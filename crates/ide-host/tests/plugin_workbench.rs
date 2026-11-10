@@ -250,7 +250,7 @@ async fn plugin_run_targets_register_prompt_route_revalidate_and_withdraw() {
     f.host.set_plugin_host(&plugins);
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/execution");
     plugins.install_from_dir(&package, &Consent::all()).unwrap();
-    let tool = f._tmp.path().join("wrapper");
+    let tool = f.root.with_file_name("wrapper");
     std::fs::write(&tool, "#!/bin/sh\nprintf 'cwd=%s\\n' \"$PWD\"\nprintf '<%s>\\n' \"$@\"\n").unwrap();
     std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
     let invocation =
@@ -370,7 +370,7 @@ async fn run_target_api15_overrides_and_frozen_api14_registration() {
     let engine = PluginEngine::new().unwrap();
     let legacy = engine.compile(&fixtures.join("run-target-api14/dist/plugin.wasm")).unwrap();
     assert_eq!(engine.check_component(&legacy).unwrap().unwrap().to_string(), "1.4.0");
-    let tool = f._tmp.path().join("wrapper");
+    let tool = f.root.with_file_name("wrapper");
     std::fs::write(&tool, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
     let invocation =
@@ -410,7 +410,16 @@ async fn run_target_api15_overrides_and_frozen_api14_registration() {
             assert_eq!(wrapped.cwd.unwrap(), f.root);
             let php = ide_run::RunConfig { command: "php".into(), args: vec!["x.php".into()], ..config.clone() };
             assert_eq!(
-                plugins.prepare_run_target(&f.root, &target.id, &php).unwrap().args,
+                plugins
+                    .prepare_run_target_launch(
+                        &f.root,
+                        &target.id,
+                        &php,
+                        ide_plugin::RunTargetOperation::Run,
+                        &Default::default()
+                    )
+                    .unwrap()
+                    .args,
                 ["wrapped", "--cwd=/container", "php", "x.php"]
             );
         }
@@ -456,7 +465,7 @@ async fn run_target_validation_gates_launches_and_preserves_selection() {
     f.host.set_plugin_host(&plugins);
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/execution");
     plugins.install_from_dir(&fixture, &Consent::all()).unwrap();
-    let tool = f._tmp.path().join("wrapper");
+    let tool = f.root.with_file_name("wrapper");
     std::fs::write(&tool, "#!/bin/sh\ntouch spawned\n").unwrap();
     std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
     plugins.choose_program("execution", "process:execution-tool", Some(&f.root), Some(&tool)).unwrap();
@@ -472,7 +481,7 @@ async fn run_target_validation_gates_launches_and_preserves_selection() {
     }
     let targets = plugins.run_targets(&f.root);
     let id = |name: &str| targets.iter().find(|t| t.target.id == name).unwrap().id.clone();
-    for operation in [RunTargetOperation::Run, RunTargetOperation::Test, RunTargetOperation::Debug] {
+    for operation in [RunTargetOperation::Run, RunTargetOperation::Test] {
         plugins.prepare_run_target_launch(&f.root, &id("allow"), &config, operation, &Default::default()).unwrap();
         let snapshot = plugins.run_command("execution", "validation", None, invocation()).unwrap().unwrap();
         assert_eq!(snapshot, format!("{}|allow|{operation:?}|composer|{}", f.root.display(), f.root.display()));
@@ -484,8 +493,6 @@ async fn run_target_validation_gates_launches_and_preserves_selection() {
         .prepare_run_target_launch(&f.root, &id("allow"), &config, RunTargetOperation::Run, &Default::default())
         .unwrap();
     assert!(plugins.info_of("execution").unwrap().stats.reclaims > 0);
-    // Non-launch consumers (LSP and document reads) do not invoke validation.
-    assert!(plugins.prepare_run_target(&f.root, &id("refuse"), &config).is_ok());
     let selected = id("refuse");
     ide_host::plugins::run_targets::answer(&f.host, &plugins, "main", &selected, true).unwrap();
     for is_test in [false, true] {
@@ -498,21 +505,6 @@ async fn run_target_validation_gates_launches_and_preserves_selection() {
         assert!(!f.root.join("spawned").exists());
         assert_eq!(f.host.project("main").unwrap().settings.effective().run.default_target, selected);
         assert_eq!(plugins.run_targets(&f.root).len(), targets.len());
-    }
-    for adapter in ["php-debug", "debugpy"] {
-        let launch = ide_dap::LaunchConfig {
-            name: "Refused debug".into(),
-            adapter: adapter.into(),
-            request: "launch".into(),
-            program: Some("app.php".into()),
-            args: Vec::new(),
-            cwd: Some(f.root.clone().into()),
-            env: Default::default(),
-            extra_json: Some(serde_json::json!({"__runTarget":selected, "__runTargetProgram":"php"}).to_string()),
-        };
-        let error = ide_host::ops::debug::debug_start(&f.host, "main", launch).await.unwrap_err();
-        assert!(error.message.contains("Project runtime is stopped"), "{adapter}: {error}");
-        assert!(f.host.debugger.sessions(None).is_empty());
     }
     let error = plugins
         .prepare_run_target_launch(&f.root, &id("long-refusal"), &config, RunTargetOperation::Run, &Default::default())

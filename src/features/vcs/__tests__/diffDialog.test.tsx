@@ -35,7 +35,9 @@ const modified = (path: string) => ({
 
 /** Editor tabs: none may open behind the modal Commit dialog. */
 const openDiff = vi.fn(async () => undefined);
-provideEditorService({ openInput: openDiff } as never);
+/** Double-click opens the source file, as the modal interface does (Show on Double-Click). */
+const openSource = vi.fn(async () => undefined);
+provideEditorService({ openInput: openDiff, openFile: openSource } as never);
 
 /** Activates (double-clicks) the file row the way a user does. */
 function activateFile(name: string) {

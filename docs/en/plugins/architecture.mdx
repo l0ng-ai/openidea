@@ -1,0 +1,102 @@
+---
+title: "Architecture and sandbox"
+description: "How plugin code runs: WebAssembly components, WIT worlds, host calls, the sandbox, resource limits and the one-thread-per-plugin model."
+---
+
+A code plugin is a WebAssembly **component** (component model, WASI preview 2) that runs inside the IDE in [wasmtime](https://wasmtime.dev). It has no direct access to files, the network, the environment or processes. Everything it does outside pure computation goes through functions the IDE provides, and each of those checks the [capabilities](/en/plugins/capabilities) the user granted.
+
+## The pieces
+
+| Part       | Where                                                                                                      | Role                                                                                                                             |
+| ---------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Plugin API | [`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit)                                                | The contract: the WIT package `openidea:plugin@1.5.0`, its interfaces and worlds                                                 |
+| Rust SDK   | [`sdk/rust/openidea-plugin`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin)       | Typed wrappers over the WIT, the `Plugin` trait, `register_plugin!`, and a mock host for `cargo test`                            |
+| Packages   | [`crates/ide-extension`](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-extension)               | The manifest, capabilities and their risk, the grant ledger, contribution points, `.oiplugin` packages and the marketplace index |
+| Runtime    | [`crates/ide-plugin`](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-plugin)                     | The wasmtime engine, one `Store` per plugin, limits, and one actor thread per active plugin                                      |
+| Host       | [`crates/ide-host/src/plugins`](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-host/src/plugins) | Implements the host API, installs and supervises plugins; the same code runs in the desktop app and in `openidea-server`         |
+
+For how the host is put together internally, see [Plugin host](/en/contribute/architecture/plugin-host) in the contributor docs.
+
+## Worlds, imports and exports
+
+The plugin API is one WIT package. Its base world, `plugin`, lists what a component may **import** (host interfaces it calls) and what it must **export** (plugin interfaces the IDE calls):
+
+- Imports: `log`, `ui`, `storage`, `fs`, `workspace`, `editor`, `decorations`, `invocation`, `vcs`, `commit`, `events`, `tasks`, `diagnostics`, `net`, `secrets`, `process`, `ipc`, `output`, `auth`, `command-runner`, `views`, `run`, `run-targets`, `database`, `mcp`, `settings`.
+- Exports: `lifecycle` (activate, deactivate), `commands` (run a command), `event-handler` (a batch of events).
+
+Optional features are separate worlds that include `plugin` and add one export. A plugin exports one only when its manifest declares the matching contribution:
+
+| World                          | Adds export                | Declared with                                              | SDK `register_plugin!` flag |
+| ------------------------------ | -------------------------- | ---------------------------------------------------------- | --------------------------- |
+| `plugin-syntax`                | `syntax-provider`          | a language without a grammar                               | `syntax`                    |
+| `plugin-providers`             | `providers`                | `[[contributes.providers]]`                                | `providers`                 |
+| `plugin-views`                 | `view-provider`            | `views`, `customEditors`                                   | `views`                     |
+| `plugin-indexing`              | `document-indexer`         | `documentIndexers`                                         | `indexing`                  |
+| `plugin-semantic-tokens`       | `semantic-tokens-provider` | `semantic-tokens` provider kind                            | `semantic_tokens`           |
+| `plugin-hover`                 | `hover-provider`           | `hover` provider kind                                      | `hover`                     |
+| `plugin-inlay-hints`           | `inlay-hints-provider`     | `inlay-hints` provider kind                                | `inlay_hints`               |
+| `plugin-diagnostics`           | `diagnostics-provider`     | `diagnostics` provider kind                                | `diagnostics`               |
+| `plugin-file-actions`          | `file-actions`             | `code-actions` provider kind                               | `file_actions`              |
+| `plugin-details`               | `detail-provider`          | views with `location = "services"`                         | `details`                   |
+| `plugin-commit-checks`         | `commit-checker`           | `commitChecks`                                             | `commit_checks`             |
+| `plugin-endpoints`             | `endpoints-provider`       | `endpoints`                                                | `endpoints`                 |
+| `plugin-run-configurations`    | `run-configurations`       | `runConfigurations`                                        | `run_configurations`        |
+| `plugin-test-results`          | `test-results`             | run detectors with `framework = "plugin"`                  | `test_results`              |
+| `plugin-language-features`     | `language-features`        | API 1.4 provider kinds                                     | `language_features`         |
+| `plugin-injections`            | `injections`               | `injections` provider kind                                 | `injections`                |
+| `plugin-mcp`                   | `mcp-provider`             | `mcpTools`                                                 | `mcp`                       |
+| `plugin-run-target-validation` | `run-target-validation`    | nothing; called for the plugin's own run targets (API 1.5) | `run_target_validation`     |
+
+In Rust you list the flags: `register_plugin!(MyPlugin, providers, views)`. Each world also has an export-only twin (`syntax`, `editor-providers`, `views-provider`, …) that component tools merge with `plugin`.
+
+## Calls in both directions
+
+- **IDE → plugin** (exports): the IDE calls `commands.run` when the user runs a command, `event-handler.handle` with batches of subscribed events, provider functions when the editor needs completion, hover and so on, and `view-provider.render` to draw a view.
+- **Plugin → IDE** (imports): inside any of those calls the plugin calls host functions such as `editor.text-editor.document`, `workspace.project.read-file` or `net.fetch`. A host function the plugin lacks a capability for returns `error::denied("<capability>")`; the plugin keeps running and can degrade.
+
+All 1.x calls are **synchronous**: a host call blocks the plugin's instance until it returns, and editor providers receive the whole document text with each call. Positions are 0-based lines and UTF-16 columns, as in the editor and LSP (the syntax provider uses UTF-8 byte offsets, which the IDE converts).
+
+## The sandbox
+
+Each plugin gets its own wasmtime `Store`:
+
+- no preopened directories, no environment variables, no network, no inherited stdin or stdout;
+- from WASI, only clocks and randomness;
+- stderr is captured: `eprintln!` output goes to the IDE log, and a panic's message is shown with the crash.
+
+Files, network, processes, sockets and secrets are reachable only through host functions, each gated by a capability. Paths are resolved to their real location before they are checked, so symlinks cannot escape a project root or a granted directory.
+
+Web views and web custom editors run in an `<iframe sandbox="allow-scripts">` loaded from the IDE's own `openidea-plugin` URL scheme: an opaque origin with no network, no cookies or storage, no IDE API, and only the page's own files. The page talks to the plugin's code through `postMessage`.
+
+## Limits
+
+Every call into a plugin is bounded:
+
+| Limit                                                                         | Value                                                                        |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| CPU                                                                           | A fuel budget of about 5·10⁹ wasm instructions per call                      |
+| Commands, events, activation, deactivation                                    | 5 s wall clock                                                               |
+| A call that opened a task (`tasks.begin`)                                     | 60 s, renewed each time the task reports progress or checks for cancellation |
+| Editor providers (syntax, completion, code actions, navigation, line markers) | Results later than 50 ms are dropped; the call is interrupted at 500 ms      |
+| Memory                                                                        | 256 MiB of linear memory                                                     |
+| Idle instance                                                                 | Reclaimed after 5 minutes without calls                                      |
+
+Waiting for the user (a picker, an input box, a confirmation) does not count against the time limit. Individual host functions have their own caps (file sizes, number of handles, response sizes), listed in [`plugins/README.md`](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md).
+
+## Threads and crashes
+
+Each active plugin runs on its own thread (an actor that owns the plugin's runtime). Callers queue jobs and wait on a reply, so calls into one instance never run concurrently. An editor caller can stop waiting at its soft deadline while the call goes on until the hard deadline; calls can be cancelled from any thread. Wall-clock limits use wasmtime's epoch interruption.
+
+A panic, trap, permission violation or exceeded limit drops the instance. The user is told once, and the plugin starts afresh the next time it is needed, after a pause that doubles with each crash in a row (1 s, 2 s, …, at most 60 s). After three crashes in a row the plugin is marked **Failed** for the session, with the reason in **Settings › Plugins**; **Restart**, toggling it off and on, or **Reload from disk** starts it again. A call that returns normally resets the count. A crashing plugin never affects the IDE itself.
+
+**Settings › Plugins** shows each plugin's activations, recent call latency (p95), crashes, late editor results and idle reclaims.
+
+## Remote projects
+
+Plugin code runs where the project is. When a window opens a remote project, the desktop sends its enabled code plugins and their grants to `openidea-server`, which runs them next to the files: file reads, searches, processes, network requests and diagnostics all act on the remote machine, and `process:` programs are resolved there. Secrets stay in the desktop's keychain; the server asks for one when a request needs it. Views, notifications, status items and terminals of remote plugins show in the window as usual.
+
+Current limits: project plugins (`.openidea/plugins`) don't run in remote projects yet, and a plugin's storage on the server starts empty.
+
+## Async and API 2.0
+
+The 1.x API is synchronous by design. WASI 0.3 async components are planned for API 2.0, behind an adapter in the host that keeps 1.x plugins running. See [API versions](/en/plugins/versioning).

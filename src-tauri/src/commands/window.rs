@@ -127,6 +127,13 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
     crate::window_groups::toggle_fullscreen(&window)
 }
 
+/// Fills the work area without the platform zoom animation. Returns whether it is filled now.
+#[tauri::command]
+#[specta::specta]
+pub fn window_toggle_zoom(window: WebviewWindow) -> IdeResult<bool> {
+    crate::window_zoom::toggle(&window)
+}
+
 /// Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
 /// breakpoint is hit while the window is in the background (macOS bounces the dock icon,
 /// Linux sets the urgency hint). A focused window is never flashed: the user is already
@@ -413,9 +420,10 @@ fn config_endpoints<R: tauri::Runtime>(app: &AppHandle<R>) -> Vec<String> {
 
 /// The endpoints tried in order: `source` first, the other source when it fails or has
 /// no manifest. Bundles are signed, so either source's manifest and downloads verify.
-/// No official endpoint (a build without updates) means no mirror either.
-fn source_endpoints(official: Vec<String>, source: UpdateSource) -> Vec<String> {
-    if official.is_empty() {
+/// No official endpoint (a build without updates) means no mirror either. Nightly builds
+/// aren't mirrored: the mirror's manifest would move them to the stable version.
+fn source_endpoints(official: Vec<String>, source: UpdateSource, nightly: bool) -> Vec<String> {
+    if official.is_empty() || nightly {
         return official;
     }
     let mirror = vec![CNB_ENDPOINT.to_string()];
@@ -425,6 +433,10 @@ fn source_endpoints(official: Vec<String>, source: UpdateSource) -> Vec<String> 
     }
 }
 
+fn is_nightly(version: &str) -> bool {
+    version.contains("-nightly.")
+}
+
 fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
     use tauri_plugin_updater::UpdaterExt;
     if !updates_configured(app) {
@@ -432,7 +444,7 @@ fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plug
     }
     let endpoints = match update_endpoint_env() {
         Some(url) => vec![url],
-        None => source_endpoints(config_endpoints(app), source),
+        None => source_endpoints(config_endpoints(app), source, is_nightly(&app.package_info().version.to_string())),
     };
     let endpoints = endpoints
         .iter()
@@ -646,10 +658,22 @@ mod tests {
     #[test]
     fn chosen_source_is_tried_first_and_the_other_after_it() {
         let github = "https://github.com/l0ng-ai/openidea/releases/latest/download/latest.json".to_string();
-        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Github), [github.clone(), CNB_ENDPOINT.into()]);
-        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb), [CNB_ENDPOINT.into(), github]);
+        assert_eq!(
+            source_endpoints(vec![github.clone()], UpdateSource::Github, false),
+            [github.clone(), CNB_ENDPOINT.into()]
+        );
+        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb, false), [CNB_ENDPOINT.into(), github]);
         // A build without an update endpoint stays without one.
-        assert!(source_endpoints(Vec::new(), UpdateSource::Cnb).is_empty());
+        assert!(source_endpoints(Vec::new(), UpdateSource::Cnb, false).is_empty());
+    }
+
+    #[test]
+    fn nightly_builds_update_from_their_own_manifest_whatever_the_source() {
+        let nightly = "https://github.com/l0ng-ai/openidea/releases/download/nightly/latest.json".to_string();
+        assert_eq!(source_endpoints(vec![nightly.clone()], UpdateSource::Cnb, true), vec![nightly.clone()]);
+        assert_eq!(source_endpoints(vec![nightly.clone()], UpdateSource::Github, true), [nightly]);
+        assert!(is_nightly("0.1.40-nightly.202611081417"));
+        assert!(!is_nightly("0.1.40"));
     }
 
     #[test]

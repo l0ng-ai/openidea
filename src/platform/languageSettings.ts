@@ -79,8 +79,32 @@ export const PHP_LANGUAGE_LEVELS = [
   "5.6",
 ] as const;
 
-/** `languages.java.languageLevel` values; `""` = SDK default (Auto). */
-export const JAVA_LANGUAGE_LEVELS = ["", "8", "11", "17", "21", "25"] as const;
+/** `languages.java.languageLevel` values; `""` = SDK default (Auto). Levels before 8 need a jdtls
+ *  that still compiles them (Settings › Languages & Frameworks › Language Servers). */
+export const JAVA_LANGUAGE_LEVELS = [
+  "",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+  "10",
+  "11",
+  "12",
+  "13",
+  "14",
+  "15",
+  "16",
+  "17",
+  "18",
+  "19",
+  "20",
+  "21",
+  "22",
+  "23",
+  "24",
+  "25",
+] as const;
 
 export type DependencyScopeValid = "compile" | "test" | "runtime" | "provided";
 
@@ -204,6 +228,10 @@ export interface ProjectStructureValid {
   unmarked: string[];
   /** Content roots besides the project folder (absolute paths). */
   contentRoots: string[];
+  /** Other projects (absolute paths) this project depends on; indexed and navigable with it. */
+  dependencies: string[];
+  /** Per-workspace-member dependencies: member path → the roots it depends on. */
+  memberDependencies: Record<string, string[]>;
   /** "Exclude files": `;`-separated name patterns. */
   excludeFiles: string;
   /** Project compiler output directory; empty = default. */
@@ -271,6 +299,8 @@ export const DEFAULT_PROJECT_STRUCTURE: ProjectStructureValid = {
   excluded: [],
   unmarked: [],
   contentRoots: [],
+  dependencies: [],
+  memberDependencies: {},
   excludeFiles: "",
   compilerOutput: "",
   modules: {},
@@ -554,6 +584,17 @@ export function validateProjectStructure(raw: unknown): ProjectStructureValid {
     contentRoots: Array.isArray(p.contentRoots)
       ? [...new Set(p.contentRoots.filter((x): x is string => typeof x === "string" && !!x.trim()))]
       : [],
+    dependencies: Array.isArray(p.dependencies)
+      ? [...new Set(p.dependencies.filter((x): x is string => typeof x === "string" && !!x.trim()))]
+      : [],
+    memberDependencies: Object.fromEntries(
+      Object.entries(obj(p.memberDependencies))
+        .map(([member, deps]) => [
+          member,
+          Array.isArray(deps) ? [...new Set(deps.filter((x): x is string => typeof x === "string" && !!x.trim()))] : [],
+        ])
+        .filter(([member, deps]) => !!member && (deps as string[]).length > 0),
+    ),
     excludeFiles: typeof p.excludeFiles === "string" ? p.excludeFiles : "",
     compilerOutput: text(p.compilerOutput, ""),
     modules: validateModulesMap(p.modules),
@@ -561,6 +602,11 @@ export function validateProjectStructure(raw: unknown): ProjectStructureValid {
     facets: validateFacetsList(p.facets),
     artifacts: validateArtifactsList(p.artifacts),
   };
+}
+
+/** Content roots plus dependency projects, deduplicated (what the Project view, index and run see). */
+export function effectiveContentRoots(ps: ProjectStructureValid): string[] {
+  return [...new Set([...ps.contentRoots, ...ps.dependencies])];
 }
 
 /** Root kinds, as in IDEA's Project Structure (`ide-workspace::roots::RootKind`). */

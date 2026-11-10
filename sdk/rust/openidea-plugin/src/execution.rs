@@ -242,7 +242,6 @@ impl From<PluginRunTarget> for PluginRunTargetWithOverrides {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunTargetOperation {
     Run,
-    Debug,
     Test,
 }
 

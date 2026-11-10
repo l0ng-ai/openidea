@@ -127,6 +127,17 @@ async function runCheck() {
   }
 }
 
+const NIGHTLY_PROMPT_KEY = "openidea.update.nightlyPromptedAt";
+const NIGHTLY_PROMPT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/** Nightly builds come out more often than anyone wants to be asked: at most one prompt a day. */
+function nightlyPromptDue(now = Date.now()): boolean {
+  const last = Number(localStorage.getItem(NIGHTLY_PROMPT_KEY));
+  if (now - last < NIGHTLY_PROMPT_INTERVAL_MS) return false;
+  localStorage.setItem(NIGHTLY_PROMPT_KEY, String(now));
+  return true;
+}
+
 /** Start one backend schedule after this window can receive its notifications. */
 export function installUpdateChecks(): () => void {
   let disposed = false;
@@ -154,6 +165,7 @@ export async function notifyUpdate(update: UpdateInfo, userInitiated = false): P
     );
     if (!claimed) return;
   }
+  if (!userInitiated && update.currentVersion.includes("-nightly.") && !nightlyPromptDue()) return;
   notifications().notify({
     level: "info",
     title: t("app.update.available", { version: update.version }),

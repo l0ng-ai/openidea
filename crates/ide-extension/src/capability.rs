@@ -38,6 +38,10 @@ pub enum Capability {
     Clipboard,
     /// HTTPS (and loopback HTTP) to one host (`*.example.com` matches subdomains).
     Net(String),
+    /// Ask the user when the first request goes to an HTTPS (or loopback) host
+    /// the manifest does not list; each answer applies to one host. Plain
+    /// HTTP elsewhere always needs `net.http:<host>`.
+    NetAsk,
     /// Unencrypted HTTP to one host.
     NetHttp(String),
     /// A local socket or named pipe on the project machine.
@@ -71,6 +75,7 @@ impl Capability {
             | Self::DatabaseSources
             | Self::VcsWrite
             | Self::Net(_)
+            | Self::NetAsk
             | Self::NetHttp(_)
             | Self::Secrets
             | Self::InputEvents
@@ -104,6 +109,10 @@ impl Capability {
                 "Copy to the clipboard from its commands, and read and write it from its web views".into()
             }
             Self::Net(host) => format!("Connect to {host} (from the machine the project is on)"),
+            Self::NetAsk => {
+                "Ask to connect to a host that is not on the list the first time it tries; you allow or refuse each host, and can revoke the allowed ones"
+                    .into()
+            }
             Self::NetHttp(host) => {
                 format!("Connect to {host} over unencrypted HTTP (from the machine the project is on)")
             }
@@ -230,6 +239,7 @@ impl fmt::Display for Capability {
             Self::InputEvents => f.write_str("events.input"),
             Self::Clipboard => f.write_str("clipboard"),
             Self::Net(h) => write!(f, "net:{h}"),
+            Self::NetAsk => f.write_str("net:ask"),
             Self::NetHttp(h) => write!(f, "net.http:{h}"),
             Self::Ipc(p) => write!(f, "ipc:{p}"),
             Self::Process(b) => write!(f, "process:{b}"),
@@ -251,6 +261,9 @@ impl FromStr for Capability {
             }
             return match kind {
                 "net" | "net.http" => {
+                    if kind == "net" && arg == "ask" {
+                        return Ok(Self::NetAsk);
+                    }
                     let host = arg.strip_prefix("*.").unwrap_or(arg);
                     let valid = !host.is_empty()
                         && host.len() <= 253
@@ -448,6 +461,25 @@ mod command_tests {
         assert!(!cap.auto_migrates());
         assert!(!Capability::VcsWrite.covers(&cap));
         assert!(!Capability::Process("git".into()).covers(&cap));
+    }
+}
+
+#[cfg(test)]
+mod net_ask_tests {
+    use super::*;
+    #[test]
+    fn net_ask_is_its_own_medium_risk_grant_covering_no_host() {
+        let cap: Capability = "net:ask".parse().unwrap();
+        assert_eq!(cap, Capability::NetAsk);
+        assert_eq!(cap.to_string(), "net:ask");
+        assert_eq!(cap.risk(), Risk::Medium);
+        assert!(!cap.auto_migrates());
+        // It asks; it does not itself connect anywhere or pre-approve a host.
+        assert!(!cap.covers(&"net:api.example.com".parse().unwrap()));
+        assert!(!cap.covers(&Capability::NetHttp("example.com".into())));
+        assert!(!"net:api.example.com".parse::<Capability>().unwrap().covers(&cap));
+        assert_ne!("net:ask.com".parse::<Capability>().unwrap(), Capability::NetAsk);
+        assert!("net:ask".parse::<Capability>().unwrap().describe().contains("host"));
     }
 }
 

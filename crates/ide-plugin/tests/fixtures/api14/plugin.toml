@@ -1,13 +1,13 @@
 id = "api14"
 name = "API 1.4 host tests"
 version = "0.1.0"
-engines.openidea = "^1.4"
+engines.openidea = "^1.5"
 wasm = "dist/plugin.wasm"
 activation = ["on-command:*", "on-event:file-closed", "on-event:settings-changed", "on-event:input-mode-changed"]
 
 [capabilities]
 required = ["storage"]
-optional = ["ide.commands", "project.read", "vcs.read", "events", "events.input", "editor.read", "secrets", "net:localhost", "net.http:example.com", "ipc:$TMPDIR/api14-*"]
+optional = ["ide.commands", "project.read", "vcs.read", "events", "events.input", "editor.read", "secrets", "net:localhost", "net.http:example.com", "net:ask", "ipc:$TMPDIR/api14-*"]
 
 [[contributes.secrets]]
 name = "token"
@@ -103,6 +103,10 @@ title = "reveal"
 [[contributes.commands]]
 id = "search-text"
 title = "search-text"
+
+[[contributes.commands]]
+id = "read-bytes"
+title = "read-bytes"
 
 [[contributes.commands]]
 id = "problems"

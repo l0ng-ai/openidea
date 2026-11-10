@@ -1,0 +1,98 @@
+---
+title: "贡献流程"
+description: "issue 如何分流、PR 需要包含什么、验证说明如何检查，以及改动如何合并。"
+---
+
+以下规则来自 [`CONTRIBUTING.md`](https://github.com/l0ng-ai/openidea/blob/main/CONTRIBUTING.md)，对所有人都适用，包括代表某人工作的编码 agent。编码规则、命令和检查项见 [`AGENTS.md`](https://github.com/l0ng-ai/openidea/blob/main/AGENTS.md)。
+
+## Issue
+
+- 一个 issue 只说一个问题或需求。请使用 issue 表单（[Bug report](https://github.com/l0ng-ai/openidea/issues/new?template=bug_report.yml) 或 [Feature request](https://github.com/l0ng-ai/openidea/issues/new?template=feature_request.yml)），空白 issue 已关闭。
+- **Bug**：给出从全新状态开始的复现步骤，并在[最新版本](https://github.com/l0ng-ai/openidea/releases/latest)上确认。附一个最小示例项目最快能修好。
+- **功能**：说明要解决的问题和验收标准。维护者打上 `planned` 标签后才算可以开工。
+
+标签表示状态：
+
+| 标签               | 含义                                                 |
+| ------------------ | ---------------------------------------------------- |
+| `needs-info`       | 等待报告者补充信息（在 PR 上则是等待补全验证说明）。 |
+| `needs-decision`   | 等待维护者做产品决策。                               |
+| `planned`          | 已接受，可以开工。                                   |
+| `needs-acceptance` | 已有修复，等待验收。                                 |
+
+## Pull request
+
+<Steps>
+  <Step title="只解决一个问题">
+    一个 PR 只解决一个问题。如果它解决了某个 issue，用 `Closes #123` 关联。无关的重构另开 PR。
+  </Step>
+  <Step title="先复现">先复现问题，或者先写一个在修复前会失败的测试。</Step>
+  <Step title="修根因">修根本原因，再检查同一原因是否还影响了附近的其他地方。diff 保持聚焦。</Step>
+  <Step title="跑检查">针对改动的部分运行 CI 会跑的检查（见下文），UI 或运行时行为的改动要在运行中的应用里验证。</Step>
+  <Step title="提 PR">
+    标题使用 [Conventional Commits](https://www.conventionalcommits.org/) 格式，例如 `fix(editor): keep the caret
+    visible after folding`。按模板填写描述。
+  </Step>
+</Steps>
+
+描述写短、写白话。几句话说不清的话，这个 PR 多半太大了。
+
+### 模板
+
+[`.github/pull_request_template.md`](https://github.com/l0ng-ai/openidea/blob/main/.github/pull_request_template.md) 有三节：
+
+| 小节                    | 内容                                                                             |
+| ----------------------- | -------------------------------------------------------------------------------- |
+| **What and why**        | 2–4 句：用户能感知到的变化，以及根本原因。                                       |
+| **How it was verified** | 必填。实际运行的命令及结果；这次改动还可能影响什么，你是怎么确认它们仍然正常的。 |
+| **Review focus**        | 可选。希望评审重点看的地方。                                                     |
+
+### How it was verified
+
+这一节必填，内容包括：
+
+- 实际运行过的命令和结果（测试、clippy、`pnpm e2e`、冒烟测试等）；
+- 改动还可能影响到哪些地方，以及你如何确认；
+- **可见的 UI 改动**：前后对比截图；**多步交互**：录屏；
+- **后端改动**：日志或命令输出。
+
+随功能一起删除的 UI、只改文案或不涉及界面的改动不需要截图，写明你检查了什么即可。
+
+工作流 `.github/workflows/pr-check.yml` 会在 PR 创建或编辑时读取描述。如果 **How it was verified** 缺失或为空，它会留言并打上 `needs-info`；补全后会删掉自己的留言并移除标签。它只读标题和描述，不会检出或运行你的代码。
+
+### 要跑的检查
+
+| 改动范围            | 运行                                                                                                                    |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Rust                | `cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo nextest run --workspace`     |
+| IPC 类型            | `pnpm gen:bindings`，并提交 `src/bindings.ts`                                                                           |
+| 前端                | `pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm knip`、`pnpm test`、`pnpm build`；涉及 UI 流程再跑 `pnpm e2e` |
+| 插件、SDK 或 `wit/` | `plugins/build.sh`、`cargo test -p ide-host --test plugins`                                                             |
+| UI 或运行时行为     | 在运行中的应用里验证（`pnpm tauri dev`）                                                                                |
+
+细节见[单元测试与 E2E](/zh/contribute/testing/unit-e2e)。
+
+### CI 跑什么
+
+`.github/workflows/ci.yml` 先按改动的文件分类，只改文档或只改前端的 PR 会跳过与之无关的任务：
+
+- **Rust**：在 macOS、Ubuntu 22.04、Windows 上运行 `cargo fmt --check`（仅 Linux）、带 `-D warnings` 的 clippy、`cargo nextest run --workspace`，并检查 `src/bindings.ts` 是否最新。
+- **Remote server**：`openidea-server` 的静态 Linux（musl）构建。
+- **Plugins**：SDK、官方插件和测试夹具的格式、clippy（宿主与 `wasm32-wasip2`）和测试；插件 Web 页面的类型检查与测试；`plugins/build.sh --check`。
+- **Cargo deny**：`cargo deny check`（许可证、安全公告、依赖来源）。
+- **Frontend**：类型检查、lint、格式检查、knip、测试、构建。
+- **E2E**：在 Playwright 容器里运行 `pnpm e2e`。
+
+当 crates、`languages/`、`fixtures/`、运行/调试功能、`src/platform/` 或 `smoke/` 有改动时，`.github/workflows/language-smoke.yml` 会运行[语言冒烟测试](/zh/contribute/testing/smoke)。
+
+## 产品决策
+
+如果改动涉及你无法拍板的产品决策（用户可感知的行为、方案取舍、范围），在 issue 里提问并停下来，不要自己猜。维护者答复前，issue 会挂着 `needs-decision`。
+
+## 插件
+
+向本仓库提的插件 PR 只限于新增或修改官方插件（`plugins/official/`）和插件 API。社区插件放在作者自己的仓库，通过 [l0ng-ai/openidea-plugins](https://github.com/l0ng-ai/openidea-plugins) 收录。见[发布插件](/zh/plugins/publishing/marketplace)。
+
+## 评审与合并
+
+维护者按上面的规则评审：只解决一个问题、修了根因、diff 聚焦、验证覆盖了改动影响的范围。一个 PR 做了好几件事的话，会被要求拆分。合并到 `main` 的提交带有 PR 的 Conventional Commits 标题和编号，例如 `fix(maven): recognize POMs with non-UTF-8 declared encodings (#2495)`，所以标题要按你希望出现在历史里的提交信息来写。

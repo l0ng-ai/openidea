@@ -325,6 +325,23 @@ impl StoreData {
         answer.map_err(to_wit)
     }
 
+    /// The user's answer for a request to `host` under `net:ask`:
+    /// `Some(_)` allows it (`true`: the host is remembered). `None` when
+    /// nobody could be asked or the user refused. Commands and view actions pass
+    /// their window; background and scheduled calls ask nobody, so only an
+    /// already-allowed host connects there.
+    fn ask_net(&mut self, host: &str) -> Result<Option<bool>, wit::Error> {
+        let client = self.net_interactive.then(|| self.invocation.client.clone()).flatten();
+        let subject = self.subject.clone();
+        let started = Instant::now();
+        let answer = self.host.net_ask(&subject, client.as_deref(), host, &self.cancel.token());
+        // The wait doesn't count against the call's wall-clock budget.
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        answer.map_err(to_wit)
+    }
+
     fn pick_prompt(
         &mut self,
         title: String,
@@ -682,6 +699,22 @@ impl workspace::HostProject for StoreData {
         Ok(sandbox::read_text(&real).map_err(wit::Error::Failed))
     }
 
+    fn read_bytes(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<Vec<u8>> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&this)?.root.clone();
+        let real = match sandbox::resolve_in_root(&root, &path) {
+            Ok(real) => real,
+            Err(e) => {
+                let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
+                return Ok(Err(e));
+            }
+        };
+        // The bytes on disk: an unsaved text buffer does not apply, binary files are the point.
+        Ok(sandbox::read_bytes(&real).map_err(wit::Error::Failed))
+    }
+
     fn exists(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<bool> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
@@ -764,7 +797,7 @@ impl workspace::HostProject for StoreData {
             return Ok(Err(too_much_to_write(&path)));
         }
         let root = self.table.get(&this)?.root.clone();
-        let real = match sandbox::resolve_new_in_root(&root, &path) {
+        let real = match sandbox::resolve_writable_in_root(&root, &path) {
             Ok(real) => real,
             Err(e) => return Ok(Err(wit::Error::Invalid(e))),
         };
@@ -1277,8 +1310,26 @@ impl net::Host for StoreData {
             Ok(h) => h,
             Err(e) => return Ok(Err(wit::Error::Invalid(e))),
         };
-        if let Err(e) = self.require(capability) {
-            return Ok(Err(e));
+        let mut grants = self.granted.clone();
+        if let Err(e) = self.require(capability.clone()) {
+            // `net:ask`: an HTTPS (or loopback) host the manifest does not list
+            // may ask the user — commands and view actions from a window only. Plain
+            // HTTP elsewhere always needs `net.http:<host>`.
+            let askable =
+                matches!(&capability, Capability::Net(_)) && self.granted.iter().any(|g| g.covers(&Capability::NetAsk));
+            let allowed = match &capability {
+                Capability::Net(host) if askable => match self.ask_net(host) {
+                    Ok(Some(_)) => true,
+                    Ok(None) => false,
+                    // A cancelled or failed question is not a refusal.
+                    Err(e) => return Ok(Err(e)),
+                },
+                _ => false,
+            };
+            if !allowed {
+                return Ok(Err(e));
+            }
+            grants.push(capability.clone());
         }
         if req.headers.iter().any(|h| h.value.contains("{{secret:"))
             && let Err(e) = self.require(Capability::Secrets)
@@ -1295,7 +1346,7 @@ impl net::Host for StoreData {
             headers: req.headers.into_iter().map(|h| (h.name, h.value)).collect(),
             body: req.body,
             timeout: wanted.min(self.remaining()),
-            grants: self.granted.clone(),
+            grants,
         };
         let token = self.cancel.token();
         Ok(self

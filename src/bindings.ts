@@ -388,6 +388,16 @@ export const commands = {
 	reference: WebReference,
 	targets: Location[],
 } | null, IdeError>(__TAURI_INVOKE("web_goto", { doc, pos })),
+	/**
+	 *  The file a Python import path (`a.b.c`, or `.x` relative to `from`) names; `None` when
+	 *  no project or content root has it.
+	 */
+	navResolveModule: (name: string, from: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("nav_resolve_module", { name, from })),
+	/**
+	 *  Index definitions named `name` within the roots `from` may navigate into (its own root
+	 *  plus its configured dependencies).
+	 */
+	navIndexDefinitions: (name: string, from: IpcPath) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("nav_index_definitions", { name, from })),
 	/**  The existing file or directory a path written in `from` names (`href`, `url()`, a string literal). */
 	fsResolveReference: (from: IpcPath, value: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
 	/**  Files and folders that continue `prefix`, a path being typed in `from`. */
@@ -811,7 +821,7 @@ export const commands = {
 	/**  Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap). */
 	javaBuildWorkspace: (module: string, request: number | null) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module, request })),
 	/**  Starts a session owned by this window: its events (and those of child sessions) go here only. */
-	debugStart: (config: LaunchConfig, request: number | null) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config, request })),
+	debugStart: (config: LaunchConfig) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config })),
 	debugSetBreakpoints: (path: string, breakpoints: Breakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_breakpoints", { path, breakpoints })),
 	debugThreads: (session: DebugSessionId) => typedError<ThreadInfo[], IdeError>(__TAURI_INVOKE("debug_threads", { session })),
 	debugStackTrace: (session: DebugSessionId, threadId: number) => typedError<StackFrame[], IdeError>(__TAURI_INVOKE("debug_stack_trace", { session, threadId })),
@@ -952,6 +962,8 @@ export const commands = {
 	/**  Focuses the next / previous window (⌘` / ⇧⌘`). */
 	windowCycle: (forward: boolean) => __TAURI_INVOKE<void>("window_cycle", { forward }),
 	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
+	/**  Fills the work area without the platform zoom animation. Returns whether it is filled now. */
+	windowToggleZoom: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_zoom")),
 	/**
 	 *  Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
 	 *  breakpoint is hit while the window is in the background (macOS bounces the dock icon,
@@ -1108,6 +1120,8 @@ export const commands = {
 	pluginGrant: (id: string, consent: Consent) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_grant", { id, consent })),
 	/**  Grants or revokes one declared capability. */
 	pluginSetCapability: (id: string, capability: string, granted: boolean) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_set_capability", { id, capability, granted })),
+	/**  Revokes one host remembered through net:ask. */
+	pluginRevokeNetHost: (id: string, host: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_revoke_net_host", { id, host })),
 	/**  Links a development plugin folder (`openidea-plugin link` does the same from a terminal). */
 	pluginLink: (path: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_link", { path })),
 	pluginUnlink: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_unlink", { id })),
@@ -1655,6 +1669,11 @@ export type AgentEvent =
 { type: "truncated"; task: string; length: number } | 
 /**  Entry `index` of `task` (of its subagent `subagent`) was added or replaced. */
 { type: "entry"; task: string; subagent: string | null; index: number; entry: AgentEntry } | 
+/**
+ *  Text was appended to entry `index` (an agent message or a thought): it read the first
+ *  `from` UTF-16 units of its text when the previous event for it was sent.
+ */
+{ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 { type: "limits"; provider: string; limits: AgentLimit[] } | 
 /**  The installed or configured agent providers changed. */
@@ -1778,8 +1797,11 @@ export type AgentRetry = {
 	error: string | null,
 };
 
-/**  What the meters in an agent task's header show. */
-export type AgentSettings = {
+/**  Settings › Agents: what the conversation shows and how messages are sent. */
+export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
+
+/**  Settings › Agents: what the conversation shows and how messages are sent. */
+export type AgentSettings_Deserialize = {
 	/**  Context window use. */
 	showContextUsage?: boolean,
 	/**  Time the agent spent on the task. */
@@ -1788,6 +1810,50 @@ export type AgentSettings = {
 	showUsageLimits?: boolean,
 	/**  What the session has cost so far, as the agent reports it. */
 	showCost?: boolean,
+	/**  A finished turn's work folds into one line under its message, leaving the reply. */
+	foldTurns?: boolean,
+	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
+	smoothText?: boolean,
+	thinking?: ThinkingDisplay,
+	toolCalls?: ToolCallDisplay,
+	/**  A tool call's output (a command's, a diff) is shown without opening it. */
+	expandToolOutput?: boolean,
+	sendWith?: SendKey,
+	/**
+	 *  What sending does while the agent works: queue the message for after the turn, or
+	 *  send it into the turn.
+	 */
+	whileRunning?: WhileRunning,
+	/**  Settings new tasks of an agent start with: agent id → option id → value. */
+	defaults?: { [key in string]: { [key in string]: string } },
+};
+
+/**  Settings › Agents: what the conversation shows and how messages are sent. */
+export type AgentSettings_Serialize = {
+	/**  Context window use. */
+	showContextUsage: boolean,
+	/**  Time the agent spent on the task. */
+	showWorkTime: boolean,
+	/**  The account's usage-limit windows (Claude's 5-hour and weekly limits). */
+	showUsageLimits: boolean,
+	/**  What the session has cost so far, as the agent reports it. */
+	showCost: boolean,
+	/**  A finished turn's work folds into one line under its message, leaving the reply. */
+	foldTurns: boolean,
+	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
+	smoothText: boolean,
+	thinking: ThinkingDisplay,
+	toolCalls: ToolCallDisplay,
+	/**  A tool call's output (a command's, a diff) is shown without opening it. */
+	expandToolOutput: boolean,
+	sendWith: SendKey,
+	/**
+	 *  What sending does while the agent works: queue the message for after the turn, or
+	 *  send it into the turn.
+	 */
+	whileRunning: WhileRunning,
+	/**  Settings new tasks of an agent start with: agent id → option id → value. */
+	defaults: { [key in string]: { [key in string]: string } },
 };
 
 /**  Where an agent comes from. */
@@ -2616,6 +2682,14 @@ export type CommitSettings = {
 	wrapAtMargin?: boolean,
 	/**  Plugin before-commit checks turned off (`<plugin id>/<check id>`); the rest run. */
 	disabledPluginChecks?: string[],
+	/**
+	 *  Double-click / Enter in the changes view: `None` follows the interface (the
+	 *  Commit tool window opens the diff, Local Changes the source file).
+	 * 
+	 *  No `skip_serializing_if`: an unset value must still appear in
+	 *  `Settings::default()`, or `SettingsStore::set` rejects the key as unknown.
+	 */
+	doubleClickOpensDiff?: boolean | null,
 };
 
 export type Commit_Deserialize = {
@@ -3118,7 +3192,7 @@ export type DbDriver = "sqlite" | "postgres" |
 "mysql" | 
 /**  Microsoft SQL Server. */
 "sqlServer" | "clickhouse" | 
-/**  Oracle Database (via Oracle Instant Client). */
+/**  Oracle Database (pure-Rust thin driver, no client library). */
 "oracle";
 
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
@@ -3161,7 +3235,7 @@ export type DbIntrospection = {
 };
 
 /**  Schema objects other than tables and columns (Go to DDL, Drop). */
-export type DbObjectKind = "function" | "procedure" | "trigger" | "sequence";
+export type DbObjectKind = "function" | "procedure" | "package" | "trigger" | "sequence";
 
 /**  Options tab: session settings applied to every connection. */
 export type DbOptions = {
@@ -3178,8 +3252,11 @@ export type DbOptions = {
 	autoDisconnectSecs?: number | null,
 	/**  PostgreSQL: show only the configured database, its schemas right under the data source. */
 	singleDatabase?: boolean,
-	/**  Oracle: directory of the Oracle Instant Client (empty: `ORACLE_HOME` / system search path). */
-	instantClient?: string,
+};
+
+/**  An Oracle package (its procedures and functions are not listed separately). */
+export type DbPackageInfo = {
+	name: string,
 };
 
 /**  One operation of a plan; `parent` indexes the plan's node list (roots: `None`). */
@@ -3241,9 +3318,10 @@ export type DbRoutineInfo = {
  */
 export type DbRowEdit = { kind: "update"; key: DbCellValue[]; values: DbCellValue[] } | { kind: "insert"; values: DbCellValue[] } | { kind: "delete"; key: DbCellValue[] };
 
-/**  A schema's routines (procedures and functions) and sequences. */
+/**  A schema's routines (procedures and functions), packages and sequences. */
 export type DbSchemaObjects = {
 	routines: DbRoutineInfo[],
+	packages: DbPackageInfo[],
 	sequences: DbSequenceInfo[],
 };
 
@@ -3853,6 +3931,8 @@ export type EditorAppearanceSettings = {
 	whitespaceInner?: boolean,
 	whitespaceTrailing?: boolean,
 	indentGuides?: boolean,
+	/**  Colour indent guides by depth (`--syn-rainbow-*`), while `indent_guides` is on. */
+	rainbowIndentGuides?: boolean,
 	/**  Right margin and visual guides from Code Style. */
 	hardWrapGuides?: boolean,
 	intentionBulb?: boolean,
@@ -5586,12 +5666,6 @@ export type LanguageServerSettings_Serialize = {
 	codeActionKinds?: string[] | null,
 };
 
-export type LanguageServerTarget = {
-	target?: string,
-	/**  Empty selects the first configured server for the language. */
-	server?: string,
-};
-
 export type LanguagesSettings = {
 	/**  Explicit plugin formatter, by language id. Empty entries use the normal formatter policy. */
 	pluginFormatters?: { [key in string]: string },
@@ -6032,13 +6106,13 @@ export type MavenSettings = {
 	activeProfiles?: string,
 };
 
-/**  Tools › MCP Server: agents use the IDE's built-in tools. */
+/**  Agents › MCP Server: agents use the IDE's built-in tools. */
 export type McpServerSettings = {
 	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
 	enabled?: boolean,
 };
 
-/**  What Settings › Tools › MCP Server shows. */
+/**  What Settings › Agents › MCP Server shows. */
 export type McpServerStatus = {
 	running: boolean,
 	/**  Why it isn't running though turned on. */
@@ -6727,6 +6801,11 @@ export type PluginInfo = {
 	hasCode: boolean,
 	/**  Declared capabilities with risk and grant state. */
 	capabilities: CapabilityInfo[],
+	/**
+	 *  HTTPS hosts the user allowed through `net:ask` ("always allow"),
+	 *  none of them declared by the manifest; each can be revoked.
+	 */
+	netHosts: string[],
 	/**  What it contributes while live (point + label). */
 	contributions: ContributionInfo[],
 	/**  `activation` events of the manifest. */
@@ -7139,6 +7218,13 @@ export type ProjectStructureSettings = {
 	unmarked?: string[],
 	/**  Content roots besides the project folder (absolute paths), shown and searched with it. */
 	contentRoots?: string[],
+	/**  Other projects (absolute paths) this project depends on; indexed and navigable like content roots. */
+	dependencies?: string[],
+	/**
+	 *  Per-workspace-member dependencies: member root (IPC path) → the roots it depends on.
+	 *  A member not listed here (or with an empty list) navigates only into itself.
+	 */
+	memberDependencies?: { [key in string]: string[] },
 	/**  "Exclude files": `;`-separated name patterns (`*.log;tmp*`) excluded at any depth. */
 	excludeFiles?: string,
 	/**  Project compiler output directory (relative to project root or absolute; empty = default). */
@@ -7157,7 +7243,12 @@ export type ProjectStructureSettings = {
  *  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
  *  `ui.input-multiline`, `ui.confirm`).
  */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null };
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null } | 
+/**
+ *  The host's own question under `net:ask` (never plugin-initiated): the
+ *  plugin reached an HTTPS host its manifest does not list.
+ */
+{ kind: "netPermission"; host: string; sessionOnly: boolean };
 
 export type ProxyKind = "http" | "socks";
 
@@ -7938,6 +8029,9 @@ export type SemanticTokens = {
 	tokenModifiers: string[],
 };
 
+/**  The key that sends a message; the other one starts a new line. */
+export type SendKey = "enter" | "modEnter";
+
 /**  A running language server instance. */
 export type ServerId = number;
 
@@ -8063,8 +8157,6 @@ export type Settings_Deserialize = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers?: { [key in string]: LanguageServerSettings_Deserialize },
-	/**  Project language id → server and plugin target. Empty target uses the host. */
-	languageServerTargets?: { [key in string]: LanguageServerTarget },
 	/**  Editor › Inspections profiles. */
 	inspections?: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
@@ -8076,9 +8168,9 @@ export type Settings_Deserialize = {
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets?: RunTarget[],
 	cmake?: CMakeSettings_Deserialize,
-	/**  Tools › Agents › Chat. */
-	agents?: AgentSettings,
-	/**  Tools › MCP Server (global only). */
+	/**  Settings › Agents. */
+	agents?: AgentSettings_Deserialize,
+	/**  Agents › MCP Server (global only). */
 	mcpServer?: McpServerSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins?: { [key in string]: { [key in string]: unknown } },
@@ -8127,8 +8219,6 @@ export type Settings_Serialize = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers: { [key in string]: LanguageServerSettings_Serialize },
-	/**  Project language id → server and plugin target. Empty target uses the host. */
-	languageServerTargets: { [key in string]: LanguageServerTarget },
 	/**  Editor › Inspections profiles. */
 	inspections: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
@@ -8140,9 +8230,9 @@ export type Settings_Serialize = {
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets: RunTarget[],
 	cmake: CMakeSettings_Serialize,
-	/**  Tools › Agents › Chat. */
-	agents: AgentSettings,
-	/**  Tools › MCP Server (global only). */
+	/**  Settings › Agents. */
+	agents: AgentSettings_Serialize,
+	/**  Agents › MCP Server (global only). */
 	mcpServer: McpServerSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins: { [key in string]: { [key in string]: unknown } },
@@ -8716,6 +8806,11 @@ export type ThemeDef = {
 
 export type ThemeKind = "dark" | "light";
 
+/**  How the agent's reasoning shows. */
+export type ThinkingDisplay = 
+/**  Open while it streams, folded once it ends. */
+"auto" | "expanded" | "collapsed";
+
 export type ThreadInfo = {
 	id: number,
 	name: string,
@@ -8762,6 +8857,13 @@ export type TomcatInstallation_Serialize = {
 	base?: string | null,
 	tomee: boolean,
 };
+
+/**  How tool calls between messages show. */
+export type ToolCallDisplay = 
+/**  A run of calls is one line saying what they did ("Read 4 files · Edited 2 files"). */
+"grouped" | 
+/**  Each call on its own line. */
+"each";
 
 /**  UI-facing state of one tool. */
 export type ToolInfo = {
@@ -9108,6 +9210,8 @@ export type WebReferenceKind =
 "anchor" | 
 /**  `var(--name)`: the custom property's declarations. */
 "cssVariable";
+
+export type WhileRunning = "queue" | "steer";
 
 /**  A request that the invoking window acknowledges through plugin_answer_command. */
 export type WindowRequest = WindowRequest_Serialize | WindowRequest_Deserialize;

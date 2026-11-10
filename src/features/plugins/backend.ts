@@ -58,6 +58,7 @@ export interface PluginsBackend {
   program(pluginId: string, program: string, scope: "global" | "project"): Promise<string>;
   pickProgram(): Promise<string | null>;
   setCapability(id: string, capability: string, granted: boolean): Promise<PluginInfo>;
+  revokeNetHost(id: string, host: string): Promise<PluginInfo>;
   /** Validated assets (icon theme mapping and SVGs) whose id starts with `prefix`. */
   assets(pluginId: string, prefix: string): Promise<[string, string][]>;
   /** `language` / `file` / `view` activation events. */
@@ -151,6 +152,8 @@ export interface PluginsBackend {
   saveWebFile(name: string, filters: FileFilter[] | undefined, bytes: Uint8Array): Promise<string | null>;
   /** Open dialog for a web view's `openidea.openFile`; `null` when cancelled. */
   openWebFile(filters: FileFilter[] | undefined): Promise<{ name: string; data: Uint8Array } | null>;
+  /** The bytes of a file on this machine, at most 64 MiB (a web custom editor's `document.bytes`). */
+  readFileBytes(path: string): Promise<Uint8Array>;
   /** Which of a plugin's declared secrets are stored (values never come back). */
   secrets(pluginId: string): Promise<PluginSecretState[]>;
   /** Stores a secret (`null` removes it). */
@@ -216,6 +219,7 @@ export const tauriPluginsBackend: PluginsBackend = {
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },
   setCapability: (id, capability, granted) => call(commands.pluginSetCapability(id, capability, granted)),
+  revokeNetHost: (id, host) => call(commands.pluginRevokeNetHost(id, host)),
   assets: (pluginId, prefix) => call(commands.pluginAssets(pluginId, prefix)),
   activationEvent: async (kind, value) => {
     await call(commands.pluginActivationEvent(kind, value));
@@ -328,6 +332,7 @@ export const tauriPluginsBackend: PluginsBackend = {
     const data = fromBase64(await call(commands.pluginWebReadFile(path)));
     return { name: path.split(/[\\/]/).pop() ?? path, data };
   },
+  readFileBytes: async (path) => fromBase64(await call(commands.pluginWebReadFile(path))),
   secrets: (pluginId) => call(commands.pluginSecrets(pluginId)),
   setSecret: async (pluginId, name, value) => {
     await call(commands.pluginSetSecret(pluginId, name, value));
@@ -420,6 +425,7 @@ function samplePlugins(): PluginInfo[] {
     enabled: true,
     error: null,
     capabilities: [],
+    netHosts: [],
     contributions: [],
     activation: [],
     warnings: [],
@@ -591,7 +597,14 @@ export function createMemoryPluginsBackend(
     setCapability: async (id, capability, granted) => {
       const p = find(id);
       p.capabilities = p.capabilities.map((c) => (c.id === capability ? { ...c, granted } : c));
+      if (!granted && capability === "net:ask") p.netHosts = [];
       if (!granted && p.capabilities.some((c) => c.id === capability && !c.optional)) p.status = "needsConsent";
+      emit({ type: "commandsChanged" });
+      return { ...p };
+    },
+    revokeNetHost: async (id, host) => {
+      const p = find(id);
+      p.netHosts = p.netHosts.filter((h) => h !== host);
       emit({ type: "commandsChanged" });
       return { ...p };
     },
@@ -684,6 +697,9 @@ export function createMemoryPluginsBackend(
     },
     saveWebFile: async () => null,
     openWebFile: async () => null,
+    readFileBytes: async () => {
+      throw new IpcError({ kind: "unavailable", message: "reading the document needs the desktop app" });
+    },
     secrets: async (pluginId) =>
       [...secrets.entries()]
         .filter(([k]) => k.startsWith(`${pluginId}/`))

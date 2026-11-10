@@ -52,6 +52,8 @@ export interface CommitSettingsValid {
   wrapAtMargin: boolean;
   /** Plugin before-commit checks turned off (`<plugin id>/<check id>`). */
   disabledPluginChecks: string[];
+  /** Double-click opens the diff (`true`), the source file (`false`), or follows the interface (`null`). */
+  doubleClickOpensDiff: boolean | null;
 }
 
 export interface VcsSettingsValid {
@@ -219,6 +221,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       showRightMargin: true,
       wrapAtMargin: false,
       disabledPluginChecks: [],
+      doubleClickOpensDiff: null,
     },
     confirmation: {
       onCreate: "ask",
@@ -290,6 +293,8 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
 const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
+/** A boolean the user may leave unset. */
+const tri = (v: unknown): boolean | null => (typeof v === "boolean" ? v : null);
 const text = (v: unknown, d: string) => (typeof v === "string" ? v : d);
 const nonEmpty = (v: unknown, d: string) => (typeof v === "string" && v.trim() ? v : d);
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[], d: T): T =>
@@ -347,6 +352,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       showRightMargin: bool(c.showRightMargin, d.commit.showRightMargin),
       wrapAtMargin: bool(c.wrapAtMargin, d.commit.wrapAtMargin),
       disabledPluginChecks: strings(c.disabledPluginChecks, d.commit.disabledPluginChecks),
+      doubleClickOpensDiff: tri(c.doubleClickOpensDiff),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),

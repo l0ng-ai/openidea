@@ -50,6 +50,7 @@ import {
   reloadPlugin,
   setAllInstalledEnabled,
   setPluginCapability,
+  revokePluginNetHost,
   setPluginEnabled,
   uninstallPlugin,
   updateAllPlugins,
@@ -460,7 +461,7 @@ function ProgramPermission({ plugin, cap, disabled }: { plugin: PluginInfo; cap:
 }
 
 function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean }) {
-  if (plugin.capabilities.length === 0) {
+  if (plugin.capabilities.length === 0 && plugin.netHosts.length === 0) {
     return (
       <div className={styles.muted}>
         <T>No special permissions.</T>
@@ -486,7 +487,30 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
           />
         </CapabilityRow>
       ))}
+      {plugin.netHosts.map((host) => (
+        <NetHostRow key={host} plugin={plugin} host={host} disabled={busy || !confirmed} />
+      ))}
     </ul>
+  );
+}
+
+/** A host the user allowed through `net:ask` ("always"); removing it asks again next time. */
+function NetHostRow({ plugin, host, disabled }: { plugin: PluginInfo; host: string; disabled: boolean }) {
+  return (
+    <li className={styles.capabilityItem}>
+      <div className={styles.capabilityHeader}>
+        <span className={styles.mono}>{`net:${host}`}</span>
+        <Badge tone={RISK_LABEL.medium.tone}>{RISK_LABEL.medium.label}</Badge>
+      </div>
+      <p className={styles.capabilityDescription}>
+        {tx("Allowed when the plugin asked at first use. Remove it to be asked again.")}
+      </p>
+      <div className={styles.programPermission}>
+        <Button disabled={disabled} onClick={() => void revokePluginNetHost(plugin.id, host)}>
+          {tx("Remove")}
+        </Button>
+      </div>
+    </li>
   );
 }
 

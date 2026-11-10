@@ -616,16 +616,16 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     assert_eq!(settings["run"]["defaultTarget"], "");
     let config = json!({"id":"wrapped-php", "name":"Wrapped PHP", "kind":"php", "command":"php", "args":["x.php", "literal ; $(touch bad)"], "env":{}, "detected":false, "isTest":false, "target":id});
     invoke(&peer, "run_start", json!({"config":config, "onOutput":{"$channel":38}})).await.unwrap();
-    until("remote wrapped run", 5, || project.join("wrapped.txt").exists()).await;
-    assert_eq!(
-        std::fs::read_to_string(project.join("wrapped.txt")).unwrap(),
-        "<wrapped>\n<--cwd=/container>\n<php>\n<x.php>\n<literal ; $(touch bad)>\n"
-    );
+    let wrapped = "<wrapped>\n<--cwd=/container>\n<php>\n<x.php>\n<literal ; $(touch bad)>\n";
+    until("remote wrapped run", 5, || std::fs::read_to_string(project.join("wrapped.txt")).is_ok_and(|s| s == wrapped))
+        .await;
     assert!(!project.join("bad").exists());
     let composer = json!({"id":"composer", "name":"Composer", "kind":"shell", "command":"composer", "args":["install"], "env":{}, "detected":false, "isTest":false, "target":id});
     invoke(&peer, "run_start", json!({"config":composer, "onOutput":{"$channel":39}})).await.unwrap();
-    until("remote composer override", 5, || project.join("composer.txt").exists()).await;
-    assert_eq!(std::fs::read_to_string(project.join("composer.txt")).unwrap(), "<composer>\n<install>\n");
+    until("remote composer override", 5, || {
+        std::fs::read_to_string(project.join("composer.txt")).is_ok_and(|s| s == "<composer>\n<install>\n")
+    })
+    .await;
     invoke(
         &peer,
         "plugin_run_command",

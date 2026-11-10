@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { getCM, Vim } from "@replit/codemirror-vim";
@@ -301,6 +301,95 @@ describe("Vim engine", () => {
     expect(view.state.doc.toString()).toBe("one two\nthree");
     expect(view.state.selection.main.head).toBe(4);
     view.destroy();
+  });
+
+  describe("the key typed right after a Normal-mode composition (see imeNextKey)", () => {
+    /** Text input as CodeMirror's `applyDOMChange` delivers it: inputHandlers first. */
+    const typeText = (view: EditorView, text: string) => {
+      const { from, to } = view.state.selection.main;
+      const insert = () => view.state.update({ changes: { from, to, insert: text }, userEvent: "input.type" });
+      if (!view.state.facet(EditorView.inputHandler).some((h) => h(view, from, to, text, insert))) {
+        view.dispatch(insert());
+      }
+    };
+    /** `ㄱ` composed at the cursor, then ended by an input source switch. */
+    const composeKorean = (view: EditorView) => {
+      const composition = (type: string, data: string) =>
+        view.contentDOM.dispatchEvent(new CompositionEvent(type, { data, bubbles: true }));
+      const at = view.state.selection.main.head;
+      composition("compositionstart", "");
+      composition("compositionupdate", "ㄱ");
+      view.dispatch({ changes: { from: at, insert: "ㄱ" }, userEvent: "input.type.compose.start" });
+      composition("compositionend", "ㄱ");
+    };
+
+    /** A key's keydown, then the text it types. jsdom reports an Apple vendor, so CodeMirror
+     * treats it as Safari and drops the keydown within 100ms of `compositionend`. */
+    const press = (view: EditorView, key: string, text: string) => {
+      view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+      typeText(view, text);
+    };
+    let clock = 0;
+    beforeEach(() => {
+      clock = Date.now();
+      vi.spyOn(Date, "now").mockImplementation(() => clock);
+    });
+    afterEach(() => vi.restoreAllMocks());
+
+    it("runs it as a Vim key when CodeMirror drops its keydown, before or after the cleanup", async () => {
+      for (const beforeCleanup of [false, true]) {
+        const view = makeView();
+        composeKorean(view);
+        if (!beforeCleanup) await tick();
+        view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true }));
+        expect(view.state.selection.main.head).toBe(0);
+        typeText(view, "j");
+        await tick();
+        expect(view.state.doc.toString()).toBe("one two\nthree");
+        expect(view.state.selection.main.head).toBe(8);
+        view.destroy();
+      }
+    });
+
+    it("maps Space and Enter like a keydown and completes a pending operator", async () => {
+      const view = makeView();
+      composeKorean(view);
+      await tick();
+      press(view, " ", " ");
+      expect(view.state.selection.main.head).toBe(1);
+      composeKorean(view);
+      await tick();
+      press(view, "Enter", "\n");
+      expect(view.state.selection.main.head).toBe(8);
+
+      view.dispatch({ selection: { anchor: 0 } });
+      Vim.handleKey(getCM(view)!, "d", "user");
+      composeKorean(view);
+      await tick();
+      press(view, "j", "j");
+      await tick();
+      expect(view.state.doc.toString()).toBe("");
+      view.destroy();
+    });
+
+    it("leaves text input to the usual handlers once a keydown got through or the window passed", async () => {
+      const view = makeView();
+      composeKorean(view);
+      await tick();
+      // Past CodeMirror's 100ms, inside ours: the keydown reaches Vim.
+      clock += 150;
+      view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "l", bubbles: true }));
+      expect(view.state.selection.main.head).toBe(1);
+      typeText(view, "j");
+      expect(view.state.doc.toString()).toBe("ojne two\nthree");
+
+      composeKorean(view);
+      await tick();
+      clock += 1000;
+      typeText(view, "x");
+      expect(view.state.doc.toString()).toContain("x");
+      view.destroy();
+    });
   });
 
   it("replays a dead-key composition as a Vim command and keeps insert-mode IME input", async () => {

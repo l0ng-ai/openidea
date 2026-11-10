@@ -10,6 +10,10 @@ use specta::Type;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// Pinned Compose Specification JSON Schema URL associated with `yaml-language-server`.
+pub const COMPOSE_SCHEMA_URL: &str =
+    "https://raw.githubusercontent.com/compose-spec/compose-go/v2.16.2/schema/compose-spec.json";
+
 mod markers;
 pub mod plugin_point;
 mod registry;
@@ -176,30 +180,11 @@ pub struct LanguageServerConfig {
     /// Set on plugin languages: start exactly this approved program.
     #[serde(skip)]
     pub pinned: Option<ProgramPin>,
-    /// Host-only transport configuration; never accepted from language definitions.
-    #[serde(skip)]
-    pub target: Option<ServerTarget>,
-    /// Separates instances when languages sharing a server select different targets.
-    #[serde(skip)]
-    pub target_key: Option<String>,
-}
-
-/// A prepared plugin wrapper. The LSP client never resolves container binaries on the host.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ServerTarget {
-    pub id: String,
-    pub origin: Option<ide_core::ServerId>,
-    pub project_root: PathBuf,
-    pub container_root: String,
-    pub mapping: ide_core::path_mapping::PathMapping,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct DebuggerConfig {
-    /// Placement in plugin run targets; absent means unsupported.
-    #[serde(default)]
-    pub target_placement: Option<String>,
     /// DAP adapter name, e.g. `codelldb`, `debugpy`, `js-debug`, `delve`.
     pub adapter: String,
     pub command: String,

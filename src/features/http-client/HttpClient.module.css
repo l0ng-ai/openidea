@@ -1,11 +1,11 @@
 /* Editor gutter ▶ per request (same look as run configuration targets). */
-.runGutter {
-  width: 14px;
-}
+/* No fixed width: the endpoints gutter is conditional (updateSpacer), so files
+   without endpoint markers keep a narrow gutter. */
 .runGutter :global(.cm-gutterElement) {
   display: flex;
   align-items: center;
-  justify-content: center;
+  /* Spare width stays left of the icons, which sit next to the code. */
+  justify-content: flex-end;
 }
 .runMarker {
   width: 14px;

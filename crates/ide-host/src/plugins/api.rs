@@ -6,6 +6,7 @@ use ide_core::ipc_path::to_ipc;
 use ide_core::{CancellationToken, TextEdit};
 use ide_extension::Capability;
 use ide_extension::Package;
+use ide_extension::ledger::{Ledger, Subject};
 use ide_language::ProgramPin;
 use ide_plugin::{
     CommitChange, CommitDraft, EventKind, HostApi, HostError, HttpRequest, HttpResponse, NotificationLevel,
@@ -17,7 +18,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command as StdCommand, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Largest storage of one plugin (keys + values).
@@ -163,16 +164,10 @@ impl SecretStore for FileSecretStore {
             None => map.remove(name),
         };
         let file = self.file(plugin);
-        std::fs::create_dir_all(file.parent().expect("has parent")).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+        ide_vfs::create_private_dir(file.parent().expect("has parent")).map_err(|e| e.to_string())?;
         let bytes = serde_json::to_vec(&map).map_err(|e| e.to_string())?;
-        let tmp = file.with_extension("tmp");
-        std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-        }
-        std::fs::rename(&tmp, &file).map_err(|e| e.to_string())
+        replace_entry(&file, &bytes).map_err(|e| e.to_string())
     }
 }
 
@@ -501,6 +496,10 @@ pub(super) struct Shared {
     pub(super) prompts: Mutex<HashMap<u64, PromptEntry>>,
     /// Plugins being stopped: their calls may not open new prompts (taken before `prompts`).
     pub(super) prompts_blocked: Mutex<BTreeSet<String>>,
+    /// One network question per plugin; refusals throttle all hosts for 30 seconds.
+    net_prompts: Mutex<HashMap<String, Option<Instant>>>,
+    pub net_hosts_session_only: AtomicBool,
+    session_net_hosts: Mutex<HashMap<String, BTreeSet<String>>>,
     pub(super) next_prompt: AtomicU64,
     pub(super) run_configurations: super::run_detectors::DynamicConfigurations,
     pub(super) run_targets: Mutex<super::run_targets::Targets>,
@@ -524,6 +523,9 @@ pub(super) struct Shared {
     pub secrets: RwLock<Arc<dyn SecretStore>>,
     /// (plugin, `process:` capability) → the approved program.
     pub pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
+    /// The grant ledger, shared with the [`super::PluginHost`]: `net:ask`
+    /// looks up and records "always allow" hosts right where a request runs.
+    pub ledger: Arc<Mutex<Ledger>>,
     pub project_pins: ProjectPins,
     pub event_editors: RwLock<HashMap<String, ide_plugin::EditorContext>>,
     /// Validated UI declarations (settings schemas, declared views).
@@ -550,6 +552,7 @@ impl Shared {
         data_dir: PathBuf,
         pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
         ui: Arc<ide_extension::UiStore>,
+        ledger: Arc<Mutex<Ledger>>,
         registry: Arc<ide_extension::ExtensionRegistry>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -560,6 +563,7 @@ impl Shared {
             workspace: RwLock::new(None),
             secrets: RwLock::new(Arc::new(FileSecretStore { dir: data_dir.clone() })),
             pins,
+            ledger,
             project_pins: Arc::default(),
             event_editors: RwLock::default(),
             data_dir,
@@ -572,6 +576,9 @@ impl Shared {
             process_shutdowns: Mutex::default(),
             prompts: Mutex::default(),
             prompts_blocked: Mutex::default(),
+            net_prompts: Mutex::default(),
+            net_hosts_session_only: AtomicBool::new(false),
+            session_net_hosts: Mutex::default(),
             next_prompt: AtomicU64::new(1),
             run_configurations: Arc::default(),
             run_targets: Mutex::default(),
@@ -803,6 +810,8 @@ impl Shared {
             self.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: plugin.into(), sets: Vec::new() });
         }
         self.withdraw_prompts(plugin);
+        self.net_prompts.lock().remove(plugin);
+        self.session_net_hosts.lock().remove(plugin);
         let removed: Vec<(Option<String>, String)> = {
             let mut contexts = self.contexts.lock();
             let keys: Vec<_> = contexts.keys().filter(|(_, p, _)| p == plugin).cloned().collect();
@@ -928,6 +937,15 @@ fn storage_io(e: std::io::Error) -> HostError {
     HostError::Failed(format!("storage: {e}"))
 }
 
+fn replace_entry(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut tmp =
+        tempfile::Builder::new().prefix(".entry-").suffix(".tmp").tempfile_in(path.parent().expect("has parent"))?;
+    tmp.write_all(bytes)?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
 /// A key's file name: its hash, since keys may hold any character.
 fn entry_name(key: &str) -> String {
     blake3::hash(key.as_bytes()).to_hex().to_string()
@@ -949,8 +967,7 @@ fn write_entry(dir: &Path, key: &str, value: &str) -> Result<(), HostError> {
     bytes.extend_from_slice(&len.to_le_bytes());
     bytes.extend_from_slice(key.as_bytes());
     bytes.extend_from_slice(value.as_bytes());
-    let tmp = file.with_extension("tmp");
-    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &file)).map_err(storage_io)
+    replace_entry(&file, &bytes).map_err(storage_io)
 }
 
 /// The stored entries' files and the bytes of their keys and values.
@@ -987,6 +1004,9 @@ impl PluginApi {
     /// older version into it.
     fn storage(&self) -> Result<PathBuf, HostError> {
         let dir = self.shared.storage_dir(self.id());
+        std::fs::create_dir_all(&self.shared.data_dir).map_err(storage_io)?;
+        ide_vfs::create_private_dir(dir.parent().expect("has parent")).map_err(failed)?;
+        ide_vfs::create_private_dir(&dir).map_err(failed)?;
         let legacy = self.shared.data_dir.join(self.id()).join("storage.json");
         match std::fs::read(&legacy) {
             Ok(bytes) => {
@@ -2230,6 +2250,90 @@ impl HostApi for PluginApi {
         })
     }
 
+    /// The `net:ask` answer: a host the user allowed with "always" is
+    /// remembered in the ledger (no dialog again, background included); a new
+    /// host is asked about in `client`'s window when there is one. Dismissal
+    /// and refusal both deny and throttle further questions.
+    fn net_ask(
+        &self,
+        subject: &Subject,
+        client: Option<&str>,
+        host: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Option<bool>, HostError> {
+        if cancel.is_cancelled() {
+            return Err(HostError::Cancelled);
+        }
+        if !self.pkg.manifest.declares(&Capability::NetAsk) {
+            return Ok(None);
+        }
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        {
+            let ledger = self.shared.ledger.lock();
+            if let Some(grant) = ledger.get(subject)
+                && grant.confirmed
+                && grant.has(&Capability::NetAsk)
+                && grant.net_hosts.contains(&host)
+            {
+                return Ok(Some(true));
+            }
+        }
+        if self.shared.session_net_hosts.lock().get(self.id()).is_some_and(|hosts| hosts.contains(&host)) {
+            return Ok(Some(true));
+        }
+        let Some(client) = client else { return Ok(None) };
+        {
+            let closed = self.shared.closed_clients.lock();
+            if closed.contains(client) {
+                return Ok(None);
+            }
+        }
+        if self.shared.prompts_blocked.lock().contains(self.id()) {
+            return Ok(None);
+        }
+        {
+            let mut prompts = self.shared.net_prompts.lock();
+            if prompts.get(self.id()).is_some_and(|until| until.is_none_or(|until| until > Instant::now())) {
+                return Ok(None);
+            }
+            prompts.insert(self.id().to_owned(), None);
+        }
+        let session_only = self.shared.net_hosts_session_only.load(Ordering::Relaxed);
+        let answer = self.ask(Some(client), Prompt::NetPermission { host: host.clone(), session_only }, cancel);
+        let result = match answer {
+            Ok(Some(keys)) if keys == ["session"] || keys == ["always"] => {
+                let mut ledger = self.shared.ledger.lock();
+                if cancel.is_cancelled() {
+                    Err(HostError::Cancelled)
+                } else if ledger.get(subject).is_some_and(|g| g.confirmed && g.has(&Capability::NetAsk)) {
+                    if session_only || keys == ["session"] {
+                        self.shared.session_net_hosts.lock().entry(self.id().into()).or_default().insert(host);
+                    } else {
+                        ledger.remember_net_host(subject, &host);
+                        if let Err(e) = ledger.save() {
+                            tracing::warn!("saving plugin grants: {e}");
+                        }
+                    }
+                    drop(ledger);
+                    self.shared.sink.emit(None, PluginEvent::CommandsChanged);
+                    Ok(Some(true))
+                } else {
+                    Ok(None)
+                }
+            }
+            Ok(Some(keys)) if keys == ["once"] => Ok(Some(false)),
+            Ok(_) => Ok(None),
+            Err(e) => Err(e),
+        };
+        let mut prompts = self.shared.net_prompts.lock();
+        if matches!(result, Ok(Some(_))) {
+            prompts.remove(self.id());
+        } else {
+            prompts.insert(self.id().to_owned(), Some(Instant::now() + Duration::from_secs(30)));
+        }
+        result
+    }
+
     fn secret_is_set(&self, name: &str) -> bool {
         self.shared.secrets.read().get(self.id(), name).is_some()
     }
@@ -2701,7 +2805,9 @@ impl HostApi for PluginApi {
             Err(e) if e.kind == ide_core::error::ErrorKind::NotFound => ("utf-8".to_string(), false),
             Err(e) => return Err(not_writable(real, e)),
         };
-        if self.plugin_dir().is_ok_and(|dir| real.starts_with(dir)) {
+        let private = self.plugin_dir().is_ok_and(|dir| real.starts_with(dir));
+        check_write_path(real)?;
+        if private {
             let bytes = ide_vfs::encode(text, &encoding, has_bom).map_err(|e| not_writable(real, e))?;
             ide_vfs::write_atomic_private(real, &bytes).map(drop).map_err(|e| not_writable(real, e))
         } else {
@@ -2711,12 +2817,24 @@ impl HostApi for PluginApi {
 
     fn write_bytes_file(&self, real: &Path, bytes: &[u8]) -> Result<(), HostError> {
         check_unsaved(self.shared.workspace(), real)?;
-        if self.plugin_dir().is_ok_and(|dir| real.starts_with(dir)) {
+        let private = self.plugin_dir().is_ok_and(|dir| real.starts_with(dir));
+        check_write_path(real)?;
+        if private {
             ide_vfs::write_atomic_private(real, bytes).map(drop).map_err(|e| not_writable(real, e))
         } else {
             ide_vfs::write_atomic(real, bytes).map(drop).map_err(|e| not_writable(real, e))
         }
     }
+}
+
+/// Approved write paths are already resolved. Refuse substitutions since approval.
+fn check_write_path(path: &Path) -> Result<(), HostError> {
+    let parent = path.parent().ok_or_else(|| HostError::Invalid("no directory to put it in".into()))?;
+    let checked = ide_plugin::resolve_writable_in_root(parent, &to_ipc(path)).map_err(HostError::Invalid)?;
+    if checked != path {
+        return Err(HostError::Invalid(format!("{}: file path changed before writing", path.display())));
+    }
+    Ok(())
 }
 
 /// A file that is not there, or cannot be read, as the plugin sees it.
@@ -3123,9 +3241,127 @@ mod tests {
             dir.join(".data"),
             pins,
             ide_extension::UiStore::new(),
+            Arc::default(),
             Arc::new(ide_extension::ExtensionRegistry::new()),
         );
         PluginApi { pkg: Package::new(manifest, dir.to_path_buf()), shared }
+    }
+
+    #[test]
+    fn net_questions_are_exclusive_throttled_and_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut api = api(dir.path(), Arc::default());
+        api.pkg = Package::new(
+            ide_extension::Manifest::parse(
+                "id = \"acme.lint\"\nname = \"Lint\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.5\"\n[capabilities]\nrequired = [\"net:ask\"]\n",
+            ).unwrap(),
+            dir.path().to_path_buf(),
+        );
+        let subject = Subject::Installed(api.id().into());
+        api.shared.ledger.lock().confirm(
+            &ide_extension::ledger::Request {
+                subject: subject.clone(),
+                plugin_id: api.id(),
+                version: "1.0.0",
+                package_hash: "h",
+                required: vec![Capability::NetAsk],
+                optional: vec![],
+            },
+            &[],
+            BTreeMap::new(),
+        );
+        for answer in [Some(vec!["always".into(), "once".into()]), None] {
+            api.shared.net_prompts.lock().clear();
+            let cancel = CancellationToken::new();
+            std::thread::scope(|scope| {
+                let run = scope.spawn(|| api.net_ask(&subject, Some("main"), "::1", &cancel));
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let id = loop {
+                    if let Some(id) = api.shared.prompts.lock().keys().next().copied() {
+                        break id;
+                    }
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                assert_eq!(api.net_ask(&subject, Some("other"), "other.example", &cancel).unwrap(), None);
+                if let Some(answer) = answer {
+                    assert!(api.shared.answer_prompt(id, Some(answer)));
+                    assert_eq!(run.join().unwrap().unwrap(), None);
+                } else {
+                    cancel.cancel();
+                    assert!(matches!(run.join().unwrap(), Err(HostError::Cancelled)));
+                }
+            });
+            assert!(api.shared.prompts.lock().is_empty());
+            assert!(api.shared.ledger.lock().get(&subject).unwrap().net_hosts.is_empty());
+            assert_eq!(api.net_ask(&subject, Some("main"), "new.example", &CancellationToken::new()).unwrap(), None);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_recheck_approved_paths_after_symlink_substitution() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let root = tmp.path().join("project");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        let path = ide_plugin::resolve_writable_in_root(&root, "nested/file.txt").unwrap();
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "unchanged").unwrap();
+        symlink(&outside, &path).unwrap();
+        assert!(api.write_text_file(&path, "text").is_err());
+        assert!(api.write_bytes_file(&path, b"bytes").is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "unchanged");
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(root.join("nested")).unwrap();
+        symlink(tmp.path(), root.join("nested")).unwrap();
+        assert!(api.write_text_file(&path, "text").is_err());
+        assert!(api.write_bytes_file(&path, b"bytes").is_err());
+        assert!(!tmp.path().join("file.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_and_secrets_do_not_write_through_temporary_symlinks() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "unchanged").unwrap();
+        let dir = api.storage().unwrap();
+        let entry = dir.join(entry_name("key"));
+        symlink(&outside, entry.with_extension("tmp")).unwrap();
+        symlink(&outside, &entry).unwrap();
+        api.storage_set("key", Some("value".into())).unwrap();
+        assert_eq!(api.storage_get("key").unwrap().as_deref(), Some("value"));
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "unchanged");
+
+        let secrets = FileSecretStore { dir: tmp.path().join("secrets") };
+        secrets.set("acme.lint", "key", Some("before")).unwrap();
+        symlink(&outside, secrets.file("acme.lint").with_extension("tmp")).unwrap();
+        secrets.set("acme.lint", "key", Some("after")).unwrap();
+        assert_eq!(secrets.get("acme.lint", "key").as_deref(), Some("after"));
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "unchanged");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_and_secrets_refuse_symlinked_private_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let dir = api.storage().unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, &dir).unwrap();
+        assert!(api.storage_set("key", Some("value".into())).is_err());
+        let secrets = FileSecretStore { dir: tmp.path().join("secrets") };
+        std::fs::create_dir(&secrets.dir).unwrap();
+        std::os::unix::fs::symlink(&outside, secrets.dir.join("acme.lint")).unwrap();
+        assert!(secrets.set("acme.lint", "key", Some("value")).is_err());
+        assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
     }
 
     #[cfg(windows)]
@@ -3741,6 +3977,7 @@ mod workbench_tests {
             root.join(".data"),
             Arc::default(),
             ide_extension::UiStore::new(),
+            Arc::default(),
             Arc::new(ide_extension::ExtensionRegistry::new()),
         );
         *shared.workspace.write() =

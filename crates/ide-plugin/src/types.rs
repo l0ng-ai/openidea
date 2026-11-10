@@ -94,6 +94,10 @@ pub enum Prompt {
     Confirm { title: String, message: String },
     #[serde(rename_all = "camelCase")]
     PickDirectory { title: String, initial: Option<String> },
+    /// The host's own question under `net:ask` (never plugin-initiated): the
+    /// plugin reached an HTTPS host its manifest does not list.
+    #[serde(rename_all = "camelCase")]
+    NetPermission { host: String, session_only: bool },
 }
 
 /// Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`).
@@ -447,7 +451,13 @@ pub fn net_host(url: &str) -> Result<String, String> {
         return Err(format!("unsupported scheme {:?}", parsed.scheme()));
     }
     match parsed.host() {
-        Some(url::Host::Domain(host)) => Ok(host.trim_end_matches('.').to_ascii_lowercase()),
+        Some(url::Host::Domain(host)) => {
+            let host = host.trim_end_matches('.').to_ascii_lowercase();
+            if host.is_empty() || host.contains('*') {
+                return Err("URL must name one exact host".into());
+            }
+            Ok(host)
+        }
         Some(url::Host::Ipv4(host)) => Ok(host.to_string()),
         Some(url::Host::Ipv6(host)) => Ok(host.to_string()),
         None => Err("URL has no host".into()),
@@ -489,8 +499,21 @@ mod tests {
             net_capability("http://example.com/").unwrap(),
             ide_extension::Capability::NetHttp("example.com".into())
         );
+        for (url, host) in [
+            ("https://EXAMPLE.com.:8443/", "example.com"),
+            ("https://bücher.example/", "xn--bcher-kva.example"),
+            ("https://xn--bcher-kva.example/", "xn--bcher-kva.example"),
+            ("https://127.1/", "127.0.0.1"),
+            ("https://[0:0:0:0:0:0:0:1]:8443/", "::1"),
+            ("https://sub.example.com/", "sub.example.com"),
+        ] {
+            assert_eq!(net_host(url).unwrap(), host);
+        }
+        assert_ne!(net_host("https://аpi.example/").unwrap(), net_host("https://api.example/").unwrap());
         assert!(net_host("file:///etc/passwd").is_err());
         assert!(net_host("example.com").is_err());
+        assert!(net_host("https://*.example.com/").is_err());
+        assert!(net_host("https://./").is_err());
     }
 }
 

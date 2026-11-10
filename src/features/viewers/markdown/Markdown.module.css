@@ -145,6 +145,7 @@
 
 /* Mermaid diagrams: the source stays until the diagram is drawn, and next to an error. */
 .preview :global([data-mermaid]) {
+  position: relative;
   margin: 0 0 1em;
 }
 .preview :global([data-mermaid] > pre) {

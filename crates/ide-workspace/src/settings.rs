@@ -216,8 +216,6 @@ impl SettingsStore {
             let Some(mut layer) = read_layer(&file) else { continue };
             if scope == SettingsScope::Project {
                 remove_global_settings(&mut layer);
-            } else if let Some(layer) = layer.as_object_mut() {
-                layer.remove("languageServerTargets");
             }
             if let Err(e) = try_merge(&mut merged, layer) {
                 tracing::warn!("{} has invalid settings, ignoring it: {e}", file.display());
@@ -244,11 +242,6 @@ impl SettingsStore {
     /// `null` removes the key from that layer. Unknown keys and values of the
     /// wrong type are rejected with `InvalidInput`; the file is left untouched.
     pub fn set(&self, scope: SettingsScope, key: &str, value: serde_json::Value) -> IdeResult<Settings> {
-        if scope == SettingsScope::Global
-            && (key == "languageServerTargets" || key.starts_with("languageServerTargets."))
-        {
-            return Err(IdeError::invalid("language server targets belong to project settings"));
-        }
         if scope == SettingsScope::Project
             && (key == "editor.customSchemes"
                 || key.starts_with("editor.customSchemes.")
@@ -650,6 +643,77 @@ mod tests {
     }
 
     #[test]
+    fn unset_settings_keep_their_defaults_json_shape() {
+        // `SettingsStore::set` validates a key path against this JSON: a new field that
+        // serializes away when unset (`skip_serializing_if`) cannot be written.
+        let commit = defaults_json()["vcs"]["commit"].clone();
+        assert_eq!(
+            commit,
+            json!({
+                "nonModal": true,
+                "clearInitialMessage": false,
+                "analyzeCode": true,
+                "checkTodo": true,
+                "reformat": false,
+                "optimizeImports": false,
+                "cleanup": false,
+                "blankLineAfterSubject": true,
+                "limitSubject": true,
+                "subjectLimit": 72,
+                "limitBody": false,
+                "bodyLimit": 72,
+                "showRightMargin": true,
+                "wrapAtMargin": false,
+                "disabledPluginChecks": [],
+                "doubleClickOpensDiff": null,
+            })
+        );
+    }
+
+    #[test]
+    fn tri_state_commit_setting_writes_and_clears() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let store = SettingsStore::load(&cfg, None);
+        assert_eq!(store.effective().vcs.commit.double_click_opens_diff, None);
+        // A layer without the key: the unset state.
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::write(cfg.join("settings.toml"), "[vcs.commit]\nnonModal = false\n").unwrap();
+        assert_eq!(store.reload().vcs.commit.double_click_opens_diff, None);
+
+        for on in [true, false] {
+            let s = store.set(SettingsScope::Global, "vcs.commit.doubleClickOpensDiff", json!(on)).unwrap();
+            assert_eq!(s.vcs.commit.double_click_opens_diff, Some(on));
+            assert!(!store.effective().vcs.commit.non_modal);
+            assert_eq!(
+                std::fs::read_to_string(cfg.join("settings.toml")).unwrap(),
+                format!("[vcs.commit]\nnonModal = false\ndoubleClickOpensDiff = {on}\n")
+            );
+            assert_eq!(SettingsStore::load(&cfg, None).effective().vcs.commit.double_click_opens_diff, Some(on));
+        }
+
+        // `null` removes the key from the layer: back to following the interface.
+        let s = store.set(SettingsScope::Global, "vcs.commit.doubleClickOpensDiff", json!(null)).unwrap();
+        assert_eq!(s.vcs.commit.double_click_opens_diff, None);
+        assert_eq!(std::fs::read_to_string(cfg.join("settings.toml")).unwrap(), "[vcs.commit]\nnonModal = false\n");
+        // A layer already lacking the table keeps its other keys when the key is set.
+        let fresh = tmp.path().join("fresh");
+        let store = SettingsStore::load(&fresh, None);
+        let s = store.set(SettingsScope::Global, "vcs.commit.doubleClickOpensDiff", json!(true)).unwrap();
+        assert_eq!(s.vcs.commit.double_click_opens_diff, Some(true));
+        assert!(s.vcs.commit.non_modal);
+        assert_eq!(
+            std::fs::read_to_string(fresh.join("settings.toml")).unwrap(),
+            "[vcs.commit]\ndoubleClickOpensDiff = true\n"
+        );
+        // Wrong types are still rejected.
+        assert_eq!(
+            store.set(SettingsScope::Global, "vcs.commit.doubleClickOpensDiff", json!("yes")).unwrap_err().kind,
+            ide_core::error::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
     fn inspection_profiles_live_in_their_layers() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = tmp.path().join("cfg");
@@ -924,27 +988,5 @@ mod tests {
                 .mcp_server
                 .enabled
         );
-    }
-    #[test]
-    fn language_server_targets_are_project_only_and_default_to_the_host() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config = tmp.path().join("config");
-        let project = tmp.path().join("project");
-        std::fs::create_dir_all(&config).unwrap();
-        std::fs::create_dir_all(&project).unwrap();
-        std::fs::write(config.join("settings.toml"), "[languageServerTargets.php]\ntarget = 'global-target'\n")
-            .unwrap();
-        let settings = SettingsStore::load(&config, Some(&project));
-        assert!(settings.effective().language_server_targets.is_empty());
-        assert!(settings.set(SettingsScope::Global, "languageServerTargets", json!({})).is_err());
-        let selected = settings
-            .set(
-                SettingsScope::Project,
-                "languageServerTargets",
-                json!({"php":{"target":"container","server":"intelephense"}}),
-            )
-            .unwrap();
-        assert_eq!(selected.language_server_targets["php"].target, "container");
-        assert_eq!(settings.reload().language_server_targets["php"].server, "intelephense");
     }
 }

@@ -259,7 +259,7 @@ export function UsagesView() {
     <div className={styles.view}>
       <div className={styles.toolbar} role="toolbar" aria-orientation="vertical" aria-label={tx("Usages actions")}>
         <IconButton
-          icon="rerun"
+          icon="refresh"
           title={tx("Rerun Find Usages")}
           size="small"
           iconSize={16}
@@ -290,7 +290,7 @@ export function UsagesView() {
           <div className={styles.summary} role="status" aria-live="polite">
             {search.loading ? (
               <>
-                <Spinner size={12} />{" "}
+                <Spinner size={16} variant="spokes" />{" "}
                 {search.symbol
                   ? formatMessage(tx("Searching for usages of '{symbol}'"), { symbol: search.symbol })
                   : tx("Searching for usages")}

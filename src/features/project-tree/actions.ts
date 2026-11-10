@@ -152,7 +152,7 @@ function showSelectIn(path: string) {
   const view = activeEditor()?.view;
   const coords = view && activeEditor()?.ctx.path === path ? view.coordsAtPos(view.state.selection.main.head) : null;
   const at = coords ? { x: coords.left, y: coords.bottom + 2 } : { x: window.innerWidth / 2 - 100, y: 80 };
-  showContextMenu(at, selectInTargets(path));
+  showContextMenu(at, selectInTargets(path), { numbers: true });
 }
 
 export function registerProjectActions(): () => void {

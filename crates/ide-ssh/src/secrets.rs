@@ -101,6 +101,22 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// Runs a credential-store operation off the async runtime.
+///
+/// The Linux Secret Service client is blocking (`zbus`) and starts a runtime of
+/// its own; calling it while a runtime already drives the current thread panics
+/// with "Cannot start a runtime from within a runtime". The store may also wait
+/// on an OS prompt, so run it on a plain thread when called from async code.
+fn off_runtime<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return f();
+    }
+    std::thread::scope(|scope| match scope.spawn(f).join() {
+        Ok(value) => value,
+        Err(panic) => std::panic::resume_unwind(panic),
+    })
+}
+
 impl SecretFile {
     pub fn new(path: PathBuf) -> Self {
         Self::with_legacy(path, |v| serde_json::from_value(v).ok())
@@ -115,85 +131,95 @@ impl SecretFile {
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
-        let _g = LOCK.lock();
-        match self.load() {
-            Contents::Index(mut index) if index.keys.contains(key) => match self.vault.get(&service(&index.id), key) {
-                Ok(secret) => Some(secret),
-                Err(StoreError::NoEntry) => {
-                    // Removed outside the app: stop listing it.
-                    index.keys.remove(key);
-                    self.write_logged(&index);
-                    None
+        off_runtime(|| {
+            let _g = LOCK.lock();
+            match self.load() {
+                Contents::Index(mut index) if index.keys.contains(key) => {
+                    match self.vault.get(&service(&index.id), key) {
+                        Ok(secret) => Some(secret),
+                        Err(StoreError::NoEntry) => {
+                            // Removed outside the app: stop listing it.
+                            index.keys.remove(key);
+                            self.write_logged(&index);
+                            None
+                        }
+                        Err(e) => {
+                            tracing::warn!("saved passwords: {key}: {e}");
+                            None
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("saved passwords: {key}: {e}");
-                    None
-                }
-            },
-            Contents::Index(_) => None,
-            Contents::Plaintext(mut old, _) => old.remove(key),
-        }
+                Contents::Index(_) => None,
+                Contents::Plaintext(mut old, _) => old.remove(key),
+            }
+        })
     }
 
     pub fn set(&self, key: &str, secret: &str) -> IdeResult<()> {
-        let _g = LOCK.lock();
-        let mut index = match self.load() {
-            Contents::Index(index) => index,
-            Contents::Plaintext(_, why) => return Err(unavailable(&why)),
-        };
-        let service = service(&index.id);
-        self.vault.set(&service, key, secret).map_err(|e| unavailable(&e.to_string()))?;
-        if index.keys.insert(key.to_owned())
-            && let Err(e) = self.write(&index)
-        {
-            let _ = self.vault.delete(&service, key);
-            return Err(e);
-        }
-        Ok(())
+        off_runtime(|| {
+            let _g = LOCK.lock();
+            let mut index = match self.load() {
+                Contents::Index(index) => index,
+                Contents::Plaintext(_, why) => return Err(unavailable(&why)),
+            };
+            let service = service(&index.id);
+            self.vault.set(&service, key, secret).map_err(|e| unavailable(&e.to_string()))?;
+            if index.keys.insert(key.to_owned())
+                && let Err(e) = self.write(&index)
+            {
+                let _ = self.vault.delete(&service, key);
+                return Err(e);
+            }
+            Ok(())
+        })
     }
 
     pub fn delete(&self, key: &str) {
-        let _g = LOCK.lock();
-        match self.load() {
-            Contents::Index(mut index) => {
-                if !index.keys.contains(key) {
-                    return;
+        off_runtime(|| {
+            let _g = LOCK.lock();
+            match self.load() {
+                Contents::Index(mut index) => {
+                    if !index.keys.contains(key) {
+                        return;
+                    }
+                    match self.vault.delete(&service(&index.id), key) {
+                        Ok(()) | Err(StoreError::NoEntry) => {}
+                        Err(e) => {
+                            // Kept in the index so that the next delete tries again.
+                            tracing::warn!("saved passwords: could not forget {key}: {e}");
+                            return;
+                        }
+                    }
+                    index.keys.remove(key);
+                    self.write_logged(&index);
                 }
-                match self.vault.delete(&service(&index.id), key) {
-                    Ok(()) | Err(StoreError::NoEntry) => {}
-                    Err(e) => {
-                        // Kept in the index so that the next delete tries again.
+                Contents::Plaintext(mut old, _) => {
+                    if old.remove(key).is_none() {
+                        return;
+                    }
+                    // A move halfway may have copied it already.
+                    if let Some(id) = self.pending_id()
+                        && let Err(e) = self.vault.delete(&service(&id), key)
+                        && !matches!(e, StoreError::NoEntry)
+                    {
                         tracing::warn!("saved passwords: could not forget {key}: {e}");
                         return;
                     }
+                    self.write_logged(&old);
                 }
-                index.keys.remove(key);
-                self.write_logged(&index);
             }
-            Contents::Plaintext(mut old, _) => {
-                if old.remove(key).is_none() {
-                    return;
-                }
-                // A move halfway may have copied it already.
-                if let Some(id) = self.pending_id()
-                    && let Err(e) = self.vault.delete(&service(&id), key)
-                    && !matches!(e, StoreError::NoEntry)
-                {
-                    tracing::warn!("saved passwords: could not forget {key}: {e}");
-                    return;
-                }
-                self.write_logged(&old);
-            }
-        }
+        })
     }
 
     /// Every stored key, sorted (the secrets themselves stay private).
     pub fn keys(&self) -> Vec<String> {
-        let _g = LOCK.lock();
-        match self.load() {
-            Contents::Index(index) => index.keys.into_iter().collect(),
-            Contents::Plaintext(old, _) => old.into_keys().collect(),
-        }
+        off_runtime(|| {
+            let _g = LOCK.lock();
+            match self.load() {
+                Contents::Index(index) => index.keys.into_iter().collect(),
+                Contents::Plaintext(old, _) => old.into_keys().collect(),
+            }
+        })
     }
 
     fn load(&self) -> Contents {
@@ -557,5 +583,51 @@ mod tests {
             let mode = std::fs::metadata(tmp.path().join("ssh-passwords.json")).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    /// A credential store that behaves like the Linux Secret Service client:
+    /// its blocking API runs a tokio runtime.
+    #[derive(Default)]
+    struct NestedRuntimeVault {
+        entries: Mutex<HashMap<(String, String), String>>,
+    }
+
+    fn nested_runtime() {
+        tokio::runtime::Builder::new_multi_thread().build().expect("a nested runtime").block_on(async {});
+    }
+
+    impl Vault for NestedRuntimeVault {
+        fn available(&self) -> bool {
+            true
+        }
+        fn get(&self, service: &str, key: &str) -> StoreResult<String> {
+            nested_runtime();
+            self.entries.lock().get(&(service.to_owned(), key.to_owned())).cloned().ok_or(StoreError::NoEntry)
+        }
+        fn set(&self, service: &str, key: &str, secret: &str) -> StoreResult<()> {
+            nested_runtime();
+            self.entries.lock().insert((service.to_owned(), key.to_owned()), secret.to_owned());
+            Ok(())
+        }
+        fn delete(&self, service: &str, key: &str) -> StoreResult<()> {
+            nested_runtime();
+            self.entries.lock().remove(&(service.to_owned(), key.to_owned())).map(|_| ()).ok_or(StoreError::NoEntry)
+        }
+    }
+
+    /// Saving a password from a Tauri command runs on a tokio runtime; the
+    /// Secret Service's blocking client starts a runtime of its own and panics
+    /// when both share a thread ("Cannot start a runtime from within a runtime").
+    #[tokio::test(flavor = "multi_thread")]
+    async fn credential_store_access_leaves_the_async_runtime_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Arc::new(NestedRuntimeVault::default());
+        let file =
+            SecretFile::with_vault(tmp.path().join("db-passwords.json"), |v| serde_json::from_value(v).ok(), vault);
+        file.set("s1", "hunter2").unwrap();
+        assert_eq!(file.get("s1").as_deref(), Some("hunter2"));
+        assert_eq!(file.keys(), ["s1"]);
+        file.delete("s1");
+        assert_eq!(file.get("s1"), None);
     }
 }

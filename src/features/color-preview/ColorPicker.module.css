@@ -1,0 +1,141 @@
+.popup {
+  width: 340px;
+  max-width: calc(100vw - 12px);
+  padding: 0 0 12px;
+  overflow: hidden;
+}
+
+.pickerArea {
+  position: relative;
+}
+
+.control:global(.react-colorful) {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) 27px 27px;
+  width: 100%;
+  height: 262px;
+  border-radius: 0;
+}
+
+.control :global(.react-colorful__saturation) {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  border-radius: 0;
+}
+
+.control :global(.react-colorful__hue),
+.control :global(.react-colorful__alpha) {
+  grid-column: 2;
+  height: 14px;
+  margin: 6px 14px 7px 2px;
+  border-radius: var(--radius-small);
+}
+
+.control :global(.react-colorful__hue) {
+  grid-row: 2;
+}
+
+.control :global(.react-colorful__alpha) {
+  grid-row: 3;
+}
+
+.sampleRow {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 104px;
+  height: 54px;
+  padding: 0 10px;
+}
+
+.preview {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  overflow: hidden;
+  background: conic-gradient(var(--fg-muted) 25%, var(--bg-input) 0 50%, var(--fg-muted) 0 75%, var(--bg-input) 0);
+  background-size: 10px 10px;
+}
+
+.preview span {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(78px, 1.65fr);
+  gap: 7px;
+  padding: 0 12px;
+}
+
+.field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  text-align: center;
+}
+
+.field input {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  border: 1px solid var(--border-input, var(--border));
+  border-radius: var(--radius-small);
+  padding: 0 3px;
+  background: var(--bg-input);
+  color: var(--fg-strong);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  outline: none;
+}
+
+.field input:focus {
+  border-color: var(--focus-ring);
+}
+
+.field input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.recent {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 8px 5px;
+  margin: 12px 12px 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.recentColor {
+  width: 25px;
+  height: 25px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  padding: 0;
+  overflow: hidden;
+  background: conic-gradient(var(--fg-muted) 25%, var(--bg-input) 0 50%, var(--fg-muted) 0 75%, var(--bg-input) 0);
+  background-size: 10px 10px;
+}
+
+.recentColor[aria-pressed="true"],
+.recentColor:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.recentColor span {
+  display: block;
+  width: 100%;
+  height: 100%;
+}

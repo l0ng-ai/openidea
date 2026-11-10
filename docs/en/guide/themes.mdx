@@ -1,0 +1,78 @@
+---
+title: "Themes and fonts"
+description: "Choose a UI theme and editor color scheme, import IntelliJ themes and color schemes, and set the editor, UI and terminal fonts."
+---
+
+## Choose a theme
+
+Open **Settings › Appearance & Behavior › Appearance** and pick a **Theme**. Built-in themes:
+
+| Light                   | Dark           |
+| ----------------------- | -------------- |
+| Islands Light (default) | Islands Dark   |
+| Solarized Light         | Solarized Dark |
+| One Light               | One Dark       |
+|                         | High Contrast  |
+
+Themes from installed plugins appear in the same list, under the plugin's name.
+
+- **Sync with OS** follows the system's light or dark mode. While it is on, the **Theme** list is disabled; pick the theme for each mode with **Preferred theme for light OS mode** and **Preferred theme for dark OS mode** in the options next to it.
+- **View › Appearance › Toggle Light/Dark Theme** switches between Islands Light and Islands Dark.
+- **View › Quick Switch Scheme…** (`` ⌃` `` / `` Ctrl+` ``) › **Theme** previews themes as you move through the list.
+- The Welcome screen's **Customize** page has the same theme and accent choices.
+
+The same page also has:
+
+- **Accent colour**: the UI's accent colour.
+- **Different tool window background**: set tool windows apart from the editor.
+- **Accessibility**: **Use contrast scrollbars** and **Adjust colors for red-green vision deficiency** (for protanopia and deuteranopia).
+- **Compact mode** under **UI Options**.
+
+## Editor color scheme
+
+The editor's syntax colours come from a color scheme. In **Settings › Appearance & Behavior › Appearance**, **Editor color scheme** is **Theme default** unless you change it: the scheme of the current theme. Choose another built-in scheme or one you imported to keep the same editor colours under any theme.
+
+**Settings › Editor › Color Scheme** edits schemes:
+
+- Select an element in the tree and change its foreground, background, bold, italic and effects. Changes are stored per scheme; **Restore Defaults** drops them.
+- **Language Defaults** has **Semantic highlighting** (local variables and parameters get a colour derived from their name) and **Rainbow brackets** (brackets coloured by depth).
+- **Import Scheme** reads an IntelliJ color scheme (`.icls`) exported from a JetBrains IDE. If a scheme with the same name exists, choose **Overwrite** or **Keep Both**. **Export Scheme** writes the selected scheme as `.icls`.
+
+## IntelliJ themes
+
+IntelliJ UI themes can be converted into OpenIDEA themes. With a project open, go to **Settings › Plugins**, open the gear menu and choose:
+
+- **Import Theme from JetBrains IDE…** to pick a theme plugin installed in your JetBrains IDEs, or
+- **Import IntelliJ Theme from File…** for a theme plugin `.jar`, a Marketplace `.zip`, a plugin folder or a `.theme.json` file.
+
+OpenIDEA converts the theme (and the editor scheme it bundles, if any) into a theme plugin and installs it. The theme in use doesn't change; select the new one under **Theme**.
+
+## Theme and icon plugins
+
+**Settings › Plugins** also offers theme and file icon theme plugins from the marketplace. Once a file icon theme is installed, **File icon theme** appears on the Appearance page. Icon themes with options get a settings page of their own.
+
+To create a theme or icon theme, see [Themes](/en/plugins/guides/themes) and [Icon themes](/en/plugins/guides/icon-themes) in the plugin guide.
+
+## Fonts
+
+### Editor font
+
+**Settings › Editor › Font**:
+
+- **Font**: the editor font family. **Show only monospaced fonts** narrows the list. The default is JetBrains Mono, bundled with OpenIDEA.
+- **Size** and **Line height**.
+- **Enable ligatures** for fonts with programming ligatures.
+- **Typography Settings**: **Main font weight**, **Bold font weight**, and a **Fallback font** for characters the main font lacks.
+
+To change the size temporarily, use **Increase Font Size** (`⌥⇧.` / `Alt+Shift+.`) and **Decrease Font Size** (`⌥⇧,` / `Alt+Shift+,`); **View › Reset Font Size in All Editors** goes back. On macOS, **Change font size with Command+Mouse Wheel** in **Settings › Editor › General** enables wheel zoom.
+
+### UI font and zoom
+
+On the Appearance page under **Accessibility**:
+
+- **Use custom font:** sets the **UI font**, a **UI fallback font** and the size for menus, tool windows and dialogs. The default UI font is Inter.
+- **Zoom** scales the whole IDE. **View › Appearance › Zoom In IDE**, **Zoom Out IDE** and **Reset IDE Zoom** do the same from the menu (`⌃⌥=`, `⌃⌥-`, `⌃⌥0` on macOS; `Alt+Shift+=`, `Alt+Shift+-`, `Alt+Shift+0` on Windows and Linux).
+
+### Terminal font
+
+The terminal uses the editor font by default. To give it its own font, turn off **Use editor font** in **Settings › Tools › Terminal**.

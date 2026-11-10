@@ -706,7 +706,7 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
     setHistory(readHistory("evaluate"));
     historyPos.current = -1;
     try {
-      const v: Variable = await evaluate(e, "repl", session ?? null);
+      const v: Variable = await evaluate(e, session?.adapter === "gdb" ? "watch" : "repl", session ?? null);
       setResult({ key: `eval:${e}:${Date.now()}`, kind: "eval", name: e, variable: v, error: null });
     } catch (err) {
       setResult({ key: `eval:${e}:${Date.now()}`, kind: "eval", name: e, variable: null, error: errorText(err) });

@@ -102,14 +102,14 @@ export function activate(): () => void {
       {
         id: "build.buildArtifacts",
         title: "Build Artifacts",
-        description: "Packages the project (mvn package, gradle assemble, cargo build --release, npm run build)",
+        description: "Packages the current module's artifacts, or the whole project when no file is active",
         category: "Build",
         when: WHEN,
-        keywords: ["package", "assemble", "jar", "release"],
+        keywords: ["package", "assemble", "jar", "release", "module"],
         run: ({ arg }) => {
           const options = typeof arg === "object" && arg !== null ? arg : {};
           const activate = !("activate" in options && options.activate === false);
-          const build = startBuild("artifacts", null, activate);
+          const build = startBuild("artifacts", moduleTarget(arg), activate);
           if ("wait" in options && options.wait === true) return build.then(() => undefined);
         },
       },

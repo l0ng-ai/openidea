@@ -139,6 +139,7 @@ export function useCommitDetails(commit: Commit, enabled = true) {
         if (!controller.signal.aborted) setResult({ key, details: null, error: true });
       });
     return () => controller.abort();
-  }, [commit, key, enabled, version]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, enabled]);
   return { details: result?.key === key ? result.details : null, error: result?.key === key && result.error };
 }
