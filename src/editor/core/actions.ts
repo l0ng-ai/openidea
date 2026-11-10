@@ -70,8 +70,7 @@ import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOf
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { useDocMeta, useOutline } from "./model/document";
-import { fontZoom, setFontZoom, stepFontZoom } from "./cm/prefs";
-import { useEditorRegistry } from "@/editor/api";
+import { resetAllEditorsFontZoom, stepAllEditorsFontZoom } from "./cm/prefs";
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
@@ -121,7 +120,7 @@ function stepSurfaceFontSize(delta: 1 | -1): void {
     if (cmEl) {
       const cmView = EditorView.findFromDOM(cmEl);
       if (cmView) {
-        stepFontZoom(cmView, delta);
+        stepAllEditorsFontZoom(cmView, delta);
         return;
       }
     }
@@ -129,7 +128,7 @@ function stepSurfaceFontSize(delta: 1 | -1): void {
 
   const slot = activeSlot();
   if (!slot?.view) return;
-  stepFontZoom(slot.view, delta);
+  stepAllEditorsFontZoom(slot.view, delta);
   if (!slot.view.hasFocus && !getContext().popupOpen) slot.view.focus();
 }
 
@@ -898,8 +897,7 @@ export function registerEditorActions(): () => void {
       keywords: ["zoom", "font size", "mouse wheel"],
       when: "projectOpen",
       run: () => {
-        for (const ed of useEditorRegistry.getState().editors)
-          if (ed.view.state.field(fontZoom, false)) ed.view.dispatch({ effects: setFontZoom.of(0) });
+        resetAllEditorsFontZoom();
         if (typeof document !== "undefined") {
           resetSurfaceFontZoom();
         }
