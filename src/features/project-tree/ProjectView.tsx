@@ -57,6 +57,7 @@ import {
 } from "@/platform/projectPresentation";
 import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
+import { PROJECT_TYPES } from "./projectType";
 import { useHomeDir } from "./home";
 import { keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
 import {
@@ -280,11 +281,13 @@ const Row = memo(function Row({
   const root = useProjectTree((s) => s.root);
   const detected = useDetectedRoots();
   const build = useProjectPresentation();
+  const projectType = useProjectTree((s) => (node.root && !node.icon ? s.projectTypes.get(node.path) : undefined));
   const file = useJvmPresentation(node.dir || node.placeholder ? "" : node.path, node.entry?.mtimeMs);
   const expanded = useProjectTree((s) => node.dir && s.expanded.has(node.key));
   const holdsOpen = useProjectTree((s) => node.dir && holdsOpenFile(node.path, s.openFiles));
-  const icon =
-    node.dir || node.placeholder || node.icon
+  const icon = projectType
+    ? PROJECT_TYPES[projectType].icon
+    : node.dir || node.placeholder || node.icon
       ? iconFor(node, roots, root, build, detected, expanded, holdsOpen)
       : presentationIcon(node.path, file, roots, root, build.spring);
   const moduleFolder =

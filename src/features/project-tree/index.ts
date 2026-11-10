@@ -26,6 +26,7 @@ import { ProjectHeaderActions, useProjectHeaderMenu, useProjectTitleMenu } from 
 import { loadHomeDir } from "./home";
 import { selectedNodes, undoLastFileOperation } from "./operations";
 import { ProjectView } from "./ProjectView";
+import { initProjectTypes } from "./projectTypes";
 import {
   applyFsChange,
   dropOutlines,
@@ -232,6 +233,7 @@ export function activate(): () => void {
         .filter((n) => !n.group)
         .map((n) => n.path),
     ),
+    initProjectTypes(),
     onIdeEvent("fsChanged", (e) => void applyFsChange(e)),
     onIdeEvent("excludedDirsChanged", (e) => void reloadLoadedDirs(e.dirs)),
   ];
