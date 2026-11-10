@@ -531,7 +531,7 @@ impl Host {
         mark("git");
         tracing::info!("opened {} in window {window} in {} ms {laps:?}", root.display(), started.elapsed().as_millis());
 
-        let (db, http_history, agents) = self.project_services(&root, &project_key);
+        let (db, http_history, agents) = self.project_services(&root, &project_key, &settings);
         let notebooks = crate::notebook::NotebookService::new(
             self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
             sink.clone(),
@@ -613,6 +613,7 @@ impl Host {
         &self,
         root: &Path,
         project_key: &str,
+        settings: &Arc<SettingsStore>,
     ) -> (Arc<ide_db::DbManager>, Arc<ide_http::History>, Arc<ide_agent::AgentManager>) {
         let db = Arc::new(
             ide_db::DbManager::new(
@@ -642,6 +643,10 @@ impl Host {
             },
             self.runtime.clone(),
         ));
+        let settings = settings.clone();
+        agents.set_mcp_servers_hook(Box::new(move || {
+            ide_agent::mcp::servers_from_settings(&Default::default(), &settings.effective().agents.mcp_servers)
+        }));
         (db, http_history, agents)
     }
 }
@@ -683,7 +688,7 @@ impl Host {
         documents.add_observer(Arc::new(HistoryObserver(history.clone())));
         let watcher = light_watcher(&dir, &sink, &documents, &history)?;
         let project_key = project_key(&dir);
-        let (db, http_history, agents) = self.project_services(&dir, &project_key);
+        let (db, http_history, agents) = self.project_services(&dir, &project_key, &settings);
         let notebooks = crate::notebook::NotebookService::new(
             self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
             sink.clone(),

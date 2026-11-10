@@ -35,7 +35,12 @@ import { useTx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 
 export function AgentsHeaderActions() {
-  return <IconButton icon="plus" action="agents.newTask" />;
+  return (
+    <>
+      <IconButton icon="plus" action="agents.newTask" />
+      <IconButton icon="settings" action="agents.mcpServers" />
+    </>
+  );
 }
 
 type Node = { kind: "group"; group: TaskGroup } | { kind: "task"; task: AgentTask };

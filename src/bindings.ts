@@ -144,6 +144,16 @@ export const commands = {
 	agentRegistryInstall: (id: string, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("agent_registry_install", { id, request, onEvent })),
 	/**  Removes a registry agent: its agent file and installed files. */
 	agentRegistryRemove: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_registry_remove", { id })),
+	/**  Lists configured and discovered MCP servers across User, Workspace, Plugin, and Built-In scopes. */
+	agentMcpList: () => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_list")),
+	/**  Creates or updates a User or Workspace MCP server and returns the updated list. */
+	agentMcpSave: (input: McpServerInput) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_save", { input })),
+	/**  Enables or disables an MCP server and returns the updated list. */
+	agentMcpSetEnabled: (id: string, enabled: boolean) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_set_enabled", { id, enabled })),
+	/**  Removes a User or Workspace MCP server and returns the updated list. */
+	agentMcpRemove: (id: string) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_remove", { id })),
+	/**  Copies MCP servers from `.mcp.json` and `.vscode/mcp.json` into the workspace settings once. */
+	agentMcpImport: () => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_import")),
 	/**
 	 *  Slash commands to complete for `provider` in `task`'s directory, or in the project
 	 *  before a task exists (skills and custom commands on disk included).
@@ -1708,6 +1718,41 @@ export type AgentLimit = {
 	resetsMs: number | null,
 };
 
+/**  An MCP server passed to coding agents in `session/new`, `session/load` and `session/fork`. */
+export type AgentMcpServer = AgentMcpServer_Serialize | AgentMcpServer_Deserialize;
+
+/**  An MCP server passed to coding agents in `session/new`, `session/load` and `session/fork`. */
+export type AgentMcpServer_Deserialize = {
+	transport?: McpTransport,
+	enabled?: boolean,
+	command?: string | null,
+	args?: string[],
+	env?: { [key in string]: string },
+	url?: string | null,
+	headers?: { [key in string]: string },
+	/**
+	 *  Agent provider ids this server is enabled for (e.g. `["claude", "codex"]`);
+	 *  empty means enabled for all agents.
+	 */
+	agents?: string[],
+};
+
+/**  An MCP server passed to coding agents in `session/new`, `session/load` and `session/fork`. */
+export type AgentMcpServer_Serialize = {
+	transport: McpTransport,
+	enabled: boolean,
+	command?: string | null,
+	args?: string[],
+	env?: { [key in string]: string },
+	url?: string | null,
+	headers?: { [key in string]: string },
+	/**
+	 *  Agent provider ids this server is enabled for (e.g. `["claude", "codex"]`);
+	 *  empty means enabled for all agents.
+	 */
+	agents?: string[],
+};
+
 export type AgentPermissionOption = {
 	id: string,
 	name: string,
@@ -1838,6 +1883,11 @@ export type AgentSettings_Deserialize = {
 	whileRunning?: WhileRunning,
 	/**  Settings new tasks of an agent start with: agent id → option id → value. */
 	defaults?: { [key in string]: { [key in string]: string } },
+	/**
+	 *  MCP servers passed to coding agents in `session/new`, `session/load` and `session/fork`,
+	 *  keyed by server name (`[agents.mcpServers.<name>]`).
+	 */
+	mcpServers?: { [key in string]: AgentMcpServer_Deserialize },
 };
 
 /**  Settings › Agents: what the conversation shows and how messages are sent. */
@@ -1866,6 +1916,11 @@ export type AgentSettings_Serialize = {
 	whileRunning: WhileRunning,
 	/**  Settings new tasks of an agent start with: agent id → option id → value. */
 	defaults: { [key in string]: { [key in string]: string } },
+	/**
+	 *  MCP servers passed to coding agents in `session/new`, `session/load` and `session/fork`,
+	 *  keyed by server name (`[agents.mcpServers.<name>]`).
+	 */
+	mcpServers: { [key in string]: AgentMcpServer_Serialize },
 };
 
 /**  Where an agent comes from. */
@@ -6118,6 +6173,47 @@ export type MavenSettings = {
 	activeProfiles?: string,
 };
 
+/**  A named environment variable or HTTP header for an MCP server. */
+export type McpKeyValue = {
+	name: string,
+	value: string,
+};
+
+/**  Where an MCP server configuration is stored (`settings.toml` vs `.openidea/settings.toml`). */
+export type McpScope = "user" | "workspace";
+
+/**  One configured Model Context Protocol (MCP) server. */
+export type McpServer = {
+	id: string,
+	name: string,
+	scope: McpScope,
+	transport: McpTransport,
+	enabled: boolean,
+	command: string | null,
+	args: string[],
+	env: McpKeyValue[],
+	url: string | null,
+	headers: McpKeyValue[],
+	/**  Agent provider ids this server is enabled for; empty means enabled for all agents. */
+	agents?: string[],
+};
+
+/**  Payload for creating or updating a user or workspace MCP server. */
+export type McpServerInput = {
+	id?: string | null,
+	name: string,
+	scope: McpScope,
+	transport: McpTransport,
+	enabled?: boolean,
+	command?: string | null,
+	args?: string[],
+	env?: McpKeyValue[],
+	url?: string | null,
+	headers?: McpKeyValue[],
+	/**  Agent provider ids this server is enabled for; empty means enabled for all agents. */
+	agents?: string[],
+};
+
 /**  Agents › MCP Server: agents use the IDE's built-in tools. */
 export type McpServerSettings = {
 	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
@@ -6139,6 +6235,9 @@ export type McpServerStatus = {
 	/**  The stdio bridge: this executable and its arguments. */
 	stdioCommand: string[],
 };
+
+/**  Transport of an MCP server configured in Settings › Agents › MCP Servers. */
+export type McpTransport = "stdio" | "http" | "sse";
 
 export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null };
 
