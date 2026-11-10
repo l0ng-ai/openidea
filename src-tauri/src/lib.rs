@@ -35,6 +35,7 @@ mod updates;
 mod window_groups;
 #[cfg(any(windows, test))]
 mod window_work_area;
+mod window_zoom;
 mod windows;
 
 use parking_lot::Mutex;
@@ -249,6 +250,7 @@ pub fn run() {
             window_groups::frame_changed(window.app_handle(), window.label());
         }
         tauri::WindowEvent::Destroyed => {
+            window_zoom::forget(window.label());
             #[cfg(target_os = "macos")]
             {
                 page_swipe::forget(window.label());

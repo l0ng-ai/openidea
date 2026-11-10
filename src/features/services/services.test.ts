@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { EditorState } from "@codemirror/state";
 import type { DockerContainer, DockerSnapshot } from "@/platform/ipc";
 import { fileIconName } from "@/ui/icons";
 import {
@@ -14,6 +15,7 @@ import {
   isDockerfile,
   useComposeFiles,
 } from "./compose";
+import { composeCompletionsAt, parseComposeDocument, resolveComposeReferenceAt } from "./composeEditor";
 import {
   DOCKERFILE,
   DOCKER_COMPOSE,
@@ -662,5 +664,30 @@ describe("docker compose detection and targets", () => {
       line: 24,
       service: "minio",
     });
+  });
+
+  it("completes and resolves internal service, network, volume, config and secret references", () => {
+    const depPos = playgroundCompose.indexOf("      - starrocks") + "      - star".length;
+    const depRes = composeCompletionsAt(playgroundCompose, depPos, false)!;
+    expect(depRes.options.map((o) => o.label)).toEqual(["starrocks"]);
+
+    const netPos = playgroundCompose.indexOf("      playground-network:") + "      play".length;
+    const netRes = composeCompletionsAt(playgroundCompose, netPos, false)!;
+    expect(netRes.options.map((o) => o.label)).toContain("playground-network");
+
+    const state = EditorState.create({ doc: playgroundCompose });
+    const model = parseComposeDocument(playgroundCompose);
+    expect([...model.services.keys()]).toEqual(["starrocks", "minio"]);
+    expect([...model.networks.keys()]).toEqual(["playground-network"]);
+
+    const netRefOffset = playgroundCompose.indexOf("      playground-network:") + 8;
+    const netDecl = resolveComposeReferenceAt(state, netRefOffset);
+    expect(netDecl?.name).toBe("playground-network");
+    expect(netDecl?.line).toBe(4);
+
+    const svcRefOffset = playgroundCompose.indexOf("      - starrocks") + 10;
+    const svcDecl = resolveComposeReferenceAt(state, svcRefOffset);
+    expect(svcDecl?.name).toBe("starrocks");
+    expect(svcDecl?.line).toBe(8);
   });
 });

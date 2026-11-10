@@ -904,6 +904,47 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         }
     }
 
+    if name == "yaml-language-server" && !s.files.compose_file_overrides.is_empty() {
+        let mut settings = cfg.settings.take().filter(Value::is_object).unwrap_or_else(|| json!({}));
+        let mut kept = Vec::new();
+        let mut excluded = Vec::new();
+        for (path, status) in &s.files.compose_file_overrides {
+            let p = Path::new(path);
+            let abs = if p.is_absolute() { p.to_path_buf() } else { root.join(p) };
+            let normalized = abs.to_string_lossy().replace('\\', "/");
+            match status {
+                ide_core::settings::ComposeFileOverride::Kept => kept.push(normalized),
+                ide_core::settings::ComposeFileOverride::Excluded => excluded.push(normalized),
+            }
+        }
+        let yaml = settings
+            .as_object_mut()
+            .expect("object")
+            .entry("yaml")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .expect("object");
+        let schemas = yaml.entry("schemas").or_insert_with(|| json!({})).as_object_mut().expect("object");
+        let entry = schemas.entry(ide_language::COMPOSE_SCHEMA_URL).or_insert_with(|| json!([]));
+        if let Value::String(single) = entry {
+            *entry = json!([single.clone()]);
+        }
+        if let Some(list) = entry.as_array_mut() {
+            for p in kept {
+                if !list.iter().any(|v| v.as_str() == Some(&p)) {
+                    list.push(Value::String(p));
+                }
+            }
+            for p in &excluded {
+                let neg = format!("!{p}");
+                if !list.iter().any(|v| v.as_str() == Some(&neg)) {
+                    list.push(Value::String(neg));
+                }
+            }
+        }
+        cfg.settings = Some(settings);
+    }
+
     if name == "rust-analyzer" {
         let r = &s.languages.rust;
         let extra_args: Vec<&str> = r.rustfmt_args.split_whitespace().collect();
@@ -1889,6 +1930,36 @@ mod maven_linkage_tests {
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         configure_maven_import(&mut cfg, tmp.path(), &[], Some(&files));
         assert!(serde_json::to_value(cfg.initialization_options).unwrap().get("projectConfigurations").is_none());
+    }
+
+    #[test]
+    fn compose_file_overrides_populate_yaml_schemas_and_typed_exclusions() {
+        let root = Path::new("/work");
+        let mut s = Settings::default();
+        s.files.compose_file_overrides.insert("custom-stack.yml".into(), ide_core::settings::ComposeFileOverride::Kept);
+        s.files
+            .compose_file_overrides
+            .insert("/work/docker/playground-compose.yml".into(), ide_core::settings::ComposeFileOverride::Excluded);
+        let mut cfg = custom_server("yaml-language-server", &LanguageServerSettings::default());
+        cfg.settings = Some(json!({
+            "yaml": {
+                "schemas": {
+                    ide_language::COMPOSE_SCHEMA_URL: ["compose.yml", "*-compose.yml"]
+                }
+            }
+        }));
+        configure_server(&mut cfg, root, root, &s);
+        let yaml = &cfg.settings.as_ref().unwrap()["yaml"];
+        assert!(yaml.get("disableSchemaDetection").is_none());
+        let list = yaml["schemas"][ide_language::COMPOSE_SCHEMA_URL]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(list.contains(&"compose.yml"));
+        assert!(list.contains(&"/work/custom-stack.yml"));
+        assert!(list.contains(&"!/work/docker/playground-compose.yml"));
     }
 }
 
