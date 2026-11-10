@@ -1,3 +1,4 @@
+import { clearContext, setContext } from "@/platform/context";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
@@ -86,6 +87,17 @@ describe("project view context menu", () => {
     const mixed = labels(contextMenuItems([node("/p/left", true), node("/p/a.txt")]));
     for (const label of ["Compare Directories", "Compare Files", "Compare With…"]) expect(mixed).not.toContain(label);
     expect(labels(contextMenuItems([node("/p/a.txt"), node("/p/b.txt")]))).toContain("Compare Files");
+  });
+
+  it("offers Git for repositories found below a non-Git project root", () => {
+    useProject.setState({ project: { name: "p", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
+    expect(sub(contextMenuItems([node("/p/a.py")]), "Git")).toBeUndefined();
+    setContext("vcsAvailable", true);
+    try {
+      expect(sub(contextMenuItems([node("/p/a.py")]), "Git")).toContain("Commit File…");
+    } finally {
+      clearContext("vcsAvailable");
+    }
   });
 
   it("follows IDEA's order for a file", () => {
