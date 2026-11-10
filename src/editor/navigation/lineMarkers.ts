@@ -138,12 +138,19 @@ export function withoutSelf(path: string, c: MarkerCandidate, targets: readonly 
 
 const TYPE_DECLARATION = /\b(?:class|interface|trait|object|struct|enum|record|impl)\s+([\p{L}_$][\p{L}\p{N}_$]*)/u;
 
-/** Name of the type a target sits in: the nearest type declaration above it, else the file name. */
-export function enclosingTypeName(lines: readonly string[] | null | undefined, target: Location): string {
+/** Name of the type a target sits in (the nearest type declaration above it); null without one. */
+export function enclosingType(lines: readonly string[] | null | undefined, target: Location): string | null {
   for (let l = target.range.start.line - 1; lines && l >= 0 && l >= target.range.start.line - 2000; l--) {
     const m = TYPE_DECLARATION.exec(lines[l] ?? "");
     if (m && !/^\s*(\/\/|\*|\/\*)/.test(lines[l] ?? "")) return m[1]!;
   }
+  return null;
+}
+
+/** Name of the type a target sits in: the nearest type declaration above it, else the file name. */
+export function enclosingTypeName(lines: readonly string[] | null | undefined, target: Location): string {
+  const found = enclosingType(lines, target);
+  if (found) return found;
   const file = target.path.split(/[\\/]/).pop() ?? target.path;
   return file.replace(/\.[^.]+$/, "");
 }

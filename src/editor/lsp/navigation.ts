@@ -72,6 +72,7 @@ import {
 import { featureBackoff } from "./availability";
 import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
+import { enclosingType } from "@/editor/navigation/lineMarkers";
 import { editorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
 import { isAddCaretGesture } from "@/editor/core/cm/multiCaret";
@@ -155,11 +156,12 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
       };
     // Server targets: the declared name (speed search matches it), position after it.
     const name = targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
+    const container = extras.container ? enclosingType(files.get(l.path), l) : null;
     return {
       id: `${i}`,
       label: name ?? basename(l.path),
       // The file name only duplicates the label when the name itself was found.
-      detail: [name && extras.fileName ? basename(l.path) : "", where].filter(Boolean).join(" · "),
+      detail: [container, name && extras.fileName ? basename(l.path) : "", where].filter(Boolean).join(" · "),
       preview,
       icon: fileIconName(basename(l.path), l.path),
       run: () => navigateTo(l),

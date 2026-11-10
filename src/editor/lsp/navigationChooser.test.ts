@@ -128,6 +128,39 @@ describe("locationItems", () => {
     expect(item.detail).toBe("src/mod.py:1");
   });
 
+  it("shows the enclosing type of server targets when the container is on", async () => {
+    const lines = ["", "class _StatefulDataset(Base):", "", "    def refresh(self) -> None:"];
+    readManyFileLines.mockResolvedValue(new Map([["/p/src/mod.py", lines]]));
+    project({});
+    const item = (
+      await locationItems([
+        {
+          path: "/p/src/mod.py",
+          uri: null,
+          range: { start: { line: 3, col: 8 }, end: { line: 3, col: 15 } },
+        },
+      ])
+    )[0]!;
+    expect(item.label).toBe("refresh");
+    expect(item.detail).toBe("_StatefulDataset · mod.py · src/mod.py:4");
+  });
+
+  it("hides the container of server targets when the container is off", async () => {
+    const lines = ["", "class _StatefulDataset(Base):", "", "    def refresh(self) -> None:"];
+    readManyFileLines.mockResolvedValue(new Map([["/p/src/mod.py", lines]]));
+    project({ container: false, fileName: false });
+    const item = (
+      await locationItems([
+        {
+          path: "/p/src/mod.py",
+          uri: null,
+          range: { start: { line: 3, col: 8 }, end: { line: 3, col: 15 } },
+        },
+      ])
+    )[0]!;
+    expect(item.detail).toBe("src/mod.py:4");
+  });
+
   it("keeps index symbols' container detail", async () => {
     readManyFileLines.mockResolvedValue(new Map());
     project({});
