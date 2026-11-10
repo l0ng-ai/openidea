@@ -18,6 +18,14 @@ use std::sync::{Mutex, OnceLock};
 
 pub mod sources;
 
+/// Lets the IDE's own Maven runs (Reload, Build) use what the local repository already
+/// has. Maven 3.9 re-resolves an artifact whose recorded origin repository (`_remote.repositories`)
+/// isn't declared in the build, such as a vendor jar downloaded through another project or
+/// installed by hand, and fails when no declared repository has it. Tracking under another
+/// file name makes such artifacts count as locally installed. Maven goals the user runs keep
+/// plain Maven's behaviour.
+pub const LOCAL_REPO_TRACKING_ARG: &str = "-Daether.enhancedLocalRepository.trackingFilename=openidea.repositories";
+
 /// Phases shown under "Lifecycle" (IDEA's default list).
 pub const LIFECYCLE: &[&str] =
     &["clean", "validate", "compile", "test", "package", "verify", "install", "site", "deploy"];

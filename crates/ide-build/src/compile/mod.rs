@@ -263,7 +263,12 @@ pub(super) fn maven_steps(
         return Err(IdeError::not_found("no Maven project found"));
     }
     let step = |p: &maven::MavenProject, extra: &[String]| {
-        let mut s = BuildStep::new(&p.command, &["-B", "-Dstyle.color=never"], &subdir(root, &p.dir), Format::Maven);
+        let mut s = BuildStep::new(
+            &p.command,
+            &["-B", "-Dstyle.color=never", maven::LOCAL_REPO_TRACKING_ARG],
+            &subdir(root, &p.dir),
+            Format::Maven,
+        );
         s.args.extend(p.options.iter().cloned());
         s.args.extend(extra.iter().cloned());
         s.args.extend(goals.iter().map(|g| (*g).to_owned()));
@@ -1044,9 +1049,21 @@ mod tests {
         assert_eq!(p.system, BuildSystem::Maven);
         assert_eq!(p.title, "demo");
         assert_eq!(p.steps.len(), 1);
-        assert_eq!(p.steps[0].args, ["-B", "-Dstyle.color=never", "test-compile"]);
+        assert_eq!(p.steps[0].args, ["-B", "-Dstyle.color=never", maven::LOCAL_REPO_TRACKING_ARG, "test-compile"]);
         let p = plan(&root, &model, BuildKind::Rebuild, Some(&root.join("core/src/main/java/A.java")), None).unwrap();
-        assert_eq!(p.steps[0].args, ["-B", "-Dstyle.color=never", "-pl", "core", "-am", "clean", "test-compile"]);
+        assert_eq!(
+            p.steps[0].args,
+            [
+                "-B",
+                "-Dstyle.color=never",
+                maven::LOCAL_REPO_TRACKING_ARG,
+                "-pl",
+                "core",
+                "-am",
+                "clean",
+                "test-compile"
+            ]
+        );
         assert_eq!(p.steps[0].cwd, root);
         assert_eq!(p.title, "demo: build module 'core'");
 
@@ -1320,12 +1337,36 @@ mod tests {
             assert_eq!(step.cwd, root);
             assert_eq!(step.program, "mvnw");
             assert_eq!(step.env["JAVA_HOME"], "/jdk");
-            assert_eq!(step.args, ["-B", "-Dstyle.color=never", "-s", "settings.xml", "-pl", "app", "-am", goal]);
+            assert_eq!(
+                step.args,
+                [
+                    "-B",
+                    "-Dstyle.color=never",
+                    maven::LOCAL_REPO_TRACKING_ARG,
+                    "-s",
+                    "settings.xml",
+                    "-pl",
+                    "app",
+                    "-am",
+                    goal
+                ]
+            );
             // Rebuild cleans first, as IDEA's Rebuild does.
             let plan = launch_plan(root, &model, &root.join("app"), test, BuildKind::Rebuild).unwrap();
             assert_eq!(
                 plan.steps[0].args,
-                ["-B", "-Dstyle.color=never", "-s", "settings.xml", "-pl", "app", "-am", "clean", goal]
+                [
+                    "-B",
+                    "-Dstyle.color=never",
+                    maven::LOCAL_REPO_TRACKING_ARG,
+                    "-s",
+                    "settings.xml",
+                    "-pl",
+                    "app",
+                    "-am",
+                    "clean",
+                    goal
+                ]
             );
         }
     }
