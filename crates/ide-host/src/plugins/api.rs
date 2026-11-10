@@ -488,6 +488,7 @@ type SettingSnapshots = BTreeMap<(Option<String>, String), BTreeMap<String, Stri
 /// State shared by the host and every plugin's [`PluginApi`].
 pub(super) struct Shared {
     pub sink: Arc<dyn PluginEventSink>,
+    pub websockets: super::websocket::WebSocketHub,
     pub workspace: RwLock<Option<Arc<dyn PluginWorkspace>>>,
     /// `<plugins>/.data`: one directory per plugin id.
     pub data_dir: PathBuf,
@@ -565,7 +566,8 @@ impl Shared {
             ui,
             registry,
             locale: RwLock::new("en".into()),
-            sink,
+            sink: sink.clone(),
+            websockets: super::websocket::WebSocketHub::new(sink.clone()),
             workspace: RwLock::new(None),
             secrets: RwLock::new(Arc::new(FileSecretStore { dir: data_dir.clone() })),
             pins,
@@ -775,6 +777,7 @@ impl Shared {
 
         self.kill_processes(plugin);
         self.connections.clear(plugin);
+        self.websockets.disconnect_plugin(plugin);
         self.setting_snapshots.lock().retain(|(_, p), _| p != plugin);
         let channels: Vec<_> = {
             let mut output = self.output.lock();
@@ -2273,6 +2276,50 @@ impl HostApi for PluginApi {
                 () = cancel.cancelled() => Err(HostError::Cancelled),
             }
         })
+    }
+
+    fn websocket_connect(&self, root: &Path, request: ide_plugin::WebSocketRequest) -> Result<u64, HostError> {
+        let secrets = self.shared.secrets.read().clone();
+        let plugin = self.id().to_owned();
+        let mut authorization = None;
+        for (name, value) in request.headers {
+            if name.eq_ignore_ascii_case("authorization") {
+                if authorization.is_some() {
+                    return Err(HostError::Invalid("duplicate WebSocket authorization header".into()));
+                }
+                authorization = Some(fill_secrets(&value, |name| secrets.get(&plugin, name))?);
+            } else {
+                return Err(HostError::Invalid(format!("WebSocket header {name:?} is not allowed")));
+            }
+        }
+        let authorization =
+            authorization.ok_or_else(|| HostError::Invalid("WebSocket authorization is required".into()))?;
+        net_runtime()
+            .block_on(self.shared.websockets.connect(
+                &plugin,
+                &to_ipc(root),
+                &request.url,
+                &authorization,
+                &request.subprotocol,
+            ))
+            .map_err(HostError::Failed)
+    }
+
+    fn websocket_send(&self, root: &Path, connection: u64, bytes: Vec<u8>) -> Result<(), HostError> {
+        self.shared.websockets.send(self.id(), &to_ipc(root), connection, bytes).map_err(HostError::Failed)
+    }
+
+    fn websocket_drain(
+        &self,
+        root: &Path,
+        connection: u64,
+        limit: usize,
+    ) -> Result<ide_plugin::WebSocketBatch, HostError> {
+        self.shared.websockets.drain(self.id(), &to_ipc(root), connection, limit).map_err(HostError::Invalid)
+    }
+
+    fn websocket_close(&self, connection: u64) {
+        let _ = self.shared.websockets.disconnect(self.id(), connection);
     }
 
     /// The `net:ask` answer: a host the user allowed with "always" is

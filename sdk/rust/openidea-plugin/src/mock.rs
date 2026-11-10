@@ -43,6 +43,25 @@ type SearchHandler = Box<dyn Fn(&TextQuery, u32) -> Result<TextSearch, Error>>;
 type NetHandler = Box<dyn Fn(&HttpRequest) -> Result<HttpResponse, Error>>;
 type ProcessHandler = Box<dyn Fn(&[String], Option<&str>) -> Result<ProcessOutput, Error>>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WebSocketState {
+    project: String,
+    request: crate::host::WebSocketRequest,
+    sent: Vec<Vec<u8>>,
+    incoming: VecDeque<Vec<u8>>,
+    closed: bool,
+}
+
+/// A background WebSocket recorded by [`MockHost`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MockWebSocket {
+    pub id: u64,
+    pub project: String,
+    pub request: crate::host::WebSocketRequest,
+    pub sent: Vec<Vec<u8>>,
+    pub closed: bool,
+}
+
 /// A process run the plugin made.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessRun {
@@ -141,6 +160,8 @@ struct State {
     loopback_queries: VecDeque<Option<String>>,
     net: Option<NetHandler>,
     requests: Vec<HttpRequest>,
+    websockets: BTreeMap<u64, WebSocketState>,
+    next_websocket: u64,
     processes: BTreeMap<String, ProcessHandler>,
     runs: Vec<ProcessRun>,
     /// The programs `start`ed, by handle id.
@@ -211,6 +232,43 @@ const ALL: &[&str] = &[
 ];
 
 impl MockHost {
+    /// Background WebSockets opened by the plugin, including sent frames.
+    pub fn websockets(&self) -> Vec<MockWebSocket> {
+        self.state
+            .borrow()
+            .websockets
+            .iter()
+            .map(|(id, socket)| MockWebSocket {
+                id: *id,
+                project: socket.project.clone(),
+                request: socket.request.clone(),
+                sent: socket.sent.clone(),
+                closed: socket.closed,
+            })
+            .collect()
+    }
+
+    /// Queues one binary server frame for the next `WebSocket::drain` call.
+    pub fn push_websocket_message(&self, connection: u64, bytes: &[u8]) -> Result<(), Error> {
+        let mut state = self.state.borrow_mut();
+        let socket =
+            state.websockets.get_mut(&connection).ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
+        if socket.closed {
+            return Err(Error::NotFound("WebSocket connection".into()));
+        }
+        socket.incoming.push_back(bytes.to_vec());
+        Ok(())
+    }
+
+    /// Makes the next drain report a final remote close after queued frames.
+    pub fn close_websocket(&self, connection: u64) -> Result<(), Error> {
+        let mut state = self.state.borrow_mut();
+        let socket =
+            state.websockets.get_mut(&connection).ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
+        socket.closed = true;
+        Ok(())
+    }
+
     /// Registers one of this plugin's declared commands, callable without ide.commands.
     pub fn on_own_command(&self, id: &str, handler: impl Fn(Option<&str>) -> Result<Option<String>, Error> + 'static) {
         let stable = format!("plugin.mock.{id}");
@@ -700,6 +758,7 @@ impl Drop for MockTaskRes {
 pub mod current {
     //! The host functions, backed by the installed mock.
     use super::*;
+    use crate::host::{WebSocketBatch, WebSocketRequest};
 
     pub type InvocationRef<'a> = MockInvocation<'a>;
     pub type ProjectRes = MockProject;
@@ -1781,6 +1840,85 @@ pub mod current {
         })
     }
 
+    pub fn websocket_connect(project: &ProjectRes, req: &WebSocketRequest) -> Result<u64, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            if !req.url.starts_with("wss://") {
+                return Err(Error::Invalid("background WebSocket requires wss://".into()));
+            }
+            let host = net_host(&req.url).ok_or_else(|| Error::Invalid("invalid WebSocket URL".into()))?;
+            let capability = format!("net:{host}");
+            if !s.capabilities.iter().any(|candidate| {
+                candidate == &capability
+                    || candidate == "net:*"
+                    || candidate.strip_prefix("net:*.").is_some_and(|suffix| host.ends_with(&format!(".{suffix}")))
+            }) {
+                return Err(Error::Denied(capability));
+            }
+            if req.subprotocol.trim().is_empty() {
+                return Err(Error::Invalid("WebSocket subprotocol is required".into()));
+            }
+            let mut request = req.clone();
+            for (_, value) in &mut request.headers {
+                while let Some(start) = value.find("{{secret:") {
+                    require(s, "secrets")?;
+                    let end =
+                        value[start..].find("}}").ok_or_else(|| Error::Invalid("unterminated secret".into()))? + start;
+                    let name = &value[start + 9..end];
+                    let secret =
+                        s.secrets.get(name).cloned().ok_or_else(|| Error::NotFound(format!("secret {name:?}")))?;
+                    value.replace_range(start..end + 2, &secret);
+                }
+            }
+            let id = s.next_websocket.max(1);
+            s.next_websocket = id + 1;
+            s.websockets.insert(
+                id,
+                WebSocketState {
+                    project: project.root.clone(),
+                    request,
+                    sent: Vec::new(),
+                    incoming: VecDeque::new(),
+                    closed: false,
+                },
+            );
+            Ok(id)
+        })
+    }
+    pub fn websocket_send(project: &ProjectRes, connection: u64, bytes: &[u8]) -> Result<(), Error> {
+        with(|s| {
+            let socket = s
+                .websockets
+                .get_mut(&connection)
+                .filter(|socket| !socket.closed && socket.project == project.root)
+                .ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
+            socket.sent.push(bytes.to_vec());
+            Ok(())
+        })
+    }
+    pub fn websocket_drain(project: &ProjectRes, connection: u64, limit: u32) -> Result<WebSocketBatch, Error> {
+        with(|s| {
+            if limit == 0 || limit > 256 {
+                return Err(Error::Invalid("WebSocket drain limit must be between 1 and 256".into()));
+            }
+            let socket = s
+                .websockets
+                .get_mut(&connection)
+                .filter(|socket| socket.project == project.root)
+                .ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
+            let count = usize::min(limit as usize, socket.incoming.len());
+            let messages = socket.incoming.drain(..count).collect();
+            Ok(WebSocketBatch { messages, closed: socket.closed && socket.incoming.is_empty() })
+        })
+    }
+    pub fn websocket_close(connection: u64) {
+        with(|s| {
+            if let Some(socket) = s.websockets.get_mut(&connection) {
+                socket.closed = true;
+            }
+        })
+    }
+
     pub fn secret_set(name: &str, value: &str) -> Result<(), Error> {
         with(|s| {
             require(s, "secrets")?;
@@ -2292,7 +2430,38 @@ fn glob_match(glob: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host;
+    use crate::host::{self, WebSocket, WebSocketRequest};
+
+    #[test]
+    fn background_websocket_mock_records_transport_and_enforces_project_scope() {
+        let mock = MockHost::install().with_capabilities(&["project.read", "secrets", "net:relay.example"]);
+        mock.declare_secret("token");
+        host::secret_set("token", "member-secret").unwrap();
+        let project = mock.invocation().project().unwrap();
+        let socket = WebSocket::connect(
+            &project,
+            &WebSocketRequest {
+                url: "wss://relay.example/socket".into(),
+                headers: vec![("authorization".into(), "Bearer {{secret:token}}".into())],
+                subprotocol: "example.v1".into(),
+            },
+        )
+        .unwrap();
+        socket.send(&project, b"outbound").unwrap();
+        mock.push_websocket_message(socket.id(), b"inbound").unwrap();
+        assert_eq!(socket.drain(&project, 8).unwrap().messages, [b"inbound"]);
+
+        let recorded = &mock.websockets()[0];
+        assert_eq!(recorded.request.headers[0].1, "Bearer member-secret");
+        assert_eq!(recorded.sent, [b"outbound"]);
+
+        mock.add_project("/other");
+        let other =
+            host::projects().unwrap().into_iter().find(|candidate| candidate.root().unwrap() == "/other").unwrap();
+        assert!(matches!(socket.send(&other, b"escape"), Err(Error::NotFound(_))));
+        mock.close_websocket(socket.id()).unwrap();
+        assert!(socket.drain(&project, 8).unwrap().closed);
+    }
 
     #[test]
     fn path_subscriptions_replace_pause_and_restore() {

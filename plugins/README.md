@@ -577,6 +577,7 @@ then run `openidea-plugin check`.
 | `Plugin::handle_events(events, ctx)`                                                                           | export `event-handler.handle`              | Batches of subscribed events, oldest first, per window.                                                                                                                                                                                                                                                                                                   |
 | `Plugin::activate` / `deactivate`                                                                              | export `lifecycle`                         | Per instance: after a crash or idle reclaim a new one is activated.                                                                                                                                                                                                                                                                                       |
 | `TextEditor::document()` → `{version, text}`                                                                   | `editor.text-editor.document`              | `selections()` are those when the command ran (0-based lines, UTF-16 columns).                                                                                                                                                                                                                                                                            |
+| `WebSocket::{connect,send,drain}`                                                                              | `net.websocket-*`                          | API 1.5: project-bound, bounded host-owned WSS transport with secret-filled authorization, close state and event-driven wakeups.                                                                                                                                                                                                                          |
 | `Project::{upsert_data_source,remove_data_source,data_sources,set_data_source_credential,connect_data_source}` | `database`                                 | API 1.4: owned project sources; requires `database.sources` and trust. See _Database sources_.                                                                                                                                                                                                                                                            |
 | `host::mcp_stdio_command()`                                                                                    | `mcp.stdio-command`                        | API 1.4: invoking project bridge argv, `None` while off. No URL/token.                                                                                                                                                                                                                                                                                    |
 | `McpProvider::call(tool, arguments, ctx)`                                                                      | export `mcp-provider.call`                 | API 1.4: declared tools under plugin grants and command budget. See _Plugin MCP tools_.                                                                                                                                                                                                                                                                   |
@@ -858,6 +859,7 @@ log/blame return empty lists and diff returns `None`.
 
 | Kind                 | Capability     | Delivered                                                                                                                                  |
 | -------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `websocket-ready`    | `events`       | API 1.5: a bounded host-owned WebSocket has frames or a final close state to drain                                                         |
 | `file-opened`        | `events`       | a file opens in an editor                                                                                                                  |
 | `file-closed`        | `events`       | API 1.4, `Event::Other`: JSON path string                                                                                                  |
 | `settings-changed`   | `events`       | API 1.4, `Event::Other`: JSON array of this plugin's changed setting keys (effective values)                                               |
@@ -895,8 +897,8 @@ The SDK's event enums are `#[non_exhaustive]`; match them with a `_` arm.
 
 API 1.3 adds `host::subscribe_paths("file-opened", &["config/*.yaml"])`
 (`events.subscribe-paths`). The host matches project-relative globs before
-queueing an event or waking an idle plugin. `file-saved` and `files-changed` work
-the same way. For `files-changed`, each category is filtered and an empty batch
+queueing an event or waking an idle plugin. `file-saved` and `files-changed`
+work the same way. For `files-changed`, each category is filtered and an empty batch
 is omitted; replacing or pausing a filter also affects batches already queued.
 Patterns use `/`, `*` stays within a directory, and `**` crosses
 directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
@@ -908,6 +910,26 @@ kind's filter, an empty list pauses it, `subscribe(kind)` restores all paths,
 and `unsubscribe(kind)` removes it. Filters survive idle reclaim and disappear
 on disable, uninstall or reload. Each window's events use its current project;
 files outside that project do not match.
+
+API 1.5 adds host-owned background WebSockets for plugins that consume event
+streams. A connection is bound to the explicit project passed to
+`WebSocket::connect`; `send` and `drain` reject the handle when called with a
+different project. `WebSocket::connect` requires the endpoint's `net:<host>` grant,
+one `Authorization` header (secret placeholders are expanded by the host), a
+required subprotocol, and WSS outside loopback.
+
+Incoming frames use a separate bounded FIFO. Activate on
+`on-event:websocket-ready`, then call `drain`; the returned batch includes the
+final `closed` state. Queue overflow rejects the new frame and closes the
+connection instead of reporting delivery or growing memory. Connections are
+removed on disconnect, plugin stop or transport failure.
+
+Native plugin tests use the same `WebSocket` wrapper with `MockHost`. Inspect
+opened connections and outbound frames with `websockets`, queue an inbound
+binary frame with `push_websocket_message`, and finish the peer side with
+`close_websocket`. The mock expands declared secret placeholders, enforces the
+network grant and project binding, and reports
+the final close only after queued frames have drained.
 
 Provider calls can use `host::project_of(&doc.path)` (`workspace.project-of`)
 without an invocation project or enumerating every open project. It returns the

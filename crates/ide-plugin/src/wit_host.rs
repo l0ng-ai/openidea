@@ -857,6 +857,7 @@ impl editor::Host for StoreData {
 fn core_range(r: wit::Range) -> ide_core::Range {
     ide_core::Range::new(pos(r.start), pos(r.end))
 }
+
 impl StoreData {
     /// A `project` resource's path: inside the resource's root, or — for a
     /// project window group — inside any of its member roots (as the editor and
@@ -1413,6 +1414,52 @@ impl net::Host for StoreData {
                 body: r.body,
             })
             .map_err(to_wit))
+    }
+
+    fn websocket_connect(&mut self, project: Resource<ProjectRes>, req: net::WebsocketRequest) -> Fallible<u64> {
+        let capability = match net_capability(&req.url) {
+            Ok(capability) => capability,
+            Err(error) => return Ok(Err(wit::Error::Invalid(error))),
+        };
+        if let Err(error) = self.require(capability) {
+            return Ok(Err(error));
+        }
+        if req.headers.iter().any(|header| header.value.contains("{{secret:"))
+            && let Err(error) = self.require(Capability::Secrets)
+        {
+            return Ok(Err(error));
+        }
+        let request = crate::WebSocketRequest {
+            url: req.url,
+            headers: req.headers.into_iter().map(|header| (header.name, header.value)).collect(),
+            subprotocol: req.subprotocol,
+        };
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self.host.websocket_connect(&root, request).map_err(to_wit))
+    }
+
+    fn websocket_send(&mut self, project: Resource<ProjectRes>, connection: u64, bytes: Vec<u8>) -> Fallible<()> {
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self.host.websocket_send(&root, connection, bytes).map_err(to_wit))
+    }
+
+    fn websocket_drain(
+        &mut self,
+        project: Resource<ProjectRes>,
+        connection: u64,
+        limit: u32,
+    ) -> Fallible<net::WebsocketBatch> {
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self
+            .host
+            .websocket_drain(&root, connection, limit as usize)
+            .map(|batch| net::WebsocketBatch { messages: batch.messages, closed: batch.closed })
+            .map_err(to_wit))
+    }
+
+    fn websocket_close(&mut self, connection: u64) -> wasmtime::Result<()> {
+        self.host.websocket_close(connection);
+        Ok(())
     }
 }
 

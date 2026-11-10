@@ -7,6 +7,7 @@ use crate::types::*;
 #[cfg(target_arch = "wasm32")]
 mod imp {
     //! Calls through the `openidea:plugin@1.0.0` world.
+    use super::{WebSocketBatch, WebSocketRequest};
     use crate::bindings::openidea::plugin as wit;
     use crate::types::*;
 
@@ -637,6 +638,33 @@ mod imp {
             .map_err(error)
     }
 
+    pub fn websocket_connect(project: &ProjectRes, req: &WebSocketRequest) -> Result<u64, Error> {
+        let request = wit::net::WebsocketRequest {
+            url: req.url.clone(),
+            headers: req
+                .headers
+                .iter()
+                .map(|(name, value)| wit::net::Header { name: name.clone(), value: value.clone() })
+                .collect(),
+            subprotocol: req.subprotocol.clone(),
+        };
+        wit::net::websocket_connect(project, &request).map_err(error)
+    }
+
+    pub fn websocket_send(project: &ProjectRes, connection: u64, bytes: &[u8]) -> Result<(), Error> {
+        wit::net::websocket_send(project, connection, bytes).map_err(error)
+    }
+
+    pub fn websocket_drain(project: &ProjectRes, connection: u64, limit: u32) -> Result<WebSocketBatch, Error> {
+        wit::net::websocket_drain(project, connection, limit)
+            .map(|batch| WebSocketBatch { messages: batch.messages, closed: batch.closed })
+            .map_err(error)
+    }
+
+    pub fn websocket_close(connection: u64) {
+        wit::net::websocket_close(connection)
+    }
+
     pub fn secret_set(name: &str, value: &str) -> Result<(), Error> {
         wit::secrets::set(name, value).map_err(error)
     }
@@ -1123,6 +1151,45 @@ pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error
 /// `secrets`). `Error::Cancelled` when the call was superseded.
 pub fn fetch(request: &HttpRequest) -> Result<HttpResponse, Error> {
     imp::fetch(request)
+}
+
+/// A host-owned background WebSocket. Dropping it closes the connection.
+pub struct WebSocket {
+    id: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WebSocketRequest {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub subprotocol: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WebSocketBatch {
+    pub messages: Vec<Vec<u8>>,
+    pub closed: bool,
+}
+
+impl WebSocket {
+    pub fn connect(project: &Project, request: &WebSocketRequest) -> Result<Self, Error> {
+        imp::websocket_connect(&project.inner, request).map(|id| Self { id })
+    }
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+    pub fn send(&self, project: &Project, bytes: &[u8]) -> Result<(), Error> {
+        imp::websocket_send(&project.inner, self.id, bytes)
+    }
+    pub fn drain(&self, project: &Project, limit: u32) -> Result<WebSocketBatch, Error> {
+        imp::websocket_drain(&project.inner, self.id, limit)
+    }
+}
+
+impl Drop for WebSocket {
+    fn drop(&mut self) {
+        imp::websocket_close(self.id)
+    }
 }
 
 /// Whether the user stored secret `name` (declared under `[[contributes.secrets]]`).

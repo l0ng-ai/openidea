@@ -43,6 +43,7 @@ interface diagnostics {
 /// HTTPS with `net:<host>`; unencrypted HTTP with `net.http:<host>`.
 interface net {
     use types.{error};
+    use workspace.{project};
 
     record header {
         name: string,
@@ -69,9 +70,30 @@ interface net {
         body: list<u8>,
     }
 
+    record websocket-request {
+        /// `wss://` requires `net:<host>`; loopback `ws://` is allowed for tests.
+        url: string,
+        /// Secret placeholders are expanded by the host as for HTTP requests.
+        headers: list<header>,
+        subprotocol: string,
+    }
+
+    record websocket-batch {
+        messages: list<list<u8>>,
+        /// The transport has ended. Any returned messages are still valid and
+        /// this connection is removed after this final drain.
+        closed: bool,
+    }
+
     /// Fails with `denied` for a host the plugin may not reach, `cancelled`
     /// when a newer request replaced the call or the user cancelled.
     fetch: func(req: request) -> result<response, error>;
+    /// The handle belongs to this plugin and project; another project cannot
+    /// send through or drain it.
+    websocket-connect: func(project: borrow<project>, req: websocket-request) -> result<u64, error>;
+    websocket-send: func(project: borrow<project>, connection: u64, bytes: list<u8>) -> result<_, error>;
+    websocket-drain: func(project: borrow<project>, connection: u64, limit: u32) -> result<websocket-batch, error>;
+    websocket-close: func(connection: u64);
 }
 
 /// Secrets the user stored for the plugin (Settings › Plugins, kept in the

@@ -155,6 +155,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::TaskProgress { .. }
             | PluginEvent::TaskEnded { .. }
             | PluginEvent::SubscriptionsChanged
+            | PluginEvent::WebsocketReady { .. }
             | PluginEvent::ViewChanged { .. }
             | PluginEvent::ViewMessage { .. }
             | PluginEvent::OpenTerminal { .. }
