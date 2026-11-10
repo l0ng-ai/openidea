@@ -1,4 +1,13 @@
 {
+  "Add Environment File": "Add Environment File",
+  "Convert to cURL and Copy": "Convert to cURL and Copy",
+  "Add Environment to Public File": "Add Environment to Public File",
+  "Add Environment to Private File": "Add Environment to Private File",
+  "Opens http-client.env.json for this request file, creating it if missing": "Opens http-client.env.json for this request file, creating it if missing",
+  "Opens http-client.private.env.json for this request file, creating it if missing": "Opens http-client.private.env.json for this request file, creating it if missing",
+  "Cannot convert the request to cURL": "Cannot convert the request to cURL",
+  "Cannot create the environment file": "Cannot create the environment file",
+  "The request was copied as a cURL command": "The request was copied as a cURL command",
   "Generate Sources and Update Folders For All Projects": "Generate Sources and Update Folders For All Projects",
   "Generate Sources and Update Folders": "Generate Sources and Update Folders",
   "Runs generate-sources, then reloads the Maven projects so generated folders become source folders": "Runs generate-sources, then reloads the Maven projects so generated folders become source folders",

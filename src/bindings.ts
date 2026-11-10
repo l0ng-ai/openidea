@@ -1379,6 +1379,18 @@ export const commands = {
 	 *  the exchange in the response history. Cancel with `cancel_request(request)`.
 	 */
 	httpExecute: (request: RequestId, path: string | null, text: string, index: number, env: string | null) => typedError<HttpExchange, IdeError>(__TAURI_INVOKE("http_execute", { request, path, text, index, env })),
+	/**
+	 *  Convert to cURL and Copy: request `index` of `text` (the editor buffer of `path`), with
+	 *  the variables of `env` substituted, as a cURL command.
+	 */
+	httpCurl: (path: string | null, text: string, index: number, env: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("http_curl", { path, text, index, env })),
+	/**  A pasted `curl …` command as `.http` request text; `None` when it isn't one. */
+	httpFromCurl: (command: string) => __TAURI_INVOKE<string | null>("http_from_curl", { command }),
+	/**
+	 *  The environment file for the request file `path` (`is_private`: the private one): the nearest
+	 *  existing one, else a new one next to it.
+	 */
+	httpEnvironmentFile: (path: IpcPath, isPrivate: boolean) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("http_environment_file", { path, isPrivate })),
 	httpHistory: () => typedError<HttpHistoryEntry[], IdeError>(__TAURI_INVOKE("http_history")),
 	httpHistoryGet: (id: string) => typedError<HttpExchange, IdeError>(__TAURI_INVOKE("http_history_get", { id })),
 	httpHistoryClear: () => typedError<null, IdeError>(__TAURI_INVOKE("http_history_clear")),
