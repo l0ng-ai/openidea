@@ -761,7 +761,7 @@ impl workspace::HostProject for StoreData {
             return Ok(Err(too_much_to_write(&path)));
         }
         let root = self.table.get(&this)?.root.clone();
-        let real = match sandbox::resolve_new_in_root(&root, &path) {
+        let real = match sandbox::resolve_writable_in_root(&root, &path) {
             Ok(real) => real,
             Err(e) => return Ok(Err(wit::Error::Invalid(e))),
         };
