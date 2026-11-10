@@ -1112,6 +1112,8 @@ impl PluginHost {
         if !self.state.lock().disabled.contains(id) {
             self.start(&plugin);
         }
+        // Plugins that need this one follow it: running again, or blocked while it can't run.
+        self.settle_dependents(id);
         self.changed();
         self.info_of(id)
     }
@@ -1132,6 +1134,8 @@ impl PluginHost {
         if !self.state.lock().disabled.contains(id) {
             self.start(&plugin);
         }
+        // Plugins that need this one follow it: running again, or blocked while it can't run.
+        self.settle_dependents(id);
         self.changed();
         self.info_of(id)
     }
@@ -1167,6 +1171,8 @@ impl PluginHost {
         if !self.state.lock().disabled.contains(id) {
             self.start(&plugin);
         }
+        // Plugins that need this one follow it: running again, or blocked while it can't run.
+        self.settle_dependents(id);
         self.changed();
         self.info_of(id)
     }
@@ -1238,6 +1244,8 @@ impl PluginHost {
         if !self.state.lock().disabled.contains(id) {
             self.start(&plugin);
         }
+        // Plugins that need this one follow it: running again, or blocked while it can't run.
+        self.settle_dependents(id);
         self.changed();
         self.info_of(id)
     }

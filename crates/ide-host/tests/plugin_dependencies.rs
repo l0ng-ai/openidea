@@ -264,3 +264,21 @@ fn the_owner_hears_that_contributions_changed() {
     let other = f.info("test.ext-contributor");
     assert_eq!(other.stats.activations, 0);
 }
+
+#[test]
+fn a_dependent_follows_its_dependency_through_permission_changes() {
+    let f = Fixture::new();
+    f.install_owner("0.1.0").unwrap();
+    f.contributor().unwrap();
+    assert_eq!(f.info("test.ext-contributor").status, PluginStatus::Static);
+
+    // Revoking a permission the owner requires stops it, and what needs it with it.
+    f.host.set_capability(OWNER, "storage", false).unwrap();
+    assert_ne!(f.info(OWNER).status, PluginStatus::Active);
+    assert_eq!(f.info("test.ext-contributor").status, PluginStatus::Blocked);
+
+    // Granting it again starts both, without touching the dependent.
+    f.host.set_capability(OWNER, "storage", true).unwrap();
+    assert_eq!(f.info("test.ext-contributor").status, PluginStatus::Static);
+    assert!(f.run(OWNER, "dump", None).unwrap().unwrap().contains("from-contributor"));
+}
