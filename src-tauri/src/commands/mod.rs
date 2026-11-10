@@ -337,6 +337,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_edit_remote,
         vcs::vcs_worktrees,
         vcs::vcs_add_worktree,
+        vcs::vcs_move_worktree,
         vcs::vcs_remove_worktree,
         vcs::vcs_diff_with_worktree,
         vcs::vcs_compare_scope,

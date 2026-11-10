@@ -25,6 +25,18 @@ export function worktreeContainsProject(path: string, projectRoot: string | null
   return project === worktree || project.startsWith(worktree.endsWith("/") ? worktree : worktree + "/");
 }
 
+/**
+ * Where Move Worktree… puts the worktree at `path` when `folder` is chosen: `folder` itself when
+ * it is named like the worktree's folder, otherwise the worktree's folder inside `folder`.
+ */
+export function worktreeMoveTarget(path: string, folder: string): string {
+  const name = pathKey(path).split("/").pop() ?? "";
+  const target = folder.replace(/[\\/]+$/, "") || folder;
+  if (pathKey(target).split("/").pop() === name) return target;
+  const sep = target.includes("\\") && !target.includes("/") ? "\\" : "/";
+  return target.endsWith(sep) ? target + name : `${target}${sep}${name}`;
+}
+
 /** The worktrees of one repository, loaded from one of its roots. */
 export interface RepoWorktrees {
   /** A VCS root of the repository the query ran from. */

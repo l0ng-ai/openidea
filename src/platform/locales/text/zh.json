@@ -1,4 +1,8 @@
 {
+  "Move Worktree": "移动工作树",
+  "Move Worktree…": "移动工作树…",
+  "Move the worktree at {path} to {to}?": "是否将位于 {path} 的工作树移动到 {to}？",
+  "Cannot move a worktree containing the open project.": "不能移动包含当前打开项目的工作树。",
   "Add Environment File": "添加环境文件",
   "Convert to cURL and Copy": "转换为 cURL 并复制",
   "Add Environment to Public File": "将环境添加到公共文件",
