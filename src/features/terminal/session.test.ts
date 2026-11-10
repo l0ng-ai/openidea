@@ -276,6 +276,40 @@ describe("terminal font zoom", () => {
     useProject.setState({ settings: null });
   });
 
+  const wheel = (host: HTMLElement, init: WheelEventInit) => {
+    const event = new WheelEvent("wheel", { bubbles: true, cancelable: true, ...init });
+    host.dispatchEvent(event);
+    return event;
+  };
+
+  it("changes the font size with Ctrl+wheel when the editor's wheel zoom is on", () => {
+    useProject.setState({
+      settings: { terminal: { useEditorFont: false, fontSize: 14 }, editor: { general: { wheelZoom: true } } },
+    } as never);
+    syncTerminalProject("/wheel-zoom");
+    const session = getSession(newTab("/wheel-zoom").session)!;
+    const up = wheel(session.host, { ctrlKey: true, deltaY: -100 });
+    expect(up.defaultPrevented).toBe(true);
+    expect(session.term.options.fontSize).toBe(15);
+    wheel(session.host, { metaKey: true, deltaY: 100 });
+    wheel(session.host, { ctrlKey: true, deltaY: 100 });
+    expect(session.term.options.fontSize).toBe(13);
+    const plain = wheel(session.host, { deltaY: -100 });
+    expect(plain.defaultPrevented).toBe(false);
+    expect(session.term.options.fontSize).toBe(13);
+    syncTerminalProject(null);
+  });
+
+  it("leaves Ctrl+wheel to the terminal when the editor's wheel zoom is off", () => {
+    useProject.setState({ settings: { terminal: { useEditorFont: false, fontSize: 14 } } } as never);
+    syncTerminalProject("/wheel-off");
+    const session = getSession(newTab("/wheel-off").session)!;
+    const event = wheel(session.host, { ctrlKey: true, deltaY: -100 });
+    expect(event.defaultPrevented).toBe(false);
+    expect(session.term.options.fontSize).toBe(14);
+    syncTerminalProject(null);
+  });
+
   it("keeps the offset through settings, refit and moving splits; fresh splits and restores start at the base", () => {
     const settings = (fontSize: number) => {
       useProject.setState({ settings: { terminal: { useEditorFont: false, fontSize } } } as never);
