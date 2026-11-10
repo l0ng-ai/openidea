@@ -31,7 +31,7 @@ import type {
 import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { basename, relativeDir, useProject } from "@/platform/project";
-import { editorService, notifications, useEditorShown, type EditorInput } from "@/workbench/contributions";
+import { notifications, useEditorShown, type EditorInput } from "@/workbench/contributions";
 import {
   Button,
   Checkbox,
@@ -56,6 +56,7 @@ import {
 } from "@/ui";
 import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
+import { openDiff, withChain, type DiffData } from "@/features/vcs/diffInput";
 import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
 import {
@@ -2768,21 +2769,20 @@ function ChangesPane({
 
 /** Opens the diff of `path` between the task's start and now. */
 export async function openChangeDiff(task: AgentTask, path: string) {
-  const base = await call(commands.agentBaseText(task.id, path)).catch(() => null);
+  const changed = (useAgents.getState().changes.get(task.id) ?? []).map((change) => change.path);
+  const paths = changed.includes(path) ? changed : [path];
   const baseLabel = task.base ?? "Base";
   const right = task.isolation === "worktree" ? branchLabel(task.branch) : "Working tree";
-  await editorService().openInput(
-    {
-      kind: "diff",
-      key: `diff:agent:${task.id}:${path}`,
-      path,
-      data: {
-        path,
+  const diffs = await Promise.all(
+    paths.map(async (file): Promise<DiffData> => {
+      const base = await call(commands.agentBaseText(task.id, file)).catch(() => null);
+      return {
+        path: file,
         left: { type: "text", text: base ?? "", label: baseLabel },
-        right: { type: "file", path, label: right },
-        title: `${basename(path)} (${baseLabel} ↔ ${right})`,
-      },
-    },
-    { focus: true },
+        right: { type: "file", path: file, label: right },
+        title: `${basename(file)} (${baseLabel} ↔ ${right})`,
+      };
+    }),
   );
+  await openDiff(withChain(diffs, paths.indexOf(path)));
 }
