@@ -188,6 +188,8 @@ export const EDITOR_EXTRA_DEFAULTS = {
     signature: false,
     /** The file name before the path. */
     fileName: false,
+    /** The `path:line` after the name. */
+    path: true,
     /** Full paths outside the project (else `…`-truncated tails). */
     fullPath: false,
   },

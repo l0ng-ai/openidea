@@ -4339,6 +4339,7 @@
   "Row Details": "行内容",
   "Show signature preview": "显示签名预览",
   "Show file name": "显示文件名",
+  "Show path": "显示路径",
   "Show full paths outside the project": "项目外文件显示完整路径",
   "Choose Overriding Method of {name} ({count} found)": "选择 {name} 的重写方法（找到 {count} 个）",
   "Is implemented by {names}": "由 {names} 实现",

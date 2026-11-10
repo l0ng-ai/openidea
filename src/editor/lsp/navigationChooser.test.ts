@@ -1,7 +1,7 @@
 /**
  * Chooser rows (`locationItems`): lean `name  path:line` by default, like IDEA's
- * chooser; the signature preview, file name and full paths outside the project
- * come from Settings › Editor › Location Choosers.
+ * chooser; the signature preview, file name, path and full paths outside the
+ * project come from Settings › Editor › Location Choosers.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -62,10 +62,36 @@ describe("locationItems", () => {
     const line = "class _StatefulDataset(Base):";
     const path = "B:/Program/Open/torchitan/tests/unit_tests/test_data.py";
     readManyFileLines.mockResolvedValue(new Map([[path, ["", line]]]));
-    project({ signature: true, fileName: true, fullPath: true });
+    project({ signature: true, fileName: true, path: true, fullPath: true });
     const item = (await locationItems([target(path, line)]))[0]!;
     expect(item.detail).toBe(`${path.split("/").pop()} · ${path}:2`);
     expect(item.preview).toBe(line);
+  });
+
+  it("hides the path, keeping the file name, when the path is off", async () => {
+    const line = "class _StatefulDataset(Base):";
+    const path = "/p/src/mod.py";
+    readManyFileLines.mockResolvedValue(new Map([[path, ["", line]]]));
+    project({ fileName: true, path: false });
+    const item = (await locationItems([target(path, line)]))[0]!;
+    expect(item.detail).toBe("mod.py");
+  });
+
+  it("reduces index symbols to the container when the path is off", async () => {
+    project({ path: false });
+    const item = (
+      await locationItems([
+        {
+          path: "/p/src/mod.py",
+          uri: null,
+          range: { start: { line: 0, col: 0 }, end: { line: 0, col: 3 } },
+          name: "Configurable",
+          kind: "class" as never,
+          container: "config",
+        },
+      ])
+    )[0]!;
+    expect(item.detail).toBe("config");
   });
 
   it("keeps index symbols' container detail", async () => {

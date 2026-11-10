@@ -141,14 +141,14 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
   const root = useProject.getState().project?.root ?? "";
   const extras = editorPrefs().chooser;
   return locs.map((l, i) => {
-    const where = chooserWhere(root, l.path, l.range.start.line + 1, extras.fullPath);
+    const where = extras.path ? chooserWhere(root, l.path, l.range.start.line + 1, extras.fullPath) : "";
     const preview = extras.signature ? files.get(l.path)?.[l.range.start.line]?.trim() : undefined;
     // Index symbols (syntax fallback): "name  container · file:line", like IDEA's chooser.
     if (l.kind && l.name)
       return {
         id: `${i}`,
         label: l.name,
-        detail: l.container ? `${l.container} · ${where}` : where,
+        detail: [l.container, where].filter(Boolean).join(" · "),
         preview,
         symbol: l.kind,
         run: () => navigateTo(l),
@@ -158,7 +158,8 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
     return {
       id: `${i}`,
       label: name ?? basename(l.path),
-      detail: name && extras.fileName ? `${basename(l.path)} · ${where}` : where,
+      // The file name only duplicates the label when the name itself was found.
+      detail: [name && extras.fileName ? basename(l.path) : "", where].filter(Boolean).join(" · "),
       preview,
       icon: fileIconName(basename(l.path), l.path),
       run: () => navigateTo(l),

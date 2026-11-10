@@ -2390,6 +2390,8 @@ export type ChooserSettings = {
 	signature?: boolean,
 	/**  The file name before the path. */
 	fileName?: boolean,
+	/**  The `path:line` after the name. */
+	path?: boolean,
 	/**  Full paths outside the project (else `…`-truncated tails). */
 	fullPath?: boolean,
 };

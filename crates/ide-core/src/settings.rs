@@ -628,13 +628,15 @@ pub struct ChooserSettings {
     pub signature: bool,
     /// The file name before the path.
     pub file_name: bool,
+    /// The `path:line` after the name.
+    pub path: bool,
     /// Full paths outside the project (else `…`-truncated tails).
     pub full_path: bool,
 }
 
 impl Default for ChooserSettings {
     fn default() -> Self {
-        Self { signature: false, file_name: false, full_path: false }
+        Self { signature: false, file_name: false, path: true, full_path: false }
     }
 }
 
