@@ -12,6 +12,8 @@
 <p align="center">
   <a href="https://github.com/l0ng-ai/openidea/releases/latest"><b>Download</b></a>
   &nbsp;·&nbsp;
+  <a href="https://openidea.sh">Docs</a>
+  &nbsp;·&nbsp;
   <a href="#benchmark">Benchmark</a>
   &nbsp;·&nbsp;
   <a href="#plugins">Plugins</a>
@@ -56,7 +58,7 @@ themes, file icons and languages. They run as sandboxed WebAssembly components;
 themes, icon themes and languages need no code at all.
 
 Install them from Settings › Plugins, or start your own with
-`openidea-plugin new` — see [Writing OpenIDEA plugins](plugins/README.md) and
+`openidea-plugin new` — see [Writing OpenIDEA plugins](https://openidea.sh/en/plugins) and
 the [official plugins](plugins/official). The plugin API is still a preview.
 
 ## Community
