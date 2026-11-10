@@ -380,18 +380,23 @@
 .markdown :global(p:last-child) {
   margin-bottom: 0;
 }
+.markdown {
+  /* A tint of the text colour: reads as code on any background, and a selection over
+     it doesn't leave light boxes the way an opaque near-white fill does. */
+  --md-code-bg: color-mix(in srgb, var(--fg) 7%, transparent);
+}
 .markdown :global(code) {
   font-family: var(--font-mono);
   font-size: var(--fs-small);
-  padding: 0 4px;
+  padding: 0 2px;
   border-radius: 3px;
-  background: var(--bg-elev);
+  background: var(--md-code-bg);
 }
 .markdown :global(pre) {
   margin: 0 0 8px;
   padding: 8px 10px;
   border-radius: var(--radius-small);
-  background: var(--bg-elev);
+  background: var(--md-code-bg);
   overflow: auto;
 }
 .markdown :global(pre code) {
@@ -449,6 +454,9 @@
 .markdown :global(.mermaid-output) {
   overflow: hidden;
   text-align: center;
+  /* Node labels are drawing, not text: selecting across a reply skips them. */
+  -webkit-user-select: none;
+  user-select: none;
 }
 .markdown :global([data-mermaid-state="error"] > .mermaid-output) {
   margin-top: 6px;

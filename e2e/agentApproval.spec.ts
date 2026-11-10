@@ -109,8 +109,7 @@ for (const theme of ["dark", "light"] as const) {
             1,
           cardWidth: rect.width,
           available: bounds.width,
-          actionsVisible: getComputedStyle(reply.nextElementSibling!.querySelector('[class*="_messageActions_"]')!)
-            .opacity,
+          replyFooter: reply.nextElementSibling != null,
         };
       });
       expect(geometry.scroll).toBe(geometry.client);
@@ -124,8 +123,8 @@ for (const theme of ["dark", "light"] as const) {
       expect(geometry.userOnRight).toBe(true);
       expect(geometry.authorBeforeWork).toBe(true);
       expect(geometry.footerAligned).toBe(true);
-      // The last message stays actionable even while an approval waits.
-      expect(geometry.actionsVisible).toBe("1");
+      // The turn waits on the approval: its interim message has no footer yet.
+      expect(geometry.replyFooter).toBe(false);
       if (width === 760) expect(geometry.cardWidth).toBeGreaterThan(geometry.available * 0.8);
       await card.locator("pre").focus();
       for (const label of ["Allow Once", "Always Allow", "Decline", "Decline and Stop"]) {

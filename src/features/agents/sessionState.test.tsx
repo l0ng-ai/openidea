@@ -160,7 +160,8 @@ describe("conversation rows", () => {
     expect(author.parentElement?.nextElementSibling?.firstElementChild).toHaveClass(styles.agentMessage!);
     const quote = within(stream()).getAllByRole("button", { name: "Quote Reply" });
     const copy = within(stream()).getAllByRole("button", { name: "Copy Markdown" });
-    expect(quote).toHaveLength(3);
+    // One per turn: only a turn's final reply carries actions.
+    expect(quote).toHaveLength(2);
     for (const button of [...quote, ...copy]) {
       expect(button.textContent).toBe("");
       expect(button.querySelector("svg path")).not.toBeNull();
@@ -211,7 +212,7 @@ describe("conversation rows", () => {
     },
   );
 
-  it("anchors every agent footer with its time before the hover actions", async () => {
+  it("puts the time and hover actions under a turn's final reply only", async () => {
     useProject.setState({ settings: { agents: { foldTurns: false } } as never });
     backend.entries.set("A", [
       { type: "user", text: "Question", attachments: [], steered: false, sentMs: 1000, doneMs: 13000 },
@@ -222,16 +223,14 @@ describe("conversation rows", () => {
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Final reply");
-    const messages = stream().querySelectorAll(`.${styles.agentMessage}`);
-    expect(messages).toHaveLength(2);
-    for (const message of messages) {
-      const [card, footer] = message.children;
-      expect(card).toHaveClass(styles.agentCard!);
-      expect(footer).toHaveClass(styles.messageFooter!);
-      expect(footer?.firstElementChild).toHaveClass(styles.messageTime!);
-      expect(footer?.firstElementChild).toHaveTextContent("12s");
-      expect(footer?.lastElementChild).toHaveClass(styles.messageActions!);
-    }
+    const [first, last] = stream().querySelectorAll(`.${styles.agentMessage}`);
+    expect(first?.children).toHaveLength(1);
+    const [card, footer] = last!.children;
+    expect(card).toHaveClass(styles.agentCard!);
+    expect(footer).toHaveClass(styles.messageFooter!);
+    expect(footer?.firstElementChild).toHaveClass(styles.messageTime!);
+    expect(footer?.firstElementChild).toHaveTextContent("12s");
+    expect(footer?.lastElementChild).toHaveClass(styles.messageActions!);
     expect(stream().querySelector(`.${styles.userMessage} > .${styles.messageFooter}`)).not.toBeNull();
   });
 
@@ -310,6 +309,8 @@ describe("turn folding", () => {
     render(<SessionEditor input={input("A")} />);
     expect(await screen.findByText("Interim note")).toBeInTheDocument();
     expect(stream().querySelector(`.${styles.turnFold}`)).toBeNull();
+    // The turn isn't over: its latest message is no final reply yet.
+    expect(stream().querySelector(`.${styles.agentMessage} > .${styles.messageFooter}`)).toBeNull();
   });
 });
 

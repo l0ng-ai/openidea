@@ -1138,10 +1138,13 @@ function AgentMessage({
           actions={false}
         />
       </div>
-      <div className={styles.messageFooter}>
-        <MessageTime sentMs={time?.sentMs ?? null} doneMs={time?.doneMs ?? null} at="done" />
-        <ReplyActions text={text} task={task} reply={reply} turnCount={turnCount} />
-      </div>
+      {/* Only a turn's final reply carries its time and actions, once the turn has ended. */}
+      {reply && !(isBusy(task.status) && reply.turn === turnCount - 1) && (
+        <div className={styles.messageFooter}>
+          <MessageTime sentMs={time?.sentMs ?? null} doneMs={time?.doneMs ?? null} at="done" />
+          <ReplyActions text={text} task={task} reply={reply} turnCount={turnCount} />
+        </div>
+      )}
     </div>
   );
 }
