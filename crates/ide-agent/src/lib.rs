@@ -163,16 +163,25 @@ impl Shared {
                     let shared = self.clone();
                     // Keep the lookup alive if a composer unmounts while it is waiting.
                     self.runtime.spawn(async move {
-                        if let Ok((commands, options)) =
+                        if let Ok(found) =
                             native::claude::discover(spec.clone(), shared.paths.project_root.clone()).await
                         {
-                            let commands = config::commands_of(&json!({ "availableCommands": commands }), &spec.id);
-                            let options = config::options_of(&json!({ "configOptions": options }));
+                            let commands =
+                                config::commands_of(&json!({ "availableCommands": found.commands }), &spec.id);
+                            let options = config::options_of(&json!({ "configOptions": found.options }));
+                            let levels: Vec<_> = found
+                                .efforts
+                                .into_iter()
+                                .map(|(model, o)| {
+                                    let options = o.map(|o| config::options_of(&json!({ "configOptions": [o] })));
+                                    (model, options.unwrap_or_default())
+                                })
+                                .collect();
                             let _ = tokio::task::spawn_blocking(move || {
                                 // Notifies subscribers itself when the discovery
                                 // changed the cached config; unchanged results
                                 // stay silent.
-                                shared.remember_discovered(&spec.id, &options, &commands);
+                                shared.remember_discovered(&spec.id, &options, &commands, &levels);
                             })
                             .await;
                         }
@@ -193,6 +202,18 @@ impl Shared {
         self.known.lock().get(provider).is_some_and(|k| !k.config.is_empty())
     }
 
+    /// Whether the thinking levels of every model the agent offers are known (#1686).
+    fn knows_all_levels(&self, provider: &str) -> bool {
+        let cache = self.known.lock();
+        let Some(known) = cache.get(provider) else { return false };
+        known
+            .config
+            .iter()
+            .filter(|o| o.category.as_deref() == Some("model"))
+            .flat_map(|o| &o.values)
+            .all(|v| known.thought_levels.contains_key(&v.value))
+    }
+
     fn root_key(&self) -> String {
         self.paths.project_root.to_string_lossy().into_owned()
     }
@@ -205,11 +226,19 @@ impl Shared {
         commands: Option<&[AgentCommand]>,
         model: Option<&str>,
     ) {
-        self.remember_inner(provider, config, commands, model, false);
+        self.remember_inner(provider, config, commands, model, &[], false);
     }
 
-    fn remember_discovered(&self, provider: &str, config: &[AgentConfigOption], commands: &[AgentCommand]) {
-        self.remember_inner(provider, Some(config), Some(commands), model_of(config).as_deref(), true);
+    /// `levels`: each model's thinking-level options, so a new task offers them for any model
+    /// it picks (#1686). A session's report for a model wins over these.
+    fn remember_discovered(
+        &self,
+        provider: &str,
+        config: &[AgentConfigOption],
+        commands: &[AgentCommand],
+        levels: &[(String, Vec<AgentConfigOption>)],
+    ) {
+        self.remember_inner(provider, Some(config), Some(commands), model_of(config).as_deref(), levels, true);
     }
 
     fn remember_inner(
@@ -218,12 +247,19 @@ impl Shared {
         config: Option<&[AgentConfigOption]>,
         commands: Option<&[AgentCommand]>,
         model: Option<&str>,
+        discovered_levels: &[(String, Vec<AgentConfigOption>)],
         discovered: bool,
     ) {
         // Keep the update and its disk write ordered; a session report wins over discovery.
         let mut cache = self.known.lock();
         let known = cache.entry(provider.to_owned()).or_default();
         let mut changed = false;
+        for (model, levels) in discovered_levels {
+            if !known.thought_levels.contains_key(model) {
+                known.thought_levels.insert(model.clone(), levels.clone());
+                changed = true;
+            }
+        }
         if let Some(c) = config.filter(|_| !discovered || known.config.is_empty()) {
             if let Some(model) = model {
                 let levels: Vec<_> =
@@ -488,7 +524,7 @@ impl AgentManager {
         // merged without duplicating what `availableCommands` or the disk offer.
         let mut offered = offered;
         if task.is_none()
-            && (offered.is_empty() || !self.shared.has_config(&provider))
+            && (offered.is_empty() || !self.shared.has_config(&provider) || !self.shared.knows_all_levels(&provider))
             && let Some(spec) = self.shared.spec(&provider).filter(|s| s.driver == provider::Driver::Claude)
         {
             self.shared.fetch_settings(spec).await;

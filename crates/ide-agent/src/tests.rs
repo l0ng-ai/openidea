@@ -2521,16 +2521,41 @@ async fn session_settings_win_over_discovery_in_memory_and_on_disk() {
         let saved = options("saved", "low");
         let discovered = options("discovered", "high");
         if discovery_first {
-            mgr.shared.remember_discovered("claude", &discovered, &[]);
+            mgr.shared.remember_discovered("claude", &discovered, &[], &[]);
         }
         mgr.shared.remember("claude", Some(&saved), None, Some("saved"));
-        mgr.shared.remember_discovered("claude", &discovered, &[]);
+        mgr.shared.remember_discovered("claude", &discovered, &[], &[]);
         let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
         for mgr in [&mgr, &restored] {
             assert_eq!(model_of(&mgr.shared.known_config("claude")).as_deref(), Some("saved"));
             assert_eq!(mgr.shared.known.lock()["claude"].thought_levels["saved"], saved[1..]);
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovered_effort_levels_fill_models_no_session_has_reported() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let effort = |values: &[&str], current: &str| {
+        config::options_of(&json!({ "configOptions": [
+            { "id": "effort", "category": "thought_level", "type": "select", "currentValue": current,
+              "options": values.iter().map(|v| json!({ "value": v })).collect::<Vec<_>>() }
+        ] }))
+    };
+    let model = config::options_of(&json!({ "configOptions": [
+        { "id": "model", "category": "model", "type": "select", "currentValue": "sonnet",
+          "options": [{ "value": "sonnet" }, { "value": "opus" }] }
+    ] }));
+    // A session already reported sonnet's levels; discovery adds opus's.
+    let reported = [model.clone(), effort(&["low", "high"], "high")].concat();
+    mgr.shared.remember("claude", Some(&reported), None, Some("sonnet"));
+    let levels =
+        [("sonnet".to_owned(), effort(&["low"], "low")), ("opus".to_owned(), effort(&["low", "max"], "default"))];
+    mgr.shared.remember_discovered("claude", &model, &[], &levels);
+    let known = mgr.shared.known.lock();
+    assert_eq!(known["claude"].thought_levels["sonnet"], effort(&["low", "high"], "high"), "the session's report wins");
+    assert_eq!(known["claude"].thought_levels["opus"], effort(&["low", "max"], "default"));
 }
 
 #[test]
