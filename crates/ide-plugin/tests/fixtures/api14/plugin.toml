@@ -105,6 +105,10 @@ id = "search-text"
 title = "search-text"
 
 [[contributes.commands]]
+id = "read-bytes"
+title = "read-bytes"
+
+[[contributes.commands]]
 id = "problems"
 title = "problems"
 

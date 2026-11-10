@@ -489,6 +489,29 @@ fn read_file_is_confined_to_the_project() {
     assert_eq!(f.status("misbehave"), PluginStatus::Active);
 }
 
+/// `project.read-bytes` returns the exact bytes on disk, where `read-file`
+/// wants UTF-8, and follows `read-file`'s confinement rules.
+#[test]
+fn read_bytes_reads_the_project_file_exactly_and_stays_inside() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_pkg());
+    let binary = [0x25u8, 0x50, 0x44, 0x46, 0x00, 0xff, 0x1b, 0x7f];
+    std::fs::write(f.project.join("logo.bin"), binary).unwrap();
+    let hex = binary.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
+    assert_eq!(f.run("misbehave", "read-bytes", Some("logo.bin")).unwrap().unwrap(), format!("8 {hex}"));
+    let abs = f.project.join("logo.bin");
+    assert_eq!(f.run("misbehave", "read-bytes", Some(abs.to_str().unwrap())).unwrap().unwrap(), format!("8 {hex}"));
+    // The same refusal and not-found behaviour as `read-file`; like every
+    // refusal, it is the plugin's to handle: it keeps running.
+    let err = f.run("misbehave", "read-bytes", Some("../secret.txt")).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    let err = f.run("misbehave", "read-bytes", Some("src/missing.bin")).unwrap_err();
+    assert!(err.contains("not found"), "{err}");
+    let err = f.run("misbehave", "read-bytes", Some("src")).unwrap_err();
+    assert!(err.contains("not a file"), "{err}");
+    assert_eq!(f.status("misbehave"), PluginStatus::Active);
+}
+
 /// `fs.read` reaches the granted paths and nothing else, through the real
 /// component: the same checks the runtime makes, against a real file system.
 #[test]
@@ -5764,6 +5787,7 @@ fn api14_denies_new_privileges_and_requires_an_invoking_window() {
         ("open-editors", "", "editor.read"),
         ("open-editor", "a.txt", "project.read"),
         ("search-text", "needle", "project.read"),
+        ("read-bytes", "a.txt", "project.read"),
         ("problems", "", "project.read"),
         ("decorations", "a.txt", "project.read"),
         ("clear-decorations", "", "project.read"),

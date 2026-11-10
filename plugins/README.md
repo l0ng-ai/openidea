@@ -289,28 +289,28 @@ installing (or when a new version asks for more). Low-risk capabilities are
 listed; high-risk ones are called out as equivalent to running code on the
 machine. Users can revoke optional capabilities in Settings › Plugins.
 
-| Capability          | Risk   | Unlocks today                                                                                                                                                      |
-| ------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ide.commands`      | high   | Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing. API 1.4; declared own commands are exempt. |
-| `database.sources`  | medium | API 1.4: manage only the plugin's own project database sources, write their secure credentials and request connection; trusted projects only.                      |
-| `project.read`      | low    | `Project::root`, `read_file`, `find_files`, `symbols`, `search_text`, `host::projects`, `publish_diagnostics`, `problems`, editor opening and decorations          |
-| `project.write`     | medium | `Project::write_file` — creates and replaces text files inside the open projects                                                                                   |
-| `fs.read:<path>`    | high   | `host::fs::read_file`, `read_bytes`, `stat`, `read_dir` — files outside the projects, under the grant's directory                                                  |
-| `fs.write:<path>`   | high   | `host::fs::write_file`, `write_bytes` — files under that path; doesn't imply reading                                                                               |
-| `editor.read`       | low    | `TextEditor::document`, `selections`, `host::open_editors`                                                                                                         |
-| `editor.write`      | medium | `TextEditor::apply_edits`                                                                                                                                          |
-| `vcs.read`          | low    | `Project::vcs_status`, `vcs_remotes`, `vcs_log`, `vcs_blame`, `vcs_diff` (new reads require trust), `host::pending_commit`, before-commit checks                   |
-| `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only), `host::set_commit_message`                                                                                           |
-| `storage`           | low    | `host::storage` (64 MiB per plugin, counting UTF-8 bytes of keys and values)                                                                                       |
-| `events`            | low    | file opened/saved, editor focused, repository changed events                                                                                                       |
-| `events.input`      | medium | `action-performed` and `input-mode-changed` events                                                                                                                 |
-| `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                                                                                     |
-| `net:<host>`        | medium | `host::fetch` over HTTPS (also loopback HTTP); `*.example.com` matches subdomains                                                                                  |
-| `net:ask`           | medium | Ask the user at the first request to an HTTPS (or loopback) host that is not declared; one answer per host, revocable; API 1.5                                     |
-| `net.http:<host>`   | medium | Unencrypted HTTP to that host; API 1.4, same wildcard rules as `net:`                                                                                              |
-| `ipc:<path>`        | high   | Local Unix sockets or Windows named pipes on the project machine; API 1.4                                                                                          |
-| `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`, `secret_set`, `secret_delete`                                                                       |
-| `clipboard`         | medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views                                                                                          |
+| Capability          | Risk   | Unlocks today                                                                                                                                                           |
+| ------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide.commands`      | high   | Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing. API 1.4; declared own commands are exempt.      |
+| `database.sources`  | medium | API 1.4: manage only the plugin's own project database sources, write their secure credentials and request connection; trusted projects only.                           |
+| `project.read`      | low    | `Project::root`, `read_file`, `read_bytes`, `find_files`, `symbols`, `search_text`, `host::projects`, `publish_diagnostics`, `problems`, editor opening and decorations |
+| `project.write`     | medium | `Project::write_file` — creates and replaces text files inside the open projects                                                                                        |
+| `fs.read:<path>`    | high   | `host::fs::read_file`, `read_bytes`, `stat`, `read_dir` — files outside the projects, under the grant's directory                                                       |
+| `fs.write:<path>`   | high   | `host::fs::write_file`, `write_bytes` — files under that path; doesn't imply reading                                                                                    |
+| `editor.read`       | low    | `TextEditor::document`, `selections`, `host::open_editors`                                                                                                              |
+| `editor.write`      | medium | `TextEditor::apply_edits`                                                                                                                                               |
+| `vcs.read`          | low    | `Project::vcs_status`, `vcs_remotes`, `vcs_log`, `vcs_blame`, `vcs_diff` (new reads require trust), `host::pending_commit`, before-commit checks                        |
+| `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only), `host::set_commit_message`                                                                                                |
+| `storage`           | low    | `host::storage` (64 MiB per plugin, counting UTF-8 bytes of keys and values)                                                                                            |
+| `events`            | low    | file opened/saved, editor focused, repository changed events                                                                                                            |
+| `events.input`      | medium | `action-performed` and `input-mode-changed` events                                                                                                                      |
+| `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                                                                                          |
+| `net:<host>`        | medium | `host::fetch` over HTTPS (also loopback HTTP); `*.example.com` matches subdomains                                                                                       |
+| `net:ask`           | medium | Ask the user at the first request to an HTTPS (or loopback) host that is not declared; one answer per host, revocable; API 1.5                                          |
+| `net.http:<host>`   | medium | Unencrypted HTTP to that host; API 1.4, same wildcard rules as `net:`                                                                                                   |
+| `ipc:<path>`        | high   | Local Unix sockets or Windows named pipes on the project machine; API 1.4                                                                                               |
+| `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`, `secret_set`, `secret_delete`                                                                            |
+| `clipboard`         | medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views                                                                                               |
 
 `process:` capabilities are also derived from what the contributions start: a
 language's `language-servers` and `debugger` commands and a run detector's
@@ -377,6 +377,10 @@ working. New in 1.5:
 - [Permissions](#capabilities): `net:ask` lets a plugin connect to HTTPS hosts
   one at a time, asking at first use instead of listing every host
   (see _[Network and secrets](#network-and-secrets)_).
+- [Reading bytes](#reading-a-files-bytes): `Project::read_bytes` reads a file
+  inside the project as its exact bytes (PDF, images, archives), with the same
+  rules as `read_file`, and `document.bytes()` gives a web custom editor the
+  bytes of the file it was opened on, without plugin-side code.
 
 ### API 1.4
 
@@ -522,6 +526,7 @@ then run `openidea-plugin check`.
 | `Project::vcs_diff(path, against)`                                                                             | `vcs.diff`                                 | API 1.4: disk working tree against HEAD/revision, optionally one file. None outside Git; fails above 4 MiB. Requires `vcs.read` and trust.                                                                                                                                                                                                                |
 | `TextEditor::apply_edits(version, edits)`                                                                      | `editor.text-editor.apply-edits`           | One undoable change, only if the document is still at `version` — else `Error::Stale` and nothing changes. `transform_selections` retries once.                                                                                                                                                                                                           |
 | `Project::root()`, `read_file(path)`                                                                           | `workspace.project`                        | Absolute or project-relative; `..`/symlinks escaping the root are rejected; UTF-8 only, ≤ 16 MiB; unsaved editor contents win; a missing path is `Error::NotFound`.                                                                                                                                                                                       |
+| `Project::read_bytes(path)`                                                                                    | `workspace.project.read-bytes`             | API 1.5: the exact bytes of a file inside the project (binary content is the point), at most 16 MiB, the file on disk. Same paths and `Error::NotFound` as `read_file`.                                                                                                                                                                                   |
 | `Project::exists(path)`, `stat(path)`                                                                          | `workspace.project`                        | `exists` covers files and directories, hidden and ignored included, without reading content; `stat` gives kind, size and modified time (`Error::NotFound` for a missing path).                                                                                                                                                                            |
 | `host::projects()`                                                                                             | `workspace.projects`                       | Every open project (for scheduled work without a window).                                                                                                                                                                                                                                                                                                 |
 | `Project::vcs_status()`, `vcs_remotes()`, `vcs_fetch()`                                                        | `vcs`                                      | `vcs_remotes` returns `(name, url)` pairs; fetch runs git, so only in trusted projects (call it inside a task).                                                                                                                                                                                                                                           |
@@ -597,6 +602,26 @@ plugin ends its children, as does closing the window that started them.
 
 `run-command` receives an optional string argument: `executeAction("plugin.<plugin id>.<command id>", "arg")`
 from another feature, or nothing when run from Search Everywhere / a shortcut. `ctx.selected_paths()` lists the files and folders a Project view or editor tab menu ran the command on (the argument is the first of them); it is empty otherwise. No capability is needed.
+
+### Reading a file's bytes
+
+`read_file` decodes: a PDF, an image or an archive is not valid UTF-8 and fails,
+and what a web custom editor sees through `document.get()` is text only. API 1.5
+adds the two ways to the bytes:
+
+- `Project::read_bytes(path)` (needs `project.read`) returns the exact bytes of
+  a file inside the project, at most 16 MiB like `fs::read_bytes`. The paths and
+  errors follow `read_file` (absolute or project-relative, paths leaving the
+  root are refused, a missing path is `Error::NotFound`); the file is read from
+  disk, so unsaved editor contents don't apply.
+- `document.bytes()` in a web custom editor's `window.openidea` resolves with
+  the bytes of the file the editor was opened on (at most 64 MiB, like
+  `openFile()`), so the page can render it without the plugin reading the file
+  for it. Read-only: a binary document has no text to edit.
+
+```rust
+let bytes = project.read_bytes(&doc.path)?;  // the PDF's exact bytes
+```
 
 ### Database sources (API 1.4)
 
@@ -1511,6 +1536,7 @@ in `html` bodies is there before the page's scripts run, plus:
 | `window.openidea`                    | What it does                                                                                                                                                       |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `document.get()`                     | `{ version, text, readOnly, name }` of the custom editor's document (`name`: the file's, without its directory; none in a tool window)                             |
+| `document.bytes()`                   | The bytes of the file the editor was opened on (at most 64 MiB), so a page can render a binary document itself. Read-only; resolves like `document.get()` does     |
 | `document.edit(version, edits)`      | Applies `[{ from, to, insert }]` (UTF-16 offsets) as one change of the document's undo history; rejects with `stale` when not at `version`; resolves `{ version }` |
 | `document.replace(version, text)`    | The same with the whole text (sent as the smallest edit)                                                                                                           |
 | `document.onChange(fn)`              | `{ version, text }` after changes made elsewhere: the text editor, Undo, another window                                                                            |

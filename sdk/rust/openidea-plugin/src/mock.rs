@@ -86,6 +86,8 @@ struct State {
     other_projects: Vec<String>,
     symbols: BTreeMap<String, Vec<SymbolInfo>>,
     files: BTreeMap<String, String>,
+    /// The same, for what `read_bytes` returns (binary content included).
+    file_bytes: BTreeMap<String, Vec<u8>>,
 
     /// Files outside every project, for `fs.read` (absolute paths).
     external: BTreeMap<String, String>,
@@ -284,6 +286,12 @@ impl MockHost {
     /// A project file `read_file` can return (project-relative or absolute path).
     pub fn add_file(&self, path: &str, text: &str) {
         self.state.borrow_mut().files.insert(path.to_owned(), text.to_owned());
+    }
+
+    /// A project file `read_bytes` can return (project-relative or absolute
+    /// path): the bytes stand even where `read_file` would refuse them.
+    pub fn add_file_bytes(&self, path: &str, bytes: &[u8]) {
+        self.state.borrow_mut().file_bytes.insert(path.to_owned(), bytes.to_vec());
     }
 
     /// A project directory `exists` and `stat` report (project-relative or
@@ -1128,6 +1136,20 @@ pub mod current {
                 return Ok(e.text.clone());
             }
             s.files.get(rel).or_else(|| s.files.get(path)).cloned().ok_or_else(|| Error::NotFound(path.into()))
+        })
+    }
+
+    pub fn project_read_bytes(p: &ProjectRes, path: &str) -> Result<Vec<u8>, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let rel = rel_in_root(p, path)?;
+            // The bytes on disk: an open editor's text does not apply.
+            s.file_bytes
+                .get(rel)
+                .or_else(|| s.file_bytes.get(path))
+                .cloned()
+                .or_else(|| s.files.get(rel).or_else(|| s.files.get(path)).map(|t| t.as_bytes().to_vec()))
+                .ok_or_else(|| Error::NotFound(path.into()))
         })
     }
 
@@ -2298,11 +2320,18 @@ mod tests {
     fn records_and_enforces() {
         let mock = MockHost::install();
         mock.add_file("src/a.txt", "hello");
+        mock.add_file_bytes("src/a.bin", &[0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
         let ctx = mock.invocation();
         let project = ctx.project().unwrap();
         assert_eq!(project.read_file("/project/src/a.txt").unwrap(), "hello");
         assert_eq!(project.read_file("src/a.txt").unwrap(), "hello");
         assert!(matches!(project.read_file("../etc/passwd"), Err(Error::Invalid(_))));
+        // The exact bytes, root-relative or absolute; escape and missing behave like read_file.
+        assert_eq!(project.read_bytes("src/a.bin").unwrap(), [0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
+        assert_eq!(project.read_bytes("/project/src/a.bin").unwrap(), [0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
+        assert_eq!(project.read_bytes("src/a.txt").unwrap(), b"hello");
+        assert!(matches!(project.read_bytes("../etc/passwd"), Err(Error::Invalid(_))));
+        assert!(matches!(project.read_bytes("src/missing.bin"), Err(Error::NotFound(_))));
         host::notify(NotificationLevel::Info, "t", "b");
         assert_eq!(mock.notifications()[0].title, "t");
         host::storage::set("k", "v").unwrap();
