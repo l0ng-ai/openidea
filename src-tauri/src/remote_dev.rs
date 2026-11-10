@@ -73,9 +73,13 @@ pub struct Connection {
     session: Option<Arc<ide_ssh::Session>>,
     /// How to reach a dev container's ports; `None` for SSH and WSL.
     exec: Option<Arc<ide_remote::container_tunnel::Exec>>,
-    /// Remote ports forwarded to this machine (Ports tool window), by remote port.
-    forwards: Mutex<Vec<(u16, Forward)>>,
+    /// Remote ports forwarded to this machine (Ports tool window), by host (`None`: the remote
+    /// host itself) and remote port.
+    forwards: Mutex<Vec<(ForwardKey, Forward)>>,
 }
+
+/// A forwarded port's host (`None`: the remote host itself) and remote port.
+type ForwardKey = (Option<String>, u16);
 
 /// A forwarded port: through the SSH connection, or `docker exec` in a dev container.
 enum Forward {
@@ -673,10 +677,17 @@ pub fn remote_current(window: Window, state: State<'_, AppState>) -> Option<Remo
 pub struct ForwardedPort {
     pub remote_port: u16,
     pub local_port: u16,
+    /// The host the port belongs to, as a dev container reaches it (a Compose service from
+    /// `forwardPorts`); `None` for the remote host itself.
+    pub host: Option<String>,
 }
 
 fn forwarded(c: &Connection) -> Vec<ForwardedPort> {
-    c.forwards.lock().iter().map(|(remote, t)| ForwardedPort { remote_port: *remote, local_port: t.port() }).collect()
+    c.forwards
+        .lock()
+        .iter()
+        .map(|((host, remote), t)| ForwardedPort { remote_port: *remote, local_port: t.port(), host: host.clone() })
+        .collect()
 }
 
 fn connection(window: &Window, state: &AppState) -> IdeResult<Arc<Connection>> {
@@ -706,31 +717,33 @@ pub async fn remote_forward_port(
         return Err(IdeError::invalid("Port must be between 1 and 65535"));
     }
     let c = connection(&window, &state)?;
-    if let Some(p) = forwarded(&c).into_iter().find(|p| p.remote_port == remote_port) {
+    if let Some(p) = forwarded(&c).into_iter().find(|p| p.host.is_none() && p.remote_port == remote_port) {
         return Ok(p);
     }
-    let tunnel = open_forward(&c, remote_port).await?;
-    let port = ForwardedPort { remote_port, local_port: tunnel.port() };
+    let tunnel = open_forward(&c, None, remote_port).await?;
+    let port = ForwardedPort { remote_port, local_port: tunnel.port(), host: None };
     let mut forwards = c.forwards.lock();
     if c.peer.is_closed() {
         return Err(IdeError::cancelled());
     }
-    if let Some(existing) = forwards.iter().find(|(remote, _)| *remote == remote_port) {
-        return Ok(ForwardedPort { remote_port, local_port: existing.1.port() });
+    if let Some(existing) = forwards.iter().find(|(key, _)| *key == (None, remote_port)) {
+        return Ok(ForwardedPort { remote_port, local_port: existing.1.port(), host: None });
     }
-    forwards.push((remote_port, tunnel));
+    forwards.push(((None, remote_port), tunnel));
     Ok(port)
 }
 
-/// Forwards `remote_port` to the same local port when it is free, else to a free one.
-async fn open_forward(c: &Connection, remote_port: u16) -> IdeResult<Forward> {
-    if let Some(session) = c.session.clone() {
+/// Forwards `remote_port` of `host` (`None`: the remote host itself) to the same local port
+/// when it is free, else to a free one. Another host is reached from a dev container only.
+async fn open_forward(c: &Connection, host: Option<&str>, remote_port: u16) -> IdeResult<Forward> {
+    if let (Some(session), None) = (c.session.clone(), host) {
         let tunnel = ide_ssh::Tunnel::listen_on(session, Some(remote_port), "localhost", remote_port).await?;
         return Ok(Forward::Ssh(tunnel));
     }
     if let Some(exec) = c.exec.clone() {
+        let host = host.unwrap_or("localhost");
         return Ok(Forward::Container(
-            ide_remote::container_tunnel::Tunnel::listen(exec, remote_port, remote_port).await?,
+            ide_remote::container_tunnel::Tunnel::listen(exec, remote_port, host, remote_port).await?,
         ));
     }
     Err(IdeError::unavailable("Forwarding ports is not supported in a WSL project yet"))
@@ -745,7 +758,13 @@ async fn forward_configured_ports(c: &Connection, folder: &str, config: &str) {
             "" => ide_workspace::devcontainer::find(&local),
             config => Some(local.join(config)),
         };
-        path.map(|path| ide_workspace::devcontainer::load_file(&path).map(|c| c.forward_ports)).transpose()
+        path.map(|path| {
+            ide_workspace::devcontainer::load_file(&path).map(|c| {
+                let own = c.forward_ports.into_iter().map(|port| (None, port));
+                own.chain(c.forward_host_ports.into_iter().map(|(host, port)| (Some(host), port))).collect::<Vec<_>>()
+            })
+        })
+        .transpose()
     })
     .await;
     let ports = match ports {
@@ -753,25 +772,34 @@ async fn forward_configured_ports(c: &Connection, folder: &str, config: &str) {
         Ok(Ok(None)) => return,
         result => return tracing::warn!("{}: forwardPorts: {result:?}", c.host),
     };
-    for remote_port in ports {
-        if c.forwards.lock().iter().any(|(remote, _)| *remote == remote_port) {
+    for key in ports {
+        if c.forwards.lock().iter().any(|(forwarded, _)| *forwarded == key) {
             continue;
         }
-        match open_forward(c, remote_port).await {
-            Ok(tunnel) => c.forwards.lock().push((remote_port, tunnel)),
-            Err(e) => tracing::warn!("{}: cannot forward port {remote_port}: {e}", c.host),
+        let (host, remote_port) = &key;
+        match open_forward(c, host.as_deref(), *remote_port).await {
+            Ok(tunnel) => c.forwards.lock().push((key, tunnel)),
+            Err(e) => {
+                tracing::warn!("{}: cannot forward {}:{remote_port}: {e}", c.host, host.as_deref().unwrap_or("port"))
+            }
         }
     }
 }
 
-/// Stops forwarding `remote_port`.
+/// Stops forwarding `remote_port` of `host` (`None`: the remote host itself).
 #[tauri::command]
 #[specta::specta]
-pub async fn remote_stop_forwarding(window: Window, state: State<'_, AppState>, remote_port: u16) -> IdeResult<()> {
+pub async fn remote_stop_forwarding(
+    window: Window,
+    state: State<'_, AppState>,
+    remote_port: u16,
+    host: Option<String>,
+) -> IdeResult<()> {
     let c = connection(&window, &state)?;
+    let key = (host, remote_port);
     let tunnel = {
         let mut forwards = c.forwards.lock();
-        forwards.iter().position(|(remote, _)| *remote == remote_port).map(|index| forwards.remove(index).1)
+        forwards.iter().position(|(forwarded, _)| *forwarded == key).map(|index| forwards.remove(index).1)
     };
     if let Some(Forward::Container(tunnel)) = tunnel {
         tunnel.close().await;
