@@ -7208,5 +7208,11 @@
   "Lifecycle": "生命周期",
   "Self": "自身",
   "Run '{name}' with Coverage": "使用覆盖率运行 '{name}'",
-  "Profile '{name}'": "对 '{name}' 进行性能分析"
+  "Profile '{name}'": "对 '{name}' 进行性能分析",
+  "IntelliJ IDEA Keymap": "IntelliJ IDEA 键盘映射",
+  "Import Keymap": "导入键盘映射",
+  "Imported '{name}' (based on {parent}): {applied} actions.": "已导入 '{name}'（基于 {parent}）：{applied} 个操作。",
+  "Not available in OpenIDEA ({length}): {join}.": "OpenIDEA 中不可用（{length}）：{join}。",
+  "Skipped {skippedShortcuts} unsupported shortcuts.": "已跳过 {skippedShortcuts} 个不支持的快捷键。",
+  "Import IntelliJ IDEA Keymap…": "导入 IntelliJ IDEA 键盘映射…"
 }
