@@ -6,3 +6,9 @@ shelf_at_repo_root
 shelf_in_non_git_project
 shelf_in_project_below_repository
 shelves_in_two_repositories
+# The same tests after ide-host's integration tests became one binary (tests/integration):
+vcs_roots::patches_read_and_write_the_requested_repository
+vcs_shelf_roots::shelf_at_repo_root
+vcs_shelf_roots::shelf_in_non_git_project
+vcs_shelf_roots::shelf_in_project_below_repository
+vcs_shelf_roots::shelves_in_two_repositories

@@ -24,7 +24,7 @@ export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-4}
 export CARGO_INCREMENTAL=0
 # After each phase, drop build output not used for a day, then the oldest until target/ is
 # under SWEEP_MAX. Needs cargo-sweep (cargo install cargo-sweep --locked); skipped if missing.
-SWEEP_MAX=${SWEEP_MAX:-60GB}
+SWEEP_MAX=${SWEEP_MAX:-70GB}
 sweep() {
     command -v cargo-sweep >/dev/null || return 0
     cargo sweep --time 1 >/dev/null 2>&1

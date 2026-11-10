@@ -60,6 +60,7 @@ A product decision needs the `needs-decision` label from AGENTS.md. Write the qu
 - The engine lives in `crates/ide-php`. It answers editor requests through the `LanguageService` dispatch in `crates/ide-host/src/ops/lsp.rs` (from phase 1.9), so the frontend doesn't change.
 - IPC uses 0-based lines and **UTF-16** columns (`ide-core::text`, `ide-text`). Commands return `IdeResult<T>`.
 - Long work runs on `spawn_blocking` or rayon and respects `CancellationToken`. It never runs on a Tauri command thread.
+- `ide-host`'s integration tests are one test binary, `crates/ide-host/tests/integration/` (one module per former file), so a change links it once, not once per file. Run one file's tests as `cargo test -p ide-host --test integration <module>::` (for example `php_engine::`), not `--test php_engine`. `language_smoke` stays its own target. Put a new integration test file in that folder and add it to `main.rs`. Windows builds link with `rust-lld` (`.cargo/config.toml`).
 - Timing tests such as `complete::tests::completion_on_the_fixture_is_fast` assert a p95 over a few samples, so they can stall when the whole suite shares the CPU. If one fails in a full run, run it alone (`cargo test -p ide-php --lib -- --exact <name>`). Only a failure there counts. The loop runs these tests on their own after the main run. Never loosen their budgets to make them pass.
 - The corpora (laravel/framework, symfony/symfony, WordPress) are in `D:\projects\php-corpus`, set up by `scripts/php-corpus.sh`. Tests that use them are `#[ignore]` and read `PHP_CORPUS_DIR`.
 
