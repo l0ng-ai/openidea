@@ -998,7 +998,6 @@ pub fn document_link(conv: &Conv, path: &Path, l: lsp::DocumentLink) -> Option<D
     let target = target.as_str();
     let (file, url) = match uri_to_path(target) {
         Some(p) => (Some(p), None),
-        None if target.starts_with("openidea-target:") => (Some(PathBuf::from(target.split('#').next()?)), None),
         None => (None, Some(target.to_owned())),
     };
     let fragment = file
@@ -1560,11 +1559,6 @@ mod tests {
         assert_eq!(file.path.as_deref(), Some(Path::new("/p/a b.md")));
         assert_eq!(file.fragment.as_deref(), Some("L12"));
         assert_eq!(file.range, Range::new(p(0, 6), p(0, 15)));
-        let virtual_link =
-            document_link(&conv, here, link(Some("openidea-target://target/7/usr/lib/a.php#L2"))).unwrap();
-        assert_eq!(virtual_link.path.as_deref(), Some(Path::new("openidea-target://target/7/usr/lib/a.php")));
-        assert_eq!(virtual_link.fragment.as_deref(), Some("L2"));
-        assert!(virtual_link.url.is_none());
         let web = document_link(&conv, here, link(Some("https://example.com/#top"))).unwrap();
         assert_eq!((web.path, web.url.as_deref(), web.fragment), (None, Some("https://example.com/#top"), None));
         assert!(document_link(&conv, here, link(None)).is_none());

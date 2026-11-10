@@ -268,8 +268,6 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
-        target: None,
-        target_key: None,
     }
 }
 
@@ -829,52 +827,6 @@ async fn java_sharing_preserves_other_servers_and_marker_scoped_fallbacks() {
         assert_eq!(h.launcher.state("jdtls").launches.load(Ordering::SeqCst), usize::from(!fallback));
         h.mgr.shutdown_all().await;
     }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn java_sharing_keeps_target_instances_separate_and_preserves_them_on_toggle() {
-    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
-    let shared = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    h.mgr.set_jdtls_shared_hook(Box::new({
-        let shared = shared.clone();
-        move || shared.load(Ordering::SeqCst)
-    }));
-    h.mgr.set_servers_hook(Box::new(|_, configs| {
-        let mut target = configs[0].clone();
-        target.target_key = Some("container".into());
-        target
-            .initialization_options
-            .as_mut()
-            .unwrap()
-            .as_table_mut()
-            .unwrap()
-            .insert("selectedTarget".into(), toml::Value::Boolean(true));
-        vec![configs[0].clone(), target]
-    }));
-    h.open("Main.java", "class Main {}");
-    for path in java_siblings(&h) {
-        h.mgr.did_open(DocId::next(), &path, &h.lang, 1, "class Main {}");
-    }
-    let state = h.launcher.state("jdtls");
-    eventually(|| h.mgr.servers().iter().filter(|s| s.status == ServerStatus::Ready).count() == 4).await;
-    let initial = state.requested("initialize");
-    assert_eq!(initial.len(), 4);
-    let targets: Vec<_> = initial.iter().filter(|v| v["initializationOptions"]["selectedTarget"] == true).collect();
-    assert_eq!(targets.len(), 3, "target roots retain their marker-based identity");
-    assert!(targets.iter().all(|v| v["initializationOptions"].get("workspaceFolders").is_none()));
-    let local = initial.iter().find(|v| v["initializationOptions"]["selectedTarget"] != true).unwrap();
-    assert_eq!(local["rootUri"], uri_of(&h.root));
-    assert_eq!(local["initializationOptions"]["workspaceFolders"], json!([uri_of(&h.root)]));
-    let old: HashSet<_> = h.mgr.servers().into_iter().map(|s| s.id).collect();
-    shared.store(false, Ordering::SeqCst);
-    h.mgr.reconfigure().await;
-    eventually(|| h.mgr.servers().iter().filter(|s| s.status == ServerStatus::Ready).count() == 6).await;
-    assert_eq!(
-        h.mgr.servers().iter().filter(|s| old.contains(&s.id)).count(),
-        3,
-        "local sharing does not retire targets"
-    );
-    h.mgr.shutdown_all().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -5990,76 +5942,4 @@ async fn missing_injected_server_uses_the_normal_single_install_notification() {
     assert_eq!(h.statuses("embedded").iter().filter(|s| **s == ServerStatus::Missing).count(), 1);
     h.mgr.did_close(host);
     h.mgr.shutdown_all().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn languages_sharing_a_server_keep_independent_target_choices() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dunce::canonicalize(dir.path()).unwrap();
-    let language = |id: &str| {
-        let mut lang: LanguageConfig = toml::from_str(&format!("id='{id}'\nname='{id}'\nextensions=['{id}']")).unwrap();
-        lang.language_servers = vec![server_cfg("shared")];
-        lang
-    };
-    let registry = Arc::new(LanguageRegistry::from_configs(vec![language("one"), language("two")]));
-    struct ScopedLauncher(Arc<MockLauncher>);
-    impl Launcher for ScopedLauncher {
-        fn launch(
-            &self,
-            config: &LanguageServerConfig,
-            root: &Path,
-            handler: Arc<dyn Handler>,
-            stderr: Box<dyn Fn(String) + Send + Sync>,
-        ) -> Result<Peer, LaunchError> {
-            let mut config = config.clone();
-            if let Some(key) = &config.target_key {
-                config.name = format!("{}@{key}", config.name);
-            }
-            self.0.launch(&config, root, handler, stderr)
-        }
-    }
-    let launcher = Arc::new(MockLauncher::default());
-    for name in ["shared", "shared@container"] {
-        *launcher.state(name).caps.lock() = json!({"textDocumentSync":1,"hoverProvider":true});
-    }
-    let manager = LspManager::with_launcher(
-        root.clone(),
-        registry,
-        Arc::new(ide_core::NullSink),
-        Arc::new(ScopedLauncher(launcher.clone())),
-    );
-    let selected = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let selected_hook = selected.clone();
-    manager.set_servers_hook(Box::new(move |lang, defined| {
-        let mut configs = defined.to_vec();
-        if lang.as_str() == "one" && selected_hook.load(Ordering::Acquire) {
-            configs[0].target_key = Some("container".into());
-        }
-        configs
-    }));
-    let one = DocId::next();
-    let two = DocId::next();
-    manager.did_open(one, &root.join("a.one"), &LanguageId::new("one"), 1, "one");
-    manager.did_open(two, &root.join("b.two"), &LanguageId::new("two"), 1, "two");
-    eventually(|| manager.servers().iter().any(|s| s.status == ServerStatus::Ready)).await;
-    assert_eq!(manager.servers().len(), 1);
-    let host = manager.servers()[0].id;
-    selected.store(true, Ordering::Release);
-    manager.reconfigure().await;
-    eventually(|| manager.servers().iter().filter(|s| s.status == ServerStatus::Ready).count() == 2).await;
-    assert!(manager.servers().iter().any(|s| s.id == host));
-    // Each document has one server. Hover must not send to both after splitting.
-    let state = launcher.state("shared");
-    state.requests.lock().clear();
-    let target_state = launcher.state("shared@container");
-    target_state.requests.lock().clear();
-    let _ = manager.hover(one, Pos::new(0, 0), CancellationToken::new()).await;
-    let _ = manager.hover(two, Pos::new(0, 0), CancellationToken::new()).await;
-    assert_eq!(state.requested("textDocument/hover").len(), 1);
-    assert_eq!(target_state.requested("textDocument/hover").len(), 1);
-    selected.store(false, Ordering::Release);
-    manager.reconfigure().await;
-    assert_eq!(manager.servers().len(), 1);
-    assert_eq!(manager.servers()[0].id, host);
-    manager.shutdown_all().await;
 }
