@@ -500,7 +500,9 @@ export function mavenGoalConfig(
     command: /(?:^|[/\\])mvnw(?:\.cmd|\.bat)?$/i.test(project.command) ? project.command : "mvn",
     args,
     cwd: project.dir || null,
-    env: { ...project.env },
+    // The model's `JAVA_HOME` is derived from Settings when it was built; freezing it here would
+    // keep an outdated Maven runner JRE after the setting changes (#2433). The launcher resolves it.
+    env: {},
     detected: false,
     isTest: !options.skipTests && !args.includes("-DskipTests") && goals.some((g) => MAVEN_TEST_GOALS.test(g)),
     debugAdapter: null,
@@ -528,7 +530,8 @@ export function gradleTaskConfig(
     command: model.command,
     args,
     cwd: model.dir || null,
-    env: { ...model.env },
+    // As for Maven: the Gradle JVM / `JAVA_HOME` is derived from Settings at launch, not frozen here.
+    env: {},
     detected: false,
     isTest: names.some((t) => /(^|:)(test|check|build|integrationTest)$/.test(t)),
     debugAdapter: null,
