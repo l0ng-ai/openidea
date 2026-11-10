@@ -122,13 +122,27 @@ export function dedupeLocations<T extends Location>(locs: readonly T[]): T[] {
   });
 }
 
-/** Popup items for locations, with a one-line source preview each. */
+/** Last segments of an absolute path, `…`-prefixed (IDEA's Go to File style). */
+function tailPath(path: string, keep = 2): string {
+  const parts = path.split("/");
+  return parts.length <= keep ? path : `…/${parts.slice(-keep).join("/")}`;
+}
+
+/** The `path:line` shown after a chooser row's name (full or `…`-tail outside the project). */
+function chooserWhere(root: string, path: string, line: number, fullPaths: boolean): string {
+  if (isVirtualUri(path)) return `${virtualContainer(path)}:${line}`;
+  const p = relativePath(root, path);
+  return `${p === path && !fullPaths ? tailPath(p) : p}:${line}`;
+}
+
+/** Popup items for locations, lean rows like IDEA's chooser (extras per Settings › Editor › Location Choosers). */
 export async function locationItems(locs: readonly DeclarationTarget[]): Promise<ListPopupItem[]> {
   const files = await readManyFileLines(locs.map((l) => l.path));
   const root = useProject.getState().project?.root ?? "";
+  const extras = editorPrefs().chooser;
   return locs.map((l, i) => {
-    const where = `${isVirtualUri(l.path) ? virtualContainer(l.path) : relativePath(root, l.path)}:${l.range.start.line + 1}`;
-    const preview = files.get(l.path)?.[l.range.start.line]?.trim();
+    const where = chooserWhere(root, l.path, l.range.start.line + 1, extras.fullPath);
+    const preview = extras.signature ? files.get(l.path)?.[l.range.start.line]?.trim() : undefined;
     // Index symbols (syntax fallback): "name  container · file:line", like IDEA's chooser.
     if (l.kind && l.name)
       return {
@@ -139,12 +153,12 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
         symbol: l.kind,
         run: () => navigateTo(l),
       };
-    // Server targets: the declared name (speed search matches it), file and line after it.
+    // Server targets: the declared name (speed search matches it), position after it.
     const name = targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
     return {
       id: `${i}`,
       label: name ?? basename(l.path),
-      detail: name ? `${basename(l.path)} · ${where}` : where,
+      detail: name && extras.fileName ? `${basename(l.path)} · ${where}` : where,
       preview,
       icon: fileIconName(basename(l.path), l.path),
       run: () => navigateTo(l),

@@ -1,8 +1,8 @@
 /**
  * Editor › General and its sub-pages, after IntelliJ IDEA / PyCharm 2025:
  * Auto Import, Appearance, Breadcrumbs, Code Completion, Code Folding, Editor
- * Tabs, Gutter Icons, Rich-Text Copy, Smart Keys, Sticky Lines; plus Code
- * Editing and Inlay Hints. Every option is read by `editor/core` or
+ * Tabs, Gutter Icons, Location Choosers, Rich-Text Copy, Smart Keys, Sticky
+ * Lines; plus Code Editing and Inlay Hints. Every option is read by `editor/core` or
  * `editor/lsp` through `platform/editorSettings`.
  */
 import { useEffect, useId, useState } from "react";
@@ -770,6 +770,23 @@ const STICKY = editorPage({
   ],
 });
 
+const CHOOSER = editorPage({
+  id: "editor.general.chooser",
+  title: "Location Choosers",
+  order: 11,
+  keywords: ["choose declaration", "choose implementation", "navigation popup", "preview"],
+  sections: [
+    {
+      title: "Row Details",
+      items: [
+        { t: "check", key: `${P}.chooser.signature`, label: "Show signature preview" },
+        { t: "check", key: `${P}.chooser.fileName`, label: "Show file name" },
+        { t: "check", key: `${P}.chooser.fullPath`, label: "Show full paths outside the project" },
+      ],
+    },
+  ],
+});
+
 const CODE_EDITING = editorPage({
   id: "editor.codeEditing",
   title: "Code Editing",
@@ -861,6 +878,7 @@ export const GENERAL_PAGES = [
   RICH_COPY,
   SMART_KEYS,
   STICKY,
+  CHOOSER,
   CODE_EDITING,
   INLAY_HINTS,
 ];

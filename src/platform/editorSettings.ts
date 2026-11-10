@@ -182,6 +182,15 @@ export const EDITOR_EXTRA_DEFAULTS = {
   inlineCompletion: { enabled: true, onlyOnPause: false, pauseMs: 500, disabledLanguages: [] as string[] },
   gutterIconsDisabled: [] as string[],
   showGutterIcons: true,
+  /** Location-chooser rows (Choose Declaration / Implementation): which extras to show. */
+  chooser: {
+    /** The target line's source preview after the name. */
+    signature: false,
+    /** The file name before the path. */
+    fileName: false,
+    /** Full paths outside the project (else `…`-truncated tails). */
+    fullPath: false,
+  },
   codeStyle: {
     lineSeparator: "system",
     hardWrapAt: 120,
