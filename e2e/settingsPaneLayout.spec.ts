@@ -26,6 +26,9 @@ for (const [id, selector] of [
             installed: true,
             commandOverridden: false,
             env: {},
+            config: [],
+            commands: [],
+            source: { kind: "builtin" },
           },
         ];
       }
