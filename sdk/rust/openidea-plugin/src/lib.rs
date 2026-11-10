@@ -1094,7 +1094,6 @@ pub mod __rt {
         let launch = crate::RunTargetLaunch {
             operation: match launch.operation {
                 Operation::Run => crate::RunTargetOperation::Run,
-                Operation::Debug => crate::RunTargetOperation::Debug,
                 Operation::Test => crate::RunTargetOperation::Test,
             },
             program: launch.program,
