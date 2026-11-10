@@ -548,7 +548,7 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     let bin = tmp.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
     let executable = bin.join("execution-tool");
-    std::fs::write(&executable, "#!/bin/sh\nif [ \"$1\" = wrapped ]; then printf '<%s>\\n' \"$@\" > \"$PWD/wrapped.txt\"; exit; fi\nread line\nprintf '%s\\n' \"$line\"\n").unwrap();
+    std::fs::write(&executable, "#!/bin/sh\nif [ \"$1\" = wrapped ]; then printf '<%s>\\n' \"$@\" > \"$PWD/wrapped.txt\"; exit; fi\nif [ \"$1\" = composer ]; then printf '<%s>\\n' \"$@\" > \"$PWD/composer.txt\"; exit; fi\nread line\nprintf '%s\\n' \"$line\"\n").unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path_var = {
         let bin = bin.clone();
@@ -599,21 +599,33 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     )
     .await
     .unwrap();
+    invoke(
+        &peer,
+        "plugin_run_command",
+        json!({"pluginId":"execution", "commandId":"target-overrides", "arg":"empty", "editor":null}),
+    )
+    .await
+    .unwrap();
     let targets = invoke(&peer, "plugin_run_targets", json!({})).await.unwrap();
     assert_eq!(targets.as_array().unwrap().len(), 1);
     assert_eq!(targets[0]["pluginId"], "execution");
+    assert_eq!(targets[0]["target"]["commands"][0]["workdirArgs"], json!([]));
     assert!(desktop.run_targets(&project).is_empty());
     let id = targets[0]["id"].as_str().unwrap();
     let settings = invoke(&peer, "plugin_answer_run_target", json!({"id":id, "useTarget":false})).await.unwrap();
     assert_eq!(settings["run"]["defaultTarget"], "");
     let config = json!({"id":"wrapped-php", "name":"Wrapped PHP", "kind":"php", "command":"php", "args":["x.php", "literal ; $(touch bad)"], "env":{}, "detected":false, "isTest":false, "target":id});
     invoke(&peer, "run_start", json!({"config":config, "onOutput":{"$channel":38}})).await.unwrap();
-    until("remote wrapped run", 5, || project.join("wrapped.txt").exists()).await;
-    assert_eq!(
-        std::fs::read_to_string(project.join("wrapped.txt")).unwrap(),
-        "<wrapped>\n<--cwd=/container>\n<php>\n<x.php>\n<literal ; $(touch bad)>\n"
-    );
+    let wrapped = "<wrapped>\n<--cwd=/container>\n<php>\n<x.php>\n<literal ; $(touch bad)>\n";
+    until("remote wrapped run", 5, || std::fs::read_to_string(project.join("wrapped.txt")).is_ok_and(|s| s == wrapped))
+        .await;
     assert!(!project.join("bad").exists());
+    let composer = json!({"id":"composer", "name":"Composer", "kind":"shell", "command":"composer", "args":["install"], "env":{}, "detected":false, "isTest":false, "target":id});
+    invoke(&peer, "run_start", json!({"config":composer, "onOutput":{"$channel":39}})).await.unwrap();
+    until("remote composer override", 5, || {
+        std::fs::read_to_string(project.join("composer.txt")).is_ok_and(|s| s == "<composer>\n<install>\n")
+    })
+    .await;
     invoke(
         &peer,
         "plugin_run_command",
@@ -622,6 +634,28 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     .await
     .unwrap();
     assert_eq!(invoke(&peer, "plugin_run_targets", json!({})).await.unwrap(), json!([]));
+    invoke(
+        &peer,
+        "plugin_run_command",
+        json!({"pluginId":"execution", "commandId":"target", "arg":"refuse", "editor":null}),
+    )
+    .await
+    .unwrap();
+    let targets = invoke(&peer, "plugin_run_targets", json!({})).await.unwrap();
+    let refused = targets[0]["id"].as_str().unwrap();
+    std::fs::remove_file(project.join("wrapped.txt")).unwrap();
+    let config = json!({"id":"refused", "name":"Refused", "kind":"shell", "command":"php", "args":[], "env":{}, "detected":false, "isTest":false, "target":refused});
+    let error = invoke(&peer, "run_start", json!({"config":config, "onOutput":{"$channel":40}})).await.unwrap_err();
+    assert!(error.to_string().contains("Project runtime is stopped"), "{error}");
+    assert!(!project.join("wrapped.txt").exists());
+    assert!(desktop.run_targets(&project).is_empty());
+    invoke(
+        &peer,
+        "plugin_run_command",
+        json!({"pluginId":"execution", "commandId":"untarget", "arg":"refuse", "editor":null}),
+    )
+    .await
+    .unwrap();
     client.plugin_events.lock().clear();
     client.events.lock().clear();
     let runner = peer.clone();

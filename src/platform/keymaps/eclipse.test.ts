@@ -47,7 +47,7 @@ const shared = [
   ["find.previous", "find.popup.previousResult"],
   ["find.usages", "project.findUsages"],
   ["code.quickDocumentation", "db.quickDoc", "debug.setValue", "vcs.changelist.edit"],
-  ["code.reformat", "project.reformatCode"],
+  ["code.reformat", "project.reformatCode", "db.reformatValue"],
   ["code.optimizeImports", "project.optimizeImports"],
   ["code.deleteLine", "db.duplicateSource", "project.compareWith", "vcs.showDiff"],
   ["code.moveStatementDown", "find.field.recentSearches", "find.popup.recentSearches"],

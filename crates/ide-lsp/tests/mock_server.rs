@@ -35,6 +35,8 @@ struct MockState {
     responder: Mutex<Option<Responder>>,
     /// Holds the handling of notifications of this method until the gate opens.
     held: Mutex<Option<(String, Arc<Gate>)>>,
+    initialize_gate: Mutex<Option<Arc<Gate>>>,
+    launch_gate: Mutex<Option<Arc<Gate>>>,
     peer: Mutex<Option<Peer>>,
 }
 
@@ -73,7 +75,9 @@ fn utf16_to_byte(text: &str, line: u64, col: u64) -> usize {
     text.len()
 }
 
-struct MockHandler(Arc<MockState>);
+type MockConnection = Mutex<Option<Peer>>;
+
+struct MockHandler(Arc<MockState>, std::sync::Weak<MockConnection>);
 
 impl Handler for MockHandler {
     fn on_notification(&self, method: &str, params: Value) {
@@ -118,8 +122,14 @@ impl Handler for MockHandler {
                 s.docs.lock().remove(&uri);
             }
             "exit" => {
-                if let Some(p) = s.peer.lock().take() {
-                    p.kill();
+                if let Some(connection) = self.1.upgrade()
+                    && let Some(peer) = connection.lock().take()
+                {
+                    peer.kill();
+                }
+                let mut latest = s.peer.lock();
+                if latest.as_ref().is_some_and(Peer::is_closed) {
+                    *latest = None;
                 }
             }
             _ => {}
@@ -131,7 +141,13 @@ impl Handler for MockHandler {
         let s = &self.0;
         s.requests.lock().push((method.to_owned(), params.clone()));
         match method {
-            "initialize" => Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } })),
+            "initialize" => {
+                let gate = s.initialize_gate.lock().take();
+                if let Some(gate) = gate {
+                    gate.hold();
+                }
+                Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } }))
+            }
             "shutdown" => Ok(Value::Null),
             _ => {
                 if let Some(error) = s.errors.lock().get(method).cloned() {
@@ -150,6 +166,7 @@ impl Handler for MockHandler {
 #[derive(Default)]
 struct MockLauncher {
     servers: Mutex<HashMap<String, Arc<MockState>>>,
+    connections: Mutex<Vec<Arc<MockConnection>>>,
 }
 
 impl MockLauncher {
@@ -186,10 +203,18 @@ impl Launcher for MockLauncher {
         state.docs.lock().clear();
         let (client_io, server_io) = tokio::io::duplex(1 << 20);
         let (sr, sw) = tokio::io::split(server_io);
-        let server = Peer::connect(sr, sw, Arc::new(MockHandler(state.clone())));
+        let connection = Arc::new(Mutex::new(None));
+        let server = Peer::connect(sr, sw, Arc::new(MockHandler(state.clone(), Arc::downgrade(&connection))));
+        *connection.lock() = Some(server.clone());
+        self.connections.lock().push(connection);
         *state.peer.lock() = Some(server);
         let (cr, cw) = tokio::io::split(client_io);
-        Ok(Peer::connect(cr, cw, handler))
+        let client = Peer::connect(cr, cw, handler);
+        let gate = state.launch_gate.lock().take();
+        if let Some(gate) = gate {
+            gate.hold();
+        }
+        Ok(client)
     }
 }
 
@@ -243,8 +268,6 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
-        target: None,
-        target_key: None,
     }
 }
 
@@ -395,6 +418,45 @@ fn change(range: Range, text: &str) -> AppliedChange {
     AppliedChange { range, text: text.into() }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn dart_file_watching_requires_an_explicit_registration() {
+    for (language, extension, name, fallback) in
+        [("dart", "dart", "dart", false), ("dart", "dart", "alternative-dart", true), ("java", "java", "jdtls", true)]
+    {
+        let h = harness_for(language, extension, &[(name, incremental_caps())], &[]);
+        let (doc, _) = h.open(&format!("open.{extension}"), "x");
+        h.wait_status(name, ServerStatus::Ready).await;
+        let s = h.launcher.state(name);
+        let path = h.root.join(format!("closed.{extension}"));
+        let notify = || h.mgr.watched_files_changed(&[], std::slice::from_ref(&path), &[], &[]);
+        notify();
+        h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.unwrap();
+        assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), usize::from(fallback), "{name}");
+        s.peer()
+            .request::<_, Value>(
+                "client/registerCapability",
+                json!({ "registrations": [{ "id": "watch", "method": "workspace/didChangeWatchedFiles", "registerOptions": { "watchers": [{ "globPattern": "**/*" }] } }] }),
+                None,
+            )
+            .await
+            .unwrap();
+        notify();
+        eventually(|| s.notified("workspace/didChangeWatchedFiles").len() == usize::from(fallback) + 1).await;
+        s.peer()
+            .request::<_, Value>(
+                "client/unregisterCapability",
+                json!({ "unregisterations": [{ "id": "watch", "method": "workspace/didChangeWatchedFiles" }] }),
+                None,
+            )
+            .await
+            .unwrap();
+        notify();
+        h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.unwrap();
+        assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), usize::from(fallback) * 2 + 1, "{name}");
+        h.mgr.shutdown_all().await;
+    }
+}
+
 // ------------------------------------------------------------------ tests
 
 #[tokio::test(flavor = "multi_thread")]
@@ -417,6 +479,405 @@ async fn linked_projects_initialize_separate_language_server_roots() {
     actual.sort();
     expected.sort();
     assert_eq!(actual, expected);
+    h.mgr.shutdown_all().await;
+}
+
+fn java_siblings(h: &Harness) -> Vec<PathBuf> {
+    ["first", "second"]
+        .into_iter()
+        .map(|name| {
+            let root = h.root.join(name);
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("mock.toml"), "").unwrap();
+            let path = root.join("Main.java");
+            std::fs::write(&path, "class Main {}").unwrap();
+            path
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_sharing_is_opt_in_and_keeps_module_requests_on_one_instance() {
+    for shared in [false, true] {
+        let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+        h.mgr.set_jdtls_shared_hook(Box::new(move || shared));
+        let paths = java_siblings(&h);
+        std::thread::scope(|scope| {
+            for path in &paths {
+                scope.spawn(|| h.mgr.did_open(DocId::next(), path, &h.lang, 1, "class Main {}"));
+            }
+        });
+        let state = h.launcher.state("jdtls");
+        let count = if shared { 1 } else { 2 };
+        eventually(|| state.requested("initialize").len() == count).await;
+        assert_eq!(state.launches.load(Ordering::SeqCst), count);
+        assert_eq!(h.mgr.servers().len(), count);
+        for path in &paths {
+            h.mgr.java_classpath(path.parent().unwrap(), false, &Default::default()).await.unwrap();
+        }
+        let requests = state.requested("workspace/executeCommand");
+        let classpaths: Vec<_> = requests.iter().filter(|r| r["command"] == "java.project.getClasspaths").collect();
+        assert_eq!(classpaths.len(), 2);
+        for path in &paths {
+            assert!(classpaths.iter().any(|r| r["arguments"][0] == uri_of(path.parent().unwrap())));
+        }
+        if shared {
+            let init = &state.requested("initialize")[0];
+            assert_eq!(init["rootUri"], uri_of(&h.root));
+            assert_eq!(init["initializationOptions"]["workspaceFolders"], json!([uri_of(&h.root)]));
+        }
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_sharing_toggle_retires_old_instances_and_reopens_every_document() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let shared = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    h.mgr.set_jdtls_shared_hook(Box::new({
+        let shared = shared.clone();
+        move || shared.load(Ordering::SeqCst)
+    }));
+    let paths = java_siblings(&h);
+    for path in &paths {
+        h.mgr.did_open(DocId::next(), path, &h.lang, 1, "class Main {}");
+    }
+    let state = h.launcher.state("jdtls");
+    eventually(|| state.requested("initialize").len() == 2).await;
+    eventually(|| {
+        paths
+            .iter()
+            .all(|path| state.notified("textDocument/didOpen").iter().any(|v| v["textDocument"]["uri"] == uri_of(path)))
+    })
+    .await;
+    let old: Vec<_> = h.mgr.servers().into_iter().map(|s| s.id).collect();
+    shared.store(true, Ordering::SeqCst);
+    h.mgr.reconfigure().await;
+    eventually(|| state.launches.load(Ordering::SeqCst) == 3 && state.docs.lock().len() == 2).await;
+    assert_eq!(h.mgr.servers().len(), 1);
+    for id in old {
+        assert!(
+            h.events
+                .lock()
+                .iter()
+                .any(|event| matches!(event, IdeEvent::LanguageServerRemoved {server} if *server == id))
+        );
+    }
+    shared.store(false, Ordering::SeqCst);
+    h.mgr.reconfigure().await;
+    eventually(|| state.launches.load(Ordering::SeqCst) == 5).await;
+    assert_eq!(h.mgr.servers().len(), 2);
+    eventually(|| {
+        paths.iter().all(|path| {
+            state.notified("textDocument/didOpen").iter().filter(|v| v["textDocument"]["uri"] == uri_of(path)).count()
+                == 3
+        })
+    })
+    .await;
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_sharing_cancels_a_retiring_initialize_before_starting_its_replacement() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let shared = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    h.mgr.set_jdtls_shared_hook(Box::new({
+        let shared = shared.clone();
+        move || shared.load(Ordering::SeqCst)
+    }));
+    let state = h.launcher.state("jdtls");
+    let gate = Arc::new(Gate::default());
+    *state.initialize_gate.lock() = Some(gate.clone());
+    let path = java_siblings(&h).remove(0);
+    h.mgr.did_open(DocId::next(), &path, &h.lang, 1, "class Main {}");
+    eventually(|| gate.entered()).await;
+    let old = state.peer();
+    shared.store(true, Ordering::SeqCst);
+    let switched = tokio::time::timeout(Duration::from_secs(2), h.mgr.reconfigure()).await;
+    let closed_before_response = old.is_closed();
+    gate.open();
+    switched.expect("initialize cancellation must not wait for its response");
+    eventually(|| state.requested("initialize").len() == 2).await;
+    assert!(closed_before_response, "the old transport must close before its initialize response is released");
+    assert_eq!(h.mgr.servers().len(), 1);
+    assert_eq!(h.mgr.servers()[0].root.as_ref(), h.root.as_path());
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_java_waits_for_an_abandoned_launcher_before_replacing_the_workspace() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.mgr.set_jdtls_shared_hook(Box::new(|| true));
+    let state = h.launcher.state("jdtls");
+    let gate = Arc::new(Gate::default());
+    *state.launch_gate.lock() = Some(gate.clone());
+    h.open("Main.java", "class Main {}");
+    eventually(|| gate.entered()).await;
+    let old = state.peer();
+    let id = h.mgr.servers()[0].id;
+    let external = tempfile::tempdir().unwrap();
+    h.mgr.set_content_roots(vec![dunce::canonicalize(external.path()).unwrap()]);
+    eventually(|| h.mgr.servers().iter().all(|s| s.id != id)).await;
+    h.open("Another.java", "class Another {}");
+    let mut transition = tokio::spawn({
+        let manager = h.mgr.clone();
+        async move { manager.reconfigure().await }
+    });
+    let pending = tokio::time::timeout(Duration::from_millis(100), &mut transition).await.is_err();
+    let launches = state.launches.load(Ordering::SeqCst);
+    let old_alive = !old.is_closed();
+    gate.open();
+    assert!(pending, "retirement must wait for the launcher to return");
+    assert_eq!(launches, 1, "the retiring launcher still owns its peer");
+    assert!(old_alive);
+    transition.await.unwrap();
+    h.mgr.reconfigure().await;
+    eventually(|| state.launches.load(Ordering::SeqCst) == 2 && state.docs.lock().len() == 2).await;
+    assert!(old.is_closed());
+    assert_eq!(h.mgr.servers().len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_classpath_waits_for_a_config_restart_that_is_reaping_startup() {
+    for (shared, failed) in [(false, false), (true, false), (false, true)] {
+        let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+        let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        h.mgr.set_jdtls_shared_hook(Box::new({
+            let changed = changed.clone();
+            move || shared && changed.load(Ordering::SeqCst)
+        }));
+        h.mgr.set_config_hook(Box::new({
+            let changed = changed.clone();
+            move |cfg, _| {
+                let changed = changed.load(Ordering::SeqCst);
+                cfg.env.insert("MOCK_CONFIG_REVISION".into(), changed.to_string());
+                if failed && changed {
+                    cfg.launch_error = Some("restart configuration error".into());
+                }
+            }
+        }));
+        let state = h.launcher.state("jdtls");
+        let gate = Arc::new(Gate::default());
+        *state.launch_gate.lock() = Some(gate.clone());
+        let path = java_siblings(&h).remove(0);
+        h.mgr.did_open(DocId::next(), &path, &h.lang, 1, "class Main {}");
+        eventually(|| gate.entered()).await;
+        let old = h.mgr.servers()[0].id;
+        changed.store(true, Ordering::SeqCst);
+        let restarting = tokio::spawn({
+            let manager = h.mgr.clone();
+            async move { manager.reconfigure().await }
+        });
+        h.wait_status("jdtls", ServerStatus::Stopped).await;
+        let mut query = tokio::spawn({
+            let manager = h.mgr.clone();
+            async move { manager.java_classpath(path.parent().unwrap(), false, &Default::default()).await }
+        });
+        let early = tokio::time::timeout(Duration::from_millis(100), &mut query).await;
+        gate.open();
+        restarting.await.unwrap();
+        let result = match early {
+            Ok(result) => result.unwrap(),
+            Err(_) => query.await.unwrap(),
+        };
+        if failed {
+            assert!(result.unwrap_err().message.contains("restart configuration error"));
+        } else {
+            assert!(result.is_ok(), "a configuration restart is transient: {result:?}");
+            assert_eq!(state.launches.load(Ordering::SeqCst), 2);
+            assert_eq!(h.mgr.servers()[0].id != old, shared);
+        }
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_classpath_restart_barrier_wait_remains_cancellable() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    h.mgr.set_config_hook(Box::new({
+        let changed = changed.clone();
+        move |cfg, _| {
+            cfg.env.insert("MOCK_CONFIG_REVISION".into(), changed.load(Ordering::SeqCst).to_string());
+        }
+    }));
+    let state = h.launcher.state("jdtls");
+    let gate = Arc::new(Gate::default());
+    *state.launch_gate.lock() = Some(gate.clone());
+    h.open("Main.java", "class Main {}");
+    eventually(|| gate.entered()).await;
+    changed.store(true, Ordering::SeqCst);
+    let restarting = tokio::spawn({
+        let manager = h.mgr.clone();
+        async move { manager.reconfigure().await }
+    });
+    h.wait_status("jdtls", ServerStatus::Stopped).await;
+    let cancel = CancellationToken::new();
+    let mut query = tokio::spawn({
+        let manager = h.mgr.clone();
+        let root = h.root.clone();
+        let cancel = cancel.clone();
+        async move { manager.java_classpath(&root, false, &cancel).await }
+    });
+    let early = tokio::time::timeout(Duration::from_millis(100), &mut query).await;
+    let waiting = early.is_err();
+    cancel.cancel();
+    let result = match early {
+        Ok(result) => Ok(result),
+        Err(_) => tokio::time::timeout(Duration::from_secs(1), query).await,
+    };
+    gate.open();
+    restarting.await.unwrap();
+    assert!(waiting, "the query must wait behind the restart barrier");
+    assert_eq!(result.unwrap().unwrap().unwrap_err().kind, ide_core::error::ErrorKind::Cancelled);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_classpath_does_not_retry_permanently_unavailable_servers() {
+    for missing in [false, true] {
+        let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+        if missing {
+            h.launcher.state("jdtls").missing.store(true, Ordering::SeqCst);
+        } else {
+            h.mgr.set_config_hook(Box::new(|cfg, _| {
+                cfg.launch_error = Some("permanent mock configuration error".into())
+            }));
+        }
+        let result =
+            tokio::time::timeout(Duration::from_secs(1), h.mgr.java_classpath(&h.root, false, &Default::default()))
+                .await
+                .expect("permanent failures must not incur the Java readiness timeout");
+        let error = result.unwrap_err();
+        assert!(error.message.contains(if missing { "not installed" } else { "permanent mock configuration error" }));
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_java_external_roots_reach_initialization_queries_and_watches() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.mgr.set_jdtls_shared_hook(Box::new(|| true));
+    let external = tempfile::tempdir().unwrap();
+    let external = dunce::canonicalize(external.path()).unwrap();
+    h.mgr.set_content_roots(vec![external.clone(), external.clone(), h.root.clone()]);
+    let file = external.join("External.java");
+    std::fs::write(&file, "class External {}").unwrap();
+    h.mgr.did_open(DocId::next(), &file, &h.lang, 1, "class External {}");
+    let state = h.launcher.state("jdtls");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let init = &state.requested("initialize")[0];
+    assert_eq!(init["initializationOptions"]["workspaceFolders"], json!([uri_of(&h.root), uri_of(&external)]));
+    assert_eq!(init["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
+    let folders: Value = state.peer().request("workspace/workspaceFolders", Value::Null, None).await.unwrap();
+    assert_eq!(folders, init["workspaceFolders"]);
+    state.peer().request::<_, Value>("client/registerCapability", json!({"registrations":[{
+        "id":"external-java", "method":"workspace/didChangeWatchedFiles", "registerOptions":{"watchers":[{"globPattern":"**/*.java"}]}
+    }]}), None).await.unwrap();
+    let other = external.join("Other.java");
+    h.mgr.watched_files_changed(std::slice::from_ref(&other), &[], &[], &[]);
+    eventually(|| {
+        state.notified("workspace/didChangeWatchedFiles").iter().any(|v| v["changes"][0]["uri"] == uri_of(&other))
+    })
+    .await;
+    h.mgr.set_content_roots(vec![]);
+    h.mgr.reconfigure().await;
+    eventually(|| state.requested("initialize").len() == 2).await;
+    assert_eq!(state.requested("initialize")[1]["initializationOptions"]["workspaceFolders"], json!([uri_of(&h.root)]));
+    assert_eq!(h.mgr.servers().len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn trusting_an_existing_java_instance_restarts_it_without_locking_the_registry() {
+    for shared in [false, true] {
+        let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+        h.mgr.set_jdtls_shared_hook(Box::new(move || shared));
+        h.open("Main.java", "class Main {}");
+        h.wait_status("jdtls", ServerStatus::Ready).await;
+        let state = h.launcher.state("jdtls");
+        h.mgr.set_execution_allowed(false);
+        h.mgr.reconfigure().await;
+        h.mgr.set_execution_allowed(true);
+        eventually(|| state.launches.load(Ordering::SeqCst) == 2 && state.docs.lock().len() == 1).await;
+        assert_eq!(h.mgr.servers().len(), 1);
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_sharing_preserves_other_servers_and_marker_scoped_fallbacks() {
+    for fallback in [false, true] {
+        let h = harness_for(
+            "java",
+            "java",
+            &[("jdtls", incremental_caps()), ("other", incremental_caps())],
+            if fallback { &["other"] } else { &[] },
+        );
+        h.mgr.set_jdtls_shared_hook(Box::new(|| true));
+        h.launcher.state("jdtls").missing.store(fallback, Ordering::SeqCst);
+        for path in java_siblings(&h) {
+            h.mgr.did_open(DocId::next(), &path, &h.lang, 1, "class Main {}");
+        }
+        eventually(|| h.launcher.state("other").requested("initialize").len() == 2).await;
+        let servers = h.mgr.servers();
+        assert_eq!(servers.iter().filter(|s| s.name == "jdtls").count(), 1);
+        assert_eq!(servers.iter().filter(|s| s.name == "other").count(), 2);
+        assert_eq!(h.launcher.state("jdtls").launches.load(Ordering::SeqCst), usize::from(!fallback));
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn virtual_java_documents_opened_during_a_toggle_attach_to_the_successor() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let shared = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    h.mgr.set_jdtls_shared_hook(Box::new({
+        let shared = shared.clone();
+        move || shared.load(Ordering::SeqCst)
+    }));
+    let (doc, _) = h.open("Main.java", "class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let uris: Vec<_> = (0..16).map(|n| format!("jdt://contents/project/Virtual{n}.class")).collect();
+    state.respond(
+        "textDocument/definition",
+        json!(
+            uris.iter()
+                .map(|uri| json!({"uri":uri,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}))
+                .collect::<Vec<_>>()
+        ),
+    );
+    h.mgr.goto(doc, Pos::default(), GotoKind::Definition).await.unwrap();
+    shared.store(true, Ordering::SeqCst);
+    let toggle = tokio::spawn({
+        let manager = h.mgr.clone();
+        async move { manager.reconfigure().await }
+    });
+    let mut opened = Vec::new();
+    for uri in uris {
+        let manager = h.mgr.clone();
+        let language = h.lang.clone();
+        let doc = DocId::next();
+        opened.push((
+            doc,
+            std::thread::spawn(move || manager.did_open_virtual(doc, &uri, &language, 0, "class Virtual {}")),
+        ));
+    }
+    let docs: Vec<_> = opened
+        .into_iter()
+        .map(|(doc, thread)| {
+            thread.join().unwrap();
+            doc
+        })
+        .collect();
+    toggle.await.unwrap();
+    eventually(|| state.docs.lock().len() == docs.len() + 1).await;
+    assert_eq!(h.mgr.servers().len(), 1);
+    for doc in docs {
+        h.mgr.hover(doc, Pos::default(), Default::default()).await.unwrap();
+    }
     h.mgr.shutdown_all().await;
 }
 
@@ -792,7 +1253,7 @@ async fn completion_mapping_merge_and_resolve() {
             "isIncomplete": false,
             "itemDefaults": { "data": { "from": "defaults" } },
             "items": [{
-                "label": "bar", "kind": 2, "detail": "fn() -> u8", "labelDetails": { "detail": "()" },
+                "label": "bar", "kind": 2, "detail": "fn() -> u8", "labelDetails": { "detail": "()", "description": "u8" },
                 "textEdit": { "newText": "bar()$0", "insert": {"start":{"line":0,"character":12},"end":{"line":0,"character":14}},
                               "replace": {"start":{"line":0,"character":12},"end":{"line":0,"character":15}} },
                 "insertTextFormat": 2, "sortText": "0001"
@@ -813,6 +1274,7 @@ async fn completion_mapping_merge_and_resolve() {
     assert_eq!(bar.insert_text, "bar()$0");
     assert!(bar.is_snippet);
     assert_eq!(bar.label_detail.as_deref(), Some("()"));
+    assert_eq!(bar.label_description.as_deref(), Some("u8"));
     assert_eq!(bar.replace_range, Some(rng(0, 12, 0, 14)));
     assert_eq!(bar.replace_range_tab, Some(rng(0, 12, 0, 15)));
     assert_eq!(bar.data, Some(json!({ "from": "defaults" })));
@@ -828,9 +1290,13 @@ async fn completion_mapping_merge_and_resolve() {
     assert_eq!(resolved.documentation.as_ref().unwrap().value, "**docs**");
     assert_eq!(resolved.additional_edits[0].new_text, "use foo;\n");
     assert_eq!(resolved.insert_text, "bar()$0", "fields absent from the resolve reply are kept");
+    assert_eq!(resolved.label_detail.as_deref(), Some("()"));
+    assert_eq!(resolved.label_description.as_deref(), Some("u8"));
+    assert_eq!(resolved.detail.as_deref(), Some("fn() -> u8"));
     assert_eq!(resolved.replace_range_tab, Some(rng(0, 12, 0, 15)));
     let sent = &a.requested("completionItem/resolve")[0];
     assert_eq!(sent["data"], json!({ "from": "defaults" }));
+    assert_eq!(sent["labelDetails"], json!({ "detail": "()", "description": "u8" }));
     assert_eq!(sent["textEdit"]["replace"]["end"]["character"], 15);
 
     // Server b has no resolve support: the item comes back unchanged.
@@ -935,7 +1401,7 @@ async fn diagnostics_become_events_and_feed_code_actions() {
     s.respond(
         "textDocument/codeAction",
         json!([
-            { "title": "Remove", "kind": "quickfix", "isPreferred": true, "data": { "id": 7 } },
+            { "title": "Remove", "kind": "quickfix", "isPreferred": true, "data": { "id": 7 }, "diagnostics": [diag(0)] },
             { "title": "Run", "command": "mock.run", "arguments": [1] }
         ]),
     );
@@ -950,6 +1416,9 @@ async fn diagnostics_become_events_and_feed_code_actions() {
     assert_eq!(actions.len(), 2);
     assert_eq!(actions[0].kind.as_deref(), Some("quickfix"));
     assert!(actions[0].is_preferred);
+    assert_eq!(actions[0].diagnostics[0].range, rng(0, 4, 0, 10));
+    assert_eq!(actions[0].diagnostics[0].message, "unused variable");
+    assert!(actions[1].diagnostics.is_empty());
     assert_eq!(actions[1].command.as_ref().unwrap().command, "mock.run");
     let req = &s.requested("textDocument/codeAction")[0];
     assert_eq!(req["context"]["only"], json!(["quickfix"]));
@@ -959,6 +1428,8 @@ async fn diagnostics_become_events_and_feed_code_actions() {
 
     let resolved = h.mgr.resolve_code_action(doc, actions[0].clone()).await.unwrap();
     assert_eq!(s.requested("codeAction/resolve")[0]["data"], json!({ "id": 7 }));
+    assert_eq!(s.requested("codeAction/resolve")[0]["diagnostics"], json!([diag(0)]));
+    assert_eq!(resolved.diagnostics, actions[0].diagnostics);
     let edit = resolved.edit.unwrap();
     assert!(
         matches!(&edit.files[0], FileEdit::Edit { path: p, edits, .. } if p == &path && edits[0].range == rng(0, 0, 1, 0))
@@ -1878,6 +2349,34 @@ async fn java_source_paths_reach_initialization_live_configuration_and_builds() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_build_waits_for_a_reconfigured_server_to_restart() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(1));
+    let gate = Arc::new(Gate::default());
+    *state.held.lock() = Some(("exit".into(), gate.clone()));
+    h.mgr.set_config_hook(Box::new(|cfg, _| cfg.args.push("--new-configuration".into())));
+    let reconfigure = tokio::spawn({
+        let mgr = h.mgr.clone();
+        async move { mgr.reconfigure().await }
+    });
+    eventually(|| gate.entered()).await;
+    let mut build = tokio::spawn({
+        let (mgr, root) = (h.mgr.clone(), h.root.clone());
+        async move { mgr.java_build(&root, false, &Default::default()).await }
+    });
+    let early = tokio::time::timeout(Duration::from_millis(100), &mut build).await;
+    gate.open();
+    reconfigure.await.unwrap();
+    assert!(early.is_err(), "a planned restart must not fail a pending build: {early:?}");
+    assert_eq!(build.await.unwrap().unwrap(), ide_lsp::jdtls::JavaBuildStatus::Succeeded);
+    assert_eq!(state.launches.load(Ordering::SeqCst), 2);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn java_build_asks_for_a_full_build_when_rebuilding() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     let state = h.launcher.state("jdtls");
@@ -2730,7 +3229,7 @@ async fn noop_handler_is_usable_for_raw_peers() {
     let (a, b) = tokio::io::duplex(1024);
     let (ar, aw) = tokio::io::split(a);
     let (br, bw) = tokio::io::split(b);
-    let _server = Peer::connect(br, bw, Arc::new(MockHandler(Arc::default())));
+    let _server = Peer::connect(br, bw, Arc::new(MockHandler(Arc::default(), std::sync::Weak::new())));
     let client = Peer::connect(ar, aw, Arc::new(NoopHandler));
     let v: Value = client.request("shutdown", (), None).await.unwrap();
     assert_eq!(v, Value::Null);
@@ -5136,6 +5635,39 @@ async fn jdtls_import_failure_names_reserved_device_files_on_windows() {
     let _ = std::fs::remove_file(&nul);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn gradle_incompatible_jdk_log_is_surfaced_once_across_message_channels() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let s = h.launcher.state("jdtls");
+    h.open("A.java", "class A {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let failure = "Can't use Java 27.0.1.0.3 and Gradle 9.7.1 to import Gradle project kotlin-gradle.";
+    for _ in 0..2 {
+        s.peer()
+            .notify(
+                "window/logMessage",
+                json!({ "type": 1, "message": format!("{failure}\njava.lang.Exception: details stay in the log") }),
+            )
+            .unwrap();
+    }
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Notify { body: Some(b), .. } if b == failure)))
+        .await;
+    s.peer().notify("window/showMessage", json!({ "type": 1, "message": failure })).unwrap();
+    s.peer().notify("window/logMessage", json!({ "type": 1, "message": "unrelated internal error" })).unwrap();
+    s.peer().notify("window/showMessage", json!({ "type": 2, "message": "after" })).unwrap();
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Notify { body: Some(b), .. } if b == "after")))
+        .await;
+    let events = h.events.lock();
+    let messages: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Notify { body: Some(body), .. } => Some(body.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(messages, vec![failure, "after"]);
+}
+
 /// Pull Members Up / Push Members Down: the extension's answers, refusals and edits.
 #[tokio::test(flavor = "multi_thread")]
 async fn java_hierarchy_refactorings_use_the_extension_commands() {
@@ -5410,76 +5942,4 @@ async fn missing_injected_server_uses_the_normal_single_install_notification() {
     assert_eq!(h.statuses("embedded").iter().filter(|s| **s == ServerStatus::Missing).count(), 1);
     h.mgr.did_close(host);
     h.mgr.shutdown_all().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn languages_sharing_a_server_keep_independent_target_choices() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dunce::canonicalize(dir.path()).unwrap();
-    let language = |id: &str| {
-        let mut lang: LanguageConfig = toml::from_str(&format!("id='{id}'\nname='{id}'\nextensions=['{id}']")).unwrap();
-        lang.language_servers = vec![server_cfg("shared")];
-        lang
-    };
-    let registry = Arc::new(LanguageRegistry::from_configs(vec![language("one"), language("two")]));
-    struct ScopedLauncher(Arc<MockLauncher>);
-    impl Launcher for ScopedLauncher {
-        fn launch(
-            &self,
-            config: &LanguageServerConfig,
-            root: &Path,
-            handler: Arc<dyn Handler>,
-            stderr: Box<dyn Fn(String) + Send + Sync>,
-        ) -> Result<Peer, LaunchError> {
-            let mut config = config.clone();
-            if let Some(key) = &config.target_key {
-                config.name = format!("{}@{key}", config.name);
-            }
-            self.0.launch(&config, root, handler, stderr)
-        }
-    }
-    let launcher = Arc::new(MockLauncher::default());
-    for name in ["shared", "shared@container"] {
-        *launcher.state(name).caps.lock() = json!({"textDocumentSync":1,"hoverProvider":true});
-    }
-    let manager = LspManager::with_launcher(
-        root.clone(),
-        registry,
-        Arc::new(ide_core::NullSink),
-        Arc::new(ScopedLauncher(launcher.clone())),
-    );
-    let selected = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let selected_hook = selected.clone();
-    manager.set_servers_hook(Box::new(move |lang, defined| {
-        let mut configs = defined.to_vec();
-        if lang.as_str() == "one" && selected_hook.load(Ordering::Acquire) {
-            configs[0].target_key = Some("container".into());
-        }
-        configs
-    }));
-    let one = DocId::next();
-    let two = DocId::next();
-    manager.did_open(one, &root.join("a.one"), &LanguageId::new("one"), 1, "one");
-    manager.did_open(two, &root.join("b.two"), &LanguageId::new("two"), 1, "two");
-    eventually(|| manager.servers().iter().any(|s| s.status == ServerStatus::Ready)).await;
-    assert_eq!(manager.servers().len(), 1);
-    let host = manager.servers()[0].id;
-    selected.store(true, Ordering::Release);
-    manager.reconfigure().await;
-    eventually(|| manager.servers().iter().filter(|s| s.status == ServerStatus::Ready).count() == 2).await;
-    assert!(manager.servers().iter().any(|s| s.id == host));
-    // Each document has one server. Hover must not send to both after splitting.
-    let state = launcher.state("shared");
-    state.requests.lock().clear();
-    let target_state = launcher.state("shared@container");
-    target_state.requests.lock().clear();
-    let _ = manager.hover(one, Pos::new(0, 0), CancellationToken::new()).await;
-    let _ = manager.hover(two, Pos::new(0, 0), CancellationToken::new()).await;
-    assert_eq!(state.requested("textDocument/hover").len(), 1);
-    assert_eq!(target_state.requested("textDocument/hover").len(), 1);
-    selected.store(false, Ordering::Release);
-    manager.reconfigure().await;
-    assert_eq!(manager.servers().len(), 1);
-    assert_eq!(manager.servers()[0].id, host);
-    manager.shutdown_all().await;
 }

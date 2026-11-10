@@ -1,0 +1,151 @@
+---
+title: "Manifest"
+description: "plugin.toml 的每个字段：身份信息、API 要求、代码、激活、能力和贡献点。"
+---
+
+每个插件都是根目录下带 `plugin.toml` 的文件夹。清单说明插件是谁、需要哪个插件 API、代码在哪里（如果有）、什么时候加载、可以做什么，以及向 IDE 贡献了什么。
+
+## 示例
+
+```toml
+id = "acme.word-tools"
+name = "Word Tools"
+version = "1.2.0"
+description = "Counts and transforms words."
+authors = ["You <you@example.com>"]
+homepage = "https://example.com"
+license = "MIT"
+change-notes = "1.2.0 — adds Shout."
+categories = ["tools"]
+icon = "icon.svg"
+icon-dark = "icon_dark.svg"
+engines.openidea = "^1.2"
+wasm = "dist/plugin.wasm"
+activation = ["on-language:markdown"]
+
+[capabilities]
+required = ["editor.read", "editor.write"]
+optional = ["net:api.example.com"]
+
+[[contributes.commands]]
+id = "count"
+title = "Word Tools: Count Words"
+category = "Word Tools"
+when = "editorFocus"
+
+[[contributes.keymaps]]
+command = "count"
+key = "Ctrl+Alt+C"
+mac = "Meta+Alt+C"
+```
+
+## 顶层字段
+
+| 字段               | 必填 | 说明                                                                                                                                                                          |
+| ------------------ | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`               | 是   | 由 `.` 连接的若干段，每段匹配 `[a-z0-9][a-z0-9_-]*`，总长不超过 64。第一个 `.` 之前是发布者命名空间（`acme.word-tools` 中的 `acme`）；签名的包必须使用其发布者的前缀。        |
+| `name`             | 是   | 显示名称，不能为空。                                                                                                                                                          |
+| `version`          | 是   | 语义化版本，如 `1.2.0`。                                                                                                                                                      |
+| `description`      | 否   | 一两句话，显示在 设置 › 插件 和插件市场中。                                                                                                                                   |
+| `authors`          | 否   | 字符串列表。                                                                                                                                                                  |
+| `homepage`         | 否   | 显示在插件详情中的 URL。                                                                                                                                                      |
+| `license`          | 否   | 许可证名称，例如 SPDX 标识。                                                                                                                                                  |
+| `change-notes`     | 否   | 发布说明，显示在插件详情的 **新功能** 中。                                                                                                                                    |
+| `categories`       | 否   | 最多 3 个插件市场分类（见下文）。                                                                                                                                             |
+| `icon`             | 否   | 插件包的 SVG 图标，用于 设置 › 插件 和插件市场。不超过 16 KiB，会被净化（不允许脚本、外部引用和 `foreignObject`）；图标无效时整个包被拒绝。需要 `engines.openidea = "^1.2"`。 |
+| `icon-dark`        | 否   | 深色主题下使用的图标变体，需要同时有 `icon`。                                                                                                                                 |
+| `engines.openidea` | 是   | 对插件 API 的 semver 版本要求，例如 `"^1.4"`。要求与 IDE 的 API 不匹配时，IDE 拒绝这个包。见 [API 版本与兼容](/zh/plugins/versioning)。                                       |
+| `wasm`             | 否   | 组件路径。纯数据插件不写。                                                                                                                                                    |
+| `activation`       | 否   | 触发加载代码的事件（见下文），需要有 `wasm`。                                                                                                                                 |
+| `[capabilities]`   | 否   | `required` 和 `optional` 两个能力字符串列表。见 [权限与能力](/zh/plugins/capabilities)。                                                                                      |
+| `[contributes]`    | 否   | 贡献点（见下文）。                                                                                                                                                            |
+
+未知的顶层字段会报错。
+
+所有路径都相对于插件包目录，且不能跳出该目录。清单作为整体校验：只要有一个贡献无效，整个插件都不会安装或加载。IDE 不认识的贡献类型（来自更新的 API）会被跳过并给出警告。
+
+### 分类
+
+`languages`、`themes`、`icon-themes`、`linters`（检查器和格式化工具）、`vcs`、`ai`、`frameworks`、`tools`、`other`。
+
+不写 `categories` 时，贡献了主题、图标主题或语言的插件会归入对应分类，其他插件归入 `other`。IDE 不认识的分类，以及已认识的前三个之后的分类都会被忽略；`openidea-plugin check` 会对这两种情况给出警告。
+
+### 激活
+
+代码按需加载。不写 `activation` 时，代码在第一次执行插件命令时加载。
+
+| 事件                  | 触发时机                                                               |
+| --------------------- | ---------------------------------------------------------------------- |
+| `on-command:<id>`     | 执行该命令；每个命令都隐含此事件。`on-command:*` 表示任意命令。        |
+| `on-language:<id>`    | 打开该语言的文件（`*`：任意语言）。                                    |
+| `on-file:<glob>`      | 打开匹配该 glob 的项目文件。                                           |
+| `on-view:<id>`        | 显示插件的某个视图或自定义编辑器。                                     |
+| `on-schedule:<secs>`  | 每隔 `secs` 秒（至少 60），插件会收到 `scheduled` 事件。               |
+| `on-event:<kind>`     | 发生该类型的工作台事件（见 [生命周期与事件](/zh/plugins/lifecycle)）。 |
+| `on-startup-finished` | 工作台就绪后不久。请谨慎使用。                                         |
+
+重复的事件会报错。部分事件类型需要更新的 API：`on-event:files-changed` 需要 `^1.3`；`file-closed`、`settings-changed`、`input-mode-changed`、`run-exited`、`terminal-exited` 和 `content-tab-action` 需要 `^1.4`。
+
+### 能力
+
+```toml
+[capabilities]
+required = ["project.read", "process:checkstyle"]
+optional = ["net:api.openai.com", "secrets"]
+```
+
+**required** 能力在安装时整体同意；**optional** 能力用户可以逐个拒绝，插件必须能处理缺少它们时返回的 `Error::Denied`。完整列表及其作用见 [权限与能力](/zh/plugins/capabilities)。
+
+## 贡献点
+
+每个贡献点是一张表（`[contributes.settings]`）或一个表数组（`[[contributes.commands]]`）。插件启用后贡献立即生效，不需要等代码加载。
+
+| 贡献点              | 声明字段                                                                     | 需要代码        | 指南                                                                                                                            |
+| ------------------- | ---------------------------------------------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `commands`          | `id`、`title`、`category?`、`when?`、`icon?`                                 | 执行时需要      | [命令与动作](/zh/plugins/guides/commands)                                                                                       |
+| `menus`             | `menu`、`command`、`when?`、`view?`、`submenu?`                              | 否              | [命令与动作](/zh/plugins/guides/commands)                                                                                       |
+| `keymaps`           | `command`、`key`、`mac?`                                                     | 否              | [命令与动作](/zh/plugins/guides/commands)                                                                                       |
+| `statusBar`         | `id`、`text`、`tooltip?`、`command?`、`align?`、`priority?`                  | 否              | [视图与装饰](/zh/plugins/guides/views)                                                                                          |
+| `settings`          | `schema`（JSON 文件）或 `pages`（API 1.3）、`title?`                         | 否              | [生命周期与事件](/zh/plugins/lifecycle)                                                                                         |
+| `secrets`           | `name`、`label`、`description?`                                              | 使用时需要      | [权限与能力](/zh/plugins/capabilities)                                                                                          |
+| `providers`         | `kinds`、`languages`                                                         | 是              | [语言功能](/zh/plugins/guides/language-features)                                                                                |
+| `documentIndexers`  | `extensions`                                                                 | 是              | [索引](/zh/plugins/guides/indexing)                                                                                             |
+| `endpoints`         | `files`（API 1.3）                                                           | 是              | [README：Project HTTP endpoints](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#project-http-endpoints-api-13) |
+| `views`             | `id`、`title`、`icon?`、`location`、`web?`、`group?`、`when?`                | 无 `web` 时需要 | [视图与装饰](/zh/plugins/guides/views)                                                                                          |
+| `customEditors`     | `id`、`title`、`patterns`、`priority`、`layout?`、`web?`                     | 无 `web` 时需要 | [视图与装饰](/zh/plugins/guides/views)                                                                                          |
+| `markerIcons`       | `id`、`icon`、`iconDark?`、`markers?`、`tooltip?`（API 1.3）：装订区标记图标 | 否              | [语言功能](/zh/plugins/guides/language-features)                                                                                |
+| `fileIcons`         | `id`、`patterns`、`icon`、`iconDark?`                                        | 否              | [图标主题](/zh/plugins/guides/icon-themes)                                                                                      |
+| `fileTemplates`     | `id`、`name`、`extension`、`path`；API 1.3：`fileName`、`variables`          | 否              | [文件操作](/zh/plugins/guides/file-actions)                                                                                     |
+| `snippets`          | `language`、`path`（API 1.4）                                                | 否              | [语言功能](/zh/plugins/guides/language-features)                                                                                |
+| `commitChecks`      | `id`、`title`                                                                | 是              | [README：Commits](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#commits)                                      |
+| `runDetectors`      | `id`、`name`、`files`、`command`、`args?`、`test?`、`framework?`             | 否              | [运行目标](/zh/plugins/guides/run-targets)                                                                                      |
+| `runConfigurations` | `files`（API 1.4）                                                           | 是              | [运行目标](/zh/plugins/guides/run-targets)                                                                                      |
+| `mcpTools`          | `name`、`description`、`inputSchema`、`readOnly`、`destructive`（API 1.4）   | 是              | [MCP 工具](/zh/plugins/guides/mcp)                                                                                              |
+| `themes`            | `path`、`editor-scheme?`                                                     | 否              | [主题](/zh/plugins/guides/themes)                                                                                               |
+| `iconThemes`        | `id`、`label`、`path`                                                        | 否              | [图标主题](/zh/plugins/guides/icon-themes)                                                                                      |
+| `languages`         | `path`（`languages/<id>.toml` 格式的文件）                                   | 否              | [添加语言](/zh/languages/adding)                                                                                                |
+
+条目 id（命令、视图、主题等）匹配 `[a-z0-9][a-z0-9._-]*`，不超过 64 个字符。菜单、快捷键和状态栏项只能引用插件自己声明的命令；在 IDE 内部，命令的操作 id 是 `plugin.<plugin id>.<command id>`。
+
+## 翻译
+
+插件包用 `locales/<tag>.json` 文件（`fr.json`、`zh-CN.json`）翻译自己的文本，不需要在清单里声明。每个文件把英文原文映射到译文：
+
+```json
+{ "Count Words": "Compter les mots", "Refresh": "Actualiser" }
+```
+
+IDE 根据当前界面语言选用目录（先精确匹配 tag，再匹配语言，再匹配变体，例如 `zh` 可以用 `zh-TW`），应用到清单声明的标题、分类、标签、提示，以及视图显示的文本。插件自己拼出来的文本（通知、错误信息、`html` 内容）不会被翻译：生成这些文本时读取 `host::locale()`。如果目录不是“字符串到字符串”的 JSON 对象，`openidea-plugin check` 会拒绝它。
+
+## 0.1 格式
+
+旧的 0.1 格式清单（`openidea-api = "0.1"`、`permissions = [...]`）仍能加载：其 permissions 视为 required 能力，贡献照常生效。但 0.1 的代码不再运行，需要用 1.x SDK 重新构建，并改用 `engines.openidea` 和 `[capabilities]`。同一个清单不能混用两种格式。
+
+## 检查清单
+
+```sh
+openidea-plugin check            # 当前文件夹
+openidea-plugin check path/to/plugin
+```
+
+`check` 按安装时完全相同的规则校验清单、所有贡献和组件。见 [测试与调试](/zh/plugins/testing)。

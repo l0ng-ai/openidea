@@ -1,0 +1,69 @@
+---
+title: "Overview"
+description: "What OpenIDEA plugins can do, the two kinds of plugin, and the current state of the plugin API."
+---
+
+OpenIDEA plugins extend the IDE with commands, editor features, tool windows, themes, icons and languages. A plugin is a folder with a `plugin.toml` manifest. If it has code, the code is a sandboxed WebAssembly component that can only do what the user allowed.
+
+<Warning>
+  The plugin system is a **preview**. **Settings › Plugins** shows a **Preview** badge: the API and the plugins may
+  still change. Released API versions only grow, so a plugin built for API 1.0 keeps loading in later 1.x IDEs (see [API
+  versions](/en/plugins/versioning)).
+</Warning>
+
+## What a plugin can do
+
+- Add **commands**. They become IDE actions: they show in Find Action and Search Everywhere, can be bound to keys, and can be placed in menus, the main toolbar and the status bar.
+- Read and change project files and the focused editor, react to workbench events (file opened or saved, VCS changes, actions run) and run background tasks with progress.
+- Provide **editor features** for any language: completion, inline completion, quick fixes, navigation, hover, inlay hints, semantic highlighting, diagnostics while typing, formatting, code lenses, gutter markers and more.
+- Show **tool windows** and **custom editors**, either declarative (trees, lists, forms, tables) or as a sandboxed web page.
+- Contribute **run configurations**, test result parsers and run targets, **database sources**, and **MCP tools** for the built-in MCP server.
+- Call web services, store secrets in the system keychain, keep data in their own storage, and run programs the user approved.
+- Contribute **settings pages**, **file templates**, **snippets**, **themes**, **file icon themes** and **languages**.
+
+## Two kinds of plugin
+
+| Kind        | Contains                                                                                                                                  | Needs code | Examples                                                                                                                                                                                     |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Data-only   | A manifest and data files: themes, icon themes, language definitions, menus, shortcuts, settings, file templates, snippets, run detectors | No         | [harbor-night](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/harbor-night), [material-icons](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/material-icons) |
+| Code plugin | The above plus a WebAssembly component (`wasm = "dist/plugin.wasm"`)                                                                      | Yes        | [string-tools](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/string-tools), [git-toolbox](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/git-toolbox)       |
+
+Declared contributions work as soon as the plugin is enabled, before any code loads: commands appear in Find Action, themes can be applied, settings pages exist. Code is loaded only when it is first needed (a command runs, a file of a declared language opens, and so on) and is unloaded again after 5 minutes without use.
+
+Code plugins are WebAssembly components targeting the `plugin` world in [`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit). The Rust SDK ([`sdk/rust/openidea-plugin`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin)) is the supported way to write them; any language with component-model tooling (`componentize-py`, `jco componentize`, TinyGo) can target the same world.
+
+## API version
+
+|                           |                                                              |
+| ------------------------- | ------------------------------------------------------------ |
+| Latest released API       | **1.4.0**, shipped with OpenIDEA 0.1.40                      |
+| In development            | **1.5.0** on the `main` branch, planned for the next release |
+| Format of the WIT package | `openidea:plugin@<version>`                                  |
+
+Declare the API your plugin needs with `engines.openidea` in the manifest, for example `engines.openidea = "^1.4"`.
+
+## Where plugins come from
+
+- **Marketplace:** **Settings › Plugins › Available** lists the official plugins and the community plugins of the [registry](https://github.com/l0ng-ai/openidea-plugins). See [Publish to the marketplace](/en/plugins/publishing/marketplace).
+- **Disk:** **Install Plugin from Disk…** (a folder) or **Install Plugin from Package File…** (an `.oiplugin` or `.zip`) in the gear menu of **Settings › Plugins**.
+- **Linked folders:** `openidea-plugin link` loads a folder you are developing, without installing it.
+- **Project plugins:** packages in `<project>/.openidea/plugins/<name>/` load in trusted projects only, after you approve their permissions.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" href="/en/plugins/quickstart">
+    Scaffold, build and run a plugin in a few minutes.
+  </Card>
+  <Card title="Example plugins" href="/en/plugins/examples">
+    A tour of the plugins in `plugins/official`.
+  </Card>
+  <Card title="Architecture and sandbox" href="/en/plugins/architecture">
+    How plugin code runs and what limits it.
+  </Card>
+  <Card title="Manifest" href="/en/plugins/manifest">
+    Every field of `plugin.toml`.
+  </Card>
+</CardGroup>
+
+The full, authoritative guide is [`plugins/README.md`](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md) in the repository.

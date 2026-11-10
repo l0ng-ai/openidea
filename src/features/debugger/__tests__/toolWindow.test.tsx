@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
+const debugEvaluateIn = vi.hoisted(() =>
+  vi.fn(async () => ({
+    status: "ok" as const,
+    data: { name: "result", value: "4", typeName: "int", variablesReference: 0, evaluateName: null },
+  })),
+);
+
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
   const ok = <T,>(data: T) => Promise.resolve({ status: "ok" as const, data });
@@ -8,6 +15,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     ...real,
     commands: {
       ...real.commands,
+      debugEvaluateIn,
       debugScopes: () => ok([{ name: "Locals", variablesReference: 1, expensive: false }]),
       debugVariables: () =>
         ok([
@@ -31,6 +39,8 @@ vi.mock("@/workbench/confirmTerminate", () => ({ confirmTerminate }));
 import type { RunConfig } from "@/platform/ipc";
 import { useDebug, type DebugSession } from "../state";
 import { DebugTabs, DebugToolWindow } from "../ui/DebugToolWindow";
+import { DebuggerOverlays } from "../ui/Overlays";
+import { useOverlays } from "../ui/popoverStore";
 
 const session: DebugSession = {
   id: 1,
@@ -53,6 +63,26 @@ const session: DebugSession = {
 };
 
 describe("debug tool window", () => {
+  it.each(["gdb", "debugpy"])("evaluates expressions in the variable field and dialog under %s", async (adapter) => {
+    debugEvaluateIn.mockClear();
+    useDebug.setState({ sessions: { 1: { ...session, adapter } }, active: 1 });
+    const { unmount } = render(<DebugToolWindow />);
+    fireEvent.click(screen.getByRole("tab", { name: "Threads & Variables" }));
+    const field = screen.getByPlaceholderText(/Evaluate expression/);
+    fireEvent.change(field, { target: { value: "count + 1" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    const context = adapter === "gdb" ? "watch" : "repl";
+    await vi.waitFor(() => expect(debugEvaluateIn).toHaveBeenCalledWith(1, 7, "count + 1", context));
+    unmount();
+    debugEvaluateIn.mockClear();
+    useOverlays.setState({ evaluate: { expression: "count + 1" } });
+    const dialog = render(<DebuggerOverlays />);
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate" }));
+    await vi.waitFor(() => expect(debugEvaluateIn).toHaveBeenCalledWith(1, 7, "count + 1", context));
+    dialog.unmount();
+    useOverlays.setState({ evaluate: null });
+  });
+
   it("offers Hot Reload and Hot Restart for Dart and Flutter sessions only", () => {
     const hot = () => ["debug.hotReload", "debug.hotRestart"].map((name) => !!screen.queryByRole("button", { name }));
     useDebug.setState({ sessions: { 1: { ...session, status: "running" } }, active: 1 });

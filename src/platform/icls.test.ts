@@ -20,6 +20,33 @@ const fixture = (name: string) => readFileSync(`src/platform/__fixtures__/colorS
 beforeAll(() => _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8")));
 
 describe(".icls schemes", () => {
+  it("round trips Python docstring tags with the Python attribute key and keywords with an extension key", () => {
+    const { scheme } = parseIcls(`<scheme name="Python docs"><attributes>
+      <option name="PY.DOC_COMMENT_TAG"><value><option name="FOREGROUND" value="123456"/></value></option>
+      <option name="OPENIDEA_pyDocstringKeyword"><value><option name="FOREGROUND" value="654321"/></value></option>
+      </attributes></scheme>`);
+    expect(scheme.attributes.pyDocstringTag?.foreground).toBe("#123456");
+    expect(scheme.attributes.pyDocstringKeyword?.foreground).toBe("#654321");
+    const xml = exportIcls("custom-python", { "custom-python": scheme });
+    expect(xml).toContain('name="PY.DOC_COMMENT_TAG"');
+    expect(xml).toContain('name="OPENIDEA_pyDocstringKeyword"');
+    expect(xml).not.toContain("PY_DOC_COMMENT_TAG");
+    expect(parseIcls(xml).scheme.attributes).toMatchObject(scheme.attributes);
+  });
+
+  it("round trips the selection foreground through SELECTION_FOREGROUND (#2446)", () => {
+    const { scheme } = parseIcls(`<scheme name="Sel" parent_scheme="Default"><colors>
+      <option name="SELECTION_BACKGROUND" value="214283"/>
+      <option name="SELECTION_FOREGROUND" value="ffffff"/>
+    </colors></scheme>`);
+    expect(scheme.attributes.selection).toEqual({ background: "#214283" });
+    expect(scheme.attributes.selectionForeground).toEqual({ foreground: "#ffffff" });
+    const { id, customs } = importScheme({}, scheme);
+    const xml = exportIcls(id, customs);
+    expect(xml).toContain('<option name="SELECTION_FOREGROUND" value="ffffff" />');
+    expect(parseIcls(xml).scheme.attributes.selectionForeground).toEqual({ foreground: "#ffffff" });
+  });
+
   it("resolves explicit attribute inheritance independent of XML order and stops cycles", () => {
     const { scheme } = parseIcls(`<scheme name="Inherited"><attributes>
       <option name="PHP_PARAMETER" baseAttributes="PHP_VAR"/>

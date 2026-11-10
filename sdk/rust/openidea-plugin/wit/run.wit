@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 /// Launches this plugin's configurations in the invoking window's Run tool window.
 interface run {

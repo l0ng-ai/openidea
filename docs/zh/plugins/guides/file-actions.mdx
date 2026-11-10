@@ -1,0 +1,189 @@
+---
+title: "文件操作"
+description: "创建、重命名或删除文件的快速修复，读写项目文件，以及访问项目之外的文件。"
+---
+
+本页介绍插件如何处理文件：
+
+- **文件操作**（`file-actions.wit`，API 1.3）：创建、重命名或删除文件的快速修复和重构，作为一次可撤销的工作区编辑应用。
+- **项目文件**（`workspace.wit`）：读取、写入、查找和搜索打开项目中的文件。
+- **其他文件**（`fs.wit`，API 1.3）：在明确授权下访问项目之外的文件，以及插件自己的私有目录。
+- **文件模板**：**文件 › 新建…** 菜单中的条目，不需要代码。
+
+## 文件操作
+
+文件操作是一种代码操作，结果是一组文件操作加文本编辑。声明 `code-actions` 提供者类型（与纯文本快速修复相同），
+实现 `openidea_plugin::file_actions::FileActions`，并与 `providers` 一起注册：
+
+```toml
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+
+[[contributes.providers]]
+kinds = ["code-actions"]
+languages = ["markdown"]
+```
+
+```rust
+use openidea_plugin::file_actions::{FileAction, FileActions, FileOperation};
+use openidea_plugin::providers::{Document, Providers};
+use openidea_plugin::{Error, Invocation, Plugin, Range, register_plugin};
+
+#[derive(Default)]
+struct Notes;
+
+impl Plugin for Notes {
+    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+        Err(Error::NotFound(id.into()))
+    }
+}
+
+impl Providers for Notes {}
+
+impl FileActions for Notes {
+    fn file_actions(&mut self, doc: &Document, _selection: Range) -> Vec<FileAction> {
+        let Some(stem) = doc.path.strip_suffix(".md") else { return vec![] };
+        let notes = format!("{stem}.notes.md");
+        vec![FileAction {
+            title: "Create a notes file".into(),
+            kind: Some("quickfix".into()),
+            operations: vec![FileOperation::Create { path: notes.clone(), text: "# Notes\n".into(), overwrite: false }],
+            open: Some(notes),
+            ..Default::default()
+        }]
+    }
+}
+
+register_plugin!(Notes, providers, file_actions);
+```
+
+这些操作与纯文本代码操作一起列在 **显示上下文操作**（`⌥⏎` / `Alt+Enter`）中，同样受 50 ms 编辑器预算约束。
+
+### `FileAction` 记录
+
+| 字段         | 说明                                                                                           |
+| ------------ | ---------------------------------------------------------------------------------------------- |
+| `title`      | 菜单中显示的标题。                                                                             |
+| `kind`       | `quickfix`、`refactor` 等。                                                                    |
+| `preferred`  | 标记为首选修复。                                                                               |
+| `operations` | 最先按顺序执行：`Create { path, text, overwrite }`、`Rename { from, to }`、`Delete { path }`。 |
+| `edits`      | 每个文件的 `(path, Vec<TextEdit>)`，在文件操作之后应用；可以修改刚创建的文件。                 |
+| `open`       | 操作应用后要打开的文件。                                                                       |
+| `data`       | 插件自己的引用；设置它并让 operations 和 edits 为空时，会在用户选中后再计算（见下）。          |
+
+规则：
+
+- 文件操作和编辑是一次工作区编辑：任何一步失败都不会应用任何改动，一次撤销即可全部还原。撤销 `Delete` 会恢复文件。
+- 文件已存在时 `Create` 会失败，除非设置 `overwrite`；缺失的父目录会自动创建。
+- 路径为绝对路径或相对项目根目录，且必须在项目内；路径超出项目时该操作不可用。
+
+### 选中时再计算
+
+返回带 `data`、`operations` 和 `edits` 为空的操作即可推迟计算。用户选中它时，宿主调用
+`resolve_file_action(doc, action)`，使用 5 秒命令预算而不是 50 ms。与 `resolve_code_action` 一样，
+`host::pick`、`pick_many`、`input` 和 `confirm` 会在编辑器所在窗口询问，等待时间不计入预算。
+返回 `Error::Cancelled` 或没有任何改动的操作即可放弃。
+
+```rust
+fn resolve_file_action(&mut self, _doc: &Document, mut action: FileAction) -> Result<FileAction, Error> {
+    let Some(name) = host::input("New file name", Some("notes.md"))? else { return Err(Error::Cancelled) };
+    action.operations = vec![FileOperation::Create { path: name.clone(), text: String::new(), overwrite: false }];
+    action.open = Some(name);
+    Ok(action)
+}
+```
+
+## 项目文件
+
+在打开的项目中，插件通过 `Project` 句柄操作文件（命令和事件中用 `ctx.project()`，提供者中用
+`host::project_of(path)`，所有打开的项目用 `host::projects()`）。除 `write_file` 外都需要 `project.read`：
+
+| 方法                             | 说明                                                                                                                    |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `root()`                         | 项目根目录的绝对路径。                                                                                                  |
+| `read_file(path)`                | UTF-8 文本，最多 16 MiB；编辑器中未保存的内容优先；不存在时返回 `Error::NotFound`。                                     |
+| `write_file(path, text)`         | API 1.3，需要 `project.write`：一次性替换或创建文件（及缺失的目录），保留原编码和 BOM。编辑器中有未保存修改时拒绝写入。 |
+| `exists(path)`、`stat(path)`     | 是否存在（包括隐藏和被忽略的文件），以及类型、大小、修改时间。                                                          |
+| `find_files(glob, limit)`        | 相对根目录的通配符（`**/*Mapper.xml`）；遵循 `.gitignore` 和排除设置；返回绝对路径。                                    |
+| `search_text(&TextQuery, limit)` | API 1.4：与“在文件中查找”相同，包含未保存文档并遵循项目排除设置，最多 10,000 条；`limit_hit` 表示可能还有更多。         |
+| `symbols(query, limit)`          | API 1.3：模糊搜索内存中的符号索引（不经过语言服务器）；索引过程中结果可能不完整。                                       |
+
+路径为绝对路径或相对根目录。`..` 以及跳出根目录的符号链接会被拒绝。在远程项目中，这些调用在服务器上、紧挨着文件执行。
+
+另有两个相关调用不需要权限，只能在窗口的命令或事件中使用：`host::pick_directory(title, initial)`（API 1.3）
+打开系统的文件夹选择器；`host::open_project(path, new_window)`（API 1.3）走正常的 **文件 › 打开…** 流程，
+包括信任提示。路径都属于界面所在的机器。
+
+## 项目之外的文件
+
+`host::fs`（WIT `fs.wit`，API 1.3）读写打开项目之外的文件：插件所集成工具的配置、许可证文件、安装在别处的程序等。
+每次调用都会对照授权检查：
+
+```toml
+engines.openidea = "^1.3"
+
+[capabilities]
+optional = ["fs.read:~/.config/mytool", "fs.write:~/.config/mytool/state.json"]
+```
+
+```rust
+use openidea_plugin::host::{self, fs};
+use openidea_plugin::LogLevel;
+
+let config = fs::read_file("~/.config/mytool/config.toml")?;
+for entry in fs::read_dir("~/.config/mytool")? {
+    host::log(LogLevel::Info, &format!("{} ({:?})", entry.name, entry.kind));
+}
+fs::write_file("~/.config/mytool/state.json", "{}")?;
+```
+
+| 函数                       | 授权              | 说明                                                              |
+| -------------------------- | ----------------- | ----------------------------------------------------------------- |
+| `read_file(path)`          | `fs.read:<path>`  | 按编辑器的方式解码的文本，最多 16 MiB；编辑器中未保存的内容优先。 |
+| `read_bytes(path)`         | `fs.read:<path>`  | 字节，最多 16 MiB。非文本文件必须这样读取。                       |
+| `stat(path)`               | `fs.read:<path>`  | 类型、大小、修改时间；不存在时返回 `Error::NotFound`。            |
+| `read_dir(path)`           | `fs.read:<path>`  | 按名称排序的条目，最多 4096 个。                                  |
+| `write_file(path, text)`   | `fs.write:<path>` | 原子地替换或创建，保留编码和 BOM（新文件为 UTF-8），最多 16 MiB。 |
+| `write_bytes(path, bytes)` | `fs.write:<path>` | 同上，写入字节。                                                  |
+| `plugin_dir()`             | 无                | 插件的私有目录（见下）。                                          |
+
+- 路径为绝对路径，或以 `~/` 开头。授权可以覆盖一个目录（任意深度）或一个文件。比较前会先解析为真实路径，
+  所以指向授权目录之外的符号链接会被拒绝，`/opt/see` 也不会覆盖 `/opt/seeyon`。
+- 授权整个文件系统（`/`、`C:\`）会在读取清单时被拒绝。
+- `fs.write` 不包含 `fs.read`。目录不存在、文本无法按原编码写入，或编辑器中有该文件未保存的修改时，写入返回 `Error::Invalid`。
+- 两者都是高风险权限，安装页面会明确提示用户。
+
+### 私有目录
+
+`host::fs::plugin_dir()` 返回只属于本插件的目录，与插件安装的代码和键值 `storage` 分开。在其中读写不需要任何
+`fs.*` 或 `project.read` 授权，即使在激活期间或没有项目的提供者调用中也可以。目录以仅所有者可访问的方式创建
+（Unix 上为 0700，Windows 上为仅所有者 ACL），在空闲回收、重新加载、更新和重启后都保留，卸载时删除。
+适合存放生成的内容或超过 `storage` 容量的缓存。其中的路径可以用于 `host::open_location`，也可以作为已批准程序的参数。
+
+## 文件模板
+
+`[[contributes.fileTemplates]]` 在 **文件 › 新建…** 菜单中添加条目。不需要代码，也不授予任何文件访问权限：
+只有用户调用模板时，才通过 IDE 正常的新建文件流程创建文件。
+
+```toml
+[[contributes.fileTemplates]]
+id = "graph"
+name = "Graphviz Graph"
+extension = "dot"
+path = "templates/graph.dot"
+```
+
+声明 `engines.openidea = "^1.3"` 后，`fileName` 可以直接创建确切的文件名（包括点文件），不再询问名称；
+`variables` 会在新建文件对话框中添加必填文本框，用 `$NAME$` 或 `${NAME}` 插入：
+
+```toml
+[[contributes.fileTemplates]]
+id = "ignore"
+name = "Docker ignore"
+fileName = ".dockerignore"
+path = "templates/dockerignore.txt"
+variables = [{ name = "OUTPUT", prompt = "Output folder" }]
+```
+
+变量名必须是唯一的 ASCII 标识符，且不能覆盖内置变量（`NAME`、`PACKAGE`、`END` 等）。`$PACKAGE$`
+按扩展名使用内置规则推断（Java 和 Kotlin 用源码根目录，PHP 用 Composer PSR-4 映射等）。

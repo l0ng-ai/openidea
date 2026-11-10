@@ -62,6 +62,12 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "caretRow", name: "Caret row", path: ["General", "Editor"], bg: "--bg-current-line" },
   { id: "selection", name: "Selection background", path: ["General", "Editor"], bg: "--bg-editor-selection" },
   {
+    id: "selectionForeground",
+    name: "Selection foreground",
+    path: ["General", "Editor"],
+    fg: "--fg-editor-selection",
+  },
+  {
     id: "selectionInactive",
     name: "Selection background (inactive)",
     path: ["General", "Editor"],
@@ -170,6 +176,8 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   },
   syn("pyKeywordArg", "Keyword argument", ["Python"], "keyword-arg"),
   syn("pyDocstring", "Docstring", ["Python"], "docstring", { defaultItalic: true }),
+  syn("pyDocstringTag", "Docstring › Tag", ["Python"], "python-docstring-tag"),
+  syn("pyDocstringKeyword", "Docstring › Keyword", ["Python"], "python-docstring-keyword"),
   syn("pyBuiltin", "Built-in name", ["Python"], "python-builtin"),
   syn("pyDecorator", "Decorator", ["Python"], "annotation"),
   syn("pyLocalVariable", "Local variable", ["Python"], "python-local-variable"),

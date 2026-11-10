@@ -98,7 +98,7 @@ pub mod providers_bindings {
         export_macro_name: "__export_editor_providers_world",
         default_bindings_module: "openidea_plugin::providers_bindings",
         with: {
-            "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types,
         },
     });
 }
@@ -115,10 +115,10 @@ pub mod views_bindings {
         export_macro_name: "__export_views_world",
         default_bindings_module: "openidea_plugin::views_bindings",
         with: {
-            "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/workspace@1.4.0": crate::bindings::openidea::plugin::workspace,
-            "openidea:plugin/editor@1.4.0": crate::bindings::openidea::plugin::editor,
-            "openidea:plugin/invocation@1.4.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.5.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.5.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.5.0": crate::bindings::openidea::plugin::invocation,
         },
     });
 }
@@ -130,7 +130,7 @@ pub mod indexing_bindings {
         world: "indexing", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_indexing_world",
         default_bindings_module: "openidea_plugin::indexing_bindings",
-        with: { "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -142,10 +142,10 @@ pub mod details_bindings {
         export_macro_name: "__export_details_world",
         default_bindings_module: "openidea_plugin::details_bindings",
         with: {
-            "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/workspace@1.4.0": crate::bindings::openidea::plugin::workspace,
-            "openidea:plugin/editor@1.4.0": crate::bindings::openidea::plugin::editor,
-            "openidea:plugin/invocation@1.4.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.5.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.5.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.5.0": crate::bindings::openidea::plugin::invocation,
         },
     });
 }
@@ -157,7 +157,7 @@ pub mod semantic_bindings {
         world: "semantic-tokens", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_semantic_tokens_world",
         default_bindings_module: "openidea_plugin::semantic_bindings",
-        with: { "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -169,8 +169,8 @@ pub mod diagnostics_bindings {
         export_macro_name: "__export_diagnostics_world",
         default_bindings_module: "openidea_plugin::diagnostics_bindings",
         with: {
-            "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/diagnostics@1.4.0": crate::bindings::openidea::plugin::diagnostics,
+            "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/diagnostics@1.5.0": crate::bindings::openidea::plugin::diagnostics,
         },
     });
 }
@@ -182,7 +182,7 @@ pub mod hover_bindings {
         world: "hover", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_hover_world",
         default_bindings_module: "openidea_plugin::hover_bindings",
-        with: { "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -194,11 +194,11 @@ pub mod commit_checks_bindings {
         export_macro_name: "__export_commit_checks_world",
         default_bindings_module: "openidea_plugin::commit_checks_bindings",
         with: {
-            "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/workspace@1.4.0": crate::bindings::openidea::plugin::workspace,
-            "openidea:plugin/editor@1.4.0": crate::bindings::openidea::plugin::editor,
-            "openidea:plugin/invocation@1.4.0": crate::bindings::openidea::plugin::invocation,
-            "openidea:plugin/commit@1.4.0": crate::bindings::openidea::plugin::commit,
+            "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.5.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.5.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.5.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/commit@1.5.0": crate::bindings::openidea::plugin::commit,
         },
     });
 }
@@ -210,7 +210,7 @@ pub mod inlay_bindings {
         world: "inlay-hints", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_inlay_hints_world",
         default_bindings_module: "openidea_plugin::inlay_bindings",
-        with: { "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -221,7 +221,7 @@ pub mod file_actions_bindings {
         world: "file-actions-provider", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_file_actions_world",
         default_bindings_module: "openidea_plugin::file_actions_bindings",
-        with: { "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -233,16 +233,16 @@ pub mod endpoints_bindings {
         export_macro_name: "__export_endpoints_world",
         default_bindings_module: "openidea_plugin::endpoints_bindings",
         with: {
-            "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/workspace@1.4.0": crate::bindings::openidea::plugin::workspace,
-            "openidea:plugin/editor@1.4.0": crate::bindings::openidea::plugin::editor,
-            "openidea:plugin/invocation@1.4.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.5.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.5.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.5.0": crate::bindings::openidea::plugin::invocation,
         },
     });
 }
 
 /// The plugin API version this SDK targets.
-pub const API_VERSION: &str = "1.3";
+pub const API_VERSION: &str = "1.5";
 
 /// A plugin. One instance lives as long as the plugin's Wasm instance (until
 /// it is disabled, crashes or is reclaimed when idle).
@@ -286,6 +286,7 @@ macro_rules! register_plugin {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __optional_exports {
+    (run_target_validation, $plugin:ty, $component:ident) => { $crate::__run_target_validation_exports!($plugin, $component); };
     (injections, $plugin:ty, $component:ident) => { $crate::__injections_exports!($plugin, $component); };
     (language_features, $plugin:ty, $component:ident) => { $crate::__language_features_exports!($plugin, $component); };
     (mcp, $plugin:ty, $component:ident) => { $crate::__mcp_exports!($plugin, $component); };
@@ -1084,6 +1085,23 @@ pub mod __rt {
         with::<T, _>(|p| p.call(tool, arguments, &ctx)).map_err(error_out)
     }
 
+    pub fn validate_run_target<T: Plugin + crate::RunTargetValidation + Default>(
+        root: &str,
+        target: &str,
+        launch: crate::run_target_validation_bindings::exports::openidea::plugin::run_target_validation::LaunchInfo,
+    ) -> Result<(), String> {
+        use crate::run_target_validation_bindings::exports::openidea::plugin::run_target_validation::Operation;
+        let launch = crate::RunTargetLaunch {
+            operation: match launch.operation {
+                Operation::Run => crate::RunTargetOperation::Run,
+                Operation::Test => crate::RunTargetOperation::Test,
+            },
+            program: launch.program,
+            cwd: launch.cwd,
+        };
+        with::<T, _>(|p| p.validate(root, target, &launch))
+    }
+
     pub fn configurations<T: Plugin + crate::RunConfigurations + Default>(
         root: &str,
     ) -> Vec<crate::run_configurations_bindings::exports::openidea::plugin::run_configurations::RunConfiguration> {
@@ -1304,7 +1322,7 @@ pub mod run_configurations_bindings {
 pub mod test_results_bindings {
     wit_bindgen::generate!({ world: "test-results-provider", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_tests_world", default_bindings_module: "openidea_plugin::test_results_bindings",
-        with: { "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types },
     });
 }
 #[doc(hidden)]
@@ -1342,7 +1360,7 @@ pub mod language_features;
 pub mod language_features_bindings {
     wit_bindgen::generate!({world: "editor-language-features", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_language_features_world", default_bindings_module: "openidea_plugin::language_features_bindings",
-        with: { "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -1374,7 +1392,7 @@ fn gutter_actions(doc: $crate::language_features_bindings::exports::openidea::pl
 pub mod injections_bindings {
     wit_bindgen::generate!({world: "language-injections", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_injections_world", default_bindings_module: "openidea_plugin::injections_bindings",
-        with: { "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -1404,8 +1422,8 @@ pub mod mcp_bindings {
     wit_bindgen::generate!({ world: "mcp-tools", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_mcp_world", default_bindings_module: "openidea_plugin::mcp_bindings",
         with: {
-            "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/invocation@1.4.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/types@1.5.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/invocation@1.5.0": crate::bindings::openidea::plugin::invocation,
         },
     });
 }
@@ -1419,5 +1437,25 @@ macro_rules! __mcp_exports {
             }
         }
         $crate::mcp_bindings::__export_mcp_world!($component with_types_in $crate::mcp_bindings);
+    };
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod run_target_validation_bindings {
+    wit_bindgen::generate!({ world: "run-target-validator", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_target_validation_world",
+        default_bindings_module: "openidea_plugin::run_target_validation_bindings" });
+}
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __run_target_validation_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::run_target_validation_bindings::exports::openidea::plugin::run_target_validation::Guest for $component {
+            fn validate(project: String, target: String, launch: $crate::run_target_validation_bindings::exports::openidea::plugin::run_target_validation::LaunchInfo) -> Result<(), String> {
+                $crate::__rt::validate_run_target::<$plugin>(&project, &target, launch)
+            }
+        }
+        $crate::run_target_validation_bindings::__export_target_validation_world!($component with_types_in $crate::run_target_validation_bindings);
     };
 }

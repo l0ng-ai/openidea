@@ -211,7 +211,8 @@ export async function runRemote(
         const before = isUpdate(op) ? await publishedTip(repo, op) : null;
         // The push summary counts what the push carries: the commits the branch is
         // ahead of its upstream before the push (pushing does not move the local head).
-        if (op.op === "push" || (op.op === "pushBranch" && !op.target)) {
+        // Another remote or target receives other commits than "ahead of the upstream".
+        if (op.op === "push" || (op.op === "pushBranch" && !op.target && !op.remote)) {
           const info = await call(commands.vcsBranchInfo(repo)).catch(() => null);
           if (info?.upstream && info.ahead > 0) pushed.push({ to: info.upstream, commits: info.ahead });
         }

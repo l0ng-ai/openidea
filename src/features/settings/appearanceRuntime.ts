@@ -124,6 +124,9 @@ type AppearanceFlag = "compactMode" | "showMainToolbar" | "showToolWindowBars" |
 
 const appearanceFlag = (key: AppearanceFlag) => validateSettings(useProject.getState().settings).appearance[key];
 
+const navigationBarPosition = (): NavigationBarPosition =>
+  validateSettings(useProject.getState().settings).appearance.navigationBar;
+
 function appearanceToggle(id: string, title: string, key: AppearanceFlag, keywords: string[]): Action {
   return {
     id,
@@ -151,6 +154,35 @@ export function appearanceToggleActions(): Action[] {
       "hide",
     ]),
     appearanceToggle("view.toggleStatusBar", "Status Bar", "showStatusBar", ["hide"]),
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// View › Appearance › Navigation Bar: a radio choice (Top / Status Bar / hidden)
+
+type NavigationBarPosition = "top" | "statusBar" | "hidden";
+
+function navigationBarAction(id: string, title: string, position: NavigationBarPosition, keywords: string[]): Action {
+  return {
+    id,
+    title,
+    category: "View",
+    keywords: ["appearance", "navigation bar", ...keywords],
+    toggled: () => navigationBarPosition() === position,
+    run: async () => {
+      if (!isTauri()) return;
+      useProject.setState({
+        settings: await call(commands.settingsSet("global", "appearance.navigationBar", JSON.stringify(position))),
+      });
+    },
+  };
+}
+
+export function navigationBarActions(): [Action, Action, Action] {
+  return [
+    navigationBarAction("view.navigationBarTop", "Top", "top", ["above editor", "menu bar"]),
+    navigationBarAction("view.navigationBarStatusBar", "Status Bar", "statusBar", ["footer", "bottom"]),
+    navigationBarAction("view.navigationBarHidden", "Don't Show", "hidden", ["hide", "breadcrumbs", "file path"]),
   ];
 }
 

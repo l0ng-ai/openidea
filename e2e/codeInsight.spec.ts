@@ -33,7 +33,7 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   await page.evaluate(() => {
     const item = (label: string, kind: string, detail: string, insertText: string) => ({
       label,
-      labelDetail: null,
+      labelDetail: kind === "property" ? ` ${detail}` : "()",
       detail,
       kind,
       documentation: null,
@@ -64,6 +64,12 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   const popup = page.locator(".cm-tooltip-autocomplete");
   await expect(popup.getByText("total", { exact: true })).toBeVisible();
   await expect(popup.getByText("toDto", { exact: true })).toBeVisible();
+  const field = popup.locator("li").filter({ has: page.locator(".cm-completionLabel", { hasText: /^total$/ }) });
+  await expect(field.locator(".cm-completionDetail")).toHaveCount(0);
+  await expect(field.locator(".cm-lsp-type")).toHaveText("BigDecimal");
+  const method = popup.locator("li").filter({ has: page.locator(".cm-completionLabel", { hasText: /^toDto$/ }) });
+  await expect(method.locator(".cm-completionDetail")).toHaveText("()");
+  await expect(method.locator(".cm-lsp-type")).toHaveText("OrderDto");
   await page.keyboard.type("toD");
   await expect(popup.getByText("total", { exact: true })).toBeHidden();
   await page.keyboard.press("Enter");

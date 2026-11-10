@@ -2,6 +2,7 @@
 import { activeEditor } from "@/editor/api";
 import { getAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
+import { canRevealInFileManager, revealInFileManagerLabel } from "@/platform/fileManager";
 import { dirname, useProject } from "@/platform/project";
 import { showContextMenu, type MenuItem } from "@/ui";
 import { maybeEditorService, menuGroupItems, toolWindowService } from "@/workbench/contributions";
@@ -120,7 +121,9 @@ export function selectInTargets(path: string): MenuItem[] {
     ...(getAction("navigate.navigationBar") && maybeEditorService()?.activePath() === path
       ? [{ kind: "action" as const, action: "navigate.navigationBar", label: "Navigation Bar" }]
       : []),
-    { label: revealLabel(), icon: "external-link", run: () => void revealInFinder(nodesFrom(path)) },
+    ...(canRevealInFileManager()
+      ? [{ label: revealLabel(), icon: "external-link", run: () => void revealInFinder(nodesFrom(path)) }]
+      : []),
     ...(getAction("terminal.openAt")
       ? [{ label: "Terminal", icon: "terminal", run: () => void delegate("terminal.openAt", parentOf(path)) }]
       : []),
@@ -388,7 +391,7 @@ export function registerProjectActions(): () => void {
     copyPath("source", "project.copySourceRootPath", "Copy Path From Source Root"),
     {
       id: "project.revealInFinder",
-      title: tx`Reveal in ${revealLabel()}`,
+      title: revealInFileManagerLabel(),
       category: "Project View",
       icon: "external-link",
       when: OPEN,

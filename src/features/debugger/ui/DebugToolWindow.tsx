@@ -1,4 +1,5 @@
 /** Debug tool window: toolbar, Threads & Variables (frames + variables), Console. */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction, getAction } from "@/platform/actions";
@@ -187,7 +188,7 @@ export function DebugToolWindow() {
               className={clsx(styles.tab, tab === id && styles.tabActive)}
               onClick={() => setView({ session: active.startedAt, status: active.status, tab: id })}
             >
-              {label}
+              {tx(label)}
             </button>
           ))}
         </div>
@@ -358,7 +359,7 @@ function FramesPane({ session }: { session: DebugSession }) {
                     label: "Copy Stack",
                     icon: "copy",
                     run: () =>
-                      void navigator.clipboard?.writeText(
+                      void writeClipboardText(
                         session.frames
                           .map((f) => `${frameLabel(f)}${f.path ? `, ${basename(f.path)}` : ""}`)
                           .join("\n"),
@@ -511,7 +512,11 @@ function VariablesPane({ session }: { session: DebugSession }) {
     const e = expression.trim();
     if (!e) return;
     try {
-      setLastEval({ expression: e, result: await evaluate(e, "repl", session), error: null });
+      setLastEval({
+        expression: e,
+        result: await evaluate(e, session.adapter === "gdb" ? "watch" : "repl", session),
+        error: null,
+      });
     } catch (err) {
       setLastEval({ expression: e, result: null, error: err instanceof Error ? err.message : String(err) });
     }

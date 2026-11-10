@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { sendKeyAction } from "./Composer";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { AgentCommand, AgentProvider } from "@/bindings";
@@ -7,6 +8,7 @@ const agentCommands = vi.fn();
 const agentCreate = vi.fn();
 const vcsBranches = vi.fn();
 const vcsBranchInfo = vi.fn();
+const clipboardImage = vi.fn();
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -17,6 +19,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ...real.commands,
       agentCommands: (provider: string, task: string | null) => agentCommands(provider, task),
       agentCreate: (request: unknown) => agentCreate(request),
+      clipboardImage: () => clipboardImage(),
       vcsBranchInfo: (root: string | null) => vcsBranchInfo(root),
       vcsBranches: (root: string | null) => vcsBranches(root),
     },
@@ -33,7 +36,7 @@ import { defaultTaskProject } from "./project";
 import { HomeEditor } from "./HomeEditor";
 import composerStyles from "./Composer.module.css";
 import tagStyles from "@/ui/InlineTag.module.css";
-import { HOME, updateComposer, useAgents } from "./store";
+import { composerDraft, HOME, updateComposer, useAgents } from "./store";
 import { emptyDraft } from "./composerModel";
 
 const command = (name: string, description: string, source: "command" | "skill" = "command"): AgentCommand => ({
@@ -72,6 +75,7 @@ beforeEach(() => {
       Promise.resolve({ status: "ok", data: { head: root === "/project-b" ? "b-main" : "a-main" } }),
     );
   agentCommands.mockReset();
+  clipboardImage.mockReset().mockResolvedValue({ status: "ok", data: "data:image/png;base64,iVBORw0KGgo=" });
   agentCreate.mockReset().mockResolvedValue({ status: "error", error: { kind: "invalid", message: "stop here" } });
   useAgents.setState({
     providers: [claude],
@@ -227,6 +231,22 @@ describe("New Task composer commands", () => {
   });
 });
 
+describe("New Task composer paste", () => {
+  it("attaches the clipboard's image when WebKitGTK pastes an empty clipboardData", async () => {
+    render(<HomeEditor />);
+    fireEvent.paste(screen.getByRole("textbox"), { clipboardData: { types: [], files: [] } });
+    await waitFor(() =>
+      expect(composerDraft(HOME).images).toEqual([{ mimeType: "image/png", data: "iVBORw0KGgo=", name: "image" }]),
+    );
+  });
+
+  it("leaves a text paste to the text box", () => {
+    render(<HomeEditor />);
+    fireEvent.paste(screen.getByRole("textbox"), { clipboardData: { types: ["text/plain"], files: [] } });
+    expect(clipboardImage).not.toHaveBeenCalled();
+  });
+});
+
 describe("workspace task project", () => {
   const project = {
     root: "/workspace",
@@ -262,5 +282,25 @@ describe("workspace task project", () => {
     expect(vcsBranchInfo).toHaveBeenLastCalledWith("/project-a");
     expect(vcsBranches).toHaveBeenLastCalledWith("/project-a");
     await vi.dynamicImportSettled();
+  });
+});
+
+describe("sendKeyAction", () => {
+  const key = (k: Partial<{ shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }> = {}) => ({
+    key: "Enter",
+    shiftKey: false,
+    metaKey: false,
+    ctrlKey: false,
+    ...k,
+  });
+  it("sends with Enter, or with the modifier, the way the settings say", () => {
+    expect(sendKeyAction(key(), "enter", "queue")).toBe("queue");
+    expect(sendKeyAction(key({ metaKey: true }), "enter", "queue")).toBe("now");
+    expect(sendKeyAction(key({ shiftKey: true }), "enter", "queue")).toBeNull();
+    expect(sendKeyAction(key(), "enter", "steer")).toBe("now");
+    expect(sendKeyAction(key(), "modEnter", "queue")).toBeNull();
+    expect(sendKeyAction(key({ ctrlKey: true }), "modEnter", "queue")).toBe("queue");
+    expect(sendKeyAction(key({ metaKey: true, shiftKey: true }), "modEnter", "queue")).toBe("now");
+    expect(sendKeyAction({ ...key(), key: "a" }, "enter", "queue")).toBeNull();
   });
 });

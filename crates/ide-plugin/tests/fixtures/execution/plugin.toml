@@ -1,7 +1,7 @@
 id = "execution"
 name = "Plugin execution tests"
 version = "0.1.0"
-engines.openidea = "^1.4"
+engines.openidea = "^1.5"
 wasm = "dist/plugin.wasm"
 activation = ["on-command:*"]
 [capabilities]
@@ -50,3 +50,11 @@ title = "target"
 [[contributes.commands]]
 id = "untarget"
 title = "untarget"
+
+[[contributes.commands]]
+id = "target-overrides"
+title = "target-overrides"
+
+[[contributes.commands]]
+id = "validation"
+title = "validation"

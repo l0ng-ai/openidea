@@ -60,6 +60,78 @@ fn cwd(c: &RunConfig) -> Option<PathBuf> {
     c.cwd.as_ref().map(|p| p.as_ref().to_path_buf())
 }
 
+// JarApplicationConfiguration.writeExternal serializes its bean as options and its environment as envs:
+// https://github.com/JetBrains/intellij-community/blob/master/java/execution/impl/src/com/intellij/execution/jar/JarApplicationConfiguration.java
+const JAR: &str = r#"<configuration default="false" name="NAME" type="JarApplication">
+    <option name="JAR_PATH" value="$PROJECT_DIR$/dist/server app.jar" />
+    <option name="VM_PARAMETERS" value="-Xmx1g -Dname=&quot;My Server&quot;" />
+    <option name="PROGRAM_PARAMETERS" value="--config &quot;$PROJECT_DIR$/server config.yml&quot; &quot;&quot;" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/server" />
+    <option name="ALTERNATIVE_JRE_PATH_ENABLED" value="true" />
+    <option name="ALTERNATIVE_JRE_PATH" value="$PROJECT_DIR$/jdk" />
+    <option name="PASS_PARENT_ENVS" value="false" />
+    <envs><env name="MODE" value="production" /></envs>
+    <method v="2" />
+  </configuration>"#;
+
+#[test]
+fn jar_applications_from_every_configuration_location() {
+    for location in [".run/Server.run.xml", ".idea/runConfigurations/Server.xml", ".idea/workspace.xml"] {
+        let dir = tempfile::tempdir().unwrap();
+        let xml = if location.ends_with("workspace.xml") {
+            workspace(&JAR.replace("NAME", "Server"))
+        } else {
+            run_file("Server", JAR)
+        };
+        write(dir.path(), location, &xml);
+        let r = import_from(dir.path(), &[]);
+        let jar = get(&r, "Server");
+        let root = dir.path().to_string_lossy().replace('\\', "/");
+        assert_eq!(jar.kind, "jar-application");
+        let java = if cfg!(windows) { "java.exe" } else { "java" };
+        assert_eq!(jar.command, format!("{root}/jdk/bin/{java}"));
+        assert_eq!(
+            jar.args,
+            s(&[
+                "-Xmx1g",
+                "-Dname=My Server",
+                "-jar",
+                "../dist/server app.jar",
+                "--config",
+                &format!("{}/server config.yml", dir.path().to_string_lossy()),
+                ""
+            ])
+        );
+        assert_eq!(cwd(jar), Some(PathBuf::from("server")));
+        assert_eq!(jar.debug_adapter.as_deref(), Some("java-debug"));
+        assert_eq!(jar.env["MODE"], "production");
+        assert!(!jar.extras.include_system_env);
+        assert_eq!(jar.extras.params["jarPath"], "../dist/server app.jar");
+        assert_eq!(jar.extras.params["jre"], format!("{root}/jdk"));
+        assert!(ignored(&r, "Server").is_empty());
+    }
+}
+
+#[test]
+fn jar_application_defaults_and_invalid_targets() {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, xml) in [
+        ("Default", JAR.replace("value=\"true\"", "value=\"false\"")),
+        ("Named", JAR.replace("$PROJECT_DIR$/jdk", "temurin-21")),
+        ("NoJar", JAR.replace("$PROJECT_DIR$/dist/server app.jar", "")),
+        ("UnknownMacro", JAR.replace("$PROJECT_DIR$/dist", "$JAR_HOME$")),
+    ] {
+        write(dir.path(), &format!(".run/{name}.run.xml"), &run_file(name, &xml));
+    }
+    let r = import_from(dir.path(), &[]);
+    assert_eq!(get(&r, "Default").command, "java");
+    assert!(!get(&r, "Default").extras.params.contains_key("jre"));
+    assert_eq!(get(&r, "Named").command, "java");
+    assert_eq!(ignored(&r, "Named"), ["JRE temurin-21"]);
+    assert_eq!(reason(&r, "NoJar"), &SkipReason::NothingToRun);
+    assert_eq!(reason(&r, "UnknownMacro"), &SkipReason::PathVariable { variable: "$JAR_HOME$".into() });
+}
+
 /// A Django project in `src/` with a root virtualenv.
 fn django_project() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -1006,4 +1078,75 @@ fn file_urls_expand_module_and_home_macros() {
     assert_eq!(home.args, s(&["main.py"]));
     assert_eq!(cwd(home), Some(PathBuf::from("jobs dir")));
     assert!(home.extras.local);
+}
+
+#[test]
+fn imports_go_application_and_test_configurations() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        ".run/build-linux-amd64.run.xml",
+        &run_file(
+            "build-linux-amd64",
+            r#"<configuration default="false" name="NAME" type="GoApplicationRunConfiguration" factoryName="Go Application" folderName="go-build">
+    <module name="goproject" />
+    <working_directory value="$PROJECT_DIR$" />
+    <go_parameters value="-ldflags &quot;-s -w&quot; -o bin/goproject.linux-amd64" />
+    <envs>
+      <env name="CGO_ENABLED" value="0" />
+      <env name="GOARCH" value="amd64" />
+      <env name="GOOS" value="linux" />
+    </envs>
+    <kind value="PACKAGE" />
+    <package value="goproject" />
+    <directory value="$PROJECT_DIR$" />
+    <filePath value="$PROJECT_DIR$/main.go" />
+    <output_directory value="$PROJECT_DIR$/bin" />
+    <option name="run" value="false" />
+    <method v="2" />
+  </configuration>"#,
+        ),
+    );
+    write(
+        dir.path(),
+        ".run/Test.run.xml",
+        &run_file(
+            "Run tests",
+            r#"<configuration default="false" name="NAME" type="GoTestRunConfiguration" factoryName="Go Test">
+    <module name="goproject" />
+    <working_directory value="$PROJECT_DIR$/pkg" />
+    <go_parameters value="-tags integration" />
+    <kind value="PACKAGE" />
+    <package value="example.com/pkg" />
+    <pattern value="TestLogin" />
+    <parameters value="-v -count=1" />
+    <method v="2" />
+  </configuration>"#,
+        ),
+    );
+    let r = import_from(dir.path(), &[]);
+
+    let app = get(&r, "build-linux-amd64");
+    assert_eq!(app.kind, "go");
+    assert_eq!(app.command, "go");
+    assert_eq!(app.args, s(&["build", "-ldflags", "-s -w", "-o", "bin/goproject.linux-amd64", "goproject"]));
+    assert_eq!(app.env["GOOS"], "linux");
+    assert_eq!(app.extras.params["goKind"], "build");
+    assert_eq!(app.extras.params["scope"], "package");
+    assert_eq!(app.extras.params["target"], "goproject");
+    assert_eq!(app.extras.params["outputDir"], "bin");
+    assert_eq!(app.extras.params["runAfterBuild"], "false");
+    assert_eq!(app.extras.folder.as_deref(), Some("go-build"));
+
+    let test = get(&r, "Run tests");
+    assert!(test.is_test);
+    assert_eq!(test.kind, "go");
+    assert_eq!(
+        test.args,
+        s(&["test", "-tags", "integration", "-run", "TestLogin", "example.com/pkg", "-args", "-v", "-count=1"])
+    );
+    assert_eq!(cwd(test), Some(PathBuf::from("pkg")));
+    assert_eq!(test.extras.params["goKind"], "test");
+    assert_eq!(test.extras.params["pattern"], "TestLogin");
+    assert_eq!(test.extras.params["module"], "pkg");
 }

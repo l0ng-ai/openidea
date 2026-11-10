@@ -1,0 +1,95 @@
+---
+title: "性能测试"
+description: "用 pnpm perf 测量 UI 交互延迟、帧和内存泄漏，用 pnpm perf:rust 跑后端基准，perf/budgets.json 中的预算，以及 perf/compare 中的外部 IDE 对比。"
+---
+
+共有三个性能工具，都在本地运行（CI 不跑）：
+
+| 工具                    | 测量内容                                                       | 对照                                       |
+| ----------------------- | -------------------------------------------------------------- | ------------------------------------------ |
+| `pnpm perf`             | UI 交互延迟、掉帧、主线程耗时、堆和 DOM 规模、内存泄漏、包体积 | `perf/budgets.json` › `ui`，以及本地基线   |
+| `pnpm perf:rust`        | 交互路径上各 crate 的 Criterion 基准                           | `perf/budgets.json` › `rust`，以及本地基线 |
+| `perf/compare/bench.py` | 从外部测量整个 IDE 的启动、就绪、内存和 CPU                    | 不做判定：输出各应用的对比报告             |
+
+改动交互路径（输入、补全、滚动、打开文件、索引、搜索）时，在改动前后各跑一次，并把数字写进 PR 的验证说明。
+
+## UI：`pnpm perf`
+
+`perf/run.ts` 用 `vite build --mode perf` 构建工作台（生产包 + 示例项目 + `__openideaPerf` 探针），起一个静态服务，用 Playwright 在 Chromium 中驱动交互场景，并检查多次测量的中位数。
+
+```sh
+pnpm perf                                    # 所有场景，每个测 3 次
+pnpm perf -- --list                          # 列出场景
+pnpm perf -- --only typing,scroll --runs 5
+pnpm perf -- --cpu 4                         # CPU 降速 4 倍（只报告，不检查预算）
+pnpm perf -- --save-baseline                 # 把本次结果保存为 target/perf/baseline-<cpu>x.json
+pnpm perf -- --only typing --trace           # 最后一次运行的 Chrome trace，存到 target/perf/traces/
+pnpm perf -- --only typing --profile --unminified   # CPU profile 和耗时最多的函数
+```
+
+其他选项：`--warmup <n>`（默认 1）、`--headed`、`--no-build`（复用上次构建）、`--channel <browser>`（默认 `chromium`，或 `OPENIDEA_PERF_CHANNEL`）、`--fail-on-regression`。
+
+场景（`perf/scenarios.ts`）：`typing`、`typingLarge`、`typingAngular`、`completion`、`consoleOutput`、`terminalTui`、`keyRepeat`、`scroll`、`gitLog`、`gitLogScrollbar`、`resizePanels`、`startup`、`tabs`、`agentTabs`、`popups`、`toolWindows`、`projectTree`、`leaks`。每次运行都会检查包体积（`bundle.initialJsKb`、`bundle.initialCssKb`）。
+
+延迟是从输入到显示结果的第一帧开始的时间，因此约 16.7 ms 就表示“下一帧”。
+
+<Note>
+  测量在 Chromium 里进行，而桌面应用运行在系统 webview 中（macOS 和 Linux 上是 WebKit，Windows 上是
+  WebView2）。它能可靠地发现前端自身工作的退化，但应用里的绝对数值可能不同。
+</Note>
+
+### 新增场景
+
+`perf/scenarios.ts` 中的场景包含 `id`、`title` 和 `run(h)`：通过 harness（`perf/lib/harness.ts`：打开文件、设置光标、输入并测量、读取编辑器状态）驱动页面并返回指标。需要强制检查的指标，在 `budgets.json` 中以 `"<scenario>.<metric>"` 加上预算。
+
+## 后端：`pnpm perf:rust`
+
+`perf/rust.ts` 对 `ide-text`、`ide-language`、`ide-index`、`ide-search` 和 `ide-host` 运行 `cargo bench`，从 `target/criterion` 读取 Criterion 结果，检查每个基准的平均值（µs）。
+
+```sh
+pnpm perf:rust                               # 跑基准并检查
+pnpm perf:rust -- --no-run                   # 只检查最近一次的 Criterion 结果
+pnpm perf:rust -- --package ide-text --save-baseline
+```
+
+基准位于 `crates/<crate>/benches/`：
+
+| 基准分组       | Crate          | 覆盖内容                                                         |
+| -------------- | -------------- | ---------------------------------------------------------------- |
+| `text/…`       | `ide-text`     | 打开 1 MB 文件、应用按键和批量变更、diff、坐标转换、以 CRLF 保存 |
+| `syntax_2mb/…` | `ide-language` | 在缓存的语法树上以及一次增量按键之后的选区、大纲和折叠           |
+| `index_100k/…` | `ide-index`    | 在 10 万文件的索引上查询文件、目录和符号                         |
+| `search_5k/…`  | `ide-search`   | 在 5 千个文件中做字面量、正则和密集匹配搜索                      |
+| `plugins/…`    | `ide-host`     | 加载 50 个插件、冷激活、2 千行文件的语法高亮                     |
+
+## 预算与基线
+
+[`perf/budgets.json`](https://github.com/l0ng-ai/openidea/blob/main/perf/budgets.json) 保存上限（越低越好）：
+
+- `ui`：`<scenario>.<metric>` → 上限，与多次测量的中位数比较；只在 CPU 1x 时强制检查；
+- `rust`：Criterion 基准 id → 平均值（微秒）；
+- `regressionTolerance`（0.2）和 `regressionFloor`（1）：指标比基线差多少（相对和绝对）才算退化。
+
+每个指标会得到一个判定：
+
+| 判定        | 条件                                | 是否导致失败                   |
+| ----------- | ----------------------------------- | ------------------------------ |
+| over budget | 超过预算                            | 是                             |
+| regressed   | 比保存的基线差 20% 以上且超过 floor | 仅在 `--fail-on-regression` 时 |
+| improved    | 比基线好 20% 以上且超过 floor       | 否                             |
+
+基线保存在本地（`target/perf/`），所以开始改动前先在自己的机器上存一份基线，并在同一台机器上对比。
+
+## 与其他 IDE 对比：`perf/compare`
+
+`pnpm perf` 是在 OpenIDEA 的 webview 内部测量。`perf/compare/bench.py` 则从外部、用同样的方式测量任意 IDE，以便把 OpenIDEA 与 `perf/compare/apps.toml` 中列出的其他应用做对比：
+
+```sh
+pip install -r perf/compare/requirements.txt
+python perf/compare/bench.py ~/src/some-project --runs 10
+python perf/compare/bench.py ~/src/some-project --runs 5 --wipe-caches   # 冷索引
+```
+
+每次运行都会用该应用打开项目，等待就绪（窗口出现、日志标记出现后，进程树的 CPU 保持在低位），空闲一段时间后关闭，并记录：到窗口出现和到就绪的时间、应用启动的所有进程（webview、语言服务器、JVM）合计的峰值与空闲内存、CPU 时间、退出耗时和缓存大小。各应用在预热后交替运行，结果输出到 `results/<time>-<project>/`（`report.md`、`results.json`）。
+
+只使用 release 构建；同一可执行文件已有实例在运行时脚本会拒绝执行。公平测量的规则和各平台说明见 [`perf/compare/README.md`](https://github.com/l0ng-ai/openidea/blob/main/perf/compare/README.md)。

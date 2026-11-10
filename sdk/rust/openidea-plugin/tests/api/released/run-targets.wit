@@ -1,0 +1,39 @@
+package openidea:plugin@1.4.0;
+
+/// Project-scoped targets owned by the registering plugin (API 1.4).
+interface run-targets {
+    use types.{error};
+    use workspace.{project};
+
+    /// An argv wrapper using a granted, pinned process program. No shell is used.
+    /// Normally: program + args + workdir-args + command + command arguments.
+    /// An override matches wrap::program_name(command) and replaces args AND command:
+    /// program + override + workdir-args + command arguments.
+    /// DDEV: program="ddev", args=["exec"], commands=[("composer", ["composer"])]:
+    /// `ddev exec php x.php` and `ddev composer install`.
+    /// Each workdir-args element may contain {cwd}, mapped under container-root.
+    /// All workdir-args are omitted without container-root or for cwd outside the project.
+    /// Without workdir-args the wrapper manages its container directory itself.
+    /// The wrapper always starts in the configuration's LOCAL working directory.
+    /// Environment reaches the wrapper; forwarding into a container depends on its conventions.
+    /// Registration never selects the target. Debugging requires container-root and an
+    /// explicitly supported language debugger placement. Connect-back adapters listen
+    /// on the host; the target must configure the debuggee to connect to that host.
+    /// Stdio adapters run inside the target and must be installed there.
+    record run-target {
+        id: string,
+        name: string,
+        program: string,
+        args: list<string>,
+        workdir-args: list<string>,
+        container-root: option<string>,
+        commands: list<tuple<string, list<string>>>,
+    }
+
+    /// Registers/replaces this plugin's target in an open, trusted project.
+    /// Targets survive idle reclamation, and disappear on unregister or plugin stop.
+    /// Remote project registration and execution take place on the server.
+    register: func(project: borrow<project>, target: run-target) -> result<_, error>;
+    /// Removes only this plugin's target from the project; missing ids are harmless.
+    unregister: func(project: borrow<project>, id: string);
+}

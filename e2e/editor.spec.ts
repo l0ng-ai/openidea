@@ -173,3 +173,40 @@ test("⌘R replaces every match in the file", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+z");
   await expect(editor.locator(".cm-line", { hasText: "OrderDto" })).toHaveCount(2);
 });
+
+test("Markdown preview highlights ⌘F matches and selected word occurrences", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("# Order Service\n\nManage **Order** items and `Order` status.\n");
+
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  await expect(preview).toContainText("Manage Order items");
+
+  // Selecting a word in the preview auto-highlights its other occurrences in the preview and the split editor.
+  await preview.locator("strong").dblclick();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const set = CSS.highlights.get("markdown-selection-match");
+        return set ? [...set].map((r) => (r as Range).toString()) : [];
+      }),
+    )
+    .toEqual(["Order", "Order"]);
+  await expect(editor.locator(".cm-selectionMatch")).toHaveCount(3);
+
+  // Pressing ⌘F seeds from the preview selection and highlights current + other matches in the preview.
+  await page.keyboard.press("Meta+f");
+  const find = page.getByRole("textbox", { name: "Find" });
+  await expect(find).toHaveValue("Order");
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        current: [...(CSS.highlights.get("markdown-find-current") ?? [])].map((r) => (r as Range).toString()),
+        other: [...(CSS.highlights.get("markdown-find") ?? [])].map((r) => (r as Range).toString()),
+      })),
+    )
+    .toEqual({ current: ["Order"], other: ["Order", "Order"] });
+});

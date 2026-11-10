@@ -192,6 +192,15 @@ describe("languages settings", () => {
     expect(folderRole(ps, "src")).toBeNull();
   });
 
+  it("defaults shared JDT LS to off and accepts only boolean values", () => {
+    expect(DEFAULT_LANGUAGES.java.jdtlsShared).toBe(false);
+    expect(validateLanguages({}).java.jdtlsShared).toBe(false);
+    expect(validateSettings({ languages: { java: { jdtlsShared: true } } }).languages.java.jdtlsShared).toBe(true);
+    expect(validateLanguages({ java: { jdtlsShared: false } }).java.jdtlsShared).toBe(false);
+    for (const invalid of ["true", 1, null, []])
+      expect(validateLanguages({ java: { jdtlsShared: invalid } }).java.jdtlsShared).toBe(false);
+  });
+
   it("defaults Java language level to SDK default and keeps only supported levels", () => {
     expect(validateLanguages({}).java.languageLevel).toBe("");
     expect(validateLanguages({ java: { languageLevel: "8" } }).java.languageLevel).toBe("8");
@@ -307,7 +316,6 @@ describe("language pages", () => {
       "Rust",
       "TypeScript",
       "Plugin Formatters",
-      "Language server targets",
     ]);
   });
 

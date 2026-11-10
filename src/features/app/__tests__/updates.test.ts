@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createElement } from "react";
+import { act, render, screen } from "@testing-library/react";
 import type { Settings, UpdateCheck, UpdateInfo, UpdateProgress } from "@/bindings";
 import type { NotificationService } from "@/workbench/contributions";
 
@@ -25,7 +27,9 @@ const appInstallUpdate = vi.fn((_source: string, _request: number, ch: Channel) 
   return install.promise;
 });
 const appCheckUpdate = vi.fn(() => check.promise);
-const appStartupUpdateCheck = vi.fn(async (): Promise<UpdateInfo | null> => null);
+const appUpdateWindowReady = vi.fn(async (_ready: boolean, _systemLocale: string) => ({ status: "ok", data: null }));
+const appUpdateAnnouncement = vi.fn(async () => ({ status: "ok", data: true }));
+const updateListeners = new Map<string, (event: { update: UpdateInfo }) => void>();
 const appRestart = vi.fn(async () => null);
 const cancelRequest = vi.fn(async () => null);
 const appBuildInfo = vi.fn(async () => ({ version: "0.1.21" }));
@@ -36,11 +40,17 @@ vi.mock("@/platform/ipc", async (orig) => {
   return {
     ...actual,
     isTauri: () => true,
+    ideEventsReady: async () => {},
+    onIdeEvent: (type: string, handler: (event: { update: UpdateInfo }) => void) => {
+      updateListeners.set(type, handler);
+      return () => updateListeners.delete(type);
+    },
     commands: {
       ...actual.commands,
       appInstallUpdate,
       appCheckUpdate,
-      appStartupUpdateCheck,
+      appUpdateWindowReady,
+      appUpdateAnnouncement,
       appRestart,
       cancelRequest,
       appBuildInfo,
@@ -51,7 +61,7 @@ vi.mock("@/platform/ipc", async (orig) => {
 
 const {
   checkForUpdates,
-  checkForUpdatesOnStartup,
+  installUpdateChecks,
   installUpdate,
   notifyUpdate,
   progressText,
@@ -115,7 +125,7 @@ describe("Install and Restart", () => {
   });
 
   it("joins the running install on repeated clicks (balloon, log entry, a second check)", async () => {
-    notifyUpdate({ version: "0.1.22", currentVersion: "0.1.21", notes: null, date: null });
+    await notifyUpdate({ version: "0.1.22", currentVersion: "0.1.21", notes: null, date: null });
     const action = notes[0]!.actions![0]!;
     action.run();
     action.run();
@@ -183,6 +193,84 @@ describe("Install and Restart", () => {
 });
 
 describe("Check for Updates", () => {
+  describe.each(["welcome", "lightEdit", "project"])("visible answers in %s windows", (windowKind) => {
+    describe.each(["logged", "unlogged", "maximized"])("%s notifications", (mode) => {
+      it.each(["available", "none", "error"])(
+        "shows %s with a saved Notifications layout and popups off",
+        async (outcome) => {
+          const { notificationServiceImpl, useNotifications, dismissBalloon } =
+            await import("@/workbench/notificationStore");
+          const { Balloons, NotificationsToolWindow } = await import("@/workbench/Notifications");
+          const { registerToolWindow } = await import("@/workbench/contributions");
+          const { useToolWindowLayout } = await import("@/workbench/toolwindows/store");
+          const previousLayout = useToolWindowLayout.getState();
+          const dispose = registerToolWindow({
+            id: "notifications",
+            title: "Notifications",
+            icon: "bell",
+            anchor: "right",
+            component: NotificationsToolWindow,
+          });
+          useProject.setState({
+            project: windowKind === "project" ? ({ root: "/p", name: "p" } as never) : null,
+            lightEdit: windowKind === "lightEdit",
+            settings: {
+              notifications: { balloons: false, groups: { updates: { display: "none", log: mode !== "unlogged" } } },
+            } as unknown as Settings,
+          });
+          useToolWindowLayout.setState({
+            visible: { ...previousLayout.visible, right: "notifications" },
+            maximized: mode === "maximized" ? "left" : null,
+          });
+          useNotifications.setState({ items: [] });
+          provideNotificationService(notificationServiceImpl);
+          const view = render(createElement(Balloons));
+          const list =
+            windowKind === "project"
+              ? render(createElement("div", { hidden: mode === "maximized" }, createElement(NotificationsToolWindow)))
+              : null;
+          try {
+            // A dismissed answer with the same key must not hide a later manual result.
+            const { notify } = await import("@/workbench/notificationStore");
+            act(() =>
+              dismissBalloon(notify({ level: "info", title: "Old update", key: UPDATE_KEY, userInitiated: true })),
+            );
+            await act(async () => {
+              const done = checkForUpdates();
+              check.resolve(
+                outcome === "error"
+                  ? { status: "error", error: { kind: "unavailable", message: "offline" } }
+                  : ok({
+                      enabled: true,
+                      update:
+                        outcome === "available"
+                          ? { version: "0.1.22", currentVersion: "0.1.21", notes: null, date: null }
+                          : null,
+                    }),
+              );
+              await done;
+            });
+            const title =
+              outcome === "error"
+                ? "Update check failed"
+                : outcome === "available"
+                  ? "OpenIDEA 0.1.22 is available"
+                  : "OpenIDEA 0.1.21 is up to date";
+            const answer = screen.getByRole(outcome === "error" ? "alert" : "status");
+            expect(answer).toBeVisible();
+            expect(answer).toHaveTextContent(title);
+          } finally {
+            view.unmount();
+            list?.unmount();
+            dispose();
+            useNotifications.setState({ items: [] });
+            useToolWindowLayout.setState(previousLayout);
+          }
+        },
+      );
+    });
+  });
+
   it("shows a background task while checking and joins a running check", async () => {
     const first = checkForUpdates();
     void checkForUpdates();
@@ -212,6 +300,30 @@ describe("Check for Updates", () => {
     expect(task(CHECK_TASK_ID)?.done).toBe(true);
   });
 
+  it("does not consume an announcement when a manual check is cancelled", async () => {
+    const done = checkForUpdates();
+    task(CHECK_TASK_ID)!.cancel!();
+    await done;
+    check.resolve(
+      ok({ enabled: true, update: { version: "0.1.22", currentVersion: "0.1.21", notes: null, date: null } }),
+    );
+    await tick();
+    expect(appUpdateAnnouncement).not.toHaveBeenCalled();
+    await notifyUpdate({ version: "0.1.22", currentVersion: "0.1.21", notes: null, date: null });
+    expect(appUpdateAnnouncement).toHaveBeenCalledWith("0.1.22", true);
+    expect(notes.at(-1)?.title).toBe("OpenIDEA 0.1.22 is available");
+  });
+
+  it("suppresses an already announced automatic version but still answers a manual check", async () => {
+    const update = { version: "0.1.22", currentVersion: "0.1.21", notes: null, date: null };
+    appUpdateAnnouncement.mockResolvedValueOnce({ status: "ok", data: false });
+    await notifyUpdate(update);
+    expect(notes).toHaveLength(0);
+    await notifyUpdate(update, true);
+    expect(appUpdateAnnouncement).toHaveBeenLastCalledWith("0.1.22", false);
+    expect(notes.at(-1)).toMatchObject({ title: "OpenIDEA 0.1.22 is available", userInitiated: true });
+  });
+
   it("shows the check in a balloon where there is no status bar (the welcome screen)", async () => {
     const done = checkForUpdates();
     expect(notes[0]).toMatchObject({ level: "info", title: "Checking for updates…", key: UPDATE_KEY });
@@ -227,16 +339,25 @@ describe("Check for Updates", () => {
     await done;
   });
 
-  it("leaves the startup check to the IDE Updates notification settings", async () => {
-    appStartupUpdateCheck.mockResolvedValueOnce({
-      version: "0.1.22",
-      currentVersion: "0.1.21",
-      notes: null,
-      date: null,
+  it("starts the process scheduler after subscribing and leaves automatic results to notification settings", async () => {
+    const dispose = installUpdateChecks();
+    await tick();
+    expect(appUpdateWindowReady).toHaveBeenCalledTimes(1);
+    updateListeners.get("updateAvailable")!({
+      update: { version: "0.1.22", currentVersion: "0.1.21", notes: null, date: null },
     });
-    await checkForUpdatesOnStartup();
-    expect(notes.at(-1)).toMatchObject({ title: "OpenIDEA 0.1.22 is available" });
-    expect(notes.at(-1)?.userInitiated).toBe(false);
+    await tick();
+    expect(notes.at(-1)).toMatchObject({ title: "OpenIDEA 0.1.22 is available", userInitiated: false });
+    dispose();
+    expect(updateListeners.has("updateAvailable")).toBe(false);
+  });
+
+  it("does not start a schedule after its window has been disposed", async () => {
+    const dispose = installUpdateChecks();
+    dispose();
+    await tick();
+    expect(appUpdateWindowReady).not.toHaveBeenCalledWith(true, expect.anything());
+    expect(appUpdateWindowReady).toHaveBeenCalledWith(false, navigator.language);
   });
 
   it('still pops up when IDE Updates is set to "No popup" (no other surface on the welcome screen)', async () => {
@@ -279,6 +400,68 @@ describe("Check for Updates", () => {
     check.resolve(ok({ enabled: true, update: null }));
     await done;
     expect(notes.at(-1)?.title).toBe("OpenIDEA 0.1.21 is up to date");
+  });
+});
+
+describe("automatic nightly update prompts", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const update = (currentVersion: string): UpdateInfo => ({
+    version: "0.1.41",
+    currentVersion,
+    notes: null,
+    date: null,
+  });
+  const startupCheck = async (currentVersion: string) => {
+    notes = [];
+    await notifyUpdate(update(currentVersion));
+    return notes.length;
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.useFakeTimers({ toFake: ["Date"], now: 10 * DAY });
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("leaves stable prompts to the backend announcement policy", async () => {
+    expect(await startupCheck("0.1.40")).toBe(1);
+    expect(await startupCheck("0.1.40")).toBe(1);
+  });
+
+  it("asks a nightly build at most once a day", async () => {
+    const nightly = "0.1.41-nightly.202611081417";
+    expect(await startupCheck(nightly)).toBe(1);
+    vi.setSystemTime(11 * DAY - 1);
+    expect(await startupCheck(nightly)).toBe(0);
+    vi.setSystemTime(11 * DAY);
+    expect(await startupCheck(nightly)).toBe(1);
+  });
+
+  it("does not prompt twice a day for periodic nightly checks, but always answers a manual check", async () => {
+    const nightly = "0.1.41-nightly.202611081417";
+    const dispose = installUpdateChecks();
+    await tick();
+    try {
+      const available = updateListeners.get("updateAvailable")!;
+      available({ update: update(nightly) });
+      await tick();
+      expect(notes).toHaveLength(1);
+      vi.setSystemTime(10 * DAY + 4 * 60 * 60 * 1000);
+      available({ update: { ...update(nightly), version: "0.1.42-nightly.202611090200" } });
+      await tick();
+      expect(notes).toHaveLength(1);
+      const done = checkForUpdates();
+      check.resolve(ok({ enabled: true, update: update(nightly) }));
+      await done;
+      expect(notes.at(-1)).toMatchObject({ title: "OpenIDEA 0.1.41 is available", userInitiated: true });
+      notes = [];
+      vi.setSystemTime(11 * DAY);
+      available({ update: { ...update(nightly), version: "0.1.42-nightly.202611091400" } });
+      await tick();
+      expect(notes).toHaveLength(1);
+    } finally {
+      dispose();
+    }
   });
 });
 

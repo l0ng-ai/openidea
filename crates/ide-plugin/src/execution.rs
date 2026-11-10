@@ -151,3 +151,18 @@ pub enum PluginTestEvent {
     Output(TestOutput),
     Other { kind: String, data: String },
 }
+
+/// Operation about to launch through a plugin-owned run target (API 1.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunTargetOperation {
+    Run,
+    Test,
+}
+
+/// Launch metadata available to a target validator; arguments and environment are omitted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunTargetLaunch {
+    pub operation: RunTargetOperation,
+    pub program: String,
+    pub cwd: String,
+}

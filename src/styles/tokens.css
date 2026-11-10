@@ -144,6 +144,9 @@ html {
   --syn-python-predefined-usage: var(--syn-predefined);
   --syn-python-fstring: #a5c261;
   --syn-python-bytes: #a5c261;
+  --syn-python-docstring-tag: var(--syn-doc-comment-tag);
+  --syn-python-docstring-tag-effect: var(--syn-doc-comment-tag-effect);
+  --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   /* PhpStorm colours PHP variables and function calls on their own */
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
@@ -181,6 +184,7 @@ html {
   --border-right-margin: #323438;
   --bg-editor-selection: #214283;
   --bg-editor-selection-inactive: #1d3460;
+  --fg-editor-selection: inherit;
   --bg-text-search-result: #114957;
   --bg-text-search-result-current: #165e70;
   --bg-matched-brace: #43454a;
@@ -247,7 +251,7 @@ html {
   --font-ui: "Inter Variable", Inter, system-ui, -apple-system, sans-serif;
   /* Shortcut glyphs (⌘⇧⌥⌃↵) render best in the system UI font, as in macOS menus. */
   --font-keys: -apple-system, BlinkMacSystemFont, "Segoe UI Symbol", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, monospace;
+  --font-mono: "JetBrains Mono", "JetBrains Mono Variable", ui-monospace, Menlo, monospace;
   --fs-ui: 13px;
   --fs-small: 12px;
   --fs-tiny: 11px;
@@ -269,6 +273,7 @@ html {
   --h-row: 24px;
   --h-list-row: 24px;
   --h-statusbar: 30px;
+  --h-navigationbar: 26px;
   --h-field: 28px;
   --h-button: 28px;
   --w-gutter: 52px;
@@ -556,6 +561,9 @@ html {
   --syn-python-predefined-usage: var(--syn-predefined);
   --syn-python-fstring: var(--syn-string);
   --syn-python-bytes: var(--syn-string);
+  --syn-python-docstring-tag: var(--syn-doc-comment-tag);
+  --syn-python-docstring-tag-effect: var(--syn-doc-comment-tag-effect);
+  --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
   --syn-builtin: #000080;
@@ -592,6 +600,7 @@ html {
   --border-right-margin: #ebecf0;
   --bg-editor-selection: #a6d2ff;
   --bg-editor-selection-inactive: #c9e3ff;
+  --fg-editor-selection: inherit;
   --bg-text-search-result: #fcd47e;
   --bg-text-search-result-current: #f2bf57;
   --bg-matched-brace: #93d9d9;
@@ -839,6 +848,9 @@ html {
   --syn-python-predefined-usage: var(--syn-predefined);
   --syn-python-fstring: var(--syn-string);
   --syn-python-bytes: var(--syn-string);
+  --syn-python-docstring-tag: var(--syn-doc-comment-tag);
+  --syn-python-docstring-tag-effect: var(--syn-doc-comment-tag-effect);
+  --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
   --syn-builtin: #b0b0f0;
@@ -1007,7 +1019,7 @@ html {
 }
 
 /* Solarized and Atom One adaptations. Exact upstream palettes and MIT notices:
- * docs/themes.md and THIRD_PARTY_LICENSES.md. The shared mapping covers every
+ * THIRD_PARTY_LICENSES.md. The shared mapping covers every
  * colour token; only palette roles below differ. UI-only states use explicit
  * mixes of original colours where the source has no equivalent component.
  * Keep before appearance options so accessibility preferences still win.
@@ -1211,6 +1223,9 @@ html {
   --syn-python-predefined-usage: var(--syn-predefined);
   --syn-python-fstring: var(--syn-string);
   --syn-python-bytes: var(--syn-string);
+  --syn-python-docstring-tag: var(--syn-doc-comment-tag);
+  --syn-python-docstring-tag-effect: var(--syn-doc-comment-tag-effect);
+  --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
   --syn-builtin: var(--palette-cyan);

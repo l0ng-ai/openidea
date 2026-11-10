@@ -83,7 +83,7 @@ impl Host {
         let opening = self.opening(window);
         let _opening = opening.lock();
         // Reject a damaged manifest before replacing the currently open project.
-        ide_workspace::workspace::Workspace::load(&root)?;
+        let is_workspace = ide_workspace::workspace::Workspace::load(&root)?.is_some();
         // The window reloaded (or asked again) for the project it already has: keep
         // it, with its warm index, language servers and unsaved documents.
         if let Ok(current) = self.project(window)
@@ -96,7 +96,7 @@ impl Host {
         self.wait_detached_closes();
         let sink: SharedSink = (self.sink_for)(window);
         // Before anything the project starts: its children get the project's environment.
-        let trusted = Arc::new(AtomicBool::new(self.trust.trusted(&root)?));
+        let trusted = Arc::new(AtomicBool::new(self.trust.window_trusted(&root)?));
         let post_start =
             trusted.load(Ordering::Acquire).then(|| self.environment.project_opened(&root, &sink)).flatten();
         let settings = SettingsStore::load(&self.config_dir, Some(&root));
@@ -139,38 +139,10 @@ impl Host {
         let settings = Arc::new(settings);
         {
             let settings = settings.clone();
-            let root = root.clone();
-            let plugins = self.plugin_host.clone();
-            let reader_plugins = plugins.clone();
-            lsp.set_target_hooks(
-                Box::new(move |language, cfg| {
-                    let effective = settings.effective();
-                    let Some(selection) =
-                        effective.language_server_targets.get(language.as_str()).filter(|s| !s.target.is_empty())
-                    else {
-                        return false;
-                    };
-                    let Some(plugins) = plugins.read().upgrade() else { return false };
-                    // A withdrawn target returns the server to the host. An invalid active
-                    // target stays visibly failed; it must never silently fall back.
-                    if !plugins.run_targets(&root).iter().any(|t| t.id == selection.target) {
-                        return false;
-                    }
-                    ide_sdk::apply::server_launch_overrides(cfg, &effective);
-                    ide_sdk::apply::server_protocol_overrides(cfg, &effective);
-                    if let Err(e) = crate::ops::lsp_target::configure(&plugins, &root, &selection.target, cfg) {
-                        cfg.launch_error = Some(e.to_string());
-                    }
-                    true
-                }),
-                Box::new(move |target, path| {
-                    let plugins = reader_plugins
-                        .read()
-                        .upgrade()
-                        .ok_or_else(|| IdeError::unavailable("plugin host is unavailable"))?;
-                    crate::ops::lsp_target::read(&plugins, target, path)
-                }),
-            );
+            // Workspace members have independent settings.
+            lsp.set_jdtls_shared_hook(Box::new(move || {
+                !is_workspace && settings.effective().languages.java.jdtls_shared
+            }));
         }
         {
             let settings = settings.clone();
@@ -188,14 +160,15 @@ impl Host {
                     .as_ref()
                     .map(|p| SettingsStore::load(&config_dir, Some(p)).effective())
                     .unwrap_or_else(|| settings.effective());
-                let root = member.as_ref().unwrap_or(&root);
+                let window_root = &root;
+                let root = member.as_ref().unwrap_or(window_root);
                 ide_sdk::apply::server_launch_overrides(cfg, &effective);
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
                 if cfg.name == "jdtls" {
                     // A workspace member keeps its build model under its own key (Build Project).
                     let cache = match &member {
-                        Some(member) => build_cache.join(crate::project::project_key(member)),
-                        None => build_cache.clone(),
+                        Some(member) if member != window_root => build_cache.join(crate::project::project_key(member)),
+                        _ => build_cache.clone(),
                     };
                     let profiles = ide_build::maven_profiles(&cache);
                     ide_sdk::maven_profiles::configure_jdtls(cfg, root, &effective, &profiles, &cache);
@@ -308,23 +281,7 @@ impl Host {
         {
             let settings = settings.clone();
             lsp.set_servers_hook(Box::new(move |language, defined| {
-                let effective = settings.effective();
-                let mut servers = ide_sdk::apply::language_servers(language.as_str(), defined, &effective);
-                if let Some(selection) =
-                    effective.language_server_targets.get(language.as_str()).filter(|s| !s.target.is_empty())
-                {
-                    let chosen = if selection.server.is_empty() {
-                        servers.first().map(|s| s.name.clone())
-                    } else {
-                        Some(selection.server.clone())
-                    };
-                    servers.retain(|s| Some(&s.name) == chosen.as_ref());
-                    for server in &mut servers {
-                        server.fallback = false;
-                        server.target_key = Some(selection.target.clone());
-                    }
-                }
-                servers
+                ide_sdk::apply::language_servers(language.as_str(), defined, &settings.effective())
             }));
         }
         {
@@ -401,6 +358,7 @@ impl Host {
                 Box::new(move |batch| {
                     let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
                     let (ignored, ignored_gone) = ignored_changes(batch);
+                    index.ignore_rules_changed(&batch.ignore_rules);
                     index.update(&[&changed[..], &ignored].concat(), &[&batch.removed[..], &ignored_gone].concat());
                     kotlin_bridge.files_changed(changed.iter().chain(&batch.removed));
                     phpstan.files_removed(batch.removed.iter());
@@ -1214,17 +1172,32 @@ pub fn history_retention(settings: &ide_core::settings::Settings) -> ide_workspa
     }
 }
 
-/// A workspace uses its root only for state, never as indexed content.
+/// Only explicit workspace containers exclude their root from indexed content.
 fn index_roots(root: &Path, folders: Vec<PathBuf>) -> ide_index::IndexRoots {
-    ide_index::IndexRoots { include_root: !root.join(ide_workspace::workspace::FILE).is_file(), folders }
+    let container =
+        ide_workspace::workspace::Workspace::load(root).ok().flatten().is_some_and(|w| w.is_container(root));
+    ide_index::IndexRoots { include_root: !container, folders: folders.into_iter().filter(|p| p != root).collect() }
 }
 
 /// Workspace members in manifest order, or extra Project Structure directories and the
 /// Gradle project folders outside the project as of the last sync (`build_cache`).
 fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
     if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
-        return workspace.projects;
+        if workspace.is_container(root) {
+            return workspace.projects;
+        }
+        let mut roots = workspace.projects.into_iter().filter(|p| !p.starts_with(root)).collect::<Vec<_>>();
+        for path in extra_content_roots(settings, root, build_cache) {
+            if !roots.contains(&path) {
+                roots.push(path);
+            }
+        }
+        return roots;
     }
+    extra_content_roots(settings, root, build_cache)
+}
+
+fn extra_content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     let user = settings.project_structure.content_roots.iter().map(|r| PathBuf::from(r.trim()));
     for p in user.chain(ide_build::gradle_external_roots(root, build_cache, &settings.languages.java.gradle)) {
@@ -1283,6 +1256,7 @@ fn content_root_watcher(
         Box::new(move |batch| {
             let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
             let (ignored, ignored_gone) = ignored_changes(batch);
+            index.ignore_rules_changed(&batch.ignore_rules);
             index.update(&[&changed[..], &ignored].concat(), &[&batch.removed[..], &ignored_gone].concat());
             // A workspace member's PHP language level follows its own composer.json.
             if composer_changed(&root, changed.iter().chain(&batch.removed)) {

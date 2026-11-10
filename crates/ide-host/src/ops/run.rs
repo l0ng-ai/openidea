@@ -24,7 +24,7 @@ pub(super) fn project_configs(
     let root_suppressed = ide_run::load_suppressed_config_ids(root)?;
     let mut all = detected_and_saved(root, settings, &user, &root_suppressed);
     if let Some(workspace) = ide_workspace::workspace::Workspace::load(root)? {
-        for member in workspace.projects.into_iter().filter(|p| p.is_dir()) {
+        for member in workspace.projects.into_iter().filter(|p| p != root && p.is_dir()) {
             let settings = ide_workspace::SettingsStore::load(config_dir, Some(&member)).effective();
             let saved = ide_run::load_user_configs(&member)?;
             let suppressed = ide_run::load_suppressed_config_ids(&member)?;
@@ -145,20 +145,21 @@ fn settings_for(
     config: &mut RunConfig,
 ) -> IdeResult<(std::path::PathBuf, ide_core::settings::Settings)> {
     let workspace = ide_workspace::workspace::Workspace::load(&project.root)?;
-    if workspace.is_some() {
+    let owner = ide_run::scope::owner(&project.root, config);
+    let member = workspace.as_ref().and_then(|workspace| {
+        workspace
+            .projects
+            .iter()
+            .filter(|root| **root != project.root && owner.starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .cloned()
+    });
+    if workspace.as_ref().is_some_and(|w| w.is_container(&project.root)) || member.is_some() {
         if config.extras.module.is_none() && !matches!(config.kind.as_str(), "application" | "spring-boot") {
             config.extras.module = config.cwd.as_deref().map(ide_core::ipc_path::to_ipc);
         }
         ide_run::scope::rebase(config, &project.root, None);
     }
-    let member = workspace.and_then(|workspace| {
-        let owner = ide_run::scope::owner(&project.root, config);
-        workspace
-            .projects
-            .into_iter()
-            .filter(|root| owner.starts_with(root))
-            .max_by_key(|root| root.components().count())
-    });
     Ok(match member {
         Some(root) => {
             let settings = ide_workspace::SettingsStore::load(&host.config_dir, Some(&root)).effective();
@@ -202,8 +203,22 @@ pub fn apply_settings(host: &Host, window: &str, configs: Vec<RunConfig>) -> Ide
 }
 
 pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit<OutputChunk>) -> IdeResult<RunInfo> {
+    start_request(host, window, config, on_output, None).await
+}
+
+pub async fn start_request(
+    host: &Host,
+    window: &str,
+    config: RunConfig,
+    on_output: Emit<OutputChunk>,
+    request: Option<ide_core::RequestId>,
+) -> IdeResult<RunInfo> {
+    let cancel = request.map(|id| host.begin_request(id)).unwrap_or_default();
     let operation = config.extras.params.get("plugin.operation").cloned();
-    let result = start_inner(host, window, config, on_output).await;
+    let result = start_inner(host, window, config, on_output, &cancel).await;
+    if let Some(id) = request {
+        host.end_request(id);
+    }
     if let (Ok(info), Some(operation), Some(plugins)) = (&result, operation, host.plugin_host()) {
         plugins.run_operation_started(window, &operation, info.id);
     }
@@ -215,7 +230,11 @@ async fn start_inner(
     window: &str,
     mut config: RunConfig,
     on_output: Emit<OutputChunk>,
+    cancel: &ide_core::CancellationToken,
 ) -> IdeResult<RunInfo> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
     host.require_trust(window)?;
     let project = host.project(window)?;
     if config.extras.target.is_none() {
@@ -258,7 +277,20 @@ async fn start_inner(
                 host.plugin_host().ok_or_else(|| IdeError::not_found("plugin run target is no longer available"))?;
             let root = project.root.clone();
             let id = id.to_owned();
-            let config = host.blocking(move || plugins.prepare_run_target(&root, &id, &config)).await?;
+            let token = cancel.clone();
+            let config = host
+                .blocking(move || {
+                    let operation = if config.is_test {
+                        ide_plugin::RunTargetOperation::Test
+                    } else {
+                        ide_plugin::RunTargetOperation::Run
+                    };
+                    plugins.prepare_run_target_launch(&root, &id, &config, operation, &token)
+                })
+                .await?;
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
             project.require_trust()?;
             return host.processes.start(
                 &project.root,

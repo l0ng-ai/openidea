@@ -90,6 +90,15 @@
     if (target?.tagName === "SCRIPT" || (target?.tagName === "LINK" && target.rel === "modulepreload")) {
       show(`Could not load startup script: ${target.src || target.href}`);
     } else if (event.error || event.message) {
+      // ResizeObserver defers undelivered notifications to the next frame; startup can
+      // continue. Blink reports the loop as a bare message, WebKit (Tauri on Linux) as an
+      // Error object — ignore both. No genuine startup failure carries these engine strings.
+      const message = event.error?.message ?? event.message;
+      if (
+        message === "ResizeObserver loop completed with undelivered notifications." ||
+        message === "ResizeObserver loop limit exceeded"
+      )
+        return;
       show(event.error || `${event.message}\n${event.filename || ""}:${event.lineno || 0}:${event.colno || 0}`);
     }
   };

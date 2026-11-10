@@ -126,6 +126,10 @@ impl PluginWorkspace for TestWorkspace {
     fn trusted(&self, _root: &Path) -> bool {
         self.trusted
     }
+    fn project_windows(&self, root: &Path) -> Vec<String> {
+        // `main` shows the fixture project; other open roots have no window left.
+        if root == self.root { vec!["closing".into(), "main".into()] } else { Vec::new() }
+    }
     fn project_of(&self, _window: &str) -> Option<PathBuf> {
         if let Some(left) = self.project_queries_left.lock().as_mut() {
             if *left == 0 {
@@ -536,6 +540,30 @@ fn project_write_stays_inside_the_project() {
     assert!(err.contains("outside the project root"), "{err}");
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn project_writes_confine_symlink_targets() {
+    use std::os::unix::fs::symlink;
+    let f = fixture(Limits::default());
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-symlink-writer", "project.write"));
+    let outside = f._tmp.path().join("secret.txt");
+    let missing = f._tmp.path().join("missing.txt");
+    symlink(&outside, f.project.join("outside.txt")).unwrap();
+    symlink(&missing, f.project.join("dangling.txt")).unwrap();
+    for name in ["outside.txt", "dangling.txt"] {
+        let error = f.run("misbehave", "projwrite", Some(name)).unwrap_err();
+        assert!(error.contains("access outside the project root is not allowed"), "{error}");
+    }
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "top secret");
+    assert!(!missing.exists());
+    for (name, target) in [("inside.txt", "src/notes.txt"), ("new.txt", "new/deep.txt")] {
+        symlink(target, f.project.join(name)).unwrap();
+        f.run("misbehave", "projwrite", Some(name)).unwrap();
+        assert_eq!(std::fs::read_to_string(f.project.join(target)).unwrap(), "written inside the project\n");
+        assert!(std::fs::symlink_metadata(f.project.join(name)).unwrap().is_symlink());
+    }
 }
 
 /// `fs.write` replaces files the grant covers and nothing else, through the
@@ -3690,31 +3718,6 @@ fn listing_while_projects_change_does_not_deadlock() {
     }
 }
 
-/// Excalidraw: a web custom editor beside the text editor, with its fonts,
-/// file icon, template and language — no code.
-#[test]
-fn official_excalidraw_installs_and_serves_its_page() {
-    let tmp = tempfile::tempdir().unwrap();
-    let pkg = with_stand_in_page(&official("excalidraw"), tmp.path());
-    let f = fixture(Limits::default());
-    let info = f.install(&pkg);
-    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
-    let page = f.host.web_page("openidea.excalidraw", "canvas").unwrap();
-    let (rev, entry) = page.path.strip_prefix("openidea.excalidraw/").unwrap().split_once('/').unwrap();
-    assert_eq!(entry, "web/index.html");
-    let html = f.host.web_file("openidea.excalidraw", &format!("{rev}/{entry}")).unwrap();
-    let html = String::from_utf8(html.bytes).unwrap();
-    // Relative URLs only: the page is served from the package.
-    let script = html.split("src=\"").nth(1).unwrap().split('"').next().unwrap();
-    assert!(script.starts_with("./assets/"), "{script}");
-    assert!(f.host.web_file("openidea.excalidraw", &format!("{rev}/web/{}", &script[2..])).is_ok());
-    let font = f.host.web_file("openidea.excalidraw", &format!("{rev}/web/fonts/Virgil/Virgil-Regular.woff2")).unwrap();
-    assert_eq!(font.mime, "font/woff2");
-    assert_eq!(f.host.ui_items("customEditors")[0].decl["layout"], "preview");
-    assert!(f.host.languages().iter().any(|l| l.id.as_str() == "excalidraw"));
-    assert_eq!(f.host.assets("openidea.excalidraw", "fileIcon/excalidraw/").unwrap().len(), 2);
-}
-
 /// A copy of the official plugin at `src` in `dir`, with a stand-in for its
 /// built page (`web/` is built by plugins/build.sh, not checked in; build.sh
 /// checks what the build produces): an entry loading a script and a font by
@@ -3756,7 +3759,18 @@ fn official_graphviz_turns_its_pages_reports_into_problems() {
     assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
     assert_eq!(f.host.ui_items("customEditors")[0].decl["layout"], "split");
     assert!(f.host.languages().iter().any(|l| l.id.as_str() == "dot"));
-    assert!(f.host.web_page("openidea.graphviz", "preview").is_ok());
+    assert_eq!(f.host.assets("openidea.graphviz", "fileIcon/graphviz/").unwrap().len(), 2);
+    let page = f.host.web_page("openidea.graphviz", "preview").unwrap();
+    let (rev, entry) = page.path.strip_prefix("openidea.graphviz/").unwrap().split_once('/').unwrap();
+    assert_eq!(entry, "web/index.html");
+    let html = f.host.web_file("openidea.graphviz", &format!("{rev}/{entry}")).unwrap();
+    let html = String::from_utf8(html.bytes).unwrap();
+    // Relative URLs only: the page is served from the package.
+    let script = html.split("src=\"").nth(1).unwrap().split('"').next().unwrap();
+    assert!(script.starts_with("./assets/"), "{script}");
+    assert!(f.host.web_file("openidea.graphviz", &format!("{rev}/web/{}", &script[2..])).is_ok());
+    let font = f.host.web_file("openidea.graphviz", &format!("{rev}/web/fonts/Virgil/Virgil-Regular.woff2")).unwrap();
+    assert_eq!(font.mime, "font/woff2");
 
     std::fs::write(f.project.join("flow.dot"), "digraph {\n  a -> \n}\n").unwrap();
     let editor = f.workspace.open("flow.dot", &[]);
@@ -4802,6 +4816,40 @@ fn notification_actions_keep_commands_and_window_scope() {
 }
 
 #[test]
+fn project_notifications_go_to_a_window_of_that_project_only() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    f.host.forget_client("closing");
+    let other = f.project.parent().unwrap().join("other");
+    std::fs::create_dir(&other).unwrap();
+    f.workspace.other_roots.lock().push(other.clone());
+    f.take_events();
+    let notifications = |f: &Fixture| {
+        f.take_events()
+            .into_iter()
+            .filter_map(|(client, event)| match event {
+                PluginEvent::Notification { title, actions, .. } => Some((client, title, actions)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // A scheduled call has no invoking window; a closing window is skipped.
+    let path = f.project.join("notes.txt").to_string_lossy().into_owned();
+    f.host.run_command("jobs", "notify-project", Some(&path), Invocation::default()).unwrap();
+    let sent = notifications(&f);
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0].0.as_deref(), sent[0].1.as_str()), (Some("main"), "Project update"));
+    assert_eq!((sent[0].2[0].command.as_str(), sent[0].2[0].argument.as_deref()), ("context", Some(path.as_str())));
+    // A project without a window fails without falling back to another one, even when invoked from one.
+    let path = other.join("notes.txt").to_string_lossy().into_owned();
+    let error = f.host.run_command("jobs", "notify-project", Some(&path), f.inv()).unwrap_err().message;
+    assert!(error.contains("not open"), "{error}");
+    assert!(notifications(&f).is_empty());
+    assert_eq!(f.status("jobs"), PluginStatus::Active);
+}
+
+#[test]
 fn directory_prompts_and_project_requests_use_the_calling_window_without_a_capability() {
     use ide_plugin::Prompt;
     let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
@@ -5703,6 +5751,158 @@ fn api14_denies_new_privileges_and_requires_an_invoking_window() {
     assert!(f.run("api14", "undeclared-secret", Some("value")).unwrap_err().contains("undeclared"));
     f.run("api14", "delete-secret", None).unwrap();
     assert_eq!(f.host.declared_secret("api14", "token"), None);
+}
+
+/// `net:ask`: a first request to a host outside the manifest asks the user
+/// from an invoking window ("once" allows this request, "always" remembers
+/// the host, refusal and dismissal deny). Background calls are denied without
+/// a dialog, plain HTTP still needs `net.http:<host>`, and a remembered host
+/// is listed in the permissions, where it can be revoked.
+#[test]
+fn net_ask_asks_once_remembers_always_and_revokes() {
+    use ide_plugin::Prompt;
+    let f = fixture(Limits::default());
+    f.host.install_from_dir(&sample("api14"), &Consent::default()).unwrap();
+    let (port, seen) = http_server("relay ok", |_| Duration::ZERO);
+    let url = format!("http://127.0.0.1:{port}/");
+
+    // Merely declaring an optional capability is not enough: the user must grant it.
+    let err = f.run("api14", "fetch", Some(&url)).unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    f.host.set_capability("api14", "net:ask", true).unwrap();
+
+    // Plain HTTP elsewhere stays out of the ask flow entirely.
+    let err = f.run("api14", "fetch", Some("http://example.com/")).unwrap_err();
+    assert!(err.contains("net.http:example.com") && err.contains("not granted"), "{err}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+
+    // Background (no invoking window): denied like before, no dialog.
+    let err = f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).unwrap_err();
+    assert!(err.message.contains("net:127.0.0.1") && err.message.contains("not granted"), "{err:?}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert!(seen.lock().is_empty(), "nothing connected");
+
+    // From a window: the question names the full host. "Allow once" lets
+    // this request through and remembers nothing.
+    let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&["once"]));
+    assert_eq!(result.unwrap().as_deref(), Some("relay ok"));
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: false });
+    assert_eq!(f.host.info_of("api14").unwrap().net_hosts, Vec::<String>::new());
+    assert_eq!(seen.lock().len(), 1);
+
+    // The next request asks again; "Always allow" remembers the host.
+    let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&["always"]));
+    assert_eq!(result.unwrap().as_deref(), Some("relay ok"));
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: false });
+    assert_eq!(f.host.info_of("api14").unwrap().net_hosts, ["127.0.0.1".to_owned()]);
+
+    // Remembered: connecting without a dialog from a window and in the background.
+    let result = f.host.run_command("api14", "fetch", Some(&url), f.inv()).map_err(|e| e.message).unwrap();
+    assert_eq!(result.as_deref(), Some("relay ok"));
+    let result =
+        f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).map_err(|e| e.message).unwrap();
+    assert_eq!(result.as_deref(), Some("relay ok"));
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert_eq!(seen.lock().len(), 4);
+
+    // The permissions list the host; revoking it asks again, and refusing denies.
+    f.host.revoke_net_host("api14", "127.0.0.1").unwrap();
+    assert_eq!(f.host.info_of("api14").unwrap().net_hosts, Vec::<String>::new());
+    let (result, prompt) = net_ask_run_and_answer(&f, &url, None);
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: false });
+    let err = result.unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+    // Refusal throttles even a different host, without making any connection.
+    let err = f.run("api14", "fetch", Some("https://other.example/")).unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert_eq!(seen.lock().len(), 4);
+
+    f.host.uninstall("api14").unwrap();
+    let ledger = ide_extension::ledger::Ledger::load(&f.plugins_dir);
+    assert!(ledger.get(&ide_extension::ledger::Subject::Installed("api14".into())).is_none());
+}
+
+#[test]
+fn net_ask_session_hosts_are_ephemeral_and_cleared_with_plugin_grants() {
+    use ide_extension::ledger::{Ledger, Subject};
+    use ide_plugin::Prompt;
+    let f = fixture(Limits::default());
+    f.host.set_net_hosts_session_only();
+    f.host.install_from_dir(&sample("api14"), &Consent::all()).unwrap();
+    let (port, seen) = http_server("session ok", |_| Duration::ZERO);
+    let url = format!("http://127.0.0.1:{port}/");
+    let subject = Subject::Installed("api14".into());
+
+    for (answer, reset) in [("session", "disable"), ("always", "revoke"), ("session", "uninstall")] {
+        let err = f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).unwrap_err();
+        assert!(err.message.contains("not granted"), "{err:?}");
+        assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+
+        let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&[answer]));
+        assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: true });
+        assert_eq!(result.unwrap().as_deref(), Some("session ok"));
+        for invocation in [f.inv(), Invocation::default()] {
+            let result = f.host.run_command("api14", "fetch", Some(&url), invocation).unwrap();
+            assert_eq!(result.as_deref(), Some("session ok"));
+        }
+        let err =
+            f.host.run_command("api14", "fetch", Some("https://other.example/"), Invocation::default()).unwrap_err();
+        assert!(err.message.contains("not granted"), "{err:?}");
+        assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+        assert!(f.host.info_of("api14").unwrap().net_hosts.is_empty());
+        assert!(Ledger::load(&f.plugins_dir).get(&subject).unwrap().net_hosts.is_empty());
+
+        match reset {
+            "disable" => {
+                f.host.set_enabled("api14", false).unwrap();
+                f.host.set_enabled("api14", true).unwrap();
+            }
+            "revoke" => {
+                f.host.set_capability("api14", "net:ask", false).unwrap();
+                f.host.set_capability("api14", "net:ask", true).unwrap();
+            }
+            "uninstall" => {
+                f.host.uninstall("api14").unwrap();
+                assert!(Ledger::load(&f.plugins_dir).get(&subject).is_none());
+                f.host.install_from_dir(&sample("api14"), &Consent::all()).unwrap();
+            }
+            _ => unreachable!(),
+        }
+    }
+    let err = f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).unwrap_err();
+    assert!(err.message.contains("not granted"), "{err:?}");
+    assert_eq!(seen.lock().len(), 9);
+}
+
+/// Runs api14's `fetch` in its window; once the `net:ask` question arrives,
+/// answers it (`None`: dismisses). Returns the command's result and the prompt.
+fn net_ask_run_and_answer(
+    f: &Fixture,
+    url: &str,
+    answer: Option<&[&str]>,
+) -> (Result<Option<String>, String>, ide_plugin::Prompt) {
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.run("api14", "fetch", Some(url)));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (client, prompt_id, prompt) = loop {
+            let asked = f.take_events().into_iter().find_map(|(client, e)| match e {
+                PluginEvent::PromptRequested { prompt_id, prompt, .. } => Some((client, prompt_id, prompt)),
+                _ => None,
+            });
+            if let Some(asked) = asked {
+                break asked;
+            }
+            assert!(Instant::now() < deadline && !running.is_finished(), "the fetch never asked");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(client.as_deref(), Some("main"), "asks in the window that ran the command");
+        let answer = answer.map(|a| a.iter().map(|s| (*s).to_owned()).collect());
+        assert!(f.host.answer_prompt(&prompt_id, answer));
+        assert!(!f.host.answer_prompt(&prompt_id, None), "an answer counts once");
+        (running.join().unwrap(), prompt)
+    })
 }
 
 #[test]

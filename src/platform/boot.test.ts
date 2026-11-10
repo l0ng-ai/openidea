@@ -24,6 +24,56 @@ it("surfaces module evaluation errors before React is available", () => {
   expect(document.querySelector("textarea")?.value).toContain(navigator.userAgent);
 });
 
+const resizeObserverMessages = [
+  "ResizeObserver loop completed with undelivered notifications.",
+  "ResizeObserver loop limit exceeded",
+];
+
+it.each(resizeObserverMessages)("keeps waiting for boot-ready after %s", (message) => {
+  window.dispatchEvent(new ErrorEvent("error", { message, filename: "tauri://localhost" }));
+  expect(document.getElementById("splash")).not.toBeNull();
+  expect(document.getElementById("boot-error")).toBeNull();
+  expect(document.documentElement.dataset.boot).toBeUndefined();
+  window.dispatchEvent(new Event("openidea:boot-ready"));
+  vi.advanceTimersByTime(30_000);
+  expect(document.getElementById("boot-error")).toBeNull();
+});
+
+it.each(resizeObserverMessages)("still reports a real failure after %s", (message) => {
+  window.dispatchEvent(new ErrorEvent("error", { message }));
+  window.dispatchEvent(new ErrorEvent("error", { error: new Error("startup failed") }));
+  expect(document.getElementById("splash")).toBeNull();
+  expect(document.querySelector("textarea")?.value).toContain("startup failed");
+  expect(document.querySelector("textarea")?.value).not.toContain(message);
+});
+
+it.each(resizeObserverMessages)("still times out an unresolved startup after %s", (message) => {
+  vi.advanceTimersByTime(15_000);
+  window.dispatchEvent(new ErrorEvent("error", { message }));
+  vi.advanceTimersByTime(15_000);
+  expect(document.querySelector("textarea")?.value).toContain("Startup did not finish within 30 seconds.");
+});
+
+it.each(resizeObserverMessages)("ignores the loop notification delivered as an Error: %s", (message) => {
+  // WebKit (Tauri on Linux) reports the loop with an Error object; Blink as a bare message.
+  // No genuine startup failure carries these engine-generated strings.
+  window.dispatchEvent(new ErrorEvent("error", { message, filename: "tauri://localhost", error: new Error(message) }));
+  expect(document.getElementById("splash")).not.toBeNull();
+  expect(document.getElementById("boot-error")).toBeNull();
+  expect(document.documentElement.dataset.boot).toBeUndefined();
+  window.dispatchEvent(new Event("openidea:boot-ready"));
+  vi.advanceTimersByTime(30_000);
+  expect(document.getElementById("boot-error")).toBeNull();
+});
+
+it.each(resizeObserverMessages)("keeps rejections with the same message fatal: %s", (message) => {
+  const event = new Event("unhandledrejection");
+  Object.defineProperty(event, "reason", { value: message });
+  window.dispatchEvent(event);
+  expect(document.getElementById("splash")).toBeNull();
+  expect(document.querySelector("textarea")?.value).toContain(message);
+});
+
 it("handles startup rejections and preserves the first failure", () => {
   const event = new Event("unhandledrejection");
   Object.defineProperty(event, "reason", { value: { message: "startup rejected" } });
@@ -44,6 +94,20 @@ it("handles script load failures but ignores image failures", () => {
   document.body.append(script);
   script.dispatchEvent(new Event("error"));
   expect(document.querySelector("textarea")?.value).toContain("/assets/entry.js");
+});
+
+it("handles modulepreload load failures", () => {
+  const link = document.createElement("link");
+  link.rel = "modulepreload";
+  link.href = "/assets/dependency.js";
+  document.head.append(link);
+  try {
+    link.dispatchEvent(new Event("error"));
+    expect(document.getElementById("splash")).toBeNull();
+    expect(document.querySelector("textarea")?.value).toContain("/assets/dependency.js");
+  } finally {
+    link.remove();
+  }
 });
 
 it("surfaces initial React render failures through the boot error event", () => {

@@ -902,59 +902,86 @@ impl Repo {
         self.log_details_cancellable(revision, &CancellationToken::new())
     }
     pub fn log_details_cancellable(&self, revision: &str, cancel: &CancellationToken) -> IdeResult<LogDetails> {
+        self.log_details_batch_cancellable(&[revision.to_string()], cancel)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| IdeError::not_found("commit not found"))
+    }
+    pub fn log_details_batch_cancellable(
+        &self,
+        revisions: &[String],
+        cancel: &CancellationToken,
+    ) -> IdeResult<Vec<LogDetails>> {
         let allowed = self.execution_allowed.load(std::sync::atomic::Ordering::Acquire);
         let _scope = crate::ExecutionScope::enter(allowed);
         let repo = self.gix()?;
-        let object =
-            repo.find_object(repo::resolve(&repo, revision)?).map_err(repo::gx)?.peel_to_commit().map_err(repo::gx)?;
-        let commit_id = object.id;
-        let id = commit_id.to_string();
-        let contains = format!("--contains={id}");
-        let branches =
-            cli::run_cancellable(self.root(), &["branch", "-a", &contains, refs::DIRECT_BRANCH_FORMAT], cancel)?;
-        let cache_key = format!("{allowed}:{id}");
-        let cached = self.log_signatures.lock().unwrap_or_else(|p| p.into_inner()).get(&cache_key).cloned();
-        let mut details = if let Some(details) = cached {
-            details
-        } else {
-            let end = object.data.windows(2).position(|s| s == b"\n\n").unwrap_or(object.data.len());
-            let headers = &object.data[..end];
-            let signed = headers.windows(8).any(|s| s == b"\ngpgsig ") || headers.windows(8).any(|s| s == b"\ngpgsig-");
-            let output = if allowed && signed {
-                Some(cli::run_cancellable(
-                    self.root(),
-                    &["log", "-1", "--format=%G?%x00%GS%x00%GK%x00%GF", "--end-of-options", &id],
-                    cancel,
-                )?)
+        let shallow: std::collections::HashSet<gix::ObjectId> =
+            repo.shallow_commits().map_err(repo::gx)?.map(|ids| ids.iter().copied().collect()).unwrap_or_default();
+        let mut out = Vec::with_capacity(revisions.len());
+        let mut commit_ids = Vec::with_capacity(revisions.len());
+        for revision in revisions {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            let object = repo
+                .find_object(repo::resolve(&repo, revision)?)
+                .map_err(repo::gx)?
+                .peel_to_commit()
+                .map_err(repo::gx)?;
+            let commit_id = object.id;
+            commit_ids.push(commit_id);
+            let id = commit_id.to_string();
+            let cache_key = format!("{allowed}:{id}");
+            let cached = self.log_signatures.lock().unwrap_or_else(|p| p.into_inner()).get(&cache_key).cloned();
+            let details = if let Some(details) = cached {
+                details
             } else {
-                None
-            };
-            let text = output.as_ref().map(|out| out.stdout_str()).unwrap_or_default();
-            let fields: Vec<_> = text.trim_end().split('\0').collect();
-            let message = {
-                let mut index = self.log_index.lock().unwrap_or_else(|p| p.into_inner());
-                let message = index.message(&repo, commit_id)?;
-                index.flush();
-                message
-            };
-            let details = LogDetails {
-                message,
-                containing_branches: Vec::new(),
-                signature: if !signed {
-                    "N".into()
+                let end = object.data.windows(2).position(|s| s == b"\n\n").unwrap_or(object.data.len());
+                let headers = &object.data[..end];
+                let signed =
+                    headers.windows(8).any(|s| s == b"\ngpgsig ") || headers.windows(8).any(|s| s == b"\ngpgsig-");
+                let output = if allowed && signed {
+                    Some(cli::run_cancellable(
+                        self.root(),
+                        &["log", "-1", "--format=%G?%x00%GS%x00%GK%x00%GF", "--end-of-options", &id],
+                        cancel,
+                    )?)
                 } else {
-                    fields.first().filter(|s| !s.is_empty()).unwrap_or(&"E").to_string()
-                },
-                signer: fields.get(1).unwrap_or(&"").to_string(),
-                key: fields.get(2).unwrap_or(&"").to_string(),
-                fingerprint: fields.get(3).unwrap_or(&"").to_string(),
+                    None
+                };
+                let text = output.as_ref().map(|out| out.stdout_str()).unwrap_or_default();
+                let fields: Vec<_> = text.trim_end().split('\0').collect();
+                let message = {
+                    let mut index = self.log_index.lock().unwrap_or_else(|p| p.into_inner());
+                    index.message(&repo, commit_id)?
+                };
+                let details = LogDetails {
+                    message,
+                    containing_branches: Vec::new(),
+                    signature: if !signed {
+                        "N".into()
+                    } else {
+                        fields.first().filter(|s| !s.is_empty()).unwrap_or(&"E").to_string()
+                    },
+                    signer: fields.get(1).unwrap_or(&"").to_string(),
+                    key: fields.get(2).unwrap_or(&"").to_string(),
+                    fingerprint: fields.get(3).unwrap_or(&"").to_string(),
+                };
+                self.log_signatures.lock().unwrap_or_else(|p| p.into_inner()).insert(cache_key, details.clone());
+                details
             };
-            self.log_signatures.lock().unwrap_or_else(|p| p.into_inner()).insert(cache_key, details.clone());
-            details
+            out.push(details);
+        }
+        let branches_per_commit = {
+            let mut index = self.log_index.lock().unwrap_or_else(|p| p.into_inner());
+            let res = index.containing_branches_batch(&repo, &commit_ids, &shallow, cancel)?;
+            index.flush();
+            res
         };
-        details.containing_branches =
-            branches.stdout_str().lines().filter(|s| !s.is_empty()).map(str::to_string).collect();
-        Ok(details)
+        for (details, branches) in out.iter_mut().zip(branches_per_commit) {
+            details.containing_branches = branches;
+        }
+        Ok(out)
     }
 
     /// Lists one immutable revision directory. Directory names end in `/`.
@@ -1172,10 +1199,11 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::restore_branch(self, deleted)
     }
-    /// Renames a local branch (`git branch -m`); its upstream configuration moves with it.
-    pub fn rename_branch(&self, from: &str, to: &str) -> IdeResult<()> {
+    /// Renames a local branch (`git branch -m`); its upstream configuration moves with it,
+    /// unless `unset_upstream` drops the tracking instead.
+    pub fn rename_branch(&self, from: &str, to: &str, unset_upstream: bool) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        write::rename_branch(self, from, to)
+        write::rename_branch(self, from, to, unset_upstream)
     }
     /// Merges `branch` into HEAD; local changes are stashed and restored around it. On
     /// conflicts an error is returned and the repository is left mid-merge

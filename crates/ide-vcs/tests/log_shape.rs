@@ -171,7 +171,7 @@ fn remotes_and_worktrees_are_managed() {
     .unwrap();
     assert_eq!(
         repo.remotes().unwrap(),
-        vec![Remote { name: "upstream".into(), url: "https://example.com/b.git".into() }]
+        vec![Remote { name: "upstream".into(), url: "https://example.com/b.git".into(), resolved_url: None }]
     );
     assert!(repo.edit_remote(&RemoteEdit::Add { name: "--bad".into(), url: "x".into() }).is_err());
     repo.edit_remote(&RemoteEdit::Remove { name: "upstream".into() }).unwrap();

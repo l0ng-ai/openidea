@@ -116,6 +116,30 @@ describe("color schemes", () => {
     expect(pythonItalic).toContain("--syn-python-static-italic: italic !important");
   });
 
+  it("leaves selected text in syntax colours until a selection foreground is set (#2446)", () => {
+    expect(ATTRIBUTES.find((a) => a.id === "selectionForeground")).toMatchObject({
+      name: "Selection foreground",
+      path: ["General", "Editor"],
+      fg: "--fg-editor-selection",
+    });
+    // The `inherit` default is not a colour: the settings page shows no foreground.
+    expect(resolvedAttribute("light", "selectionForeground")).toEqual({});
+    expect(resolvedAttribute("dark", "selectionForeground")).toEqual({});
+    const customs = {
+      "custom-sel": {
+        name: "Sel",
+        parent: "dark" as const,
+        attributes: { selectionForeground: { foreground: "#112233" } },
+      },
+    };
+    expect(resolvedAttribute("custom-sel", "selectionForeground", customs)).toMatchObject({
+      foreground: "#112233",
+    });
+    expect(schemeCss("dark", { dark: { selectionForeground: { foreground: "#112233" } } })).toContain(
+      "--fg-editor-selection: #112233 !important",
+    );
+  });
+
   it("applies an explicit scheme over a plugin theme of the same base", () => {
     const root = document.documentElement;
     root.dataset.theme = "dark";

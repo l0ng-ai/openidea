@@ -36,7 +36,7 @@ const MAIN: &str = "main";
 const PREFIX: &str = "project-";
 const CASCADE: f64 = 28.0;
 const SETTINGS_SIZE: (f64, f64) = (980.0, 720.0);
-const SETTINGS_MIN_SIZE: (f64, f64) = (640.0, 420.0);
+const SETTINGS_MIN_SIZE: (f64, f64) = (900.0, 700.0);
 const COMPARISON_SIZE: (f64, f64) = (1100.0, 720.0);
 const COMPARISON_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DEPLOYMENT_SIZE: (f64, f64) = (1400.0, 900.0);
@@ -159,6 +159,9 @@ pub struct WindowsState {
     last_focused: Mutex<Option<String>>,
     /// Set by Quit while windows close one by one.
     quitting: AtomicBool,
+    /// The last closed project opted out of Welcome; macOS keeps its app in the Dock.
+    #[cfg(target_os = "macos")]
+    pub keep_alive: AtomicBool,
     /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
     /// once, so its members ask together.
     close_requests: Mutex<Vec<String>>,
@@ -946,10 +949,11 @@ enum ProjectTarget {
 }
 
 /// Routes canonical `paths` (with whether each is a folder) over `windows` (the preferred
-/// free one first). A folder focuses the window that has it open, else takes a free window,
+/// one first). A folder focuses the window that has it open, else takes a free window,
 /// else a new one. A file inside a local project being opened (the deepest root if nested)
-/// opens in that project's window; the others all join the LightEdit window, else a free
-/// window or a new one switches to LightEdit for them.
+/// opens in that project's window; the others join the preferred window when it holds a local
+/// project or LightEdit, else the LightEdit window, else a free window or a new one switches to
+/// LightEdit for them.
 pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Vec<OpenStep> {
     let mut free = windows.iter().filter(|(_, h)| *h == Holds::Nothing).map(|(l, _)| l.clone());
     let (mut dirs, mut files) = (Vec::new(), Vec::new());
@@ -1009,13 +1013,23 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
             None => loose.push(file),
         }
     }
+    let preferred = windows.first().filter(|(_, h)| matches!(h, Holds::Project(_) | Holds::LightEdit));
+    let light = windows.iter().find(|(_, h)| *h == Holds::LightEdit);
+    match preferred.or(light) {
+        Some((label, _)) if !loose.is_empty() => {
+            let files = std::mem::take(&mut loose);
+            match in_windows.iter_mut().find(|(l, _)| l == label) {
+                Some((_, list)) => list.extend(files),
+                None => in_windows.push((label.clone(), files)),
+            }
+        }
+        _ => {}
+    }
     steps.extend(in_windows.into_iter().map(|(label, files)| OpenStep::Files(label, files)));
     if !loose.is_empty() {
-        let light = windows.iter().find(|(_, h)| *h == Holds::LightEdit).map(|(l, _)| l.clone());
-        steps.push(match (light, free.next()) {
-            (Some(label), _) => OpenStep::Files(label, loose),
-            (None, Some(label)) => OpenStep::Launch(label, path_launch_of(None, loose)),
-            (None, None) => OpenStep::New(None, loose),
+        steps.push(match free.next() {
+            Some(label) => OpenStep::Launch(label, path_launch_of(None, loose)),
+            None => OpenStep::New(None, loose),
         });
     }
     steps
@@ -1590,10 +1604,12 @@ pub(super) fn place_over_parent(window: &WebviewWindow, parent: &WebviewWindow) 
     if (bounds.2, bounds.3) != (own.width, own.height) {
         // Sizes are set on the client area, and even an undecorated window has a resize frame.
         let (width, height) = ((bounds.2 - frame.0).max(1.0), (bounds.3 - frame.1).max(1.0));
-        window.set_min_size(Some(tauri::LogicalSize::new(
-            SETTINGS_MIN_SIZE.0.min(width),
-            SETTINGS_MIN_SIZE.1.min(height),
-        )))?;
+        let minimum = match auxiliary(window.label()) {
+            Some((AuxKind::Comparison, _)) => COMPARISON_MIN_SIZE,
+            Some((AuxKind::Deployment, _)) => DEPLOYMENT_MIN_SIZE,
+            _ => SETTINGS_MIN_SIZE,
+        };
+        window.set_min_size(Some(tauri::LogicalSize::new(minimum.0.min(width), minimum.1.min(height))))?;
         window.set_size(tauri::LogicalSize::new(width, height))?;
     }
     if maximized {
@@ -2023,11 +2039,13 @@ mod tests {
         assert_eq!(
             steps,
             [
-                OpenStep::Files("main".into(), vec![p("/proj/src/a.rs"), p("/proj/e.rs")]),
+                // `/projects` is not inside `/proj`; loose files join the focused project window.
+                OpenStep::Files(
+                    "main".into(),
+                    vec![p("/proj/src/a.rs"), p("/proj/e.rs"), p("/x/b.txt"), p("/projects/d.rs")],
+                ),
                 // The deepest root wins.
                 OpenStep::Files("project-2".into(), vec![p("/proj/sub/c.rs")]),
-                // `/projects` is not inside `/proj`.
-                OpenStep::Files("project-1".into(), vec![p("/x/b.txt"), p("/projects/d.rs")]),
             ]
         );
     }
@@ -2088,18 +2106,13 @@ mod tests {
 
     #[test]
     fn files_opened_from_a_window_go_to_their_project_window_else_light_edit() {
-        let windows = [
-            w("main", Holds::Nothing),
-            w("project-1", Holds::Project(p("/proj"))),
-            w("project-2", Holds::Nothing),
-            w("project-3", Holds::Other),
-        ];
-        let files = vec![p("/proj/src/a.rs"), p("/x/b.txt")];
-        // The Welcome window turns into LightEdit itself; another free window doesn't take the files.
-        let (steps, here) = plan_open_files("main", files.clone(), &windows);
-        assert_eq!(steps, [OpenStep::Files("project-1".into(), vec![p("/proj/src/a.rs")])]);
+        let welcome_only = [w("main", Holds::Nothing), w("project-2", Holds::Nothing), w("project-3", Holds::Other)];
+        // With no local project or LightEdit window, the Welcome window turns into LightEdit itself.
+        let (steps, here) = plan_open_files("main", vec![p("/x/b.txt")], &welcome_only);
+        assert!(steps.is_empty());
         assert_eq!(here, [p("/x/b.txt")]);
         // A LightEdit window keeps loose files, even with another one open.
+        let files = vec![p("/proj/src/a.rs"), p("/x/b.txt")];
         let light =
             [w("main", Holds::LightEdit), w("project-1", Holds::Project(p("/proj"))), w("project-2", Holds::LightEdit)];
         let (steps, here) = plan_open_files("main", files.clone(), &light);
@@ -2109,8 +2122,20 @@ mod tests {
         let others = [w("main", Holds::Nothing), w("project-2", Holds::LightEdit)];
         let (steps, here) = plan_open_files("main", vec![p("/x/b.txt")], &others);
         assert_eq!((steps, here), (vec![OpenStep::Files("project-2".into(), vec![p("/x/b.txt")])], vec![]));
+        // A project window in the background doesn't take them from a Welcome window.
+        let with_proj = [
+            w("main", Holds::Nothing),
+            w("project-1", Holds::Project(p("/proj"))),
+            w("project-2", Holds::Nothing),
+            w("project-3", Holds::Other),
+        ];
+        let (steps, here) = plan_open_files("main", files.clone(), &with_proj);
+        assert_eq!(steps, [OpenStep::Files("project-1".into(), vec![p("/proj/src/a.rs")])]);
+        assert_eq!(here, [p("/x/b.txt")]);
         // A remote project window gets a new LightEdit window, never a free one or its own.
-        let (steps, here) = plan_open_files("project-3", files, &windows);
+        let remote =
+            [w("project-3", Holds::Other), w("main", Holds::Nothing), w("project-1", Holds::Project(p("/proj")))];
+        let (steps, here) = plan_open_files("project-3", files, &remote);
         assert_eq!(
             steps,
             [OpenStep::Files("project-1".into(), vec![p("/proj/src/a.rs")]), OpenStep::New(None, vec![p("/x/b.txt")])]
@@ -2119,13 +2144,22 @@ mod tests {
     }
 
     #[test]
-    fn files_opened_while_running_take_a_free_window_else_a_new_one() {
-        let free = [w("main", Holds::Project(p("/proj"))), w("project-1", Holds::Nothing)];
+    fn files_opened_while_running_join_the_focused_window_else_a_free_one_else_a_new_one() {
+        // The focused local project window takes them, even with a LightEdit window open.
+        let project =
+            [w("main", Holds::Project(p("/proj"))), w("project-1", Holds::Nothing), w("project-2", Holds::LightEdit)];
+        assert_eq!(
+            plan_open(vec![(p("/x/a.txt"), false)], &project),
+            [OpenStep::Files("main".into(), vec![p("/x/a.txt")])]
+        );
+        // A project window in the background doesn't.
+        let free =
+            [w("main", Holds::Other), w("project-2", Holds::Project(p("/proj"))), w("project-1", Holds::Nothing)];
         assert_eq!(
             plan_open(vec![(p("/x/a.txt"), false)], &free),
             [OpenStep::Launch("project-1".into(), path_launch_of(None, vec![p("/x/a.txt")]))]
         );
-        let busy = [w("main", Holds::Project(p("/proj"))), w("project-1", Holds::Other)];
+        let busy = [w("main", Holds::Other)];
         assert_eq!(plan_open(vec![(p("/x/a.txt"), false)], &busy), [OpenStep::New(None, vec![p("/x/a.txt")])]);
     }
 

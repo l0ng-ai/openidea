@@ -4,7 +4,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { _addEditor, _removeEditor, editorContributions, type EditorDocContext } from "@/editor/api";
-import { fontZoom, setFontZoom } from "@/editor/core/cm/prefs";
+import { fontZoom, resetAllEditorsFontZoom, setFontZoom } from "@/editor/core/cm/prefs";
 import { fontExtension } from "@/editor/core/cm/setup";
 import type { EditorSlot } from "@/editor/core/model/slot";
 import { executeAction } from "@/platform/actions";
@@ -51,6 +51,7 @@ describe("editor font size actions", () => {
   const zoom = (view: EditorView) => view.state.field(fontZoom);
 
   beforeEach(() => {
+    resetAllEditorsFontZoom();
     disposers.push(registerEditorActions(), registerMarkdownLiveSource());
     useContextKeys.setState({ projectOpen: true, textEditorActive: true, editorFocus: true, popupOpen: true });
   });
@@ -63,26 +64,30 @@ describe("editor font size actions", () => {
     useContextKeys.setState({}, true);
   });
 
-  it("zooms only the active editor, clamped to -6..36", async () => {
+  it("zooms all open editors together, clamped to -6..36", async () => {
     const md = open(mdCtx);
     const ts = open(tsCtx);
     activate(md);
     await executeAction("editor.increaseFontSize");
     await executeAction("editor.increaseFontSize");
     expect(zoom(md)).toBe(2);
-    expect(zoom(ts)).toBe(0);
+    expect(zoom(ts)).toBe(2);
 
     activate(ts);
     await executeAction("editor.decreaseFontSize");
-    expect(zoom(ts)).toBe(-1);
-    expect(zoom(md)).toBe(2);
+    expect(zoom(ts)).toBe(1);
+    expect(zoom(md)).toBe(1);
 
+    md.dispatch({ effects: setFontZoom.of(36) });
     ts.dispatch({ effects: setFontZoom.of(36) });
     await executeAction("editor.increaseFontSize");
     expect(zoom(ts)).toBe(36);
+    expect(zoom(md)).toBe(36);
+    md.dispatch({ effects: setFontZoom.of(-6) });
     ts.dispatch({ effects: setFontZoom.of(-6) });
     await executeAction("editor.decreaseFontSize");
     expect(zoom(ts)).toBe(-6);
+    expect(zoom(md)).toBe(-6);
   });
 
   it("scales the Markdown preview with its editor and resets with it", async () => {

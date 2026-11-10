@@ -70,6 +70,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("proto", include_str!("../../../languages/proto.toml")),
     ("python", include_str!("../../../languages/python.toml")),
     ("r", include_str!("../../../languages/r.toml")),
+    ("restructuredtext", include_str!("../../../languages/restructuredtext.toml")),
     ("ruby", include_str!("../../../languages/ruby.toml")),
     ("rust", include_str!("../../../languages/rust.toml")),
     ("sass", include_str!("../../../languages/sass.toml")),
@@ -562,6 +563,7 @@ mod tests {
         "R",
         "RPM Changes",
         "RPM Spec",
+        "reStructuredText",
         "Ruby",
         "SAS",
         "Scala",
@@ -628,6 +630,12 @@ mod tests {
         let asciidoc = reg.get(&LanguageId::new("asciidoc")).unwrap();
         assert_eq!(asciidoc.ui_mode.as_deref(), Some("AsciiDoc"));
         assert_eq!(asciidoc.line_comment.as_deref(), Some("//"));
+        for path in ["guide.rst", "README.RST"] {
+            assert_eq!(detect(&reg, path), "restructuredtext");
+        }
+        let rst = reg.get(&LanguageId::new("restructuredtext")).unwrap();
+        assert_eq!(rst.ui_mode.as_deref(), Some("reStructuredText"));
+        assert_eq!(rst.line_comment.as_deref(), Some(".."));
         assert_eq!(reg.detect(Path::new("script"), Some("#!/usr/bin/env python3")).as_str(), "python");
         assert_eq!(detect(&reg, "README"), "plaintext");
         assert_eq!(detect(&reg, "unknown.zzz"), "plaintext");
@@ -999,11 +1007,11 @@ mod tests {
     }
 
     #[test]
-    fn astro_server_reads_the_project_typescript() {
+    fn astro_server_leaves_typescript_sdk_resolution_to_the_launcher() {
         let reg = reg();
         let ls = &reg.get(&LanguageId::new("astro")).unwrap().language_servers[0];
         let tsdk = ls.initialization_options.as_ref().and_then(|o| o.get("typescript")?.get("tsdk")?.as_str());
-        assert_eq!(tsdk, Some("node_modules/typescript/lib"));
+        assert_eq!(tsdk, None);
     }
 
     #[test]

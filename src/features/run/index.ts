@@ -2,7 +2,6 @@
  * Run configurations, the title bar run widget, the Run tool window (console +
  * test runner) and run/debug/stop actions.
  */
-import { withRunTarget } from "@/platform/runTargetSelection";
 import { registerEditorContribution } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, registerActions } from "@/platform/actions";
 import { getContext, setContext, useContextKeys } from "@/platform/context";
@@ -147,7 +146,6 @@ async function runSelected() {
 }
 
 async function debugConfig(config: RunConfig, chain: readonly string[] = [], show?: boolean) {
-  config = withRunTarget(config);
   if (config.kind === "compound") {
     if (!(await prepareLaunch(config, chain, show))) return;
     const children = compoundChildren(config, useRun.getState().configs);
@@ -157,10 +155,6 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
   if (remoteDebugBlocked(config)) return;
   if (!(await prepareLaunch(config, chain, show))) return;
   recordRun(config.id);
-  if (config.target?.startsWith("plugin-target:")) {
-    await executeAction("debug.startConfig", show === false ? { config, show: false } : config);
-    return;
-  }
   // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
   if (containerDebuggable(config) && getAction("debug.attach")) {
     await debugInContainer(config);
@@ -431,8 +425,8 @@ export function activate(): () => void {
     // Only while the same project stays open: closing it tears its runs down separately.
     useProject.subscribe((s, prev) => {
       if (!s.project || s.project.root !== prev.project?.root) return;
-      const before = prev.project.workspace?.projects ?? [];
-      const after = s.project.workspace?.projects ?? [];
+      const before = prev.project.workspace?.projects ?? [prev.project.root];
+      const after = s.project.workspace?.projects ?? [s.project.root];
       for (const root of before) if (!after.includes(root)) void cleanupRemovedProject(root);
     }),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
@@ -714,6 +708,7 @@ export function activate(): () => void {
       },
     ]),
     onIdeEvent("runExited", (e) => onRunExited(e.run, e.code)),
+    onIdeEvent("projectRootsChanged", scheduleReload),
     // Lets other title items follow the selected configuration (e.g. Build shows only for compiled ones).
     useRun.subscribe((s) => {
       const selected = s.configs.find((c) => c.id === s.selectedId);

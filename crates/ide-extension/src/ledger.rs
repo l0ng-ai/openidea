@@ -53,6 +53,9 @@ pub struct Grant {
     /// Granted capabilities (`project.read`, `net:x`, …).
     #[serde(default)]
     pub granted: BTreeSet<String>,
+    /// Exact hosts approved through `net:ask`, separate from manifest grants.
+    #[serde(default)]
+    pub net_hosts: BTreeSet<String>,
     /// Optional capabilities the user declined (not asked again until re-confirmed).
     #[serde(default)]
     pub declined: BTreeSet<String>,
@@ -201,6 +204,9 @@ impl Ledger {
         let Some(grant) = self.grants.get_mut(&req.subject) else {
             return Decision::NeedsConfirmation { new: req.required.clone(), first_time: true };
         };
+        if !req.required.iter().chain(&req.optional).any(|c| c == &Capability::NetAsk) {
+            grant.net_hosts.clear();
+        }
         if !grant.confirmed {
             return Decision::NeedsConfirmation { new: req.required.clone(), first_time: true };
         }
@@ -225,6 +231,9 @@ impl Ledger {
         binaries: BTreeMap<String, BinaryGrant>,
     ) {
         let grant = self.grants.entry(req.subject.clone()).or_default();
+        if !req.required.iter().chain(&req.optional).any(|c| c == &Capability::NetAsk) {
+            grant.net_hosts.clear();
+        }
         grant.plugin_id = req.plugin_id.to_owned();
         grant.version = req.version.to_owned();
         grant.package_hash = req.package_hash.to_owned();
@@ -252,6 +261,12 @@ impl Ledger {
             grant.declined.remove(&s);
             grant.granted.insert(s)
         } else {
+            if let Capability::Net(host) = cap {
+                return grant.net_hosts.remove(host) | grant.granted.remove(&s);
+            }
+            if cap == &Capability::NetAsk {
+                grant.net_hosts.clear();
+            }
             if let Capability::Process(_) = cap {
                 grant.binaries.remove(&s);
                 for binaries in grant.project_binaries.values_mut() {
@@ -260,6 +275,19 @@ impl Ledger {
             }
             grant.granted.remove(&s)
         }
+    }
+
+    /// Remembers one exact host without granting a manifest capability.
+    pub fn remember_net_host(&mut self, subject: &Subject, host: &str) -> bool {
+        let Some(grant) = self.grants.get_mut(subject) else { return false };
+        if !grant.confirmed || !grant.has(&Capability::NetAsk) || host.contains('*') {
+            return false;
+        }
+        grant.net_hosts.insert(host.to_owned())
+    }
+
+    pub fn forget_net_host(&mut self, subject: &Subject, host: &str) -> bool {
+        self.grants.get_mut(subject).is_some_and(|g| g.net_hosts.remove(host))
     }
 
     /// Records the program approved for a `process:` grant.
@@ -508,6 +536,40 @@ mod tests {
         // Revoking a required capability blocks loading again.
         assert!(l.set(&r3.subject, &Capability::EditorWrite, false));
         assert!(matches!(l.decide(&r3), Decision::NeedsConfirmation { .. }));
+    }
+
+    #[test]
+    fn net_ask_hosts_persist_revoke_and_drop_with_the_capability() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut l = Ledger::load(tmp.path());
+        let r = req("1.0.0", "h", &["net:ask"], &[]);
+        l.confirm(&r, &[], BTreeMap::new());
+        let host = "api.example.com";
+        assert!(l.remember_net_host(&r.subject, host));
+        assert!(!l.remember_net_host(&r.subject, "*.example.com"));
+        assert!(!l.get(&r.subject).unwrap().has(&Capability::Net(host.into())));
+        l.save().unwrap();
+        l = Ledger::load(tmp.path());
+        assert!(l.get(&r.subject).unwrap().net_hosts.contains(host));
+        l.confirm(&r, &[], BTreeMap::new());
+        assert!(l.get(&r.subject).unwrap().net_hosts.contains(host));
+        assert!(l.set(&r.subject, &Capability::Net(host.into()), false));
+        assert!(l.get(&r.subject).unwrap().net_hosts.is_empty());
+
+        for confirm in [false, true] {
+            l.remember_net_host(&r.subject, host);
+            // A newly declared host must not inherit an ask grant after net:ask is removed.
+            let update = req("2.0.0", "h2", &["project.read", "net:api.example.com"], &[]);
+            if confirm {
+                l.confirm(&update, &[], BTreeMap::new());
+            } else {
+                assert!(matches!(l.decide(&update), Decision::NeedsConfirmation { .. }));
+            }
+            assert!(l.get(&r.subject).unwrap().net_hosts.is_empty());
+        }
+        l.remember_net_host(&r.subject, host);
+        l.set(&r.subject, &Capability::NetAsk, false);
+        assert!(l.get(&r.subject).unwrap().net_hosts.is_empty());
     }
 
     #[test]

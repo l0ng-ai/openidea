@@ -1522,7 +1522,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
 dependencies = [
  "quote",
- "syn 3.0.9",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -4180,7 +4180,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "ide-agent"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4204,7 +4204,7 @@ dependencies = [
 
 [[package]]
 name = "ide-analysis"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ast-grep-core",
  "ide-core",
@@ -4218,7 +4218,7 @@ dependencies = [
 
 [[package]]
 name = "ide-android"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "serde",
@@ -4229,11 +4229,13 @@ dependencies = [
 
 [[package]]
 name = "ide-build"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "blake3",
+ "chardetng",
  "dirs 6.0.0",
  "dunce",
+ "encoding_rs",
  "ide-core",
  "serde",
  "serde_json",
@@ -4245,7 +4247,7 @@ dependencies = [
 
 [[package]]
 name = "ide-cli"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -4259,8 +4261,9 @@ dependencies = [
 
 [[package]]
 name = "ide-clipboard"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
+ "gtk",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
@@ -4268,12 +4271,11 @@ dependencies = [
 
 [[package]]
 name = "ide-core"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dunce",
  "encoding_rs",
  "libc",
- "percent-encoding",
  "serde",
  "serde_json",
  "specta",
@@ -4286,7 +4288,7 @@ dependencies = [
 
 [[package]]
 name = "ide-coverage"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "ide-run",
@@ -4300,14 +4302,12 @@ dependencies = [
 
 [[package]]
 name = "ide-dap"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "futures",
  "ide-core",
  "ide-jsonrpc",
  "ide-language",
- "ide-remote",
- "ide-run",
  "libc",
  "memchr",
  "parking_lot",
@@ -4323,7 +4323,7 @@ dependencies = [
 
 [[package]]
 name = "ide-db"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "bb8",
  "blake3",
@@ -4353,7 +4353,7 @@ dependencies = [
 
 [[package]]
 name = "ide-docker"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "serde",
@@ -4366,7 +4366,7 @@ dependencies = [
 
 [[package]]
 name = "ide-extension"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4386,7 +4386,7 @@ dependencies = [
 
 [[package]]
 name = "ide-fonts"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "objc2-core-foundation",
  "objc2-core-text",
@@ -4398,7 +4398,7 @@ dependencies = [
 
 [[package]]
 name = "ide-github"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "ide-vcs",
@@ -4411,7 +4411,7 @@ dependencies = [
 
 [[package]]
 name = "ide-host"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4455,7 +4455,6 @@ dependencies = [
  "ignore",
  "jsonschema",
  "parking_lot",
- "percent-encoding",
  "quick-xml 0.42.0",
  "regex-lite",
  "regex-syntax",
@@ -4478,7 +4477,7 @@ dependencies = [
 
 [[package]]
 name = "ide-http"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "parking_lot",
@@ -4496,7 +4495,7 @@ dependencies = [
 
 [[package]]
 name = "ide-index"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "blake3",
  "criterion",
@@ -4518,7 +4517,7 @@ dependencies = [
 
 [[package]]
 name = "ide-jsonrpc"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "encoding_rs",
  "futures",
@@ -4535,7 +4534,7 @@ dependencies = [
 
 [[package]]
 name = "ide-language"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "blake3",
  "criterion",
@@ -4591,7 +4590,7 @@ dependencies = [
 
 [[package]]
 name = "ide-lsp"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dunce",
  "futures",
@@ -4617,7 +4616,7 @@ dependencies = [
 
 [[package]]
 name = "ide-mcp"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "bytes",
  "dunce",
@@ -4636,7 +4635,7 @@ dependencies = [
 
 [[package]]
 name = "ide-notebook"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "futures",
  "ide-core",
@@ -4659,7 +4658,7 @@ dependencies = [
 
 [[package]]
 name = "ide-plugin"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "blake3",
  "dunce",
@@ -4682,7 +4681,7 @@ dependencies = [
 
 [[package]]
 name = "ide-profiler"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "ide-run",
@@ -4695,7 +4694,7 @@ dependencies = [
 
 [[package]]
 name = "ide-remote"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dunce",
  "globset",
@@ -4714,7 +4713,7 @@ dependencies = [
 
 [[package]]
 name = "ide-run"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4738,7 +4737,7 @@ dependencies = [
 
 [[package]]
 name = "ide-sdk"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dunce",
  "ide-core",
@@ -4746,6 +4745,7 @@ dependencies = [
  "ide-run",
  "ide-vfs",
  "ignore",
+ "quick-xml 0.42.0",
  "serde",
  "serde_json",
  "specta",
@@ -4757,7 +4757,7 @@ dependencies = [
 
 [[package]]
 name = "ide-search"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "criterion",
  "globset",
@@ -4777,7 +4777,7 @@ dependencies = [
 
 [[package]]
 name = "ide-spell"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "parking_lot",
@@ -4790,7 +4790,7 @@ dependencies = [
 
 [[package]]
 name = "ide-ssh"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dirs 6.0.0",
  "flate2",
@@ -4811,7 +4811,7 @@ dependencies = [
 
 [[package]]
 name = "ide-syntax"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "ide-language",
@@ -4826,7 +4826,7 @@ dependencies = [
 
 [[package]]
 name = "ide-terminal"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "libc",
@@ -4839,7 +4839,7 @@ dependencies = [
 
 [[package]]
 name = "ide-text"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "criterion",
  "ide-core",
@@ -4852,7 +4852,7 @@ dependencies = [
 
 [[package]]
 name = "ide-tools"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "flate2",
  "hex",
@@ -4873,7 +4873,7 @@ dependencies = [
 
 [[package]]
 name = "ide-vcs"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "blake3",
  "dunce",
@@ -4894,7 +4894,7 @@ dependencies = [
 
 [[package]]
 name = "ide-vfs"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "chardetng",
  "dunce",
@@ -4918,7 +4918,7 @@ dependencies = [
 
 [[package]]
 name = "ide-web"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "open",
@@ -4934,7 +4934,7 @@ dependencies = [
 
 [[package]]
 name = "ide-workspace"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "blake3",
  "dunce",
@@ -5581,9 +5581,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.37.0"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f111c8c41e7c61a49cd34e44c7619462967221a6443b0ec299e0ac30cfb9b1"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -6364,6 +6364,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-system-configuration"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7216bd11cbda54ccabcab84d523dc93b858ec75ecfb3a7d89513fa22464da396"
+dependencies = [
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "objc2-ui-kit"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6512,7 +6521,7 @@ dependencies = [
 
 [[package]]
 name = "openidea"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -8629,8 +8638,7 @@ checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 [[package]]
 name = "sqlx"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "378620ccc25c62c89d8be1c819e76a88d59bdcc3304733330788948e619bfd71"
+source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
 dependencies = [
  "sqlx-core",
  "sqlx-macros",
@@ -8642,8 +8650,7 @@ dependencies = [
 [[package]]
 name = "sqlx-core"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05b44e85bf579a8eeb4ceaa77a3a523baf2bf0e9bac7e40f405d537b5d2d5ccb"
+source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -8665,7 +8672,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "smallvec",
  "thiserror 2.0.21",
  "tokio",
@@ -8678,8 +8685,7 @@ dependencies = [
 [[package]]
 name = "sqlx-macros"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd2b84f2bc39a5705ef27ec785a11c934a41bbd4a24941e257927cddc26b60bf"
+source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8691,8 +8697,7 @@ dependencies = [
 [[package]]
 name = "sqlx-macros-core"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb8d96de5fdc85a5c4ec813432b523ec637e80ba98f046555f75f7908ddac7c3"
+source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
 dependencies = [
  "cfg-if",
  "dotenvy",
@@ -8703,7 +8708,7 @@ dependencies = [
  "quote",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sqlx-core",
  "sqlx-mysql",
  "sqlx-postgres",
@@ -8716,8 +8721,7 @@ dependencies = [
 [[package]]
 name = "sqlx-mysql"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90b8020fe17c5f2c245bfa2505d7ef59c5604839527c740266ad2214acebea27"
+source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
 dependencies = [
  "bitflags 2.13.2",
  "byteorder",
@@ -8742,8 +8746,7 @@ dependencies = [
 [[package]]
 name = "sqlx-postgres"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87a2bdd6e83f6b3ea525ca9fee568030508b58355a43d0b2c1674d5f79dcd65e"
+source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
 dependencies = [
  "atoi",
  "base64 0.22.1",
@@ -8777,8 +8780,7 @@ dependencies = [
 [[package]]
 name = "sqlx-sqlite"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "488e99c397a62007e4229aec669a179816339afc6d2620ca6fa420dbee2e982c"
+source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
 dependencies = [
  "atoi",
  "flume",
@@ -9543,7 +9545,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -11309,6 +11311,12 @@ name = "whoami"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "626c4bac6755d76ffc12cb01b2eac751db1996b9e0041de9aa02c8c211ddc82c"
+dependencies = [
+ "libc",
+ "libredox",
+ "objc2-system-configuration",
+ "web-sys",
+]
 
 [[package]]
 name = "win_uds"

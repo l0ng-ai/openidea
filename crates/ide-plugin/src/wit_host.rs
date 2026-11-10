@@ -322,6 +322,23 @@ impl StoreData {
         answer.map_err(to_wit)
     }
 
+    /// The user's answer for a request to `host` under `net:ask`:
+    /// `Some(_)` allows it (`true`: the host is remembered). `None` when
+    /// nobody could be asked or the user refused. Commands and view actions pass
+    /// their window; background and scheduled calls ask nobody, so only an
+    /// already-allowed host connects there.
+    fn ask_net(&mut self, host: &str) -> Result<Option<bool>, wit::Error> {
+        let client = self.net_interactive.then(|| self.invocation.client.clone()).flatten();
+        let subject = self.subject.clone();
+        let started = Instant::now();
+        let answer = self.host.net_ask(&subject, client.as_deref(), host, &self.cancel.token());
+        // The wait doesn't count against the call's wall-clock budget.
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        answer.map_err(to_wit)
+    }
+
     fn pick_prompt(
         &mut self,
         title: String,
@@ -362,6 +379,25 @@ impl StoreData {
     }
 }
 
+/// Checks `ui.notify` buttons; the host checks that their commands are declared.
+fn notification_actions(actions: Vec<ui::NotificationAction>) -> Result<Vec<crate::NotificationAction>, wit::Error> {
+    const MAX_ACTIONS: usize = 3;
+    if actions.len() > MAX_ACTIONS {
+        return Err(wit::Error::Invalid(format!("a notification has at most {MAX_ACTIONS} actions")));
+    }
+    let mut checked = Vec::with_capacity(actions.len());
+    for a in actions {
+        if a.label.trim().is_empty() || a.label.len() > 256 || a.label.chars().any(char::is_control) {
+            return Err(wit::Error::Invalid(format!("invalid action label {:?}", a.label)));
+        }
+        if a.argument.as_ref().is_some_and(|arg| arg.len() > 64 << 10) {
+            return Err(wit::Error::Invalid("an action argument is limited to 64 KiB".into()));
+        }
+        checked.push(crate::NotificationAction { label: a.label, command: a.command, argument: a.argument });
+    }
+    Ok(checked)
+}
+
 impl ui::Host for StoreData {
     fn notify(
         &mut self,
@@ -370,22 +406,29 @@ impl ui::Host for StoreData {
         body: String,
         actions: Vec<ui::NotificationAction>,
     ) -> Fallible<()> {
-        const MAX_ACTIONS: usize = 3;
-        if actions.len() > MAX_ACTIONS {
-            return Ok(Err(wit::Error::Invalid(format!("a notification has at most {MAX_ACTIONS} actions"))));
-        }
-        let mut checked = Vec::with_capacity(actions.len());
-        for a in actions {
-            if a.label.trim().is_empty() || a.label.len() > 256 || a.label.chars().any(char::is_control) {
-                return Ok(Err(wit::Error::Invalid(format!("invalid action label {:?}", a.label))));
-            }
-            if a.argument.as_ref().is_some_and(|arg| arg.len() > 64 << 10) {
-                return Ok(Err(wit::Error::Invalid("an action argument is limited to 64 KiB".into())));
-            }
-            checked.push(crate::NotificationAction { label: a.label, command: a.command, argument: a.argument });
-        }
+        let actions = match notification_actions(actions) {
+            Ok(actions) => actions,
+            Err(e) => return Ok(Err(e)),
+        };
         let (title, body) = (clip(title, MAX_TITLE), clip(body, 16 << 10));
-        Ok(self.host.notify(self.client(), notification_level(level), title, body, checked).map_err(to_wit))
+        Ok(self.host.notify(self.client(), notification_level(level), title, body, actions).map_err(to_wit))
+    }
+
+    fn notify_project(
+        &mut self,
+        target: Resource<ProjectRes>,
+        level: wit::NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<ui::NotificationAction>,
+    ) -> Fallible<()> {
+        let actions = match notification_actions(actions) {
+            Ok(actions) => actions,
+            Err(e) => return Ok(Err(e)),
+        };
+        let root = self.table.get(&target)?.root.clone();
+        let (title, body) = (clip(title, MAX_TITLE), clip(body, 16 << 10));
+        Ok(self.host.notify_project(&root, notification_level(level), title, body, actions).map_err(to_wit))
     }
 
     fn show_notification(
@@ -735,7 +778,7 @@ impl workspace::HostProject for StoreData {
             return Ok(Err(too_much_to_write(&path)));
         }
         let root = self.table.get(&this)?.root.clone();
-        let real = match sandbox::resolve_new_in_root(&root, &path) {
+        let real = match sandbox::resolve_writable_in_root(&root, &path) {
             Ok(real) => real,
             Err(e) => return Ok(Err(wit::Error::Invalid(e))),
         };
@@ -1243,8 +1286,26 @@ impl net::Host for StoreData {
             Ok(h) => h,
             Err(e) => return Ok(Err(wit::Error::Invalid(e))),
         };
-        if let Err(e) = self.require(capability) {
-            return Ok(Err(e));
+        let mut grants = self.granted.clone();
+        if let Err(e) = self.require(capability.clone()) {
+            // `net:ask`: an HTTPS (or loopback) host the manifest does not list
+            // may ask the user — commands and view actions from a window only. Plain
+            // HTTP elsewhere always needs `net.http:<host>`.
+            let askable =
+                matches!(&capability, Capability::Net(_)) && self.granted.iter().any(|g| g.covers(&Capability::NetAsk));
+            let allowed = match &capability {
+                Capability::Net(host) if askable => match self.ask_net(host) {
+                    Ok(Some(_)) => true,
+                    Ok(None) => false,
+                    // A cancelled or failed question is not a refusal.
+                    Err(e) => return Ok(Err(e)),
+                },
+                _ => false,
+            };
+            if !allowed {
+                return Ok(Err(e));
+            }
+            grants.push(capability.clone());
         }
         if req.headers.iter().any(|h| h.value.contains("{{secret:"))
             && let Err(e) = self.require(Capability::Secrets)
@@ -1261,7 +1322,7 @@ impl net::Host for StoreData {
             headers: req.headers.into_iter().map(|h| (h.name, h.value)).collect(),
             body: req.body,
             timeout: wanted.min(self.remaining()),
-            grants: self.granted.clone(),
+            grants,
         };
         let token = self.cancel.token();
         Ok(self
@@ -1852,31 +1913,72 @@ impl From<bindings::openidea::plugin::views::ContentTabReply> for crate::Content
     }
 }
 
+impl StoreData {
+    fn register_plugin_run_target(
+        &mut self,
+        project: Resource<ProjectRes>,
+        target: crate::PluginRunTarget,
+    ) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Process(target.program.clone())) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self.host.register_run_target(&root, target).map_err(to_wit))
+    }
+}
+
 impl bindings::openidea::plugin::run_targets::Host for StoreData {
     fn register(
         &mut self,
         project: Resource<ProjectRes>,
         target: bindings::openidea::plugin::run_targets::RunTarget,
     ) -> Fallible<()> {
-        if let Err(e) = self.require(Capability::Process(target.program.clone())) {
-            return Ok(Err(e));
-        }
-        let root = self.table.get(&project)?.root.clone();
-        Ok(self
-            .host
-            .register_run_target(
-                &root,
-                crate::PluginRunTarget {
-                    id: target.id,
-                    name: target.name,
-                    program: target.program,
-                    args: target.args,
-                    workdir_args: target.workdir_args,
-                    container_root: target.container_root,
-                    commands: target.commands,
-                },
-            )
-            .map_err(to_wit))
+        self.register_plugin_run_target(
+            project,
+            crate::PluginRunTarget {
+                id: target.id,
+                name: target.name,
+                program: target.program,
+                args: target.args,
+                workdir_args: target.workdir_args,
+                container_root: target.container_root,
+                commands: target
+                    .commands
+                    .into_iter()
+                    .map(|(name, args)| ide_core::remote_settings::PluginCommandOverride {
+                        name,
+                        args,
+                        workdir_args: None,
+                    })
+                    .collect(),
+            },
+        )
+    }
+    fn register_with_overrides(
+        &mut self,
+        project: Resource<ProjectRes>,
+        target: bindings::openidea::plugin::run_targets::RunTargetWithOverrides,
+    ) -> Fallible<()> {
+        self.register_plugin_run_target(
+            project,
+            crate::PluginRunTarget {
+                id: target.id,
+                name: target.name,
+                program: target.program,
+                args: target.args,
+                workdir_args: target.workdir_args,
+                container_root: target.container_root,
+                commands: target
+                    .commands
+                    .into_iter()
+                    .map(|c| ide_core::remote_settings::PluginCommandOverride {
+                        name: c.name,
+                        args: c.args,
+                        workdir_args: c.workdir_args,
+                    })
+                    .collect(),
+            },
+        )
     }
     fn unregister(&mut self, project: Resource<ProjectRes>, id: String) -> wasmtime::Result<()> {
         let root = self.table.get(&project)?.root.clone();
@@ -2267,4 +2369,9 @@ pub(crate) mod mcp_bindings {
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
         },
     });
+}
+
+/// Optional API 1.5 run-target launch validation.
+pub(crate) mod run_target_validation_bindings {
+    wasmtime::component::bindgen!({ world: "run-target-validator", path: "../../wit" });
 }

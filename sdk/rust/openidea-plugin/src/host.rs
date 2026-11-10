@@ -82,6 +82,29 @@ mod imp {
         wit::ui::notify(level, title, body, &actions).map_err(error)
     }
 
+    pub fn notify_project(
+        p: &ProjectRes,
+        level: NotificationLevel,
+        title: &str,
+        body: &str,
+        actions: &[NotificationAction],
+    ) -> Result<(), Error> {
+        let level = match level {
+            NotificationLevel::Info => wit::types::NotificationLevel::Info,
+            NotificationLevel::Warning => wit::types::NotificationLevel::Warning,
+            NotificationLevel::Error => wit::types::NotificationLevel::Error,
+        };
+        let actions: Vec<_> = actions
+            .iter()
+            .map(|a| wit::ui::NotificationAction {
+                label: a.label.clone(),
+                command: a.command.clone(),
+                argument: a.argument.clone(),
+            })
+            .collect();
+        wit::ui::notify_project(p, level, title, body, &actions).map_err(error)
+    }
+
     pub fn set_status_item(id: &str, item: &StatusItem) {
         let item = wit::ui::StatusItem {
             text: item.text.clone(),
@@ -738,6 +761,32 @@ mod imp {
         )
         .map_err(error)
     }
+    pub fn register_run_target_with_overrides(
+        project: &ProjectRes,
+        target: &crate::PluginRunTargetWithOverrides,
+    ) -> Result<(), Error> {
+        wit::run_targets::register_with_overrides(
+            project,
+            &wit::run_targets::RunTargetWithOverrides {
+                id: target.id.clone(),
+                name: target.name.clone(),
+                program: target.program.clone(),
+                args: target.args.clone(),
+                workdir_args: target.workdir_args.clone(),
+                container_root: target.container_root.clone(),
+                commands: target
+                    .commands
+                    .iter()
+                    .map(|c| wit::run_targets::CommandOverride {
+                        name: c.name.clone(),
+                        args: c.args.clone(),
+                        workdir_args: c.workdir_args.clone(),
+                    })
+                    .collect(),
+            },
+        )
+        .map_err(error)
+    }
     pub fn unregister_run_target(project: &ProjectRes, id: &str) {
         wit::run_targets::unregister(project, id);
     }
@@ -937,6 +986,20 @@ impl Project {
     /// Disk working tree versus HEAD or a revision, failing above 4 MiB. Requires vcs.read and trust.
     pub fn vcs_diff(&self, path: Option<&str>, against: Option<&str>) -> Result<Option<String>, Error> {
         imp::vcs_diff(&self.inner, path, against)
+    }
+
+    /// [`notify_with_actions`] in a window of this project only (API 1.5), also from
+    /// scheduled or background work: the most recently focused one when it is open in
+    /// several, and its buttons run there. Once the project has closed this is
+    /// [`Error::NotFound`] and nothing is shown. Needs no capability.
+    pub fn notify(
+        &self,
+        level: NotificationLevel,
+        title: &str,
+        body: &str,
+        actions: &[NotificationAction],
+    ) -> Result<(), Error> {
+        imp::notify_project(&self.inner, level, title, body, actions)
     }
 
     /// Absolute path of the root. Needs `project.read`.
@@ -1675,6 +1738,14 @@ pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Resul
 /// Registers/replaces a read-only project target. Requires the program's process grant.
 pub fn register_run_target(project: &Project, target: &crate::PluginRunTarget) -> Result<(), Error> {
     imp::register_run_target(&project.inner, target)
+}
+/// Registers a target with per-command working-directory control (API 1.5).
+/// Requires the same process grant and project trust as register_run_target.
+pub fn register_run_target_with_overrides(
+    project: &Project,
+    target: &crate::PluginRunTargetWithOverrides,
+) -> Result<(), Error> {
+    imp::register_run_target_with_overrides(&project.inner, target)
 }
 /// Withdraws a target owned by this plugin.
 pub fn unregister_run_target(project: &Project, id: &str) {

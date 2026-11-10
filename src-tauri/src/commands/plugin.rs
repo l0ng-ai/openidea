@@ -235,6 +235,14 @@ pub async fn plugin_set_capability(
     blocking(move || host.set_capability(&id, &capability, granted)).await
 }
 
+/// Revokes one host remembered through net:ask.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_revoke_net_host(state: State<'_, AppState>, id: String, host: String) -> IdeResult<PluginInfo> {
+    let plugins = state.plugins.clone();
+    blocking(move || plugins.revoke_net_host(&id, &host)).await
+}
+
 /// Links a development plugin folder (`openidea-plugin link` does the same from a terminal).
 #[tauri::command]
 #[specta::specta]

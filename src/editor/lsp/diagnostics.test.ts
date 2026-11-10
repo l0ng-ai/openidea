@@ -71,10 +71,19 @@ describe("toLintDiagnostics", () => {
       d(0, 3, 7, "error", { deprecated: true }),
     ]);
     expect(out).toEqual([
-      { from: 3, to: 7, severity: "error", message: "m0:3", source: undefined, markClass: "cm-lsp-deprecated" },
+      {
+        from: 3,
+        to: 7,
+        problem: d(0, 3, 7, "error", { deprecated: true }),
+        severity: "error",
+        message: "m0:3",
+        source: undefined,
+        markClass: "cm-lsp-deprecated",
+      },
       {
         from: 18,
         to: 19,
+        problem: d(1, 6, 7, "warning", { unnecessary: true, source: "rustc", code: "unused" }),
         severity: "warning",
         message: "m1:6",
         source: "rustc unused",

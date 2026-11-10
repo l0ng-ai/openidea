@@ -3,6 +3,7 @@
  * Agents tool window lists tasks by what they need from the user, a task opens as an
  * editor tab (conversation + changed files), and New Task is an editor page.
  */
+import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
@@ -18,20 +19,22 @@ import {
   toolWindowService,
 } from "@/workbench/contributions";
 import { AgentsStatus } from "./AgentsStatus";
-import { HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW } from "./model";
+import { AGENTS_GROUP, HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW, providerIcon } from "./model";
 import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { connect, disconnect, openHome, useAgents } from "./store";
-import { taskActions } from "./taskActions";
+import { TaskStatusMark } from "./TaskStatusMark";
+import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
 
-/** Settings › Tools › Agents (also used by the Settings window). */
+/** Settings › Agents › Coding Agents (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
   return registerSettingsPage({
     id: REGISTRY_PAGE,
-    title: "Agents",
-    group: "Tools",
-    order: 500,
+    title: "Coding Agents",
+    group: AGENTS_GROUP,
+    // First in Agents, which sits after Languages & Frameworks and before Tools.
+    order: 450,
     keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
     component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
   });
@@ -71,7 +74,8 @@ export function activate(): () => void {
       anchor: "right",
       order: 0.5,
       component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView)),
-      headerContent: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsLocationActions)),
+      headerMenu: useAgentsHeaderMenu,
+      plainTitle: true,
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),
       useBadge: () => {
         const n = useAgents(
@@ -87,7 +91,12 @@ export function activate(): () => void {
         const data = input.data as { task: string; title?: string };
         return useAgents.getState().tasks.get(data.task)?.title ?? data.title ?? "Agent Task";
       },
-      icon: () => "toolwindow-agents",
+      icon: (input) => {
+        const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
+        return task ? providerIcon(task.provider) : "toolwindow-agents";
+      },
+      // Busy / done marker in the tab's trailing slot (#2233).
+      trailing: (input) => createElement(TaskStatusMark, { task: (input.data as { task: string }).task }),
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
       restorable: true,
       // Rebuilding a long conversation on every switch back is slow.
@@ -97,7 +106,10 @@ export function activate(): () => void {
       kind: HOME_KIND,
       component: lazyComponent(() => import("./HomeEditor").then((m) => m.HomeEditor)),
       title: () => "New Agent Task",
-      icon: () => "toolwindow-agents",
+      icon: (input) => {
+        const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
+        return task ? providerIcon(task.provider) : "toolwindow-agents";
+      },
       restorable: true,
     }),
     // An explicit editor drop sets the placement for subsequent sessions too.

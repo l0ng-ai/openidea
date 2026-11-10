@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { useBookmarkPopups } from "@/features/search/bookmarks/store";
 import { commitBookmarkPath } from "./logBookmarks";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
@@ -142,7 +143,9 @@ function useLogRepositories() {
   const roots = useVcs((s) => s.roots);
   const repo = tab?.repo;
   const repositories = tab?.repositories;
-  return useMemo(() => (repositories?.length ? repositories : repo ? [repo] : roots), [repo, roots, repositories]);
+  const key = (repositories?.length ? repositories : repo ? [repo] : roots).join("\0");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => (repositories?.length ? repositories : repo ? [repo] : roots), [key]);
 }
 
 function useReadOnlyLog() {
@@ -281,10 +284,13 @@ export function LogView() {
 
   // On mount, when the window switches to another project and when another of its
   // repositories is selected (its branches are needed to notice its refs moving).
+  const mounted = useRef(false);
   useEffect(() => {
     lastRefs.current = null;
     allRefs.current = null;
-    void reloadLog({ preserve: logState(scope ?? undefined).commits.length > 0 }, scope ?? undefined);
+    const state = logState(scope ?? undefined);
+    if (mounted.current || !state.loading) void reloadLog({ preserve: state.commits.length > 0 }, scope ?? undefined);
+    mounted.current = true;
     if (!readOnly) void loadBranches().catch(() => undefined);
   }, [root, repo, readOnly, scope]);
 
@@ -1400,12 +1406,19 @@ function CommitList() {
   const selectedSet = useMemo(() => new Set(selection), [selection]);
   const revealTick = useGitLog((s) => s.revealTick);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const selectedIndex = useMemo(
+    () => (selected ? commits.findIndex((c) => commitKey(c) === selected) : -1),
+    [commits, selected],
+  );
+  const lastRevealed = useRef(0);
+  // Recycled rows can emit enter events without the pointer moving.
+  const hoverPointer = useRef<{ x: number; y: number } | null>(null);
   const previousRows = useRef(commits);
   useLayoutEffect(() => {
     const element = scrollRef.current;
     const previous = previousRows.current;
     previousRows.current = commits;
-    if (!element || previous === commits) return;
+    if (!element || previous === commits || (revealTick !== lastRevealed.current && selectedIndex >= 0)) return;
     const top = Math.max(0, Math.floor((element.scrollTop - ROW) / ROW));
     // Preserve the first surviving visible commit and its pixel offset.
     for (let i = top; i < previous.length; i++) {
@@ -1414,7 +1427,7 @@ function CommitList() {
       element.scrollTop += (next - i) * ROW;
       break;
     }
-  }, [commits]);
+  }, [commits, revealTick, selectedIndex]);
   const finished = done;
   const virtualizer = useVirtualizer({
     count: commits.length + (finished ? 0 : 1),
@@ -1432,15 +1445,11 @@ function CommitList() {
     if (!finished && !loading && last && last.index >= commits.length - PAGE) void loadMore(scope ?? undefined);
   }, [last, commits.length, finished, loading, active, scope]);
 
-  const selectedIndex = useMemo(
-    () => (selected ? commits.findIndex((c) => commitKey(c) === selected) : -1),
-    [commits, selected],
-  );
   useLayoutEffect(() => {
-    if (selectedIndex >= 0) virtualizer.scrollToIndex(selectedIndex, { align: "center" });
-    // Only on explicit reveal requests.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [revealTick]);
+    if (revealTick === lastRevealed.current || selectedIndex < 0) return;
+    lastRevealed.current = revealTick;
+    virtualizer.scrollToIndex(selectedIndex, { align: "center" });
+  }, [revealTick, selectedIndex, virtualizer]);
 
   const visible = useRef(commits);
   visible.current = commits;
@@ -1647,6 +1656,11 @@ function CommitList() {
 
   rowEvents.current = {
     onHover: (edge) => {
+      if (
+        edge === hoverColor ||
+        (edge && (virtualizer.isScrolling || scrollRef.current?.hasAttribute("data-hover-paused")))
+      )
+        return;
       setHoverColor(edge);
       if (!edge) return;
       const source = displayedGraph.find((c) => c.parents.some((p) => `${c.id}\0${p}` === edge));
@@ -1703,6 +1717,19 @@ function CommitList() {
         aria-multiselectable
         aria-activedescendant={selectedIndex >= 0 ? `commit-${scope ?? "log"}-${selectedIndex}` : undefined}
         tabIndex={0}
+        onScroll={(e) => {
+          if (!e.currentTarget.hasAttribute("data-hover-paused")) e.currentTarget.dataset.hoverPaused = "";
+          setHoverColor(null);
+        }}
+        onPointerMoveCapture={(e) => {
+          const previous = hoverPointer.current;
+          hoverPointer.current = { x: e.clientX, y: e.clientY };
+          if (!virtualizer.isScrolling && (!previous || previous.x !== e.clientX || previous.y !== e.clientY))
+            delete e.currentTarget.dataset.hoverPaused;
+        }}
+        onPointerLeave={(e) => {
+          hoverPointer.current = { x: e.clientX, y: e.clientY };
+        }}
         onKeyDown={onKeyDown}
         onCopy={(e) => {
           if (window.getSelection()?.toString()) return;
@@ -2078,7 +2105,10 @@ function CommitRowView({
   }, [tooltip]);
   const enterTooltip = () => {
     clearTimeout(tooltipTimer.current);
-    tooltipTimer.current = setTimeout(() => setTooltip(true), TOOLTIP_DELAY);
+    if (tooltip || subjectRef.current?.closest("[data-hover-paused]")) return;
+    tooltipTimer.current = setTimeout(() => {
+      if (!subjectRef.current?.closest("[data-hover-paused]")) setTooltip(true);
+    }, TOOLTIP_DELAY);
   };
   const leaveTooltip = () => {
     clearTimeout(tooltipTimer.current);
@@ -2116,6 +2146,7 @@ function CommitRowView({
         ref={subjectRef}
         className={clsx(styles.subject, head && styles.headSubject, merge && styles.mergeSubject)}
         onPointerEnter={enterTooltip}
+        onPointerMove={enterTooltip}
         onPointerLeave={leaveTooltip}
         onPointerDown={() => {
           clearTimeout(tooltipTimer.current);
@@ -2280,6 +2311,7 @@ export function GraphCell({
           tabIndex={actionable ? 0 : undefined}
           aria-label={actionable ? label : undefined}
           onMouseEnter={() => onHover?.(s.edge ?? `${s.source ?? ""}\0${target ?? ""}`)}
+          onMouseMove={() => onHover?.(s.edge ?? `${s.source ?? ""}\0${target ?? ""}`)}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
@@ -2315,6 +2347,7 @@ export function GraphCell({
         aria-label={onNode ? tx("Collapse or expand this branch") : undefined}
         onMouseDown={(e) => e.stopPropagation()}
         onMouseEnter={() => row.id && onHover?.(`node:${row.id}`)}
+        onMouseMove={() => row.id && onHover?.(`node:${row.id}`)}
         onClick={(e) => {
           e.stopPropagation();
           onNode?.();
@@ -2477,7 +2510,8 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
     return () => {
       alive = false;
     };
-  }, [idsKey, chosen, fromParents, parentIndex, commitRoot, filesKey, many, readOnly, showLineStats]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idsKey, fromParents, parentIndex, commitRoot, filesKey, many, readOnly, showLineStats]);
 
   const groupByDirectory = useLogOptions((s) => s.groupByDirectory);
   const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(() => new Set());
@@ -2785,7 +2819,7 @@ function CommitMessage({ commit, compact = false }: { commit: Commit; compact?: 
           type="button"
           className={clsx(styles.linkButton, styles.hash)}
           title={tx("Copy revision number")}
-          onClick={() => void navigator.clipboard?.writeText(commit.id)}
+          onClick={() => void writeClipboardText(commit.id)}
         >
           {commit.shortId}
         </button>{" "}
