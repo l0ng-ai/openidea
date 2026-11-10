@@ -5,7 +5,7 @@
  */
 import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import { emptyGutterSpacer, type EditorDocContext } from "@/editor/api";
+import { emptyGutterSpacer, gutterSpacer, type EditorDocContext } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands, type RunConfig } from "@/platform/ipc";
@@ -338,16 +338,7 @@ class ScriptMarker extends GutterMarker {
   }
 }
 
-/** Width-reserving spacer for lines without a marker; never an interactive control. */
-class ScriptSpacer extends GutterMarker {
-  override toDOM(): Node {
-    const el = document.createElement("span");
-    el.className = styles.runMarker ?? "";
-    return el;
-  }
-}
-
-const scriptSpacer = new ScriptSpacer();
+const scriptSpacer = gutterSpacer(styles.runMarker ?? "");
 
 const DEBOUNCE = 300;
 

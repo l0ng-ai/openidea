@@ -7,7 +7,7 @@ import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { gutterIconMarkup, showContextMenu } from "@/ui";
-import { emptyGutterSpacer } from "@/editor/api";
+import { emptyGutterSpacer, gutterSpacer } from "@/editor/api";
 import { notifications, onEndpointsChanged, searchEndpoints, type EndpointEntry } from "@/workbench/contributions";
 import { appendGeneratedRequests } from "./generatedRequests";
 import { METHODS } from "./language";
@@ -91,16 +91,7 @@ class EndpointMarker extends GutterMarker {
   }
 }
 
-/** Width-reserving spacer for lines without a marker; never an interactive control. */
-class EndpointSpacer extends GutterMarker {
-  override toDOM(): Node {
-    const el = document.createElement("span");
-    el.className = styles.runMarker ?? "";
-    return el;
-  }
-}
-
-const endpointSpacer = new EndpointSpacer();
+const endpointSpacer = gutterSpacer(styles.runMarker ?? "");
 
 export function endpointEditorExtension(ctx: EditorDocContext): Extension {
   if (ctx.language === "http") return EditorState.languageData.of(() => [{ openideaCompletion: endpointCompletion }]);

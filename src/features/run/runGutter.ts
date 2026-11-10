@@ -6,7 +6,7 @@
  */
 import { RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import { emptyGutterSpacer, type EditorDocContext } from "@/editor/api";
+import { emptyGutterSpacer, gutterSpacer, type EditorDocContext } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { shortcutLabel } from "@/platform/keymap";
@@ -174,16 +174,7 @@ class RunMarker extends GutterMarker {
   }
 }
 
-/** Width-reserving spacer for lines without a marker; never an interactive control. */
-class RunSpacer extends GutterMarker {
-  override toDOM(): Node {
-    const el = document.createElement("span");
-    el.className = styles.runMarker ?? "";
-    return el;
-  }
-}
-
-const runSpacer = new RunSpacer();
+const runSpacer = gutterSpacer(styles.runMarker ?? "");
 
 /** The gutter asks for markers on every update: rebuild only when targets or test results changed. */
 const markerCache = new WeakMap<readonly PlacedTarget[], { version: number; set: RangeSet<GutterMarker> }>();
