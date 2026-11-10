@@ -132,7 +132,9 @@ test("Show on Double-Click → Source opens the file itself, and Follow the Inte
   await expect(diffTab(page)).toHaveAttribute("aria-selected", "true");
 });
 
-test("modal Commit dialog: double-click opens the file itself", async ({ workbench: page }) => {
+test("modal Commit dialog: double-click opens the diff in a front window, not an editor tab", async ({
+  workbench: page,
+}) => {
   await openFromTree(page, PRELOADED);
   await stubRepository(page);
   await stubSettingsWrites(page);
@@ -141,6 +143,7 @@ test("modal Commit dialog: double-click opens the file itself", async ({ workben
   const dialog = page.getByRole("dialog", { name: "Commit Changes" });
   await expect(dialog).toBeVisible();
   await doubleClickChange(dialog);
-  await expect(sourceTab(page)).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("dialog", { name: /\(HEAD ↔ Your version\)/ })).toBeVisible();
+  await expect(sourceTab(page)).toHaveCount(0);
   await expect(diffTab(page)).toHaveCount(0);
 });

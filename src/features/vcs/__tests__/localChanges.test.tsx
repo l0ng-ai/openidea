@@ -262,12 +262,13 @@ describe("Changes tree diffs follow the commit interface setting (#1863)", () =>
     }
   });
 
-  it("opens the Commit dialog's files as source files", async () => {
-    modal(true);
+  it("opens the Commit dialog's files as a front diff window, whatever Show on Double-Click says", async () => {
+    commitSettings({ nonModal: false, doubleClickOpensDiff: false });
     render(<ChangesTree mode="dialog" />);
     await activate();
-    await vi.waitFor(() => expect(openFile.mock.calls).toEqual([["/p/src/a.ts", { focus: true }]]));
-    expect(openDiffDialog).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(openDiffDialog).toHaveBeenCalledTimes(1));
+    expect(openFile).not.toHaveBeenCalled();
+    expect(openInput).not.toHaveBeenCalled();
   });
 
   it("opens the Show Diff menu item in front with the modal interface", async () => {

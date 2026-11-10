@@ -207,8 +207,8 @@ const bottomLeft = (el: HTMLElement) => {
  * files of its group, in tree order. Enter and double-click follow IDEA's Show on
  * Double-Click (opensDiffOnActivate): the source file, or the diff where the commit
  * interface puts it (openVcsDiff: a preview editor tab, or under the modal interface the
- * front diff window, behind the modal Commit dialog, #1863). `forceDiff` is Show Diff,
- * which always shows the diff.
+ * front diff window, behind the modal Commit dialog, #1863). `forceDiff` is Show Diff and
+ * the Commit dialog's own activation, which always show the diff in front.
  */
 function openNode(n: ChangeNode, roots: readonly ChangeNode[], forceDiff = false) {
   if (n.type !== "file" || !n.path) return;
@@ -772,7 +772,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
             });
           }}
-          onActivate={(n) => openNode(n, roots)}
+          onActivate={(n) => openNode(n, roots, mode === "dialog")}
           onContextMenu={(node, sel, e: MouseEvent) => {
             if (!node) return;
             if (node.type === "group" && node.changelist) {
