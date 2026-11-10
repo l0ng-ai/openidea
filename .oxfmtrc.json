@@ -12,6 +12,7 @@
     "src/editor/core/cm/angular/parser*.ts",
     "src/editor/core/cm/jsp/parser*.ts",
     "src/editor/core/cm/astro/parser*.ts",
+    "src/editor/core/cm/django/parser*.ts",
     "plugins/themes.md",
     "pnpm-lock.yaml",
     "**/*.toml",
