@@ -339,6 +339,8 @@ export const viewerTheme = EditorView.theme(
     "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection, .cm-openidea-selected, &.cm-focused .cm-openidea-selected":
       {
         backgroundColor: "var(--bg-selected-strong)",
+        // Unset (the default `inherit`): the declaration drops and the syntax colours show through.
+        color: "var(--fg-editor-selection)",
       },
     ".cm-activeLine": { backgroundColor: "var(--bg-current-line)" },
     ".cm-gutters": {

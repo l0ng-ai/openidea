@@ -34,6 +34,19 @@ describe(".icls schemes", () => {
     expect(parseIcls(xml).scheme.attributes).toMatchObject(scheme.attributes);
   });
 
+  it("round trips the selection foreground through SELECTION_FOREGROUND (#2446)", () => {
+    const { scheme } = parseIcls(`<scheme name="Sel" parent_scheme="Default"><colors>
+      <option name="SELECTION_BACKGROUND" value="214283"/>
+      <option name="SELECTION_FOREGROUND" value="ffffff"/>
+    </colors></scheme>`);
+    expect(scheme.attributes.selection).toEqual({ background: "#214283" });
+    expect(scheme.attributes.selectionForeground).toEqual({ foreground: "#ffffff" });
+    const { id, customs } = importScheme({}, scheme);
+    const xml = exportIcls(id, customs);
+    expect(xml).toContain('<option name="SELECTION_FOREGROUND" value="ffffff" />');
+    expect(parseIcls(xml).scheme.attributes.selectionForeground).toEqual({ foreground: "#ffffff" });
+  });
+
   it("resolves explicit attribute inheritance independent of XML order and stops cycles", () => {
     const { scheme } = parseIcls(`<scheme name="Inherited"><attributes>
       <option name="PHP_PARAMETER" baseAttributes="PHP_VAR"/>

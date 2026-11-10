@@ -184,6 +184,7 @@ html {
   --border-right-margin: #323438;
   --bg-editor-selection: #214283;
   --bg-editor-selection-inactive: #1d3460;
+  --fg-editor-selection: inherit;
   --bg-text-search-result: #114957;
   --bg-text-search-result-current: #165e70;
   --bg-matched-brace: #43454a;
@@ -599,6 +600,7 @@ html {
   --border-right-margin: #ebecf0;
   --bg-editor-selection: #a6d2ff;
   --bg-editor-selection-inactive: #c9e3ff;
+  --fg-editor-selection: inherit;
   --bg-text-search-result: #fcd47e;
   --bg-text-search-result-current: #f2bf57;
   --bg-matched-brace: #93d9d9;
