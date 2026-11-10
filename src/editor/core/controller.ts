@@ -5,6 +5,7 @@
  */
 import { writeClipboardText } from "@/platform/clipboard";
 import { pasteEditorClipboard } from "./cm/clipboard";
+import type { ReactNode } from "react";
 import { EditorSelection } from "@codemirror/state";
 import { create } from "zustand";
 import { setContext } from "@/platform/context";
@@ -208,6 +209,16 @@ export function tabIcon(input: EditorInput, kinds: EditorKinds): string {
     return kind?.icon?.(input) ?? "file";
   } catch {
     return "file";
+  }
+}
+
+/** A kind's trailing marker (status dot …); `null` when it has none. */
+export function tabTrailing(input: EditorInput, kinds: EditorKinds): ReactNode {
+  const kind = kinds.get(input.kind);
+  try {
+    return kind?.trailing?.(input) ?? null;
+  } catch {
+    return null;
   }
 }
 

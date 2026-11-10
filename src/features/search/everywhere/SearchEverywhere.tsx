@@ -4,7 +4,7 @@ import { useFilePresentation } from "@/platform/filePresentation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
 import { actionToggled, executeAction, executeActionFrom, getAction } from "@/platform/actions";
-import type { ProjectFileSet } from "@/platform/ipc";
+import { onIdeEvent, type ProjectFileSet } from "@/platform/ipc";
 import { tx as translate, useTx } from "@/platform/i18n";
 import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim, shortcutLabel } from "@/platform/keymap";
 import {
@@ -143,6 +143,16 @@ function SearchEverywhereDialog() {
 
   useEffect(() => () => controller.dispose(), [controller]);
   const [endpointVersion, setEndpointVersion] = useState(0);
+  const [filesVersion, setFilesVersion] = useState(0);
+  useEffect(
+    () =>
+      onIdeEvent("indexState", (e) => {
+        if (e.indexing) return;
+        controller.invalidateFiles();
+        setFilesVersion((v) => v + 1);
+      }),
+    [controller],
+  );
   useEffect(
     () =>
       onEndpointsChanged(() => {
@@ -193,7 +203,7 @@ function SearchEverywhereDialog() {
       includeDisabled: tab === "actions" ? includeNonProject : undefined,
       extra,
     });
-  }, [controller, searchQuery, tab, includeNonProject, fileSet, filter, extra, endpointVersion]);
+  }, [controller, searchQuery, tab, includeNonProject, fileSet, filter, extra, endpointVersion, filesVersion]);
 
   useEffect(() => {
     inputRef.current?.select();

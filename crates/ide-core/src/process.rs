@@ -105,6 +105,8 @@ fn signal_group(child: &Child, signal: libc::c_int) {
 const TREE_EXIT_WAIT: Duration = Duration::from_secs(5);
 
 #[cfg(windows)]
+pub use windows_job::Job;
+#[cfg(windows)]
 pub use windows_tree::ProcessTree;
 
 /// `taskkill /T /F` from `pid`, then waits (up to [`TREE_EXIT_WAIT`]) until what the child
@@ -248,6 +250,167 @@ mod windows_tree {
         // SAFETY: a live process handle opened with query access; four out-parameters.
         let ok = unsafe { GetProcessTimes(process.as_raw_handle(), &mut created, &mut exited, &mut kernel, &mut user) };
         (ok != 0).then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    }
+}
+
+/// A kernel job object over one launched process tree. Everything a launch starts joins
+/// the job by inheritance, so [`Job::terminate`] ends the whole tree — also processes
+/// started after the launch's snapshot was taken, orphans of a launcher that already
+/// exited (where a `taskkill /T /F` from the tracked pid no longer finds them), and
+/// processes born in the window a process-enumeration kill would miss. Spawns assign
+/// their root right after it starts; when the assignment fails (an enclosing job that
+/// disallows nesting, an already-exited pid), callers fall back to `taskkill /T /F`.
+#[cfg(windows)]
+mod windows_job {
+    use std::mem::size_of;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_BASIC_LIMIT_INFORMATION, JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
+        SetInformationJobObject, TerminateJobObject,
+    };
+    use windows_sys::Win32::System::Threading::{IO_COUNTERS, OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+
+    /// A job object holding one launch's processes. The handle is kept open for the
+    /// launch's lifetime: `KILL_ON_JOB_CLOSE` ends anything still in the job when the
+    /// launch record (a run entry, a debug session) is finally dropped.
+    pub struct Job(OwnedHandle);
+
+    impl Job {
+        /// Takes the just-started `child` into a new job, so everything it starts is in
+        /// there too. `None` when the job could not be made or the process rejected the
+        /// assignment (callers fall back to `taskkill /T /F` from the child's pid).
+        pub fn for_child(child: &std::process::Child) -> Option<Job> {
+            // SAFETY: the child's own handle is a live process handle.
+            Self::from_handle(child.as_raw_handle())
+        }
+
+        /// [`Job::for_child`] for a process known by its id (a PTY child, a follow-up run,
+        /// a `tokio` child). `None` when the id no longer names an openable process — a
+        /// caller that holds the child cannot have had it reaped, so this is a dead or
+        /// already-gone launch.
+        pub fn for_pid(pid: u32) -> Option<Job> {
+            // SAFETY: plain call; a non-null result is a process handle owned by the caller.
+            // Assignment needs `SET_QUOTA | TERMINATE` on the process.
+            let handle = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+            if handle.is_null() {
+                return None;
+            }
+            // SAFETY: the handle was just opened and is owned here.
+            let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+            Self::from_handle(handle.as_raw_handle())
+        }
+
+        fn from_handle(handle: RawHandle) -> Option<Job> {
+            // SAFETY: plain calls; a non-null result is a job handle owned by the caller.
+            let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if job.is_null() || job == INVALID_HANDLE_VALUE {
+                return None;
+            }
+            // SAFETY: the job handle is owned here and `limits` is sized as the API requires.
+            let job = unsafe { OwnedHandle::from_raw_handle(job) };
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+                BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
+                    PerProcessUserTimeLimit: 0,
+                    PerJobUserTimeLimit: 0,
+                    LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                    MinimumWorkingSetSize: 0,
+                    MaximumWorkingSetSize: 0,
+                    ActiveProcessLimit: 0,
+                    Affinity: 0,
+                    PriorityClass: 0,
+                    SchedulingClass: 0,
+                },
+                IoInfo: IO_COUNTERS {
+                    ReadOperationCount: 0,
+                    WriteOperationCount: 0,
+                    OtherOperationCount: 0,
+                    ReadTransferCount: 0,
+                    WriteTransferCount: 0,
+                    OtherTransferCount: 0,
+                },
+                ProcessMemoryLimit: 0,
+                JobMemoryLimit: 0,
+                PeakProcessMemoryUsed: 0,
+                PeakJobMemoryUsed: 0,
+            };
+            // SAFETY: the job handle is owned here and `limits` is sized as the API requires.
+            let ok = unsafe {
+                SetInformationJobObject(
+                    job.as_raw_handle(),
+                    JobObjectExtendedLimitInformation,
+                    &mut limits as *mut _ as *const _,
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            if ok == 0 {
+                return None;
+            }
+            // SAFETY: the process handle belongs to the just-spawned child and outlives
+            // this call; the job handle is owned here.
+            let ok = unsafe { AssignProcessToJobObject(job.as_raw_handle(), handle) };
+            if ok == 0 {
+                return None;
+            }
+            Some(Job(job))
+        }
+
+        /// Adds another just-started root of the same launch to the job (a Go build's
+        /// follow-up run, a JVM a debug session starts itself). `false` when it did not
+        /// take; the process then relies on its own kill.
+        pub fn assign_pid(&self, pid: u32) -> bool {
+            // SAFETY: plain call; the handle is opened only to assign it, and the job
+            // handle is owned and valid.
+            let handle = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+            if handle.is_null() {
+                return false;
+            }
+            // SAFETY: both handles are valid for the duration of the call.
+            let ok = unsafe { AssignProcessToJobObject(self.0.as_raw_handle(), handle) };
+            // SAFETY: the process handle was opened above and is owned here.
+            unsafe { drop(OwnedHandle::from_raw_handle(handle)) };
+            ok != 0
+        }
+
+        /// Terminates every process in the job. `false` when the call failed (the job
+        /// handle is invalid): callers then fall back to `taskkill /T /F`. Termination is
+        /// asynchronous; poll [`Job::is_running`] (bounded by [`TREE_EXIT_WAIT`]) until
+        /// the tree is gone.
+        pub fn terminate(&self) -> bool {
+            // SAFETY: a job handle owned here.
+            unsafe { TerminateJobObject(self.0.as_raw_handle(), 1) != 0 }
+        }
+
+        /// Whether any process of the launch is still in the job. When the job's state
+        /// cannot be read, reports gone: waits on this must not wedge, and a kill via
+        /// [`Job::terminate`] does not depend on the answer.
+        pub fn is_running(&self) -> bool {
+            // A list of one is the common case; `ERROR_MORE_DATA` says the real list is
+            // longer, which means there are processes.
+            let mut list = JOBOBJECT_BASIC_PROCESS_ID_LIST {
+                NumberOfAssignedProcesses: 0,
+                NumberOfProcessIdsInList: 0,
+                ProcessIdList: [0],
+            };
+            let mut returned = 0u32;
+            // SAFETY: the job handle is owned here and `list` is sized as the API requires.
+            let ok = unsafe {
+                QueryInformationJobObject(
+                    self.0.as_raw_handle(),
+                    JobObjectBasicProcessIdList,
+                    &mut list as *mut _ as *mut _,
+                    size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() as u32,
+                    &mut returned,
+                )
+            };
+            if ok != 0 {
+                list.NumberOfProcessIdsInList > 0
+            } else {
+                std::io::Error::last_os_error().raw_os_error() == Some(ERROR_MORE_DATA as i32)
+            }
+        }
     }
 }
 
@@ -954,5 +1117,68 @@ mod kill_tests {
         terminate_tree(&mut child, Duration::from_millis(50));
         assert!(child.try_wait().unwrap().is_some(), "the child is reaped");
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod job_tests {
+    use super::*;
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+    use std::time::Instant;
+
+    /// `cmd` that keeps a `ping` grandchild for a minute, like a launcher that started an
+    /// application: the job must reach both.
+    fn launch_tree() -> (std::process::Child, Job, ProcessTree) {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/D", "/S", "/C", "ping -n 60 127.0.0.1 >NUL"]).stdin(Stdio::null()).creation_flags(CREATE_NO_WINDOW);
+        let child = cmd.spawn().unwrap();
+        let job = Job::for_child(&child).expect("the job takes the launch");
+        let tree = ProcessTree::capture(child.id());
+        assert!(tree.is_running(), "cmd started a grandchild the job inherits");
+        (child, job, tree)
+    }
+
+    /// Termination is asynchronous: the job reports its processes gone while their
+    /// handles still wait, so wait on the handles (the reused-pid-proof oracle).
+    fn assert_gone(tree: &ProcessTree) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while tree.is_running() {
+            assert!(Instant::now() < until, "the tree survived the job");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn job_terminates_the_tree_the_root_started() {
+        let (mut child, job, tree) = launch_tree();
+        assert!(job.is_running());
+        assert!(job.terminate(), "TerminateJobObject succeeds");
+        // The captured tree's handles survive the root's death, so the wait below is the
+        // grandchild's, not a reused pid's.
+        assert_gone(&tree);
+        assert!(!job.is_running());
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn a_later_spawned_root_joins_the_job() {
+        let (mut first, job, _) = launch_tree();
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/D", "/S", "/C", "ping -n 60 127.0.0.1 >NUL"]).stdin(Stdio::null()).creation_flags(CREATE_NO_WINDOW);
+        let mut second = cmd.spawn().unwrap();
+        let second_tree = ProcessTree::capture(second.id());
+        assert!(job.assign_pid(second.id()), "the follow-up run joins the job");
+        assert!(job.terminate());
+        assert_gone(&second_tree);
+        let _ = first.wait();
+        let _ = second.wait();
+    }
+
+    #[test]
+    fn a_dead_pid_makes_no_job() {
+        // An id of a process this test cannot open (or that does not exist) gives no job,
+        // which is the callers' cue for the `taskkill /T /F` fallback.
+        assert!(Job::for_pid(u32::MAX).is_none());
     }
 }

@@ -286,6 +286,7 @@ macro_rules! register_plugin {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __optional_exports {
+    (run_target_validation, $plugin:ty, $component:ident) => { $crate::__run_target_validation_exports!($plugin, $component); };
     (injections, $plugin:ty, $component:ident) => { $crate::__injections_exports!($plugin, $component); };
     (language_features, $plugin:ty, $component:ident) => { $crate::__language_features_exports!($plugin, $component); };
     (mcp, $plugin:ty, $component:ident) => { $crate::__mcp_exports!($plugin, $component); };
@@ -1084,6 +1085,24 @@ pub mod __rt {
         with::<T, _>(|p| p.call(tool, arguments, &ctx)).map_err(error_out)
     }
 
+    pub fn validate_run_target<T: Plugin + crate::RunTargetValidation + Default>(
+        root: &str,
+        target: &str,
+        launch: crate::run_target_validation_bindings::exports::openidea::plugin::run_target_validation::LaunchInfo,
+    ) -> Result<(), String> {
+        use crate::run_target_validation_bindings::exports::openidea::plugin::run_target_validation::Operation;
+        let launch = crate::RunTargetLaunch {
+            operation: match launch.operation {
+                Operation::Run => crate::RunTargetOperation::Run,
+                Operation::Debug => crate::RunTargetOperation::Debug,
+                Operation::Test => crate::RunTargetOperation::Test,
+            },
+            program: launch.program,
+            cwd: launch.cwd,
+        };
+        with::<T, _>(|p| p.validate(root, target, &launch))
+    }
+
     pub fn configurations<T: Plugin + crate::RunConfigurations + Default>(
         root: &str,
     ) -> Vec<crate::run_configurations_bindings::exports::openidea::plugin::run_configurations::RunConfiguration> {
@@ -1419,5 +1438,25 @@ macro_rules! __mcp_exports {
             }
         }
         $crate::mcp_bindings::__export_mcp_world!($component with_types_in $crate::mcp_bindings);
+    };
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod run_target_validation_bindings {
+    wit_bindgen::generate!({ world: "run-target-validator", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_target_validation_world",
+        default_bindings_module: "openidea_plugin::run_target_validation_bindings" });
+}
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __run_target_validation_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::run_target_validation_bindings::exports::openidea::plugin::run_target_validation::Guest for $component {
+            fn validate(project: String, target: String, launch: $crate::run_target_validation_bindings::exports::openidea::plugin::run_target_validation::LaunchInfo) -> Result<(), String> {
+                $crate::__rt::validate_run_target::<$plugin>(&project, &target, launch)
+            }
+        }
+        $crate::run_target_validation_bindings::__export_target_validation_world!($component with_types_in $crate::run_target_validation_bindings);
     };
 }

@@ -164,16 +164,10 @@ impl SecretStore for FileSecretStore {
             None => map.remove(name),
         };
         let file = self.file(plugin);
-        std::fs::create_dir_all(file.parent().expect("has parent")).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+        ide_vfs::create_private_dir(file.parent().expect("has parent")).map_err(|e| e.to_string())?;
         let bytes = serde_json::to_vec(&map).map_err(|e| e.to_string())?;
-        let tmp = file.with_extension("tmp");
-        std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-        }
-        std::fs::rename(&tmp, &file).map_err(|e| e.to_string())
+        replace_entry(&file, &bytes).map_err(|e| e.to_string())
     }
 }
 
@@ -934,6 +928,15 @@ fn storage_io(e: std::io::Error) -> HostError {
     HostError::Failed(format!("storage: {e}"))
 }
 
+fn replace_entry(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut tmp =
+        tempfile::Builder::new().prefix(".entry-").suffix(".tmp").tempfile_in(path.parent().expect("has parent"))?;
+    tmp.write_all(bytes)?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
 /// A key's file name: its hash, since keys may hold any character.
 fn entry_name(key: &str) -> String {
     blake3::hash(key.as_bytes()).to_hex().to_string()
@@ -955,8 +958,7 @@ fn write_entry(dir: &Path, key: &str, value: &str) -> Result<(), HostError> {
     bytes.extend_from_slice(&len.to_le_bytes());
     bytes.extend_from_slice(key.as_bytes());
     bytes.extend_from_slice(value.as_bytes());
-    let tmp = file.with_extension("tmp");
-    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &file)).map_err(storage_io)
+    replace_entry(&file, &bytes).map_err(storage_io)
 }
 
 /// The stored entries' files and the bytes of their keys and values.
@@ -993,6 +995,9 @@ impl PluginApi {
     /// older version into it.
     fn storage(&self) -> Result<PathBuf, HostError> {
         let dir = self.shared.storage_dir(self.id());
+        std::fs::create_dir_all(&self.shared.data_dir).map_err(storage_io)?;
+        ide_vfs::create_private_dir(dir.parent().expect("has parent")).map_err(failed)?;
+        ide_vfs::create_private_dir(&dir).map_err(failed)?;
         let legacy = self.shared.data_dir.join(self.id()).join("storage.json");
         match std::fs::read(&legacy) {
             Ok(bytes) => {
@@ -2768,7 +2773,9 @@ impl HostApi for PluginApi {
             Err(e) if e.kind == ide_core::error::ErrorKind::NotFound => ("utf-8".to_string(), false),
             Err(e) => return Err(not_writable(real, e)),
         };
-        if self.plugin_dir().is_ok_and(|dir| real.starts_with(dir)) {
+        let private = self.plugin_dir().is_ok_and(|dir| real.starts_with(dir));
+        check_write_path(real)?;
+        if private {
             let bytes = ide_vfs::encode(text, &encoding, has_bom).map_err(|e| not_writable(real, e))?;
             ide_vfs::write_atomic_private(real, &bytes).map(drop).map_err(|e| not_writable(real, e))
         } else {
@@ -2778,12 +2785,24 @@ impl HostApi for PluginApi {
 
     fn write_bytes_file(&self, real: &Path, bytes: &[u8]) -> Result<(), HostError> {
         check_unsaved(self.shared.workspace(), real)?;
-        if self.plugin_dir().is_ok_and(|dir| real.starts_with(dir)) {
+        let private = self.plugin_dir().is_ok_and(|dir| real.starts_with(dir));
+        check_write_path(real)?;
+        if private {
             ide_vfs::write_atomic_private(real, bytes).map(drop).map_err(|e| not_writable(real, e))
         } else {
             ide_vfs::write_atomic(real, bytes).map(drop).map_err(|e| not_writable(real, e))
         }
     }
+}
+
+/// Approved write paths are already resolved. Refuse substitutions since approval.
+fn check_write_path(path: &Path) -> Result<(), HostError> {
+    let parent = path.parent().ok_or_else(|| HostError::Invalid("no directory to put it in".into()))?;
+    let checked = ide_plugin::resolve_writable_in_root(parent, &to_ipc(path)).map_err(HostError::Invalid)?;
+    if checked != path {
+        return Err(HostError::Invalid(format!("{}: file path changed before writing", path.display())));
+    }
+    Ok(())
 }
 
 /// A file that is not there, or cannot be read, as the plugin sees it.
@@ -3238,6 +3257,72 @@ mod tests {
             assert!(api.shared.ledger.lock().get(&subject).unwrap().net_hosts.is_empty());
             assert_eq!(api.net_ask(&subject, Some("main"), "new.example", &CancellationToken::new()).unwrap(), None);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_recheck_approved_paths_after_symlink_substitution() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let root = tmp.path().join("project");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        let path = ide_plugin::resolve_writable_in_root(&root, "nested/file.txt").unwrap();
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "unchanged").unwrap();
+        symlink(&outside, &path).unwrap();
+        assert!(api.write_text_file(&path, "text").is_err());
+        assert!(api.write_bytes_file(&path, b"bytes").is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "unchanged");
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(root.join("nested")).unwrap();
+        symlink(tmp.path(), root.join("nested")).unwrap();
+        assert!(api.write_text_file(&path, "text").is_err());
+        assert!(api.write_bytes_file(&path, b"bytes").is_err());
+        assert!(!tmp.path().join("file.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_and_secrets_do_not_write_through_temporary_symlinks() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "unchanged").unwrap();
+        let dir = api.storage().unwrap();
+        let entry = dir.join(entry_name("key"));
+        symlink(&outside, entry.with_extension("tmp")).unwrap();
+        symlink(&outside, &entry).unwrap();
+        api.storage_set("key", Some("value".into())).unwrap();
+        assert_eq!(api.storage_get("key").unwrap().as_deref(), Some("value"));
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "unchanged");
+
+        let secrets = FileSecretStore { dir: tmp.path().join("secrets") };
+        secrets.set("acme.lint", "key", Some("before")).unwrap();
+        symlink(&outside, secrets.file("acme.lint").with_extension("tmp")).unwrap();
+        secrets.set("acme.lint", "key", Some("after")).unwrap();
+        assert_eq!(secrets.get("acme.lint", "key").as_deref(), Some("after"));
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "unchanged");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_and_secrets_refuse_symlinked_private_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let dir = api.storage().unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, &dir).unwrap();
+        assert!(api.storage_set("key", Some("value".into())).is_err());
+        let secrets = FileSecretStore { dir: tmp.path().join("secrets") };
+        std::fs::create_dir(&secrets.dir).unwrap();
+        std::os::unix::fs::symlink(&outside, secrets.dir.join("acme.lint")).unwrap();
+        assert!(secrets.set("acme.lint", "key", Some("value")).is_err());
+        assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
     }
 
     #[cfg(windows)]

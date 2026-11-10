@@ -831,7 +831,7 @@ pub async fn remote_invoke(
         None
     };
     let call = Invoke { window: label, cmd, args };
-    let result: Value = c.peer.request("invoke", call, None).await.map_err(ide_host::rpc::error_from_reply)?;
+    let result = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30)).await?;
     if let (Some((peers, edit)), Some(version)) =
         (mirrored, result.as_u64().and_then(|version| u32::try_from(version).ok()))
     {
@@ -875,9 +875,38 @@ pub async fn remote_import_local(
     result
 }
 
+// Conversation reads are snapshots; a silent host must not leave them pending forever.
+async fn invoke_reply(peer: &Peer, call: Invoke, entries_timeout: std::time::Duration) -> IdeResult<Value> {
+    let reply = peer.request("invoke", &call, None);
+    if call.cmd == "agent_entries" {
+        tokio::time::timeout(entries_timeout, reply)
+            .await
+            .map_err(|_| IdeError::unavailable("Loading the conversation timed out. Try again."))?
+            .map_err(ide_host::rpc::error_from_reply)
+    } else {
+        reply.await.map_err(ide_host::rpc::error_from_reply)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn conversation_read_times_out_when_the_host_never_replies() {
+        let (client, _silent_host) = tokio::io::duplex(4096);
+        let (reader, writer) = tokio::io::split(client);
+        let peer = Peer::connect(reader, writer, Arc::new(ide_jsonrpc::NoopHandler));
+        let call = Invoke {
+            window: "main".into(),
+            cmd: "agent_entries".into(),
+            args: serde_json::json!({"task": "saved-codex-task", "subagent": null}),
+        };
+        let error = invoke_reply(&peer, call, std::time::Duration::from_millis(10)).await.unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
+        assert_eq!(error.message, "Loading the conversation timed out. Try again.");
+        peer.kill();
+    }
 
     #[test]
     fn maps_uname_to_rust_platform_names() {

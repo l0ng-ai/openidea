@@ -18,6 +18,7 @@ use crate::types::{
 };
 use crate::wit_host::injections_bindings::exports::openidea::plugin::injections as wit_inj;
 use crate::wit_host::language_features_bindings::exports::openidea::plugin::language_features as wit_lf;
+use crate::wit_host::run_target_validation_bindings::exports::openidea::plugin::run_target_validation as wit_rtv;
 use crate::wit_host::{
     bindings, commit_checks_bindings, details_bindings, endpoints_bindings, file_actions_bindings, hover_bindings,
     indexing_bindings, inlay_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
@@ -945,6 +946,7 @@ pub struct Runtime {
 
 /// What the component exports: the `plugin` world, plus optional interfaces.
 struct Exports {
+    run_target_validation: Option<wit_rtv::Guest>,
     language_features: Option<wit_lf::Guest>,
     injections: Option<wit_inj::Guest>,
     plugin: bindings::Plugin,
@@ -1084,6 +1086,7 @@ impl Runtime {
         let endpoint_indices = wit_endpoints::GuestIndices::new(&pre).ok();
         let configs_indices = wit_configs::GuestIndices::new(&pre).ok();
         let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
+        let validation_indices = wit_rtv::GuestIndices::new(&pre).ok();
         let lf_indices = wit_lf::GuestIndices::new(&pre).ok();
         let inj_indices = wit_inj::GuestIndices::new(&pre).ok();
         let mcp_indices =
@@ -1095,6 +1098,8 @@ impl Runtime {
         let test_results = tests_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let language_features = lf_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let injections = inj_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let run_target_validation =
+            validation_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
@@ -1147,6 +1152,7 @@ impl Runtime {
         Ok(Self {
             store,
             exports: Exports {
+                run_target_validation,
                 language_features,
                 injections,
                 plugin,
@@ -1169,6 +1175,37 @@ impl Runtime {
             limits: setup.limits,
             version: setup.version,
         })
+    }
+
+    pub fn has_run_target_validation(&self) -> bool {
+        self.exports.run_target_validation.is_some()
+    }
+
+    /// Missing optional validators allow the launch without a guest call.
+    pub fn validate_run_target(
+        &mut self,
+        root: String,
+        target: String,
+        launch: crate::RunTargetLaunch,
+        timeout: Duration,
+    ) -> Result<Result<(), String>, CallError> {
+        if self.exports.run_target_validation.is_none() {
+            return Ok(Ok(()));
+        }
+        let invocation = Invocation { workspace_root: Some(root.clone().into()), ..Default::default() };
+        let launch = wit_rtv::LaunchInfo {
+            operation: match launch.operation {
+                crate::RunTargetOperation::Run => wit_rtv::Operation::Run,
+                crate::RunTargetOperation::Debug => wit_rtv::Operation::Debug,
+                crate::RunTargetOperation::Test => wit_rtv::Operation::Test,
+            },
+            program: launch.program,
+            cwd: launch.cwd,
+        };
+        self.call(invocation, timeout, |e, store| {
+            e.run_target_validation.as_ref().unwrap().call_validate(store, &root, &target, &launch)
+        })
+        .map(|r| r.map_err(|message| clip(message, 4096)))
     }
 
     /// Complete configurations from the optional API 1.4 export.

@@ -71,6 +71,8 @@ const STORAGE_KEY = "openidea.services.runTypes:";
 const RAN_KEY = "openidea.services.ran:";
 /** Types shown in Services until the user changes the list. */
 export const DEFAULT_TYPES: readonly string[] = ["spring-boot"];
+/** Docker run kinds whose containers/deployments are already shown under the Docker provider in Services. */
+const DOCKER_PROVIDER_KINDS: ReadonlySet<string> = new Set(["docker-compose", "docker-dockerfile", "docker-image"]);
 
 // ---------------------------------------------------------------------------
 // Types added to Services, per project
@@ -325,12 +327,14 @@ export function runServiceItems(
 ): ServiceTreeItem[] {
   const executions = serviceSessions(sessions, debug);
   const latest = currentServiceSessions(executions);
-  const kinds = [...added];
+  const kinds = added.filter((kind) => !DOCKER_PROVIDER_KINDS.has(kind));
   const shown = (s: ServiceSession) => liveServiceSession(s) || !removed(s.config.id);
-  for (const s of executions) if (shown(s) && !kinds.includes(s.config.kind)) kinds.push(s.config.kind);
+  for (const s of executions)
+    if (shown(s) && !DOCKER_PROVIDER_KINDS.has(s.config.kind) && !kinds.includes(s.config.kind))
+      kinds.push(s.config.kind);
   for (const id of ran) {
     const kind = configs.find((c) => c.id === id)?.kind;
-    if (kind && !kinds.includes(kind)) kinds.push(kind);
+    if (kind && !DOCKER_PROVIDER_KINDS.has(kind) && !kinds.includes(kind)) kinds.push(kind);
   }
   return kinds.flatMap((kind) => {
     const entries: RunConfig[] = added.includes(kind)
@@ -847,7 +851,9 @@ function addMenu(): MenuItem[] {
   const added = currentTypes();
   const used = [...new Set(useRun.getState().configs.map((c) => c.kind))];
   const known = [...KIND_OPTIONS.map((o) => o.value), ...useRunConfigTypes.getState().types.keys()];
-  const kinds = [...new Set([...used, ...known])].filter((k) => k !== "compound" && !added.includes(k));
+  const kinds = [...new Set([...used, ...known])].filter(
+    (k) => k !== "compound" && !DOCKER_PROVIDER_KINDS.has(k) && !added.includes(k),
+  );
   /** A leaf item: the type's own label; grouped types live in their group's submenu. */
   const item = (kind: string): MenuItem => ({
     label: useRunConfigTypes.getState().types.get(kind)?.label ?? kindLabel(kind),
