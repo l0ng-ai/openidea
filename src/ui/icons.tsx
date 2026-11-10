@@ -219,6 +219,7 @@ const ICONS = {
   "agent-auggie": "openidea/agents/auggie",
   "agent-kiro": "openidea/agents/kiro",
   "agent-vibe": "openidea/agents/vibe",
+  "agent-omp": "openidea/agents/omp",
   "toolwindow-maven": "toolwindows/maven",
   "toolwindow-gradle": "toolwindows/gradle",
   "toolwindow-build": "toolwindows/build",

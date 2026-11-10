@@ -64,6 +64,7 @@ const BUILTIN: &[(&str, &str, Driver, &[&str], &str)] = &[
     ("auggie", "Auggie", Driver::Acp, &["auggie", "--acp"], "Run `auggie login` in a terminal."),
     ("kiro", "Kiro", Driver::Acp, &["kiro-cli", "acp"], "Run `kiro-cli login` in a terminal."),
     ("vibe", "Mistral Vibe", Driver::Acp, &["vibe-acp"], "Run `vibe` in a terminal and sign in."),
+    ("omp", "OMP", Driver::Acp, &["omp", "acp"], "Run `omp` in a terminal and sign in."),
 ];
 
 fn builtins() -> Vec<ProviderSpec> {
