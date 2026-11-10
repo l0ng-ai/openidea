@@ -375,7 +375,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
 
   const adapterOptions: SelectOption[] = [
     { value: "", label: "None" },
-    ...ADAPTERS.map((a) => ({ value: a.id, label: a.label })),
+    ...ADAPTERS.map((a) => ({ value: a.id, label: tx(a.label) })),
   ];
   if (config.debugAdapter && !ADAPTERS.some((a) => a.id === config.debugAdapter))
     adapterOptions.push({

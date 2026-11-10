@@ -17,8 +17,8 @@ const config: KnipConfig = {
   // Plugins' web pages are projects of their own (own package.json, checked by plugins/build.sh and CI).
   ignore: ["plugins/**/web-src/**"],
   ignoreExportsUsedInFile: true,
-  // lint-staged formats Rust files with the toolchain's rustfmt.
-  ignoreBinaries: ["rustfmt"],
+  // System tools: lint-staged uses rustfmt; C/C++ smoke tests build fixtures with make.
+  ignoreBinaries: ["rustfmt", "make"],
   compilers: {
     // Fonts come in through `@import` in global.css.
     css: (text: string) => [...text.matchAll(/(?<=@)import[^;]+/g)].join("\n"),

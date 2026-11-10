@@ -8,6 +8,7 @@ name = "app-c (GDB)"
 kind = "shell"
 command = "bin/app-c"
 debug-adapter = "gdb"
+env = { OPENIDEA_GDB_FIXTURE = "present" }
 
 [[configurations]]
 id = "user:app-cpp"
@@ -15,3 +16,4 @@ name = "app-cpp (GDB)"
 kind = "shell"
 command = "bin/app-cpp"
 debug-adapter = "gdb"
+env = { OPENIDEA_GDB_FIXTURE = "present" }

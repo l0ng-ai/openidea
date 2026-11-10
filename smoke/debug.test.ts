@@ -266,6 +266,12 @@ async function smoke(language: string) {
 
   const value = await evaluate(c.evaluate[0], "repl", s);
   expect(value.value, c.evaluate[0]).toMatch(c.evaluate[1]);
+  if (c.debugger === "gdb") {
+    const expression = await evaluate(c.variable, "watch", s);
+    expect(expression.value).toBeTruthy();
+    const environment = await evaluate("environment_ok", "watch", s);
+    expect(environment.value).toBe("1");
+  }
 
   // Python 3.12 reports a conditional expression's line twice: Step Over may stop on it
   // (and its breakpoint) again.

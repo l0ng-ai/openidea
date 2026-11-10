@@ -353,6 +353,8 @@ const GDB_MIN_MAJOR: u32 = 14;
 /// (GDB) 15.0.50.20240403-0ubuntu1`). `None` when no standalone version number is there.
 pub fn parse_gdb_version(output: &str) -> Option<(u32, u32)> {
     let line = output.lines().next()?;
+    // Distribution names can contain versions, e.g. `(GDB; SUSE Linux Enterprise 15) 14.2`.
+    let line = line.rsplit_once(')').map_or(line, |(_, version)| version);
     let b = line.as_bytes();
     let mut i = 0;
     while i < b.len() {
@@ -383,23 +385,17 @@ pub fn parse_gdb_version(output: &str) -> Option<(u32, u32)> {
     None
 }
 
-/// `(major, minor)` of `command` (resolved like a launch), or `None` when the binary is
-/// missing, answers nothing or nothing version-like (the failed start reports that).
-pub(crate) async fn gdb_version(command: &str, cwd: &Path) -> IdeResult<Option<(u32, u32)>> {
-    let Some(binary) = tokio::task::spawn_blocking({
-        let (command, cwd) = (command.to_owned(), cwd.to_owned());
-        move || resolve_binary(&command, &cwd)
-    })
-    .await
-    .ok()
-    .flatten() else {
-        return Ok(None); // Reported as a missing adapter when it is started.
-    };
-    let mut probe = Command::new(&binary);
+/// Probe the already resolved and verified executable with its launch environment.
+async fn gdb_version(binary: &Path, spec: &AdapterSpec) -> IdeResult<Option<(u32, u32)>> {
+    let mut probe = Command::new(binary);
+    if let Some(path) = adapter_path(&spec.env) {
+        probe.env("PATH", path);
+    }
     ide_core::process::prepare(probe.as_std_mut());
     let probe = probe
         .arg("--version")
-        .current_dir(cwd)
+        .current_dir(&spec.cwd)
+        .envs(spec.env.iter().cloned())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -411,15 +407,14 @@ pub(crate) async fn gdb_version(command: &str, cwd: &Path) -> IdeResult<Option<(
     Ok(parse_gdb_version(&String::from_utf8_lossy(&out.stdout)))
 }
 
-/// Prepares a `gdb -i dap` launch: refuses a GDB without the DAP interpreter, naming
-/// the required version and the one installed. A missing binary is not an error here
-/// (reported as a missing adapter when the session is started).
-async fn prepare_gdb(spec: &AdapterSpec) -> IdeResult<()> {
-    let Some((major, minor)) = gdb_version(&spec.command, &spec.cwd).await? else {
-        return Ok(());
+/// Refuse old GDB versions and report whether launch must follow configurationDone.
+/// GDB 15 starts the inferior in launch; 14 and 16+ start it at configurationDone.
+async fn prepare_gdb(spec: &AdapterSpec, binary: &Path) -> IdeResult<bool> {
+    let Some((major, minor)) = gdb_version(binary, spec).await? else {
+        return Ok(false);
     };
     if major >= GDB_MIN_MAJOR {
-        return Ok(());
+        return Ok(major == 15);
     }
     let mut msg = format!(
         "debugging with GDB needs GDB {GDB_MIN_MAJOR} or newer (found {major}.{minor}): \
@@ -430,15 +425,6 @@ async fn prepare_gdb(spec: &AdapterSpec) -> IdeResult<()> {
         msg.push_str(hint);
     }
     Err(IdeError::unavailable(msg))
-}
-
-/// Whether `launch` has to wait for `configurationDone`: GDB 15 starts the program
-/// inside `launch`, so a launch sent before the breakpoint upload races the breakpoints
-/// and `configurationDone` is refused with `notStopped` while the program runs. GDB 14
-/// runs the program at `configurationDone` and 16+ defers the launch there, so both take
-/// the launch-first order every other adapter uses. `false` when the version is unknown.
-pub(crate) async fn gdb_launch_after_configuration(spec: &AdapterSpec) -> bool {
-    matches!(gdb_version(&spec.command, &spec.cwd).await, Ok(Some((15, _))))
 }
 
 /// An adapter that is a plugin of another program (java-debug, a jdtls bundle) rather
@@ -474,6 +460,8 @@ pub type BoxWriter = Box<dyn AsyncWrite + Unpin + Send>;
 
 /// A connected adapter: byte streams plus the process (if we spawned one).
 pub struct AdapterIo {
+    /// GDB 15 starts running inside `launch`; configure breakpoints before sending it.
+    pub launch_after_configuration: bool,
     pub reader: BoxReader,
     pub writer: BoxWriter,
     pub child: Option<Child>,
@@ -525,6 +513,7 @@ impl AdapterLauncher for ProcessLauncher {
                 let stream = connect_with_retries(host, port, None, timeout).await?;
                 let (r, w) = stream.into_split();
                 return Ok(AdapterIo {
+                    launch_after_configuration: false,
                     reader: Box::new(r),
                     writer: Box::new(w),
                     child: None,
@@ -548,6 +537,7 @@ impl AdapterLauncher for ProcessLauncher {
                 let _ = stream.set_nodelay(true);
                 let (r, w) = stream.into_split();
                 return Ok(AdapterIo {
+                    launch_after_configuration: false,
                     reader: Box::new(r),
                     writer: Box::new(w),
                     child: None,
@@ -561,9 +551,6 @@ impl AdapterLauncher for ProcessLauncher {
             }
             if is_plugin_bundle(&spec.command) {
                 return Err(not_standalone(&spec));
-            }
-            if spec.adapter == "gdb" && spec.target.is_none() {
-                prepare_gdb(&spec).await?;
             }
             let binary = match spec.pinned.clone() {
                 Some(pin) => tokio::task::spawn_blocking(move || pin.verify().map(Path::to_path_buf))
@@ -579,9 +566,15 @@ impl AdapterLauncher for ProcessLauncher {
                         .ok_or_else(|| missing(&spec))?
                 }
             };
+            let launch_after_configuration =
+                if spec.adapter == "gdb" && spec.target.is_none() { prepare_gdb(&spec, &binary).await? } else { false };
             let base_args = substitute_root(&spec.args, &spec.cwd);
             match spec.transport {
-                Transport::Stdio => spawn_adapter(&spec, &binary, &base_args, None, CONNECT_TIMEOUT).await,
+                Transport::Stdio => {
+                    let mut io = spawn_adapter(&spec, &binary, &base_args, None, CONNECT_TIMEOUT).await?;
+                    io.launch_after_configuration = launch_after_configuration;
+                    Ok(io)
+                }
                 Transport::Tcp => {
                     // An embedded adapter started without `${port}` listens on its usual
                     // address; every other TCP adapter gets a port chosen here so it can be
@@ -598,7 +591,10 @@ impl AdapterLauncher for ProcessLauncher {
                         };
                         let args = substitute_port(&base_args, port);
                         match spawn_adapter(&spec, &binary, &args, Some(port), start_timeout).await {
-                            Ok(io) => return Ok(io),
+                            Ok(mut io) => {
+                                io.launch_after_configuration = launch_after_configuration;
+                                return Ok(io);
+                            }
                             Err(e) => {
                                 if fixed.is_none() && attempt < PORT_ATTEMPTS && is_port_race(&e) {
                                     tracing::warn!(
@@ -660,6 +656,7 @@ async fn spawn_adapter(
             let stdin = child.stdin.take().ok_or_else(|| IdeError::internal("adapter stdin unavailable"))?;
             let stdout = child.stdout.take().ok_or_else(|| IdeError::internal("adapter stdout unavailable"))?;
             Ok(AdapterIo {
+                launch_after_configuration: false,
                 reader: Box::new(stdout),
                 writer: Box::new(stdin),
                 child: Some(child),
@@ -691,6 +688,7 @@ async fn spawn_adapter(
             };
             let (r, w) = stream.into_split();
             Ok(AdapterIo {
+                launch_after_configuration: false,
                 reader: Box::new(r),
                 writer: Box::new(w),
                 child: Some(child),
@@ -873,6 +871,8 @@ mod tests {
             ("GNU gdb (Ubuntu 12.1-0ubuntu1~22.04.2) 12.1", Some((12, 1))),
             ("GNU gdb (Debian 13.1-3) 13.1", Some((13, 1))),
             ("GNU gdb (GDB) Fedora Linux 16.3-1.fc41", Some((16, 3))),
+            ("GNU gdb (GDB; SUSE Linux Enterprise 15) 14.2", Some((14, 2))),
+            ("GNU gdb (GDB; SUSE Linux Enterprise 15) 11.1", Some((11, 1))),
             ("mingw32-gdb13.exe (GDB) 13.2", Some((13, 2))),
             ("GNU gdb 14", Some((14, 0))),
             ("no version here", None),
@@ -882,58 +882,64 @@ mod tests {
         }
     }
 
-    /// A GDB without the DAP interpreter is refused with the required version in the message.
-    #[cfg(unix)]
     #[tokio::test]
-    async fn gdb_older_than_14_is_refused_with_the_required_version() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("openidea-dap-gdb-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let fake = dir.join("gdb");
-        std::fs::write(&fake, "#!/bin/sh\necho 'GNU gdb (GDB) 12.1'\n").unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        let mut spec = resolve(&builtin("gdb").unwrap(), dir.clone());
+    async fn gdb_probe_never_executes_a_changed_pinned_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join(if cfg!(windows) { "gdb.cmd" } else { "gdb" });
+        std::fs::write(&fake, "approved").unwrap();
+        let pin = ProgramPin::approve(&fake).unwrap();
+        #[cfg(windows)]
+        std::fs::write(&fake, "@echo off\r\necho ran>probe-ran\r\necho GNU gdb (GDB) 15.1\r\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&fake, "#!/bin/sh\ntouch probe-ran\necho 'GNU gdb (GDB) 15.1'\n").unwrap();
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut spec = resolve(&builtin("gdb").unwrap(), dir.path().to_owned());
         spec.command = fake.to_string_lossy().into_owned();
-        let err = prepare_gdb(&spec).await.unwrap_err();
-        assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
-        assert!(err.message.contains("GDB 14 or newer"), "{}", err.message);
-        assert!(err.message.contains("12.1"), "{}", err.message);
-        assert!(err.message.contains("Install GDB 14 or newer"), "{}", err.message);
-
-        // A DAP-capable one passes (and a missing binary does not block the start).
-        std::fs::write(&fake, "#!/bin/sh\necho 'GNU gdb (GDB) 15.1'\n").unwrap();
-        prepare_gdb(&spec).await.unwrap();
-        spec.command = "definitely-not-a-real-binary-openidea".into();
-        prepare_gdb(&spec).await.unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
+        spec.pinned = Some(pin);
+        let error = ProcessLauncher.launch(spec, None).await.err().expect("changed program is refused");
+        assert_eq!(error.kind, ide_core::error::ErrorKind::PermissionDenied);
+        assert!(!dir.path().join("probe-ran").exists(), "the version probe executed an unapproved program");
     }
 
-    /// The same refusal on Windows, where the probe runs a `gdb.cmd` shim.
-    #[cfg(windows)]
     #[tokio::test]
-    async fn gdb_older_than_14_is_refused_with_the_required_version() {
-        let dir = std::env::temp_dir().join(format!("openidea-dap-gdb-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let fake = dir.join("gdb.cmd");
-        std::fs::write(&fake, "@echo off\r\necho GNU gdb (GDB) 12.1\r\n").unwrap();
-
-        let mut spec = resolve(&builtin("gdb").unwrap(), dir.clone());
-        spec.command = fake.to_string_lossy().into_owned();
-        let err = prepare_gdb(&spec).await.unwrap_err();
-        assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
-        assert!(err.message.contains("GDB 14 or newer"), "{}", err.message);
-        assert!(err.message.contains("12.1"), "{}", err.message);
-        assert!(err.message.contains("Install GDB 14 or newer"), "{}", err.message);
-
-        // A DAP-capable one passes (and a missing binary does not block the start).
-        std::fs::write(&fake, "@echo off\r\necho GNU gdb (GDB) 15.1\r\n").unwrap();
-        prepare_gdb(&spec).await.unwrap();
-        spec.command = "definitely-not-a-real-binary-openidea".into();
-        prepare_gdb(&spec).await.unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
+    async fn gdb_probe_uses_the_verified_program_and_launch_environment_once() {
+        use tokio::io::AsyncReadExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join(if cfg!(windows) { "gdb.cmd" } else { "gdb" });
+        #[cfg(windows)]
+        std::fs::write(&fake, "@echo off\r\nif \"%~1\"==\"--version\" (\r\n echo probe>>probes\r\n echo GNU gdb ^(GDB^) %GDB_TEST_VERSION%\r\n) else (\r\n echo adapter\r\n)\r\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&fake, "#!/bin/sh\nif [ \"$1\" = --version ]; then\n echo probe >> probes\n echo \"GNU gdb (GDB) $GDB_TEST_VERSION\"\nelse\n echo adapter\nfi\n").unwrap();
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let pin = ProgramPin::approve(&fake).unwrap();
+        for (version, deferred) in [("12.1", false), ("14.2", false), ("15.1", true), ("16.3", false)] {
+            let mut spec = resolve(&builtin("gdb").unwrap(), dir.path().to_owned());
+            // Only the approved path is executable; the symbolic command must never be probed.
+            spec.command = "definitely-not-a-real-binary-openidea".into();
+            spec.pinned = Some(pin.clone());
+            spec.env.push(("GDB_TEST_VERSION".into(), version.into()));
+            let result = ProcessLauncher.launch(spec, None).await;
+            if version == "12.1" {
+                let error = result.err().expect("GDB 12 has no DAP interpreter");
+                assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
+                assert!(error.message.contains("GDB 14 or newer"), "{}", error.message);
+                assert!(error.message.contains("12.1"), "{}", error.message);
+            } else {
+                let mut io = result.unwrap();
+                assert_eq!(io.launch_after_configuration, deferred, "{version}");
+                let mut output = String::new();
+                io.reader.read_to_string(&mut output).await.unwrap();
+                assert_eq!(output.trim(), "adapter");
+                io.child.as_mut().unwrap().wait().await.unwrap();
+            }
+        }
+        assert_eq!(std::fs::read_to_string(dir.path().join("probes")).unwrap().lines().count(), 4);
     }
 
     #[test]

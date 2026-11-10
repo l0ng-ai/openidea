@@ -511,7 +511,11 @@ function VariablesPane({ session }: { session: DebugSession }) {
     const e = expression.trim();
     if (!e) return;
     try {
-      setLastEval({ expression: e, result: await evaluate(e, "repl", session), error: null });
+      setLastEval({
+        expression: e,
+        result: await evaluate(e, session.adapter === "gdb" ? "watch" : "repl", session),
+        error: null,
+      });
     } catch (err) {
       setLastEval({ expression: e, result: null, error: err instanceof Error ? err.message : String(err) });
     }

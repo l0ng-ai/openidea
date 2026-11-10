@@ -1,5 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* FNV-1a 64-bit, one byte at a time: enough of a call stack to inspect. */
 static uint64_t mix(uint64_t h, unsigned char byte) {
@@ -16,6 +18,8 @@ static uint64_t hash(uint64_t h, const char *s) {
 }
 
 int main(void) {
+    const char *fixture = getenv("OPENIDEA_GDB_FIXTURE");
+    int environment_ok = getenv("PATH") != NULL && fixture != NULL && strcmp(fixture, "present") == 0;
     const char *words[] = {"openidea", "gdb", "dap"};
     uint64_t hashes[3];
     for (int i = 0; i < 3; i++) {
@@ -25,5 +29,5 @@ int main(void) {
     // Set a breakpoint here (QA: debugger) and inspect `value`.
     value = hash(1469598103934665603ULL, words[2]);
     printf("%s %016llx\n", words[2], (unsigned long long)value);
-    return 0;
+    return environment_ok ? 0 : 1;
 }

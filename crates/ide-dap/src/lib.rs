@@ -778,6 +778,18 @@ impl DebugManager {
         if let Some(server) = &debug_server {
             spec.server_host = server.host.clone();
         }
+        if config.adapter == "gdb" && config.request == "launch" && debug_server.is_none() {
+            // GDB's DAP env replaces the entire inferior environment. Ordinary run overrides
+            // instead belong on the adapter process, which the inferior inherits. Explicit
+            // launch JSON keeps GDB's replacement semantics.
+            let explicit_env = config.extra_json.as_deref().is_some_and(|extra| {
+                serde_json::from_str::<Value>(extra).is_ok_and(|extra| extra.get("env").is_some())
+            });
+            if !explicit_env {
+                spec.env.extend(config.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+                arguments.as_object_mut().unwrap().remove("env");
+            }
+        }
         if let Some(cargo) = arguments.as_object_mut().and_then(|o| o.remove("cargo")) {
             let cargo_args: Vec<String> = cargo
                 .get("args")
@@ -893,6 +905,7 @@ impl DebugManager {
                 e
             }
         })?;
+        let launch_after_configuration = io.launch_after_configuration && request == "launch";
         let stderr = io.stderr.clone();
         let (conn, incoming) = {
             let stderr = stderr.clone();
@@ -935,7 +948,7 @@ impl DebugManager {
         let configured = tokio::select! {
             biased;
             _ = session.startup_cancel.cancelled() => return Err(IdeError::cancelled()),
-            result = self.configure(&session, arguments) => result,
+            result = self.configure(&session, arguments, launch_after_configuration) => result,
         };
         match configured {
             Ok(()) => Ok(id),
@@ -976,7 +989,7 @@ impl DebugManager {
         }
     }
 
-    async fn configure(&self, s: &Arc<Session>, mut arguments: Value) -> IdeResult<()> {
+    async fn configure(&self, s: &Arc<Session>, mut arguments: Value, launch_in_config: bool) -> IdeResult<()> {
         if s.adapter == kotlin::ADAPTER {
             let project = arguments
                 .get("projectRoot")
@@ -1044,7 +1057,6 @@ impl DebugManager {
         // Many adapters answer only after `configurationDone`, so don't wait for the reply yet.
         // GDB 15 is the exception: its `launch` starts the program itself (14 runs at
         // `configurationDone`, 16+ defers the launch there), so its launch waits below.
-        let launch_in_config = s.adapter == "gdb" && adapter::gdb_launch_after_configuration(&s.spec).await;
         let mut launch = if launch_in_config {
             None
         } else {

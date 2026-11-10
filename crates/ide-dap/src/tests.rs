@@ -129,6 +129,7 @@ struct Script {
     /// GDB 15 semantics: `initialized` right after `initialize`, the program starts at
     /// `launch`, and a `configurationDone` sent while it runs is refused with `notStopped`.
     gdb15_starts_at_launch: bool,
+    launch_after_configuration: bool,
 }
 
 impl Default for Script {
@@ -149,6 +150,7 @@ impl Default for Script {
             startup_error: None,
             close_during_startup: false,
             gdb15_starts_at_launch: false,
+            launch_after_configuration: false,
         }
     }
 }
@@ -163,10 +165,12 @@ impl AdapterLauncher for FakeLauncher {
         let (client, server) = tokio::io::duplex(1 << 16);
         let log = self.log.clone();
         let script = self.script.clone();
+        let launch_after_configuration = script.launch_after_configuration;
         tokio::spawn(fake_adapter(server, log, script));
         let (r, w) = tokio::io::split(client);
         Box::pin(async move {
             Ok(AdapterIo {
+                launch_after_configuration,
                 reader: Box::new(r),
                 writer: Box::new(w),
                 child: None,
@@ -536,51 +540,58 @@ async fn stop_cancels_pending_launch_and_attach() {
     }
 }
 
-/// GDB 15 starts the program inside `launch`: a launch that races the breakpoint upload is
-/// refused at `configurationDone` with `notStopped` (Ubuntu 24.04's GDB), so for it the
-/// launch goes out after the configuration. GDB 14 runs at `configurationDone` and 16+
-/// defers the launch there, so those keep the launch-first order every other adapter uses.
-/// The version comes from a fake `gdb` on the managed tools path (a real process probe,
-/// so this test runs on the real clock).
-#[tokio::test]
+/// GDB 15 must receive breakpoints and configurationDone before launch.
+#[tokio::test(start_paused = true)]
 async fn gdb_15_launch_waits_for_the_configuration() {
-    let root = std::env::temp_dir().join(format!("openidea-dap-gdb15-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let fake = root.join("gdb").join("bin").join(if cfg!(windows) { "gdb.cmd" } else { "gdb" });
-    std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
-    let answer = |version: &str| {
-        #[cfg(windows)]
-        std::fs::write(&fake, format!("@echo off\r\necho GNU gdb (GDB) {version}\r\n")).unwrap();
-        #[cfg(not(windows))]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::write(&fake, format!("#!/bin/sh\necho 'GNU gdb (GDB) {version}'\n")).unwrap();
-            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for deferred in [false, true] {
+        let h =
+            harness(Script { gdb15_starts_at_launch: true, launch_after_configuration: deferred, ..Script::default() });
+        let result = h.start(LaunchConfig { adapter: "gdb".into(), ..config() }).await;
+        if deferred {
+            let id = result.expect("GDB 15 defers its launch past the configuration");
+            let commands = h.commands();
+            let pos = |c: &str| commands.iter().position(|x| x == c).unwrap();
+            assert!(pos("launch") > pos("configurationDone"), "{commands:?}");
+            h.manager.stop(id).await.unwrap();
+        } else {
+            let error = result.unwrap_err();
+            assert!(error.message.contains("configurationDone failed: notStopped"), "{}", error.message);
         }
-    };
-    let dir = std::env::temp_dir().join(format!("openidea-dap-gdb15-cwd-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let gdb_config =
-        |dir: &Path| LaunchConfig { adapter: "gdb".into(), cwd: Some(dir.to_path_buf().into()), ..config() };
+    }
+}
 
-    answer("15.1");
-    adapter::set_tools_root(root.clone());
-    let h = harness(Script { gdb15_starts_at_launch: true, ..Script::default() });
-    let id = h.start(gdb_config(&dir)).await.expect("GDB 15 defers its launch past the configuration");
+#[tokio::test(start_paused = true)]
+async fn gdb_attach_keeps_the_normal_configuration_order() {
+    let h = harness(Script { launch_after_configuration: true, ..Script::default() });
+    let id = h.start(LaunchConfig { adapter: "gdb".into(), request: "attach".into(), ..config() }).await.unwrap();
     let commands = h.commands();
     let pos = |c: &str| commands.iter().position(|x| x == c).unwrap();
-    assert!(pos("launch") > pos("configurationDone"), "{commands:?}");
-    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    assert!(pos("attach") < pos("configurationDone"), "{commands:?}");
     h.manager.stop(id).await.unwrap();
+}
 
-    // With a GDB whose launch does not race (14, 16+), the script fails exactly like the
-    // real GDB 15 does when a client sends `launch` first.
-    answer("18.1");
-    let h = harness(Script { gdb15_starts_at_launch: true, ..Script::default() });
-    let error = h.start(gdb_config(&dir)).await.unwrap_err();
-    assert!(error.message.contains("configurationDone failed: notStopped"), "{}", error.message);
-    let _ = std::fs::remove_dir_all(&root);
-    let _ = std::fs::remove_dir_all(&dir);
+#[tokio::test(start_paused = true)]
+async fn gdb_run_environment_overrides_preserve_inheritance() {
+    for explicit in [None, Some(r#"{"env":{"ONLY":"explicit"}}"#)] {
+        let h = harness(Script::default());
+        let id = h
+            .start(LaunchConfig { adapter: "gdb".into(), extra_json: explicit.map(str::to_owned), ..config() })
+            .await
+            .unwrap();
+        let session = h.manager.session(id).unwrap();
+        {
+            let log = h.log.lock();
+            let args = &log.iter().find(|m| m["command"] == "launch").unwrap()["arguments"];
+            if explicit.is_some() {
+                assert_eq!(args["env"], json!({"ONLY": "explicit"}));
+                assert!(session.spec.env.is_empty());
+            } else {
+                assert!(args.get("env").is_none(), "GDB must inherit its process environment");
+                assert!(session.spec.env.contains(&("A".into(), "1".into())));
+            }
+        }
+        h.manager.stop(id).await.unwrap();
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -2001,6 +2012,7 @@ async fn rdbg_drains_test_output_after_dap_closes_before_killing_the_process() {
                 });
                 let (reader, writer) = tokio::io::split(client);
                 Ok(AdapterIo {
+                    launch_after_configuration: false,
                     reader: Box::new(reader),
                     writer: Box::new(writer),
                     child: Some(child),
