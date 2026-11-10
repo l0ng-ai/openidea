@@ -4370,6 +4370,7 @@ version = "0.1.40"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "dunce",
  "ed25519-dalek",
  "ide-core",
  "parking_lot",
