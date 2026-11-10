@@ -1257,18 +1257,21 @@ fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cac
 /// the project root) plus that root's configured dependencies. A workspace member depends
 /// only on the roots picked per member in Settings › Project Structure › Dependencies —
 /// being attached to the workspace never makes its code navigable by itself.
+/// Cached navigation roots per (project, file), with the instant they were computed.
+type NavigationRootsCache = HashMap<(PathBuf, PathBuf), (Instant, Vec<PathBuf>)>;
+
 pub(crate) fn navigation_roots(project: &Project, from: &Path) -> Vec<PathBuf> {
     // Hover probes and import-segment clicks repeat these lookups for the same file,
     // and each uncached call re-reads the workspace file: memoize briefly. The short
     // TTL keeps settings and workspace edits near-immediate.
-    static CACHE: Mutex<Option<HashMap<(PathBuf, PathBuf), (Instant, Vec<PathBuf>)>>> = Mutex::new(None);
+    static CACHE: Mutex<Option<NavigationRootsCache>> = Mutex::new(None);
     const TTL: Duration = Duration::from_secs(1);
     const CAP: usize = 256;
     let key = (project.root.clone(), from.to_path_buf());
-    if let Some((at, roots)) = CACHE.lock().as_ref().and_then(|m| m.get(&key)) {
-        if at.elapsed() < TTL {
-            return roots.clone();
-        }
+    if let Some((at, roots)) = CACHE.lock().as_ref().and_then(|m| m.get(&key))
+        && at.elapsed() < TTL
+    {
+        return roots.clone();
     }
     let roots = navigation_roots_uncached(project, from);
     if let Some(map) = CACHE.lock().as_mut() {
