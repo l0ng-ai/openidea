@@ -10,6 +10,7 @@ import { selectableText } from "./selectableText";
 import appIcon from "../../src-tauri/icons/128x128.png";
 import styles from "./Dialog.module.css";
 import { isImeKey } from "@/platform/ime";
+import { lockDragCursor } from "./dragCursor";
 
 /**
  * `default`: filled accent button, triggered by Enter. `cancel`: Esc / close
@@ -370,6 +371,7 @@ function DialogInner({
     const el = ref.current;
     if (!el) return;
     e.preventDefault();
+    const releaseCursor = lockDragCursor("nwse-resize");
     const start = { x: e.clientX, y: e.clientY };
     const rect = el.getBoundingClientRect();
     const minW = minWidth ?? (typeof width === "number" ? width : 320);
@@ -395,6 +397,7 @@ function DialogInner({
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      releaseCursor();
       if (last) onResized?.(last);
     };
     window.addEventListener("pointermove", move);

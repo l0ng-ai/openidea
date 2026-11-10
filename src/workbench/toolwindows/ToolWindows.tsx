@@ -17,7 +17,16 @@ import { create } from "zustand";
 import { call, commands } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
-import { dragRequiresAlt, Icon, IconButton, Menu, showContextMenu, tooltipAttrs, type MenuItem } from "@/ui";
+import {
+  dragRequiresAlt,
+  Icon,
+  IconButton,
+  lockDragCursor,
+  Menu,
+  showContextMenu,
+  tooltipAttrs,
+  type MenuItem,
+} from "@/ui";
 import { FOCUSABLE } from "@/ui/popupState";
 import { TabStripRegistry } from "@/ui/Tabs";
 import {
@@ -229,8 +238,7 @@ function StripeHandle({
     const origin = e.clientX;
     const icons = parseFloat(getComputedStyle(stripe).getPropertyValue("--stripe-icon-button")) || 30;
     const start = names ? width : icons;
-    const cursor = document.body.style.cursor;
-    document.body.style.cursor = "col-resize";
+    const releaseCursor = lockDragCursor("ew-resize");
     let next = { names, width, px: start };
     const move = (ev: globalThis.PointerEvent) => {
       if (!(ev.buttons & 1)) return end();
@@ -243,7 +251,7 @@ function StripeHandle({
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", end);
       el.removeEventListener("pointercancel", end);
-      document.body.style.cursor = cursor;
+      releaseCursor();
       stripe.style.removeProperty("--stripe-drag");
       onCommit(next.names, next.width);
     };
@@ -885,8 +893,7 @@ function SplitHandle({ anchor, hidden }: { anchor: ToolWindowAnchor; hidden: boo
     e.preventDefault();
     el.setPointerCapture(e.pointerId);
     const origin = stacked ? e.clientY : e.clientX;
-    const cursor = document.body.style.cursor;
-    document.body.style.cursor = stacked ? "row-resize" : "col-resize";
+    const releaseCursor = lockDragCursor(stacked ? "ns-resize" : "ew-resize");
     let ratio: number | null = null;
     const move = (ev: globalThis.PointerEvent) => {
       if (!(ev.buttons & 1)) return end();
@@ -897,7 +904,7 @@ function SplitHandle({ anchor, hidden }: { anchor: ToolWindowAnchor; hidden: boo
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", end);
       el.removeEventListener("pointercancel", end);
-      document.body.style.cursor = cursor;
+      releaseCursor();
       if (ratio !== null) setToolWindowSplit(anchor, ratio);
       // Back to the store's value (unchanged when the ratio was clamped to it).
       apply(m.areas, useToolWindowLayout.getState().splits[anchor]);
@@ -1042,8 +1049,7 @@ function GapHandle({
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
     const origin = vertical ? e.clientX : e.clientY;
-    const cursor = document.body.style.cursor;
-    document.body.style.cursor = vertical ? "col-resize" : "row-resize";
+    const releaseCursor = lockDragCursor(vertical ? "ew-resize" : "ns-resize");
     let next = m.size;
     const move = (ev: globalThis.PointerEvent) => {
       if (!(ev.buttons & 1)) return end();
@@ -1056,7 +1062,7 @@ function GapHandle({
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", end);
       el.removeEventListener("pointercancel", end);
-      document.body.style.cursor = cursor;
+      releaseCursor();
       if (next === 0) visibleIds.forEach(hideToolWindow);
       else if (next !== m.size) commit(next);
       else sync();
