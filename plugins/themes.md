@@ -214,7 +214,7 @@ The full table is `UI_KEYS` in [`src/features/plugins/intellijTheme.ts`](../src/
 |---|---|
 | `--fg-editor`, `--bg-editor` | attribute `TEXT` (foreground, background) |
 | `--caret`, `--bg-current-line` | colour `CARET_COLOR`, `CARET_ROW_COLOR` |
-| `--bg-editor-selection` | colour `SELECTION_BACKGROUND` |
+| `--bg-editor-selection`, `--fg-editor-selection` | colour `SELECTION_BACKGROUND`, `SELECTION_FOREGROUND` |
 | `--fg-line-number`, `--fg-line-number-current` | colour `LINE_NUMBERS_COLOR`, `LINE_NUMBER_ON_CARET_ROW_COLOR` |
 | `--bg-editor-gutter` | colour `EDITOR_GUTTER_BACKGROUND`, else the editor background (as the new UI paints it; `GUTTER_BACKGROUND` is the classic UI's) |
 | `--border-indent-guide`, `--border-right-margin`, `--fg-whitespace` | colour `INDENT_GUIDE`, `RIGHT_MARGIN_COLOR`, `WHITESPACES` |
@@ -268,7 +268,7 @@ from `type`, then map:
 | `--fg-editor` | `editor.foreground` |
 | `--caret` | `editorCursor.foreground` |
 | `--bg-current-line` | `editor.lineHighlightBackground` |
-| `--bg-editor-selection`, `--bg-editor-selection-inactive` | `editor.selectionBackground`, `editor.inactiveSelectionBackground` |
+| `--bg-editor-selection`, `--bg-editor-selection-inactive`, `--fg-editor-selection` | `editor.selectionBackground`, `editor.inactiveSelectionBackground`, `editor.selectionForeground` |
 | `--fg-line-number`, `--fg-line-number-current` | `editorLineNumber.foreground`, `editorLineNumber.activeForeground` |
 | `--border-indent-guide`, `--border-indent-guide-active` | `editorIndentGuide.background1`, `editorIndentGuide.activeBackground1` |
 | `--fg-whitespace` | `editorWhitespace.foreground` |
@@ -329,7 +329,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-255 themeable tokens: 125 in the UI theme file, 130 in the editor colour scheme file.
+256 themeable tokens: 125 in the UI theme file, 131 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -499,6 +499,7 @@ a token.
 | `--border-right-margin` | `#323438` | `#ebecf0` |
 | `--bg-editor-selection` | `#214283` | `#a6d2ff` |
 | `--bg-editor-selection-inactive` | `#1d3460` | `#c9e3ff` |
+| `--fg-editor-selection` | `inherit` | `inherit` |
 | `--bg-text-search-result` | `#114957` | `#fcd47e` |
 | `--bg-text-search-result-current` | `#165e70` | `#f2bf57` |
 | `--bg-matched-brace` | `#43454a` | `#93d9d9` |

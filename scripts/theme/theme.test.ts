@@ -159,6 +159,17 @@ describe("IntelliJ theme import", () => {
     expect(s).toBeNull();
   });
 
+  it("maps the selection foreground colour (#2446)", () => {
+    const s = convertIcls(`<scheme name="Sel" version="142" parent_scheme="Default"><colors>
+      <option name="SELECTION_BACKGROUND" value="214283" />
+      <option name="SELECTION_FOREGROUND" value="112233" />
+    </colors></scheme>`);
+    expect(s.tokens).toMatchObject({
+      "--bg-editor-selection": "#214283",
+      "--fg-editor-selection": "#112233",
+    });
+  });
+
   it("only targets tokens that exist in tokens.css", () => {
     const declared = new Set([...css.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]!));
     // Read with a fallback by the editor (no tokens.css default), still themeable.
