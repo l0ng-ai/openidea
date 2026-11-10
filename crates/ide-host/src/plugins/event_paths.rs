@@ -21,9 +21,9 @@ pub(super) struct PathFilter {
 
 impl PathFilter {
     pub fn new(kind: &str, globs: Vec<String>) -> Result<Self, HostError> {
-        if !matches!(kind, "file-opened" | "file-saved" | "files-changed") {
+        if !matches!(kind, "file-opened" | "file-saved" | "files-changed" | "document-changed") {
             return Err(HostError::Invalid(
-                "subscribe-paths supports file-opened, file-saved and files-changed".into(),
+                "subscribe-paths supports file-opened, file-saved, files-changed and document-changed".into(),
             ));
         }
         if globs.len() > 64 {
@@ -126,6 +126,7 @@ impl PluginHost {
                 }
                 let path = match event {
                     WorkbenchEvent::FileOpened(path) | WorkbenchEvent::FileSaved(path) => Path::new(path),
+                    WorkbenchEvent::DocumentChanged(change) => Path::new(&change.path),
                     _ => return Some(event.clone()),
                 };
                 let Some(filter) = filters.get(event.kind().name()) else { return Some(event.clone()) };
@@ -167,6 +168,7 @@ mod tests {
         assert!(PathFilter::new("file-saved", vec!["./".repeat(513)]).is_err());
         assert!(PathFilter::new("file-saved", vec![]).is_ok());
         assert!(PathFilter::new("files-changed", vec![]).is_ok());
+        assert!(PathFilter::new("document-changed", vec!["src/**/*.rs".into()]).is_ok());
     }
 
     #[test]

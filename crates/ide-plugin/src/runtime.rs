@@ -450,6 +450,14 @@ pub trait HostApi: Send + Sync {
         let _ = (connection, limit);
         Err(HostError::Invalid("background WebSockets are unavailable on this host".into()))
     }
+    fn websocket_subscribe_document(&self, root: &Path, connection: u64, path: &Path) -> Result<bool, HostError> {
+        let _ = (root, connection, path);
+        Err(HostError::Invalid("document WebSocket subscriptions are unavailable on this host".into()))
+    }
+    fn websocket_unsubscribe_document(&self, root: &Path, connection: u64, path: &Path) -> Result<bool, HostError> {
+        let _ = (root, connection, path);
+        Err(HostError::Invalid("document WebSocket subscriptions are unavailable on this host".into()))
+    }
     fn websocket_close(&self, connection: u64) {
         let _ = connection;
     }
@@ -1016,6 +1024,10 @@ const MAX_BATCH: usize = 1000;
 
 fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
     match e {
+        WorkbenchEvent::DocumentChanged(value) => wit_events::Event::Other(wit_types::Extension {
+            kind: "document-changed".into(),
+            data: serde_json::to_string(&value).expect("document change serializes"),
+        }),
         WorkbenchEvent::WebsocketReady(value) => wit_events::Event::Other(wit_types::Extension {
             kind: "websocket-ready".into(),
             data: serde_json::to_string(&value).expect("WebSocket ready event serializes"),

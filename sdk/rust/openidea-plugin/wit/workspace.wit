@@ -111,6 +111,7 @@ interface workspace {
 
 interface editor {
     use types.{error, range, text-edit};
+    use workspace.{project};
 
     record document {
         /// Grows with every change; edits name the version they were made for.
@@ -125,6 +126,17 @@ interface editor {
     /// Open a project file (project.read) or a file in plugin-dir, selecting a range.
     /// Only from commands/events of a window. Paths follow views.open-location.
     open: func(path: string, selection: option<range>) -> result<_, error>;
+
+    /// Current version and text of an open project document. Unlike
+    /// `text-editor.document`, this is available to background events.
+    /// The path is project-relative and requires `project.read` and
+    /// `editor.read`.
+    document-at: func(project: borrow<project>, path: string) -> result<document, error>;
+
+    /// Applies versioned edits to an open project document from a background
+    /// event. The path is project-relative and requires `project.read` and
+    /// `editor.write`. Stale versions are rejected without changing text.
+    apply-edits-at: func(project: borrow<project>, path: string, version: u64, edits: list<text-edit>) -> result<u64, error>;
 
     /// A file open in an editor.
     resource text-editor {

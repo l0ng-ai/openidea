@@ -62,9 +62,12 @@ pub fn export_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {
             &fresh,
         )
         .expect("failed to export TypeScript bindings");
-    let text = std::fs::read(&fresh).expect("exported TypeScript bindings");
+    let generated = std::fs::read_to_string(&fresh).expect("exported TypeScript bindings");
     let _ = std::fs::remove_file(&fresh);
-    if std::fs::read(target).ok().as_deref() != Some(text.as_slice()) {
+    // Specta can leave spaces after union separators. Keep generated sources compatible with
+    // `git diff --check` and stable across editors without changing their TypeScript meaning.
+    let text = generated.lines().map(str::trim_end).collect::<Vec<_>>().join("\n") + "\n";
+    if std::fs::read_to_string(target).ok().as_deref() != Some(text.as_str()) {
         std::fs::write(target, text).expect("failed to write TypeScript bindings");
     }
 }

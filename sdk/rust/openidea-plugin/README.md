@@ -3,7 +3,7 @@
 The Rust API is documented by `cargo doc`. Web pages shipped alongside a Rust
 component use `window.openidea` rather than Rust imports.
 
-## Background WebSockets
+## Background document WebSockets
 
 `host::WebSocket` keeps a bounded, host-owned connection alive between plugin
 calls. `connect`, `send` and `drain` require the same explicit `Project`, so a
@@ -12,14 +12,27 @@ handle cannot be reused from another project. Non-loopback endpoints must use
 credentials, a query, or a fragment. Authentication is supplied through one
 `Authorization` header, whose value may contain a declared
 `{{secret:name}}`. The manifest must grant `net:<host>`, `secrets` when a
-placeholder is used, plus `project.read` and `events`.
+placeholder is used, `events`, and the editor/project capabilities used by the
+plugin.
 
-The outgoing and incoming
+`subscribe_document(project, path)` accepts only an open, regular file resolved
+inside that project. Symlinks, IDE/VCS control directories and common secret
+files (`.env*`, private-key and credential files) are refused. Each local edit
+to the open document is sent after the versioned backend accepts it, as one
+binary JSON frame containing `path`, `baseVersion`, `version`, and UTF-16
+`changes`. Subscriptions are
+idempotent and isolated by connection and path. Unsubscribe stops delivery;
+dropping the connection removes all subscriptions. The outgoing and incoming
 queues are bounded (256 frames, 8 MiB total, 1 MiB per frame). A full queue
 rejects the new frame explicitly instead of reporting it as sent.
 
 Declare `activation = ["on-event:websocket-ready"]` and handle that event to
-call `drain` without polling. Inbound frames are plugin protocol data.
+call `drain` without polling. Inbound frames are plugin protocol data. After
+validation and conflict handling, a plugin can use `Project::document` and
+`Project::apply_document_edits`, or decode a relayed `DocumentChanged` and call
+`Project::apply_document_change`; applying against a stale version fails
+without changing the editor so the plugin can merge or surface the conflict.
+Transport shutdown removes subscriptions immediately.
 `drain` returns a `closed` flag with the final queued frames; the handle is
 removed after that drain, or after a short expiry if the plugin abandons it.
 

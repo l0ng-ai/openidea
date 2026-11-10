@@ -5,10 +5,10 @@ use super::{
     network_inbox::{Inbox, Push},
 };
 use futures::{SinkExt, StreamExt};
-use ide_plugin::WebSocketBatch;
+use ide_plugin::{DocumentChanged, WebSocketBatch};
 use parking_lot::Mutex;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc, Weak,
         atomic::{AtomicU64, Ordering},
@@ -41,10 +41,17 @@ pub enum ConnectError {
     Failed(String),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PublishResult {
+    pub accepted: usize,
+    pub rejected: usize,
+}
+
 struct Connection {
     plugin: String,
     #[allow(dead_code, reason = "read by document subscriptions (#2610)")]
     project: String,
+    documents: Mutex<HashSet<String>>,
     outgoing: Arc<Inbox>,
     incoming: Arc<Inbox>,
     wake: Notify,
@@ -147,6 +154,7 @@ impl WebSocketHub {
             let connection = Arc::new(Connection {
                 plugin: plugin.to_owned(),
                 project: project.to_owned(),
+                documents: Mutex::new(HashSet::new()),
                 outgoing: Arc::new(Inbox::new(MAX_MESSAGES, MAX_BYTES, MAX_FRAME)),
                 incoming: Arc::new(Inbox::new(MAX_MESSAGES, MAX_BYTES, MAX_FRAME)),
                 wake: Notify::new(),
@@ -178,6 +186,58 @@ impl WebSocketHub {
         }
     }
 
+    pub fn subscribe(&self, plugin: &str, connection: ConnectionId, document: &str) -> Result<bool, String> {
+        if document.is_empty() || document.len() > 4096 {
+            return Err("invalid document id".into());
+        }
+        let connection = self.connection(plugin, connection)?;
+        let inserted = connection.documents.lock().insert(document.to_owned());
+        if inserted {
+            self.subscriptions_changed();
+        }
+        Ok(inserted)
+    }
+
+    pub fn unsubscribe(&self, plugin: &str, connection: ConnectionId, document: &str) -> Result<bool, String> {
+        let connection = self.connection(plugin, connection)?;
+        let removed = connection.documents.lock().remove(document);
+        if removed {
+            self.subscriptions_changed();
+        }
+        Ok(removed)
+    }
+
+    pub fn publish(&self, change: &DocumentChanged) -> PublishResult {
+        let connections: Vec<_> = self
+            .0
+            .connections
+            .lock()
+            .values()
+            .filter(|connection| connection.documents.lock().contains(&change.path))
+            .cloned()
+            .collect();
+        let bytes = match serde_json::to_vec(change) {
+            Ok(bytes) if bytes.len() <= MAX_FRAME => bytes,
+            _ => return PublishResult { accepted: 0, rejected: connections.len() },
+        };
+        let mut result = PublishResult::default();
+        for connection in connections {
+            match connection.outgoing.push(bytes.clone()) {
+                Push::Wake => {
+                    result.accepted += 1;
+                    connection.wake.notify_one();
+                }
+                Push::Queued => result.accepted += 1,
+                Push::OverflowWake => {
+                    result.rejected += 1;
+                    connection.wake.notify_one();
+                }
+                Push::OverflowQueued | Push::Closed => result.rejected += 1,
+            }
+        }
+        result
+    }
+
     pub fn drain(&self, plugin: &str, connection: ConnectionId, limit: usize) -> Result<WebSocketBatch, String> {
         if limit == 0 || limit > DRAIN_BATCH {
             return Err("invalid drain limit".into());
@@ -202,10 +262,14 @@ impl WebSocketHub {
             .filter(|connection| connection.plugin == plugin)
             .cloned()
             .ok_or_else(|| "unknown WebSocket connection".to_owned())?;
+        let had_documents = !connection.documents.lock().is_empty();
         connection.outgoing.close();
         let _ = connection.stop.send(true);
         connection.wake.notify_one();
         self.0.connections.lock().remove(&id);
+        if had_documents {
+            self.subscriptions_changed();
+        }
         Ok(())
     }
 
@@ -216,11 +280,19 @@ impl WebSocketHub {
                 connections.iter().filter(|(_, connection)| connection.plugin == plugin).map(|(id, _)| *id).collect();
             ids.into_iter().filter_map(|id| connections.remove(&id)).collect()
         };
+        let subscriptions_changed = removed.iter().any(|connection| !connection.documents.lock().is_empty());
         for connection in removed {
             connection.outgoing.close();
             let _ = connection.stop.send(true);
             connection.wake.notify_one();
         }
+        if subscriptions_changed {
+            self.subscriptions_changed();
+        }
+    }
+
+    pub fn has_subscriptions(&self) -> bool {
+        self.0.connections.lock().values().any(|connection| !connection.documents.lock().is_empty())
     }
 
     /// Returns the project captured when this plugin opened the resource.
@@ -228,6 +300,12 @@ impl WebSocketHub {
     #[allow(dead_code, reason = "read by document subscriptions (#2610)")]
     pub fn project(&self, plugin: &str, id: ConnectionId) -> Result<String, String> {
         Ok(self.connection(plugin, id)?.project.clone())
+    }
+
+    fn subscriptions_changed(&self) {
+        if let Some(sink) = &self.0.sink {
+            sink.emit(None, PluginEvent::SubscriptionsChanged);
+        }
     }
 
     fn connection(&self, plugin: &str, id: ConnectionId) -> Result<Arc<Connection>, String> {
@@ -449,6 +527,25 @@ mod tests {
         assert!(hub.drain("plugin", connection, 1).is_err());
     }
 
+    #[tokio::test]
+    async fn document_changes_reach_only_subscribed_connections() {
+        let (url, server) = server().await;
+        let hub = WebSocketHub::default();
+        let connection = hub.connect("plugin", "/project", &url, "Bearer test", "openidea.test.v1").await.unwrap();
+        assert!(hub.subscribe("plugin", connection, "/project/a.rs").unwrap());
+        assert!(!hub.subscribe("plugin", connection, "/project/a.rs").unwrap());
+        let ignored = DocumentChanged { path: "/project/b.rs".into(), base_version: 1, version: 2, changes: vec![] };
+        let sent = DocumentChanged { path: "/project/a.rs".into(), base_version: 1, version: 2, changes: vec![] };
+        assert_eq!(hub.publish(&ignored), PublishResult::default());
+        assert_eq!(hub.publish(&sent), PublishResult { accepted: 1, rejected: 0 });
+        assert!(hub.unsubscribe("plugin", connection, "/project/a.rs").unwrap());
+        assert_eq!(hub.publish(&sent), PublishResult::default());
+        hub.disconnect("plugin", connection).unwrap();
+        let messages = server.await.unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(serde_json::from_slice::<DocumentChanged>(&messages[0]).unwrap(), sent);
+    }
+
     #[test]
     fn send_rejects_full_queues_without_reporting_success() {
         let hub = WebSocketHub::default();
@@ -456,6 +553,7 @@ mod tests {
         let connection = Arc::new(Connection {
             plugin: "plugin".into(),
             project: "/project".into(),
+            documents: Mutex::new(HashSet::new()),
             outgoing: Arc::new(Inbox::new(1, MAX_BYTES, MAX_FRAME)),
             incoming: Arc::new(Inbox::new(1, MAX_BYTES, MAX_FRAME)),
             wake: Notify::new(),

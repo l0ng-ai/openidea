@@ -167,6 +167,7 @@ pub struct ChildRes {
 /// Releasing the component resource closes the underlying transport.
 pub struct WebSocketRes {
     id: u64,
+    root: PathBuf,
     host: std::sync::Arc<dyn crate::HostApi>,
 }
 
@@ -1505,7 +1506,7 @@ impl net::Host for StoreData {
         let root = self.table.get(&project)?.root.clone();
         let timeout = WEBSOCKET_HANDSHAKE_TIMEOUT.min(self.io_timeout());
         match self.host.websocket_connect(&root, request, timeout) {
-            Ok(id) => self.push(WebSocketRes { id, host: self.host.clone() }).map(Ok),
+            Ok(id) => self.push(WebSocketRes { id, root, host: self.host.clone() }).map(Ok),
             Err(error) => {
                 self.grant_io_error_grace();
                 Ok(Err(to_wit(error)))
@@ -1531,6 +1532,37 @@ impl net::HostWebsocket for StoreData {
             .websocket_drain(id, limit as usize)
             .map(|batch| net::WebsocketBatch { messages: batch.messages, closed: batch.closed })
             .map_err(to_wit))
+    }
+
+    fn subscribe_document(&mut self, this: Resource<WebSocketRes>, path: String) -> Fallible<bool> {
+        if let Err(error) = self
+            .require(Capability::ProjectRead)
+            .and_then(|_| self.require(Capability::EditorRead))
+            .and_then(|_| self.require(Capability::Events))
+        {
+            return Ok(Err(error));
+        }
+        let socket = self.table.get(&this)?;
+        let path = match sandbox::resolve_shared_document(&socket.root, &path) {
+            Ok(path) => path,
+            Err(error) => return Ok(Err(wit::Error::Invalid(error))),
+        };
+        if self.host.document(&path).is_none() {
+            return Ok(Err(wit::Error::NotFound(format!("{} is not open", path.display()))));
+        }
+        Ok(self.host.websocket_subscribe_document(&socket.root, socket.id, &path).map_err(to_wit))
+    }
+
+    fn unsubscribe_document(&mut self, this: Resource<WebSocketRes>, path: String) -> Fallible<bool> {
+        if let Err(error) = self.require(Capability::ProjectRead) {
+            return Ok(Err(error));
+        }
+        let socket = self.table.get(&this)?;
+        let path = match sandbox::resolve_shared_document_identity(&socket.root, &path) {
+            Ok(path) => path,
+            Err(error) => return Ok(Err(wit::Error::Invalid(error))),
+        };
+        Ok(self.host.websocket_unsubscribe_document(&socket.root, socket.id, &path).map_err(to_wit))
     }
 
     fn close(&mut self, this: Resource<WebSocketRes>) -> Fallible<()> {
