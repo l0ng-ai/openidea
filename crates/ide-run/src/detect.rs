@@ -988,7 +988,10 @@ fn detect_python(top: &Path, root: &Path, out: &mut Vec<RunConfig>) {
             &["-m", &m],
         ));
     }
-    if uses_pytest(root) || env.has_tool(root, "pytest") {
+    // Only an environment of the folder itself makes it a pytest project: one borrowed from a
+    // parent would give every folder with a `requirements.txt` its own pytest run.
+    let own_pytest = matches!(env, PyEnv::Venv(ref v) if !v.starts_with("../")) && env.has_tool(root, "pytest");
+    if uses_pytest(root) || own_pytest {
         out.push(py_config("pytest".into(), "pytest".into(), "pytest", env.tool(root, "pytest"), &[]).test());
     }
     // After pytest: a project set up for pytest (pytest-django) keeps it as the default test runner.

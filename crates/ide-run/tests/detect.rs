@@ -1161,4 +1161,15 @@ fn a_django_project_in_src_uses_the_environment_next_to_it() {
     let dir = project(&[(".venv/bin/python", ""), ("app/manage.py", "")]);
     let c = detect(&dir.path().join("app"));
     assert_eq!(cmdline(find(&c, "django:runserver")), "python3 manage.py runserver");
+
+    // A folder borrowing the root's environment isn't a pytest project because pytest is installed there.
+    let dir = project(&[
+        ("pyproject.toml", ""),
+        (".venv/bin/python", ""),
+        (".venv/bin/pytest", ""),
+        ("docs/requirements.txt", ""),
+    ]);
+    let c = detect(dir.path());
+    assert!(c.iter().any(|c| c.id == "pytest"));
+    assert!(!c.iter().any(|c| c.id.starts_with("pytest:")), "{:?}", c.iter().map(|c| &c.id).collect::<Vec<_>>());
 }
