@@ -17,6 +17,7 @@ import {
 } from "@/ui";
 import { openLocation } from "./ipc";
 import {
+  closeHierarchy,
   ROOT_ID,
   directionLabel,
   hierarchyTitle,
@@ -64,9 +65,10 @@ export function HierarchyTabs() {
       variant="compact"
       className={styles.tabs}
       aria-label="Hierarchies"
-      items={[{ id: "current", label }]}
+      items={[{ id: "current", label, closable: true }]}
       activeId="current"
       onSelect={() => undefined}
+      onClose={closeHierarchy}
     />
   );
 }
