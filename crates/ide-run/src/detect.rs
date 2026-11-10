@@ -43,7 +43,7 @@ pub(crate) fn detect_with_profiles(
                     .iter()
                     .any(|name| dir.join(name).join(PyEnv::bin_dir()).join(PyEnv::python_exe()).is_file())
         },
-        detect_python,
+        |dir, out| detect_python(root, dir, out),
         &mut out,
     );
     detect_projects(
@@ -808,6 +808,25 @@ impl PyEnv {
         Self::System
     }
 
+    /// [`PyEnv::detect`] of `dir`, else of the first of its parents up to `top` that has an
+    /// environment: a Django project in `src/` uses the virtualenv or lock file next to it.
+    /// Paths stay relative to `dir`.
+    fn detect_within(top: &Path, dir: &Path) -> Self {
+        for (up, base) in dir.ancestors().enumerate() {
+            if !base.starts_with(top) {
+                break;
+            }
+            let parent = "../".repeat(up);
+            match Self::detect(base) {
+                Self::System => {}
+                Self::Venv(v) => return Self::Venv(format!("{parent}{v}")),
+                Self::Pixi(v) => return Self::Pixi(format!("{parent}{v}")),
+                runner => return runner,
+            }
+        }
+        Self::System
+    }
+
     /// The first pixi environment `.pixi/envs/<env>` holding a Python, relative
     /// to the root, in name order.
     fn pixi_env(root: &Path) -> Option<String> {
@@ -929,9 +948,10 @@ fn uses_pytest(root: &Path) -> bool {
         .any(|f| read(&root.join(f)).is_some_and(|s| s.contains("pytest")))
 }
 
-fn detect_python(root: &Path, out: &mut Vec<RunConfig>) {
+/// Python configurations of the project at `root`, a folder of the opened project `top`.
+fn detect_python(top: &Path, root: &Path, out: &mut Vec<RunConfig>) {
     let markers = ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "pytest.ini", "tox.ini", "manage.py"];
-    let env = PyEnv::detect(root);
+    let env = PyEnv::detect_within(top, root);
     // A project virtualenv or pixi environment marks a Python project too
     // (scripts + tests without packaging files).
     let venv = matches!(env, PyEnv::Venv(_) | PyEnv::Pixi(_));
