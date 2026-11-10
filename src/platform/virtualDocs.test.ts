@@ -91,4 +91,36 @@ describe("libraryEntryPaths", () => {
   ])("%s", (_, uri, expected) => {
     expect(libraryEntryPaths(uri)).toEqual(expected);
   });
+
+  const GRADLE = "/home/me/.gradle/caches/modules-2/files-2.1/org.example/a/1.0";
+  const SOURCES = `${GRADLE}/sourceHash/a-1.0-sources.jar`;
+  const BINARY = `${GRADLE}/binaryHash/a-1.0.jar!`;
+
+  it.each([
+    `jar:file://${SOURCES}!/org/x/Y.java`,
+    `jdt://contents/a-1.0-sources.jar/org.x/Y.class?=p/${encodeURIComponent(SOURCES)}%3Corg.x%28Y.class`,
+  ])("finds a Gradle binary jar in a different hash directory for %s", (uri) => {
+    expect(libraryEntryPaths(uri, [BINARY])).toEqual([
+      ...(uri.startsWith("jar:") ? [`${SOURCES}!/org/x/Y.java`] : []),
+      `${GRADLE}/sourceHash/a-1.0.jar!/org/x/Y.class`,
+      `${BINARY}/org/x/Y.class`,
+    ]);
+  });
+
+  it("keeps the direct Gradle binary match ahead of other hash directories", () => {
+    expect(
+      libraryEntryPaths(`jar:file://${SOURCES}!/org/x/Y.java`, [BINARY, `${GRADLE}/sourceHash/a-1.0.jar!`]),
+    ).toEqual([`${SOURCES}!/org/x/Y.java`, `${GRADLE}/sourceHash/a-1.0.jar!/org/x/Y.class`]);
+  });
+
+  it("does not match Gradle jars from another version, artifact or file name", () => {
+    expect(
+      libraryEntryPaths(`jar:file://${SOURCES}!/org/x/Y.java`, [
+        BINARY.replace("/1.0/", "/2.0/"),
+        BINARY.replace("/a/", "/b/"),
+        `${GRADLE}/binaryHash/b-1.0.jar!`,
+        `${GRADLE}/binaryHash/a-1.0.jar`,
+      ]),
+    ).toEqual([`${SOURCES}!/org/x/Y.java`, `${GRADLE}/sourceHash/a-1.0.jar!/org/x/Y.class`]);
+  });
 });
