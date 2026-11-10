@@ -7,6 +7,7 @@
  */
 import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
+import { emptyGutterSpacer } from "@/editor/api";
 import { hasPrimaryModifier } from "@/platform/keymap";
 import { marksOf, setFileLines, updateBookmarks, useBookmarks } from "./store";
 
@@ -157,7 +158,9 @@ export function bookmarkGutter(path: string, toggle: (line: number) => void): Ex
     gutter({
       class: "cm-openidea-bookmarks",
       markers: (v) => v.state.field(field),
-      initialSpacer: () => spacer,
+      // Reserve the bookmark's width only while this file has bookmarks.
+      initialSpacer: () => emptyGutterSpacer,
+      updateSpacer: (_spacer, u) => (u.state.field(field).size ? spacer : emptyGutterSpacer),
     }),
     theme,
   ];
@@ -167,7 +170,8 @@ const theme = EditorView.baseTheme({
   ".cm-openidea-bookmarks .cm-gutterElement": {
     display: "flex",
     alignItems: "center",
-    justifyContent: "center",
+    // Spare width stays left of the bookmark, which sits next to the code.
+    justifyContent: "flex-end",
     padding: "0 2px",
   },
   ".cm-openidea-bookmark": {

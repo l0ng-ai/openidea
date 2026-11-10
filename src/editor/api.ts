@@ -336,6 +336,12 @@ export class LaneMarker extends GutterMarker {
 }
 
 /**
+ * A gutter spacer that renders nothing: pair it with `gutter`'s `updateSpacer`
+ * to reserve icon width only while the file has something to show.
+ */
+export const emptyGutterSpacer = new (class extends GutterMarker {})();
+
+/**
  * The floating row at the editor's top-right (IDEA's inspection widget area): widgets
  * append their element to it (CSS `order` sorts them; lower first) and remove it when
  * done. The inspection widget sits there; code review adds its Review Mode group.

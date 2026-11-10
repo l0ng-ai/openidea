@@ -6,7 +6,7 @@
  */
 import { RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import type { EditorDocContext } from "@/editor/api";
+import { emptyGutterSpacer, type EditorDocContext } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { shortcutLabel } from "@/platform/keymap";
@@ -263,7 +263,12 @@ export function runGutter(ctx: EditorDocContext): Extension {
     gutter({
       class: `${styles.runGutter} cm-openidea-gutter-run`,
       markers: (view) => markers(view.state, path),
-      initialSpacer: () => new RunMarker({ line: 0, pos: 0, kind: "test", name: "", path: [] }, path),
+      // One icon of width only while the file has run targets; other files keep a narrow gutter.
+      initialSpacer: () => emptyGutterSpacer,
+      updateSpacer: (_spacer, update) =>
+        update.state.field(targetsField).length
+          ? new RunMarker({ line: 0, pos: 0, kind: "test", name: "", path: [] }, path)
+          : emptyGutterSpacer,
       domEventHandlers: {
         mousedown: (view, block, event) => {
           const target = view.state.field(targetsField).find((t) => t.pos === block.from);
