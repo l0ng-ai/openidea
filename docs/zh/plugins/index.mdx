@@ -1,0 +1,69 @@
+---
+title: "概览"
+description: "OpenIDEA 插件能做什么、插件的两种类型，以及插件 API 的当前状态。"
+---
+
+OpenIDEA 插件可以为 IDE 增加命令、编辑器功能、工具窗口、主题、图标和语言。插件就是一个带 `plugin.toml` 清单（manifest）的文件夹；如果包含代码，代码是一个运行在沙箱里的 WebAssembly 组件，只能做用户允许的事。
+
+<Warning>
+  插件系统目前是**预览版**。**设置 › 插件** 页面上的 **预览** 标记会提示：“插件系统目前是预览版：API
+  和插件都可能还会变化。”已发布的 API 版本只增不改，为 API 1.0 构建的插件在之后的 1.x IDE 中仍能加载（见 [API
+  版本与兼容](/zh/plugins/versioning)）。
+</Warning>
+
+## 插件能做什么
+
+- 添加**命令**。命令就是 IDE 操作：可以在 **查找操作** 和 **随处搜索** 中找到、绑定快捷键，也可以放进菜单、主工具栏和状态栏。
+- 读写项目文件和当前编辑器，响应工作台事件（文件打开或保存、VCS 变化、执行了某个操作），并以带进度的后台任务运行工作。
+- 为任意语言提供**编辑器功能**：补全、行内补全、快速修复、导航、悬停、内嵌提示、语义高亮、输入时诊断、格式化、代码透镜、装订区标记等。
+- 显示**工具窗口**和**自定义编辑器**，可以是声明式的（树、列表、表单、表格），也可以是沙箱中的网页。
+- 提供**运行配置**、测试结果解析器和运行目标、**数据库数据源**，以及给内置 MCP 服务器用的 **MCP 工具**。
+- 调用 Web 服务、把密钥存进系统钥匙串、在自己的存储里保存数据、运行用户批准过的程序。
+- 提供**设置页**、**文件模板**、**代码片段**、**主题**、**文件图标主题**和**语言**。
+
+## 两种插件
+
+| 类型       | 包含                                                                                         | 需要代码 | 示例                                                                                                                                                                                         |
+| ---------- | -------------------------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 纯数据插件 | 清单和数据文件：主题、图标主题、语言定义、菜单、快捷键、设置、文件模板、代码片段、运行检测器 | 否       | [harbor-night](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/harbor-night)、[material-icons](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/material-icons) |
+| 代码插件   | 以上内容，外加一个 WebAssembly 组件（`wasm = "dist/plugin.wasm"`）                           | 是       | [string-tools](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/string-tools)、[git-toolbox](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/git-toolbox)       |
+
+插件一启用，声明的贡献就生效，不需要先加载代码：命令出现在 **查找操作** 里、主题可以应用、设置页已经存在。代码只在第一次需要时才加载（执行了它的命令、打开了它声明的语言的文件等），空闲 5 分钟后再卸载。
+
+代码插件是面向 [`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit) 中 `plugin` world 的 WebAssembly 组件。官方支持用 Rust SDK（[`sdk/rust/openidea-plugin`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin)）编写；任何有组件模型工具链的语言（`componentize-py`、`jco componentize`、TinyGo）也都可以面向同一个 world。
+
+## API 版本
+
+|                |                                                 |
+| -------------- | ----------------------------------------------- |
+| 最新已发布 API | **1.4.0**，随 OpenIDEA 0.1.40 发布              |
+| 开发中         | `main` 分支上的 **1.5.0**，计划随下一个版本发布 |
+| WIT 包名       | `openidea:plugin@<version>`                     |
+
+在清单里用 `engines.openidea` 声明插件需要的 API，例如 `engines.openidea = "^1.4"`。
+
+## 插件从哪里来
+
+- **插件市场：** **设置 › 插件 › 可用** 列出官方插件和[社区登记仓库](https://github.com/l0ng-ai/openidea-plugins)中的社区插件。见 [发布到市场](/zh/plugins/publishing/marketplace)。
+- **磁盘：** 在 **设置 › 插件** 的齿轮菜单中选择 **从磁盘安装插件…**（文件夹）或 **从插件包文件安装…**（`.oiplugin` 或 `.zip`）。
+- **链接的文件夹：** `openidea-plugin link` 让 IDE 直接加载你正在开发的文件夹，无需安装。
+- **项目插件：** 放在 `<project>/.openidea/plugins/<name>/` 下的插件包，只在受信任的项目中、且你批准其权限后才会加载。
+
+## 下一步
+
+<CardGroup cols={2}>
+  <Card title="快速开始" href="/zh/plugins/quickstart">
+    几分钟内生成、构建并运行一个插件。
+  </Card>
+  <Card title="示例插件" href="/zh/plugins/examples">
+    逐个了解 `plugins/official` 里的插件。
+  </Card>
+  <Card title="架构与沙箱" href="/zh/plugins/architecture">
+    插件代码如何运行、受到哪些限制。
+  </Card>
+  <Card title="Manifest" href="/zh/plugins/manifest">
+    `plugin.toml` 的每个字段。
+  </Card>
+</CardGroup>
+
+最完整、最权威的指南是仓库里的 [`plugins/README.md`](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md)。

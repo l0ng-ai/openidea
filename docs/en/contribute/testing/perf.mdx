@@ -1,0 +1,95 @@
+---
+title: "Performance tests"
+description: "Measuring UI interaction latency, frames and leaks with pnpm perf, backend benchmarks with pnpm perf:rust, the budgets in perf/budgets.json, and the external IDE comparison in perf/compare."
+---
+
+There are three performance tools, all run locally (CI doesn't run them):
+
+| Tool                    | Measures                                                                                        | Checked against                                       |
+| ----------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `pnpm perf`             | UI interaction latency, dropped frames, main-thread time, heap and DOM size, leaks, bundle size | `perf/budgets.json` › `ui`, and your local baseline   |
+| `pnpm perf:rust`        | Criterion benchmarks of the crates on the interactive path                                      | `perf/budgets.json` › `rust`, and your local baseline |
+| `perf/compare/bench.py` | Startup, readiness, memory and CPU of whole IDEs, from the outside                              | Nothing: a report comparing the apps                  |
+
+When you change something on the interactive path (typing, completion, scrolling, opening files, indexing, search), run them before and after the change and include the numbers in the PR's verification section.
+
+## UI: `pnpm perf`
+
+`perf/run.ts` builds the workbench with `vite build --mode perf` (the production bundle plus the sample project and a `__openideaPerf` probe), serves it, drives interaction scenarios in Chromium with Playwright, and checks the medians of the measured runs.
+
+```sh
+pnpm perf                                    # all scenarios, 3 measured runs each
+pnpm perf -- --list                          # list the scenarios
+pnpm perf -- --only typing,scroll --runs 5
+pnpm perf -- --cpu 4                         # 4x CPU slowdown (reported, budgets not enforced)
+pnpm perf -- --save-baseline                 # store this run as target/perf/baseline-<cpu>x.json
+pnpm perf -- --only typing --trace           # Chrome trace of the last run in target/perf/traces/
+pnpm perf -- --only typing --profile --unminified   # CPU profile and top functions
+```
+
+Other options: `--warmup <n>` (default 1), `--headed`, `--no-build` (reuse the last build), `--channel <browser>` (default `chromium`, or `OPENIDEA_PERF_CHANNEL`), `--fail-on-regression`.
+
+Scenarios (`perf/scenarios.ts`): `typing`, `typingLarge`, `typingAngular`, `completion`, `consoleOutput`, `terminalTui`, `keyRepeat`, `scroll`, `gitLog`, `gitLogScrollbar`, `resizePanels`, `startup`, `tabs`, `agentTabs`, `popups`, `toolWindows`, `projectTree`, `leaks`. Bundle size (`bundle.initialJsKb`, `bundle.initialCssKb`) is checked on every run.
+
+Latencies are measured from input to the start of the first frame that shows the result, so about 16.7 ms means "next frame".
+
+<Note>
+  This runs in Chromium, while the desktop app runs in the system webview (WebKit on macOS and Linux, WebView2 on
+  Windows). It catches regressions in the frontend's own work reliably; absolute numbers in the app can differ.
+</Note>
+
+### Adding a scenario
+
+A scenario in `perf/scenarios.ts` has an `id`, a `title` and a `run(h)` that drives the page through the harness (`perf/lib/harness.ts`: open files, set the cursor, type and measure, read editor state) and returns metrics. Add a budget for each metric you want enforced as `"<scenario>.<metric>"` in `budgets.json`.
+
+## Backend: `pnpm perf:rust`
+
+`perf/rust.ts` runs `cargo bench` for `ide-text`, `ide-language`, `ide-index`, `ide-search` and `ide-host`, reads the Criterion results from `target/criterion`, and checks each bench's mean (in µs).
+
+```sh
+pnpm perf:rust                               # run the benches, then check
+pnpm perf:rust -- --no-run                   # only check the latest Criterion results
+pnpm perf:rust -- --package ide-text --save-baseline
+```
+
+The benches live in `crates/<crate>/benches/`:
+
+| Bench group    | Crate          | Covers                                                                                             |
+| -------------- | -------------- | -------------------------------------------------------------------------------------------------- |
+| `text/…`       | `ide-text`     | opening 1 MB, applying keystrokes and change batches, diffs, coordinate conversion, save with CRLF |
+| `syntax_2mb/…` | `ide-language` | selection, outline and folding on a cached tree and after an incremental keystroke                 |
+| `index_100k/…` | `ide-index`    | file, directory and symbol queries on a 100k-file index                                            |
+| `search_5k/…`  | `ide-search`   | literal, regex and dense-match search over 5k files                                                |
+| `plugins/…`    | `ide-host`     | loading 50 plugins, cold activation, syntax highlights of a 2k-line file                           |
+
+## Budgets and baselines
+
+[`perf/budgets.json`](https://github.com/l0ng-ai/openidea/blob/main/perf/budgets.json) holds upper bounds (lower is better):
+
+- `ui`: `<scenario>.<metric>` → bound, compared with the median of the measured runs; enforced at CPU 1x only;
+- `rust`: Criterion bench id → mean in microseconds;
+- `regressionTolerance` (0.2) and `regressionFloor` (1): how much worse than the baseline a metric may get, relative and absolute, before it counts as regressed.
+
+Each metric gets a verdict:
+
+| Verdict     | When                                                            | Fails the run                    |
+| ----------- | --------------------------------------------------------------- | -------------------------------- |
+| over budget | above its budget                                                | yes                              |
+| regressed   | more than 20% and more than the floor above your saved baseline | only with `--fail-on-regression` |
+| improved    | more than 20% and more than the floor below the baseline        | no                               |
+
+Baselines are local (`target/perf/`), so save one on your machine before you start changing things, and compare on the same machine.
+
+## Comparing with other IDEs: `perf/compare`
+
+`pnpm perf` measures OpenIDEA from inside its webview. `perf/compare/bench.py` measures any IDE from the outside, the same way for each, so OpenIDEA can be compared with the other apps listed in `perf/compare/apps.toml`:
+
+```sh
+pip install -r perf/compare/requirements.txt
+python perf/compare/bench.py ~/src/some-project --runs 10
+python perf/compare/bench.py ~/src/some-project --runs 5 --wipe-caches   # cold index
+```
+
+Each run launches the app on the project, waits until it is ready (the process tree's CPU stays low after the window and the log markers appear), idles, closes it, and records time to window and to ready, peak and idle memory summed over every process the app started (webview, language servers, JVMs), CPU time, exit time and cache size. Apps run interleaved after warmup runs; output goes to `results/<time>-<project>/` (`report.md`, `results.json`).
+
+Use release builds only; the script refuses to run while another instance of the same executable is running. See [`perf/compare/README.md`](https://github.com/l0ng-ai/openidea/blob/main/perf/compare/README.md) for fair-run rules and platform notes.

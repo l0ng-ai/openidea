@@ -1,0 +1,202 @@
+---
+title: "语言支持总览"
+description: "OpenIDEA 支持哪些语言、各语言使用哪个语言服务器和调试器，以及它们如何安装。"
+---
+
+OpenIDEA 用一个小的定义文件 `languages/<id>.toml` 描述每种语言：哪些文件属于这种语言、怎么高亮，以及由哪个语言服务器和调试适配器提供代码智能和调试。语言服务器提供的能力（补全、导航、诊断、重构）对所有语言都通过同一套编辑器功能呈现。
+
+## 语言支持的工作方式
+
+打开文件时，IDE 按以下顺序判断它属于哪种语言：
+
+1. 单个文件的 **覆盖文件类型**（在项目树中文件的右键菜单或编辑器标签页的右键菜单里）。
+2. 精确文件名（`Dockerfile`、`go.mod`）或文件名模式。
+3. 扩展名，优先匹配最长的（`.html.erb` 先于 `.erb`）。
+4. 文件第一行：例如 `#!/usr/bin/env python3` 这样的 shebang，或 `<?php` 这类模式。
+5. 都不匹配时按纯文本处理。
+
+在 **设置 › 编辑器 › 文件类型**（**已识别的文件类型**）中可以为某种语言添加或移除文件名模式。
+
+识别出语言后，支持分为几层：
+
+- **高亮** 即时生效：来自编辑器里的 CodeMirror 模式；语言没有对应模式时，改用内置的 tree-sitter 语法。
+- **结构**（大纲、折叠、项目索引中的符号）来自内置的 tree-sitter 语法，无需任何配置。
+- **代码智能** 来自一个或多个语言服务器（LSP）。打开文件时 IDE 启动它们，并把最近的、包含该服务器根标记（`Cargo.toml`、`package.json`、`pom.xml` 等）的目录作为工作区根目录。
+- **调试** 来自调试适配器（DAP）。
+
+<Note>语言服务器和调试适配器会运行你机器上的程序，所以只在你信任的项目中启动。</Note>
+
+### 一种语言多个服务器
+
+一种语言可以配置多个服务器：
+
+- **备选**（下表中写作 `a → b`）：只运行第一个已安装的。例如 Python 默认用 basedpyright，只有它缺失时才退回 pyright、ty 或 pyrefly。在 **设置 › 语言和框架 › 语言服务器** 中可以指定其中一个，或选 **自动**（使用第一个可用的）。
+- **附加**（写作 `+ b`）：和主服务器同时运行，通常只在用到它的项目中启用。带 Ruff 配置的项目里 Ruff 与 basedpyright 一起运行；带 oxlint 配置的项目里 oxlint 与 vtsls 一起运行；Angular 和 Laravel 项目里分别加上 Angular 和 Laravel 的服务器。
+
+## 安装语言服务器和调试器
+
+OpenIDEA 不内置语言服务器。打开一个文件而它的服务器缺失时，会弹出通知提示该服务器未安装，并提供 **安装** 按钮；安装完成后会重新启动这种语言的代码洞察。也可以在一个页面里统一管理所有工具：
+
+<Steps>
+  <Step title="打开语言服务器页面">
+    打开 **设置 › 语言和框架 › 语言服务器**（`⌘,` / `Ctrl+Alt+S` 后搜索"语言服务器"），或者在 **查找操作…**（`⌘⇧A` /
+    `Ctrl+Shift+A`）中运行 **语言服务器…**。
+  </Step>
+  <Step title="找到工具">
+    按工具或语言过滤。每一项都会显示它是由 IDE 安装的、在 `PATH` 上找到的、指定了自定义可执行文件，还是缺失。
+  </Step>
+  <Step title="安装，或指向自己的版本">
+    点击 **安装**（或 **重新安装**）让 IDE 安装；也可以把 **可执行文件** 设为你自己安装的程序。
+  </Step>
+</Steps>
+
+IDE 安装工具从不需要 `sudo`。工具装在本地数据目录下 IDE 自己的工具文件夹里（见 [数据目录与日志](/zh/reference/data-directories)），按工具选用合适的安装方式：
+
+| 方式                   | 适用于                                                                                                                                                                                |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| npm                    | 基于 Node 的服务器，如 vtsls、Pyright、Intelephense，以及 Vue、Svelte、Astro、Angular、CSS、HTML、JSON、YAML、Bash、Dockerfile 的服务器。需要 Node.js。                               |
+| pip 安装到私有虚拟环境 | basedpyright、ty、pyrefly、Ruff（有 `uv` 时用 `uv`）。                                                                                                                                |
+| pip 安装到私有目录     | debugpy。                                                                                                                                                                             |
+| `go install`           | gopls、Delve、sqls。需要 Go。                                                                                                                                                         |
+| `rustup component add` | rust-analyzer（不可用时改为从 Open VSX 下载）。                                                                                                                                       |
+| `gem install`          | Solargraph 装到独立的 gem 目录；Ruby LSP 装到项目使用的 Ruby 中。                                                                                                                     |
+| `dotnet tool install`  | csharp-ls、FsAutoComplete。需要 .NET SDK。                                                                                                                                            |
+| 下载发布包             | clangd、CodeLLDB、vscode-js-debug、JDT LS、java-debug、Kotlin LSP、Lua、Marksman、Taplo、ZLS、terraform-ls 等，来源包括 GitHub、Open VSX、Maven Central、Eclipse 下载站和 HashiCorp。 |
+| 内置                   | JDT LS 使用的 Lombok agent 随应用一起提供。                                                                                                                                           |
+
+查找服务器时，IDE 先看设置中指定的可执行文件，再看自己的工具文件夹，最后看 `PATH`。IDE 无法安装的服务器（例如随 Swift 工具链提供的 sourcekit-lsp，或 Godot 编辑器自带的服务器）会显示安装提示。
+
+<Tip>
+  下载 GitHub release 时，如果有 `GITHUB_TOKEN`、`GH_TOKEN` 或 `gh` 登录信息，IDE 会使用它们，避免匿名 API 的频率限制。
+</Tip>
+
+### 配置服务器
+
+在语言服务器页面选中一个语言服务器即可看到它的设置，这些设置保存在 `languageServers.<name>` 下（全局或项目级）：
+
+- 关闭该服务器，或在多个备选中选择运行哪一个；
+- **可执行文件**：要启动的程序；
+- **启动**：**实参**、**环境变量** 和 **初始化选项**（修改后会重启服务器）；
+- **工作区配置**：用于响应服务器的 `workspace/configuration` 请求，修改后无需重启即可生效。
+
+**添加语言服务器…** 用来注册任何定义里都没有的服务器：填写它的命令、服务的语言和根标记即可。
+
+## 支持矩阵
+
+下表列出全部内置语言定义。**加粗** 的服务器和调试器可以在 IDE 中一键安装，其余需要自行安装（IDE 中的安装提示会说明方法）。"高亮"和"Tree-sitter"两列分别表示是否有即时高亮，以及是否有用于大纲和折叠的内置语法。
+
+| 语言                | ID                 | 文件                                                        | 高亮 | Tree-sitter | 语言服务器                                                                            | 调试器                   |
+| ------------------- | ------------------ | ----------------------------------------------------------- | ---- | ----------- | ------------------------------------------------------------------------------------- | ------------------------ |
+| .env                | `dotenv`           | `.env`                                                      | 是   | —           | —                                                                                     | —                        |
+| Arduino             | `arduino`          | `.ino`                                                      | 是   | 是          | arduino-language-server                                                               | —                        |
+| AsciiDoc            | `asciidoc`         | `.adoc`, `.asciidoc`                                        | 是   | —           | —                                                                                     | —                        |
+| Astro               | `astro`            | `.astro`                                                    | 是   | —           | **astro-ls** + **oxlint**                                                             | —                        |
+| Batch               | `bat`              | `.bat`, `.cmd`                                              | 是   | —           | —                                                                                     | —                        |
+| C                   | `c`                | `.c`, `.h`                                                  | 是   | 是          | **clangd**                                                                            | lldb-dap                 |
+| C#                  | `csharp`           | `.cs`, `.csx`                                               | 是   | 是          | **csharp-ls**                                                                         | **netcoredbg**           |
+| C++                 | `cpp`              | `.cpp`, `.cc`, `.cxx`, `.c++`, `.hpp`, …                    | 是   | 是          | **clangd**                                                                            | lldb-dap                 |
+| Clojure             | `clojure`          | `.clj`, `.cljs`, `.cljc`, `.cljd`, `.edn`, …                | 是   | —           | **clojure-lsp**                                                                       | —                        |
+| CMake               | `cmake`            | `.cmake`                                                    | 是   | 是          | **neocmakelsp** → cmake-language-server                                               | —                        |
+| CSS                 | `css`              | `.css`, `.pcss`, `.postcss`                                 | 是   | 是          | **vscode-css-language-server**                                                        | —                        |
+| D                   | `d`                | `.d`, `.di`                                                 | 是   | —           | serve-d                                                                               | —                        |
+| Dart                | `dart`             | `.dart`                                                     | 是   | 是          | dart                                                                                  | dart                     |
+| Diff                | `diff`             | `.diff`, `.patch`, `.rej`                                   | 是   | —           | —                                                                                     | —                        |
+| Dockerfile          | `dockerfile`       | `.dockerfile`, `.containerfile`                             | 是   | —           | **dockerfile-language-server**                                                        | —                        |
+| Elixir              | `elixir`           | `.ex`, `.exs`                                               | 是   | 是          | **elixir-ls**                                                                         | **elixir-ls-debugger**   |
+| ERB                 | `erb`              | `.erb`, `.html.erb`, `.rhtml`, `.js.erb`, `.text.erb`, …    | 是   | —           | —                                                                                     | —                        |
+| Erlang              | `erlang`           | `.erl`, `.hrl`, `.escript`, `.app.src`                      | 是   | —           | elp                                                                                   | —                        |
+| F#                  | `fsharp`           | `.fs`, `.fsi`, `.fsx`                                       | 是   | —           | **fsautocomplete**                                                                    | **netcoredbg**           |
+| GDScript            | `gdscript`         | `.gd`                                                       | 是   | 是          | godot                                                                                 | godot                    |
+| Git Attributes      | `gitattributes`    | `.gitattributes`                                            | —    | —           | —                                                                                     | —                        |
+| Go                  | `go`               | `.go`                                                       | 是   | 是          | **gopls**                                                                             | **delve**                |
+| Go Module           | `go.mod`           | `go.mod`                                                    | 是   | —           | **gopls**                                                                             | —                        |
+| Go Workspace        | `go.work`          | `go.work`                                                   | 是   | —           | **gopls**                                                                             | —                        |
+| Godot Resource      | `godot-resource`   | `.tscn`, `.tres`, `.godot`, `.import`                       | 是   | —           | —                                                                                     | —                        |
+| Godot Shader        | `gdshader`         | `.gdshader`, `.gdshaderinc`                                 | 是   | —           | —                                                                                     | —                        |
+| GraphQL             | `graphql`          | `.graphql`, `.graphqls`, `.gql`                             | 是   | 是          | **graphql-lsp**                                                                       | —                        |
+| Groovy              | `groovy`           | `.groovy`, `.gradle`, `.gvy`, `.gy`, `.gsh`                 | 是   | —           | groovy-language-server                                                                | —                        |
+| Haskell             | `haskell`          | `.hs`, `.hs-boot`, `.hsig`                                  | 是   | 是          | haskell-language-server                                                               | —                        |
+| HCL                 | `hcl`              | `.hcl`, `.nomad`, `.pkr.hcl`                                | 是   | 是          | —                                                                                     | —                        |
+| HTML                | `html`             | `.html`, `.htm`, `.xhtml`, `.shtml`, `.html.tmpl`           | 是   | 是          | **vscode-html-language-server** + **angular-language-server**                         | —                        |
+| HTTP Request        | `http`             | `.http`, `.rest`                                            | 是   | —           | —                                                                                     | —                        |
+| Ignore File         | `ignore`           | `.gitignore`, `.dockerignore`                               | —    | —           | —                                                                                     | —                        |
+| INI                 | `ini`              | `.ini`, `.cfg`, `.conf`, `.cnf`, `.inf`, …                  | 是   | —           | —                                                                                     | —                        |
+| Java                | `java`             | `.java`                                                     | 是   | 是          | **jdtls** → **kmp-lsp**                                                               | **java-debug**           |
+| JavaScript          | `javascript`       | `.js`, `.mjs`, `.cjs`                                       | 是   | 是          | **vtsls** → **typescript-language-server** + **oxlint**                               | **js-debug**             |
+| JavaScript JSX      | `javascriptreact`  | `.jsx`                                                      | 是   | 是          | **vtsls** → **typescript-language-server** + **oxlint**                               | **js-debug**             |
+| JSON                | `json`             | `.json`, `.geojson`, `.topojson`, `.webmanifest`, `.har`, … | 是   | 是          | **vscode-json-language-server**                                                       | —                        |
+| JSON with Comments  | `jsonc`            | `.jsonc`, `.code-workspace`, `.code-snippets`               | 是   | 是          | **vscode-json-language-server**                                                       | —                        |
+| JSP                 | `jsp`              | `.jsp`, `.jspx`, `.jspf`, `.jsph`, `.tag`, …                | 是   | —           | —                                                                                     | —                        |
+| Julia               | `julia`            | `.jl`                                                       | 是   | —           | julia-languageserver                                                                  | —                        |
+| Kotlin              | `kotlin`           | `.kt`, `.kts`                                               | 是   | 是          | **kotlin-lsp** → **kotlin-language-server**                                           | **kotlin-debug-adapter** |
+| LaTeX               | `latex`            | `.tex`, `.ltx`, `.sty`, `.cls`, `.dtx`, …                   | 是   | —           | **texlab**                                                                            | —                        |
+| Less                | `less`             | `.less`                                                     | 是   | —           | **vscode-css-language-server**                                                        | —                        |
+| Log                 | `log`              | `.log`                                                      | 是   | —           | —                                                                                     | —                        |
+| Lua                 | `lua`              | `.lua`, `.luau`, `.rockspec`                                | 是   | 是          | **lua-language-server**                                                               | —                        |
+| Makefile            | `makefile`         | `.mk`, `.mak`, `.make`                                      | 是   | 是          | —                                                                                     | —                        |
+| Markdown            | `markdown`         | `.md`, `.markdown`, `.mdown`, `.mkd`, `.mkdn`, …            | 是   | 是          | **marksman**                                                                          | —                        |
+| Nix                 | `nix`              | `.nix`                                                      | 是   | 是          | nil → nixd                                                                            | —                        |
+| Objective-C         | `objective-c`      | `.m`                                                        | 是   | —           | **clangd**                                                                            | lldb-dap                 |
+| Objective-C++       | `objective-cpp`    | `.mm`                                                       | 是   | —           | **clangd**                                                                            | lldb-dap                 |
+| OCaml               | `ocaml`            | `.ml`, `.mll`, `.mly`                                       | 是   | 是          | ocamllsp                                                                              | ocamlearlybird           |
+| OCaml Interface     | `ocaml.interface`  | `.mli`                                                      | 是   | 是          | ocamllsp                                                                              | —                        |
+| Perl                | `perl`             | `.pl`, `.pm`, `.pod`, `.psgi`, `.cgi`                       | 是   | —           | **perlnavigator**                                                                     | —                        |
+| PHP                 | `php`              | `.php`, `.phtml`, `.php3`, `.php4`, `.php5`, …              | 是   | 是          | **intelephense** → phpactor + **laravel-lsp**                                         | **php-debug**            |
+| Plain Text          | `plaintext`        | `.txt`, `.text`                                             | —    | —           | —                                                                                     | —                        |
+| PowerShell          | `powershell`       | `.ps1`, `.psm1`, `.psd1`, `.pssc`, `.psrc`                  | 是   | —           | powershell-editor-services                                                            | —                        |
+| Properties          | `properties`       | `.properties`, `.prefs`                                     | 是   | —           | —                                                                                     | —                        |
+| Protocol Buffers    | `proto`            | `.proto`                                                    | 是   | 是          | **buf**                                                                               | —                        |
+| Python              | `python`           | `.py`, `.pyi`, `.pyw`                                       | 是   | 是          | **basedpyright** → **pyright** → **ty** → **pyrefly** + **ruff**                      | **debugpy**              |
+| R                   | `r`                | `.r`, `.rprofile`                                           | 是   | —           | r-languageserver                                                                      | —                        |
+| reStructuredText    | `restructuredtext` | `.rst`                                                      | 是   | —           | —                                                                                     | —                        |
+| Ruby                | `ruby`             | `.rb`, `.rake`, `.gemspec`, `.ru`, `.rbi`, …                | 是   | 是          | **ruby-lsp** → **solargraph**                                                         | rdbg                     |
+| Rust                | `rust`             | `.rs`                                                       | 是   | 是          | **rust-analyzer**                                                                     | **codelldb**             |
+| Sass                | `sass`             | `.sass`                                                     | 是   | —           | —                                                                                     | —                        |
+| Scala               | `scala`            | `.scala`, `.sc`, `.sbt`, `.mill`                            | 是   | 是          | metals                                                                                | —                        |
+| SCSS                | `scss`             | `.scss`                                                     | 是   | —           | **vscode-css-language-server**                                                        | —                        |
+| Shell Script        | `shellscript`      | `.sh`, `.bash`, `.zsh`, `.ksh`, `.ash`, …                   | 是   | 是          | **bash-language-server**                                                              | **bash-debug**           |
+| SQL                 | `sql`              | `.sql`, `.ddl`, `.dml`, `.psql`, `.pgsql`, …                | 是   | —           | **sqls**                                                                              | —                        |
+| Svelte              | `svelte`           | `.svelte`                                                   | 是   | —           | **svelte-language-server** + **oxlint**                                               | —                        |
+| Swift               | `swift`            | `.swift`, `.swiftinterface`                                 | 是   | 是          | sourcekit-lsp                                                                         | lldb-dap                 |
+| Terraform           | `terraform`        | `.tf`, `.tofu`, `.tftest.hcl`                               | 是   | 是          | **terraform-ls**                                                                      | —                        |
+| Terraform Variables | `terraform-vars`   | `.tfvars`                                                   | 是   | 是          | **terraform-ls**                                                                      | —                        |
+| TOML                | `toml`             | `.toml`                                                     | 是   | 是          | **taplo**                                                                             | —                        |
+| TypeScript          | `typescript`       | `.ts`, `.mts`, `.cts`                                       | 是   | 是          | **vtsls** → **typescript-language-server** + **angular-language-server** + **oxlint** | **js-debug**             |
+| TypeScript JSX      | `typescriptreact`  | `.tsx`                                                      | 是   | 是          | **vtsls** → **typescript-language-server** + **oxlint**                               | **js-debug**             |
+| Vue                 | `vue`              | `.vue`                                                      | 是   | —           | **vue-language-server**, **vtsls** + **oxlint**                                       | —                        |
+| XML                 | `xml`              | `.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`, …                  | 是   | 是          | **lemminx**                                                                           | —                        |
+| YAML                | `yaml`             | `.yaml`, `.yml`                                             | 是   | 是          | **yaml-language-server**                                                              | —                        |
+| Zig                 | `zig`              | `.zig`, `.zon`                                              | 是   | 是          | **zls**                                                                               | **codelldb**             |
+
+说明：
+
+- **C、C++、Objective-C、Swift**：`lldb-dap` 随 LLVM 或 Xcode 提供。C 和 C++ 也可以用 **CodeLLDB** 或 GDB 14 及以上版本调试，见 [C 与 C++](/zh/languages/cpp)。
+- **Ruby**：`rdbg` 来自 `debug` gem。
+- **GDScript**：语言服务器和调试器就是 Godot 编辑器本身，见 [Godot](/zh/languages/godot)。
+- **Arduino**：需要 Arduino IDE 2（包含 Arduino Language Server、Arduino CLI 和 clangd）。
+- **Vue**：Vue 服务器和 vtsls 同时运行，TypeScript 部分由 vtsls 处理。
+
+## 运行、测试与调试
+
+运行配置根据项目中的构建文件自动检测。下表列出各生态会检测出哪些配置，用法见 [运行配置](/zh/guide/run)、[测试](/zh/guide/testing) 和 [调试](/zh/guide/debugging)。
+
+| 生态                    | 检测依据                                                                  | 配置                                                                       |
+| ----------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| JavaScript / TypeScript | `package.json`、`deno.json`                                               | package 脚本（npm、pnpm、Yarn、Bun）、Deno 任务                            |
+| Rust                    | `Cargo.toml`                                                              | `cargo build`、`cargo run`、`cargo test`                                   |
+| Go                      | `go.mod`                                                                  | Go Build、Go Test                                                          |
+| Java / Kotlin           | `pom.xml`、Gradle 构建文件                                                | Maven 目标、Gradle 任务、Application、JAR Application、Spring Boot、Tomcat |
+| Python                  | `pyproject.toml`、`setup.py`、`requirements.txt`、`manage.py`、`.venv` 等 | `python -m <package>`、pytest、Django `runserver` 和测试                   |
+| PHP                     | `composer.json`、`phpunit.xml`                                            | Composer 脚本、PHPUnit 或 Pest、Laravel `artisan serve`                    |
+| Ruby                    | `Gemfile`、`Rakefile`、`*.gemspec`、`config.ru`                           | Rails server、Rake 任务、RSpec、Minitest                                   |
+| C / C++                 | `CMakeLists.txt`                                                          | CMake 目标                                                                 |
+| C#                      | `.sln`、`.slnx`、`.csproj`                                                | .NET Project、`dotnet test`                                                |
+| GDScript                | `project.godot`                                                           | Godot                                                                      |
+| 任意                    | `justfile`、`Makefile`                                                    | just 配方、Make 目标                                                       |
+
+TypeScript、Python、Rust、Go、Java、Kotlin 和 PHP 的运行、测试（含测试树和 **重新运行失败的测试**）与调试，都在示例项目上做了端到端测试；C 和 C++ 也测试了调试。这几种语言（TypeScript、Python、Rust、Go、Java、Kotlin、PHP）的代码智能都用真实的语言服务器做了测试。
+
+## 修改或添加语言
+
+- 要修改内置定义，在配置目录的 `languages` 文件夹里放一个 `id` 相同的文件，下次启动时它会替换内置定义。格式见 [添加新语言](/zh/languages/adding)。
+- 插件也可以添加语言，并带上自己的服务器和调试器，见 [语言功能](/zh/plugins/guides/language-features)。

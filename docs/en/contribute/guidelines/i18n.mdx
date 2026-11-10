@@ -1,0 +1,79 @@
+---
+title: "Localization"
+description: "How user-visible text is translated: the source-text catalog, keyed message catalogs, the required English and Chinese entries, and the tests that enforce them."
+---
+
+Every user-visible string goes through a catalog. English and Simplified Chinese are required for every new string; other locales (`es`, `fr`, `ko`, `pl`, `pt`) may lack entries, and their UI shows the English text until a translator adds it.
+
+## Two catalogs
+
+| Catalog                                  | Files                                     | Keys                                            | Used through                                |
+| ---------------------------------------- | ----------------------------------------- | ----------------------------------------------- | ------------------------------------------- |
+| **Source text** (most UI text)           | `src/platform/locales/text/<locale>.json` | The English text itself                         | `tx("…")`, `useTx()`, and the UI primitives |
+| **Messages** (menus, app-level messages) | `src/platform/locales/<locale>.json`      | Namespaced keys: `menu.*`, `app.*`, `common.*`… | `t("key", params)`, `useT()`                |
+
+### Source text
+
+Most text is written in English at the call site. The UI primitives (labels, buttons, menus, dialogs, tooltips) pass the strings they are given through the source-text catalog, so this is translated automatically:
+
+```tsx
+<Button>Retry Loading Conversation</Button>;
+registerAction({ id: "project.trust", title: "Trust Project", category: "Project", run });
+notifications().notify({ title: "Plugin update available", body: names });
+```
+
+The text catalog test treats a string as translatable when it reaches the translation layer directly: the argument of `tx` / `txTemplate`, the text children of `T`, `Button` and `Dialog`, and props or object keys such as `label`, `title`, `description`, `tooltip`, `placeholder`, `message`, `hint`, `aria-label`.
+
+Text built at runtime uses the `tx` tag, which looks up a template with named placeholders:
+
+```ts
+tx`Cannot open ${path}`; // looks up "Cannot open {path}"
+```
+
+```json src/platform/locales/text/zh.json
+"Cannot open {path}": "无法打开 {path}"
+```
+
+Action titles and categories are translated the same way (an `action.<id>` message key, if present, takes precedence). The English title stays searchable in Find Action.
+
+### Messages
+
+Keyed messages use an ICU-lite syntax:
+
+```ts
+t("app.unsaved.body", { count: 3, project: "openidea" });
+```
+
+- `{name}` parameters (numbers are locale-formatted);
+- `{n, plural, =0 {none} one {# file} other {# files}}`;
+- `{g, select, a {…} other {…}}`;
+- `{n, number}`.
+
+English (`en.json`) is bundled and is the fallback for missing keys; other locales load lazily.
+
+## Rules
+
+- **Add every new string to both `en` and `zh`.** For source text, that is `text/en.json` (the English text mapped to itself) and `text/zh.json`. For a message key, `en.json` and `zh.json`.
+- **Rewording a string drops its translation.** Source-text keys are the English text, so if you change the wording at the call site, update the catalog entries too.
+- **Remove entries you orphan.** The test fails on catalog entries whose text no longer appears anywhere in `src/`, the Rust crates or `languages/`.
+- **Translate whole sentences.** Don't splice English words into translated text (`${kind.toLowerCase()}`, `${n === 1 ? "" : "s"}`); write one text per variant, or use a plural message.
+- **No untagged template literals** in an exact lookup: `` `Cannot open ${path}` `` can never be translated. Use the `tx` tag.
+- **Backend text** (error messages and the like) counts as used as long as the literal appears in the source; add its translation like any other text.
+- **Chinese terminology:** follow the existing entries in `text/zh.json` and `zh.json` for the same concepts, so one English term doesn't get two translations.
+
+## Tests
+
+| Test                                        | Fails when                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/platform/locales/textCatalog.test.ts`  | A literal UI text has no Chinese entry (`zh` is a complete locale); a catalog has entries whose text no longer appears in the source; two template entries differ only in placeholder names; a template literal reaches an exact lookup; built text splices words; a literal key passed to `t` is missing from `en.json`. |
+| `src/platform/locales/actionTitles.test.ts` | A literal action title, including arguments of action factory functions, has no Chinese entry.                                                                                                                                                                                                                            |
+
+Run them on their own while iterating:
+
+```sh
+pnpm vitest run src/platform/locales
+```
+
+## Plugins
+
+Plugins ship their own translations in the package; that mechanism is documented for plugin authors in `plugins/README.md` (_Translations_). The rules on this page apply to the IDE's own UI.

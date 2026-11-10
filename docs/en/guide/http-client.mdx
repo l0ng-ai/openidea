@@ -1,0 +1,138 @@
+---
+title: "HTTP Client"
+description: "Write HTTP requests in .http files, run them from the editor, and inspect responses."
+---
+
+The HTTP client runs requests written in `.http` and `.rest` files, in the same format as the IntelliJ IDEA HTTP client. Responses show in the **Services** tool window under the **HTTP Client** tab.
+
+## Create a request file
+
+- **Tools › New HTTP Request** creates a scratch file `requests.http` (then `requests_2.http`, and so on) in the IDE's scratch folder.
+- In the Project tool window, **New › HTTP Request** creates a `.http` file in the selected folder.
+- Any file ending in `.http` or `.rest` works.
+
+## Syntax
+
+```http
+@host = localhost:8080
+
+### Get a user
+GET http://{{host}}/users/1
+Accept: application/json
+
+### Create a user
+# @name createUser
+POST http://{{host}}/users
+Content-Type: application/json
+
+{ "name": "Ada", "id": "{{$uuid}}" }
+
+### Upload from a file
+POST http://{{host}}/import
+Content-Type: application/json
+
+< ./payload.json
+```
+
+| Element       | Rules                                                                                                                                          |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Separator     | A line starting with `###`. Text after it names the request.                                                                                   |
+| Name          | `# @name createUser` or `// @name createUser` (overrides the separator text).                                                                  |
+| Comments      | Lines starting with `#` or `//` before the request line and among the headers. Lines in the body are sent as written.                          |
+| Request line  | `METHOD URL [HTTP/version]`, or just a URL for `GET`. Methods: `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, `OPTIONS`, `TRACE`, `CONNECT`. |
+| Long URLs     | Indented lines starting with `?`, `&` or `/` continue the URL.                                                                                 |
+| Relative URLs | `GET /path` needs a `Host:` header. A URL without a scheme gets `http://`.                                                                     |
+| Headers       | `Name: value` lines up to the first blank line.                                                                                                |
+| Body          | Everything after the blank line. `< ./file` inserts a file, relative to the `.http` file.                                                      |
+| Multipart     | With a `multipart/*` `Content-Type`, body lines are joined with CRLF. Write the boundaries yourself.                                           |
+
+## Variables
+
+Write `{{name}}` anywhere in the URL, headers or body. A name is looked up in this order:
+
+1. File variables: `@name = value` lines. They apply to the whole file; a later definition wins.
+2. The selected environment in `http-client.private.env.json`.
+3. The selected environment in `http-client.env.json`.
+4. `$shared` in the private file, then `$shared` in the public file.
+
+Variables can refer to other variables. A request with an unresolved variable is not sent; the error lists the missing names. Variables inside a file inserted with `<` are not substituted.
+
+Dynamic variables:
+
+| Variable                                | Value                                    |
+| --------------------------------------- | ---------------------------------------- |
+| `{{$uuid}}`, `{{$random.uuid}}`         | A random UUID                            |
+| `{{$timestamp}}`                        | Current Unix time in seconds             |
+| `{{$isoTimestamp}}`                     | Current UTC time, `YYYY-MM-DDTHH:MM:SSZ` |
+| `{{$randomInt}}`, `{{$random.integer}}` | A random integer from 0 to 999           |
+
+### Environments
+
+Put environments in `http-client.env.json`, and secrets in `http-client.private.env.json` (keep that one out of version control):
+
+```json http-client.env.json
+{
+  "$shared": { "version": "v1" },
+  "dev": { "host": "localhost:8080" },
+  "prod": { "host": "api.example.com" }
+}
+```
+
+OpenIDEA looks for each file in the request file's folder, then in each parent folder up to the project root, and uses the closest one. Files at different levels are not merged. Only string, number and boolean values are used.
+
+Pick the environment in the editor toolbar under **Run with:** (**No Environment** or one of the names). The choice is remembered per file. Click **Reload Environments** after editing the files.
+
+## Run requests
+
+| Action                        | macOS    | Windows/Linux |
+| ----------------------------- | -------- | ------------- |
+| Run HTTP Request at Caret     | `⌘Enter` | `Ctrl+Enter`  |
+| Run All HTTP Requests in File | none     | none          |
+
+You can also click the run icon in the gutter next to a request line. The editor toolbar has **Run All Requests in File**, **Stop** and **Run with:**.
+
+- The request at the caret is the block containing the caret, or the nearest one above it.
+- Unsaved edits are included.
+- Starting a new run cancels the one in progress.
+- **Run All** runs requests in order. It stops if a request can't be prepared (for example, an unresolved variable); network errors are recorded and the next request runs.
+
+## Responses
+
+The **HTTP Client** tab in the Services tool window lists past exchanges on the left, newest first, with status, method, name and time. For the selected one it shows:
+
+- The status, HTTP version, total time (hover for the time to headers) and size.
+- **Response**: the body. JSON, XML and HTML are pretty-printed; switch with **Show Raw** / **Show Formatted**. Binary bodies show their type and size only. Bodies over 16 MiB are cut off.
+- **Headers**: the response headers.
+- **Request**: the request as it was sent, after variable substitution.
+
+The toolbar has **Stop Request**, **Reload History** and **Clear History**. The history keeps the last 100 exchanges per project.
+
+## Connection behaviour
+
+- HTTP/1.1 and HTTP/2. gzip, deflate and brotli responses are decoded.
+- TLS certificates are verified against the system trust store.
+- Redirects are followed.
+- Cookies are not kept between requests.
+- Connections time out after 30 seconds; there is no overall request timeout.
+- The proxy comes from **Settings › Appearance & Behavior › System Settings › HTTP Proxy**.
+
+There is no separate HTTP client settings page.
+
+## Endpoints and Spring
+
+OpenIDEA indexes Spring Web endpoints (`@RestController` / `@Controller` classes with `@RequestMapping`, `@GetMapping` and similar) in Java and Kotlin:
+
+- A gutter icon on each mapping and controller. **Generate Request in HTTP Client** and **Generate Requests for Controller** (also in the editor context menu and as intentions) add requests to a scratch file `generated-requests.http` and open it.
+- Generated requests use `http://localhost:<server.port>` plus the context path from `application.properties` or `application.yml` (port 8080 by default). Path variables become `{{var}}`, and a JSON skeleton of the `@RequestBody` type is filled in.
+- Search Everywhere has an **Endpoints** tab.
+- In a `.http` file, URL completion after the method suggests known endpoints.
+
+Plugins can contribute endpoints of other frameworks; they get an **Open in HTTP Client** gutter icon.
+
+## Not supported
+
+- JavaScript response handlers (`> {% ... %}`, `> handler.js`) and pre-request scripts. Handler lines are recognized and skipped.
+- Saving responses with `>>` / `>>!`, and `<>` references to previous responses (skipped).
+- WebSocket, gRPC and GraphQL requests in `.http` files. GraphQL has its own support in `.graphql` files.
+- Per-request SSL options, client certificates, turning off redirects, and cookie jars.
+- Importing from or exporting to cURL.

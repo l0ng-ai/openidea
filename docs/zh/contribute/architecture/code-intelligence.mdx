@@ -1,0 +1,95 @@
+---
+title: "代码智能"
+description: "补全、导航等语言功能从哪里来：语言服务器、IDE 自己的索引、tree-sitter 语法和插件，以及它们的结果如何合并。"
+---
+
+OpenIDEA 的语言功能有四个来源，分层组织：任何时候都有可用的结果，而能回答时以最精确的来源为准。
+
+| 来源                  | Crate / 代码                                              | 提供                                                                                                    |
+| --------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| **语言服务器（LSP）** | `ide-lsp`、`ide-jsonrpc`、`ide-tools`（安装器）           | 语义功能：补全、跳转到定义、查找用法、悬停、诊断与快速修复、重命名、格式化、inlay hint、语义 token 等。 |
+| **IDE 自己的索引**    | `ide-index`                                               | 整个项目的文件和符号：Go to File / Class / Symbol 与 Search Everywhere，服务器就绪前也能用。            |
+| **tree-sitter 语法**  | `ide-language`、`ide-syntax`、`ide-analysis`、`ide-spell` | 大纲、折叠、对没有编辑器模式的语言做高亮、结构化兜底、重复代码与结构化搜索、拼写检查。                  |
+| **插件**              | `ide-host::plugins`                                       | 针对插件声明的语言提供：补全、代码操作、定义、行标记、悬停、inlay hint、语义 token、诊断、索引器。      |
+
+编辑器本身还有 CodeMirror 语言模式（语言定义中的 `ui-mode`），在后端返回之前就能立即高亮。
+
+## 语言定义
+
+每种语言是 `languages/` 下的一个 TOML 文件（构建时嵌入；用户也可以在自己的配置目录里添加）。它声明识别规则、注释符号、tree-sitter 语法、编辑器模式，以及要启动的语言服务器和调试器：
+
+```toml languages/rust.toml
+id = "rust"
+name = "Rust"
+extensions = ["rs"]
+line-comment = "//"
+block-comment = ["/*", "*/"]
+ui-mode = "Rust"
+tree-sitter = "rust"
+
+[[language-servers]]
+name = "rust-analyzer"
+command = "rust-analyzer"
+root-markers = ["Cargo.toml", "rust-project.json"]
+install-hint = "rustup component add rust-analyzer"
+
+[debugger]
+adapter = "codelldb"
+command = "codelldb"
+```
+
+一种语言可以列出多个 `[[language-servers]]`（比如 TypeScript 同时用 `vtsls` 和 `eslint`）。`ide-tools` 维护着按同一 `name` 索引的可安装服务器注册表，把它们装进应用托管的工具目录，不需要 `sudo`。
+
+## 语言服务器
+
+`ide-lsp` 是语言服务器管理器：
+
+- **懒启动。** 打开匹配语言的文档时，按 `(服务器名, 工作区根目录)` 启动服务器，根目录由 `root-markers` 决定。
+- **文档同步。** 后端持有每个打开文档的权威副本（`ide-text`）。编辑器发送带基线版本号的变更集，后端应用后再转发 `didChange`。过期的变更集以 `outOfSync` 拒绝，编辑器随即重新同步。
+- **只用 IDE 类型。** 所有请求都使用 IDE 坐标（UTF-16、从 0 开始），返回 `ide_lsp::types` 中的类型，从不暴露 `lsp-types`，无论服务器发来什么，IPC 接口都保持稳定。
+- **能力。** 服务器不支持的请求返回 `unavailable`，消息形如 “jdtls doesn't support inline completion”。编辑器按文档、按功能分别退避（`src/editor/lsp/availability.ts`），一个服务器缺某项能力不会连带关掉其他功能。
+- **信任。** 服务器只在受信任的项目里启动，因为它们会执行项目的构建脚本。
+
+单靠 LSP 不够的地方，IDE 会扩展它自带的服务器。Java 方面，JDT LS 会加载 `java/` 下应用自有的扩展包：`java-usages`（带读/写访问区分的语义用法、配置文件导航）、`kotlin-bridge`（把 Kotlin 库放到 Java classpath 上）以及打过补丁的 Lombok agent，由 `ide-sdk` / `ide-tools` 嵌入。`java-usages` 命令缺失或失败时，查找用法会退回到标准的 LSP references。
+
+## IDE 自己的索引
+
+`ide-index` 在后台为项目的文件及其符号建立索引。符号来自 tree-sitter 标签（`ide-language`），所以只要有内置语法的语言都能建索引，不依赖语言服务器。索引持久化在 redb 中，用 nucleo 做模糊匹配。
+
+索引从不阻塞：查询基于已经索引的部分立即应答，索引完成时 `IdeEvent::IndexState` 通知 UI（即 “dumb mode” 指示）。
+
+## tree-sitter 语法
+
+`ide-language` 内置 tree-sitter 语法，并为每个打开的文档维护一棵语法树：首次查询时懒解析，编辑后增量重解析，关闭时丢弃。在此之上：
+
+- 大纲（Structure）、折叠、符号标签，以及对没有 CodeMirror 模式的语言做高亮；
+- `ide-syntax`，即**结构服务**：节点与表达式查找、语法错误、作用域与局部变量、标识符出现位置、结构化范围。
+
+结构服务是**兜底**：只有在语言服务器不可用、未就绪或出错时，或者重构在无法解析的代码上返回空结果时，功能才会用它。它的回答纯粹基于语法，只声明确定的事情——不确定的情况会被标记出来（`certain: false`、`exact: false`、候选列表），而不是去猜。
+
+`ide-analysis`（Locate Duplicates、结构化搜索与替换）和 `ide-spell`（标识符、注释和字符串）也基于这些语法树工作。
+
+## 结果如何合并
+
+| 位置                                                   | 合并内容                                                                                                                                           |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide-lsp`                                              | 同一语言所有服务器的结果。位置按文件和起点去重；重命名的编辑合并成一个 workspace edit。                                                            |
+| `ide-host::ops::lsp`                                   | 插件 provider 的结果加到服务器结果上：插件补全项追加到服务器列表之后，插件给出的位置和高亮在不重复时加入。只有声明与文档语言匹配的插件才会被调用。 |
+| Search Everywhere（`src/features/search/everywhere/`） | IDE 索引里的符号与语言服务器的 workspace symbols，在 UI 中合并、排序。索引立即返回，服务器结果到达后再并入。                                       |
+| 编辑器导航（`src/editor/navigationProviders.ts`）      | 各功能贡献的可选异步 provider，按编辑器文本版本化，过期的回答会被丢弃。                                                                            |
+
+## 为什么是 LSP 而不是类 PSI 模型
+
+OpenIDEA 没有一个由 IDE 自己维护的统一代码语义模型（IntelliJ 称之为 PSI）。语义知识——类型、解析、引用——来自每种语言自己的服务器；IDE 自己的那几层（索引、tree-sitter 结构）都是语法层面的。
+
+这在实践中意味着：
+
+- **广度来自现成的服务器。** 支持一门语言，主要是写一份语言定义，再配上 IDE 能安装的服务器，而不是在 IDE 内部实现解析器和名称解析。
+- **深度受限于服务器。** 查找用法、重命名、重构、检查和快速修复的效果，取决于服务器对相应 LSP 请求的实现。服务器缺某个功能时，IDE 会如实返回 `unavailable`，不会编造结果。
+- **没有跨语言的语义模型。** 需要同时理解多种语言的重构，或者按解析后的类型做匹配的结构化搜索，在这套架构上做不到。[路线图](/zh/roadmap)说明了这一范围，各[语言页面](/zh/languages/index)列出了各自的限制。
+- **按语言补齐短板。** 当服务器可以扩展（如上面的 JDT LS 扩展包），或者有插件提供 provider 时，IDE 能在该语言上做得更深，而无需通用的语义模型。
+- **语法兜底很保守。** tree-sitter 这一层从不猜测语义，没把握的地方都会标出来。
+
+## 测试
+
+语言冒烟测试（`crates/ide-host/tests/language_smoke.rs`）针对每种语言的 `fixtures/` 项目、用真实的服务器跑一遍日常清单：补全、跳转到定义、查找用法、悬停、带快速修复的诊断、一个 intention、重命名、格式化、参数信息、Structure 视图、自动导入、Optimize Imports 和移动文件。见[冒烟测试](/zh/contribute/testing/smoke)。

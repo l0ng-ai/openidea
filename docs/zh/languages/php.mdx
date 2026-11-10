@@ -1,0 +1,88 @@
+---
+title: "PHP"
+description: "Intelephense、PHP 解释器与语言级别、Composer、PHPUnit 与 Pest、PHPStan、Xdebug 调试以及 Laravel 支持。"
+---
+
+OpenIDEA 开箱即可高亮 PHP 文件（`.php`、`.phtml`、`.phpt` 以及老式的 `.php3`–`.php5`，还有以 `<?php` 或 `php` shebang 开头的文件）。补全、跳转、重构和诊断由 Intelephense 提供。Composer 脚本和 PHPUnit/Pest 测试套件会被识别为运行配置，Xdebug 调试通过 PHP Debug 适配器进行。其他语言见[支持矩阵](/zh/languages/index)。
+
+## 语言服务器
+
+| 服务器         | 启用条件                                                                                                              |
+| -------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `intelephense` | 默认。工作区根：`composer.json`、`.phpactor.json` 或 `index.php`。                                                    |
+| `phpactor`     | 备选：仅在未安装 Intelephense 时使用。                                                                                |
+| `laravel-lsp`  | 仅限 Laravel 项目（`artisan` 文件所在目录之下）：在 `config('…')`、`route('…')`、`view('…')` 中提供悬停、跳转和补全。 |
+
+Intelephense 会按项目的 PHP 版本检查代码（见下文“语言级别”），并索引你配置的 stub 和包含路径。
+
+## 环境配置
+
+### 安装工具
+
+打开 `.php` 文件时如果缺少 Intelephense，IDE 会弹出通知并提供 **安装** 按钮，用 npm 把它装进 IDE 自己的工具目录（需要 `PATH` 上有 `npm` 或 `pnpm`）。所有工具也都列在 **设置 › 语言和框架 › 语言服务器** 中。
+
+| 工具               | 安装方式                                           |
+| ------------------ | -------------------------------------------------- |
+| Intelephense       | npm（`intelephense`）                              |
+| Laravel LSP        | GitHub release（`laravel/lsp`）                    |
+| PHP Debug (Xdebug) | Open VSX（`xdebug.php-debug`），运行时需要 Node.js |
+| phpactor           | IDE 不负责安装，请自行安装并放到 `PATH` 上         |
+
+### PHP 解释器
+
+**设置 › 语言和框架 › PHP** 的 **CLI 解释器** 部分：
+
+- **PHP 解释器**：运行脚本、PHPUnit、Composer、`artisan` 以及 phpactor 等基于 PHP 的服务器所用的 `php`。**默认** 表示使用 `PATH` 上的 `php`。所选解释器的目录会被放到 `PATH` 最前面，因此 `vendor/bin/phpunit` 等 `#!/usr/bin/env php` 脚本也会用同一个 PHP。列表包括 `PATH` 上的 PHP（含 `php8.3` 这类带版本号的可执行文件）、Homebrew、phpbrew、phpenv、Laravel Herd，Windows 上还有 XAMPP 和 Laragon。
+- **在目标中运行**：在本机，或在 **设置 › 构建、执行、部署 › 运行目标** 中的某个运行目标里执行 PHP 和 Composer 命令。
+- 页面会显示所选 PHP 的版本和已加载的 Xdebug 版本（未加载时显示 **未安装**）。
+
+### 语言级别
+
+同一页面的 **PHP 语言级别** 决定 Intelephense 按哪个 PHP 版本检查代码（5.6 到 8.5），使用了更新版本的语法或函数会被报告。**自动** 读取 `composer.json` 的 `config.platform.php`，没有时取 `require.php` 允许的最低版本。状态栏会显示当前语言级别，点击即可切换。
+
+该页面还有：
+
+- **包含路径**：项目之外、也需要 Intelephense 索引的目录，例如模块所扩展的平台代码。
+- **附加存根**：在默认 stub 之外额外加载的 Intelephense stub 集（例如 `wordpress`）。`composer.json` 的 `require` / `require-dev` 中每个 `ext-*` 会自动加入对应的 stub。
+
+### Composer
+
+Composer 项目没有 `vendor/`，或已安装的包与 `composer.lock` 不一致时，PHP 文件和 `composer.json` 顶部会出现 “未安装 Composer 依赖” 横幅，提供 **安装**（用所配置的 PHP 执行 `composer install`）和 **忽略**。
+
+## 静态分析与格式化
+
+- **PHPStan**：项目中有 `vendor/bin/phpstan` 时，保存的文件会交给它检查，结果显示为诊断。**PHPStan › 配置文件** 用于指定配置；留空则使用项目根目录下的 `phpstan.neon`、`phpstan.neon.dist` 或 `phpstan.dist.neon`。
+- **PHP-CS-Fixer**：当文件上层目录中有 `.php-cs-fixer.php` 或 `.php-cs-fixer.dist.php`，且项目有 `vendor/bin/php-cs-fixer` 时，**重新格式化代码**（`⌥⌘L` / `Ctrl+Alt+L`）改用 PHP-CS-Fixer，而不是语言服务器。
+
+## 运行与测试
+
+项目含 `composer.json` 或 PHPUnit 配置文件时，会自动检测：
+
+- `composer.json` 中每个脚本对应一个 `composer <script>` 配置（Composer 事件钩子除外）；名为 `test` 的脚本是测试配置。
+- 存在 `phpunit.xml`、`phpunit.xml.dist`、`phpunit.dist.xml`，依赖了 `phpunit/phpunit` 或 `pestphp/pest`，或 `vendor/bin` 中有对应运行器时，生成 **PHPUnit** 配置（存在 `vendor/bin/pest` 时为 **Pest**）。
+- Laravel 项目中的 `artisan serve`。
+
+PHPUnit 运行配置类型包含 **目标**、**配置文件**、**测试过滤器** 和 **PHPUnit 选项** 等字段。
+
+**运行上下文配置**（`⌃⇧R` / `Ctrl+Shift+F10`）对 `*Test.php` 文件走 PHPUnit 配置，对其他 PHP 文件用所选解释器直接运行。在 `*Test.php` 文件以及 `test/`、`tests/` 下的文件中，边栏图标可以单独运行某个测试类、测试方法或 Pest 测试。结果显示在测试树中，支持 **重新运行失败的测试**。详见[测试](/zh/guide/testing)。
+
+## 调试
+
+调试使用 PHP Debug（vscode-php-debug）配合 Xdebug。所选 PHP 必须已加载 Xdebug 扩展，PHP 设置页会显示是否已加载。
+
+- **调试** 适用于 PHP 文件、PHPUnit/Pest 和 `artisan serve`。IDE 通过 `-d` 选项为本次会话开启 Xdebug 并使用空闲端口，不需要改 `php.ini`，也不会与另一个监听 9003 端口的 IDE 冲突。
+- **PHP 远程调试 (Xdebug)** 是一种运行配置类型，用于监听外部的 Xdebug 连接（默认端口 9003），适合调试 php-fpm、容器等其他地方处理的请求。其 **远程端启动命令** 字段给出对应的 `php -dxdebug.mode=debug …` 命令；Web 请求可使用 `XDEBUG_SESSION` cookie 或查询参数。用 **本地根目录** 和 **远程根目录** 做路径映射。
+
+详见[调试](/zh/guide/debugging)。
+
+## 框架支持
+
+- **Laravel**：Laravel LSP 支持 `config()`、`route()`、`view()` 中的字符串，并提供 `artisan serve` 运行配置。
+- **WordPress** 等平台：在 **附加存根** 中加入对应 stub，在 **包含路径** 中加入平台代码目录。
+
+## 已知限制
+
+- 不支持 Blade 或 Twig 模板，只有 `.php` 文件有 PHP 代码智能。
+- IDE 不会安装 phpactor。
+- PHPUnit 不支持使用覆盖率运行。
+- 调试需要 PHP 已安装 Xdebug 扩展，IDE 不负责安装。
