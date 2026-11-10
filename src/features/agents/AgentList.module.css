@@ -226,7 +226,8 @@
 /* "Label: control" rows; a hint sits under its control. */
 .form {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  /* Wide enough for the longest label, so the sections' controls line up. */
+  grid-template-columns: minmax(150px, max-content) minmax(0, 1fr);
   align-items: center;
   column-gap: 10px;
   row-gap: 4px;
@@ -268,8 +269,14 @@
   min-width: 0;
 }
 .select {
-  width: 260px;
+  display: flex;
+  width: 280px;
   max-width: 100%;
+  min-width: 0;
+}
+/* Every select of a form is as wide as the others, as IDEA lays out combo boxes. */
+.select > button {
+  flex: 1;
   min-width: 0;
 }
 .launch {
