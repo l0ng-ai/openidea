@@ -542,6 +542,30 @@ fn project_write_stays_inside_the_project() {
     assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
 }
 
+#[cfg(unix)]
+#[test]
+fn project_writes_confine_symlink_targets() {
+    use std::os::unix::fs::symlink;
+    let f = fixture(Limits::default());
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-symlink-writer", "project.write"));
+    let outside = f._tmp.path().join("secret.txt");
+    let missing = f._tmp.path().join("missing.txt");
+    symlink(&outside, f.project.join("outside.txt")).unwrap();
+    symlink(&missing, f.project.join("dangling.txt")).unwrap();
+    for name in ["outside.txt", "dangling.txt"] {
+        let error = f.run("misbehave", "projwrite", Some(name)).unwrap_err();
+        assert!(error.contains("access outside the project root is not allowed"), "{error}");
+    }
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "top secret");
+    assert!(!missing.exists());
+    for (name, target) in [("inside.txt", "src/notes.txt"), ("new.txt", "new/deep.txt")] {
+        symlink(target, f.project.join(name)).unwrap();
+        f.run("misbehave", "projwrite", Some(name)).unwrap();
+        assert_eq!(std::fs::read_to_string(f.project.join(target)).unwrap(), "written inside the project\n");
+        assert!(std::fs::symlink_metadata(f.project.join(name)).unwrap().is_symlink());
+    }
+}
+
 /// `fs.write` replaces files the grant covers and nothing else, through the
 /// real component.
 #[test]
@@ -3694,31 +3718,6 @@ fn listing_while_projects_change_does_not_deadlock() {
     }
 }
 
-/// Excalidraw: a web custom editor beside the text editor, with its fonts,
-/// file icon, template and language — no code.
-#[test]
-fn official_excalidraw_installs_and_serves_its_page() {
-    let tmp = tempfile::tempdir().unwrap();
-    let pkg = with_stand_in_page(&official("excalidraw"), tmp.path());
-    let f = fixture(Limits::default());
-    let info = f.install(&pkg);
-    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
-    let page = f.host.web_page("openidea.excalidraw", "canvas").unwrap();
-    let (rev, entry) = page.path.strip_prefix("openidea.excalidraw/").unwrap().split_once('/').unwrap();
-    assert_eq!(entry, "web/index.html");
-    let html = f.host.web_file("openidea.excalidraw", &format!("{rev}/{entry}")).unwrap();
-    let html = String::from_utf8(html.bytes).unwrap();
-    // Relative URLs only: the page is served from the package.
-    let script = html.split("src=\"").nth(1).unwrap().split('"').next().unwrap();
-    assert!(script.starts_with("./assets/"), "{script}");
-    assert!(f.host.web_file("openidea.excalidraw", &format!("{rev}/web/{}", &script[2..])).is_ok());
-    let font = f.host.web_file("openidea.excalidraw", &format!("{rev}/web/fonts/Virgil/Virgil-Regular.woff2")).unwrap();
-    assert_eq!(font.mime, "font/woff2");
-    assert_eq!(f.host.ui_items("customEditors")[0].decl["layout"], "preview");
-    assert!(f.host.languages().iter().any(|l| l.id.as_str() == "excalidraw"));
-    assert_eq!(f.host.assets("openidea.excalidraw", "fileIcon/excalidraw/").unwrap().len(), 2);
-}
-
 /// A copy of the official plugin at `src` in `dir`, with a stand-in for its
 /// built page (`web/` is built by plugins/build.sh, not checked in; build.sh
 /// checks what the build produces): an entry loading a script and a font by
@@ -3760,7 +3759,18 @@ fn official_graphviz_turns_its_pages_reports_into_problems() {
     assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
     assert_eq!(f.host.ui_items("customEditors")[0].decl["layout"], "split");
     assert!(f.host.languages().iter().any(|l| l.id.as_str() == "dot"));
-    assert!(f.host.web_page("openidea.graphviz", "preview").is_ok());
+    assert_eq!(f.host.assets("openidea.graphviz", "fileIcon/graphviz/").unwrap().len(), 2);
+    let page = f.host.web_page("openidea.graphviz", "preview").unwrap();
+    let (rev, entry) = page.path.strip_prefix("openidea.graphviz/").unwrap().split_once('/').unwrap();
+    assert_eq!(entry, "web/index.html");
+    let html = f.host.web_file("openidea.graphviz", &format!("{rev}/{entry}")).unwrap();
+    let html = String::from_utf8(html.bytes).unwrap();
+    // Relative URLs only: the page is served from the package.
+    let script = html.split("src=\"").nth(1).unwrap().split('"').next().unwrap();
+    assert!(script.starts_with("./assets/"), "{script}");
+    assert!(f.host.web_file("openidea.graphviz", &format!("{rev}/web/{}", &script[2..])).is_ok());
+    let font = f.host.web_file("openidea.graphviz", &format!("{rev}/web/fonts/Virgil/Virgil-Regular.woff2")).unwrap();
+    assert_eq!(font.mime, "font/woff2");
 
     std::fs::write(f.project.join("flow.dot"), "digraph {\n  a -> \n}\n").unwrap();
     let editor = f.workspace.open("flow.dot", &[]);

@@ -203,8 +203,22 @@ pub fn apply_settings(host: &Host, window: &str, configs: Vec<RunConfig>) -> Ide
 }
 
 pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit<OutputChunk>) -> IdeResult<RunInfo> {
+    start_request(host, window, config, on_output, None).await
+}
+
+pub async fn start_request(
+    host: &Host,
+    window: &str,
+    config: RunConfig,
+    on_output: Emit<OutputChunk>,
+    request: Option<ide_core::RequestId>,
+) -> IdeResult<RunInfo> {
+    let cancel = request.map(|id| host.begin_request(id)).unwrap_or_default();
     let operation = config.extras.params.get("plugin.operation").cloned();
-    let result = start_inner(host, window, config, on_output).await;
+    let result = start_inner(host, window, config, on_output, &cancel).await;
+    if let Some(id) = request {
+        host.end_request(id);
+    }
     if let (Ok(info), Some(operation), Some(plugins)) = (&result, operation, host.plugin_host()) {
         plugins.run_operation_started(window, &operation, info.id);
     }
@@ -216,7 +230,11 @@ async fn start_inner(
     window: &str,
     mut config: RunConfig,
     on_output: Emit<OutputChunk>,
+    cancel: &ide_core::CancellationToken,
 ) -> IdeResult<RunInfo> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
     host.require_trust(window)?;
     let project = host.project(window)?;
     if config.extras.target.is_none() {
@@ -259,7 +277,23 @@ async fn start_inner(
                 host.plugin_host().ok_or_else(|| IdeError::not_found("plugin run target is no longer available"))?;
             let root = project.root.clone();
             let id = id.to_owned();
-            let config = host.blocking(move || plugins.prepare_run_target(&root, &id, &config)).await?;
+            let token = cancel.clone();
+            let config = host
+                .blocking(move || {
+                    let operation =
+                        if config.extras.params.get("plugin.targetOperation").is_some_and(|op| op == "debug") {
+                            ide_plugin::RunTargetOperation::Debug
+                        } else if config.is_test {
+                            ide_plugin::RunTargetOperation::Test
+                        } else {
+                            ide_plugin::RunTargetOperation::Run
+                        };
+                    plugins.prepare_run_target_launch(&root, &id, &config, operation, &token)
+                })
+                .await?;
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
             project.require_trust()?;
             return host.processes.start(
                 &project.root,

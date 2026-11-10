@@ -708,7 +708,7 @@ export const commands = {
 	runImportConfigs: (source: RunImportSource, existing: RunConfig_Deserialize[]) => typedError<RunImport_Serialize, IdeError>(__TAURI_INVOKE("run_import_configs", { source, existing })),
 	/**  The environment runs inherit when "Include system environment variables" is on. */
 	runSystemEnv: () => __TAURI_INVOKE<{ [key in string]: string }>("run_system_env"),
-	runStart: (config: RunConfig_Deserialize, onOutput: Channel<OutputChunk>) => typedError<RunInfo, IdeError>(__TAURI_INVOKE("run_start", { config, onOutput })),
+	runStart: (config: RunConfig_Deserialize, onOutput: Channel<OutputChunk>, request: number | null) => typedError<RunInfo, IdeError>(__TAURI_INVOKE("run_start", { config, onOutput, request })),
 	runStop: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_stop", { id })),
 	runStdin: (id: RunId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_stdin", { id, data })),
 	runList: () => __TAURI_INVOKE<RunInfo[]>("run_list"),
@@ -811,7 +811,7 @@ export const commands = {
 	/**  Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap). */
 	javaBuildWorkspace: (module: string, request: number | null) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module, request })),
 	/**  Starts a session owned by this window: its events (and those of child sessions) go here only. */
-	debugStart: (config: LaunchConfig) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config })),
+	debugStart: (config: LaunchConfig, request: number | null) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config, request })),
 	debugSetBreakpoints: (path: string, breakpoints: Breakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_breakpoints", { path, breakpoints })),
 	debugThreads: (session: DebugSessionId) => typedError<ThreadInfo[], IdeError>(__TAURI_INVOKE("debug_threads", { session })),
 	debugStackTrace: (session: DebugSessionId, threadId: number) => typedError<StackFrame[], IdeError>(__TAURI_INVOKE("debug_stack_trace", { session, threadId })),
@@ -2773,6 +2773,8 @@ export type CompletionSettings = {
 	parameterInfoDelay?: number,
 };
 
+export type ComposeFileOverride = "kept" | "excluded";
+
 export type ComposeOp = "start" | "stop" | "restart" | 
 /**  Stops and removes the project's containers and networks. */
 "down";
@@ -4309,6 +4311,8 @@ export type FileSettings = {
 	fileTypes?: { [key in string]: FileTypeAssociation },
 	/**  Override File Type: file (project-relative and `/`-separated, or absolute) → language id. */
 	fileTypeOverrides?: { [key in string]: string },
+	/**  Compose detection choices, keyed by project-relative file path. */
+	composeFileOverrides?: { [key in string]: ComposeFileOverride },
 };
 
 export type FileStamp = {
@@ -4885,7 +4889,9 @@ export type IdeEvent =
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
 { type: "windowFullscreenChanged" } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
-{ type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[] } | 
+{ type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[]; 
+/**  Subtrees whose ignore rules changed, after the matchers were rebuilt. */
+ignoreRules?: IpcPath[] } | 
 /**  Excluded or ignored folders whose contents changed; they stay out of `FsChanged`. */
 { type: "excludedDirsChanged"; dirs: IpcPath[] } | 
 /**
@@ -6422,6 +6428,14 @@ export type PickItem = {
 	description: string | null,
 };
 
+/**  Per-command argv prefix and optional replacement working-directory arguments. */
+export type PluginCommandOverride = {
+	name: string,
+	args: string[],
+	/**  None inherits the target's list; Some([]) suppresses it. */
+	workdirArgs?: string[] | null,
+};
+
 /**  A plugin's before-commit check to run (`[[contributes.commitChecks]]`). */
 export type PluginCommitCheckRef = {
 	pluginId: string,
@@ -6730,7 +6744,7 @@ export type PluginRunTarget = {
 	args: string[],
 	workdirArgs: string[],
 	containerRoot: string | null,
-	commands: ([string, string[]])[],
+	commands: PluginCommandOverride[],
 };
 
 /**  A secret a plugin declares, and whether the user stored it. */

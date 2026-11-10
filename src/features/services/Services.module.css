@@ -152,6 +152,10 @@
   justify-content: center;
 }
 .marker {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
   width: 14px;
   height: 14px;
   display: flex;

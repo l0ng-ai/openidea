@@ -71,7 +71,7 @@ export async function dotnet(args: string[], cwd: string, signal?: AbortSignal):
   };
   signal?.addEventListener("abort", stop);
   try {
-    const info = await call(commands.runStart(dotnetConfig(args, cwd), channel));
+    const info = await call(commands.runStart(dotnetConfig(args, cwd), channel, null));
     id = info.id;
     if (signal?.aborted || overflow) stop();
     if (exits.has(id)) finish(exits.get(id)!);

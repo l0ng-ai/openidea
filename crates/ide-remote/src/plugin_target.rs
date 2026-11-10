@@ -15,8 +15,12 @@ pub fn validate(target: &PluginRunTarget) -> IdeResult<()> {
     if !argv(&target.args)
         || !argv(&target.workdir_args)
         || target.commands.len() > 64
-        || target.commands.iter().any(|(name, args)| {
-            !label(name, 256) || wrap::program_name(name) != *name || !names.insert(name) || !argv(args)
+        || target.commands.iter().any(|c| {
+            !label(&c.name, 256)
+                || wrap::program_name(&c.name) != c.name
+                || !names.insert(&c.name)
+                || !argv(&c.args)
+                || c.workdir_args.as_ref().is_some_and(|args| !argv(args))
         })
         || serde_json::to_vec(target).map_or(true, |v| v.len() > 256 << 10)
         || target
@@ -61,12 +65,13 @@ pub fn prepare(root: &Path, target: &PluginRunTarget, program: &Path, config: &R
         |m| m.program.clone(),
     );
     let name = wrap::program_name(&config.command);
-    let override_args = target.commands.iter().find(|(n, _)| n == &name).map(|(_, a)| a);
-    let mut args = override_args.unwrap_or(&target.args).clone();
+    let command_override = target.commands.iter().find(|c| c.name == name);
+    let mut args = command_override.map_or(&target.args, |c| &c.args).clone();
+    let workdir_args = command_override.and_then(|c| c.workdir_args.as_ref()).unwrap_or(&target.workdir_args);
     if let Some(cwd) = mapped_cwd {
-        args.extend(target.workdir_args.iter().map(|a| a.replace("{cwd}", &cwd)));
+        args.extend(workdir_args.iter().map(|a| a.replace("{cwd}", &cwd)));
     }
-    if override_args.is_none() {
+    if command_override.is_none() {
         args.push(command);
     }
     args.extend(mapped.as_ref().map_or_else(|| config.args.clone(), |m| m.args.clone()));
@@ -83,6 +88,7 @@ pub fn prepare(root: &Path, target: &PluginRunTarget, program: &Path, config: &R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ide_core::remote_settings::PluginCommandOverride;
     fn config(command: &str, args: &[&str], cwd: &str) -> RunConfig {
         serde_json::from_value(serde_json::json!({"id":"test", "name":"Test", "kind":"php", "command":command, "args":args, "cwd":cwd, "env":{}, "detected":false, "isTest":false})).unwrap()
     }
@@ -95,7 +101,11 @@ mod tests {
             args: vec!["exec".into()],
             workdir_args: vec!["--dir".into(), "{cwd}".into()],
             container_root: Some("/var/www/html".into()),
-            commands: vec![("composer".into(), vec!["composer".into()])],
+            commands: vec![PluginCommandOverride {
+                name: "composer".into(),
+                args: vec!["composer".into()],
+                workdir_args: None,
+            }],
         };
         let tmp = tempfile::tempdir().unwrap();
         let base = dunce::canonicalize(tmp.path()).unwrap();
@@ -131,6 +141,73 @@ mod tests {
     }
 
     #[test]
+    fn per_command_workdir_arguments_replace_inherit_and_preserve_other_commands() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::create_dir(root.join("public")).unwrap();
+        for (workdir_args, expected) in [
+            (Some(vec![]), vec!["composer", "install"]),
+            (
+                Some(vec!["--working-dir={cwd}".into(), "literal ; $(touch bad)".into()]),
+                vec!["composer", "--working-dir=/var/www/html/public", "literal ; $(touch bad)", "install"],
+            ),
+            (None, vec!["composer", "--dir=/var/www/html/public", "--", "install"]),
+        ] {
+            let target = PluginRunTarget {
+                id: "ddev".into(),
+                name: "DDEV".into(),
+                program: "ddev".into(),
+                args: vec!["exec".into(), "--raw".into()],
+                workdir_args: vec!["--dir={cwd}".into(), "--".into()],
+                container_root: Some("/var/www/html".into()),
+                commands: vec![PluginCommandOverride {
+                    name: "composer".into(),
+                    args: vec!["composer".into()],
+                    workdir_args,
+                }],
+            };
+            // The metadata crosses the remote protocol without losing None vs Some([]).
+            let encoded = serde_json::to_vec(&target).unwrap();
+            let decoded = serde_json::from_slice::<PluginRunTarget>(&encoded).unwrap();
+            assert_eq!(decoded, target);
+            let run = prepare(&root, &decoded, Path::new("ddev"), &config("composer", &["install"], "public")).unwrap();
+            assert_eq!(run.args, expected);
+            assert_eq!(run.cwd.unwrap(), root.join("public"));
+            let php = prepare(&root, &target, Path::new("ddev"), &config("php", &["x.php"], "public")).unwrap();
+            assert_eq!(php.args, ["exec", "--raw", "--dir=/var/www/html/public", "--", "php", "x.php"]);
+            for (container_root, cwd) in [(None, "public"), (target.container_root.clone(), "../outside")] {
+                let target = PluginRunTarget { container_root, ..target.clone() };
+                let run = prepare(&root, &target, Path::new("ddev"), &config("composer", &["install"], cwd)).unwrap();
+                assert_eq!(run.args, ["composer", "install"]);
+            }
+        }
+    }
+
+    #[test]
+    fn override_workdir_arguments_obey_the_same_bounds() {
+        let mut target = PluginRunTarget {
+            id: "ddev".into(),
+            name: "DDEV".into(),
+            program: "ddev".into(),
+            commands: vec![PluginCommandOverride { name: "composer".into(), ..Default::default() }],
+            ..Default::default()
+        };
+        for args in
+            [vec!["bad\0arg".into()], vec!["x".repeat(16385)], vec!["x".into(); 257], vec!["x".repeat(16384); 17]]
+        {
+            target.commands[0].workdir_args = Some(args);
+            assert!(validate(&target).is_err());
+        }
+        target.commands[0].workdir_args = Some(vec!["x".repeat(16384)]);
+        assert!(validate(&target).is_ok());
+        target.commands[0].name = "path/composer".into();
+        assert!(validate(&target).is_err());
+        target.commands[0].name = "composer".into();
+        target.commands.push(target.commands[0].clone());
+        assert!(validate(&target).is_err());
+    }
+
+    #[test]
     fn command_overrides_match_both_path_separators_on_every_platform() {
         let tmp = tempfile::tempdir().unwrap();
         let target = PluginRunTarget {
@@ -140,7 +217,7 @@ mod tests {
             args: vec!["exec".into()],
             workdir_args: Vec::new(),
             container_root: Some("/container".into()),
-            commands: vec![("php".into(), vec!["php".into()])],
+            commands: vec![PluginCommandOverride { name: "php".into(), args: vec!["php".into()], workdir_args: None }],
         };
         for command in ["php", "/usr/bin/php", r"C:\tools\php.exe", r"\\?\C:\tools\php.exe", "C:/tools/php.cmd"] {
             for container_root in [None, target.container_root.clone()] {

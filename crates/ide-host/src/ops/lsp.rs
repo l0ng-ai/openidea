@@ -922,12 +922,13 @@ fn plugin_file_edits(
     use ide_plugin::FileOperation;
     let confine = !a.operations.is_empty() || a.open.is_some();
     let confined = |path: &Path| ide_plugin::resolve_new_in_root(root, &path.to_string_lossy());
+    let writable = |path: &Path| ide_plugin::resolve_writable_in_root(root, &path.to_string_lossy());
     let mut files = Vec::new();
     let mut created_with_text = Vec::new();
     for operation in &a.operations {
         match operation {
             FileOperation::Create { path, text, overwrite } => {
-                let path = confined(path)?;
+                let path = writable(path)?;
                 files.push(FileEdit::Create { path: path.clone().into(), overwrite: *overwrite });
                 if !text.is_empty() {
                     let start = Range::point(Pos::new(0, 0));
@@ -948,7 +949,7 @@ fn plugin_file_edits(
         }
     }
     for (path, edits) in &a.edits {
-        let path = if confine { confined(path)? } else { path.clone() };
+        let path = if confine { writable(path)? } else { path.clone() };
         if created_with_text.contains(&path) {
             return Err("put the text of a created file in its `create`, not in an edit".into());
         }
@@ -2226,6 +2227,55 @@ mod tests {
             ["/app/_ide_helper_models.php", "/app/.phpstorm.meta.php"]
         );
         assert!(without_generated_helpers(Vec::new()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugins_file_actions_confine_content_writes_and_preserve_link_entries() {
+        use ide_core::FileEdit;
+        use ide_plugin::{CodeAction, FileOperation};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir(&root).unwrap();
+        let root = dunce::canonicalize(root).unwrap();
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "unchanged").unwrap();
+        std::fs::write(root.join("target.txt"), "inside").unwrap();
+        for (name, target) in [
+            ("outside", outside.clone()),
+            ("dangling", tmp.path().join("missing.txt")),
+            ("inside", root.join("target.txt")),
+        ] {
+            std::os::unix::fs::symlink(target, root.join(name)).unwrap();
+        }
+        let action = |operations, edits| CodeAction {
+            title: "Update files".into(),
+            kind: None,
+            preferred: false,
+            edits,
+            operations,
+            open: Some(root.join("target.txt")),
+            data: None,
+            file_action: true,
+        };
+        for name in ["outside", "dangling"] {
+            let create = FileOperation::Create { path: root.join(name), text: "text".into(), overwrite: true };
+            assert!(plugin_file_edits(&root, &action(vec![create], Vec::new())).is_err());
+            let edits = vec![(root.join(name), vec![TextEdit { range: Range::default(), new_text: "text".into() }])];
+            assert!(plugin_file_edits(&root, &action(Vec::new(), edits)).is_err());
+        }
+        let create = FileOperation::Create { path: root.join("inside"), text: "text".into(), overwrite: true };
+        let (files, _) = plugin_file_edits(&root, &action(vec![create], Vec::new())).unwrap();
+        assert!(matches!(&files[0], FileEdit::Create { path, .. } if **path == root.join("target.txt")));
+        let operations = vec![
+            FileOperation::Rename { from: root.join("outside"), to: root.join("dangling") },
+            FileOperation::Delete { path: root.join("outside") },
+        ];
+        let (files, _) = plugin_file_edits(&root, &action(operations, Vec::new())).unwrap();
+        assert!(matches!(&files[0], FileEdit::Rename { from, to }
+            if **from == root.join("outside") && **to == root.join("dangling")));
+        assert!(matches!(&files[1], FileEdit::Delete { path, .. } if **path == root.join("outside")));
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "unchanged");
     }
 
     #[test]

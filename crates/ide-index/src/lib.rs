@@ -332,6 +332,28 @@ impl ProjectIndex {
         }
     }
 
+    /// Refreshes ignore matchers and indexed entries in the affected subtrees.
+    pub fn ignore_rules_changed(&self, dirs: &[PathBuf]) {
+        let filter = self.shared.filter();
+        let mut affected = Vec::new();
+        for dir in dirs {
+            let path = if dir.is_absolute() { dir.clone() } else { self.root.join(dir) };
+            let path = dunce::canonicalize(&path).unwrap_or(path);
+            for root in filter.roots() {
+                if path.starts_with(root) {
+                    affected.push(path.clone());
+                    break;
+                }
+                if root.starts_with(&path) {
+                    affected.push(root.to_path_buf());
+                }
+            }
+        }
+        if !affected.is_empty() {
+            self.shared.enqueue(Job::IgnoreRules(affected));
+        }
+    }
+
     /// Boost for "recent files" ranking.
     /// Records a recently opened file; a virtual document's URI (library
     /// class) is kept verbatim, like IDEA lists library classes in Recent Files.

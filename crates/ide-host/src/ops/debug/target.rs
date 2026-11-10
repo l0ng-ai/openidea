@@ -12,6 +12,7 @@ pub(super) async fn start(
     mut config: LaunchConfig,
     owner: SessionOwner,
     id: String,
+    cancel: &ide_core::CancellationToken,
 ) -> IdeResult<ide_core::DebugSessionId> {
     let project = host.project(window)?;
     let plugins =
@@ -33,6 +34,23 @@ pub(super) async fn start(
     {
         return Err(IdeError::invalid("This debugger does not support plugin run targets"));
     }
+    let program = config
+        .extra_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v.get("__runTargetProgram").and_then(|p| p.as_str()).map(str::to_owned))
+        .or_else(|| config.program.clone())
+        .unwrap_or_else(|| dbg.command.clone());
+    let metadata = serde_json::from_value(json!({"id":"debug", "name":config.name, "kind":"shell", "command":program, "args":[], "cwd":config.cwd, "env":{}, "detected":false, "isTest":false}))
+        .map_err(|e| IdeError::invalid(e.to_string()))?;
+    let (validator, root, target, token) = (plugins.clone(), project.root.clone(), id.clone(), cancel.clone());
+    host.blocking(move || {
+        validator.prepare_run_target_launch(&root, &target, &metadata, ide_plugin::RunTargetOperation::Debug, &token)
+    })
+    .await?;
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
     let mapping = TargetMapping {
         paths: PathMapping::new(&project.root.to_string_lossy(), &container),
         external_prefix: format!(
@@ -48,6 +66,7 @@ pub(super) async fn start(
         .map_err(|e| IdeError::invalid(e.to_string()))?
         .unwrap_or(json!({}));
     extra.as_object_mut().ok_or_else(|| IdeError::invalid("invalid debug launch arguments"))?.remove("__runTarget");
+    extra.as_object_mut().unwrap().remove("__runTargetProgram");
     // DAP paths already use target coordinates; adapter-native mappings stay identity.
     if placement == "connect-back" {
         config.program = None;

@@ -637,6 +637,15 @@ pub struct FileSettings {
     pub file_types: BTreeMap<String, FileTypeAssociation>,
     /// Override File Type: file (project-relative and `/`-separated, or absolute) → language id.
     pub file_type_overrides: BTreeMap<String, String>,
+    /// Compose detection choices, keyed by project-relative file path.
+    pub compose_file_overrides: BTreeMap<String, ComposeFileOverride>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ComposeFileOverride {
+    Kept,
+    Excluded,
 }
 
 /// One language's file name and hashbang patterns on top of its definition.
@@ -664,6 +673,7 @@ impl Default for FileSettings {
             local_history_max_mb: 512,
             file_types: BTreeMap::new(),
             file_type_overrides: BTreeMap::new(),
+            compose_file_overrides: BTreeMap::new(),
         }
     }
 }
