@@ -45,6 +45,7 @@ use ide_core::settings::LaravelModuleSystem;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::config::ConfigKeys;
 use super::ide_json::IdeJson;
 use crate::project::composer::RootManifest;
 use crate::project::normalize;
@@ -302,10 +303,19 @@ impl LaravelProject {
     /// This project with the route files `facts` register (merged with
     /// their files, [`LaravelFacts::merge_located`]).
     pub fn with_routes(&self, facts: &LaravelFacts) -> Self {
+        self.with_routes_config(facts, None)
+    }
+
+    /// [`with_routes`](Self::with_routes), the `config('…')` parts of route
+    /// file paths filled in from `config` (the key's value, else the call's
+    /// default; without `config`, the default). A registration whose path
+    /// can't be filled in is left out.
+    pub fn with_routes_config(&self, facts: &LaravelFacts, config: Option<&ConfigKeys>) -> Self {
         let mut project = self.clone();
         project.route_files.clear();
+        let value = |key: &str| config.and_then(|config| config.string_value(key));
         for registration in &facts.routes {
-            let Some(file) = project.route_file(registration) else { continue };
+            let Some(file) = project.route_file(registration, &value) else { continue };
             let known = project.route_files.iter().any(|known| {
                 known.path == file.path && known.prefix == file.prefix && known.name_prefix == file.name_prefix
             });
@@ -365,25 +375,32 @@ impl LaravelProject {
         self.route_files.iter().any(|file| file.path == path)
     }
 
-    fn route_file(&self, registration: &RouteRegistration) -> Option<RouteFile> {
+    fn route_file(
+        &self,
+        registration: &RouteRegistration,
+        value: &dyn Fn(&str) -> Option<String>,
+    ) -> Option<RouteFile> {
         let from = registration.file.as_deref()?;
-        let relative = |base: &Path, rest: &str| normalize(&base.join(rest.trim_start_matches(['/', '\\'])));
+        let relative = |base: &Path, rest: &str| {
+            let rest = RoutePath::fill(rest, value)?;
+            Some(normalize(&base.join(rest.trim_start_matches(['/', '\\']))))
+        };
         let path = match &registration.path {
             RoutePath::Dir { up, rest } => {
                 let mut dir = from.parent()?;
                 for _ in 0..*up {
                     dir = dir.parent()?;
                 }
-                relative(dir, rest)
+                relative(dir, rest)?
             }
-            RoutePath::Base(rest) => relative(&self.root, rest),
-            RoutePath::App(rest) => relative(&self.paths.app, rest),
+            RoutePath::Base(rest) => relative(&self.root, rest)?,
+            RoutePath::App(rest) => relative(&self.paths.app, rest)?,
             RoutePath::Module { name, rest } => {
                 let module = match name {
                     Some(name) => self.module(name),
                     None => self.module_of(from),
                 }?;
-                relative(&module.path, rest)
+                relative(&module.path, rest)?
             }
         };
         let module = self.module_of(&path).map(|module| module.name.clone());

@@ -371,6 +371,55 @@ fn default_route_files_without_registrations() {
     assert_eq!(route_table(&dir, &project), ["routes/web.php Web '' '' [web]", "routes/api.php Api 'api' '' [api]"]);
 }
 
+#[test]
+fn route_files_at_config_computed_paths() {
+    // Jetstream: `__DIR__.'/../routes/'.config('jetstream.stack').'.php'`.
+    let provider = r#"<?php
+namespace App\Providers;
+class StackServiceProvider extends ServiceProvider {
+    public function boot(): void {
+        $this->loadRoutesFrom(__DIR__.'/../../routes/'.config('jetstream.stack').'.php');
+        Route::middleware('web')->group(base_path('routes/teams-'.(\config('jetstream.teams', 'off')).'.php'));
+        $this->loadRoutesFrom(__DIR__.'/../../routes/'.config('jetstream.missing').'.php');
+        $this->loadRoutesFrom(__DIR__.'/../../routes/'.config($key).'.php');
+    }
+}
+"#;
+    assert_eq!(
+        routes(provider),
+        [
+            "laravel routes Other dir^0/../../routes/{config('jetstream.stack')}.php",
+            "laravel routes Web base:routes/teams-{config('jetstream.teams', 'off')}.php middleware [web]",
+            "laravel routes Other dir^0/../../routes/{config('jetstream.missing')}.php",
+        ]
+    );
+
+    let dir = Dir::new();
+    dir.write("composer.json", LARAVEL);
+    dir.write("config/jetstream.php", "<?php\nreturn ['stack' => 'inertia'];\n");
+    let base = LaravelProject::load(&dir.root).unwrap();
+    let registered = facts(&dir, &[("app/Providers/StackServiceProvider.php", provider)]);
+    let read = |dir: &Dir| ConfigKeys::read(&dir.path("config"), |path| std::fs::read_to_string(path).ok());
+    // The key's value, else the call's default; a key with neither leaves its file out.
+    let project = base.with_routes_config(&registered, Some(&read(&dir)));
+    assert_eq!(
+        route_table(&dir, &project),
+        ["routes/inertia.php Other '' '' []", "routes/teams-off.php Web '' '' [web]"]
+    );
+    // A changed configuration picks the other file.
+    dir.write(
+        "config/jetstream.php",
+        "<?php\nreturn ['stack' => env('JETSTREAM_STACK', 'livewire'), 'teams' => \"on\"];\n",
+    );
+    let project = base.with_routes_config(&registered, Some(&read(&dir)));
+    assert_eq!(
+        route_table(&dir, &project),
+        ["routes/livewire.php Other '' '' []", "routes/teams-on.php Web '' '' [web]"]
+    );
+    // Without the configuration, only the defaults.
+    assert_eq!(route_table(&dir, &base.with_routes(&registered)), ["routes/teams-off.php Web '' '' [web]"]);
+}
+
 // ------------------------------------------------------------------- engine
 
 fn open_engine(dir: &Dir) -> Arc<PhpEngine> {

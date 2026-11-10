@@ -186,6 +186,52 @@ Route::group(['middleware' => ['web']], function () {
     assert!(routes.named("installer.run").next().unwrap().middleware.is_empty());
 }
 
+#[test]
+fn route_files_at_config_computed_paths_follow_the_configuration() {
+    // Jetstream's provider; Monica's `redirect()->route('profile.show')`.
+    let provider = r#"<?php
+namespace App\Providers;
+
+use Illuminate\Support\ServiceProvider;
+
+class StackServiceProvider extends ServiceProvider {
+    public function boot(): void {
+        $this->loadRoutesFrom(__DIR__.'/../../routes/'.config('jetstream.stack', 'livewire').'.php');
+    }
+}
+"#;
+    let route = |name: &str| {
+        format!(
+            "<?php\nuse Illuminate\\Support\\Facades\\Route;\nRoute::get('/user/profile', fn () => null)->name('{name}');\n"
+        )
+    };
+    let mut project = Project::new(&[
+        ("composer.json", COMPOSER),
+        ("config/jetstream.php", "<?php\nreturn ['stack' => 'inertia'];\n"),
+        ("app/Providers/StackServiceProvider.php", provider),
+        ("routes/inertia.php", &route("profile.show")),
+        ("routes/livewire.php", &route("profile.livewire")),
+    ]);
+    let names = |project: &Project| -> Vec<String> {
+        let routes = project.engine.laravel_routes().unwrap();
+        routes.routes().iter().filter_map(|route| route.name.clone()).collect()
+    };
+    assert_eq!(names(&project), ["profile.show"]);
+    let (doc, _) = project.open("app/Http/Probe.php", "<?php\nredirect()->route('profile.show');\n/*|*/");
+    let inspected = project.engine.inspect(doc, &CancellationToken::new()).unwrap();
+    assert!(
+        !inspected.diagnostics.iter().any(|d| d.code.as_deref() == Some("PhpUndefinedRoute")),
+        "{:?}",
+        inspected.diagnostics
+    );
+    project.engine.document_closed(doc);
+    // An edited configuration picks the other file; without the key, the call's default.
+    let (config, _) = project.open("config/jetstream.php", "<?php\nreturn ['stack' => 'livewire'];\n/*|*/");
+    assert_eq!(names(&project), ["profile.livewire"]);
+    project.engine.document_changed(config, 2, "<?php\nreturn [];\n");
+    assert_eq!(names(&project), ["profile.livewire"]);
+}
+
 const ROUTES: &str = r#"<?php
 
 use App\Http\Controllers\PhotoController;

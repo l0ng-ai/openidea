@@ -265,14 +265,14 @@ The engine's own threads keep their default stack sizes. `real_app_checklist` an
 
 Debug build, own code only:
 
-| Application | Files inspected | Diagnostics before | Diagnostics after |
-| ----------- | --------------- | ------------------ | ----------------- |
-| Monica      | 896             | 200                | 194               |
-| Bagisto     | 2,983           | 227                | 181               |
+| Application | Files inspected | Diagnostics before | Diagnostics after       |
+| ----------- | --------------- | ------------------ | ----------------------- |
+| Monica      | 896             | 200                | 193 (194 before 8.29.b) |
+| Bagisto     | 2,983           | 227                | 181                     |
 
 What remains, by inspection:
 
-- Monica: 175 `PhpUnusedParameter`, 7 `PhpUndefinedVariable`, 4 `PhpUndefinedTranslation`, 3 `PhpUnusedLocalVariable`, 2 `PhpUndefinedRoute`, 1 `PhpUnknownAbility`, 1 `PhpUnknownEloquentColumn`, 1 `PhpUnusedAlias`.
+- Monica: 175 `PhpUnusedParameter`, 7 `PhpUndefinedVariable`, 4 `PhpUndefinedTranslation`, 3 `PhpUnusedLocalVariable`, 1 `PhpUndefinedRoute`, 1 `PhpUnknownAbility`, 1 `PhpUnknownEloquentColumn`, 1 `PhpUnusedAlias`.
 - Bagisto: 51 `PhpUnusedParameter`, 44 `PhpUndefinedTranslation`, 24 `PhpUnusedLocalVariable`, 15 `PhpDeprecation`, 11 `PhpUnknownEloquentColumn`, 7 `PhpUnusedAlias`, 7 `PhpUndefinedVariable`, 5 `PhpUndefinedView`, 3 each of `PhpParams`, `PhpUndefinedClass` and `PhpUndefinedField`, 2 each of `PhpIncompatibleReturnType`, `PhpUndefinedMethod` and `PhpUndefinedConfigKey`, 1 each of `PhpUndefinedRoute` and `PhpUndefinedEnvKey`.
 
 Nearly all of them are real. Some examples:
@@ -286,7 +286,7 @@ The rest follow a wrong declaration or are limits of the analysis:
 - Seven Bagisto diagnostics come from `bagisto/laravel-datafaker`. `Helpers\Category::factory()` is documented `Factory<static>`, but it returns the model's factory, so `->create()` is typed as the helper.
 - `getOptionProductsPrices()` has no native return type and documents `@return float` while returning an array.
 - Monica's `$timestamp` (four diagnostics in the CalDAV and CardDAV backends) is read only when an earlier condition set it (`if ($data) { $timestamp = …; } if (empty($data) || $timestamp …)`). The analysis doesn't relate the two conditions, and neither does PhpStorm's.
-- Monica's `profile.show` is Jetstream's. Jetstream loads its routes from `__DIR__.'/../routes/'.config('jetstream.stack').'.php'`, a path the engine can't read without the configuration. Phase 8.29.b covers it.
+- Monica's `profile.show` is Jetstream's. Jetstream loads its routes from `__DIR__.'/../routes/'.config('jetstream.stack').'.php'`. Since phase 8.29.b a route file path keeps its `config('key')` and `config('key', 'default')` parts, and they are filled in from the project's configuration when the route files are resolved: the key's value (a string literal, or the default of `env('…', '…')`), else the call's default. A path whose part has neither is left out. Monica's `config/jetstream.php` says `'stack' => 'inertia'`, so `routes/inertia.php` is read and `profile.show` is defined; changing the stack picks `livewire.php`.
 
 To run them:
 

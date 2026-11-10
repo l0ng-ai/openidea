@@ -354,6 +354,63 @@ pub enum RoutePath {
     Module { name: Option<String>, rest: String },
 }
 
+/// Opens and closes a `config('key', 'default')` part of a [`RoutePath`]'s
+/// `rest` (`__DIR__.'/../routes/'.config('jetstream.stack').'.php'`,
+/// Jetstream): characters no file path holds.
+const CONFIG_MARK: char = '\u{1}';
+/// Separates the key of a `config()` part from the call's default.
+const DEFAULT_MARK: char = '\u{2}';
+
+impl RoutePath {
+    /// The `rest` piece standing for `config(key, default)`.
+    pub fn config_part(key: &str, default: Option<&str>) -> String {
+        match default {
+            Some(default) => format!("{CONFIG_MARK}{key}{DEFAULT_MARK}{default}{CONFIG_MARK}"),
+            None => format!("{CONFIG_MARK}{key}{CONFIG_MARK}"),
+        }
+    }
+
+    /// Whether the path has a `config()` part.
+    pub fn has_config(&self) -> bool {
+        let (Self::Dir { rest, .. } | Self::Base(rest) | Self::App(rest) | Self::Module { rest, .. }) = self;
+        rest.contains(CONFIG_MARK)
+    }
+
+    /// `rest` with each `config()` part replaced by the key's value
+    /// (`value`), else the call's default; `None` when a part has neither.
+    pub fn fill(rest: &str, value: impl Fn(&str) -> Option<String>) -> Option<String> {
+        let mut out = String::with_capacity(rest.len());
+        for (index, piece) in rest.split(CONFIG_MARK).enumerate() {
+            if index % 2 == 0 {
+                out.push_str(piece);
+                continue;
+            }
+            let (key, default) = match piece.split_once(DEFAULT_MARK) {
+                Some((key, default)) => (key, Some(default)),
+                None => (piece, None),
+            };
+            out.push_str(&value(key).or_else(|| default.map(str::to_owned))?);
+        }
+        Some(out)
+    }
+
+    /// `rest` as written, a `config()` part as `{config('key', 'default')}`.
+    pub fn display(rest: &str) -> String {
+        let mut out = String::with_capacity(rest.len());
+        for (index, piece) in rest.split(CONFIG_MARK).enumerate() {
+            if index % 2 == 0 {
+                out.push_str(piece);
+            } else {
+                match piece.split_once(DEFAULT_MARK) {
+                    Some((key, default)) => out.push_str(&format!("{{config('{key}', '{default}')}}")),
+                    None => out.push_str(&format!("{{config('{piece}')}}")),
+                }
+            }
+        }
+        out
+    }
+}
+
 /// What a route file holds, from how it is loaded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RouteFileKind {

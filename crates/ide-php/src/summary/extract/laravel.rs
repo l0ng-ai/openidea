@@ -26,7 +26,8 @@
 //!   (a `RouteServiceProvider`, a `then:` callback), and
 //!   `$this->loadRoutesFrom(path)`, when the path is relative to `__DIR__`
 //!   or `dirname(__DIR__)`, or made by `base_path()`, `app_path()` or
-//!   `module_path()`.
+//!   `module_path()`; its pieces are literals or `config('key', 'default')`
+//!   calls (Jetstream), filled in when the route files are resolved.
 //!
 //! The column types follow what Eloquent gives an attribute without a cast
 //! (Laravel's public documentation on migrations and casts): integers are
@@ -692,13 +693,33 @@ fn function_name(expr: &Expression<'_>) -> Option<String> {
     Some(lossy(name.strip_prefix(b"\\").unwrap_or(name)))
 }
 
+/// A piece of a route file's path: string literals, `config('key')` and
+/// `config('key', 'default')` calls ([`RoutePath::config_part`]), and their
+/// concatenations.
+fn path_text(expr: &Expression<'_>) -> Option<String> {
+    match expr {
+        Expression::Parenthesized(inner) => path_text(inner.expression),
+        Expression::Binary(binary) if matches!(binary.operator, BinaryOperator::StringConcat(_)) => {
+            Some(path_text(binary.lhs)? + &path_text(binary.rhs)?)
+        }
+        Expression::Call(Call::Function(call)) if function_name(call.function)?.eq_ignore_ascii_case("config") => {
+            match args(&call.argument_list)[..] {
+                [key] => Some(RoutePath::config_part(&string(key)?, None)),
+                [key, default] => Some(RoutePath::config_part(&string(key)?, Some(&string(default)?))),
+                _ => None,
+            }
+        }
+        _ => string(expr),
+    }
+}
+
 /// A route file's path: see [`RoutePath`].
 fn route_path(expr: &Expression<'_>) -> Option<RoutePath> {
     match expr {
         Expression::Parenthesized(inner) => route_path(inner.expression),
         Expression::MagicConstant(MagicConstant::Directory(_)) => Some(RoutePath::Dir { up: 0, rest: String::new() }),
         Expression::Binary(binary) if matches!(binary.operator, BinaryOperator::StringConcat(_)) => {
-            let tail = string(binary.rhs)?;
+            let tail = path_text(binary.rhs)?;
             Some(match route_path(binary.lhs)? {
                 RoutePath::Dir { up, rest } => RoutePath::Dir { up, rest: rest + &tail },
                 RoutePath::Base(rest) => RoutePath::Base(rest + &tail),
@@ -710,7 +731,7 @@ fn route_path(expr: &Expression<'_>) -> Option<RoutePath> {
             let name = function_name(call.function)?.to_ascii_lowercase();
             let args = args(&call.argument_list);
             let text = |index: usize| match args.get(index) {
-                Some(arg) => string(arg),
+                Some(arg) => path_text(arg),
                 None => Some(String::new()),
             };
             match name.as_str() {

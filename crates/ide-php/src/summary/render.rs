@@ -107,10 +107,12 @@ fn laravel(out: &mut String, facts: &LaravelFacts) {
     }
     for route in &facts.routes {
         let path = match &route.path {
-            RoutePath::Dir { up, rest } => format!("dir^{up}{rest}"),
-            RoutePath::Base(rest) => format!("base:{rest}"),
-            RoutePath::App(rest) => format!("app:{rest}"),
-            RoutePath::Module { name, rest } => format!("module({}):{rest}", name.as_deref().unwrap_or("?")),
+            RoutePath::Dir { up, rest } => format!("dir^{up}{}", RoutePath::display(rest)),
+            RoutePath::Base(rest) => format!("base:{}", RoutePath::display(rest)),
+            RoutePath::App(rest) => format!("app:{}", RoutePath::display(rest)),
+            RoutePath::Module { name, rest } => {
+                format!("module({}):{}", name.as_deref().unwrap_or("?"), RoutePath::display(rest))
+            }
         };
         let mut line = format!("laravel routes {:?} {path}", route.kind);
         if !route.prefix.is_empty() {

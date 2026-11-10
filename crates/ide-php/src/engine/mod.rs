@@ -704,7 +704,16 @@ impl PhpEngine {
             }
         };
         let project = loaded.map(|loaded| {
-            Arc::new(loaded.with_routes(&Declarations::laravel(self)).with_module_system(settings.modules))
+            let facts = Declarations::laravel(self);
+            // Route files at `config('…')`-computed paths (Jetstream) need the
+            // configuration, read here from the project as loaded:
+            // `laravel_config` needs this project.
+            let config = facts.routes.iter().any(|route| route.path.has_config()).then(|| {
+                let packages = crate::frameworks::laravel::config::package_configs_with(&loaded, self);
+                let previous = self.shared.laravel_config.lock().as_ref().map(|(_, keys)| keys.clone());
+                ConfigKeys::read_parts(&loaded.paths.config, &packages, self, previous.as_deref())
+            });
+            Arc::new(loaded.with_routes_config(&facts, config.as_ref()).with_module_system(settings.modules))
         });
         let mut cache = self.shared.laravel.lock();
         if cache.loaded.is_some() {

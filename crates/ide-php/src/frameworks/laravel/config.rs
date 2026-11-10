@@ -154,6 +154,18 @@ impl ConfigKeys {
         self.entries.get(at).filter(|entry| entry.key == key)
     }
 
+    /// The string a key holds when its source says it: a string literal, or
+    /// the literal default of `env('…', '…')`.
+    pub fn string_value(&self, key: &str) -> Option<String> {
+        let value = self.get(key)?.value.as_deref()?.trim();
+        if let Some(call) = value.strip_prefix("env(").or_else(|| value.strip_prefix("\\env(")) {
+            let open = value.len() - call.len() - 1;
+            let args = call_arguments(value, open)?;
+            return string_literal(args.get(1)?);
+        }
+        string_literal(value)
+    }
+
     /// The entries directly below `parent`. `None` gives the files, whose
     /// names may have dots of their own (`services.mail` is the file
     /// `config/services/mail.php`); such a file is below its folder's
