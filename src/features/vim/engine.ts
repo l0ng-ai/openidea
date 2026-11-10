@@ -13,6 +13,7 @@ import { showStatusInfo } from "@/workbench/contributions";
 import { VIM_EDITOR_ATTR } from "./conflicts";
 import { useVimMode, type VimModeState } from "./mode";
 import { resolveActionId, type RcCommand } from "./rc";
+import { mapFunctionTextObjects } from "./textObjects";
 
 /** Insert/Replace state as seen by transactions (mode changes are queued). */
 const setVimInsert = StateEffect.define<boolean>();
@@ -347,6 +348,7 @@ export function defineExCommands() {
   Vim.defineEx("wq", "wq", saveThenClose);
   Vim.defineEx("xit", "x", saveThenClose);
   Vim.defineEx("action", "action", (_cm, params) => void runIdeAction(params.args?.[0]));
+  mapFunctionTextObjects();
 }
 
 /**
@@ -408,6 +410,8 @@ export function applyRcCommands(commands: readonly RcCommand[]): string[] {
   defineExCommands();
   Vim.mapclear();
   shadowLeaderBuiltins(commands);
+  // `mapclear` drops them with the user mappings; before those, which may remap them.
+  mapFunctionTextObjects();
   const problems: string[] = [];
   for (const c of commands) {
     try {
