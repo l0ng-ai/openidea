@@ -183,6 +183,22 @@ export async function fillMarkers(
       down.length = 0;
     }
   }
+  // Some servers (Pyrefly) answer implementation requests with nothing while their
+  // type hierarchy still knows the subtypes: use it for the ↓ markers of types.
+  const subtypes = deps.supers.subtypes;
+  if (subtypes) {
+    await Promise.all(
+      down.map(async (c, i) => {
+        if (c.method || (implementations[i]?.length ?? 0)) return;
+        try {
+          const found = await subtypes(path, { line: c.line, col: c.col });
+          implementations[i] = found.map((s) => ({ path: s.path, range: s.selectionRange }));
+        } catch (e) {
+          if (isCancelled(e)) throw e;
+        }
+      }),
+    );
+  }
   const supers: SuperMethod[][] = [];
   for (const c of up) supers.push(await superMethodTargets(path, c.owner!, c.symbol, deps.supers));
 
@@ -389,8 +405,10 @@ class MarkersPlugin {
 /** LSP access for one pass: this document's outline as known, others' opened on demand, each asked once. */
 function markerDeps(ctx: EditorDocContext, items: OutlineItem[], request: RequestId, cache: MarkerCache): MarkerDeps {
   const supertypes = new Map<string, Promise<HierarchyItem[]>>();
+  const subtypes = new Map<string, Promise<HierarchyItem[]>>();
   const outlines = new Map<string, Promise<OutlineItem[]>>([[ctx.path, Promise.resolve(items)]]);
-  const hierarchy = (doc: number, pos: Pos) => lspRequest(() => commands.lspTypeHierarchy(doc, pos, "incoming"));
+  const hierarchy = (doc: number, pos: Pos, direction: "incoming" | "outgoing") =>
+    lspRequest(() => commands.lspTypeHierarchy(doc, pos, direction));
   return {
     implementations: (positions) => lspRequest(() => commands.lspImplementations(request, ctx.doc, positions)),
     supers: {
@@ -400,13 +418,25 @@ function markerDeps(ctx: EditorDocContext, items: OutlineItem[], request: Reques
         if (!p) {
           p =
             path === ctx.path
-              ? hierarchy(ctx.doc, pos).catch((e) => {
+              ? hierarchy(ctx.doc, pos, "incoming").catch((e) => {
                   // No type hierarchy for this file: no ↑ markers until the server changes.
                   if (isUnavailable(e)) cache.unsupported.add("supers");
                   throw e;
                 })
-              : withDocument(path, (doc) => hierarchy(doc, pos));
+              : withDocument(path, (doc) => hierarchy(doc, pos, "incoming"));
           supertypes.set(key, p);
+        }
+        return p;
+      },
+      subtypes: (path, pos) => {
+        const key = `${path}:${pos.line}:${pos.col}`;
+        let p = subtypes.get(key);
+        if (!p) {
+          p =
+            path === ctx.path
+              ? hierarchy(ctx.doc, pos, "outgoing")
+              : withDocument(path, (doc) => hierarchy(doc, pos, "outgoing"));
+          subtypes.set(key, p);
         }
         return p;
       },
