@@ -1,0 +1,167 @@
+name: Kylin build
+
+# Builds OpenIDEA for Kylin / domestic Linux desktops (x86_64 and arm64).
+#
+# Runtime requirements of the produced packages:
+#   - glibc >= 2.35 (built on Ubuntu 22.04, the oldest base Tauri 2 supports)
+#   - webkit2gtk-4.1 (Tauri 2 cannot link against the 4.0 series)
+# Kylin V10 SP1 ships glibc 2.31 and webkit2gtk 4.0, so install webkit2gtk-4.1
+# there first; otherwise use a Kylin release that already provides it.
+#
+# Triggers:
+#   - manual run (Actions -> Kylin build -> Run workflow)
+#   - push to the `kylin` branch
+#   - push of a `kylin-v*` tag (also publishes a release)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (branch, tag or SHA). Empty = the selected branch."
+        required: false
+        type: string
+      release:
+        description: "Publish the packages as a GitHub release"
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches: [kylin]
+    tags: ["kylin-v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kylin-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  version:
+    name: Read version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - id: read
+        run: echo "version=$(jq -r .version src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Kylin ${{ matrix.arch }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: kylin-${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Kylin packages are distributed outside the upstream updater, so the
+      # build skips updater artifacts (which would otherwise need a signing key).
+      - name: Build
+        run: |
+          pnpm tauri build \
+            --target ${{ matrix.target }} \
+            --bundles deb,appimage \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Collect packages
+        run: |
+          version='${{ needs.version.outputs.version }}'
+          arch='${{ matrix.arch }}'
+          bundle="target/${{ matrix.target }}/release/bundle"
+          mkdir -p dist
+
+          shopt -s nullglob
+          for f in "$bundle"/deb/*.deb; do
+            cp "$f" "dist/openidea_${version}_kylin_${arch}.deb"
+          done
+          for f in "$bundle"/appimage/*.AppImage; do
+            cp "$f" "dist/OpenIDEA_${version}_kylin_${arch}.AppImage"
+          done
+
+          test -n "$(ls -A dist)" || { echo "::error::no deb or AppImage was produced"; exit 1; }
+          (cd dist && sha256sum * > SHA256SUMS)
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openidea-kylin-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish release
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/kylin-v')) || inputs.release }}
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('kylin-v{0}', needs.version.outputs.version) }}
+          name: OpenIDEA ${{ needs.version.outputs.version }} for Kylin
+          body: |
+            OpenIDEA ${{ needs.version.outputs.version }} built for Kylin / domestic Linux.
+
+            - `amd64` (x86_64) and `arm64` (aarch64) .deb packages
+            - AppImage for both architectures
+            - `SHA256SUMS` for integrity checks
+
+            Requires glibc >= 2.35 and webkit2gtk-4.1 on the target system.
+          files: dist/*
+          fail_on_unmatched_files: true
