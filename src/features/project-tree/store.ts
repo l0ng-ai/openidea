@@ -58,6 +58,8 @@ export interface ViewOptions extends TreeOptions {
   previewTab: boolean;
   /** Show a file's declarations as expandable rows below it. */
   showMembers: boolean;
+  /** Show the location of each project root beside its name. */
+  showRootPaths: boolean;
 }
 
 export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
@@ -69,6 +71,7 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   // IDEA's "Enable Preview Tab" is off by default.
   previewTab: false,
   showMembers: false,
+  showRootPaths: true,
 };
 
 function storedOptions(): ViewOptions {
@@ -232,7 +235,7 @@ export function selectModel(s: ProjectTreeState): TreeModel {
   const options = treeOptions(s);
   const contributed = projectViewRoots(extras);
   const memberRoots = s.members
-    ?.map((path) => ({ path, label: nameOf(path), icon: "", detail: path }))
+    ?.map((path) => ({ path, label: nameOf(path), icon: "" }))
     .sort((a, b) => {
       if (s.options.sortBy === "type") {
         const aType = s.projectTypes.get(a.path);

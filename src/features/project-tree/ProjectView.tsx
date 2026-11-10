@@ -253,6 +253,8 @@ interface RowProps {
   cut: boolean;
   dropTarget: boolean;
   detail: string | null;
+  /** Tooltip when no decoration gives one (a root's path while it is not shown beside it). */
+  hint?: string | null;
   onEditDone: () => void;
   onClick: (node: ProjectNode, e: ReactMouseEvent) => void;
   onDoubleClick: (node: ProjectNode, e: ReactMouseEvent) => void;
@@ -269,6 +271,7 @@ const Row = memo(function Row({
   cut,
   dropTarget,
   detail,
+  hint,
   onEditDone,
   onClick,
   onDoubleClick,
@@ -303,7 +306,7 @@ const Row = memo(function Row({
       data-project-path={node.placeholder ? undefined : node.path}
       data-project-key={node.key}
       data-dir={node.dir || undefined}
-      title={deco.tooltip}
+      title={deco.tooltip ?? hint ?? undefined}
       onClick={(e) => onClick(node, e)}
       onDoubleClick={(e) => onDoubleClick(node, e)}
       onPointerDown={(e) => onPointerDown(node, e)}
@@ -750,6 +753,11 @@ export function ProjectView() {
   };
 
   const cutPaths = useMemo(() => new Set(clipboard?.cut ? clipboard.paths : []), [clipboard]);
+  // A project root's location, shown beside its name (Project View › Show Root Paths) or on hover.
+  const rootPath = useCallback(
+    (node: ProjectNode) => (node.root && !node.icon ? tildify(node.path, home) : null),
+    [home],
+  );
 
   const renderNode = useCallback(
     (node: ProjectNode, state: TreeRowState) =>
@@ -762,14 +770,25 @@ export function ProjectView() {
           editing={editing}
           cut={cutPaths.has(node.path)}
           dropTarget={dropTarget === node.key}
-          detail={node.detail ?? (node.root && !node.icon ? tildify(node.path, home) : null)}
+          detail={node.detail ?? (rootPath(node) && options.showRootPaths ? rootPath(node) : null)}
+          hint={rootPath(node)}
           onEditDone={focusTree}
           onClick={onRowClick}
           onDoubleClick={onRowDoubleClick}
           onPointerDown={onRowPointerDown}
         />
       ),
-    [editing, cutPaths, dropTarget, home, focusTree, onRowClick, onRowDoubleClick, onRowPointerDown],
+    [
+      editing,
+      cutPaths,
+      dropTarget,
+      options.showRootPaths,
+      rootPath,
+      focusTree,
+      onRowClick,
+      onRowDoubleClick,
+      onRowPointerDown,
+    ],
   );
 
   if (!root) return null;
