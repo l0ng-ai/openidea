@@ -13,7 +13,7 @@ use ide_vfs::Watcher;
 use ide_workspace::documents::DocumentObserver;
 use ide_workspace::{DocumentInfo, Documents, FileMoves, LocalHistory, ProjectRoots, SettingsStore, SourceFolder};
 use parking_lot::{Mutex, RwLock};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1288,7 +1288,8 @@ fn navigation_roots_uncached(project: &Project, from: &Path) -> Vec<PathBuf> {
         .and_then(|w| w.projects.iter().filter(|p| from.starts_with(p)).max_by_key(|p| p.components().count()).cloned())
         .unwrap_or_else(|| project.root.clone());
     let mut roots = vec![own.clone()];
-    if let Some(deps) = settings.project_structure.member_dependencies.get(&ide_core::ipc_path::to_ipc(&own)) {
+    let own_key = ide_core::ipc_path::to_ipc(&own);
+    if let Some(deps) = member_dependencies_for(&settings.project_structure.member_dependencies, &own_key) {
         for dep in deps {
             let dep = PathBuf::from(dep.trim());
             if dep.is_dir() && !roots.contains(&dep) {
@@ -1304,6 +1305,16 @@ fn navigation_roots_uncached(project: &Project, from: &Path) -> Vec<PathBuf> {
         }
     }
     roots
+}
+
+/// The dependency roots configured for `own`, keyed by IPC path. The settings UI writes
+/// keys as it received the member paths (IPC form); a hand-edited settings.toml may not,
+/// so compare normalized rather than only by exact match.
+fn member_dependencies_for<'a>(map: &'a BTreeMap<String, Vec<String>>, own_key: &str) -> Option<&'a Vec<String>> {
+    if let Some(deps) = map.get(own_key) {
+        return Some(deps);
+    }
+    map.iter().find(|(key, _)| ide_core::ipc_path::to_ipc(&PathBuf::from(key)) == own_key).map(|(_, deps)| deps)
 }
 
 fn extra_content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
@@ -1929,6 +1940,15 @@ mod composer_tests {
 #[cfg(test)]
 mod content_roots_tests {
     use super::content_roots;
+
+    #[test]
+    #[cfg(windows)]
+    fn member_dependencies_match_hand_written_keys() {
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("B:\\proj\\member".to_string(), vec!["B:/dep".to_string()]);
+        let deps = super::member_dependencies_for(&map, "B:/proj/member");
+        assert_eq!(deps.map(Vec::as_slice), Some(["B:/dep".to_string()].as_slice()));
+    }
 
     #[test]
     fn dependency_projects_join_the_content_roots() {
