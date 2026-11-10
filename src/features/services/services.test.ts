@@ -612,6 +612,15 @@ describe("docker compose detection and targets", () => {
     ]);
   });
 
+  it("recognises service names beginning with an underscore", () => {
+    const content = "services:\n  _worker:\n    image: busybox\n";
+    expect(isComposeContent(content)).toBe(true);
+    expect(fileTargets("/p/stack.yml", content)).toEqual([
+      { kind: "composeAll", line: 0 },
+      { kind: "composeService", line: 1, service: "_worker" },
+    ]);
+  });
+
   it("detects compose files by name and content, and respects Keep / Not a Compose file overrides", () => {
     expect(isComposeFile("/git/gocommon/docker/playground-compose.yml")).toBe(true);
     expect(fileIconName("playground-compose.yml", "/git/gocommon/docker/playground-compose.yml")).toBe("file-docker");

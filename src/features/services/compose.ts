@@ -216,6 +216,8 @@ const COMPOSE_SERVICE_KEYS = new Set([
 
 export const COMPOSE_SCAN_LIMIT = 64 * 1024;
 
+const isServiceName = (name: string) => /^[a-zA-Z0-9_.-]+$/.test(name) && !name.startsWith("x-");
+
 /** Whether a bounded YAML prefix looks like a Docker Compose configuration. */
 export function isComposeContent(text: string): boolean {
   const lines = text
@@ -253,7 +255,7 @@ export function isComposeContent(text: string): boolean {
       propIndent = null;
       const match = KEY.exec(line);
       const name = match?.[3] ?? match?.[4] ?? match?.[5];
-      service = !!name && /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name) && !name.startsWith("x-");
+      service = !!name && isServiceName(name);
       continue;
     }
     if (service && lead > serviceIndent) {
@@ -339,8 +341,7 @@ export function composeTargets(text: string): DockerTarget[] {
     if (lead !== indent) continue;
     const m = KEY.exec(line);
     const service = m?.[3] ?? m?.[4] ?? m?.[5];
-    if (service && /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(service) && !service.startsWith("x-"))
-      out.push({ kind: "composeService", line: i, service });
+    if (service && isServiceName(service)) out.push({ kind: "composeService", line: i, service });
   }
   return out;
 }
