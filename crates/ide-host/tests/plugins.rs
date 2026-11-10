@@ -542,6 +542,30 @@ fn project_write_stays_inside_the_project() {
     assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
 }
 
+#[cfg(unix)]
+#[test]
+fn project_writes_confine_symlink_targets() {
+    use std::os::unix::fs::symlink;
+    let f = fixture(Limits::default());
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-symlink-writer", "project.write"));
+    let outside = f._tmp.path().join("secret.txt");
+    let missing = f._tmp.path().join("missing.txt");
+    symlink(&outside, f.project.join("outside.txt")).unwrap();
+    symlink(&missing, f.project.join("dangling.txt")).unwrap();
+    for name in ["outside.txt", "dangling.txt"] {
+        let error = f.run("misbehave", "projwrite", Some(name)).unwrap_err();
+        assert!(error.contains("access outside the project root is not allowed"), "{error}");
+    }
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "top secret");
+    assert!(!missing.exists());
+    for (name, target) in [("inside.txt", "src/notes.txt"), ("new.txt", "new/deep.txt")] {
+        symlink(target, f.project.join(name)).unwrap();
+        f.run("misbehave", "projwrite", Some(name)).unwrap();
+        assert_eq!(std::fs::read_to_string(f.project.join(target)).unwrap(), "written inside the project\n");
+        assert!(std::fs::symlink_metadata(f.project.join(name)).unwrap().is_symlink());
+    }
+}
+
 /// `fs.write` replaces files the grant covers and nothing else, through the
 /// real component.
 #[test]
