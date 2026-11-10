@@ -46,7 +46,15 @@ import {
   type TabItem,
   type TabsDnd,
 } from "@/ui";
-import { editorController, isTextInput, tabIcon, tabTitle, useTabs, type VirtualInputData } from "../controller";
+import {
+  editorController,
+  isTextInput,
+  tabIcon,
+  tabTitle,
+  tabTrailing,
+  useTabs,
+  type VirtualInputData,
+} from "../controller";
 import { useDocMeta } from "../model/document";
 import { inputDirty } from "../model/customDocuments";
 import type { LayoutNode, SplitEdge, Tab } from "../model/tabs";
@@ -193,6 +201,8 @@ function PaneView({ paneId }: { paneId: string }) {
           : names.filter((n) => n === name).length > 1 && t.input.path
             ? basename(dirname(t.input.path))
             : null;
+      const kindMark = tabTrailing(t.input, kinds);
+      const pin = t.pinned ? <Icon name="pin" size={11} className={styles.pin} label="Pinned" /> : null;
       return {
         id: t.id,
         label: (
@@ -213,7 +223,13 @@ function PaneView({ paneId }: { paneId: string }) {
         color: colors[i] || undefined,
         tint: tints[i] || undefined,
         tooltip: virtualTooltip(t.input) ?? (showFullPathOnHover ? (t.input.path ?? name) : undefined),
-        trailing: t.pinned ? <Icon name="pin" size={11} className={styles.pin} label="Pinned" /> : undefined,
+        trailing:
+          kindMark || pin ? (
+            <>
+              {kindMark}
+              {pin}
+            </>
+          ) : undefined,
       };
     });
   }, [
