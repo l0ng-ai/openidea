@@ -307,6 +307,89 @@ describe("message tags", () => {
 });
 
 describe("scrolling", () => {
+  it.each(["wheel", "touch", "ArrowUp", "PageUp", "Home", "Shift+Space"])(
+    "releases following before an upward %s scroll, even within the bottom threshold",
+    async (method) => {
+      useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Initial reply" }]]]) });
+      render(<SessionEditor input={input("A")} />);
+      const el = stream();
+      let height = 1000;
+      Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
+      Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+      el.scrollTop = 600;
+      fireEvent.scroll(el);
+      if (method === "wheel") fireEvent.wheel(el, { deltaY: -4 });
+      if (method === "touch") {
+        fireEvent.touchStart(el, { touches: [{ clientY: 100 }] });
+        fireEvent.touchMove(el, { touches: [{ clientY: 110 }] });
+      }
+      if (["ArrowUp", "PageUp", "Home"].includes(method)) fireEvent.keyDown(el, { key: method });
+      if (method === "Shift+Space") fireEvent.keyDown(el, { key: " ", shiftKey: true });
+      // A chunk can land before the browser dispatches the scroll event.
+      height = 1004;
+      act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Streaming" }]]]) }));
+      expect(el.scrollTop).toBe(600);
+      el.scrollTop = 588;
+      fireEvent.scroll(el);
+      // A queued event at the same offset must not re-enable following near the bottom.
+      fireEvent.scroll(el);
+      el.scrollTop = 592;
+      fireEvent.scroll(el);
+      height = 1008;
+      act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "More streaming" }]]]) }));
+      expect(el.scrollTop).toBe(592);
+      expect(screen.getByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
+      // Scrolling down to the end resumes following.
+      fireEvent.wheel(el, { deltaY: 12 });
+      el.scrollTop = 608;
+      fireEvent.scroll(el);
+      height = 1100;
+      act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Latest" }]]]) }));
+      expect(el.scrollTop).toBe(1100);
+    },
+  );
+
+  it("does not move the viewport while the scrollbar is held during streaming", () => {
+    useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Initial reply" }]]]) });
+    render(<SessionEditor input={input("A")} />);
+    const el = stream();
+    let height = 1000;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    fireEvent.pointerDown(el);
+    height = 1100;
+    act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Streaming" }]]]) }));
+    expect(el.scrollTop).toBe(600);
+    el.scrollTop = 588;
+    fireEvent.scroll(el);
+    fireEvent.pointerUp(window);
+    height = 1200;
+    act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "More streaming" }]]]) }));
+    expect(el.scrollTop).toBe(588);
+  });
+
+  it("keeps following when an inner tool output consumes the upward wheel", () => {
+    const transcript: AgentEntry[] = [tool("live", { status: "running", output: "Tool output" })];
+    useAgents.setState({ entries: new Map([["A", transcript]]) });
+    render(<SessionEditor input={input("A")} />);
+    const el = stream();
+    const output = screen.getByText("Tool output");
+    let height = 1000;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    output.style.overflowY = "auto";
+    output.scrollTop = 100;
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    fireEvent.wheel(output, { deltaY: -4 });
+    height = 1100;
+    act(() => useAgents.setState({ entries: new Map([["A", [...transcript, { type: "agent", text: "Streaming" }]]]) }));
+    expect(el.scrollTop).toBe(1100);
+    expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+  });
+
   it("hides Jump to Latest and follows new replies after retracting the conversation", async () => {
     render(<SessionEditor input={input("A")} />);
     const el = stream();
