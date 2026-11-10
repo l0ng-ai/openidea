@@ -57,7 +57,7 @@ const sessionPayloadTask = (payload: string): string | null => {
   }
 };
 
-export function TaskStatusIcon({ status }: { status: Status }) {
+function TaskStatusIcon({ status }: { status: Status }) {
   switch (status) {
     case "needsInput":
       return <Icon name="warning" size={13} label="Needs input" />;

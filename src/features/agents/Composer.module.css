@@ -99,15 +99,10 @@
   margin-left: auto;
 }
 /* Attach/reference buttons share the send button's 24px footprint and chrome. */
+/* Plain toolbar icons, framed only on hover like the rest of the IDE's toolbars. */
 .composerButton {
   width: var(--h-control);
   height: var(--h-control);
-  border-radius: var(--radius-small);
-  background: var(--bg-elev);
-  box-shadow: inset 0 0 0 1px var(--border);
-}
-.composerButton:hover:not(:disabled) {
-  background: var(--bg-hover);
 }
 .spacer {
   flex: 1;
@@ -319,6 +314,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* The effort is in the model popup: the button keeps the model's name readable. */
+  .chipDetail {
+    display: none;
   }
   .inlineSetting {
     display: none;

@@ -231,7 +231,11 @@ describe("conversation rows", () => {
     expect(footer?.firstElementChild).toHaveClass(styles.messageTime!);
     expect(footer?.firstElementChild).toHaveTextContent("12s");
     expect(footer?.lastElementChild).toHaveClass(styles.messageActions!);
-    expect(stream().querySelector(`.${styles.userMessage} > .${styles.messageFooter}`)).not.toBeNull();
+    // Your message keeps its actions and time beside "You", above it.
+    expect(stream().querySelector(`.${styles.userMessage} > .${styles.messageFooter}`)).toBeNull();
+    expect(
+      stream().querySelector(`.${styles.userMessage} > .${styles.messageHead} .${styles.messageActions}`),
+    ).not.toBeNull();
   });
 
   it("builds only the requested tail, with absolute indexes", () => {

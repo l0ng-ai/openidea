@@ -56,7 +56,6 @@ import {
 } from "@/ui";
 import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
-import { TaskStatusIcon } from "./AgentsView";
 import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
 import {
@@ -190,13 +189,6 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
       }}
     >
       <div className={styles.conversation} hidden={docked && changesOpen}>
-        <Header
-          task={task}
-          changes={changes ?? null}
-          changesOpen={changesOpen}
-          onToggleChanges={() => setChangesOpen(!changesOpen)}
-          docked={docked}
-        />
         {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
         <FoldedContent.Provider value={finding && shown}>
           <Stream
@@ -272,41 +264,28 @@ function useLocalHead(status: AgentTask["status"] | null, root: string | null): 
   return local ? head : null;
 }
 
-function Header({
+/** The task's terminal and changes, at the end of its status line. */
+function StatusActions({
   task,
   changes,
   changesOpen,
   onToggleChanges,
-  docked,
 }: {
   task: AgentTask;
   changes: AgentChange[] | null;
   changesOpen: boolean;
   onToggleChanges: () => void;
-  /** The tool window bar above a docked conversation already shows the title. */
-  docked?: boolean;
 }) {
   const tx = useTx();
   const count = changes?.length ?? 0;
   return (
-    <div
-      className={styles.header}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        showContextMenu(e, taskMenu([task]));
-      }}
-    >
-      <TaskStatusIcon status={task.status} />
-      {!docked && (
-        <span className={styles.title} title={task.title}>
-          {task.title}
-        </span>
-      )}
-      <span className={styles.headerSpacer} />
-      <IconButton icon="terminal" title="Terminal" onClick={() => void executeAction("terminal.openAt", task.cwd)} />
-      {task.status === "archived" && (
-        <IconButton icon="undo" title="Unarchive Task" action="agents.unarchiveTasks" actionArg={[task.id]} />
-      )}
+    <span className={styles.statusActions}>
+      <IconButton
+        size="small"
+        icon="terminal"
+        title="Terminal"
+        onClick={() => void executeAction("terminal.openAt", task.cwd)}
+      />
       <button
         type="button"
         className={styles.changesToggle}
@@ -319,7 +298,7 @@ function Header({
         <Icon name="toolwindow-changes" size={14} />
         {count > 0 && <span>{count}</span>}
       </button>
-    </div>
+    </span>
   );
 }
 
@@ -328,21 +307,35 @@ function SessionStatus({
   task,
   entries,
   head,
+  changes,
+  changesOpen,
+  onToggleChanges,
 }: {
   task: AgentTask;
   entries: AgentEntry[] | null;
   head: string | null;
+  changes: AgentChange[] | null;
+  changesOpen: boolean;
+  onToggleChanges: () => void;
 }) {
   const tx = useTx();
   const project = useProject((s) => s.project);
   const projectName = project?.workspace ? basename(task.projectRoot ?? project.root) : null;
   const where = task.isolation === "worktree" ? branchLabel(task.branch) : null;
+  const pickedModel = task.status !== "archived" && task.config.some((o) => o.category === "model");
   return (
-    <div className={styles.statusBar}>
+    <div
+      className={styles.statusBar}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        showContextMenu(e, taskMenu([task]));
+      }}
+    >
       <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
       <span className={styles.statusText} title={task.cwd}>
         {providerName(task.provider)}
-        {task.model ? ` · ${task.model}` : ""}
+        {/* The composer's model picker shows the model when the agent offers one. */}
+        {task.model && !pickedModel ? ` · ${task.model}` : ""}
         {projectName ? ` · ${projectName}` : ""}
         {" · "}
         {where ?? (
@@ -356,6 +349,7 @@ function SessionStatus({
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
       </span>
       <Meters task={task} entries={entries} />
+      <StatusActions task={task} changes={changes} changesOpen={changesOpen} onToggleChanges={onToggleChanges} />
     </div>
   );
 }
@@ -1325,26 +1319,8 @@ function UserMessage({
   const files = entry.attachments.slice(0, entry.attachments.length - images.length);
   return (
     <div className={clsx(styles.message, styles.userMessage)}>
+      {/* Actions and the time sit beside the author on hover: the reply under it has the turn's duration. */}
       <div className={styles.messageHead}>
-        <span className={styles.role}>
-          <T>You</T>
-        </span>
-      </div>
-      <div className={styles.user}>
-        <MessageText text={entry.text} />
-        <ImageStrip images={images} />
-        {files.length > 0 && (
-          <div className={styles.attachments}>
-            {files.map((a, i) => (
-              <span key={i} className={styles.attachment}>
-                <Icon name={fileIconName(a)} size={12} />
-                {a}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-      <div className={styles.messageFooter}>
         <MessageActions>
           <IconButton size="small" icon="copy" title="Copy" onClick={() => void copyText(entry.text)} />
           {inPlace && entry.text && (
@@ -1381,7 +1357,24 @@ function UserMessage({
             />
           )}
         </MessageActions>
-        <MessageTime sentMs={entry.sentMs ?? null} doneMs={entry.doneMs ?? null} />
+        <MessageTime sentMs={entry.sentMs ?? null} doneMs={null} />
+        <span className={styles.role}>
+          <T>You</T>
+        </span>
+      </div>
+      <div className={styles.user}>
+        <MessageText text={entry.text} />
+        <ImageStrip images={images} />
+        {files.length > 0 && (
+          <div className={styles.attachments}>
+            {files.map((a, i) => (
+              <span key={i} className={styles.attachment}>
+                <Icon name={fileIconName(a)} size={12} />
+                {a}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2504,7 +2497,14 @@ function SessionComposer({
     );
   return (
     <div className={styles.composerArea}>
-      <SessionStatus task={task} entries={entries} head={head} />
+      <SessionStatus
+        task={task}
+        entries={entries}
+        head={head}
+        changes={changes}
+        changesOpen={changesOpen}
+        onToggleChanges={onToggleChanges}
+      />
       {task.status === "archived" && (
         <div className={styles.banner}>
           <span className={styles.bannerText}>

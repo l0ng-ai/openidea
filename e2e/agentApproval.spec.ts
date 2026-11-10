@@ -104,9 +104,10 @@ for (const theme of ["dark", "light"] as const) {
           userOnRight: prompt.getBoundingClientRect().right > reply.getBoundingClientRect().right,
           authorBeforeWork:
             transcript.querySelector('[class*="_agentAuthor_"]')?.nextElementSibling?.matches("details") ?? false,
-          footerAligned:
-            Math.abs(prompt.getBoundingClientRect().right - prompt.nextElementSibling!.getBoundingClientRect().right) <
-            1,
+          headAligned:
+            Math.abs(
+              prompt.getBoundingClientRect().right - prompt.previousElementSibling!.getBoundingClientRect().right,
+            ) < 1,
           cardWidth: rect.width,
           available: bounds.width,
           replyFooter: reply.nextElementSibling != null,
@@ -122,7 +123,7 @@ for (const theme of ["dark", "light"] as const) {
       expect(geometry.replyBorder).toBe("0px");
       expect(geometry.userOnRight).toBe(true);
       expect(geometry.authorBeforeWork).toBe(true);
-      expect(geometry.footerAligned).toBe(true);
+      expect(geometry.headAligned).toBe(true);
       // The turn waits on the approval: its interim message has no footer yet.
       expect(geometry.replyFooter).toBe(false);
       if (width === 760) expect(geometry.cardWidth).toBeGreaterThan(geometry.available * 0.8);

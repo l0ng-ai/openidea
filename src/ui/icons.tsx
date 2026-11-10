@@ -68,6 +68,7 @@ const ICONS = {
   "file-md": "fileTypes/markdown",
   "file-image": "fileTypes/image",
   paperclip: "openidea/general/paperclip",
+  image: "openidea/general/image",
   "file-config": "fileTypes/config",
   "file-python": "fileTypes/python",
   "file-jupyter": "fileTypes/jupyter",

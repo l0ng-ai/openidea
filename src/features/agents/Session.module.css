@@ -34,38 +34,11 @@
   width: auto;
 }
 
-.header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 6px 0 12px;
-  border-bottom: 1px solid var(--border);
-  flex: none;
-  min-width: 0;
-  overflow: hidden;
-}
-.header > * {
-  flex: none;
-}
-/* Shrinks ahead of the meters. */
-.title {
-  flex: 0 1000 auto;
-  min-width: 0;
-  font-weight: 600;
-  color: var(--fg-strong);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.header > .headerSpacer {
-  flex: 1 1 0;
-}
 .providerIcon {
   color: var(--fg-muted);
 }
 
-/* The task's state, just above the composer; the header keeps only the actions. */
+/* The task's state and its terminal and changes, just above the composer. */
 .statusBar {
   display: flex;
   align-items: center;
@@ -74,6 +47,16 @@
   padding: 0 2px;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
+}
+.statusActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+.statusActions > .changesToggle {
+  height: var(--h-control-small);
+  padding: 0 4px;
 }
 .statusText {
   flex: 1 1 0;
@@ -191,8 +174,7 @@
   width: fit-content;
   max-width: min(var(--session-card-width), 720px);
 }
-.userMessage > .messageHead,
-.userMessage > .messageFooter {
+.userMessage > .messageHead {
   justify-content: flex-end;
 }
 /* The actions and time below a message, in flow so they never cover the next entry. */
@@ -257,15 +239,18 @@
   -webkit-user-select: none;
   user-select: none;
 }
-.messageFooter > .messageTime {
+.messageFooter > .messageTime,
+.messageHead > .messageTime {
   opacity: 0;
 }
-.conversationRow:nth-last-child(1 of [data-message]) .messageFooter > .messageTime,
-.message:hover .messageFooter > .messageTime,
+/* A turn's final reply keeps its time and actions in view; your messages show theirs on hover. */
+.conversationRow:nth-last-child(1 of [data-message]) .agentMessage .messageTime,
+.conversationRow:nth-last-child(1 of [data-message]) .agentMessage .messageActions,
+.conversationRow:nth-last-child(1 of [data-message]) .reply .messageActions,
+.message:hover .messageTime,
 .agentMessage:hover .messageFooter > .messageTime,
-.message:focus-within .messageFooter > .messageTime,
+.message:focus-within .messageTime,
 .agentMessage:focus-within .messageFooter > .messageTime,
-.conversationRow:nth-last-child(1 of [data-message]) .messageActions,
 .message:hover .messageActions,
 .reply:hover .messageActions,
 .agentMessage:hover .messageActions,

@@ -626,7 +626,7 @@ export function Composer(props: ComposerProps) {
             }}
           />
           <IconButton
-            icon="file-image"
+            icon="image"
             title="Attach Image…"
             className={styles.composerButton}
             onClick={() => imageInput.current?.click()}
