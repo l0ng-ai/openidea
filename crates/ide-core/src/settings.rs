@@ -573,6 +573,8 @@ pub struct EditorSettings {
     pub show_gutter_icons: bool,
     pub code_style: CodeStyleSettings,
     pub encodings: EncodingSettings,
+    /// Location chooser rows (Choose Declaration / Implementation): which extras to show.
+    pub chooser: ChooserSettings,
 }
 
 impl Default for EditorSettings {
@@ -613,7 +615,26 @@ impl Default for EditorSettings {
             show_gutter_icons: true,
             code_style: CodeStyleSettings::default(),
             encodings: EncodingSettings::default(),
+            chooser: ChooserSettings::default(),
         }
+    }
+}
+
+/// Editor › General › Location Choosers: which extras the location chooser rows show.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ChooserSettings {
+    /// The target line's source preview after the name.
+    pub signature: bool,
+    /// The file name before the path.
+    pub file_name: bool,
+    /// Full paths outside the project (else `…`-truncated tails).
+    pub full_path: bool,
+}
+
+impl Default for ChooserSettings {
+    fn default() -> Self {
+        Self { signature: false, file_name: false, full_path: false }
     }
 }
 
