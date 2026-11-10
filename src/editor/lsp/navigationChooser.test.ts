@@ -5,12 +5,31 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { readManyFileLines } = vi.hoisted(() => ({
+const { readManyFileLines, findSymbols } = vi.hoisted(() => ({
   readManyFileLines: vi.fn<() => Promise<Map<string, string[] | null>>>(async () => new Map()),
+  findSymbols: vi.fn<
+    (
+      query: string,
+      filter: string,
+      limit: number,
+    ) => Promise<
+      Array<{
+        name: string;
+        kind: string;
+        container: string | null;
+        path: string;
+        range: { start: { line: number; col: number } };
+      }>
+    >
+  >(async () => []),
 }));
 vi.mock("./files", async (orig) => {
   const real = await orig<typeof import("./files")>();
   return { ...real, readManyFileLines };
+});
+vi.mock("@/platform/ipc", async (orig) => {
+  const real = await orig<typeof import("@/platform/ipc")>();
+  return { ...real, call: (p: Promise<unknown>) => p, commands: { ...real.commands, findSymbols } };
 });
 
 const { locationItems } = await import("./navigation");
@@ -37,6 +56,8 @@ function lean() {
 
 beforeEach(() => {
   useProject.setState({ project: null, settings: null });
+  findSymbols.mockReset();
+  findSymbols.mockResolvedValue([]);
 });
 afterEach(() => {
   useProject.setState({ project: null, settings: null });
@@ -210,6 +231,51 @@ describe("locationItems", () => {
     )[0]!;
     expect(item.detail).not.toContain("factory");
     expect(item.detail).not.toContain("helper");
+    expect(item.detail).toContain("_StatefulDataset");
+  });
+
+  it("prefers the index container over the enclosing-type heuristic", async () => {
+    const line = "    def refresh(self) -> None:";
+    const lines = ["", "class _StatefulDataset(Base):", "", "    # a class does mention here", line];
+    readManyFileLines.mockResolvedValue(new Map([["/p/src/mod.py", lines]]));
+    findSymbols.mockResolvedValue([
+      {
+        name: "refresh",
+        kind: "method",
+        container: "DatasetMixin",
+        path: "/p/src/mod.py",
+        range: { start: { line: 4, col: 4 } },
+      },
+    ]);
+    project({});
+    const item = (
+      await locationItems([
+        {
+          path: "/p/src/mod.py",
+          uri: null,
+          range: { start: { line: 4, col: 4 }, end: { line: 4, col: 11 } },
+        },
+      ])
+    )[0]!;
+    // The index's answer wins even though the heuristic would answer from the comment.
+    expect(item.detail).not.toContain("class");
+    expect(item.detail).toContain("DatasetMixin");
+  });
+
+  it("falls back to the enclosing-type heuristic when the index misses", async () => {
+    const lines = ["", "class _StatefulDataset(Base):", "", "    def refresh(self) -> None:"];
+    readManyFileLines.mockResolvedValue(new Map([["/p/src/mod.py", lines]]));
+    findSymbols.mockResolvedValue([]);
+    project({});
+    const item = (
+      await locationItems([
+        {
+          path: "/p/src/mod.py",
+          uri: null,
+          range: { start: { line: 3, col: 8 }, end: { line: 3, col: 15 } },
+        },
+      ])
+    )[0]!;
     expect(item.detail).toContain("_StatefulDataset");
   });
 

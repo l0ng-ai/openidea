@@ -23,6 +23,7 @@ import {
 } from "@codemirror/view";
 import { Channel } from "@tauri-apps/api/core";
 import {
+  call,
   commands,
   isCancelled,
   nextRequestId,
@@ -136,11 +137,47 @@ function chooserWhere(root: string, path: string, line: number, fullPaths: boole
   return `${p === path && !fullPaths ? tailPath(p) : p}:${line}`;
 }
 
+/**
+ * The index's container for each server target (exact path+range match), keyed by
+ * target index; misses (fresh edits, excluded folders, outside the project) fall
+ * back to the enclosing-type heuristic. One query per distinct target name.
+ */
+async function indexContainers(
+  locs: readonly DeclarationTarget[],
+  files: ReadonlyMap<string, string[] | null>,
+): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  const byName = new Map<string, number[]>();
+  locs.forEach((l, i) => {
+    const name = targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col) ?? "";
+    if (name) byName.set(name, (byName.get(name) ?? []).concat(i));
+  });
+  await Promise.all(
+    [...byName].map(async ([name, at]) => {
+      try {
+        const matches = await call(commands.findSymbols(name, "all", 100));
+        for (const i of at) {
+          const l = locs[i]!;
+          const hit = matches.find(
+            (m) =>
+              m.path === l.path && m.range.start.line === l.range.start.line && m.range.start.col === l.range.start.col,
+          );
+          if (hit?.container) out.set(i, hit.container);
+        }
+      } catch {
+        // The index is optional here; the heuristic answers instead.
+      }
+    }),
+  );
+  return out;
+}
+
 /** Popup items for locations, lean rows like IDEA's chooser (extras per Settings › Editor › Location Choosers). */
 export async function locationItems(locs: readonly DeclarationTarget[]): Promise<ListPopupItem[]> {
   const files = await readManyFileLines(locs.map((l) => l.path));
   const root = useProject.getState().project?.root ?? "";
   const extras = editorPrefs().chooser;
+  const indexed = extras.container ? await indexContainers(locs, files) : new Map<number, string>();
   return locs.map((l, i) => {
     const where = extras.path ? chooserWhere(root, l.path, l.range.start.line + 1, extras.fullPath) : "";
     const preview = extras.signature ? files.get(l.path)?.[l.range.start.line]?.trim() : undefined;
@@ -156,7 +193,8 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
       };
     // Server targets: the declared name (speed search matches it), position after it.
     const name = targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
-    const container = extras.container ? enclosingType(files.get(l.path), l) : null;
+    // The index knows the container precisely; the enclosing-type scan covers what it misses.
+    const container = extras.container ? (indexed.get(i) ?? enclosingType(files.get(l.path), l)) : null;
     return {
       id: `${i}`,
       label: name ?? basename(l.path),
