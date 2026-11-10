@@ -11,6 +11,7 @@ import {
 import { AgentsView } from "./AgentsView";
 import { AgentsStatus } from "./AgentsStatus";
 import { activate } from "./index";
+import { openChangeDiff } from "./SessionEditor";
 import * as actions from "@/platform/actions";
 import { TASK_DRAG } from "./model";
 import {
@@ -54,6 +55,7 @@ vi.mock("@/platform/ipc", async (original) => ({
     },
     agentProviders: async () => ({ status: "ok", data: [] }),
     agentChanges: async () => ({ status: "ok", data: [] }),
+    agentBaseText: async (_task: string, path: string) => ({ status: "ok", data: `base of ${path}` }),
     agentEntries: async () => ({ status: "ok", data: await backend.entries }),
   },
 }));
@@ -401,5 +403,31 @@ describe("streaming while the conversation loads", () => {
     emit({ type: "append", task: "one", subagent: null, index: 1, from: 11, text: "!" });
     expect(useAgents.getState().entries.get("one")?.[1]).toEqual({ type: "agent", text: "Hello there!" });
     expect(useAgents.getState().entryLoads.size).toBe(0);
+  });
+});
+
+describe("the diff of an agent change", () => {
+  const change = (path: string) => ({
+    path,
+    relPath: path.slice("/project/".length),
+    kind: "modified" as const,
+    added: 1,
+    removed: 1,
+  });
+
+  it("lists the task's other changed files, so F7 moves on to the next one", async () => {
+    useAgents.setState({ changes: new Map([["one", [change("/project/a.ts"), change("/project/b.ts")]]]) });
+    await openChangeDiff(task("one"), "/project/b.ts");
+    const input = backend.openInput.mock.lastCall![0];
+    expect(input.data.path).toBe("/project/b.ts");
+    expect(input.data.left).toEqual({ type: "text", text: "base of /project/b.ts", label: "Base" });
+    expect(input.data.chain.map((d: { path: string }) => d.path)).toEqual(["/project/a.ts", "/project/b.ts"]);
+    expect(input.data.chain[0].left.text).toBe("base of /project/a.ts");
+  });
+
+  it("opens a file outside the change list on its own", async () => {
+    useAgents.setState({ changes: new Map([["one", [change("/project/a.ts")]]]) });
+    await openChangeDiff(task("one"), "/project/c.ts");
+    expect(backend.openInput.mock.lastCall![0].data.chain).toBeUndefined();
   });
 });
