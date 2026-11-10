@@ -304,7 +304,7 @@ pub fn sync_maven(
     let mut model = maven::load_with_linked(
         root,
         maven::default_local_repo(),
-        &options.profiles,
+        &options.maven_settings.profiles(&options.profiles),
         &options.maven_settings.linked_projects,
     );
     maven::UnlinkedProjects::from_model(&model, &options.maven_settings).filter(&mut model);
@@ -816,6 +816,40 @@ mod tests {
         let mut m = gradle::load(&root).unwrap();
         apply_gradle_cache(&root, &cache_dir, &mut m);
         assert!(m.stale, "gradle.properties is watched");
+    }
+
+    #[test]
+    fn applied_script_edits_invalidate_the_cached_gradle_model() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let cache_dir = tmp.path().join("cache");
+        std::fs::create_dir_all(root.join("gradle")).unwrap();
+        std::fs::write(root.join("build.gradle"), "apply from: 'gradle/dependencies.gradle'").unwrap();
+        let applied = root.join("gradle/dependencies.gradle");
+        std::fs::write(&applied, "implementation 'g:a:1'").unwrap();
+        let model = gradle::load(&root).unwrap();
+        let cache = GradleCache {
+            hash: hash_gradle_files(&gradle::build_files(&root, &model)),
+            projects: vec![ReportedProject {
+                path: ":".into(),
+                dir: root.to_string_lossy().into_owned(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        write_cache(&cache_dir, GRADLE_CACHE, &cache).unwrap();
+        let stale = || {
+            let mut model = gradle::load(&root).unwrap();
+            apply_gradle_cache(&root, &cache_dir, &mut model);
+            model.stale
+        };
+        assert!(!stale());
+        std::fs::write(&applied, "// comment\nimplementation   'g:a:1'\n").unwrap();
+        assert!(!stale());
+        std::fs::write(&applied, "implementation 'g:a:2'").unwrap();
+        assert!(stale());
+        std::fs::remove_file(&applied).unwrap();
+        assert!(stale());
     }
 
     #[test]

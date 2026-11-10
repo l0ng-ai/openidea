@@ -163,3 +163,24 @@ describe("merged title bar menu", () => {
     },
   );
 });
+
+describe("compact window header", () => {
+  it("shows the window title and follows it, without toolbar widgets", async () => {
+    document.title = "demo – src/main.rs";
+    render(<TitleBar compact />);
+    const bar = document.querySelector("header[data-titlebar='compact']")!;
+    expect(bar.textContent).toBe("demo – src/main.rs");
+    expect(bar.querySelector("button")).toBeNull();
+    await act(async () => {
+      document.title = "demo – Cargo.toml";
+      await Promise.resolve();
+    });
+    expect(bar.textContent).toBe("demo – Cargo.toml");
+  });
+
+  it("prefers an explicit title (LightEdit)", () => {
+    document.title = "ignored";
+    render(<TitleBar compact lightEdit title="notes.txt" />);
+    expect(document.querySelector("header[data-titlebar='compact']")!.textContent).toBe("notes.txt");
+  });
+});

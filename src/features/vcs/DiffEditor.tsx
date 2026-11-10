@@ -13,7 +13,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { EditorView, keymap } from "@codemirror/view";
-import { Prec, Text, type Extension } from "@codemirror/state";
+import { Compartment, Prec, Text, type Extension } from "@codemirror/state";
 import { history, historyKeymap } from "@codemirror/commands";
 import {
   MergeView,
@@ -27,12 +27,16 @@ import {
 } from "@codemirror/merge";
 import { attachDocument, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
 import { setFindOpen } from "@/editor/core/cm/find";
+import { softWrapActive } from "@/editor/core/cm/prefs";
 import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
 import { getContext, setContext } from "@/platform/context";
+import { editorPrefs } from "@/platform/editorSettings";
 import { call, commands } from "@/platform/ipc";
 import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import { IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
+import { registerSoftWrapSurface } from "@/workbench/softWrap";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { changedLineGutters, diffOverview, diffWords, languageFor, viewerBase } from "./cm";
 import { applyChunk, arrowControls, chunkAt, hoverRevert, revertUnifiedChunk } from "./diffControls";
@@ -51,6 +55,9 @@ import {
 import {
   chainNeighbour,
   diffTitle,
+  detectLineEnding,
+  liveSideText,
+  lineEndingBadge,
   isIndex,
   isWorktree,
   loadSide,
@@ -215,6 +222,7 @@ export function DiffEditor({
   input,
   toolbarActions,
   onNeighbour,
+  onJumpToSource,
 }: {
   input: EditorInput;
   toolbarActions?: ReactNode;
@@ -224,6 +232,8 @@ export function DiffEditor({
    * own content, as a modal dialog hides the editor area.
    */
   onNeighbour?: (data: DiffData) => void;
+  /** Called as Jump to Source opens the file in an editor: a modal host closes, or the editor stays hidden behind it. */
+  onJumpToSource?: () => void;
 }) {
   const data = input.data as DiffData;
   const { path, left, right } = data;
@@ -327,7 +337,7 @@ export function DiffEditor({
     };
   }, [path]);
 
-  const updateChunkInfo = useCallback(() => {
+  const updateChunkInfo = useCallback((docChanged = false) => {
     const v = viewsRef.current?.b;
     if (!v) return;
     const chunks = getChunks(v.state)?.chunks ?? [];
@@ -335,6 +345,7 @@ export function DiffEditor({
     const current = chunks.findIndex((c) => c.fromB <= head && head <= Math.max(c.fromB, c.endB));
     const { moves, whitespaceOnly } = getDiffInsights(chunks);
     setChunkInfo((p) =>
+      !docChanged &&
       p.count === chunks.length &&
       p.current === current &&
       p.moves === moves.length &&
@@ -358,6 +369,24 @@ export function DiffEditor({
   const editableB = !binary && !!attached?.b && !attached.b.readOnly;
   const ready = !!attached && !!statics && lang !== null && binary !== null;
 
+  // Soft wraps follow the editor's (Settings › Editor › General) unless toggled in the viewer settings.
+  const editorSoftWrap = useProject((s) => softWrapActive(s.settings?.editor?.softWrap, editorPrefs(s.settings), path));
+  const softWrap = opts.softWrap ?? editorSoftWrap;
+  const wrapSlot = useMemo(() => new Compartment(), []);
+  const softWrapRef = useRef(softWrap);
+  softWrapRef.current = softWrap;
+  const toggleSoftWrapRef = useRef(() => {});
+  toggleSoftWrapRef.current = () => setOpts({ softWrap: !softWrapRef.current });
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || !ready || binary) return;
+    return registerSoftWrapSurface(host, {
+      enabled: () => softWrapRef.current,
+      toggle: () => toggleSoftWrapRef.current(),
+    });
+  }, [ready, binary]);
+
   // Read when the views are built; toggling it later goes through `setSync`.
   const syncScroll = useRef(opts.syncScroll);
   syncScroll.current = opts.syncScroll;
@@ -377,13 +406,33 @@ export function DiffEditor({
     prev?.destroy();
     host.textContent = "";
     const listener = EditorView.updateListener.of((u) => {
-      if (u.selectionSet || u.docChanged) updateChunkInfo();
+      if (u.selectionSet || u.docChanged) updateChunkInfo(u.docChanged);
     });
     const findWatch = (s: Side) => EditorView.updateListener.of((u) => findWatchers.current[s].forEach((fn) => fn(u)));
     const focusTracker = (side: "a" | "b") =>
       EditorView.domEventHandlers({
         focus: () => {
           focusedSide.current = side;
+        },
+        mousedown: (event, view) => {
+          if (
+            view.hasFocus ||
+            event.button !== 0 ||
+            event.detail !== 1 ||
+            event.shiftKey ||
+            event.altKey ||
+            event.metaKey ||
+            event.ctrlKey ||
+            !view.contentDOM.contains(event.target as Node)
+          )
+            return false;
+          const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+          if (pos === null) return false;
+          // WebKit may scroll to the old DOM selection on focus. Place the caret first so
+          // the default mouse handler measures the same position before and after focusing.
+          view.dispatch({ selection: { anchor: pos }, userEvent: "select.pointer" });
+          view.focus();
+          return false;
         },
       });
     const collapseUnchanged = opts.collapse ? { margin: 3, minSize: 6 } : undefined;
@@ -392,6 +441,7 @@ export function DiffEditor({
     const inclusion = includable ? inclusionGutter(path, textA) : [];
     const side = (att: DocumentAttachment | null, editable: boolean, notes?: "left" | "right"): Extension[] => [
       viewerBase({ readOnly: !editable, findBar: true }),
+      wrapSlot.of(softWrapRef.current ? EditorView.lineWrapping : []),
       // Esc closes the find bar before it collapses the selection (a found match); open popups go first.
       Prec.high(keymap.of([{ key: "Escape", run: () => findEscape.current() }])),
       lang,
@@ -535,7 +585,7 @@ export function DiffEditor({
     viewerRef.current = built;
     setViewer(built);
     setViewsGen((g) => g + 1);
-    requestAnimationFrame(updateChunkInfo);
+    requestAnimationFrame(() => updateChunkInfo());
   }, [
     contribs,
     attached,
@@ -546,6 +596,7 @@ export function DiffEditor({
     opts.collapse,
     opts.ignore,
     opts.highlight,
+    wrapSlot,
     editableA,
     editableB,
     updateChunkInfo,
@@ -553,6 +604,37 @@ export function DiffEditor({
     includable,
     path,
   ]);
+
+  useEffect(() => {
+    const views = viewsRef.current;
+    if (!views) return;
+    // Aligned panes scroll in MergeView's outer element, which scrollSnapshot does not cover.
+    const outer = views.merge && !views.panes ? views.merge.dom : null;
+    const top = outer?.getBoundingClientRect().top;
+    const block = top == null ? null : views.b.lineBlockAtHeight(Math.max(0, top - views.b.documentTop));
+    const anchor =
+      block && top != null
+        ? EditorView.scrollIntoView(block.from, { y: "start", yMargin: block.top + views.b.documentTop - top })
+        : null;
+    for (const view of [views.a, views.b]) {
+      if (view)
+        view.dispatch({
+          effects: [
+            wrapSlot.reconfigure(softWrap ? EditorView.lineWrapping : []),
+            ...(outer ? (view === views.b && anchor ? [anchor] : []) : [view.scrollSnapshot()]),
+          ],
+        });
+    }
+    // MergeView inserts alignment spacers on its next measure, after the panes have reflowed.
+    if (anchor) {
+      let frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          if (viewsRef.current === views) views.b.dispatch({ effects: anchor });
+        });
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+  }, [softWrap, wrapSlot]);
 
   useEffect(() => viewsRef.current?.panes?.setSync(opts.syncScroll), [opts.syncScroll]);
 
@@ -649,7 +731,40 @@ export function DiffEditor({
       }
       pendingFile.current = 0;
       setNavHint(null);
-      (dir === 1 ? goToNextChunk : goToPreviousChunk)({ state: v.state, dispatch: (tr) => v.dispatch(tr) });
+      (dir === 1 ? goToNextChunk : goToPreviousChunk)({
+        state: v.state,
+        dispatch: (tr) => {
+          const selection = tr.selection ?? v.state.selection;
+          v.dispatch({
+            selection,
+            effects: EditorView.scrollIntoView(selection.main.head, { y: "center" }),
+            userEvent: "select.byChunk",
+          });
+          // CodeMirror draws the caret only in a focused editor, so a difference reached from
+          // the toolbar, a menu or F7 pressed after those would move an invisible caret.
+          v.focus();
+          const scroller = views.merge && !views.panes ? views.merge.dom : v.scrollDOM;
+          v.requestMeasure({
+            key: step,
+            read: () => {
+              const documentTop = v.documentTop - scroller.getBoundingClientRect().top + scroller.scrollTop;
+              const caret = v.coordsAtPos(v.state.selection.main.head);
+              const lineTop = caret
+                ? (caret.top + caret.bottom) / 2 - v.documentTop
+                : v.lineBlockAt(v.state.selection.main.head).top;
+              return documentTop + lineTop - scroller.clientHeight / 2;
+            },
+            write: (top) => {
+              const options: ScrollToOptions = {
+                top: Math.max(0, top),
+                behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+              };
+              if (views.panes) views.panes.scrollTo(onA ? "a" : "b", options);
+              else scroller.scrollTo(options);
+            },
+          });
+        },
+      });
       if (v !== views.b) {
         // Mirror the caret into the right pane so the counter follows.
         const chunks = getChunks(v.state)?.chunks ?? [];
@@ -689,8 +804,10 @@ export function DiffEditor({
     const own = onA ? fileA : fileB;
     const file = own ?? fileB ?? fileA ?? worktreeSource;
     if (!file) return;
-    const open = (line: number, col: number) =>
+    const open = (line: number, col: number) => {
+      onJumpToSource?.();
       void editorService().openFile(file, { selection: { line, col }, focus: true });
+    };
     if (!v) return open(0, 0);
     const head = v.state.selection.main.head;
     const at = v.state.doc.lineAt(head);
@@ -704,7 +821,7 @@ export function DiffEditor({
       const line = mapLine(Chunk.build(from, to), at.number - 1, from, to);
       open(line, to.line(line + 1).text === at.text ? head - at.from : 0);
     });
-  }, [left, right, path, worktreeSource]);
+  }, [left, right, path, worktreeSource, onJumpToSource]);
 
   const currentChunk = (): { chunk: Chunk; index: number } | undefined => {
     const v = viewsRef.current?.b;
@@ -877,6 +994,12 @@ export function DiffEditor({
         run: () => setOpts({ collapse: !opts.collapse }),
       },
       {
+        id: "softWrap",
+        label: "Use Soft Wraps",
+        checked: softWrap,
+        run: () => setOpts({ softWrap: !softWrap }),
+      },
+      {
         id: "sync",
         label: "Synchronize Scrolling",
         checked: opts.syncScroll,
@@ -964,8 +1087,18 @@ export function DiffEditor({
     [],
   );
 
-  const identical =
-    ready && chunkInfo.count === 0 && (attached?.a?.text() ?? statics?.a) === (attached?.b?.text() ?? statics?.b);
+  const textA = attached?.a?.text() ?? statics?.a ?? "";
+  const textB = attached?.b?.text() ?? statics?.b ?? "";
+  const eolA = attached?.a?.lineEnding() ?? detectLineEnding(textA);
+  const eolB = attached?.b?.lineEnding() ?? detectLineEnding(textB);
+  const rawA = attached?.a ? liveSideText(textA, eolA) : textA;
+  const rawB = attached?.b ? liveSideText(textB, eolB) : textB;
+  const badgeA = lineEndingBadge(rawA);
+  const badgeB = lineEndingBadge(rawB);
+  const sameText = rawA.replace(/\r\n?/g, "\n") === rawB.replace(/\r\n?/g, "\n");
+  const eolOnly = ready && !binary && rawA !== rawB && sameText;
+  const eolDiffers = ready && !binary && (badgeA !== badgeB || eolOnly);
+  const identical = ready && chunkInfo.count === 0 && rawA === rawB;
   // Staging applies to local changes against HEAD / the index only.
   const canStage = editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
   const hasSource = !!source;
@@ -1011,14 +1144,14 @@ export function DiffEditor({
         )}
         <span className={styles.sep} />
         <IconButton
-          icon="split"
+          icon="diff-side-by-side"
           title="Side-by-side Viewer"
           size="small"
           pressed={opts.mode === "split"}
           onClick={() => setOpts({ mode: "split" })}
         />
         <IconButton
-          icon="list"
+          icon="diff-unified"
           title="Unified Viewer"
           size="small"
           pressed={opts.mode === "unified"}
@@ -1085,9 +1218,11 @@ export function DiffEditor({
             : chunkInfo.count === 0
               ? identical
                 ? tx("Contents are identical")
-                : chunkInfo.whitespaceOnly
-                  ? tx("Whitespace-only changes")
-                  : tx("No differences")
+                : eolOnly
+                  ? tx("Contents differ only in line separators")
+                  : chunkInfo.whitespaceOnly
+                    ? tx("Whitespace-only changes")
+                    : tx("No differences")
               : chunkInfo.current >= 0
                 ? tx`${chunkInfo.current + 1} of ${chunkInfo.count} differences`
                 : chunkInfo.count === 1
@@ -1114,6 +1249,7 @@ export function DiffEditor({
         <div className={styles.labels}>
           <span className={styles.label} title={sideLabel(left)}>
             {sideLabel(left)}
+            {eolDiffers && eolA && <span className={styles.badge}>{badgeA}</span>}
             {editableA && (
               <span className={styles.badge}>
                 <T>editable</T>
@@ -1122,6 +1258,7 @@ export function DiffEditor({
           </span>
           <span className={styles.label} title={sideLabel(right)}>
             {sideLabel(right)}
+            {eolDiffers && eolB && <span className={styles.badge}>{badgeB}</span>}
             {editableB && (
               <span className={styles.badge}>{left.type === "rev" ? tx("working copy") : tx("editable")}</span>
             )}
@@ -1130,7 +1267,9 @@ export function DiffEditor({
       ) : (
         <div className={styles.labels}>
           <span className={styles.label}>
-            {sideLabel(left)} → {sideLabel(right)}
+            {sideLabel(left)}
+            {eolDiffers && eolA && <span className={styles.badge}>{badgeA}</span>} → {sideLabel(right)}
+            {eolDiffers && eolB && <span className={styles.badge}>{badgeB}</span>}
           </span>
         </div>
       )}

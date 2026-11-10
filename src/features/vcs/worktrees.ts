@@ -17,6 +17,14 @@ export function isCurrentWorktree(path: string, root: string | null | undefined)
   return !!root && pathKey(path) === pathKey(root);
 }
 
+/** Whether deleting this worktree would also delete the window's project folder. */
+export function worktreeContainsProject(path: string, projectRoot: string | null | undefined): boolean {
+  if (!projectRoot) return false;
+  const worktree = pathKey(path);
+  const project = pathKey(projectRoot);
+  return project === worktree || project.startsWith(worktree.endsWith("/") ? worktree : worktree + "/");
+}
+
 /** The worktrees of one repository, loaded from one of its roots. */
 export interface RepoWorktrees {
   /** A VCS root of the repository the query ran from. */

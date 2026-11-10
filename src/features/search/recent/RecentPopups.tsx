@@ -1,5 +1,6 @@
 import { useFilePresentation } from "@/platform/filePresentation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { flushSync } from "react-dom";
 import clsx from "clsx";
 import { editorsFor, getNavigationHistory } from "@/editor/api";
 import { call, commands, type OutlineItem } from "@/platform/ipc";
@@ -61,10 +62,24 @@ export function RecentPopupsOverlay() {
 
 const NAV_KEYS = ["ArrowDown", "ArrowUp", "PageDown", "PageUp"];
 
-/** Defers work until the dialog unmounted and restored focus. */
-const afterClose = (fn: () => void) => {
-  hideRecentPopup();
-  setTimeout(fn, 0);
+let handingFocus = false;
+// Asked when the dialog's effects are cleaned up, which may come after `fn` already ran.
+const keepFocus = () => {
+  const keep = !handingFocus;
+  handingFocus = false;
+  return keep;
+};
+
+/**
+ * Runs `fn` once the dialog has unmounted and given focus back, in the same frame: the
+ * popup closing and what it opens paint together, without a frame of the old editor between.
+ * `takesFocus`: what `fn` opens focuses itself, so focus isn't given back first (focusing the
+ * editor left behind would lay out the window once more).
+ */
+const afterClose = (fn: () => void, takesFocus = false) => {
+  handingFocus = takesFocus;
+  flushSync(hideRecentPopup);
+  fn();
 };
 
 // ---------------------------------------------------------------------------
@@ -139,10 +154,12 @@ function RecentFilesDialog() {
   const openFile = (item: RecentFileItem | undefined, side = false) => {
     if (!item) return;
     const editor = item.editor;
-    afterClose(() =>
-      editor
-        ? void maybeEditorService()?.openInput(editor.input, { side, focus: true })
-        : void openLocation(item.path, null, { side }),
+    afterClose(
+      () =>
+        editor
+          ? void maybeEditorService()?.openInput(editor.input, { side, focus: true })
+          : void openLocation(item.path, null, { side }),
+      !!editor,
     );
   };
 
@@ -278,7 +295,14 @@ function RecentFilesDialog() {
   const title = switcher ? "Switcher" : editedOnly ? "Recently Edited Files" : "Recent Files";
   const footerPath = (selected?.editor ? selected.rel : selected?.path) ?? (selectedTool ? "" : (root ?? ""));
   return (
-    <Dialog open onClose={hideRecentPopup} width={720} aria-label={title} className={styles.dialog}>
+    <Dialog
+      open
+      onClose={hideRecentPopup}
+      restoreFocus={keepFocus}
+      width={720}
+      aria-label={title}
+      className={styles.dialog}
+    >
       <header className={styles.header}>
         <span className={styles.title}>
           <T>{title}</T>

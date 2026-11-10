@@ -1,15 +1,11 @@
-/**
- * IDEA mouse multi-caret gestures (macOS keymap): ⌥⇧click adds a caret (or
- * removes the one under the pointer), ⌥⇧drag adds a selection, ⌥drag and
- * middle-button drag make a column (rectangular) selection. Middle-button
- * drag is left alone on Linux, where a middle click pastes the primary selection.
- */
+/** Mouse caret gestures follow the keymap; Alt and middle-button drags select columns. */
 import { EditorSelection, type Extension } from "@codemirror/state";
 import { EditorView, type MouseSelectionStyle } from "@codemirror/view";
+import { bindingsFor, mouseStrokeOf, normalizeBinding } from "@/platform/keymap";
 import { usePlatform } from "@/platform/platformInfo";
 import { blockMouseSelection } from "./columnMode";
 
-/** The selection after ⌥⇧click / drag from `anchor` to `head` on top of `start`. */
+/** The selection after a caret click / drag from `anchor` to `head` on top of `start`. */
 export function toggleCaret(start: EditorSelection, anchor: number, head: number): EditorSelection {
   if (anchor === head) {
     const hit = start.ranges.findIndex((r) => r.empty && r.head === head);
@@ -21,8 +17,16 @@ export function toggleCaret(start: EditorSelection, anchor: number, head: number
   return start.addRange(EditorSelection.range(anchor, head));
 }
 
+export function isAddCaretGesture(event: MouseEvent): boolean {
+  if (event.button !== 0) return false;
+  const stroke = mouseStrokeOf(event);
+  return (
+    stroke !== null && bindingsFor("editor.addOrRemoveCaret").some((binding) => normalizeBinding(binding) === stroke)
+  );
+}
+
 const addCaretStyle = EditorView.mouseSelectionStyle.of((view, event): MouseSelectionStyle | null => {
-  if (event.button !== 0 || !event.altKey || !event.shiftKey || event.metaKey || event.ctrlKey) return null;
+  if (!isAddCaretGesture(event)) return null;
   let start = view.state.selection;
   const anchor = view.posAtCoords({ x: event.clientX, y: event.clientY }, false);
   return {
@@ -41,7 +45,7 @@ export const multiCaretMouse: Extension = [
   // CodeMirror's default (⌘click) would clash with ⌘click navigation.
   EditorView.clickAddsSelectionRange.of(() => false),
   blockMouseSelection((e) => {
-    if (e.shiftKey || e.metaKey || e.ctrlKey) return false;
+    if (isAddCaretGesture(e) || e.shiftKey || e.metaKey || e.ctrlKey) return false;
     if (e.button === 0) return e.altKey;
     return e.button === 1 && !e.altKey && usePlatform.getState().os !== "linux";
   }),

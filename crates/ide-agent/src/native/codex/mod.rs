@@ -8,6 +8,7 @@ mod translate;
 mod tests;
 
 use super::Shim;
+use crate::acp::AUTH_REQUIRED;
 use crate::provider::ProviderSpec;
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
 use parking_lot::Mutex;
@@ -27,8 +28,6 @@ const OUTPUT_EVERY: Duration = Duration::from_millis(200);
 const EARLY_CANCEL: Duration = Duration::from_secs(1);
 /// How long the client's connection outlives codex.
 const EXIT_GRACE: Duration = Duration::from_millis(100);
-/// ACP's error code for a request that needs the user to sign in.
-const AUTH_REQUIRED: i64 = -32000;
 
 pub(crate) fn connect(
     spec: &ProviderSpec,
@@ -54,6 +53,7 @@ fn attach(
         client: OnceLock::new(),
         state: Mutex::new(State::default()),
         models: tokio::sync::Mutex::new(None),
+        skills: tokio::sync::Mutex::new(()),
     });
     let codex = connect_codex(Arc::new(CodexEvents(Arc::downgrade(&shim))))?;
     let _ = shim.codex.set(codex.clone());
@@ -83,6 +83,8 @@ struct CodexShim {
     state: Mutex<State>,
     /// `model/list`, fetched once.
     models: tokio::sync::Mutex<Option<Arc<Vec<ModelInfo>>>>,
+    /// Keep skill snapshots in request order, including invalidations during session setup.
+    skills: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -204,7 +206,7 @@ fn from_codex(e: RpcError) -> ResponseError {
                 code,
                 codes::PARSE_ERROR | codes::INVALID_REQUEST | codes::METHOD_NOT_FOUND | codes::INVALID_PARAMS
             );
-            let code = if !protocol && message.to_lowercase().contains("auth") { AUTH_REQUIRED } else { code };
+            let code = if !protocol && crate::acp::auth_required(code, &message) { AUTH_REQUIRED } else { code };
             ResponseError { code, message, data }
         }
         RpcError::Closed => error(codes::INTERNAL_ERROR, "Codex exited"),
@@ -264,7 +266,7 @@ impl CodexShim {
             "agentCapabilities": {
                 "loadSession": true,
                 "promptCapabilities": { "image": true, "audio": false, "embeddedContext": true },
-                "mcpCapabilities": { "http": false, "sse": false },
+                "mcpCapabilities": { "http": false, "sse": false, "stdio": true },
                 "sessionCapabilities": { "fork": {}, "close": {} },
                 "_meta": { "openidea": { "rollback": true, "steer": true } },
             },
@@ -301,6 +303,20 @@ impl CodexShim {
         models
     }
 
+    async fn publish_skills(&self, session: &str) {
+        let _listing = self.skills.lock().await;
+        let cwd = self.state.lock().threads.get(session).and_then(|t| t.cwd.clone());
+        let Some(cwd) = cwd else { return };
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), self.call("skills/list", json!({ "cwds": [cwd] }))).await;
+        if let Ok(Ok(result)) = result
+            && let Some(update) = translate::skill_commands(&result)
+            && self.state.lock().threads.contains_key(session)
+        {
+            self.emit(session, update);
+        }
+    }
+
     /// Registers a thread codex opened for a session of its own; returns its `configOptions`.
     fn open_thread(&self, result: &Value, models: &[ModelInfo], settings: Option<Settings>) -> (String, Value) {
         let thread = result.get("thread").unwrap_or(&Value::Null);
@@ -318,11 +334,16 @@ impl CodexShim {
 
     async fn new_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let models = self.models().await;
-        let result = self.call("thread/start", json!({ "cwd": params.get("cwd") })).await?;
+        let mut request = json!({ "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
+        let result = self.call("thread/start", request).await?;
         let (id, options) = self.open_thread(&result, &models, None);
         if id.is_empty() {
             return Err(error(codes::INTERNAL_ERROR, "codex started no thread"));
         }
+        self.publish_skills(&id).await;
         Ok(json!({ "sessionId": id, "configOptions": options }))
     }
 
@@ -330,13 +351,18 @@ impl CodexShim {
     async fn load_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let id = str_param(params, "sessionId")?;
         let models = self.models().await;
-        let result = self.call("thread/resume", json!({ "threadId": id, "cwd": params.get("cwd") })).await?;
+        let mut request = json!({ "threadId": id, "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
+        let result = self.call("thread/resume", request).await?;
         let (_, options) = self.open_thread(&result, &models, None);
         let cwd = self.state.lock().threads.get(id).and_then(|t| t.cwd.clone());
         let thread = result.get("thread").unwrap_or(&Value::Null);
         for update in translate::history(thread, cwd.as_deref()) {
             self.emit(id, update);
         }
+        self.publish_skills(id).await;
         Ok(json!({ "configOptions": options }))
     }
 
@@ -345,6 +371,9 @@ impl CodexShim {
         let models = self.models().await;
         let settings = self.state.lock().threads.get(source).and_then(|t| t.settings.clone());
         let mut request = json!({ "threadId": source, "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
         if let Some(s) = &settings {
             request["model"] = json!(s.model_slug(&models));
             request["approvalPolicy"] = json!(s.mode.approval_policy());
@@ -352,6 +381,7 @@ impl CodexShim {
         }
         let result = self.call("thread/fork", request).await?;
         let (id, options) = self.open_thread(&result, &models, settings);
+        self.publish_skills(&id).await;
         Ok(json!({ "sessionId": id, "configOptions": options }))
     }
 
@@ -541,9 +571,25 @@ impl CodexShim {
         }
     }
 
-    fn on_codex_notification(&self, method: &str, params: &Value) {
+    fn on_codex_notification(self: &Arc<Self>, method: &str, params: &Value) {
         let thread = params.get("threadId").and_then(Value::as_str).unwrap_or_default();
         match method {
+            "skills/changed" => {
+                let shim = self.clone();
+                let sessions: Vec<String> = self
+                    .state
+                    .lock()
+                    .threads
+                    .iter()
+                    .filter(|(_, t)| t.settings.is_some() && t.parent.is_none())
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                self.runtime.spawn(async move {
+                    for session in sessions {
+                        shim.publish_skills(&session).await;
+                    }
+                });
+            }
             "turn/started" => {
                 if let Some(turn) = params.pointer("/turn/id").and_then(Value::as_str) {
                     self.turn_known(thread, turn, true);

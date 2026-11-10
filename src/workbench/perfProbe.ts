@@ -60,6 +60,7 @@ function completionItem(i: number): CompletionItem {
   return {
     label,
     labelDetail: kind === "method" || kind === "function" ? "(id: string, options?: Options)" : null,
+    labelDescription: null,
     detail: kind === "class" || kind === "interface" ? qualified(label) : RESULT,
     kind,
     documentation: null,

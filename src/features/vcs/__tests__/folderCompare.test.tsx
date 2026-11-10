@@ -22,6 +22,7 @@ vi.mock("@/platform/ipc", async (original) => {
     },
   };
 });
+vi.mock("../diffDialog", () => ({ openDiffDialog: mocks.open }));
 vi.mock("../DiffEditor", () => ({
   DiffEditor: ({ input }: { input: unknown }) => <div data-testid="diff">{JSON.stringify(input)}</div>,
 }));
@@ -149,6 +150,20 @@ describe("directory comparison", () => {
     fireEvent.mouseDown(screen.getByText("app.ts"), { button: 0 });
     expect(await screen.findByTestId("diff")).toHaveTextContent('"rev":"aaa"');
     expect(screen.getByTestId("diff")).toHaveTextContent("/workspace/client/src/app.ts");
+  });
+
+  it("keeps the list open under the diff window of the modal commit interface", async () => {
+    mocks.compare.mockResolvedValue({ status: "ok", data: result });
+    useProject.setState({ settings: { vcs: { commit: { nonModal: false } } } as never });
+    const onClose = vi.fn();
+    render(<ChangesBetweenDialog from={{ rev: "main", label: "main" }} to={null} scope={scope} onClose={onClose} />);
+    fireEvent.mouseDown(await screen.findByText("app.ts"), { button: 0 });
+    fireEvent.click(await screen.findByRole("button", { name: "Show Diff" }));
+    await waitFor(() =>
+      expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({ right: { type: "worktree" } })),
+    );
+    expect(onClose).not.toHaveBeenCalled();
+    useProject.setState({ settings: null });
   });
 
   it("cancels the backend request when a running comparison is closed", async () => {

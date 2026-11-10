@@ -126,6 +126,25 @@ pub async fn lsp_virtual_document(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn lsp_can_download_sources(window: Window, state: State<'_, AppState>, uri: String) -> IdeResult<bool> {
+    ide_host::ops::lsp::lsp_can_download_sources(&state.host, window.label(), uri).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_library_sources(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    uri: String,
+    pos: Pos,
+    sources: Option<std::path::PathBuf>,
+) -> IdeResult<Option<Location>> {
+    ide_host::ops::lsp::lsp_library_sources(&state.host, window.label(), request, uri, pos, sources).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn lsp_resolve_class_file(
     window: Window,
     state: State<'_, AppState>,
@@ -459,4 +478,30 @@ pub async fn lsp_execute_code_action(
     answers: Vec<FormAnswer>,
 ) -> IdeResult<Vec<ide_core::IpcPath>> {
     ide_host::ops::lsp::lsp_execute_code_action(&state.host, window.label(), request, doc, action, answers).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_language_visuals(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+) -> IdeResult<ide_host::ops::lsp::PluginLanguageVisuals> {
+    ide_host::ops::lsp::plugin_language_visuals(&state.host, window.label(), doc).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_color_presentations(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+    plugin: String,
+    color: ide_plugin::language_features::ColorInfo,
+) -> IdeResult<Vec<String>> {
+    ide_host::ops::lsp::plugin_color_presentations(&state.host, window.label(), doc, plugin, color).await
+}
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_formatters() -> IdeResult<Vec<ide_host::plugins::language_features::FormatterChoice>> {
+    Ok(ide_host::ops::lsp::plugin_formatters())
 }

@@ -31,6 +31,7 @@ pub enum Transport {
 /// A fully resolved adapter command line.
 #[derive(Clone, Debug)]
 pub struct AdapterSpec {
+    pub target: Option<crate::target::TargetMapping>,
     pub adapter: String,
     pub command: String,
     pub args: Vec<String>,
@@ -51,6 +52,7 @@ pub struct AdapterSpec {
 /// Built-in adapters used when no language definition names `adapter`.
 fn builtin(adapter: &str) -> Option<DebuggerConfig> {
     let cfg = |command: &str, args: &[&str], transport: &str, hint: &str| DebuggerConfig {
+        target_placement: None,
         adapter: adapter.to_owned(),
         command: command.to_owned(),
         args: args.iter().map(|a| (*a).to_owned()).collect(),
@@ -101,6 +103,7 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
         "lldb-dap" => {
             cfg("lldb-dap", &[], "stdio", "Install LLVM's lldb-dap (brew install llvm; on macOS `xcrun -f lldb-dap`)")
         }
+        "rdbg" => cfg("rdbg", &["-O", "--port", PORT_PLACEHOLDER, "-c"], "tcp", "gem install debug"),
         // A jdtls bundle: the session is started through jdtls and reached via `debugServer`.
         "java-debug" => cfg(
             "com.microsoft.java.debug.plugin.jar",
@@ -133,6 +136,7 @@ pub fn default_type(adapter: &str) -> Option<&'static str> {
 
 pub fn resolve(config: &DebuggerConfig, cwd: PathBuf) -> AdapterSpec {
     AdapterSpec {
+        target: None,
         adapter: config.adapter.clone(),
         command: config.command.clone(),
         args: config.args.clone(),
@@ -165,6 +169,11 @@ pub fn parse_address(addr: &str) -> Option<(String, u16)> {
 }
 
 /// A port that was free a moment ago on the loopback interface.
+///
+/// Inherently racy: another process can bind the port between the listener being
+/// dropped here and the adapter binding it. Callers that hand the port to a child
+/// retry on a bind conflict (see [`ProcessLauncher`]), or — better — let the child
+/// pick `:0` and report the actual port back (as the Kotlin JDWP debuggee does).
 pub fn free_port() -> std::io::Result<u16> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     Ok(listener.local_addr()?.port())
@@ -373,8 +382,8 @@ pub struct AdapterIo {
 pub type ProgramOutput = tokio::sync::mpsc::UnboundedReceiver<(&'static str, String)>;
 type ProgramSink = tokio::sync::mpsc::UnboundedSender<(&'static str, String)>;
 
-/// Delve's debuggee inherits its stdio; no DAP output event carries what the program prints.
-const SHARES_STDIO: &str = "delve";
+/// These debuggees inherit adapter stdio; no DAP event carries their output.
+const SHARES_STDIO: &[&str] = &["delve", "rdbg"];
 const DELVE_BANNER: &str = "DAP server listening at:";
 
 pub type LaunchFuture = Pin<Box<dyn Future<Output = IdeResult<AdapterIo>> + Send>>;
@@ -393,6 +402,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const EMBEDDED_START_TIMEOUT: Duration = Duration::from_secs(120);
 /// Probe of a `connect` address before starting the command.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+/// Attempts at a fresh port for a TCP adapter: the one `free_port` hands out can be
+/// claimed by another process before the adapter binds it, so a new one usually wins.
+const PORT_ATTEMPTS: u32 = 3;
 
 impl AdapterLauncher for ProcessLauncher {
     fn launch(&self, mut spec: AdapterSpec, reuse_port: Option<u16>) -> LaunchFuture {
@@ -438,7 +450,7 @@ impl AdapterLauncher for ProcessLauncher {
                     program_output: None,
                 });
             }
-            if spec.adapter == DEBUGPY_TOOL {
+            if spec.adapter == DEBUGPY_TOOL && spec.target.is_none() {
                 prepare_debugpy(&mut spec).await?;
             }
             if is_plugin_bundle(&spec.command) {
@@ -458,85 +470,139 @@ impl AdapterLauncher for ProcessLauncher {
                         .ok_or_else(|| missing(&spec))?
                 }
             };
-            let port = match spec.transport {
-                // An embedded adapter started without `${port}` listens on its usual address.
-                Transport::Tcp => match &embedded {
-                    Some((_, port)) if !spec.args.iter().any(|a| a.contains(PORT_PLACEHOLDER)) => Some(*port),
-                    _ => Some(free_port()?),
-                },
-                Transport::Stdio => None,
-            };
-            let args = substitute_root(&spec.args, &spec.cwd);
-            let args = match port {
-                Some(port) => substitute_port(&args, port),
-                None => args,
-            };
-            let mut cmd = Command::new(&binary);
-            if let Some(path) = adapter_path(&spec.env) {
-                cmd.env("PATH", path);
-            }
-            ide_core::process::prepare(cmd.as_std_mut());
-            cmd.args(&args)
-                .envs(spec.env.iter().map(|(k, v)| (k, v)))
-                .current_dir(&spec.cwd)
-                .stdin(if port.is_some() { Stdio::null() } else { Stdio::piped() })
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true);
-            let mut child =
-                cmd.spawn().map_err(|e| IdeError::unavailable(format!("failed to start {}: {e}", binary.display())))?;
-            let (program_sink, program_output) = if spec.adapter == SHARES_STDIO {
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                (Some(tx), Some(rx))
-            } else {
-                (None, None)
-            };
-            if let Some(err) = child.stderr.take() {
-                pump_lines(err, spec.adapter.clone(), stderr.clone(), program_sink.clone().map(|tx| (tx, "stderr")));
-            }
-            match port {
-                None => {
-                    let stdin = child.stdin.take().ok_or_else(|| IdeError::internal("adapter stdin unavailable"))?;
-                    let stdout = child.stdout.take().ok_or_else(|| IdeError::internal("adapter stdout unavailable"))?;
-                    Ok(AdapterIo {
-                        reader: Box::new(stdout),
-                        writer: Box::new(stdin),
-                        child: Some(child),
-                        port: None,
-                        stderr,
-                        program_output,
-                    })
-                }
-                Some(port) => {
-                    if let Some(out) = child.stdout.take() {
-                        pump_lines(out, spec.adapter.clone(), stderr.clone(), program_sink.map(|tx| (tx, "stdout")));
-                    }
-                    let timeout = if embedded.is_some() { EMBEDDED_START_TIMEOUT } else { CONNECT_TIMEOUT };
-                    let stream = match connect_with_retries(LOOPBACK, port, Some(&mut child), timeout).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            let _ = child.start_kill();
-                            let tail = stderr.lock().join("\n");
-                            return Err(if tail.is_empty() {
-                                e
-                            } else {
-                                IdeError::unavailable(format!("{}\n{tail}", e.message))
-                            });
-                        }
+            let base_args = substitute_root(&spec.args, &spec.cwd);
+            match spec.transport {
+                Transport::Stdio => spawn_adapter(&spec, &binary, &base_args, None, CONNECT_TIMEOUT).await,
+                Transport::Tcp => {
+                    // An embedded adapter started without `${port}` listens on its usual
+                    // address; every other TCP adapter gets a port chosen here so it can be
+                    // retried if another process takes it before the adapter binds.
+                    let fixed = match &embedded {
+                        Some((_, port)) if !spec.args.iter().any(|a| a.contains(PORT_PLACEHOLDER)) => Some(*port),
+                        _ => None,
                     };
-                    let (r, w) = stream.into_split();
-                    Ok(AdapterIo {
-                        reader: Box::new(r),
-                        writer: Box::new(w),
-                        child: Some(child),
-                        port: Some(port),
-                        stderr,
-                        program_output,
-                    })
+                    let start_timeout = if embedded.is_some() { EMBEDDED_START_TIMEOUT } else { CONNECT_TIMEOUT };
+                    for attempt in 1..=PORT_ATTEMPTS {
+                        let port = match fixed {
+                            Some(port) => port,
+                            None => free_port()?,
+                        };
+                        let args = substitute_port(&base_args, port);
+                        match spawn_adapter(&spec, &binary, &args, Some(port), start_timeout).await {
+                            Ok(io) => return Ok(io),
+                            Err(e) => {
+                                if fixed.is_none() && attempt < PORT_ATTEMPTS && is_port_race(&e) {
+                                    tracing::warn!(
+                                        target: "ide_dap::adapter",
+                                        "debug adapter failed to start on port {port}: {}; retrying",
+                                        e.message
+                                    );
+                                    continue;
+                                }
+                                return Err(e);
+                            }
+                        }
+                    }
+                    unreachable!("the retry loop returns on its last attempt")
                 }
             }
         })
     }
+}
+
+/// Starts `binary` with `args`, then connects to it when `port` is set (a TCP adapter)
+/// or hands back its stdio when it is not. The child is stopped if it never accepts.
+async fn spawn_adapter(
+    spec: &AdapterSpec,
+    binary: &Path,
+    args: &[String],
+    port: Option<u16>,
+    start_timeout: Duration,
+) -> IdeResult<AdapterIo> {
+    let stderr = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let mut cmd = Command::new(binary);
+    if let Some(path) = adapter_path(&spec.env) {
+        cmd.env("PATH", path);
+    }
+    ide_core::process::prepare(cmd.as_std_mut());
+    // Every adapter leads its own process group: the program an adapter launches itself
+    // (java-debug's JVM) joins the group, so a forced stop reaches the whole tree with
+    // one `kill(-pgid)`. On Windows the same coverage comes from the session's job object.
+    ide_core::process::own_group(cmd.as_std_mut());
+    cmd.args(args)
+        .envs(spec.env.iter().map(|(k, v)| (k, v)))
+        .current_dir(&spec.cwd)
+        .stdin(if port.is_some() { Stdio::null() } else { Stdio::piped() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child =
+        cmd.spawn().map_err(|e| IdeError::unavailable(format!("failed to start {}: {e}", binary.display())))?;
+    let (program_sink, program_output) = if SHARES_STDIO.contains(&spec.adapter.as_str()) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    if let Some(err) = child.stderr.take() {
+        pump_lines(err, spec.adapter.clone(), stderr.clone(), program_sink.clone().map(|tx| (tx, "stderr")));
+    }
+    match port {
+        None => {
+            let stdin = child.stdin.take().ok_or_else(|| IdeError::internal("adapter stdin unavailable"))?;
+            let stdout = child.stdout.take().ok_or_else(|| IdeError::internal("adapter stdout unavailable"))?;
+            Ok(AdapterIo {
+                reader: Box::new(stdout),
+                writer: Box::new(stdin),
+                child: Some(child),
+                port: None,
+                stderr,
+                program_output,
+            })
+        }
+        Some(port) => {
+            if let Some(out) = child.stdout.take() {
+                pump_lines(out, spec.adapter.clone(), stderr.clone(), program_sink.map(|tx| (tx, "stdout")));
+            }
+            let stream = match connect_with_retries(LOOPBACK, port, Some(&mut child), start_timeout).await {
+                Ok(s) => s,
+                Err(e) => {
+                    if spec.adapter == "rdbg"
+                        && let Some(pid) = child.id()
+                    {
+                        ide_core::process::kill_tree_of(pid);
+                    }
+                    let _ = child.start_kill();
+                    let tail = stderr.lock().join("\n");
+                    return Err(if tail.is_empty() {
+                        e
+                    } else {
+                        IdeError::unavailable(format!("{}\n{tail}", e.message))
+                    });
+                }
+            };
+            let (r, w) = stream.into_split();
+            Ok(AdapterIo {
+                reader: Box::new(r),
+                writer: Box::new(w),
+                child: Some(child),
+                port: Some(port),
+                stderr,
+                program_output,
+            })
+        }
+    }
+}
+
+/// A failed adapter start that another process grabbing the free port can explain
+/// (POSIX and Windows "address already in use" texts, or the adapter exiting because
+/// it could not bind). Anything else is a real start failure and is not retried.
+fn is_port_race(err: &IdeError) -> bool {
+    let message = err.message.to_ascii_lowercase();
+    message.contains("address already in use")
+        || message.contains("addrinuse")
+        || message.contains("only one usage of each socket address")
+        || message.contains("exited before accepting connections")
 }
 
 fn pump_lines<R: AsyncRead + Unpin + Send + 'static>(
@@ -765,5 +831,17 @@ mod tests {
         let err = ProcessLauncher.launch(spec, None).await.err().unwrap();
         assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
         assert!(err.message.contains("runs inside the Java language server"), "{}", err.message);
+    }
+
+    #[test]
+    fn port_conflicts_are_recognised_for_retry() {
+        let in_use = IdeError::unavailable(
+            "debug adapter exited before accepting connections (exit status: 1)\nbind: address already in use",
+        );
+        assert!(is_port_race(&in_use));
+        assert!(is_port_race(&IdeError::unavailable(
+            "Only one usage of each socket address (protocol/network address/port) is normally permitted."
+        )));
+        assert!(!is_port_race(&IdeError::unavailable("failed to start codelldb: file not found")));
     }
 }

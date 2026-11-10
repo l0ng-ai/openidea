@@ -5,6 +5,7 @@
  * offers to disable hints of that kind.
  */
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
+import { shownAgain } from "@/editor/api";
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { call, commands, isTauri, type InlayHint } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
@@ -162,6 +163,7 @@ const inlayPlugin = ViewPlugin.fromClass(
     private unsubscribe: () => void;
     private offReady: () => void;
     private offModifier: () => void;
+    private skipped = false;
     constructor(private view: EditorView) {
       this.refresh();
       view.contentDOM.classList.toggle("cm-lsp-navigation-modifier", navigationModifierHeld());
@@ -178,11 +180,12 @@ const inlayPlugin = ViewPlugin.fromClass(
       this.offReady = onLspRefresh("inlayHints", () => this.refresh());
     }
     update(u: ViewUpdate) {
-      if (u.docChanged || u.viewportChanged) this.refresh();
+      if (u.docChanged || u.viewportChanged || (this.skipped && shownAgain(u))) this.refresh();
     }
     async run() {
       const view = this.view;
-      if (!view.dom.isConnected) return;
+      this.skipped = !view.dom.isConnected;
+      if (this.skipped) return;
       const doc = docOf(view);
       if (!doc) return;
       if (!enabled(doc.language) || inlayBackoff.active(doc.doc)) {

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within, waitFor } from "@testing-library/react";
-import { Select, type SelectOption } from "./Select";
+import { StrictMode, useState } from "react";
+import { Select, SelectListbox, type SelectOption } from "./Select";
+import { useI18n } from "@/platform/i18n";
+import { Dialog } from "./Dialog";
 
 const options: SelectOption[] = [
   { value: "9router", label: "9router", section: true },
@@ -105,4 +108,77 @@ describe("Select", () => {
     key("Enter");
     expect(changed).toHaveBeenCalledExactlyOnceWith("a");
   });
+});
+
+describe("Select preview lifecycle", () => {
+  const rows = [
+    { value: "a", label: "A" },
+    { value: "b", label: "B" },
+  ];
+
+  it("restores using the newly selected value when closing", () => {
+    const preview = vi.fn();
+    function Picker() {
+      const [value, setValue] = useState("a");
+      return (
+        <Select
+          aria-label="Theme"
+          value={value}
+          options={rows}
+          onChange={setValue}
+          onPreview={(next) => preview(next, value)}
+        />
+      );
+    }
+    render(<Picker />);
+    fireEvent.click(screen.getByRole("button", { name: "Theme" }));
+    expect(preview).toHaveBeenLastCalledWith("a", "a");
+    key("ArrowDown");
+    expect(preview).toHaveBeenLastCalledWith("b", "a");
+    key("Enter");
+    expect(preview).toHaveBeenLastCalledWith(null, "b");
+  });
+
+  it("keeps the initial preview active under Strict Mode and clears it on unmount", () => {
+    const preview = vi.fn();
+    const { unmount } = render(
+      <StrictMode>
+        <SelectListbox value="b" options={rows} onChoose={vi.fn()} onPreview={preview} />
+      </StrictMode>,
+    );
+    expect(preview).toHaveBeenLastCalledWith("b");
+    unmount();
+    expect(preview).toHaveBeenLastCalledWith(null);
+  });
+
+  it("closes only the list on Escape inside a dialog and restores trigger focus", () => {
+    const close = vi.fn();
+    render(
+      <Dialog open title="Settings" onClose={close}>
+        <Select aria-label="Theme" value="b" options={rows} onChange={vi.fn()} />
+      </Dialog>,
+    );
+    const trigger = screen.getByRole("button", { name: "Theme" });
+    trigger.focus();
+    fireEvent.click(trigger);
+    expect(within(list()).getByRole("option", { name: "B" })).toHaveAttribute("aria-selected", "true");
+    key("Escape");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(close).not.toHaveBeenCalled();
+    expect(trigger).toHaveFocus();
+  });
+});
+
+it("preserves user values when their labels match translated UI text", () => {
+  const previous = useI18n.getState().texts;
+  useI18n.setState({ texts: { Cancel: "取消" } });
+  try {
+    const changed = setup(false, [{ value: "Cancel", label: "Cancel", verbatim: true }]);
+    expect(within(list()).getByRole("option", { name: "Cancel" })).toBeInTheDocument();
+    key("c");
+    key("Enter");
+    expect(changed).toHaveBeenCalledWith("Cancel");
+  } finally {
+    useI18n.setState({ texts: previous });
+  }
 });

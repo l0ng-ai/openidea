@@ -115,6 +115,10 @@ export class SeController {
     this.signatures.delete("endpoints");
   }
 
+  invalidateFiles() {
+    for (const id of ["files", "classes", "symbols", "text"] as const) this.signatures.delete(id);
+  }
+
   run(req: SeRequest) {
     const gen = ++this.gen;
     this.disposed = false;

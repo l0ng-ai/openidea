@@ -1,4 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { copySelectionOnKeyDown, copyText } from "@/ui/selectableText";
@@ -6,16 +15,10 @@ import { EmptyState, IconButton, showContextMenu, T, type MenuItem } from "@/ui"
 import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
-import { spanStyle, type Span, type SpanStyle } from "@/ui/ansi";
+import { spanStyle } from "@/ui/ansi";
 import ansi from "@/ui/ansi.module.css";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
-import {
-  DEFAULT_FIND_OPTIONS,
-  findInLines,
-  type ConsoleMatch,
-  type FindOptions,
-  type FindResult,
-} from "@/ui/consoleFind";
+import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions, type FindResult } from "@/ui/consoleFind";
 import {
   appendConsole,
   clearConsole,
@@ -24,10 +27,14 @@ import {
   readsProgramInput,
   sendProgramInput,
   useDebug,
+  type ConsoleLine,
   type DebugSession,
 } from "../state";
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import { useExpressionCompletion } from "./ExpressionCompletion";
+import { findOutputLinks, type OutputLink } from "@/features/run/links";
+import { openTarget, openUrl, runDirectory } from "@/features/run/navigate";
+import { segmentLine, type SegmentMark } from "@/features/run/segments";
 import styles from "./DebugToolWindow.module.css";
 
 const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
@@ -35,69 +42,64 @@ const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
 const MARK_COLOR = "var(--bg-search-match)";
 const CURRENT_MARK_COLOR = "var(--bg-search-match-current)";
 
-interface Segment {
-  text: string;
-  style: SpanStyle;
-  /** The piece is inside a find match. */
-  mark: boolean;
-  /** …and inside the current one. */
-  current: boolean;
-}
-
-/** Splits a line's styled spans at find-match boundaries (the Run console's `segmentLine`, without links). */
-function findSegments(spans: readonly Span[], marks: readonly ConsoleMatch[], active?: ConsoleMatch): Segment[] {
-  const out: Segment[] = [];
-  let pos = 0;
-  let mi = 0;
-  for (const span of spans) {
-    const { text, ...style } = span;
-    let offset = 0;
-    while (offset < text.length) {
-      const abs = pos + offset;
-      while (mi < marks.length && marks[mi]!.end <= abs) mi++;
-      const mark = marks[mi];
-      if (mark && mark.start <= abs) {
-        const take = Math.min(mark.end - abs, text.length - offset);
-        out.push({ text: text.slice(offset, offset + take), style, mark: true, current: mark === active });
-        offset += take;
-      } else if (mark && mark.start < pos + text.length) {
-        const take = Math.min(mark.start - abs, text.length - offset);
-        out.push({ text: text.slice(offset, offset + take), style, mark: false, current: false });
-        offset += take;
-      } else {
-        out.push({ text: text.slice(offset), style, mark: false, current: false });
-        offset = text.length;
-      }
-    }
-    pos += text.length;
-  }
-  return out;
-}
-
-/** A match keeps the span's colours but takes the search background (as IDEA does). */
-function segmentNode(seg: Segment, key: number) {
-  if (!seg.mark)
+const DebugLine = memo(
+  function DebugLine({
+    line,
+    marks,
+    cwd,
+  }: {
+    line: ConsoleLine;
+    marks?: readonly SegmentMark[];
+    length: number;
+    cwd: string;
+  }) {
+    const segments = segmentLine(line.spans, line.category === "system" ? [] : findOutputLinks(line.text), marks);
+    const activate = (e: MouseEvent, link: OutputLink) => {
+      e.preventDefault();
+      if (window.getSelection()?.toString()) return;
+      if (link.kind === "url") void openUrl(link.url);
+      else void openTarget(link.target, cwd);
+    };
+    if (segments.length === 0) return <>{"\u200B"}</>;
     return (
-      <span key={key} style={spanStyle(seg.style)}>
-        {seg.text}
-      </span>
+      <>
+        {segments.map((seg, i) => {
+          const style = seg.mark
+            ? {
+                ...spanStyle(seg.style),
+                backgroundColor: seg.current ? CURRENT_MARK_COLOR : MARK_COLOR,
+                color: "var(--fg-search-match)",
+              }
+            : spanStyle(seg.style);
+          const marked = seg.mark ? { "data-find-match": "", "data-find-current": seg.current ? "" : undefined } : {};
+          return seg.link ? (
+            <a
+              key={i}
+              href={seg.link.kind === "url" ? seg.link.url : undefined}
+              className={styles.link}
+              style={style}
+              onClick={(e) => activate(e, seg.link!)}
+              role="link"
+              tabIndex={-1}
+              {...marked}
+            >
+              {seg.text}
+            </a>
+          ) : seg.mark ? (
+            <mark key={i} className={styles.findMatch} style={style} {...marked}>
+              {seg.text}
+            </mark>
+          ) : (
+            <span key={i} style={style}>
+              {seg.text}
+            </span>
+          );
+        })}
+      </>
     );
-  return (
-    <mark
-      key={key}
-      className={styles.findMatch}
-      style={{
-        ...spanStyle(seg.style),
-        backgroundColor: seg.current ? CURRENT_MARK_COLOR : MARK_COLOR,
-        color: "var(--fg-search-match)",
-      }}
-      data-find-match=""
-      data-find-current={seg.current ? "" : undefined}
-    >
-      {seg.text}
-    </mark>
-  );
-}
+  },
+  (a, b) => a.line === b.line && a.length === b.length && a.cwd === b.cwd && a.marks === b.marks,
+);
 
 export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
   const session = useDebug((s) => s.sessions[sessionId]);
@@ -160,6 +162,11 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     });
   }, [lines, virtualizer, follow, softWrap]);
 
+  const cwd = useMemo(
+    () => runDirectory(session.launch?.cwd ?? session.runConfig?.cwd),
+    [session.launch?.cwd, session.runConfig?.cwd],
+  );
+
   // Find (⌘F): search the whole buffer, not just the rendered rows.
   const found = useMemo(
     () => (findOpen ? findInLines(lines ?? [], query, findOptions) : EMPTY_FIND),
@@ -168,14 +175,15 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const activeIndex = found.matches.length ? Math.min(Math.max(activeMatchIndex, 0), found.matches.length - 1) : -1;
   const current = activeIndex >= 0 ? found.matches[activeIndex] : undefined;
   const marksByLine = useMemo(() => {
-    const byLine = new Map<number, ConsoleMatch[]>();
-    found.matches.forEach((match) => {
+    const byLine = new Map<number, SegmentMark[]>();
+    found.matches.forEach((match, i) => {
+      const mark: SegmentMark = { start: match.start, end: match.end, current: i === activeIndex };
       const marks = byLine.get(match.line);
-      if (marks) marks.push(match);
-      else byLine.set(match.line, [match]);
+      if (marks) marks.push(mark);
+      else byLine.set(match.line, [mark]);
     });
     return byLine;
-  }, [found]);
+  }, [found, activeIndex]);
 
   // The line at the top of the viewport: typing searches from there, as IDEA does.
   const topLine = () => {
@@ -393,27 +401,14 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
       >
         <IconButton
           icon="search"
-          iconSize={14}
           title="Find…"
           shortcut={formatBinding(hostBinding("Meta+F"))}
           pressed={findOpen}
           onClick={() => (findOpen ? closeFind() : openFind())}
         />
-        <IconButton
-          icon="arrow-down"
-          iconSize={14}
-          title="Scroll to End"
-          pressed={follow}
-          onClick={() => setFollow((v) => !v)}
-        />
-        <IconButton
-          icon="soft-wrap"
-          iconSize={14}
-          title="Soft-Wrap"
-          pressed={softWrap}
-          onClick={() => setWrapOverride(!softWrap)}
-        />
-        <IconButton icon="trash" iconSize={14} title="Clear Console" onClick={() => clearConsole(session.id)} />
+        <IconButton icon="scroll-to-end" title="Scroll to End" pressed={follow} onClick={() => setFollow((v) => !v)} />
+        <IconButton icon="soft-wrap" title="Soft-Wrap" pressed={softWrap} onClick={() => setWrapOverride(!softWrap)} />
+        <IconButton icon="trash" title="Clear Console" onClick={() => clearConsole(session.id)} />
       </div>
       <div className={styles.console}>
         {findOpen && (
@@ -462,7 +457,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
                   className={clsx(styles.out, styles[`cat-${l.category}`])}
                   style={{ transform: `translateY(${item.start}px)` }}
                 >
-                  {findSegments(l.spans, marksByLine.get(item.index) ?? [], current).map(segmentNode)}
+                  <DebugLine line={l} marks={marksByLine.get(item.index)} length={l.text.length} cwd={cwd} />
                 </span>
               );
             })}

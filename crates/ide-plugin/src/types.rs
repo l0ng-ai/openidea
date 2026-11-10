@@ -25,6 +25,8 @@ pub struct EditorContext {
 /// Where a command or event batch comes from: the window and its project.
 #[derive(Clone, Debug, Default)]
 pub struct Invocation {
+    /// Plugin instances waiting on this command chain; never re-enter one.
+    pub command_chain: Vec<String>,
     pub client: Option<String>,
     pub workspace_root: Option<PathBuf>,
     /// Settings actions can read the global layer while retaining their project context.
@@ -35,7 +37,7 @@ pub struct Invocation {
 }
 
 /// A failed host call, as the plugin sees it (WIT `types.error`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HostError {
     /// Not granted; names the capability.
     Denied(String),
@@ -98,6 +100,12 @@ pub enum Prompt {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventKind {
+    FileClosed,
+    SettingsChanged,
+    InputModeChanged,
+    RunExited,
+    TerminalExited,
+    ContentTabAction,
     FileOpened,
     FileSaved,
     FilesChanged,
@@ -108,7 +116,13 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 13] = [
+        Self::FileClosed,
+        Self::SettingsChanged,
+        Self::InputModeChanged,
+        Self::RunExited,
+        Self::TerminalExited,
+        Self::ContentTabAction,
         Self::FileOpened,
         Self::FileSaved,
         Self::FilesChanged,
@@ -120,6 +134,12 @@ impl EventKind {
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::FileClosed => "file-closed",
+            Self::SettingsChanged => "settings-changed",
+            Self::InputModeChanged => "input-mode-changed",
+            Self::RunExited => "run-exited",
+            Self::TerminalExited => "terminal-exited",
+            Self::ContentTabAction => "content-tab-action",
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
@@ -138,8 +158,8 @@ impl EventKind {
     /// manifest declares).
     pub fn capability(self) -> Option<ide_extension::Capability> {
         match self {
-            Self::ActionPerformed => Some(ide_extension::Capability::InputEvents),
-            Self::Scheduled => None,
+            Self::ActionPerformed | Self::InputModeChanged => Some(ide_extension::Capability::InputEvents),
+            Self::Scheduled | Self::RunExited | Self::TerminalExited | Self::ContentTabAction => None,
             _ => Some(ide_extension::Capability::Events),
         }
     }
@@ -188,10 +208,24 @@ pub struct FilesChanged {
     pub removed: Vec<String>,
 }
 
+/// The focused editor's input mode and optional visual sub-mode.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct InputMode {
+    pub path: String,
+    pub mode: String,
+    pub sub: Option<String>,
+}
+
 /// A workbench event delivered to plugins.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum WorkbenchEvent {
+    RunExited(crate::RunExited),
+    TerminalExited(crate::TerminalExited),
+    ContentTabAction(crate::ContentTabAction),
+    FileClosed(String),
+    SettingsChanged(Vec<String>),
+    InputModeChanged(InputMode),
     FileOpened(String),
     FileSaved(String),
     FilesChanged(FilesChanged),
@@ -204,6 +238,12 @@ pub enum WorkbenchEvent {
 impl WorkbenchEvent {
     pub fn kind(&self) -> EventKind {
         match self {
+            Self::RunExited(_) => EventKind::RunExited,
+            Self::TerminalExited(_) => EventKind::TerminalExited,
+            Self::ContentTabAction(_) => EventKind::ContentTabAction,
+            Self::FileClosed(_) => EventKind::FileClosed,
+            Self::SettingsChanged(_) => EventKind::SettingsChanged,
+            Self::InputModeChanged(_) => EventKind::InputModeChanged,
             Self::FileOpened(_) => EventKind::FileOpened,
             Self::FileSaved(_) => EventKind::FileSaved,
             Self::FilesChanged(_) => EventKind::FilesChanged,
@@ -350,6 +390,8 @@ pub struct HttpRequest {
     pub headers: Vec<(String, String)>,
     pub body: Option<Vec<u8>>,
     pub timeout: Duration,
+    /// Grants checked again before following a redirect.
+    pub grants: Vec<ide_extension::Capability>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -371,6 +413,8 @@ pub struct ProcessOutput {
 /// the environment to add to the inherited one (WIT `process.command`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProcessCommand {
+    /// The invoking project whose executable override applies, independent of cwd.
+    pub approval_root: Option<PathBuf>,
     pub program: String,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
@@ -388,23 +432,27 @@ pub struct ProcessChunk {
 /// Where `net:` requests may go: the URL's host when it is `https`, or
 /// `http` to the loopback interface.
 pub fn net_host(url: &str) -> Result<String, String> {
-    let (scheme, rest) = url.split_once("://").ok_or_else(|| format!("{url:?} is not an absolute URL"))?;
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = if let Some(v6) = authority.strip_prefix('[') {
-        v6.split(']').next().unwrap_or_default().to_owned()
-    } else {
-        authority.split(':').next().unwrap_or_default().to_ascii_lowercase()
-    };
-    if host.is_empty() {
-        return Err(format!("{url:?} has no host"));
+    let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!("unsupported scheme {:?}", parsed.scheme()));
     }
-    let loopback = matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1");
-    match scheme.to_ascii_lowercase().as_str() {
-        "https" => Ok(host),
-        "http" if loopback => Ok(host),
-        "http" => Err(format!("{url:?}: plain http is only allowed to localhost")),
-        other => Err(format!("{url:?}: unsupported scheme {other:?}")),
+    match parsed.host() {
+        Some(url::Host::Domain(host)) => Ok(host.trim_end_matches('.').to_ascii_lowercase()),
+        Some(url::Host::Ipv4(host)) => Ok(host.to_string()),
+        Some(url::Host::Ipv6(host)) => Ok(host.to_string()),
+        None => Err("URL has no host".into()),
+    }
+}
+
+/// The grant required by a URL; loopback HTTP retains the original `net:` rule.
+pub fn net_capability(url: &str) -> Result<ide_extension::Capability, String> {
+    let host = net_host(url)?;
+    if url::Url::parse(url).is_ok_and(|u| u.scheme() == "http")
+        && !matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1")
+    {
+        Ok(ide_extension::Capability::NetHttp(host))
+    } else {
+        Ok(ide_extension::Capability::Net(host))
     }
 }
 
@@ -427,7 +475,10 @@ mod tests {
         assert_eq!(net_host("https://API.example.com:8443/v1?x").unwrap(), "api.example.com");
         assert_eq!(net_host("http://localhost:11434/api").unwrap(), "localhost");
         assert_eq!(net_host("https://user:pw@h.io/").unwrap(), "h.io");
-        assert!(net_host("http://example.com/").is_err());
+        assert_eq!(
+            net_capability("http://example.com/").unwrap(),
+            ide_extension::Capability::NetHttp("example.com".into())
+        );
         assert!(net_host("file:///etc/passwd").is_err());
         assert!(net_host("example.com").is_err());
     }
@@ -442,7 +493,8 @@ pub struct ProviderDocument {
     pub text: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename = "PluginLocation")]
 pub struct Location {
     pub path: PathBuf,
     pub range: ide_core::Range,
@@ -709,4 +761,97 @@ pub struct NotificationAction {
     pub label: String,
     pub command: String,
     pub argument: Option<String>,
+}
+
+/// An open editor reported by its window.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenEditor {
+    pub path: String,
+    pub language: String,
+    pub dirty: bool,
+    pub active: bool,
+}
+/// Find in Files options.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TextQuery {
+    pub pattern: String,
+    pub regex: bool,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+}
+/// A search hit, using UTF-16 coordinates.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct TextMatch {
+    pub location: Location,
+    pub line: String,
+}
+/// Bounded search results.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TextSearch {
+    pub matches: Vec<TextMatch>,
+    pub limit_hit: bool,
+}
+/// A file's problems from one producer.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct FileProblems {
+    pub path: String,
+    pub source: String,
+    pub diagnostics: Vec<ide_core::Diagnostic>,
+}
+/// An editor decoration.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+pub struct Decoration {
+    pub range: ide_core::Range,
+    pub style: String,
+    pub hover: Option<String>,
+    pub after: Option<String>,
+}
+/// A tree decoration.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+pub struct FileDecoration {
+    pub badge: Option<String>,
+    pub style: String,
+    pub tooltip: Option<String>,
+}
+/// Commit metadata, date in Unix seconds.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitInfo {
+    pub id: String,
+    pub short_id: String,
+    pub author: String,
+    pub author_email: String,
+    pub date: i64,
+    pub subject: String,
+    pub body: String,
+    pub parents: Vec<String>,
+}
+/// One zero-based line's attribution, date in Unix seconds.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct BlameLine {
+    pub line: u32,
+    pub commit: String,
+    pub author: String,
+    pub date: i64,
+    pub summary: String,
+}
+
+/// Non-secret settings of a plugin-owned project database source (API 1.4).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDataSource {
+    pub id: String,
+    pub name: String,
+    pub driver: String,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub database: Option<String>,
+    pub user: Option<String>,
+    pub url: Option<String>,
+    pub options: Vec<(String, String)>,
 }

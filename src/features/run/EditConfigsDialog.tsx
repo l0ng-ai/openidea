@@ -1,9 +1,10 @@
+/** Sidebar rows: type groups, their folders (first), then loose configurations; collapsed nodes hide their children. */
+import { useRunTargets } from "@/platform/pluginRunTargets";
 import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri, type RunConfig, type RunImportSource } from "@/platform/ipc";
 import { letterOf } from "@/platform/keymap";
-import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { Button, Dialog, Icon, IconButton, Input, T } from "@/ui";
 import {
   notifications,
@@ -49,7 +50,6 @@ export type TreeRow =
   | { type: "folder"; key: string; kind: string; name: string }
   | { type: "config"; key: string; config: RunConfig; depth: 1 | 2 };
 
-/** Sidebar rows: type groups, their folders (first), then loose configurations; collapsed nodes hide their children. */
 export function treeRows(
   configs: readonly RunConfig[],
   extraFolders: ReadonlyArray<{ kind: string; name: string }> = [],
@@ -133,7 +133,7 @@ function EditConfigsDialog() {
   const [dirty, setDirty] = useState(() => useRun.getState().editDirty);
   const [removedDetectedIds, setRemovedDetectedIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
-  const runTargets = useWorkflowSettings((s) => s.runTargets);
+  const runTargets = useRunTargets();
   const [adding, setAdding] = useState<{ x: number; y: number } | null>(null);
   const [modifyRequest, setModifyRequest] = useState(0);
   const addRef = useRef<HTMLButtonElement>(null);

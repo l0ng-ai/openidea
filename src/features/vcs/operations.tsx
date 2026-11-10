@@ -11,7 +11,7 @@ import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
 import { Button, Checkbox, Dialog, Icon, Input, Spinner, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { windowBackgroundHex } from "@/workbench/theme";
-import { diffInput, openDiff, type DiffData, type DiffSide } from "./diffInput";
+import { diffInput, openVcsDiff, vcsDiffInFront, type DiffData, type DiffSide } from "./diffInput";
 import { openDialog, promptText } from "./dialogs";
 import { KIND_COLOR, fileCount } from "./model";
 import { runGitOperation, runOp } from "./ops";
@@ -672,8 +672,9 @@ export function ChangesBetweenDialog({
     if (!current) return;
     if (onShowDiff) onShowDiff(diffFor(current));
     else {
-      void openDiff(diffFor(current));
-      onClose();
+      void openVcsDiff(diffFor(current));
+      // A diff window opens on top of this list (#1863); an editor tab would sit behind it.
+      if (!vcsDiffInFront()) onClose();
     }
   };
   const contents = (

@@ -9,7 +9,7 @@ import clsx from "clsx";
 import type { AgentConfigOption } from "@/bindings";
 import { useTx } from "@/platform/i18n";
 import { Icon, IconButton, Popup, Select, T, Toggle } from "@/ui";
-import type { SelectOption } from "@/ui/Select";
+import { SelectListbox, type SelectOption } from "@/ui/Select";
 import { mainOptions, modeIcon } from "./composerModel";
 import styles from "./Composer.module.css";
 
@@ -241,15 +241,21 @@ function ModelEffortPicker({
         aria-label={tx("Model & effort settings")}
         className={styles.modelEffortPopup}
       >
-        <div className={styles.settingsRow}>
-          <span className={styles.settingsLabel}>{tx(model.name)}</span>
-          <ConfigPicker option={model} value={modelValue} onChange={onChange} framed />
+        <div className={styles.effortBlock}>
+          <div className={styles.effortHeader}>
+            <span className={styles.settingsLabel}>{tx(effort.name)}</span>
+            <span className={styles.effortValue}>{effortName}</span>
+          </div>
+          <EffortSlider option={effort} value={effortValue} onChange={(v) => onChange(effort.id, v)} />
         </div>
-        <div className={styles.effortHeader}>
-          <span className={styles.settingsLabel}>{tx(effort.name)}</span>
-          <span className={styles.effortValue}>{effortName}</span>
-        </div>
-        <EffortSlider option={effort} value={effortValue} onChange={(v) => onChange(effort.id, v)} />
+        <SelectListbox
+          aria-label={tx(model.name)}
+          value={modelValue}
+          options={configPickerOptions(model)}
+          searchable
+          listClassName={styles.modelList}
+          onChoose={(v) => onChange(model.id, v)}
+        />
       </Popup>
     </>
   );

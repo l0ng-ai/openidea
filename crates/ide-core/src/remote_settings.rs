@@ -191,6 +191,30 @@ pub struct RunTarget {
     pub image_user: bool,
 }
 
+/// A plugin-owned argv wrapper for project runs (API 1.4).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRunTarget {
+    pub id: String,
+    pub name: String,
+    pub program: String,
+    pub args: Vec<String>,
+    pub workdir_args: Vec<String>,
+    pub container_root: Option<String>,
+    pub commands: Vec<PluginCommandOverride>,
+}
+
+/// Per-command argv prefix and optional replacement working-directory arguments.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCommandOverride {
+    pub name: String,
+    pub args: Vec<String>,
+    /// None inherits the target's list; Some([]) suppresses it.
+    #[serde(default)]
+    pub workdir_args: Option<Vec<String>>,
+}
+
 #[cfg(test)]
 mod deployment_tests {
     use super::*;

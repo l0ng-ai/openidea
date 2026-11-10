@@ -24,7 +24,7 @@ mod registry;
 mod ui;
 mod when;
 
-pub use capability::{Capability, CapabilityInfo, Risk, host_matches};
+pub use capability::{Capability, CapabilityInfo, Risk, expand_ipc_name, host_matches, validate_ipc_name};
 pub use index::ContributionIndex;
 pub use manifest::{
     ActivationEvent, CATEGORIES, Capabilities, ENGINE_VERSION, EVENT_KINDS, LEGACY_API, MANIFEST_FILE, MAX_CATEGORIES,

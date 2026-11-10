@@ -32,18 +32,23 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
     assert!(!host.open_project("main", &root).unwrap().is_trusted());
     for command in [
         "app_info",
+        "workspace_discover_projects",
         "app_build_info",
         "app_cli_install",
         "app_cli_uninstall",
         "app_log_location",
         "app_check_update",
-        "app_startup_update_check",
+        "app_update_window_ready",
+        "app_update_status",
+        "app_update_announcement",
         "app_install_update",
         "caches_schedule_invalidation",
         "clear_caches",
         "clipboard_file_list",
         "clipboard_has_files",
+        "clipboard_image",
         "clipboard_set_file_list",
+        "clipboard_write_text",
         "jdk_download_vendors",
         "jdk_download_releases",
         "jdk_download_location",
@@ -446,4 +451,34 @@ async fn revocation_still_applies_when_a_project_folder_was_removed() {
     host.set_project_trust(&project.root, false, false).await.unwrap();
     assert!(!project.is_trusted());
     host.shutdown().await;
+}
+
+#[test]
+fn attached_member_trust_is_required_after_restart_and_revocation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (config, data) = (tmp.path().join("config"), tmp.path().join("data"));
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("primary");
+    let other = base.join("other");
+    for path in [&root, &other] {
+        std::fs::create_dir(path).unwrap();
+    }
+    ide_workspace::workspace::Workspace::attach(&root, "Primary", vec![root.clone(), other.clone()]).unwrap();
+    let trust = TrustStore::load(&config, &data);
+    trust.decide(&root, true, false).unwrap();
+    trust.inherit(&other).unwrap();
+    assert!(trust.window_trusted(&root).unwrap());
+    let trust = TrustStore::load(&config, &data);
+    assert!(trust.status(&root).unwrap().trusted);
+    assert!(!trust.window_trusted(&root).unwrap());
+    assert!(!trust.status(&other).unwrap().decided);
+    trust.decide(&root, true, false).unwrap();
+    assert!(!trust.window_trusted(&root).unwrap(), "trusting only the root does not recover the window");
+    trust.decide(&other, true, false).unwrap();
+    assert!(trust.window_trusted(&root).unwrap());
+    trust.decide(&other, false, false).unwrap();
+    assert!(trust.status(&other).unwrap().decided);
+    assert!(!trust.window_trusted(&root).unwrap());
+    trust.decide(&other, true, false).unwrap();
+    assert!(trust.window_trusted(&root).unwrap());
 }

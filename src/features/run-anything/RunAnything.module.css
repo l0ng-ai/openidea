@@ -45,16 +45,26 @@
 }
 .input {
   flex: 1;
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
 }
 .rows {
   max-height: 360px;
   height: auto;
 }
 .section {
-  padding: 4px 10px 0;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  padding: 0;
   font-size: var(--fs-small);
   color: var(--fg-subtle);
+}
+.section::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-popup);
 }
 .row {
   display: flex;
@@ -68,18 +78,25 @@
   color: var(--fg-muted);
 }
 .label {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: pre;
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
   color: var(--fg-emphasis);
 }
 .activeRow .label {
   color: var(--fg-strong);
 }
 .detail {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-style: italic;
   margin-left: auto;
   color: var(--fg-subtle);
   font-size: var(--fs-small);

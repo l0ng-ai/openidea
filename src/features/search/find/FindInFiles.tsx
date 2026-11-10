@@ -5,7 +5,7 @@ import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { t, useTxTemplate, tx } from "@/platform/i18n";
 import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
-import { call, commands, isTauri, type SearchScope } from "@/platform/ipc";
+import { call, commands, isTauri, onIdeEvent, type SearchScope } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useProjectModules } from "@/platform/projectRoots";
 import { EDIT_SCOPES_ACTION, useCustomScopeList } from "@/platform/search";
@@ -235,6 +235,13 @@ function FindInFilesDialog() {
   const stale = state.stale || (state.query ? JSON.stringify(state.query) !== queryKey : !!s.pattern);
   const currentQuery = useRef(queryKey);
   const [rerun, setRerun] = useState(0);
+  useEffect(
+    () =>
+      onIdeEvent("fsChanged", (e) => {
+        if (e.ignoreRules?.length) setRerun((v) => v + 1);
+      }),
+    [],
+  );
   useLayoutEffect(() => {
     currentQuery.current = queryKey;
     session.invalidate();

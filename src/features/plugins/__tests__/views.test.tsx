@@ -713,3 +713,32 @@ describe("API 1.3 read-only values and table rows", () => {
     },
   );
 });
+
+it("carries zero-based problem and search coordinates as JSON and selected paths", () => {
+  const off = registerAction({ id: "plugin.p.check", title: "Inspect", run: () => {} });
+  const plugin = { id: "p", name: "P", status: "active", enabled: true } as unknown as Parameters<
+    typeof syncUiContributions
+  >[1][number];
+  syncUiContributions(
+    ["problems.context", "searchResults.context"].map((menu) => ({
+      pluginId: "p",
+      point: "menus",
+      key: menu,
+      decl: { menu, command: "check" },
+    })),
+    [plugin],
+  );
+  for (const menu of ["problems", "searchResults"] as const) {
+    const item = pluginMenuItems(menu, ["/p/a.sql"], { line: 3, column: 5 })[0]!;
+    expect(item).toMatchObject({
+      kind: "action",
+      action: "plugin.p.check",
+      arg: { path: "/p/a.sql", paths: ["/p/a.sql"], line: 3, column: 5 },
+    });
+    expect(commandArgs("arg" in item ? item.arg : null)).toEqual([
+      '{"path":"/p/a.sql","line":3,"column":5}',
+      ["/p/a.sql"],
+    ]);
+  }
+  off();
+});

@@ -5,6 +5,8 @@ import { useDocMeta } from "../model/document";
 import styles from "./EditorArea.module.css";
 import { classFileBreakpointReason } from "@/platform/classFiles";
 import { tx } from "@/platform/i18n";
+import { executeAction } from "@/platform/actions";
+import { useLibrarySources } from "../librarySources";
 
 const TEXT = {
   binary: "This file appears to be binary and is shown read-only.",
@@ -39,6 +41,7 @@ export function VirtualBanner({
   path: string;
 }) {
   const reason = classFileBreakpointReason(path);
+  const sources = useLibrarySources(path, decompiled);
   return (
     <div className={`${styles.banner} ${styles.libraryBanner}`} role="status">
       <Icon name={decompiled ? "info" : "lock"} size={14} className={styles.bannerIcon} />
@@ -50,6 +53,40 @@ export function VirtualBanner({
           : tx("Library source (read-only).")}
         {reason && ` ${tx(reason)}`}
       </span>
+      {sources.message && <span>{tx(sources.message)}</span>}
+      {sources.busy ? (
+        <>
+          <span>{tx("Loading library sources…")}</span>
+          <button
+            type="button"
+            className={styles.bannerLink}
+            onClick={() => void executeAction("editor.cancelSourceDownload", path)}
+          >
+            <T>Cancel</T>
+          </button>
+        </>
+      ) : (
+        <>
+          {sources.download && (
+            <button
+              type="button"
+              className={styles.bannerLink}
+              onClick={() => void executeAction("editor.downloadSources", path)}
+            >
+              <T>Download Sources</T>
+            </button>
+          )}
+          {sources.choose && (
+            <button
+              type="button"
+              className={styles.bannerLink}
+              onClick={() => void executeAction("editor.chooseSources", path)}
+            >
+              <T>Choose Sources…</T>
+            </button>
+          )}
+        </>
+      )}
       {description && (
         <span className={styles.bannerDetail} title={description}>
           {description}

@@ -106,12 +106,12 @@ export const nameWithOwner = (r: GHRepositoryCoordinates) => `${r.owner}/${r.nam
 
 /** The GitHub remotes among `remotes` of the repository at `root`, one per GitHub repository. */
 export function githubRemotes(
-  remotes: ReadonlyArray<{ name: string; url: string }>,
+  remotes: ReadonlyArray<{ name: string; url: string; resolvedUrl?: string | null }>,
   root: string | null = null,
 ): GHRemote[] {
   const out: GHRemote[] = [];
   for (const r of remotes) {
-    const c = parseGitHubRemote(r.url);
+    const c = parseGitHubRemote(r.resolvedUrl ?? r.url);
     if (c && !out.some((o) => sameRepository(o, c))) out.push({ ...c, remote: r.name, url: r.url, root });
   }
   return out;

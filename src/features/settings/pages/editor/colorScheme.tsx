@@ -29,7 +29,7 @@ import { executeAction, registerActions } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { ask, confirm, showError } from "@/workbench/messages";
 import { parseIcls, importScheme, deleteScheme, exportIcls } from "@/platform/icls";
-import { tx } from "@/platform/i18n";
+import { tx, useTx } from "@/platform/i18n";
 import { selectPage } from "../../model/staging";
 
 type Overrides = Record<string, Record<string, TextAttributesOverride>>;
@@ -249,9 +249,12 @@ const SAMPLES: Record<string, CodeSample> = {
       ],
       [
         ["  /**", "docComment"],
-        [" doc comment ", "docComment"],
-        ["@param", "docComment"],
-        [" id", "docComment"],
+        [" <b>", "docCommentMarkup"],
+        ["doc comment", "docComment"],
+        ["</b> ", "docCommentMarkup"],
+        ["@param", "docCommentTag"],
+        [" ", "docComment"],
+        ["id", "docCommentTagValue"],
         [" */", "docComment"],
       ],
       [
@@ -279,6 +282,8 @@ const SAMPLES: Record<string, CodeSample> = {
         ["name", "parameter"],
         [", ", "operator"],
         ["GLOBAL", "globalVariable"],
+        [", ", "operator"],
+        ["com.example", "packageReference"],
         ["):", "operator"],
       ],
       [
@@ -356,7 +361,13 @@ const SAMPLES: Record<string, CodeSample> = {
       ],
       [['    """', "pyDocstring"]],
       [["    Syntax Highlighting Demo", "pyDocstring"]],
-      [["    @param x Parameter", "pyDocstring"]],
+      [
+        ["    :", "pyDocstring"],
+        ["param", "pyDocstringTag"],
+        [" ", "pyDocstring"],
+        ["x", "pyDocstringKeyword"],
+        [": Parameter", "pyDocstring"],
+      ],
       [],
       [["    Semantic highlighting:", "pyDocstring"]],
       [["    Generated spectrum to pick colors for local variables and parameters:", "pyDocstring"]],
@@ -687,6 +698,74 @@ const SAMPLES: Record<string, CodeSample> = {
       [["}", "java.operator"]],
     ],
   },
+  Go: {
+    code: [
+      [["package ", "go.keyword"], ["palette"]],
+      [
+        ["import ", "go.keyword"],
+        ['"fmt"', "go.string"],
+      ],
+      [["// Retry a greeting", "go.lineComment"]],
+      [
+        ["const ", "go.keyword"],
+        ["MaxRetries", "go.constant"],
+        [" = ", "go.operator"],
+        ["3", "go.number"],
+      ],
+      [
+        ["var ", "go.keyword"],
+        ["DefaultName", "go.globalVariable"],
+        [" = ", "go.operator"],
+        ['"Go"', "go.string"],
+      ],
+      [
+        ["type ", "go.keyword"],
+        ["Greeter", "go.className"],
+        [" struct ", "go.keyword"],
+        ["{", "go.operator"],
+      ],
+      [
+        ["    Name", "go.field"],
+        [" string", "go.predefined"],
+      ],
+      [["}", "go.operator"]],
+      [
+        ["func ", "go.keyword"],
+        ["(", "go.operator"],
+        ["g", "go.parameter"],
+        [" Greeter", "go.className"],
+        [") ", "go.operator"],
+        ["Greet", "go.functionDeclaration"],
+        ["(", "go.operator"],
+        ["count", "go.parameter"],
+        [" int", "go.predefined"],
+        [") ", "go.operator"],
+        ["string", "go.predefined"],
+        [" {", "go.operator"],
+      ],
+      [
+        ["    message", "go.identifier"],
+        [" := ", "go.operator"],
+        ["fmt", "go.packageReference"],
+        [".", "go.operator"],
+        ["Sprintf", "go.functionCall"],
+        ["(", "go.operator"],
+        ['"Hello, %s', "go.string"],
+        ["\\n", "go.escape"],
+        ['"', "go.string"],
+        [", ", "go.operator"],
+        ["g", "go.parameter"],
+        [".", "go.operator"],
+        ["Name", "go.field"],
+        [")", "go.operator"],
+      ],
+      [
+        ["    return ", "go.keyword"],
+        ["message", "go.identifier"],
+      ],
+      [["}", "go.operator"]],
+    ],
+  },
   Kotlin: {
     code: [
       [["// Kotlin", "kotlin.lineComment"]],
@@ -977,6 +1056,7 @@ function ColorRow({
 }
 
 function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landing?: boolean }) {
+  const translate = useTx();
   const [scheme, setScheme] = useSetting<string>("editor.colorScheme", "global");
   const [overrides, setOverrides] = useSetting<Overrides>("editor.colorOverrides", "global");
   const [weight] = useSetting<number>("editor.fontWeight");
@@ -1217,7 +1297,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
                 aria-label="Color scheme attributes"
                 roots={roots}
                 getKey={(n) => n.key}
-                getLabel={(n) => n.label}
+                getLabel={(n) => translate(n.label)}
                 getChildren={(n) => n.children}
                 isExpandable={(n) => !!n.children?.length}
                 expanded={expanded}
@@ -1230,7 +1310,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
                   <span
                     className={`${styles.treeLabel} ${(n.attr ? mine?.[n.attr.id] : modifiedKeys.has(n.key)) ? styles.attrModified : ""}`}
                   >
-                    {n.label}
+                    {translate(n.label)}
                   </span>
                 )}
                 speedSearch

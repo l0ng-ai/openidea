@@ -61,6 +61,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ahash"
+version = "0.8.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
+dependencies = [
+ "cfg-if",
+ "getrandom 0.3.4",
+ "once_cell",
+ "serde",
+ "version_check",
+ "zerocopy",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -617,6 +631,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "borrow-or-share"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
+
+[[package]]
 name = "borsh"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -689,6 +709,12 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 dependencies = [
  "allocator-api2",
 ]
+
+[[package]]
+name = "bytecount"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
 
 [[package]]
 name = "bytemuck"
@@ -1496,7 +1522,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
 dependencies = [
  "quote",
- "syn 3.0.9",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2031,6 +2057,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "email_address"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e079f19b08ca6239f47f8ba8509c11cf3ea30095831f7fed61441475edd8c449"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "embed-resource"
 version = "3.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2188,6 +2223,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fancy-regex"
+version = "0.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f"
+dependencies = [
+ "bit-set 0.8.0",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "faster-hex"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2288,6 +2334,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fluent-uri"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1918b65d96df47d3591bed19c5cca17e3fa5d0707318e4b5ef2eae01764df7e5"
+dependencies = [
+ "borrow-or-share",
+ "ref-cast",
+ "serde",
+]
+
+[[package]]
 name = "flume"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2344,6 +2401,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fraction"
+version = "0.15.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e076045bb43dac435333ed5f04caf35c7463631d0dae2deb2638d94dd0a5b872"
+dependencies = [
+ "lazy_static",
+ "num",
 ]
 
 [[package]]
@@ -3908,6 +3975,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3933,6 +4006,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -4106,12 +4180,13 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "ide-agent"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dunce",
  "encoding_rs",
  "ide-core",
  "ide-jsonrpc",
+ "ide-mcp",
  "ide-tools",
  "ide-vcs",
  "ide-vfs",
@@ -4129,7 +4204,7 @@ dependencies = [
 
 [[package]]
 name = "ide-analysis"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ast-grep-core",
  "ide-core",
@@ -4143,7 +4218,7 @@ dependencies = [
 
 [[package]]
 name = "ide-android"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "serde",
@@ -4154,7 +4229,7 @@ dependencies = [
 
 [[package]]
 name = "ide-build"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "blake3",
  "dirs 6.0.0",
@@ -4170,7 +4245,7 @@ dependencies = [
 
 [[package]]
 name = "ide-cli"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -4184,8 +4259,9 @@ dependencies = [
 
 [[package]]
 name = "ide-clipboard"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
+ "gtk",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
@@ -4193,11 +4269,12 @@ dependencies = [
 
 [[package]]
 name = "ide-core"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dunce",
  "encoding_rs",
  "libc",
+ "percent-encoding",
  "serde",
  "serde_json",
  "specta",
@@ -4210,7 +4287,7 @@ dependencies = [
 
 [[package]]
 name = "ide-coverage"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "ide-run",
@@ -4224,12 +4301,14 @@ dependencies = [
 
 [[package]]
 name = "ide-dap"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "futures",
  "ide-core",
  "ide-jsonrpc",
  "ide-language",
+ "ide-remote",
+ "ide-run",
  "libc",
  "memchr",
  "parking_lot",
@@ -4245,10 +4324,12 @@ dependencies = [
 
 [[package]]
 name = "ide-db"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "bb8",
+ "blake3",
  "dirs 6.0.0",
+ "dunce",
  "futures",
  "ide-core",
  "ide-http",
@@ -4266,13 +4347,14 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml 0.9.12+spec-1.1.0",
+ "toml_edit 0.25.17+spec-1.1.0",
  "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "ide-docker"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "serde",
@@ -4285,7 +4367,7 @@ dependencies = [
 
 [[package]]
 name = "ide-extension"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4305,7 +4387,7 @@ dependencies = [
 
 [[package]]
 name = "ide-fonts"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "objc2-core-foundation",
  "objc2-core-text",
@@ -4317,7 +4399,7 @@ dependencies = [
 
 [[package]]
 name = "ide-github"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "ide-vcs",
@@ -4330,7 +4412,7 @@ dependencies = [
 
 [[package]]
 name = "ide-host"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4338,6 +4420,7 @@ dependencies = [
  "dirs 6.0.0",
  "dunce",
  "encoding_rs",
+ "futures",
  "getrandom 0.3.4",
  "globset",
  "ide-agent",
@@ -4354,6 +4437,7 @@ dependencies = [
  "ide-jsonrpc",
  "ide-language",
  "ide-lsp",
+ "ide-mcp",
  "ide-notebook",
  "ide-plugin",
  "ide-remote",
@@ -4370,8 +4454,11 @@ dependencies = [
  "ide-vfs",
  "ide-workspace",
  "ignore",
+ "jsonschema",
  "parking_lot",
+ "percent-encoding",
  "quick-xml 0.42.0",
+ "regex-lite",
  "regex-syntax",
  "reqwest",
  "rustix",
@@ -4392,7 +4479,7 @@ dependencies = [
 
 [[package]]
 name = "ide-http"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "parking_lot",
@@ -4410,7 +4497,7 @@ dependencies = [
 
 [[package]]
 name = "ide-index"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "blake3",
  "criterion",
@@ -4432,7 +4519,7 @@ dependencies = [
 
 [[package]]
 name = "ide-jsonrpc"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "encoding_rs",
  "futures",
@@ -4449,7 +4536,7 @@ dependencies = [
 
 [[package]]
 name = "ide-language"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "blake3",
  "criterion",
@@ -4505,7 +4592,7 @@ dependencies = [
 
 [[package]]
 name = "ide-lsp"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dunce",
  "futures",
@@ -4530,8 +4617,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-mcp"
+version = "0.1.40"
+dependencies = [
+ "bytes",
+ "dunce",
+ "getrandom 0.3.4",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "ide-notebook"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "futures",
  "ide-core",
@@ -4554,9 +4660,10 @@ dependencies = [
 
 [[package]]
 name = "ide-plugin"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "blake3",
+ "dunce",
  "ide-core",
  "ide-extension",
  "parking_lot",
@@ -4568,6 +4675,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "url",
  "wasmtime",
  "wasmtime-wasi",
  "wat",
@@ -4575,7 +4683,7 @@ dependencies = [
 
 [[package]]
 name = "ide-profiler"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "ide-run",
@@ -4588,8 +4696,9 @@ dependencies = [
 
 [[package]]
 name = "ide-remote"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
+ "dunce",
  "globset",
  "ide-core",
  "ide-run",
@@ -4606,7 +4715,7 @@ dependencies = [
 
 [[package]]
 name = "ide-run"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4630,7 +4739,7 @@ dependencies = [
 
 [[package]]
 name = "ide-sdk"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dunce",
  "ide-core",
@@ -4638,6 +4747,7 @@ dependencies = [
  "ide-run",
  "ide-vfs",
  "ignore",
+ "quick-xml 0.42.0",
  "serde",
  "serde_json",
  "specta",
@@ -4649,7 +4759,7 @@ dependencies = [
 
 [[package]]
 name = "ide-search"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "criterion",
  "globset",
@@ -4669,7 +4779,7 @@ dependencies = [
 
 [[package]]
 name = "ide-spell"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "parking_lot",
@@ -4682,7 +4792,7 @@ dependencies = [
 
 [[package]]
 name = "ide-ssh"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dirs 6.0.0",
  "flate2",
@@ -4703,7 +4813,7 @@ dependencies = [
 
 [[package]]
 name = "ide-syntax"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "ide-language",
@@ -4718,7 +4828,7 @@ dependencies = [
 
 [[package]]
 name = "ide-terminal"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "libc",
@@ -4731,7 +4841,7 @@ dependencies = [
 
 [[package]]
 name = "ide-text"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "criterion",
  "ide-core",
@@ -4744,7 +4854,7 @@ dependencies = [
 
 [[package]]
 name = "ide-tools"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "flate2",
  "hex",
@@ -4765,7 +4875,7 @@ dependencies = [
 
 [[package]]
 name = "ide-vcs"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "blake3",
  "dunce",
@@ -4786,7 +4896,7 @@ dependencies = [
 
 [[package]]
 name = "ide-vfs"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "chardetng",
  "dunce",
@@ -4810,7 +4920,7 @@ dependencies = [
 
 [[package]]
 name = "ide-web"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ide-core",
  "open",
@@ -4826,7 +4936,7 @@ dependencies = [
 
 [[package]]
 name = "ide-workspace"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "blake3",
  "dunce",
@@ -5258,6 +5368,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonschema"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d46662859bc5f60a145b75f4632fbadc84e829e45df6c5de74cfc8e05acb96b5"
+dependencies = [
+ "ahash",
+ "base64 0.22.1",
+ "bytecount",
+ "email_address",
+ "fancy-regex",
+ "fraction",
+ "idna",
+ "itoa",
+ "num-cmp",
+ "num-traits",
+ "once_cell",
+ "percent-encoding",
+ "referencing",
+ "regex",
+ "regex-syntax",
+ "serde",
+ "serde_json",
+ "uuid-simd",
+]
+
+[[package]]
 name = "jupyter-protocol"
 version = "2.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5447,9 +5583,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.37.0"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f111c8c41e7c61a49cd34e44c7619462967221a6443b0ec299e0ac30cfb9b1"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -5490,7 +5626,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "53353550a17c04ac46c585feb189c2db82154fc84b79c7a66c96c2c644f66071"
 dependencies = [
  "bitflags 1.3.2",
- "fluent-uri",
+ "fluent-uri 0.1.4",
  "serde",
  "serde_json",
  "serde_repr",
@@ -5831,6 +5967,12 @@ dependencies = [
  "rand 0.10.3",
  "rand_core 0.10.1",
 ]
+
+[[package]]
+name = "num-cmp"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63335b2e2c34fae2fb0aa2cecfd9f0832a1e24b3b32ecec612c3426d46dc8aaa"
 
 [[package]]
 name = "num-complex"
@@ -6224,6 +6366,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-system-configuration"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7216bd11cbda54ccabcab84d523dc93b858ec75ecfb3a7d89513fa22464da396"
+dependencies = [
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "objc2-ui-kit"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6372,7 +6523,7 @@ dependencies = [
 
 [[package]]
 name = "openidea"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -6400,6 +6551,7 @@ dependencies = [
  "ide-jsonrpc",
  "ide-language",
  "ide-lsp",
+ "ide-mcp",
  "ide-notebook",
  "ide-plugin",
  "ide-profiler",
@@ -6507,6 +6659,12 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "outref"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
 
 [[package]]
 name = "p256"
@@ -7273,6 +7431,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "referencing"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e9c261f7ce75418b3beadfb3f0eb1299fe8eb9640deba45ffa2cb783098697d"
+dependencies = [
+ "ahash",
+ "fluent-uri 0.3.2",
+ "once_cell",
+ "parking_lot",
+ "percent-encoding",
+ "serde_json",
 ]
 
 [[package]]
@@ -8468,8 +8640,7 @@ checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 [[package]]
 name = "sqlx"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "378620ccc25c62c89d8be1c819e76a88d59bdcc3304733330788948e619bfd71"
+source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
 dependencies = [
  "sqlx-core",
  "sqlx-macros",
@@ -8481,8 +8652,7 @@ dependencies = [
 [[package]]
 name = "sqlx-core"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05b44e85bf579a8eeb4ceaa77a3a523baf2bf0e9bac7e40f405d537b5d2d5ccb"
+source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -8504,7 +8674,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "smallvec",
  "thiserror 2.0.21",
  "tokio",
@@ -8517,8 +8687,7 @@ dependencies = [
 [[package]]
 name = "sqlx-macros"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd2b84f2bc39a5705ef27ec785a11c934a41bbd4a24941e257927cddc26b60bf"
+source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8530,8 +8699,7 @@ dependencies = [
 [[package]]
 name = "sqlx-macros-core"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb8d96de5fdc85a5c4ec813432b523ec637e80ba98f046555f75f7908ddac7c3"
+source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
 dependencies = [
  "cfg-if",
  "dotenvy",
@@ -8542,7 +8710,7 @@ dependencies = [
  "quote",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sqlx-core",
  "sqlx-mysql",
  "sqlx-postgres",
@@ -8555,8 +8723,7 @@ dependencies = [
 [[package]]
 name = "sqlx-mysql"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90b8020fe17c5f2c245bfa2505d7ef59c5604839527c740266ad2214acebea27"
+source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
 dependencies = [
  "bitflags 2.13.2",
  "byteorder",
@@ -8581,8 +8748,7 @@ dependencies = [
 [[package]]
 name = "sqlx-postgres"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87a2bdd6e83f6b3ea525ca9fee568030508b58355a43d0b2c1674d5f79dcd65e"
+source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
 dependencies = [
  "atoi",
  "base64 0.22.1",
@@ -8616,8 +8782,7 @@ dependencies = [
 [[package]]
 name = "sqlx-sqlite"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "488e99c397a62007e4229aec669a179816339afc6d2620ca6fa420dbee2e982c"
+source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
 dependencies = [
  "atoi",
  "flume",
@@ -9382,7 +9547,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -10466,6 +10631,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "uuid-simd"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23b082222b4f6619906941c17eb2297fff4c2fb96cb60164170522942a200bd8"
+dependencies = [
+ "outref",
+ "uuid",
+ "vsimd",
+]
+
+[[package]]
 name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10488,6 +10664,12 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vsimd"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
 
 [[package]]
 name = "vswhom"
@@ -11131,6 +11313,12 @@ name = "whoami"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "626c4bac6755d76ffc12cb01b2eac751db1996b9e0041de9aa02c8c211ddc82c"
+dependencies = [
+ "libc",
+ "libredox",
+ "objc2-system-configuration",
+ "web-sys",
+]
 
 [[package]]
 name = "win_uds"

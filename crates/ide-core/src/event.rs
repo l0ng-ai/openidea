@@ -12,7 +12,23 @@ use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum McpUiRequest {
+    Confirm { client: String, tool: String, subject: String, project: String, detail: Option<String> },
+    OpenFile { path: crate::IpcPath, line: Option<u32>, column: Option<u32> },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum IdeEvent {
+    /// Project data source settings changed; reload the Database tree.
+    DbSourcesChanged,
+    McpRequest {
+        id: u32,
+        request: McpUiRequest,
+    },
+    McpRequestClosed {
+        id: u32,
+    },
     /// Project window membership or selection changed.
     WindowGroupsChanged,
     /// A window entered or left full screen, itself or as a member of a full-screen window group.
@@ -26,6 +42,10 @@ pub enum IdeEvent {
         created: Vec<crate::IpcPath>,
         modified: Vec<crate::IpcPath>,
         removed: Vec<crate::IpcPath>,
+        /// Subtrees whose ignore rules changed, after the matchers were rebuilt.
+        #[serde(default)]
+        #[specta(optional)]
+        ignore_rules: Vec<crate::IpcPath>,
     },
     /// Excluded or ignored folders whose contents changed; they stay out of `FsChanged`.
     ExcludedDirsChanged {
@@ -131,6 +151,12 @@ pub enum IdeEvent {
     /// global value, the project's for a project value) re-read their effective settings.
     SettingsChanged {
         key: String,
+    },
+    UpdateStatusChanged {
+        status: crate::updates::UpdateStatus,
+    },
+    UpdateAvailable {
+        update: crate::updates::UpdateInfo,
     },
     /// The project's source / test / resource / excluded roots changed (build files
     /// changed or folders were marked); the UI re-reads them with `project_roots`.

@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Icon, Tree, fileIconName, lazyComponent } from "@/ui";
-import { diffInput, openDiff, type DiffData } from "./diffInput";
+import { diffInput, openVcsDiff, type DiffData } from "./diffInput";
 import { dirKeys, type FileTreeNode } from "./fileTree";
 import styles from "./common.module.css";
 
@@ -53,7 +53,7 @@ export function ComparisonTree<F>({
           onSelect(entry);
           const diff = diffFor(entry);
           if (openOnActivate && diff) {
-            void openDiff(diff);
+            void openVcsDiff(diff);
             onOpen?.();
           }
         }}

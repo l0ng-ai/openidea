@@ -6,13 +6,13 @@
  */
 import type { Text } from "@codemirror/state";
 import { EditorSelection, StateEffect, StateField } from "@codemirror/state";
-import { EditorView, ViewPlugin } from "@codemirror/view";
+import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { forEachDiagnostic, linter, setDiagnostics, type Diagnostic as LintDiagnostic } from "@codemirror/lint";
 import type { Diagnostic, Severity } from "@/bindings";
 import { commands, ideEventsReady, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { publishLocalDiagnostics } from "@/platform/localDiagnostics";
-import { intentionsChanged, scrollbarMarks, type ScrollbarMark } from "@/editor/api";
+import { intentionsChanged, scrollbarMarks, shownAgain, type ScrollbarMark } from "@/editor/api";
 import { rangeToOffsets } from "./positions";
 import { lspDoc } from "./lsp";
 import { showHint } from "./hint";
@@ -125,9 +125,13 @@ export function installDiagnosticsEvents(): () => void {
 
 const SEVERITY_RANK: Record<Severity, number> = { error: 0, warning: 1, info: 2, hint: 3 };
 
+export interface EditorDiagnostic extends LintDiagnostic {
+  problem?: Diagnostic;
+}
+
 /** Backend diagnostics → lint diagnostics for `doc` (empty ranges widened to one character). */
-export function toLintDiagnostics(doc: Text, items: readonly Diagnostic[]): LintDiagnostic[] {
-  const out: LintDiagnostic[] = items.map((d) => {
+export function toLintDiagnostics(doc: Text, items: readonly Diagnostic[]): EditorDiagnostic[] {
+  const out: EditorDiagnostic[] = items.map((d) => {
     let { from, to } = rangeToOffsets(doc, d.range);
     if (from === to) {
       const line = doc.lineAt(from);
@@ -142,6 +146,7 @@ export function toLintDiagnostics(doc: Text, items: readonly Diagnostic[]): Lint
     return {
       from,
       to,
+      problem: d,
       severity: d.severity,
       message: d.message,
       source: [d.source, isInternalCode(d.code) ? null : d.code].filter(Boolean).join(" ") || undefined,
@@ -190,6 +195,7 @@ const diagnosticsSync = ViewPlugin.fromClass(
   class {
     private unsubscribe: () => void;
     private pending = false;
+    private skipped = false;
     constructor(private view: EditorView) {
       const path = view.state.facet(lspDoc)?.path;
       this.unsubscribe = path ? subscribeDiagnostics(path, () => this.schedule()) : () => {};
@@ -201,7 +207,8 @@ const diagnosticsSync = ViewPlugin.fromClass(
       queueMicrotask(() => {
         this.pending = false;
         const path = this.view.state.facet(lspDoc)?.path;
-        if (!path || !this.view.dom.isConnected) return;
+        this.skipped = !this.view.dom.isConnected;
+        if (!path || this.skipped) return;
         const lint = toLintDiagnostics(this.view.state.doc, diagnosticsFor(path));
         const tr = setDiagnostics(this.view.state, lint);
         this.view.dispatch({
@@ -209,6 +216,9 @@ const diagnosticsSync = ViewPlugin.fromClass(
           effects: [...[tr.effects ?? []].flat(), setMarks.of(diagnosticMarks(lint)), intentionsChanged.of(null)],
         });
       });
+    }
+    update(u: ViewUpdate) {
+      if (this.skipped && shownAgain(u)) this.schedule();
     }
     destroy() {
       this.unsubscribe();
@@ -277,7 +287,7 @@ export function diagnosticsExtension() {
 export interface PlacedDiagnostic {
   from: number;
   to: number;
-  diagnostic: LintDiagnostic;
+  diagnostic: EditorDiagnostic;
 }
 
 export function diagnosticsAt(view: EditorView, pos: number): PlacedDiagnostic[] {

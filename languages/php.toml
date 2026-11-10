@@ -38,6 +38,7 @@ require-root-marker = true
 install-hint = "composer global require laravel/lsp"
 
 [debugger]
+target-placement = "connect-back"
 adapter = "php-debug"
 command = "php-debug-adapter"
 install-hint = "Install PHP Debug (Xdebug) in Settings › Languages & Frameworks › Language Servers, and enable Xdebug"

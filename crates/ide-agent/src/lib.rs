@@ -100,6 +100,8 @@ struct Shared {
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
     probes: Mutex<HashMap<String, AgentProbe>>,
+    /// One pre-session lookup of commands and settings per provider, including failed attempts.
+    command_fetches: Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>,
     /// [`IDLE_RELEASE`], in milliseconds (shorter in tests).
     idle_release_ms: AtomicU64,
 }
@@ -151,6 +153,46 @@ impl Shared {
         cache.get(provider).and_then(|k| k.commands.get(&self.root_key())).cloned().unwrap_or_default()
     }
 
+    async fn fetch_settings(self: &Arc<Self>, spec: provider::ProviderSpec) {
+        let mut ready = {
+            let mut fetches = self.command_fetches.lock();
+            fetches
+                .entry(spec.id.clone())
+                .or_insert_with(|| {
+                    let (done, ready) = tokio::sync::watch::channel(false);
+                    let shared = self.clone();
+                    // Keep the lookup alive if a composer unmounts while it is waiting.
+                    self.runtime.spawn(async move {
+                        if let Ok((commands, options)) =
+                            native::claude::discover(spec.clone(), shared.paths.project_root.clone()).await
+                        {
+                            let commands = config::commands_of(&json!({ "availableCommands": commands }), &spec.id);
+                            let options = config::options_of(&json!({ "configOptions": options }));
+                            let _ = tokio::task::spawn_blocking(move || {
+                                // Notifies subscribers itself when the discovery
+                                // changed the cached config; unchanged results
+                                // stay silent.
+                                shared.remember_discovered(&spec.id, &options, &commands);
+                            })
+                            .await;
+                        }
+                        let _ = done.send(true);
+                    });
+                    ready
+                })
+                .clone()
+        };
+        while !*ready.borrow_and_update() {
+            if ready.changed().await.is_err() {
+                break;
+            }
+        }
+    }
+
+    fn has_config(&self, provider: &str) -> bool {
+        self.known.lock().get(provider).is_some_and(|k| !k.config.is_empty())
+    }
+
     fn root_key(&self) -> String {
         self.paths.project_root.to_string_lossy().into_owned()
     }
@@ -163,41 +205,63 @@ impl Shared {
         commands: Option<&[AgentCommand]>,
         model: Option<&str>,
     ) {
-        let snapshot = {
-            let mut cache = self.known.lock();
-            let known = cache.entry(provider.to_owned()).or_default();
-            let mut changed = false;
-            if let Some(c) = config {
-                if let Some(model) = model {
-                    let levels: Vec<_> =
-                        c.iter().filter(|o| o.category.as_deref() == Some("thought_level")).cloned().collect();
-                    if known.thought_levels.get(model) != Some(&levels) {
-                        known.thought_levels.insert(model.to_owned(), levels);
-                        changed = true;
-                    }
-                }
-                if !c.is_empty() && known.config != c {
-                    known.config = c.to_vec();
+        self.remember_inner(provider, config, commands, model, false);
+    }
+
+    fn remember_discovered(&self, provider: &str, config: &[AgentConfigOption], commands: &[AgentCommand]) {
+        self.remember_inner(provider, Some(config), Some(commands), model_of(config).as_deref(), true);
+    }
+
+    fn remember_inner(
+        &self,
+        provider: &str,
+        config: Option<&[AgentConfigOption]>,
+        commands: Option<&[AgentCommand]>,
+        model: Option<&str>,
+        discovered: bool,
+    ) {
+        // Keep the update and its disk write ordered; a session report wins over discovery.
+        let mut cache = self.known.lock();
+        let known = cache.entry(provider.to_owned()).or_default();
+        let mut changed = false;
+        if let Some(c) = config.filter(|_| !discovered || known.config.is_empty()) {
+            if let Some(model) = model {
+                let levels: Vec<_> =
+                    c.iter().filter(|o| o.category.as_deref() == Some("thought_level")).cloned().collect();
+                if known.thought_levels.get(model) != Some(&levels) {
+                    known.thought_levels.insert(model.to_owned(), levels);
                     changed = true;
                 }
             }
-            let root = self.root_key();
-            if let Some(c) =
-                commands.filter(|c| !c.is_empty() && known.commands.get(&root).map(Vec::as_slice) != Some(c))
-            {
-                known.commands.insert(root, c.to_vec());
+            if !c.is_empty() && known.config != c {
+                known.config = c.to_vec();
                 changed = true;
             }
-            if !changed {
-                return;
-            }
-            serde_json::to_vec_pretty(&*cache)
-        };
-        if let Ok(bytes) = snapshot
+        }
+        let root = self.root_key();
+        if let Some(c) = commands.filter(|c| {
+            !c.is_empty()
+                && (!discovered || known.commands.get(&root).is_none_or(Vec::is_empty))
+                && known.commands.get(&root).map(Vec::as_slice) != Some(c)
+        }) {
+            known.commands.insert(root, c.to_vec());
+            changed = true;
+        }
+        if !changed {
+            return;
+        }
+        if let Ok(bytes) = serde_json::to_vec_pretty(&*cache)
             && let Err(e) = write_file(&self.paths.models_file, &bytes)
         {
             tracing::warn!("saving agent settings: {e}");
         }
+        // The cached provider config actually changed (a session report, discovery,
+        // or a turn update): tell subscribers to re-list, so a changed model list
+        // reaches the composer without waiting for the next task (#1490). Unchanged
+        // reports stay silent, so routine session traffic emits nothing. The cache
+        // lock is released first; the sink never runs under it.
+        drop(cache);
+        self.emit(AgentEvent::Providers);
     }
 }
 
@@ -251,6 +315,7 @@ struct Live {
     embedded: bool,
     /// `session/load`: the process can be stopped between turns and the session reloaded.
     resumable: bool,
+    mcp_stdio: bool,
 }
 
 struct Task {
@@ -316,6 +381,7 @@ impl AgentManager {
             known: Mutex::new(known),
             providers,
             probes: Mutex::new(HashMap::new()),
+            command_fetches: Mutex::new(HashMap::new()),
             idle_release_ms: AtomicU64::new(IDLE_RELEASE.as_millis() as u64),
         });
         let mut tasks = HashMap::new();
@@ -419,9 +485,21 @@ impl AgentManager {
         // Commands the agent implements itself and never lists (its CLI builtins):
         // merged without duplicating what `availableCommands` or the disk offer.
         let mut offered = offered;
+        if task.is_none()
+            && (offered.is_empty() || !self.shared.has_config(&provider))
+            && let Some(spec) = self.shared.spec(&provider).filter(|s| s.driver == provider::Driver::Claude)
+        {
+            self.shared.fetch_settings(spec).await;
+            offered = self.shared.known_commands(&provider);
+        }
         for &(name, description) in builtin_commands(&provider) {
             if !offered.iter().any(|c| c.name == name) {
-                offered.push(AgentCommand { name: name.to_owned(), description: description.to_owned(), hint: None });
+                offered.push(AgentCommand {
+                    name: name.to_owned(),
+                    description: description.to_owned(),
+                    hint: None,
+                    source: AgentCommandSource::Command,
+                });
             }
         }
         if provider != "claude" && provider != "claude-acp" {
@@ -696,7 +774,7 @@ impl AgentManager {
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
         let reply: Value = live
             .peer
-            .request("session/fork", json!({ "sessionId": live.session, "cwd": cwd_s, "mcpServers": [] }), None)
+            .request("session/fork", json!({ "sessionId": live.session, "cwd": cwd_s, "mcpServers": mcp_servers_for(live.mcp_stdio, &source.shared.paths.project_root) }), None)
             .await
             .map_err(|e| IdeError::internal(source.describe(e)))?;
         let session = reply
@@ -1394,13 +1472,22 @@ impl Task {
             };
             return Failure { message, limit: Some(resets) };
         }
-        match e {
-            // Signed out, or the account was refused (Claude Code: "API Error: 403").
-            RpcError::Server { message, .. } if message.to_lowercase().contains("auth") => {
-                Failure::from(self.live.lock().as_ref().map(|live| live.sign_in_message.clone()).unwrap_or(message))
-            }
-            e => Failure::from(self.describe(e)),
+        let guidance = self.live.lock().as_ref().map(|live| live.sign_in_message.clone());
+        Failure::from(self.sign_in_error(&e, guidance.as_deref()).unwrap_or_else(|| self.describe(e)))
+    }
+
+    fn sign_in_error(&self, e: &RpcError, guidance: Option<&str>) -> Option<String> {
+        let RpcError::Server { code, message, .. } = e else { return None };
+        if !acp::auth_required(*code, message) {
+            return None;
         }
+        tracing::warn!(task = %self.id, code, %message, "agent sign-in failed");
+        let Some(guidance) = guidance else { return Some(message.clone()) };
+        Some(if message.trim().is_empty() || guidance.contains(message) {
+            guidance.to_owned()
+        } else {
+            format!("{guidance}\n\n{message}")
+        })
     }
 
     async fn ensure_session(self: &Arc<Self>) -> Result<Live, String> {
@@ -1419,7 +1506,6 @@ impl Task {
         let spec = tokio::task::spawn_blocking(move || spec.resolve_for_launch(&launch_cwd))
             .await
             .map_err(|e| e.to_string())?;
-        let sign_in_message = spec.sign_in_message();
         self.stderr.lock().clear();
         self.config_sent.lock().clear();
         let weak = Arc::downgrade(self);
@@ -1439,7 +1525,9 @@ impl Task {
             .map_err(|e| format!("Couldn't start {} (`{}`): {e}", spec.name, spec.command))?;
 
         let init = peer.initialize(&client_info()).await.map_err(|e| self.describe(e))?;
+        let sign_in_message = spec.sign_in_message(&init.auth_methods);
         let can_load = init.load_session();
+        let mcp_stdio = init.mcp_stdio();
         let (capabilities, embedded) = capabilities_of(&init);
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
@@ -1448,7 +1536,7 @@ impl Task {
         if let (Some(id), true) = (saved, can_load) {
             self.replaying.store(true, Ordering::Release);
             let loaded: Result<Value, RpcError> =
-                peer.request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": [] }), None).await;
+                peer.request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": mcp_servers_for(mcp_stdio, &self.shared.paths.project_root) }), None).await;
             tokio::time::sleep(REPLAY_GRACE).await;
             self.replaying.store(false, Ordering::Release);
             match loaded {
@@ -1461,14 +1549,13 @@ impl Task {
             Some(s) => s,
             None => {
                 let v: Value = peer
-                    .request("session/new", json!({ "cwd": cwd_s, "mcpServers": [] }), None)
+                    .request(
+                        "session/new",
+                        json!({ "cwd": cwd_s, "mcpServers": mcp_servers_for(mcp_stdio, &self.shared.paths.project_root) }),
+                        None,
+                    )
                     .await
-                    .map_err(|e| match e {
-                        RpcError::Server { ref message, .. } if message.to_lowercase().contains("auth") => {
-                            sign_in_message.clone()
-                        }
-                        e => self.describe(e),
-                    })?;
+                    .map_err(|e| self.sign_in_error(&e, Some(&sign_in_message)).unwrap_or_else(|| self.describe(e)))?;
                 let id = v.get("sessionId").and_then(Value::as_str).ok_or("the agent returned no session")?.to_owned();
                 (id, v)
             }
@@ -1557,7 +1644,8 @@ impl Task {
         }
         self.persist();
         self.emit_task();
-        let live = Live { sign_in_message, peer, session: session_id, capabilities, embedded, resumable: can_load };
+        let live =
+            Live { sign_in_message, peer, session: session_id, capabilities, embedded, resumable: can_load, mcp_stdio };
         *self.live.lock() = Some(live.clone());
         Ok(live)
     }
@@ -1701,7 +1789,7 @@ impl Task {
                     true
                 }
                 "available_commands_update" => {
-                    s.task.commands = config::commands_of(update);
+                    s.task.commands = config::commands_of(update, &provider);
                     true
                 }
                 "usage_update" => {
@@ -2211,3 +2299,20 @@ mod replay;
 mod replay_tests;
 #[cfg(test)]
 mod tests;
+
+// The desktop advertises its relay only while the built-in server is listening.
+static MCP_EXECUTABLE: parking_lot::RwLock<Option<std::path::PathBuf>> = parking_lot::RwLock::new(None);
+
+pub fn set_mcp_executable(executable: Option<std::path::PathBuf>) {
+    *MCP_EXECUTABLE.write() = executable;
+}
+
+fn mcp_servers_for(supported: bool, root: &std::path::Path) -> Vec<Value> {
+    stdio_mcp_servers(MCP_EXECUTABLE.read().as_deref(), supported, root)
+}
+
+fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root: &std::path::Path) -> Vec<Value> {
+    let Some(executable) = executable.filter(|_| supported) else { return Vec::new() };
+    let command = ide_mcp::stdio_command(executable, root);
+    vec![json!({ "name": "OpenIDEA", "command": command[0], "args": command[1..], "env": [] })]
+}

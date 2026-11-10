@@ -14,6 +14,7 @@ use crate::exe;
 use crate::exec::{query_in, query_in_cancellable, which};
 use ide_core::CancellationToken;
 use ide_core::settings::Settings;
+use quick_xml::{Reader, XmlVersion, events::Event};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
@@ -27,7 +28,7 @@ use std::time::{Duration, SystemTime};
 pub struct LibraryGroup {
     /// Display name, e.g. `Python 3.12 (.venv)`.
     pub name: String,
-    /// `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle`.
+    /// `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle` | `classpath`.
     pub kind: String,
     pub roots: Vec<LibraryRoot>,
 }
@@ -148,6 +149,7 @@ pub fn project_libraries_stream(
                 return Vec::new();
             }
             let mut groups = dependency_groups(root, &settings, dependencies);
+            groups.extend(classpath_groups(&roots));
             groups.extend(project_structure_groups(root, &settings));
             if !cancel.is_cancelled() && !groups.is_empty() {
                 on_groups(groups.clone());
@@ -433,10 +435,20 @@ fn ruby_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<Lib
 // ------------------------------------------------------------------ jdk
 
 fn jdk_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
+    // Java modules without a build manifest carry `.classpath` / `.project` /
+    // `.idea` instead; a configured JDK or declared source roots mark one too.
     let files = match manifests(root, JAVA_MANIFESTS) {
         Some(files) => files,
-        None if !s.languages.java.jdk.trim().is_empty() || !s.project_structure.source_roots.is_empty() => Vec::new(),
-        None => return Vec::new(),
+        None => {
+            let java = [".classpath", ".project"].iter().any(|f| root.join(f).is_file())
+                || root.join(".idea").is_dir()
+                || !s.languages.java.jdk.trim().is_empty()
+                || !s.project_structure.source_roots.is_empty();
+            if !java {
+                return Vec::new();
+            }
+            [".classpath", ".project"].iter().map(|f| root.join(f)).collect()
+        }
     };
     cached_cancellable(root, "jdk", s.languages.java.jdk.clone(), &files, cancel, || {
         let jdk = crate::apply::project_jdk(root, s).or_else(|| {
@@ -465,6 +477,84 @@ fn project_structure_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
         if !roots.is_empty() {
             let name = if lib.name.trim().is_empty() { roots[0].name.clone() } else { lib.name.trim().to_owned() };
             out.push(LibraryGroup { name, kind: "library".into(), roots });
+        }
+    }
+    out
+}
+
+/// JDT libraries of modules without a Maven / Gradle manifest: each `.classpath`
+/// in `roots` (the project root and its discovered modules) becomes a group.
+fn classpath_groups(roots: &[PathBuf]) -> Vec<LibraryGroup> {
+    let mut out = Vec::new();
+    for dir in roots {
+        let file = dir.join(".classpath");
+        let Ok(text) = std::fs::read_to_string(&file) else { continue };
+        let mut seen = std::collections::HashSet::new();
+        let entries: Vec<LibraryRoot> = classpath_entries(dir, &text)
+            .into_iter()
+            .filter(|path| seen.insert(dunce::canonicalize(path).unwrap_or_else(|_| path.clone())))
+            .filter_map(|path| {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                if path.is_file() {
+                    Some(LibraryRoot { name, path: ide_vfs::archive_root(&path).into() })
+                } else {
+                    path.is_dir().then(|| LibraryRoot { name, path: path.into() })
+                }
+            })
+            .collect();
+        if !entries.is_empty() {
+            let name = dir
+                .file_name()
+                .map(|n| format!(".classpath ({})", n.to_string_lossy()))
+                .unwrap_or_else(|| ".classpath".into());
+            out.push(LibraryGroup { name, kind: "classpath".into(), roots: entries });
+        }
+    }
+    out
+}
+
+/// `path` (or its `sourcepath`, when it exists) of `.classpath` `kind="lib"`
+/// entries resolved against the module dir; entries pointing nowhere are dropped.
+pub(crate) fn classpath_entries(dir: &Path, text: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut reader = Reader::from_str(text);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Empty(ref tag)) | Ok(Event::Start(ref tag)) => {
+                if !tag.local_name().as_ref().eq_ignore_ascii_case("classpathentry") {
+                    continue;
+                }
+                let (mut kind, mut path, mut srcpath) = (String::new(), String::new(), String::new());
+                for a in tag.attributes().flatten() {
+                    let Ok(value) = a.normalized_value(XmlVersion::Implicit1_0) else { continue };
+                    match a.key.as_ref() {
+                        "kind" => kind = value.into_owned(),
+                        "path" => path = value.into_owned(),
+                        "sourcepath" => srcpath = value.into_owned(),
+                        _ => {}
+                    }
+                }
+                if kind != "lib" {
+                    continue;
+                }
+                for p in [&srcpath, &path] {
+                    let p = p.trim_matches('/');
+                    if p.is_empty() {
+                        continue;
+                    }
+                    let candidate = dir.join(p);
+                    if candidate.exists() {
+                        out.push(candidate);
+                        break;
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
         }
     }
     out
@@ -1107,5 +1197,53 @@ mod go_cache_tests {
         invalidate_go(dir.path());
         cached(dir.path(), "go", "same".into(), &[], detect);
         assert_eq!(count.get(), 2);
+    }
+
+    #[test]
+    fn classpath_entries_resolve_lib_paths_against_the_module() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("guava.jar"), "").unwrap();
+        std::fs::create_dir_all(root.join("classes")).unwrap();
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        std::fs::write(root.join("lib/servlet.jar"), "").unwrap();
+        let text = r#"<?xml version="1.0" encoding="UTF-8"?>
+<classpath>
+    <classpathentry kind="src" path="src"/>
+    <classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
+    <classpathentry kind="lib" path="guava.jar" sourcepath="sources.zip"/>
+    <classpathentry kind="lib" path="classes"/>
+    <classpathentry kind="lib" path="/lib/servlet.jar"/>
+    <classpathentry kind="lib" path="missing.jar"/>
+    <classpathentry kind="output" path="bin"/>
+</classpath>"#;
+        std::fs::write(root.join("sources.zip"), "").unwrap();
+        assert_eq!(
+            classpath_entries(root, text),
+            vec![root.join("sources.zip"), root.join("classes"), root.join("lib/servlet.jar")]
+        );
+    }
+
+    #[test]
+    fn classpath_groups_lists_jars_per_module() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join(".classpath"), r#"<classpath><classpathentry kind="lib" path="a.jar"/></classpath>"#)
+            .unwrap();
+        std::fs::write(root.join("a.jar"), "").unwrap();
+        let module = root.join("module-b");
+        std::fs::create_dir_all(&module).unwrap();
+        std::fs::write(
+            module.join(".classpath"),
+            r#"<classpath><classpathentry kind="lib" path="../shared.jar"/></classpath>"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("shared.jar"), "").unwrap();
+        let groups = classpath_groups(&[root.to_path_buf(), module]);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].kind, "classpath");
+        assert_eq!(groups[0].roots.len(), 1);
+        assert!(groups[0].roots[0].path.to_string_lossy().ends_with("a.jar!"));
+        assert_eq!(groups[1].roots.len(), 1);
     }
 }

@@ -59,6 +59,12 @@ pub struct Grant {
     /// `process:<program>` → the program confirmed for it.
     #[serde(default)]
     pub binaries: BTreeMap<String, BinaryGrant>,
+    /// Project root → process grant → the executable approved for that project.
+    #[serde(default)]
+    pub project_binaries: BTreeMap<PathBuf, BTreeMap<String, BinaryGrant>>,
+    /// Explicit global executable choices, retained for the next re-approval.
+    #[serde(default)]
+    pub program_choices: BTreeMap<String, PathBuf>,
     /// Migrated from 0.1: capabilities not granted yet are asked for on first
     /// use instead of blocking the plugin from loading.
     #[serde(default)]
@@ -248,6 +254,9 @@ impl Ledger {
         } else {
             if let Capability::Process(_) = cap {
                 grant.binaries.remove(&s);
+                for binaries in grant.project_binaries.values_mut() {
+                    binaries.remove(&s);
+                }
             }
             grant.granted.remove(&s)
         }
@@ -258,6 +267,58 @@ impl Ledger {
         if let Some(grant) = self.grants.get_mut(subject) {
             grant.binaries.insert(cap.to_string(), binary);
         }
+    }
+
+    /// The user's explicit global executable choice, if any.
+    pub fn program_choice(&self, subject: &Subject, cap: &Capability) -> Option<&Path> {
+        self.grants.get(subject)?.program_choices.get(&cap.to_string()).map(PathBuf::as_path)
+    }
+    /// Remembers or resets an explicit global executable choice after confirmation.
+    pub fn set_program_choice(&mut self, subject: &Subject, cap: &Capability, path: Option<&Path>) {
+        if let Some(grant) = self.grants.get_mut(subject) {
+            if let Some(path) = path {
+                grant.program_choices.insert(cap.to_string(), path.into());
+            } else {
+                grant.program_choices.remove(&cap.to_string());
+            }
+        }
+    }
+
+    /// Updates a project-specific program choice after user confirmation.
+    pub fn set_project_binary(
+        &mut self,
+        subject: &Subject,
+        cap: &Capability,
+        root: &Path,
+        binary: Option<BinaryGrant>,
+    ) {
+        if let Some(grant) = self.grants.get_mut(subject) {
+            if let Some(binary) = binary {
+                grant.project_binaries.entry(root.into()).or_default().insert(cap.to_string(), binary);
+            } else if let Some(binaries) = grant.project_binaries.get_mut(root) {
+                binaries.remove(&cap.to_string());
+            }
+        }
+    }
+    /// The project override when present, otherwise the global approved program.
+    pub fn check_binary_in_project(
+        &self,
+        subject: &Subject,
+        cap: &Capability,
+        root: Option<&Path>,
+    ) -> Result<PathBuf, String> {
+        let grant = self.grants.get(subject).ok_or_else(|| format!("{cap} was not granted"))?;
+        if !grant.has(cap) {
+            return Err(format!("{cap} was not granted"));
+        }
+        if let Some(bin) = root.and_then(|root| grant.project_binaries.get(root)).and_then(|b| b.get(&cap.to_string()))
+        {
+            return match file_hash(&bin.path) {
+                Ok(hash) if hash == bin.hash => Ok(bin.path.clone()),
+                _ => Err(format!("{} changed or is missing; confirm {cap} again", bin.path.display())),
+            };
+        }
+        self.check_binary(subject, cap)
     }
 
     /// Checks a `process:` grant at call time: the program confirmed for it,
@@ -304,6 +365,16 @@ pub fn by_risk(caps: &[Capability]) -> Vec<(Risk, Vec<Capability>)> {
         groups.entry(std::cmp::Reverse(c.risk())).or_default().push(c.clone());
     }
     groups.into_iter().map(|(r, v)| (r.0, v)).collect()
+}
+
+/// Pins an explicitly selected executable, retaining a multicall shim's filename.
+pub fn approve_program(path: &Path) -> Result<BinaryGrant, String> {
+    if !path.is_absolute() || !is_executable(path) {
+        return Err("choose an absolute executable file".into());
+    }
+    let path = canonical_dir(path);
+    let hash = file_hash(&path).map_err(|e| e.to_string())?;
+    Ok(BinaryGrant { path, hash })
 }
 
 /// Resolves a `process:` program to an absolute path once, at grant time:

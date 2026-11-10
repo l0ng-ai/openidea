@@ -116,6 +116,7 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
           mono={mono}
           placeholder={placeholder}
           invalid={touched && !!error}
+          autoSelect={initial !== ""}
           onChange={(e) => {
             setTouched(true);
             const next = clean(e);

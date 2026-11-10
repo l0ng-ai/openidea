@@ -31,6 +31,22 @@ Keys are the plugin's own strings and ranges are UTF-16. When a key has
 definitions in the same detected module, other modules' definitions are left
 out. Several targets open a chooser.
 
+A marker's tooltip lists its targets. With API 1.3, a `[[contributes.markerIcons]]`
+entry can brand markers by key prefix; the longest matching prefix wins, and
+other markers keep the navigation glyph:
+
+```toml
+[[contributes.markerIcons]]
+id = "usages"
+icon = "icons/usages.svg"
+iconDark = "icons/usages_dark.svg"
+markers = ["usages#"]
+tooltip = "Usages of this class"   # shown above the targets
+```
+
+A marker published as `Anchor { key: "usages#User".into(), range }` then shows
+that icon. See `plugins/README.md` for the limits.
+
 Initial discovery reuses the host's project index. The editor schedules
 cancellable batches of at most 16 files; edits and file changes invalidate the
 affected entries before they are indexed again. Reloading, disabling or a
@@ -67,6 +83,12 @@ A language server that declines ownership of the indexed name does not prevent
 its indexed anchors from being renamed. Failed reference or name-preparation
 queries show an incomplete-search warning. A server that owns the same name
 keeps its rename validation; a rejected native rename changes nothing.
+
+When no language server can rename there (none is running, or it has no rename
+support), an anchor on a code identifier, per the file's syntax tree, is not
+renamed: the anchors would miss the declaration, imports and file name its
+language owns. Anchors in strings, comments or attribute values, and in files
+without a syntax grammar, are still renamed from the index alone.
 
 These features consume the existing graph; no references or rename export is
 needed. Unindexed names continue through the normal language-server path.

@@ -24,7 +24,7 @@ import { registerLogPaneActions } from "./logPaneActions";
 import { controlLabel, controlOperation, inProgress } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
 import { inlineBlame } from "./inlineBlame";
-import { BranchWidget, useBranchesPopup } from "./BranchWidget";
+import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidget";
 import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
 import { DIFF_KIND, diffTitle, type DiffData } from "./diffInput";
@@ -238,6 +238,7 @@ export function activate(): () => void {
     trackMergeRebaseItem(),
     installHunkPopup(),
     registerOverlay({ id: "vcs.dialogs", component: VcsDialogHost }),
+    registerOverlay({ id: "vcs.branches", component: BranchesPopupHost }),
     activateConflictBanner(),
     activateConflictMarkers(),
     trackCommitWindow(),

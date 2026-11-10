@@ -52,6 +52,7 @@ import { enterInDocComment } from "./docComment";
 import { skipClosingQuote, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
 import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
+import { LINE_INSET } from "./lineInset";
 
 // --- soft wraps ---------------------------------------------------------------
 
@@ -82,7 +83,9 @@ const wrapIndentCache = new Map<number, Decoration>();
 function wrapIndentDeco(cols: number) {
   let d = wrapIndentCache.get(cols);
   if (!d) {
-    d = Decoration.line({ attributes: { style: `padding-left: calc(6px + ${cols}ch); text-indent: -${cols}ch` } });
+    d = Decoration.line({
+      attributes: { style: `padding-left: calc(${LINE_INSET}px + ${cols}ch); text-indent: -${cols}ch` },
+    });
     wrapIndentCache.set(cols, d);
   }
   return d;
@@ -164,7 +167,7 @@ export function marginGuides(columns: readonly number[]): Extension {
   const image = cols
     .map(
       (c) =>
-        `linear-gradient(to right, transparent calc(6px + ${c}ch), var(--border-right-margin, var(--border)) calc(6px + ${c}ch), var(--border-right-margin, var(--border)) calc(7px + ${c}ch), transparent calc(7px + ${c}ch))`,
+        `linear-gradient(to right, transparent calc(${LINE_INSET}px + ${c}ch), var(--border-right-margin, var(--border)) calc(${LINE_INSET}px + ${c}ch), var(--border-right-margin, var(--border)) calc(${LINE_INSET + 1}px + ${c}ch), transparent calc(${LINE_INSET + 1}px + ${c}ch))`,
     )
     .join(", ");
   return EditorView.contentAttributes.of({ style: `background-image: ${image}` });

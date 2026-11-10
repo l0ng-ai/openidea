@@ -256,6 +256,31 @@ fn effort_name(effort: &str) -> String {
     }
 }
 
+/// The enabled skills from `skills/list`, named as Codex ACP advertises them.
+pub(super) fn skill_commands(result: &Value) -> Option<Value> {
+    let entries = result.get("data")?.as_array()?;
+    let mut seen = std::collections::HashSet::new();
+    let commands: Vec<Value> = entries
+        .iter()
+        .filter_map(|entry| entry.get("skills").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|skill| {
+            let name = skill.get("name")?.as_str()?.trim();
+            if name.is_empty() || skill.get("enabled") == Some(&Value::Bool(false)) || !seen.insert(name) {
+                return None;
+            }
+            let description = skill
+                .pointer("/interface/shortDescription")
+                .and_then(Value::as_str)
+                .or_else(|| skill.get("shortDescription").and_then(Value::as_str))
+                .or_else(|| skill.get("description").and_then(Value::as_str))
+                .unwrap_or(name);
+            Some(json!({ "name": format!("${name}"), "description": description, "source": "skill", "input": null }))
+        })
+        .collect();
+    Some(json!({ "sessionUpdate": "available_commands_update", "availableCommands": commands }))
+}
+
 /// ACP prompt content blocks as codex `UserInput`s. Embedded files become text.
 pub(super) fn user_input(prompt: &Value) -> Vec<Value> {
     let blocks = prompt.as_array().map(Vec::as_slice).unwrap_or_default();
@@ -835,4 +860,32 @@ pub(super) fn tail(text: &str) -> String {
 
 fn str_of(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+/// Session-scoped MCP configuration, carried in thread/start, resume and fork.
+pub(super) fn mcp_config(params: &Value) -> Option<Value> {
+    let mut servers = serde_json::Map::new();
+    for server in params.get("mcpServers")?.as_array()? {
+        if server.get("type").and_then(Value::as_str).is_some_and(|t| t != "stdio") {
+            continue;
+        }
+        let (Some(name), Some(command)) =
+            (server.get("name").and_then(Value::as_str), server.get("command").and_then(Value::as_str))
+        else {
+            continue;
+        };
+        let env: serde_json::Map<String, Value> = server
+            .get("env")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|v| Some((v.get("name")?.as_str()?.to_owned(), v.get("value")?.clone())))
+            .collect();
+        servers.insert(
+            name.into(),
+            json!({"command":command,
+            "args":server.get("args").cloned().unwrap_or_else(||json!([])),"env":env}),
+        );
+    }
+    (!servers.is_empty()).then(|| json!({"mcp_servers":servers}))
 }
