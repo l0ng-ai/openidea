@@ -1096,14 +1096,13 @@ async function pageUntil(find: () => boolean) {
   }
 }
 
-/** Selects `id` in the log, clearing filters and paging until it is loaded. */
+/** Selects `id` in the log, seeking directly to it (and clearing filters only if needed). */
 export async function revealCommit(id: string, repo = currentRepo(), tab = "log") {
   if (useGitLog.getState().logTabs.find((t) => t.id === tab)?.location === "editor") showLogView(tab);
   else selectGitTab(tab);
   if (tab === "log") initLogBranchFilter();
-  const filtered = hasFilters(useGitLog.getState().filters);
-  if (filtered) useGitLog.setState({ filters: emptyFilters() });
-  const { filters, selected } = useGitLog.getState();
+  let { filters } = useGitLog.getState();
+  const { selected } = useGitLog.getState();
   const root = useVcs.getState().root;
   const valid = () => {
     const state = useGitLog.getState();
@@ -1117,8 +1116,8 @@ export async function revealCommit(id: string, repo = currentRepo(), tab = "log"
   const find = () =>
     useGitLog
       .getState()
-      .commits.find((c) => (!commitRepo(c) || commitRepo(c) === repo) && (c.id === id || c.id.startsWith(id)));
-  if (!useGitLog.getState().commits.length || filtered) {
+      .commits.find((c) => (!repo || !commitRepo(c) || commitRepo(c) === repo) && (c.id === id || c.id.startsWith(id)));
+  const waitReload = async () => {
     await reloadLog();
     // The log's first mount may replace this request with its own initial load.
     while (valid()) {
@@ -1126,11 +1125,26 @@ export async function revealCommit(id: string, repo = currentRepo(), tab = "log"
       if (!pending) break;
       await pending;
     }
+  };
+  if (find() && !loadPromises.has(tab)) {
+    const hit = find();
+    if (hit) selectCommit(commitKey(hit), true);
+    return;
+  }
+  useGitLog.setState({ seek: { repo, id } });
+  await waitReload();
+  if (!valid()) return;
+  if (!find() && hasFilters(useGitLog.getState().filters)) {
+    filters = emptyFilters();
+    useGitLog.setState({ filters, seek: { repo, id } });
+    await waitReload();
     if (!valid()) return;
   }
-  const generation = useGitLog.getState().generation;
-  await pageUntil(() => !!find());
-  if (!valid() || useGitLog.getState().generation !== generation) return;
+  if (!find()) {
+    const generation = useGitLog.getState().generation;
+    await pageUntil(() => !!find());
+    if (!valid() || useGitLog.getState().generation !== generation) return;
+  }
   const hit = find();
   if (hit) selectCommit(commitKey(hit), true);
 }
