@@ -7181,5 +7181,7 @@
   "⌘Enter": "⌘Enter",
   "No checksum provided: the download can't be verified.": "未提供校验和：无法校验下载的文件。",
   "Sign In": "登录",
-  "New Tasks": "新任务"
+  "New Tasks": "新任务",
+  "Coding Agents": "编程 Agent",
+  "Install coding agents and configure how they launch, chat and connect to the IDE.": "安装编程 Agent，并配置其启动方式、聊天行为以及与 IDE 的连接。"
 }

@@ -648,10 +648,10 @@ export const TOOLS_PAGES: PageSpec[] = [
     ],
   },
   {
-    // Under Settings › Agents (the agents feature registers `agents`).
     id: "agents.chat",
     title: "Chat",
-    order: 0,
+    group: "Agents",
+    order: 460,
     keywords: [
       "agent",
       "claude",

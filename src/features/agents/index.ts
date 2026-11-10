@@ -19,7 +19,7 @@ import {
   toolWindowService,
 } from "@/workbench/contributions";
 import { AgentsStatus } from "./AgentsStatus";
-import { HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW } from "./model";
+import { AGENTS_GROUP, HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW } from "./model";
 import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { connect, disconnect, openHome, useAgents } from "./store";
@@ -27,12 +27,13 @@ import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions } from "./taskActions";
 import { replyActions } from "./replyActions";
 
-/** Settings › Agents (also used by the Settings window). */
+/** Settings › Agents › Coding Agents (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
   return registerSettingsPage({
     id: REGISTRY_PAGE,
-    title: "Agents",
-    // After Languages & Frameworks, before Tools.
+    title: "Coding Agents",
+    group: AGENTS_GROUP,
+    // First in Agents, which sits after Languages & Frameworks and before Tools.
     order: 450,
     keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
     component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),

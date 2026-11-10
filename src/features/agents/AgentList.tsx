@@ -1,5 +1,5 @@
 /**
- * Settings › Agents: one searchable list of every agent, those this machine can run first
+ * Settings › Agents › Coding Agents: one searchable list of every agent, those this machine can run first
  * (built in, installed from the ACP Registry, or defined in an agent file), then those it
  * can install. The selected agent's page holds its actions, the settings its new tasks
  * start with, and how it is launched. Launch edits are staged until Apply; installs run in

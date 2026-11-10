@@ -859,5 +859,7 @@
   "⌘Enter": "⌘Enter",
   "No checksum provided: the download can't be verified.": "No checksum provided: the download can't be verified.",
   "Sign In": "Sign In",
-  "New Tasks": "New Tasks"
+  "New Tasks": "New Tasks",
+  "Coding Agents": "Coding Agents",
+  "Install coding agents and configure how they launch, chat and connect to the IDE.": "Install coding agents and configure how they launch, chat and connect to the IDE."
 }

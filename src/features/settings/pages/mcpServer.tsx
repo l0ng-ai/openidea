@@ -116,7 +116,8 @@ function McpServerEndpoint() {
 export const MCP_SERVER_PAGE: PageSpec = {
   id: "agents.mcpServer",
   title: "MCP Server",
-  order: 10,
+  group: "Agents",
+  order: 470,
   keywords: ["mcp", "model context protocol", "ai", "agent", "claude", "codex", "tools", "stdio"],
   sections: [
     {

@@ -7,8 +7,10 @@ export const HOME_KEY = "agent:new";
 export const TOOL_WINDOW = "agents";
 /** MIME of a dragged agent task (a tree row or the docked conversation bar): the payload is the task id. */
 export const TASK_DRAG = "application/x-openidea-agent-task";
-/** Settings › Agents: the agents this machine runs. */
-export const REGISTRY_PAGE = "agents";
+/** Settings › Agents › Coding Agents: the agents this machine runs. */
+export const REGISTRY_PAGE = "agents.list";
+/** The Settings folder holding the agent pages. */
+export const AGENTS_GROUP = "Agents";
 
 export const sessionKey = (task: string) => `agent:${task}`;
 
