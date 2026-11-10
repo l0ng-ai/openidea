@@ -813,7 +813,7 @@
   "Bun": "Bun",
   "Run a typescript or javascript file with Bun": "Run a typescript or javascript file with Bun",
   "Working Dir": "Working Dir",
-  "Script (.ts .js)": "Script (.ts .js)"
+  "Script (.ts .js)": "Script (.ts .js)",
   "This file was auto-detected as a Docker Compose configuration based on its content": "This file was auto-detected as a Docker Compose configuration based on its content",
   "Not a Compose file": "Not a Compose file",
   "Keep as Docker Compose": "Keep as Docker Compose",
