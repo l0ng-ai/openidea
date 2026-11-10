@@ -89,6 +89,15 @@ const CASES: Record<string, Case> = {
     variable: "library",
     evaluate: ["library", /Library/],
   },
+  php: {
+    fixture: "php-app",
+    setup: (root) =>
+      execFileSync("composer", ["install", "--no-interaction", "--no-progress"], { cwd: root, stdio: "ignore" }),
+    debugger: "php-debug",
+    file: "bin/quote.php",
+    variable: "$shipment",
+    evaluate: ["count($shipment)", /^3$/],
+  },
 };
 
 let deactivate: (() => void) | null = null;

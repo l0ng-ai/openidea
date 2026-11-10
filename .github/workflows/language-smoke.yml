@@ -47,6 +47,7 @@ env:
   JDTLS: 1.63.0-202610191322
   KOTLIN_LSP: 263.7084.0
   GRADLE: 8.14.3
+  INTELEPHENSE: 1.18.5
 
 jobs:
   smoke:
@@ -54,7 +55,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [typescript, python, rust, go, java, kotlin]
+        language: [typescript, python, rust, go, java, kotlin, php]
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     steps:
@@ -107,6 +108,13 @@ jobs:
             | tar xz -C "$RUNNER_TEMP/kotlin-lsp" --strip-components=1
           ln -s "$RUNNER_TEMP/kotlin-lsp/kotlin-lsp.sh" "$RUNNER_TEMP/bin/kotlin-lsp"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # Xdebug for the debug smoke; Composer installs the fixture's Pest for the run smoke.
+      - if: matrix.language == 'php'
+        uses: shivammathur/setup-php@v2
+        with: { php-version: "8.5", coverage: xdebug, tools: composer }
+      - if: matrix.language == 'php'
+        run: npm install --global "intelephense@$INTELEPHENSE"
 
       - run: cargo test --locked -p ide-host --test language_smoke --no-run
       - run: cargo test --locked -p ide-host --test language_smoke -- --ignored --exact ${{ matrix.language }}
