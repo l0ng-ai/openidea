@@ -47,7 +47,7 @@ interface InTable {
 
 export type DbNode =
   | { kind: "source"; key: string; source: DataSource }
-  /** A database of a PostgreSQL server; `id` is its connection target. */
+  /** A database of a PostgreSQL / SQL Server host; `id` is its connection target. */
   | { kind: "database"; key: string; id: string; name: string; current: boolean }
   | { kind: "schema"; key: string; id: string; schema: string }
   | { kind: "folder"; key: string; id: string; schema: string; folder: Folder }

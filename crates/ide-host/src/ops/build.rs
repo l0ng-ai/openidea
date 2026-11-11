@@ -538,6 +538,35 @@ pub async fn build_run(
     let config_dir = host.config_dir.clone();
     let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
+        // Fast path (#2476): an unchanged single-project Maven build skips
+        // Maven entirely. Previous diagnostics stay: nothing changed, so they
+        // are still accurate.
+        let single = cmake.is_none() && ide_workspace::workspace::Workspace::load(&root)?.is_none();
+        if single && kind == BuildKind::Build {
+            let model = with_profiles(load(&root, &cache, &settings), &cache);
+            if compile::menu_up_to_date(&cache, &root, &model, file.as_deref(), &token) {
+                let started = std::time::Instant::now();
+                let plan = prepare_plan(
+                    compile::plan(&root, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref())?,
+                    &root,
+                    &settings,
+                );
+                let _ = on_event.send(BuildEvent::Started { system: plan.system, title: plan.title.clone() });
+                let _ = on_event.send(BuildEvent::Output {
+                    text: "Up to date: no changes, build skipped.\n".into(),
+                    stderr: false,
+                });
+                return Ok(BuildResult {
+                    system: plan.system,
+                    title: plan.title,
+                    success: true,
+                    errors: 0,
+                    warnings: 0,
+                    duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+                    messages: Vec::new(),
+                });
+            }
+        }
         for path in clear {
             sink.emit(IdeEvent::Diagnostics {
                 path: path.into(),
@@ -581,6 +610,51 @@ pub async fn build_run(
                 &settings,
             )
         };
+        let result = compile::run(&root, &plan, &token, &|e| {
+            let _ = on_event.send(e);
+        })?;
+        if result.success && single && kind == BuildKind::Build {
+            let model = with_profiles(load(&root, &cache, &settings), &cache);
+            compile::record_menu_build(&cache, &root, &model, file.as_deref(), &token);
+        }
+        for (path, items) in compile::diagnostics(&result.messages) {
+            sink.emit(IdeEvent::Diagnostics { path: path.into(), source: compile::DIAGNOSTICS_SOURCE.into(), items });
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(join_err);
+    host.end_request(request);
+    result?
+}
+
+/// Build › Compile File: compiles one Java source of a linked Maven module with
+/// `javac`, streaming the console and messages on `on_event`; cancellable with
+/// `cancel_request(request)`. Diagnostics of `clear` (the files of the previous
+/// build) are cleared first; the new messages are published as `build`
+/// diagnostics.
+pub async fn build_compile_file(
+    host: &Host,
+    window: &str,
+    file: std::path::PathBuf,
+    request: RequestId,
+    clear: Vec<std::path::PathBuf>,
+    on_event: Channel<BuildEvent>,
+) -> IdeResult<BuildResult> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let (root, cache, sink) = (project.root.clone(), project.build_cache_dir(), project.sink.clone());
+    let settings = project.settings.effective();
+    let token = host.begin_project_request(window, request);
+    let result = tokio::task::spawn_blocking(move || {
+        for path in clear {
+            sink.emit(IdeEvent::Diagnostics {
+                path: path.into(),
+                source: compile::DIAGNOSTICS_SOURCE.into(),
+                items: Vec::new(),
+            });
+        }
+        let plan = compile::compile_file_plan(&root, &with_profiles(load(&root, &cache, &settings), &cache), &file)?;
         let result = compile::run(&root, &plan, &token, &|e| {
             let _ = on_event.send(e);
         })?;
@@ -652,6 +726,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.sender("onEvent")?,
         )
         .await
+    });
+    d.add("build_compile_file", |c| async move {
+        build_compile_file(&c.host, &c.window, c.arg("file")?, c.arg("request")?, c.arg("clear")?, c.sender("onEvent")?)
+            .await
     });
 }
 

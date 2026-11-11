@@ -297,7 +297,7 @@ function dropFinished() {
  * An attach to `process` this soon after a session on it ended may be to such a JVM.
  */
 const RELISTEN_MS = 3000;
-function justDetached(process: RunId | null | undefined): boolean {
+export function justDetached(process: RunId | null | undefined): boolean {
   if (process == null) return false;
   const now = Date.now();
   return Object.values(useDebug.getState().sessions).some(

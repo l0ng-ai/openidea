@@ -156,7 +156,7 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
   };
 
   const browse = async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({
       directory: true,
       multiple: false,

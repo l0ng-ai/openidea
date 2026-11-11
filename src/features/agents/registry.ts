@@ -1,5 +1,5 @@
 /** Agents of the ACP Registry: listing, install / update / remove (`agent_registry_*`). */
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "@/platform/dialog";
 import { Channel } from "@tauri-apps/api/core";
 import type {
   AgentProvider,

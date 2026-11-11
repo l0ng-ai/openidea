@@ -136,6 +136,36 @@ fn the_shape_decides_the_version_not_the_number() {
 }
 
 #[test]
+fn picks_non_terminal_agent_auth_method() {
+    let v1 = Negotiated::from_initialize(&json!({
+        "protocolVersion": 1,
+        "authMethods": [
+            { "id": "cli_login", "_meta": { "terminal-auth": { "command": "copilot", "args": ["login"] } } },
+            { "id": "terminal_login", "type": "terminal", "args": ["login"] },
+            { "id": "api_key", "type": "env_var" },
+            { "id": "github_oauth", "name": "GitHub OAuth" }
+        ]
+    }));
+    assert_eq!(v1.agent_auth_method(), Some("github_oauth"));
+
+    let v2 = Negotiated::from_initialize(&json!({
+        "protocolVersion": 2,
+        "info": { "name": "x", "version": "1" },
+        "authMethods": [
+            { "type": "terminal", "methodId": "cli", "name": "CLI", "args": ["login"] },
+            { "type": "agent", "methodId": "oauth", "name": "OAuth" }
+        ]
+    }));
+    assert_eq!(v2.agent_auth_method(), Some("oauth"));
+
+    let terminal_only = Negotiated::from_initialize(&json!({
+        "protocolVersion": 1,
+        "authMethods": [{ "id": "cli", "type": "terminal", "args": ["login"] }]
+    }));
+    assert_eq!(terminal_only.agent_auth_method(), None);
+}
+
+#[test]
 fn meta_and_auth_methods_pass_through() {
     // The native shims advertise their extensions in `agentCapabilities._meta`.
     let shim = Negotiated::from_initialize(&json!({ "protocolVersion": 1, "agentCapabilities": {

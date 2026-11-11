@@ -55,6 +55,14 @@ const declaration: SettingsDecl = {
       properties: [JSON.parse(JSON.stringify(profile))],
       actions: [{ title: "Test", command: "test" }],
     },
+    {
+      id: "defaults",
+      title: "Defaults",
+      properties: [
+        { key: "enabled", title: "Enabled", type: "boolean", default: false },
+        { key: "name", title: "Name", type: "string", default: "" },
+      ],
+    },
   ],
 };
 let dispose: () => void;
@@ -277,4 +285,17 @@ it("indexes string-list enum options", () => {
   expect(useSettingsPages.getState().pages.get("plugins.example-helper.settings:list")!.keywords).toContain(
     "documentation",
   );
+});
+
+it("keeps values that equal the setting's default instead of dropping them", () => {
+  useProject.setState({
+    settings: { plugins: { "example.helper": { enabled: true, name: "Custom" } } } as never,
+  });
+  openSettings();
+  render(<Harness page="defaults" />);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Enabled" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "" } });
+  expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toMatchObject({
+    "example.helper": { enabled: false, name: "" },
+  });
 });

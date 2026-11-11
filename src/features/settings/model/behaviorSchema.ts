@@ -40,6 +40,8 @@ export interface AppearanceExtras {
   mainMenuStyle: "hamburger" | "merged";
   /** A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
   mainMenuAlt: boolean;
+  /** Always show the main menu titles instead of the hamburger button (#1521). */
+  alwaysShowMainMenu: boolean;
   ideAntialiasing: Antialiasing;
   editorAntialiasing: Antialiasing;
   showToolWindowBars: boolean;
@@ -67,6 +69,10 @@ export interface GeneralExtras {
   openProjectIn: OpenProjectIn;
   updateSource: UpdateSourceSetting;
   autoCheckUpdates: boolean;
+  /** System Settings › Updates: show the What's New page after the app starts a new version. */
+  showWhatsNewAfterUpdate: boolean;
+  /** Version the app last started with; empty on the first run. */
+  lastRunVersion: string;
   defaultProjectDirectory: string;
   saveOnIdle: boolean;
   idleSeconds: number;
@@ -107,6 +113,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   menuIcons: true,
   mainMenuStyle: "hamburger",
   mainMenuAlt: true,
+  alwaysShowMainMenu: false,
   ideAntialiasing: "greyscale",
   editorAntialiasing: "greyscale",
   showToolWindowBars: true,
@@ -124,6 +131,8 @@ export const DEFAULT_GENERAL_EXTRAS: GeneralExtras = {
   openProjectIn: "ask",
   updateSource: "auto",
   autoCheckUpdates: true,
+  showWhatsNewAfterUpdate: true,
+  lastRunVersion: "",
   defaultProjectDirectory: "",
   saveOnIdle: false,
   idleSeconds: 15,
@@ -171,6 +180,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     menuIcons: b("menuIcons"),
     mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged"], d.mainMenuStyle),
     mainMenuAlt: b("mainMenuAlt"),
+    alwaysShowMainMenu: b("alwaysShowMainMenu"),
     ideAntialiasing: oneOf(a.ideAntialiasing, AA, d.ideAntialiasing),
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
     showToolWindowBars: b("showToolWindowBars"),
@@ -197,6 +207,8 @@ export function validateGeneralExtras(raw: unknown): GeneralExtras {
     openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same"] as const, d.openProjectIn),
     updateSource: oneOf(g.updateSource, ["auto", "github", "cnb"] as const, d.updateSource),
     autoCheckUpdates: bool(g.autoCheckUpdates, d.autoCheckUpdates),
+    showWhatsNewAfterUpdate: bool(g.showWhatsNewAfterUpdate, d.showWhatsNewAfterUpdate),
+    lastRunVersion: typeof g.lastRunVersion === "string" ? g.lastRunVersion : d.lastRunVersion,
     defaultProjectDirectory: typeof g.defaultProjectDirectory === "string" ? g.defaultProjectDirectory : "",
     saveOnIdle: bool(g.saveOnIdle, d.saveOnIdle),
     idleSeconds: int(g.idleSeconds, d.idleSeconds, IDLE_LIMITS),

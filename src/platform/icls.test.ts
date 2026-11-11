@@ -135,6 +135,48 @@ describe(".icls schemes", () => {
     expect([applied, skipped]).toEqual([16, 2]);
   });
 
+  it("maps WebStorm's JavaScript and TypeScript keys, TypeScript first, then JavaScript, then defaults", () => {
+    const { scheme, applied, skipped } = parseIcls(fixture("webstorm-darcula"));
+    const fg = (id: string) => scheme.attributes[id]?.foreground;
+    expect(scheme.attributes.keyword).toEqual({ foreground: "#e89c45", bold: false, italic: false });
+    expect(fg("string")).toBe("#8bb770");
+    // A global function's key colours its calls too, and wins over the member function key.
+    expect(fg("functionDeclaration")).toBe("#6dacff");
+    expect(fg("functionCall")).toBe("#6dacff");
+    expect(fg("globalVariable")).toBe("#c678dd");
+    expect(fg("field")).toBe("#ef8a80");
+    expect(fg("constant")).toBe("#c580ea");
+    expect(fg("className")).toBe("#6fa4e5");
+    expect(fg("docCommentTagValue")).toBe("#e5c07b");
+    expect(fg("regexp")).toBe("#56b6c2");
+    // Superseded keys and DEFAULT_SEMICOLON are counted as skipped.
+    expect(scheme.attributes.operator).toBeUndefined();
+    expect([applied, skipped]).toEqual([10, 6]);
+  });
+
+  it("maps punctuation only from keys that do not spread one colour to other punctuation", () => {
+    const opt = (name: string, c: string) =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${c}"/></value></option>`;
+    const parse = (...options: string[]) =>
+      parseIcls(`<scheme name="P"><attributes>${options.join("")}</attributes></scheme>`);
+    const separators = parse(
+      opt("DEFAULT_SEMICOLON", "d56075"),
+      opt("DEFAULT_COMMA", "111111"),
+      opt("DEFAULT_DOT", "222222"),
+    );
+    expect(separators.scheme.attributes.operator).toBeUndefined();
+    expect([separators.applied, separators.skipped]).toEqual([0, 3]);
+    const braces = parse(opt("DEFAULT_BRACES", "333333"), opt("DEFAULT_PARENTHS", "444444"));
+    expect(braces.scheme.attributes.operator?.foreground).toBe("#444444");
+    const sign = parse(
+      opt("DEFAULT_PARENTHS", "444444"),
+      opt("DEFAULT_SEMICOLON", "d56075"),
+      opt("DEFAULT_OPERATION_SIGN", "555555"),
+    );
+    expect(sign.scheme.attributes.operator?.foreground).toBe("#555555");
+    expect([sign.applied, sign.skipped]).toEqual([1, 2]);
+  });
+
   it.each([
     "",
     "<scheme",

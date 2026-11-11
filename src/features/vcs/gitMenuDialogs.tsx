@@ -693,7 +693,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
 
   const move = async () => {
     if (!current || !currentGroup || current.main || containsProject) return;
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({
       directory: true,
       multiple: false,
