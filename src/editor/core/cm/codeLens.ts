@@ -1,13 +1,23 @@
 /**
  * Renders `codeLenses` (editor/api) as one small hint row above the target
- * line, indented like the line (IDEA "3 usages | Run test" inlays).
+ * line, indented like the line (IDEA "3 usages   Run test" inlays), and those
+ * whose kind is set to "right" (`codeLensPositions`) after the end of that line.
  */
-import { EditorState, RangeSetBuilder, type Extension } from "@codemirror/state";
+import { EditorState, Facet, RangeSetBuilder, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
 import { getIndentUnit } from "@codemirror/language";
 import { codeLenses, type CodeLens } from "@/editor/api";
 import { guideVars, rainbowGuides } from "./indentGuides";
 import { LINE_INSET } from "./lineInset";
+
+/**
+ * Where code lenses of each kind (`CodeLens.kind`) go: a row above the declaration (IDEA's default, also for
+ * kinds not listed) or after the end of its line.
+ */
+export const codeLensPositions = Facet.define<
+  Readonly<Record<string, "top" | "right">>,
+  Readonly<Record<string, "top" | "right">>
+>({ combine: (v) => Object.assign({}, ...v) });
 
 /** Groups lenses by line start, ordered by line then `order`. Exported for tests. */
 export function groupLenses(
@@ -71,12 +81,15 @@ class LensWidget extends WidgetType {
     readonly indent: number,
     readonly indentUnit: number,
     readonly rainbow: boolean,
+    /** After the end of the line instead of a row above it. */
+    readonly inline = false,
   ) {
     super();
   }
 
   private get key(): string {
     return (
+      (this.inline ? "inline\u0000" : "") +
       this.indent +
       "\u0000" +
       this.indentUnit +
@@ -92,8 +105,9 @@ class LensWidget extends WidgetType {
   }
 
   override toDOM(view: EditorView): HTMLElement {
-    const dom = document.createElement("div");
-    dom.className = "cm-openidea-lens";
+    // The inline one shares no class with the row, so none of the row's block styles reach into the line.
+    const dom = document.createElement(this.inline ? "span" : "div");
+    dom.className = this.inline ? "cm-openidea-lensInline" : "cm-openidea-lens";
     this.fill(dom, view);
     return dom;
   }
@@ -105,9 +119,11 @@ class LensWidget extends WidgetType {
 
   private fill(dom: HTMLElement, view: EditorView) {
     dom.textContent = "";
-    dom.style.paddingLeft = `${Math.round(this.indent * view.defaultCharacterWidth) + LINE_INSET}px`;
     // The guides of the annotated line continue through this row while indent guides are on.
-    const guides = guideVars(Math.floor(this.indent / this.indentUnit), this.indentUnit, this.rainbow);
+    const guides = this.inline
+      ? null
+      : guideVars(Math.floor(this.indent / this.indentUnit), this.indentUnit, this.rainbow);
+    if (!this.inline) dom.style.paddingLeft = `${Math.round(this.indent * view.defaultCharacterWidth) + LINE_INSET}px`;
     if (guides) {
       dom.style.setProperty("--openidea-guide-images", guides.images);
       dom.style.setProperty("--openidea-guide-positions", guides.positions);
@@ -117,14 +133,7 @@ class LensWidget extends WidgetType {
     }
     dom.setAttribute("role", "group");
     dom.setAttribute("aria-label", "Code lens");
-    this.lenses.forEach((lens, i) => {
-      if (i > 0) {
-        const sep = document.createElement("span");
-        sep.className = "cm-openidea-lensSep";
-        sep.textContent = "|";
-        sep.setAttribute("aria-hidden", "true");
-        dom.appendChild(sep);
-      }
+    for (const lens of this.lenses) {
       const el = document.createElement(lens.run ? "button" : "span");
       el.className = lens.run ? "cm-openidea-lensItem cm-openidea-lensAction" : "cm-openidea-lensItem";
       if (lens.tooltip) el.title = lens.tooltip;
@@ -154,11 +163,11 @@ class LensWidget extends WidgetType {
         });
       }
       dom.appendChild(el);
-    });
+    }
   }
 
   override get estimatedHeight(): number {
-    return 16;
+    return this.inline ? -1 : 16;
   }
 
   override ignoreEvent(): boolean {
@@ -169,16 +178,28 @@ class LensWidget extends WidgetType {
 function buildDecorations(state: EditorState): DecorationSet {
   const lenses = state.facet(codeLenses);
   if (!lenses.length) return Decoration.none;
+  const positions = state.facet(codeLensPositions);
+  const right = (l: CodeLens) => !!l.kind && positions[l.kind] === "right";
   const builder = new RangeSetBuilder<Decoration>();
   for (const group of groupLenses(state, lenses)) {
     const line = state.doc.lineAt(group.lineFrom);
-    const widget = new LensWidget(
-      group.lenses,
-      indentColumns(line.text, state.tabSize),
-      Math.max(1, getIndentUnit(state)),
-      state.facet(rainbowGuides),
-    );
-    builder.add(line.from, line.from, Decoration.widget({ widget, block: true, side: -1 }));
+    const indent = indentColumns(line.text, state.tabSize);
+    const unit = Math.max(1, getIndentUnit(state));
+    const rainbow = state.facet(rainbowGuides);
+    const above = group.lenses.filter((l) => !right(l));
+    const after = group.lenses.filter(right);
+    if (above.length)
+      builder.add(
+        line.from,
+        line.from,
+        Decoration.widget({ widget: new LensWidget(above, indent, unit, rainbow), block: true, side: -1 }),
+      );
+    if (after.length)
+      builder.add(
+        line.to,
+        line.to,
+        Decoration.widget({ widget: new LensWidget(after, indent, unit, rainbow, true), side: 1 }),
+      );
   }
   return builder.finish();
 }
@@ -187,7 +208,7 @@ const lensTheme = EditorView.theme({
   ".cm-openidea-lens": {
     display: "flex",
     alignItems: "center",
-    gap: "6px",
+    gap: "12px",
     height: "16px",
     color: "var(--fg-muted)",
     WebkitUserSelect: "none",
@@ -195,29 +216,37 @@ const lensTheme = EditorView.theme({
     whiteSpace: "nowrap",
     overflow: "hidden",
   },
+  // "right": after the line's text, on its baseline, with IDEA's spacing.
+  ".cm-openidea-lensInline": {
+    display: "inline-flex",
+    alignItems: "baseline",
+    gap: "12px",
+    marginLeft: "12px",
+    color: "var(--fg-muted)",
+    WebkitUserSelect: "none",
+    userSelect: "none",
+    whiteSpace: "nowrap",
+  },
   ".cm-openidea-lensItem": {
     display: "inline-flex",
     alignItems: "center",
-    gap: "3px",
+    gap: "4px",
     padding: "0",
     border: "none",
     background: "none",
     font: "inherit",
     color: "inherit",
-  },
-  // The row keeps the editor font so its `ch`-based indent guides line up with the code.
-  ".cm-openidea-lensItem, .cm-openidea-lensSep": {
+    // The items take the UI font; the row keeps the editor's, so its `ch`-based indent guides line up with the code.
     fontFamily: "var(--font-ui)",
     fontSize: "var(--fs-tiny)",
   },
   ".cm-openidea-lensAction": { cursor: "pointer" },
   ".cm-openidea-lensAction:hover": { color: "var(--accent)", textDecoration: "underline" },
-  ".cm-openidea-lensSep": { color: "var(--fg-faint)" },
   ".cm-openidea-lensIcon-run": { color: "var(--success)" },
 });
 
 /** Base extension (always installed): no cost until a provider contributes lenses. */
 export const codeLensExtension: Extension = [
-  EditorView.decorations.compute([codeLenses, rainbowGuides], buildDecorations),
+  EditorView.decorations.compute([codeLenses, rainbowGuides, codeLensPositions], buildDecorations),
   lensTheme,
 ];

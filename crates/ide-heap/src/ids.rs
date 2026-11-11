@@ -19,6 +19,9 @@ const CHUNK_SLOT_BITS: u32 = 17;
 const WORD_BITS: u64 = 64;
 const WORDS_PER_CHUNK: usize = (1 << CHUNK_SLOT_BITS) / WORD_BITS as usize;
 
+// The bit table is matched in hot paths; boxing the big variant would only add
+// an indirection to save stack space `IdMap` never holds by value in bulk.
+#[allow(clippy::large_enum_variant)]
 enum Repr {
     Bits {
         /// Chunk number of the first table entry.
