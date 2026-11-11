@@ -50,7 +50,7 @@ import {
 } from "./editing";
 import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
 import { enterInDocComment } from "./docComment";
-import { skipClosingQuote, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
+import { skipClosingQuote, smartAngleBrackets, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
 import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
 import { LINE_INSET } from "./lineInset";
@@ -594,13 +594,10 @@ export function prefsExtension(o: PrefsOptions): Extension {
     out.push(pasteReindentFilter(k.reformatOnPaste));
 
   // Pairing: closeBrackets() reads the brackets list from language data; ours comes first.
-  // `<` pairs only when the opt-in angle-bracket setting is on (it doubles as a tag opener in HTML / XML / JSX).
-  const brackets = [
-    ...(k.pairBrackets ? ["(", "[", "{"] : []),
-    ...(k.pairQuotes ? ["'", '"'] : []),
-    ...(k.pairAngleBrackets ? ["<"] : []),
-  ];
+  const brackets = [...(k.pairBrackets ? ["(", "[", "{"] : []), ...(k.pairQuotes ? ["'", '"'] : [])];
   out.push(Prec.highest(EditorState.languageData.of(() => [{ closeBrackets: { brackets } }])));
+  // `<` pairs where the syntax says a generic type list starts, as in IDEA — no separate option.
+  if (k.pairBrackets && !o.readOnly) out.push(smartAngleBrackets(o.language));
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));
   if (k.pairQuotes) out.push(Prec.highest(skipClosingQuote));
   if (k.tabOutOfPair) out.push(tabOut);

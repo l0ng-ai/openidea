@@ -1,8 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { indentService, indentUnit } from "@codemirror/language";
+import { indentService, indentUnit, LanguageSupport, StreamLanguage } from "@codemirror/language";
 import { closeBrackets, insertBracket } from "@codemirror/autocomplete";
+import { java } from "@codemirror/lang-java";
+import { javascript } from "@codemirror/lang-javascript";
+import { languages as cmLanguages } from "@codemirror/language-data";
+import { kotlin, csharp } from "@codemirror/legacy-modes/mode/clike";
 import { validateEditorExtras } from "@/platform/editorSettings";
 import {
   autoIndentBackspace,
@@ -13,6 +17,7 @@ import {
   tabOutOfScope,
 } from "./smartKeys";
 import { prefsExtension } from "./prefs";
+import { interpolationParser } from "./interpolation";
 
 /** One unit (2) deeper after a (non-blank) line ending in `{`, one less on a line starting with `}`. */
 const braces = indentService.of((cx, pos) => {
@@ -174,9 +179,9 @@ describe("tab out of pairs", () => {
   });
 });
 
-describe("angle brackets pairing", () => {
-  /** The real wiring: prefsExtension feeds closeBrackets() its brackets list. */
-  const prefs = (smartKeys: Record<string, unknown>) =>
+describe("smart angle brackets", () => {
+  /** The real wiring: prefsExtension attaches the `<` handler for the document's language. */
+  const prefs = (language: string | undefined, smartKeys: Record<string, unknown> = {}) =>
     [
       closeBrackets(),
       prefsExtension({
@@ -186,44 +191,145 @@ describe("angle brackets pairing", () => {
         showWhitespace: false,
         hardWrapAt: 120,
         readOnly: false,
+        language,
       }),
     ] satisfies Extension[];
+
+  /** Type through the real input handlers, falling back to a plain insert. */
   const type = (v: EditorView, ch: string) => {
-    const tr = insertBracket(v.state, ch);
-    if (tr) v.dispatch(tr);
-    else v.dispatch(v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" }));
+    const r = v.state.selection.main;
+    const insert = () => v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" });
+    if (!v.state.facet(EditorView.inputHandler).some((h) => h(v, r.from, r.to, ch, insert)))
+      v.dispatch(v.state.replaceSelection(ch), { userEvent: "input.type" });
   };
 
-  it("stays off by default: typing < inserts nothing but <", () => {
-    const v = make("a|", prefs({}));
+  /** Types `<` at the caret (marked `|`) in `language` (whose parser is attached) and checks the doc. */
+  const pair = (language: string | undefined, support: Extension, text: string, expected: string) => {
+    const v = make(text, [support, prefs(language, {})]);
     type(v, "<");
-    expect(show(v)).toBe("a<|");
-    expect(tabOutOfScope(v)).toBe(false);
+    expect(show(v)).toBe(expected);
+  };
+
+  const JAVA = java();
+  const TS = javascript({ typescript: true });
+  const TSX = javascript({ jsx: true, typescript: true });
+  const JS = javascript();
+  const KOTLIN = StreamLanguage.define(interpolationParser(kotlin, "Kotlin"));
+  const CSHARP = StreamLanguage.define(interpolationParser(csharp, "C#"));
+  let RUST: LanguageSupport;
+  beforeAll(async () => {
+    RUST = (await cmLanguages.find((l) => l.name === "Rust")!.load()) as LanguageSupport;
   });
 
-  it("does not pair before a word character, so tag openers like <div stay literal", () => {
-    const v = make("a|div", prefs({ pairAngleBrackets: true }));
-    type(v, "<");
-    expect(show(v)).toBe("a<|div");
+  it("pairs after a type name in Java: fields, type arguments and class declarations", () => {
+    pair("java", JAVA, "class Box|", "class Box<|>");
+    pair("java", JAVA, "class A {\n  java.util.List|\n}", "class A {\n  java.util.List<|>\n}");
+    pair("java", JAVA, "class A {\n  java.util.Map<String, |\n}", "class A {\n  java.util.Map<String, <|>\n}");
+    pair("java", JAVA, "class A extends Comparable|", "class A extends Comparable<|>");
   });
 
-  it("pairs <> when 'Insert paired angle brackets <>' is on and Tabs out of it", () => {
-    const v = make("a|", prefs({ pairAngleBrackets: true }));
+  it("does not pair comparisons or shifts in Java", () => {
+    pair("java", JAVA, "class A {\n  void f() {\n    a |\n  }\n}", "class A {\n  void f() {\n    a <|\n  }\n}");
+    pair("java", JAVA, "class A {\n  void f() {\n    i |\n  }\n}", "class A {\n  void f() {\n    i <|\n  }\n}");
+    pair("java", JAVA, "class A {\n  void f() {\n    x |\n  }\n}", "class A {\n  void f() {\n    x <|\n  }\n}");
+  });
+
+  it("does not pair inside Java strings or comments", () => {
+    pair("java", JAVA, 'class A {\n  String s = "abc|";\n}', 'class A {\n  String s = "abc<|";\n}');
+    pair("java", JAVA, "class A {\n  void f() {\n    // abc|\n  }\n}", "class A {\n  void f() {\n    // abc<|\n  }\n}");
+  });
+
+  it("pairs type positions in TypeScript but not expressions", () => {
+    pair("typescript", TS, "const a: Array|", "const a: Array<|>");
+    pair("typescript", TS, "const a = new Array|", "const a = new Array<|>");
+    pair("typescript", TS, "const a: Map<string, |", "const a: Map<string, <|>");
+    pair("typescript", TS, "function f|", "function f<|>");
+    pair("typescript", TS, "if (a |", "if (a <|");
+    pair("typescript", TS, "const y = x |", "const y = x <|");
+    pair("typescript", TS, 'const s = "abc|"', 'const s = "abc<|"');
+  });
+
+  it("never pairs JSX / HTML tags in TSX", () => {
+    pair("typescriptreact", TSX, "const x = |", "const x = <|");
+    pair("typescriptreact", TSX, "return |", "return <|");
+    // Type syntax still pairs there.
+    pair("typescriptreact", TSX, "const a: Array|", "const a: Array<|>");
+  });
+
+  it("pairs Rust type identifiers, fn names and turbofish", () => {
+    pair("rust", RUST, "let v: Vec|", "let v: Vec<|>");
+    pair("rust", RUST, "let v: Vec<Vec|", "let v: Vec<Vec<|>");
+    pair("rust", RUST, "fn f|", "fn f<|>");
+    pair("rust", RUST, "let v: Vec<_> = x.iter().collect::|", "let v: Vec<_> = x.iter().collect::<|>");
+  });
+
+  it("does not pair comparisons or shifts in Rust", () => {
+    pair("rust", RUST, "fn f() {\n    let c = a |\n}", "fn f() {\n    let c = a <|\n}");
+    pair("rust", RUST, "fn f() {\n    while i |\n}", "fn f() {\n    while i <|\n}");
+    pair("rust", RUST, "fn f() {\n    let c = x |\n}", "fn f() {\n    let c = x <|\n}");
+  });
+
+  it("pairs capitalized type positions in Kotlin (stream parser)", () => {
+    pair("kotlin", KOTLIN, "class A {\n  val x: List|\n}", "class A {\n  val x: List<|>\n}");
+    pair("kotlin", KOTLIN, "class Box|", "class Box<|>");
+    // Kotlin puts a function's type parameters right after `fun`.
+    pair("kotlin", KOTLIN, "fun |", "fun <|>");
+    // Lowercase values are comparisons, not types.
+    pair("kotlin", KOTLIN, "fun f() {\n  val c = a |\n}", "fun f() {\n  val c = a <|\n}");
+  });
+
+  it("pairs capitalized type positions in C# (stream parser)", () => {
+    pair("csharp", CSHARP, "class A {\n  List|\n}", "class A {\n  List<|>\n}");
+    pair("csharp", CSHARP, "class Box|", "class Box<|>");
+    pair(
+      "csharp",
+      CSHARP,
+      "class A {\n  void F() {\n    var c = a |\n  }\n}",
+      "class A {\n  void F() {\n    var c = a <|\n  }\n}",
+    );
+  });
+
+  it("languages without a rule never pair, even outside type syntax", () => {
+    pair("javascript", JS, "let y = a|", "let y = a<|");
+    pair(undefined, JS, "let y = List|", "let y = List<|");
+  });
+
+  it("needs the Insert pair bracket option on", () => {
+    const v = make("class A {\n  java.util.List|\n}", [JAVA, prefs("java", { pairBrackets: false })]);
     type(v, "<");
-    expect(show(v)).toBe("a<|>");
-    type(v, "x");
-    expect(show(v)).toBe("a<x|>");
+    expect(show(v)).toBe("class A {\n  java.util.List<|\n}");
+  });
+
+  it("typing > steps over the inserted one, including out of nested pairs", () => {
+    const v = make("class A {\n  java.util.Map|\n}", [JAVA, prefs("java", {})]);
+    type(v, "<");
+    expect(show(v)).toBe("class A {\n  java.util.Map<|>\n}");
+    type(v, "String, java.util.List");
+    expect(show(v)).toBe("class A {\n  java.util.Map<String, java.util.List|>\n}");
+    type(v, "<");
+    expect(show(v)).toBe("class A {\n  java.util.Map<String, java.util.List<|>>\n}");
+    type(v, ">");
+    expect(show(v)).toBe("class A {\n  java.util.Map<String, java.util.List<>|>\n}");
+    type(v, ">");
+    expect(show(v)).toBe("class A {\n  java.util.Map<String, java.util.List<>>|\n}");
+    // A third > has no pair left to step over and inserts.
+    type(v, ">");
+    expect(show(v)).toBe("class A {\n  java.util.Map<String, java.util.List<>>>|\n}");
+  });
+
+  it("a > typed ahead of an existing, not-inserted > is kept as-is", () => {
+    const v = make("class A {\n  java.util.List<String|>\n}", [JAVA, prefs("java", {})]);
+    type(v, ">");
+    expect(show(v)).toBe("class A {\n  java.util.List<String>|>\n}");
+  });
+
+  it("pairs step out with Tab via the PAIRS table", () => {
+    const v = make("class A {\n  java.util.List|\n}", [JAVA, prefs("java", {})]);
+    type(v, "<");
     expect(insertTab(v)).toBe(true);
-    expect(show(v)).toBe("a<x>|");
+    expect(show(v)).toBe("class A {\n  java.util.List<>|\n}");
     // Once out, Tab inserts whitespace again.
     insertTab(v);
-    expect(show(v)).toBe("a<x>  |");
-  });
-
-  it("typing > skips the auto-inserted one instead of doubling it", () => {
-    const v = make("a|", prefs({ pairAngleBrackets: true }));
-    type(v, "<");
-    type(v, ">");
-    expect(show(v)).toBe("a<>|");
+    expect(show(v)).toBe("class A {\n  java.util.List<>  |\n}");
   });
 });
