@@ -7011,7 +7011,6 @@
   "Default run target": "默认运行目标",
   "Snippets": "代码片段",
   "Plugin Formatters": "插件格式化工具",
-  "Format on save": "保存时格式化",
   "The selected plugin formatter is unavailable": "所选插件格式化工具不可用",
   "Plugin formatter returned an invalid range": "插件格式化工具返回了无效范围",
   "Plugin formatter returned overlapping edits": "插件格式化工具返回了重叠的编辑",

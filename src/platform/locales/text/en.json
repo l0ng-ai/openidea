@@ -683,7 +683,6 @@
   "Read-only": "Read-only",
   "Snippets": "Snippets",
   "Plugin Formatters": "Plugin Formatters",
-  "Format on save": "Format on save",
   "The selected plugin formatter is unavailable": "The selected plugin formatter is unavailable",
   "Plugin formatter returned an invalid range": "Plugin formatter returned an invalid range",
   "Plugin formatter returned overlapping edits": "Plugin formatter returned overlapping edits",
