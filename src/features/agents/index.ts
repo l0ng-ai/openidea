@@ -23,6 +23,7 @@ import {
   AGENTS_GROUP,
   HOME_KIND,
   MCP_PAGE,
+  POLICY_PAGE,
   REGISTRY_PAGE,
   SESSION_KIND,
   TASK_DRAG,
@@ -56,8 +57,17 @@ export function activateSettingsPages(): () => void {
       keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
       component: lazyComponent(() => import("./McpServersPage").then((m) => m.McpServersPage)),
     }),
+    registerSettingsPage({
+      id: POLICY_PAGE,
+      title: "Command Execution Policy",
+      group: AGENTS_GROUP,
+      order: 490,
+      keywords: ["agent", "policy", "security", "whitelist", "blacklist", "permission", "command", "exec"],
+      projectScope: true,
+      component: lazyComponent(() => import("./AgentPolicyPage").then((m) => m.AgentPolicyPage)),
+    }),
   ];
-  return () => disposers.forEach((d) => d());
+  return () => disposers.reverse().forEach((d) => d());
 }
 
 export function activate(): () => void {

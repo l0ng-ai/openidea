@@ -108,6 +108,7 @@ export const ICLS_COLORS: Record<string, string[]> = {
   MODIFIED_LINES_COLOR: ["--gutter-modified"],
   ADDED_LINES_COLOR: ["--gutter-added"],
   DELETED_LINES_COLOR: ["--gutter-deleted"],
+  CONSOLE_BACKGROUND_KEY: ["--bg-console"],
 };
 
 type Part = "FOREGROUND" | "BACKGROUND" | "EFFECT_COLOR" | "ERROR_STRIPE_COLOR";
@@ -194,22 +195,70 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   MARKDOWN_HEADER_LEVEL_1: [["FOREGROUND", "--syn-markup-heading"]],
   MARKDOWN_CODE_SPAN: [["FOREGROUND", "--syn-markup-code"]],
   MARKDOWN_LINK_TEXT: [["FOREGROUND", "--syn-link"]],
-  CONSOLE_BLACK_OUTPUT: [["FOREGROUND", "--ansi-black"]],
-  CONSOLE_RED_OUTPUT: [["FOREGROUND", "--ansi-red"]],
-  CONSOLE_GREEN_OUTPUT: [["FOREGROUND", "--ansi-green"]],
-  CONSOLE_YELLOW_OUTPUT: [["FOREGROUND", "--ansi-yellow"]],
-  CONSOLE_BLUE_OUTPUT: [["FOREGROUND", "--ansi-blue"]],
-  CONSOLE_MAGENTA_OUTPUT: [["FOREGROUND", "--ansi-magenta"]],
-  CONSOLE_CYAN_OUTPUT: [["FOREGROUND", "--ansi-cyan"]],
-  CONSOLE_GRAY_OUTPUT: [["FOREGROUND", "--ansi-white"]],
-  CONSOLE_DARKGRAY_OUTPUT: [["FOREGROUND", "--ansi-bright-black"]],
-  CONSOLE_RED_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-red"]],
-  CONSOLE_GREEN_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-green"]],
-  CONSOLE_YELLOW_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-yellow"]],
-  CONSOLE_BLUE_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-blue"]],
-  CONSOLE_MAGENTA_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-magenta"]],
-  CONSOLE_CYAN_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-cyan"]],
-  CONSOLE_WHITE_OUTPUT: [["FOREGROUND", "--ansi-bright-white"]],
+  CONSOLE_BLACK_OUTPUT: [
+    ["FOREGROUND", "--ansi-black"],
+    ["FOREGROUND", "--terminal-ansi-black"],
+  ],
+  CONSOLE_RED_OUTPUT: [
+    ["FOREGROUND", "--ansi-red"],
+    ["FOREGROUND", "--terminal-ansi-red"],
+  ],
+  CONSOLE_GREEN_OUTPUT: [
+    ["FOREGROUND", "--ansi-green"],
+    ["FOREGROUND", "--terminal-ansi-green"],
+  ],
+  CONSOLE_YELLOW_OUTPUT: [
+    ["FOREGROUND", "--ansi-yellow"],
+    ["FOREGROUND", "--terminal-ansi-yellow"],
+  ],
+  CONSOLE_BLUE_OUTPUT: [
+    ["FOREGROUND", "--ansi-blue"],
+    ["FOREGROUND", "--terminal-ansi-blue"],
+  ],
+  CONSOLE_MAGENTA_OUTPUT: [
+    ["FOREGROUND", "--ansi-magenta"],
+    ["FOREGROUND", "--terminal-ansi-magenta"],
+  ],
+  CONSOLE_CYAN_OUTPUT: [
+    ["FOREGROUND", "--ansi-cyan"],
+    ["FOREGROUND", "--terminal-ansi-cyan"],
+  ],
+  CONSOLE_GRAY_OUTPUT: [
+    ["FOREGROUND", "--ansi-white"],
+    ["FOREGROUND", "--terminal-ansi-white"],
+  ],
+  CONSOLE_DARKGRAY_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-black"],
+    ["FOREGROUND", "--terminal-ansi-bright-black"],
+  ],
+  CONSOLE_RED_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-red"],
+    ["FOREGROUND", "--terminal-ansi-bright-red"],
+  ],
+  CONSOLE_GREEN_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-green"],
+    ["FOREGROUND", "--terminal-ansi-bright-green"],
+  ],
+  CONSOLE_YELLOW_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-yellow"],
+    ["FOREGROUND", "--terminal-ansi-bright-yellow"],
+  ],
+  CONSOLE_BLUE_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-blue"],
+    ["FOREGROUND", "--terminal-ansi-bright-blue"],
+  ],
+  CONSOLE_MAGENTA_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-magenta"],
+    ["FOREGROUND", "--terminal-ansi-bright-magenta"],
+  ],
+  CONSOLE_CYAN_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-cyan"],
+    ["FOREGROUND", "--terminal-ansi-bright-cyan"],
+  ],
+  CONSOLE_WHITE_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-white"],
+    ["FOREGROUND", "--terminal-ansi-bright-white"],
+  ],
 };
 
 export interface ConvertedTheme {

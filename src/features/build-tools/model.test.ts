@@ -272,6 +272,8 @@ describe("Maven runs", () => {
     expect(goalCompletions("sure", [surefire]).map((x) => x.label)).toEqual(["surefire:help", "surefire:test"]);
     expect(goalCompletions("cl", [], ["clean install"]).map((x) => x.label)[0]).toBe("clean install");
     expect(goalCompletions("-D", [surefire])).toEqual([]);
+    expect(goalCompletions("mvn clean test ", [surefire]).map((x) => x.label)).not.toContain("test");
+    expect(goalCompletions("clean c", []).map((x) => x.label)).not.toContain("clean");
   });
 });
 
@@ -456,6 +458,8 @@ describe("Gradle tree and runs", () => {
     const labelsOf = taskCompletions("ru", gradle).map((c) => c.label);
     expect(labelsOf).toEqual([":app:run"]);
     expect(taskCompletions("clean wr", gradle).map((c) => c.line)).toEqual(["clean wrapper"]);
+    expect(taskCompletions("wrapper wr", gradle)).toEqual([]);
+    expect(taskCompletions(":app:run ", gradle).map((c) => c.label)).not.toContain(":app:run");
   });
 });
 

@@ -211,7 +211,8 @@ describe(".icls schemes", () => {
     expect(scheme.attributes.gutter?.background).toBe("#212121");
     expect(scheme.attributes.lineNumber?.foreground).toBe("#424242");
     expect(scheme.attributes.selection?.background).toBe("#353535");
-    expect([applied, skipped]).toEqual([12, 3]);
+    expect(scheme.attributes.consoleBackground?.background).toBe("#212121");
+    expect([applied, skipped]).toEqual([13, 2]);
   });
 
   it.each([
@@ -333,7 +334,9 @@ describe(".icls schemes", () => {
       <option name="PY.BUILTIN_NAME"><value><option name="FOREGROUND" value="abcd"/></value></option>
     </attributes></scheme>`;
     const attrs = parseIcls(xml).scheme.attributes;
-    expect(attrs.keyword).toEqual({ foreground: "#112233", bold: false, italic: false, effect: "none" });
+    // PY.KEYWORD styles Python only now; the shared keyword keeps DEFAULT_KEYWORD's value.
+    expect(attrs.pyKeyword).toEqual({ foreground: "#112233", bold: false, italic: false, effect: "none" });
+    expect(attrs.keyword).toEqual({ foreground: "#ff0000", bold: true, italic: false });
     expect(attrs.pyNestedFunction?.foreground).toBe("#223344");
     expect(attrs.pyDocstring?.foreground).toBe("#334455");
     expect(attrs.pyDocstring?.effect).toBe("none");

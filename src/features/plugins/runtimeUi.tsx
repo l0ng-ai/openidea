@@ -32,7 +32,7 @@ import { setPluginDecorations } from "./decorations";
 import { editorsFor, onEditorEvent } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
-import { onIdeEvent } from "@/platform/ipc";
+import { isTauri, onIdeEvent } from "@/platform/ipc";
 import { openExternalUrl } from "@/platform/openUrl";
 import { tx, VerbatimTextContext } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -612,6 +612,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       openPrompts.get(e.promptId)?.abort();
       openPrompts.delete(e.promptId);
       return true;
+    case "promptWaiting":
+      bringWindowToFront();
+      return true;
     case "commitRequested":
       void answerCommit(e.requestId, e.request);
       return true;
@@ -621,6 +624,18 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     default:
       return false;
   }
+}
+
+/** Another window ran a command of a plugin whose prompt is open here: show this window. */
+function bringWindowToFront() {
+  if (!isTauri()) return;
+  void import("@tauri-apps/api/window")
+    .then(async ({ getCurrentWindow }) => {
+      const w = getCurrentWindow();
+      if (await w.isMinimized()) await w.unminimize();
+      await w.setFocus();
+    })
+    .catch(() => undefined);
 }
 
 /**

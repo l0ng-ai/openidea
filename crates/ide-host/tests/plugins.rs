@@ -4158,6 +4158,35 @@ fn code_action_resolution_prompts_in_the_editor_window_under_the_command_budget(
 }
 
 #[test]
+fn a_command_from_another_window_is_refused_while_the_plugin_waits_for_an_answer() {
+    let (f, doc) = interactive_actions_fixture();
+    let action = f
+        .host
+        .provide_code_actions(&doc, ide_core::Range::default())
+        .into_iter()
+        .find(|(_, action)| action.data.as_deref() == Some("pick"))
+        .unwrap()
+        .1;
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+        let (id, _) = action_prompt(&f);
+        // Queued behind the open prompt it would not run until the prompt is answered.
+        let other = Invocation { client: Some("other-window".into()), ..Default::default() };
+        let err = f.host.run_command("misbehave", "anything", None, other).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert!(err.message.contains("waiting for your answer in another window"), "{}", err.message);
+        let events = f.take_events();
+        assert!(
+            events.iter().any(|(client, e)| client.as_deref() == Some("editor-window")
+                && matches!(e, PluginEvent::PromptWaiting { plugin_id } if plugin_id == "misbehave")),
+            "the prompting window is brought forward: {events:?}"
+        );
+        assert!(f.host.answer_prompt(&id, Some(vec!["b".into()])));
+        running.join().unwrap().unwrap();
+    });
+}
+
+#[test]
 fn code_action_prompts_dismiss_cancel_and_close_without_edits_or_hanging() {
     for (how, kind) in [
         ("dismiss", "pick"),

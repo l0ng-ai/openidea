@@ -71,6 +71,17 @@
 .label + .label {
   border-left: 1px solid var(--border);
 }
+/* Side by side, the right label starts at the right pane (`--diff-b-start`, set by the viewer). */
+.labels > .label:first-child:not(:only-child) {
+  flex: 0 0 var(--diff-b-start, 50%);
+}
+.labelFile {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-subtle);
+  font-family: var(--font-ui);
+}
 .badge {
   padding: 0 5px;
   border-radius: var(--radius-small);
@@ -93,13 +104,14 @@
   border-bottom: none;
 }
 .findRowSplit > div {
-  flex: 0 0 50%;
+  flex: 0 0 var(--diff-b-start, 50%);
   border-right: 1px solid var(--border);
 }
 .findRowRight {
   justify-content: flex-end;
 }
 .findRowRight > div {
+  flex-basis: calc(100% - var(--diff-b-start, 50%));
   border-right: none;
   border-left: 1px solid var(--border);
 }

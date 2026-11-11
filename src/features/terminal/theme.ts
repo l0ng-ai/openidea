@@ -43,12 +43,14 @@ export function buildTheme(read: TokenReader): ITheme {
   const color = (name: string, fallback = FALLBACK[name] ?? "#808080"): Rgba =>
     parseColor(read(name)) ?? parseColor(fallback)!;
 
-  const bg = color("--bg-island", read("--bg-app") || FALLBACK["--bg-app"]);
+  // Console Colors edits `--bg-console`; fall back to the island / app surface.
+  const bg = color("--bg-console", read("--bg-island") || read("--bg-app") || FALLBACK["--bg-app"]);
   const fg = color("--fg-editor", read("--fg") || FALLBACK["--fg"]);
   const strong = color("--fg-strong");
   const accent = color("--accent");
   const caret = color("--caret", toHex(accent));
   const selection = parseColor(read("--bg-editor-selection"));
+  // Theme `--terminal-ansi-*` first; Settings/import mirror `--ansi-*` into those names.
   const ansi = (name: string, derived: () => Rgba): Rgba =>
     parseColor(read(`--terminal-ansi-${name}`)) ?? parseColor(read(`--ansi-${name}`)) ?? derived();
 

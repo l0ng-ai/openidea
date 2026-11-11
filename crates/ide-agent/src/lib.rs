@@ -16,6 +16,7 @@ mod model;
 mod native;
 mod provider;
 pub mod registry;
+pub mod security;
 mod skills;
 mod timeline;
 mod worktree;
@@ -38,6 +39,9 @@ use std::time::Duration;
 
 /// Receives the events of one project's tasks.
 pub type AgentSink = Arc<dyn Fn(AgentEvent) + Send + Sync>;
+
+/// Returns the active command execution security policy for the project.
+pub type SecurityHook = Arc<dyn Fn() -> ide_core::settings::AgentSecuritySettings + Send + Sync>;
 
 /// Entry changes are batched for this long before they are sent.
 const FLUSH_DELAY: Duration = Duration::from_millis(40);
@@ -102,6 +106,7 @@ struct Shared {
     runtime: tokio::runtime::Handle,
     connector: Connector,
     sink: RwLock<Option<AgentSink>>,
+    security: RwLock<Option<SecurityHook>>,
     known: Mutex<HashMap<String, Known>>,
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
@@ -177,9 +182,15 @@ impl Shared {
                     let shared = self.clone();
                     // Keep the lookup alive if a composer unmounts while it is waiting.
                     self.runtime.spawn(async move {
-                        if let Ok(found) =
-                            native::claude::discover(spec.clone(), shared.paths.project_root.clone()).await
-                        {
+                        tracing::info!("agent {}: settings discovery started", spec.id);
+                        let discovered = if spec.driver == provider::Driver::Acp {
+                            acp::discover::run(&shared, &spec).await.map(|_| None)
+                        } else if spec.driver == provider::Driver::Claude {
+                            native::claude::discover(spec.clone(), shared.paths.project_root.clone()).await.map(Some)
+                        } else {
+                            return;
+                        };
+                        if let Ok(Some(found)) = discovered {
                             let commands =
                                 config::commands_of(&json!({ "availableCommands": found.commands }), &spec.id);
                             let options = config::options_of(&json!({ "configOptions": found.options }));
@@ -198,6 +209,8 @@ impl Shared {
                                 shared.remember_discovered(&spec.id, &options, &commands, &levels);
                             })
                             .await;
+                        } else if let Err(e) = discovered {
+                            tracing::info!("agent {}: settings discovery failed: {e}", spec.id);
                         }
                         let _ = done.send(true);
                     });
@@ -220,12 +233,17 @@ impl Shared {
     fn knows_all_levels(&self, provider: &str) -> bool {
         let cache = self.known.lock();
         let Some(known) = cache.get(provider) else { return false };
-        known
+        let models: Vec<&str> = known
             .config
             .iter()
             .filter(|o| o.category.as_deref() == Some("model"))
-            .flat_map(|o| &o.values)
-            .all(|v| known.thought_levels.contains_key(&v.value))
+            .flat_map(|o| o.values.iter().map(|v| v.value.as_str()))
+            .collect();
+        // No advertised models yet: nothing to attach effort levels to.
+        if models.is_empty() {
+            return false;
+        }
+        models.iter().all(|id| known.thought_levels.contains_key(*id))
     }
 
     fn root_key(&self) -> String {
@@ -434,6 +452,7 @@ impl AgentManager {
             runtime,
             connector,
             sink: RwLock::new(None),
+            security: RwLock::new(None),
             known: Mutex::new(known),
             providers,
             probes: Mutex::new(HashMap::new()),
@@ -477,6 +496,11 @@ impl AgentManager {
         tasks
     }
 
+    /// Sets the callback used to read the active command execution security policy.
+    pub fn set_security_hook(&self, hook: SecurityHook) {
+        *self.shared.security.write() = Some(hook);
+    }
+
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.
     pub fn providers(&self) -> Vec<AgentProvider> {
         let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
@@ -501,7 +525,9 @@ impl AgentManager {
             let new = specs.iter().find(|p| &p.id == id);
             matches!((old, new), (Some(a), Some(b)) if a.command == b.command && a.args == b.args && a.env == b.env)
         });
-        *prev = specs;
+        *prev = specs.clone();
+        drop(probes);
+        drop(prev);
         list
     }
 
@@ -520,6 +546,30 @@ impl AgentManager {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
         provider::set_builtin_env(&dir, id, env)
+    }
+
+    /// Saves a new custom ACP agent through its agent file.
+    pub fn save_custom_agent(&self, input: CustomAgentInput) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::save_custom(&dir, &input)
+    }
+
+    /// Removes a custom agent's file (registry installs go through `registry_remove`).
+    pub fn remove_custom_agent(&self, id: &str) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::remove_custom(&dir, id)
+    }
+
+    /// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents.
+    pub fn import_acp_agents(&self, text: &str) -> IdeResult<Vec<AcpImportOutcome>> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::import_acp(&dir, text)
     }
 
     /// Re-reads configured/installed agents, drops cached probes, and notifies subscribers.
@@ -552,10 +602,16 @@ impl AgentManager {
         let mut offered = offered;
         if task.is_none()
             && (offered.is_empty() || !self.shared.has_config(&provider) || !self.shared.knows_all_levels(&provider))
-            && let Some(spec) = self.shared.spec(&provider).filter(|s| s.driver == provider::Driver::Claude)
+            && let Some(spec) = self
+                .shared
+                .spec(&provider)
+                .filter(|s| matches!(s.driver, provider::Driver::Claude | provider::Driver::Acp))
         {
+            let claude = spec.driver == provider::Driver::Claude;
             self.shared.fetch_settings(spec).await;
-            offered = self.shared.known_commands(&provider);
+            if claude {
+                offered = self.shared.known_commands(&provider);
+            }
         }
         for &(name, description) in builtin_commands(&provider) {
             if !offered.iter().any(|c| c.name == name) {
@@ -888,14 +944,38 @@ impl AgentManager {
             }
             o.clone()
         };
+        let previous = target.current.clone();
+        // Cursor's `session/set_config_option` (Fast, effort) can take seconds. Show the
+        // choice first so the switch and slider move immediately.
+        apply_config_choice(&task, option, &value);
+        task.persist();
+        task.emit_task();
+
         let live = task.live.lock().clone().filter(|l| !l.peer.is_closed());
         let mut model_options =
-            target.category.as_deref() != Some("model") || target.current.as_deref() == Some(value.as_str());
+            target.category.as_deref() != Some("model") || previous.as_deref() == Some(value.as_str());
         if let Some(live) = live.filter(|_| option != config::CURSOR_APPROVAL) {
             let (method, mut params) = config::set_request(&target, &value);
             params["sessionId"] = json!(live.session);
-            let reply: Value =
-                live.peer.request(method, params, None).await.map_err(|e| IdeError::internal(task.describe(e)))?;
+            let reply: Value = match live.peer.request(method, params, None).await {
+                Ok(reply) => reply,
+                Err(e) => {
+                    {
+                        let mut s = task.state.lock();
+                        s.wanted.retain(|c| c.id != option);
+                        if let Some(prev) = previous.clone() {
+                            s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: prev });
+                        }
+                        if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
+                            o.current = previous.clone();
+                        }
+                        s.task.model = model_of(&s.task.config).or(s.task.model.take());
+                    }
+                    task.persist();
+                    task.emit_task();
+                    return Err(IdeError::internal(task.describe(e)));
+                }
+            };
             if let Some(options) = reply.get("configOptions") {
                 config::merge_update(&mut task.state.lock().task.config, options);
                 model_options = true;
@@ -906,8 +986,6 @@ impl AgentManager {
             if !model_options {
                 s.task.config.retain(|o| o.category.as_deref() != Some("thought_level"));
             }
-            s.wanted.retain(|c| c.id != option);
-            s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: value.clone() });
             if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
                 o.current = Some(value);
             }
@@ -1260,15 +1338,19 @@ impl AgentManager {
     /// Files the task changed since it started.
     pub async fn changes(&self, id: &str) -> IdeResult<Vec<AgentChange>> {
         let task = self.task(id)?;
-        let (cwd, base) = task.cwd_and_base();
+        let at = task.base();
         let before = task.state.lock().before.clone();
-        blocking(move || Ok(worktree::without_untouched(worktree::changes(&cwd, &base)?, &before))).await
+        blocking(move || at.changes(&before)).await
     }
 
     /// Content of `path` (in the task's directory) when the task started.
     pub async fn base_text(&self, id: &str, path: PathBuf) -> IdeResult<Option<String>> {
-        let (cwd, base) = self.task(id)?.cwd_and_base();
-        blocking(move || worktree::file_at(&cwd, &path, &base)).await
+        let at = self.task(id)?.base();
+        blocking(move || match at.rev()? {
+            Some(rev) => worktree::file_at(at.cwd(), &path, &rev),
+            None => Ok(None),
+        })
+        .await
     }
 
     /// Rollback: puts the task's changed files among `rel_paths` (all with `None`) back as they
@@ -1278,16 +1360,17 @@ impl AgentManager {
         if task.state.lock().busy {
             return Err(IdeError::invalid("the agent is working: stop it before rolling back its changes"));
         }
-        let (cwd, base) = task.cwd_and_base();
+        let at = task.base();
         let (before, saved) = {
             let s = task.state.lock();
             (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)))
         };
         let restamped = blocking(move || {
-            let changes = worktree::without_untouched(worktree::changes(&cwd, &base)?, &before);
+            let changes = at.changes(&before)?;
+            let rev = at.rev()?;
             let mut restamped = Vec::new();
             for change in changes.iter().filter(|c| rel_paths.as_ref().is_none_or(|p| p.contains(&c.rel_path))) {
-                worktree::restore(&cwd, &base, change, &before, saved.as_deref())?;
+                worktree::restore(at.cwd(), rev.as_deref(), change, &before, saved.as_deref())?;
                 // Back to the user's own edits: not a change of the task any more.
                 if before.contains_key(&change.rel_path) {
                     restamped.push((change.rel_path.clone(), worktree::stamp(&change.path.0)));
@@ -1304,6 +1387,41 @@ impl AgentManager {
         }
         task.persist();
         Ok(())
+    }
+
+    /// Accept: copies the task's changed files among `rel_paths` (all with `None`) from its
+    /// worktree into the local checkout, uncommitted, for the user to review and commit.
+    /// Files the checkout changed itself are left alone and reported. Only worktree tasks
+    /// have anything to accept.
+    pub async fn accept_changes(&self, id: &str, rel_paths: Option<Vec<String>>) -> IdeResult<AgentAcceptOutcome> {
+        let task = self.task(id)?;
+        if task.state.lock().busy {
+            return Err(IdeError::invalid("the agent is working: stop it before accepting its changes"));
+        }
+        let (isolation, cwd, base, root, before) = {
+            let s = task.state.lock();
+            (
+                s.task.isolation,
+                s.task.cwd.0.clone(),
+                s.task.base_commit.clone(),
+                s.task.project_root.clone().map(|p| p.0).unwrap_or_else(|| self.shared.paths.project_root.clone()),
+                (*s.before).clone(),
+            )
+        };
+        if isolation != Isolation::Worktree {
+            return Err(IdeError::invalid("the task works in the local checkout: there is nothing to accept"));
+        }
+        let Some(base) = base else {
+            return Err(IdeError::invalid("the task has no base revision to accept from"));
+        };
+        blocking(move || {
+            let wanted: Vec<AgentChange> = worktree::without_untouched(worktree::changes(&cwd, &base)?, &before)
+                .into_iter()
+                .filter(|c| rel_paths.as_ref().is_none_or(|p| p.contains(&c.rel_path)))
+                .collect();
+            worktree::accept(&root, &cwd, &base, &wanted)
+        })
+        .await
     }
 
     /// Stops every agent (project closed).
@@ -1356,15 +1474,15 @@ impl Task {
         })
     }
 
-    fn cwd_and_base(&self) -> (PathBuf, String) {
+    fn base(&self) -> worktree::TaskBase {
         let s = self.state.lock();
-        // In the project's own checkout the user commits too: compare against the current HEAD,
-        // as the Commit tool window does, so commits made since the task started drop out.
-        let base = match s.task.isolation {
-            Isolation::Local => None,
-            Isolation::Worktree => s.task.base_commit.clone(),
-        };
-        (s.task.cwd.0.clone(), base.unwrap_or_else(|| "HEAD".into()))
+        let cwd = s.task.cwd.0.clone();
+        match s.task.isolation {
+            Isolation::Local => worktree::TaskBase::Local { cwd, start: s.task.base_commit.clone() },
+            Isolation::Worktree => {
+                worktree::TaskBase::Worktree { cwd, base: s.task.base_commit.clone().unwrap_or_else(|| "HEAD".into()) }
+            }
+        }
     }
 
     fn emit_task(&self) {
@@ -2124,6 +2242,44 @@ impl Task {
             .iter()
             .map(|question| question.answer_key.clone().unwrap_or_else(|| question.question.clone()))
             .collect();
+        if let Some(hook) = self.shared.security.read().clone()
+            && let Some(command) = security::extract_command(params)
+        {
+            match security::evaluate_command(&command, &hook()) {
+                security::PolicyDecision::Blocked(pattern) => {
+                    let reject = options.iter().find(|o| o.kind.starts_with("reject")).cloned();
+                    let _ = self.push_entry(AgentEntry::Permission {
+                        id,
+                        title,
+                        options,
+                        questions: Vec::new(),
+                        chosen: Some(format!("Blocked by policy ({pattern})")),
+                    });
+                    return match reject {
+                        Some(option) => json!({ "outcome": { "outcome": "selected", "optionId": option.id } }),
+                        None => json!({ "outcome": { "outcome": "cancelled" } }),
+                    };
+                }
+                security::PolicyDecision::Allowed => {
+                    if let Some(allow) = options
+                        .iter()
+                        .find(|o| o.kind == "allow_once")
+                        .or_else(|| options.iter().find(|o| o.kind.starts_with("allow")))
+                        .cloned()
+                    {
+                        let _ = self.push_entry(AgentEntry::Permission {
+                            id,
+                            title,
+                            options,
+                            questions: Vec::new(),
+                            chosen: Some(format!("{} (whitelisted)", allow.name)),
+                        });
+                        return json!({ "outcome": { "outcome": "selected", "optionId": allow.id } });
+                    }
+                }
+                security::PolicyDecision::AskUser => {}
+            }
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let entry =
             self.push_entry(AgentEntry::Permission { id, title, options: options.clone(), questions, chosen: None });
@@ -2437,7 +2593,7 @@ fn with_details(message: String, data: Option<&Value>) -> String {
     }
 }
 
-fn client_info() -> Value {
+pub(crate) fn client_info() -> Value {
     json!({ "name": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") })
 }
 
@@ -2494,6 +2650,16 @@ fn retry_of(update: &Value, now: f64) -> Option<AgentRetry> {
         retry_at_ms: now + n("retryDelayMs").unwrap_or(0) as f64,
         error: update.get("error").and_then(Value::as_str).filter(|e| !e.is_empty()).map(str::to_owned),
     })
+}
+
+fn apply_config_choice(task: &Task, option: &str, value: &str) {
+    let mut s = task.state.lock();
+    s.wanted.retain(|c| c.id != option);
+    s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: value.to_owned() });
+    if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
+        o.current = Some(value.to_owned());
+    }
+    s.task.model = model_of(&s.task.config).or(s.task.model.take());
 }
 
 fn model_of(config: &[AgentConfigOption]) -> Option<String> {

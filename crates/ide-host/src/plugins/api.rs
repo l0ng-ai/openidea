@@ -896,6 +896,13 @@ impl Shared {
         self.prompts_blocked.lock().remove(plugin);
     }
 
+    /// A window other than `client` where `plugin` waits for the user's answer (a prompt or a
+    /// Commit request). The plugin runs one call at a time, so anything else asked of it waits
+    /// behind that answer.
+    pub fn waiting_elsewhere(&self, plugin: &str, client: &str) -> Option<String> {
+        self.prompts.lock().values().find(|p| p.plugin == plugin && p.client != client).map(|p| p.client.clone())
+    }
+
     /// The user answered (`Some`) or dismissed (`None`) a prompt.
     pub fn answer_prompt(&self, id: u64, answer: Option<Vec<String>>) -> bool {
         let mut prompts = self.prompts.lock();

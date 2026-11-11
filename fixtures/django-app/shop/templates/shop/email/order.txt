@@ -1,0 +1,3 @@
+{% autoescape off %}Thank you for your order, {{ name|default:"customer" }}!
+{% for line in lines %}- {{ line.quantity }} × {{ line.product.name }}
+{% endfor %}{% endautoescape %}

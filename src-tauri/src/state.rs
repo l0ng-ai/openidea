@@ -75,6 +75,11 @@ impl AppState {
         tracing::info!(?data_dir, ?local_data_dir, "application data directories");
         // Saved git HTTPS credentials (askpass answers them silently).
         ide_ssh::git_creds::init(data_dir.join("git-credentials.json"));
+        // A newly chosen local-data directory from Settings › System Settings ›
+        // Caches: the previous tree moves first, so a pending invalidation still
+        // wipes what was just moved.
+        let identifier = app.config().identifier.clone();
+        ide_host::data_dirs::apply_custom_migration(&identifier, &local_data_dir);
         // File › Invalidate Caches… requested at the last run.
         let removed = ide_workspace::caches::apply_pending(&data_dir, &local_data_dir);
         if !removed.is_empty() {
