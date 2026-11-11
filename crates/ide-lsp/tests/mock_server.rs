@@ -6781,3 +6781,142 @@ async fn gomod_files_are_served_by_gopls() {
     assert_eq!(items[0].message, "missing requirement");
     mgr.shutdown_all().await;
 }
+
+// ------------------------------------------------------------------ notebooks
+
+fn notebook_caps() -> Value {
+    let mut caps = incremental_caps();
+    caps["notebookDocumentSync"] = json!({
+        "notebookSelector": [{
+            "notebook": { "scheme": "file", "notebookType": "jupyter-notebook" },
+            "cells": [{ "language": "python" }]
+        }]
+    });
+    caps
+}
+
+fn cells(cells: &[(&str, &str)]) -> Vec<ide_lsp::NotebookCell> {
+    cells.iter().map(|(id, source)| ide_lsp::NotebookCell { id: (*id).into(), source: (*source).into() }).collect()
+}
+
+fn cell_texts(open: &Value) -> Vec<(String, String)> {
+    open["cellTextDocuments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["uri"].as_str().unwrap().to_owned(), c["text"].as_str().unwrap().to_owned()))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn notebook_cells_are_documents_of_the_servers_that_sync_notebooks() {
+    let h = harness_for("python", "py", &[("nb", notebook_caps()), ("plain", incremental_caps())], &[]);
+    let path = h.root.join("analysis.ipynb");
+    let python = LanguageId::new("python");
+    h.mgr.sync_notebook(&path, &python, &cells(&[("a", "import os\n"), ("b", "os.pa")]));
+    h.wait_status("nb", ServerStatus::Ready).await;
+    h.wait_status("plain", ServerStatus::Ready).await;
+    let (nb, plain) = (h.launcher.state("nb"), h.launcher.state("plain"));
+    eventually(|| !nb.notified("notebookDocument/didOpen").is_empty()).await;
+
+    let docs = h.mgr.notebook_cells(&path);
+    assert_eq!(docs.iter().map(|d| d.cell.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    assert_eq!(docs[0].uri, ide_lsp::cell_uri(&path, "a"));
+    let open = &nb.notified("notebookDocument/didOpen")[0];
+    assert_eq!(open["notebookDocument"]["uri"], uri_of(&path));
+    assert_eq!(open["notebookDocument"]["notebookType"], "jupyter-notebook");
+    assert_eq!(open["notebookDocument"]["cells"][1], json!({ "kind": 2, "document": docs[1].uri }));
+    assert_eq!(
+        cell_texts(open),
+        [(docs[0].uri.clone(), "import os\n".to_owned()), (docs[1].uri.clone(), "os.pa".to_owned())]
+    );
+    assert!(plain.notified("notebookDocument/didOpen").is_empty() && plain.notified("textDocument/didOpen").is_empty());
+
+    // Requests address a cell like a file, and go only to the server it is open on.
+    nb.respond("textDocument/completion", json!({ "isIncomplete": false, "items": [{ "label": "path" }] }));
+    plain.respond("textDocument/completion", json!({ "isIncomplete": false, "items": [{ "label": "wrong" }] }));
+    let list = h.mgr.completion(docs[1].doc, Pos::new(0, 5), None, Default::default()).await.unwrap();
+    assert_eq!(list.items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["path"]);
+    assert_eq!(nb.requested("textDocument/completion")[0]["textDocument"]["uri"], docs[1].uri);
+    assert!(plain.requested("textDocument/completion").is_empty());
+
+    // Its diagnostics are reported under the cell's URI.
+    nb.peer()
+        .notify(
+            "textDocument/publishDiagnostics",
+            json!({ "uri": docs[1].uri, "diagnostics": [{
+                "range": {"start":{"line":0,"character":3},"end":{"line":0,"character":5}}, "message": "no attribute pa"
+            }] }),
+        )
+        .unwrap();
+    let cell_path = PathBuf::from(&docs[1].uri);
+    eventually(|| {
+        h.events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Diagnostics { path, items, .. } if path.0 == cell_path && items.len() == 1))
+    })
+    .await;
+
+    h.mgr.close_notebook(&path);
+    eventually(|| !nb.notified("notebookDocument/didClose").is_empty()).await;
+    assert_eq!(nb.notified("notebookDocument/didClose")[0]["cellTextDocuments"].as_array().unwrap().len(), 2);
+    assert!(h.mgr.notebook_cells(&path).is_empty());
+    assert!(h.mgr.completion(docs[1].doc, Pos::new(0, 5), None, Default::default()).await.is_err());
+    let last = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Diagnostics { path, items, source } if path.0 == cell_path && source == "nb" => Some(items.len()),
+            _ => None,
+        })
+        .next_back();
+    assert_eq!(last, Some(0), "a closed notebook's diagnostics are cleared");
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn notebook_edits_change_cell_text_and_reorders_reopen_it() {
+    let h = harness_for("python", "py", &[("nb", notebook_caps())], &[]);
+    let path = h.root.join("n.ipynb");
+    let python = LanguageId::new("python");
+    h.mgr.sync_notebook(&path, &python, &cells(&[("a", "x = 1\n"), ("b", "print(x)\n")]));
+    h.wait_status("nb", ServerStatus::Ready).await;
+    let nb = h.launcher.state("nb");
+    eventually(|| nb.notified("notebookDocument/didOpen").len() == 1).await;
+    let before = h.mgr.notebook_cells(&path);
+
+    // Typing in one cell sends only that cell's text.
+    h.mgr.sync_notebook(&path, &python, &cells(&[("a", "x = 1\n"), ("b", "print(x + 1)\n")]));
+    h.mgr.sync_notebook(&path, &python, &cells(&[("a", "x = 1\n"), ("b", "print(x + 1)\n")]));
+    eventually(|| !nb.notified("notebookDocument/didChange").is_empty()).await;
+    let changes = nb.notified("notebookDocument/didChange");
+    assert_eq!(changes.len(), 1, "an unchanged notebook sends nothing");
+    let content = &changes[0]["change"]["cells"]["textContent"];
+    assert_eq!(content.as_array().unwrap().len(), 1);
+    assert_eq!(content[0]["document"]["uri"], before[1].uri);
+    assert_eq!(content[0]["changes"], json!([{ "text": "print(x + 1)\n" }]));
+    assert_eq!(changes[0]["notebookDocument"]["version"], 2);
+
+    // Inserting and moving cells reopens the notebook; kept cells keep their documents.
+    h.mgr.sync_notebook(&path, &python, &cells(&[("c", "import math\n"), ("b", "print(x + 1)\n"), ("a", "x = 1\n")]));
+    eventually(|| nb.notified("notebookDocument/didOpen").len() == 2).await;
+    assert_eq!(nb.notified("notebookDocument/didClose").len(), 1);
+    let after = h.mgr.notebook_cells(&path);
+    assert_eq!(after.iter().map(|d| d.cell.as_str()).collect::<Vec<_>>(), ["c", "b", "a"]);
+    assert_eq!((after[1].doc, after[2].doc), (before[1].doc, before[0].doc));
+    let reopened = &nb.notified("notebookDocument/didOpen")[1];
+    assert_eq!(
+        cell_texts(reopened).into_iter().map(|(_, t)| t).collect::<Vec<_>>(),
+        ["import math\n", "print(x + 1)\n", "x = 1\n"]
+    );
+
+    // A restarted server gets the notebook again.
+    let launches = nb.launches.load(Ordering::SeqCst);
+    let server = h.mgr.servers()[0].id;
+    h.mgr.restart(server).await.unwrap();
+    eventually(|| nb.launches.load(Ordering::SeqCst) > launches && nb.notified("notebookDocument/didOpen").len() == 3)
+        .await;
+    h.mgr.shutdown_all().await;
+}

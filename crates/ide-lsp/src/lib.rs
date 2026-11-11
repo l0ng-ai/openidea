@@ -25,6 +25,7 @@ mod kotlin_lsp;
 mod launch;
 mod library_source;
 mod loading;
+mod notebook;
 mod pull;
 mod scope;
 mod server;
@@ -42,6 +43,7 @@ pub use inspect::{FileInspection, InspectHost, InspectOptions};
 pub use jdtls::jvm_inspect::JdtJvmInspector;
 pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
+pub use notebook::{NotebookCell, NotebookCellDoc, cell_uri};
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
 pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
 
@@ -115,6 +117,8 @@ struct DocState {
     servers: Vec<Attached>,
     /// Open YAML document whose filename does not match a Compose glob and whose content is Compose.
     compose_detected: bool,
+    /// The notebook a code cell belongs to: synced through `notebookDocument/*`, not as a file.
+    notebook: Option<PathBuf>,
 }
 
 impl DocState {
@@ -229,6 +233,8 @@ pub struct LspManager {
     /// Contents fetched for virtual URIs.
     virtual_docs: Mutex<HashMap<String, VirtualDocument>>,
     injections: injections::State,
+    /// Open notebooks by path. Locked before `docs` when both are.
+    notebooks: Mutex<HashMap<PathBuf, notebook::NotebookState>>,
 }
 
 /// Fetched virtual documents kept before the cache is reset.
@@ -476,6 +482,7 @@ impl LspManager {
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
             injections: injections::State::default(),
+            notebooks: Mutex::new(HashMap::new()),
         })
     }
 
@@ -614,8 +621,13 @@ impl LspManager {
     /// enabled in settings.
     fn attach_fallbacks(&self) {
         let _gate = self.injections.gate.lock();
-        let open: Vec<(DocId, LanguageId, PathBuf)> =
-            self.docs.lock().iter().map(|(id, d)| (*id, d.language.clone(), d.path.clone())).collect();
+        let open: Vec<(DocId, LanguageId, PathBuf)> = self
+            .docs
+            .lock()
+            .iter()
+            .filter(|(_, d)| d.notebook.is_none())
+            .map(|(id, d)| (*id, d.language.clone(), d.path.clone()))
+            .collect();
         let wanted: Vec<(DocId, Vec<Arc<Server>>)> =
             open.into_iter().map(|(id, language, path)| (id, self.servers_for(&language, &path))).collect();
         let mut start = Vec::new();
@@ -647,6 +659,11 @@ impl LspManager {
         }
         for (doc, server) in opened {
             self.schedule_pull(doc, Some(&server), Duration::ZERO);
+        }
+        for server in self.attach_notebook_servers() {
+            if !start.iter().any(|s| s.id == server.id) {
+                start.push(server);
+            }
         }
         for server in &start {
             self.ensure_started(server);
@@ -867,7 +884,7 @@ impl LspManager {
                 false
             } else {
                 let open_close = run.caps.read().open_close;
-                for (id, d) in docs.iter_mut() {
+                for (id, d) in docs.iter_mut().filter(|(_, d)| d.notebook.is_none()) {
                     let params = d.did_open_params();
                     for a in
                         d.servers.iter_mut().filter(|a| a.server.id == server.id && a.opened_gen != Some(generation))
@@ -889,6 +906,7 @@ impl LspManager {
         for doc in reopened {
             self.schedule_pull(doc, Some(&server), Duration::ZERO);
         }
+        self.reopen_notebooks(&server, &run);
         self.check_clang_tidy(&server).await;
         self.check_vue_navigation(&server).await;
         server.refresh_busy_status(&self.sink);
@@ -1083,6 +1101,7 @@ impl LspManager {
             text: Arc::new(DocText::new(text)),
             servers: servers.iter().map(|s| Attached { server: s.clone(), opened_gen: None }).collect(),
             compose_detected,
+            notebook: None,
         };
         let compose_added = {
             let mut docs = self.docs.lock();
@@ -1214,7 +1233,7 @@ impl LspManager {
             return;
         }
         let docs = self.docs.lock();
-        for d in docs.values() {
+        for d in docs.values().filter(|d| d.notebook.is_none()) {
             if !d.servers.iter().any(|a| a.server.id == server.id && a.opened_gen == Some(generation)) {
                 continue;
             }
@@ -1288,13 +1307,23 @@ impl LspManager {
     fn snapshot(&self, doc: DocId) -> IdeResult<DocSnap> {
         let docs = self.docs.lock();
         let d = docs.get(&doc).ok_or_else(|| IdeError::not_found(format!("{doc} is not open")))?;
+        // A cell is asked only of the servers its notebook is open on (those that sync notebooks).
+        let servers = d
+            .servers
+            .iter()
+            .filter(|a| {
+                d.notebook.is_none()
+                    || a.opened_gen.is_some_and(|g| a.server.running().is_some_and(|run| run.generation == g))
+            })
+            .map(|a| a.server.clone())
+            .collect();
         Ok(DocSnap {
             version: d.version,
             path: d.path.clone(),
             uri: d.uri.clone(),
             language: d.language.clone(),
             text: d.text.clone(),
-            servers: d.servers.iter().map(|a| a.server.clone()).collect(),
+            servers,
         })
     }
 

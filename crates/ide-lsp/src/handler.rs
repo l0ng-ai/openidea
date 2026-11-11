@@ -10,6 +10,7 @@ use ide_core::{IdeEvent, TaskId};
 use ide_jsonrpc::{Handler, codes};
 use lsp_types as lsp;
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -229,7 +230,11 @@ impl ClientHandler {
                 return;
             }
         };
-        let Some(path) = uri_to_path(params.uri.as_str()) else { return };
+        let Some(path) = uri_to_path(params.uri.as_str())
+            .or_else(|| crate::notebook::is_cell_uri(params.uri.as_str()).then(|| PathBuf::from(params.uri.as_str())))
+        else {
+            return;
+        };
         if self.server.name == "jdtls"
             && let Some(failure) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics)
         {
