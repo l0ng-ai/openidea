@@ -321,6 +321,10 @@ pub enum PluginEvent {
     /// The call that asked gave up (cancelled, or its plugin stopped): close the prompt.
     #[serde(rename_all = "camelCase")]
     PromptClosed { prompt_id: String },
+    /// A command of this window's prompting plugin was run from another window and refused
+    /// while the plugin waits for the answer here: bring this window to the front.
+    #[serde(rename_all = "camelCase")]
+    PromptWaiting { plugin_id: String },
     /// Bring the tool window of the plugin's view `view` to the front.
     #[serde(rename_all = "camelCase")]
     RevealView { plugin_id: String, view: String },
