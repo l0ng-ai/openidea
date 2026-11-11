@@ -1,0 +1,137 @@
+id = "ktor"
+name = "Ktor"
+group = "Kotlin"
+icon = "project-ktor"
+order = 1
+description = "A Ktor server application built with Gradle."
+
+[[fields]]
+id = "jdk"
+label = "JDK:"
+type = "sdk"
+sdk = "jdk"
+
+[[fields]]
+id = "jvm"
+label = "JVM target:"
+type = "choice"
+options = ["25", "21", "17"]
+default = "21"
+
+[[fields]]
+id = "group"
+label = "Group:"
+type = "text"
+pattern = '^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*$'
+default = "com.example"
+
+[[fields]]
+id = "package"
+label = "Package:"
+type = "text"
+pattern = '^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*$'
+default = "{{group}}.{{name|ident}}"
+
+[[files]]
+path = "settings.gradle.kts"
+content = '''
+rootProject.name = "{{name|kebab}}"
+'''
+
+[[files]]
+path = "build.gradle.kts"
+content = '''
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+plugins {
+    kotlin("jvm") version "2.2.21"
+    id("io.ktor.plugin") version "3.3.1"
+}
+
+group = "{{group}}"
+version = "0.0.1"
+
+application {
+    mainClass = "{{package}}.ApplicationKt"
+}
+
+repositories {
+    mavenCentral()
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.fromTarget("{{jvm}}")
+    }
+}
+
+java {
+    targetCompatibility = JavaVersion.toVersion({{jvm}})
+}
+
+dependencies {
+    implementation("io.ktor:ktor-server-core")
+    implementation("io.ktor:ktor-server-netty")
+    implementation("ch.qos.logback:logback-classic:1.5.20")
+    testImplementation("io.ktor:ktor-server-test-host")
+    testImplementation(kotlin("test"))
+}
+'''
+
+[[files]]
+path = "src/main/kotlin/{{package|path}}/Application.kt"
+content = '''
+package {{package}}
+
+import io.ktor.server.application.*
+import io.ktor.server.engine.*
+import io.ktor.server.netty.*
+import io.ktor.server.response.*
+import io.ktor.server.routing.*
+
+fun main() {
+    embeddedServer(Netty, port = 8080, host = "0.0.0.0", module = Application::module).start(wait = true)
+}
+
+fun Application.module() {
+    routing {
+        get("/") {
+            call.respondText("Hello, World!")
+        }
+    }
+}
+'''
+
+[[files]]
+path = "src/main/resources/logback.xml"
+content = '''
+<configuration>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>
+'''
+
+[[files]]
+path = ".gitignore"
+content = '''
+build/
+.gradle/
+.kotlin/
+.idea/
+'''
+
+[[after]]
+label = "Generating the Gradle wrapper"
+program = "gradle"
+args = ["wrapper", "--no-daemon", "-q"]
+env = { JAVA_HOME = "{{jdk}}" }
+optional = true
+
+[settings.java]
+jdk = "{{jdk}}"

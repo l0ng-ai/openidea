@@ -1,4 +1,4 @@
-/** Welcome › Projects: search, Open / Clone Repository, and the recent projects list. */
+/** Welcome › Projects: search, New Project / Open / Clone Repository, and the recent projects list. */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction, useActions } from "@/platform/actions";
@@ -29,9 +29,15 @@ function HeaderButtons() {
   const canClone = useActions((s) => s.actions.has("vcs.clone"));
   const canRemote = useActions((s) => s.actions.has("remote.connect"));
   const opening = useProject((s) => s.opening);
+  const canCreate = useActions((s) => s.actions.has("file.newProject"));
   const openKey = shortcutLabel("file.openProject");
   return (
     <div className={styles.headerButtons}>
+      {canCreate && (
+        <Button disabled={opening} onClick={() => void executeAction("file.newProject")}>
+          <T>New Project</T>
+        </Button>
+      )}
       <Button
         disabled={opening}
         onClick={() => void executeAction("file.openProject")}
@@ -55,6 +61,7 @@ function HeaderButtons() {
 
 /** Shown when there are no recent projects (IntelliJ's empty welcome). */
 function Landing() {
+  const canCreate = useActions((s) => s.actions.has("file.newProject"));
   const canClone = useActions((s) => s.actions.has("vcs.clone"));
   const canRemote = useActions((s) => s.actions.has("remote.connect"));
   const opening = useProject((s) => s.opening);
@@ -65,13 +72,28 @@ function Landing() {
         <T>Welcome to OpenIDEA</T>
       </div>
       <p className={styles.landingText}>
-        {canClone
-          ? tx("Open a folder from disk or clone a repository from version control.")
-          : tx("Open a folder from disk.")}
+        {canCreate && canClone
+          ? tx("Create a project, open a folder from disk or clone a repository from version control.")
+          : canClone
+            ? tx("Open a folder from disk or clone a repository from version control.")
+            : tx("Open a folder from disk.")}
         <br />
         <T>You can also drop a folder onto this window.</T>
       </p>
       <div className={styles.landingActions}>
+        {canCreate && (
+          <button
+            type="button"
+            className={styles.landingAction}
+            disabled={opening}
+            onClick={() => void executeAction("file.newProject")}
+          >
+            <span className={styles.landingIcon}>
+              <Icon name="plus" size={20} />
+            </span>
+            <T>New Project</T>
+          </button>
+        )}
         <button
           type="button"
           className={styles.landingAction}

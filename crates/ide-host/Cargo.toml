@@ -49,6 +49,7 @@ ide-notebook.workspace = true
 ide-extension.workspace = true
 ide-plugin.workspace = true
 ide-tools = { path = "../ide-tools" }
+ide-scaffold.workspace = true
 ide-docker = { path = "../ide-docker" }
 semver = "1"
 serde.workspace = true
