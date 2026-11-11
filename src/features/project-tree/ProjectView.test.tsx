@@ -3,7 +3,12 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { emitLocalIdeEvent } from "@/platform/ipc";
 import { installRepeatedDoubleClick } from "@/platform/doubleClick";
 import { getContext } from "@/platform/context";
-import { provideEditorService, registerProjectViewRoot, type EditorService } from "@/workbench/contributions";
+import {
+  provideEditorService,
+  registerProjectViewRoot,
+  setFileDecorations,
+  type EditorService,
+} from "@/workbench/contributions";
 import { activate } from "./index";
 import { setOsClipboardForTests } from "./clipboard";
 import { MemoryFs, setProjectFsForTests } from "./fs";
@@ -735,4 +740,36 @@ it("hides the path beside workspace roots when Show Root Paths is off, keeping i
   const root = document.querySelector('[data-project-path="/a/service"]');
   expect(root?.getAttribute("title")).toBe("/a/service");
   act(() => setViewOption("showRootPaths", true));
+});
+
+it("shows a decoration's suffix after the root name, with icons and struck-out segments", async () => {
+  const { row } = setup();
+  await waitFor(() => expect(row("acme")).toBeTruthy());
+  act(() =>
+    setFileDecorations(
+      "test-suffix",
+      new Map([
+        [
+          ROOT,
+          {
+            suffixColor: "var(--accent)",
+            suffix: [
+              { text: "main" },
+              { text: "/" },
+              { text: "0", strike: true, label: "Up to date with origin/main" },
+              { text: "2", icon: "vcs-outgoing", label: "2 outgoing commits" },
+            ],
+          },
+        ],
+      ]),
+    ),
+  );
+  await waitFor(() => expect(row("acme").textContent).toContain("main/02"));
+  const root = row("acme");
+  expect(root.querySelector("s")?.textContent).toBe("0");
+  expect(root.querySelector("s")?.closest("[style]")?.getAttribute("style")).toContain("var(--accent)");
+  expect(within(root).getByLabelText("2 outgoing commits").querySelector("svg")).not.toBeNull();
+  expect(within(root).getByLabelText("Up to date with origin/main").textContent).toBe("0");
+  act(() => setFileDecorations("test-suffix", new Map()));
+  await waitFor(() => expect(row("acme").textContent).not.toContain("main/"));
 });

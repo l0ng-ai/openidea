@@ -19,6 +19,7 @@ export interface IssueLinkValid {
 
 export interface GitSettingsValid {
   inlineBlame: boolean;
+  showBranchInProjectView: boolean;
   executable: string;
   updateMethod: UpdateMethod;
   autoUpdateOnPushRejected: boolean;
@@ -190,6 +191,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     historyLimit: 1000,
     git: {
       inlineBlame: false,
+      showBranchInProjectView: false,
       executable: "",
       updateMethod: "merge",
       autoUpdateOnPushRejected: false,
@@ -321,6 +323,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
     historyLimit: num(v.historyLimit, d.historyLimit, L.historyLimit, true),
     git: {
       inlineBlame: bool(g.inlineBlame, d.git.inlineBlame),
+      showBranchInProjectView: bool(g.showBranchInProjectView, d.git.showBranchInProjectView),
       executable: text(g.executable, d.git.executable).trim(),
       updateMethod: oneOf(g.updateMethod, ["merge", "rebase"] as const, d.git.updateMethod),
       autoUpdateOnPushRejected: bool(g.autoUpdateOnPushRejected, d.git.autoUpdateOnPushRejected),

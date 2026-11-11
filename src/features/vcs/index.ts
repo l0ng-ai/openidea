@@ -47,6 +47,7 @@ import { installFileConfirmations } from "./confirmations";
 import { installIncomingCheck } from "./incoming";
 import { closeLogTab, installGitLog, selectGitTab, useGitLog } from "./logStore";
 import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
+import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
 
 /** The Resolve/Continue/Abort buttons exist in the title bar only while there is something to resolve. */
@@ -213,6 +214,7 @@ export function activate(): () => void {
   useCommit.setState({ signOff: workflowSettings().vcs.git.signOff });
   const disposers = [
     installVcsStore(),
+    installRootSync(),
     installGitLog(),
     installDiagnosticsTracking(),
     installPreparedMessage(),

@@ -7315,5 +7315,7 @@
   "Import from Project": "从项目导入",
   "No new MCP servers in the project's .mcp.json or .vscode/mcp.json.": "项目的 .mcp.json 和 .vscode/mcp.json 中没有新的 MCP 服务器。",
   "Imported 1 MCP server from the project.": "已从项目导入 1 个 MCP 服务器。",
-  "Imported {count} MCP servers from the project.": "已从项目导入 {count} 个 MCP 服务器。"
+  "Imported {count} MCP servers from the project.": "已从项目导入 {count} 个 MCP 服务器。",
+  "Show branch and incoming/outgoing commits in the Project view": "在项目视图中显示分支及传入/传出提交",
+  "Up to date with {upstream}": "已与 {upstream} 同步"
 }
