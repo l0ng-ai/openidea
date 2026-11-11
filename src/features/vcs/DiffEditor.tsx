@@ -63,6 +63,7 @@ import {
   isIndex,
   isWorktree,
   loadSide,
+  oneSided,
   openDiff,
   sideFile,
   sideKey,
@@ -248,6 +249,10 @@ export function DiffEditor({
     const saved = loadDiffOptions();
     return data.mode ? { ...saved, mode: data.mode } : saved;
   });
+  // An added or deleted file shows its one side alone, full width (IDEA's one-side viewer):
+  // the unified layout of an empty side is exactly that. The saved mode stays as it is.
+  const single = oneSided(data);
+  const viewMode: DiffMode = single ? "unified" : opts.mode;
   const [lang, setLang] = useState<Extension | null>(null);
   const [chunkInfo, setChunkInfo] = useState({ count: 0, current: -1, moves: 0, whitespaceOnly: false });
   const [busy, setBusy] = useState(false);
@@ -441,7 +446,8 @@ export function DiffEditor({
       });
     const collapseUnchanged = opts.collapse ? { margin: 3, minSize: 6 } : undefined;
     const diffConfig = ideaDiffConfig(opts.ignore, opts.highlight);
-    const highlightChanges = opts.highlight === "words";
+    // One side alone has no words to compare: IDEA tints its lines, without fragments.
+    const highlightChanges = opts.highlight === "words" && !single;
     const inclusion = includable ? inclusionGutter(path, textA) : [];
     const side = (att: DocumentAttachment | null, editable: boolean, notes?: "left" | "right"): Extension[] => [
       // The left pane of a side-by-side diff has its line numbers next to the divider, as in IDEA.
@@ -459,10 +465,10 @@ export function DiffEditor({
             styles,
           )
         : [],
-      notes ? contribs.map((c) => c.extensions?.({ side: notes, unified: opts.mode !== "split" }) ?? []) : [],
+      notes ? contribs.map((c) => c.extensions?.({ side: notes, unified: viewMode !== "split" }) ?? []) : [],
     ];
     let views: Views;
-    if (opts.mode === "split") {
+    if (viewMode === "split") {
       let merge: MergeView | null = null;
       const panes = opts.alignChanges
         ? null
@@ -601,7 +607,7 @@ export function DiffEditor({
       };
     }
     viewsRef.current = views;
-    const built = viewerHost(views, dataRef.current, opts.mode, () => focusedSide.current);
+    const built = viewerHost(views, dataRef.current, viewMode, () => focusedSide.current);
     const detach = contribs.map((c) => c.attach?.(built));
     const destroyViews = views.destroy;
     views.destroy = () => {
@@ -617,7 +623,8 @@ export function DiffEditor({
     attached,
     statics,
     lang,
-    opts.mode,
+    viewMode,
+    single,
     opts.alignChanges,
     opts.collapse,
     opts.ignore,
@@ -982,13 +989,15 @@ export function DiffEditor({
       {
         id: "split",
         label: "Side-by-side Viewer",
-        checked: opts.mode === "split",
+        checked: viewMode === "split",
+        disabled: single,
         run: () => setOpts({ mode: "split" }),
       },
       {
         id: "unified",
         label: "Unified Viewer",
-        checked: opts.mode === "unified",
+        checked: viewMode === "unified",
+        disabled: single,
         run: () => setOpts({ mode: "unified" }),
       },
       { kind: "separator" },
@@ -1029,14 +1038,14 @@ export function DiffEditor({
         id: "sync",
         label: "Synchronize Scrolling",
         checked: opts.syncScroll,
-        disabled: opts.mode !== "split",
+        disabled: viewMode !== "split",
         run: () => setOpts({ syncScroll: !opts.syncScroll }),
       },
       {
         id: "align",
         label: "Align Changes",
         checked: opts.alignChanges,
-        disabled: opts.mode !== "split",
+        disabled: viewMode !== "split",
         run: () => setOpts({ alignChanges: !opts.alignChanges }),
       },
       ...contribs.flatMap((c) => {
@@ -1208,14 +1217,16 @@ export function DiffEditor({
           icon="diff-side-by-side"
           title="Side-by-side Viewer"
           size="small"
-          pressed={opts.mode === "split"}
+          pressed={viewMode === "split"}
+          disabled={single}
           onClick={() => setOpts({ mode: "split" })}
         />
         <IconButton
           icon="diff-unified"
           title="Unified Viewer"
           size="small"
-          pressed={opts.mode === "unified"}
+          pressed={viewMode === "unified"}
+          disabled={single}
           onClick={() => setOpts({ mode: "unified" })}
         />
         <span className={styles.sep} />
@@ -1240,7 +1251,7 @@ export function DiffEditor({
           pressed={opts.collapse}
           onClick={() => setOpts({ collapse: !opts.collapse })}
         />
-        {opts.mode === "split" && (
+        {viewMode === "split" && (
           <IconButton
             icon="lock"
             title="Synchronize Scrolling"
@@ -1314,7 +1325,7 @@ export function DiffEditor({
           onClick={(e) => showSettings(e.currentTarget)}
         />
       </div>
-      {opts.mode === "split" ? (
+      {viewMode === "split" ? (
         <div className={styles.labels}>
           <span className={styles.label} title={[titleA.label, titleA.file].filter(Boolean).join(" ")}>
             {titleA.label}
@@ -1348,8 +1359,8 @@ export function DiffEditor({
         <div
           className={clsx(
             styles.findRow,
-            opts.mode === "split" && styles.findRowSplit,
-            opts.mode === "split" && find.side === "b" && styles.findRowRight,
+            viewMode === "split" && styles.findRowSplit,
+            viewMode === "split" && find.side === "b" && styles.findRowRight,
           )}
         >
           <FindPanel
@@ -1378,7 +1389,7 @@ export function DiffEditor({
         className={clsx(
           styles.host,
           opts.highlight === "none" && styles.noHighlight,
-          opts.mode === "split" && (opts.alignChanges ? !opts.syncScroll && styles.unsynced : styles.unaligned),
+          viewMode === "split" && (opts.alignChanges ? !opts.syncScroll && styles.unsynced : styles.unaligned),
         )}
         hidden={!!binary || !!error || !ready}
         aria-label={diffTitle(data)}
