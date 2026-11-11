@@ -1546,12 +1546,6 @@
 .planCurrent {
   color: var(--fg);
 }
-.trayActivity {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 /* A one-button toolbar, not a round bubble: the popup's large arc would turn it into a circle. */
 .quotePopup {
   display: flex;
