@@ -92,9 +92,11 @@ function previewOrder(ids: readonly string[], id: string, index: number): Map<st
   return new Map(order.map((it, i) => [it, i]));
 }
 
-/** A tab strip as seen from its container: close the selected tab if it can be closed. */
+/** A tab strip as seen from its container: close the selected tab if it can be closed, pin / unpin it if the strip supports it. */
 export interface TabStripHandle {
   closeSelected(): boolean;
+  /** Toggles the pin of the selected tab; false when the strip has no pin support. */
+  togglePinSelected(): boolean;
 }
 
 /**
@@ -108,6 +110,8 @@ export interface TabsProps {
   activeId: string | null;
   onSelect: (id: string) => void;
   onClose?: (id: string) => void;
+  /** Toggles a tab's pin (Pin / Unpin Tab of a tool window's content tabs). */
+  onTogglePin?: (id: string) => void;
   /** Alt+click on a close button (IDEA: close all other tabs). */
   onCloseOthers?: (id: string) => void;
   /** Shift+left-click a tab closes it (editor tabs; plain clicks still select). */
@@ -137,6 +141,7 @@ export function Tabs({
   activeId,
   onSelect,
   onClose,
+  onTogglePin,
   onCloseOthers,
   closeOnShiftClick,
   onDoubleClick,
@@ -162,9 +167,9 @@ export function Tabs({
   const [dragging, setDragging] = useState<string | null>(null);
 
   const register = useContext(TabStripRegistry);
-  const latest = useRef({ items, activeId, onClose });
+  const latest = useRef({ items, activeId, onClose, onTogglePin });
   useLayoutEffect(() => {
-    latest.current = { items, activeId, onClose };
+    latest.current = { items, activeId, onClose, onTogglePin };
   });
   useEffect(
     () =>
@@ -174,6 +179,13 @@ export function Tabs({
           const item = items.find((it) => it.id === activeId);
           if (!item || !onClose || item.closable === false) return false;
           onClose(item.id);
+          return true;
+        },
+        togglePinSelected: () => {
+          const { items, activeId, onTogglePin } = latest.current;
+          const item = items.find((it) => it.id === activeId);
+          if (!item || !onTogglePin) return false;
+          onTogglePin(item.id);
           return true;
         },
       }),

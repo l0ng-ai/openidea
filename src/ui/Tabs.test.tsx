@@ -171,6 +171,53 @@ describe("Tabs interactions", () => {
     expect(handles).toHaveLength(0);
   });
 
+  it("lets a container toggle the pin of the selected tab through the strip handle", () => {
+    const handles: TabStripHandle[] = [];
+    const register = (h: TabStripHandle) => (handles.push(h), () => void handles.splice(handles.indexOf(h), 1));
+    const onTogglePin = vi.fn();
+    const { rerender, unmount } = render(
+      <TabStripRegistry.Provider value={register}>
+        <Tabs items={items} activeId="b" onSelect={() => {}} onTogglePin={onTogglePin} />
+      </TabStripRegistry.Provider>,
+    );
+    expect(handles[0]!.togglePinSelected()).toBe(true);
+    expect(onTogglePin).toHaveBeenCalledWith("b");
+    // The consumer flips the state; the strip keeps handing over the selected tab.
+    rerender(
+      <TabStripRegistry.Provider value={register}>
+        <Tabs
+          items={items.map((it) => ({ ...it, icon: it.id === "b" ? "pin" : undefined }))}
+          activeId="b"
+          onSelect={() => {}}
+          onTogglePin={onTogglePin}
+        />
+      </TabStripRegistry.Provider>,
+    );
+    expect(handles[0]!.togglePinSelected()).toBe(true);
+    expect(onTogglePin).toHaveBeenCalledTimes(2);
+    unmount();
+    expect(handles).toHaveLength(0);
+  });
+
+  it("reports no pin support without onTogglePin or without a selected tab", () => {
+    const handles: TabStripHandle[] = [];
+    const register = (h: TabStripHandle) => (handles.push(h), () => void handles.splice(handles.indexOf(h), 1));
+    const { rerender, unmount } = render(
+      <TabStripRegistry.Provider value={register}>
+        <Tabs items={items} activeId="a" onSelect={() => {}} />
+      </TabStripRegistry.Provider>,
+    );
+    expect(handles[0]!.togglePinSelected()).toBe(false);
+    rerender(
+      <TabStripRegistry.Provider value={register}>
+        <Tabs items={[]} activeId={null} onSelect={() => {}} onTogglePin={() => {}} />
+      </TabStripRegistry.Provider>,
+    );
+    expect(handles[0]!.togglePinSelected()).toBe(false);
+    unmount();
+    expect(handles).toHaveLength(0);
+  });
+
   it("a vertical strip moves with ↑/↓, shows actions above the tabs and has no overflow dropdown", () => {
     const onSelect = vi.fn();
     render(

@@ -24,3 +24,9 @@ export function closeSelectedContent(id: string): boolean {
   for (const strip of strips.get(id) ?? []) if (strip.closeSelected()) return true;
   return false;
 }
+
+/** Toggles the pin of the selected content tab of tool window `id`; false when no strip pins tabs. */
+export function pinSelectedContent(id: string): boolean {
+  for (const strip of strips.get(id) ?? []) if (strip.togglePinSelected()) return true;
+  return false;
+}

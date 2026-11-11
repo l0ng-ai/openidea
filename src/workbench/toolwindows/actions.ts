@@ -15,7 +15,7 @@ import {
   saveLayout,
   useToolWindowLayouts,
 } from "./layouts";
-import { closeSelectedContent } from "./content";
+import { closeSelectedContent, pinSelectedContent } from "./content";
 import {
   activateToolWindow,
   hideActiveToolWindow,
@@ -205,6 +205,20 @@ export function installToolWindowActions(): () => void {
         const s = useToolWindowLayout.getState();
         const id = s.focused ?? s.lastActive;
         if (id && !closeSelectedContent(id)) hideToolWindow(id);
+      },
+    },
+    {
+      // Pin Content: the selected tab of the focused tool window (the Find results, a run session),
+      // as IDEA's Pin Active Tab pins the selected content of the focused tool window.
+      id: "toolwindow.pinContent",
+      title: "Pin / Unpin Tool Window Tab",
+      category: "Window",
+      keywords: ["pin", "unpin", "pin tab", "tool window tab"],
+      when: "toolWindowFocus && !popupOpen",
+      run: () => {
+        const s = useToolWindowLayout.getState();
+        const id = s.focused ?? s.lastActive;
+        if (id) pinSelectedContent(id);
       },
     },
     {
