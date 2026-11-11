@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="windows-1252"?>
+<!-- Saved by a Windows editor: the declaration describes the file's bytes, while a
+     caller hands parseIcls already decoded text. The name must survive unchanged. -->
+<scheme name="Café Solar" version="142" parent_scheme="Default">
+  <colors><option name="CARET_COLOR" value="ffcc00" /></colors>
+  <attributes>
+    <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="cc7832" /></value></option>
+  </attributes>
+</scheme>

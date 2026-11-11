@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findAll, findRanges, formatDuration, pathLink, quoteText, withQuote } from "./conversation";
+import { fileHref, findAll, findRanges, formatDuration, pathLink, quoteText, withQuote } from "./conversation";
 
 describe("quoting", () => {
   it("quotes each line and leaves a line to type on", () => {
@@ -34,6 +34,33 @@ describe("pathLink", () => {
     ]) {
       expect(pathLink(t, cwd)).toBeNull();
     }
+  });
+});
+
+describe("fileHref", () => {
+  const cwd = "C:/repo";
+  it("resolves a link against the task folder", () => {
+    expect(fileHref("docs/my%20notes.md:3", cwd)).toEqual({ path: "C:/repo/docs/my notes.md", line: 2 });
+    expect(fileHref("/abs/x.py#L7", cwd)).toEqual({ path: "/abs/x.py", line: 6 });
+    expect(fileHref("https://x.dev/a.md", cwd)).toBeNull();
+    expect(fileHref("#top", cwd)).toBeNull();
+  });
+  // On Windows, opening `//server/share` signs in to that server with the user's credentials.
+  it("names no network share, however the link spells it", () => {
+    for (const href of [
+      "//evil/share/x.md",
+      "%2F%2Fevil/share/x.md",
+      "/%2Fevil/share/x.md",
+      "/\\evil/share/x.md",
+      "/%5Cevil/share/x.md",
+      "%5C%5Cevil%5Cshare%5Cx.md",
+    ]) {
+      expect(fileHref(href, cwd), href).toBeNull();
+    }
+    expect(fileHref("%5Cevil/share/x.md", ""), "no task folder").toBeNull();
+  });
+  it("follows links in a task that is on a share", () => {
+    expect(fileHref("docs/a.md", "//nas/work/app")).toEqual({ path: "//nas/work/app/docs/a.md" });
   });
 });
 

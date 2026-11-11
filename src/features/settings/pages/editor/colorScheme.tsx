@@ -28,7 +28,7 @@ import styles from "./Editor.module.css";
 import { executeAction, registerActions } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { ask, confirm, showError } from "@/workbench/messages";
-import { parseIcls, importScheme, deleteScheme, exportIcls } from "@/platform/icls";
+import { parseIcls, SchemeParseError, importScheme, deleteScheme, exportIcls } from "@/platform/icls";
 import { tx, useTx } from "@/platform/i18n";
 import { selectPage } from "../../model/staging";
 
@@ -97,9 +97,7 @@ function treeIds(nodes: readonly Node[], out = new Set<string>()): Set<string> {
 
 /** Settings sub-page that owns an attribute, for preview clicks that cross pages. */
 function attrPageId(attr: AttributeDef): string {
-  return `editor.colorScheme.${
-    attr.path[0] === "Language Defaults" ? "language-defaults" : attr.path[0]!.toLowerCase()
-  }`;
+  return languagePageId(attr.path[0]!);
 }
 
 /** Preview click on another sub-page: the target page selects and reveals the attribute. */
@@ -123,6 +121,7 @@ function previewVars(
       k.startsWith("--fg-") ||
       k.startsWith("--bg-") ||
       k.startsWith("--border-") ||
+      k.startsWith("--ansi-") ||
       k === "--caret"
     )
       vars[k] = v;
@@ -236,6 +235,30 @@ const SAMPLES: Record<string, CodeSample> = {
     ],
     caret: 2,
   },
+  "Console Colors": {
+    code: [
+      [
+        ["black ", "ansiBlack"],
+        ["red ", "ansiRed"],
+        ["green ", "ansiGreen"],
+        ["yellow ", "ansiYellow"],
+        ["blue ", "ansiBlue"],
+        ["magenta ", "ansiMagenta"],
+        ["cyan ", "ansiCyan"],
+        ["white", "ansiWhite"],
+      ],
+      [
+        ["dark ", "ansiBrightBlack"],
+        ["bright-red ", "ansiBrightRed"],
+        ["bright-green ", "ansiBrightGreen"],
+        ["bright-yellow ", "ansiBrightYellow"],
+        ["bright-blue ", "ansiBrightBlue"],
+        ["bright-magenta ", "ansiBrightMagenta"],
+        ["bright-cyan ", "ansiBrightCyan"],
+        ["bright-white", "ansiBrightWhite"],
+      ],
+    ],
+  },
   "Language Defaults": {
     code: [
       [["# Language Defaults", "lineComment"]],
@@ -334,30 +357,30 @@ const SAMPLES: Record<string, CodeSample> = {
     caret: 4,
     code: [
       [
-        ["import ", "keyword"],
+        ["import ", "pyKeyword"],
         ["os", "pyStaticSymbol"],
       ],
       [
         ["MAX_RETRIES", "pyConstant"],
-        [" = ", "operator"],
-        ["3", "number"],
+        [" = ", "pyOperationSign"],
+        ["3", "pyNumber"],
       ],
       [],
       [
         ["@decorator", "pyDecorator"],
         ["(", "pyParentheses"],
         ["param", "pyKeywordArg"],
-        ["=", "operator"],
-        ["1", "number"],
+        ["=", "pyOperationSign"],
+        ["1", "pyNumber"],
         [")", "pyParentheses"],
       ],
       [
-        ["def ", "keyword"],
-        ["f", "functionDeclaration"],
+        ["def ", "pyKeyword"],
+        ["f", "pyFunctionDeclaration"],
         ["(", "pyParentheses"],
-        ["x", "parameter"],
+        ["x", "pyParameter"],
         [")", "pyParentheses"],
-        [":", "operator"],
+        [":", "pyOperationSign"],
       ],
       [['    """', "pyDocstring"]],
       [["    Syntax Highlighting Demo", "pyDocstring"]],
@@ -390,199 +413,199 @@ const SAMPLES: Record<string, CodeSample> = {
       [['    """', "pyDocstring"]],
       [],
       [
-        ["    def ", "keyword"],
+        ["    def ", "pyKeyword"],
         ["nested_func", "pyNestedFunction"],
         ["(", "pyParentheses"],
-        ["y", "parameter"],
+        ["y", "pyParameter"],
         [")", "pyParentheses"],
-        [":", "operator"],
+        [":", "pyOperationSign"],
       ],
       [
         ["        ", "text"],
-        ["print", "pyPredefinedUsage"],
+        ["print", "pyBuiltin"],
         ["(", "pyParentheses"],
-        ["y", "identifier"],
-        [" + ", "operator"],
-        ["1", "number"],
+        ["y", "pyLocalVariable"],
+        [" + ", "pyOperationSign"],
+        ["1", "pyNumber"],
         [")", "pyParentheses"],
       ],
       [],
       [
         ["    s", "pyLocalVariable"],
-        [" = ", "operator"],
+        [" = ", "pyOperationSign"],
         ["(", "pyParentheses"],
-        ['"Test"', "string"],
-        [", ", "operator"],
-        ["2", "number"],
-        ["+", "operator"],
-        ["3", "number"],
-        [", ", "operator"],
+        ['"Test"', "pyString"],
+        [", ", "pyOperationSign"],
+        ["2", "pyNumber"],
+        ["+", "pyOperationSign"],
+        ["3", "pyNumber"],
+        [", ", "pyOperationSign"],
         ["{", "pyBraces"],
-        ["'a'", "string"],
-        [": ", "operator"],
-        ["'b'", "string"],
+        ["'a'", "pyString"],
+        [": ", "pyOperationSign"],
+        ["'b'", "pyString"],
         ["}", "pyBraces"],
-        [",", "operator"],
+        [",", "pyOperationSign"],
       ],
       [
         ["         ", "text"],
         ["f", "pyFString"],
         ["'{", "pyFString"],
-        ["x", "parameter"],
+        ["x", "pyParameter"],
         ["!s:", "pyFormat"],
         ["{", "pyFormat"],
-        ['"^10"', "string"],
+        ['"^10"', "pyString"],
         ["}", "pyFormat"],
         ["}'", "pyFString"],
-        [", ", "operator"],
+        [", ", "pyOperationSign"],
         ["f", "pyFString"],
         ['"{', "pyFString"],
-        ["1", "number"],
+        ["1", "pyNumber"],
         [":", "pyFString"],
         ["01d", "pyFormat"],
         ['}"', "pyFString"],
         [")", "pyParentheses"],
         ["  ", "text"],
-        ["# Comment", "lineComment"],
+        ["# Comment", "pyLineComment"],
       ],
       [
         ["    ", "text"],
-        ["f", "functionCall"],
+        ["f", "pyFunctionCall"],
         ["(", "pyParentheses"],
         ["s", "pyLocalVariable"],
         ["[", "pyBrackets"],
-        ["0", "number"],
+        ["0", "pyNumber"],
         ["]", "pyBrackets"],
-        [".", "operator"],
-        ["lower", "pyPredefinedUsage"],
+        [".", "pyOperationSign"],
+        ["lower", "pyMethodCall"],
         ["(", "pyParentheses"],
         [")", "pyParentheses"],
         [")", "pyParentheses"],
       ],
       [
         ["    ", "text"],
-        ["nested_func", "functionCall"],
+        ["nested_func", "pyFunctionCall"],
         ["(", "pyParentheses"],
-        ["42", "number"],
+        ["42", "pyNumber"],
         [")", "pyParentheses"],
       ],
       [],
       [
-        ["class ", "keyword"],
-        ["Foo", "className"],
-        [":", "operator"],
+        ["class ", "pyKeyword"],
+        ["Foo", "pyClassDefinition"],
+        [":", "pyOperationSign"],
       ],
       [
         ["    tags", "pyClassAttribute"],
         [": ", "text"],
         ["List", "pyAnnotation"],
         ["[", "pyBrackets"],
-        ["str", "pyAnnotation"],
+        ["str", "pyBuiltin"],
         ["]", "pyBrackets"],
       ],
       [],
       [
-        ["    def ", "keyword"],
+        ["    def ", "pyKeyword"],
         ["__init__", "pyPredefinedDefinition"],
         ["(", "pyParentheses"],
         ["self", "pySelf"],
         [": ", "text"],
         ["Foo", "pyAnnotation"],
         [")", "pyParentheses"],
-        [":", "operator"],
+        [":", "pyOperationSign"],
       ],
       [
         ["        byte_string", "pyLocalVariable"],
         [": ", "text"],
-        ["bytes", "pyAnnotation"],
-        [" = ", "operator"],
+        ["bytes", "pyBuiltin"],
+        [" = ", "pyOperationSign"],
         ["b'newline:", "pyBytes"],
-        ["\\n", "escape"],
+        ["\\n", "pyValidEscape"],
         [" also newline:", "pyBytes"],
-        ["\\x0a", "escape"],
+        ["\\x0a", "pyValidEscape"],
         ["'", "pyBytes"],
       ],
       [
         ["        text_string", "pyLocalVariable"],
-        [" = ", "operator"],
-        ['u"Cyrillic Я is ', "string"],
-        ["\\u042f", "escape"],
-        [". Oops: ", "string"],
-        ["\\u042g", "weakWarning"],
-        ['"', "string"],
+        [" = ", "pyOperationSign"],
+        ['u"Cyrillic Я is ', "pyString"],
+        ["\\u042f", "pyValidEscape"],
+        [". Oops: ", "pyString"],
+        ["\\u042g", "pyInvalidEscape"],
+        ['"', "pyString"],
       ],
       [
         ["        ", "text"],
         ["self", "pySelf"],
-        [".", "operator"],
+        [".", "pyOperationSign"],
         ["make_sense", "pyMethodCall"],
         ["(", "pyParentheses"],
         ["whatever", "pyKeywordArg"],
-        ["=", "operator"],
-        ["1", "number"],
+        ["=", "pyOperationSign"],
+        ["1", "pyNumber"],
         [")", "pyParentheses"],
       ],
       [],
       [["@property", "pyDecorator"]],
       [
-        ["    def ", "keyword"],
+        ["    def ", "pyKeyword"],
         ["alias", "pyProperty"],
         ["(", "pyParentheses"],
         ["self", "pySelf"],
         [")", "pyParentheses"],
-        [":", "operator"],
+        [":", "pyOperationSign"],
       ],
       [
-        ["        return ", "keyword"],
+        ["        return ", "pyKeyword"],
         ["self", "pySelf"],
-        [".", "operator"],
+        [".", "pyOperationSign"],
         ["sense", "pyInstanceAttribute"],
       ],
       [],
       [
-        ["    def ", "keyword"],
-        ["make_sense", "functionDeclaration"],
+        ["    def ", "pyKeyword"],
+        ["make_sense", "pyFunctionDeclaration"],
         ["[", "pyBrackets"],
         ["T", "pyTypeParameter"],
         ["]", "pyBrackets"],
         ["(", "pyParentheses"],
         ["self", "pySelf"],
-        [", ", "operator"],
-        ["whatever", "parameter"],
+        [", ", "pyOperationSign"],
+        ["whatever", "pyParameter"],
         [": ", "text"],
         ["T", "pyAnnotation"],
         [")", "pyParentheses"],
-        [":", "operator"],
+        [":", "pyOperationSign"],
       ],
       [
         ["        ", "text"],
         ["self", "pySelf"],
-        [".", "operator"],
+        [".", "pyOperationSign"],
         ["sense", "pyInstanceAttribute"],
-        [" = ", "operator"],
-        ["whatever", "parameter"],
+        [" = ", "pyOperationSign"],
+        ["whatever", "pyParameter"],
       ],
       [],
       [
         ["x", "pyGlobalVariable"],
-        [" = ", "operator"],
-        ["len", "pyPredefinedUsage"],
+        [" = ", "pyOperationSign"],
+        ["len", "pyBuiltin"],
         ["(", "pyParentheses"],
-        ['"abc"', "string"],
+        ['"abc"', "pyString"],
         [")", "pyParentheses"],
       ],
       [
-        ["type ", "keyword"],
+        ["type ", "pyKeyword"],
         ["my_int", "pyGlobalVariable"],
-        [" = ", "operator"],
+        [" = ", "pyOperationSign"],
         ["int", "pyBuiltin"],
       ],
       [
-        ["print", "pyPredefinedUsage"],
+        ["print", "pyBuiltin"],
         ["(", "pyParentheses"],
-        ["f", "functionCall"],
-        [".", "operator"],
-        ["__doc__", "pyInstanceAttribute"],
+        ["f", "pyFunctionCall"],
+        [".", "pyOperationSign"],
+        ["__doc__", "pyPredefinedUsage"],
         [")", "pyParentheses"],
       ],
     ],
@@ -814,6 +837,72 @@ const SAMPLES: Record<string, CodeSample> = {
         [")", "kotlin.operator"],
       ],
       [["}", "kotlin.operator"]],
+    ],
+  },
+  "C#": {
+    code: [
+      [["// Greets the user", "csharp.lineComment"]],
+      [
+        ["using ", "csharp.keyword"],
+        ["System", "csharp.packageReference"],
+        [";", "csharp.operator"],
+      ],
+      [["/// <summary>Says hello.</summary>", "csharp.docComment"]],
+      [
+        ["[", "csharp.operator"],
+        ["Serializable", "csharp.metadata"],
+        ["]", "csharp.operator"],
+      ],
+      [
+        ["public class ", "csharp.keyword"],
+        ["Greeter", "csharp.className"],
+      ],
+      [["{", "csharp.operator"]],
+      [
+        ["    private const int ", "csharp.keyword"],
+        ["MaxRetries", "csharp.constant"],
+        [" = ", "csharp.operator"],
+        ["3", "csharp.number"],
+        [";", "csharp.operator"],
+      ],
+      [
+        ["    public string ", "csharp.keyword"],
+        ["Name", "csharp.field"],
+        [" { ", "csharp.operator"],
+        ["get", "csharp.keyword"],
+        ["; }", "csharp.operator"],
+      ],
+      [
+        ["    public string ", "csharp.keyword"],
+        ["Greet", "csharp.functionDeclaration"],
+        ["(", "csharp.operator"],
+        ["int ", "csharp.keyword"],
+        ["count", "csharp.parameter"],
+        [")", "csharp.operator"],
+      ],
+      [["    {", "csharp.operator"]],
+      [
+        ["        var ", "csharp.keyword"],
+        ["message", "csharp.identifier"],
+        [" = ", "csharp.operator"],
+        ['$"Hello, {Name}', "csharp.string"],
+        ["\\n", "csharp.escape"],
+        ['"', "csharp.string"],
+        [";", "csharp.operator"],
+      ],
+      [
+        ["        return ", "csharp.keyword"],
+        ["string", "csharp.keyword"],
+        [".", "csharp.operator"],
+        ["Format", "csharp.functionCall"],
+        ["(", "csharp.operator"],
+        ["message", "csharp.identifier"],
+        [", ", "csharp.operator"],
+        ["count", "csharp.parameter"],
+        [");", "csharp.operator"],
+      ],
+      [["    }", "csharp.operator"]],
+      [["}", "csharp.operator"]],
     ],
   },
   PHP: {
@@ -1125,10 +1214,15 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
   const attr = ATTRIBUTES.find((a) => a.id === selected);
   const language = attr?.language;
   const inherited = useMemo(() => (attr ? resolvedAttribute(id, attr.id, customs) : {}), [id, attr, customs]);
-  const vars = useMemo(
-    () => ({ ...previewVars(id, mine, customs, language), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
-    [id, mine, customs, language, weight, boldFontWeight],
-  );
+  const vars = useMemo(() => {
+    const next = {
+      ...previewVars(id, mine, customs, language),
+      ...fontWeightVars(weight, boldFontWeight),
+    } as CSSProperties & Record<string, string>;
+    // Console preview sits on the console background, not the editor surface.
+    if (scopes[0] === "Console Colors" && next["--bg-console"]) next["--bg-editor"] = next["--bg-console"];
+    return next;
+  }, [id, mine, customs, language, weight, boldFontWeight, scopes]);
   const baseVars = useMemo(
     () => ({ ...previewVars(id, mine, customs), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
     [id, mine, customs, weight, boldFontWeight],
@@ -1158,10 +1252,17 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
           file ??
           (await open({
             multiple: false,
-            filters: [{ name: tx("IntelliJ Color Scheme"), extensions: ["icls"] }],
+            // IDEA schemes ship as .icls, but the ones people download are frequently .xml.
+            filters: [{ name: tx("IntelliJ Color Scheme"), extensions: ["icls", "xml"] }],
           }));
         if (!path) return;
-        const parsed = parseIcls(await call(commands.fsReadText(path)));
+        // A scheme element without a name is named after its file, as IntelliJ does.
+        const fallbackName =
+          path
+            .split(/[\\/]/)
+            .at(-1)
+            ?.replace(/\.[^.]+$/, "") || "Imported scheme";
+        const parsed = parseIcls(await call(commands.fsReadText(path)), fallbackName);
         let overwrite = false;
         if (schemes.some((s) => s.name === parsed.scheme.name)) {
           const canOverwrite = Object.values(customs).some((s) => s.name === parsed.scheme.name);
@@ -1232,9 +1333,9 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
               await handlers.current[name]!(typeof arg === "string" ? arg : undefined);
             } catch (error) {
               await showError(
-                tx("Color Scheme"),
-                error instanceof Error && error.message === "Invalid .icls color scheme"
-                  ? tx("Invalid .icls color scheme")
+                tx("Import Scheme"),
+                error instanceof SchemeParseError
+                  ? `${tx("Invalid .icls color scheme")}: ${error.message}`
                   : String(error),
               );
             } finally {
@@ -1370,15 +1471,19 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
 }
 
 const LANGUAGES = [...new Set(ATTRIBUTES.map((a) => a.path[0]!))].filter(
-  (s) => !["General", "Debugger", "Language Defaults"].includes(s),
+  (s) => !["General", "Debugger", "Language Defaults", "Console Colors"].includes(s),
 );
+/** A sub-page id: `C#` → `csharp`, `Console Colors` → `console-colors` (`#` would end a settings link). */
+const languagePageId = (language: string) =>
+  `editor.colorScheme.${language.toLowerCase().replace(/#/g, "sharp").replace(/\s+/g, "-")}`;
 
 /** Sub-pages linked from the Color Scheme landing page, in sidebar order. */
 const SCHEME_SUBPAGES = [
   { id: "editor.colorScheme.general", title: "General" },
   { id: "editor.colorScheme.language-defaults", title: "Language Defaults" },
   { id: "editor.colorScheme.debugger", title: "Debugger" },
-  ...LANGUAGES.map((l) => ({ id: `editor.colorScheme.${l.toLowerCase()}`, title: l })),
+  { id: "editor.colorScheme.console-colors", title: "Console Colors" },
+  ...LANGUAGES.map((l) => ({ id: languagePageId(l), title: l })),
 ];
 
 /** The scope chooser, import/export buttons and preview are identical on every sub-page. */
@@ -1470,11 +1575,19 @@ export const COLOR_SCHEME_PAGES: PageSpec[] = [
     keywords: ["breakpoint", "inline values"],
     sections: [colorSchemeSection(["Debugger"])],
   }),
+  editorPage({
+    id: "editor.colorScheme.console-colors",
+    title: "Console Colors",
+    order: 4,
+    projectScope: false,
+    keywords: ["terminal", "ansi", "console", "background"],
+    sections: [colorSchemeSection(["Console Colors"])],
+  }),
   ...LANGUAGES.map((language, i) =>
     editorPage({
-      id: `editor.colorScheme.${language.toLowerCase()}`,
+      id: languagePageId(language),
       title: language,
-      order: 4 + i,
+      order: 5 + i,
       projectScope: false,
       keywords: ATTRIBUTES.filter((a) => a.path[0] === language).map((a) => a.name),
       sections: [colorSchemeSection([language])],

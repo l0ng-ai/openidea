@@ -140,6 +140,15 @@ export const commands = {
 	 */
 	agentSetEnv: (id: string, env: { [key in string]: string }) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_env", { id, env })),
 	/**
+	 *  Saves a new custom ACP agent through its agent file; refuses built-in and
+	 *  ACP Registry ids and taken ids.
+	 */
+	agentCustomSave: (input: CustomAgentInput) => typedError<null, IdeError>(__TAURI_INVOKE("agent_custom_save", { input })),
+	/**  Removes a custom agent's file (registry installs go through `agent_registry_remove`). */
+	agentCustomRemove: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_custom_remove", { id })),
+	/**  Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents. */
+	agentCustomImport: (text: string) => typedError<AcpImportOutcome[], IdeError>(__TAURI_INVOKE("agent_custom_import", { text })),
+	/**
 	 *  Agents of the ACP Registry this machine can run, with what is installed; the list
 	 *  saved earlier when the registry is unreachable. Cancel with `cancel_request(request)`.
 	 */
@@ -209,6 +218,11 @@ export const commands = {
 	agentBaseText: (task: string, path: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path })),
 	/**  Rollback: the task's changed files among `paths` (all without) back as they were when it started. */
 	agentRollbackChanges: (task: string, paths: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rollback_changes", { task, paths })),
+	/**
+	 *  Accept: copies a worktree task's changed files among `paths` (all without) into the
+	 *  local checkout, uncommitted; files the checkout changed itself are left alone and reported.
+	 */
+	agentAcceptChanges: (task: string, paths: string[] | null) => typedError<AgentAcceptOutcome, IdeError>(__TAURI_INVOKE("agent_accept_changes", { task, paths })),
 	notebookOpen: (path: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_open", { path })),
 	notebookGet: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_get", { id })),
 	notebookEdit: (id: string, version: number, edit: NotebookEdit) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_edit", { id, version, edit })),
@@ -298,8 +312,9 @@ export const commands = {
 	 *  without opening it: previews of closed files.
 	 */
 	docUiMode: (path: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("doc_ui_mode", { path })),
-	/**  "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label. */
-	docSetEncoding: (doc: DocId, encoding: string, reload: boolean) => typedError<string, IdeError>(__TAURI_INVOKE("doc_set_encoding", { doc, encoding, reload })),
+	/**  "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state. */
+	docSetEncoding: (doc: DocId, encoding: string, reload: boolean) => typedError<DocumentEncoding, IdeError>(__TAURI_INVOKE("doc_set_encoding", { doc, encoding, reload })),
+	docSetBom: (doc: DocId, hasBom: boolean) => typedError<DocumentEncoding, IdeError>(__TAURI_INVOKE("doc_set_bom", { doc, hasBom })),
 	docSetLineEnding: (doc: DocId, lineEnding: LineEnding) => typedError<null, IdeError>(__TAURI_INVOKE("doc_set_line_ending", { doc, lineEnding })),
 	/**
 	 *  Structure view: LSP document symbols when available (with tree-sitter
@@ -1013,6 +1028,11 @@ export const commands = {
 	 */
 	windowOpenComparison: (comparison: ComparisonLaunch, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_comparison", { comparison, background })),
 	/**
+	 *  Opens a window showing `diff` next to this window ("Show Diff in New Window").
+	 *  `background` (`#rrggbb`) paints it until its page has loaded.
+	 */
+	windowOpenDiff: (diff: DiffLaunch_Deserialize, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_diff", { diff, background })),
+	/**
 	 *  Opens this window's Sync with Deployed window comparing `paths` with `server` (or hands them
 	 *  to the open one). `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
@@ -1056,15 +1076,17 @@ export const commands = {
 	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
 	newProjects: boolean,
 	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
-	positions?: FilePosition[],
+	positions: FilePosition[],
 	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
-	comparison?: ComparisonLaunch | null,
+	comparison: ComparisonLaunch | null,
+	/**  Diff windows: the diff to show (boxed: most launches have none). */
+	diffWindow: DiffLaunch_Serialize | null,
 	/**  `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none). */
-	diff?: DiffFilesLaunch | null,
+	diff: DiffFilesLaunch | null,
 	/**  Files requested after the pending diff take focus after it opens. */
-	diffBeforeFiles?: boolean,
+	diffBeforeFiles: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
-	deployment?: DeploymentLaunch | null,
+	deployment: DeploymentLaunch | null,
 } | null>("window_take_launch"),
 	/**  Release the opening window's reservation after navigation or cancellation. */
 	windowCompleteLaunch: () => typedError<null, IdeError>(__TAURI_INVOKE("window_complete_launch")),
@@ -1170,9 +1192,15 @@ export const commands = {
 	/**  Opens `url` in `browser` (an id from `web_browsers`), or the default browser. */
 	webOpen: (url: string, browser: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("web_open", { url, browser })),
 	/**  How to run `config` under a sampling profiler, or which profiler is missing. */
-	profilerPrepare: (config: RunConfig_Deserialize) => typedError<ProfilePrepared_Serialize, IdeError>(__TAURI_INVOKE("profiler_prepare", { config })),
+	profilerPrepare: (config: RunConfig_Deserialize, mode: ProfileMode) => typedError<ProfilePrepared_Serialize, IdeError>(__TAURI_INVOKE("profiler_prepare", { config, mode })),
 	/**  Reads the profile a profiled run left behind. */
 	profilerCollect: (spec: ProfileSpec) => typedError<Profile, IdeError>(__TAURI_INVOKE("profiler_collect", { spec })),
+	/**
+	 *  Runs a full garbage collection in the JVMs of a running local run, so a live-object profile
+	 *  written when it stops holds only reachable objects. Returns how many JVMs collected; 0 for a
+	 *  run that is gone, remote, or has no JVM with an attach listener.
+	 */
+	profilerGcBeforeStop: (run: RunId) => typedError<number, IdeError>(__TAURI_INVOKE("profiler_gc_before_stop", { run })),
 	/**  Dumps the session's JVM and analyzes the dump; cancel with `request`. */
 	debugHeapCapture: (session: DebugSessionId, request: RequestId, onProgress: Channel<HeapProgress>) => typedError<HeapCaptureResult, IdeError>(__TAURI_INVOKE("debug_heap_capture", { session, request, onProgress })),
 	/**  Analyzes an `.hprof` file; cancel with `request`. */
@@ -1472,6 +1500,11 @@ export const commands = {
 	 *  existing one, else a new one next to it.
 	 */
 	httpEnvironmentFile: (path: IpcPath, isPrivate: boolean) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("http_environment_file", { path, isPrivate })),
+	/**
+	 *  Where `{{name}}` is defined in the environment files that apply to request file `path`
+	 *  (Navigate › Declaration on a variable), private file first.
+	 */
+	httpVariableDefinitions: (path: IpcPath, name: string) => typedError<Location[], IdeError>(__TAURI_INVOKE("http_variable_definitions", { path, name })),
 	httpHistory: () => typedError<HttpHistoryEntry[], IdeError>(__TAURI_INVOKE("http_history")),
 	httpHistoryGet: (id: string) => typedError<HttpExchange, IdeError>(__TAURI_INVOKE("http_history_get", { id })),
 	httpHistoryClear: () => typedError<null, IdeError>(__TAURI_INVOKE("http_history_clear")),
@@ -1610,6 +1643,17 @@ export const commands = {
 };
 
 /* Types */
+/**  What importing one entry of a JetBrains `acp.json` file did. */
+export type AcpImportOutcome = {
+	/**  The `agent_servers` key the entry was imported from. */
+	name: string,
+	/**  The id its agent file would get (also when skipped). */
+	id: string,
+	saved: boolean,
+	/**  Why the entry was skipped; empty when it was saved. */
+	reason?: string,
+};
+
 export type ActionPerformed = {
 	action: string,
 	title: string,
@@ -1630,6 +1674,20 @@ export type ActionsOnSaveSettings = {
 export type ActiveTheme = {
 	pluginId: string,
 	theme: ThemeDef,
+};
+
+/**  What accepting a worktree task's changes copied into the local checkout. */
+export type AgentAcceptOutcome = {
+	/**  Relative paths copied into the checkout (uncommitted), including ones already identical. */
+	accepted: string[],
+	/**  Files left alone because the checkout has its own edits to them. */
+	skipped: AgentAcceptSkipped[],
+};
+
+/**  A file accept left alone, with why. */
+export type AgentAcceptSkipped = {
+	path: string,
+	reason: string,
 };
 
 /**  A task the agent runs in the background while the conversation goes on. */
@@ -1933,6 +1991,14 @@ export type AgentRetry = {
 	/**  When the next attempt starts (ms since the epoch). */
 	retryAtMs: number | null,
 	error: string | null,
+};
+
+/**  Tools › Agents: Command Execution Policy (whitelist and blacklist patterns). */
+export type AgentSecuritySettings = {
+	/**  Commands or patterns (`git status*`, `pwd`) automatically approved without prompting. */
+	allowedCommands?: string[],
+	/**  Commands or patterns (`rm -rf *`, `mkfs*`) automatically rejected. */
+	blockedCommands?: string[],
 };
 
 /**  Settings › Agents: what the conversation shows and how messages are sent. */
@@ -2722,6 +2788,13 @@ export type CodeStyleSettings_Serialize = {
 	formatterTagsRegexp: boolean,
 };
 
+/**  Editor › Inlay Hints › Code Vision position (IDEA's "Default position for metrics"). */
+export type CodeVisionPosition = 
+/**  A row of its own above the declaration. */
+"top" | 
+/**  After the end of the declaration's first line. */
+"right";
+
 /**  ColorInfo data. */
 export type ColorInfo = {
 	range: Range,
@@ -3152,6 +3225,18 @@ export type CreateRequest = {
 	name: string,
 	git: boolean,
 	values: { [key in string]: string },
+};
+
+/**
+ *  Payload for creating a custom ACP agent (always the ACP driver); the id
+ *  becomes the `<config>/agents/<id>.toml` file name.
+ */
+export type CustomAgentInput = {
+	id: string,
+	name: string,
+	command: string,
+	args?: string[],
+	env?: { [key in string]: string },
 };
 
 /**  Imported editor colour scheme on top of a built-in base. */
@@ -3817,6 +3902,58 @@ export type DiffFilesLaunch = {
 	right: IpcPath,
 };
 
+/**  The diff a diff window shows (IDEA's "Show Diff in New Window"), from the UI's `DiffData`. */
+export type DiffLaunch = DiffLaunch_Serialize | DiffLaunch_Deserialize;
+
+/**  The diff a diff window shows (IDEA's "Show Diff in New Window"), from the UI's `DiffData`. */
+export type DiffLaunch_Deserialize = {
+	/**  Absolute path of the file (the right side's path). */
+	path: string,
+	left: DiffSide_Deserialize,
+	right: DiffSide_Deserialize,
+	/**  0-based line of the right side to reveal. */
+	line?: number | null,
+};
+
+/**  The diff a diff window shows (IDEA's "Show Diff in New Window"), from the UI's `DiffData`. */
+export type DiffLaunch_Serialize = {
+	/**  Absolute path of the file (the right side's path). */
+	path: string,
+	left: DiffSide_Serialize,
+	right: DiffSide_Serialize,
+	/**  0-based line of the right side to reveal. */
+	line?: number | null,
+};
+
+/**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
+export type DiffSide = DiffSide_Serialize | DiffSide_Deserialize;
+
+/**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
+export type DiffSide_Deserialize = 
+/**  File content at a Git revision (`HEAD`, `:0` = index, a commit id). */
+({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; text?: never } | 
+/**  The working file (unsaved editor buffer included). */
+({ type: "worktree"; label?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
+/**  Another file (Compare With…, Compare Files). */
+({ type: "file"; path: string; label?: string | null }) & { id?: never; rev?: never; text?: never } | 
+/**  Literal text: a side that does not exist. */
+({ type: "text"; text: string; label: string }) & { id?: never; path?: never; rev?: never } | 
+/**  A Local History revision. */
+({ type: "history"; id: string; label: string }) & { path?: never; rev?: never; text?: never };
+
+/**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
+export type DiffSide_Serialize = 
+/**  File content at a Git revision (`HEAD`, `:0` = index, a commit id). */
+({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; text?: never } | 
+/**  The working file (unsaved editor buffer included). */
+({ type: "worktree"; label?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
+/**  Another file (Compare With…, Compare Files). */
+({ type: "file"; path: string; label?: string | null }) & { id?: never; rev?: never; text?: never } | 
+/**  Literal text: a side that does not exist. */
+({ type: "text"; text: string; label: string }) & { id?: never; path?: never; rev?: never } | 
+/**  A Local History revision. */
+({ type: "history"; id: string; label: string }) & { path?: never; rev?: never; text?: never };
+
 export type DirectoryCompareEntry = {
 	path: string,
 	status: DirectoryCompareStatus,
@@ -4017,6 +4154,12 @@ export type DockerVolume = {
 	labels?: { [key in string]: string },
 };
 
+/**  Encoding and BOM currently applied to an open document. */
+export type DocumentEncoding = {
+	encoding: string,
+	hasBom: boolean,
+};
+
 /**  What the UI needs to show an opened document. */
 export type DocumentInfo = {
 	id: DocId,
@@ -4025,6 +4168,7 @@ export type DocumentInfo = {
 	version: number,
 	language: LanguageId,
 	encoding: string,
+	hasBom: boolean,
 	lineEnding: LineEnding,
 	readOnly: boolean,
 	dirty: boolean,
@@ -5583,6 +5727,12 @@ export type InlayHintsSettings = {
 	codeVisionUsages?: boolean,
 	/**  Code vision: last author of a declaration (VCS blame) beside its usages. */
 	codeVisionAuthor?: boolean,
+	/**  Code vision: "no usages" on declarations nothing uses (IDEA shows it; clicking searches everywhere). */
+	codeVisionNoUsages?: boolean,
+	/**  Code vision: where the usages go, above the declaration or at the end of its line. */
+	codeVisionUsagesPosition?: CodeVisionPosition,
+	/**  Code vision: where the author goes, above the declaration or at the end of its line. */
+	codeVisionAuthorPosition?: CodeVisionPosition,
 };
 
 export type InlayKind = "type" | "parameter" | "other";
@@ -6184,31 +6334,7 @@ export type LanguagesSettings = {
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
-export type Launch = {
-	/**  Project folder to open. */
-	project: IpcPath | null,
-	/**
-	 *  Files to open in the editor: in `project` once it is open, else in this
-	 *  window's project or (without one) in LightEdit.
-	 */
-	files: IpcPath[],
-	/**  Remote project to open (Remote Development). */
-	remote: RemoteLaunch | null,
-	/**  Settings windows: the page to show. */
-	settingsPage: string | null,
-	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
-	newProjects: boolean,
-	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
-	positions?: FilePosition[],
-	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
-	comparison?: ComparisonLaunch | null,
-	/**  `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none). */
-	diff?: DiffFilesLaunch | null,
-	/**  Files requested after the pending diff take focus after it opens. */
-	diffBeforeFiles?: boolean,
-	/**  Deployment windows: the server and local selection to compare. */
-	deployment?: DeploymentLaunch | null,
-};
+export type Launch = Launch_Serialize | Launch_Deserialize;
 
 export type LaunchConfig = {
 	name: string,
@@ -6229,6 +6355,64 @@ export type LaunchConfig = {
 	 *  (`dlv --headless`, `debugpy --listen`).
 	 */
 	extraJson: string | null,
+};
+
+/**  What a freshly opened window should do once its frontend is up. */
+export type Launch_Deserialize = {
+	/**  Project folder to open. */
+	project: IpcPath | null,
+	/**
+	 *  Files to open in the editor: in `project` once it is open, else in this
+	 *  window's project or (without one) in LightEdit.
+	 */
+	files: IpcPath[],
+	/**  Remote project to open (Remote Development). */
+	remote: RemoteLaunch | null,
+	/**  Settings windows: the page to show. */
+	settingsPage: string | null,
+	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
+	newProjects: boolean,
+	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
+	positions?: FilePosition[],
+	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
+	comparison?: ComparisonLaunch | null,
+	/**  Diff windows: the diff to show (boxed: most launches have none). */
+	diffWindow?: DiffLaunch_Deserialize | null,
+	/**  `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none). */
+	diff?: DiffFilesLaunch | null,
+	/**  Files requested after the pending diff take focus after it opens. */
+	diffBeforeFiles?: boolean,
+	/**  Deployment windows: the server and local selection to compare. */
+	deployment?: DeploymentLaunch | null,
+};
+
+/**  What a freshly opened window should do once its frontend is up. */
+export type Launch_Serialize = {
+	/**  Project folder to open. */
+	project: IpcPath | null,
+	/**
+	 *  Files to open in the editor: in `project` once it is open, else in this
+	 *  window's project or (without one) in LightEdit.
+	 */
+	files: IpcPath[],
+	/**  Remote project to open (Remote Development). */
+	remote: RemoteLaunch | null,
+	/**  Settings windows: the page to show. */
+	settingsPage: string | null,
+	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
+	newProjects: boolean,
+	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
+	positions: FilePosition[],
+	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
+	comparison: ComparisonLaunch | null,
+	/**  Diff windows: the diff to show (boxed: most launches have none). */
+	diffWindow: DiffLaunch_Serialize | null,
+	/**  `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none). */
+	diff: DiffFilesLaunch | null,
+	/**  Files requested after the pending diff take focus after it opens. */
+	diffBeforeFiles: boolean,
+	/**  Deployment windows: the server and local selection to compare. */
+	deployment: DeploymentLaunch | null,
 };
 
 /**  One SDK or library with its source folders (`< Python 3.12 (.venv) >`). */
@@ -6664,6 +6848,11 @@ export type McpServerInput = {
 export type McpServerSettings = {
 	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
 	enabled?: boolean,
+	/**
+	 *  Run the tools that change the project or start processes without asking first
+	 *  (IDEA's brave mode). Read from the IDE's own settings only, never a project's.
+	 */
+	runWithoutConfirmation?: boolean,
 };
 
 /**  What Settings › Agents › MCP Server shows. */
@@ -7232,6 +7421,11 @@ actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: ne
 ({ type: "promptRequested"; pluginId: string; promptId: string; prompt: Prompt }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  The call that asked gave up (cancelled, or its plugin stopped): close the prompt. */
 ({ type: "promptClosed"; promptId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+/**
+ *  A command of this window's prompting plugin was run from another window and refused
+ *  while the plugin waits for the answer here: bring this window to the front.
+ */
+({ type: "promptWaiting"; pluginId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Bring the tool window of the plugin's view `view` to the front. */
 ({ type: "revealView"; pluginId: string; view: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never } | 
 /**
@@ -7326,6 +7520,11 @@ actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: ne
 ({ type: "promptRequested"; pluginId: string; promptId: string; prompt: Prompt }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  The call that asked gave up (cancelled, or its plugin stopped): close the prompt. */
 ({ type: "promptClosed"; promptId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+/**
+ *  A command of this window's prompting plugin was run from another window and refused
+ *  while the plugin waits for the answer here: bring this window to the front.
+ */
+({ type: "promptWaiting"; pluginId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Bring the tool window of the plugin's view `view` to the front. */
 ({ type: "revealView"; pluginId: string; view: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never } | 
 /**
@@ -7647,8 +7846,9 @@ export type ProcessMemory = {
 export type Profile = {
 	/**  `node --cpu-prof`, `py-spy`, `async-profiler`, `perf`. */
 	profiler: string,
-	/**  `ms` (time-weighted) or `samples`. */
+	/**  `ms` (time-weighted), `samples` (sample or live-object counts) or `bytes` (allocated). */
 	unit: string,
+	mode: ProfileMode,
 	total: number | null,
 	frames: ProfileFrame[],
 	/**  Depth-first; `nodes[0]` is the root. */
@@ -7662,7 +7862,23 @@ export type ProfileFrame = {
 	file: IpcPath | null,
 	/**  0-based. */
 	line: number | null,
+	kind: ProfileFrameKind,
 };
+
+export type ProfileFrameKind = 
+/**  A function; `file` / `line` locate its source. */
+"code" | 
+/**  The leaf of an allocation stack: the type that was allocated, not a source line. */
+"allocatedType";
+
+/**  What a profile measures. */
+export type ProfileMode = 
+/**  Sampled CPU time. */
+"cpu" | 
+/**  Bytes allocated, by allocation stack. */
+"allocations" | 
+/**  Objects still alive when the run stopped, by allocation stack. */
+"liveObjects";
 
 /**  A call-tree node; node 0 is the synthetic root (`all`). */
 export type ProfileNode = {
@@ -7692,9 +7908,10 @@ export type ProfileSpec =
 { kind: "cpuProfiles"; dir: IpcPath; root: IpcPath } | 
 /**
  *  Collapsed-stack files with extension `ext` in `dir`; relative frame files resolve
- *  against `base`. `jvm_root`: map JVM class frames to sources below it.
+ *  against `base`. `jvm_root`: map JVM class frames to sources below it. For the
+ *  allocation modes the last frame of a JVM stack is the allocated type.
  */
-{ kind: "folded"; profiler: string; dir: IpcPath; ext: string; base: IpcPath; jvmRoot: IpcPath | null } | 
+{ kind: "folded"; profiler: string; dir: IpcPath; ext: string; base: IpcPath; jvmRoot: IpcPath | null; mode: ProfileMode } | 
 /**  `perf script -i <data>` output. */
 { kind: "perf"; perf: string; data: IpcPath; cwd: IpcPath; env: { [key in string]: string } };
 
@@ -8746,6 +8963,8 @@ export type Settings_Deserialize = {
 	agents?: AgentSettings_Deserialize,
 	/**  Agents › MCP Server (global only). */
 	mcpServer?: McpServerSettings,
+	/**  Tools › Agents: Command Execution Policy. */
+	agentSecurity?: AgentSecuritySettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins?: { [key in string]: { [key in string]: unknown } },
 };
@@ -8808,6 +9027,8 @@ export type Settings_Serialize = {
 	agents: AgentSettings_Serialize,
 	/**  Agents › MCP Server (global only). */
 	mcpServer: McpServerSettings,
+	/**  Tools › Agents: Command Execution Policy. */
+	agentSecurity: AgentSecuritySettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins: { [key in string]: { [key in string]: unknown } },
 };

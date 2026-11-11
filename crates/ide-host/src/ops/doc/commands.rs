@@ -5,7 +5,7 @@ use crate::rpc::Dispatcher;
 use ide_core::{DocId, IdeError, IdeResult, OutlineItem, Range};
 use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
-use ide_workspace::{DocumentInfo, HistoryEntry};
+use ide_workspace::{DocumentEncoding, DocumentInfo, HistoryEntry};
 use std::path::PathBuf;
 
 /// Runs blocking work (disk I/O, parsing, large copies) on the blocking pool,
@@ -29,16 +29,22 @@ pub async fn doc_ui_mode(host: &Host, window: &str, path: PathBuf) -> IdeResult<
     blocking(move || Ok(project.documents.ui_mode_of(&path))).await
 }
 
-/// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label.
+/// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state.
 pub async fn doc_set_encoding(
     host: &Host,
     window: &str,
     doc: DocId,
     encoding: String,
     reload: bool,
-) -> IdeResult<String> {
+) -> IdeResult<DocumentEncoding> {
     let project = host.project(window)?;
     host.blocking(move || project.documents.set_encoding(doc, &encoding, reload)).await
+}
+
+/// Adds or removes the BOM on a UTF-8 document; the change is written on save.
+pub async fn doc_set_bom(host: &Host, window: &str, doc: DocId, has_bom: bool) -> IdeResult<DocumentEncoding> {
+    let project = host.project(window)?;
+    host.blocking(move || project.documents.set_bom(doc, has_bom)).await
 }
 
 pub fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_ending: LineEnding) -> IdeResult<()> {
@@ -175,6 +181,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("doc_set_encoding", |c| async move {
         doc_set_encoding(&c.host, &c.window, c.arg("doc")?, c.arg("encoding")?, c.arg("reload")?).await
     });
+    d.add("doc_set_bom", |c| async move { doc_set_bom(&c.host, &c.window, c.arg("doc")?, c.arg("hasBom")?).await });
     d.add("doc_set_line_ending", |c| async move {
         blocking(move || doc_set_line_ending(&c.host, &c.window, c.arg("doc")?, c.arg("lineEnding")?)).await
     });

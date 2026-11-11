@@ -378,7 +378,7 @@ it("runs duplicate task paths with the selected build's wrapper, cwd and offline
       model,
       expanded: { maven: new Set(), gradle: expanded },
       current: { gradle: gradleProjectKey(builds[1]!, builds[1]!.projects[1]!) },
-      settings: { ...useBuild.getState().settings, gradle: { offline: true } },
+      settings: { ...useBuild.getState().settings, gradle: { offline: true, skipTests: false } },
     }),
   );
   const started: RunConfig[] = [];

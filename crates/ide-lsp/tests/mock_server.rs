@@ -3212,6 +3212,33 @@ async fn rename_merges_the_servers_that_can_rename_there() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_rename_the_server_withdraws_while_analysing_is_asked_again_then_explained() {
+    let h = harness(&[("dart", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "count = 1\n");
+    h.wait_status("dart", ServerStatus::Ready).await;
+    let dart = h.launcher.state("dart");
+    let r = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":5}});
+    dart.respond("textDocument/rename", json!({ "changes": { uri_of(&path): [{ "range": r, "newText": "total" }] } }));
+    // Withdrawn while the server analyses an edit, then answered.
+    dart.errors.lock().insert("textDocument/rename".into(), (-32801, "Document was modified".into()));
+    let renaming = {
+        let mgr = h.mgr.clone();
+        tokio::spawn(async move { mgr.rename(doc, Pos::new(0, 1), "total".into(), Default::default()).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    dart.errors.lock().clear();
+    let edit = renaming.await.unwrap().unwrap().edit;
+    assert_eq!(edits_in(&edit, &path), [(rng(0, 0, 0, 5), "total".into())]);
+    assert!(dart.requested("textDocument/rename").len() >= 2);
+
+    // Withdrawn every time: an error that says so, not a silent cancellation.
+    dart.errors.lock().insert("textDocument/rename".into(), (-32801, "Document was modified".into()));
+    let err = h.mgr.rename(doc, Pos::new(0, 1), "total".into(), Default::default()).await.unwrap_err();
+    assert_ne!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(err.message.contains("try again"), "{}", err.message);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn angular_server_is_asked_about_typescript_only_in_component_templates() {
     let servers = [("vtsls", incremental_caps()), ("angular-language-server", incremental_caps())];
     let h = harness_for("typescript", "ts", &servers, &[]);
@@ -6150,4 +6177,70 @@ async fn missing_injected_server_uses_the_normal_single_install_notification() {
     assert_eq!(h.statuses("embedded").iter().filter(|s| **s == ServerStatus::Missing).count(), 1);
     h.mgr.did_close(host);
     h.mgr.shutdown_all().await;
+}
+
+/// #2248: `go.mod` files are served by gopls with the language id it
+/// understands, and its pushed diagnostics reach the Problems view.
+#[tokio::test(flavor = "multi_thread")]
+async fn gomod_files_are_served_by_gopls() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let registry = Arc::new(LanguageRegistry::load(None).unwrap());
+    // The bundled configs route Go files of every kind to gopls.
+    for lang in ["go", "go.mod", "go.work"] {
+        let cfg = registry.get(&LanguageId::new(lang)).unwrap_or_else(|| panic!("{lang} has no language definition"));
+        assert!(cfg.language_servers.iter().any(|s| s.name == "gopls"), "{lang} is not served by gopls");
+    }
+    let launcher = Arc::new(MockLauncher::default());
+    *launcher.state("gopls").caps.lock() = incremental_caps();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = {
+        let events = events.clone();
+        Arc::new(move |e: IdeEvent| events.lock().push(e))
+    };
+    let mgr = LspManager::with_launcher(root.clone(), registry, sink, launcher.clone());
+    let text = "module example.com/app\n\ngo 1.22\n";
+    let path = root.join("go.mod");
+    std::fs::write(&path, text).unwrap();
+    assert!(mgr.serves_path(&path));
+    mgr.did_open(DocId::next(), &path, &LanguageId::new("go.mod"), 1, text);
+    let gopls = launcher.state("gopls");
+    eventually(|| !gopls.notified("textDocument/didOpen").is_empty()).await;
+    // gopls only treats the file as a module file for the `go.mod` id.
+    let opened = &gopls.notified("textDocument/didOpen")[0]["textDocument"];
+    assert_eq!(opened["languageId"], json!("go.mod"));
+    // The module root (the go.mod itself is the marker) scopes the server.
+    let init = &gopls.requested("initialize")[0];
+    assert_eq!(init["rootUri"], json!(uri_of(&root)));
+    // Same startup options as when a `.go` file launches the server first.
+    assert_eq!(init["initializationOptions"]["semanticTokens"], json!(true));
+    // Pushed go.mod diagnostics surface with gopls as their source.
+    gopls
+        .peer()
+        .notify(
+            "textDocument/publishDiagnostics",
+            json!({ "uri": uri_of(&path), "diagnostics": [{
+                "range": {"start": {"line": 2, "character": 3}, "end": {"line": 2, "character": 7}},
+                "severity": 1, "message": "missing requirement", "source": "gopls" }] }),
+        )
+        .unwrap();
+    eventually(|| {
+        events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Diagnostics { path: p, source, .. } if p.0 == path && source == "gopls"))
+    })
+    .await;
+    let items = events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Diagnostics { path: p, items, .. } if p.0 == path => Some(items.clone()),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].message, "missing requirement");
+    mgr.shutdown_all().await;
 }

@@ -165,6 +165,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::OpenProject { .. }
             | PluginEvent::PromptRequested { .. }
             | PluginEvent::PromptClosed { .. }
+            | PluginEvent::PromptWaiting { .. }
             | PluginEvent::RevealView { .. }
             | PluginEvent::CommitRequested { .. }
             | PluginEvent::EndpointsChanged { .. }
