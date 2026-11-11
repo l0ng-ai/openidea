@@ -17,6 +17,7 @@ import {
   registerServiceView,
   showServiceView,
 } from "@/workbench/contributions";
+import { registerVariableNavigation } from "./variableNavigation";
 import { HTTP_LANGUAGE, httpEditorExtension, refreshRequests, requestAtCaret } from "./editor";
 import { HttpClientHeaderActions, HttpClientView } from "./HttpClientView";
 import { httpLanguageDescription } from "./language";
@@ -134,6 +135,7 @@ async function newRequest(directory?: string) {
 export function activate(): () => void {
   const disposers = [
     registerSpringEndpointProvider(),
+    registerVariableNavigation(),
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root) resetHttpClient();
     }),

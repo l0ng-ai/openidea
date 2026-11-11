@@ -647,6 +647,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         http::http_curl,
         http::http_from_curl,
         http::http_environment_file,
+        http::http_variable_definitions,
         http::http_history,
         http::http_history_get,
         http::http_history_clear,
