@@ -159,15 +159,15 @@ test("the Services detail pane adds no second scrollbar over a console", async (
   // the split panel scroll too (the console had its own scrollbar right beside it).
   await page.setViewportSize({ width: 1200, height: 640 });
   await page.evaluate(async () => {
-    const store = await import("/src/features/run/store.ts");
+    const store = await import(/* @vite-ignore */ "/src/features/run/store.ts" as string);
     await store.startSampleOutput(200, 50);
     const id = store.useRun.getState().activeSession as string;
     store.useRun.setState((s: { sessions: { id: string }[]; versions: Record<string, number> }) => ({
       sessions: s.sessions.map((x) => (x.id === id ? { ...x, status: "running" } : x)),
       versions: { ...s.versions, [id]: (s.versions[id] ?? 0) + 1 },
     }));
-    const svc = await import("/src/features/run/services.tsx");
-    const tree = await import("/src/features/services/tree.ts");
+    const svc = await import(/* @vite-ignore */ "/src/features/run/services.tsx" as string);
+    const tree = await import(/* @vite-ignore */ "/src/features/services/tree.ts" as string);
     const session = store.useRun.getState().sessions.find((s: { id: string }) => s.id === id);
     svc.addType(session.config.kind);
     tree.useServicesTree.setState({
