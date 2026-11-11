@@ -18,7 +18,6 @@ import { useProject } from "@/platform/project";
 import { resolveMonoFont } from "@/platform/fonts";
 import { Icon, showContextMenu } from "@/ui";
 import { spanStyle } from "@/ui/ansi";
-import ansi from "@/ui/ansi.module.css";
 import type { ConsoleLine, ConsoleModel } from "./console";
 import { findOutputLinks, type OutputLink } from "./links";
 import { openTarget, openUrl } from "./navigate";
@@ -536,7 +535,7 @@ export function ConsoleView({
       )}
       <div
         ref={scrollRef}
-        className={clsx(styles.console, ansi.palette, softWrap && styles.wrap)}
+        className={clsx(styles.console, softWrap && styles.wrap)}
         style={{
           fontFamily: consoleFont.family,
           fontSize: `${consoleFont.size}px`,
