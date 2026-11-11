@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
 const calls: string[] = [];
+/** The editor at the caret (`null`: none, as for a search from outside an editor). */
+let caretView: import("@codemirror/view").EditorView | null = null;
 const referenceResponse = vi.fn(
   async (): Promise<{ locations: (typeof loc)[]; incomplete: null; librariesSkipped?: boolean }> => ({
     locations: [loc],
@@ -20,7 +22,7 @@ vi.mock("@/platform/keymap", async (orig) => ({
 }));
 vi.mock("./ipc", async (orig) => ({
   ...(await orig<typeof import("./ipc")>()),
-  caretContext: () => ({ doc: 1, path: "/p/a.ts", line: 0, col: 0, word: "used", view: null }),
+  caretContext: () => ({ doc: 1, path: "/p/a.ts", line: 0, col: 0, word: "used", view: caretView }),
   lspRequest: (request: () => unknown) => {
     request();
     return referenceResponse();
@@ -259,6 +261,38 @@ it("opens with the usages found first and fills in the rest", async () => {
   expect(screen.getAllByRole("option")).toHaveLength(3);
   expect(calls.slice(before)).toEqual([]);
   act(() => dismissUsagesPopup());
+});
+
+it("says at the caret that it is searching until the popup shows", async () => {
+  const { EditorState } = await import("@codemirror/state");
+  const { EditorView } = await import("@codemirror/view");
+  const { PENDING_HINT_DELAY_MS } = await import("@/editor/lsp/hint");
+  render(<UsagesPopup />);
+  caretView = new EditorView({ state: EditorState.create({ doc: "used();" }), parent: document.body });
+  const hint = () => document.querySelector(".cm-lsp-hint")?.textContent ?? null;
+  const at = (line: number) => ({ ...loc, range: { start: { line, col: 4 }, end: { line, col: 8 } } });
+  let resolve!: (value: { locations: (typeof loc)[]; incomplete: null }) => void;
+  referenceResponse.mockReturnValueOnce(
+    new Promise((r) => {
+      resolve = r;
+    }),
+  );
+  try {
+    const pending = showUsagesPopup();
+    expect(hint()).toBeNull();
+    await act(() => new Promise((r) => setTimeout(r, PENDING_HINT_DELAY_MS + 10)));
+    expect(hint()).toBe("Searching for usages…");
+    await act(async () => {
+      resolve({ locations: [at(1), at(2)], incomplete: null });
+      await pending;
+    });
+    expect(useUsagesPopup.getState().open).toBe(true);
+    expect(hint()).toBeNull();
+  } finally {
+    caretView.destroy();
+    caretView = null;
+    act(() => dismissUsagesPopup());
+  }
 });
 
 it("jumps to a single usage when all arrive quickly, and otherwise stays open", async () => {

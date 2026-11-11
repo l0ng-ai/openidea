@@ -88,7 +88,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.12.0.jar`, and added alongside existing initialization bundles.
+`java-usages-1.13.0.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 

@@ -22,6 +22,7 @@ const cases = [
   ["Go", "package main\nfunc f() int { return 1 }"],
   ["JSP", "<% if (ready) { %><p><%= value %></p><% } %>"],
   ["Angular Template", "@if (ready) {\n  <p>{{ value }}</p>\n}"],
+  ["Django Template", "{% if ready %}\n  <p>{{ value|lower }}</p>\n{% endif %}"],
 ];
 
 function highlights(state: EditorState) {

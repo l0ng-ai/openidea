@@ -15,6 +15,7 @@ something to show.
 | `java-app/`      | JDK 21, Maven 3.9                                               | `mvn compile exec:java`             | `mvn test`           | `mvn test -DopenideaFail=true`            | unused variable in `App.java`                            |
 | `c-app/`         | gcc / g++ 12+, make, GDB 14+                                    | `make all`                          | —                    | —                                     | —                                                        |
 | `php-app/`       | PHP 8.5, Composer                                               | `composer quote`                    | `vendor/bin/pest`    | `OPENIDEA_FAIL=1 vendor/bin/pest`         | unused variable in `ThresholdCustoms.php`                |
+| `django-app/`    | Python 3.10+, Django 5.2+                                       | `python manage.py runserver`        | `python manage.py test` | `OPENIDEA_FAIL=1 python manage.py test` | unused import in `shop/views.py`                         |
 | `polyglot/`      | Go, TS, Python, C, shell, SQL, TOML/YAML/JSON, proto, Terraform | `make`                              | `make test`          | —                                     | unused variable in `native/hash.c`                       |
 
 The fixtures are standalone: `rust-app` declares its own `[workspace]` and

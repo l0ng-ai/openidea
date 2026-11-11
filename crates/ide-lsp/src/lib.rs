@@ -15,6 +15,7 @@ mod convert;
 mod external_project;
 mod file_ops;
 mod file_watch;
+mod go_mod;
 mod go_scope;
 mod handler;
 mod injections;
@@ -221,6 +222,8 @@ pub struct LspManager {
     configuration_cache: Arc<Mutex<jdtls::configuration::ConfigurationCache>>,
     /// `window/showMessage` texts already surfaced; servers repeat them on every restart/reconfigure.
     shown_messages: Mutex<HashSet<(String, String)>>,
+    /// go.mod files whose upgrades gopls has been asked to check this session.
+    go_mod_checked: Mutex<HashSet<PathBuf>>,
     /// Virtual (non-`file:`) URIs a server returned, by the server that owns them.
     virtual_origins: Mutex<HashMap<String, ide_core::ServerId>>,
     /// Contents fetched for virtual URIs.
@@ -469,6 +472,7 @@ impl LspManager {
             debug_servers: Mutex::new(HashMap::new()),
             configuration_cache: Arc::new(Mutex::new(Default::default())),
             shown_messages: Mutex::new(HashSet::new()),
+            go_mod_checked: Mutex::new(HashSet::new()),
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
             injections: injections::State::default(),
@@ -1068,6 +1072,7 @@ impl LspManager {
         servers: Vec<Arc<Server>>,
     ) {
         let canonical = dunce::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        let canonical_path = canonical.clone();
         let compose_detected = language.as_str() == "yaml" && compose::is_content_detected_compose_file(&path, text);
         let mut state = DocState {
             path,
@@ -1098,6 +1103,13 @@ impl LspManager {
         self.schedule_pull(doc, None, Duration::ZERO);
         for s in &servers {
             self.ensure_started(s);
+            // Waits for a server still starting, so it is not tied to `running()` below.
+            if s.name == "gopls"
+                && let Some(me) = self.me.upgrade()
+            {
+                let (path, server) = (canonical_path.clone(), s.clone());
+                self.runtime.spawn(async move { me.check_go_mod(doc, &path, server).await });
+            }
             if s.running().is_some()
                 && let Some(me) = self.me.upgrade()
             {
@@ -1239,6 +1251,7 @@ impl LspManager {
         drop(docs);
         self.schedule_pull(doc, None, Duration::ZERO);
         self.pull_dependents(doc);
+        self.go_mod_saved(doc);
     }
 
     pub fn did_close(&self, doc: DocId) {
