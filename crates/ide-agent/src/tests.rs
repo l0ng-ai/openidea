@@ -2869,6 +2869,158 @@ async fn rolling_back_restores_the_start_of_the_task_and_keeps_the_users_own_edi
     assert!(!dir.join("store").join(format!("{}.before", task.id)).exists());
 }
 
+/// A git repository in a temporary folder, for local tasks whose checkout moves under them.
+struct Checkout {
+    _tmp: tempfile::TempDir,
+    dir: PathBuf,
+}
+
+impl Checkout {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = dunce::canonicalize(tmp.path()).unwrap();
+        let checkout = Self { _tmp: tmp, dir };
+        checkout.git(&["init", "-q", "-b", "main"]);
+        checkout.git(&["config", "core.autocrlf", "false"]);
+        checkout.write(".gitignore", "store/\nworktrees/\nagents/\nmodels.json\n");
+        checkout
+    }
+
+    fn git(&self, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&self.dir)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "{args:?}");
+    }
+
+    fn commit(&self, message: &str) {
+        self.git(&["add", "."]);
+        self.git(&["commit", "-q", "-m", message]);
+    }
+
+    fn write(&self, rel: &str, text: &str) {
+        std::fs::write(self.dir.join(rel), text).unwrap();
+    }
+
+    fn read(&self, rel: &str) -> String {
+        std::fs::read_to_string(self.dir.join(rel)).unwrap()
+    }
+
+    /// A local task, stopped so it can be rolled back.
+    async fn task(&self) -> (AgentManager, AgentTask) {
+        let mgr = manager(&self.dir, Arc::new(FakeAgent::default()));
+        let task = mgr
+            .create(NewAgentTask {
+                project_root: None,
+                prompt: text("Hello"),
+                provider: "claude".into(),
+                config: Vec::new(),
+                isolation: Isolation::Local,
+                base: None,
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+        mgr.cancel(&task.id, None).unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        (mgr, task)
+    }
+}
+
+async fn changed(mgr: &AgentManager, id: &str) -> Vec<String> {
+    mgr.changes(id).await.unwrap().into_iter().map(|c| c.rel_path).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn work_uncommitted_by_a_reset_during_a_local_task_is_not_rolled_back() {
+    let repo = Checkout::new();
+    repo.write("a.txt", "base\n");
+    repo.write("mine.txt", "base\n");
+    repo.commit("init");
+    repo.write("mine.txt", "my work\n");
+    repo.commit("my work");
+    let (mgr, task) = repo.task().await;
+    repo.write("a.txt", "agent\n");
+    // The user takes the last commit back into the working tree (`git reset --soft`, an
+    // undone commit): its changes are the user's, not the agent's.
+    repo.git(&["reset", "-q", "--soft", "HEAD~1"]);
+    assert_eq!(changed(&mgr, &task.id).await, ["a.txt"]);
+
+    let base = mgr.base_text(&task.id, repo.dir.join("a.txt")).await.unwrap();
+    assert_eq!(base.as_deref(), Some("base\n"));
+    mgr.rollback_changes(&task.id, None).await.unwrap();
+    assert_eq!(repo.read("a.txt"), "base\n");
+    assert_eq!(repo.read("mine.txt"), "my work\n", "the user's work survives the rollback");
+    assert!(changed(&mgr, &task.id).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_branch_switched_to_during_a_local_task_is_left_alone() {
+    let repo = Checkout::new();
+    repo.write("a.txt", "base\n");
+    repo.write("other.txt", "base\n");
+    repo.commit("init");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write("other.txt", "feature\n");
+    repo.write("only-feature.txt", "feature\n");
+    repo.commit("feature");
+    repo.git(&["checkout", "-q", "main"]);
+    repo.write("only-main.txt", "main\n");
+    repo.commit("main");
+    let (mgr, task) = repo.task().await;
+    repo.write("a.txt", "agent\n");
+    // The agent's uncommitted edit comes along to a branch that doesn't contain the task's start.
+    repo.git(&["checkout", "-q", "feature"]);
+    assert_eq!(changed(&mgr, &task.id).await, ["a.txt"]);
+
+    mgr.rollback_changes(&task.id, None).await.unwrap();
+    assert_eq!(repo.read("a.txt"), "base\n");
+    assert_eq!(repo.read("other.txt"), "feature\n");
+    assert_eq!(repo.read("only-feature.txt"), "feature\n");
+    assert!(!repo.dir.join("only-main.txt").exists());
+    assert!(changed(&mgr, &task.id).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn commits_made_during_a_local_task_are_kept_by_its_rollback() {
+    let repo = Checkout::new();
+    repo.write("a.txt", "base\n");
+    repo.commit("init");
+    let (mgr, task) = repo.task().await;
+    repo.write("a.txt", "agent\n");
+    repo.write("b.txt", "agent\n");
+    // The user commits what the agent did to `a.txt` so far: it drops out of the task's changes.
+    repo.git(&["add", "a.txt"]);
+    repo.git(&["commit", "-q", "-m", "keep"]);
+    assert_eq!(changed(&mgr, &task.id).await, ["b.txt"]);
+    repo.write("a.txt", "agent\nagain\n");
+    assert_eq!(changed(&mgr, &task.id).await, ["a.txt", "b.txt"]);
+
+    mgr.rollback_changes(&task.id, None).await.unwrap();
+    assert_eq!(repo.read("a.txt"), "agent\n", "back to the commit, not to before it");
+    assert!(!repo.dir.join("b.txt").exists());
+    assert!(changed(&mgr, &task.id).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_local_task_in_a_repository_without_commits_lists_and_rolls_back_its_changes() {
+    let repo = Checkout::new();
+    repo.write("mine.txt", "mine\n");
+    let (mgr, task) = repo.task().await;
+    repo.write("new.txt", "agent\n");
+    assert_eq!(changed(&mgr, &task.id).await, ["new.txt"]);
+    assert_eq!(mgr.base_text(&task.id, repo.dir.join("new.txt")).await.unwrap(), None);
+
+    mgr.rollback_changes(&task.id, None).await.unwrap();
+    assert!(!repo.dir.join("new.txt").exists());
+    assert_eq!(repo.read("mine.txt"), "mine\n");
+    assert!(changed(&mgr, &task.id).await.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn security_policy_auto_approves_whitelist_and_rejects_blacklist() {
     use ide_core::settings::AgentSecuritySettings;

@@ -1338,15 +1338,19 @@ impl AgentManager {
     /// Files the task changed since it started.
     pub async fn changes(&self, id: &str) -> IdeResult<Vec<AgentChange>> {
         let task = self.task(id)?;
-        let (cwd, base) = task.cwd_and_base();
+        let at = task.base();
         let before = task.state.lock().before.clone();
-        blocking(move || Ok(worktree::without_untouched(worktree::changes(&cwd, &base)?, &before))).await
+        blocking(move || at.changes(&before)).await
     }
 
     /// Content of `path` (in the task's directory) when the task started.
     pub async fn base_text(&self, id: &str, path: PathBuf) -> IdeResult<Option<String>> {
-        let (cwd, base) = self.task(id)?.cwd_and_base();
-        blocking(move || worktree::file_at(&cwd, &path, &base)).await
+        let at = self.task(id)?.base();
+        blocking(move || match at.rev()? {
+            Some(rev) => worktree::file_at(at.cwd(), &path, &rev),
+            None => Ok(None),
+        })
+        .await
     }
 
     /// Rollback: puts the task's changed files among `rel_paths` (all with `None`) back as they
@@ -1356,16 +1360,17 @@ impl AgentManager {
         if task.state.lock().busy {
             return Err(IdeError::invalid("the agent is working: stop it before rolling back its changes"));
         }
-        let (cwd, base) = task.cwd_and_base();
+        let at = task.base();
         let (before, saved) = {
             let s = task.state.lock();
             (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)))
         };
         let restamped = blocking(move || {
-            let changes = worktree::without_untouched(worktree::changes(&cwd, &base)?, &before);
+            let changes = at.changes(&before)?;
+            let rev = at.rev()?;
             let mut restamped = Vec::new();
             for change in changes.iter().filter(|c| rel_paths.as_ref().is_none_or(|p| p.contains(&c.rel_path))) {
-                worktree::restore(&cwd, &base, change, &before, saved.as_deref())?;
+                worktree::restore(at.cwd(), rev.as_deref(), change, &before, saved.as_deref())?;
                 // Back to the user's own edits: not a change of the task any more.
                 if before.contains_key(&change.rel_path) {
                     restamped.push((change.rel_path.clone(), worktree::stamp(&change.path.0)));
@@ -1469,15 +1474,15 @@ impl Task {
         })
     }
 
-    fn cwd_and_base(&self) -> (PathBuf, String) {
+    fn base(&self) -> worktree::TaskBase {
         let s = self.state.lock();
-        // In the project's own checkout the user commits too: compare against the current HEAD,
-        // as the Commit tool window does, so commits made since the task started drop out.
-        let base = match s.task.isolation {
-            Isolation::Local => None,
-            Isolation::Worktree => s.task.base_commit.clone(),
-        };
-        (s.task.cwd.0.clone(), base.unwrap_or_else(|| "HEAD".into()))
+        let cwd = s.task.cwd.0.clone();
+        match s.task.isolation {
+            Isolation::Local => worktree::TaskBase::Local { cwd, start: s.task.base_commit.clone() },
+            Isolation::Worktree => {
+                worktree::TaskBase::Worktree { cwd, base: s.task.base_commit.clone().unwrap_or_else(|| "HEAD".into()) }
+            }
+        }
     }
 
     fn emit_task(&self) {
