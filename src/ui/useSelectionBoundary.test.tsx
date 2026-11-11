@@ -15,6 +15,9 @@ function Pane() {
     <div ref={ref}>
       <p>First message</p>
       <p>Last message</p>
+      <div style={{ userSelect: "none" }}>
+        <span>11:35 AM</span>
+      </div>
     </div>
   );
 }
@@ -44,6 +47,14 @@ it("clamps a downward selection before the composer and Git panel", () => {
   expect(selection.toString()).toBe("message");
   expect(selection.anchorNode).toBe(text("Last message"));
   expect(selection.anchorOffset).toBe(5);
+});
+
+it("ends a clamped selection in the last selectable text, not on the pane's edge", () => {
+  // WebKit paints a selection ending on the pane's edge into the next text field after it.
+  const { text, select } = fixture();
+  const selection = select(text("Last message"), 0, text("Reply to the agent"), 0);
+  expect(selection.focusNode).toBe(text("Last message"));
+  expect(selection.focusOffset).toBe("Last message".length);
 });
 
 it("clamps an upward selection while retaining its direction", () => {

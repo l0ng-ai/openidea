@@ -118,6 +118,7 @@ export interface TerminalSettingsValid {
   overrideIdeShortcuts: boolean;
   shellIntegration: boolean;
   highlightHyperlinks: boolean;
+  highlightSelection: boolean;
   optionAsMeta: boolean;
   escapeToEditor: boolean;
   cursorShape: CursorShape;
@@ -276,6 +277,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     overrideIdeShortcuts: true,
     shellIntegration: true,
     highlightHyperlinks: true,
+    highlightSelection: true,
     optionAsMeta: false,
     escapeToEditor: false,
     cursorShape: "block",
@@ -444,6 +446,7 @@ export function validateTerminal(raw: unknown): TerminalSettingsValid {
     overrideIdeShortcuts: bool(v.overrideIdeShortcuts, d.overrideIdeShortcuts),
     shellIntegration: bool(v.shellIntegration, d.shellIntegration),
     highlightHyperlinks: bool(v.highlightHyperlinks, d.highlightHyperlinks),
+    highlightSelection: bool(v.highlightSelection, d.highlightSelection),
     optionAsMeta: bool(v.optionAsMeta, d.optionAsMeta),
     escapeToEditor: bool(v.escapeToEditor, d.escapeToEditor),
     cursorShape: oneOf(v.cursorShape, ["block", "underline", "bar"] as const, d.cursorShape),

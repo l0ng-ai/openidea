@@ -374,7 +374,7 @@ async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | 
     case "pickDirectory": {
       if (signal.aborted) return null;
       try {
-        const { open } = await import("@tauri-apps/plugin-dialog");
+        const { open } = await import("@/platform/dialog");
         if (signal.aborted) return null;
         const selected = await open({
           directory: true,

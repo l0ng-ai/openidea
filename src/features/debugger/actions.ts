@@ -30,7 +30,7 @@ import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
 import { cancelHotSwapBuild, reloadChangedClasses } from "./hotswap";
-import { debugUnsupportedReason, launchConfigFor } from "./launch";
+import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
 import {
   isPythonAttachTarget,
   isRemoteConfig,
@@ -44,6 +44,7 @@ import {
   resumeExecution,
   evaluate,
   isLive,
+  justDetached,
   rerunSession,
   revealFrame,
   rootOf,
@@ -329,7 +330,7 @@ async function startConfig(arg: unknown) {
   // php-debug starts the PHP chosen in Settings unless the command names one.
   const php =
     config.debugAdapter === "php-debug" && isTauri() ? await call(commands.sdkPhpEffective()).catch(() => null) : null;
-  const launch = launchConfigFor(prepared, root, php);
+  const launch = launchConfigFor(await withEnvFiles(prepared, root), root, php);
   if (!launch) {
     notifications().notify({
       group: "run",
@@ -399,7 +400,7 @@ export function registerDebugActions(): () => void {
         const config = await call(commands.pluginPrepareDebugRun(a.config));
         const root = useProject.getState().project?.root;
         if (!root) throw new Error("No project");
-        const launch = launchConfigFor(config, root);
+        const launch = launchConfigFor(await withEnvFiles(config, root), root);
         if (!launch) throw new Error("This configuration has no debugger");
         let id: number | null = null;
         let stopped = false;
@@ -454,14 +455,21 @@ export function registerDebugActions(): () => void {
             if (isPythonAttachTarget(arg)) launch = pythonAttachConfig(arg, root);
             else if (isJavaAttachTarget(arg)) launch = await javaAttachConfig(arg, root);
             else return;
+            const process = (arg.process ?? null) as RunId | null;
+            // Another JVM of the same run (a Gradle test worker, the one just detached) keeps it.
+            const shared =
+              process != null &&
+              (justDetached(process) ||
+                Object.values(useDebug.getState().sessions).some((s) => s.process === process && isLive(s)));
             const session = await startSession(launch, {
-              process: (arg.process ?? null) as RunId | null,
+              process,
               runConfig: arg.runConfig,
               rerunnable: false,
               show: (arg as { show?: boolean }).show,
             });
-            if (session == null && isPythonAttachTarget(arg) && arg.process != null)
-              await stopAssociatedProcess(arg.process);
+            // The process was started for this debugger and waits for it (`suspend=y`): without
+            // the attach it would never go on, and Stop on the finished session can't reach it.
+            if (session == null && process != null && !shared) await stopAssociatedProcess(process);
           })(),
         ),
     },

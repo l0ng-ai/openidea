@@ -386,7 +386,7 @@ export async function importShelfPatches(paths?: string[]) {
   const repo = currentRepo();
   const picked =
     paths ??
-    (await import("@tauri-apps/plugin-dialog").then(({ open }) =>
+    (await import("@/platform/dialog").then(({ open }) =>
       open({ multiple: true, directory: false, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] }),
     ));
   if (!picked) return;

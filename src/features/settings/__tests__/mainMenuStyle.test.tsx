@@ -43,4 +43,9 @@ describe("Main menu appearance setting", () => {
     expect(validateAppearanceExtras({ mainMenuStyle: "unknown" }).mainMenuStyle).toBe("hamburger");
     expect(validateAppearanceExtras({ mainMenuStyle: "merged" }).mainMenuStyle).toBe("merged");
   });
+
+  it("defaults to hiding the hamburger override and round-trips it (#1521)", () => {
+    expect(validateAppearanceExtras({}).alwaysShowMainMenu).toBe(false);
+    expect(validateAppearanceExtras({ alwaysShowMainMenu: true }).alwaysShowMainMenu).toBe(true);
+  });
 });

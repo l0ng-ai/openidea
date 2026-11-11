@@ -130,6 +130,17 @@ pub fn run_system_env(_host: &Host, _window: &str) -> std::collections::BTreeMap
     ide_run::system_env()
 }
 
+/// Variables of the `.env` files a debug launch names, in order (later files win):
+/// the same files a run loads, over the system environment debug adapters inherit.
+pub fn run_env_files(
+    _host: &Host,
+    _window: &str,
+    files: Vec<std::path::PathBuf>,
+) -> IdeResult<std::collections::BTreeMap<String, String>> {
+    ide_run::envfile::load(&files, &ide_run::system_env())
+        .map_err(|e| IdeError::not_found(format!("cannot read .env file: {e}")))
+}
+
 /// Writes the Gradle init script that adds `jvm_args` to the JVMs the build forks
 /// (`bootRun`, `run`, tests) and returns its path, for `--init-script`.
 pub async fn run_gradle_jvm_args_script(_host: &Host, _window: &str, jvm_args: Vec<String>) -> IdeResult<String> {
@@ -332,6 +343,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         run_import_configs(&c.host, &c.window, c.arg("source")?, c.arg("existing")?)
     });
     d.add("run_system_env", |c| async move { Ok(run_system_env(&c.host, &c.window)) });
+    d.add("run_env_files", |c| async move { run_env_files(&c.host, &c.window, c.arg("files")?) });
     d.add("run_gradle_jvm_args_script", |c| async move {
         run_gradle_jvm_args_script(&c.host, &c.window, c.arg("jvmArgs")?).await
     });

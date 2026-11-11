@@ -1153,7 +1153,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
   useEffect(() => {
     handlers.current = {
       import: async (file) => {
-        const { open } = await import("@tauri-apps/plugin-dialog");
+        const { open } = await import("@/platform/dialog");
         const path =
           file ??
           (await open({
@@ -1184,7 +1184,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
         setReport(tx`Applied ${parsed.applied} values; skipped ${parsed.skipped} unsupported or invalid values.`);
       },
       export: async (file) => {
-        const { save } = await import("@tauri-apps/plugin-dialog");
+        const { save } = await import("@/platform/dialog");
         const path =
           file ??
           (await save({

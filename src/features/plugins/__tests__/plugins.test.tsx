@@ -1354,6 +1354,19 @@ describe("marketplace", () => {
       await waitFor(() => expect(consents.map(([id]) => id)).toEqual(["a", "b"]));
     });
 
+    it("marks installed plugins with updates and updates one from its details", async () => {
+      setConsentPrompt(async () => ({ optional: [] }));
+      const consents = updatesBackend({ a: preview("a", "1.1.0"), b: preview("b", "2.0.0") });
+      const user = userEvent.setup();
+      render(<PluginsPage />);
+      await waitFor(() => expect(usePlugins.getState().market).toHaveLength(3));
+      const list = screen.getByRole("list", { name: "Installed plugins" });
+      expect(within(list).getAllByText("Update")).toHaveLength(2);
+      await user.click(within(list).getAllByRole("button", { name: /^b/i })[0]!);
+      await user.click(await screen.findByRole("button", { name: "Update to 2.0.0" }));
+      await waitFor(() => expect(consents.map(([id]) => id)).toEqual(["b"]));
+    });
+
     it("announces updates with actions to install them or show the plugins", async () => {
       updatesBackend({ a: preview("a", "1.1.0"), b: preview("b", "2.0.0") });
       handlePluginEvent({

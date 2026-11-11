@@ -11,6 +11,11 @@ import { useEffect, useState } from "react";
 export const REVEAL_HORIZON_MS = 150;
 /** A frame stalled longer than this (a background tab) counts as this long. */
 const MAX_FRAME_MS = 250;
+/**
+ * Commits at most at 60 Hz: a 120 Hz display would otherwise re-render the reply's Markdown
+ * twice as often for no visible gain. The slack absorbs frame jitter on a 60 Hz display.
+ */
+const FRAME_MS = 1000 / 60 - 2;
 
 /** Characters to reveal in a frame `elapsed` ms after the last, at least one while behind. */
 export function revealStep(backlog: number, elapsed: number, horizon = REVEAL_HORIZON_MS): number {
@@ -20,10 +25,36 @@ export function revealStep(backlog: number, elapsed: number, horizon = REVEAL_HO
   return Math.min(backlog, Math.max(1, Math.ceil((backlog * ms) / horizon)));
 }
 
-/** `count` moved past a lone UTF-16 high surrogate, so an emoji never paints half. */
-function boundary(text: string, count: number): number {
+const graphemes =
+  typeof Intl.Segmenter === "function" ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+
+/**
+ * `count` pulled back to the start of the grapheme it falls in, so a cluster (an emoji with
+ * its joiners or skin tone, a flag, a letter with its combining marks) never paints in parts.
+ * Only the painted end moves: the count still advances, so a long cluster can't stall.
+ */
+export function revealBoundary(text: string, count: number): number {
+  if (count <= 0 || count >= text.length) return Math.max(0, Math.min(count, text.length));
+  if (graphemes) return graphemes.segment(text).containing(count)?.index ?? count;
   const c = text.charCodeAt(count - 1);
-  return c >= 0xd800 && c <= 0xdbff ? Math.min(count + 1, text.length) : count;
+  return c >= 0xd800 && c <= 0xdbff ? count - 1 : count;
+}
+
+/**
+ * `text` without a trailing fragment that waits on the rest of its cluster: a chunk can end
+ * mid-cluster. A lone high surrogate, a trailing zero-width joiner, an unpaired regional
+ * indicator (half a flag).
+ */
+export function withoutBrokenTail(text: string): string {
+  const last = text.charCodeAt(text.length - 1);
+  if ((last >= 0xd800 && last <= 0xdbff) || last === 0x200d) return text.slice(0, -1);
+  let flags = 0;
+  for (let i = text.length; i >= 2; i -= 2) {
+    const cp = text.codePointAt(i - 2)!;
+    if (cp < 0x1f1e6 || cp > 0x1f1ff) break;
+    flags++;
+  }
+  return flags % 2 === 1 ? text.slice(0, -2) : text;
 }
 
 /**
@@ -43,15 +74,14 @@ export function useRevealedText(text: string, live: boolean): string {
     if (!behind) return;
     let last = performance.now();
     let frame = requestAnimationFrame(function tick(now) {
-      const elapsed = now - last;
-      last = now;
-      setState((s) => ({
-        ...s,
-        count: boundary(s.text, s.count + revealStep(s.text.length - s.count, elapsed)),
-      }));
       frame = requestAnimationFrame(tick);
+      const elapsed = now - last;
+      if (elapsed < FRAME_MS) return;
+      last = now;
+      setState((s) => ({ ...s, count: s.count + revealStep(s.text.length - s.count, elapsed) }));
     });
     return () => cancelAnimationFrame(frame);
   }, [behind]);
-  return behind ? text.slice(0, count) : text;
+  if (behind) return text.slice(0, revealBoundary(text, count));
+  return live ? withoutBrokenTail(text) : text;
 }

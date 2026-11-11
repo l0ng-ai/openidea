@@ -222,7 +222,9 @@ function SettingControl({ pluginId, s }: { pluginId: string; s: SettingSchema })
         set={(v) => {
           const valid = accepts(s, v);
           setInvalid(!valid);
-          if (valid) form.setMapEntry("plugins", [pluginId, s.key], v === s.default ? null : v);
+          // Keep the chosen value even when it equals the default: false and ""
+          // are real plugin settings, not "remove the override".
+          if (valid) form.setMapEntry("plugins", [pluginId, s.key], v);
         }}
       />
       {s.description && <div className={styles.description}>{s.description}</div>}
