@@ -944,10 +944,11 @@ fn find_built_war(root: &Path, module: Option<&Path>) -> Option<PathBuf> {
 
 /// Whether the WAR a Tomcat config deploys is newer than the module's sources, so its
 /// "Before launch › Build" task can be skipped (IDEA's up-to-date check). Conservative:
-/// a missing WAR or a newer source/build file means it is not current. Only the WAR
-/// module's own sources, web resources and build files are inspected, not the modules it
-/// depends on.
-pub fn artifact_is_current(root: &Path, base: &Path, config: &RunConfig) -> bool {
+/// a missing WAR or a newer source/build file means it is not current. Besides the WAR
+/// module's sources, web resources and build files, the sources and build files of every
+/// module in `modules` (project-relative build modules) are inspected: a mapper XML or
+/// class in a module the WAR depends on is packaged into it as a JAR.
+pub fn artifact_is_current(root: &Path, base: &Path, config: &RunConfig, modules: &[PathBuf]) -> bool {
     let p = &config.extras.params;
     if p.get("deployment").map(String::as_str).unwrap_or("artifact") != "artifact" {
         return true;
@@ -976,7 +977,14 @@ pub fn artifact_is_current(root: &Path, base: &Path, config: &RunConfig) -> bool
             newest = Some(time);
         }
     }
-    for dir in [module.as_path(), root] {
+    let other_modules = modules.iter().map(|m| root.join(m));
+    for dir in [module.clone(), root.to_path_buf()].into_iter().chain(other_modules) {
+        if dir != module
+            && let Some(time) = newest_mtime_under(&dir.join("src"))
+            && newest.is_none_or(|cur| time > cur)
+        {
+            newest = Some(time);
+        }
         for name in ["pom.xml", "build.gradle", "build.gradle.kts"] {
             if let Ok(time) = fs::metadata(dir.join(name)).and_then(|m| m.modified())
                 && newest.is_none_or(|cur| time > cur)
@@ -1646,10 +1654,10 @@ mod tests {
         c.cwd = Some(ide_core::IpcPath(PathBuf::from("web")));
         c.extras.params.insert("artifact".into(), "maven:web/pom.xml".into());
         // The WAR was packed after the source was written.
-        assert!(artifact_is_current(root, &base, &c));
+        assert!(artifact_is_current(root, &base, &c, &[]));
         std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(&source, "class App { int changed; }").unwrap();
-        assert!(!artifact_is_current(root, &base, &c));
+        assert!(!artifact_is_current(root, &base, &c, &[]));
     }
 
     #[test]
@@ -1673,10 +1681,10 @@ mod tests {
         // Older configs may not carry the artifact's module as `cwd` (the UI sets it today).
         let mut c = config();
         c.extras.params.insert("artifact".into(), "maven:web/pom.xml".into());
-        assert!(artifact_is_current(root, &base, &c));
+        assert!(artifact_is_current(root, &base, &c, &[]));
         std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(&source, "<beans><edited/></beans>").unwrap();
-        assert!(!artifact_is_current(root, &base, &c));
+        assert!(!artifact_is_current(root, &base, &c, &[]));
     }
 
     #[test]
@@ -1703,10 +1711,38 @@ mod tests {
         let mut c = config();
         c.cwd = Some(ide_core::IpcPath(PathBuf::from("web")));
         c.extras.params.insert("artifact".into(), "maven:web/pom.xml".into());
-        assert!(artifact_is_current(root, &base, &c));
+        assert!(artifact_is_current(root, &base, &c, &[]));
         std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(&web_xml, "<web-app><edited/></web-app>").unwrap();
-        assert!(!artifact_is_current(root, &base, &c));
+        assert!(!artifact_is_current(root, &base, &c, &[]));
+    }
+
+    #[test]
+    fn up_to_date_check_watches_the_modules_the_war_depends_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let web = root.join("web");
+        let dao = root.join("dao");
+        fs::create_dir_all(web.join("src/main/java")).unwrap();
+        fs::create_dir_all(web.join("target")).unwrap();
+        fs::create_dir_all(dao.join("src/main/resources/mapper")).unwrap();
+        fs::write(web.join("pom.xml"), "<project/>").unwrap();
+        fs::write(dao.join("pom.xml"), "<project/>").unwrap();
+        fs::write(web.join("src/main/java/App.java"), "class App {}").unwrap();
+        let mapper = dao.join("src/main/resources/mapper/UserMapper.xml");
+        fs::write(&mapper, "<mapper/>").unwrap();
+        archive(&web.join("target/app.war"), &[("WEB-INF/web.xml", "<web-app/>")]);
+        let base = root.join("cache");
+        fs::create_dir_all(&base).unwrap();
+        let mut c = config();
+        c.cwd = Some(ide_core::IpcPath(PathBuf::from("web")));
+        c.extras.params.insert("artifact".into(), "maven:web/pom.xml".into());
+        let modules = [PathBuf::from(""), PathBuf::from("web"), PathBuf::from("dao")];
+        assert!(artifact_is_current(root, &base, &c, &modules));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&mapper, "<mapper><select/></mapper>").unwrap();
+        assert!(!artifact_is_current(root, &base, &c, &modules), "a dependency module's XML changed");
+        assert!(artifact_is_current(root, &base, &c, &[]), "without the build's modules only the WAR module counts");
     }
 
     #[test]
