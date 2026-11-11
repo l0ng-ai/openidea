@@ -478,8 +478,11 @@ impl AgentManager {
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.
     pub fn providers(&self) -> Vec<AgentProvider> {
         let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
+        let in_use: std::collections::HashSet<String> =
+            self.tasks.read().values().map(|t| t.state.lock().task.provider.clone()).collect();
         let list = specs
             .iter()
+            .filter(|p| !provider::is_unlisted(p) || in_use.contains(&p.id))
             .map(|p| {
                 let mut info = provider::describe(p);
                 info.config = self.shared.known_config(&p.id);

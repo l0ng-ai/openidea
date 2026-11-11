@@ -1552,3 +1552,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A one-button toolbar, not a round bubble: the popup's large arc would turn it into a circle. */
+.quotePopup {
+  display: flex;
+  padding: 2px;
+  border-radius: var(--radius-toolbar-button);
+}

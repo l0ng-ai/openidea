@@ -1,6 +1,7 @@
 import { useEffect, useState, type RefObject } from "react";
 import type { AgentTask } from "@/bindings";
 import { IconButton, Popup } from "@/ui";
+import styles from "./Session.module.css";
 
 /** Text selected in `stream`, or "" when the selection is elsewhere. */
 export function selectionIn(stream: HTMLElement): string {
@@ -55,7 +56,15 @@ export function SelectionQuote({ task, streamRef }: { task: AgentTask; streamRef
   const [quote, clear] = useSelectionQuote(streamRef);
   if (!quote || task.status === "archived") return null;
   return (
-    <Popup open anchor={quote.range} placement="top-end" autoFocus={false} restoreFocus={false} onClose={clear}>
+    <Popup
+      open
+      anchor={quote.range}
+      placement="top-end"
+      autoFocus={false}
+      restoreFocus={false}
+      className={styles.quotePopup}
+      onClose={clear}
+    >
       <IconButton
         icon="quote"
         title="Quote"

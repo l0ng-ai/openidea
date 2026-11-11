@@ -185,6 +185,14 @@ pub(crate) fn builtin_spec(id: &str) -> Option<ProviderSpec> {
     builtins().into_iter().find(|s| s.id == id)
 }
 
+/// The ACP adapters of Claude Code and Codex, which the native drivers replace: they still
+/// launch, but are listed only once customized through an agent file or used by a task.
+const UNLISTED: &[&str] = &["claude-acp", "codex-acp"];
+
+pub(crate) fn is_unlisted(spec: &ProviderSpec) -> bool {
+    UNLISTED.contains(&spec.id.as_str()) && builtin_spec(&spec.id).as_ref() == Some(spec)
+}
+
 /// Public launch metadata, keeping the built-in defaults separate from agent-file overrides.
 pub(crate) fn describe(spec: &ProviderSpec) -> AgentProvider {
     let builtin = builtin_spec(&spec.id);
@@ -589,6 +597,15 @@ mod tests {
         set_builtin_env(dir.path(), "claude", BTreeMap::new()).unwrap();
         assert!(!dir.path().join("claude.toml").exists());
         set_builtin_env(dir.path(), "not-a-builtin", env).unwrap_err();
+    }
+
+    #[test]
+    fn acp_adapters_of_native_agents_are_unlisted_until_customized() {
+        let dir = tempfile::tempdir().unwrap();
+        let unlisted = |dir: &Path| load(Some(dir)).into_iter().filter(is_unlisted).map(|s| s.id).collect::<Vec<_>>();
+        assert_eq!(unlisted(dir.path()), ["claude-acp", "codex-acp"]);
+        set_builtin_env(dir.path(), "codex-acp", BTreeMap::from([("A".to_owned(), "1".to_owned())])).unwrap();
+        assert_eq!(unlisted(dir.path()), ["claude-acp"]);
     }
 
     #[test]
