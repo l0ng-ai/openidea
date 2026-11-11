@@ -505,6 +505,29 @@ fn reload_and_convert_encoding() {
     assert!(f.docs.set_encoding(info.id, "gbk", true).is_err());
 }
 
+#[test]
+fn utf8_bom_is_added_and_removed_on_save() {
+    let f = fixture();
+    let path = f.root.join("bom.txt");
+    fs::write(&path, "text").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    assert!(!info.has_bom);
+
+    assert!(f.docs.set_bom(info.id, true).unwrap().has_bom);
+    assert_eq!(fs::read(&path).unwrap(), b"text", "written on save only");
+    f.docs.save(info.id).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"\xEF\xBB\xBFtext");
+    assert_eq!(f.docs.snapshot(info.id).unwrap().text, "text");
+
+    assert!(!f.docs.set_bom(info.id, false).unwrap().has_bom);
+    f.docs.save(info.id).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"text");
+
+    // Other encodings have no BOM to toggle.
+    f.docs.set_encoding(info.id, "gbk", false).unwrap();
+    assert!(f.docs.set_bom(info.id, true).is_err());
+}
+
 #[cfg(unix)]
 #[test]
 fn symlinked_path_maps_to_same_document() {
