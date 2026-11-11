@@ -6665,6 +6665,11 @@ export type McpServerInput = {
 export type McpServerSettings = {
 	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
 	enabled?: boolean,
+	/**
+	 *  Run the tools that change the project or start processes without asking first
+	 *  (IDEA's brave mode). Read from the IDE's own settings only, never a project's.
+	 */
+	runWithoutConfirmation?: boolean,
 };
 
 /**  What Settings › Agents › MCP Server shows. */

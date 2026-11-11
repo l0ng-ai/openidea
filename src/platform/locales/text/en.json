@@ -673,6 +673,8 @@
   "Gradle Tasks": "Gradle Tasks",
   "IDE MCP Server": "IDE MCP Server",
   "Enable MCP server": "Enable MCP server",
+  "Run tools without confirmation (brave mode)": "Run tools without confirmation (brave mode)",
+  "Run configurations, terminal commands and other tools that change a project start without asking, for unattended agents. Only the IDE's own settings can turn this on, not a project's.": "Run configurations, terminal commands and other tools that change a project start without asking, for unattended agents. Only the IDE's own settings can turn this on, not a project's.",
   "Status": "Status",
   "Running on port {port}": "Running on port {port}",
   "Failed to start: {error}": "Failed to start: {error}",
