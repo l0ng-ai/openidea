@@ -342,6 +342,21 @@ mod tests {
     }
 
     #[test]
+    fn effort_and_fast_categories_are_inferred_from_ids() {
+        let c = options_of(&json!({
+            "configOptions": [
+                {"id": "effort", "type": "select", "currentValue": "high",
+                 "options": [{"value": "low"}, {"value": "high"}]},
+                {"id": "fast", "type": "select", "currentValue": "false",
+                 "options": [{"value": "false", "name": "Off"}, {"value": "true", "name": "On"}]}
+            ]
+        }));
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].category.as_deref(), Some("thought_level"));
+        assert_eq!(c[1].category.as_deref(), Some("model_config"));
+    }
+
+    #[test]
     fn command_sources_in_updates_and_stored_tasks() {
         let update = json!({"availableCommands": [
             {"name": "review", "source": "skill"},

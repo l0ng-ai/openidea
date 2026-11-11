@@ -517,30 +517,7 @@ impl AgentManager {
         *prev = specs.clone();
         drop(probes);
         drop(prev);
-        for spec in specs.into_iter().filter(|s| s.driver == provider::Driver::Acp && s.id == "cursor") {
-            self.schedule_cursor_discovery(spec);
-        }
         list
-    }
-
-    /// Starts Cursor config discovery when effort levels are still unknown. Logs even when
-    /// a lookup is already running, so the dev terminal shows why the model popup is empty.
-    fn schedule_cursor_discovery(&self, spec: provider::ProviderSpec) {
-        let known = self.shared.knows_all_levels(&spec.id);
-        let inflight = self.shared.command_fetches.lock().contains_key(&spec.id);
-        if known {
-            tracing::debug!("agent cursor: settings discovery skipped (effort levels already cached)");
-            return;
-        }
-        if inflight {
-            tracing::debug!("agent cursor: settings discovery already running");
-            return;
-        }
-        tracing::info!("agent cursor: scheduling settings discovery");
-        let shared = self.shared.clone();
-        self.shared.runtime.spawn(async move {
-            shared.fetch_settings(spec).await;
-        });
     }
 
     /// Overrides built-in `id`'s command with `command` (the driver and arguments stay
@@ -595,15 +572,9 @@ impl AgentManager {
                 .spec(&provider)
                 .filter(|s| matches!(s.driver, provider::Driver::Claude | provider::Driver::Acp))
         {
-            if spec.driver == provider::Driver::Acp && spec.id == "cursor" {
-                self.schedule_cursor_discovery(spec);
-            } else if spec.driver == provider::Driver::Acp {
-                let shared = self.shared.clone();
-                self.shared.runtime.spawn(async move {
-                    shared.fetch_settings(spec).await;
-                });
-            } else {
-                self.shared.fetch_settings(spec).await;
+            let claude = spec.driver == provider::Driver::Claude;
+            self.shared.fetch_settings(spec).await;
+            if claude {
                 offered = self.shared.known_commands(&provider);
             }
         }

@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 
-const DISCOVER_TIMEOUT: Duration = Duration::from_secs(120);
+const DISCOVER_TIMEOUT: Duration = if cfg!(test) { Duration::from_secs(3) } else { Duration::from_secs(120) };
 
 /// Opens `session/new`, reads `configOptions`, and records per-model `thought_level` choices.
 pub(crate) async fn run(shared: &Arc<Shared>, spec: &ProviderSpec) -> Result<(), String> {
