@@ -11,6 +11,7 @@ const config: KnipConfig = {
     "!src/editor/core/cm/astro/parser.terms.ts",
     "scripts/**/*.ts",
     "perf/**/*.ts",
+    "evals/**/*.ts",
     "e2e/**/*.ts",
     "smoke/**/*.ts",
   ],

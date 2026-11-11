@@ -192,6 +192,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
         label: l.name,
         detail: [l.container, where].filter(Boolean).join(" · "),
         symbol: l.kind,
+        location: { path: l.path, line: l.range.start.line },
         run: () => navigateTo(l),
       };
     return {
@@ -199,6 +200,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
       label: names[i] ?? basename(l.path),
       detail: [indexed.get(i) ?? enclosingType(files.get(l.path), l), where].filter(Boolean).join(" · "),
       icon: fileIconName(basename(l.path), l.path),
+      location: { path: l.path, line: l.range.start.line },
       run: () => navigateTo(l),
     };
   });
@@ -256,6 +258,7 @@ function streamedImplementations(view: EditorView, offset: number, onOpen: () =>
             kind: "list",
             anchor: caretAnchor(view, offset),
             title: searchingTitle(name, first.length),
+            busy: true,
             items,
             pin: pinToFind(name ?? "", first),
             onClose: () => {
@@ -282,6 +285,7 @@ function streamedImplementations(view: EditorView, offset: number, onOpen: () =>
       if (closed || superseded()) return;
       updatePopup("list", {
         title: chooserTitle("implementation", name, all.length),
+        busy: false,
         items,
         pin: pinToFind(name ?? "", all),
       });

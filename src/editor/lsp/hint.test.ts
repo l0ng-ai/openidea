@@ -29,8 +29,19 @@ describe("pending hints", () => {
     const done = showPendingHint(view, "Waiting…");
     vi.advanceTimersByTime(PENDING_HINT_DELAY_MS);
     expect(hint()).toBe("Waiting…");
+    expect(document.querySelector<HTMLElement>(".cm-lsp-hint")?.dataset.pending).toBe("true");
     done();
     expect(hint()).toBeNull();
+  });
+
+  it("marks only progress as pending", () => {
+    showHint(view, "Done");
+    expect(document.querySelector<HTMLElement>(".cm-lsp-hint")?.dataset.pending).toBeUndefined();
+  });
+
+  it("puts what the hint answers in its data attributes", () => {
+    showHint(view, "Only one usage", { data: { usages: "1" } });
+    expect(document.querySelector<HTMLElement>(".cm-lsp-hint")?.dataset.usages).toBe("1");
   });
 
   it("does not dismiss a newer hint when an old request finishes", () => {

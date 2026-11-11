@@ -456,21 +456,33 @@ async function searchPopup(c: CaretContext, libraries: boolean, widenable: boole
     // As in IDEA, the hint offers to widen the search, which Show Usages does while it shows.
     const widen = scope === "project" && again !== "";
     if (widen) popupTarget.hintUntil = Date.now() + HINT_MS;
+    // The count and scope, for tests: the hint is the whole answer.
+    const counted: Record<string, string> = scope ? { usages: String(total), scope } : { usages: String(total) };
     if (!total) {
-      if (widen) hint(`No usages found in Project Files. Press ${again} again to search in 'Project and Libraries'`);
-      else if (scope === "project") hint("No usages found in Project Files");
+      if (widen)
+        hint(
+          `No usages found in Project Files. Press ${again} again to search in 'Project and Libraries'`,
+          "info",
+          counted,
+        );
+      else if (scope === "project") hint("No usages found in Project Files", "info", counted);
       else {
         const none = c.word ? `No usages of '${c.word}' found` : "No usages found";
-        hint(note ? `${none}. ${note}` : none);
+        hint(note ? `${none}. ${note}` : none, "info", counted);
       }
       return;
     }
     // IDEA jumps to the only usage and says so in the target editor.
     const u = groups[0]!.usages[0]!;
     await openLocation(u.path, u.line, u.col);
-    if (widen) hint(`Only one usage in Project Files. Press ${again} again to search in 'Project and Libraries'`);
-    else if (scope === "libraries") hint("Only one usage in Project and Libraries");
-    else hint("Only one usage in Project Files");
+    if (widen)
+      hint(
+        `Only one usage in Project Files. Press ${again} again to search in 'Project and Libraries'`,
+        "info",
+        counted,
+      );
+    else if (scope === "libraries") hint("Only one usage in Project and Libraries", "info", counted);
+    else hint("Only one usage in Project Files", "info", counted);
   } catch (e) {
     if (popupRequest !== request || isCancelled(e)) return;
     if (early || reopened) useUsagesPopup.setState({ loading: false });
