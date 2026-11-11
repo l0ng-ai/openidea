@@ -1,0 +1,27 @@
+id = "elixir"
+name = "Elixir"
+group = "Elixir"
+icon = "project-elixir"
+description = "An Elixir project from mix new."
+
+[[requires]]
+program = "mix"
+hint = "Install Elixir: https://elixir-lang.org/install.html"
+
+[[fields]]
+id = "app"
+label = "Application name:"
+type = "text"
+pattern = '^[a-z][a-z0-9_]*$'
+default = "{{name|snake}}"
+
+[[fields]]
+id = "sup"
+label = "Supervision tree"
+type = "checkbox"
+default = "false"
+
+[[steps]]
+label = "Running mix new"
+program = "mix"
+args = ["new", ".", "--app", "{{app}}", { when = { sup = "true" }, args = ["--sup"] }]

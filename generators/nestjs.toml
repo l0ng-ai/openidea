@@ -1,0 +1,51 @@
+id = "nestjs"
+name = "NestJS"
+group = "JavaScript"
+icon = "project-nestjs"
+order = 7
+description = "A NestJS server from the Nest CLI."
+
+[[requires]]
+program = "node"
+min = "20.19"
+hint = "Install Node.js 20.19 or later: https://nodejs.org"
+
+[[requires]]
+program = "{{pm}}"
+when = { pm = ["pnpm", "yarn", "bun"] }
+hint = "Install it, or choose npm."
+
+[[fields]]
+id = "strict"
+label = "Strict TypeScript"
+type = "checkbox"
+default = "true"
+
+[[fields]]
+id = "pm"
+label = "Package manager:"
+type = "choice"
+segmented = true
+options = ["npm", "pnpm", "yarn", "bun"]
+default = "npm"
+
+[[fields]]
+id = "install"
+label = "Install dependencies"
+type = "checkbox"
+default = "true"
+
+[[steps]]
+label = "Running nest new"
+package = "@nestjs/cli@latest"
+cwd = "parent"
+args = [
+    "new", "{{name}}", "--package-manager", "{{pm}}", "--skip-git", "--skip-install", "--language", "TS",
+    { when = { strict = "true" }, args = ["--strict"] },
+]
+
+[[after]]
+label = "Installing dependencies"
+program = "{{pm}}"
+args = ["install"]
+when = { install = "true" }

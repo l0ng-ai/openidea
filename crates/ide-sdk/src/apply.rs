@@ -1154,6 +1154,7 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         command: ls.command.trim().to_owned(),
         args: Vec::new(),
         env: Default::default(),
+        requires_env: Vec::new(),
         root_markers: ls.root_markers.clone(),
         require_root_marker: false,
         initialization_options: None,

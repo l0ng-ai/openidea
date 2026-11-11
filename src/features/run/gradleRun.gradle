@@ -20,6 +20,11 @@ if (target != null) {
                 t.jvmArgs(list('openidea.run.jvmArgs'))
                 // The IDE attaches to this JVM, not to the Gradle daemon; port 0 prints the one picked.
                 if (Boolean.getBoolean('openidea.run.debug')) {
+                    // Opens the attach socket for the memory view, unless the VM options decide about it.
+                    if (Boolean.getBoolean('openidea.run.attachListener')
+                            && !list('openidea.run.jvmArgs').any { it.toString().find(/StartAttachListener|DisableAttachMechanism/) != null }) {
+                        t.jvmArgs('-XX:+StartAttachListener')
+                    }
                     t.jvmArgs('-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0')
                 }
                 def dir = System.getProperty('openidea.run.workingDir')

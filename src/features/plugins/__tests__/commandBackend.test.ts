@@ -65,16 +65,7 @@ it("does not invoke a command when the caller signal is already aborted", async 
   controller.abort();
 
   await expect(
-    tauriPluginsBackend.runCommand(
-      "example",
-      "annotations",
-      "buffer",
-      null,
-      [],
-      undefined,
-      undefined,
-      controller.signal,
-    ),
+    tauriPluginsBackend.runCommand("example", "annotations", "buffer", null, [], undefined, undefined, controller.signal),
   ).rejects.toMatchObject({ name: "AbortError" });
   expect(invoke).not.toHaveBeenCalled();
 });
@@ -84,16 +75,7 @@ it("does not cancel a completed command when the caller later aborts", async () 
   const controller = new AbortController();
 
   await expect(
-    tauriPluginsBackend.runCommand(
-      "example",
-      "annotations",
-      "buffer",
-      null,
-      [],
-      undefined,
-      undefined,
-      controller.signal,
-    ),
+    tauriPluginsBackend.runCommand("example", "annotations", "buffer", null, [], undefined, undefined, controller.signal),
   ).resolves.toBe("finished");
   controller.abort();
 

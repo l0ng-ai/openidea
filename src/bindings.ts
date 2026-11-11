@@ -8,6 +8,13 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	/**
+	 *  True when the plugin's dialogs can't be shown here: Linux with no portal service on the session
+	 *  bus (running or activatable) and no `zenity`.
+	 */
+	fileDialogNeedsGtk: () => __TAURI_INVOKE<boolean>("file_dialog_needs_gtk"),
+	/**  Shows a GTK file chooser attached to `window`. `None` when the user cancels. */
+	gtkPickPaths: (options: GtkPickOptions) => typedError<IpcPath[] | null, IdeError>(__TAURI_INVOKE("gtk_pick_paths", { options })),
 	mcpUiReady: (ready: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_ui_ready", { ready })),
 	mcpRespond: (id: number, allow: boolean, error: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_respond", { id, allow, error })),
 	mcpServerStatus: () => typedError<McpServerStatus, IdeError>(__TAURI_INVOKE("mcp_server_status")),
@@ -831,6 +838,14 @@ export const commands = {
 	 */
 	buildRun: (kind: BuildKind, file: string | null, cmake: string | null, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_run", { kind, file, cmake, request, clear, onEvent })),
 	/**
+	 *  Build › Compile File: compiles one Java source of a linked Maven module with
+	 *  `javac`, streaming the console and messages on `on_event`; cancellable with
+	 *  `cancel_request(request)`. Diagnostics of `clear` (the files of the previous
+	 *  build) are cleared first; the new messages are published as `build`
+	 *  diagnostics.
+	 */
+	buildCompileFile: (file: string, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_compile_file", { file, request, clear, onEvent })),
+	/**
 	 *  Cancellable with `cancel_request(request)`.
 	 *  Builds according to `policy`, then resolves the runtime (or test)
 	 *  classpath and the JDK of the module at `module` (absolute, or relative to the project root).
@@ -888,6 +903,20 @@ export const commands = {
 	 *  and language servers waiting for a JDK (jdtls) start on it.
 	 */
 	jdkDownload: (vendor: string, version: number, location: string | null, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("jdk_download", { vendor, version, location, request, onEvent })),
+	/**  The project generators File › New Project offers, in list order. */
+	scaffoldCatalog: () => __TAURI_INVOKE<GeneratorInfo[]>("scaffold_catalog"),
+	/**
+	 *  The fields a generator's project service adds for `values`; cancellable with
+	 *  `cancel_request(request)`.
+	 */
+	scaffoldOptions: (generator: string, values: { [key in string]: string }, request: RequestId) => typedError<Field[], IdeError>(__TAURI_INVOKE("scaffold_options", { generator, values, request })),
+	/**  The programs a generator needs for `values`, and whether they are installed. */
+	scaffoldRequirements: (generator: string, values: { [key in string]: string }) => typedError<Requirement[], IdeError>(__TAURI_INVOKE("scaffold_requirements", { generator, values })),
+	/**
+	 *  Creates a project, streaming progress through `on_event`, and returns its directory,
+	 *  trusted. Cancellable with `cancel_request(request)`; a failed or cancelled run leaves nothing.
+	 */
+	scaffoldCreate: (req: CreateRequest, request: RequestId, onEvent: Channel<ScaffoldEvent>) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("scaffold_create", { req, request, onEvent })),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
@@ -1072,6 +1101,13 @@ export const commands = {
 	 *  with `app_restart`. One install runs at a time.
 	 */
 	appInstallUpdate: (source: UpdateSource, request: RequestId, onProgress: Channel<UpdateProgress>) => typedError<null, IdeError>(__TAURI_INVOKE("app_install_update", { source, request, onProgress })),
+	/**
+	 *  Release notes of `version` from the update manifest (`latest.json`), read
+	 *  through the configured source. An install records the notes it saw, so this
+	 *  is only for an update installed outside the app. `Ok(None)` when the manifest
+	 *  covers another version or carries no notes.
+	 */
+	appReleaseNotes: (version: string, source: UpdateSource) => typedError<string | null, IdeError>(__TAURI_INVOKE("app_release_notes", { version, source })),
 	debugExceptionFilters: () => typedError<SessionExceptionFilters[], IdeError>(__TAURI_INVOKE("debug_exception_filters")),
 	debugSetExceptionBreakpoints: (choices: { [key in string]: boolean }) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_breakpoints", { choices })),
 	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
@@ -1099,6 +1135,14 @@ export const commands = {
 	debugListenForJvm: (request: RequestId, host: string, port: number) => typedError<number, IdeError>(__TAURI_INVOKE("debug_listen_for_jvm", { request, host, port })),
 	/**  HotSwap (Reload Changed Classes) in a java-debug session. */
 	debugRedefineClasses: (session: DebugSessionId) => typedError<HotSwapResult, IdeError>(__TAURI_INVOKE("debug_redefine_classes", { session })),
+	/**  The debuggee JVM's loaded classes (instances and shallow bytes), or why they cannot be read. */
+	debugJvmMemoryClasses: (session: DebugSessionId) => typedError<JvmMemoryResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_classes", { session })),
+	/**  Up to `limit` live instances of the class in the stopped JVM. */
+	debugJvmMemoryInstances: (session: DebugSessionId, className: string, limit: number) => typedError<JvmInstancesResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_instances", { session, className, limit })),
+	/**  The fields (or array elements) of an instance in the stopped JVM. */
+	debugJvmMemoryFields: (session: DebugSessionId, object: JvmObjectRef) => typedError<JvmFieldsResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_fields", { session, object })),
+	/**  The objects that hold a reference to `object`; `limit` 0 selects the default. */
+	debugJvmMemoryReferrers: (session: DebugSessionId, object: JvmObjectRef, limit: number) => typedError<JvmReferrersResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_referrers", { session, object, limit })),
 	/**
 	 *  How to run `config` with coverage: the command to launch and where its report will be,
 	 *  or which tool is missing.
@@ -2110,6 +2154,8 @@ export type AppearanceSettings = {
 	mainMenuStyle?: string,
 	/**  A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
 	mainMenuAlt?: boolean,
+	/**  Always show the main menu titles instead of the hamburger button (#1521). */
+	alwaysShowMainMenu?: boolean,
 	/**  `subpixel` | `greyscale` | `none` */
 	ideAntialiasing?: string,
 	editorAntialiasing?: string,
@@ -2527,6 +2573,11 @@ export type CheckoutOutcome = { kind: "done" } |
  *  on conflicts in these files.
  */
 { kind: "conflicts"; files: string[] };
+
+export type ChoiceOption = {
+	value: string,
+	label: string,
+};
 
 export type ClassifiedReference = {
 	/**  Optional for older Java extensions; missing means unclassified. */
@@ -3070,6 +3121,15 @@ export type CreatePullRequest = {
 	push: boolean,
 };
 
+export type CreateRequest = {
+	generator: string,
+	/**  The parent directory; the project is `<location>/<name>`. */
+	location: IpcPath,
+	name: string,
+	git: boolean,
+	values: { [key in string]: string },
+};
+
 /**  Imported editor colour scheme on top of a built-in base. */
 export type CustomColorScheme = CustomColorScheme_Serialize | CustomColorScheme_Deserialize;
 
@@ -3486,6 +3546,16 @@ export type DebugCapabilities = {
 	logPoints: boolean,
 	/**  HotSwap ("Reload Changed Classes"): java-debug's `redefineClasses` request. */
 	hotCodeReplace: boolean,
+	/**
+	 *  The session debugs a JVM, so it has a Memory view; [`DebugManager::jvm_memory_classes`]
+	 *  says why when it has no data (platform, remote JVM, ...).
+	 */
+	jvmMemory: boolean,
+	/**
+	 *  The session has a JVM inspector: instances, fields and referrers while suspended. Can
+	 *  change during the session ([`ide_core::event::DebugEvent::Capabilities`]).
+	 */
+	jvmInstances: boolean,
 };
 
 /**  A completion the adapter offers for an expression (DAP `completions`). */
@@ -3514,7 +3584,9 @@ export type DebugEvent =
  *  java-debug's `hotcodereplace` event: `change_type` is `BUILD_COMPLETE` (classes
  *  changed and can be reloaded), `STARTING`, `END`, `WARNING` or `ERROR`.
  */
-{ kind: "hotCodeReplace"; changeType: string; message: string };
+{ kind: "hotCodeReplace"; changeType: string; message: string } | 
+/**  The session's capabilities changed after it started: fetch them again. */
+{ kind: "capabilities" } | { kind: "jvmBackend"; state: JvmBackendState };
 
 /**  A debug adapter session. */
 export type DebugSessionId = number;
@@ -3573,6 +3645,17 @@ export type DeletedTag = {
 	name: string,
 	/**  What the tag pointed at: its tag object (annotated tags) or commit. */
 	target: string,
+};
+
+export type Dependency = {
+	id: string,
+	name: string,
+	description: string,
+};
+
+export type DependencyGroup = {
+	name: string,
+	items: Dependency[],
 };
 
 /**  A plugin another one requires. */
@@ -4343,6 +4426,26 @@ export type FacetConfig = {
 	webRoot?: string,
 };
 
+export type Field = {
+	id: string,
+	label: string,
+	kind: FieldKind,
+	/**
+	 *  A template over the fields before it: `{{id}}`, `{{id|filter}}` (filters:
+	 *  `path`, `ident`, `kebab`, `snake`, `pascal`, `lower`, `json`).
+	 */
+	default: string,
+	/**  Shown only while each listed field has one of its values. */
+	visible: { [key in string]: string[] },
+	hint: string,
+};
+
+export type FieldKind = { type: "text"; pattern: string | null; placeholder: string } | { type: "choice"; options: ChoiceOption[]; segmented: boolean } | { type: "checkbox" } | 
+/**  An installed SDK of this kind (`jdk`); the value is its home, empty = automatic. */
+{ type: "sdk"; sdk: string } | 
+/**  Several ids out of grouped items; the value is comma-separated. */
+{ type: "dependencies"; groups: DependencyGroup[] };
+
 export type FieldValue = { kind: "label"; value: string } | { kind: "readonlyText"; value: {
 	text: string,
 	multiline: boolean,
@@ -4669,6 +4772,25 @@ export type GeneralSettings = {
 	/**  Where updates come from: `auto` (the CNB mirror for the Chinese UI, else GitHub) | `github` | `cnb`. */
 	updateSource?: string,
 	autoCheckUpdates?: boolean,
+	/**  System Settings › Updates: open the What's New page after the app starts a new version. */
+	showWhatsNewAfterUpdate?: boolean,
+	/**  The version the app last started with, so the first start after an update is recognisable. */
+	lastRunVersion?: string,
+};
+
+/**  One entry of File › New Project. */
+export type GeneratorInfo = {
+	id: string,
+	name: string,
+	group: string,
+	icon: string,
+	order: number,
+	description: string,
+	/**  Offer "Create Git repository". */
+	git: boolean,
+	fields: Field[],
+	/**  More fields come from `scaffold_options` (a project service's metadata). */
+	dynamic: boolean,
 };
 
 /**  A repository of the signed-in account (owned, collaborator, or organization member). */
@@ -4892,6 +5014,21 @@ export type GradleTask = {
 	/**  Lower-case group (`build`, `build setup`, `other`). */
 	group: string,
 	description: string | null,
+};
+
+export type GtkFilter = {
+	name: string,
+	extensions: string[],
+};
+
+export type GtkPickOptions = {
+	title: string | null,
+	defaultPath: string | null,
+	directory: boolean,
+	multiple: boolean,
+	/**  A save dialog: one path, with overwrite confirmation. */
+	save: boolean,
+	filters: GtkFilter[],
 };
 
 /**  GutterAction data. */
@@ -5589,9 +5726,94 @@ export type JetBrainsSettings = {
 	files: { [key in string]: string },
 };
 
+/**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */
+export type JvmBackendState = { kind: "ready" } | 
+/**  Turned off for the rest of the session: the debug adapter lacks what it needs. */
+{ kind: "unsupported"; detail: string } | 
+/**  The Kotlin JDWP link only forwards now; inspecting stops. */
+{ kind: "degraded"; detail: string } | { kind: "closed" };
+
+export type JvmClassRow = {
+	name: string,
+	module: string | null,
+	instances: number,
+	bytes: number,
+	/**  Change since the previous snapshot; `None` on the first one and for ambiguous rows. */
+	deltaInstances: number | null,
+	deltaBytes: number | null,
+	/**  Several classes share this name (different class loaders), so it has no delta. */
+	ambiguous: boolean,
+};
+
+/**  For arrays `name` is `"[i]"`. */
+export type JvmField = {
+	name: string,
+	value: JvmValue,
+};
+
+export type JvmFieldsResult = { status: "ready"; fields: JvmField[] } | { status: "unavailable"; reason: JvmInspectUnavailable };
+
 export type JvmFilePresentation = {
 	path: string,
 	presentation: JvmPresentation,
+};
+
+export type JvmInspectUnavailable = 
+/**  The session has no inspector: not a JVM session, not ready yet, or turned off. */
+{ kind: "noBackend" } | 
+/**  The debug adapter lacks what the inspector needs; turned off for the session. */
+{ kind: "unsupported"; detail: string } | { kind: "notSuspended" } | 
+/**  The object is from an earlier stop, or the program stopped or resumed meanwhile. */
+{ kind: "stale" } | { kind: "collected" } | { kind: "classNotLoaded" } | { kind: "vmNotFound" } | 
+/**  Transient: ask again. */
+{ kind: "timedOut" } | { kind: "backendClosed" };
+
+export type JvmInstancesResult = { status: "ready"; 
+/**  Goes into the [`JvmObjectRef`] of each instance. */
+generation: number; instances: JvmValue[]; 
+/**  The limit was reached; there may be more. */
+truncated: boolean } | { status: "unavailable"; reason: JvmInspectUnavailable };
+
+export type JvmMemoryResult = { status: "ready"; snapshot: JvmMemorySnapshot } | { status: "unavailable"; reason: JvmMemoryUnavailable; 
+/**  The debugger could count the classes if the program were paused. */
+canCountWhenPaused: boolean };
+
+export type JvmMemorySnapshot = {
+	/**  Largest `bytes` first. */
+	rows: JvmClassRow[],
+	totalInstances: number,
+	totalBytes: number,
+	/**  Empty when unknown. */
+	javaVersion: string,
+	takenWhileSuspended: boolean,
+	/**  A previous snapshot from the same source exists; deltas are against it. */
+	hasBaseline: boolean,
+	/**  Wall time of the histogram or count request. */
+	elapsedMs: number,
+	source: JvmMemorySource,
+};
+
+export type JvmMemorySource = 
+/**  `GC.class_histogram -all`: sizes, and objects not yet collected. */
+"histogram" | 
+/**  JDWP `InstanceCounts`: reachable objects only, no sizes (`bytes` is 0). */
+"debugger";
+
+export type JvmMemoryUnavailable = 
+/**  An attach session whose JVM is remote, or local but not found by its JDWP port. */
+{ kind: "attachedJvmNotFound" } | 
+/**
+ *  An attach through the IDE's listen-mode relay: the JVM connected to the IDE, so it has
+ *  no JDWP listener to be found by.
+ */
+{ kind: "listenModeNotSupported" } | { kind: "unsupportedPlatform" } | { kind: "noJvmProcess" } | { kind: "listenerNotRunning" } | 
+/**  `java_major` is 0 when the version is unknown. */
+{ kind: "unsafeWhileSuspended"; javaMajor: number } | { kind: "programExited" } | { kind: "timedOut" };
+
+export type JvmObjectRef = {
+	/**  The `generation` of the [`JvmInstancesResult`] the object came from. */
+	generation: number,
+	id: number,
 };
 
 export type JvmPresentation = {
@@ -5600,7 +5822,19 @@ export type JvmPresentation = {
 	runnable: boolean,
 };
 
+export type JvmReferrer = {
+	value: JvmValue,
+	/**  Field names, or `"[i]"` for array slots, through which `value` points at the object. */
+	via: string[],
+};
+
+export type JvmReferrersResult = { status: "ready"; referrers: JvmReferrer[]; truncated: boolean } | { status: "unavailable"; reason: JvmInspectUnavailable };
+
 export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
+
+export type JvmValue = { kind: "null" } | { kind: "primitive"; typeName: string; text: string } | 
+/**  `text` is `None` when `length` exceeds [`STRING_PREVIEW_CHARS`]. */
+{ kind: "string"; id: number; text: string | null; length: number } | { kind: "boxed"; id: number; typeName: string; text: string } | { kind: "object"; id: number; typeName: string } | { kind: "array"; id: number; typeName: string; length: number };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
 export type LanguageCodeStyle = LanguageCodeStyle_Serialize | LanguageCodeStyle_Deserialize;
@@ -7776,6 +8010,16 @@ export type RepositoryComparison = {
 /**  A cancellable, streaming backend request issued by the UI. */
 export type RequestId = number;
 
+/**  A program a generator needs, and whether this machine has it. */
+export type Requirement = {
+	program: string,
+	min: string | null,
+	/**  The version found; `None` when the program is missing or reports none. */
+	found: string | null,
+	satisfied: boolean,
+	hint: string,
+};
+
 /**  `git reset` modes offered by Reset Current Branch to Here. */
 export type ResetMode = "soft" | "mixed" | "hard" | "keep";
 
@@ -8077,6 +8321,13 @@ export type RustSettings = {
 	/**  Extra arguments for rustfmt (rust-analyzer `rustfmt.extraArgs`), space-separated. */
 	rustfmtArgs?: string,
 };
+
+/**  Progress of `scaffold_create`. */
+export type ScaffoldEvent = 
+/**  A new step began. */
+{ type: "step"; text: string } | 
+/**  A line of a tool's output. */
+{ type: "line"; text: string };
 
 export type Scope = {
 	name: string,

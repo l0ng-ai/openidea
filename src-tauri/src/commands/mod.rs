@@ -22,6 +22,7 @@ pub mod deploy;
 pub mod doc;
 pub mod docker;
 pub mod env;
+pub mod file_dialog;
 pub mod fonts;
 pub mod fs;
 pub mod github;
@@ -37,6 +38,7 @@ pub mod plugin;
 pub mod profiler;
 pub mod refactor;
 pub mod run;
+pub mod scaffold;
 pub mod sdk;
 pub mod search;
 pub mod spell;
@@ -66,6 +68,8 @@ pub(crate) fn sender<T: tauri::ipc::IpcResponse + Send + Sync + 'static>(
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![
         app::app_info,
+        file_dialog::file_dialog_needs_gtk,
+        file_dialog::gtk_pick_paths,
         mcp::mcp_ui_ready,
         mcp::mcp_respond,
         mcp::mcp_server_status,
@@ -410,6 +414,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         build::maven_exclude_dependency,
         build::maven_goto_declaration,
         build::build_run,
+        build::build_compile_file,
         java::java_resolve_launch,
         java::java_debug_server,
         java::java_build_workspace,
@@ -439,6 +444,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         tools::jdk_download_releases,
         tools::jdk_download_location,
         tools::jdk_download,
+        scaffold::scaffold_catalog,
+        scaffold::scaffold_options,
+        scaffold::scaffold_requirements,
+        scaffold::scaffold_create,
         sdk::sdk_detect,
         sdk::sdk_python_interpreter,
         sdk::sdk_python_effective,
@@ -485,6 +494,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::app_update_status,
         window::app_update_announcement,
         window::app_install_update,
+        window::app_release_notes,
         debug::debug_exception_filters,
         debug::debug_set_exception_breakpoints,
         debug::debug_set_variable,
@@ -500,6 +510,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         debug::debug_free_port,
         debug::debug_listen_for_jvm,
         debug::debug_redefine_classes,
+        debug::debug_jvm_memory_classes,
+        debug::debug_jvm_memory_instances,
+        debug::debug_jvm_memory_fields,
+        debug::debug_jvm_memory_referrers,
         coverage::coverage_prepare,
         coverage::coverage_collect,
         coverage::coverage_import,

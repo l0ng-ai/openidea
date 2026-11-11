@@ -59,7 +59,7 @@ import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
 import { openDiff, withChain, type DiffData } from "@/features/vcs/diffInput";
 import { Composer } from "./Composer";
-import { SelectionQuote, selectionIn } from "./SelectionQuote";
+import { selectionIn } from "./selection";
 import { SubmitButton } from "./SubmitButton";
 import {
   canSend,
@@ -532,6 +532,7 @@ function scrollsInside(target: EventTarget | null, root: HTMLElement): boolean {
 function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
+  const [openFolds] = useState(() => new Map<string, boolean>());
   const key = entriesKey(task.id, subagent?.id ?? null);
   const positions = useAgents.getState().scrollPositions;
   const position = useRef(positions.get(key) ?? { top: 0, stick: true });
@@ -631,7 +632,16 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
     const el = ref.current;
     if (!el || entries === null || !visible) return;
     const truncated = entries.length < previousLength.current;
+    // A message the user just sent: back to the end, where it shows, wherever they had scrolled.
+    const sent = previousLength.current > 0 && entries.slice(previousLength.current).some((e) => e.type === "user");
     previousLength.current = entries.length;
+    if (sent && !position.current.stick) {
+      scrollingUp.current = false;
+      position.current = { top: el.scrollTop, stick: true };
+      positions.set(key, position.current);
+      setAway(false);
+      return;
+    }
     if ((truncated || entries.length === 0) && el.scrollHeight - el.scrollTop - el.clientHeight < 40) {
       scrollingUp.current = false;
       position.current = { top: el.scrollTop, stick: true };
@@ -733,138 +743,133 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
         ))}
       </TurnFold>
     ) : row.kind === "process" ? (
-      <ProcessRun row={row} task={task} lastIndex={lastIndex} busy={busy} renderRow={renderRow} />
+      <ProcessRun row={row} task={task} lastIndex={lastIndex} busy={busy} onDiagramDrawn={onDiagramDrawn} />
     ) : (
       renderRow(row)
     );
   return (
-    <div className={styles.streamArea}>
-      {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
-      <SelectionQuote task={task} streamRef={ref} />
-      <div
-        ref={ref}
-        // The conversation is read and copied like a document; focusable so ⌘F reaches it.
-        className={clsx(styles.stream, selectableText)}
-        tabIndex={-1}
-        onWheel={(e) => {
-          markUserScroll();
-          if (e.deltaY < 0 && !e.ctrlKey && !e.defaultPrevented) stopFollowing(e.target);
-          else if (e.deltaY > 0 && !e.ctrlKey && !e.defaultPrevented) scrollingUp.current = false;
-        }}
-        onTouchStart={(e) => {
-          touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
-        }}
-        onTouchMove={(e) => {
-          markUserScroll();
-          const y = e.touches.length === 1 ? e.touches[0]!.clientY : null;
-          if (y !== null && touchY.current !== null && y > touchY.current) stopFollowing(e.target);
-          else if (y !== null && touchY.current !== null && y < touchY.current) scrollingUp.current = false;
-          touchY.current = y;
-        }}
-        onKeyDown={(e) => {
-          markUserScroll();
-          if (e.defaultPrevented || (e.target as Element).closest("input, textarea, [contenteditable]")) return;
-          if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home" || (e.key === " " && e.shiftKey))
-            stopFollowing(e.target);
-          else if (e.key === "ArrowDown" || e.key === "PageDown" || e.key === "End" || (e.key === " " && !e.shiftKey))
+    <OpenFolds.Provider value={openFolds}>
+      <div className={styles.streamArea}>
+        {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
+        <div
+          ref={ref}
+          // The conversation is read and copied like a document; focusable so ⌘F reaches it.
+          className={clsx(styles.stream, selectableText)}
+          tabIndex={-1}
+          onWheel={(e) => {
+            markUserScroll();
+            if (e.deltaY < 0 && !e.ctrlKey && !e.defaultPrevented) stopFollowing(e.target);
+            else if (e.deltaY > 0 && !e.ctrlKey && !e.defaultPrevented) scrollingUp.current = false;
+          }}
+          onTouchStart={(e) => {
+            touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
+          }}
+          onTouchMove={(e) => {
+            markUserScroll();
+            const y = e.touches.length === 1 ? e.touches[0]!.clientY : null;
+            if (y !== null && touchY.current !== null && y > touchY.current) stopFollowing(e.target);
+            else if (y !== null && touchY.current !== null && y < touchY.current) scrollingUp.current = false;
+            touchY.current = y;
+          }}
+          onKeyDown={(e) => {
+            markUserScroll();
+            if (e.defaultPrevented || (e.target as Element).closest("input, textarea, [contenteditable]")) return;
+            if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home" || (e.key === " " && e.shiftKey))
+              stopFollowing(e.target);
+            else if (e.key === "ArrowDown" || e.key === "PageDown" || e.key === "End" || (e.key === " " && !e.shiftKey))
+              scrollingUp.current = false;
+          }}
+          onPointerDown={() => {
+            markUserScroll();
             scrollingUp.current = false;
-        }}
-        onPointerDown={() => {
-          markUserScroll();
-          scrollingUp.current = false;
-        }}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-          const laidOut = el.scrollHeight !== seenHeight.current;
-          seenHeight.current = el.scrollHeight;
-          const byUser = dragging.current || performance.now() - userScrolled.current < 500 || !laidOut;
-          const movedDown = el.scrollTop > position.current.top;
-          const stayedAtEnd = position.current.stick && el.scrollTop === position.current.top;
-          const stick =
-            (atEnd && !scrollingUp.current && (movedDown || stayedAtEnd)) || (position.current.stick && !byUser);
-          // Still following: back to the end the offset was moved away from.
-          if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
-          position.current = { top: el.scrollTop, stick };
-          positions.set(key, position.current);
-          setAway(!position.current.stick);
-          // Reached the top of what is painted: fetch the earlier entries, but only
-          // once the drag has settled.
-          if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
-          if (!position.current.stick && el.scrollTop < 120 && !dragging.current) loadWhenStill();
-        }}
-        // Copy, plus Quote for a selection: replies to it in the composer.
-        onContextMenu={(e) => {
-          const text = selectionIn(e.currentTarget);
-          const items = copyMenuFor(e.target) ?? [];
-          if (text.trim() && task.status !== "archived") {
-            items.push({
-              kind: "action",
-              action: "agents.quoteReply",
-              label: "Quote",
-              arg: { task: task.id, text },
-            });
-          }
-          if (!items.length) return;
-          e.preventDefault();
-          showContextMenu(e, items);
-        }}
-      >
-        {loadError && (
-          <div role="alert">
-            <EmptyState
-              title={tx`Couldn't load the conversation: ${loadError}`}
-              actions={
-                <Button
-                  onClick={() =>
-                    void executeAction("agents.retryConversation", {
-                      task: task.id,
-                      subagent: subagent?.id ?? null,
-                    })
-                  }
-                >
-                  Retry
-                </Button>
-              }
-            />
-          </div>
-        )}
-        {entries === null ? (
-          !loadError && <Spinner />
-        ) : entries.length === 0 && !busy && !loadError ? (
-          <EmptyState title="No conversation history" />
-        ) : (
-          rows.map((row) => (
-            <div
-              key={row.index}
-              className={styles.conversationRow}
-              data-message={
-                (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
-              }
-              data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
-            >
-              {authorHeaders.has(row.index) && (
-                <div className={styles.agentAuthor}>
-                  <div className={styles.role}>
-                    <Icon name={providerIcon(task.provider)} size={13} />
-                    <span>{providerName(task.provider)}</span>
-                  </div>
-                </div>
-              )}
-              {renderConversationRow(row)}
+          }}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+            const laidOut = el.scrollHeight !== seenHeight.current;
+            seenHeight.current = el.scrollHeight;
+            const byUser = dragging.current || performance.now() - userScrolled.current < 500 || !laidOut;
+            const movedDown = el.scrollTop > position.current.top;
+            const stayedAtEnd = position.current.stick && el.scrollTop === position.current.top;
+            const stick =
+              (atEnd && !scrollingUp.current && (movedDown || stayedAtEnd)) || (position.current.stick && !byUser);
+            // Still following: back to the end the offset was moved away from.
+            if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
+            position.current = { top: el.scrollTop, stick };
+            positions.set(key, position.current);
+            setAway(!position.current.stick);
+            // Reached the top of what is painted: fetch the earlier entries, but only
+            // once the drag has settled.
+            if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
+            if (!position.current.stick && el.scrollTop < 120 && !dragging.current) loadWhenStill();
+          }}
+          // Copy, plus Quote for a selection: replies to it in the composer.
+          onContextMenu={(e) => {
+            const text = selectionIn(e.currentTarget);
+            const items = copyMenuFor(e.target) ?? [];
+            if (text.trim() && task.status !== "archived") {
+              items.push({
+                kind: "action",
+                action: "agents.quoteReply",
+                label: "Quote",
+                arg: { task: task.id, text },
+              });
+            }
+            if (!items.length) return;
+            e.preventDefault();
+            showContextMenu(e, items);
+          }}
+        >
+          {loadError && (
+            <div role="alert">
+              <EmptyState
+                title={tx`Couldn't load the conversation: ${loadError}`}
+                actions={
+                  <Button
+                    onClick={() =>
+                      void executeAction("agents.retryConversation", {
+                        task: task.id,
+                        subagent: subagent?.id ?? null,
+                      })
+                    }
+                  >
+                    Retry
+                  </Button>
+                }
+              />
             </div>
-          ))
-        )}
-        {subagent && subagentWorking(subagent.status) && (
-          <div className={styles.working}>
-            <Spinner size={12} />
-            <T>{subagent.status === "needsInput" ? "Waiting for your answer…" : "Working…"}</T>
-            {subagent.startedMs != null && <Elapsed since={subagent.startedMs} />}
-          </div>
-        )}
+          )}
+          {entries === null ? (
+            !loadError && <Spinner />
+          ) : entries.length === 0 && !busy && !loadError ? (
+            <EmptyState title="No conversation history" />
+          ) : (
+            rows.map((row) => (
+              <div
+                key={row.index}
+                className={styles.conversationRow}
+                data-message={
+                  (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
+                }
+                data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
+              >
+                {authorHeaders.has(row.index) && (
+                  <div className={styles.agentAuthor}>
+                    <div className={styles.role}>
+                      <Icon name={providerIcon(task.provider)} size={13} />
+                      <span>{providerName(task.provider)}</span>
+                    </div>
+                  </div>
+                )}
+                {renderConversationRow(row)}
+              </div>
+            ))
+          )}
+          <WorkingRow task={task} entries={entries} subagent={subagent} />
+        </div>
+        {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
       </div>
-      {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
-    </div>
+    </OpenFolds.Provider>
   );
 }
 
@@ -1162,6 +1167,15 @@ function AgentMessage({
   );
 }
 
+/** The first line of reasoning, without its Markdown emphasis: what a folded thought was about. */
+export function thoughtPreview(text: string): string {
+  const line = text.split("\n").find((l) => l.trim()) ?? "";
+  return line
+    .replace(/^\s*(#+\s*|[-*]\s+)?/, "")
+    .replace(/[*_`]+/g, "")
+    .trim();
+}
+
 /** The agent's reasoning: open while it streams, folded after, as Settings › Agents › Chat says. */
 function ThoughtEntry({
   task,
@@ -1174,8 +1188,13 @@ function ThoughtEntry({
   working: boolean;
   onDiagramDrawn: () => void;
 }) {
-  const { thinking } = useAgentSettings();
+  const { thinking, smoothText } = useAgentSettings();
   const open = thinking === "expanded" || (thinking === "auto" && working);
+  // Streaming reasoning in view is revealed at the reply's pace; folded, nothing is painted.
+  const shown = useRevealedText(text, working && smoothText && open);
+  useLayoutEffect(() => {
+    if (working && open) onDiagramDrawn();
+  }, [shown, working, open, onDiagramDrawn]);
   return (
     <div className={styles.process}>
       <Fold
@@ -1183,17 +1202,19 @@ function ThoughtEntry({
         open={open}
         summary={
           <summary>
+            <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
             {working ? (
-              <Spinner size={12} />
+              <span className={styles.shimmer}>
+                <T>Thinking</T>
+              </span>
             ) : (
-              <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
+              <span className={styles.thoughtPreview}>{thoughtPreview(text) || <T>Reasoning</T>}</span>
             )}
-            <T>{working ? "Thinking" : "Reasoning"}</T>
           </summary>
         }
       >
         <div className={styles.thoughtBody}>
-          <Markdown text={text} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
+          <Markdown text={shown} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
         </div>
       </Fold>
     </div>
@@ -1546,8 +1567,11 @@ type EntryRow = Extract<ConversationRow, { kind: "entry" }>;
 const liveTool = (entry: AgentEntry) =>
   entry.type === "tool" && (entry.status === "running" || entry.status === "pending");
 
-/** Reasoning and finished tool calls fold together; a running tool stays visible on its own. */
-const isProcessEntry = (entry: AgentEntry) => entry.type === "thought" || (entry.type === "tool" && !liveTool(entry));
+/**
+ * Reasoning and tool calls fold together, running ones included: the run keeps its place while
+ * a call finishes, and its summary line says what is running.
+ */
+const isProcessEntry = (entry: AgentEntry) => entry.type === "thought" || entry.type === "tool";
 
 /**
  * The conversation's rows from `from`: a run of reasoning and finished tool calls becomes
@@ -1594,11 +1618,11 @@ export function foldTurnRows(rows: ConversationRow[], turns: ReadonlyMap<number,
   return out;
 }
 
-/** "Reasoning · Edited 2 files · Read 4 files": what a run of work did. */
+/** "Edited 2 files · Read 4 files": what a run of work did; "Reasoning" when it only thought. */
 function workSummaryText(work: WorkSummary, tx: ReturnType<typeof useTx>, toolCalls: number): string[] {
   const parts = workParts(work).map((p) => tx(p.text).replace("{count}", String(p.count)));
   if (!parts.length && toolCalls) parts.push(`${toolCalls} ${tx(toolCalls === 1 ? "tool call" : "tool calls")}`);
-  if (work.thoughts) parts.unshift(tx("Reasoning"));
+  if (!parts.length && work.thoughts) parts.push(tx("Reasoning"));
   return parts;
 }
 
@@ -1621,11 +1645,12 @@ function TurnFold({
   const took = turn.sentMs != null && turn.doneMs != null ? formatDuration(turn.doneMs - turn.sentMs) : null;
   return (
     <Fold
+      id={`turn:${turn.user}`}
       className={clsx(styles.turnFold, styles.process)}
       summary={
         <summary className={styles.processSummary}>
           <Icon name="chevron-right" size={12} className={styles.processChevron} />
-          <span>{parts.join(" · ")}</span>
+          <span className={styles.processParts}>{parts.join(" · ")}</span>
           {work.added > 0 && <span className={styles.added}>+{work.added}</span>}
           {work.removed > 0 && <span className={styles.removed}>−{work.removed}</span>}
           {took && <span className={styles.muted}>{took}</span>}
@@ -1643,14 +1668,13 @@ const ProcessRun = memo(function ProcessRun({
   task,
   lastIndex,
   busy,
-  renderRow,
+  onDiagramDrawn,
 }: {
   row: Extract<ConversationRow, { kind: "process" }>;
   task: AgentTask;
   lastIndex: number;
   busy: boolean;
-  /** Renders one non-folded row (a reasoning entry). */
-  renderRow: (row: EntryRow) => ReactElement;
+  onDiagramDrawn: () => void;
 }) {
   const tx = useTx();
   const tools = row.entries.filter(
@@ -1660,26 +1684,55 @@ const ProcessRun = memo(function ProcessRun({
   const { added, removed } = work;
   const working = busy && row.entries.some(({ index }) => index === lastIndex);
   const parts = workSummaryText(work, tx, tools.length);
+  // What the run is doing now: the call still running, or the reasoning it ends with.
+  const live = [...tools].reverse().find(({ entry }) => liveTool(entry))?.entry;
+  const last = row.entries.at(-1)!.entry;
+  const current = live
+    ? shortTitle(task, live.title || live.kind)
+    : working && last.type === "thought"
+      ? tx("Thinking")
+      : null;
+  // While the run grows, its open body follows the latest call unless scrolled up.
+  const body = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
+  useLayoutEffect(() => {
+    const el = body.current;
+    if (el && working && following.current) el.scrollTop = el.scrollHeight;
+  });
   return (
     <Fold
+      id={`run:${row.index}`}
       className={clsx(styles.processRun, styles.process)}
       summary={
         <summary className={styles.processSummary}>
           <Icon name="chevron-right" size={12} className={styles.processChevron} />
-          {working && <Spinner size={12} />}
-          <span>{parts.join(" · ")}</span>
+          <span className={clsx(styles.processParts, (working || live) && styles.shimmer)}>{parts.join(" · ")}</span>
           {added > 0 && <span className={styles.added}>+{added}</span>}
           {removed > 0 && <span className={styles.removed}>−{removed}</span>}
+          {current && <span className={clsx(styles.processCurrent, styles.shimmer)}>{current}</span>}
         </summary>
       }
     >
-      <div className={styles.processBody}>
+      <div
+        ref={body}
+        className={styles.processBody}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        }}
+      >
         {row.entries.map(({ index, entry }) =>
           entry.type === "tool" ? (
             <ToolEntry key={index} task={task} entry={entry} />
-          ) : (
-            renderRow({ kind: "entry", index, entry })
-          ),
+          ) : entry.type === "thought" ? (
+            <ThoughtEntry
+              key={index}
+              task={task}
+              text={entry.text}
+              working={busy && index === lastIndex}
+              onDiagramDrawn={onDiagramDrawn}
+            />
+          ) : null,
         )}
       </div>
     </Fold>
@@ -1690,24 +1743,45 @@ const ProcessRun = memo(function ProcessRun({
 const FoldedContent = createContext(false);
 
 /**
+ * Which keyed folds of a conversation the reader opened. A fold's row can remount (a run
+ * grows from one call to two, a finished turn folds its work away); this keeps it as it was.
+ */
+const OpenFolds = createContext<Map<string, boolean> | null>(null);
+
+/**
  * A collapsed section that renders its content only once opened: most of a long conversation
  * stays folded, and keeping it out of the DOM keeps showing and restyling the tab cheap.
  */
 function Fold({
+  id,
   className,
   open,
   summary,
   children,
 }: {
+  /** Remembers whether the reader opened it across remounts (`OpenFolds`). */
+  id?: string;
   className?: string;
   open?: boolean;
   summary: ReactElement;
   children: ReactNode;
 }) {
   const always = useContext(FoldedContent);
-  const [expanded, setExpanded] = useState(!!open);
+  const remembered = useContext(OpenFolds);
+  const [expanded, setExpanded] = useState(() => !!open || (!!id && !!remembered?.get(id)));
   return (
-    <details className={className} open={open || undefined} onToggle={(e) => setExpanded(e.currentTarget.open)}>
+    <details
+      className={className}
+      open={open || (!!id && expanded) || undefined}
+      onToggle={(e) => {
+        const now = e.currentTarget.open;
+        setExpanded(now);
+        if (id && remembered) {
+          if (now) remembered.set(id, true);
+          else remembered.delete(id);
+        }
+      }}
+    >
       {summary}
       {(expanded || open || always) && children}
     </details>
@@ -1725,7 +1799,7 @@ const ToolEntry = memo(function ToolEntry({
   const head = (
     <>
       <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} />
-      <span className={styles.toolTitle} title={entry.title || entry.kind}>
+      <span className={clsx(styles.toolTitle, liveTool(entry) && styles.shimmer)} title={entry.title || entry.kind}>
         {shortTitle(task, entry.title || entry.kind)}
       </span>
       {entry.diffs.map((d) => (
@@ -1742,7 +1816,6 @@ const ToolEntry = memo(function ToolEntry({
           <span className={styles.added}>+{d.added}</span> <span className={styles.removed}>−{d.removed}</span>
         </button>
       ))}
-      {(entry.status === "running" || entry.status === "pending") && <Spinner size={12} />}
       {entry.status === "failed" && <Icon name="error" size={12} />}
     </>
   );
@@ -2357,8 +2430,6 @@ function Tray({
   const planShown = plan && plan.items.length > 0 && done < plan.items.length;
   const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
   const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
-  const busy = task.status === "running" || task.status === "starting";
-  const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   return (
     <div className={styles.tray}>
       {pending && <PendingPermission task={task} entry={pending} />}
@@ -2409,17 +2480,45 @@ function Tray({
         </div>
       )}
       {children}
-      {busy && !pending && (
-        <div className={styles.working} role="status">
-          <Spinner size={12} />
-          {task.retry ? (
-            <Retrying retry={task.retry} />
-          ) : (
-            <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
-          )}
-          {lastUser?.sentMs != null && !lastUser.doneMs && <Elapsed since={lastUser.sentMs} />}
-        </div>
+    </div>
+  );
+}
+
+/**
+ * The end of the conversation while the agent works on it: what it is doing (starting, working,
+ * retrying the API) and for how long. Hidden while it waits for an approval, which says so itself.
+ */
+function WorkingRow({
+  task,
+  entries,
+  subagent,
+}: {
+  task: AgentTask;
+  entries: AgentEntry[] | null;
+  subagent: SubagentEntry | null;
+}) {
+  if (subagent) {
+    if (!subagentWorking(subagent.status)) return null;
+    return (
+      <div className={styles.working} role="status">
+        <Spinner size={12} />
+        <T>{subagent.status === "needsInput" ? "Waiting for your answer…" : "Working…"}</T>
+        {subagent.startedMs != null && <Elapsed since={subagent.startedMs} />}
+      </div>
+    );
+  }
+  if (task.status !== "running" && task.status !== "starting") return null;
+  if (entries?.some((e) => e.type === "permission" && !e.chosen && !e.questions?.length)) return null;
+  const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
+  return (
+    <div className={styles.working} role="status">
+      <Spinner size={12} />
+      {task.retry ? (
+        <Retrying retry={task.retry} />
+      ) : (
+        <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
       )}
+      {lastUser?.sentMs != null && !lastUser.doneMs && <Elapsed since={lastUser.sentMs} />}
     </div>
   );
 }

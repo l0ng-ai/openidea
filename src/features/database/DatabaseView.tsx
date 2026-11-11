@@ -319,11 +319,22 @@ export function DatabaseView() {
   const load = async (n: Node) => {
     if (n.kind === "source") {
       const id = n.source.id ?? "";
-      if (!(await connect(id))) return;
+      if (!(await connect(id))) {
+        const err = { status: "error" as const, message: tx("Cannot connect") };
+        if (listsDatabases(n.source)) useDatabase.setState((s) => ({ databases: { ...s.databases, [id]: err } }));
+        else useDatabase.setState((s) => ({ schemas: { ...s.schemas, [id]: err } }));
+        return;
+      }
       if (listsDatabases(n.source)) await loadDatabases(id);
       else await loadSchemas(id);
     } else if (n.kind === "database") {
-      if (await connect(n.id)) await loadSchemas(n.id);
+      if (!(await connect(n.id))) {
+        useDatabase.setState((s) => ({
+          schemas: { ...s.schemas, [n.id]: { status: "error", message: tx("Cannot connect") } },
+        }));
+        return;
+      }
+      await loadSchemas(n.id);
     } else if (n.kind === "schema") await loadTables(n.id, n.schema);
     else if (n.kind === "table") await loadDetails(n.id, n.schema, n.table.name);
   };

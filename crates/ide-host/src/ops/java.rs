@@ -54,9 +54,15 @@ async fn resolve_launch(
             project.java_launch_snapshots.lock().initialize();
             let model = load(&project.root, &project.build_cache_dir(), &settings);
             let non_java = build && compile::launch_has_non_java_sources(&project.root, &model, &module, test);
+            let is_maven =
+                model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| project.root.join(&p.dir) == module));
             let delegated = build
-                && model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| project.root.join(&p.dir) == module))
-                && (non_java || cache::has_record(&project.root, &project.build_cache_dir(), &module));
+                && delegates_to_external_build(
+                    is_maven,
+                    policy,
+                    non_java,
+                    cache::has_record(&project.root, &project.build_cache_dir(), &module),
+                );
             let external = non_java || delegated;
             (model, external, delegated)
         })
@@ -80,7 +86,7 @@ async fn resolve_launch(
                 &cancel,
             )?;
             let copies = use_snapshot(&mut info, &outputs.originals, &outputs.snapshot);
-            apply_external_build_result(&mut info, outputs.failure);
+            apply_external_build_result(&mut info, outputs.failure, policy == BuildPolicy::Rebuild);
             copies
         } else if external {
             let built = compile::build_for_launch(&project.root, &model, &module, test, build_kind, &cancel)?;
@@ -149,10 +155,16 @@ async fn resolve_launch(
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-fn apply_external_build_result(info: &mut JavaLaunchInfo, failure: Option<String>) {
+fn apply_external_build_result(info: &mut JavaLaunchInfo, failure: Option<String>, clean: bool) {
     info.build = Some(if let Some(failure) = failure {
         info.hints.push(failure);
         JavaBuildStatus::Failed
+    } else if clean {
+        // A clean external build recompiled every source; JDT's diagnostics still describe
+        // the previous output (and reject sources javac accepts, e.g. a package mismatch).
+        info.errors.clear();
+        info.error_count = 0;
+        JavaBuildStatus::Succeeded
     } else if info.error_count > 0 {
         // Incremental Maven compilation can accept error-stub classes written by JDT.
         JavaBuildStatus::WithErrors
@@ -210,6 +222,13 @@ fn apply_library_classpath(
             info.class_paths.push(entry);
         }
     }
+}
+
+/// Whether a launch should be built by the project's build system instead of jdtls.
+/// A Rebuild has to clean the output; jdtls' full build only recompiles sources, so
+/// Maven modules always delegate for it, even when every source is Java.
+fn delegates_to_external_build(is_maven: bool, policy: BuildPolicy, non_java: bool, has_record: bool) -> bool {
+    is_maven && (policy == BuildPolicy::Rebuild || non_java || has_record)
 }
 
 fn same_entry(a: &str, b: &str, windows: bool) -> bool {
@@ -289,6 +308,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rebuild_delegates_maven_builds_to_the_build_system() {
+        assert!(delegates_to_external_build(true, BuildPolicy::Rebuild, false, false));
+        assert!(delegates_to_external_build(true, BuildPolicy::Automatic, true, false));
+        assert!(delegates_to_external_build(true, BuildPolicy::Make, false, true));
+        assert!(!delegates_to_external_build(true, BuildPolicy::Automatic, false, false));
+        assert!(!delegates_to_external_build(true, BuildPolicy::Make, false, false));
+        assert!(!delegates_to_external_build(false, BuildPolicy::Rebuild, false, false));
+    }
+
+    #[test]
     fn successful_external_compilation_does_not_erase_scoped_jdt_errors() {
         for (failure, expected) in
             [(None, JavaBuildStatus::WithErrors), (Some("compile failed"), JavaBuildStatus::Failed)]
@@ -304,15 +333,33 @@ mod tests {
                 ..Default::default()
             };
             let errors = info.errors.clone();
-            apply_external_build_result(&mut info, failure.map(str::to_owned));
+            apply_external_build_result(&mut info, failure.map(str::to_owned), false);
             assert_eq!(info.build, Some(expected));
             assert_eq!(info.error_count, 1);
             assert_eq!(info.errors, errors);
             assert_eq!(info.hints, failure.into_iter().collect::<Vec<_>>());
         }
         let mut info = JavaLaunchInfo::default();
-        apply_external_build_result(&mut info, None);
+        apply_external_build_result(&mut info, None, false);
         assert_eq!(info.build, Some(JavaBuildStatus::Succeeded));
+    }
+
+    #[test]
+    fn clean_external_build_clears_stale_jdt_errors() {
+        let mut info = JavaLaunchInfo {
+            error_count: 7,
+            errors: vec![ide_lsp::jdtls::JavaCompileError {
+                path: "src/main/java/Main.java".into(),
+                line: 0,
+                column: 0,
+                message: "stale JDT diagnostic".into(),
+            }],
+            ..Default::default()
+        };
+        apply_external_build_result(&mut info, None, true);
+        assert_eq!(info.build, Some(JavaBuildStatus::Succeeded));
+        assert_eq!(info.error_count, 0);
+        assert!(info.errors.is_empty());
     }
 
     #[test]

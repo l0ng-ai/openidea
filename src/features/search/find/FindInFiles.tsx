@@ -89,7 +89,7 @@ import styles from "./FindInFiles.module.css";
 /** The Directory scope's browse button: a folder chooser opened at the current directory. */
 async function chooseDirectory(current: string): Promise<string | null> {
   if (!isTauri()) return null;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     directory: true,
     multiple: false,

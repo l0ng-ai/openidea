@@ -7,6 +7,7 @@
 //! [`super::resolve`] turns them into IDE coordinates.
 
 use ide_core::Severity;
+pub(crate) use ide_core::output_encoding::strip_ansi;
 use serde_json::Value;
 
 /// Output dialect of a build step.
@@ -96,32 +97,6 @@ struct Pending {
 pub(crate) struct OutputParser {
     format: Format,
     pending: Option<Pending>,
-}
-
-/// Removes ANSI escape sequences (colour, cursor movement).
-pub(crate) fn strip_ansi(s: &str) -> String {
-    if !s.contains('\u{1b}') {
-        return s.to_owned();
-    }
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '\u{1b}' {
-            out.push(c);
-            continue;
-        }
-        if chars.peek() == Some(&'[') {
-            chars.next();
-            for c in chars.by_ref() {
-                if c.is_ascii_alphabetic() || c == '~' {
-                    break;
-                }
-            }
-        } else {
-            chars.next();
-        }
-    }
-    out
 }
 
 fn num(s: &str) -> Option<u32> {

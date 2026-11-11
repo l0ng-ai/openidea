@@ -60,7 +60,9 @@ function ProjectButton() {
   const actions = useActions((s) => s.actions);
   const Popup = useWorkbenchSlots((s) => s.projectPopup);
   const items = useMemo<MenuItem[]>(() => {
-    const list: MenuItem[] = [{ kind: "action", action: "file.openProject", label: "Open…" }];
+    const list: MenuItem[] = [];
+    if (actions.has("file.newProject")) list.push({ kind: "action", action: "file.newProject", label: "New Project…" });
+    list.push({ kind: "action", action: "file.openProject", label: "Open…" });
     if (actions.has("welcome.recentProjects")) list.push({ kind: "action", action: "welcome.recentProjects" });
     list.push({ kind: "separator" }, { kind: "action", action: "file.closeProject" });
     return list;
