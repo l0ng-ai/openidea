@@ -2095,20 +2095,20 @@ async fn stop_kills_the_program_started_by_the_reported_launcher() {
 fn delve_leftovers_are_removed_without_touching_other_files() {
     let dir = std::env::temp_dir().join(format!("openidea-delve-bin-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    for name in ["__debug_bin", "__debug_bin.exe", "__debug_bin.exe3323301925"] {
+    for name in ["__debug_bin", "__debug_bin833767175", "__debug_bin.exe", "__debug_bin.exe3323301925"] {
         std::fs::write(dir.join(name), b"bin").unwrap();
     }
     // Lookalikes that are not Delve's own binaries stay: sources, a future
     // in-progress build, and a directory that happens to share the name.
-    for name in ["__debug_bin.go", "__debug_bin.go.exe", "main.go"] {
+    for name in ["__debug_bin.go", "__debug_bin.go.exe", "__debug_bin12.go", "main.go"] {
         std::fs::write(dir.join(name), b"keep").unwrap();
     }
     std::fs::create_dir(dir.join("__debug_bin.dir")).unwrap();
     remove_delve_binaries(&dir);
-    for name in ["__debug_bin", "__debug_bin.exe", "__debug_bin.exe3323301925"] {
+    for name in ["__debug_bin", "__debug_bin833767175", "__debug_bin.exe", "__debug_bin.exe3323301925"] {
         assert!(!dir.join(name).exists(), "{name} should be gone");
     }
-    for name in ["__debug_bin.go", "__debug_bin.go.exe", "main.go", "__debug_bin.dir"] {
+    for name in ["__debug_bin.go", "__debug_bin.go.exe", "__debug_bin12.go", "main.go", "__debug_bin.dir"] {
         assert!(dir.join(name).exists(), "{name} should stay");
     }
     std::fs::remove_dir_all(&dir).unwrap();
