@@ -1,4 +1,13 @@
 {
+  "Debugging Kotlin with kotlin-debug-adapter": "Debugging Kotlin with kotlin-debug-adapter",
+  "Waiting for kotlin-lsp to import the project": "Waiting for kotlin-lsp to import the project",
+  "kotlin-lsp is not the Kotlin language server of this project.": "kotlin-lsp is not the Kotlin language server of this project.",
+  "kotlin-lsp is not installed.": "kotlin-lsp is not installed.",
+  "kotlin-lsp did not start: {detail}": "kotlin-lsp did not start: {detail}",
+  "kotlin-lsp is still importing the project. Debug again once the import has finished to use its debugger.": "kotlin-lsp is still importing the project. Debug again once the import has finished to use its debugger.",
+  "kotlin-lsp could not import the project.": "kotlin-lsp could not import the project.",
+  "kotlin-lsp could not start its debugger: {detail}": "kotlin-lsp could not start its debugger: {detail}",
+  "kotlin-lsp or kotlin-debug-adapter (Kotlin)": "kotlin-lsp or kotlin-debug-adapter (Kotlin)",
   "Black": "Black",
   "Bright blue": "Bright blue",
   "Bright cyan": "Bright cyan",
