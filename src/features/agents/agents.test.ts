@@ -4,6 +4,8 @@ import {
   applyCompletion,
   atEdgeLine,
   bypassDefaults,
+  cursorModelDefaults,
+  modelConfigOptions,
   canSend,
   completionAt,
   isPathQuery,
@@ -196,6 +198,15 @@ describe("agent composer", () => {
     expect(atEdgeLine("a\nb", 1, -1)).toBe(true);
     expect(atEdgeLine("a\nb", 3, -1)).toBe(false);
     expect(atEdgeLine("a\nb", 1, 1)).toBe(false);
+  });
+
+  it("defaults Cursor fast mode off when available", () => {
+    const fast = option("model_config", ["false", "true"], "true");
+    fast.id = "fast";
+    fast.name = "Fast";
+    expect(cursorModelDefaults("cursor", [fast])).toEqual({ fast: "false" });
+    expect(cursorModelDefaults("claude", [fast])).toEqual({});
+    expect(modelConfigOptions([fast]).map((o) => o.id)).toEqual(["fast"]);
   });
 
   it("picks the main settings and cycles the mode", () => {

@@ -107,7 +107,15 @@ pub(crate) fn parse_options(options: &Value) -> Vec<AgentConfigOption> {
             Some(AgentConfigOption {
                 name: str_of(o, "name").unwrap_or_else(|| id.clone()),
                 description: str_of(o, "description"),
-                category: str_of(o, "category").or_else(|| matches!(id.as_str(), "model" | "mode").then(|| id.clone())),
+                category: str_of(o, "category").or_else(|| {
+                    matches!(id.as_str(), "model" | "mode")
+                        .then(|| id.clone())
+                        .or_else(|| {
+                            matches!(id.as_str(), "effort" | "reasoning_effort" | "thinking" | "reasoning")
+                                .then(|| "thought_level".into())
+                        })
+                        .or_else(|| matches!(id.as_str(), "fast").then(|| "model_config".into()))
+                }),
                 current: str_of(o, "currentValue"),
                 values,
                 via: AgentConfigVia::Option,

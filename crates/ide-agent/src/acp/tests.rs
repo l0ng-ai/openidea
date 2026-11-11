@@ -93,9 +93,15 @@ fn the_negotiating_request_carries_both_versions() {
     assert!(p["capabilities"].is_object());
     assert_eq!(p["clientCapabilities"]["subagents"], json!({}));
     assert_eq!(p["clientCapabilities"]["terminal"], false);
+    assert_eq!(
+        p["clientCapabilities"]["_meta"]["parameterizedModelPicker"], true,
+        "Cursor and similar agents need parameterized model options (e.g. fast on/off)"
+    );
     // What we sent in the capture is what claude-agent-acp negotiated v2 and v1 from.
     let sent = &frames(TURN, "out")[0]["params"];
-    assert_eq!(sent["clientCapabilities"], p["clientCapabilities"]);
+    assert_eq!(sent["clientCapabilities"]["fs"], p["clientCapabilities"]["fs"]);
+    assert_eq!(sent["clientCapabilities"]["terminal"], p["clientCapabilities"]["terminal"]);
+    assert_eq!(sent["clientCapabilities"]["subagents"], p["clientCapabilities"]["subagents"]);
 }
 
 #[test]
