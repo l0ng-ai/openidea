@@ -17,9 +17,11 @@ pub async fn fs_read_range(_host: &Host, _window: &str, path: PathBuf, offset: u
     blocking(move || ide_vfs::read_range(&path, offset, len)).await
 }
 
-/// An image file as a `data:` URL.
-pub async fn fs_read_image(_host: &Host, _window: &str, path: PathBuf) -> IdeResult<String> {
-    blocking(move || ide_vfs::read_data_url(&path)).await
+/// An image file as a `data:` URL. A network path is read only from a share an open project is
+/// on: the path may come from Markdown, and opening a share signs in to its server.
+pub async fn fs_read_image(host: &Host, _window: &str, path: PathBuf) -> IdeResult<String> {
+    let opened: Vec<PathBuf> = host.projects().iter().map(|project| project.root.clone()).collect();
+    blocking(move || ide_vfs::read_data_url(&path, &opened)).await
 }
 
 /// Commands of this module the remote server answers.

@@ -260,6 +260,8 @@ describe("catalogs", () => {
     "⌘Enter",
     "Fork",
     "Shell",
+    "ID",
+    "my-agent",
     "Java",
     "Python",
     "C/C++",
@@ -283,6 +285,8 @@ describe("catalogs", () => {
     "Yarn",
     "Cargo",
     "CMake",
+    "f-string",
+    "Tailwind CSS",
   ]);
   const translated = SUPPORTED_LOCALES.filter((locale) => locale !== "en").sort();
 

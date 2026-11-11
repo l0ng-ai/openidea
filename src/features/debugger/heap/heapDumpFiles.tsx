@@ -3,6 +3,7 @@ import { ProgressBar } from "@/ui";
 import { setContext } from "@/platform/context";
 import { tx, useTx } from "@/platform/i18n";
 import { call, commands, IpcError } from "@/platform/ipc";
+import { open as openDialog, save as saveDialog } from "@/platform/dialog";
 import { ipcPath } from "@/platform/paths";
 import { basename } from "@/platform/project";
 import { isRemoteWindow, useRemote } from "@/platform/remote";
@@ -43,8 +44,7 @@ export async function openHeapDump(): Promise<void> {
   }
   // One file at a time; the running open keeps its progress notification.
   if (useHeap.getState().opening) return;
-  const { open } = await import("@tauri-apps/plugin-dialog");
-  const picked = await open({ multiple: false, directory: false, filters: FILTERS() });
+  const picked = await openDialog({ multiple: false, directory: false, filters: FILTERS() });
   if (typeof picked !== "string" || useHeap.getState().opening) return;
   const path = ipcPath(picked);
   const name = basename(path);
@@ -85,8 +85,7 @@ export async function openHeapDump(): Promise<void> {
 export async function saveHeapDump(id: number): Promise<void> {
   const entry = useHeap.getState().snapshots[id];
   if (!entry || entry.info.origin.kind !== "captured" || isRemoteWindow()) return;
-  const { save } = await import("@tauri-apps/plugin-dialog");
-  const picked = await save({
+  const picked = await saveDialog({
     defaultPath: `${entry.info.label.replace(/[/\\:*?"<>|]/g, "-")}.hprof`,
     filters: FILTERS(),
   });

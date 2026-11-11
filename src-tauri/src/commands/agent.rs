@@ -3,8 +3,8 @@
 use crate::state::AppState;
 use ide_agent::registry::AgentRegistry;
 use ide_agent::{
-    AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
-    ExternalSession, McpServer, McpServerInput, NewAgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt,
+    AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
@@ -60,6 +60,32 @@ pub fn agent_set_env(
     env: std::collections::BTreeMap<String, String>,
 ) -> IdeResult<()> {
     agent::set_env(&state.host, window.label(), id, env)
+}
+
+/// Saves a new custom ACP agent through its agent file; refuses built-in and
+/// ACP Registry ids and taken ids.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_custom_save(window: Window, state: State<'_, AppState>, input: CustomAgentInput) -> IdeResult<()> {
+    agent::save_custom_agent(&state.host, window.label(), input)
+}
+
+/// Removes a custom agent's file (registry installs go through `agent_registry_remove`).
+#[tauri::command]
+#[specta::specta]
+pub fn agent_custom_remove(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
+    agent::remove_custom_agent(&state.host, window.label(), id)
+}
+
+/// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_custom_import(
+    window: Window,
+    state: State<'_, AppState>,
+    text: String,
+) -> IdeResult<Vec<AcpImportOutcome>> {
+    agent::import_acp_agents(&state.host, window.label(), text)
 }
 
 /// Agents of the ACP Registry this machine can run, with what is installed; the list
@@ -166,23 +192,23 @@ pub async fn agent_create(window: Window, state: State<'_, AppState>, request: N
     agent::create(&state.host, window.label(), request).await
 }
 
-/// Sessions on this machine that no task holds yet, newest first (#312).
+/// Sessions of the project on this machine that no task holds yet, newest first.
 #[tauri::command]
 #[specta::specta]
-pub fn agent_external_sessions(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ExternalSession>> {
-    agent::external_sessions(&state.host, window.label())
+pub async fn agent_external_sessions(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ExternalSession>> {
+    agent::external_sessions(&state.host, window.label()).await
 }
 
-/// Imports an external session as a task: its first turn loads and replays it (#312).
+/// Imports an external session as a task: its first turn loads and replays it.
 #[tauri::command]
 #[specta::specta]
-pub fn agent_import_session(
+pub async fn agent_import_session(
     window: Window,
     state: State<'_, AppState>,
     provider: String,
     session_id: String,
 ) -> IdeResult<AgentTask> {
-    agent::import_session(&state.host, window.label(), provider, session_id)
+    agent::import_session(&state.host, window.label(), provider, session_id).await
 }
 
 /// Sends a message; while the agent works it is queued, or with `now` it interrupts the turn.
@@ -354,6 +380,19 @@ pub async fn agent_rollback_changes(
     paths: Option<Vec<String>>,
 ) -> IdeResult<()> {
     agent::rollback_changes(&state.host, window.label(), task, paths).await
+}
+
+/// Accept: copies a worktree task's changed files among `paths` (all without) into the
+/// local checkout, uncommitted; files the checkout changed itself are left alone and reported.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_accept_changes(
+    window: Window,
+    state: State<'_, AppState>,
+    task: String,
+    paths: Option<Vec<String>>,
+) -> IdeResult<AgentAcceptOutcome> {
+    agent::accept_changes(&state.host, window.label(), task, paths).await
 }
 
 /// Content of `path` when the task started (left side of its diff).

@@ -59,15 +59,11 @@ export function sessionIcon(s: RunSession): string {
 
 export function SessionPanel({
   session,
-  onRerun,
-  onDebug,
-  onStop,
+  showLifecycle = true,
 }: {
   session: RunSession;
-  onRerun?: (() => void) | null;
-  /** Override the Debug button (Services: rerun the attached debugger's launch); null disables it. */
-  onDebug?: (() => void) | null;
-  onStop?: () => void;
+  /** False in the Services detail: the window's own toolbar already offers Run/Debug/Stop for the selection. */
+  showLifecycle?: boolean;
 }) {
   const updating = useApplicationUpdates((s) => s.ids.has(session.id));
   const version = useRun((s) => s.versions[session.id] ?? 0);
@@ -169,48 +165,50 @@ export function SessionPanel({
   return (
     <div className={styles.session}>
       <div className={styles.toolbar} role="toolbar" aria-orientation="vertical" aria-label={tx("Run actions")}>
-        <IconButton
-          icon="rerun"
-          title="Rerun"
-          shortcut={shortcutLabel("run.rerun")}
-          disabled={onRerun === null}
-          onClick={onRerun ?? (() => rerunSession(session.id))}
-        />
-        {/* Switch the launch mode: the same configuration started under the debugger. */}
-        <IconButton
-          icon="debug"
-          title="Debug"
-          shortcut={shortcutLabel("run.debug")}
-          disabled={onDebug === null}
-          onClick={onDebug ?? (() => void debugSession(session.id))}
-        />
-        {rt.tests && (
-          <IconButton
-            icon="rerun"
-            tone="danger"
-            title="Rerun Failed Tests"
-            shortcut={shortcutLabel("run.rerunFailed")}
-            disabled={!canRerunFailed}
-            onClick={() => void rerunFailed(session.id)}
-          />
+        {showLifecycle && (
+          <>
+            <IconButton
+              icon="rerun"
+              title="Rerun"
+              shortcut={shortcutLabel("run.rerun")}
+              onClick={() => rerunSession(session.id)}
+            />
+            {/* Switch the launch mode: the same configuration started under the debugger. */}
+            <IconButton
+              icon="debug"
+              title="Debug"
+              shortcut={shortcutLabel("run.debug")}
+              onClick={() => void debugSession(session.id)}
+            />
+            {rt.tests && (
+              <IconButton
+                icon="rerun"
+                tone="danger"
+                title="Rerun Failed Tests"
+                shortcut={shortcutLabel("run.rerunFailed")}
+                disabled={!canRerunFailed}
+                onClick={() => void rerunFailed(session.id)}
+              />
+            )}
+            <IconButton
+              icon="stop"
+              title={session.status === "stopping" ? tx`Stopping… (click to kill)` : "Stop"}
+              tone={running ? "danger" : "default"}
+              disabled={!running}
+              onClick={() => void stopSession(session.id)}
+            />
+            {isUpdatable(session.config) && (
+              <IconButton
+                icon="refresh"
+                title="Update Application"
+                shortcut={shortcutLabel("run.updateApplication")}
+                disabled={session.status !== "running" || updating}
+                onClick={() => showApplicationUpdate(session.id)}
+              />
+            )}
+            <div className={styles.toolbarSep} />
+          </>
         )}
-        <IconButton
-          icon="stop"
-          title={session.status === "stopping" ? tx`Stopping… (click to kill)` : "Stop"}
-          tone={running || onStop ? "danger" : "default"}
-          disabled={!running && !onStop}
-          onClick={onStop ?? (() => void stopSession(session.id))}
-        />
-        {isUpdatable(session.config) && (
-          <IconButton
-            icon="refresh"
-            title="Update Application"
-            shortcut={shortcutLabel("run.updateApplication")}
-            disabled={session.status !== "running" || updating}
-            onClick={() => showApplicationUpdate(session.id)}
-          />
-        )}
-        <div className={styles.toolbarSep} />
         {!rt.terminal && (
           <>
             <IconButton

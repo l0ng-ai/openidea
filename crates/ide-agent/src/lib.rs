@@ -16,6 +16,7 @@ mod model;
 mod native;
 mod provider;
 pub mod registry;
+pub mod security;
 mod skills;
 mod timeline;
 mod worktree;
@@ -38,6 +39,9 @@ use std::time::Duration;
 
 /// Receives the events of one project's tasks.
 pub type AgentSink = Arc<dyn Fn(AgentEvent) + Send + Sync>;
+
+/// Returns the active command execution security policy for the project.
+pub type SecurityHook = Arc<dyn Fn() -> ide_core::settings::AgentSecuritySettings + Send + Sync>;
 
 /// Entry changes are batched for this long before they are sent.
 const FLUSH_DELAY: Duration = Duration::from_millis(40);
@@ -102,6 +106,7 @@ struct Shared {
     runtime: tokio::runtime::Handle,
     connector: Connector,
     sink: RwLock<Option<AgentSink>>,
+    security: RwLock<Option<SecurityHook>>,
     known: Mutex<HashMap<String, Known>>,
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
@@ -447,6 +452,7 @@ impl AgentManager {
             runtime,
             connector,
             sink: RwLock::new(None),
+            security: RwLock::new(None),
             known: Mutex::new(known),
             providers,
             probes: Mutex::new(HashMap::new()),
@@ -488,6 +494,11 @@ impl AgentManager {
         let mut tasks: Vec<AgentTask> = self.tasks.read().values().map(|t| t.state.lock().task.clone()).collect();
         tasks.sort_by(|a, b| b.updated_ms.total_cmp(&a.updated_ms));
         tasks
+    }
+
+    /// Sets the callback used to read the active command execution security policy.
+    pub fn set_security_hook(&self, hook: SecurityHook) {
+        *self.shared.security.write() = Some(hook);
     }
 
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.
@@ -535,6 +546,30 @@ impl AgentManager {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
         provider::set_builtin_env(&dir, id, env)
+    }
+
+    /// Saves a new custom ACP agent through its agent file.
+    pub fn save_custom_agent(&self, input: CustomAgentInput) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::save_custom(&dir, &input)
+    }
+
+    /// Removes a custom agent's file (registry installs go through `registry_remove`).
+    pub fn remove_custom_agent(&self, id: &str) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::remove_custom(&dir, id)
+    }
+
+    /// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents.
+    pub fn import_acp_agents(&self, text: &str) -> IdeResult<Vec<AcpImportOutcome>> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::import_acp(&dir, text)
     }
 
     /// Re-reads configured/installed agents, drops cached probes, and notifies subscribers.
@@ -613,17 +648,19 @@ impl AgentManager {
         self.tasks.read().values().filter_map(|t| t.state.lock().session_id.clone()).collect()
     }
 
-    /// Sessions on this machine that no task holds yet, newest first (#312).
+    /// Sessions of this project on this machine that no task holds yet, newest first. Reads
+    /// transcripts from disk: call it off the UI and command threads.
     pub fn external_sessions(&self) -> Vec<ExternalSession> {
         let mut out = Vec::new();
+        let root = self.shared.paths.project_root.clone();
         if let Some(spec) = self.shared.spec("claude")
             && let Some(dir) = native::claude::cli::config_dir(&spec.env)
         {
-            out.extend(external::claude_sessions(&dir));
+            out.extend(external::claude_sessions(&dir, &root));
         }
         let home = self.shared.paths.home_dir.clone().or_else(home_dir);
         if let Some(home) = home {
-            out.extend(external::codex_sessions(&home.join(".codex")));
+            out.extend(external::codex_sessions(&home.join(".codex"), &root));
         }
         let known = self.imported_session_ids();
         out.retain(|s| !known.contains(&s.session_id));
@@ -1275,15 +1312,6 @@ impl AgentManager {
         };
         // A copy of the task (a fork) may work in the same worktree.
         let shared = self.tasks.read().values().any(|t| t.id != id && t.state.lock().task.cwd.0 == cwd);
-        if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
-            // On Windows the agent's processes lock the folder (their working directory,
-            // open files) until they have exited.
-            if let Some(peer) = live {
-                let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
-            }
-            let worktrees = self.shared.paths.worktrees_dir.clone();
-            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
-        }
         self.tasks.write().remove(id);
         *task.deleted.lock() = true;
         let _ = std::fs::remove_file(self.shared.paths.store_dir.join(format!("{id}.json")));
@@ -1293,7 +1321,17 @@ impl AgentManager {
         {
             let _ = std::fs::remove_dir_all(self.shared.paths.store_dir.join(saved));
         }
+        // The list drops the task now; removing a large worktree's folder can take a while.
         self.shared.emit(AgentEvent::Removed { id: id.to_owned() });
+        if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
+            // On Windows the agent's processes lock the folder (their working directory,
+            // open files) until they have exited.
+            if let Some(peer) = live {
+                let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
+            }
+            let worktrees = self.shared.paths.worktrees_dir.clone();
+            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
+        }
         Ok(())
     }
 
@@ -1344,6 +1382,41 @@ impl AgentManager {
         }
         task.persist();
         Ok(())
+    }
+
+    /// Accept: copies the task's changed files among `rel_paths` (all with `None`) from its
+    /// worktree into the local checkout, uncommitted, for the user to review and commit.
+    /// Files the checkout changed itself are left alone and reported. Only worktree tasks
+    /// have anything to accept.
+    pub async fn accept_changes(&self, id: &str, rel_paths: Option<Vec<String>>) -> IdeResult<AgentAcceptOutcome> {
+        let task = self.task(id)?;
+        if task.state.lock().busy {
+            return Err(IdeError::invalid("the agent is working: stop it before accepting its changes"));
+        }
+        let (isolation, cwd, base, root, before) = {
+            let s = task.state.lock();
+            (
+                s.task.isolation,
+                s.task.cwd.0.clone(),
+                s.task.base_commit.clone(),
+                s.task.project_root.clone().map(|p| p.0).unwrap_or_else(|| self.shared.paths.project_root.clone()),
+                (*s.before).clone(),
+            )
+        };
+        if isolation != Isolation::Worktree {
+            return Err(IdeError::invalid("the task works in the local checkout: there is nothing to accept"));
+        }
+        let Some(base) = base else {
+            return Err(IdeError::invalid("the task has no base revision to accept from"));
+        };
+        blocking(move || {
+            let wanted: Vec<AgentChange> = worktree::without_untouched(worktree::changes(&cwd, &base)?, &before)
+                .into_iter()
+                .filter(|c| rel_paths.as_ref().is_none_or(|p| p.contains(&c.rel_path)))
+                .collect();
+            worktree::accept(&root, &cwd, &base, &wanted)
+        })
+        .await
     }
 
     /// Stops every agent (project closed).
@@ -2164,6 +2237,44 @@ impl Task {
             .iter()
             .map(|question| question.answer_key.clone().unwrap_or_else(|| question.question.clone()))
             .collect();
+        if let Some(hook) = self.shared.security.read().clone()
+            && let Some(command) = security::extract_command(params)
+        {
+            match security::evaluate_command(&command, &hook()) {
+                security::PolicyDecision::Blocked(pattern) => {
+                    let reject = options.iter().find(|o| o.kind.starts_with("reject")).cloned();
+                    let _ = self.push_entry(AgentEntry::Permission {
+                        id,
+                        title,
+                        options,
+                        questions: Vec::new(),
+                        chosen: Some(format!("Blocked by policy ({pattern})")),
+                    });
+                    return match reject {
+                        Some(option) => json!({ "outcome": { "outcome": "selected", "optionId": option.id } }),
+                        None => json!({ "outcome": { "outcome": "cancelled" } }),
+                    };
+                }
+                security::PolicyDecision::Allowed => {
+                    if let Some(allow) = options
+                        .iter()
+                        .find(|o| o.kind == "allow_once")
+                        .or_else(|| options.iter().find(|o| o.kind.starts_with("allow")))
+                        .cloned()
+                    {
+                        let _ = self.push_entry(AgentEntry::Permission {
+                            id,
+                            title,
+                            options,
+                            questions: Vec::new(),
+                            chosen: Some(format!("{} (whitelisted)", allow.name)),
+                        });
+                        return json!({ "outcome": { "outcome": "selected", "optionId": allow.id } });
+                    }
+                }
+                security::PolicyDecision::AskUser => {}
+            }
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let entry =
             self.push_entry(AgentEntry::Permission { id, title, options: options.clone(), questions, chosen: None });

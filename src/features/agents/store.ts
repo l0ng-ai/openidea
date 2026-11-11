@@ -3,6 +3,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import type {
+  AgentAcceptOutcome,
   AgentChange,
   AgentCommand,
   AgentConfigOption,
@@ -535,6 +536,15 @@ export async function refreshChanges(task: string): Promise<void> {
 export async function rollbackChanges(task: string, relPaths: string[] | null): Promise<void> {
   try {
     await call(commands.agentRollbackChanges(task, relPaths));
+  } finally {
+    await refreshChanges(task);
+  }
+}
+
+/** Copies a worktree task's changed files into the local checkout, uncommitted. */
+export async function acceptChanges(task: string, relPaths: string[] | null): Promise<AgentAcceptOutcome> {
+  try {
+    return await call(commands.agentAcceptChanges(task, relPaths));
   } finally {
     await refreshChanges(task);
   }
