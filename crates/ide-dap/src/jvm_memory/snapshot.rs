@@ -6,14 +6,16 @@ use super::{
     safe_while_suspended,
 };
 use ide_core::IdeResult;
-use ide_jvm_attach::{AttachError, HistogramRow, JavaVersion};
+use ide_jvm_attach::{AttachError, HeapDumpReply, HistogramRow, JavaVersion};
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
 
 /// Version probe for a JVM whose `release` file could not be read.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
+const FLAGS_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// The attach calls a snapshot makes, so tests can stand in for a JVM.
+/// The attach calls a snapshot or a heap dump makes, so tests can stand in for a JVM.
 pub(crate) trait AttachProbe: Send + Sync {
     fn has_listener(&self, pid: u32) -> bool;
     /// Asks only the JVMs whose pid `may_query` accepts.
@@ -21,6 +23,10 @@ pub(crate) trait AttachProbe: Send + Sync {
     fn version(&self, pid: u32) -> Option<JavaVersion>;
     fn histogram(&self, pid: u32) -> Result<String, AttachError>;
     fn alive(&self, pid: u32) -> bool;
+    fn vm_flags(&self, pid: u32) -> Result<String, AttachError>;
+    fn heap_dump(&self, pid: u32, path: &Path, timeout: Duration) -> Result<HeapDumpReply, AttachError>;
+    /// `None` where the free space is not known.
+    fn free_bytes(&self, dir: &Path) -> Option<u64>;
 }
 
 pub(super) struct JdkProbe {
@@ -54,6 +60,18 @@ impl AttachProbe for JdkProbe {
 
     fn alive(&self, pid: u32) -> bool {
         alive(pid)
+    }
+
+    fn vm_flags(&self, pid: u32) -> Result<String, AttachError> {
+        ide_jvm_attach::vm_flags(pid, FLAGS_TIMEOUT)
+    }
+
+    fn heap_dump(&self, pid: u32, path: &Path, timeout: Duration) -> Result<HeapDumpReply, AttachError> {
+        ide_jvm_attach::heap_dump(pid, path, timeout)
+    }
+
+    fn free_bytes(&self, dir: &Path) -> Option<u64> {
+        ide_heap::free_bytes(dir)
     }
 }
 
