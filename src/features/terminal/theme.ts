@@ -6,7 +6,7 @@
  */
 import type { ITheme, Terminal } from "@xterm/xterm";
 import { fontWeightOf } from "@/platform/editorSettings";
-import { BUNDLED_MONO_FAMILY, familyFaces, fontsLoaded, monoFontFamily, monoStack } from "@/platform/fonts";
+import { familyFaces, fontsLoaded, monoStack, resolveMonoFont } from "@/platform/fonts";
 import { parseColor, type Rgba } from "@/platform/cssColor";
 
 export { parseColor, type Rgba };
@@ -191,11 +191,6 @@ function withNerdFonts(family: string): string {
   return `${family.replace(/,\s*monospace\s*$/i, "")}, ${fallbacks}, monospace`;
 }
 
-function cssNumber(name: string): number {
-  if (typeof document === "undefined") return NaN;
-  return parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
-}
-
 /**
  * Font from Settings › Tools › Terminal: the editor font (Editor › Font, with its
  * fallback and Typography Settings weights) or the terminal's own family / size. The line
@@ -211,23 +206,17 @@ export function terminalFont(
   editor: EditorFont | undefined,
   base = monoStack(),
 ): TerminalFont {
-  let family: string, fallback: string, size: number;
   let weight = 400,
     boldWeight = 700;
-  if (!t.useEditorFont) {
-    family = t.fontFamily;
-    fallback = t.fallbackFontFamily;
-    size = t.fontSize;
-  } else {
-    family = editor?.fontFamily || BUNDLED_MONO_FAMILY;
-    fallback = t.fallbackFontFamily.trim() || editor?.fallbackFont || "";
-    size = editor?.fontSize || cssNumber("--fs-code") || 13;
+  const chosen = resolveMonoFont(t, editor, base);
+  if (t.useEditorFont) {
     weight = fontWeightOf(editor?.fontWeight, weight);
     boldWeight = fontWeightOf(editor?.boldFontWeight, boldWeight);
   }
+  const size = chosen.size;
   const letterSpacing = Math.round((t.columnWidth - 1) * size * 0.6 * 10) / 10;
   return {
-    family: withNerdFonts(monoFontFamily(family, fallback, base)),
+    family: withNerdFonts(chosen.family),
     size,
     lineHeight: t.lineHeight,
     letterSpacing,
