@@ -180,6 +180,10 @@ export function FindTabs() {
       activeId={String(tab.id)}
       onSelect={(id) => useFindWindow.setState({ active: Number(id) })}
       onClose={(id) => closeFindTab(Number(id))}
+      onTogglePin={(id) => {
+        const t = tabs.find((x) => x.id === Number(id));
+        if (t) pinFindTab(t.id, !t.pinned);
+      }}
       onContextMenu={(id, e) => {
         const t = tabs.find((x) => x.id === Number(id));
         if (!t) return;

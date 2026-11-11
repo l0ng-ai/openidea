@@ -90,6 +90,10 @@ export function UsagesTabs() {
       activeId={String(search.id)}
       onSelect={(id) => useUsages.setState({ active: Number(id) })}
       onClose={(id) => closeUsageTab(Number(id))}
+      onTogglePin={(id) => {
+        const t = tabs.find((x) => x.id === Number(id));
+        if (t) pinUsageTab(t.id, !t.pinned);
+      }}
       onContextMenu={(id, e) => {
         const t = tabs.find((x) => x.id === Number(id));
         if (!t) return;
