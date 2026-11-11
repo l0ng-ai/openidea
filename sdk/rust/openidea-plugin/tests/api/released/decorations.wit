@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 /// Project-scoped decorations (API 1.4). Requires project.read; paths must be inside
 /// an open project. Sets belong to the plugin and disappear when it stops.
