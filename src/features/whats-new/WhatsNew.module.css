@@ -1,0 +1,189 @@
+/* What's New: one reading column on the page, like a document tab. */
+.page {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-editor);
+  color: var(--fg);
+}
+
+/* The title, the notes and the footer share this column. */
+.column {
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 0 32px;
+  box-sizing: border-box;
+}
+
+.header {
+  flex: none;
+  padding: 22px 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.title {
+  margin: 0;
+  color: var(--fg-strong);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.version {
+  margin-top: 3px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 0 32px;
+}
+
+/* Fills the body so an empty or loading state can sit in its middle. */
+.bodyColumn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.notes {
+  font-size: var(--fs-ui);
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.notes > :first-child {
+  margin-top: 0;
+}
+
+.notes :where(h1, h2, h3) {
+  margin: 22px 0 10px;
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+
+.notes :where(h1) {
+  font-size: 18px;
+}
+
+.notes :where(h2) {
+  font-size: var(--fs-input-large);
+}
+
+.notes :where(h3) {
+  font-size: var(--fs-ui);
+}
+
+.notes :where(p) {
+  margin: 0 0 12px;
+}
+
+.notes :where(ul, ol) {
+  margin: 0 0 12px;
+  padding-left: 22px;
+}
+
+.notes :where(li) {
+  margin: 3px 0;
+}
+
+.notes :where(a) {
+  color: var(--link);
+  text-decoration: none;
+}
+
+.notes :where(a:hover) {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+
+.notes :where(code) {
+  padding: 1px 4px;
+  border-radius: var(--radius-small);
+  background: var(--bg-input);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+
+.notes :where(pre) {
+  overflow: auto;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius-small);
+  background: var(--bg-input);
+}
+
+.notes :where(pre code) {
+  padding: 0;
+  background: none;
+}
+
+.notes :where(blockquote) {
+  margin: 0 0 12px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--fg-secondary);
+}
+
+.notes :where(hr) {
+  height: 1px;
+  margin: 18px 0;
+  border: 0;
+  background: var(--border);
+}
+
+.notes :where(img) {
+  max-width: 100%;
+}
+
+.notes :where(table) {
+  margin: 0 0 14px;
+  border-collapse: collapse;
+}
+
+.notes :where(th, td) {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.empty {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 480px;
+  color: var(--fg-secondary);
+  text-align: center;
+}
+
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+}
+
+.link:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+
+.footer {
+  flex: none;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.footerRow {
+  display: flex;
+  align-items: center;
+}

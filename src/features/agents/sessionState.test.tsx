@@ -283,7 +283,7 @@ describe("process folding", () => {
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    const summary = await screen.findByText("Reasoning · Read 2 files");
+    const summary = await screen.findByText("Read 2 files");
     const fold = summary.closest("details")!;
     expect(fold.open).toBe(false);
     // Folded content is rendered once opened, a level at a time.
@@ -291,12 +291,13 @@ describe("process folding", () => {
       details.open = true;
       fireEvent(details, new Event("toggle"));
     };
-    expect(screen.queryByText("Reasoning")).toBeNull();
-    open(fold);
-    const thought = (await screen.findAllByText("Reasoning"))[0]!.closest("details")!;
     expect(screen.queryByText("think one")).toBeNull();
+    open(fold);
+    // A folded thought shows its first line; opening it shows the rest.
+    const thought = (await screen.findByText("think one")).closest("details")!;
+    expect(thought.open).toBe(false);
     open(thought);
-    expect(await screen.findByText("think one")).toBeInTheDocument();
+    expect(thought.querySelector(`.${styles.thoughtBody}`)).toHaveTextContent("think one");
   });
 });
 
@@ -313,7 +314,7 @@ describe("turn folding", () => {
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Final reply");
-    const summary = screen.getByText("Reasoning · Ran 1 command · Read 1 file · 1 message");
+    const summary = screen.getByText("Ran 1 command · Read 1 file · 1 message");
     const fold = summary.closest("details")!;
     expect(fold).toHaveClass(styles.turnFold!);
     expect(fold).toHaveTextContent("12s");
@@ -341,6 +342,56 @@ describe("turn folding", () => {
     expect(stream().querySelector(`.${styles.turnFold}`)).toBeNull();
     // The turn isn't over: its latest message is no final reply yet.
     expect(stream().querySelector(`.${styles.agentMessage} > .${styles.messageFooter}`)).toBeNull();
+    // What the agent is doing ends the conversation, below its latest output.
+    const working = within(stream()).getByText("Working…").closest(`.${styles.working}`);
+    expect(stream().lastElementChild).toBe(working);
+  });
+});
+
+describe("opened runs", () => {
+  it("stay open when the finished turn folds them away and is opened again", async () => {
+    const asked = {
+      type: "user",
+      text: "Question",
+      attachments: [],
+      steered: false,
+      sentMs: 1000,
+      doneMs: null,
+    } as const;
+    const setTask = (status: AgentTask["status"]) => ({
+      tasks: new Map(useAgents.getState().tasks).set("A", { ...useAgents.getState().tasks.get("A")!, status }),
+    });
+    useAgents.setState({
+      entries: new Map([["A", [asked, tool("one"), tool("two"), { type: "agent", text: "Interim" }] as AgentEntry[]]]),
+      ...setTask("running"),
+    });
+    render(<SessionEditor input={input("A")} />);
+    const toggle = (details: HTMLDetailsElement) => {
+      details.open = !details.open;
+      fireEvent(details, new Event("toggle"));
+    };
+    toggle((await screen.findByText("Read 2 files")).closest("details")!);
+    act(() =>
+      useAgents.setState({
+        entries: new Map([
+          [
+            "A",
+            [
+              { ...asked, doneMs: 9000 },
+              tool("one"),
+              tool("two"),
+              { type: "agent", text: "Interim" },
+              { type: "agent", text: "Done" },
+            ] as AgentEntry[],
+          ],
+        ]),
+        ...setTask("ready"),
+      }),
+    );
+    const turn = screen.getByText("Read 2 files · 1 message").closest("details")!;
+    expect(turn).toHaveClass(styles.turnFold!);
+    toggle(turn);
+    expect(screen.getByText("Read 2 files").closest("details")!.open).toBe(true);
   });
 });
 
@@ -393,44 +444,13 @@ describe("the conversation selection", () => {
     selection.addRange(range);
   };
 
-  it("shows a Quote button after a mouse selection ends", async () => {
+  it("offers Quote on a right-click, not as a button when the selection ends", async () => {
     render(<SessionEditor input={input("A")} />);
     select(await screen.findByText("Answer A"));
     fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
-    expect(screen.getByRole("button", { name: "Quote" })).toBeInTheDocument();
-    expect(labels()).toEqual([]);
-  });
-
-  it("shows no button for an empty selection", async () => {
-    render(<SessionEditor input={input("A")} />);
-    await screen.findByText("Answer A");
-    window.getSelection()!.removeAllRanges();
-    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
     expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
-  });
-
-  it("shows no button for a selection outside the conversation", async () => {
-    render(<SessionEditor input={input("A")} />);
-    await screen.findByText("Answer A");
-    const outside = document.createElement("p");
-    outside.textContent = "selected elsewhere";
-    document.body.appendChild(outside);
-    select(outside);
-    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
-    outside.remove();
-    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
-  });
-
-  it("hides the button when the conversation scrolls or Escape is pressed", async () => {
-    render(<SessionEditor input={input("A")} />);
-    select(await screen.findByText("Answer A"));
-    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
-    fireEvent.scroll(stream());
-    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
-    select(screen.getByText("Answer A"));
-    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+    fireEvent.contextMenu(stream(), { clientX: 120, clientY: 90 });
+    expect(labels()).toContain("Quote");
   });
 
   it("offers Copy alone on a right-click without a selection", async () => {
@@ -443,6 +463,27 @@ describe("the conversation selection", () => {
 });
 
 describe("scrolling", () => {
+  it("returns to the end when the user sends a message while scrolled up", async () => {
+    const reply = { type: "agent", text: "Initial reply" } as AgentEntry;
+    useAgents.setState({ entries: new Map([["A", [reply]]]) });
+    render(<SessionEditor input={input("A")} />);
+    const el = stream();
+    let height = 1000;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    fireEvent.wheel(el, { deltaY: -200 });
+    el.scrollTop = 200;
+    fireEvent.scroll(el);
+    expect(screen.getByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
+    height = 1100;
+    const sent = { type: "user", text: "Next", attachments: [], steered: false, sentMs: 1, doneMs: null } as AgentEntry;
+    act(() => useAgents.setState({ entries: new Map([["A", [reply, sent]]]) }));
+    expect(el.scrollTop).toBe(1100);
+    expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+  });
+
   it.each(["wheel", "touch", "ArrowUp", "PageUp", "Home", "Shift+Space"])(
     "releases following before an upward %s scroll, even within the bottom threshold",
     async (method) => {
@@ -638,22 +679,16 @@ describe("scrolling", () => {
 });
 
 describe("tool calls", () => {
-  it.each(["pending", "running"] as const)(
-    "keeps %s tools outside folds with their output expanded",
-    async (status) => {
-      backend.entries.set("A", [
-        tool("done one"),
-        tool("done two"),
-        tool("live", { status, output: "Reading files…" }),
-      ]);
-      useAgents.setState({ entries: new Map(backend.entries) });
-      render(<SessionEditor input={input("A")} />);
-      const output = await screen.findByText("Reading files…");
-      expect(output.closest("details")!.open).toBe(true);
-      expect(output.closest(`.${styles.processRun}`)).toBeNull();
-      expect(screen.getByText("Read 2 files").closest("details")!.open).toBe(false);
-    },
-  );
+  it.each(["pending", "running"] as const)("keeps %s tools in their run, named on its summary", async (status) => {
+    backend.entries.set("A", [tool("done one"), tool("done two"), tool("live", { status, output: "Reading files…" })]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const summary = (await screen.findByText("Read 3 files")).closest("summary")!;
+    expect(summary.closest("details")!).toHaveClass(styles.processRun!);
+    expect(summary.closest("details")!.open).toBe(false);
+    expect(summary.querySelector(`.${styles.processCurrent}`)).toHaveTextContent("live");
+    expect(screen.queryByText("Reading files…")).toBeNull();
+  });
 
   it("folds consecutive finished tool calls into one collapsed row", async () => {
     const edit = (id: string) => tool(id, { kind: "edit", diffs: [{ path: "/project/a.ts", added: 2, removed: 1 }] });

@@ -43,10 +43,14 @@ ide-ssh = { path = "crates/ide-ssh" }
 ide-remote = { path = "crates/ide-remote" }
 ide-host = { path = "crates/ide-host" }
 ide-mcp = { path = "crates/ide-mcp" }
+ide-scaffold = { path = "crates/ide-scaffold" }
 ide-notebook = { path = "crates/ide-notebook" }
 ide-extension = { path = "crates/ide-extension" }
 ide-plugin = { path = "crates/ide-plugin" }
 ide-cli = { path = "crates/ide-cli" }
+ide-jvm-attach = { path = "crates/ide-jvm-attach" }
+ide-jvm-inspect = { path = "crates/ide-jvm-inspect" }
+ide-jdwp = { path = "crates/ide-jdwp" }
 
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }

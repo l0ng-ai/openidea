@@ -15,6 +15,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     ...real,
     commands: {
       ...real.commands,
+      debugJvmMemoryClasses: () => ok({ status: "unavailable", reason: { kind: "programExited" } }),
       debugEvaluateIn,
       debugScopes: () => ok([{ name: "Locals", variablesReference: 1, expensive: false }]),
       debugVariables: () =>
@@ -37,6 +38,7 @@ const confirmTerminate = vi.hoisted(() => vi.fn(async () => false));
 vi.mock("@/workbench/confirmTerminate", () => ({ confirmTerminate }));
 
 import type { RunConfig } from "@/platform/ipc";
+import { setLocale } from "@/platform/i18n";
 import { useDebug, type DebugSession } from "../state";
 import { DebugTabs, DebugToolWindow } from "../ui/DebugToolWindow";
 import { DebuggerOverlays } from "../ui/Overlays";
@@ -58,6 +60,7 @@ const session: DebugSession = {
   frames: [{ id: 7, name: "main", path: "/p/app/main.py", line: 11, column: 0, presentationHint: null }],
   selectedFrame: 7,
   hits: 1,
+  stops: 0,
   exitCode: null,
   caps: null,
 };
@@ -92,6 +95,62 @@ describe("debug tool window", () => {
     useDebug.setState({ sessions: { 1: { ...session, adapter: "dart", status: "running" } }, active: 1 });
     render(<DebugToolWindow />);
     expect(hot()).toEqual([true, true]);
+  });
+
+  it("shows the Memory tab only for sessions with jvmMemory", async () => {
+    const withCaps = (jvmMemory: boolean) => ({ ...session, caps: { jvmMemory } as DebugSession["caps"] });
+    useDebug.setState({ sessions: { 1: withCaps(false) }, active: 1 });
+    const { unmount } = render(<DebugToolWindow />);
+    expect(screen.queryByRole("tab", { name: "Memory" })).toBeNull();
+    unmount();
+    useDebug.setState({ sessions: { 1: withCaps(true) }, active: 1 });
+    render(<DebugToolWindow />);
+    const memory = screen.getByRole("tab", { name: "Memory" });
+    fireEvent.click(memory);
+    expect(memory.getAttribute("aria-selected")).toBe("true");
+    expect(await screen.findByText("The program has exited.")).toBeTruthy();
+    // Switching to a session without the capability leaves the tab it no longer has.
+    act(() => useDebug.setState({ sessions: { 1: withCaps(false) } }));
+    expect(screen.queryByText("The program has exited.")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Threads & Variables" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("shows the Memory tab for a java-debug attach session", () => {
+    const attach = {
+      ...session,
+      adapter: "java-debug",
+      launch: { request: "attach" } as DebugSession["launch"],
+      caps: { jvmMemory: true } as DebugSession["caps"],
+    };
+    useDebug.setState({ sessions: { 1: attach }, active: 1 });
+    render(<DebugToolWindow />);
+    expect(screen.getByRole("tab", { name: "Memory" })).toBeTruthy();
+  });
+
+  it("keeps the Memory tab selected when the session pauses", async () => {
+    const caps = { jvmMemory: true } as DebugSession["caps"];
+    useDebug.setState({ sessions: { 1: { ...session, caps, status: "running" } }, active: 1 });
+    render(<DebugToolWindow />);
+    const memory = screen.getByRole("tab", { name: "Memory" });
+    fireEvent.click(memory);
+    expect(await screen.findByText("The program has exited.")).toBeTruthy();
+    act(() => useDebug.setState({ sessions: { 1: { ...session, caps, status: "paused" } } }));
+    expect(memory.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("The program has exited.")).toBeTruthy();
+  });
+
+  it("renames the view tabs when the locale switches to Chinese", async () => {
+    const caps = { jvmMemory: true } as DebugSession["caps"];
+    useDebug.setState({ sessions: { 1: { ...session, caps } }, active: 1 });
+    render(<DebugToolWindow />);
+    expect(screen.getByRole("tab", { name: "Memory" })).toBeTruthy();
+    try {
+      await act(() => setLocale("zh"));
+      const tabs = screen.getAllByRole("tab").map((t) => t.textContent);
+      expect(tabs).toEqual(["线程和变量", "控制台", "内存"]);
+    } finally {
+      await act(() => setLocale("en"));
+    }
   });
 
   it("says a PHP Remote Debug session listens for Xdebug while nothing is suspended", () => {

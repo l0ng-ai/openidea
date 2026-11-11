@@ -32,6 +32,7 @@ import {
   hasRelativeImports,
 } from "./producers";
 import { runWithExecutor } from "./executors";
+import { jdwpLaunch } from "./javaDebug";
 import { goModulePath, loadGoModules } from "./goModules";
 import { isPythonPackage, loadPythonPackages } from "./pythonPackages";
 import { remoteDebugBlocked } from "./remote";
@@ -136,6 +137,14 @@ async function buildFirst(build: RunConfig, show?: boolean): Promise<boolean> {
       if (check()) unsub();
     });
   });
+}
+
+/**
+ * Like IDEA, Debug is offered only where a debugger can run it: a debug plan, a debug adapter, or a
+ * Maven / Gradle configuration whose JVM gets a JDWP agent (a JUnit test run through Surefire).
+ */
+export function canDebugProduced(p: Produced): boolean {
+  return !!(p.debug || p.config?.debugAdapter || p.missing || (p.config && jdwpLaunch(p.config)));
 }
 
 /** Runs or debugs a production (adopting it as the selected temporary configuration). */
@@ -371,8 +380,7 @@ export function contextMenuItems(menu: ContextMenuId, ctx: MenuGroupContext): Me
   const arg: ContextArg = { path, line, dir, content: dir ? undefined : input.content };
   return [
     { kind: "action", action: "run.runContext", arg, label: tx`Run '${p.name}'`, icon: "run" },
-    // Like IDEA, Debug only where a debugger can run it.
-    ...(p.debug || p.config?.debugAdapter || p.missing
+    ...(canDebugProduced(p)
       ? ([
           { kind: "action", action: "run.debugContext", arg, label: tx`Debug '${p.name}'`, icon: "debug" },
         ] as MenuItem[])

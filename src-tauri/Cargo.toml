@@ -70,6 +70,7 @@ ide-mcp.workspace = true
 ide-notebook.workspace = true
 ide-jsonrpc.workspace = true
 ide-tools = { path = "../crates/ide-tools" }
+ide-scaffold.workspace = true
 ide-plugin = { path = "../crates/ide-plugin" }
 ide-extension = { path = "../crates/ide-extension" }
 ide-docker = { path = "../crates/ide-docker" }
