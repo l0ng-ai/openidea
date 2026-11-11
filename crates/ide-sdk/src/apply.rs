@@ -1725,12 +1725,15 @@ pub fn terminal_activation(root: &Path, s: &Settings, shell: &str) -> Option<Str
     if !s.languages.python.activate_virtualenv {
         return None;
     }
-    let venv = python_interpreter(root, s).as_deref().and_then(venv_of)?;
+    let python = python_interpreter(root, s)?;
+    let name = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
+    let name = Path::new(name).file_stem().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let Some(venv) = venv_of(&python) else {
+        return conda_activation(&python, &name, std::env::var_os("CONDA_EXE").map(PathBuf::from), which("conda"));
+    };
     if std::env::var_os("VIRTUAL_ENV").is_some_and(|v| Path::new(&v) == venv) {
         return None;
     }
-    let name = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
-    let name = Path::new(name).file_stem().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
     let script = |file: &str| venv.join(bin_dir()).join(file);
     let line = match name.as_str() {
         "fish" => format!("source {}", sh_quote(&script("activate.fish").to_string_lossy())),
@@ -1753,6 +1756,64 @@ pub fn terminal_activation(root: &Path, s: &Settings, shell: &str) -> Option<Str
         _ => "activate",
     };
     script(target).is_file().then_some(line)
+}
+
+/// `conda activate <prefix>` for a conda interpreter, as PyCharm does for a Conda project
+/// interpreter: conda envs have no activate script of their own, and the shells' conda hook
+/// comes from the installation (the env itself for `base`, the parent of `envs/`, else
+/// `CONDA_EXE` or the `conda` on PATH). `name` is the shell's lowercased file stem.
+fn conda_activation(python: &Path, name: &str, conda_exe: Option<PathBuf>, on_path: Option<PathBuf>) -> Option<String> {
+    let env = crate::discover::conda_env_home(python).filter(|env| env.join("conda-meta").is_dir())?;
+    if std::env::var_os("CONDA_PREFIX").is_some_and(|p| Path::new(&p) == env) {
+        return None;
+    }
+    let is_base = |dir: &Path| dir.join("condabin").is_dir();
+    // `<base>/bin/conda`, `<base>/condabin/conda[.bat]`, `<base>\Scripts\conda.exe`.
+    let base_of = |exe: PathBuf| exe.parent()?.parent().map(Path::to_path_buf).filter(|b| is_base(b));
+    let base = Some(env.clone())
+        .filter(|e| is_base(e))
+        .or_else(|| {
+            env.parent()
+                .filter(|p| p.file_name().is_some_and(|n| n == "envs"))?
+                .parent()
+                .map(Path::to_path_buf)
+                .filter(|b| is_base(b))
+        })
+        .or_else(|| conda_exe.and_then(base_of))
+        .or_else(|| on_path.and_then(base_of))?;
+    let prefix = env.to_string_lossy();
+    let conda = if cfg!(windows) { base.join("Scripts").join("conda.exe") } else { base.join("bin").join("conda") };
+    let posix = |hook: &str| {
+        conda.is_file().then(|| {
+            format!(
+                "eval \"$({} shell.{hook} hook)\" && conda activate {}",
+                sh_quote(&conda.to_string_lossy()),
+                sh_quote(&prefix)
+            )
+        })
+    };
+    match name {
+        "cmd" => {
+            let bat = base.join("condabin").join("conda.bat");
+            bat.is_file().then(|| format!("call \"{}\" activate \"{prefix}\"", bat.display()))
+        }
+        "pwsh" | "powershell" => {
+            let hook = base.join("shell").join("condabin").join("conda-hook.ps1");
+            let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
+            hook.is_file().then(|| format!("& {}; conda activate {}", quote(&hook.to_string_lossy()), quote(&prefix)))
+        }
+        "bash" => posix("bash"),
+        "zsh" => posix("zsh"),
+        "sh" | "dash" | "ksh" | "mksh" | "ash" => posix("posix"),
+        "fish" => conda.is_file().then(|| {
+            format!(
+                "{} shell.fish hook | source; and conda activate {}",
+                sh_quote(&conda.to_string_lossy()),
+                sh_quote(&prefix)
+            )
+        }),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -2129,5 +2190,72 @@ mod java_compliance_tests {
         assert_eq!(c("4"), None);
         assert_eq!(c(""), None);
         assert_eq!(c("latest"), None);
+    }
+}
+
+#[cfg(test)]
+mod conda_activation_tests {
+    use super::*;
+
+    fn touch(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+    }
+
+    /// A conda prefix with its interpreter where conda puts it on this OS.
+    fn prefix(dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(dir.join("conda-meta")).unwrap();
+        let python = if cfg!(windows) { dir.join("python.exe") } else { dir.join("bin").join("python") };
+        touch(&python);
+        python
+    }
+
+    #[test]
+    fn conda_envs_activate_through_the_installations_shell_hooks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("miniconda3");
+        let base_python = prefix(&base);
+        std::fs::create_dir_all(base.join("condabin")).unwrap();
+        let conda = if cfg!(windows) { base.join("Scripts").join("conda.exe") } else { base.join("bin").join("conda") };
+        touch(&conda);
+        let bat = base.join("condabin").join("conda.bat");
+        touch(&bat);
+        let hook = base.join("shell").join("condabin").join("conda-hook.ps1");
+        touch(&hook);
+        let env = base.join("envs").join("agent-gateway");
+        let python = prefix(&env);
+        let q = |p: &Path| sh_quote(&p.to_string_lossy());
+
+        assert_eq!(
+            conda_activation(&python, "zsh", None, None).unwrap(),
+            format!("eval \"$({} shell.zsh hook)\" && conda activate {}", q(&conda), q(&env))
+        );
+        assert_eq!(
+            conda_activation(&python, "cmd", None, None).unwrap(),
+            format!("call \"{}\" activate \"{}\"", bat.display(), env.display())
+        );
+        assert_eq!(
+            conda_activation(&python, "powershell", None, None).unwrap(),
+            format!("& '{}'; conda activate '{}'", hook.display(), env.display())
+        );
+        assert_eq!(
+            conda_activation(&python, "fish", None, None).unwrap(),
+            format!("{} shell.fish hook | source; and conda activate {}", q(&conda), q(&env))
+        );
+        assert_eq!(conda_activation(&python, "nu", None, None), None, "no conda hook for this shell");
+        assert!(conda_activation(&base_python, "bash", None, None).unwrap().ends_with(&q(&base)), "base itself");
+
+        // A `--prefix` env elsewhere finds the installation through CONDA_EXE or PATH.
+        let elsewhere = tmp.path().join("project").join(".conda");
+        let python = prefix(&elsewhere);
+        assert_eq!(conda_activation(&python, "bash", None, None), None);
+        let line = conda_activation(&python, "bash", Some(conda.clone()), None).unwrap();
+        assert!(line.ends_with(&format!("conda activate {}", q(&elsewhere))), "{line}");
+        assert!(conda_activation(&python, "cmd", None, Some(bat.clone())).is_some());
+
+        // Not a conda prefix.
+        let plain = tmp.path().join("python");
+        touch(&plain.join("bin").join("python"));
+        assert_eq!(conda_activation(&plain.join("bin").join("python"), "bash", Some(conda), None), None);
     }
 }
