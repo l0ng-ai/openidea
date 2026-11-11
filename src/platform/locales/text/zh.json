@@ -4,6 +4,7 @@
   "They go back to how they were when the task started, in the task's worktree.": "它们会在任务的工作树中恢复为任务开始时的内容。",
   "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.": "它们会恢复为任务开始时的内容。任务开始后你对它们做的修改也会丢失；任务开始前的修改会保留。",
   "Cannot roll back the changes": "无法回滚更改",
+  "Cannot connect": "无法连接",
   "Rollback Selected Changes…": "回滚所选更改…",
   "Rollback All Changes…": "回滚全部更改…",
   "JUnit": "JUnit",

@@ -4,6 +4,7 @@
   "They go back to how they were when the task started, in the task's worktree.": "They go back to how they were when the task started, in the task's worktree.",
   "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.": "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.",
   "Cannot roll back the changes": "Cannot roll back the changes",
+  "Cannot connect": "Cannot connect",
   "Rollback Selected Changes…": "Rollback Selected Changes…",
   "Rollback All Changes…": "Rollback All Changes…",
   "JUnit": "JUnit",
