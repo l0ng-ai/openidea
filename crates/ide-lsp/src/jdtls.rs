@@ -1082,6 +1082,29 @@ impl LspManager {
     }
 }
 
+/// m2e's error on a `pom.xml` whose build plan can't be computed: a build plugin (or one of its
+/// dependencies) doesn't resolve, e.g. a version a company mirror lacks. The module is then left
+/// without its Java configuration and navigation finds nothing, with only this marker to tell.
+pub(crate) fn build_plan_failure(path: &Path, root: &Path, diagnostics: &[lsp_types::Diagnostic]) -> Option<String> {
+    if path.file_name()? != "pom.xml" {
+        return None;
+    }
+    let message = diagnostics
+        .iter()
+        .filter(|d| d.severity == Some(lsp_types::DiagnosticSeverity::ERROR))
+        .find_map(|d| d.message.split_once("Could not calculate build plan:").map(|(_, m)| m))?;
+    const UNRESOLVED: &str = "could not be resolved";
+    let reason = match message.find(UNRESOLVED) {
+        Some(end) => &message[..end + UNRESOLVED.len()],
+        None => message.lines().next().unwrap_or(message),
+    };
+    Some(format!(
+        "{}: {}. Java navigation and completion don't work in this module until Maven resolves it: make it available in your Maven repository or mirror, or set a version the repository has in pom.xml.",
+        path.strip_prefix(root).unwrap_or(path).display(),
+        reason.trim().trim_end_matches(':')
+    ))
+}
+
 impl LspManager {
     /// JDT LS aborted its import with `message`: when reserved Windows device names
     /// below `root` are the cause, say which (once). The walk runs off the RPC thread.
@@ -1108,6 +1131,29 @@ mod tests {
         let language: ide_language::LanguageConfig =
             toml::from_str(include_str!("../../../languages/java.toml")).unwrap();
         language.language_servers.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn an_unresolvable_build_plugin_is_explained() {
+        let diagnostic = |severity, message: &str| lsp_types::Diagnostic {
+            severity: Some(severity),
+            message: message.into(),
+            ..Default::default()
+        };
+        let error = diagnostic(
+            lsp_types::DiagnosticSeverity::ERROR,
+            "CoreException: Could not calculate build plan: Plugin org.apache.maven.plugins:maven-compiler-plugin:3.13.0 or one of its dependencies could not be resolved: Failure to find org.apache.maven.plugins:maven-compiler-plugin:jar:3.13.0 in https://nexus.corp/repository/public",
+        );
+        let info = diagnostic(
+            lsp_types::DiagnosticSeverity::INFORMATION,
+            "Plugin execution not covered by lifecycle configuration",
+        );
+        let (root, pom) = (Path::new("/w"), Path::new("/w/app/pom.xml"));
+        let body = build_plan_failure(pom, root, &[info.clone(), error.clone()]).unwrap();
+        assert!(body.starts_with("app/pom.xml: Plugin org.apache.maven.plugins:maven-compiler-plugin:3.13.0 or one of its dependencies could not be resolved. Java navigation"), "{body}");
+        assert!(!body.contains("nexus.corp"));
+        assert_eq!(build_plan_failure(pom, root, &[info]), None);
+        assert_eq!(build_plan_failure(Path::new("/w/app/src/Main.java"), root, &[error]), None);
     }
 
     #[test]
