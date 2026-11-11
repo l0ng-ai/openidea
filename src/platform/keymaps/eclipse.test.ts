@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerAction } from "../actions";
+import { clearContext, setContext } from "../context";
 import {
   applyKeymapSettings,
   bindingsFor,
@@ -202,5 +203,84 @@ it("keeps numeric-keypad aliases working for existing presets", () => {
   } finally {
     uninstall();
     dispose();
+  }
+});
+
+it("renames in the project view although the preset shares Alt+Shift+R with the Git log (#2815)", async () => {
+  // As in the keymap editor: the added strokes (F2, Alt+Shift+T) land on top of
+  // the preset's list; Alt+Shift+R is already bound by the preset, so recording
+  // it changes nothing and the preset's own five-way conflict decides.
+  applyKeymapSettings("eclipse-windows", {
+    "project.rename": ["Shift+Alt+R", "Shift+F6", "F2", "Alt+Shift+T"],
+  });
+  const rename = vi.fn();
+  const editMessage = vi.fn();
+  const shelfRename = vi.fn();
+  const editChangelist = vi.fn();
+  const quickDoc = vi.fn();
+  const dbRename = vi.fn();
+  const refactorRename = vi.fn();
+  // The claimants as they ship: `when` + `keyWhen` exactly as registered.
+  const EDITOR = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+  const disposers = [
+    registerAction({
+      id: "project.rename",
+      title: "Rename File…",
+      when: "projectOpen",
+      keyWhen: "projectViewFocus",
+      run: rename,
+    }),
+    // The Git log actions carry no keyWhen: without dispatch precedence they ate the stroke.
+    registerAction({
+      id: "vcs.log.editMessage",
+      title: "Edit Commit Message…",
+      when: "vcsAvailable",
+      run: editMessage,
+    }),
+    registerAction({
+      id: "vcs.shelf.rename",
+      title: "Rename Shelved Changes…",
+      when: "vcsAvailable",
+      run: shelfRename,
+    }),
+    registerAction({
+      id: "vcs.changelist.edit",
+      title: "Edit Changelist…",
+      when: "vcsAvailable",
+      keyWhen: "vcsAvailable && activeToolWindow == commit",
+      run: editChangelist,
+    }),
+    registerAction({ id: "code.quickDocumentation", title: "Quick Documentation", when: EDITOR, run: quickDoc }),
+    registerAction({
+      id: "db.rename",
+      title: "Rename…",
+      when: "projectOpen",
+      keyWhen: "databaseViewFocus",
+      run: dbRename,
+    }),
+    registerAction({ id: "refactor.rename", title: "Rename…", when: EDITOR, run: refactorRename }),
+  ];
+  setContext("projectOpen", true);
+  setContext("vcsAvailable", true);
+  setContext("projectViewFocus", true);
+  const uninstall = installKeyboardDispatcher(window);
+  try {
+    const press = (code: string, key: string, init: KeyboardEventInit = {}) =>
+      window.dispatchEvent(new KeyboardEvent("keydown", { code, key, bubbles: true, cancelable: true, ...init }));
+    press("KeyR", "R", { altKey: true, shiftKey: true }); // Alt+Shift+R
+    press("F2", "F2");
+    press("KeyT", "T", { altKey: true, shiftKey: true }); // Alt+Shift+T
+    await Promise.resolve();
+    expect(rename).toHaveBeenCalledTimes(3);
+    expect(editMessage).not.toHaveBeenCalled();
+    expect(shelfRename).not.toHaveBeenCalled();
+    expect(editChangelist).not.toHaveBeenCalled();
+    expect(quickDoc).not.toHaveBeenCalled();
+    expect(dbRename).not.toHaveBeenCalled();
+    expect(refactorRename).not.toHaveBeenCalled();
+  } finally {
+    uninstall();
+    disposers.forEach((dispose) => dispose());
+    for (const key of ["projectOpen", "vcsAvailable", "projectViewFocus"]) clearContext(key);
   }
 });

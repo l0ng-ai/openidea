@@ -1,5 +1,0 @@
-/* ANSI palette for Run and Debug consoles: inherit `--ansi-*` from the scheme
- * (Color Scheme › Console Colors / imported CONSOLE_*). Marker class only. */
-.palette {
-  display: contents;
-}
