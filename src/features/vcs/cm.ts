@@ -336,12 +336,15 @@ export const viewerTheme = EditorView.theme(
     },
     ".cm-line": { padding: `0 2px 0 ${LINE_INSET}px` },
     ...caretStyles,
-    "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection, .cm-openidea-selected, &.cm-focused .cm-openidea-selected":
-      {
-        backgroundColor: "var(--bg-selected-strong)",
-        // Unset (the default `inherit`): the declaration drops and the syntax colours show through.
-        color: "var(--fg-editor-selection)",
-      },
+    "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {
+      backgroundColor: "var(--bg-selected-strong)",
+      // Unset (the default `inherit`): the declaration drops and the syntax colours show through.
+      color: "var(--fg-editor-selection)",
+    },
+    ".cm-openidea-selected, &.cm-focused .cm-openidea-selected": {
+      "--openidea-selected-bg": "var(--bg-selected-strong)",
+      color: "var(--fg-editor-selection)",
+    },
     ".cm-activeLine": { backgroundColor: "var(--bg-current-line)" },
     ".cm-gutters": {
       backgroundColor: "var(--bg-app)",

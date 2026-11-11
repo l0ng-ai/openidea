@@ -37,12 +37,16 @@ const plugin = ViewPlugin.fromClass(
 
 const theme = EditorView.baseTheme({
   ".cm-openidea-selected": {
-    backgroundColor: "var(--editor-selection-inactive, var(--bg-editor-selection-inactive))",
+    "--openidea-selected-bg": "var(--editor-selection-inactive, var(--bg-editor-selection-inactive))",
+    // Capped at `1lh` so a font taller than the line height does not bleed into the rows above and below.
+    background: "linear-gradient(var(--openidea-selected-bg), var(--openidea-selected-bg)) center / 100% 1lh no-repeat",
+    WebkitBoxDecorationBreak: "clone",
+    boxDecorationBreak: "clone",
     // Unset (the default `inherit`): the declaration drops and the syntax colours show through.
     color: "var(--fg-editor-selection)",
   },
   "&.cm-focused .cm-openidea-selected": {
-    backgroundColor: "var(--editor-selection, var(--bg-editor-selection))",
+    "--openidea-selected-bg": "var(--editor-selection, var(--bg-editor-selection))",
   },
 });
 

@@ -222,3 +222,37 @@ test("the bookmark gutter takes no width until the file has a bookmark", async (
   await expect(column.locator(".cm-openidea-bookmark")).toBeVisible();
   await expect.poll(width).toBeGreaterThan(0);
 });
+
+test("single-line selection stays on its own row when font glyphs exceed line height", async ({ workbench: page }) => {
+  await page.evaluate(async () => {
+    const projectModule = "/src/platform/project.ts";
+    const schemaModule = "/src/features/settings/model/schema.ts";
+    const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+      import(/* @vite-ignore */ projectModule),
+      import(/* @vite-ignore */ schemaModule),
+    ]);
+    const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+    useProject.setState({
+      settings: { ...base, editor: { ...base.editor, fontSize: 20, lineHeight: 22 } },
+    });
+    await document.fonts.ready;
+  });
+
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("- Build desktop bundle\n- Run integration suite\n---");
+
+  const targetLine = editor.locator(".cm-line", { hasText: "Run integration suite" });
+  await expect(targetLine).toBeVisible();
+  await targetLine.dblclick();
+
+  const sel = editor.locator(".cm-openidea-selectionLayer .cm-selectionBackground");
+  await expect(sel).toHaveCount(1);
+  const [lineBox, selBox] = await Promise.all([targetLine.boundingBox(), sel.boundingBox()]);
+  expect(lineBox).not.toBeNull();
+  expect(selBox).not.toBeNull();
+  expect(Math.abs(selBox!.y - lineBox!.y)).toBeLessThanOrEqual(1);
+  expect(Math.abs(selBox!.height - lineBox!.height)).toBeLessThanOrEqual(1);
+});
