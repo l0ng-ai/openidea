@@ -538,6 +538,35 @@ pub async fn build_run(
     let config_dir = host.config_dir.clone();
     let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
+        // Fast path (#2476): an unchanged single-project Maven build skips
+        // Maven entirely. Previous diagnostics stay: nothing changed, so they
+        // are still accurate.
+        let single = cmake.is_none() && ide_workspace::workspace::Workspace::load(&root)?.is_none();
+        if single && kind == BuildKind::Build {
+            let model = with_profiles(load(&root, &cache, &settings), &cache);
+            if compile::menu_up_to_date(&cache, &root, &model, file.as_deref(), &token) {
+                let started = std::time::Instant::now();
+                let plan = prepare_plan(
+                    compile::plan(&root, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref())?,
+                    &root,
+                    &settings,
+                );
+                let _ = on_event.send(BuildEvent::Started { system: plan.system, title: plan.title.clone() });
+                let _ = on_event.send(BuildEvent::Output {
+                    text: "Up to date: no changes, build skipped.\n".into(),
+                    stderr: false,
+                });
+                return Ok(BuildResult {
+                    system: plan.system,
+                    title: plan.title,
+                    success: true,
+                    errors: 0,
+                    warnings: 0,
+                    duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+                    messages: Vec::new(),
+                });
+            }
+        }
         for path in clear {
             sink.emit(IdeEvent::Diagnostics {
                 path: path.into(),
@@ -584,6 +613,10 @@ pub async fn build_run(
         let result = compile::run(&root, &plan, &token, &|e| {
             let _ = on_event.send(e);
         })?;
+        if result.success && single && kind == BuildKind::Build {
+            let model = with_profiles(load(&root, &cache, &settings), &cache);
+            compile::record_menu_build(&cache, &root, &model, file.as_deref(), &token);
+        }
         for (path, items) in compile::diagnostics(&result.messages) {
             sink.emit(IdeEvent::Diagnostics { path: path.into(), source: compile::DIAGNOSTICS_SOURCE.into(), items });
         }

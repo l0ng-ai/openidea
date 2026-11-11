@@ -79,23 +79,26 @@ fn scan(
     Ok(())
 }
 
-/// `None` means an input cannot be resolved safely: build normally without reuse.
-/// All filesystem work belongs on the caller's blocking thread.
-pub fn launch_fingerprint(
+/// One planned step as fingerprinted: resolved program, args, cwd and env.
+type StepFingerprint = (PathBuf, Vec<String>, PathBuf, BTreeMap<String, String>);
+
+/// Environment, planned steps and input paths shared by every Maven build
+/// fingerprint: the filtered process environment plus the wrapper, settings
+/// and JDK files the planned invocation reads.
+struct Collected {
+    inputs: Vec<PathBuf>,
+    environment: BTreeMap<String, String>,
+    steps: Vec<StepFingerprint>,
+    inherited_hash: u64,
+}
+
+fn collect(
     root: &Path,
-    model: &BuildModel,
-    module: &Path,
-    test: bool,
+    projects: &[&maven::MavenProject],
+    plan: &BuildPlan,
     local_repo: Option<PathBuf>,
-    cancel: &CancellationToken,
-) -> IdeResult<Option<LaunchFingerprint>> {
-    let Some(m) = &model.maven else { return Ok(None) };
-    let projects = maven_launch_projects(root, m, module, test);
-    if projects.is_empty() {
-        return Ok(None);
-    }
-    let Some(mut inputs) = maven::launch_inputs(root, &projects, local_repo) else { return Ok(None) };
-    let plan = launch_plan(root, model, module, test, BuildKind::Build)?;
+) -> IdeResult<Option<Collected>> {
+    let Some(mut inputs) = maven::launch_inputs(root, projects, local_repo) else { return Ok(None) };
     let mut environment: BTreeMap<String, String> = std::env::vars()
         .map(|(key, value)| (key.to_ascii_uppercase(), value))
         .filter(|(key, _)| {
@@ -165,23 +168,100 @@ pub fn launch_fingerprint(
             Path::new(home).join(if cfg!(windows) { "bin/java.exe" } else { "bin/java" }),
         ]);
     }
-    let steps: Vec<_> =
-        plan.steps.iter().map(|s| (process::program_path(&s.program, &s.env), &s.args, &s.cwd, &s.env)).collect();
+    let steps = plan
+        .steps
+        .iter()
+        .map(|s| (process::program_path(&s.program, &s.env), s.args.clone(), s.cwd.clone(), s.env.clone()))
+        .collect();
     // Profiles and plugins can read arbitrary environment variables. Keep a signature
     // of the inherited environment without persisting unrelated credentials.
     let inherited: BTreeMap<_, _> = std::env::vars_os().collect();
     let mut inherited_hash = std::hash::DefaultHasher::new();
     inherited.hash(&mut inherited_hash);
-    let parameters =
-        serde_json::to_string(&(root, module, test, steps, environment, inherited_hash.finish(), projects))
-            .map_err(|e| IdeError::internal(e.to_string()))?;
+    Ok(Some(Collected { inputs, environment, steps, inherited_hash: inherited_hash.finish() }))
+}
+
+/// Scans every input, storing project inputs relative to the project.
+fn scan_all(
+    root: &Path,
+    inputs: Vec<PathBuf>,
+    cancel: &CancellationToken,
+) -> IdeResult<BTreeMap<PathBuf, Option<Stamp>>> {
     let mut files = BTreeMap::new();
     for path in inputs {
         scan(root, &path, &mut files, &mut HashSet::new(), cancel)?;
     }
     // Store project inputs relative to the project, including each file's relative path.
-    let files = files.into_iter().map(|(p, stamp)| (p.strip_prefix(root).unwrap_or(&p).to_path_buf(), stamp)).collect();
-    Ok(Some(LaunchFingerprint { version: 2, parameters, files }))
+    Ok(files.into_iter().map(|(p, stamp)| (p.strip_prefix(root).unwrap_or(&p).to_path_buf(), stamp)).collect())
+}
+
+/// `None` means an input cannot be resolved safely: build normally without reuse.
+/// All filesystem work belongs on the caller's blocking thread.
+pub fn launch_fingerprint(
+    root: &Path,
+    model: &BuildModel,
+    module: &Path,
+    test: bool,
+    local_repo: Option<PathBuf>,
+    cancel: &CancellationToken,
+) -> IdeResult<Option<LaunchFingerprint>> {
+    let Some(m) = &model.maven else { return Ok(None) };
+    let projects = maven_launch_projects(root, m, module, test);
+    if projects.is_empty() {
+        return Ok(None);
+    }
+    let plan = launch_plan(root, model, module, test, BuildKind::Build)?;
+    let Some(collected) = collect(root, &projects, &plan, local_repo)? else { return Ok(None) };
+    let Collected { inputs, environment, steps, inherited_hash } = collected;
+    let parameters = serde_json::to_string(&(root, module, test, steps, environment, inherited_hash, projects))
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+    Ok(Some(LaunchFingerprint { version: 2, parameters, files: scan_all(root, inputs, cancel)? }))
+}
+
+/// Inputs fingerprint of a menu build (`Build Project` / `Build Module`): the
+/// built modules' sources, resources and POM chain plus the exact planned
+/// steps, so an unchanged project skips Maven entirely (#2476). Only `Build`
+/// callers reuse it, never `Rebuild` or `Artifacts`; `None` disables reuse.
+/// All filesystem work belongs on the caller's blocking thread.
+pub fn menu_fingerprint(
+    root: &Path,
+    model: &BuildModel,
+    file: Option<&Path>,
+    cancel: &CancellationToken,
+) -> IdeResult<Option<LaunchFingerprint>> {
+    let plan = plan(root, model, BuildKind::Build, file, None)?;
+    if plan.system != BuildSystem::Maven {
+        return Ok(None);
+    }
+    let Some(m) = &model.maven else { return Ok(None) };
+    let projects: Vec<&maven::MavenProject> = match file {
+        Some(file) => {
+            // The innermost linked project owning the file, as in single-file compilation.
+            let rel = rel_str(root, file);
+            let module = m
+                .projects
+                .iter()
+                .filter(|p| rel == p.dir || rel.starts_with(&format!("{}/", p.dir)) || p.dir.is_empty())
+                .max_by_key(|p| p.dir.len());
+            match module {
+                Some(project) if project.packaging != "pom" => {
+                    maven_launch_projects(root, m, &subdir(root, &project.dir), true)
+                }
+                _ => return Ok(None),
+            }
+        }
+        // A project build walks every linked project.
+        None => m.projects.iter().collect(),
+    };
+    if projects.is_empty() {
+        return Ok(None);
+    }
+    let Some(collected) = collect(root, &projects, &plan, None)? else { return Ok(None) };
+    let Collected { inputs, environment, steps, inherited_hash } = collected;
+    let scope = file.map(|f| rel_str(root, f));
+    let parameters = serde_json::to_string(&("menu-build", scope, steps, environment, inherited_hash))
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+    Ok(Some(LaunchFingerprint { version: 2, parameters, files: scan_all(root, inputs, cancel)? }))
 }
 
 impl LaunchFingerprint {
