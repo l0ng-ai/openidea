@@ -442,7 +442,8 @@ export function DiffEditor({
     const highlightChanges = opts.highlight === "words";
     const inclusion = includable ? inclusionGutter(path, textA) : [];
     const side = (att: DocumentAttachment | null, editable: boolean, notes?: "left" | "right"): Extension[] => [
-      viewerBase({ readOnly: !editable, findBar: true }),
+      // The left pane of a side-by-side diff has its line numbers next to the divider, as in IDEA.
+      viewerBase({ readOnly: !editable, findBar: true, lineNumbers: notes === "left" ? "after" : true }),
       wrapSlot.of(softWrapRef.current ? EditorView.lineWrapping : []),
       // Esc closes the find bar before it collapses the selection (a found match); open popups go first.
       Prec.high(keymap.of([{ key: "Escape", run: () => findEscape.current() }])),
