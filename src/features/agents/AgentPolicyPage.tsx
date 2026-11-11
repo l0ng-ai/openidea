@@ -50,9 +50,9 @@ export function AgentPolicyPage() {
     <section className={styles.body} aria-label="Command Execution Policy">
       <p className={styles.notice}>
         <T>
-          Configure command patterns for AI agents. Allowed commands run automatically without prompting; blocked
-          commands are rejected immediately and take precedence over allowed patterns. Supports prefix and glob
-          wildcards (* and ?).
+          Allowed commands run without asking: an entry matches that command, alone or with more arguments. Commands
+          with substitutions, redirections or variable assignments always ask. Blocked commands are rejected and win
+          over allowed ones; they support the * and ? wildcards.
         </T>
       </p>
       <div className={styles.grid}>
