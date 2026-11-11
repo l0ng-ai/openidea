@@ -251,6 +251,10 @@ impl LanguageService for BladeService {
         {
             return Some(Ok(targets.into_iter().map(|target| Location::file(target.path, target.range)).collect()));
         }
+        let offset = ide_php::syntax::LineIndex::new(&info.text).byte(pos);
+        if let Some(targets) = engine.as_ref().and_then(|engine| engine.blade_vue_definition(&blade(&info), offset)) {
+            return Some(Ok(targets.into_iter().map(|target| Location::file(target.path, target.range)).collect()));
+        }
         let files = goto_view(&info.text, pos, &ViewPaths::new(&self.root));
         if !files.is_empty() {
             return Some(Ok(files.into_iter().map(|path| Location::file(path, Default::default())).collect()));

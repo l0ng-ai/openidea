@@ -21,6 +21,7 @@ pub mod intentions;
 pub mod structure;
 pub mod tags;
 pub mod views;
+pub mod vue;
 
 #[cfg(test)]
 mod tests;

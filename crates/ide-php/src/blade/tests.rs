@@ -621,3 +621,74 @@ fn slots_find_their_enclosing_component() {
     assert!(is_builtin("slot") && is_builtin("slot:title") && is_builtin("dynamic-component"));
     assert!(!is_builtin("slotted"));
 }
+
+#[test]
+fn vue_component_tags_and_their_registrations() {
+    use super::vue::{component_tag_at, normalize_name, registrations, x_template};
+    let text = "<v-dashboard-filters>\n</v-dashboard-filters> <x-alert/> <div> <livewire:counter/>";
+    let name = |offset: u32| component_tag_at(text, offset).map(|(s, e)| &text[s as usize..e as usize]);
+    assert_eq!(name(5), Some("v-dashboard-filters"));
+    assert_eq!(name(26), Some("v-dashboard-filters"));
+    assert_eq!(name(46), None, "Blade's own component");
+    assert_eq!(name(56), None, "a plain element");
+    assert_eq!(name(64), None, "Livewire's tag");
+    assert_eq!(normalize_name("VForm"), normalize_name("v-form"));
+
+    let script = "app.component('v-dashboard-filters', {\n template: '#v-dashboard-filters-template' });\n\
+                  app.component(\"VForm\", Form); mycomponent('v-dashboard-filters');";
+    let found = registrations(script, &normalize_name("v-dashboard-filters"));
+    assert_eq!(
+        found.iter().map(|&(s, e)| &script[s as usize..e as usize]).collect::<Vec<_>>(),
+        ["v-dashboard-filters"]
+    );
+    assert_eq!(registrations(script, &normalize_name("v-form")).len(), 1);
+    let template = "<script type=\"text/x-template\" id=\"v-dashboard-filters-template\">";
+    let (s, e) = x_template(template, &normalize_name("v-dashboard-filters")).unwrap();
+    assert_eq!(&template[s as usize..e as usize], "v-dashboard-filters-template");
+}
+
+#[test]
+fn goto_a_vue_component_from_its_tag() {
+    let project = Project::new();
+    // Registered in the template itself.
+    let page = "<v-dash/*|*/board-filters></v-dashboard-filters>\n@pushOnce('scripts')\n<script type=\"module\">\n\
+                app.component('v-dashboard-filters', { template: '#v-dashboard-filters-template' });\n</script>\n@endPushOnce";
+    let found = project
+        .with(page, |engine, blade, pos| engine.blade_vue_definition(blade, LineIndex::new(blade.text).byte(pos)));
+    let found = found.expect("the registration");
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].path, crate::project::normalize(&project.view()));
+    assert_eq!(found[0].range.start, Pos::new(3, 15));
+
+    // Registered in the app's JavaScript, and a single-file component.
+    write(
+        &project.root,
+        &[
+            ("resources/js/app.js", "import Form from './Form.vue';\napp.component(\"VForm\", Form);\n"),
+            ("resources/js/components/UserCard.vue", "<template><div/></template>\n"),
+            ("node_modules/lib/index.js", "app.component('v-form', X);\n"),
+        ],
+    );
+    let found = project
+        .with("<v-fo/*|*/rm></v-form>", |engine, blade, pos| {
+            engine.blade_vue_definition(blade, LineIndex::new(blade.text).byte(pos))
+        })
+        .expect("the registration in app.js");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].path.ends_with("resources/js/app.js"), "{found:?}");
+    assert_eq!(found[0].range.start, Pos::new(1, 15));
+    let found = project
+        .with("<User/*|*/Card/>", |engine, blade, pos| {
+            engine.blade_vue_definition(blade, LineIndex::new(blade.text).byte(pos))
+        })
+        .expect("the .vue file");
+    assert!(found[0].path.ends_with("resources/js/components/UserCard.vue"), "{found:?}");
+    // Nothing registered: left to the other services.
+    assert!(
+        project
+            .with("<v-no/*|*/where/>", |engine, blade, pos| {
+                engine.blade_vue_definition(blade, LineIndex::new(blade.text).byte(pos))
+            })
+            .is_none()
+    );
+}
