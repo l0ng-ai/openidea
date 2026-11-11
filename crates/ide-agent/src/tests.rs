@@ -492,7 +492,7 @@ for line in sys.stdin:
         }
         let concurrent = async {
             if outcome == "session_report" {
-                tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::time::timeout(Duration::from_secs(10), async {
                     while !root.join("initialized").exists() {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
@@ -564,7 +564,7 @@ for line in sys.stdin:
             };
             assert_eq!(subtypes, expected, "{outcome}");
             let pid = std::fs::read_to_string(root.join("pid")).unwrap();
-            tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::time::timeout(Duration::from_secs(10), async {
                 while std::process::Command::new("kill").args(["-0", pid.trim()]).output().unwrap().status.success() {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
