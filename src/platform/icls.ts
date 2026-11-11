@@ -233,7 +233,28 @@ const COLOR_NAMES: Record<string, [string, "foreground" | "background"]> = {
   INDENT_GUIDE: ["indentGuide", "foreground"],
   RIGHT_MARGIN_COLOR: ["rightMargin", "foreground"],
   METHOD_SEPARATORS_COLOR: ["methodSeparator", "foreground"],
+  CONSOLE_BACKGROUND_KEY: ["consoleBackground", "background"],
 };
+
+Object.assign(ATTRIBUTE_NAMES, {
+  CONSOLE_BLACK_OUTPUT: "ansiBlack",
+  CONSOLE_RED_OUTPUT: "ansiRed",
+  CONSOLE_GREEN_OUTPUT: "ansiGreen",
+  CONSOLE_YELLOW_OUTPUT: "ansiYellow",
+  CONSOLE_BLUE_OUTPUT: "ansiBlue",
+  CONSOLE_MAGENTA_OUTPUT: "ansiMagenta",
+  CONSOLE_CYAN_OUTPUT: "ansiCyan",
+  CONSOLE_GRAY_OUTPUT: "ansiWhite",
+  CONSOLE_DARKGRAY_OUTPUT: "ansiBrightBlack",
+  CONSOLE_RED_BRIGHT_OUTPUT: "ansiBrightRed",
+  CONSOLE_GREEN_BRIGHT_OUTPUT: "ansiBrightGreen",
+  CONSOLE_YELLOW_BRIGHT_OUTPUT: "ansiBrightYellow",
+  CONSOLE_BLUE_BRIGHT_OUTPUT: "ansiBrightBlue",
+  CONSOLE_MAGENTA_BRIGHT_OUTPUT: "ansiBrightMagenta",
+  CONSOLE_CYAN_BRIGHT_OUTPUT: "ansiBrightCyan",
+  CONSOLE_WHITE_OUTPUT: "ansiBrightWhite",
+});
+
 // Preserve editor attributes without a standard exchange name on our own round trip.
 for (const attr of ATTRIBUTES)
   if (!Object.values(ATTRIBUTE_NAMES).includes(attr.id)) ATTRIBUTE_NAMES[`OPENIDEA_${attr.id}`] = attr.id;

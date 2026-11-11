@@ -219,6 +219,9 @@ html {
   --fg-weak-warning: #6f737a;
   --fg-bulb: #f2c55c;
 
+  /* console / terminal surfaces (Color Scheme › Console Colors) */
+  --bg-console: var(--bg-island);
+
   /* terminal / console ANSI palette */
   --ansi-black: #000000;
   --ansi-red: #f0524f;

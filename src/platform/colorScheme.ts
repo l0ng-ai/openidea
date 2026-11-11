@@ -135,6 +135,26 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "inlineValue", name: "Inline debugger values", path: ["Debugger"], fg: "--syn-inline-value" },
   { id: "breakpointLine", name: "Breakpoint line", path: ["Debugger"], bg: "--bg-breakpoint-line" },
 
+  // Console / terminal: IDEA's Console Colors (background + 16 ANSI). `--ansi-*` is mirrored
+  // to `--terminal-ansi-*` in overrideDeclarations so the terminal picks up edits.
+  { id: "consoleBackground", name: "Console background", path: ["Console Colors"], bg: "--bg-console" },
+  { id: "ansiBlack", name: "Black", path: ["Console Colors"], fg: "--ansi-black" },
+  { id: "ansiRed", name: "Red", path: ["Console Colors"], fg: "--ansi-red" },
+  { id: "ansiGreen", name: "Green", path: ["Console Colors"], fg: "--ansi-green" },
+  { id: "ansiYellow", name: "Yellow", path: ["Console Colors"], fg: "--ansi-yellow" },
+  { id: "ansiBlue", name: "Blue", path: ["Console Colors"], fg: "--ansi-blue" },
+  { id: "ansiMagenta", name: "Magenta", path: ["Console Colors"], fg: "--ansi-magenta" },
+  { id: "ansiCyan", name: "Cyan", path: ["Console Colors"], fg: "--ansi-cyan" },
+  { id: "ansiWhite", name: "White", path: ["Console Colors"], fg: "--ansi-white" },
+  { id: "ansiBrightBlack", name: "Dark gray", path: ["Console Colors"], fg: "--ansi-bright-black" },
+  { id: "ansiBrightRed", name: "Bright red", path: ["Console Colors"], fg: "--ansi-bright-red" },
+  { id: "ansiBrightGreen", name: "Bright green", path: ["Console Colors"], fg: "--ansi-bright-green" },
+  { id: "ansiBrightYellow", name: "Bright yellow", path: ["Console Colors"], fg: "--ansi-bright-yellow" },
+  { id: "ansiBrightBlue", name: "Bright blue", path: ["Console Colors"], fg: "--ansi-bright-blue" },
+  { id: "ansiBrightMagenta", name: "Bright magenta", path: ["Console Colors"], fg: "--ansi-bright-magenta" },
+  { id: "ansiBrightCyan", name: "Bright cyan", path: ["Console Colors"], fg: "--ansi-bright-cyan" },
+  { id: "ansiBrightWhite", name: "Bright white", path: ["Console Colors"], fg: "--ansi-bright-white" },
+
   syn("keyword", "Keyword", [LD], "keyword"),
   syn("identifier", "Identifiers › Local variable", [LD], "variable"),
   syn("parameter", "Identifiers › Parameter", [LD], "param"),
@@ -405,7 +425,11 @@ export function overrideDeclarations(
     if (attr.language !== language) continue;
     const o = overrides[attr.id];
     if (!o) continue;
-    if (setOrCleared(o.foreground) && attr.fg) out.push([attr.fg, o.foreground]);
+    if (setOrCleared(o.foreground) && attr.fg) {
+      out.push([attr.fg, o.foreground]);
+      // Terminal prefers `--terminal-ansi-*`; keep it in sync with console `--ansi-*`.
+      if (attr.fg.startsWith("--ansi-")) out.push([`--terminal-ansi-${attr.fg.slice("--ansi-".length)}`, o.foreground]);
+    }
     if (setOrCleared(o.background) && attr.bg) out.push([attr.bg, o.background]);
     if (setOrCleared(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
     if (attr.effect && setOrCleared(o.effectColor)) {
@@ -556,7 +580,12 @@ export function schemeCss(
   const pluginTheme = !!el?.dataset.pluginTheme && id === setting;
   if (id !== themeScheme(root) || pluginTheme) {
     const tokens = resolvedSchemeTokens(id, valid);
-    for (const [k, v] of tokens) if (SCHEME_VARS.has(k) || k.startsWith("--syn-")) decls.push([k, v]);
+    for (const [k, v] of tokens)
+      if (SCHEME_VARS.has(k) || k.startsWith("--syn-")) {
+        decls.push([k, v]);
+        // Terminal reads `--terminal-ansi-*`; keep it aligned with console `--ansi-*`.
+        if (k.startsWith("--ansi-")) decls.push([`--terminal-ansi-${k.slice("--ansi-".length)}`, v]);
+      }
     // The editor surface follows the scheme, not the island colour of the UI theme.
     const bg = tokens.get("--bg-editor") ?? tokens.get("--bg-island");
     if (bg) decls.push(["--bg-editor", bg], ["--bg-editor-gutter", tokens.get("--bg-editor-gutter") ?? bg]);
