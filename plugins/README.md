@@ -345,7 +345,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `ide.commands`      | high   | Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing. API 1.4; declared own commands are exempt.      |
 | `database.sources`  | medium | API 1.4: manage only the plugin's own project database sources, write their secure credentials and request connection; trusted projects only.                           |
 | `project.read`      | low    | `Project::root`, `read_file`, `read_bytes`, `find_files`, `symbols`, `search_text`, `host::projects`, `publish_diagnostics`, `problems`, editor opening and decorations |
-| `project.write`     | medium | `Project::write_file` — creates and replaces text files inside the open projects                                                                                        |
+| `project.write`     | high   | `Project::write_file` — creates and replaces text files inside the open projects, the settings and build scripts a trusted project runs included                        |
 | `fs.read:<path>`    | high   | `host::fs::read_file`, `read_bytes`, `stat`, `read_dir` — files outside the projects, under the grant's directory                                                       |
 | `fs.write:<path>`   | high   | `host::fs::write_file`, `write_bytes` — files under that path; doesn't imply reading                                                                                    |
 | `editor.read`       | low    | `TextEditor::document`, `selections`, `host::open_editors`                                                                                                              |
@@ -388,7 +388,9 @@ keep the file's encoding and BOM (a new file is UTF-8), are capped at 16 MiB,
 and are refused while the editor holds unsaved changes for the same file. The
 path is resolved as a read's is, so a link inside a granted directory cannot be
 used to write outside it. `project.write` does the same inside the open
-projects, creating missing directories. Both are new in API 1.3
+projects, creating missing directories. It never writes git's own files:
+nothing inside a `.git` folder, nor the `.git` file of a linked worktree or
+submodule, whichever name or link leads there. Both are new in API 1.3
 (`engines.openidea = "^1.3"`).
 
 `host::fs::plugin_dir()` (API 1.3) returns a private directory belonging only to
@@ -1006,7 +1008,8 @@ Then `register_plugin!(MyPlugin, providers)` and implement
 `inline_completion`, `code_actions`, `definition`, `line_markers`. Each gets
 the document (path, language, version, text). Results join the language
 servers' (completion lists, ⌥⏎ quick fixes, ⌘B, gutter icons; a code action
-carries edits for any files, applied as one change). A completion item's
+carries edits for files in the project, applied as one change; an edit
+anywhere else, or to git's own files, disables it). A completion item's
 `kind` (`CompletionKind` in the SDK, a string in the WIT) picks its icon; it
 can be a `snippet` (`$1`, `${1:name}`, `$0`), match on `filter_text` instead
 of its label, and bring `additional_edits` elsewhere in the document (an
@@ -1023,7 +1026,8 @@ deletes files implements `file_actions::FileActions` too
 covers both): a `FileAction` carries `operations` (`FileOperation::Create {
 path, text, overwrite }`, `Rename`, `Delete`) and `edits`, applied as one
 workspace edit, so a failure changes nothing and one undo reverses it. A path
-outside the project root disables the action; `open` shows a file once the
+outside the project root, or one of git's own files (a `.git` folder's, or the
+`.git` file of a linked worktree), disables the action; `open` shows a file once the
 action is applied. Like a code action, it can leave `operations` and `edits`
 empty and set `data`: `resolve_file_action` computes them when the user picks
 it, with the same prompts and editor window as `resolve_code_action`. File actions are new in API 1.3. Problems (`publish_diagnostics`) can name

@@ -540,6 +540,18 @@
 .markdown :global(img) {
   max-width: 100%;
 }
+.loadImage {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--fg-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.loadImage:hover {
+  background: var(--bg-hover);
+}
 .markdown :global(li:has(> input[type="checkbox"])) {
   margin-left: -20px;
 }

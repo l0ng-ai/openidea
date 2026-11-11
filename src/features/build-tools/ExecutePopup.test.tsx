@@ -47,7 +47,7 @@ it("starts PageUp on a completion rather than a section", () => {
   render(<ExecutePopupHost />);
   const input = screen.getByRole("textbox");
   fireEvent.keyDown(input, { key: "PageUp" });
-  fireEvent.keyDown(input, { key: "Enter" });
+  fireEvent.keyDown(input, { key: "Tab" });
   expect(input).toHaveValue("clean ");
 });
 
@@ -96,8 +96,19 @@ it("PageDown selects a completion rather than a section at its landing position"
   const input = screen.getByRole("textbox");
   fireEvent.keyDown(input, { key: "ArrowDown" });
   fireEvent.keyDown(input, { key: "PageDown" });
-  fireEvent.keyDown(input, { key: "Enter" });
+  fireEvent.keyDown(input, { key: "Tab" });
   expect(input).toHaveValue(`${goalCompletions("", [])[0]!.line} `);
+});
+
+it("shows a clicked completion in the input instead of appending it", () => {
+  render(<ExecutePopupHost />);
+  const input = screen.getByRole("textbox");
+  const options = screen.getAllByRole("option");
+  fireEvent.click(options[0]!);
+  expect(input).toHaveValue("clean");
+  fireEvent.click(options[1]!);
+  expect(input).toHaveValue("validate");
+  expect(screen.getAllByRole("option")).toHaveLength(options.length);
 });
 
 it("resets selection when changing the Gradle build used for completion", () => {

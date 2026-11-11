@@ -15,8 +15,10 @@ import { tx } from "@/platform/i18n";
 export interface FileRef {
   /** Absolute path (in the task's directory). */
   path: string;
-  /** As written after `@`. */
+  /** As written after `@`; the file name when `attached`. */
   rel: string;
+  /** Sent without an `@` mention: a file from outside the project, shown as a chip. */
+  attached?: boolean;
 }
 
 export interface ComposerDraft {
@@ -142,19 +144,22 @@ export function mentionOf(rel: string, lines?: { from: number; to: number }): st
   return lines.from === lines.to ? `@${rel}:${lines.from}` : `@${rel}:${lines.from}-${lines.to}`;
 }
 
-/** The prompt to send: files still mentioned in the text (each once), and the images. */
+/** Whether `text` still holds the `@rel` mention, with or without a line range. */
+export const isMentioned = (text: string, rel: string) =>
+  new RegExp(`@${escapeRe(rel)}(?![\\w./-])|@${escapeRe(rel)}:`).test(text);
+
+/** The prompt to send: attached files, files still mentioned in the text (each once), and the images. */
 export function toPrompt(draft: ComposerDraft): AgentPrompt {
   const seen = new Set<string>();
   const files = draft.files.filter((f) => {
-    if (seen.has(f.path) || !new RegExp(`@${escapeRe(f.rel)}(?![\\w./-])|@${escapeRe(f.rel)}:`).test(draft.text))
-      return false;
+    if (seen.has(f.path) || !(f.attached || isMentioned(draft.text, f.rel))) return false;
     seen.add(f.path);
     return true;
   });
   return { text: draft.text.trim(), files: files.map((f) => f.path), images: draft.images };
 }
 
-export const canSend = (d: ComposerDraft) => !!d.text.trim() || d.images.length > 0;
+export const canSend = (d: ComposerDraft) => !!d.text.trim() || d.images.length > 0 || d.files.some((f) => f.attached);
 
 /**
  * ↑ / ↓ through sent messages (newest first). `index` −1 is the unsent draft. Returns the
@@ -171,10 +176,32 @@ export function atEdgeLine(text: string, caret: number, dir: -1 | 1): boolean {
   return dir < 0 ? !text.slice(0, caret).includes("\n") : !text.slice(caret).includes("\n");
 }
 
-/** The settings shown in the composer: model, mode, collaboration mode, permissions, approvals, effort. */
+const matchesCategory = (o: AgentConfigOption, category: string) =>
+  o.category === category || (category === "model_config" && (o.category === "model_config" || o.id === "fast"));
+
+/** Cursor / ACP model parameters (`fast`, `context`…), separate from the model id itself. */
+export function modelConfigOptions(config: readonly AgentConfigOption[]): AgentConfigOption[] {
+  return config.filter((o) => o.category === "model_config" || o.id === "fast");
+}
+
+/** The settings shown in the composer: model, mode, collaboration mode, permissions, approvals, effort, fast. */
 export function mainOptions(config: readonly AgentConfigOption[]): AgentConfigOption[] {
-  const order = ["model", "mode", "collaboration_mode", "permissions", "approval", "thought_level"];
-  return order.flatMap((c) => config.filter((o) => o.category === c).slice(0, 1));
+  const order = ["model", "mode", "collaboration_mode", "permissions", "approval", "thought_level", "model_config"];
+  return order.flatMap((c) => {
+    const matched = config.filter((o) => matchesCategory(o, c));
+    return c === "model_config" ? matched : matched.slice(0, 1);
+  });
+}
+
+/** Cursor defaults to Fast; prefer standard Composer unless the user chose otherwise. */
+export function cursorModelDefaults(
+  providerId: string | undefined,
+  config: readonly AgentConfigOption[],
+): Record<string, string> {
+  if (providerId !== "cursor") return {};
+  const fast = config.find((o) => o.id === "fast" || o.category === "model_config");
+  if (fast?.values.some((v) => v.value === "false")) return { [fast.id]: "false" };
+  return {};
 }
 
 export const modeOption = (config: readonly AgentConfigOption[]) => config.find((o) => o.category === "mode");

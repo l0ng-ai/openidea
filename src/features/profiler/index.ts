@@ -11,7 +11,9 @@ import { resetProfiler } from "./store";
 
 export function activate(): () => void {
   const disposers: Array<() => void> = [
-    registerRunExecutor(profilerExecutor),
+    registerRunExecutor(profilerExecutor("cpu")),
+    registerRunExecutor(profilerExecutor("allocations")),
+    registerRunExecutor(profilerExecutor("liveObjects")),
     registerToolWindow({
       id: "profiler",
       title: "Profiler",
@@ -32,6 +34,27 @@ export function activate(): () => void {
         when: "projectOpen",
         keywords: ["profiler", "flame graph", "cpu"],
         run: () => executeAction("run.withExecutor", { executor: "profiler" }).then(() => undefined),
+      },
+      {
+        id: "run.profileAllocations",
+        title: "Profile Allocations",
+        description: "Run the selected configuration and record where it allocates memory",
+        category: "Run",
+        icon: "profile",
+        when: "projectOpen",
+        keywords: ["allocation", "memory", "async-profiler"],
+        run: () => executeAction("run.withExecutor", { executor: "profilerAllocations" }).then(() => undefined),
+      },
+      {
+        id: "run.profileLiveObjects",
+        title: "Profile Live Objects",
+        description:
+          "Run the selected configuration and record where the objects still alive when it stops were allocated",
+        category: "Run",
+        icon: "profile",
+        when: "projectOpen",
+        keywords: ["allocation", "live objects", "memory leak"],
+        run: () => executeAction("run.withExecutor", { executor: "profilerLiveObjects" }).then(() => undefined),
       },
       {
         id: "run.profileContext",

@@ -20,6 +20,8 @@ import {
   profilesArg,
   splitArgs,
   taskCompletions,
+  withGradleOptions,
+  gradleHasTestTask,
   type BuildNode,
 } from "./model";
 
@@ -270,6 +272,8 @@ describe("Maven runs", () => {
     expect(goalCompletions("sure", [surefire]).map((x) => x.label)).toEqual(["surefire:help", "surefire:test"]);
     expect(goalCompletions("cl", [], ["clean install"]).map((x) => x.label)[0]).toBe("clean install");
     expect(goalCompletions("-D", [surefire])).toEqual([]);
+    expect(goalCompletions("mvn clean test ", [surefire]).map((x) => x.label)).not.toContain("test");
+    expect(goalCompletions("clean c", []).map((x) => x.label)).not.toContain("clean");
   });
 });
 
@@ -324,7 +328,7 @@ describe("Gradle tree and runs", () => {
 
   it("runs tasks by path from the build directory", () => {
     const app = gradle.projects[1]!;
-    const config = gradleTaskConfig(gradle, app, ["test"], { offline: true });
+    const config = gradleTaskConfig(gradle, app, ["test"], { offline: true, skipTests: false });
     expect(config).toMatchObject({
       name: "app [test]",
       kind: "gradle",
@@ -335,11 +339,59 @@ describe("Gradle tree and runs", () => {
       env: {},
       isTest: true,
     });
-    expect(gradleTaskConfig(gradle, gradle.projects[0]!, ["wrapper"], { offline: false }).args).toEqual(["wrapper"]);
-    expect(gradleTaskConfig(gradle, app, [":lib:jar", "--info"], { offline: false }).args).toEqual([
+    expect(
+      gradleTaskConfig(gradle, gradle.projects[0]!, ["wrapper"], { offline: false, skipTests: false }).args,
+    ).toEqual(["wrapper"]);
+    expect(gradleTaskConfig(gradle, app, [":lib:jar", "--info"], { offline: false, skipTests: false }).args).toEqual([
       ":lib:jar",
       "--info",
     ]);
+  });
+
+  it("appends -x test to task runs when Skip Tests is on", () => {
+    const app = gradle.projects[1]!;
+    const skipped = gradleTaskConfig(gradle, app, ["build"], { offline: false, skipTests: true });
+    expect(skipped.args).toEqual([":app:build", "-x", "test"]);
+    // Running `test` with Skip Tests on is not a test run for the Run window.
+    const test = gradleTaskConfig(gradle, app, ["test"], { offline: false, skipTests: true });
+    expect(test.args).toEqual([":app:test", "-x", "test"]);
+    expect(test.isTest).toBe(false);
+    // A command line that already excludes tests is not changed again (typed task names keep
+    // the pre-existing project-path prefix).
+    const explicit = gradleTaskConfig(gradle, app, ["build", "-x", "test"], { offline: false, skipTests: true });
+    expect(explicit.args).toEqual([":app:build", "-x", ":app:test"]);
+    const verbose = gradleTaskConfig(gradle, app, ["build", "--exclude-task", "test"], {
+      offline: false,
+      skipTests: true,
+    });
+    expect(verbose.args).toEqual([":app:build", "--exclude-task", ":app:test"]);
+    // A build without a `test` task would fail on `-x test`.
+    const noTests = {
+      ...gradle,
+      projects: gradle.projects.map((p) => ({ ...p, tasks: p.tasks.filter((t) => t.name !== "test") })),
+    };
+    expect(gradleHasTestTask([noTests])).toBe(false);
+    expect(
+      gradleTaskConfig(noTests, noTests.projects[1]!, ["build"], { offline: false, skipTests: true }).args,
+    ).toEqual([":app:build"]);
+  });
+
+  it("applies the toolbar toggles to saved configurations started from the tree", () => {
+    const saved = runConfig({ id: "g", name: "app [build]", kind: "gradle", args: ["build"] });
+    expect(withGradleOptions(saved, { offline: false, skipTests: false }).args).toEqual(["build"]);
+    expect(withGradleOptions(saved, { offline: true, skipTests: false }).args).toEqual(["build", "--offline"]);
+    expect(withGradleOptions(saved, { offline: true, skipTests: true }).args).toEqual([
+      "build",
+      "--offline",
+      "-x",
+      "test",
+    ]);
+    const excluding = withGradleOptions(runConfig({ ...saved, args: ["build", "-x", "test"] }), {
+      offline: false,
+      skipTests: true,
+    });
+    expect(excluding.args).toEqual(["build", "-x", "test"]);
+    expect(withGradleOptions(saved, { offline: false, skipTests: true }, false).args).toEqual(["build"]);
   });
 
   it("keeps identical project paths and tasks of independent builds distinct", () => {
@@ -361,7 +413,7 @@ describe("Gradle tree and runs", () => {
       return gradleChildren(group, builds, [])![0]!;
     });
     expect(tasks[0]!.key).not.toBe(tasks[1]!.key);
-    const runs = builds.map((b) => gradleTaskConfig(b, b.projects[1]!, ["test"], { offline: true }));
+    const runs = builds.map((b) => gradleTaskConfig(b, b.projects[1]!, ["test"], { offline: true, skipTests: false }));
     expect(runs[0]!.id).not.toBe(runs[1]!.id);
     expect(runs[1]).toMatchObject({
       command: "/p/second/gradlew",
@@ -406,6 +458,8 @@ describe("Gradle tree and runs", () => {
     const labelsOf = taskCompletions("ru", gradle).map((c) => c.label);
     expect(labelsOf).toEqual([":app:run"]);
     expect(taskCompletions("clean wr", gradle).map((c) => c.line)).toEqual(["clean wrapper"]);
+    expect(taskCompletions("wrapper wr", gradle)).toEqual([]);
+    expect(taskCompletions(":app:run ", gradle).map((c) => c.label)).not.toContain(":app:run");
   });
 });
 

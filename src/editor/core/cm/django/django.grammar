@@ -1,0 +1,112 @@
+// Django templates: the template layer. Tags (`{% … %}`), variables (`{{ … }}`)
+// and comments are parsed here; the text between them is HTML, mounted by
+// `./index.ts`. Block tags of Django and its contrib libraries nest
+// (`{% if %}…{% elif %}…{% endif %}`); other tags, custom ones included, stand
+// alone. Regenerate with `pnpm gen:django-grammar`.
+
+@context blocks from "./tokens"
+
+@top Template { node* }
+
+node {
+  Text |
+  Comment |
+  Interpolation |
+  Tag |
+  Element |
+  CommentElement |
+  VerbatimElement
+}
+
+// A block tag, its middle tags (`elif`, `else`, `empty`, `plural`) and its end tag.
+Element { OpenTag node* (MidTag node*)* EndTag }
+
+// `{% comment %}…{% endcomment %}`: the content is not parsed.
+CommentElement { CommentTag CommentBody? EndTag }
+
+// `{% verbatim %}…{% endverbatim %}`: the content is HTML whose tags and
+// variables Django leaves alone.
+VerbatimElement { VerbatimTag VerbatimBody? EndTag }
+
+@skip { space } {
+  OpenTag { OpenTagStart TagName argument* TagEnd }
+  CommentTag { CommentTagStart TagName argument* TagEnd }
+  VerbatimTag { VerbatimTagStart TagName argument* TagEnd }
+  MidTag { MidTagStart TagName argument* TagEnd }
+  EndTag { EndTagStart TagName argument* TagEnd }
+  Tag { TagStart TagName argument* TagEnd }
+
+  Interpolation { "{{" expression? "}}" }
+
+  argument {
+    expression |
+    CompareOp |
+    AssignOp { "=" } |
+    kw<"and"> | kw<"or"> | kw<"not"> | kw<"in"> | kw<"is"> |
+    kw<"as"> | kw<"with"> | kw<"only"> | kw<"from">
+  }
+
+  expression[@isGroup=Expression] {
+    VariableName |
+    MemberExpression |
+    String |
+    Number |
+    @specialize[@name=BooleanLiteral]<identifier, "True" | "False"> |
+    @specialize[@name=None]<identifier, "None"> |
+    FilterExpression
+  }
+
+  MemberExpression { (VariableName | MemberExpression) "." (PropertyName | Number) }
+
+  FilterExpression { expression !filter FilterOp FilterName (":" filterArgument)? }
+
+  filterArgument { VariableName | MemberExpression | String | Number }
+}
+
+@precedence { filter @left }
+
+VariableName { identifier }
+
+PropertyName { identifier }
+
+FilterName { identifier }
+
+// `with` is a keyword in arguments and a block tag's name.
+TagName { identifier | kw<"with"> }
+
+FilterOp { "|" }
+
+TagEnd { "%}" }
+
+kw<term> { @specialize[@name={term}]<identifier, term> }
+
+// Tried in this order, before the tokens below: a raw block's content before
+// the tags in it.
+@external tokens comment from "./tokens" { Comment }
+@external tokens commentBody from "./tokens" { CommentBody }
+@external tokens verbatimBody from "./tokens" { VerbatimBody }
+@external tokens text from "./tokens" { Text }
+@external tokens tagStart from "./tokens" {
+  OpenTagStart, CommentTagStart, VerbatimTagStart, MidTagStart, EndTagStart, TagStart
+}
+
+@tokens {
+  space { $[ \t\n\r]+ }
+
+  identifier { $[a-zA-Z_\u{a1}-\u{10ffff}] $[a-zA-Z0-9_\u{a1}-\u{10ffff}]* }
+
+  Number { "-"? @digit+ ("." @digit+)? }
+
+  String {
+    '"' (!["\\] | "\\" _)* '"'? |
+    "'" (!['\\] | "\\" _)* "'"?
+  }
+
+  CompareOp { "==" | "!=" | "<" | ">" | "<=" | ">=" }
+
+  @precedence { CompareOp, "=" }
+
+  "{{" "}}" "." ":" "="
+}
+
+@detectDelim

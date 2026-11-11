@@ -93,9 +93,15 @@ async fn external_history_is_readable_and_never_becomes_a_write_target() {
     let payload =
         serde_json::to_vec(&serde_json::json!({ "repo": external, "revision": first, "path": "deleted.txt" })).unwrap();
     let hex = payload.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let document =
-        vcs::revision_virtual_document(&host, "standalone", &format!("git-revision:{hex}/deleted.txt")).await.unwrap();
+    let uri = format!("git-revision:{hex}/deleted.txt");
+    let document = vcs::revision_virtual_document(&host, "standalone", &uri, None).await.unwrap();
     assert_eq!(document.text, "historical content\n");
+    assert_eq!(document.encoding, "utf-8");
+    assert!(document.can_reload_encoding);
+    // Reload with Encoding re-decodes the blob with the chosen charset.
+    let reloaded = vcs::revision_virtual_document(&host, "standalone", &uri, Some("utf-16le")).await.unwrap();
+    assert_eq!(reloaded.encoding, "utf-16le");
+    assert_ne!(reloaded.text, document.text);
     host.trust.decide(&root, true, false).unwrap();
     let project = host.open_project("main", &root).unwrap();
     assert!(vcs::vcs_log(&host, "main", Some(external.clone()), Default::default()).await.is_err());

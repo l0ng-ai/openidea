@@ -630,6 +630,13 @@ describe("Settings dialog", () => {
     expect(within(dialog).getByLabelText("UI font size")).toHaveValue("13");
   });
 
+  it("keeps Project Structure out of the Settings page tree", async () => {
+    useProject.setState({ project: { name: "demo", root: "/project" } as never });
+    const dialog = await openDialog("appearance");
+    const tree = within(dialog).getByRole("tree", { name: "Settings pages" });
+    expect(within(tree).queryByText("Project Structure")).toBeNull();
+  });
+
   it("opens Project Structure as its own standalone IDEA-style dialog instead of Settings", async () => {
     useProject.setState({ project: { name: "demo", root: "/project" } as never });
     render(

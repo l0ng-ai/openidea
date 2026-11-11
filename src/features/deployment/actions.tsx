@@ -15,7 +15,7 @@ import {
 import { tx, txTemplate, useTxTemplate } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import { relativePath, useProject } from "@/platform/project";
-import type { AutoUploadValid, DeploymentServerValid } from "@/platform/remoteSettings";
+import { deploymentConnection, type AutoUploadValid, type DeploymentServerValid } from "@/platform/remoteSettings";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications, projectViewSelection, toolWindowService } from "@/workbench/contributions";
 import { chooseItem } from "@/workbench/inputDialogs";
@@ -187,6 +187,21 @@ async function transfer(direction: "upload" | "download", server: DeploymentServ
     showReport(report, direction, server);
   } catch (e) {
     showFailure(direction === "upload" ? "Cannot upload to {server}" : "Cannot download from {server}", server, e);
+  }
+}
+
+/** Downloads remote files and folders into local folder `target`, each under its own name
+ *  (Remote Host › Download to…, or a drag onto the Project view). */
+export async function downloadRemoteInto(server: DeploymentServerValid, paths: string[], target: string) {
+  if (!paths.length) return;
+  const request = nextRequestId();
+  try {
+    const report = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+      call(commands.remoteDownloadInto(deploymentConnection(server), paths, target, request)),
+    );
+    showReport(report, "download", server);
+  } catch (e) {
+    showFailure("Cannot download from {server}", server, e);
   }
 }
 
@@ -432,6 +447,18 @@ export function registerDeploymentActions(): () => void {
       when,
       keywords: ["deploy", "sftp", "upload", "remote"],
       run: withTargets(async (paths) => transfer("upload", await pickServer("Upload to", paths), paths)),
+    },
+    {
+      id: "deployment.downloadRemoteInto",
+      title: "Download Remote Files Into Folder",
+      category: CATEGORY,
+      hidden: true,
+      description: "Download Remote Host files into a local folder (arg: { server, paths, target })",
+      run: async ({ arg }) => {
+        const a = arg as { server: string; paths: string[]; target: string } | undefined;
+        const server = a && resolveServer(deployment(), a.server);
+        if (server) await downloadRemoteInto(server, a.paths, a.target);
+      },
     },
     {
       id: "deployment.downloadFromDefault",

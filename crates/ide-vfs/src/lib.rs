@@ -21,7 +21,10 @@ pub use archive::{
     ARCHIVE_EXTENSIONS, archive_entry_path, archive_root, is_archive_file, is_archive_path, read_archive_dir,
     read_archive_entry, split_archive_path,
 };
-pub use bytes::{ByteRange, FileProbe, MAX_RANGE_LEN, base64, image_mime, probe, read_data_url, read_range};
+pub use bytes::{
+    ByteRange, FileProbe, MAX_RANGE_LEN, base64, content_path_allowed, image_mime, on_local_drive, probe,
+    read_data_url, read_range, same_share,
+};
 pub use compare::{
     DirectoryCompareEntry, DirectoryCompareProgress, DirectoryCompareStatus, compare_directories, copy_merge,
 };

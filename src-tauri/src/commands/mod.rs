@@ -28,6 +28,7 @@ pub mod fs;
 pub mod github;
 pub mod heap;
 pub mod history;
+pub mod hotkeys;
 pub mod http;
 pub mod java;
 pub mod lsp;
@@ -122,6 +123,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_providers,
         agent::agent_set_command,
         agent::agent_set_env,
+        agent::agent_custom_save,
+        agent::agent_custom_remove,
+        agent::agent_custom_import,
         agent::agent_registry_list,
         agent::agent_registry_install,
         agent::agent_registry_remove,
@@ -152,6 +156,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_changes,
         agent::agent_base_text,
         agent::agent_rollback_changes,
+        agent::agent_accept_changes,
         notebook::notebook_open,
         notebook::notebook_get,
         notebook::notebook_edit,
@@ -195,6 +200,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         doc::doc_snapshot,
         doc::doc_ui_mode,
         doc::doc_set_encoding,
+        doc::doc_set_bom,
         doc::doc_set_line_ending,
         doc::doc_outline,
         doc::doc_folding,
@@ -214,12 +220,15 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         history::history_list_dir,
         history::history_put_label,
         history::history_restore,
+        hotkeys::system_probe_hotkeys,
         refactor::refactor_file_move_edits,
         refactor::refactor_file_move_text_edits,
         refactor::refactor_move_files,
         refactor::refactor_undo_file_move,
         refactor::refactor_can_undo_file_move,
         caches::caches_schedule_invalidation,
+        caches::caches_local_data_info,
+        caches::caches_set_local_data_dir,
         caches::app_restart,
         nav::index_status,
         nav::index_file_extensions,
@@ -469,6 +478,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::window_new,
         window::window_open_settings,
         window::window_open_comparison,
+        window::window_open_diff,
         window::window_open_deployment,
         window::window_cycle,
         window::window_toggle_fullscreen,
@@ -524,6 +534,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         web::web_open,
         profiler::profiler_prepare,
         profiler::profiler_collect,
+        profiler::profiler_gc_before_stop,
         heap::debug_heap_capture,
         heap::debug_heap_open,
         heap::debug_heap_classes,
@@ -641,6 +652,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         http::http_curl,
         http::http_from_curl,
         http::http_environment_file,
+        http::http_variable_definitions,
         http::http_history,
         http::http_history_get,
         http::http_history_clear,
@@ -676,6 +688,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         deploy::remote_of,
         deploy::remote_delete,
         deploy::remote_mkdir,
+        deploy::remote_download_into,
         deploy::remote_rename,
         crate::remote_dev::remote_bootstrap_list,
         crate::remote_dev::remote_connect,

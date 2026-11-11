@@ -100,6 +100,19 @@ pub async fn window_open_comparison(
     windows::open_comparison_window(&app, &window, comparison, background)
 }
 
+/// Opens a window showing `diff` next to this window ("Show Diff in New Window").
+/// `background` (`#rrggbb`) paints it until its page has loaded.
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_diff(
+    app: AppHandle,
+    window: WebviewWindow,
+    diff: windows::DiffLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    windows::open_diff_window(&app, &window, diff, background)
+}
+
 /// Opens this window's Sync with Deployed window comparing `paths` with `server` (or hands them
 /// to the open one). `background` (`#rrggbb`) paints a new window until its page has loaded.
 #[tauri::command]

@@ -15,6 +15,7 @@ pub mod connection;
 pub mod jdwp;
 mod jvm_memory;
 pub mod kotlin;
+pub mod kotlin_lsp;
 mod session;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
@@ -610,9 +611,19 @@ fn unverified(enabled: impl Iterator<Item = bool>) -> Vec<BreakpointState> {
         .collect()
 }
 
-/// Delve compiles the debuggee to `__debug_bin` in the session's cwd (on Windows
-/// `__debug_bin.exe` plus `__debug_bin.exe<digits>` in DAP mode) and removes it on a
-/// graceful exit — a shutdown it doesn't always reach, so the files pile up. Sweep
+/// A step request's outcome; a failed one leaves no step pending, so the next stop keeps its reason.
+fn step_settled(session: &Session, sent: Result<Value, DapError>) -> Result<Value, DapError> {
+    if sent.is_err()
+        && let Some(quirks) = session.kotlin_lsp_quirks()
+    {
+        quirks.resume_sent();
+    }
+    sent
+}
+
+/// Delve compiles the debuggee to `__debug_bin` in the session's cwd (in DAP mode a
+/// temp-file name, `__debug_bin<digits>`; on Windows with `.exe` before the digits) and
+/// removes it on a graceful exit — a shutdown it doesn't always reach, so the files pile up. Sweep
 /// the leftovers once the session is down. Runs after `session_closed`, so Delve
 /// has already exited or been killed and holds no file locks; a leftover of a
 /// still-building run is removed on that run's own shutdown.
@@ -621,14 +632,10 @@ fn remove_delve_binaries(cwd: &Path) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        // Windows writes `__debug_bin.exe` (and `.exe<digits>` in DAP mode); other
-        // platforms keep the bare name. Suffixes like `.go` are user files.
-        let suffix = name.strip_prefix("__debug_bin");
-        let leftover = suffix.is_some_and(|s| {
-            s.is_empty()
-                || s == ".exe"
-                || (s.starts_with(".exe") && s[".exe".len()..].chars().all(|c| c.is_ascii_digit()))
-        });
+        // `__debug_bin`, then `.exe` on Windows, then DAP mode's temp-file digits.
+        // Suffixes like `.go` are user files.
+        let suffix = name.strip_prefix("__debug_bin").map(|s| s.strip_prefix(".exe").unwrap_or(s));
+        let leftover = suffix.is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()));
         if !leftover || entry.file_type().is_ok_and(|t| !t.is_file()) {
             continue;
         }
@@ -981,6 +988,7 @@ impl DebugManager {
             arguments["projectRoot"] = json!(mirror.root());
             *s.kotlin_mirror.lock() = Some(mirror);
         }
+        let is_kotlin_lsp = s.adapter == kotlin_lsp::ADAPTER;
         let caps = s
             .conn
             .request_timeout(
@@ -988,7 +996,7 @@ impl DebugManager {
                 json!({
                     "clientID": "openidea",
                     "clientName": "OpenIDEA",
-                    "adapterID": s.adapter,
+                    "adapterID": if is_kotlin_lsp { kotlin_lsp::DAP_ADAPTER_ID } else { s.adapter.as_str() },
                     "locale": "en",
                     "linesStartAt1": true,
                     "columnsStartAt1": true,
@@ -998,7 +1006,8 @@ impl DebugManager {
                     "supportsRunInTerminalRequest": true,
                     "supportsStartDebuggingRequest": true,
                     "supportsProgressReporting": true,
-                    "supportsInvalidatedEvent": false,
+                    // kotlin-lsp sends `invalidated` either way.
+                    "supportsInvalidatedEvent": is_kotlin_lsp,
                     "supportsMemoryReferences": false,
                     "supportsArgsCanBeInterpretedByShell": false,
                 }),
@@ -1008,7 +1017,7 @@ impl DebugManager {
         *s.caps.lock() = if caps.is_object() { caps } else { json!({}) };
 
         // The Kotlin adapters ignore the resolved classpath and project runtime on launch.
-        let request = if s.adapter == kotlin::ADAPTER && s.request == "launch" {
+        let request = if kotlin::is_kotlin(&s.adapter) && s.request == "launch" {
             session::start_kotlin_debuggee(s, &mut arguments).await?;
             "attach"
         } else {
@@ -1032,7 +1041,7 @@ impl DebugManager {
                 jvm_memory::find_attached_jvm(s, port, finder).await;
             }
         }
-        if s.adapter == kotlin::ADAPTER {
+        if kotlin::is_kotlin(&s.adapter) {
             let host = arguments
                 .get("hostName")
                 .and_then(Value::as_str)
@@ -1044,7 +1053,7 @@ impl DebugManager {
                 .and_then(|p| u16::try_from(p).ok())
                 .filter(|p| *p != 0)
                 .ok_or_else(|| IdeError::invalid("Invalid Kotlin JDWP port"))?;
-            let (link, port) = ide_jdwp::JdwpLink::start(host, port, kotlin::link_options()).await?;
+            let (link, port) = ide_jdwp::JdwpLink::start(host, port, kotlin::link_options(&s.adapter)).await?;
             *s.jvm_inspector.lock() = Some(Arc::new(ide_jdwp::LinkInspector::new(link.clone())));
             jvm_memory::watch_link(s, &link);
             *s.jdwp_link.lock() = Some(link);
@@ -1381,6 +1390,8 @@ impl DebugManager {
 
     pub async fn threads(&self, s: DebugSessionId) -> IdeResult<Vec<ThreadInfo>> {
         let session = self.session(s)?;
+        // Before sending: a stop that overtakes the reply must not take the reply's ids as its own.
+        let stop = session.suspended.ticket();
         let body = session.conn.request_timeout("threads", Value::Null, REQUEST_TIMEOUT).await?;
         let threads: Vec<ThreadInfo> = body
             .get("threads")
@@ -1394,11 +1405,15 @@ impl DebugManager {
                     .collect()
             })
             .unwrap_or_default();
+        if let Some(quirks) = session.kotlin_lsp_quirks() {
+            quirks.saw_threads(stop, threads.iter().map(|t| t.id));
+        }
         Ok(threads)
     }
 
     pub async fn stack_trace(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<Vec<StackFrame>> {
         let session = self.session(s)?;
+        session.check_thread(thread_id)?;
         let body = session
             .conn
             .request_timeout(
@@ -1407,10 +1422,14 @@ impl DebugManager {
                 REQUEST_TIMEOUT,
             )
             .await?;
+        let kotlin_lsp = session.kotlin_lsp_quirks().is_some();
         let frame = |f: &Value| {
             let mut frame = frame_from(f);
             if let Some(client) = frame.path.as_deref().and_then(|p| session.client_path(&p.to_string_lossy())) {
                 frame.path = Some(client.into());
+            }
+            if kotlin_lsp {
+                frame.name = kotlin_lsp::frame_name(&frame.name).to_owned();
             }
             frame
         };
@@ -1523,6 +1542,10 @@ impl DebugManager {
 
     pub async fn resume(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<()> {
         let session = self.session(s)?;
+        session.check_thread(thread_id)?;
+        if let Some(quirks) = session.kotlin_lsp_quirks() {
+            quirks.resume_sent();
+        }
         let ticket = session.suspended.ticket();
         let body = session.conn.request_timeout("continue", json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
         // DAP: a response without the flag continued every thread.
@@ -1567,8 +1590,13 @@ impl DebugManager {
             StepKind::Out => "stepOut",
         };
         let session = self.session(s)?;
+        session.check_thread(thread_id)?;
+        if let Some(quirks) = session.kotlin_lsp_quirks() {
+            quirks.step_sent();
+        }
         let ticket = session.suspended.ticket();
-        session.conn.request_timeout(command, json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
+        let sent = session.conn.request_timeout(command, json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await;
+        step_settled(&session, sent)?;
         // A step runs its thread; other threads stopped by their own events stay stopped.
         session.suspended.resumed(ticket, thread_id, false);
         session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
@@ -1587,6 +1615,8 @@ impl DebugManager {
         force: bool,
     ) -> IdeResult<()> {
         let session = self.session(s)?;
+        // Before touching breakpoints: a refused `continue` would leave them replaced.
+        session.check_thread(thread_id)?;
         if force {
             self.suspend_breakpoints(&session, Some(&path)).await?;
         }
@@ -1661,6 +1691,7 @@ impl DebugManager {
     /// Force Step Over: `next` with every breakpoint suspended until the step ends.
     pub async fn force_step_over(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<()> {
         let session = self.session(s)?;
+        session.check_thread(thread_id)?;
         self.suspend_breakpoints(&session, None).await?;
         self.step(s, thread_id, StepKind::Over).await
     }
@@ -1668,11 +1699,16 @@ impl DebugManager {
     /// Step into a specific call of the current line (Smart Step Into).
     pub async fn step_in_target(&self, s: DebugSessionId, thread_id: i64, target_id: i64) -> IdeResult<()> {
         let session = self.session(s)?;
+        session.check_thread(thread_id)?;
+        if let Some(quirks) = session.kotlin_lsp_quirks() {
+            quirks.step_sent();
+        }
         let ticket = session.suspended.ticket();
-        session
+        let sent = session
             .conn
             .request_timeout("stepIn", json!({ "threadId": thread_id, "targetId": target_id }), REQUEST_TIMEOUT)
-            .await?;
+            .await;
+        step_settled(&session, sent)?;
         session.suspended.resumed(ticket, thread_id, false);
         session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
         Ok(())

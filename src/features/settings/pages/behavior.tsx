@@ -10,11 +10,13 @@ import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "rea
 import clsx from "clsx";
 import { shortcutLabel } from "@/platform/keymap";
 import { usePlatform } from "@/platform/platformInfo";
-import { isTauri } from "@/platform/ipc";
+import { call, commands, isTauri } from "@/platform/ipc";
+import type { LocalDataInfo } from "@/bindings";
+import { notifications } from "@/workbench/contributions";
 import { ZOOM_LIMITS } from "@/platform/zoom";
 import { SCHEMES as EDITOR_SCHEMES, listSchemes, customSchemes } from "@/platform/colorScheme";
 import { formatTimestamp } from "@/platform/dateFormat";
-import { Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
+import { Button, Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
 import { NOTIFICATION_GROUPS } from "@/workbench/notificationStore";
 import { ColorSwatches, FormGroup, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
@@ -467,6 +469,124 @@ function DefaultDirectoryRow() {
   );
 }
 
+/**
+ * Settings › System Settings › Caches: where tools, language servers, indexes
+ * and caches live (the C: problem of #1722). A custom directory takes effect
+ * after a restart; the previous tree moves along when asked.
+ */
+function LocalDataDirRow() {
+  const [info, setInfo] = useState<LocalDataInfo | null>(null);
+  const [root, setRoot] = useState("");
+  const [move, setMove] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const id = useId();
+  useEffect(() => {
+    if (!isTauri()) return;
+    let live = true;
+    void call(commands.cachesLocalDataInfo()).then(
+      (v) => {
+        if (!live) return;
+        setInfo(v);
+        setRoot(v.customRoot ?? "");
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  const browse = async () => {
+    const { open } = await import("@/platform/dialog");
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: "Local data directory",
+      defaultPath: root || undefined,
+    });
+    const path = Array.isArray(picked) ? picked[0] : picked;
+    if (path) setRoot(path);
+  };
+  const apply = async (next: string | null) => {
+    setBusy(true);
+    try {
+      await call(commands.cachesSetLocalDataDir(next, move));
+      await commands.appRestart();
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: "Could not change the local data directory",
+        body: e instanceof Error ? e.message : String(e),
+        key: "app.localDataDir",
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!isTauri()) {
+    return (
+      <p className={styles.note}>
+        <T>Restart is only available in the desktop app</T>
+      </p>
+    );
+  }
+  const locked = busy || info?.envOverride === true;
+  return (
+    <>
+      <Row label="Current location">
+        <Input className={styles.pathInput} value={info?.current ?? ""} readOnly />
+      </Row>
+      <Row
+        label="Custom directory"
+        htmlFor={id}
+        hint="Tools, language servers, indexes and caches live here. Empty means the OS default. Changing it restarts the IDE."
+      >
+        <Input
+          id={id}
+          className={styles.pathInput}
+          value={root}
+          placeholder="System default"
+          disabled={locked}
+          onChange={(e) => setRoot(e.target.value)}
+        />
+        <IconButton
+          icon="folder-open"
+          size="small"
+          title="Browse…"
+          aria-label="Browse"
+          disabled={locked}
+          onClick={() => void browse()}
+        />
+      </Row>
+      {info?.envOverride === true && (
+        <p role="note" className={styles.note}>
+          <T>The OPENIDEA_LOCAL_DATA_DIR environment variable is set and takes precedence.</T>
+        </p>
+      )}
+      <div className={styles.fontRow}>
+        <Button
+          variant="primary"
+          size="small"
+          disabled={locked}
+          onClick={() => void apply(root.trim() ? root.trim() : null)}
+        >
+          Apply and Restart
+        </Button>
+        <Button
+          size="small"
+          disabled={locked || (!root && !info?.customRoot)}
+          onClick={() => {
+            setRoot("");
+            void apply(null);
+          }}
+        >
+          Reset to default
+        </Button>
+        <Checkbox label="Move existing data to the new location" checked={move} onChange={setMove} disabled={locked} />
+      </div>
+    </>
+  );
+}
+
 function IdleSaveRow() {
   const [on, setOn] = useSetting<boolean>("general.saveOnIdle");
   const [seconds, setSeconds] = useSetting<number>("general.idleSeconds");
@@ -713,6 +833,17 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             component: OpenProjectInRow,
           },
           { kind: "custom", label: "Default directory", component: DefaultDirectoryRow },
+        ],
+      },
+      {
+        title: "Caches",
+        options: [
+          {
+            kind: "custom",
+            label: "Local data directory",
+            keywords: ["cache", "local data", "data directory", "C盘", "缓存", "目录"],
+            component: LocalDataDirRow,
+          },
         ],
       },
       {

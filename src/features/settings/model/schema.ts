@@ -106,7 +106,7 @@ export interface ValidSettings extends WorkflowSettings {
   /** Tools › Agents › Chat: the meters in an agent task's header. */
   agents: Required<AgentSettings>;
   /** Agents › IDE MCP Server (global). */
-  mcpServer: { enabled: boolean };
+  mcpServer: { enabled: boolean; runWithoutConfirmation: boolean };
 }
 
 /** One `languageServers.<name>` entry; every field optional, like in settings.toml. */
@@ -196,7 +196,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     defaults: {},
     mcpServers: {},
   },
-  mcpServer: { enabled: false },
+  mcpServer: { enabled: false, runWithoutConfirmation: false },
   ...DEFAULT_WORKFLOW,
 };
 
@@ -365,7 +365,10 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       defaults: agentDefaults(agents.defaults),
       mcpServers: agentMcpServers(agents.mcpServers),
     },
-    mcpServer: { enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled) },
+    mcpServer: {
+      enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled),
+      runWithoutConfirmation: bool(obj(root.mcpServer).runWithoutConfirmation, d.mcpServer.runWithoutConfirmation),
+    },
     ...validateWorkflow(root),
   };
 }
