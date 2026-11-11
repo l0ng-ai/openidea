@@ -128,6 +128,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_commands,
         agent::agent_entries,
         agent::agent_create,
+        agent::agent_external_sessions,
+        agent::agent_import_session,
         agent::agent_prompt,
         agent::agent_unqueue,
         agent::agent_send_queued_now,
