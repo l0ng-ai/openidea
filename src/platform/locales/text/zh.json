@@ -7682,7 +7682,7 @@
   "Apply and Restart": "应用并重启",
   "Reset to default": "恢复默认",
   "Move existing data to the new location": "将现有数据移动到新位置",
-  "Could not change the local data directory": "无法更改本地数据目录"
+  "Could not change the local data directory": "无法更改本地数据目录",
   "Settings › Tools › SSH Configurations": "设置 › 工具 › SSH 配置",
   "Edit SSH Configurations": "编辑 SSH 配置",
   "Docker over SSH uses the system ssh: choose a configuration with OpenSSH config authentication.": "通过 SSH 连接 Docker 使用系统 ssh：请选择认证方式为“OpenSSH 配置和身份验证代理”的 SSH 配置。"
