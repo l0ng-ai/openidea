@@ -50,6 +50,7 @@ import { DiffEditorTab } from "../diff-editor-tab";
 import { diffInput, withChain, type DiffData } from "../diffInput";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { useProject } from "@/platform/project";
+import { useVcs } from "../store";
 import { applyKeymapSettings, installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { setContext } from "@/platform/context";
 import { registerCompareActions } from "../compare";
@@ -145,6 +146,18 @@ describe("Diff toolbar", () => {
     expect(screen.queryByText("Contents differ only in line separators")).toBeNull();
   });
 
+  it("titles a revision with its short commit id, HEAD resolved, and the file's repository path", async () => {
+    const before = useVcs.getState();
+    useVcs.setState({ roots: ["/p"], heads: { "/p": { head: "main", headCommit: "81a179900123456789abcdef" } } });
+    const mounted = render(
+      <DiffEditor input={{ ...input, data: { ...(input.data as object), path: "/p/src/a.ts", mode: "split" } }} />,
+    );
+    await waitFor(() => expect(mounted.container.querySelectorAll(".cm-editor")).toHaveLength(2));
+    expect(screen.getByTitle("81a17990 src/a.ts")).toBeInTheDocument();
+    expect(screen.getByTitle("abc123 src/a.ts")).toBeInTheDocument();
+    mounted.unmount();
+    useVcs.setState({ roots: before.roots, heads: before.heads });
+  });
   it("puts Jump to Source right after Next Difference, in the navigation group", async () => {
     render(<DiffEditor input={input} />);
     await screen.findByRole("button", { name: "Jump to Source" });
