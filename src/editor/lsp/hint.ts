@@ -72,6 +72,12 @@ export function showHint(
   );
 }
 
+/**
+ * How long a request runs before its pending hint shows: past the answers that come at once,
+ * within the 100 ms a user waits for any sign that something is happening.
+ */
+export const PENDING_HINT_DELAY_MS = 50;
+
 /** Show progress only for slow requests; the disposer removes only its own hint. */
 export function showPendingHint(view: EditorView, content: string): () => void {
   const { doc, selection } = view.state;
@@ -87,7 +93,7 @@ export function showPendingHint(view: EditorView, content: string): () => void {
       return;
     showHint(view, content, { timeout: 30_000 });
     shown = view.state.field(hintField);
-  }, 250);
+  }, PENDING_HINT_DELAY_MS);
   return () => {
     clearTimeout(timer);
     if (shown && view.state.field(hintField, false) === shown) {

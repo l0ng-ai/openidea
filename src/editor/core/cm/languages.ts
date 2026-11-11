@@ -132,6 +132,12 @@ const OWN_MODES = [
   }),
   LanguageDescription.of({ name: "JSP", load: () => import("./jsp").then((m) => m.jsp()) }),
   LanguageDescription.of({
+    name: "Django Template",
+    alias: ["django-html", "djhtml"],
+    extensions: ["djhtml"],
+    load: () => import("./django").then((m) => m.django()),
+  }),
+  LanguageDescription.of({
     name: "Astro",
     extensions: ["astro"],
     load: () => import("./astro").then((m) => m.astro()),

@@ -134,7 +134,7 @@ describe("scheme actions", () => {
       filters: [{ name: "IntelliJ Color Scheme", extensions: ["icls", "xml"] }],
     });
     expect(value("colorScheme")).toMatch(/^custom-/);
-    expect(screen.getByRole("status")).toHaveTextContent("Applied 12 values; skipped 3");
+    expect(screen.getByRole("status")).toHaveTextContent("Applied 13 values; skipped 2");
     const schemes = value("customSchemes") as Record<string, { name: string }>;
     expect(Object.values(schemes).some((s) => s.name === "Material Darker")).toBe(true);
   });
@@ -367,5 +367,18 @@ describe("scheme attribute state", () => {
     expect(effects).not.toBeChecked();
     expect(value("colorOverrides")).toEqual({});
     expect(useSettingsDialog.getState().staged["global|editor.colorOverrides"]).toBeUndefined();
+  });
+});
+
+describe("Console Colors (#2698)", () => {
+  it("lists ANSI colours and selects Red from the preview", () => {
+    act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+    schemePage("editor.colorScheme.console-colors");
+    const tree = screen.getByRole("tree", { name: "Color scheme attributes" });
+    expect(within(tree).getByRole("treeitem", { name: "Console background" })).toBeInTheDocument();
+    expect(within(tree).getByRole("treeitem", { name: "Red" })).toBeInTheDocument();
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(within(preview).getByText(/^red\s*$/)));
+    expect(screen.getByRole("treeitem", { name: "Red", selected: true })).toBeInTheDocument();
   });
 });

@@ -231,8 +231,16 @@ pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> I
             .ok_or_else(|| IdeError::invalid("Choose a WAR artifact"))?;
         let base = ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config)?;
         // "Build before launch" is skipped when the built WAR is already newer than the
-        // module's sources, so a repeated run does not rebuild (IDEA's up-to-date check).
-        if ide_run::tomcat::artifact_is_current(&project.root, &base, &config) {
+        // sources of every module in the build, so a repeated run does not rebuild (IDEA's
+        // up-to-date check) but a change in a dependency module does.
+        let modules: Vec<std::path::PathBuf> = model
+            .maven
+            .iter()
+            .flat_map(|m| m.projects.iter().map(|p| p.dir.as_str()))
+            .chain(model.gradle.iter().flat_map(|g| g.projects.iter().map(|p| p.dir.as_str())))
+            .map(std::path::PathBuf::from)
+            .collect();
+        if ide_run::tomcat::artifact_is_current(&project.root, &base, &config, &modules) {
             return Ok(None);
         }
         let mut plan = ide_build::web::build(&project.root, &model, id, &base)?;

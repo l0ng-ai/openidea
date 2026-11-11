@@ -863,6 +863,48 @@ fn module_dir(root: &Path, module: Option<&Path>) -> PathBuf {
     }
 }
 
+/// The module directory a Tomcat config's WAR belongs to. Created configs carry it as `cwd`
+/// (set from the selected artifact); when it is missing, the selected artifact id still names
+/// the module — `maven:<pom>` its POM, `gradle:…` its build — instead of falling back to the
+/// project root, whose own `src` rarely exists and would make every launch look current.
+fn artifact_module_dir(root: &Path, config: &RunConfig) -> PathBuf {
+    if config.cwd.is_some() {
+        return module_dir(root, config.cwd.as_ref().map(|c| c.0.as_path()));
+    }
+    let selected = config.extras.params.get("artifact").filter(|s| !s.is_empty());
+    if let Some(id) = selected {
+        if let Some(pom) = id.strip_prefix("maven:") {
+            // `maven:pom.xml` is the root module itself.
+            return match Path::new(pom).parent().filter(|p| !p.as_os_str().is_empty()) {
+                Some(dir) => root.join(dir),
+                None => root.to_path_buf(),
+            };
+        }
+        if let Some(rest) = id.strip_prefix("gradle:") {
+            // `gradle:<project path>` for the root build, else `gradle:["<build dir>", "<path>"]`.
+            if let Ok((dir, path)) = serde_json::from_str::<(String, String)>(rest) {
+                return root.join(gradle_module_dir(&dir, &path));
+            }
+            if !rest.trim_matches(':').is_empty() {
+                return root.join(gradle_module_dir("", rest));
+            }
+        }
+    }
+    root.to_path_buf()
+}
+
+/// Maps a Gradle project path (`:` for the build itself, `:web` for a subproject) below its
+/// build directory. Custom `projectDir` mappings are invisible here, so this is the
+/// conventional layout; still closer than the project root.
+fn gradle_module_dir(dir: &str, path: &str) -> PathBuf {
+    let mut module = PathBuf::from(dir);
+    let rel = path.trim_start_matches(':').replace(':', "/");
+    if !rel.is_empty() {
+        module.push(rel);
+    }
+    module
+}
+
 /// The newest modification time of `path` or, for a directory, anything below it.
 fn newest_mtime_under(path: &Path) -> Option<std::time::SystemTime> {
     let meta = fs::metadata(path).ok()?;
@@ -902,14 +944,16 @@ fn find_built_war(root: &Path, module: Option<&Path>) -> Option<PathBuf> {
 
 /// Whether the WAR a Tomcat config deploys is newer than the module's sources, so its
 /// "Before launch › Build" task can be skipped (IDEA's up-to-date check). Conservative:
-/// a missing WAR or a newer source/build file means it is not current. Only the module's
-/// own sources and build files are inspected, not dependency modules.
-pub fn artifact_is_current(root: &Path, base: &Path, config: &RunConfig) -> bool {
+/// a missing WAR or a newer source/build file means it is not current. Besides the WAR
+/// module's sources, web resources and build files, the sources and build files of every
+/// module in `modules` (project-relative build modules) are inspected: a mapper XML or
+/// class in a module the WAR depends on is packaged into it as a JAR.
+pub fn artifact_is_current(root: &Path, base: &Path, config: &RunConfig, modules: &[PathBuf]) -> bool {
     let p = &config.extras.params;
     if p.get("deployment").map(String::as_str).unwrap_or("artifact") != "artifact" {
         return true;
     }
-    let module = module_dir(root, config.cwd.as_ref().map(|c| c.0.as_path()));
+    let module = artifact_module_dir(root, config);
     let selected = p.get("artifact").filter(|s| !s.is_empty());
     let recorded_id = fs::read_to_string(base.join("artifact-id.txt")).ok();
     let id_matches = selected.is_none_or(|id| recorded_id.as_deref().map(str::trim) == Some(id.as_str()));
@@ -923,7 +967,24 @@ pub fn artifact_is_current(root: &Path, base: &Path, config: &RunConfig) -> bool
     };
     let Ok(war_time) = fs::metadata(&war).and_then(|m| m.modified()) else { return false };
     let mut newest = newest_mtime_under(&module.join("src"));
-    for dir in [module.as_path(), root] {
+    // Web content packaged from outside `src` (a custom `warSourceDirectory`, `webResources`
+    // directories, a custom Gradle web app dir) also lands in the WAR — the running-session
+    // sync copies it from these same folders — so a save there must rebuild too (#2685).
+    for (dir, _) in web_sources(&module) {
+        if let Some(time) = newest_mtime_under(&dir)
+            && newest.is_none_or(|cur| time > cur)
+        {
+            newest = Some(time);
+        }
+    }
+    let other_modules = modules.iter().map(|m| root.join(m));
+    for dir in [module.clone(), root.to_path_buf()].into_iter().chain(other_modules) {
+        if dir != module
+            && let Some(time) = newest_mtime_under(&dir.join("src"))
+            && newest.is_none_or(|cur| time > cur)
+        {
+            newest = Some(time);
+        }
         for name in ["pom.xml", "build.gradle", "build.gradle.kts"] {
             if let Ok(time) = fs::metadata(dir.join(name)).and_then(|m| m.modified())
                 && newest.is_none_or(|cur| time > cur)
@@ -946,6 +1007,7 @@ pub fn deployment(root: &Path, base: &Path, config: &RunConfig, resources_only: 
             let recorded_id = fs::read_to_string(base.join("artifact-id.txt")).ok();
             let id_matches = selected.is_none_or(|id| recorded_id.as_deref().map(str::trim) == Some(id.as_str()));
             let recorded = fs::read_to_string(base.join("artifact-path.txt")).ok().map(|s| PathBuf::from(s.trim()));
+            let module = artifact_module_dir(root, config);
             let war = match recorded.filter(|_| id_matches) {
                 Some(war) => {
                     if war.is_file() && is_war(&war) {
@@ -954,7 +1016,7 @@ pub fn deployment(root: &Path, base: &Path, config: &RunConfig, resources_only: 
                         return Err(invalid(format!("The built WAR artifact does not exist: {}", war.display())));
                     }
                 }
-                None => find_built_war(root, config.cwd.as_ref().map(|c| c.0.as_path())).ok_or_else(|| {
+                None => find_built_war(root, Some(module.as_path())).ok_or_else(|| {
                     invalid("No built WAR artifact found - build the project first, or add 'Build' to Before launch")
                 })?,
             };
@@ -1592,10 +1654,119 @@ mod tests {
         c.cwd = Some(ide_core::IpcPath(PathBuf::from("web")));
         c.extras.params.insert("artifact".into(), "maven:web/pom.xml".into());
         // The WAR was packed after the source was written.
-        assert!(artifact_is_current(root, &base, &c));
+        assert!(artifact_is_current(root, &base, &c, &[]));
         std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(&source, "class App { int changed; }").unwrap();
-        assert!(!artifact_is_current(root, &base, &c));
+        assert!(!artifact_is_current(root, &base, &c, &[]));
+    }
+
+    #[test]
+    fn up_to_date_check_follows_the_selected_artifact_when_cwd_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let module = root.join("web");
+        fs::create_dir_all(module.join("src/main/resources")).unwrap();
+        fs::create_dir_all(module.join("target")).unwrap();
+        fs::write(root.join("pom.xml"), "<project/>").unwrap();
+        fs::write(module.join("pom.xml"), "<project/>").unwrap();
+        let source = module.join("src/main/resources/applicationContext.xml");
+        fs::write(&source, "<beans/>").unwrap();
+        let war = module.join("target/app.war");
+        archive(&war, &[("WEB-INF/web.xml", "<web-app/>")]);
+        let base = root.join("cache");
+        fs::create_dir_all(&base).unwrap();
+        // A previous IDE build recorded its archive, as `ide_build::web::build` leaves behind.
+        fs::write(base.join("artifact-id.txt"), "maven:web/pom.xml").unwrap();
+        fs::write(base.join("artifact-path.txt"), war.to_string_lossy().as_bytes()).unwrap();
+        // Older configs may not carry the artifact's module as `cwd` (the UI sets it today).
+        let mut c = config();
+        c.extras.params.insert("artifact".into(), "maven:web/pom.xml".into());
+        assert!(artifact_is_current(root, &base, &c, &[]));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&source, "<beans><edited/></beans>").unwrap();
+        assert!(!artifact_is_current(root, &base, &c, &[]));
+    }
+
+    #[test]
+    fn up_to_date_check_watches_web_resources_outside_src() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let module = root.join("web");
+        fs::create_dir_all(module.join("src/main/java")).unwrap();
+        fs::create_dir_all(module.join("target")).unwrap();
+        fs::create_dir_all(module.join("WebContent/WEB-INF")).unwrap();
+        fs::write(
+            module.join("pom.xml"),
+            "<project><plugin><artifactId>maven-war-plugin</artifactId><configuration><webResources>\
+             <resource><directory>WebContent</directory></resource></webResources></configuration></plugin></project>",
+        )
+        .unwrap();
+        fs::write(module.join("src/main/java/App.java"), "class App {}").unwrap();
+        let web_xml = module.join("WebContent/WEB-INF/web.xml");
+        fs::write(&web_xml, "<web-app/>").unwrap();
+        let war = module.join("target/app.war");
+        archive(&war, &[("WEB-INF/web.xml", "<web-app/>"), ("index.html", "built")]);
+        let base = root.join("cache");
+        fs::create_dir_all(&base).unwrap();
+        let mut c = config();
+        c.cwd = Some(ide_core::IpcPath(PathBuf::from("web")));
+        c.extras.params.insert("artifact".into(), "maven:web/pom.xml".into());
+        assert!(artifact_is_current(root, &base, &c, &[]));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&web_xml, "<web-app><edited/></web-app>").unwrap();
+        assert!(!artifact_is_current(root, &base, &c, &[]));
+    }
+
+    #[test]
+    fn up_to_date_check_watches_the_modules_the_war_depends_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let web = root.join("web");
+        let dao = root.join("dao");
+        fs::create_dir_all(web.join("src/main/java")).unwrap();
+        fs::create_dir_all(web.join("target")).unwrap();
+        fs::create_dir_all(dao.join("src/main/resources/mapper")).unwrap();
+        fs::write(web.join("pom.xml"), "<project/>").unwrap();
+        fs::write(dao.join("pom.xml"), "<project/>").unwrap();
+        fs::write(web.join("src/main/java/App.java"), "class App {}").unwrap();
+        let mapper = dao.join("src/main/resources/mapper/UserMapper.xml");
+        fs::write(&mapper, "<mapper/>").unwrap();
+        archive(&web.join("target/app.war"), &[("WEB-INF/web.xml", "<web-app/>")]);
+        let base = root.join("cache");
+        fs::create_dir_all(&base).unwrap();
+        let mut c = config();
+        c.cwd = Some(ide_core::IpcPath(PathBuf::from("web")));
+        c.extras.params.insert("artifact".into(), "maven:web/pom.xml".into());
+        let modules = [PathBuf::from(""), PathBuf::from("web"), PathBuf::from("dao")];
+        assert!(artifact_is_current(root, &base, &c, &modules));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&mapper, "<mapper><select/></mapper>").unwrap();
+        assert!(!artifact_is_current(root, &base, &c, &modules), "a dependency module's XML changed");
+        assert!(artifact_is_current(root, &base, &c, &[]), "without the build's modules only the WAR module counts");
+    }
+
+    #[test]
+    fn artifact_module_prefers_cwd_then_selected_artifact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let module_of = |cwd: Option<&str>, artifact: Option<&str>| {
+            let mut c = config();
+            c.cwd = cwd.map(|d| ide_core::IpcPath(PathBuf::from(d)));
+            if let Some(id) = artifact {
+                c.extras.params.insert("artifact".into(), id.into());
+            }
+            artifact_module_dir(root, &c)
+        };
+        // The UI keeps `cwd` on the artifact's module; it wins over a stale selection.
+        assert_eq!(module_of(Some("web"), Some("maven:other/pom.xml")), root.join("web"));
+        assert_eq!(module_of(None, Some("maven:web/pom.xml")), root.join("web"));
+        assert_eq!(module_of(None, Some("maven:pom.xml")), root);
+        assert_eq!(module_of(None, Some("gradle::web")), root.join("web"));
+        assert_eq!(module_of(None, Some("gradle::")), root);
+        assert_eq!(module_of(None, Some("gradle:[\"sub\",\":web\"]")), root.join("sub/web"));
+        assert_eq!(module_of(None, Some("other:whatever")), root);
+        assert_eq!(module_of(None, None), root);
+        assert_eq!(module_of(Some("web"), None), root.join("web"));
     }
 
     #[test]

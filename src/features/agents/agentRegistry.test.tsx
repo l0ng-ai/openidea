@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { AgentProvider, AgentRegistry, InstallEvent, RegistryAgent, RequestId } from "@/bindings";
+import type {
+  AcpImportOutcome,
+  AgentProvider,
+  AgentRegistry,
+  InstallEvent,
+  RegistryAgent,
+  RequestId,
+} from "@/bindings";
 import { IpcError } from "@/platform/ipc";
 import { setLocale, tx } from "@/platform/i18n";
 import { iconMarkup } from "@/ui/icons";
@@ -366,6 +373,10 @@ class FakeCommands implements CommandsBackend {
   saved: [string, string | null][] = [];
   providers = vi.fn(async () => this.list);
   chooseExecutable = vi.fn(async () => "/chosen/agent");
+  saveCustom = vi.fn(async () => {});
+  removeCustom = vi.fn(async () => {});
+  importAcp = vi.fn(async (): Promise<AcpImportOutcome[]> => []);
+  pickAcpJson = vi.fn(async (): Promise<string | null> => null);
   savedEnv: [string, Record<string, string>][] = [];
   async setEnv(id: string, env: Record<string, string>) {
     this.savedEnv.push([id, env]);
@@ -781,5 +792,97 @@ describe("the agent list", () => {
     commands.list = [claudeProvider("claude")];
     await open(commands);
     expect(screen.getByText(/after its first session/)).toBeInTheDocument();
+  });
+});
+
+describe("custom agents", () => {
+  let dispose = () => {};
+  beforeEach(() => openSettings(REGISTRY_PAGE));
+  afterEach(() => {
+    closeSettings();
+    dispose();
+  });
+
+  const customProvider = (): AgentProvider => ({
+    ...claudeProvider("/opt/mine"),
+    id: "mine",
+    name: "Mine",
+    args: ["acp"],
+    defaultProgram: null,
+    defaultArgs: [],
+    loginHint: null,
+    commandEditable: false,
+    commandReadOnlyReason: "customAgent",
+    source: { kind: "custom" },
+  });
+
+  const openList = (commands: FakeCommands) => {
+    const backend = new FakeBackend();
+    dispose = registerSettingsPage({
+      id: REGISTRY_PAGE,
+      title: "Agents",
+      group: "Tools",
+      component: () => <RegistryPage backend={backend} commandBackend={commands} />,
+    });
+    render(
+      <>
+        <SettingsDialog />
+        <MessagesHost />
+      </>,
+    );
+  };
+
+  it("adds a custom agent through the modal, suggesting the id", async () => {
+    const commands = new FakeCommands();
+    openList(commands);
+    await waitFor(() => expect(commands.providers).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Add Custom Agent…" }));
+    const dialog = await screen.findByRole("dialog", { name: "Add Custom Agent" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Name" }), { target: { value: "My Agent" } });
+    expect(within(dialog).getByRole("textbox", { name: "ID" })).toHaveValue("my-agent");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Command" }), {
+      target: { value: "/opt/mine" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    await waitFor(() =>
+      expect(commands.saveCustom).toHaveBeenCalledWith({
+        id: "my-agent",
+        name: "My Agent",
+        command: "/opt/mine",
+        args: [],
+        env: {},
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add Custom Agent" })).toBeNull());
+    expect(commands.providers.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("removes a custom agent after asking", async () => {
+    const commands = new FakeCommands();
+    commands.list = [customProvider()];
+    openList(commands);
+    await waitFor(() => expect(row("Mine")).toBeInTheDocument());
+    fireEvent.click(within(row("Mine")).getByRole("button", { name: "Remove" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove Mine" });
+    expect(dialog).toHaveTextContent("Remove Mine and delete its agent file?");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(commands.removeCustom).toHaveBeenCalledWith("mine"));
+    expect(commands.providers.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("imports acp.json and reports saved and skipped entries", async () => {
+    const commands = new FakeCommands();
+    commands.pickAcpJson.mockResolvedValueOnce('{"agent_servers": {}}');
+    commands.importAcp.mockResolvedValueOnce([
+      { name: "My Agent", id: "my-agent", saved: true, reason: "" },
+      { name: "Taken", id: "taken", saved: false, reason: "there is already a custom agent 'taken'" },
+    ]);
+    openList(commands);
+    await waitFor(() => expect(commands.providers).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Import acp.json" }));
+    await screen.findByText(
+      "Imported My Agent from acp.json. Skipped Taken (there is already a custom agent 'taken').",
+    );
+    expect(commands.importAcp).toHaveBeenCalledTimes(1);
   });
 });

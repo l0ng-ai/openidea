@@ -357,6 +357,14 @@ pub struct VirtualDocument {
     pub description: Option<String>,
     /// Generated Java from a decompiler, rather than real source or a disassembler stub.
     pub decompiled: bool,
+    /// Charset the content was decoded with (a WHATWG label, e.g. `gbk`);
+    /// `utf-8` for text the server decoded itself.
+    pub encoding: String,
+    pub has_bom: bool,
+    /// "Reload with Encoding" can re-decode the origin's bytes (archive
+    /// entries, JDT sources with an editable attachment encoding); false for
+    /// server-generated content such as decompiled code.
+    pub can_reload_encoding: bool,
 }
 
 /// Reference updates for a file / folder move (`workspace/willRenameFiles`).

@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import type { ClassifiedReference, ReferenceAccess, ReferenceKind, Location, References, RequestId } from "@/bindings";
 import { clearLineTokens } from "@/editor/lineTokens";
+import { showPendingHint } from "@/editor/lsp/hint";
 import { incompleteNote } from "@/editor/lsp/lsp";
 import { commands, IpcError, isCancelled, nextRequestId } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
@@ -418,8 +419,11 @@ async function searchPopup(c: CaretContext, libraries: boolean, widenable: boole
   let early = false;
   let found: FetchedUsages | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // Until the popup or the answer shows (a reopened popup has its own spinner).
+  const pending = !reopened && c.view ? showPendingHint(c.view, "Searching for usages…") : () => {};
   const openEarly = () => {
     if (popupRequest !== request || !found) return;
+    pending();
     if (!early && !reopened) useUsagesPopup.setState({ open: true, anchor: caretPoint(), symbol: c.word });
     early = true;
     useUsagesPopup.setState({ ...found, loading: true, scope: widenable ? "libraries" : null });
@@ -436,7 +440,10 @@ async function searchPopup(c: CaretContext, libraries: boolean, widenable: boole
         else timer ??= setTimeout(openEarly, EARLY_POPUP_DELAY_MS);
       },
       libraries,
-    ).finally(() => clearTimeout(timer));
+    ).finally(() => {
+      clearTimeout(timer);
+      pending();
+    });
     if (popupRequest !== request) return;
     const scope = searchedScope(libraries, librariesSkipped, widenable);
     popupTarget = { c, widenable: widenable || scope !== null, hintUntil: 0 };

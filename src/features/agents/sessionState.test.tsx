@@ -31,6 +31,13 @@ const backend = vi.hoisted(() => ({
   }>,
   imported: [] as Array<[string, string]>,
   externalError: null as string | null,
+  accepted: [] as Array<[string, string[] | null]>,
+  acceptedOutcome: { accepted: ["very-long-file-name.ts"], skipped: [] } as {
+    accepted: string[];
+    skipped: Array<{ path: string; reason: string }>;
+  },
+  confirmed: [] as string[],
+  confirmAnswer: true,
 }));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
@@ -44,6 +51,11 @@ vi.mock("@/platform/ipc", async (original) => ({
       return { status: "ok", data: backend.entries.get(key) ?? [] };
     },
     agentChanges: async () => ({ status: "ok", data: backend.changes }),
+    agentRollbackChanges: async () => ({ status: "ok", data: null }),
+    agentAcceptChanges: async (task: string, paths: string[] | null) => {
+      backend.accepted.push([task, paths]);
+      return { status: "ok", data: backend.acceptedOutcome };
+    },
     vcsBranchInfo: async () => ({ status: "ok", data: { head: "main" } }),
     agentRespond: async (task: string, permission: number, option: string | null) => {
       backend.answers.push([task, permission, option]);
@@ -63,6 +75,13 @@ vi.mock("@/platform/ipc", async (original) => ({
 }));
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: () => Promise.resolve(() => {}) }),
+}));
+vi.mock("@/workbench/messages", async (original) => ({
+  ...(await original<typeof import("@/workbench/messages")>()),
+  confirm: async (options: { title: string }) => {
+    backend.confirmed.push(options.title);
+    return backend.confirmAnswer;
+  },
 }));
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
@@ -140,6 +159,10 @@ beforeEach(() => {
   backend.external = [];
   backend.imported = [];
   backend.externalError = null;
+  backend.accepted = [];
+  backend.acceptedOutcome = { accepted: ["very-long-file-name.ts"], skipped: [] };
+  backend.confirmed = [];
+  backend.confirmAnswer = true;
   backend.entries = new Map([
     ["A", [{ type: "agent", text: "Answer A" }, subagent]],
     [entriesKey("A", "child"), [{ type: "agent", text: "Child answer" }]],
@@ -1346,5 +1369,59 @@ describe("sessions from other apps", () => {
     await openHistory();
     expect(screen.getByText("no home")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Import" })).toBeNull();
+  });
+});
+
+describe("accept changes", () => {
+  const worktreeChanges = () => {
+    backend.changes = [
+      {
+        path: "/project/very-long-file-name.ts",
+        relPath: "very-long-file-name.ts",
+        kind: "modified",
+        added: 8,
+        removed: 2,
+      },
+    ];
+    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
+    useAgents.setState({
+      tasks: new Map([[task("A").id, { ...task("A"), isolation: "worktree", status: "ready" }]]),
+    });
+  };
+
+  it("copies a worktree task's changes into the checkout after confirming", async () => {
+    worktreeChanges();
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByRole("complementary", { name: "Changes" });
+    fireEvent.click(screen.getByRole("button", { name: "Accept All Changes…" }));
+    expect(backend.confirmed).toEqual(["Accept Changes"]);
+    await waitFor(() => expect(backend.accepted).toEqual([["A", null]]));
+  });
+
+  it("does nothing when the confirm dialog is dismissed", async () => {
+    worktreeChanges();
+    backend.confirmAnswer = false;
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByRole("complementary", { name: "Changes" });
+    fireEvent.click(screen.getByRole("button", { name: "Accept All Changes…" }));
+    await waitFor(() => expect(backend.confirmed).toEqual(["Accept Changes"]));
+    expect(backend.accepted).toEqual([]);
+  });
+
+  it("offers no accept action for tasks that run in the checkout", async () => {
+    backend.changes = [
+      {
+        path: "/project/very-long-file-name.ts",
+        relPath: "very-long-file-name.ts",
+        kind: "modified",
+        added: 8,
+        removed: 2,
+      },
+    ];
+    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByRole("complementary", { name: "Changes" });
+    expect(screen.queryByRole("button", { name: /Accept .* Changes…/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Rollback All Changes…" })).toBeInTheDocument();
   });
 });

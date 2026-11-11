@@ -2,7 +2,9 @@
  * Viewport-scoped selection-occurrence highlights in the terminal.
  *
  * - Scans only the visible rows (plus a small margin), never the scrollback.
- * - Caches per logical line and rescans only rows invalidated by `onRender`.
+ * - Caches per logical line, invalidates rendered/active-screen rows, and
+ *   clears on scrollback trims (`IMarker` at row 0) so shifted margin/scrollback
+ *   rows never stay stale.
  * - Draws all visible matches in one overlay layer (`.openidea-terminal-selection-matches`)
  *   inside `.xterm-screen` instead of calling `registerDecoration` per match.
  * - Coalesces `onRender` / `onScroll` / `onSelectionChange` to one pass per
@@ -13,7 +15,7 @@
  *   selections, turns off in the alternate buffer (`vim`, `htop`), and respects
  *   `terminal.highlightSelection`.
  */
-import type { IBufferLine, IDisposable, Terminal } from "@xterm/xterm";
+import type { IBufferLine, IDisposable, IMarker, Terminal } from "@xterm/xterm";
 import { workflowSettings } from "@/platform/workflowSettings";
 
 export const MIN_SELECTION_LENGTH = 2;
@@ -41,16 +43,104 @@ interface CachedLogicalLine {
 export class SelectionLineCache {
   private needle = "";
   private cols = 0;
+  private trackedTerm: Terminal | null = null;
+  private bufferSub: IDisposable | null = null;
+  private headMarker: IMarker | null = null;
+  private headMarkerSub: IDisposable | null = null;
+  private lastBaseY = 0;
+  private lastLength = 0;
+  private readonly onTrim?: () => void;
   private readonly lines = new Map<number, CachedLogicalLine>();
   /** Number of logical-line scans performed (exposed for unit tests). */
   scans = 0;
+
+  constructor(onTrim?: () => void) {
+    this.onTrim = onTrim;
+  }
+
+  private clearHeadMarker() {
+    const sub = this.headMarkerSub;
+    const marker = this.headMarker;
+    this.headMarkerSub = null;
+    this.headMarker = null;
+    sub?.dispose();
+    marker?.dispose();
+  }
 
   syncKey(needle: string, cols: number) {
     if (this.needle !== needle || this.cols !== cols) {
       this.needle = needle;
       this.cols = cols;
-      this.lines.clear();
+      this.clear();
     }
+  }
+
+  /**
+   * Synchronizes the cache against `term`'s active buffer. Anchors a single
+   * marker at row 0 so any top-of-buffer trim (`recycle` at the scrollback
+   * limit, `CSI 3 J`, `clear`) disposes it and clears shifted row entries.
+   */
+  sync(term: Terminal, needle: string) {
+    if (this.trackedTerm !== term) {
+      this.dispose();
+      this.trackedTerm = term;
+      this.bufferSub = term.buffer.onBufferChange(() => this.clear());
+    }
+    const buffer = term.buffer.active;
+    if (this.needle !== needle || this.cols !== term.cols) {
+      this.needle = needle;
+      this.cols = term.cols;
+      this.clear();
+    } else if (this.lines.size > 0) {
+      if (
+        !this.headMarker ||
+        this.headMarker.isDisposed ||
+        this.headMarker.line !== 0 ||
+        buffer.baseY < this.lastBaseY ||
+        buffer.length < this.lastLength
+      ) {
+        this.clear();
+      } else if (buffer.baseY > this.lastBaseY) {
+        this.invalidateRange(this.lastBaseY, buffer.baseY + term.rows - 1);
+      }
+    }
+    this.lastBaseY = buffer.baseY;
+    this.lastLength = buffer.length;
+    if (!this.headMarker && buffer.type === "normal" && buffer.length > 0) {
+      const cursorRow = buffer.baseY + buffer.cursorY;
+      const marker = term.registerMarker(cursorRow > 0 ? -cursorRow : 0);
+      if (marker && !marker.isDisposed && marker.line === 0) {
+        this.headMarker = marker;
+        this.headMarkerSub = marker.onDispose(() => {
+          this.headMarker = null;
+          this.headMarkerSub?.dispose();
+          this.headMarkerSub = null;
+          this.lines.clear();
+          this.lastBaseY = 0;
+          this.lastLength = 0;
+          this.onTrim?.();
+        });
+      }
+    }
+  }
+
+  handleWriteParsed(term: Terminal) {
+    if (this.lines.size === 0) return;
+    const buffer = term.buffer.active;
+    if (
+      !this.headMarker ||
+      this.headMarker.isDisposed ||
+      this.headMarker.line !== 0 ||
+      buffer.baseY < this.lastBaseY ||
+      buffer.length < this.lastLength
+    ) {
+      this.clear();
+      return;
+    }
+    const invalidStart = Math.min(this.lastBaseY, buffer.baseY);
+    this.invalidateRange(invalidStart, buffer.baseY + term.rows - 1);
+    this.lastBaseY = buffer.baseY;
+    this.lastLength = buffer.length;
   }
 
   get(baseRow: number): CachedLogicalLine | undefined {
@@ -62,23 +152,41 @@ export class SelectionLineCache {
   }
 
   invalidateRange(startRow: number, endRow: number) {
+    const hadEntries = this.lines.size > 0;
     for (const [baseRow, entry] of this.lines) {
       if (baseRow <= endRow && baseRow + entry.span - 1 >= startRow) {
         this.lines.delete(baseRow);
       }
     }
+    if (hadEntries && this.lines.size === 0) {
+      this.clearHeadMarker();
+    }
   }
 
   prune(minRow: number, maxRow: number) {
+    const hadEntries = this.lines.size > 0;
     for (const baseRow of this.lines.keys()) {
       if (baseRow < minRow || baseRow > maxRow) {
         this.lines.delete(baseRow);
       }
     }
+    if (hadEntries && this.lines.size === 0) {
+      this.clearHeadMarker();
+    }
   }
 
   clear() {
+    this.clearHeadMarker();
     this.lines.clear();
+    this.lastBaseY = 0;
+    this.lastLength = 0;
+  }
+
+  dispose() {
+    this.clear();
+    this.bufferSub?.dispose();
+    this.bufferSub = null;
+    this.trackedTerm = null;
   }
 }
 
@@ -213,7 +321,7 @@ export function findVisibleSelectionMatches(
   const viewEnd = Math.min(totalRows - 1, buffer.viewportY + term.rows - 1 + marginRows);
   const maxWrapEnd = Math.min(totalRows - 1, viewEnd + MAX_WRAP_ROWS);
 
-  cache?.syncKey(text, cols);
+  cache?.sync(term, text);
   cache?.prune(Math.max(0, viewStart - MAX_WRAP_ROWS), maxWrapEnd);
 
   const visited = new Set<number>();
@@ -267,15 +375,30 @@ export function installSelectionHighlights(
 ): SelectionHighlightController {
   const isEnabled = opts.isEnabled ?? (() => workflowSettings().terminal.highlightSelection);
   const isSearchSelection = opts.isSearchSelection ?? (() => false);
-  const cache = new SelectionLineCache();
-
   let overlay: HTMLDivElement | null = null;
   const pool: HTMLDivElement[] = [];
   let activeBoxes = 0;
   let rafId = 0;
-  let lastWriteMs = 0;
+  let lastWriteMs = -Infinity;
   let heavyOutput = false;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const syncInactiveOverlay = (): boolean => {
+    if (!term.hasSelection() || isSearchSelection() || !isEnabled()) {
+      if (rafId !== 0 || activeBoxes > 0) {
+        cancelFrame();
+        clearOverlay();
+      }
+      return true;
+    }
+    return false;
+  };
+
+  const cache = new SelectionLineCache(() => {
+    if (!syncInactiveOverlay() && !heavyOutput) {
+      scheduleFrame();
+    }
+  });
 
   const ensureOverlay = (): HTMLDivElement | null => {
     if (overlay && overlay.isConnected) return overlay;
@@ -385,7 +508,8 @@ export function installSelectionHighlights(
   };
 
   const onWriteParsed = () => {
-    if (!term.hasSelection() || isSearchSelection() || !isEnabled()) return;
+    cache.handleWriteParsed(term);
+    if (syncInactiveOverlay()) return;
     const now = performance.now();
     const isBurst = now - lastWriteMs <= HEAVY_WRITE_WINDOW_MS;
     lastWriteMs = now;
@@ -400,33 +524,32 @@ export function installSelectionHighlights(
         cache.clear();
         scheduleFrame();
       }, HEAVY_SETTLE_MS);
+    } else {
+      scheduleFrame();
     }
   };
 
   const disposables: IDisposable[] = [
     term.onSelectionChange(() => {
-      if (!term.hasSelection() || isSearchSelection()) {
-        cancelFrame();
-        clearOverlay();
-        return;
-      }
+      if (syncInactiveOverlay()) return;
       scheduleFrame();
     }),
     term.onScroll(() => {
-      if (term.hasSelection() && !isSearchSelection() && !heavyOutput) {
+      if (syncInactiveOverlay()) return;
+      if (!heavyOutput) {
         scheduleFrame();
       }
     }),
     term.onRender(({ start, end }) => {
       const viewportY = term.buffer.active.viewportY;
       cache.invalidateRange(viewportY + start, viewportY + end);
-      if (term.hasSelection() && !isSearchSelection() && !heavyOutput) {
+      if (!syncInactiveOverlay() && !heavyOutput) {
         scheduleFrame();
       }
     }),
     term.onResize(() => {
       cache.clear();
-      if (term.hasSelection() && !isSearchSelection() && !heavyOutput) {
+      if (!syncInactiveOverlay() && !heavyOutput) {
         scheduleFrame();
       }
     }),
@@ -436,7 +559,7 @@ export function installSelectionHighlights(
       if (term.buffer.active.type === "alternate") {
         cancelFrame();
         clearOverlay();
-      } else if (term.hasSelection() && !isSearchSelection()) {
+      } else if (!syncInactiveOverlay()) {
         scheduleFrame();
       }
     }),
@@ -464,7 +587,7 @@ export function installSelectionHighlights(
       overlay = null;
       pool.length = 0;
       activeBoxes = 0;
-      cache.clear();
+      cache.dispose();
     },
   };
 }

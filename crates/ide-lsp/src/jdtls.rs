@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const SERVER: &str = "jdtls";
+pub(crate) const SERVER: &str = "jdtls";
 
 pub(crate) mod configuration;
 mod formatter;
