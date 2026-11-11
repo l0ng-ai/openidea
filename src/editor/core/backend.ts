@@ -396,6 +396,7 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
     lineEnding: d.lineEnding,
     readOnly: d.readOnly,
     dirty: d.text !== d.saved || d.hasBom !== d.savedBom,
+    canReloadEncoding: !d.uri,
     ...(d.uri ? { uri: d.uri } : {}),
     ...(d.uiMode ? { uiMode: d.uiMode } : {}),
   });

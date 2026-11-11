@@ -594,7 +594,8 @@ export function goalCompletions(
   const head = line.slice(0, at);
   const word = line.slice(at).toLowerCase();
   const out: Completion[] = [];
-  const seen = new Set<string>();
+  // Already-typed goals are not offered again.
+  const seen = new Set<string>(parseGoalLine(head));
   const push = (label: string, detail?: string) => {
     if (seen.has(label) || !label.toLowerCase().startsWith(word)) return;
     seen.add(label);
@@ -618,7 +619,8 @@ export function taskCompletions(line: string, model: GradleModel, history: reado
   const head = line.slice(0, at);
   const word = line.slice(at).toLowerCase();
   const out: Completion[] = [];
-  const seen = new Set<string>();
+  // Already-typed tasks are not offered again.
+  const seen = new Set<string>(parseTaskLine(head));
   if (!head.trim())
     for (const h of history)
       if (h.toLowerCase().startsWith(line.toLowerCase()) && h !== line)

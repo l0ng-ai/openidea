@@ -48,11 +48,11 @@ const { SYNTAX_ERRORS_PRODUCER } = await import("@/platform/inspections");
 
 const ctx = { doc: 1, path: "/p/a.php", language: "php", uiMode: null, readOnly: false };
 const views: EditorView[] = [];
-function open() {
+function open(doc = ctx) {
   const view = new EditorView({
     state: EditorState.create({
       doc: "<?php\n$a = A::geUn iqTask\nb()\n",
-      extensions: [lspDoc.of(ctx), syntaxErrorsExtension()],
+      extensions: [lspDoc.of(doc), syntaxErrorsExtension()],
     }),
   });
   views.push(view);
@@ -77,6 +77,14 @@ describe("syntax errors without a language server", () => {
       expect.objectContaining({ severity: "error", message: "Unexpected token", source: "Syntax" }),
       expect.objectContaining({ severity: "error", message: "';' expected" }),
     ]);
+  });
+
+  it("skips Django templates, whose tags the borrowed HTML grammar can't read", async () => {
+    vi.useFakeTimers();
+    servers = [{ status: "missing", languages: ["django-html"] }];
+    open({ ...ctx, path: "/p/templates/a.html", language: "django-html" });
+    await settle();
+    expect(last()).toBeUndefined();
   });
 
   it("leaves them to a running server, and checks again when the server stops", async () => {

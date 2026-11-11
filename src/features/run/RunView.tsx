@@ -40,6 +40,7 @@ import { isUpdatable } from "./updatePolicies";
 import { configIcon } from "./configs";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
+import { toolWindowService } from "@/workbench/contributions";
 
 function failed(s: RunSession): boolean {
   return s.status === "failed" || (s.status === "finished" && s.exitCode !== 0 && !s.stopped);
@@ -292,6 +293,13 @@ function currentTab(
   return traces.length ? { trace: traces[traces.length - 1]! } : null;
 }
 
+/** Closes a session or stack trace tab; as in IDEA, the tool window goes away with its last tab. */
+export async function closeRunTab(id: string, traces: readonly StackTraceTab[]) {
+  if (traces.some((t) => t.id === id)) closeStackTrace(id);
+  else if (!(await closeSessionTab(id))) return;
+  if (!useRun.getState().sessions.length && !useStackTraces.getState().tabs.length) toolWindowService().hide("run");
+}
+
 /** Session (and stack trace) tabs in the tool window header. */
 export function RunTabs() {
   const sessions = useRun((s) => s.sessions);
@@ -312,7 +320,7 @@ export function RunTabs() {
       items={items}
       activeId={"session" in current ? current.session.id : current.trace.id}
       onSelect={(id) => useRun.setState({ activeSession: id })}
-      onClose={(id) => (traces.some((t) => t.id === id) ? closeStackTrace(id) : void closeSessionTab(id))}
+      onClose={(id) => void closeRunTab(id, traces)}
       panelIdPrefix="openidea-run"
     />
   );

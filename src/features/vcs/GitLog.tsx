@@ -2574,9 +2574,12 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   }, [active]);
   const previewSelection = (sel: ReadonlySet<string>) => {
     clearTimeout(previewTimer.current);
-    if (syncingDiff.current) return;
-    if (!logOptions().diffPreview || logOptions().diffLocation !== "editor" || vcsDiffInFront() || sel.size !== 1)
-      return;
+    if (syncingDiff.current || sel.size !== 1) return;
+    // While the editor shows one of this pane's diffs, the selection walks it along (a click or
+    // arrow key), as in the Commit window.
+    const shown = maybeEditorService()?.activeInput?.();
+    const following = shown?.kind === DIFF_KIND && ordered.some((c) => diffInput(c.diff).key === shown.key);
+    if (!following && (!logOptions().diffPreview || logOptions().diffLocation !== "editor" || vcsDiffInFront())) return;
     const file = fileNodeAt(tree, [...sel][0]!)?.file;
     // A preview that cannot open (no editor yet, the file went away) is just skipped.
     if (file)

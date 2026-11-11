@@ -28,6 +28,7 @@ pub mod fs;
 pub mod github;
 pub mod heap;
 pub mod history;
+pub mod hotkeys;
 pub mod http;
 pub mod java;
 pub mod lsp;
@@ -218,6 +219,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         history::history_list_dir,
         history::history_put_label,
         history::history_restore,
+        hotkeys::system_probe_hotkeys,
         refactor::refactor_file_move_edits,
         refactor::refactor_file_move_text_edits,
         refactor::refactor_move_files,
@@ -685,6 +687,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         deploy::remote_of,
         deploy::remote_delete,
         deploy::remote_mkdir,
+        deploy::remote_download_into,
         deploy::remote_rename,
         crate::remote_dev::remote_bootstrap_list,
         crate::remote_dev::remote_connect,

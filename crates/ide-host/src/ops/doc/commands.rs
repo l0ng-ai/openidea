@@ -19,7 +19,17 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send
 pub async fn doc_open_virtual(host: &Host, window: &str, uri: String) -> IdeResult<DocumentInfo> {
     let project = host.project(window)?;
     let vd = crate::ops::lsp::lsp_virtual_document(host, window, uri).await?;
-    blocking(move || project.documents.open_virtual(&vd.uri, vd.language_id, &vd.text)).await
+    blocking(move || {
+        project.documents.open_virtual(
+            &vd.uri,
+            vd.language_id,
+            &vd.text,
+            &vd.encoding,
+            vd.has_bom,
+            vd.can_reload_encoding,
+        )
+    })
+    .await
 }
 
 /// The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
@@ -30,6 +40,8 @@ pub async fn doc_ui_mode(host: &Host, window: &str, path: PathBuf) -> IdeResult<
 }
 
 /// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state.
+/// Virtual documents re-read their origin (archive, language server, Git blob)
+/// instead of a disk file; converting them would write to it, so it stays refused.
 pub async fn doc_set_encoding(
     host: &Host,
     window: &str,
@@ -38,6 +50,14 @@ pub async fn doc_set_encoding(
     reload: bool,
 ) -> IdeResult<DocumentEncoding> {
     let project = host.project(window)?;
+    if reload && let Some(uri) = project.documents.virtual_uri(doc)? {
+        let vd = if uri.starts_with("git-revision:") {
+            crate::ops::vcs::revision_virtual_document(host, window, &uri, Some(&encoding)).await?
+        } else {
+            project.lsp.reload_virtual(&uri, &encoding).await?
+        };
+        return host.blocking(move || project.documents.replace_virtual(doc, &vd.text, &vd.encoding, vd.has_bom)).await;
+    }
     host.blocking(move || project.documents.set_encoding(doc, &encoding, reload)).await
 }
 

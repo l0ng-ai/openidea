@@ -1043,7 +1043,7 @@ const EXT_ICONS = table({
   "file-text": "txt text",
   "file-log": "log",
   "file-csv": "csv tsv",
-  "file-html": "html htm shtml html.tmpl",
+  "file-html": "html htm shtml html.tmpl djhtml",
   "file-xhtml": "xhtml",
   "file-css": "css pcss postcss",
   "file-less": "less",

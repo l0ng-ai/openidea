@@ -5,6 +5,7 @@ use crate::{ChangeKind, FileStatus, Repo};
 use gix::status::index_worktree::Item as WtItem;
 use gix::status::plumbing::index_as_worktree::{Change as WtChange, EntryStatus};
 use ide_core::IdeResult;
+use ide_core::ignored::IgnoredNames;
 use std::collections::{BTreeMap, HashSet};
 
 #[derive(Default)]
@@ -15,10 +16,43 @@ struct Entry {
 }
 
 pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
+    let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
+    // gitoxide stops at the first IO error (a directory it may not read), where git warns
+    // and lists the rest: git answers then.
+    let (map, conflicts) = gix_status(r, &ignored).or_else(|e| {
+        tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
+        cli_status(r, &ignored)
+    })?;
+    Ok(map
+        .into_iter()
+        .filter(|(_, e)| e.staged.is_some() || e.unstaged.is_some())
+        // Ignored names mean "the IDE treats these as nonexistent": hide their tracked
+        // changes too, not just untracked hits above. Conflicts stay visible so merges
+        // cannot stall on a file the user cannot see.
+        .filter(|(rel, _)| conflicts.contains(rel) || !ignored.is_ignored_path(rel))
+        .map(|(rel, mut e)| {
+            if conflicts.contains(&rel) {
+                e.staged = None;
+                e.renamed_from = None;
+                e.unstaged = Some(ChangeKind::Conflicted);
+            }
+            FileStatus {
+                path: r.abs_path(&rel).into(),
+                rel_path: rel,
+                staged: e.staged,
+                unstaged: e.unstaged,
+                renamed_from: e.renamed_from,
+            }
+        })
+        .collect())
+}
+
+type Entries = (BTreeMap<String, Entry>, HashSet<String>);
+
+fn gix_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
     let repo = r.gix()?;
     let mut map: BTreeMap<String, Entry> = BTreeMap::new();
     let mut conflicts: HashSet<String> = HashSet::new();
-    let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
 
     // Stamp before status can read the index: stamping after the load could capture
     // an external `git switch`, `add` or commit's new index and allow the stale
@@ -118,28 +152,60 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
         }
     }
 
-    Ok(map
-        .into_iter()
-        .filter(|(_, e)| e.staged.is_some() || e.unstaged.is_some())
-        // Ignored names mean "the IDE treats these as nonexistent": hide their tracked
-        // changes too, not just untracked hits above. Conflicts stay visible so merges
-        // cannot stall on a file the user cannot see.
-        .filter(|(rel, _)| conflicts.contains(rel) || !ignored.is_ignored_path(rel))
-        .map(|(rel, mut e)| {
-            if conflicts.contains(&rel) {
-                e.staged = None;
-                e.renamed_from = None;
-                e.unstaged = Some(ChangeKind::Conflicted);
+    Ok((map, conflicts))
+}
+
+/// `git status --porcelain=v2`: what git lists, unreadable directories skipped.
+fn cli_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
+    let out = crate::cli::run(r.root(), &["status", "--porcelain=v2", "-z", "--untracked-files=all"], None)?;
+    Ok(parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout), ignored))
+}
+
+fn parse_porcelain_v2(out: &str, ignored: &IgnoredNames) -> Entries {
+    let kind = |c: u8| match c {
+        b'M' | b'T' => Some(ChangeKind::Modified),
+        b'A' | b'C' => Some(ChangeKind::Added),
+        b'D' => Some(ChangeKind::Deleted),
+        b'R' => Some(ChangeKind::Renamed),
+        _ => None,
+    };
+    let mut map: BTreeMap<String, Entry> = BTreeMap::new();
+    let mut conflicts: HashSet<String> = HashSet::new();
+    let mut records = out.split('\0');
+    while let Some(record) = records.next() {
+        let (tag, rest) = record.split_once(' ').unwrap_or((record, ""));
+        match tag {
+            // `1 XY sub mH mI mW hH hI path`, `2 … Xscore path` + NUL + the original path.
+            "1" | "2" => {
+                let fields = if tag == "1" { 8 } else { 9 };
+                let mut parts = rest.splitn(fields, ' ');
+                let xy = parts.next().unwrap_or("..").as_bytes();
+                let Some(path) = parts.nth(fields - 2) else { continue };
+                let e = map.entry(path.to_owned()).or_default();
+                e.staged = xy.first().copied().and_then(kind);
+                // Intent to add shows as `.A`; worktree renames are off, as with gitoxide.
+                e.unstaged = xy.get(1).copied().and_then(kind).filter(|k| *k != ChangeKind::Renamed);
+                if tag == "2" {
+                    let from = records.next().unwrap_or_default();
+                    if e.staged == Some(ChangeKind::Renamed) {
+                        e.renamed_from = Some(from.to_owned());
+                    }
+                }
             }
-            FileStatus {
-                path: r.abs_path(&rel).into(),
-                rel_path: rel,
-                staged: e.staged,
-                unstaged: e.unstaged,
-                renamed_from: e.renamed_from,
+            // `u XY sub m1 m2 m3 mW h1 h2 h3 path`
+            "u" => {
+                if let Some(path) = rest.splitn(10, ' ').nth(9) {
+                    conflicts.insert(path.to_owned());
+                    map.entry(path.to_owned()).or_default().unstaged = Some(ChangeKind::Conflicted);
+                }
             }
-        })
-        .collect())
+            "?" if !rest.is_empty() && !ignored.is_ignored_path(rest) => {
+                map.entry(rest.to_owned()).or_default().unstaged = Some(ChangeKind::Untracked);
+            }
+            _ => {}
+        }
+    }
+    (map, conflicts)
 }
 
 /// Lets a test land an external index write in the window between the status run
@@ -226,5 +292,60 @@ mod tests {
         // Nothing staged: HEAD and index agree.
         let staged = Command::new("git").current_dir(dir).args(["diff", "--cached", "--stat"]).output().unwrap();
         assert!(staged.stdout.is_empty(), "{}", String::from_utf8_lossy(&staged.stdout));
+    }
+
+    /// git's porcelain answer (used when gitoxide can't read the tree) matches gitoxide's.
+    #[test]
+    fn git_and_gitoxide_report_the_same_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-q"]);
+        git(dir, &["config", "user.name", "Test User"]);
+        git(dir, &["config", "user.email", "test@example.com"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+        for f in ["modified.txt", "staged.txt", "deleted.txt", "staged_del.txt", "both.txt", "conflict.txt"] {
+            std::fs::write(dir.join(f), "a\n").unwrap();
+        }
+        std::fs::write(dir.join("rename_me.txt"), "some longer content\nthat is stable\nfor rename detection\n")
+            .unwrap();
+        commit_all(dir, "base");
+        git(dir, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(dir.join("conflict.txt"), "side\n").unwrap();
+        commit_all(dir, "side");
+        git(dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join("conflict.txt"), "main\n").unwrap();
+        commit_all(dir, "main");
+        let merge = Command::new("git").current_dir(dir).args(["merge", "-q", "side"]).output().unwrap();
+        assert!(!merge.status.success());
+
+        std::fs::write(dir.join("modified.txt"), "b\n").unwrap();
+        std::fs::write(dir.join("staged.txt"), "b\n").unwrap();
+        git(dir, &["add", "staged.txt"]);
+        std::fs::remove_file(dir.join("deleted.txt")).unwrap();
+        git(dir, &["rm", "-q", "staged_del.txt"]);
+        std::fs::write(dir.join("both.txt"), "b\n").unwrap();
+        git(dir, &["add", "both.txt"]);
+        std::fs::write(dir.join("both.txt"), "c\n").unwrap();
+        git(dir, &["mv", "rename_me.txt", "renamed with space.txt"]);
+        std::fs::create_dir_all(dir.join("new dir")).unwrap();
+        std::fs::write(dir.join("new dir/untracked.txt"), "u\n").unwrap();
+        std::fs::write(dir.join("intent.txt"), "i\n").unwrap();
+        git(dir, &["add", "-N", "intent.txt"]);
+
+        let repo = Repo::discover(dir).unwrap().expect("repository found");
+        let ignored = IgnoredNames::default();
+        let show = |(map, conflicts): Entries| {
+            let mut c: Vec<_> = conflicts.into_iter().collect();
+            c.sort();
+            let m: Vec<_> = map
+                .into_iter()
+                .map(|(k, e)| format!("{k}: {:?} {:?} {:?}", e.staged, e.unstaged, e.renamed_from))
+                .collect();
+            (m, c)
+        };
+        let from_git = show(cli_status(&repo, &ignored).unwrap());
+        assert_eq!(from_git, show(gix_status(&repo, &ignored).unwrap()));
+        assert!(from_git.0.iter().any(|l| l.starts_with("renamed with space.txt: Some(Renamed)")), "{from_git:?}");
+        assert_eq!(from_git.1, ["conflict.txt"]);
     }
 }

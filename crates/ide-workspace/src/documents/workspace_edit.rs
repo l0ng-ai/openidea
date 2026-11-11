@@ -748,6 +748,7 @@ impl Documents {
             let result = self.with_doc(*id, |state| {
                 self.replace_locked(*id, state, &before.doc.text())?;
                 state.encoding = before.encoding.clone();
+                state.encoding_chosen = before.encoding_chosen;
                 state.has_bom = before.has_bom;
                 state.doc.set_line_ending(before.doc.line_ending());
                 state.disk_mtime = fs::metadata(&state.path).map(|m| ide_vfs::mtime_ms(&m)).unwrap_or(0.0);
@@ -789,7 +790,11 @@ impl Documents {
                     return Err(stale(path));
                 }
                 let defaults = self.file_defaults();
-                let loaded = ide_vfs::load_text_with_fallback(path, defaults.fallback_for(path))?;
+                let loaded = if state.encoding_chosen {
+                    Self::load_as(path, &state.encoding, state.native_to_ascii)?
+                } else {
+                    ide_vfs::load_text_with_fallback(path, defaults.fallback_for(path))?
+                };
                 self.replace_locked(id, state, &loaded.text)?;
                 state.encoding = loaded.encoding;
                 state.has_bom = loaded.has_bom;
