@@ -1228,6 +1228,11 @@ export interface ExecutorLaunch {
   launch: RunConfig;
   /** The process exited (not called when it failed to start). */
   finished(result: { exitCode: number | null; stopped: boolean }): void;
+  /**
+   * The user stopped the run: called before the stop signal, which waits for it (at most
+   * `BEFORE_STOP_TIMEOUT_MS`). A second Stop does not wait.
+   */
+  beforeStop?(runId: RunId): Promise<void>;
 }
 
 export interface RunExecutorContribution {

@@ -205,6 +205,49 @@ pub(crate) fn run_paths(root: &Path, args: &[&str], paths: &[String]) -> IdeResu
     run_paths_env(root, args, paths, None, &[])
 }
 
+const RESTRICTED_CONFIG: [&str; 8] = [
+    "core.fsmonitor=false",
+    "core.hooksPath=",
+    // `git diff` writes the index back after refreshing it, and that write runs the hooks a
+    // config names for `post-index-change`, which `core.hooksPath` does not reach.
+    "diff.autoRefreshIndex=false",
+    "hook.post-index-change.enabled=false",
+    "diff.external=",
+    "core.attributesFile=",
+    "submodule.recurse=false",
+    "log.showSignature=false",
+];
+
+/// The keys that name a signature verifier; `gpg.openpgp.program` is an alias of `gpg.program`.
+const VERIFIER_KEYS: [&str; 4] = ["gpg.program", "gpg.openpgp.program", "gpg.ssh.program", "gpg.x509.program"];
+
+/// A program path git opens directly and cannot find, as nothing exists below a regular file.
+/// An empty name is not enough: Git for Windows looks it up on `PATH` and runs a file named `.exe`.
+fn no_program() -> &'static std::ffi::OsStr {
+    static PATH: OnceLock<std::ffi::OsString> = OnceLock::new();
+    PATH.get_or_init(|| match std::env::current_exe() {
+        Ok(exe) if exe.is_absolute() => exe.join("no-program").into_os_string(),
+        _ => Default::default(),
+    })
+}
+
+/// Keeps `cmd`, a git that reads a repository, from running what that repository's config names
+/// for a read: the fsmonitor hook, hooks, the external diff, a signature verifier and a lazy
+/// fetch. Call it before the subcommand is added. Clean and process filters have a key per
+/// driver ([`filter_overrides_from`] empties those); signing, transport and credential helpers
+/// are not covered.
+pub fn restrict(cmd: &mut Command) {
+    for setting in RESTRICTED_CONFIG {
+        cmd.arg("-c").arg(setting);
+    }
+    for key in VERIFIER_KEYS {
+        let mut setting = std::ffi::OsString::from(format!("{key}="));
+        setting.push(no_program());
+        cmd.arg("-c").arg(setting);
+    }
+    cmd.env_remove("GIT_EXTERNAL_DIFF").env("GIT_NO_LAZY_FETCH", "1");
+}
+
 /// Builds a `git` command with the environment every invocation needs.
 pub(crate) fn command(root: &Path) -> IdeResult<Command> {
     let restricted = !crate::execution_allowed();
@@ -215,16 +258,7 @@ pub(crate) fn command(root: &Path) -> IdeResult<Command> {
     };
     let mut cmd = Command::new(binary);
     if restricted {
-        for setting in [
-            "core.fsmonitor=false",
-            "core.hooksPath=",
-            "diff.external=",
-            "core.attributesFile=",
-            "submodule.recurse=false",
-        ] {
-            cmd.arg("-c").arg(setting);
-        }
-        cmd.env_remove("GIT_EXTERNAL_DIFF").env("GIT_NO_LAZY_FETCH", "1");
+        restrict(&mut cmd);
     }
     cmd.current_dir(root)
         .arg("-c")
@@ -385,6 +419,13 @@ fn run_cancellable_raw_stdin(
     run_capture(root, args, stdin, cancel, usize::MAX)
 }
 
+/// Options for a `git diff` that reads the working tree in Restricted Mode: git asks a submodule
+/// with changes for its own status, and for its own diff when `diff.submodule` says so, and both
+/// run under the submodule's config.
+pub(crate) fn submodule_guards() -> &'static [&'static str] {
+    if crate::execution_allowed() { &[] } else { &["--ignore-submodules=dirty", "--submodule=short"] }
+}
+
 /// Neutralizes repository clean/process filters for a read of working-tree bytes.
 /// Git still applies them with --no-ext-diff and --no-textconv.
 pub(crate) fn filter_overrides(root: &Path, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
@@ -392,15 +433,27 @@ pub(crate) fn filter_overrides(root: &Path, cancel: &CancellationToken) -> IdeRe
         return Ok(Vec::new());
     }
     let config = run_bounded(root, &["config", "--null", "--list"], cancel, 4 << 20)?;
+    filter_overrides_from(&config.stdout)
+}
+
+/// `-c` arguments that empty every clean and process filter in `config`, the output of
+/// `git config --null --list`. Fails when one of them cannot be emptied this way: git splits
+/// `-c name=value` at the first `=`, and a name that is not UTF-8 does not reach git as it is
+/// on every platform.
+pub fn filter_overrides_from(config: &[u8]) -> IdeResult<Vec<String>> {
     let mut overrides = Vec::new();
-    for record in config.stdout_str().split('\0') {
-        let key = record.split('\n').next().unwrap_or_default();
-        if key.starts_with("filter.")
-            && (key.ends_with(".clean") || key.ends_with(".process") || key.ends_with(".required"))
-        {
-            overrides.push("-c".into());
-            overrides.push(format!("{key}={}", if key.ends_with(".required") { "false" } else { "" }));
+    for record in config.split(|b| *b == 0) {
+        let key = record.split(|b| *b == b'\n').next().unwrap_or_default();
+        let required = key.ends_with(b".required");
+        if !key.starts_with(b"filter.") || !(key.ends_with(b".clean") || key.ends_with(b".process") || required) {
+            continue;
         }
+        let Some(key) = std::str::from_utf8(key).ok().filter(|key| !key.contains('=')) else {
+            let key = String::from_utf8_lossy(key);
+            return Err(IdeError::invalid(format!("git cannot be told to skip the filter setting `{key}`")));
+        };
+        overrides.push("-c".into());
+        overrides.push(format!("{key}={}", if required { "false" } else { "" }));
     }
     Ok(overrides)
 }
@@ -761,6 +814,25 @@ mod command_session_tests {
 }
 
 #[cfg(test)]
+mod restrict_tests {
+    use super::*;
+
+    #[test]
+    fn restrict_names_a_verifier_git_opens_directly_and_cannot_find() {
+        let mut cmd = Command::new("git");
+        restrict(&mut cmd);
+        let args: Vec<_> = cmd.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        let programs: Vec<_> = args.iter().filter_map(|arg| arg.split_once(".program=")).collect();
+        assert_eq!(programs.len(), 4, "{args:?}");
+        for (key, program) in programs {
+            let program = Path::new(program);
+            assert!(program.is_absolute(), "{key}.program is {program:?}: git would look that name up on PATH");
+            assert!(!program.exists(), "{key}.program is {program:?}, which exists");
+        }
+    }
+}
+
+#[cfg(test)]
 mod batching_tests {
     use super::{WINDOWS_LIMIT, base_command_line_len, batch_paths, command_line_limit};
 
@@ -836,12 +908,10 @@ mod index_lock_tests {
         run(dir.path(), &["init", "-q", "-b", "main"], None).unwrap();
         std::fs::write(dir.path().join("file"), "main\n").unwrap();
         run(dir.path(), &["add", "file"], None).unwrap();
-        run(
-            dir.path(),
-            &["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"],
-            None,
-        )
-        .unwrap();
+        // git started outside an execution scope is restricted and has no signing program, so the
+        // user's `commit.gpgsign` must not reach this commit.
+        let identity = ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"];
+        run(dir.path(), &[&identity[..], &["commit", "-qm", "initial"]].concat(), None).unwrap();
         run(dir.path(), &["branch", "other"], None).unwrap();
         dir
     }
@@ -891,6 +961,8 @@ mod index_lock_tests {
         )
         .unwrap();
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Hooks run only in a trusted repository.
+        let _scope = crate::ExecutionScope::enter(true);
         let out = run_raw(dir.path(), &["switch", "-q", "other"], None).unwrap();
         assert_eq!(out.code, Some(1));
         assert_eq!(std::fs::read_to_string(dir.path().join("hook-runs")).unwrap(), "ran\n");

@@ -128,10 +128,24 @@ fn valid_name(name: &str) -> IdeResult<String> {
     Ok(name.to_owned())
 }
 
+/// A workspace file can come with a cloned repository, and looking a folder up on a network
+/// share signs in to that share's server: only local drives and the share `from` is on are
+/// looked up.
+fn reachable(path: &Path, from: &Path) -> IdeResult<()> {
+    if ide_vfs::content_path_allowed(path, &[from]) {
+        return Ok(());
+    }
+    Err(IdeError::invalid(format!(
+        "Project folder is not on a local drive or the workspace's share: {}",
+        path.display()
+    )))
+}
+
 fn normalize_projects(root: &Path, projects: Vec<PathBuf>) -> IdeResult<Vec<PathBuf>> {
     let mut result = Vec::new();
     for path in projects {
         let path = if path.is_absolute() { path } else { root.join(path) };
+        reachable(&path, root)?;
         let path = match dunce::canonicalize(&path) {
             Ok(path) if path.is_dir() => path,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => path,
@@ -141,6 +155,9 @@ fn normalize_projects(root: &Path, projects: Vec<PathBuf>) -> IdeResult<Vec<Path
             let mut nested: Workspace = serde_json::from_slice(&std::fs::read(path.join(FILE))?)
                 .map_err(|e| IdeError::invalid(format!("Invalid workspace: {e}")))?;
             let primary = nested.projects.first().map(|p| if p.is_absolute() { p.clone() } else { path.join(p) });
+            if let Some(primary) = &primary {
+                reachable(primary, &path)?;
+            }
             if let Some(primary) = primary.and_then(|p| dunce::canonicalize(p).ok()) {
                 nested.projects[0] = primary;
             }
@@ -238,6 +255,50 @@ mod tests {
         assert_eq!(Workspace::load(&root).unwrap().unwrap().projects.len(), 1);
         let missing = Workspace::load(&root).unwrap().unwrap().projects;
         Workspace::save(&root, "Renamed", missing, false).unwrap();
+    }
+
+    /// A workspace file comes with a cloned repository, and its folders are looked up as soon
+    /// as the project opens: on Windows, looking one up on a network share signs in to that
+    /// share's server with the user's credentials.
+    #[cfg(windows)]
+    #[test]
+    fn folders_on_a_share_the_workspace_is_not_on_are_not_looked_up() {
+        const REFUSED: &str = "Project folder is not on a local drive or the workspace's share";
+        let tmp = tempfile::tempdir().unwrap();
+        let local = dunce::canonicalize(tmp.path()).unwrap();
+        for dir in ["root/.openidea", "root/sub/.openidea", "member"] {
+            std::fs::create_dir_all(local.join(dir)).unwrap();
+        }
+        // The same folders reached over SMB through the loopback admin share.
+        let s = local.to_str().unwrap();
+        let share = PathBuf::from(format!(r"\\127.0.0.1\{}${}", &s[..1], &s[2..]));
+        assert!(share.join("member").is_dir(), "control: {} is not reachable over SMB", share.display());
+        let write = |dir: &Path, projects: &[&Path]| {
+            let projects = projects.iter().map(|p| p.to_path_buf()).collect();
+            let workspace = Workspace { version: 1, name: "W".into(), projects };
+            std::fs::write(dir.join(FILE), serde_json::to_vec(&workspace).unwrap()).unwrap();
+        };
+        let root = local.join("root");
+
+        write(&root, &[&root, &local.join("member")]);
+        assert_eq!(Workspace::load(&root).unwrap().unwrap().projects, [root.clone(), local.join("member")]);
+
+        write(&root, &[&root, &share.join("member")]);
+        let error = Workspace::load(&root).unwrap_err();
+        assert!(error.message.starts_with(REFUSED), "{}", error.message);
+
+        // A linked folder's own workspace file names its primary folder.
+        write(&root.join("sub"), &[&share.join("member")]);
+        write(&root, &[&root, Path::new("sub")]);
+        let error = Workspace::load(&root).unwrap_err();
+        assert!(error.message.starts_with(REFUSED), "{}", error.message);
+
+        // A workspace that is on the share links that share's folders.
+        std::fs::remove_file(root.join("sub").join(FILE)).unwrap();
+        let root = dunce::canonicalize(share.join("root")).unwrap();
+        write(&root, &[&root, &share.join("member")]);
+        let projects = Workspace::load(&root).unwrap().unwrap().projects;
+        assert_eq!(projects, [root, dunce::canonicalize(share.join("member")).unwrap()]);
     }
 
     #[test]

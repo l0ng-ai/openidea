@@ -144,20 +144,26 @@ test("styles quotes, rules, images and task lists", async ({ page }) => {
   expect(await css(reply, "li:has(> input)", "list-style-type")).toBe("none");
 });
 
-test("loads local and web reply images", async ({ page }) => {
-  await page.route("https://images.example.com/code.gif", (route) =>
-    route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") }),
-  );
+test("loads local reply images, and web ones when asked", async ({ page }) => {
+  let fetched = 0;
+  await page.route("https://images.example.com/code.gif", (route) => {
+    fetched++;
+    return route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") });
+  });
   const reply = await openReply(
     page,
     "![Local QR](/tmp/code.png)\n\n![Web QR](https://images.example.com/code.gif)",
     PIXEL,
   );
-  for (const name of ["Local QR", "Web QR"]) {
-    await expect
-      .poll(() => reply.getByRole("img", { name }).evaluate((img: HTMLImageElement) => img.naturalWidth))
-      .toBe(1);
-  }
+  const width = (name: string) =>
+    reply.getByRole("img", { name, includeHidden: true }).evaluate((img: HTMLImageElement) => img.naturalWidth);
+  await expect.poll(() => width("Local QR")).toBe(1);
+  const load = reply.getByRole("button", { name: "Load image from images.example.com" });
+  await expect(load).toBeVisible();
+  expect(fetched).toBe(0);
+  await load.click();
+  await expect.poll(() => width("Web QR")).toBe(1);
+  expect(fetched).toBe(1);
 });
 
 test("copies reply Markdown with the keyboard and keeps code copying separate", async ({ page, context }) => {
@@ -461,3 +467,45 @@ for (const theme of ["dark", "light"] as const) {
     for (const { text, ratio } of contrasts) expect(ratio, `${theme}: ${text}`).toBeGreaterThanOrEqual(4.5);
   });
 }
+
+test("draws a diagram without reaching the hosts its configuration names", async ({ page }) => {
+  const asked: string[] = [];
+  await page.route(/^https:\/\/([a-z\d-]+\.)*example\.com\//, (route) => {
+    asked.push(new URL(route.request().url()).pathname);
+    return route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") });
+  });
+  const at = (name: string) => `https://images.example.com/${name}`;
+  const fence = (...lines: string[]) => ["```mermaid", ...lines, "```"].join("\n");
+  const diagrams = [
+    fence(
+      `%%{init: {"themeCSS": ".nodeLabel{background-image:url(${at("theme-css")})} svg{background-image:url(${at("theme-css-root")})}"}}%%`,
+      "flowchart TD",
+      "    A[One]-->B[Two]",
+    ),
+    fence(
+      `%%{init: {"fontFamily": "x;background-image:url(${at("font-family")})"}}%%`,
+      "flowchart TD",
+      "    A[One]-->B[Two]",
+    ),
+    fence(
+      "---",
+      "config:",
+      `  themeCSS: ".nodeLabel{background-image:url(${at("front-matter")})}"`,
+      "---",
+      "flowchart TD",
+      "    A[One]-->B[Two]",
+    ),
+  ];
+  const reply = await openReply(page, `Diagrams:\n\n${diagrams.join("\n\n")}`);
+  await expect(reply.locator("[data-mermaid-state='ok'] .mermaid-output svg")).toHaveCount(diagrams.length);
+  await page.evaluate(
+    (src) =>
+      new Promise<void>((done) => {
+        const img = new Image();
+        img.onload = img.onerror = () => done();
+        img.src = src;
+      }),
+    "https://example.com/after",
+  );
+  expect(asked).toEqual(["/after"]);
+});

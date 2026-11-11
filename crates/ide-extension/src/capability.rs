@@ -71,7 +71,6 @@ impl Capability {
         match self {
             Self::ProjectRead | Self::EditorRead | Self::Storage | Self::Events | Self::VcsRead => Risk::Low,
             Self::EditorWrite
-            | Self::ProjectWrite
             | Self::DatabaseSources
             | Self::VcsWrite
             | Self::Net(_)
@@ -80,7 +79,14 @@ impl Capability {
             | Self::Secrets
             | Self::InputEvents
             | Self::Clipboard => Risk::Medium,
-            Self::IdeCommands | Self::Ipc(_) | Self::Process(_) | Self::FsRead(_) | Self::FsWrite(_) => Risk::High,
+            // A trusted project's own files name the programs the IDE starts (its settings, its
+            // build scripts), so writing them is running code.
+            Self::ProjectWrite
+            | Self::IdeCommands
+            | Self::Ipc(_)
+            | Self::Process(_)
+            | Self::FsRead(_)
+            | Self::FsWrite(_) => Risk::High,
         }
     }
 
@@ -400,6 +406,15 @@ mod tests {
         assert_eq!(Capability::Clipboard.risk(), Risk::Medium);
         assert_eq!(Capability::Process("cargo".into()).risk(), Risk::High);
         assert!(Capability::Storage.auto_migrates() && !Capability::EditorWrite.auto_migrates());
+    }
+
+    /// A trusted project's files name programs the IDE starts by itself: the git and language
+    /// server executables in `.openidea/settings.toml`, its build scripts. Writing them is
+    /// running code, and the install dialog says so.
+    #[test]
+    fn writing_project_files_is_a_high_risk_grant() {
+        assert_eq!(Capability::ProjectWrite.risk(), Risk::High);
+        assert!(!Capability::ProjectWrite.auto_migrates());
     }
 
     #[test]

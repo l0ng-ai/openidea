@@ -1,6 +1,7 @@
 import { call, commands } from "@/platform/ipc";
 import { ipcPath } from "@/platform/paths";
 import { tx } from "@/platform/i18n";
+import styles from "./Session.module.css";
 
 const hasControl = (text: string) => [...text].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
 
@@ -37,9 +38,12 @@ export function imageTarget(source: string, cwd: string): ImageTarget | null {
   }
 }
 
-/** Cache belongs to one message: streaming reuses reads, later replies can show a new QR at the same path. */
-export function loadImages(root: HTMLElement, cwd: string, cache: Map<string, Promise<string>>): () => void {
+/** What one message has loaded: streaming reuses it, later replies read a new QR at the same path and ask again. */
+export type MessageImages = { reads: Map<string, Promise<string>>; asked: Set<string> };
+
+export function loadImages(root: HTMLElement, cwd: string, { reads, asked }: MessageImages): () => void {
   let alive = true;
+  const held: HTMLButtonElement[] = [];
   const images = [...root.querySelectorAll<HTMLImageElement>("img")];
   for (const img of images) {
     const source = img.dataset.imageSrc ?? "";
@@ -55,13 +59,34 @@ export function loadImages(root: HTMLElement, cwd: string, cache: Map<string, Pr
     if (!target) {
       fail();
     } else if ("url" in target) {
-      img.src = target.url;
+      const { url } = target;
+      if (/^data:/i.test(url) || asked.has(url)) {
+        img.hidden = false;
+        img.src = url;
+      } else {
+        // A reply can be steered into naming an address that carries data out: the user decides.
+        // That holds for this machine too, where a server may pass the request on.
+        const load = document.createElement("button");
+        load.type = "button";
+        load.className = styles.loadImage!;
+        load.textContent = tx`Load image from ${new URL(url).host}`;
+        load.title = url;
+        load.onclick = () => {
+          asked.add(url);
+          load.remove();
+          img.hidden = false;
+          img.src = url;
+        };
+        img.hidden = true;
+        img.before(load);
+        held.push(load);
+      }
     } else {
-      let pending = cache.get(target.path);
+      let pending = reads.get(target.path);
       if (!pending) {
         pending = call(commands.fsReadImage(target.path));
-        cache.set(target.path, pending);
-        void pending.catch(() => cache.delete(target.path));
+        reads.set(target.path, pending);
+        void pending.catch(() => reads.delete(target.path));
       }
       void pending.then((url) => {
         if (alive) img.src = url;
@@ -71,5 +96,6 @@ export function loadImages(root: HTMLElement, cwd: string, cache: Map<string, Pr
   return () => {
     alive = false;
     for (const img of images) img.onerror = null;
+    for (const load of held) load.remove();
   };
 }

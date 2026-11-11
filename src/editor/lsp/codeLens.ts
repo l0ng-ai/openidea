@@ -233,14 +233,22 @@ class UsagesLensPlugin {
         const offset = posToOffset(text, { line: t.line, col: t.col });
         const who = lines && authorSummary(lines, t.startLine, t.endLine);
         if (who)
-          lenses.push({ pos: offset, title: authorLabel(who), tooltip: authorTooltip(who), icon: "user", order: 20 });
+          lenses.push({
+            pos: offset,
+            title: authorLabel(who),
+            tooltip: authorTooltip(who),
+            icon: "user",
+            order: 20,
+            kind: "author",
+          });
         const n = usages ? this.cache.get(key(t)) : undefined;
-        if (n === undefined) continue;
+        if (n === undefined || (n === 0 && !editorPrefs().inlay.codeVisionNoUsages)) continue;
         lenses.push({
           pos: offset,
           title: usagesLabel(n),
           tooltip: tx`Show usages of ${t.name}`,
           order: 10,
+          kind: "usages",
           run: (v) => openUsages(v, Math.min(offset, v.state.doc.length)),
         });
       }

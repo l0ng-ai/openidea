@@ -22,7 +22,7 @@
 mod templates;
 
 use ide_extension::{Manifest, validate_plugin_id};
-use ide_host::plugins::{PluginHost, plugin_icon, read_market_url, resolve_market_href};
+use ide_host::plugins::{PluginHost, market_href_reachable_from, plugin_icon, read_market_url, resolve_market_href};
 use ide_plugin::{Limits, PluginEngine};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -591,7 +591,7 @@ fn cmd_index(args: &[String]) -> Result<(), String> {
     let base = a.value("download-base").map(|b| b.trim_end_matches('/'));
     // Revocations and other publishers of an existing index are kept.
     let mut index = match std::fs::read_to_string(&out) {
-        Ok(text) => current_format(Index::parse(&text)?, &out.to_string_lossy())?,
+        Ok(text) => parse_index(&text, &out.to_string_lossy())?,
         Err(_) => Index { format: package::INDEX_FORMAT, ..Index::default() },
     };
     let publisher = match (a.value("publisher"), a.value("key")) {
@@ -653,6 +653,11 @@ fn cmd_index(args: &[String]) -> Result<(), String> {
                 engine: package::engine_requirement(&m.engine, built_for.as_ref()),
                 categories: m.categories(),
                 icon: plugin_icon(&ide_extension::Package::new(m.clone(), scratch.clone()))?,
+                homepage: m.homepage.clone().filter(|h| !h.trim().is_empty()),
+                notes: m.change_notes.clone().filter(|n| !n.trim().is_empty()),
+                downloads: None,
+                featured: false,
+                suggest: Vec::new(),
             })
         })();
         let entry = entry.map_err(|e| format!("{}: {e}", path.display()))?;
@@ -717,13 +722,21 @@ fn register_key(
     Ok(publishers)
 }
 
-/// `index`, unless a newer `openidea-plugin` wrote it (rewriting it would drop what this one can't read).
-fn current_format(index: Index, file: &str) -> Result<Index, String> {
+/// The index in `text` (read from `file`), unless a newer `openidea-plugin` wrote it (rewriting it
+/// would drop what this one can't read). Says which entries it does not keep: no IDE offers them.
+fn parse_index(text: &str, file: &str) -> Result<Index, String> {
+    let (index, dropped) = Index::parse_dropping(text)?;
     if index.is_newer() {
         return Err(format!(
             "{file}: index format {} is newer than this tool writes; update openidea-plugin",
             index.format
         ));
+    }
+    for e in &dropped {
+        eprintln!(
+            "warning: {file}: dropped {:?} {:?}: its id or version is not one a manifest may carry",
+            e.id, e.version
+        );
     }
     Ok(index)
 }
@@ -735,14 +748,15 @@ fn cmd_merge(args: &[String]) -> Result<(), String> {
     };
     let keep = a.value("keep").ok_or("--keep is required")?;
     let out = a.value("out").unwrap_or(base);
-    let mut index =
-        current_format(Index::parse(&std::fs::read_to_string(base).map_err(|e| format!("{base}: {e}"))?)?, base)?;
+    let mut index = parse_index(&std::fs::read_to_string(base).map_err(|e| format!("{base}: {e}"))?, base)?;
     let bytes = read_market_url(other, 16 << 20)?;
-    let theirs = Index::parse(&String::from_utf8(bytes).map_err(|_| format!("{other}: not UTF-8"))?)?;
-    let mut theirs = current_format(theirs, other)?;
+    let mut theirs = parse_index(&String::from_utf8(bytes).map_err(|_| format!("{other}: not UTF-8"))?, other)?;
     // Their downloads are relative to their index, not to ours.
     for e in &mut theirs.plugins {
         e.download = resolve_market_href(other, &e.download);
+        if !market_href_reachable_from(other, &e.download) {
+            return Err(format!("{other}: the download of {} {} is not on the network", e.id, e.version));
+        }
     }
     let count = theirs.plugins.len();
     index.include(theirs, &[keep]).map_err(|e| format!("{other}: {e}"))?;
@@ -940,6 +954,47 @@ mod tests {
         signed_theme(t, "carol.noon", "carol", &keys[2].0, &community);
         let err = cmd_index(&strings(&[community.to_str().unwrap()])).unwrap_err();
         assert!(err.contains("unknown publisher"), "{err}");
+    }
+
+    /// An index read over the network is not merged when it names a download on this machine:
+    /// the merged index is a local one, which may.
+    #[test]
+    fn an_index_read_over_the_network_is_not_merged_with_local_downloads() {
+        use std::io::{BufRead, BufReader, Write};
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("index.json");
+        write_index(&Index { format: package::INDEX_FORMAT, ..Index::default() }, &base).unwrap();
+        let local = tmp.path().join("alice.dawn-1.0.0.oiplugin").to_string_lossy().into_owned();
+        let theirs = serde_json::json!({
+            "format": package::INDEX_FORMAT,
+            "publishers": [{ "id": "alice", "name": "Alice", "keys": [] }],
+            "plugins": [{
+                "id": "alice.dawn", "name": "Dawn", "version": "1.0.0", "publisher": "alice",
+                "download": local, "digest": "d", "engine": "^1.0",
+            }],
+        })
+        .to_string();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let other = format!("http://127.0.0.1:{}/index.json", listener.local_addr().unwrap().port());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                    line.clear();
+                }
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{theirs}",
+                    theirs.len()
+                );
+            }
+        });
+
+        let err = cmd_merge(&strings(&[base.to_str().unwrap(), &other, "--keep", "openidea"])).unwrap_err();
+        assert!(err.contains("is not on the network"), "{err}");
+        let merged = Index::parse(&std::fs::read_to_string(&base).unwrap()).unwrap();
+        assert!(merged.plugins.is_empty(), "{:?}", merged.plugins);
     }
 
     #[test]

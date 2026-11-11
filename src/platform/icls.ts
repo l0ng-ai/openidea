@@ -274,16 +274,45 @@ function attributeEntries(section: Element): Element[] {
   return entries.filter((e) => e.getAttribute("name") !== "DEFAULT_BLOCK_COMMENT");
 }
 
-export function parseIcls(xml: string): { scheme: CustomColorScheme; applied: number; skipped: number } {
-  const doc = new DOMParser().parseFromString(xml, "application/xml");
-  const root = doc.documentElement;
-  if (
-    doc.querySelector("parsererror") ||
-    doc.doctype ||
-    root.tagName !== "scheme" ||
-    !root.getAttribute("name")?.trim()
-  )
-    throw new Error("Invalid .icls color scheme");
+/** A scheme file that is not an IntelliJ color scheme; `message` says what is wrong with it. */
+export class SchemeParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SchemeParseError";
+  }
+}
+
+/**
+ * The variants real IDEA scheme files come in: a BOM, an `encoding=` declaration
+ * (both describe the file's bytes, while this text has already been decoded), and
+ * a DOCTYPE prolog. None of them change the scheme, so drop the first two.
+ */
+const prepareIclsXml = (xml: string) =>
+  xml
+    .replace(/^\uFEFF+/, "")
+    .replace(/^\s*<\?xml\s[^>]*\?>(\r\n|\r|\n)?/i, "")
+    .replace(/^\s*(\r\n|\r|\n)?/, "");
+
+const parserDetail = (doc: Document): string => {
+  const detail = (doc.querySelector("parsererror")?.textContent ?? "").replace(/\s+/g, " ").trim();
+  return detail.length ? detail.slice(0, 200) : "no scheme element found";
+};
+
+export function parseIcls(
+  xml: string,
+  fallbackName = "Imported scheme",
+): { scheme: CustomColorScheme; applied: number; skipped: number } {
+  const doc = new DOMParser().parseFromString(prepareIclsXml(xml), "application/xml");
+  // Some distributors wrap the scheme element (an <application>/<component> export), or leave the name out.
+  const root =
+    doc.documentElement?.tagName === "scheme"
+      ? doc.documentElement
+      : (doc.getElementsByTagName("scheme")[0] ?? undefined);
+  if (doc.querySelector("parsererror") || !root)
+    throw new SchemeParseError(
+      doc.querySelector("parsererror") ? `not valid XML (${parserDetail(doc)})` : "no IntelliJ <scheme> element found",
+    );
+  const name = root.getAttribute("name")?.trim() || fallbackName;
   const attributes: Record<string, TextAttributesOverride> = {};
   const entries = new Map(
     children(root, "attributes").flatMap((section) =>
@@ -397,7 +426,7 @@ export function parseIcls(xml: string): { scheme: CustomColorScheme; applied: nu
         : dark
           ? "dark"
           : "light";
-  return { scheme: { name: root.getAttribute("name")!.trim(), parent, attributes }, applied, skipped };
+  return { scheme: { name, parent, attributes }, applied, skipped };
 }
 
 /** Name collisions include built-ins; imports never replace a built-in. */

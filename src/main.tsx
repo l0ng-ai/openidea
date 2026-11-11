@@ -6,10 +6,12 @@ import { activateSecondaryWindow, activateWorkbench } from "./workbench/activate
 import {
   activateComparisonWindowFeatures,
   activateDeploymentWindowFeatures,
+  activateDiffWindowFeatures,
   activateFeatures,
   activateSettingsWindowFeatures,
   ComparisonWindow,
   DeploymentWindow,
+  DiffWindow,
   SettingsWindow,
 } from "./features";
 import { auxiliaryWindow } from "./platform/auxWindow";
@@ -61,6 +63,10 @@ if (aux?.kind === "settings") {
   activateSecondaryWindow();
   activateComparisonWindowFeatures(aux.parent);
   installKeyboardDispatcher();
+} else if (aux?.kind === "diff") {
+  activateSecondaryWindow();
+  activateDiffWindowFeatures(aux.parent);
+  installKeyboardDispatcher();
 } else if (aux?.kind === "deployment") {
   activateSecondaryWindow();
   activateDeploymentWindowFeatures(aux.parent);
@@ -92,6 +98,8 @@ function App() {
     <SettingsWindow />
   ) : aux?.kind === "comparison" ? (
     <ComparisonWindow />
+  ) : aux?.kind === "diff" ? (
+    <DiffWindow />
   ) : aux?.kind === "deployment" ? (
     <DeploymentWindow />
   ) : (

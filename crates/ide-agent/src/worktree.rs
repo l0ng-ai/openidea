@@ -14,8 +14,18 @@ pub(crate) struct Created {
     pub base_commit: String,
 }
 
+/// The repository of `path`, free to execute: the host runs every agent command that
+/// reaches a repository only in a trusted project.
+fn discover(path: &Path) -> IdeResult<Option<Repo>> {
+    let repo = Repo::discover(path)?;
+    if let Some(repo) = &repo {
+        repo.set_execution_allowed(true);
+    }
+    Ok(repo)
+}
+
 fn repo_at(path: &Path) -> IdeResult<Repo> {
-    Repo::discover(path)?.ok_or_else(|| IdeError::unavailable(format!("{} is not in a git repository", path.display())))
+    discover(path)?.ok_or_else(|| IdeError::unavailable(format!("{} is not in a git repository", path.display())))
 }
 
 /// The current branch (or commit when detached) and its commit.
@@ -91,10 +101,11 @@ fn retrying(attempts: u32, pause: Duration, mut op: impl FnMut() -> std::io::Res
 /// Files under `cwd` that differ from `base` (untracked files included), with line counts.
 /// Outside a repository there is nothing to compare against: no changes.
 pub(crate) fn changes(cwd: &Path, base: &str) -> IdeResult<Vec<AgentChange>> {
-    let Some(repo) = Repo::discover(cwd)? else { return Ok(Vec::new()) };
+    let Some(repo) = discover(cwd)? else { return Ok(Vec::new()) };
     let root = repo.root().to_path_buf();
-    let stats = repo.numstat_with_worktree(base)?;
-    let stat = |rel: &str| stats.iter().find(|(p, ..)| p == rel).map_or((0, 0), |&(_, a, r)| (a, r));
+    let stats: std::collections::HashMap<String, (u32, u32)> =
+        repo.numstat_with_worktree(base)?.into_iter().map(|(p, a, r)| (p, (a, r))).collect();
+    let stat = |rel: &str| stats.get(rel).copied().unwrap_or((0, 0));
     let mut out: Vec<AgentChange> = repo
         .diff_with_worktree(base)?
         .into_iter()
@@ -103,8 +114,9 @@ pub(crate) fn changes(cwd: &Path, base: &str) -> IdeResult<Vec<AgentChange>> {
             AgentChange { path: IpcPath(root.join(&f.path)), rel_path: f.path, kind: f.kind, added, removed }
         })
         .collect();
+    let tracked: std::collections::HashSet<String> = out.iter().map(|c| c.rel_path.clone()).collect();
     for s in repo.status()? {
-        if s.unstaged == Some(ChangeKind::Untracked) && !out.iter().any(|c| c.rel_path == s.rel_path) {
+        if s.unstaged == Some(ChangeKind::Untracked) && !tracked.contains(&s.rel_path) {
             let added = std::fs::read_to_string(&*s.path).map_or(0, |t| t.lines().count() as u32);
             out.push(AgentChange { path: s.path, rel_path: s.rel_path, kind: ChangeKind::Added, added, removed: 0 });
         }
@@ -168,7 +180,10 @@ pub(crate) fn stamp(path: &Path) -> Stamp {
 
 /// The files already changed in `cwd` against `HEAD`, stamped so later edits to them show.
 pub(crate) fn snapshot(cwd: &Path) -> IdeResult<BTreeMap<String, Stamp>> {
-    Ok(changes(cwd, "HEAD")?.into_iter().map(|c| (c.rel_path, stamp(&c.path))).collect())
+    // Paths and stamps only: no diff and no line counts, which read every untracked file
+    // and held up starting a task in a checkout with many of them.
+    let Some(repo) = Repo::discover(cwd)? else { return Ok(BTreeMap::new()) };
+    Ok(repo.status()?.into_iter().map(|s| (s.rel_path, stamp(&s.path))).collect())
 }
 
 /// Drops the changes that were there before the task and haven't been touched since.
@@ -248,7 +263,7 @@ pub(crate) fn restore(
 }
 
 pub(crate) fn file_at(cwd: &Path, path: &Path, rev: &str) -> IdeResult<Option<String>> {
-    let Some(repo) = Repo::discover(cwd)? else { return Ok(None) };
+    let Some(repo) = discover(cwd)? else { return Ok(None) };
     let encoding = match ide_vfs::load_text(path) {
         Ok(loaded) => encoding_rs::Encoding::for_label(loaded.encoding.as_bytes()).unwrap_or(encoding_rs::UTF_8),
         Err(_) => ide_vfs::detect_encoding(&repo.file_bytes_at(path, Some(rev))?.unwrap_or_default(), None),

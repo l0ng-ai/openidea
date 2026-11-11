@@ -1234,15 +1234,6 @@ impl AgentManager {
         };
         // A copy of the task (a fork) may work in the same worktree.
         let shared = self.tasks.read().values().any(|t| t.id != id && t.state.lock().task.cwd.0 == cwd);
-        if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
-            // On Windows the agent's processes lock the folder (their working directory,
-            // open files) until they have exited.
-            if let Some(peer) = live {
-                let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
-            }
-            let worktrees = self.shared.paths.worktrees_dir.clone();
-            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
-        }
         self.tasks.write().remove(id);
         *task.deleted.lock() = true;
         let _ = std::fs::remove_file(self.shared.paths.store_dir.join(format!("{id}.json")));
@@ -1252,7 +1243,17 @@ impl AgentManager {
         {
             let _ = std::fs::remove_dir_all(self.shared.paths.store_dir.join(saved));
         }
+        // The list drops the task now; removing a large worktree's folder can take a while.
         self.shared.emit(AgentEvent::Removed { id: id.to_owned() });
+        if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
+            // On Windows the agent's processes lock the folder (their working directory,
+            // open files) until they have exited.
+            if let Some(peer) = live {
+                let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
+            }
+            let worktrees = self.shared.paths.worktrees_dir.clone();
+            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
+        }
         Ok(())
     }
 

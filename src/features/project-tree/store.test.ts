@@ -43,6 +43,22 @@ afterEach(() => {
 
 const childLabels = (key: string) => (currentModel().children.get(key) ?? []).map((n) => n.label);
 
+it("retains cached types only for members that remain in the same workspace", () => {
+  initProjectTree("/workspace", "Workspace", ["/go", "/web"]);
+  useProjectTree.setState({
+    projectTypes: new Map([
+      ["/go", "go"],
+      ["/web", "node"],
+    ]),
+  });
+
+  initProjectTree("/workspace", "Workspace", ["/go", "/new"]);
+  expect([...useProjectTree.getState().projectTypes]).toEqual([["/go", "go"]]);
+
+  initProjectTree("/other-workspace", "Other workspace", ["/go"]);
+  expect(useProjectTree.getState().projectTypes.size).toBe(0);
+});
+
 describe("lazy loading", () => {
   it("loads folders on demand and shares concurrent requests", async () => {
     const spy = vi.spyOn(fs, "readDir");
