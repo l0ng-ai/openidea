@@ -685,6 +685,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         deploy::remote_of,
         deploy::remote_delete,
         deploy::remote_mkdir,
+        deploy::remote_download_into,
         deploy::remote_rename,
         crate::remote_dev::remote_bootstrap_list,
         crate::remote_dev::remote_connect,

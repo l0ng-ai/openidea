@@ -130,6 +130,19 @@ pub async fn remote_mkdir(state: State<'_, AppState>, connection: FsConnection, 
 
 #[tauri::command]
 #[specta::specta]
+pub async fn remote_download_into(
+    window: Window,
+    state: State<'_, AppState>,
+    connection: FsConnection,
+    paths: Vec<String>,
+    target: IpcPath,
+    request: RequestId,
+) -> IdeResult<TransferReport> {
+    ide_host::ops::deploy::remote_download_into(window.label(), &state.host, connection, paths, target, request).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn remote_rename(
     state: State<'_, AppState>,
     connection: FsConnection,
