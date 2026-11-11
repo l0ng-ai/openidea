@@ -410,7 +410,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
     }
 
     /// What `foreach` over a value of type `ty` gives as keys and values.
-    fn iteration_types(&self, ty: &Type, frames: &[Frame<'a>]) -> (Type, Type) {
+    pub(crate) fn iteration_types(&self, ty: &Type, frames: &[Frame<'a>]) -> (Type, Type) {
         let context = self.context(frames);
         let mut keys = Vec::new();
         let mut values = Vec::new();

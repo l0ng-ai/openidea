@@ -336,7 +336,7 @@ impl PhpEngine {
     }
 
     /// The text of `path`: its open buffer, else the file on disk.
-    fn current_text(&self, path: &Path) -> Option<String> {
+    pub(crate) fn current_text(&self, path: &Path) -> Option<String> {
         match self.open_document(path) {
             Some(document) => Some(document.text.to_string()),
             None => std::fs::read_to_string(path).ok(),

@@ -324,8 +324,9 @@ fn completes_the_variables_passed_to_a_view_in_its_template() {
     // An array, from a controller and from `@include` in two templates.
     let welcome = project.engine.laravel_view_variables(&project.root.join("resources/views/welcome.blade.php"));
     assert_eq!(welcome.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["latest"]);
+    // `@include` passes the including template's variables too.
     let card = project.engine.laravel_view_variables(&project.root.join("resources/views/posts/_card.blade.php"));
-    assert_eq!(card.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["post"]);
+    assert_eq!(card.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["latest", "loop", "post", "posts"]);
 
     // `->with()` chained on the call, and an open buffer.
     project.open(
@@ -342,6 +343,62 @@ fn completes_the_variables_passed_to_a_view_in_its_template() {
     let found = project.engine.blade_completion(&blade, pos, None, &CancellationToken::new()).unwrap();
     assert!(found.items.iter().any(|item| item.label == "$title"), "{:?}", found.items);
     let found = project.engine.blade_completion(&blade, Pos::new(1, 16), None, &CancellationToken::new()).unwrap();
+    assert!(found.items.iter().any(|item| item.label == "title"), "{:?}", found.items);
+}
+
+#[test]
+fn variables_are_carried_through_nested_includes_and_each() {
+    let controller = "<?php\nnamespace App\\Http\\Controllers;\n\nuse App\\Models\\Post;\n\nclass ShelfController\n{\n    /** @param list<Post> $posts */\n    public function index(array $posts)\n    {\n        return view('shelf.index', ['title' => 'Shelf', 'posts' => $posts]);\n    }\n}\n";
+    let index = "@php($count = 3)\n@include('shelf.header')\n@foreach ($posts as $post)\n    @include('shelf.row', ['position' => $loop->index])\n@endforeach\n@each('shelf.item', $posts, 'entry')\n@include('shelf.cycle-a')\n";
+    let mut project = Project::app_with(&[
+        ("app/Http/Controllers/ShelfController.php", controller),
+        ("resources/views/shelf/index.blade.php", index),
+        ("resources/views/shelf/header.blade.php", "<h1>{{ $title }}</h1>\n@include('shelf.subtitle')\n"),
+        ("resources/views/shelf/subtitle.blade.php", "<p>{{ $count }}</p>\n"),
+        ("resources/views/shelf/row.blade.php", "{{ $post->title }}\n"),
+        ("resources/views/shelf/item.blade.php", "{{ $entry->title }}\n"),
+        ("resources/views/shelf/cycle-a.blade.php", "@php($a = 1)\n@include('shelf.cycle-b')\n"),
+        ("resources/views/shelf/cycle-b.blade.php", "@php($b = 1)\n@include('shelf.cycle-a')\n"),
+    ]);
+    let variables = |project: &Project, view: &str| -> Vec<(String, String)> {
+        let path = project.root.join(format!("resources/views/shelf/{view}.blade.php"));
+        project.engine.laravel_view_variables(&path).as_ref().clone()
+    };
+    let names = |found: &[(String, String)]| found.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
+    let typed = |found: &[(String, String)], name: &str| {
+        found.iter().find(|(known, _)| known == name).map(|(_, ty)| ty.clone()).unwrap_or_default()
+    };
+
+    // One level: what the controller passes, and what the template defined.
+    let header = variables(&project, "header");
+    assert_eq!(names(&header), ["count", "posts", "title"]);
+    assert_eq!(typed(&header, "count"), "int");
+    assert_eq!(typed(&header, "title"), "string");
+    // Two levels.
+    assert_eq!(variables(&project, "subtitle"), header);
+    // Inside a loop, with the include's own data.
+    let row = variables(&project, "row");
+    assert_eq!(names(&row), ["count", "loop", "position", "post", "posts", "title"]);
+    assert_eq!(typed(&row, "post"), "App\\Models\\Post");
+    // `@each` passes only the item and its key.
+    let item = variables(&project, "item");
+    assert_eq!(
+        item,
+        [("entry".to_owned(), "App\\Models\\Post".to_owned()), ("key".to_owned(), "non-negative-int".to_owned())]
+    );
+    // Templates including each other get the other's variables, and stop.
+    let a = variables(&project, "cycle-a");
+    assert!(names(&a).contains(&"b".to_owned()) && names(&a).contains(&"title".to_owned()), "{a:?}");
+    assert!(names(&variables(&project, "cycle-b")).contains(&"a".to_owned()));
+
+    // Completion two levels down.
+    let (doc, path, text, pos) = project.blade("resources/views/shelf/subtitle.blade.php", "<p>{{ $ti/*|*/ }}</p>\n");
+    let blade = BladeDocument { doc, path: &path, version: 1, text: &text };
+    let found = project.engine.blade_completion(&blade, pos, None, &CancellationToken::new()).unwrap();
+    assert!(found.items.iter().any(|item| item.label == "$title"), "{:?}", found.items);
+    let (doc, path, text, pos) = project.blade("resources/views/shelf/item.blade.php", "{{ $entry->tit/*|*/ }}\n");
+    let blade = BladeDocument { doc, path: &path, version: 1, text: &text };
+    let found = project.engine.blade_completion(&blade, pos, None, &CancellationToken::new()).unwrap();
     assert!(found.items.iter().any(|item| item.label == "title"), "{:?}", found.items);
 }
 

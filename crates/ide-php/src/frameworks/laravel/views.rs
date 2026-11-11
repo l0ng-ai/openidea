@@ -18,14 +18,19 @@
 //! - **Data:** the variables a call passes to a view: the array after the
 //!   view's name (`view('x', ['user' => $u])`, `@include('x', [...])`), a
 //!   `compact('a', 'b')` there, and `->with('k', $v)` / `->with([...])` chained
-//!   on the call, each with its type at the call.
+//!   on the call, each with its type at the call. A template's `@include`
+//!   also passes every variable the template has defined there (those its
+//!   own callers pass it included), and `@each('x', $items, 'item')` passes
+//!   `$item` and `$key`.
 //!
 //! Only Laravel's documentation and source (MIT) are design inputs.
 
 use std::path::{Component, Path, PathBuf};
 
 use mago_span::HasSpan;
-use mago_syntax::cst::{Argument, ArgumentList, ArrayElement, Call, ClassLikeMemberSelector, Expression, Literal};
+use mago_syntax::cst::{
+    Argument, ArgumentList, ArrayElement, Call, ClassLikeMemberSelector, DirectVariable, Expression, Literal,
+};
 use mago_syntax::walker::Walker;
 
 use super::LaravelProject;
@@ -607,8 +612,17 @@ pub fn passed_variables(types: &ExprTypes<'_, '_>, parsed: &ParsedFile, starts: 
             })
             .min_by_key(|(call, _, _)| call.span().end.offset - call.span().start.offset);
         let Some((call, list, index)) = found else { continue };
-        let skip_positional = matches!(call, Expression::Instantiation(_))
-            || function_name(call).is_some_and(|name| name == format!("{}each", crate::blade::VIEW_CALL_PREFIX));
+        let directive = function_name(call)
+            .and_then(|name| name.strip_prefix(crate::blade::VIEW_CALL_PREFIX).map(str::to_owned))
+            .unwrap_or_default();
+        if directive == "each" {
+            each_item(types, list, index, &mut out);
+            continue;
+        }
+        if INHERITING_DIRECTIVES.contains(&directive.as_str()) {
+            scope_variables(types, parsed, call.span().start.offset, &mut out);
+        }
+        let skip_positional = matches!(call, Expression::Instantiation(_));
         for (at, argument) in list.arguments.iter().enumerate() {
             match argument {
                 Argument::Positional(argument) if at == index + 1 && !skip_positional => {
@@ -647,6 +661,77 @@ pub fn passed_variables(types: &ExprTypes<'_, '_>, parsed: &ParsedFile, starts: 
         }
     }
     out
+}
+
+/// The directives (lower case, as [`function_name`] gives them) whose view
+/// gets every variable of the template calling it, as Laravel compiles them
+/// with `get_defined_vars()` (`compileInclude` and its kin). `@extends`
+/// passes them too, but a layout would then get every page's variables.
+const INHERITING_DIRECTIVES: &[&str] = &["include", "includeif", "includewhen", "includeunless", "includefirst"];
+
+/// The variables a compiled template has defined before byte `at` of its
+/// top level (the ones its callers pass it are assignments at its top),
+/// with their types at their last write before it.
+fn scope_variables(types: &ExprTypes<'_, '_>, parsed: &ParsedFile, at: u32, out: &mut Vec<(String, Type)>) {
+    struct Writes<'f> {
+        flow: &'f crate::types::Flow,
+        before: u32,
+        /// Each name with the offset of its last write.
+        names: Vec<(Vec<u8>, u32)>,
+    }
+    struct WriteWalker;
+    impl<'a> Walker<'a, 'a, Writes<'_>> for WriteWalker {
+        fn walk_in_direct_variable(&self, variable: &'a DirectVariable<'a>, cx: &mut Writes<'_>) {
+            let start = variable.span().start.offset;
+            let name = variable.name.strip_prefix(b"$").unwrap_or(variable.name);
+            if start >= cx.before
+                || cx.flow.written_at(start).is_none()
+                || matches!(name, b"this" | b"errors" | b"__env" | b"__data" | b"__path")
+            {
+                return;
+            }
+            match cx.names.iter_mut().find(|(known, _)| known == name) {
+                Some((_, last)) => *last = (*last).max(start),
+                None => cx.names.push((name.to_vec(), start)),
+            }
+        }
+    }
+    let frames = types.find(at).map(|(_, frames)| frames).unwrap_or_default();
+    if frames.iter().any(|frame| !matches!(frame, crate::types::Frame::Class(_))) {
+        // Only the template's own top level is passed on.
+        return;
+    }
+    let flow = types.flow(&frames);
+    let mut writes = Writes { flow: &flow, before: at, names: Vec::new() };
+    WriteWalker.walk_program(parsed.program(), &mut writes);
+    for (name, last) in writes.names {
+        let ty = types.variable_type(&name, last, &frames).widen();
+        out.push((String::from_utf8_lossy(&name).into_owned(), ty));
+    }
+}
+
+/// `@each('view', $items, 'item')`: the view gets the item (an element of
+/// the collection, under the name the third argument gives) and `$key`, as
+/// Laravel's `renderEach` passes them.
+fn each_item<'a>(types: &ExprTypes<'a, '_>, list: &'a ArgumentList<'a>, index: usize, out: &mut Vec<(String, Type)>) {
+    let positional: Vec<&'a Expression<'a>> = list
+        .arguments
+        .iter()
+        .filter_map(|argument| match argument {
+            Argument::Positional(argument) => Some(argument.value),
+            _ => None,
+        })
+        .collect();
+    let (Some(items), Some(name)) =
+        (positional.get(index + 1), positional.get(index + 2).and_then(|name| literal_string(name)))
+    else {
+        return;
+    };
+    let frames = types.find(items.span().start.offset).map(|(_, frames)| frames).unwrap_or_default();
+    let iterated = types.type_of(items, &frames);
+    let (key, value) = types.iteration_types(&iterated, &frames);
+    out.push(("key".to_owned(), key.widen()));
+    out.push((name, value.widen()));
 }
 
 fn type_of<'a>(types: &ExprTypes<'a, '_>, expr: &'a Expression<'a>) -> Type {

@@ -1938,7 +1938,17 @@ impl PhpEngine {
         if let Some(found) = self.view_variables_cache().lock().get(&path).filter(|(at, _)| *at == modification) {
             return found.1.clone();
         }
+        // A template including itself, directly or through others, gets
+        // nothing more on the way round.
+        thread_local! {
+            static IN_PROGRESS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+        }
+        if IN_PROGRESS.with(|views| views.borrow().contains(&path)) {
+            return Arc::new(Vec::new());
+        }
+        IN_PROGRESS.with(|views| views.borrow_mut().push(path.clone()));
         let found = Arc::new(self.view_variables_uncached(&path).unwrap_or_default());
+        IN_PROGRESS.with(|views| views.borrow_mut().retain(|view| *view != path));
         self.view_variables_cache().lock().insert(path, (modification, found.clone()));
         found
     }
@@ -1952,7 +1962,20 @@ impl PhpEngine {
         let resolver = self.resolver();
         let mut passed: Vec<(String, Type)> = Vec::new();
         for candidate in candidates {
-            let Some(file) = self.usage_file(&candidate, &open, kind.usage_text(&name)) else { continue };
+            // A calling template is compiled with the variables its own
+            // callers pass it, which `@include` and `@extends` pass on.
+            let file = if crate::frameworks::laravel::views::is_blade(&candidate) && !self.is_library(&candidate) {
+                self.current_text(&candidate).filter(|text| text.contains(kind.usage_text(&name))).map(|text| {
+                    let text = text.replace("\r\n", "\n");
+                    let compiled = self.blade_compile(&candidate, &text);
+                    let parsed = Arc::new(ParsedFile::parse("usages.php", compiled.php.as_str()));
+                    let lines = Arc::new(crate::syntax::LineIndex::new(&text));
+                    UsageFile { parsed, lines, compiled: Some(compiled) }
+                })
+            } else {
+                self.usage_file(&candidate, &open, kind.usage_text(&name))
+            };
+            let Some(file) = file else { continue };
             let starts: Vec<u32> = sites(&file.parsed, &resolver, &[kind], None)
                 .into_iter()
                 .filter(|site| {

@@ -941,11 +941,19 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
 
   Tests: caret, rename and inspection fixtures, plus `real_app_checklist` on Monica and Bagisto with no new false positives.
 
-- [ ] Phase 9.5.c: Laravel gaps, views, Eloquent and components
+- [x] Phase 9.5.c: Laravel gaps, views, Eloquent and components
       What 9.5.b left (it did the Livewire rename both ways and find usages and rename from JSON locale files):
   - **Views:** variables passed to a template are carried through nested `@include` and to `@each`'s item variable.
   - **Eloquent:** `*_count` properties follow the query that loaded the model (flow-sensitive), not project-wide `withCount` calls.
   - **Blade components:** an "add constructor parameter" quick-fix for class components, and `@aware` completion from the parent.
+  - **Livewire in Blade:** rename starting from a `<livewire:…>` tag or `@livewire('…')` in a template (the Blade service answers no rename yet).
+
+  Tests: caret, rename and inspection fixtures, plus `real_app_checklist` on Monica and Bagisto with no new false positives.
+
+- [ ] Phase 9.5.d: Laravel gaps, Eloquent, components and Livewire in Blade
+      What 9.5.c left (it carried view variables through nested `@include` and to `@each`'s item):
+  - **Eloquent:** `*_count` properties follow the query that loaded the model (flow-sensitive), not project-wide `withCount` calls.
+  - **Blade components:** an "add constructor parameter" quick-fix for class components, and `@aware` completion from the parent (the `@props` of the components whose tags enclose this one's in some template).
   - **Livewire in Blade:** rename starting from a `<livewire:…>` tag or `@livewire('…')` in a template (the Blade service answers no rename yet).
 
   Tests: caret, rename and inspection fixtures, plus `real_app_checklist` on Monica and Bagisto with no new false positives.
