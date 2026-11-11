@@ -5,6 +5,7 @@
 pub mod askpass;
 pub mod filesystem;
 pub mod git_creds;
+pub mod hosts;
 pub mod manager;
 pub mod secrets;
 pub mod session;
@@ -16,6 +17,7 @@ pub mod testing;
 pub mod tunnel;
 
 pub use filesystem::{FsConnection, RemoteFs};
+pub use hosts::{SshConfigHost, config_hosts, default_config_path};
 pub use manager::SshManager;
 pub use russh::Sig;
 pub use session::{ConnectError, ExecOutput, Output, RemoteProcess, Session, UnknownHostKey};

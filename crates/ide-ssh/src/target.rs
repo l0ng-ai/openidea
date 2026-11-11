@@ -100,7 +100,7 @@ struct RawConfig {
     user_known_hosts_file: Option<String>,
 }
 
-fn strip_quotes(s: &str) -> &str {
+pub(crate) fn strip_quotes(s: &str) -> &str {
     let s = s.trim();
     if s.len() >= 2 && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\''))) {
         &s[1..s.len() - 1]
@@ -110,7 +110,7 @@ fn strip_quotes(s: &str) -> &str {
 }
 
 /// Splits an `ssh_config` line into `(keyword, rest)`, supporting both whitespace and `=` separators.
-fn split_directive(line: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_directive(line: &str) -> Option<(&str, &str)> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
         return None;
@@ -123,7 +123,7 @@ fn split_directive(line: &str) -> Option<(&str, &str)> {
 }
 
 /// Splits whitespace-delimited arguments while respecting single and double quotes.
-fn split_args(input: &str) -> Vec<String> {
+pub(crate) fn split_args(input: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut cur = String::new();
     let mut quote: Option<char> = None;
@@ -331,7 +331,7 @@ fn eval_match(
 }
 
 /// Expands a path pattern that may contain `*` or `?` in its path segments.
-fn expand_include_glob(pattern: &Path) -> Vec<PathBuf> {
+pub(crate) fn expand_include_glob(pattern: &Path) -> Vec<PathBuf> {
     use std::path::Component;
     let mut paths = vec![PathBuf::new()];
     for comp in pattern.components() {
