@@ -54,6 +54,7 @@ import { activate as agents, activateSettingsPages as agentsPages } from "./agen
 import { activate as vim, activateSettingsPages as vimPages } from "./vim";
 import { activate as ssh } from "./ssh";
 import { activate as remoteDev } from "./remote-dev";
+import { activate as whatsNew } from "./whats-new";
 
 type Activate = () => void | (() => void);
 
@@ -63,6 +64,7 @@ const features: Array<[string, Activate]> = [
   ["editor-lsp", editorLsp],
   ["mcp", mcp],
   ["app", app],
+  ["whats-new", whatsNew],
   ["welcome", welcome],
   ["project-tree", projectTree],
   ["search", search],

@@ -7320,5 +7320,7 @@
   "Imported {count} MCP servers from the project.": "已从项目导入 {count} 个 MCP 服务器。",
   "Show branch and incoming/outgoing commits in the Project view": "在项目视图中显示分支及传入/传出提交",
   "Up to date with {upstream}": "已与 {upstream} 同步",
-  "Highlight occurrences of selected text": "高亮所选文本的匹配项"
+  "Highlight occurrences of selected text": "高亮所选文本的匹配项",
+  "Show What's New after an update": "更新后显示“新功能”页面",
+  "Opens a page with the release notes when a new version starts. Help › What's New opens it any time.": "新版本首次启动时显示包含发行说明的页面。可随时通过“帮助 › 新功能”打开。"
 }

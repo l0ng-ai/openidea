@@ -453,6 +453,10 @@ pub struct GeneralSettings {
     /// Where updates come from: `auto` (the CNB mirror for the Chinese UI, else GitHub) | `github` | `cnb`.
     pub update_source: String,
     pub auto_check_updates: bool,
+    /// System Settings › Updates: open the What's New page after the app starts a new version.
+    pub show_whats_new_after_update: bool,
+    /// The version the app last started with, so the first start after an update is recognisable.
+    pub last_run_version: String,
 }
 
 impl Default for GeneralSettings {
@@ -471,6 +475,8 @@ impl Default for GeneralSettings {
             project_name: String::new(),
             update_source: "auto".into(),
             auto_check_updates: true,
+            show_whats_new_after_update: true,
+            last_run_version: String::new(),
         }
     }
 }
