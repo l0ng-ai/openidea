@@ -4,7 +4,7 @@ import { commitRepo } from "./multiRoot";
  * Interactively Rebase from Here (IDEA's Git.Log.ContextMenu).
  */
 import { useState } from "react";
-import type { Commit, RebaseAction, RebaseEntry } from "@/bindings";
+import type { BranchInfo, Commit, RebaseAction, RebaseEntry } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { Dialog, IconButton, Select, T } from "@/ui";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -24,6 +24,7 @@ import {
   moveRow,
   planIsNoop,
   planProblem,
+  protectedBranchProblem,
   rebaseRange,
   singleCommitPlan,
   squashPlan,
@@ -33,6 +34,7 @@ import {
   type RebaseRow,
 } from "./rebasePlan";
 import { currentRepo, refreshNow, useVcs } from "./store";
+import { isProtectedBranch } from "./remoteUi";
 import { notifications } from "@/workbench/contributions";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
@@ -44,8 +46,42 @@ function refuse(title: string, body: string) {
   void showError(title, body);
 }
 
+/** IDEA forbids rewriting the history of a protected branch (force push is not allowed there). */
+const protectedProblem = (branch: { head: string | null; upstream: string | null } | null) =>
+  protectedBranchProblem(branch ?? { head: null, upstream: null }, isProtectedBranch);
+
 const pushedWarning = (what: string) =>
   `The commit is already pushed to ${useVcs.getState().branch?.upstream ?? "the remote"}. ${what} rewrites published history; pushing afterwards needs a force push.`;
+
+/**
+ * Whether rewriting `range` (its oldest commit up to HEAD) touches history already
+ * pushed to the branch's upstream. Every common ancestor of HEAD and the upstream is
+ * an ancestor of their merge base, so the range is pushed iff its oldest commit is at
+ * or below that merge base.
+ */
+async function rangeTouchesUpstream(
+  branch: BranchInfo | null,
+  range: RebaseRange,
+  repo: string | null,
+): Promise<boolean> {
+  if (!branch?.upstream) return false;
+  if (headPushed(branch)) return true;
+  const base = await call(commands.vcsMergeBase(repo, "HEAD", branch.upstream)).catch(() => null);
+  if (!base) return false;
+  const oldest = range.commits[0]!.id;
+  const below = await call(
+    commands.vcsLog(repo, {
+      branch: null,
+      path: null,
+      author: null,
+      text: null,
+      range: `${base}..${oldest}`,
+      skip: 0,
+      limit: 1,
+    }),
+  ).catch(() => null);
+  return below !== null && below.length === 0;
+}
 
 // ---------------------------------------------------------------------------
 // Undo Commit
@@ -54,7 +90,7 @@ export async function undoCommit(commit: Commit) {
   const repo = commitRepo(commit) ?? currentRepo();
   await refreshNow();
   const branch = useVcs.getState().branch;
-  const problem = undoCommitProblem(commit, branch);
+  const problem = undoCommitProblem(commit, branch) ?? protectedProblem(branch);
   if (problem) return refuse("Cannot undo commit", problem);
   if (headPushed(branch)) {
     const ok = await confirmDialog({
@@ -96,6 +132,11 @@ async function rangeFrom(target: Commit, verb: string): Promise<(RebaseRange & {
     refuse(`Cannot ${verb}`, `A ${op} is in progress`);
     return null;
   }
+  const protectedProblemResult = protectedProblem(branch);
+  if (protectedProblemResult) {
+    refuse(`Cannot ${verb}`, protectedProblemResult);
+    return null;
+  }
   const parent = target.parents[0];
   try {
     const history = await call(
@@ -114,7 +155,7 @@ async function rangeFrom(target: Commit, verb: string): Promise<(RebaseRange & {
       refuse(`Cannot ${verb}`, range.error);
       return null;
     }
-    if (headPushed(branch)) {
+    if (await rangeTouchesUpstream(branch, range, repo)) {
       const ok = await confirmDialog({
         title: verb.replace(/^\w/, (c) => c.toUpperCase()),
         message: pushedWarning(verb.replace(/^\w/, (c) => c.toUpperCase())),

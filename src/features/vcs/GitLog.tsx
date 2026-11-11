@@ -60,7 +60,6 @@ import {
   goToChild,
   goToParent,
   initLogBranchFilter,
-  isPushed,
   isMine,
   loadMore,
   logState,
@@ -1155,10 +1154,7 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
   const vcs = useVcs.getState();
   const head = (repo ? vcs.heads[repo]?.head : vcs.branch?.head) ?? null;
   const { outgoing } = useGitLog.getState();
-  const pushed = (x: Commit) =>
-    commitRepo(x) === undefined ? !!outgoing && !outgoing.has(x.id) : isPushed(commitKey(x));
   if (many) {
-    const anyPushed = selection.some(pushed);
     return [
       { kind: "action", action: "vcs.log.copyRevision", arg: selection, label: "Copy Revision Numbers" },
       { kind: "action", action: "vcs.log.createPatch", arg: selection },
@@ -1169,11 +1165,10 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
       { kind: "separator" },
       { kind: "action", action: "vcs.log.revert", arg: selection, label: "Revert Commits" },
       { kind: "separator" },
-      { kind: "action", action: "vcs.log.squashCommits", arg: selection, disabled: anyPushed },
-      { kind: "action", action: "vcs.log.dropCommit", arg: selection, label: "Drop Commits", disabled: anyPushed },
+      { kind: "action", action: "vcs.log.squashCommits", arg: selection },
+      { kind: "action", action: "vcs.log.dropCommit", arg: selection, label: "Drop Commits" },
     ];
   }
-  const pushedCommit = pushed(c);
   // Without an upstream there is no outgoing set: allow pushing up to any commit of HEAD.
   const canPushHere =
     !!head &&
@@ -1214,11 +1209,11 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
     { kind: "action", action: "vcs.log.revert", arg: c },
     { kind: "action", action: "vcs.log.undoCommit", arg: c },
     { kind: "separator" },
-    { kind: "action", action: "vcs.log.editMessage", arg: c, disabled: pushedCommit },
-    { kind: "action", action: "vcs.log.fixup", arg: c, disabled: pushedCommit },
-    { kind: "action", action: "vcs.log.squashInto", arg: c, disabled: pushedCommit },
-    { kind: "action", action: "vcs.log.dropCommit", arg: c, disabled: pushedCommit },
-    { kind: "action", action: "vcs.log.interactiveRebase", arg: c, disabled: pushedCommit },
+    { kind: "action", action: "vcs.log.editMessage", arg: c },
+    { kind: "action", action: "vcs.log.fixup", arg: c },
+    { kind: "action", action: "vcs.log.squashInto", arg: c },
+    { kind: "action", action: "vcs.log.dropCommit", arg: c },
+    { kind: "action", action: "vcs.log.interactiveRebase", arg: c },
     { kind: "action", action: "vcs.log.pushUpToHere", arg: c, disabled: !canPushHere },
     { kind: "separator" },
     ...(branchActions.length > 2 ? [{ label: "Branches", submenu: branchActions }] : branchActions),
