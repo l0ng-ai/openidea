@@ -18,6 +18,7 @@ import {
   type RefObject,
 } from "react";
 import type { CommitSelection, FileMatches, SearchQuery, RunConfig, RunId } from "@/bindings";
+import { notifyEach } from "@/platform/listeners";
 import type { MenuItem } from "@/ui/Menu";
 import type { DragData } from "@/ui/pointerDrag";
 import type { TreeReorder } from "@/ui/Tree";
@@ -1590,7 +1591,7 @@ export function onEndpointsChanged(listener: () => void): () => void {
 }
 /** Endpoints a provider reports may have changed: `onEndpointsChanged` listeners ask again. */
 export function endpointsChanged() {
-  for (const listener of endpointListeners) listener();
+  notifyEach(endpointListeners, (listener) => listener(), "endpoints changed");
 }
 
 export function registerEndpointProvider(p: EndpointProvider): () => void {
