@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::Path;
 
-const FILE: &str = "data-sources.toml";
+pub(crate) const FILE: &str = "data-sources.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

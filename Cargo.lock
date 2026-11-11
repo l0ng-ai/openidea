@@ -4303,6 +4303,7 @@ dependencies = [
  "ide-core",
  "ide-http",
  "ide-ssh",
+ "notify",
  "oracledb",
  "parking_lot",
  "reqwest",
