@@ -26,6 +26,7 @@ pub mod file_dialog;
 pub mod fonts;
 pub mod fs;
 pub mod github;
+pub mod heap;
 pub mod history;
 pub mod http;
 pub mod java;
@@ -517,6 +518,14 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         web::web_open,
         profiler::profiler_prepare,
         profiler::profiler_collect,
+        heap::debug_heap_capture,
+        heap::debug_heap_open,
+        heap::debug_heap_classes,
+        heap::debug_heap_dominators,
+        heap::debug_heap_path,
+        heap::debug_heap_compare,
+        heap::debug_heap_save,
+        heap::debug_heap_close,
         plugin::plugin_subscribe,
         plugin::plugin_list,
         plugin::plugin_set_enabled,

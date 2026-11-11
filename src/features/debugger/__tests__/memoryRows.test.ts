@@ -53,6 +53,26 @@ describe("visibleRows", () => {
     expect(names(visibleRows(rows, { ...q, sort: "instances" }))[0]).toBe("java.lang.String");
   });
 
+  it("sorts by retained with missing values last", () => {
+    const retained = new Map([
+      ["java.lang.String", 3000],
+      ["com.example.Order", 9000],
+      ["java.util.HashMap$Node", 100],
+    ]);
+    expect(names(visibleRows(rows, { ...q, sort: "retained", desc: true }, retained))).toEqual([
+      "com.example.Order",
+      "java.lang.String",
+      "java.util.HashMap$Node",
+      "com.example.Customer",
+    ]);
+    expect(names(visibleRows(rows, { ...q, sort: "retained", desc: false }, retained))).toEqual([
+      "java.util.HashMap$Node",
+      "java.lang.String",
+      "com.example.Order",
+      "com.example.Customer",
+    ]);
+  });
+
   it("does not mutate its input", () => {
     const copy = [...rows];
     visibleRows(rows, { ...q, sort: "name", desc: false });
@@ -61,14 +81,15 @@ describe("visibleRows", () => {
 });
 
 describe("columns", () => {
-  it("keeps debugger tables without sizes", () => {
-    expect(columnsOf("histogram")).toEqual(["name", "instances", "deltaInstances", "bytes"]);
-    expect(columnsOf("debugger")).toEqual(["name", "instances", "deltaInstances"]);
+  it("has a Retained Size column only with retained sizes, and keeps debugger tables without sizes", () => {
+    expect(columnsOf("histogram", true)).toEqual(["name", "instances", "deltaInstances", "bytes", "retained"]);
+    expect(columnsOf("debugger", true)).toEqual(["name", "instances", "deltaInstances", "retained"]);
+    expect(columnsOf("histogram", false)).not.toContain("retained");
   });
 
-  it("falls back to the count when the sort column is gone", () => {
-    expect(queryFor({ ...q, sort: "bytes" }, "debugger").sort).toBe("instances");
-    expect(queryFor({ ...q, sort: "bytes" }, "histogram").sort).toBe("bytes");
+  it("falls back to the count when the retained sizes are gone", () => {
+    expect(queryFor({ ...q, sort: "retained" }, "histogram", false).sort).toBe("instances");
+    expect(queryFor({ ...q, sort: "retained" }, "debugger", true).sort).toBe("retained");
   });
 });
 

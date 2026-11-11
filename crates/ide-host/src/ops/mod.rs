@@ -15,6 +15,7 @@ pub mod doc;
 pub mod docker;
 pub mod env;
 pub mod fs;
+pub mod heap;
 pub mod history;
 pub mod java;
 pub mod jvm_icons;
@@ -81,6 +82,7 @@ pub fn register_all(d: &mut crate::rpc::Dispatcher) {
     sdk::register(d);
     java::register(d);
     debug::register(d);
+    heap::register(d);
     bytes::register(d);
     vcs::register(d);
     doc::register(d);
