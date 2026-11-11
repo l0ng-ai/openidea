@@ -162,6 +162,10 @@ export const commands = {
 	/**  Entries of `task`'s conversation, or of its subagent `subagent`'s. */
 	agentEntries: (task: string, subagent: string | null) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task, subagent })),
 	agentCreate: (request: NewAgentTask) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_create", { request })),
+	/**  Sessions on this machine that no task holds yet, newest first (#312). */
+	agentExternalSessions: () => typedError<ExternalSession[], IdeError>(__TAURI_INVOKE("agent_external_sessions")),
+	/**  Imports an external session as a task: its first turn loads and replays it (#312). */
+	agentImportSession: (provider: string, sessionId: string) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_import_session", { provider, sessionId })),
 	/**  Sends a message; while the agent works it is queued, or with `now` it interrupts the turn. */
 	agentPrompt: (task: string, prompt: AgentPrompt, now: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_prompt", { task, prompt, now })),
 	/**  Drops a queued message and returns it (to edit it). */
@@ -733,6 +737,8 @@ export const commands = {
 	runImportConfigs: (source: RunImportSource, existing: RunConfig_Deserialize[]) => typedError<RunImport_Serialize, IdeError>(__TAURI_INVOKE("run_import_configs", { source, existing })),
 	/**  The environment runs inherit when "Include system environment variables" is on. */
 	runSystemEnv: () => __TAURI_INVOKE<{ [key in string]: string }>("run_system_env"),
+	/**  Variables of the `.env` files a debug launch names, for the debugger to start with. */
+	runEnvFiles: (files: string[]) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("run_env_files", { files })),
 	runStart: (config: RunConfig_Deserialize, onOutput: Channel<OutputChunk>, request: number | null) => typedError<RunInfo, IdeError>(__TAURI_INVOKE("run_start", { config, onOutput, request })),
 	runStop: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_stop", { id })),
 	runStdin: (id: RunId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_stdin", { id, data })),
@@ -4295,6 +4301,19 @@ export type ExternalFormatterSettings = {
 	/**  Prefer this formatter even when a language server offers formatting. */
 	prefer?: boolean,
 	runOnSave?: boolean,
+};
+
+/**  A session on this machine that no task holds yet. */
+export type ExternalSession = {
+	/**  The [`crate::AgentProvider`] id that owns it (`claude`, `codex`). */
+	provider: string,
+	/**  The id resuming it names (`--resume`, `thread/resume`). */
+	sessionId: string,
+	title: string,
+	/**  Where it ran, when the transcript names one. */
+	cwd: string | null,
+	/**  File modification time, ms since the epoch. */
+	updatedMs: number | null,
 };
 
 /**  Tools › External Tools entry. */
@@ -8809,6 +8828,7 @@ export type TerminalSettings = {
 	overrideIdeShortcuts?: boolean,
 	shellIntegration?: boolean,
 	highlightHyperlinks?: boolean,
+	highlightSelection?: boolean,
 	optionAsMeta?: boolean,
 	/**  Escape moves focus to the editor instead of reaching the shell. */
 	escapeToEditor?: boolean,

@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 /// Plugin-owned project data sources. Requires database.sources and project trust.
 /// Runs on the Database subsystem's host, including on remote project servers.

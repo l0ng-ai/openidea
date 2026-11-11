@@ -30,7 +30,7 @@ import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
 import { cancelHotSwapBuild, reloadChangedClasses } from "./hotswap";
-import { debugUnsupportedReason, launchConfigFor } from "./launch";
+import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
 import {
   isPythonAttachTarget,
   isRemoteConfig,
@@ -329,7 +329,7 @@ async function startConfig(arg: unknown) {
   // php-debug starts the PHP chosen in Settings unless the command names one.
   const php =
     config.debugAdapter === "php-debug" && isTauri() ? await call(commands.sdkPhpEffective()).catch(() => null) : null;
-  const launch = launchConfigFor(prepared, root, php);
+  const launch = launchConfigFor(await withEnvFiles(prepared, root), root, php);
   if (!launch) {
     notifications().notify({
       group: "run",
@@ -399,7 +399,7 @@ export function registerDebugActions(): () => void {
         const config = await call(commands.pluginPrepareDebugRun(a.config));
         const root = useProject.getState().project?.root;
         if (!root) throw new Error("No project");
-        const launch = launchConfigFor(config, root);
+        const launch = launchConfigFor(await withEnvFiles(config, root), root);
         if (!launch) throw new Error("This configuration has no debugger");
         let id: number | null = null;
         let stopped = false;
