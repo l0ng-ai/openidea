@@ -35,7 +35,7 @@ What the engine reads to build its picture of the project (the "project model"):
 | Assets               | `vite.config.*` inputs and `public/build/manifest.json`                                                                                       |
 | Gates and policies   | `Gate::define`, `Gate::policy`, `$policies`, `#[UsePolicy]`, `Gate::guessPolicyNamesUsing`, Laravel's naming conventions                      |
 | Guards and brokers   | `config/auth.php`, and guards providers set with `config([...])`                                                                              |
-| Artisan commands     | classes with `$signature` / `$name`, the framework's and the packages' commands                                                               |
+| Artisan commands     | classes with `$signature` / `$name` / `#[AsCommand]` (Symfony's commands too), the framework's and the packages' commands                     |
 | Eloquent schema      | migrations (`create`, `table`, renames and drops), casts, accessors, relations, and optionally a live database                                |
 | Livewire, Inertia    | components below `App\Livewire` (`App\Http\Livewire` on Livewire 2) and `Livewire::component(…)`; page files below the Inertia page folders   |
 
@@ -151,6 +151,8 @@ Abilities complete and resolve in `Gate::allows/denies/authorize`, `$user->can/c
 - An **Artisan command run configuration** completes command names and options.
 - A run icon in the gutter of console command classes.
 - Command names complete and go to their class in `Artisan::call('…')` and `$this->call('…')`.
+- The keys of the parameters array (`Artisan::call('posts:publish', ['--dry-run' => true])`, also `$this->call`, `Schedule::command` and a test's `$this->artisan`) complete the command's options and arguments, go to them in its signature, show their description and find the same key given to the same command.
+- `PhpUnknownArtisanCommand` reports a command name no command has. It runs only when `vendor/` is installed, so that the packages' commands (and Symfony's, such as `completion`) are known.
 
 ### Livewire and Inertia
 
@@ -213,6 +215,7 @@ The Laravel inspections are in the inspection profile (Settings › PHP › Insp
 | `PhpUnknownPasswordBroker`                     | brokers `config/auth.php` doesn't declare                                                                            |                               |
 | `PhpUndefinedController`                       | route actions naming a missing controller class or method (`'dream'`, `'Foo@bar'`)                                   | create controller, add method |
 | `PhpUndefinedInertiaPage`                      | Inertia pages no page folder has                                                                                     | create the page               |
+| `PhpUnknownArtisanCommand`                     | Artisan command names no command has (only with `vendor/` installed)                                                 |                               |
 | `BladeUnclosedSection`, `BladeUnopenedSection` | `@section` / `@push` blocks never closed, and closing directives with nothing open                                   |                               |
 | `BladeUndefinedComponent`                      | `<x-…>` tags no component defines                                                                                    | create the component          |
 | `BladeUnknownLivewireParameter`                | `@livewire(…, [...])` keys and `<livewire:…>` attributes that are neither `mount()` parameters nor public properties |                               |
@@ -301,7 +304,7 @@ Not read: `helperCode` and any other key not listed here.
 - **Translations:** Find Usages doesn't start from a JSON locale file.
 - **Validation:** `in:` values come from attributes named like the field, not from the Form Request's own model. `Rule::in()` with variadic strings isn't completed. `unique`/`exists` with more than two parameters aren't converted to `Rule::` objects. Only the common shapes of `Gate::guessPolicyNamesUsing` callbacks are followed.
 - **Eloquent:** `*_count` properties are offered once any `withCount()` of the project counts the relation, not along the query that loaded the model. Tables of a database schema other than the default one aren't used. A query builder's table is lost through a variable reassigned in a loop.
-- **Artisan:** there is no "unknown command" inspection, and option keys in `Artisan::call('x', ['--opt' => …])` don't complete.
+- **Artisan:** option keys aren't checked (an unknown `--opt` isn't reported), and a key renamed in a signature isn't renamed in the calls.
 - **Generators:** a listener is registered only where an event service provider has a `$listen` array (Laravel 11 otherwise discovers listeners); a module provider only in a nwidart `module.json`. An `ide.json` `dataFile` is read again only when its `ide.json` is.
 - **Model view:** it doesn't refresh by itself when files change while it's open, and Add columns has no length, default or index modifiers.
 - **Analysis:** a file whose syntax tree is more than 1,500 levels deep isn't analysed (it gets one syntax error saying so); no hand-written code in the corpora comes near that.
@@ -329,6 +332,7 @@ The checklist is `crates/ide-php/tests/laravel_parity.rs`. It runs on `fixtures/
 - `real_app_checklist` (ignored, `LARAVEL_APP_DIR`) runs the name-independent parts on a real application with `vendor/`:
   - the project model is built and has routes, views and configuration keys
   - completion of configuration keys, route names, views, translations, environment keys, validation rules and Artisan commands
+  - no `PhpUnknownArtisanCommand` in the application's own code and tests (phase 9.5: none on the pinned Monica, 18 files with Artisan calls, and Bagisto, 30 files)
   - every generator, rendered in memory
 
 Gaps go in the test's `GAPS` list. A gap that starts working fails the test until it is removed from `GAPS` and from this file. The list is empty: every kind passes every check.
@@ -352,7 +356,8 @@ Gaps go in the test's `GAPS` list. A gap that starts working fails the test unti
 | `gate`              | `Gate::allows('publish-posts')`             | ✓          | ✓                  | ✓      | ✓ `PhpUnknownAbility`        |
 | `authGuard`         | `auth('web')`                               | ✓          | ✓                  | ✓      | ✓ `PhpUnknownGuard`          |
 | `passwordBroker`    | `Password::broker('users')`                 | ✓          | ✓                  | ✓      | ✓ `PhpUnknownPasswordBroker` |
-| `artisanCommand`    | `Artisan::call('posts:publish')`            | ✓          | ✓                  | ✓      | n/a                          |
+| `artisanCommand`    | `Artisan::call('posts:publish')`            | ✓          | ✓                  | ✓      | ✓ `PhpUnknownArtisanCommand` |
+| `artisanOption`     | `Artisan::call('x', ['--dry-run' => 1])`    | ✓          | ✓                  | ✓      | n/a                          |
 | `livewireComponent` | `Livewire::test('counter')`                 | ✓          | ✓                  | ✓      | n/a                          |
 | `livewireParameter` | `Livewire::test('counter', ['start' => 1])` | ✓          | ✓                  | ✓      | n/a                          |
 | `inertiaPage`       | `Inertia::render('Dashboard')`              | ✓          | ✓                  | ✓      | ✓ `PhpUndefinedInertiaPage`  |

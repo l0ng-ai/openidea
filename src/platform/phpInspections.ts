@@ -300,6 +300,13 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
       "Reports route actions naming a controller class or method that doesn't exist, in 'Controller@method', [Controller::class, 'method'] or a plain 'Controller'. The quick-fixes create the controller or add the method.",
   },
   {
+    code: "PhpUnknownArtisanCommand",
+    name: "Unknown Artisan command",
+    group: "Laravel",
+    description:
+      "Reports Artisan command names, in Artisan::call(), $this->call(), Schedule::command() or $this->artisan(), that no command of the project, its packages or Laravel has. Only reported when vendor/ is installed, so that the packages' commands are known.",
+  },
+  {
     code: "BladeUnclosedSection",
     producer: BLADE_PRODUCER,
     name: "Unclosed Blade section",

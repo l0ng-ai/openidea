@@ -99,7 +99,8 @@ fn place_patterns_match_command_names() {
         ("app(\\Illuminate\\Console\\Scheduling\\Schedule::class)->command('x/*|*/');", Some("artisanCommand")),
         // A closure command's own signature isn't a usage.
         ("Artisan::command('x/*|*/', fn () => 1);", None),
-        ("Artisan::call('x', ['--y/*|*/' => 1]);", None),
+        // An option key is an `artisanOption`.
+        ("Artisan::call('x', ['--y/*|*/' => 1]);", Some("artisanOption")),
     ];
     for (body, expected) in table {
         assert_eq!(project.artisan_kind_at(probe_rel, &probe(body)), *expected, "{body}");
@@ -173,4 +174,137 @@ fn finds_usages_from_the_signature() {
     ] {
         assert!(found.contains(&expected), "{expected:?} in {found:?}");
     }
+}
+
+impl Project {
+    /// The `(line, message)` of the diagnostics with code `code` in the
+    /// file `rel` holding `source` (without a caret).
+    fn problems_in(&mut self, rel: &str, source: &str, code: &str) -> Vec<(u32, String)> {
+        let (doc, _) = self.open(rel, &format!("{source}/*|*/"));
+        let inspected = self.engine.inspect(doc, &ide_core::CancellationToken::new()).unwrap();
+        self.engine.document_closed(doc);
+        inspected
+            .diagnostics
+            .iter()
+            .filter(|d| d.code.as_deref() == Some(code))
+            .map(|d| (d.range.start.line, d.message.clone()))
+            .collect()
+    }
+}
+
+const UNKNOWN: &str = "PhpUnknownArtisanCommand";
+
+#[test]
+fn reports_unknown_commands_only_with_vendor() {
+    let mut project = Project::app();
+    assert!(project.engine.laravel_artisan().unwrap().vendor);
+    let body = [
+        "Artisan::call('posts:publish --dry-run');",
+        "Artisan::call('migrate');",
+        "Artisan::call('inspire');",
+        "Artisan::call('posts:nowhere --force');",
+        "Schedule::command('nowhere')->daily();",
+        "Artisan::call(\"posts:{$x}\");",
+    ]
+    .join("\n    ");
+    assert_eq!(
+        project.problems_in("app/Http/Probe.php", &probe(&body), UNKNOWN),
+        [
+            (12, "Artisan command 'posts:nowhere' is not defined".to_owned()),
+            (13, "Artisan command 'nowhere' is not defined".to_owned()),
+        ]
+    );
+    // In a command class, for `$this->call`.
+    let found =
+        project.problems_in("app/Console/Commands/Probe.php", &command_class("$this->call('nowhere');"), UNKNOWN);
+    assert_eq!(found.len(), 1, "{found:?}");
+
+    // Without `vendor/` the packages' commands aren't known: nothing is reported.
+    let mut bare = Project::new(&[
+        ("composer.json", r#"{"require": {"laravel/framework": "^11.0"}, "autoload": {"psr-4": {"App\\": "app/"}}}"#),
+        ("artisan", "#!/usr/bin/env php\n"),
+    ]);
+    assert!(!bare.engine.laravel_artisan().unwrap().vendor);
+    assert!(bare.problems_in("app/Http/Probe.php", &probe("Artisan::call('nowhere');"), UNKNOWN).is_empty());
+}
+
+#[test]
+fn symfony_commands_are_commands() {
+    let base = "<?php\n\nnamespace Symfony\\Component\\Console\\Command;\n\nclass Command\n{\n    protected static $defaultName;\n}\n";
+    let legacy = "<?php\n\nnamespace App\\Console;\n\nuse Symfony\\Component\\Console\\Attribute\\AsCommand;\nuse Symfony\\Component\\Console\\Command\\Command;\n\nclass Legacy extends Command\n{\n    protected static $defaultName = 'legacy:run';\n}\n\n#[AsCommand(name: 'legacy:attribute')]\nclass Attributed extends Command\n{\n}\n";
+    let mut project = Project::app_with(&[("app/SymfonyCommand.php", base), ("app/Console/Legacy.php", legacy)]);
+    let commands = project.engine.laravel_artisan().unwrap();
+    for name in ["legacy:run", "legacy:attribute"] {
+        let command = commands.get(name).unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(command.source, CommandSource::Class);
+    }
+    let body = "Artisan::call('legacy:run');\n    Artisan::call('legacy:attribute');";
+    assert!(project.problems_in("app/Http/Probe.php", &probe(body), UNKNOWN).is_empty());
+}
+
+#[test]
+fn option_keys_are_artisan_options() {
+    let mut project = Project::app();
+    let table: &[(&str, Option<&str>)] = &[
+        ("Artisan::queue('x', ['/*|*/y' => 1]);", Some("artisanOption")),
+        ("Schedule::command('x', ['--y/*|*/' => 1])->daily();", Some("artisanOption")),
+        // Values aren't keys.
+        ("Artisan::call('x', ['--y' => '/*|*/z']);", None),
+        ("Schedule::command('x', ['--y/*|*/'])->daily();", None),
+    ];
+    for (body, expected) in table {
+        assert_eq!(project.artisan_kind_at("app/Http/Probe.php", &probe(body)), *expected, "{body}");
+    }
+    let source = command_class("$this->call('x', ['/*|*/' => 1]);");
+    assert_eq!(project.artisan_kind_at("app/Console/Commands/Probe.php", &source), Some("artisanOption"));
+}
+
+#[test]
+fn completes_option_keys_of_the_command() {
+    let mut project = Project::app();
+    let complete = |project: &mut Project, body: &str| project.complete_in("app/Http/Probe.php", &probe(body));
+    assert_eq!(complete(&mut project, "Artisan::call('posts:prune-drafts', ['/*|*/' => 1]);"), ["--force", "days"]);
+    assert_eq!(complete(&mut project, "Artisan::call('posts:publish', ['--/*|*/' => 1]);"), ["--dry-run"]);
+    // The command by class, and with options written after its name.
+    let by_class = "Artisan::call(\\App\\Console\\Commands\\PublishScheduledPosts::class, ['/*|*/' => 1]);";
+    assert_eq!(complete(&mut project, by_class), ["--dry-run"]);
+    assert_eq!(complete(&mut project, "Artisan::call('migrate --seed', ['--for/*|*/' => 1]);"), ["--force"]);
+    // An unknown command has none.
+    assert!(complete(&mut project, "Artisan::call('nowhere', ['/*|*/' => 1]);").is_empty());
+}
+
+#[test]
+fn option_keys_go_to_the_signature_and_hover() {
+    let mut project = Project::app();
+    let goto = |project: &mut Project, body: &str| project.definition_in("app/Http/Probe.php", &probe(body));
+    assert_eq!(
+        goto(&mut project, "Artisan::call('posts:publish', ['--dry/*|*/-run' => true]);"),
+        [(PUBLISH.to_owned(), 15, "dry-run".to_owned())]
+    );
+    assert_eq!(
+        goto(&mut project, "Artisan::call('posts:prune-drafts', ['da/*|*/ys' => 7]);"),
+        [(PRUNE.to_owned(), 10, "days".to_owned())]
+    );
+    assert!(goto(&mut project, "Artisan::call('posts:publish', ['--no/*|*/where' => 1]);").is_empty());
+    let hover = project.artisan_hover("Artisan::call('posts:prune-drafts', ['--fo/*|*/rce' => true]);").unwrap();
+    assert!(hover.contains("**artisan** `posts:prune-drafts` `--force`"), "{hover}");
+    assert!(hover.contains("Delete without asking"), "{hover}");
+}
+
+#[test]
+fn finds_usages_of_an_option_key_of_the_same_command() {
+    let mut project = Project::app();
+    let source = probe(
+        "Artisan::call('posts:publish', ['--dry/*|*/-run' => true]);\n    Artisan::call('posts:prune-drafts', ['--force' => true, '--dry-run' => 1]);",
+    );
+    let found: Vec<(String, u32, String)> = project
+        .references("app/Http/Probe.php", &source)
+        .into_iter()
+        .map(|(path, line, text, _)| (path, line, text))
+        .collect();
+    assert!(found.contains(&("app/Http/Probe.php".to_owned(), 9, "--dry-run".to_owned())), "{found:?}");
+    // `PruneDrafts` calls `posts:publish` with it.
+    assert!(found.contains(&(PRUNE.to_owned(), 16, "--dry-run".to_owned())), "{found:?}");
+    // Not the key given to another command.
+    assert!(!found.iter().any(|(path, line, _)| path == "app/Http/Probe.php" && *line == 10), "{found:?}");
 }

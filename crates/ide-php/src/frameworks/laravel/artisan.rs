@@ -3,9 +3,11 @@
 //! Artisan run configuration:
 //!
 //! - the console command classes of the project and of its packages
-//!   (subclasses of `Illuminate\Console\Command`): the name, arguments and
-//!   options of their `$signature`, else their `$name` or the name of their
-//!   `#[AsCommand]` attribute, and their `$description`;
+//!   (subclasses of `Illuminate\Console\Command`, and of Symfony's
+//!   `Command`, which packages and Symfony's own `completion` extend): the
+//!   name, arguments and options of their `$signature`, else their `$name`,
+//!   Symfony's `$defaultName` or the name of their `#[AsCommand]`
+//!   attribute, and their `$description`;
 //! - the closure commands of `routes/console.php` (also a module's):
 //!   `Artisan::command('inspire', fn …)->purpose('…')`;
 //! - Laravel's own commands ([`FRAMEWORK`]), for projects without a
@@ -24,12 +26,17 @@ use ide_core::Range;
 use super::project::LaravelProject;
 use super::views::{call_arguments, string_literal};
 use crate::engine::PhpEngine;
+use crate::project::composer::RootManifest;
 use crate::summary::{ClassKind, FileSummary};
 use crate::syntax::LineIndex;
 use crate::types::model::{ClassModel, ModelProperty};
 
 /// The base class of console commands.
 pub const CONSOLE_COMMAND: &str = "Illuminate\\Console\\Command";
+
+/// Symfony's base class of console commands, which [`CONSOLE_COMMAND`]
+/// extends.
+pub const SYMFONY_COMMAND: &str = "Symfony\\Component\\Console\\Command\\Command";
 
 /// An argument of a command.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,6 +127,10 @@ impl ArtisanCommand {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ArtisanCommands {
     pub commands: Vec<ArtisanCommand>,
+    /// The packages are installed (`vendor/composer/installed.json`), so
+    /// their commands are known: a name none of [`Self::commands`] has is
+    /// unknown.
+    pub vendor: bool,
 }
 
 impl ArtisanCommands {
@@ -160,7 +171,10 @@ impl ArtisanCommands {
                 class_range: None,
             })
         });
-        Self::merge(project_commands.into_iter().chain(closures).chain(packages).chain(framework))
+        let mut commands = Self::merge(project_commands.into_iter().chain(closures).chain(packages).chain(framework));
+        let vendor_dir = RootManifest::read(&project.root).map_or_else(|| "vendor".to_owned(), |m| m.vendor_dir);
+        commands.vendor = project.root.join(vendor_dir).join("composer").join("installed.json").is_file();
+        commands
     }
 
     /// `commands` once per name (the first wins, its missing description and
@@ -182,7 +196,7 @@ impl ArtisanCommands {
             }
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
-        Self { commands: out }
+        Self { commands: out, vendor: false }
     }
 
     /// The command named `name`.
@@ -196,12 +210,13 @@ impl ArtisanCommands {
     }
 }
 
-/// The classes extending [`CONSOLE_COMMAND`], directly or not.
+/// The classes extending [`CONSOLE_COMMAND`] or [`SYMFONY_COMMAND`],
+/// directly or not.
 fn command_classes(engine: &PhpEngine) -> Vec<std::sync::Arc<ClassModel>> {
     let Some(index) = engine.index() else { return Vec::new() };
     let resolver = engine.resolver();
     let mut seen: HashSet<String> = HashSet::new();
-    let mut queue = vec![CONSOLE_COMMAND.to_owned()];
+    let mut queue = vec![SYMFONY_COMMAND.to_owned(), CONSOLE_COMMAND.to_owned()];
     let mut out = Vec::new();
     while let Some(parent) = queue.pop() {
         for decl in index.direct_subclasses(&parent).unwrap_or_default() {
@@ -221,10 +236,12 @@ fn command_classes(engine: &PhpEngine) -> Vec<std::sync::Arc<ClassModel>> {
 }
 
 /// The string default of property `name` declared by the class itself or a
-/// parent below [`CONSOLE_COMMAND`]: its value and the declaring class.
+/// parent below [`CONSOLE_COMMAND`] and [`SYMFONY_COMMAND`]: its value and
+/// the declaring class.
 fn string_property<'m>(model: &'m ClassModel, name: &str) -> Option<(String, &'m ModelProperty)> {
     let property = model.property(name)?;
-    if property.declaring.fqn.trim_start_matches('\\').eq_ignore_ascii_case(CONSOLE_COMMAND) {
+    let declaring = property.declaring.fqn.trim_start_matches('\\');
+    if declaring.eq_ignore_ascii_case(CONSOLE_COMMAND) || declaring.eq_ignore_ascii_case(SYMFONY_COMMAND) {
         return None;
     }
     let value = string_literal(property.declared()?.default.as_deref()?)?;
@@ -249,7 +266,9 @@ fn class_command(engine: &PhpEngine, model: &ClassModel) -> Option<ArtisanComman
                 .and_then(|declared| name_in(&text, declared.loc.start, declared.loc.end, &parsed.0));
         }
         parsed
-    } else if let Some((name, property)) = string_property(model, "name") {
+    } else if let Some((name, property)) =
+        string_property(model, "name").or_else(|| string_property(model, "defaultName"))
+    {
         if property.declaring.fqn == class.fqn {
             name_at =
                 property.declared().and_then(|declared| name_in(&text, declared.loc.start, declared.loc.end, &name));

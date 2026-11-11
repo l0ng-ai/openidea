@@ -918,11 +918,21 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
 - [x] Phase 9.4.b: Inspect Code scaling
       What 9.4 left (it fixed the cold model, stored the model's parts in the index database and made Inspect Code parallel): Inspect Code over Monica's own code takes 24.3 s in a release build (74 s one file after another), over the 20 s budget. The work has no long tail (the slowest file takes 0.7 s) but scales only about 3× on 16 threads (2.4× on 4), so something shared serializes it: find it with a profiler (candidates: the index database's read transaction per declaration lookup, `FileSummary` decoding of the same summaries in every thread, the allocator, the locks on open documents and stubs), fix it, and record the numbers in `laravel.md` and `performance.md`. Tests: `real_app_inspect_code` still finds the same diagnostics in parallel and one by one; `php_laravel_real/inspect_code` within its budget.
 
-- [ ] Phase 9.5: Laravel gaps
+- [x] Phase 9.5: Laravel gaps
       From "Known limits" in `laravel.md`:
   - **Artisan:**
     - an "unknown Artisan command" inspection, only when `vendor/` is present so package commands are known
     - completion of option keys in `Artisan::call('x', ['--opt' => …])`
+  - **Livewire:** renaming a component class or alias edits `<livewire:…>` tags and `@livewire(…)` names. Discovered (unaliased) names can be renamed.
+  - **Views:** variables passed to a template are carried through nested `@include` and to `@each`'s item variable.
+  - **Eloquent:** `*_count` properties follow the query that loaded the model (flow-sensitive), not project-wide `withCount` calls.
+  - **Translations:** find usages starting from a JSON locale file.
+  - **Blade components:** an "add constructor parameter" quick-fix for class components, and `@aware` completion from the parent.
+
+  Tests: caret, rename and inspection fixtures, plus `real_app_checklist` on Monica and Bagisto with no new false positives.
+
+- [ ] Phase 9.5.b: Laravel gaps, the rest
+      What 9.5 left (it did the Artisan items: `PhpUnknownArtisanCommand` with `vendor/` installed, and the `artisanOption` kind for the keys of `Artisan::call('x', ['--opt' => …])`):
   - **Livewire:** renaming a component class or alias edits `<livewire:…>` tags and `@livewire(…)` names. Discovered (unaliased) names can be renamed.
   - **Views:** variables passed to a template are carried through nested `@include` and to `@each`'s item variable.
   - **Eloquent:** `*_count` properties follow the query that loaded the model (flow-sensitive), not project-wide `withCount` calls.

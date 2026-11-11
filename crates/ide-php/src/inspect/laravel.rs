@@ -29,6 +29,9 @@
 //! - `PhpUndefinedController`: a route action naming a controller class or
 //!   method that doesn't exist (fixes: create the controller, add the
 //!   method; [`crate::frameworks::laravel::refs::ControllerAction`]).
+//! - `PhpUnknownArtisanCommand`: an Artisan command name (`Artisan::call`,
+//!   `$this->call`, `Schedule::command`, `$this->artisan`) no command has;
+//!   only with `vendor/` installed, so the packages' commands are known.
 //!
 //! They run only while the indexes are ready, in Laravel projects.
 
@@ -37,8 +40,8 @@ use ide_core::Severity;
 use super::{Inspection, InspectionContext, Problems, QuickFix};
 use crate::engine::{EngineState, is_meta_path};
 use crate::frameworks::laravel::refs::{
-    AuthGuard, ConfigKey, ControllerAction, EloquentField, EnvKey, Gate, InertiaPageKind, PasswordBroker,
-    ReferenceKind, TranslationKey, ValidationRule, ViewName, ViteAsset,
+    ArtisanCommandKind, AuthGuard, ConfigKey, ControllerAction, EloquentField, EnvKey, Gate, InertiaPageKind,
+    PasswordBroker, ReferenceKind, TranslationKey, ValidationRule, ViewName, ViteAsset,
 };
 
 /// One "undefined …" inspection; see the module documentation.
@@ -48,7 +51,7 @@ pub struct UndefinedReference {
 }
 
 /// The inspections, as `(inspection id, kind)`.
-const INSPECTIONS: [(&str, &dyn ReferenceKind); 11] = [
+const INSPECTIONS: [(&str, &dyn ReferenceKind); 12] = [
     ("PhpUndefinedConfigKey", &ConfigKey),
     ("PhpUndefinedEnvKey", &EnvKey),
     ("PhpUndefinedTranslation", &TranslationKey),
@@ -60,6 +63,7 @@ const INSPECTIONS: [(&str, &dyn ReferenceKind); 11] = [
     ("PhpUnknownGuard", &AuthGuard),
     ("PhpUnknownPasswordBroker", &PasswordBroker),
     ("PhpUndefinedController", &ControllerAction),
+    ("PhpUnknownArtisanCommand", &ArtisanCommandKind),
 ];
 
 impl UndefinedReference {

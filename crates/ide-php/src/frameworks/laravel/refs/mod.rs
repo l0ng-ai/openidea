@@ -16,7 +16,7 @@
 //! `middleware` ([`middleware`]), `viewName` ([`view_name`]), and
 //! `validationRule` and `requestField` ([`validation_rule`]), and
 //! `eloquentField` and `eloquentRelation` ([`eloquent`]), and `gate`,
-//! `authGuard` and `passwordBroker` ([`gate`]), and `artisanCommand`
+//! `authGuard` and `passwordBroker` ([`gate`]), and `artisanCommand` and `artisanOption`
 //! ([`artisan_command`]), and `livewireComponent` and `livewireParameter`
 //! ([`livewire`]), and
 //! `inertiaPage` ([`inertia_page`]), and `staticStrings` and
@@ -113,7 +113,7 @@ use crate::summary::FileSummary;
 use crate::syntax::ParsedFile;
 use crate::types::{ExprTypes, Resolver, Type};
 
-pub use artisan_command::ArtisanCommandKind;
+pub use artisan_command::{ArtisanCommandKind, ArtisanOptionKind};
 pub use config_key::ConfigKey;
 pub use controller_action::{ControllerAction, ResourceAction};
 pub use db_table::DbTable;
@@ -1132,6 +1132,7 @@ pub fn kinds() -> &'static [&'static dyn ReferenceKind] {
         &AuthGuard,
         &PasswordBroker,
         &ArtisanCommandKind,
+        &ArtisanOptionKind,
         &LivewireComponentKind,
         &LivewireParameterKind,
         &InertiaPageKind,

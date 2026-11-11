@@ -11,12 +11,26 @@
 //! after it; goto opens the command's signature (its class, or its closure
 //! in `routes/console.php`); hover shows its description and synopsis; find
 //! usages works from a usage and from the name in a `$signature`.
+//! `PhpUnknownArtisanCommand` reports a name no command has, only when
+//! `vendor/` is installed, so that the packages' commands are known.
+//!
+//! The `artisanOption` kind ([`ArtisanOptionKind`]) is a key of the
+//! parameters array given with the command (`Artisan::call('posts:publish',
+//! ['--dry-run' => true])`): an option (`--dry-run`, or its shortcut `-D`)
+//! or an argument (`post`) of the command the first argument names, by name
+//! or by class. It completes them, goes to them in the signature, shows
+//! their description and finds the keys naming the same one of the same
+//! command.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use super::{CalleePattern, Declared, PlacePattern, RefContext, RefItem, ReferenceKind};
-use crate::frameworks::laravel::artisan::{ArtisanCommand, ArtisanCommands, CommandSource};
+use ide_core::Severity;
+
+use super::{CalleePattern, Declared, PlacePattern, Position, RefContext, RefItem, ReferenceKind, Undefined};
+use crate::frameworks::laravel::artisan::{
+    ArtisanArgument, ArtisanCommand, ArtisanCommands, ArtisanOption, CommandSource,
+};
 use crate::navigate::Target;
 use crate::syntax::ParsedFile;
 
@@ -39,6 +53,21 @@ static PATTERNS: [PlacePattern; 4] = [
     ),
     PlacePattern::argument(CalleePattern::Method { classes: SCHEDULES, names: &["command"] }, 0, "command"),
     PlacePattern::argument(CalleePattern::Method { classes: TESTS, names: &["artisan"] }, 0, "command"),
+];
+
+static OPTION_PATTERNS: [PlacePattern; 4] = [
+    PlacePattern::argument(CalleePattern::Method { classes: ARTISAN, names: &["call", "queue"] }, 1, "parameters")
+        .at(Position::ArrayKey),
+    PlacePattern::argument(
+        CalleePattern::Method { classes: COMMANDS, names: &["call", "callSilent", "callSilently"] },
+        1,
+        "arguments",
+    )
+    .at(Position::ArrayKey),
+    PlacePattern::argument(CalleePattern::Method { classes: SCHEDULES, names: &["command"] }, 1, "parameters")
+        .at(Position::ArrayKey),
+    PlacePattern::argument(CalleePattern::Method { classes: TESTS, names: &["artisan"] }, 1, "parameters")
+        .at(Position::ArrayKey),
 ];
 
 fn commands(cx: &RefContext<'_>) -> Arc<ArtisanCommands> {
@@ -182,5 +211,164 @@ impl ReferenceKind for ArtisanCommandKind {
 
     fn hover(&self, cx: &RefContext<'_>, value: &str) -> Option<String> {
         commands(cx).get(name_of(value).0).map(command_hover)
+    }
+
+    fn undefined(&self, cx: &RefContext<'_>, value: &str) -> Option<Undefined> {
+        let commands = commands(cx);
+        let (name, _, _) = name_of(value);
+        // Without `vendor/` the packages' commands aren't known.
+        if !commands.vendor || name.is_empty() || commands.get(name).is_some() {
+            return None;
+        }
+        Some(Undefined {
+            message: format!("Artisan command '{name}' is not defined"),
+            severity: Severity::Warning,
+            fixes: Vec::new(),
+        })
+    }
+}
+
+/// See the module documentation.
+pub struct ArtisanOptionKind;
+
+/// What a key of the parameters array names.
+enum Parameter<'c> {
+    Option(&'c ArtisanOption),
+    Argument(&'c ArtisanArgument),
+}
+
+impl ArtisanOptionKind {
+    /// The command the call names first, by name (its first word) or by
+    /// class.
+    fn command<'c>(cx: &RefContext<'_>, commands: &'c ArtisanCommands) -> Option<&'c ArtisanCommand> {
+        let first = cx.site.as_ref()?.first_argument.as_deref()?;
+        let (name, _, _) = name_of(first);
+        commands.get(name).or_else(|| {
+            let class = first.trim_start_matches('\\');
+            commands
+                .commands
+                .iter()
+                .find(|command| command.class.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(class)))
+        })
+    }
+
+    /// The option (`--name`, `-S`) or argument (`name`) `key` names.
+    fn parameter<'c>(command: &'c ArtisanCommand, key: &str) -> Option<Parameter<'c>> {
+        let key = key.trim();
+        if let Some(option) = key.strip_prefix("--") {
+            return command.options.iter().find(|found| found.name == option).map(Parameter::Option);
+        }
+        if let Some(shortcut) = key.strip_prefix('-') {
+            return command
+                .options
+                .iter()
+                .find(|found| found.shortcut.as_deref().is_some_and(|s| s.split('|').any(|s| s == shortcut)))
+                .map(Parameter::Option);
+        }
+        command.arguments.iter().find(|found| found.name == key).map(Parameter::Argument)
+    }
+
+    /// Where `parameter`'s name is written in `command`'s signature, looked
+    /// for between the command's name and the end of its string.
+    fn declaration(cx: &RefContext<'_>, command: &ArtisanCommand, parameter: &Parameter<'_>) -> Option<Target> {
+        let path = command.path.clone()?;
+        let (start, _) = command.bytes?;
+        let text = cx.engine.text_of(&path)?;
+        let rest = text.get(start as usize..)?;
+        let signature = &rest[..rest.find(['\'', '"']).unwrap_or(rest.len())];
+        let (name, found) = match parameter {
+            Parameter::Option(option) => {
+                let name = option.name.as_str();
+                let found = name_after(signature, "--", name).or_else(|| name_after(signature, "|", name));
+                (name, found)
+            }
+            Parameter::Argument(argument) => (argument.name.as_str(), name_after(signature, "{", &argument.name)),
+        };
+        let at = start + found? as u32;
+        let lines = crate::syntax::LineIndex::new(&text);
+        Some(Target { path, range: lines.range(at, at + name.len() as u32) })
+    }
+}
+
+/// The byte `name` starts at in `signature` where it follows `before`
+/// (spaces between them allowed) and nothing of a name follows it.
+fn name_after(signature: &str, before: &str, name: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(found) = signature[from..].find(before) {
+        let after = from + found + before.len();
+        from = after;
+        let rest = &signature[after..];
+        let at = after + (rest.len() - rest.trim_start_matches(' ').len());
+        let Some(tail) = signature[at..].strip_prefix(name) else { continue };
+        if tail.chars().next().is_none_or(|c| !(c.is_alphanumeric() || c == '-' || c == '_')) {
+            return Some(at);
+        }
+    }
+    None
+}
+
+impl ReferenceKind for ArtisanOptionKind {
+    fn id(&self) -> &'static str {
+        "artisanOption"
+    }
+
+    fn patterns(&self) -> &'static [PlacePattern] {
+        &OPTION_PATTERNS
+    }
+
+    fn complete(&self, cx: &RefContext<'_>, value: &str, _at: usize) -> Vec<RefItem> {
+        let commands = commands(cx);
+        let Some(command) = Self::command(cx, &commands) else { return Vec::new() };
+        let item = |label: String, description: &str| RefItem {
+            insert: label.clone(),
+            label,
+            detail: Some(description.to_owned()).filter(|d| !d.is_empty()),
+            from: 0,
+            to: value.len(),
+        };
+        let options = command.options.iter().map(|option| item(format!("--{}", option.name), &option.description));
+        let arguments = command.arguments.iter().map(|argument| item(argument.name.clone(), &argument.description));
+        options.chain(arguments).collect()
+    }
+
+    fn resolve(&self, cx: &RefContext<'_>, value: &str, _at: usize) -> Vec<Target> {
+        let commands = commands(cx);
+        let Some(command) = Self::command(cx, &commands) else { return Vec::new() };
+        let Some(parameter) = Self::parameter(command, value) else { return Vec::new() };
+        Self::declaration(cx, command, &parameter).or_else(|| command_target(command)).into_iter().collect()
+    }
+
+    /// `posts:publish --dry-run`: the command's name and the key.
+    fn canonical(&self, cx: &RefContext<'_>, value: &str) -> String {
+        let commands = commands(cx);
+        let command = Self::command(cx, &commands).map_or("", |command| command.name.as_str());
+        format!("{command} {}", value.trim())
+    }
+
+    fn usage_text<'v>(&self, value: &'v str) -> &'v str {
+        value.rsplit(' ').next().unwrap_or(value)
+    }
+
+    fn is_known(&self, cx: &RefContext<'_>, value: &str) -> bool {
+        let commands = commands(cx);
+        // The keys of an unknown command can't be checked.
+        Self::command(cx, &commands).is_none_or(|command| Self::parameter(command, value).is_some())
+    }
+
+    fn hover(&self, cx: &RefContext<'_>, value: &str) -> Option<String> {
+        let commands = commands(cx);
+        let command = Self::command(cx, &commands)?;
+        let (label, description) = match Self::parameter(command, value)? {
+            Parameter::Option(option) => {
+                let takes = if option.accepts_value { "=" } else { "" };
+                (format!("--{}{takes}", option.name), &option.description)
+            }
+            Parameter::Argument(argument) => (argument.name.clone(), &argument.description),
+        };
+        let mut out = format!("**artisan** `{}` `{label}`", command.name);
+        if !description.is_empty() {
+            out.push_str(&format!("\n\n{description}"));
+        }
+        Some(out)
     }
 }

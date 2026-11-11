@@ -6244,6 +6244,8 @@
   "Unknown password broker": "未知的密码代理",
   "Undefined controller": "未定义的控制器",
   "Reports route actions naming a controller class or method that doesn't exist, in 'Controller@method', [Controller::class, 'method'] or a plain 'Controller'. The quick-fixes create the controller or add the method.": "报告路由动作中不存在的控制器类或方法，包括 'Controller@method'、[Controller::class, 'method'] 或单独的 'Controller'。快速修复会创建该控制器或添加该方法。",
+  "Unknown Artisan command": "未知的 Artisan 命令",
+  "Reports Artisan command names, in Artisan::call(), $this->call(), Schedule::command() or $this->artisan(), that no command of the project, its packages or Laravel has. Only reported when vendor/ is installed, so that the packages' commands are known.": "报告 Artisan::call()、$this->call()、Schedule::command() 或 $this->artisan() 中项目、其依赖包或 Laravel 都没有的 Artisan 命令名称。仅在已安装 vendor/ 时报告，以便知道依赖包的命令。",
   "Reports guards, in auth(), Auth::guard(), @auth, @guest or the auth: and guest: middleware, that config/auth.php doesn't declare.": "报告 auth()、Auth::guard()、@auth、@guest 或 auth: 与 guest: 中间件中 config/auth.php 未声明的守卫。",
   "Reports password brokers passed to Password::broker() that config/auth.php doesn't declare.": "报告传给 Password::broker() 的密码代理中 config/auth.php 未声明的代理。",
   "Reports column names in Eloquent queries (where(), orderBy(), select(), create([...]) and the like) and in a model's $fillable, $hidden, $casts or $appends that the model's table doesn't have. Only reported when the migrations say for certain which columns the table has.": "报告 Eloquent 查询（where()、orderBy()、select()、create([...]) 等）以及模型的 $fillable、$hidden、$casts 或 $appends 中模型数据表没有的列名。仅当迁移能确定数据表有哪些列时才会报告。",

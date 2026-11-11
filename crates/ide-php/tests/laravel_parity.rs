@@ -165,6 +165,14 @@ const CHECKS: &[Check] = &[
         "posts:publish",
         "Artisan::call('/*|*/posts:publish');",
         "app/Console/Commands/PublishScheduledPosts.php",
+    )
+    .undefined("Artisan::call('posts:nowhere');", "PhpUnknownArtisanCommand"),
+    check(
+        "artisanOption",
+        "Artisan::call('posts:publish', ['/*|*/' => true]);",
+        "--dry-run",
+        "Artisan::call('posts:publish', ['/*|*/--dry-run' => true]);",
+        "app/Console/Commands/PublishScheduledPosts.php",
     ),
     check(
         "livewireComponent",
@@ -630,6 +638,40 @@ fn real_app_checklist() {
     ];
     undefined.retain(|found| !REAL.iter().any(|real| found.ends_with(real)));
     assert!(undefined.is_empty(), "undefined controllers:\n{}", undefined.join("\n"));
+
+    // Phase 9.5: the app's own code and tests name no unknown Artisan command.
+    let mut files = app_php_files(&root);
+    let mut tests = vec![root.join("tests")];
+    while let Some(dir) = tests.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                tests.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "php") {
+                files.push(path);
+            }
+        }
+    }
+    let mut unknown = Vec::new();
+    let mut checked = 0;
+    for (index, path) in files.iter().enumerate() {
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        if !["Artisan::", "->call(", "callSilent", "command(", "->artisan("].iter().any(|call| text.contains(call)) {
+            continue;
+        }
+        checked += 1;
+        let doc = DocId(40_000 + index as u32);
+        engine.document_opened(doc, path, 1, &text);
+        let inspected = engine.inspect(doc, &CancellationToken::new());
+        engine.document_closed(doc);
+        for diagnostic in inspected.map(|found| found.diagnostics).unwrap_or_default() {
+            if diagnostic.code.as_deref() == Some("PhpUnknownArtisanCommand") {
+                unknown.push(format!("{}:{}: {}", path.display(), diagnostic.range.start.line + 1, diagnostic.message));
+            }
+        }
+    }
+    eprintln!("{checked} files checked for unknown Artisan commands");
+    assert!(unknown.is_empty(), "unknown Artisan commands:\n{}", unknown.join("\n"));
 
     let context = engine.laravel_generation_context().expect("generators");
     let mut failures = Vec::new();
