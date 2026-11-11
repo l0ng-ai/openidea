@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { classHighlighter, highlightTree } from "@lezer/highlight";
+import { EditorView } from "@codemirror/view";
 import { findLanguageDescription, loadSupport } from "./languages";
+import { commentLine } from "./comments";
 
 async function tokens(source: string) {
   const desc = findLanguageDescription("Blade", "welcome.blade.php")!;
@@ -47,5 +49,35 @@ describe("Blade mode", () => {
     expect(styleOf(out, "$c")).toContain("tok-variableName");
     expect(styleOf(out, "'b'")).toBe("tok-string");
     expect(out.filter((t) => t.text === "p")).toHaveLength(1);
+  });
+});
+
+describe("Blade comments", () => {
+  async function editor(doc: string, caret: number) {
+    const support = await loadSupport(findLanguageDescription("Blade", "welcome.blade.php")!);
+    const view = new EditorView({
+      state: EditorState.create({ doc, selection: { anchor: caret }, extensions: [support!] }),
+      parent: document.body,
+    });
+    ensureSyntaxTree(view.state, doc.length, 1000);
+    return view;
+  }
+
+  it("puts the caret inside the comment ⌘/ adds on an empty line", async () => {
+    const view = await editor("<div>\n    \n</div>", 10);
+    commentLine(view);
+    const line = view.state.doc.line(2);
+    expect(line.text).toBe("    {{--  --}}");
+    expect(view.state.selection.main.head).toBe(line.from + "    {{-- ".length);
+    view.destroy();
+  });
+
+  it("still toggles the comment around a line with text", async () => {
+    const view = await editor("<p>hi</p>", 2);
+    commentLine(view);
+    expect(view.state.doc.toString()).toBe("{{-- <p>hi</p> --}}");
+    commentLine(view);
+    expect(view.state.doc.toString()).toBe("<p>hi</p>");
+    view.destroy();
   });
 });
