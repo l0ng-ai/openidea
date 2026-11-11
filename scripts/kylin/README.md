@@ -10,9 +10,10 @@ scripts/kylin/bundle-runtime.sh <amd64|arm64> <input.deb> <output-dir>
 
 It must run on the same Ubuntu 22.04 machine (same architecture) that built the
 app, with `libwebkit2gtk-4.1-0` and `libgtk-3-0` installed, because the runtime
-is copied from that machine's system directories. It writes
-`openidea_<version>_kylin_<arch>.deb` and `AppDir-<arch>/` (for `appimagetool`)
-to the output directory.
+is copied from that machine's system directories. It writes three things to the
+output directory: `openidea_<version>_kylin_<arch>.deb`, `AppDir-<arch>/` (for
+`appimagetool`) and `OpenIDEA_<version>_kylin_<arch>.tar.gz`, a portable archive
+that runs straight from wherever it is unpacked (`./openidea`).
 
 ## What ends up in the package
 
@@ -23,6 +24,10 @@ to the output directory.
 /usr/lib/openidea/runtime/libexec/webkit2gtk-4.1/
                                            WebKit helper processes, injected bundle
 ```
+
+The tarball holds the same tree under `OpenIDEA-<version>-kylin-<arch>/`, plus
+`openidea` (runs the launcher), `install-desktop.sh` (menu entry for the current
+user) and `README.txt`.
 
 The launcher opens the bundled `ld.so` on file descriptor 3 and executes the app,
 whose interpreter is `/proc/self/fd/3`. That keeps the package relocatable (an
@@ -62,5 +67,6 @@ grep -q libwebkit2gtk-4.1 "$root/DEBIAN/control" && echo "still depends on webki
 app="$root/usr/lib/openidea"
 "$app/runtime/lib/ld-linux-"*.so.* --library-path "$app/runtime/lib" --list "$app/openidea" | grep 'not found'
 grep -a java-usages-1.12.0.jar "$app/openidea" > /dev/null   # and the other jars
-xvfb-run -a dbus-run-session -- "$root/usr/bin/openidea"      # starts and keeps running
+tar -xzf OpenIDEA_<version>_kylin_<arch>.tar.gz -C /tmp
+xvfb-run -a dbus-run-session -- /tmp/OpenIDEA-<version>-kylin-<arch>/openidea   # starts and keeps running
 ```

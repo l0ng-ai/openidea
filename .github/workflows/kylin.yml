@@ -7,6 +7,9 @@ name: Kylin build
 # loader. Kylin V10 SP1 (glibc 2.31, webkit2gtk 4.0 only) therefore needs
 # nothing beyond a working X11 or Wayland desktop.
 #
+# Each architecture gets three artifacts: a .deb, an AppImage, and a .tar.gz
+# that runs straight from wherever it is unpacked.
+#
 # The Java support jars (java-usages, kotlin-bridge, lombok) are compiled into
 # the binary, so they ship with every package automatically.
 #
@@ -138,6 +141,7 @@ jobs:
           mkdir -p kylin-dist
           bash scripts/kylin/bundle-runtime.sh "$arch" "$deb" kylin-dist
           test -f "kylin-dist/openidea_${version}_kylin_${arch}.deb"
+          test -f "kylin-dist/OpenIDEA_${version}_kylin_${arch}.tar.gz"
           test -d "kylin-dist/AppDir-${arch}"
 
       - name: Build AppImage
@@ -207,26 +211,41 @@ jobs:
 
           echo "== AppImage =="
           "$appimage" --appimage-offset > /dev/null
+
+          echo "== tarball =="
+          tarfile="kylin-dist/OpenIDEA_${version}_kylin_${arch}.tar.gz"
+          top="OpenIDEA-${version}-kylin-${arch}"
+          listing=$(tar -tzf "$tarfile")
+          for entry in "$top/openidea" "$top/AppRun" "$top/README.txt" \
+                       "$top/usr/bin/openidea" \
+                       "$top/usr/lib/openidea/runtime/lib/libwebkit2gtk-4.1.so.0" \
+                       "$top/usr/lib/openidea/runtime/libexec/webkit2gtk-4.1/WebKitWebProcess"; do
+            if ! grep -qx "$entry" <<< "$listing"; then
+              echo "::error::$tarfile is missing $entry"
+              exit 1
+            fi
+          done
           ls -lh kylin-dist
 
-      # Starts the real app against the bundled runtime with no system
-      # webkit2gtk-4.1 present. A machine without a GPU uses Mesa's software
-      # renderer, which is what the runner and Kylin VMs do.
+      # Starts the real app from the extracted tarball (the "unpack and run"
+      # path) with no system webkit2gtk-4.1 present. A machine without a GPU
+      # uses Mesa's software renderer, which is what the runner and Kylin VMs do.
       - name: Smoke test
         run: |
           version='${{ needs.version.outputs.version }}'
           arch='${{ matrix.arch }}'
-          root=$(mktemp -d)
-          dpkg-deb -R "kylin-dist/openidea_${version}_kylin_${arch}.deb" "$root"
+          work=$(mktemp -d)
+          tar -xzf "kylin-dist/OpenIDEA_${version}_kylin_${arch}.tar.gz" -C "$work"
+          appdir="$work/OpenIDEA-${version}-kylin-${arch}"
           export HOME=$(mktemp -d)
           set +e
-          timeout 60 xvfb-run -a dbus-run-session -- "$root/usr/bin/openidea" > /tmp/smoke.log 2>&1
+          timeout 60 xvfb-run -a dbus-run-session -- "$appdir/openidea" > /tmp/smoke.log 2>&1
           rc=$?
           set -e
           sed -n '1,80p' /tmp/smoke.log
           # 124 means it was still running when the timeout fired: that is a pass.
           if grep -q 'application data directories' /tmp/smoke.log; then
-            echo "::notice::the app started with the bundled runtime (exit $rc)"
+            echo "::notice::the app started from the extracted tarball (exit $rc)"
           else
             echo "::error::the app did not start"
             exit 1
@@ -235,7 +254,7 @@ jobs:
       - name: Collect packages
         run: |
           out=kylin-dist
-          (cd "$out" && sha256sum -- *.deb *.AppImage > SHA256SUMS)
+          (cd "$out" && sha256sum -- *.deb *.AppImage *.tar.gz > SHA256SUMS)
           ls -lh "$out"
 
       - uses: actions/upload-artifact@v4
@@ -265,6 +284,7 @@ jobs:
 
             - `amd64` (x86_64) and `arm64` (aarch64) .deb packages
             - AppImage for both architectures
+            - `.tar.gz` archives: unpack anywhere and run `./openidea`
             - `SHA256SUMS` for integrity checks
 
             **Self-contained runtime.** The packages carry the glibc, GTK and

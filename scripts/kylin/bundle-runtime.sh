@@ -354,5 +354,68 @@ exec "$here/usr/bin/openidea" "$@"
 EOF
 chmod 755 "$appdir/AppRun"
 
+# --- portable tarball -------------------------------------------------------
+# Same tree as the AppDir, with a friendly entry point: unpack anywhere and run
+# ./openidea. The launcher resolves its own location, so the directory can be
+# moved freely.
+top="OpenIDEA-${version}-kylin-${arch}"
+tar_root="$out_dir/$top"
+rm -rf "$tar_root"
+cp -al "$appdir" "$tar_root"
+
+cat > "$tar_root/openidea" <<'EOF'
+#!/bin/sh
+# Runs OpenIDEA from this directory, with the runtime bundled next to it.
+here=$(dirname "$(readlink -f "$0")")
+exec "$here/usr/bin/openidea" "$@"
+EOF
+chmod 755 "$tar_root/openidea"
+
+cat > "$tar_root/install-desktop.sh" <<'EOF'
+#!/bin/sh
+# Adds OpenIDEA to the application menu of the current user, pointing at this
+# copy. Re-run it after moving the directory.
+here=$(dirname "$(readlink -f "$0")")
+target="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+mkdir -p "$target"
+sed "s|^Exec=.*|Exec=$here/openidea|; s|^Icon=.*|Icon=$here/openidea.png|" \
+  "$here/openidea.desktop" > "$target/openidea.desktop"
+echo "installed $target/openidea.desktop"
+EOF
+chmod 755 "$tar_root/install-desktop.sh"
+
+cat > "$tar_root/README.txt" <<EOF
+OpenIDEA ${version} for Kylin / domestic Linux (${arch})
+=================================================
+
+Self-contained: the glibc, GTK and WebKitGTK 4.1 runtime is included, so this
+archive runs on stock Kylin V10 SP1 (glibc 2.31, webkit2gtk 4.0 only) without
+installing anything else.
+
+Run
+---
+  ./openidea
+
+Nothing is installed and nothing is written outside your home directory. The
+directory can be moved or renamed; the launcher finds its runtime relative to
+itself.
+
+Optional: add it to the application menu
+----------------------------------------
+  ./install-desktop.sh
+
+Notes
+-----
+  - The WebKit sandbox is disabled by default, because it cannot see the paths
+    of a relocated bundle. Set OPENIDEA_WEBKIT_SANDBOX=1 to keep it enabled.
+  - GPU drivers come from the host. On a machine without a GPU, install
+    libgl1-mesa-dri so Mesa can use its software renderer.
+EOF
+
+tar_out="$out_dir/OpenIDEA_${version}_kylin_${arch}.tar.gz"
+log "writing $tar_out"
+tar -C "$out_dir" --owner=0 --group=0 --numeric-owner -czf "$tar_out" "$top"
+rm -rf "$tar_root"
+
 log "runtime libraries: $(du -sh "$libdir" | cut -f1)"
 log "app dir: $appdir (arch $appimage_arch)"
