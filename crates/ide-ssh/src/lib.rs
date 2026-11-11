@@ -1,9 +1,10 @@
 //! SSH for every remote feature: configurations and `~/.ssh/config` hosts,
 //! host-key trust, authentication (password, key, agent), remote commands and
-//! processes, SFTP, local port forwarding, and askpass for `ssh` / `git`.
+//! processes, SFTP (and FTP for deployment), local port forwarding, and askpass for `ssh` / `git`.
 
 pub mod askpass;
 pub mod filesystem;
+pub mod ftp;
 pub mod git_creds;
 pub mod manager;
 pub mod secrets;

@@ -177,7 +177,10 @@ fn interchangeable_servers_list_their_alternatives() {
     assert_eq!(find(&list, "vtsls").alternatives, ["vtsls", "typescript-language-server"]);
     for name in ["jdtls", "kmp-lsp"] {
         assert_eq!(find(&list, name).alternatives, ["jdtls", "kmp-lsp"]);
-        assert_eq!(find(&list, name).languages, ["Java"]);
+        assert_eq!(find(&list, name).languages, if name == "kmp-lsp" { &["Java", "Kotlin"][..] } else { &["Java"] });
+    }
+    for name in ["kotlin-lsp", "kotlin-language-server"] {
+        assert_eq!(find(&list, name).alternatives, ["kotlin-lsp", "kotlin-language-server", "kmp-lsp"]);
     }
     // A regular server after a fallback starts no group with it.
     assert!(find(&list, "angular-language-server").alternatives.is_empty());

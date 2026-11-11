@@ -29,6 +29,15 @@ max-java = 21
 root-markers = ["settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle", "pom.xml"]
 install-hint = "brew install kotlin-language-server (https://github.com/fwcd/kotlin-language-server)"
 
+[[language-servers]]
+name = "kmp-lsp"
+# Alternative: tree-sitter based, starts at once and needs no JVM or Gradle import, but resolves
+# symbols syntactically. Used only when the servers above are not installed.
+fallback = true
+command = "kmp-lsp"
+root-markers = ["settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle", "pom.xml"]
+install-hint = "Install kmp-lsp in Settings › Languages & Frameworks › Language Servers (https://github.com/Hessesian/kmp-lsp)"
+
 [debugger]
 adapter = "kotlin-debug-adapter"
 command = "kotlin-debug-adapter"
