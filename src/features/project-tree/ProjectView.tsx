@@ -34,10 +34,12 @@ import {
 } from "@/workbench/contributions";
 import {
   FILES_DRAG,
+  REMOTE_FILES_DRAG,
   HighlightedText,
   Icon,
   Popup,
   dragSession,
+  registerDropTarget,
   Tree,
   acquirePopup,
   fileIconName,
@@ -727,6 +729,24 @@ export function ProjectView() {
       disposed = true;
       unlisten?.();
     };
+  }, []);
+
+  // Files and folders dragged from Remote Host download into the folder they are dropped on.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    return registerDropTarget(el, {
+      accepts: (type) => type === REMOTE_FILES_DRAG,
+      over: (_, x, y) => setDropTarget(folderAt(el, x, y)?.key ?? null),
+      leave: () => setDropTarget(null),
+      drop: (data, x, y) => {
+        setDropTarget(null);
+        const target = folderAt(el, x, y);
+        if (!target) return;
+        const { server, paths } = JSON.parse(data.payload) as { server: string; paths: string[] };
+        void executeAction("deployment.downloadRemoteInto", { server, paths, target: target.path });
+      },
+    });
   }, []);
 
   // Reconcile external files and expired Copy/Cut state when returning from another app.

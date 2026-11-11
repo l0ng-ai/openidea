@@ -3,6 +3,7 @@
 
 use crate::adapter::AdapterSpec;
 use crate::connection::{Connection, DapError, Incoming};
+use crate::kotlin_lsp;
 use crate::{Breakpoint, BreakpointState, DataBreakpoint, DebugManager, FunctionBreakpoint, SessionOwner};
 use ide_core::event::DebugEvent;
 #[cfg(unix)]
@@ -103,6 +104,8 @@ pub(crate) struct Session {
     pub jvm_located: watch::Sender<bool>,
     pub kotlin_mirror: Mutex<Option<crate::kotlin::SourceMirror>>,
     pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
+    /// Used only by a kotlin-lsp session: see [`Session::kotlin_lsp_quirks`].
+    pub(crate) quirks: kotlin_lsp::Quirks,
 }
 
 /// Which threads of the program are suspended: each from its `stopped` event until a
@@ -252,6 +255,19 @@ impl Session {
             jvm_located: watch::channel(false).0,
             kotlin_mirror: Mutex::new(None),
             jvm_memory: tokio::sync::Mutex::default(),
+            quirks: kotlin_lsp::Quirks::default(),
+        }
+    }
+
+    pub fn kotlin_lsp_quirks(&self) -> Option<&kotlin_lsp::Quirks> {
+        (self.adapter == kotlin_lsp::ADAPTER).then_some(&self.quirks)
+    }
+
+    /// Call before sending a request for thread `id`.
+    pub fn check_thread(&self, id: i64) -> ide_core::IdeResult<()> {
+        match self.kotlin_lsp_quirks() {
+            Some(quirks) => quirks.check_thread(self.suspended.ticket(), self.suspended.get(), id),
+            None => Ok(()),
         }
     }
 
@@ -283,6 +299,11 @@ impl Session {
 
     /// A path from the adapter as the IDE knows it (undoes [`Session::adapter_path`]).
     pub fn client_path(&self, path: &str) -> Option<PathBuf> {
+        if self.adapter == kotlin_lsp::ADAPTER
+            && let Some(path) = kotlin_lsp::source_path(path)
+        {
+            return Some(path);
+        }
         if let Some(real) = self.kotlin_mirror.lock().as_ref().and_then(|m| m.client_path(Path::new(path))) {
             return Some(real);
         }
@@ -697,7 +718,11 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
         "stopped" => {
             let all = body.get("allThreadsStopped").and_then(Value::as_bool).unwrap_or(false);
             s.suspended.stopped(int("threadId"), all);
-            let reason = str_("reason").unwrap_or_else(|| "pause".into());
+            let mut reason = str_("reason").unwrap_or_else(|| "pause".into());
+            if let Some(quirks) = s.kotlin_lsp_quirks() {
+                quirks.saw_threads(s.suspended.ticket(), int("threadId"));
+                reason = quirks.stop_reason(reason);
+            }
             mgr.restore_breakpoints(s).await;
             s.emit(DebugEvent::Stopped {
                 thread_id: int("threadId").unwrap_or(0),
@@ -798,6 +823,14 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
         "hotcodereplace" => s.emit(DebugEvent::HotCodeReplace {
             change_type: crate::hot_code_replace_type(body.get("changeType")),
             message: str_("message").unwrap_or_default(),
+        }),
+        // Sent only by adapters told `supportsInvalidatedEvent` (kotlin-lsp).
+        "invalidated" => s.emit(DebugEvent::Invalidated {
+            areas: body
+                .get("areas")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                .unwrap_or_default(),
         }),
         _ => tracing::trace!("dap: ignored event {event}"),
     }

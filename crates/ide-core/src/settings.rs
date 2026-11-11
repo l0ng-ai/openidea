@@ -63,6 +63,8 @@ pub struct Settings {
     pub agents: AgentSettings,
     /// Agents › MCP Server (global only).
     pub mcp_server: McpServerSettings,
+    /// Tools › Agents: Command Execution Policy.
+    pub agent_security: AgentSecuritySettings,
     /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
     #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
     pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
@@ -261,6 +263,9 @@ pub enum WhileRunning {
 pub struct McpServerSettings {
     /// Serve the tools on 127.0.0.1 while the IDE runs.
     pub enabled: bool,
+    /// Run the tools that change the project or start processes without asking first
+    /// (IDEA's brave mode). Read from the IDE's own settings only, never a project's.
+    pub run_without_confirmation: bool,
 }
 
 /// Absent profiles retain automatic discovery for existing projects.
@@ -408,6 +413,7 @@ impl Default for Settings {
             cmake: CMakeSettings::default(),
             agents: AgentSettings::default(),
             mcp_server: McpServerSettings::default(),
+            agent_security: AgentSecuritySettings::default(),
             plugins: BTreeMap::new(),
         }
     }

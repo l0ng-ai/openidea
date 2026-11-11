@@ -14,8 +14,18 @@ pub(crate) struct Created {
     pub base_commit: String,
 }
 
+/// The repository of `path`, free to execute: the host runs every agent command that
+/// reaches a repository only in a trusted project.
+fn discover(path: &Path) -> IdeResult<Option<Repo>> {
+    let repo = Repo::discover(path)?;
+    if let Some(repo) = &repo {
+        repo.set_execution_allowed(true);
+    }
+    Ok(repo)
+}
+
 fn repo_at(path: &Path) -> IdeResult<Repo> {
-    Repo::discover(path)?.ok_or_else(|| IdeError::unavailable(format!("{} is not in a git repository", path.display())))
+    discover(path)?.ok_or_else(|| IdeError::unavailable(format!("{} is not in a git repository", path.display())))
 }
 
 /// The current branch (or commit when detached) and its commit.
@@ -91,10 +101,11 @@ fn retrying(attempts: u32, pause: Duration, mut op: impl FnMut() -> std::io::Res
 /// Files under `cwd` that differ from `base` (untracked files included), with line counts.
 /// Outside a repository there is nothing to compare against: no changes.
 pub(crate) fn changes(cwd: &Path, base: &str) -> IdeResult<Vec<AgentChange>> {
-    let Some(repo) = Repo::discover(cwd)? else { return Ok(Vec::new()) };
+    let Some(repo) = discover(cwd)? else { return Ok(Vec::new()) };
     let root = repo.root().to_path_buf();
-    let stats = repo.numstat_with_worktree(base)?;
-    let stat = |rel: &str| stats.iter().find(|(p, ..)| p == rel).map_or((0, 0), |&(_, a, r)| (a, r));
+    let stats: std::collections::HashMap<String, (u32, u32)> =
+        repo.numstat_with_worktree(base)?.into_iter().map(|(p, a, r)| (p, (a, r))).collect();
+    let stat = |rel: &str| stats.get(rel).copied().unwrap_or((0, 0));
     let mut out: Vec<AgentChange> = repo
         .diff_with_worktree(base)?
         .into_iter()
@@ -103,14 +114,59 @@ pub(crate) fn changes(cwd: &Path, base: &str) -> IdeResult<Vec<AgentChange>> {
             AgentChange { path: IpcPath(root.join(&f.path)), rel_path: f.path, kind: f.kind, added, removed }
         })
         .collect();
+    let tracked: std::collections::HashSet<String> = out.iter().map(|c| c.rel_path.clone()).collect();
     for s in repo.status()? {
-        if s.unstaged == Some(ChangeKind::Untracked) && !out.iter().any(|c| c.rel_path == s.rel_path) {
+        if s.unstaged == Some(ChangeKind::Untracked) && !tracked.contains(&s.rel_path) {
             let added = std::fs::read_to_string(&*s.path).map_or(0, |t| t.lines().count() as u32);
             out.push(AgentChange { path: s.path, rel_path: s.rel_path, kind: ChangeKind::Added, added, removed: 0 });
         }
     }
     out.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     Ok(out)
+}
+
+/// Copies the task's `changes` (against `base`) from the worktree `cwd` into the
+/// local checkout `root`, uncommitted: the user reviews and commits them with the
+/// VCS tools. Files the checkout changed itself are left alone and reported, so
+/// accepting never destroys the user's own edits. Returns accepted and skipped paths.
+pub(crate) fn accept(
+    root: &Path,
+    cwd: &Path,
+    base: &str,
+    changes: &[AgentChange],
+) -> IdeResult<crate::AgentAcceptOutcome> {
+    let repo = repo_at(cwd)?;
+    let mut accepted = Vec::with_capacity(changes.len());
+    let mut skipped = Vec::new();
+    for change in changes {
+        let local = root.join(&change.rel_path);
+        let base_bytes = repo.file_bytes_at(&change.path.0, Some(base))?;
+        let current = std::fs::read(&change.path.0).ok();
+        let local_bytes = std::fs::read(&local).ok();
+        if local_bytes == current {
+            accepted.push(change.rel_path.clone());
+        } else if local_bytes == base_bytes {
+            match current {
+                Some(bytes) => {
+                    if let Some(parent) = local.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&local, bytes)?;
+                }
+                None => match std::fs::remove_file(&local) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                    _ => {}
+                },
+            }
+            accepted.push(change.rel_path.clone());
+        } else {
+            skipped.push(crate::AgentAcceptSkipped {
+                path: change.rel_path.clone(),
+                reason: "the checkout has changes of its own to it; accept it by hand".to_owned(),
+            });
+        }
+    }
+    Ok(crate::AgentAcceptOutcome { accepted, skipped })
 }
 
 /// Size and modification time of a file, `None` once it is gone.
@@ -124,7 +180,10 @@ pub(crate) fn stamp(path: &Path) -> Stamp {
 
 /// The files already changed in `cwd` against `HEAD`, stamped so later edits to them show.
 pub(crate) fn snapshot(cwd: &Path) -> IdeResult<BTreeMap<String, Stamp>> {
-    Ok(changes(cwd, "HEAD")?.into_iter().map(|c| (c.rel_path, stamp(&c.path))).collect())
+    // Paths and stamps only: no diff and no line counts, which read every untracked file
+    // and held up starting a task in a checkout with many of them.
+    let Some(repo) = Repo::discover(cwd)? else { return Ok(BTreeMap::new()) };
+    Ok(repo.status()?.into_iter().map(|s| (s.rel_path, stamp(&s.path))).collect())
 }
 
 /// Drops the changes that were there before the task and haven't been touched since.
@@ -204,7 +263,7 @@ pub(crate) fn restore(
 }
 
 pub(crate) fn file_at(cwd: &Path, path: &Path, rev: &str) -> IdeResult<Option<String>> {
-    let Some(repo) = Repo::discover(cwd)? else { return Ok(None) };
+    let Some(repo) = discover(cwd)? else { return Ok(None) };
     let encoding = match ide_vfs::load_text(path) {
         Ok(loaded) => encoding_rs::Encoding::for_label(loaded.encoding.as_bytes()).unwrap_or(encoding_rs::UTF_8),
         Err(_) => ide_vfs::detect_encoding(&repo.file_bytes_at(path, Some(rev))?.unwrap_or_default(), None),
@@ -390,5 +449,62 @@ mod tests {
         std::fs::write(elsewhere.join("keep.txt"), "x\n").unwrap();
         assert!(remove(&repo, &tmp.path().join("wt"), &elsewhere).is_err());
         assert!(elsewhere.join("keep.txt").exists());
+    }
+
+    fn accept_repo() -> (tempfile::TempDir, PathBuf, Created) {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(repo.join("gone.txt"), "bye\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+        let created = create(&repo, &tmp.path().join("wt"), "Edit A", None).unwrap();
+        (tmp, repo, created)
+    }
+
+    fn listed(cwd: &Path, base: &str) -> Vec<AgentChange> {
+        without_untouched(changes(cwd, base).unwrap(), &BTreeMap::new())
+    }
+
+    #[test]
+    fn accept_copies_new_modified_and_deleted_files_into_the_checkout() {
+        let (_tmp, repo, created) = accept_repo();
+        std::fs::write(created.path.join("a.txt"), "one\nTWO\n").unwrap();
+        std::fs::write(created.path.join("new.txt"), "x\n").unwrap();
+        std::fs::remove_file(created.path.join("gone.txt")).unwrap();
+
+        let outcome =
+            accept(&repo, &created.path, &created.base_commit, &listed(&created.path, &created.base_commit)).unwrap();
+        assert!(outcome.skipped.is_empty());
+        assert_eq!(outcome.accepted, ["a.txt", "gone.txt", "new.txt"]);
+        assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "one\nTWO\n");
+        assert_eq!(std::fs::read_to_string(repo.join("new.txt")).unwrap(), "x\n");
+        assert!(!repo.join("gone.txt").exists());
+
+        // Accepting again changes nothing: the checkout already matches.
+        let again =
+            accept(&repo, &created.path, &created.base_commit, &listed(&created.path, &created.base_commit)).unwrap();
+        assert!(again.skipped.is_empty());
+        assert_eq!(again.accepted, ["a.txt", "gone.txt", "new.txt"]);
+    }
+
+    #[test]
+    fn accept_leaves_files_the_checkout_changed_itself() {
+        let (_tmp, repo, created) = accept_repo();
+        std::fs::write(created.path.join("a.txt"), "one\nTWO\n").unwrap();
+        std::fs::write(created.path.join("gone.txt"), "bye\nbye\n").unwrap();
+        std::fs::write(repo.join("a.txt"), "one\nMINE\n").unwrap();
+
+        let outcome =
+            accept(&repo, &created.path, &created.base_commit, &listed(&created.path, &created.base_commit)).unwrap();
+        assert_eq!(outcome.accepted, ["gone.txt"]);
+        assert_eq!(outcome.skipped.len(), 1);
+        assert_eq!(outcome.skipped[0].path, "a.txt");
+        assert!(!outcome.skipped[0].reason.is_empty());
+        // The user's own edit survives; the other file comes over.
+        assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "one\nMINE\n");
+        assert_eq!(std::fs::read_to_string(repo.join("gone.txt")).unwrap(), "bye\nbye\n");
     }
 }

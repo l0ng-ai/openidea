@@ -403,6 +403,7 @@ interface EvalRow {
 function VariablesPane({ session }: { session: DebugSession }) {
   const watches = useDebug((s) => s.watches);
   const stopSeq = useDebug((s) => s.stopSeq);
+  const variablesEpoch = useDebug((s) => s.variablesEpoch);
   const [expression, setExpression] = useState("");
   const evalField = useRef<HTMLInputElement>(null);
   const completion = useExpressionCompletion(evalField, expression, setExpression, session);
@@ -443,9 +444,10 @@ function VariablesPane({ session }: { session: DebugSession }) {
     return () => {
       cancelled = true;
     };
-  }, [session.id, frame, stopSeq]);
+  }, [session.id, frame, stopSeq, variablesEpoch]);
 
-  // Watches are re-evaluated on every stop / frame change.
+  // Watches are re-evaluated on every stop / frame change, and when the adapter has new values (kotlin-lsp first
+  // answers "Collecting data…").
   useEffect(() => {
     if (frame == null || !watches.length) return;
     let cancelled = false;
@@ -466,7 +468,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
     };
     // `session` identity changes on every patch; frame/stopSeq capture what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.id, frame, stopSeq, watches]);
+  }, [session.id, frame, stopSeq, variablesEpoch, watches]);
 
   const roots = useMemo<VarRoot[]>(() => {
     const out: VarRoot[] = [];
@@ -583,7 +585,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
         <VariablesView
           roots={roots}
           session={session.id}
-          generation={stopSeq * 100000 + (frame ?? 0)}
+          generation={(stopSeq * 1000 + (variablesEpoch % 1000)) * 100000 + (frame ?? 0)}
           changes={{ epoch: stopSeq, scope: changeScope }}
           aria-label="Variables"
         />

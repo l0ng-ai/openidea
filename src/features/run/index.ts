@@ -44,7 +44,7 @@ import { invalidateGoModules } from "./goModules";
 import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
-import { cleanupRemovedProject, recordRun, registerRunServiceActions, runServiceProvider } from "./services";
+import { cleanupRemovedProject, registerRunServiceActions, runServiceProvider } from "./services";
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
 import { ServiceImportHost } from "./serviceImport";
 import { cmakeBuildId } from "./cmake";
@@ -158,7 +158,6 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
   }
   if (remoteDebugBlocked(config)) return;
   if (!(await prepareLaunch(config, chain, show))) return;
-  recordRun(config.id);
   // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
   if (containerDebuggable(config) && getAction("debug.attach")) {
     await debugInContainer(config);

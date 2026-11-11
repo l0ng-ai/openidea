@@ -6,7 +6,7 @@ use ide_core::{ChangeSet, DocId, IdeResult, OutlineItem, Range};
 pub use ide_host::ops::doc::*;
 use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
-use ide_workspace::{DocumentInfo, HistoryEntry};
+use ide_workspace::{DocumentEncoding, DocumentInfo, HistoryEntry};
 use std::path::PathBuf;
 use tauri::{Manager, State, Window};
 
@@ -87,7 +87,7 @@ pub async fn doc_ui_mode(window: Window, state: State<'_, AppState>, path: PathB
     ide_host::ops::doc::doc_ui_mode(&state.host, window.label(), path).await
 }
 
-/// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label.
+/// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state.
 #[tauri::command]
 #[specta::specta]
 pub async fn doc_set_encoding(
@@ -96,8 +96,19 @@ pub async fn doc_set_encoding(
     doc: DocId,
     encoding: String,
     reload: bool,
-) -> IdeResult<String> {
+) -> IdeResult<DocumentEncoding> {
     ide_host::ops::doc::doc_set_encoding(&state.host, window.label(), doc, encoding, reload).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn doc_set_bom(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+    has_bom: bool,
+) -> IdeResult<DocumentEncoding> {
+    ide_host::ops::doc::doc_set_bom(&state.host, window.label(), doc, has_bom).await
 }
 
 #[tauri::command]

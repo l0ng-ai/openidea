@@ -1,13 +1,13 @@
 /** Remote Host tool window operations: list, open, create, rename, delete and download remote files. */
-import { txTemplate } from "@/platform/i18n";
+import { tx, txTemplate } from "@/platform/i18n";
 import { call, commands, type RemoteEntry } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { deploymentConnection, type DeploymentServerValid } from "@/platform/remoteSettings";
 import { copyText } from "@/ui";
-import { editorService, notifications } from "@/workbench/contributions";
+import { editorService, notifications, projectViewSelection } from "@/workbench/contributions";
 import { promptInput } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
-import { downloadPaths } from "./actions";
+import { downloadPaths, downloadRemoteInto } from "./actions";
 import { joinRemote, localPathForRemote, remoteName, remoteParent } from "./model";
 import { withSsh } from "./ssh";
 import { EMPTY_TREE, patchTree, useDeployment } from "./store";
@@ -179,6 +179,35 @@ export async function downloadToProject(server: DeploymentServerValid, entries: 
       key: "deployment.unmapped",
     });
   if (locals.length) await downloadPaths(server, locals);
+}
+
+/** Download to…: the entries into a chosen local folder (the Project view's selected folder, or
+ *  the project root, preselected), without the server path above them. */
+export async function downloadTo(server: DeploymentServerValid, entries: RemoteEntry[]) {
+  if (!entries.length) return;
+  const { open } = await import("@/platform/dialog");
+  const target = await open({
+    directory: true,
+    multiple: false,
+    title: tx("Download to"),
+    defaultPath: (await defaultDownloadFolder()) ?? undefined,
+  });
+  if (typeof target !== "string") return;
+  await downloadRemoteInto(
+    server,
+    entries.map((e) => e.path),
+    target,
+  );
+}
+
+async function defaultDownloadFolder(): Promise<string | null> {
+  const selected = projectViewSelection()[0];
+  if (selected) {
+    const kind = await call(commands.fsEntryKind(selected)).catch(() => null);
+    if (kind === "dir") return selected;
+    if (kind === "file") return selected.replace(/[\\/][^\\/]*$/, "");
+  }
+  return useProject.getState().project?.root ?? null;
 }
 
 export const copyRemotePath = (entry: RemoteEntry) => void copyText(entry.path);

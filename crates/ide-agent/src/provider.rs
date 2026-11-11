@@ -2,7 +2,7 @@
 //! `<config>/agents/<id>.toml` (written by hand, or by installing one from the ACP
 //! Registry, see `registry`).
 
-use crate::{AgentCommandReadOnlyReason, AgentProvider, AgentSource};
+use crate::{AcpImportOutcome, AgentCommandReadOnlyReason, AgentProvider, AgentSource, CustomAgentInput};
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -276,6 +276,127 @@ fn update_builtin(custom_dir: &Path, id: &str, change: impl FnOnce(&mut CustomAg
     }
     agent.write(&file)?;
     Ok(())
+}
+
+/// Saves a new custom agent; refuses built-in and ACP Registry ids, taken ids
+/// and an empty command. The id is also the agent file's name, so it must be
+/// a safe file stem.
+pub(crate) fn save_custom(custom_dir: &Path, input: &CustomAgentInput) -> IdeResult<()> {
+    let id = validated_custom_id(&input.id)?;
+    if builtin_spec(&id).is_some() {
+        return Err(IdeError::invalid(format!("{id} is a built-in agent; change its command instead")));
+    }
+    if input.command.trim().is_empty() {
+        return Err(IdeError::invalid("the agent command must not be empty"));
+    }
+    let file = custom_dir.join(format!("{id}.toml"));
+    if file.try_exists()? {
+        if CustomAgent::read(&file).is_ok_and(|a| a.registry.is_some()) {
+            return Err(IdeError::invalid(format!(
+                "{id} is installed from the ACP Registry; uninstall it there to replace it"
+            )));
+        }
+        return Err(IdeError::invalid(format!("there is already a custom agent '{id}'")));
+    }
+    CustomAgent {
+        name: Some(input.name.clone()),
+        driver: Driver::Acp,
+        command: input.command.clone(),
+        args: input.args.clone(),
+        env: input.env.clone(),
+        registry: None,
+    }
+    .write(&file)?;
+    Ok(())
+}
+
+/// Removes a custom agent's file; refuses built-in, ACP Registry and missing ids.
+pub(crate) fn remove_custom(custom_dir: &Path, id: &str) -> IdeResult<()> {
+    let id = validated_custom_id(id)?;
+    let id = id.as_str();
+    if builtin_spec(id).is_some() {
+        return Err(IdeError::invalid(format!("{id} is a built-in agent and cannot be removed")));
+    }
+    let file = custom_dir.join(format!("{id}.toml"));
+    let agent =
+        CustomAgent::read(&file).map_err(|_| IdeError::not_found(format!("there is no custom agent '{id}'")))?;
+    if agent.registry.is_some() {
+        return Err(IdeError::invalid(format!("{id} is installed from the ACP Registry; uninstall it there")));
+    }
+    match std::fs::remove_file(&file) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
+/// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom
+/// agents, one outcome per entry; entries that collide, lack a command or
+/// have no usable name are skipped with a reason.
+pub(crate) fn import_acp(custom_dir: &Path, text: &str) -> IdeResult<Vec<AcpImportOutcome>> {
+    #[derive(Deserialize)]
+    struct AcpJson {
+        #[serde(default)]
+        agent_servers: BTreeMap<String, AcpServer>,
+    }
+    #[derive(Deserialize)]
+    struct AcpServer {
+        #[serde(default)]
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+    }
+    let parsed: AcpJson =
+        serde_json::from_str(text).map_err(|e| IdeError::invalid(format!("not an acp.json file: {e}")))?;
+    let mut outcomes = Vec::with_capacity(parsed.agent_servers.len());
+    for (name, server) in parsed.agent_servers {
+        let id = slugify_id(&name);
+        let mut outcome = AcpImportOutcome { name, id: id.clone(), saved: false, reason: String::new() };
+        if id.is_empty() {
+            outcome.reason = "the name has no usable characters for an id".to_owned();
+        } else if builtin_spec(&id).is_some() {
+            outcome.reason = format!("{id} is a built-in agent");
+        } else if server.command.trim().is_empty() {
+            outcome.reason = "the entry has no command".to_owned();
+        } else if custom_dir.join(format!("{id}.toml")).try_exists()? {
+            outcome.reason = format!("there is already a custom agent '{id}'");
+        } else {
+            CustomAgent {
+                name: Some(outcome.name.clone()),
+                driver: Driver::Acp,
+                command: server.command,
+                args: server.args,
+                env: server.env,
+                registry: None,
+            }
+            .write(&custom_dir.join(format!("{id}.toml")))?;
+            outcome.saved = true;
+        }
+        outcomes.push(outcome);
+    }
+    Ok(outcomes)
+}
+
+/// A custom agent id doubles as a file stem: letters, digits, `-` and `_` only.
+fn validated_custom_id(id: &str) -> IdeResult<String> {
+    if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Ok(id.to_owned());
+    }
+    Err(IdeError::invalid(format!("'{id}' is not a usable agent id (letters, digits, '-' and '_' only)")))
+}
+
+/// Turns an `acp.json` server name into a file-stem id (`"My Agent!"` → `"my-agent"`).
+fn slugify_id(name: &str) -> String {
+    let mut id = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            id.push(c.to_ascii_lowercase());
+        } else if !id.ends_with('-') {
+            id.push('-');
+        }
+    }
+    id.trim_matches('-').to_owned()
 }
 
 /// An agent file, `<config>/agents/<id>.toml`.
@@ -752,5 +873,81 @@ mod tests {
         let spec = load(Some(path.parent().unwrap())).into_iter().find(|s| s.id == "amp-acp").unwrap();
         assert_eq!(spec.source, AgentSource::Registry { version: "0.10.0".into(), update: None });
         assert!(toml::from_str::<CustomAgent>("command = \"x\"\n[registry]\nid = \"x\"\n").is_err());
+    }
+
+    fn custom_input(id: &str) -> CustomAgentInput {
+        CustomAgentInput {
+            id: id.into(),
+            name: "Mine".into(),
+            command: "/opt/mine".into(),
+            args: vec!["acp".into()],
+            env: BTreeMap::from([("K".to_owned(), "v".to_owned())]),
+        }
+    }
+
+    #[test]
+    fn custom_agents_save_list_and_remove() {
+        let dir = tempfile::tempdir().unwrap();
+        save_custom(dir.path(), &custom_input("mine")).unwrap();
+        let mine = load(Some(dir.path())).into_iter().find(|s| s.id == "mine").unwrap();
+        assert_eq!((mine.name.as_str(), mine.command.as_str()), ("Mine", "/opt/mine"));
+        assert_eq!(mine.env, vec![("K".to_owned(), "v".to_owned())]);
+        assert_eq!(mine.source, AgentSource::Custom);
+        remove_custom(dir.path(), "mine").unwrap();
+        assert!(!load(Some(dir.path())).iter().any(|s| s.id == "mine"));
+        remove_custom(dir.path(), "mine").unwrap_err();
+    }
+
+    #[test]
+    fn custom_agents_refuse_builtin_registry_and_bad_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        save_custom(dir.path(), &custom_input("claude")).unwrap_err();
+        save_custom(dir.path(), &custom_input("../evil")).unwrap_err();
+        save_custom(dir.path(), &custom_input("")).unwrap_err();
+        let mut empty_command = custom_input("mine");
+        empty_command.command = "  ".into();
+        save_custom(dir.path(), &empty_command).unwrap_err();
+        save_custom(dir.path(), &custom_input("mine")).unwrap();
+        save_custom(dir.path(), &custom_input("mine")).unwrap_err();
+        remove_custom(dir.path(), "claude").unwrap_err();
+        // An id that isn't a plain file stem never reaches outside the agents directory.
+        let outside = dir.path().join("outside.toml");
+        std::fs::write(&outside, "command = \"/bin/sh\"\n").unwrap();
+        let agents = dir.path().join("agents");
+        std::fs::create_dir(&agents).unwrap();
+        remove_custom(&agents, "../outside").unwrap_err();
+        assert!(outside.exists());
+        std::fs::write(
+            dir.path().join("amp-acp.toml"),
+            "command = \"/registry/amp\"\n[registry]\nid = \"amp-acp\"\nversion = \"1.0\"\n",
+        )
+        .unwrap();
+        save_custom(dir.path(), &custom_input("amp-acp")).unwrap_err();
+        remove_custom(dir.path(), "amp-acp").unwrap_err();
+    }
+
+    #[test]
+    fn acp_json_imports_servers_and_skips_collisions() {
+        let dir = tempfile::tempdir().unwrap();
+        save_custom(dir.path(), &custom_input("taken")).unwrap();
+        let outcomes = import_acp(
+            dir.path(),
+            r#"{"agent_servers": {
+                "My Agent!": {"command": "/opt/agent", "args": ["--acp"], "env": {"K": "v"}},
+                "taken": {"command": "/opt/taken"},
+                "claude": {"command": "/opt/claude"},
+                "!!!": {"command": "/opt/noname"},
+                "silent": {"args": []}
+            }}"#,
+        )
+        .unwrap();
+        let saved: Vec<&str> = outcomes.iter().filter(|o| o.saved).map(|o| o.id.as_str()).collect();
+        assert_eq!(saved, ["my-agent"]);
+        assert!(outcomes.iter().filter(|o| !o.saved).all(|o| !o.reason.is_empty()));
+        let mine = load(Some(dir.path())).into_iter().find(|s| s.id == "my-agent").unwrap();
+        assert_eq!((mine.name.as_str(), mine.command.as_str()), ("My Agent!", "/opt/agent"));
+        assert_eq!(mine.source, AgentSource::Custom);
+        import_acp(dir.path(), "not json").unwrap_err();
+        assert!(import_acp(dir.path(), "{}").unwrap().is_empty());
     }
 }

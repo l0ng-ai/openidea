@@ -1,7 +1,8 @@
 import { call, commands, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import type { RunConfigTypeContribution } from "@/workbench/contributions";
-import { parseArgs } from "./configs";
+import { formatArgs, parseArgs } from "./configs";
+import { commandName } from "./commandName";
 import { prepareDotnetTest } from "@/platform/dotnet";
 
 function profile(p: Readonly<Record<string, string>>): {
@@ -26,6 +27,38 @@ export function dotnetCommand(p: Readonly<Record<string, string>>, test = false)
       ...(p.programArgs?.trim() ? ["--", ...parseArgs(p.programArgs)] : []),
     ],
   };
+}
+
+/**
+ * The form fields of a `dotnet run` command line ([`dotnetCommand`] reversed), or `null` when it
+ * uses anything the form can't show. Lets a new configuration, and one typed as a command, open
+ * as the form with its project field.
+ */
+function dotnetRunParams(c: RunConfig): Record<string, string> | null {
+  if (!/^dotnet(\.exe)?$/i.test(commandName(c.command))) return null;
+  const [verb, ...rest] = c.args;
+  if (verb !== "run") return null;
+  const p: Record<string, string> = c.command === "dotnet" ? {} : { executable: c.command };
+  const flags: Record<string, string> = {
+    "--project": "project",
+    "--framework": "framework",
+    "--configuration": "configuration",
+    "--launch-profile": "launchProfile",
+  };
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg === "--") {
+      p.programArgs = formatArgs(rest.slice(i + 1));
+      break;
+    }
+    if (arg === "--no-launch-profile") continue;
+    const key = flags[arg];
+    const value = rest[i + 1];
+    if (!key || value === undefined) return null;
+    p[key] = value;
+    i++;
+  }
+  return { project: "", ...p };
 }
 
 /** Build the current project/framework, independently of the run's profile working directory. */
@@ -104,6 +137,7 @@ export const dotnetProjectType: RunConfigTypeContribution = {
     },
   ],
   commandLine: (p) => dotnetCommand(p),
+  paramsFrom: dotnetRunParams,
   async prepareLaunch(config) {
     const resolved = await call(commands.runDotnetResolve(config, false));
     const p = resolved.params ?? {};

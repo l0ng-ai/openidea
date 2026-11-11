@@ -26,12 +26,19 @@
   display: flex;
   flex: none;
   flex-direction: column;
-  width: 280px;
+  width: 340px;
   min-height: 0;
   border-right: 1px solid var(--border);
 }
-.search {
+.searchRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 8px;
+}
+.searchField {
+  flex: 1;
+  min-width: 0;
 }
 .spacer {
   flex: 1;
@@ -398,13 +405,89 @@
   margin-bottom: 12px;
 }
 
-.marketItem {
-  list-style: none;
-  padding: 4px 8px;
+.categorySelect {
+  flex: none;
+  width: 150px;
+}
+.ownIcon {
+  background: transparent;
 }
 
-.categorySelect {
-  width: 100%;
+.marketRow .rowMain {
+  align-items: flex-start;
+  min-height: 60px;
+}
+.marketRow .icon {
+  margin-top: 2px;
+}
+.rowTitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.rowDescription {
+  overflow: hidden;
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.downloads {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+.exampleTag {
+  flex: none;
+  padding: 0 4px;
+  border-radius: var(--radius-small);
+  background: var(--bg-control);
+  color: var(--fg-muted);
+  font-size: var(--fs-tiny);
+  line-height: 14px;
+}
+.groupNote {
+  padding: 0 12px 4px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.suggestNotice {
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+/* plugins without an icon: their initial on a tint picked by id */
+.monogram {
+  font-weight: 600;
+  font-size: var(--fs-input-large);
+  --tone: var(--info);
+  background: color-mix(in srgb, var(--tone) 18%, transparent);
+  color: var(--tone);
+}
+.iconLarge.monogram {
+  font-size: 24px;
+}
+.tone0 {
+  --tone: var(--info);
+}
+.tone1 {
+  --tone: var(--success);
+}
+.tone2 {
+  --tone: var(--warning);
+}
+.tone3 {
+  --tone: var(--danger);
+}
+.tone4 {
+  --tone: var(--ansi-magenta);
+}
+.tone5 {
+  --tone: var(--ansi-cyan);
 }
 
 .detailsNotice {

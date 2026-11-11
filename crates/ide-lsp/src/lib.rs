@@ -20,6 +20,7 @@ mod handler;
 mod injections;
 mod inspect;
 pub mod jdtls;
+mod kotlin_lsp;
 mod launch;
 mod library_source;
 mod loading;
@@ -33,10 +34,12 @@ mod tsserver_bridge;
 pub mod types;
 mod uri;
 mod virtual_doc;
+mod vue_navigation;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
 pub use inspect::{FileInspection, InspectHost, InspectOptions};
 pub use jdtls::jvm_inspect::JdtJvmInspector;
+pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
 pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
@@ -315,6 +318,10 @@ impl<T> Outcome<T> {
         }
     }
 }
+
+/// How often a rename the server withdrew (`ContentModified`) is asked, and the pause between.
+const RENAME_ATTEMPTS: u32 = 5;
+const RENAME_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Implementation requests of one line-marker pass in flight at once.
 const IMPLEMENTATION_CONCURRENCY: usize = 4;
@@ -843,6 +850,7 @@ impl LspManager {
             self.schedule_pull(doc, Some(&server), Duration::ZERO);
         }
         self.check_clang_tidy(&server).await;
+        self.check_vue_navigation(&server).await;
         server.refresh_busy_status(&self.sink);
         server.announce_ready(generation);
         self.spawn_supervisor(server, generation, peer);
@@ -1060,8 +1068,11 @@ impl LspManager {
                 if s.name == compose::SERVER && compose_added {
                     me.reconfigure_soon();
                 }
+                let hint = me.clone();
                 let server = s.clone();
                 self.runtime.spawn(async move { me.check_clang_tidy(&server).await });
+                let server = s.clone();
+                self.runtime.spawn(async move { hint.check_vue_navigation(&server).await });
             }
         }
     }
@@ -2369,8 +2380,25 @@ impl LspManager {
         let query = || async {
             let mut params = snap.pos_params(t, pos);
             params["newName"] = json!(new_name);
-            let r: Option<lsp::WorkspaceEdit> =
-                self.call(t, "textDocument/rename", params, Some(cancel), LONG_TIMEOUT).await?;
+            // A server still analysing an edit withdraws the rename (`ContentModified`, which
+            // arrives as a cancellation). The user asked for it: ask again shortly instead of
+            // dropping it without a word, and say why if it keeps being withdrawn.
+            let mut attempt = 0;
+            let r: Option<lsp::WorkspaceEdit> = loop {
+                match self.call(t, "textDocument/rename", params.clone(), Some(cancel), LONG_TIMEOUT).await {
+                    Err(e) if e.kind == ide_core::error::ErrorKind::Cancelled && !cancel.is_cancelled() => {
+                        attempt += 1;
+                        if attempt >= RENAME_ATTEMPTS {
+                            return Err(IdeError::invalid(format!(
+                                "{} was still analysing a change and withdrew the rename; try again",
+                                t.server.name
+                            )));
+                        }
+                        tokio::time::sleep(RENAME_RETRY_DELAY).await;
+                    }
+                    r => break r?,
+                }
+            };
             Ok(r.map(|e| convert::workspace_edit(&self.conv(t.enc()), e)).unwrap_or_default())
         };
         // The Angular server renames in the file's own project only, whatever is open.

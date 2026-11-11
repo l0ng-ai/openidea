@@ -171,10 +171,32 @@ export function atEdgeLine(text: string, caret: number, dir: -1 | 1): boolean {
   return dir < 0 ? !text.slice(0, caret).includes("\n") : !text.slice(caret).includes("\n");
 }
 
-/** The settings shown in the composer: model, mode, collaboration mode, permissions, approvals, effort. */
+const matchesCategory = (o: AgentConfigOption, category: string) =>
+  o.category === category || (category === "model_config" && (o.category === "model_config" || o.id === "fast"));
+
+/** Cursor / ACP model parameters (`fast`, `context`…), separate from the model id itself. */
+export function modelConfigOptions(config: readonly AgentConfigOption[]): AgentConfigOption[] {
+  return config.filter((o) => o.category === "model_config" || o.id === "fast");
+}
+
+/** The settings shown in the composer: model, mode, collaboration mode, permissions, approvals, effort, fast. */
 export function mainOptions(config: readonly AgentConfigOption[]): AgentConfigOption[] {
-  const order = ["model", "mode", "collaboration_mode", "permissions", "approval", "thought_level"];
-  return order.flatMap((c) => config.filter((o) => o.category === c).slice(0, 1));
+  const order = ["model", "mode", "collaboration_mode", "permissions", "approval", "thought_level", "model_config"];
+  return order.flatMap((c) => {
+    const matched = config.filter((o) => matchesCategory(o, c));
+    return c === "model_config" ? matched : matched.slice(0, 1);
+  });
+}
+
+/** Cursor defaults to Fast; prefer standard Composer unless the user chose otherwise. */
+export function cursorModelDefaults(
+  providerId: string | undefined,
+  config: readonly AgentConfigOption[],
+): Record<string, string> {
+  if (providerId !== "cursor") return {};
+  const fast = config.find((o) => o.id === "fast" || o.category === "model_config");
+  if (fast?.values.some((v) => v.value === "false")) return { [fast.id]: "false" };
+  return {};
 }
 
 export const modeOption = (config: readonly AgentConfigOption[]) => config.find((o) => o.category === "mode");

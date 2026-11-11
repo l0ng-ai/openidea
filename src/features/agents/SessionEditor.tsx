@@ -105,6 +105,7 @@ import {
   type SubagentEntry,
 } from "./model";
 import {
+  acceptChanges,
   cancelTask,
   stopBackgroundTask,
   loadEntries,
@@ -2848,6 +2849,48 @@ function ChangesPane({
       });
     }
   };
+  const accept = async () => {
+    const chosen = (changes ?? []).filter((c) => selected.has(c.path));
+    const count = chosen.length || changes?.length || 0;
+    if (!count) return;
+    const name = basename((chosen[0] ?? changes![0]!).path);
+    const ok = await confirm({
+      title: "Accept Changes",
+      message: (
+        <>
+          <p>
+            {count === 1
+              ? tx`Copy the changes to ${name} into the local checkout?`
+              : tx`Copy the changes to ${count} files into the local checkout?`}
+          </p>
+          <p>{tx("They land uncommitted. Files you changed yourself since the task started are left alone.")}</p>
+        </>
+      ),
+      ok: "Accept",
+      icon: "warning",
+    });
+    if (!ok) return;
+    try {
+      const outcome = await acceptChanges(task.id, chosen.length ? chosen.map((c) => c.relPath) : null);
+      setSelected(new Set());
+      if (outcome.skipped.length) {
+        const skippedNames = outcome.skipped.map((s) => s.path).join(", ");
+        notifications().notify({
+          level: "warning",
+          title: tx("Changes accepted, some files kept"),
+          body: tx`You changed them yourself, accept them by hand: ${skippedNames}.`,
+        });
+      } else {
+        notifications().notify({ level: "info", title: tx("Changes accepted") });
+      }
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot accept the changes"),
+        body: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
   return (
     <aside className={styles.changes} aria-label={tx("Changes")}>
       <div className={styles.changesHeader}>
@@ -2861,6 +2904,14 @@ function ChangesPane({
           </span>
         )}
         <span className={styles.bannerSpacer} />
+        {task.isolation === "worktree" && (
+          <IconButton
+            icon="check"
+            title={selected.size ? "Accept Selected Changes…" : "Accept All Changes…"}
+            disabled={!changes?.length || task.status === "starting" || task.status === "running"}
+            onClick={() => void accept()}
+          />
+        )}
         <IconButton
           icon="revert"
           title={selected.size ? "Rollback Selected Changes…" : "Rollback All Changes…"}

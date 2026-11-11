@@ -256,6 +256,26 @@ describe("model and effort button", () => {
     expect(screen.queryByRole("button", { name: "Reasoning Effort" })).not.toBeInTheDocument();
   });
 
+  it("tucks Fast into the model popup with effort", () => {
+    const config = [
+      ...copilotConfig().filter((o) => o.category !== "thought_level"),
+      {
+        id: "fast",
+        name: "Fast",
+        category: "model_config",
+        description: null,
+        current: "false",
+        via: "option" as const,
+        values: [value("false", "Off"), value("true", "On")],
+      },
+    ];
+    render(<ConfigPickers config={config} onChange={vi.fn()} />);
+    expect(screen.queryByRole("switch", { name: "Fast" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    const dialog = screen.getByRole("dialog", { name: "Model & effort settings" });
+    expect(within(dialog).getByRole("switch", { name: "Fast" })).toHaveAttribute("aria-checked", "false");
+  });
+
   it("steps through the advertised effort levels and picks a model from the popup", () => {
     const onChange = vi.fn();
     render(<ConfigPickers config={copilotConfig()} values={{ reasoning_effort: "high" }} onChange={onChange} />);

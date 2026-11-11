@@ -45,31 +45,43 @@ fn innermost_repo<T>(repos: Vec<(PathBuf, T)>, path: &Path) -> Option<(PathBuf, 
 // Read tools must never invoke repository-configured executables, including in Restricted Mode.
 fn read_command(git: &str, root: &Path) -> std::process::Command {
     let mut command = std::process::Command::new(git);
+    ide_vcs::restrict(&mut command);
     command
         .current_dir(root)
-        .args([
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.hooksPath=",
-            "-c",
-            "diff.external=",
-            "-c",
-            "core.attributesFile=",
-            "-c",
-            "submodule.recurse=false",
-            "-c",
-            "color.ui=false",
-        ])
-        .env("GIT_NO_LAZY_FETCH", "1")
+        .args(["-c", "color.ui=false"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .env_remove("GIT_EXTERNAL_DIFF")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE");
     ide_core::process::prepare(&mut command);
     command
+}
+
+/// `-c` arguments that empty the clean and process filters the repository's own config names:
+/// git runs them to compare a changed file with the index. Filters of the user's config stay
+/// (Git LFS), as they are not the repository's choice.
+fn filter_overrides(git: &str, root: &Path) -> IdeResult<Vec<String>> {
+    let mut cmd = read_command(git, root);
+    cmd.args(["config", "--null", "--list", "--show-scope"]);
+    let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run git: {e}")))?;
+    if !out.status.success() {
+        return Err(IdeError::internal(String::from_utf8_lossy(&out.stderr).trim().to_owned()));
+    }
+    repository_filter_overrides(&out.stdout)
+}
+
+/// [`filter_overrides`] out of `listing`, the output of `git config --null --list --show-scope`.
+fn repository_filter_overrides(listing: &[u8]) -> IdeResult<Vec<String>> {
+    let mut fields = listing.split(|b| *b == 0);
+    let mut own = Vec::new();
+    while let (Some(scope), Some(record)) = (fields.next(), fields.next()) {
+        if matches!(scope, b"local" | b"worktree") {
+            own.extend_from_slice(record);
+            own.push(0);
+        }
+    }
+    ide_vcs::filter_overrides_from(&own)
 }
 
 /// The branch HEAD is on (unborn too); `None` when HEAD is detached or git fails.
@@ -167,7 +179,10 @@ fn git_executable(call: &Call) -> String {
 /// `git status` of the repository at `root`, paths relative to it.
 fn read_status(git: &str, root: &Path, untracked: bool, ignored: bool) -> IdeResult<Vec<StatusEntry>> {
     let mut cmd = read_command(git, root);
+    cmd.args(filter_overrides(git, root)?);
     cmd.args(["-c", "core.quotepath=false", "status", "--porcelain", "-z", "--find-renames"]);
+    // git asks a submodule with changes for its own status, which runs under the submodule's config.
+    cmd.arg("--ignore-submodules=dirty");
     // git refuses `--ignored=matching` with `--untracked-files=no`: untracked files are dropped below.
     cmd.arg(if untracked || ignored { "--untracked-files=all" } else { "--untracked-files=no" });
     if ignored {
@@ -181,6 +196,39 @@ fn read_status(git: &str, root: &Path, untracked: bool, ignored: bool) -> IdeRes
     let mut entries = parse_status(&String::from_utf8_lossy(&out.stdout));
     entries.retain(|e| untracked || !e.untracked());
     Ok(entries)
+}
+
+/// `git diff` of the repository at `root` (of `file` alone, when given): the index against HEAD
+/// when `staged`, else disk against the index.
+fn read_diff(
+    git: &str,
+    root: &Path,
+    file: Option<&Path>,
+    staged: bool,
+    cancel: &ide_core::CancellationToken,
+) -> IdeResult<String> {
+    let mut cmd = read_command(git, root);
+    cmd.args(filter_overrides(git, root)?);
+    cmd.args(["--no-pager", "diff", "--no-ext-diff", "--no-textconv"]);
+    // git asks a submodule with changes for its own status, and for its own diff when the
+    // repository's `diff.submodule` says so: both run under the submodule's config.
+    cmd.args(["--ignore-submodules=dirty", "--submodule=short"]);
+    if staged {
+        cmd.arg("--cached");
+    }
+    cmd.arg("--");
+    if let Some(file) = file {
+        cmd.arg(file.strip_prefix(root).map_err(|e| IdeError::invalid(e.to_string()))?);
+    }
+    ide_core::process::prepare(&mut cmd);
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let out = cmd.output()?;
+    if !out.status.success() {
+        return Err(IdeError::unavailable(String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// A git repository in the project, for paths outside the repositories IDEA knows: the
@@ -307,18 +355,7 @@ fn git_diff() -> Tool {
         let staged = call.flag("staged", false)?;
         let git = git_executable(&call);
         let cancel = call.cancel.clone();
-        let text = call.host.blocking(move || {
-            let mut cmd = read_command(&git, &root);
-            cmd.args(["--no-pager", "diff", "--no-ext-diff", "--no-textconv"]);
-            if staged { cmd.arg("--cached"); }
-            cmd.arg("--");
-            if let Some(file) = file { cmd.arg(file.strip_prefix(&root).map_err(|e| IdeError::invalid(e.to_string()))?); }
-            ide_core::process::prepare(&mut cmd);
-            if cancel.is_cancelled() { return Err(IdeError::cancelled()); }
-            let out = cmd.output()?;
-            if !out.status.success() { return Err(IdeError::unavailable(String::from_utf8_lossy(&out.stderr).trim())); }
-            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-        }).await?;
+        let text = call.host.blocking(move || read_diff(&git, &root, file.as_deref(), staged, &cancel)).await?;
         Ok(Output::text(text))
     })
     .param(Param::optional("repositoryPathRelativeToProject", ParamType::String, "Select the containing repository"))
@@ -340,6 +377,252 @@ mod tests {
         assert!(e[0].staged() && !e[0].unstaged());
         assert!(e[2].untracked() && !e[2].staged());
         assert!(e[3].conflicted() && !e[3].staged() && !e[3].unstaged());
+    }
+
+    /// Security audit lead 2 (variant): reading status or a diff must not run the repository's filters.
+    #[test]
+    fn status_and_diff_do_not_run_repository_filters() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git").current_dir(&root).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.test"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join(".gitattributes"), "*.txt filter=marker\n").unwrap();
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+        git(&["config", "filter.marker.clean", "echo x > executed-marker; cat"]);
+        git(&["config", "filter.marker.process", "echo x > executed-marker; cat"]);
+        git(&["config", "filter.marker.required", "true"]);
+        let marker = root.join("executed-marker");
+        let mut ran = Vec::new();
+        // The size it has in the index, so git has to read the file to tell whether it changed.
+        std::fs::write(root.join("a.txt"), "two\n").unwrap();
+        let status = read_status("git", &root, false, false);
+        if marker.exists() {
+            ran.push("status");
+        }
+        let _ = std::fs::remove_file(&marker);
+        std::fs::write(root.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let diff = read_diff("git", &root, None, false, &ide_core::CancellationToken::new());
+        if marker.exists() {
+            ran.push("diff");
+        }
+        // Control: the fixture's filter really runs when git is used directly.
+        let _ = std::fs::remove_file(&marker);
+        std::fs::write(root.join("a.txt"), "six\n").unwrap();
+        let _ = std::process::Command::new("git").current_dir(&root).args(["status", "--porcelain"]).output();
+        assert!(marker.exists(), "control: plain `git status` did not run the filter, fixture is not live");
+        assert!(ran.is_empty(), "a read tool ran the repository's filter via: {ran:?}");
+        assert_eq!(status.unwrap().len(), 1);
+        let diff = diff.unwrap();
+        assert!(diff.contains("+three"), "{diff}");
+    }
+
+    #[test]
+    fn only_filters_of_the_repository_s_own_config_are_emptied() {
+        let listing = b"system\0filter.lfs.clean\ngit-lfs clean -- %f\0\
+            global\0filter.lfs.process\ngit-lfs filter-process\0\
+            global\0filter.lfs.required\ntrue\0\
+            local\0core.bare\nfalse\0\
+            local\0filter.a.clean\nx\0\
+            worktree\0filter.b.process\ny\0\
+            local\0filter.a.required\ntrue\0\
+            command\0filter.c.clean\nz\0";
+        assert_eq!(
+            repository_filter_overrides(listing).unwrap(),
+            ["-c", "filter.a.clean=", "-c", "filter.b.process=", "-c", "filter.a.required=false"]
+        );
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git").current_dir(dir).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// A repository at `dir` with `a.txt` committed.
+    fn repository(dir: &Path, attributes: &[u8]) {
+        std::fs::create_dir_all(dir).unwrap();
+        git(dir, &["init", "-q"]);
+        git(dir, &["config", "user.email", "t@example.test"]);
+        git(dir, &["config", "user.name", "t"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join(".gitattributes"), attributes).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-qm", "init"]);
+    }
+
+    /// A shell command that leaves `marker` behind and passes its input on.
+    fn leaves(marker: &Path) -> String {
+        format!("echo x > '{}'; cat", marker.to_string_lossy().replace('\\', "/"))
+    }
+
+    /// Whether a program of the fixture left `marker` behind; removes it.
+    fn left(marker: &Path) -> bool {
+        let was = marker.exists();
+        let _ = std::fs::remove_file(marker);
+        was
+    }
+
+    /// Reads the status and then the diff of `root` after rewriting `file`, then has plain git
+    /// read the status as a control. Each write keeps the size the file has in the index, so git
+    /// has to read it to tell whether it changed.
+    fn read_both(root: &Path, file: &Path, marker: &Path) -> (IdeResult<Vec<StatusEntry>>, IdeResult<String>) {
+        let mut ran = Vec::new();
+        std::fs::write(file, "two\n").unwrap();
+        let status = read_status("git", root, false, false);
+        if left(marker) {
+            ran.push("status");
+        }
+        std::fs::write(file, "six\n").unwrap();
+        let diff = read_diff("git", root, None, false, &ide_core::CancellationToken::new());
+        if left(marker) {
+            ran.push("diff");
+        }
+        std::fs::write(file, "ten\n").unwrap();
+        let _ = std::process::Command::new("git").current_dir(root).args(["status", "--porcelain"]).output();
+        assert!(left(marker), "control: plain `git status` ran no program of the fixture, it is not live");
+        assert!(ran.is_empty(), "a read tool ran a program of the repository via: {ran:?}");
+        (status, diff)
+    }
+
+    #[test]
+    fn status_and_diff_do_not_run_filters_of_any_repository_config() {
+        type Configure = fn(&Path, &str);
+        let cases: [(&str, Configure); 4] = [
+            ("clean", |root, command| git(root, &["config", "filter.marker.clean", command])),
+            ("process", |root, command| git(root, &["config", "filter.marker.process", command])),
+            ("included file", |root, command| {
+                let included = format!("[filter \"marker\"]\n\tclean = \"{command}\"\n");
+                std::fs::write(root.join("extra.gitconfig"), included).unwrap();
+                git(root, &["config", "include.path", "../extra.gitconfig"]);
+            }),
+            ("worktree config", |root, command| {
+                git(root, &["config", "extensions.worktreeConfig", "true"]);
+                git(root, &["config", "--worktree", "filter.marker.clean", command]);
+            }),
+        ];
+        for (case, configure) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dunce::canonicalize(dir.path()).unwrap().join("repo");
+            let marker = root.with_file_name("marker");
+            repository(&root, b"*.txt filter=marker\n");
+            configure(&root, &leaves(&marker));
+            let (status, diff) = read_both(&root, &root.join("a.txt"), &marker);
+            assert_eq!(status.unwrap().len(), 1, "{case}");
+            let diff = diff.unwrap();
+            assert!(diff.contains("+six"), "{case}: {diff}");
+        }
+    }
+
+    /// git splits `-c name=value` at the first `=` and takes no name that is not UTF-8 on every
+    /// platform, so such a filter cannot be emptied: the tools read nothing instead.
+    #[test]
+    fn status_and_diff_refuse_a_repository_filter_git_cannot_be_told_to_skip() {
+        for name in [&b"x=y"[..], &[0xE9]] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dunce::canonicalize(dir.path()).unwrap().join("repo");
+            let marker = root.with_file_name("marker");
+            repository(&root, &[b"*.txt filter=", name, b"\n"].concat());
+            let section =
+                [b"[filter \"", name, format!("\"]\n\tclean = \"{}\"\n", leaves(&marker)).as_bytes()].concat();
+            let config = root.join(".git").join("config");
+            std::fs::write(&config, [std::fs::read(&config).unwrap(), section].concat()).unwrap();
+            let (status, diff) = read_both(&root, &root.join("a.txt"), &marker);
+            assert!(status.is_err() && diff.is_err(), "{name:?}");
+        }
+    }
+
+    /// git asks a submodule for its own status to tell whether it is dirty, under the
+    /// submodule's config.
+    #[test]
+    fn status_and_diff_do_not_run_filters_of_a_submodule() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap().join("repo");
+        let (sub, marker) = (root.join("sub"), root.with_file_name("marker"));
+        repository(&root, b"");
+        repository(&sub, b"*.txt filter=marker\n");
+        git(&root, &["add", "sub"]);
+        git(&root, &["commit", "-qm", "submodule"]);
+        git(&sub, &["config", "filter.marker.clean", &leaves(&marker)]);
+        git(&root, &["config", "diff.ignoreSubmodules", "none"]);
+        git(&root, &["config", "submodule.sub.ignore", "none"]);
+        let (status, diff) = read_both(&root, &sub.join("a.txt"), &marker);
+        status.unwrap();
+        diff.unwrap();
+    }
+
+    /// `git diff` writes the index back when it finds a file whose stat changed and whose content
+    /// did not, and git runs the hooks a config names for `post-index-change` on that write.
+    #[test]
+    fn status_and_diff_do_not_run_hooks_of_the_repository_s_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap().join("repo");
+        let marker = root.with_file_name("marker");
+        repository(&root, b"");
+        git(&root, &["config", "hook.marker.event", "post-index-change"]);
+        let command = format!("echo x > '{}'", marker.to_string_lossy().replace('\\', "/"));
+        git(&root, &["config", "hook.marker.command", &command]);
+        let listed = std::process::Command::new("git")
+            .current_dir(&root)
+            .args(["hook", "list", "post-index-change"])
+            .output()
+            .unwrap();
+        if !String::from_utf8_lossy(&listed.stdout).contains("marker") {
+            return; // This git has no hooks named by a config.
+        }
+        // The content it has in the index, with a time of its own that is not the index's.
+        let touch = |seconds: u64| {
+            let file = std::fs::File::options().write(true).open(root.join("a.txt")).unwrap();
+            file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(seconds)).unwrap();
+        };
+        let mut ran = Vec::new();
+        touch(60);
+        let status = read_status("git", &root, false, false);
+        if left(&marker) {
+            ran.push("status");
+        }
+        touch(120);
+        let diff = read_diff("git", &root, None, false, &ide_core::CancellationToken::new());
+        if left(&marker) {
+            ran.push("diff");
+        }
+        touch(180);
+        let _ = std::process::Command::new("git").current_dir(&root).args(["--no-pager", "diff"]).output();
+        assert!(left(&marker), "control: plain `git diff` did not run the hook, fixture is not live");
+        assert!(ran.is_empty(), "a read tool ran a hook of the repository's config via: {ran:?}");
+        assert!(status.unwrap().is_empty());
+        assert_eq!(diff.unwrap(), "");
+    }
+
+    /// `diff.submodule=diff` has git run `git diff` in the submodule, under the submodule's config.
+    #[test]
+    fn diff_does_not_run_a_diff_driver_of_a_submodule() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap().join("repo");
+        let (sub, marker) = (root.join("sub"), root.with_file_name("marker"));
+        repository(&root, b"");
+        repository(&sub, b"*.txt diff=marker\n");
+        git(&root, &["add", "sub"]);
+        git(&root, &["commit", "-qm", "submodule"]);
+        std::fs::write(sub.join("a.txt"), "one\ntwo\n").unwrap();
+        git(&sub, &["commit", "-qam", "second"]);
+        git(&sub, &["config", "diff.marker.command", &leaves(&marker)]);
+        git(&root, &["config", "diff.submodule", "diff"]);
+        let diff = read_diff("git", &root, None, false, &ide_core::CancellationToken::new());
+        let ran = left(&marker);
+        let _ = std::process::Command::new("git").current_dir(&root).args(["--no-pager", "diff"]).output();
+        assert!(left(&marker), "control: plain `git diff` did not run the diff driver, fixture is not live");
+        assert!(!ran, "git_diff ran the submodule's diff driver");
+        let diff = diff.unwrap();
+        assert!(diff.contains("Subproject commit"), "{diff}");
+        assert_eq!(read_status("git", &root, false, false).unwrap().len(), 1);
     }
 
     #[cfg(unix)]

@@ -45,7 +45,7 @@ export interface BuildSettings {
 
 export const DEFAULT_SETTINGS: BuildSettings = {
   maven: { offline: false, skipTests: false, profiles: {} },
-  gradle: { offline: false },
+  gradle: { offline: false, skipTests: false },
 };
 
 interface SyncState {
@@ -131,6 +131,8 @@ export const toggleSkipTests = () =>
   updateSettings((s) => ({ ...s, maven: { ...s.maven, skipTests: !s.maven.skipTests } }));
 export const toggleGradleOffline = () =>
   updateSettings((s) => ({ ...s, gradle: { ...s.gradle, offline: !s.gradle.offline } }));
+export const toggleGradleSkipTests = () =>
+  updateSettings((s) => ({ ...s, gradle: { ...s.gradle, skipTests: !s.gradle.skipTests } }));
 
 /** Delay before reloading Maven after a profile toggle, so a few toggles in a row reload once. */
 export const PROFILE_RELOAD_DELAY_MS = 800;

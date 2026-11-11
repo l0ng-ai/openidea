@@ -22,6 +22,21 @@
   margin-left: auto;
   width: 200px;
 }
+.notice {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-small);
+  color: var(--fg-secondary);
+}
+.noticeIcon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--warning);
+}
 .body {
   flex: 1;
   min-height: 0;
@@ -88,6 +103,10 @@
 .c4 {
   background: var(--flame-4);
 }
+/* After c1–c4 so an allocated type wins over its name's colour slot; match and dim still win over it. */
+.typeFrame {
+  background: var(--flame-type);
+}
 .match {
   background: var(--flame-match);
 }
@@ -101,6 +120,12 @@
   white-space: nowrap;
   text-overflow: ellipsis;
   line-height: 15px;
+}
+
+.typeMark {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
 }
 
 /* call tree */
@@ -182,7 +207,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.methodCell .muted {
+.methodCell .muted,
+.methodCell .typeMark {
   margin-left: 8px;
 }
 .num {
