@@ -768,11 +768,9 @@ export function DiffEditor({
         state: v.state,
         dispatch: (tr) => {
           const selection = tr.selection ?? v.state.selection;
-          v.dispatch({
-            selection,
-            effects: EditorView.scrollIntoView(selection.main.head, { y: "center" }),
-            userEvent: "select.byChunk",
-          });
+          // No scrollIntoView effect: it would set scrollTop in the same measure and cut off the
+          // smooth scroll below, which centres the caret.
+          v.dispatch({ selection, userEvent: "select.byChunk" });
           // CodeMirror draws the caret only in a focused editor, so a difference reached from
           // the toolbar, a menu or F7 pressed after those would move an invisible caret.
           v.focus();
