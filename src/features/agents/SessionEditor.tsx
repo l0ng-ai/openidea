@@ -75,7 +75,7 @@ import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
-import { currentTool, foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
+import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
 import { useRevealedText } from "./reveal";
 import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
 import {
@@ -2388,7 +2388,6 @@ function Tray({
   const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
   const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
   const busy = task.status === "running" || task.status === "starting";
-  const tool = entries && busy ? currentTool(entries) : null;
   const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   return (
     <div className={styles.tray}>
@@ -2445,10 +2444,6 @@ function Tray({
           <Spinner size={12} />
           {task.retry ? (
             <Retrying retry={task.retry} />
-          ) : tool ? (
-            <span className={styles.trayActivity} title={tool.title}>
-              {shortTitle(task, tool.title || tool.kind)}
-            </span>
           ) : (
             <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
           )}
