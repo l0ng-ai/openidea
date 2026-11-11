@@ -217,7 +217,7 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("regexp", "Regular expression", ["RegExp"], "regexp"),
 ];
 
-const SCHEME_LANGUAGES = { go: "Go", java: "Java", kotlin: "Kotlin", php: "PHP" } as const;
+const SCHEME_LANGUAGES = { csharp: "C#", go: "Go", java: "Java", kotlin: "Kotlin", php: "PHP" } as const;
 /** Languages that scope their overrides into a per-language editor block; Python ships its own attributes. */
 const SCHEME_LANGUAGE_SCOPES = { ...SCHEME_LANGUAGES, python: "Python" } as const;
 

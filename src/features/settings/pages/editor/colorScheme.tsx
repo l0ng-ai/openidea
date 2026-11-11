@@ -97,9 +97,7 @@ function treeIds(nodes: readonly Node[], out = new Set<string>()): Set<string> {
 
 /** Settings sub-page that owns an attribute, for preview clicks that cross pages. */
 function attrPageId(attr: AttributeDef): string {
-  return `editor.colorScheme.${
-    attr.path[0] === "Language Defaults" ? "language-defaults" : attr.path[0]!.toLowerCase()
-  }`;
+  return attr.path[0] === "Language Defaults" ? "editor.colorScheme.language-defaults" : languagePageId(attr.path[0]!);
 }
 
 /** Preview click on another sub-page: the target page selects and reveals the attribute. */
@@ -816,6 +814,72 @@ const SAMPLES: Record<string, CodeSample> = {
       [["}", "kotlin.operator"]],
     ],
   },
+  "C#": {
+    code: [
+      [["// Greets the user", "csharp.lineComment"]],
+      [
+        ["using ", "csharp.keyword"],
+        ["System", "csharp.packageReference"],
+        [";", "csharp.operator"],
+      ],
+      [["/// <summary>Says hello.</summary>", "csharp.docComment"]],
+      [
+        ["[", "csharp.operator"],
+        ["Serializable", "csharp.metadata"],
+        ["]", "csharp.operator"],
+      ],
+      [
+        ["public class ", "csharp.keyword"],
+        ["Greeter", "csharp.className"],
+      ],
+      [["{", "csharp.operator"]],
+      [
+        ["    private const int ", "csharp.keyword"],
+        ["MaxRetries", "csharp.constant"],
+        [" = ", "csharp.operator"],
+        ["3", "csharp.number"],
+        [";", "csharp.operator"],
+      ],
+      [
+        ["    public string ", "csharp.keyword"],
+        ["Name", "csharp.field"],
+        [" { ", "csharp.operator"],
+        ["get", "csharp.keyword"],
+        ["; }", "csharp.operator"],
+      ],
+      [
+        ["    public string ", "csharp.keyword"],
+        ["Greet", "csharp.functionDeclaration"],
+        ["(", "csharp.operator"],
+        ["int ", "csharp.keyword"],
+        ["count", "csharp.parameter"],
+        [")", "csharp.operator"],
+      ],
+      [["    {", "csharp.operator"]],
+      [
+        ["        var ", "csharp.keyword"],
+        ["message", "csharp.identifier"],
+        [" = ", "csharp.operator"],
+        ['$"Hello, {Name}', "csharp.string"],
+        ["\\n", "csharp.escape"],
+        ['"', "csharp.string"],
+        [";", "csharp.operator"],
+      ],
+      [
+        ["        return ", "csharp.keyword"],
+        ["string", "csharp.keyword"],
+        [".", "csharp.operator"],
+        ["Format", "csharp.functionCall"],
+        ["(", "csharp.operator"],
+        ["message", "csharp.identifier"],
+        [", ", "csharp.operator"],
+        ["count", "csharp.parameter"],
+        [");", "csharp.operator"],
+      ],
+      [["    }", "csharp.operator"]],
+      [["}", "csharp.operator"]],
+    ],
+  },
   PHP: {
     code: [
       [["<?php", "php.scriptTag"]],
@@ -1379,13 +1443,15 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
 const LANGUAGES = [...new Set(ATTRIBUTES.map((a) => a.path[0]!))].filter(
   (s) => !["General", "Debugger", "Language Defaults"].includes(s),
 );
+/** A language's sub-page id; `#` would end a settings link (`C#` → `csharp`). */
+const languagePageId = (language: string) => `editor.colorScheme.${language.toLowerCase().replace(/#/g, "sharp")}`;
 
 /** Sub-pages linked from the Color Scheme landing page, in sidebar order. */
 const SCHEME_SUBPAGES = [
   { id: "editor.colorScheme.general", title: "General" },
   { id: "editor.colorScheme.language-defaults", title: "Language Defaults" },
   { id: "editor.colorScheme.debugger", title: "Debugger" },
-  ...LANGUAGES.map((l) => ({ id: `editor.colorScheme.${l.toLowerCase()}`, title: l })),
+  ...LANGUAGES.map((l) => ({ id: languagePageId(l), title: l })),
 ];
 
 /** The scope chooser, import/export buttons and preview are identical on every sub-page. */
@@ -1479,7 +1545,7 @@ export const COLOR_SCHEME_PAGES: PageSpec[] = [
   }),
   ...LANGUAGES.map((language, i) =>
     editorPage({
-      id: `editor.colorScheme.${language.toLowerCase()}`,
+      id: languagePageId(language),
       title: language,
       order: 4 + i,
       projectScope: false,

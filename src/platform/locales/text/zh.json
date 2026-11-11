@@ -4365,6 +4365,7 @@
   "Use ; to separate patterns. * matches every file.": "使用 ; 分隔模式。* 匹配所有文件。",
   "Function and method suggestions get (); the caret goes inside unless there are no parameters.": "函数和方法建议会补全 ()；除非没有参数，否则光标置于括号内。",
   "Insert paired brackets (), [], {}": "插入成对括号 ()、[]、{}",
+  "Also pairs <> for generics where the syntax says a type starts.": "在语法表明类型开始处（泛型）也会补全 <>。",
   "word": "单词",
   "Runs of consecutive matching lines collapse into one expandable “<N internal lines>” row.": "连续匹配的多行会折叠为一个可展开的“<N internal lines>”行。",
   "Confirm closing a tab with a running process": "关闭有正在运行进程的标签页时确认",
@@ -7657,5 +7658,8 @@
   "Suggested for This Project": "为当前项目推荐",
   "Featured": "精选",
   "All Plugins": "全部插件",
-  "Examples": "示例插件"
+  "Examples": "示例插件",
+  "Settings › Tools › SSH Configurations": "设置 › 工具 › SSH 配置",
+  "Edit SSH Configurations": "编辑 SSH 配置",
+  "Docker over SSH uses the system ssh: choose a configuration with OpenSSH config authentication.": "通过 SSH 连接 Docker 使用系统 ssh：请选择认证方式为“OpenSSH 配置和身份验证代理”的 SSH 配置。"
 }
