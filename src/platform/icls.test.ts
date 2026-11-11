@@ -334,7 +334,9 @@ describe(".icls schemes", () => {
       <option name="PY.BUILTIN_NAME"><value><option name="FOREGROUND" value="abcd"/></value></option>
     </attributes></scheme>`;
     const attrs = parseIcls(xml).scheme.attributes;
-    expect(attrs.keyword).toEqual({ foreground: "#112233", bold: false, italic: false, effect: "none" });
+    // PY.KEYWORD styles Python only now; the shared keyword keeps DEFAULT_KEYWORD's value.
+    expect(attrs.pyKeyword).toEqual({ foreground: "#112233", bold: false, italic: false, effect: "none" });
+    expect(attrs.keyword).toEqual({ foreground: "#ff0000", bold: true, italic: false });
     expect(attrs.pyNestedFunction?.foreground).toBe("#223344");
     expect(attrs.pyDocstring?.foreground).toBe("#334455");
     expect(attrs.pyDocstring?.effect).toBe("none");

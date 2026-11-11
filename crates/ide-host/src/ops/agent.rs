@@ -5,8 +5,9 @@ use crate::Host;
 use crate::rpc::Dispatcher;
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
-    AgentAcceptOutcome, AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider,
-    AgentQueued, AgentTask, ExternalSession, McpScope, McpServer, McpServerInput, NewAgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt,
+    AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpScope, McpServer, McpServerInput,
+    NewAgentTask,
 };
 use ide_core::error::ErrorKind;
 use ide_core::{IdeError, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
@@ -42,6 +43,24 @@ pub fn set_env(
 ) -> IdeResult<()> {
     host.require_trust(window)?;
     host.project(window)?.agents.set_builtin_env(&id, env)
+}
+
+/// Saves a new custom ACP agent through its agent file.
+pub fn save_custom_agent(host: &Host, window: &str, input: CustomAgentInput) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.save_custom_agent(input)
+}
+
+/// Removes a custom agent's file (registry installs go through `registry_remove`).
+pub fn remove_custom_agent(host: &Host, window: &str, id: String) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.remove_custom_agent(&id)
+}
+
+/// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents.
+pub fn import_acp_agents(host: &Host, window: &str, text: String) -> IdeResult<Vec<AcpImportOutcome>> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.import_acp_agents(&text)
 }
 
 /// Where ACP Registry agents are saved (`<config>/agents`, like the user's own) and installed.

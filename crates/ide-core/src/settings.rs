@@ -63,6 +63,8 @@ pub struct Settings {
     pub agents: AgentSettings,
     /// Agents › MCP Server (global only).
     pub mcp_server: McpServerSettings,
+    /// Tools › Agents: Command Execution Policy.
+    pub agent_security: AgentSecuritySettings,
     /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
     #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
     pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
@@ -411,6 +413,7 @@ impl Default for Settings {
             cmake: CMakeSettings::default(),
             agents: AgentSettings::default(),
             mcp_server: McpServerSettings::default(),
+            agent_security: AgentSecuritySettings::default(),
             plugins: BTreeMap::new(),
         }
     }

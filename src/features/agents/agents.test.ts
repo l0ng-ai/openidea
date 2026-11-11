@@ -4,6 +4,8 @@ import {
   applyCompletion,
   atEdgeLine,
   bypassDefaults,
+  cursorModelDefaults,
+  modelConfigOptions,
   canSend,
   completionAt,
   isPathQuery,
@@ -198,15 +200,29 @@ describe("agent composer", () => {
     expect(atEdgeLine("a\nb", 1, 1)).toBe(false);
   });
 
+  it("defaults Cursor fast mode off when available", () => {
+    const fast = option("model_config", ["false", "true"], "true");
+    fast.id = "fast";
+    fast.name = "Fast";
+    expect(cursorModelDefaults("cursor", [fast])).toEqual({ fast: "false" });
+    expect(cursorModelDefaults("claude", [fast])).toEqual({});
+    expect(modelConfigOptions([fast]).map((o) => o.id)).toEqual(["fast"]);
+  });
+
   it("picks the main settings and cycles the mode", () => {
     const config = [option("fast", ["on"], null), option("mode", ["ask", "code"], "code"), option("model", ["m"], "m")];
-    expect(mainOptions(config).map((o) => o.id)).toEqual(["model", "mode"]);
+    expect(mainOptions(config).map((o) => o.id)).toEqual(["model", "mode", "fast"]);
     expect(nextValue(config[1]!)).toBe("ask");
     const permissions = option("allow_all", ["off", "on"], "off");
     permissions.category = "permissions";
-    expect(mainOptions([...config, permissions]).map((o) => o.id)).toEqual(["model", "mode", permissions.id]);
+    expect(mainOptions([...config, permissions]).map((o) => o.id)).toEqual(["model", "mode", permissions.id, "fast"]);
     const collaboration = option("collaboration_mode", ["default", "plan"], "default");
-    expect(mainOptions([...config, collaboration]).map((o) => o.id)).toEqual(["model", "mode", collaboration.id]);
+    expect(mainOptions([...config, collaboration]).map((o) => o.id)).toEqual([
+      "model",
+      "mode",
+      collaboration.id,
+      "fast",
+    ]);
     const approvals = {
       ...option("openidea.cursor.approval", ["ask", "bypass"], "ask"),
       category: "approval",
@@ -216,6 +232,7 @@ describe("agent composer", () => {
       "mode",
       permissions.id,
       approvals.id,
+      "fast",
     ]);
     expect(
       [
