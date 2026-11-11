@@ -1,5 +1,6 @@
 //! IPC commands of `ide_host::ops::run` (the shared implementation).
 
+use super::doc::blocking;
 use crate::state::AppState;
 use ide_core::{IdeResult, RunId};
 #[allow(unused_imports)]
@@ -55,13 +56,15 @@ pub async fn run_configs(window: Window, state: State<'_, AppState>) -> IdeResul
 
 #[tauri::command]
 #[specta::specta]
-pub fn run_save_configs(
+pub async fn run_save_configs(
     window: Window,
     state: State<'_, AppState>,
     configs: Vec<RunConfig>,
     removed_detected_ids: Option<Vec<String>>,
 ) -> IdeResult<()> {
-    ide_host::ops::run::save_configs(&state.host, window.label(), &configs, &removed_detected_ids.unwrap_or_default())
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    let removed = removed_detected_ids.unwrap_or_default();
+    blocking(move || ide_host::ops::run::save_configs(&host, &label, &configs, &removed)).await
 }
 
 /// Temporary configurations as they are kept between sessions: without what settings derived.
@@ -140,36 +143,44 @@ pub fn run_close_stdin(state: State<'_, AppState>, id: RunId) -> IdeResult<()> {
 /// Configuration templates: per-type defaults applied to new configurations.
 #[tauri::command]
 #[specta::specta]
-pub fn run_templates(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<RunConfig>> {
-    ide_host::ops::run::run_templates(&state.host, window.label())
+pub async fn run_templates(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<RunConfig>> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::run::run_templates(&host, &label)).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn run_save_templates(window: Window, state: State<'_, AppState>, templates: Vec<RunConfig>) -> IdeResult<()> {
-    ide_host::ops::run::run_save_templates(&state.host, window.label(), templates)
+pub async fn run_save_templates(
+    window: Window,
+    state: State<'_, AppState>,
+    templates: Vec<RunConfig>,
+) -> IdeResult<()> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::run::run_save_templates(&host, &label, templates)).await
 }
 
 /// Project files run configurations can be imported from (`.vscode/launch.json`).
 #[tauri::command]
 #[specta::specta]
-pub fn run_import_sources(
+pub async fn run_import_sources(
     window: Window,
     state: State<'_, AppState>,
 ) -> IdeResult<Vec<ide_run::import::RunImportSource>> {
-    ide_host::ops::run::run_import_sources(&state.host, window.label())
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::run::run_import_sources(&host, &label)).await
 }
 
 /// Configurations read from `source`, not saved; names already in `existing` are skipped.
 #[tauri::command]
 #[specta::specta]
-pub fn run_import_configs(
+pub async fn run_import_configs(
     window: Window,
     state: State<'_, AppState>,
     source: ide_run::import::RunImportSource,
     existing: Vec<RunConfig>,
 ) -> IdeResult<ide_run::import::RunImport> {
-    ide_host::ops::run::run_import_configs(&state.host, window.label(), source, existing)
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::run::run_import_configs(&host, &label, source, existing)).await
 }
 
 /// The environment runs inherit when "Include system environment variables" is on.
@@ -182,12 +193,13 @@ pub fn run_system_env(state: State<'_, AppState>) -> std::collections::BTreeMap<
 /// Variables of the `.env` files a debug launch names, for the debugger to start with.
 #[tauri::command]
 #[specta::specta]
-pub fn run_env_files(
+pub async fn run_env_files(
     window: Window,
     state: State<'_, AppState>,
     files: Vec<std::path::PathBuf>,
 ) -> IdeResult<std::collections::BTreeMap<String, String>> {
-    ide_host::ops::run::run_env_files(&state.host, window.label(), files)
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::run::run_env_files(&host, &label, files)).await
 }
 
 /// Writes the Gradle init script adding `jvm_args` to the JVMs the build forks; returns its path.
