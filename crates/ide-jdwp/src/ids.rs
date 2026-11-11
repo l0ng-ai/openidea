@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn object_array_region_rejects_void_and_primitive_elements() {
-        for inner in [b'V', b'I'] {
+        for inner in *b"VI" {
             let mut w = Writer::new();
             w.u8(b'[');
             w.i32(1);

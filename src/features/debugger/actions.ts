@@ -33,6 +33,8 @@ import { cancelHotSwapBuild, reloadChangedClasses } from "./hotswap";
 import { refreshMemory, useMemory } from "./memory/memoryState";
 import { closeInstances, instancesOutdated, showInstances, showReferrers, useInstances } from "./memory/instancesState";
 import { jumpToClass } from "./memory/jumpToClass";
+import { captureHeap } from "./heap/heapState";
+import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
 import {
   isPythonAttachTarget,
@@ -513,6 +515,40 @@ export function registerDebugActions(): () => void {
       run: () => {
         const s = activeSession();
         if (s && sessionSupports("jvmMemory", s)) void refreshMemory(s.id);
+      },
+    },
+    {
+      id: "debug.heap.capture",
+      title: "Capture Heap Snapshot",
+      category: "Debug",
+      icon: "heap-snapshot",
+      keywords: ["memory", "heap", "dump", "snapshot"],
+      when: "debugHasJvmMemory",
+      run: () => {
+        const s = activeSession();
+        if (s && sessionSupports("jvmHeap", s)) void captureHeap(s.id);
+      },
+    },
+    {
+      // The host opens dumps for a trusted project only (F21).
+      id: "debug.heap.open",
+      title: "Open Heap Dump…",
+      category: "Debug",
+      icon: "heap-snapshot",
+      keywords: ["memory", "heap", "dump", "hprof", "snapshot"],
+      when: "projectOpen",
+      run: () => openHeapDump(),
+    },
+    {
+      id: "debug.heap.saveDump",
+      title: "Save Heap Dump As…",
+      category: "Debug",
+      icon: "export",
+      keywords: ["memory", "heap", "dump", "hprof", "snapshot"],
+      when: "debugHeapSnapshotCaptured",
+      run: () => {
+        const id = activeCapturedSnapshot();
+        if (id !== null) return saveHeapDump(id);
       },
     },
     {

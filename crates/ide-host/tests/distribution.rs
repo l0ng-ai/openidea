@@ -177,6 +177,11 @@ fn signed(
         engine: "^1.0".into(),
         categories: vec!["tools".into()],
         icon: None,
+        homepage: None,
+        notes: None,
+        downloads: None,
+        featured: false,
+        suggest: vec![],
     };
     (out, entry)
 }

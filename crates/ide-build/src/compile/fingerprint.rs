@@ -265,6 +265,14 @@ pub fn menu_fingerprint(
 }
 
 impl LaunchFingerprint {
+    /// Folders (relative to the project) of the Maven projects whose POM is an input.
+    pub(super) fn project_dirs(&self) -> impl Iterator<Item = &Path> {
+        self.files
+            .keys()
+            .filter(|p| p.is_relative() && p.file_name().is_some_and(|n| n == "pom.xml"))
+            .map(|pom| pom.parent().unwrap_or(Path::new("")))
+    }
+
     /// Relative paths whose content changed while `(length, mtime)` stayed the same
     /// compared to `previous` (timestamp-preserving external edits, coarse-granularity
     /// filesystems). Timestamp-incremental builders (Maven, the Kotlin plugin) would

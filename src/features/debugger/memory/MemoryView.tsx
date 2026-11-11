@@ -1,4 +1,4 @@
-/** Memory tab of the Debug tool window: live instance counts per class of the debugged JVM. */
+/** Memory tab of the Debug tool window: live instance counts per class of the debugged JVM, and heap capture. */
 import { useEffect, useMemo } from "react";
 import clsx from "clsx";
 import { Checkbox, Icon, IconButton, Input, List, T } from "@/ui";
@@ -7,6 +7,7 @@ import { useTx } from "@/platform/i18n";
 import type { JvmClassRow, JvmMemorySnapshot } from "@/platform/ipc";
 import { sessionSupports, type DebugSession } from "../state";
 import { useActionEnabled } from "../ui/useActionEnabled";
+import { retainedForSession, useHeap } from "../heap/heapState";
 import {
   DEFAULT_QUERY,
   isOutdated,
@@ -16,6 +17,7 @@ import {
   setMemoryQuery,
   useMemory,
 } from "./memoryState";
+import { HeapCaptureButton, HeapCaptureStatus } from "./HeapCapture";
 import { InstancesPane } from "./InstancesPane";
 import { backendText } from "./instancesTree";
 import { keepKeysOnButton } from "./rowButtonKeys";
@@ -28,24 +30,31 @@ const COLUMNS: ReadonlyArray<{ key: SortKey; label: string; numeric: boolean }> 
   { key: "instances", label: "Count", numeric: true },
   { key: "deltaInstances", label: "Diff", numeric: true },
   { key: "bytes", label: "Shallow Size", numeric: true },
+  { key: "retained", label: "Retained Size", numeric: true },
 ];
 
 const showInstancesOf = (name: string) => void executeAction("debug.memory.showInstances", name);
 
-/** `listsInstances`: the session can list the class's instances, which it reads only while paused. */
+/**
+ * `listsInstances`: the session can list the class's instances, which it reads only while paused.
+ * `retained`: retained bytes by class name from a snapshot of this table's stop, or `null` for no such column.
+ */
 function ClassRow({
   row,
   sizes,
+  retained,
   listsInstances,
   paused,
 }: {
   row: JvmClassRow;
   sizes: boolean;
+  retained: ReadonlyMap<string, number> | null;
   listsInstances: boolean;
   paused: boolean;
 }) {
   const tx = useTx();
   const delta = formatDelta(row.deltaInstances);
+  const retainedBytes = retained?.get(row.name);
   const opens = listsInstances && paused;
   return (
     <div className={styles.row} role="none" onDoubleClick={opens ? () => showInstancesOf(row.name) : undefined}>
@@ -86,6 +95,11 @@ function ClassRow({
           {formatBytes(row.bytes)}
         </span>
       )}
+      {retained && (
+        <span role="gridcell" className={clsx(styles.cell, styles.num, retainedBytes === undefined && styles.zero)}>
+          {retainedBytes === undefined ? "—" : formatBytes(retainedBytes)}
+        </span>
+      )}
     </div>
   );
 }
@@ -99,7 +113,15 @@ export function MemoryView({ session }: { session: DebugSession }) {
   const result = entry?.result ?? null;
   const snapshot = entry?.snapshot ?? null;
   const source = snapshot?.source ?? "histogram";
-  const sorted = useMemo(() => queryFor(query, source), [query, source]);
+  const heapSnapshots = useHeap((s) => s.snapshots);
+  const tableStop = snapshot ? (entry?.takenAtStop ?? null) : null;
+  // `retainedForSession` alone decides whether the sizes fit this table (Z2), so other callers cannot skip a check.
+  const retained = useMemo(
+    () => (tableStop === null ? null : retainedForSession(id, tableStop)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the heap snapshots and the session's stop and status are the inputs of retainedForSession()
+    [id, tableStop, session.stops, session.status, heapSnapshots],
+  );
+  const sorted = useMemo(() => queryFor(query, source, retained !== null), [query, source, retained]);
   const listsInstances = sessionSupports("jvmInstances", session);
   const paused = session.status === "paused";
   const canRefresh = useActionEnabled("debug.memory.refresh");
@@ -115,8 +137,11 @@ export function MemoryView({ session }: { session: DebugSession }) {
     if (overtaken) void refreshMemory(id);
   }, [id, overtaken]);
 
-  const rows = useMemo(() => (snapshot ? visibleRows(snapshot.rows, sorted) : []), [snapshot, sorted]);
-  const columns = COLUMNS.filter((c) => columnsOf(source).includes(c.key));
+  const rows = useMemo(
+    () => (snapshot ? visibleRows(snapshot.rows, sorted, retained ?? undefined) : []),
+    [snapshot, sorted, retained],
+  );
+  const columns = COLUMNS.filter((c) => columnsOf(source, retained !== null).includes(c.key));
   const selected = entry?.selected ?? null;
 
   const sortBy = (key: SortKey) =>
@@ -133,6 +158,7 @@ export function MemoryView({ session }: { session: DebugSession }) {
           iconSize={16}
           disabled={entry?.loading || !canRefresh}
         />
+        <HeapCaptureButton session={session} />
         <Input
           className={styles.filter}
           value={query.filter}
@@ -161,6 +187,7 @@ export function MemoryView({ session }: { session: DebugSession }) {
           {entry.error}
         </div>
       )}
+      <HeapCaptureStatus session={session} />
       {snapshot && entry && isOutdated(entry, session.stops) && (
         <div className={styles.banner} role="status">
           <T>Taken before the last stop. Refresh to update.</T>
@@ -180,7 +207,7 @@ export function MemoryView({ session }: { session: DebugSession }) {
         </div>
       )}
       {snapshot && (
-        <div className={clsx(styles.table, source === "debugger" && styles.noSizes)}>
+        <div className={clsx(styles.table, source === "debugger" && styles.noSizes, retained && styles.withRetained)}>
           <div className={styles.grid} role="grid" aria-label={tx("Memory")} aria-rowcount={rows.length + 1}>
             <div className={styles.headGroup} role="rowgroup">
               <div className={styles.head} role="row" aria-rowindex={1}>
@@ -207,7 +234,13 @@ export function MemoryView({ session }: { session: DebugSession }) {
               items={rows}
               getKey={(r, i) => `${i}:${r.name}`}
               renderItem={(r) => (
-                <ClassRow row={r} sizes={source !== "debugger"} listsInstances={listsInstances} paused={paused} />
+                <ClassRow
+                  row={r}
+                  sizes={source !== "debugger"}
+                  retained={retained}
+                  listsInstances={listsInstances}
+                  paused={paused}
+                />
               )}
               activeIndex={selected == null ? -1 : rows.findIndex((r) => r.name === selected)}
               onActiveChange={(i) => selectMemoryClass(id, rows[i]?.name ?? null)}

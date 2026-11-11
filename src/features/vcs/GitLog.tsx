@@ -2745,6 +2745,10 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
               }}
               renderNode={(n) => <ChangedFileRow node={n} flat={!groupByDirectory} />}
               onActivate={(n) => n.file && void showChangesDiff([n.file])}
+              onJumpToSource={(n, sel) => {
+                const files = sel.has(n.key) ? filesUnder(tree, sel) : filesUnder([n]);
+                void executeAction("vcs.log.changes.jumpToSource", files);
+              }}
               onContextMenu={onFileMenu}
               aria-label="Changed files"
               className={styles.fileTree}

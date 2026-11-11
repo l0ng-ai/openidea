@@ -313,6 +313,7 @@ export function TitleBar({
   const frameless = usePlatform((s) => s.framelessTitleBar);
   const { map, shown, menu } = useToolbar();
   const [menuExpanded, setMenuExpanded] = useState(false);
+  const separateMenu = useProject((s) => s.settings?.appearance?.mainMenuStyle === "toolbar");
   const [bar, setBar] = useState<HTMLElement | null>(null);
   useNativeTitlebar(bar);
   const className = clsx(
@@ -338,7 +339,8 @@ export function TitleBar({
     );
   const entry = (id: string) => <ToolbarEntry key={id} id={id} items={map} />;
   const toolbar = !minimal && !lightEdit;
-  return (
+  const menuRow = frameless && !minimal && separateMenu;
+  const header = (
     <header
       ref={setBar}
       className={clsx(className, minimal && styles.minimal, dialog && styles.dialogBar)}
@@ -349,7 +351,7 @@ export function TitleBar({
         showContextMenu(e, menu);
       }}
     >
-      {frameless && !minimal && <MainMenu onExpandedChange={setMenuExpanded} />}
+      {frameless && !minimal && !separateMenu && <MainMenu onExpandedChange={setMenuExpanded} />}
       {title && (
         <span className={styles.windowTitle} {...windowDragRegion}>
           {typeof title === "string" ? <T>{title}</T> : title}
@@ -370,5 +372,14 @@ export function TitleBar({
       )}
       {frameless && <WindowControls dialog={dialog} />}
     </header>
+  );
+  if (!menuRow) return header;
+  return (
+    <>
+      {header}
+      <div className={styles.menuRow}>
+        <MainMenu row />
+      </div>
+    </>
   );
 }
