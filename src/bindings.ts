@@ -3872,6 +3872,8 @@ export type DeploymentServer = {
 	name?: string,
 	/**  [`SshConfiguration::id`]. */
 	sshConfig?: string,
+	/**  FTP / FTPS servers. */
+	ftp?: FtpConnection,
 	/**  Absolute remote folder the mappings are relative to; empty = the login directory. */
 	rootPath?: string,
 	/**  Web server URL of the root (Open in Browser on the deployed file). */
@@ -3895,7 +3897,9 @@ export type DeploymentSettings = {
 	exclude?: string[],
 };
 
-export type DeploymentType = "sftp" | "local";
+export type DeploymentType = "sftp" | "ftp" | 
+/**  FTP secured with `AUTH TLS` (explicit FTPS). */
+"ftps" | "local";
 
 export type Diagnostic = {
 	range: Range,
@@ -4932,7 +4936,23 @@ export type Fragment = {
 	text: string,
 };
 
-export type FsConnection = { kind: "sftp"; ssh: string } | { kind: "local" };
+export type FsConnection = { kind: "sftp"; ssh: string } | 
+/**  `server`: the deployment server whose saved password is used. */
+{ kind: "ftp"; server: string; secure: boolean; ftp: FtpConnection } | { kind: "local" };
+
+/**
+ *  Host and login of an FTP / FTPS deployment server. The password is kept with
+ *  the saved passwords, under the server's id.
+ */
+export type FtpConnection = {
+	host?: string,
+	/**  `None`: 21. */
+	port?: number | null,
+	/**  Empty: anonymous login. */
+	user?: string,
+	/**  Passive mode (the client opens data connections); off: active mode. */
+	passive?: boolean,
+};
 
 /**
  *  A method breakpoint (DAP function breakpoint). `name` uses the adapter's syntax:

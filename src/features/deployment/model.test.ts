@@ -132,6 +132,14 @@ describe("servers and reports", () => {
     expect(sshRemedy("permissionDenied", "SSH password required for deploy@example.com", "password")).toBe("secret");
     expect(sshRemedy("permissionDenied", "SSH key passphrase required for ~/.ssh/id", "keyPair")).toBe("secret");
     expect(sshRemedy("permissionDenied", "SSH host key of box:22 has changed", "password")).toBeNull();
+    expect(sshRemedy("permissionDenied", "FTP password required for web@ftp.example.com:21", "openSsh")).toBe("secret");
+    expect(
+      sshRemedy(
+        "permissionDenied",
+        "FTP authentication failed for web@ftp.example.com:21: [530] Login incorrect.",
+        "openSsh",
+      ),
+    ).toBe("secret");
     expect(sshRemedy("permissionDenied", "SSH authentication failed", "openSsh")).toBeNull();
     expect(sshRemedy("permissionDenied", "SSH authentication failed", "password")).toBe("secret");
     expect(sshRemedy("io", "Connection refused", "password")).toBeNull();
