@@ -876,9 +876,10 @@ org.eclipse.jdt.core.compiler.codegen.targetPlatform={jdt_ver}\n"
         tracing::warn!("jdtls: cannot write compiler defaults: {e}");
         return;
     }
-    // jdtls accepts absolute filesystem paths as well as URLs (including paths
-    // containing spaces and Windows backslashes). Explicit server settings win later.
-    let defaults = json!({"settings": {"java": {"settings": {"url": file.to_string_lossy()}}}});
+    // A `file:` URI: jdtls parses the setting as a URI when matching watched-file
+    // changes, which fails on a bare path with spaces. Explicit server settings win later.
+    let url = url::Url::from_file_path(&file).map_or_else(|()| file.to_string_lossy().into_owned(), String::from);
+    let defaults = json!({"settings": {"java": {"settings": {"url": url}}}});
     let existing = cfg.initialization_options.clone();
     merge_init_options(cfg, defaults);
     if let Some(existing) = existing {
@@ -1824,13 +1825,18 @@ mod java_compiler_tests {
         serde_json::to_value(cfg.initialization_options.as_ref().unwrap()).unwrap()
     }
 
+    fn prefs_path(options: &Value) -> PathBuf {
+        let url = options.pointer("/settings/java/settings/url").unwrap().as_str().unwrap();
+        url::Url::parse(url).unwrap().to_file_path().unwrap()
+    }
+
     #[test]
     fn serial_version_inspection_sets_the_compiler_option() {
         let tmp = tempfile::tempdir().unwrap();
         let url = |inspections: &InspectionSettings| {
             let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
             configure_java_compiler(&mut cfg, tmp.path(), inspections);
-            options(&cfg).pointer("/settings/java/settings/url").unwrap().as_str().unwrap().to_owned()
+            prefs_path(&options(&cfg))
         };
         let set = |o: ide_core::settings::InspectionOverride| {
             let mut s = InspectionSettings::default();
@@ -1869,7 +1875,9 @@ mod java_compiler_tests {
         merge_init_options(&mut cfg, json!({"settings": {"java": {"format": {"tabSize": 4}}}}));
         configure_java_compiler(&mut cfg, &cache, &InspectionSettings::default());
         let options = options(&cfg);
-        let path = PathBuf::from(options.pointer("/settings/java/settings/url").unwrap().as_str().unwrap());
+        let url = options.pointer("/settings/java/settings/url").unwrap().as_str().unwrap();
+        assert!(url.starts_with("file://") && !url.contains(' '), "{url}");
+        let path = prefs_path(&options);
         assert!(path.starts_with(&cache));
         let prefs = std::fs::read_to_string(&path).unwrap();
         assert_eq!(prefs.lines().count(), 2);

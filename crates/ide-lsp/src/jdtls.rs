@@ -1314,15 +1314,22 @@ mod tests {
         std::fs::write(&file, format!("{}=warning\n{}=ignore\nother=error\n", ACCESS_OPTIONS[0], ACCESS_OPTIONS[1]))
             .unwrap();
         let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
-        cfg.initialization_options = Some(
-            toml::Value::try_from(json!({"settings": {"java": {"settings": {"url": file.to_string_lossy()}}}}))
-                .unwrap(),
-        );
+        let with_url = |cfg: &mut ide_language::LanguageServerConfig, url: String| {
+            cfg.initialization_options =
+                Some(toml::Value::try_from(json!({"settings": {"java": {"settings": {"url": url}}}})).unwrap());
+        };
+        with_url(&mut cfg, crate::uri::path_to_uri_string(&file));
         assert_eq!(compiler_defaults(&cfg), json!({}));
         for prefix in ["", "--jvm-arg="] {
             cfg.args = vec![format!("{prefix}-Djava.import.generatesMetadataFilesAtProjectRoot=false")];
             assert_eq!(compiler_defaults(&cfg), json!({ACCESS_OPTIONS[0]: "warning", ACCESS_OPTIONS[1]: "ignore"}));
         }
+        with_url(&mut cfg, file.to_string_lossy().into_owned());
+        assert_eq!(
+            compiler_defaults(&cfg),
+            json!({ACCESS_OPTIONS[0]: "warning", ACCESS_OPTIONS[1]: "ignore"}),
+            "a path"
+        );
         cfg.args.push("--jvm-arg=-Djava.import.generatesMetadataFilesAtProjectRoot=true".into());
         assert_eq!(compiler_defaults(&cfg), json!({}), "the final JVM property wins");
         cfg.args.pop();
