@@ -40,7 +40,7 @@ use super::parts::PartReader;
 use super::project::{Module, ModuleKind};
 use super::views::{call_arguments, path_expression, provider_files, string_literal};
 use crate::names::{FileNames, NameKind, Resolution};
-use crate::project::composer::{RootManifest, installed_packages};
+use crate::project::composer::{RootManifest, installed_packages_in};
 use crate::project::normalize;
 use crate::project::{AutoloadMap, AutoloadStandard, NamespaceRoot};
 use crate::syntax::ParsedFile;
@@ -60,9 +60,17 @@ pub(crate) struct Discovery {
 
 /// The service providers of the project at `root` and its Concord modules;
 /// `local` are the providers already known (`app/Providers`, the modules'),
-/// whose registrations are followed too.
-pub(crate) fn discover(root: &Path, vendor: &Path, manifest: Option<&RootManifest>, local: &[PathBuf]) -> Discovery {
-    let classes = ClassFiles::new(root, vendor, manifest);
+/// whose registrations are followed too. `installed` is the parsed
+/// `<vendor>/composer/installed.json`, read once by the caller (roadmap
+/// phase 9.8.b: each reader used to parse it again).
+pub(crate) fn discover(
+    root: &Path,
+    vendor: &Path,
+    manifest: Option<&RootManifest>,
+    installed: Option<&serde_json::Value>,
+    local: &[PathBuf],
+) -> Discovery {
+    let classes = ClassFiles::new(root, vendor, manifest, installed);
     let read = |path: &Path| std::fs::read_to_string(path).ok().map(|text| ParsedFile::parse("providers.php", text));
     let mut registered: Vec<String> = Vec::new();
     if let Some(parsed) = read(&root.join("bootstrap").join("providers.php")) {
@@ -81,7 +89,7 @@ pub(crate) fn discover(root: &Path, vendor: &Path, manifest: Option<&RootManifes
             }
         }
     }
-    registered.extend(discovered_providers(vendor));
+    registered.extend(discovered_providers(installed));
 
     let mut out = Discovery { providers: Vec::new(), concord };
     let mut seen: Vec<PathBuf> = local.to_vec();
@@ -129,7 +137,7 @@ struct ClassFiles {
 }
 
 impl ClassFiles {
-    fn new(root: &Path, vendor: &Path, manifest: Option<&RootManifest>) -> Self {
+    fn new(root: &Path, vendor: &Path, manifest: Option<&RootManifest>, installed: Option<&serde_json::Value>) -> Self {
         let mut map = AutoloadMap::default();
         let mut add =
             |base: &Path, autoload: &crate::project::composer::Autoload, dev: bool, package: Option<String>| {
@@ -153,7 +161,7 @@ impl ClassFiles {
             add(root, &manifest.autoload, false, None);
             add(root, &manifest.autoload_dev, true, None);
         }
-        for package in installed_packages(vendor) {
+        for package in installed.map(|json| installed_packages_in(vendor, json)).unwrap_or_default() {
             add(&normalize(&package.dir), &package.autoload, package.dev, Some(package.name));
         }
         Self { map }
@@ -165,13 +173,15 @@ impl ClassFiles {
     }
 }
 
+/// The packages of an `installed.json`, in either format.
+fn package_list(installed: Option<&serde_json::Value>) -> &[serde_json::Value] {
+    installed.and_then(|json| json.get("packages").unwrap_or(json).as_array()).map_or(&[], Vec::as_slice)
+}
+
 /// The providers packages list under `extra.laravel.providers` in
-/// `installed.json`.
-fn discovered_providers(vendor: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(vendor.join("composer").join("installed.json")) else { return Vec::new() };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { return Vec::new() };
-    let packages = json.get("packages").unwrap_or(&json).as_array().cloned().unwrap_or_default();
-    packages
+/// `installed.json` (parsed: `installed`).
+fn discovered_providers(installed: Option<&serde_json::Value>) -> Vec<String> {
+    package_list(installed)
         .iter()
         .filter_map(|package| package.pointer("/extra/laravel/providers").and_then(|p| p.as_array()))
         .flatten()
@@ -184,22 +194,18 @@ fn discovered_providers(vendor: &Path) -> Vec<String> {
 /// Laravel's defaults (`Facade::defaultAliases()`, which before Laravel 11
 /// sat in `config/app.php`), the `aliases` packages list under
 /// `extra.laravel` in `installed.json`, then the `aliases` of
-/// `config/app.php`. Later entries win.
-pub(crate) fn class_aliases(root: &Path, vendor: &Path) -> Vec<(String, String)> {
+/// `config/app.php`. Later entries win. `installed` is the parsed
+/// `installed.json`.
+pub(crate) fn class_aliases(root: &Path, installed: Option<&serde_json::Value>) -> Vec<(String, String)> {
     let mut aliases: Vec<(String, String)> = super::refs::intentions::ALIASES
         .iter()
         .map(|(alias, class)| ((*alias).to_owned(), (*class).to_owned()))
         .collect();
-    if let Ok(text) = std::fs::read_to_string(vendor.join("composer").join("installed.json"))
-        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
-    {
-        let packages = json.get("packages").unwrap_or(&json).as_array().cloned().unwrap_or_default();
-        for package in &packages {
-            let Some(listed) = package.pointer("/extra/laravel/aliases").and_then(|a| a.as_object()) else { continue };
-            for (alias, class) in listed {
-                if let Some(class) = class.as_str() {
-                    aliases.push((alias.clone(), class.trim_start_matches('\\').to_owned()));
-                }
+    for package in package_list(installed) {
+        let Some(listed) = package.pointer("/extra/laravel/aliases").and_then(|a| a.as_object()) else { continue };
+        for (alias, class) in listed {
+            if let Some(class) = class.as_str() {
+                aliases.push((alias.clone(), class.trim_start_matches('\\').to_owned()));
             }
         }
     }
@@ -639,5 +645,44 @@ mod tests {
                 .to_owned(),
         );
         assert_eq!(registered_by(&provider), ["A\\EventServiceProvider"]);
+    }
+
+    /// `installed.json` is parsed once by `LaravelProject::load_with` and
+    /// shared by package discovery, the autoload rules and the class aliases
+    /// (roadmap phase 9.8.b), in both of its formats.
+    #[test]
+    fn one_installed_json_parse_gives_providers_and_aliases() {
+        let package = r#"{"name": "acme/pkg", INSTALL
+            "autoload": {"psr-4": {"Acme\\Pkg\\": "src/"}},
+            "extra": {"laravel": {"providers": ["\\Acme\\Pkg\\PkgServiceProvider"],
+                                  "aliases": {"Pkg": "Acme\\Pkg\\Facades\\Pkg", "Cfg": "Acme\\Pkg\\Old"}}}}"#;
+        let composer2 = format!(
+            r#"{{"packages": [{}], "dev-package-names": []}}"#,
+            package.replace("INSTALL", r#""install-path": "../acme/pkg","#)
+        );
+        let composer1 = format!("[{}]", package.replace("INSTALL", ""));
+        for installed in [composer2, composer1] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let write = |path: &str, text: &str| {
+                let path = root.join(path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, text).unwrap();
+            };
+            write("artisan", "");
+            write("composer.json", r#"{"require": {"laravel/framework": "^11.0"}}"#);
+            write("vendor/composer/installed.json", &installed);
+            write(
+                "vendor/acme/pkg/src/PkgServiceProvider.php",
+                "<?php\nnamespace Acme\\Pkg;\nclass PkgServiceProvider {}\n",
+            );
+            write("config/app.php", "<?php\nreturn ['aliases' => ['Cfg' => App\\Cfg::class]];\n");
+
+            let project = super::super::LaravelProject::load(root).expect("a Laravel project");
+            let names: Vec<_> = project.providers.iter().filter_map(|path| path.file_name()).collect();
+            assert_eq!(names, ["PkgServiceProvider.php"], "{installed}");
+            assert_eq!(project.class_alias("Pkg"), Some("Acme\\Pkg\\Facades\\Pkg"), "{installed}");
+            assert_eq!(project.class_alias("Cfg"), Some("App\\Cfg"), "config/app.php wins: {installed}");
+        }
     }
 }

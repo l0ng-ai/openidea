@@ -123,7 +123,12 @@ pub(crate) fn installed_packages(vendor: &Path) -> Vec<InstalledPackage> {
             return Vec::new();
         }
     };
-    let (packages, dev_names) = match &json {
+    installed_packages_in(vendor, &json)
+}
+
+/// [`installed_packages`] of an `installed.json` already parsed (`json`).
+pub(crate) fn installed_packages_in(vendor: &Path, json: &Value) -> Vec<InstalledPackage> {
+    let (packages, dev_names) = match json {
         Value::Array(packages) => (packages.as_slice(), Vec::new()),
         Value::Object(map) => (
             map.get("packages").and_then(Value::as_array).map_or(&[][..], Vec::as_slice),

@@ -138,8 +138,13 @@ impl ArtisanCommands {
     pub fn read(engine: &PhpEngine, project: &LaravelProject) -> Self {
         let mut project_commands = Vec::new();
         let mut packages = Vec::new();
-        for model in command_classes(engine) {
-            let Some(command) = class_command(engine, &model) else { continue };
+        // Each command class's file is read: hundreds with `vendor/`, so in
+        // parallel, in the classes' order (roadmap phase 9.8.b).
+        let found: Vec<ArtisanCommand> = {
+            use rayon::prelude::*;
+            command_classes(engine).par_iter().filter_map(|model| class_command(engine, model)).collect()
+        };
+        for command in found {
             if command.source == CommandSource::Package {
                 packages.push(command);
             } else {
@@ -214,25 +219,26 @@ impl ArtisanCommands {
 /// directly or not.
 fn command_classes(engine: &PhpEngine) -> Vec<std::sync::Arc<ClassModel>> {
     let Some(index) = engine.index() else { return Vec::new() };
-    let resolver = engine.resolver();
     let mut seen: HashSet<String> = HashSet::new();
     let mut queue = vec![SYMFONY_COMMAND.to_owned(), CONSOLE_COMMAND.to_owned()];
-    let mut out = Vec::new();
+    let mut classes = Vec::new();
     while let Some(parent) = queue.pop() {
         for decl in index.direct_subclasses(&parent).unwrap_or_default() {
             if !seen.insert(decl.fqn.to_ascii_lowercase()) {
                 continue;
             }
             queue.push(decl.fqn.clone());
-            if let Some(model) = resolver.class_model(&decl.fqn)
-                && model.kind() == ClassKind::Class
-                && !model.class.modifiers.is_abstract
-            {
-                out.push(model);
-            }
+            classes.push(decl.fqn);
         }
     }
-    out
+    // The models (with their inherited members) are built in parallel, in
+    // the order found (roadmap phase 9.8.b).
+    use rayon::prelude::*;
+    classes
+        .par_iter()
+        .filter_map(|fqn| engine.class_model(fqn))
+        .filter(|model| model.kind() == ClassKind::Class && !model.class.modifiers.is_abstract)
+        .collect()
 }
 
 /// The string default of property `name` declared by the class itself or a

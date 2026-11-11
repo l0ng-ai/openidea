@@ -18,6 +18,7 @@ Final verification (phase 9.8, 2026-11-11, release builds, `vendor/` installed):
 
 - `real_app_checklist`, `real_app_eloquent_columns` and `real_app_inspect_code` pass on Monica and Bagisto. Monica: 70 models (63 with a certain schema), 2 unknown-column problems in 891 files; Inspect Code finds 202 diagnostics in 896 files, 13.9 s in parallel (7.3 s again), 108.9 s one by one. Bagisto: 127 models (105 certain), all three checks pass.
 - `language_smoke` `php` (the Intelephense fallback) and `php_native` pass.
+- Phase 9.8.b brought Monica's `php_laravel_real/model_warm_start` from 155 ms back under its 150 ms budget, to 97 ms (`model_cold` 205 ms), by parsing `installed.json` once and loading the project's independent parts in parallel ([performance.md](performance.md#warm-start-phase-98b)).
 - What's still missing is listed in [Known limits](#known-limits). Nothing new was found in Laravel support during the verification.
 
 ## Turning it on
@@ -642,6 +643,8 @@ Monica, release build, 2026-11-11 (`model_profile`, mean of 5 cold builds and 3 
 | --------------------------------------------- | ------ | ------------- | ------ |
 | cold (`forget_laravel_model`, nothing stored) | 400 ms | 542 ms        | 230 ms |
 | warm start (a new session, 748 parts stored)  | 150 ms | —             | 129 ms |
+
+Phase 9.8 measured the warm start at 155 ms; phase 9.8.b brought it to 97 ms (`php_laravel_real/model_warm_start`). The time was in work no part stores: the project's JSON files, `ide.json`, class aliases and provider discovery, the resolver's facts and the Artisan command classes ([performance.md](performance.md#warm-start-phase-98b)).
 
 The benches `php_laravel_real/model_cold` (budget now 400 ms) and the new `php_laravel_real/model_warm_start` (150 ms: a new engine on the cache of an earlier one, with nothing read from the files that didn't change) measure the same.
 

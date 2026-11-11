@@ -996,5 +996,5 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
 
   Failures that come from this machine's `core.autocrlf` (`known-failures.txt`) are reported, not fixed here. Anything too large to fix becomes a follow-up phase. Record the results in `PROGRESS.md` and in a short "Status" section at the top of `laravel.md` and `performance.md`.
 
-- [ ] Phase 9.8.b: Monica's warm model start
+- [x] Phase 9.8.b: Monica's warm model start
       What 9.8 left (it ran every deferred check and fixed what they found: PHPDoc parses mapping a 64 MB stack segment on request threads, Symfony container ids matched to classes ignoring case, and three Rust results that depended on serde_json's `preserve_order`): `php_laravel_real/model_warm_start` takes 155 ms on Monica, over its 150 ms budget (129 ms in 9.4). Find what grew since 9.4 (the stored model parts' decoding, the parts that are rebuilt, the summaries' schema 22), fix it, and record the number in `laravel.md` and `performance.md`. Tests: `pnpm perf:rust --package ide-php` with `LARAVEL_APP_DIR` on Monica within budget, and `real_app_checklist` unchanged.

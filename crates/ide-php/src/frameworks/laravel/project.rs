@@ -219,11 +219,20 @@ impl LaravelProject {
     /// (Settings › PHP › Laravel › Laravel support: Enabled).
     pub fn load_with(root: &Path, force: bool) -> Option<Self> {
         let root = normalize(root);
-        let composer = read_json(&root.join("composer.json"));
-        let lock = read_json(&root.join("composer.lock"));
         let manifest = RootManifest::read(&root);
         let vendor = root.join(manifest.as_ref().map_or("vendor", |m| m.vendor_dir.as_str()));
-        let installed = read_json(&vendor.join("composer").join("installed.json"));
+        // `composer.lock` and `installed.json` are large (700 KB each in
+        // Monica): parsed at the same time, and `installed.json` only once
+        // for every reader below (roadmap phase 9.8.b).
+        let (composer, (lock, installed)) = rayon::join(
+            || read_json(&root.join("composer.json")),
+            || {
+                rayon::join(
+                    || read_json(&root.join("composer.lock")),
+                    || read_json(&vendor.join("composer").join("installed.json")),
+                )
+            },
+        );
         let required = |name: &str| {
             composer.as_ref().is_some_and(|json| {
                 ["require", "require-dev"].iter().any(|section| json.get(section).and_then(|s| s.get(name)).is_some())
@@ -251,8 +260,6 @@ impl LaravelProject {
         let nwidart = required("nwidart/laravel-modules")
             || locked("nwidart/laravel-modules").is_some()
             || root.join("modules_statuses.json").is_file();
-        let ide_json = IdeJson::load(&root, &vendor);
-        let packages = LaravelPackages::detect(|name| required(name) || locked(name).is_some(), &ide_json);
         let livewire_major = locked(LaravelPackages::LIVEWIRE)
             .or_else(|| {
                 composer.as_ref().and_then(|json| {
@@ -269,11 +276,11 @@ impl LaravelProject {
             paths,
             route_files: Vec::new(),
             modules: Vec::new(),
-            ide_json,
-            packages,
+            ide_json: IdeJson::default(),
+            packages: LaravelPackages::default(),
             livewire_major,
             providers: Vec::new(),
-            class_aliases: super::providers::class_aliases(&root, &vendor),
+            class_aliases: Vec::new(),
             provider_guards: Vec::new(),
         };
         if nwidart {
@@ -281,7 +288,20 @@ impl LaravelProject {
         }
         project.directory_modules(manifest.as_ref());
         let local = super::views::local_provider_files(&project);
-        let discovery = super::providers::discover(&root, &vendor, manifest.as_ref(), &local);
+        // The `ide.json` files, the class aliases and the providers don't
+        // need each other: read at the same time (roadmap phase 9.8.b).
+        let (ide_json, (class_aliases, discovery)) = rayon::join(
+            || IdeJson::load(&root, &vendor),
+            || {
+                rayon::join(
+                    || super::providers::class_aliases(&root, installed.as_ref()),
+                    || super::providers::discover(&root, &vendor, manifest.as_ref(), installed.as_ref(), &local),
+                )
+            },
+        );
+        project.packages = LaravelPackages::detect(|name| required(name) || locked(name).is_some(), &ide_json);
+        project.ide_json = ide_json;
+        project.class_aliases = class_aliases;
         for module in discovery.concord {
             if !project.modules.iter().any(|known| same_path(&known.path, &module.path)) {
                 project.modules.push(module);

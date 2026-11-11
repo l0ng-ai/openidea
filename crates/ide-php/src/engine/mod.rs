@@ -770,7 +770,14 @@ impl PhpEngine {
             Some(loaded) => loaded,
             None => {
                 let force = settings.detection == LaravelDetection::Enabled;
-                let loaded = LaravelProject::load_with(&self.root(), force).map(Arc::new);
+                let root = self.root();
+                // The resolver's facts (read from the index's summaries) are
+                // needed right after: built at the same time when the
+                // project looks like a Laravel one (roadmap phase 9.8.b).
+                let (loaded, _) = rayon::join(
+                    || LaravelProject::load_with(&root, force).map(Arc::new),
+                    || (force || root.join("artisan").is_file()).then(|| self.resolver().laravel()),
+                );
                 self.shared.laravel.lock().loaded = Some(loaded.clone());
                 loaded
             }
@@ -1336,8 +1343,12 @@ impl Declarations for PhpEngine {
     /// order migrations run in).
     fn laravel(&self) -> LaravelFacts {
         let indexed = self.index().and_then(|index| index.laravel_files().ok()).unwrap_or_default();
-        let mut summaries: Vec<(PathBuf, Arc<FileSummary>)> =
-            indexed.iter().filter_map(|path| Some((path.clone(), self.shared_summary(path).ok()??))).collect();
+        // Decoded in parallel: hundreds of summaries on a new session
+        // (roadmap phase 9.8.b).
+        let mut summaries: Vec<(PathBuf, Arc<FileSummary>)> = {
+            use rayon::prelude::*;
+            indexed.par_iter().filter_map(|path| Some((path.clone(), self.shared_summary(path).ok()??))).collect()
+        };
         let open: Vec<OpenDocument> = self.shared.documents.lock().values().cloned().collect();
         for document in open {
             if !indexed.contains(&document.path) {
@@ -1362,8 +1373,12 @@ impl Declarations for PhpEngine {
     /// yet, in path order.
     fn symfony(&self) -> SymfonyProject {
         let indexed = self.index().and_then(|index| index.symfony_files().ok()).unwrap_or_default();
-        let mut summaries: Vec<(PathBuf, Arc<FileSummary>)> =
-            indexed.iter().filter_map(|path| Some((path.clone(), self.shared_summary(path).ok()??))).collect();
+        // Decoded in parallel: hundreds of summaries on a new session
+        // (roadmap phase 9.8.b).
+        let mut summaries: Vec<(PathBuf, Arc<FileSummary>)> = {
+            use rayon::prelude::*;
+            indexed.par_iter().filter_map(|path| Some((path.clone(), self.shared_summary(path).ok()??))).collect()
+        };
         let open: Vec<OpenDocument> = self.shared.documents.lock().values().cloned().collect();
         for document in open {
             if !indexed.contains(&document.path) {
