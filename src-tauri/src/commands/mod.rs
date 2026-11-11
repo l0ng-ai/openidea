@@ -194,6 +194,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         doc::doc_snapshot,
         doc::doc_ui_mode,
         doc::doc_set_encoding,
+        doc::doc_set_bom,
         doc::doc_set_line_ending,
         doc::doc_outline,
         doc::doc_folding,

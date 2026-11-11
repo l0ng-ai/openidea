@@ -486,11 +486,15 @@ fn reload_and_convert_encoding() {
     let (bytes, _, _) = encoding_rs::GBK.encode("中文内容");
     fs::write(&path, &bytes).unwrap();
     let info = f.docs.open(&path).unwrap();
-    assert_eq!(f.docs.set_encoding(info.id, "gbk", true).unwrap(), "gbk");
+    let encoding = f.docs.set_encoding(info.id, "gbk", true).unwrap();
+    assert_eq!(encoding.encoding, "gbk");
+    assert!(!encoding.has_bom);
     assert_eq!(f.docs.snapshot(info.id).unwrap().text, "中文内容");
 
     // Convert: same text, written in the new encoding on save.
-    assert_eq!(f.docs.set_encoding(info.id, "utf-8", false).unwrap(), "utf-8");
+    let encoding = f.docs.set_encoding(info.id, "utf-8", false).unwrap();
+    assert_eq!(encoding.encoding, "utf-8");
+    assert!(!encoding.has_bom);
     f.docs.save(info.id).unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "中文内容");
 
