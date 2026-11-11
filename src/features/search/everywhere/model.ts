@@ -76,6 +76,8 @@ export interface FileItem {
   nameIndices: number[];
   line: number | null;
   col: number | null;
+  /** A directory: choosing it selects it in the Project view. */
+  folder?: boolean;
 }
 
 export interface SymbolItem {
@@ -167,6 +169,12 @@ export function fileItem(
     line,
     col,
   };
+}
+
+/** A directory match (`relPath` ends in `/`), listed with the files as IDEA's Go to File does. */
+export function folderItem(m: Pick<FileMatch, "path" | "relPath" | "indices">): FileItem {
+  const rel = m.relPath.replace(/\/$/, "");
+  return { ...fileItem({ ...m, relPath: rel }), key: `d:${m.path}`, folder: true };
 }
 
 export function symbolItem(m: SymbolMatch): SymbolItem {

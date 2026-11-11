@@ -27,7 +27,7 @@ export interface EmmetSyntax {
 }
 
 /** Languages with markup expansion; `<style>` / `<script>` regions are handled. */
-const MARKUP_LANGUAGES = new Set(["html", "vue", "svelte"]);
+const MARKUP_LANGUAGES = new Set(["html", "vue", "svelte", "django-html"]);
 const STYLESHEET_LANGUAGES: Record<string, string> = { css: "css", scss: "scss", less: "less", sass: "sass" };
 
 /** Whether `language` files expand Emmet abbreviations. */
@@ -68,6 +68,8 @@ export function syntaxAt(language: string, before: string): EmmetSyntax | null {
   if (css) return stylesheetContext(text) ? { type: "stylesheet", syntax: css } : null;
   if (!MARKUP_LANGUAGES.has(language)) return null;
   if (lastMatch(text, /<!--/g) > lastMatch(text, /-->/g)) return null;
+  // Not inside a Django tag, variable or comment (`{% if user|`).
+  if (language === "django-html" && lastMatch(text, /\{[%{#]/g) > lastMatch(text, /[%}#]\}/g)) return null;
   if (openRegion(text, "script")) return null;
   const style = openRegion(text, "style");
   if (style) {

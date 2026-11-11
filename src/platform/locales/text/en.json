@@ -956,6 +956,9 @@
   "This file was auto-detected as a Docker Compose configuration based on its content": "This file was auto-detected as a Docker Compose configuration based on its content",
   "Not a Compose file": "Not a Compose file",
   "Keep as Docker Compose": "Keep as Docker Compose",
+  "This file has Django template tags": "This file has Django template tags",
+  "Keep as HTML": "Keep as HTML",
+  "Use Django Template": "Use Django Template",
   "Set Docker Compose File Detection": "Set Docker Compose File Detection",
   "Could not save Docker Compose file detection": "Could not save Docker Compose file detection",
   "Compose Up": "Compose Up",
@@ -1318,5 +1321,6 @@
   "Suggested for This Project": "Suggested for This Project",
   "Featured": "Featured",
   "All Plugins": "All Plugins",
-  "Examples": "Examples"
+  "Examples": "Examples",
+  "Remove File": "Remove File"
 }

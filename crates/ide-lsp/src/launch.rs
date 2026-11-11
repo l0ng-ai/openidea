@@ -146,7 +146,7 @@ fn required_env_set(config: &LanguageServerConfig) -> bool {
 }
 
 /// A configured `PATH` (e.g. a selected toolchain prepended) also resolves the binary.
-fn server_search_path(config: &LanguageServerConfig) -> OsString {
+pub(crate) fn server_search_path(config: &LanguageServerConfig) -> OsString {
     config.env.get("PATH").map(OsString::from).unwrap_or_else(search_path)
 }
 

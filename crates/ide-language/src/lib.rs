@@ -55,6 +55,10 @@ pub struct LanguageConfig {
     /// the first one whose root marker is found applies.
     #[serde(default)]
     pub framework_ui_modes: Vec<FrameworkUiMode>,
+    /// Files of this language in a framework's projects that their extension alone would
+    /// give to another language (Django templates are `.html` files in `templates`).
+    #[serde(default)]
+    pub framework_files: Vec<FrameworkFiles>,
     #[serde(default)]
     pub tree_sitter: Option<String>,
     #[serde(default)]
@@ -87,6 +91,18 @@ pub struct FrameworkUiMode {
     /// Files whose presence in a directory above a file, up to the project
     /// folder, marks the framework's project, e.g. `angular.json`; matched like
     /// language servers' `root-markers`.
+    pub root_markers: Vec<String>,
+}
+
+/// Files in a framework's folder: a file with one of `extensions` below a folder named
+/// `folder`, which has a root marker in a directory above it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FrameworkFiles {
+    pub folder: String,
+    /// Without the dot, compared ignoring case.
+    pub extensions: Vec<String>,
+    /// Matched like language servers' `root-markers`, e.g. `manage.py`.
     pub root_markers: Vec<String>,
 }
 
