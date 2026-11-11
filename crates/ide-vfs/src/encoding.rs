@@ -359,6 +359,32 @@ fn sync_error_is_tolerable(e: &std::io::Error) -> bool {
     false
 }
 
+/// On Windows a file can't be replaced while another process has it open without
+/// delete sharing: an antivirus or indexer scan, a sync client, a program reading
+/// its config. Those let go within moments, so the replacing rename is retried briefly.
+const RENAME_ATTEMPTS: u32 = 10;
+const RENAME_PAUSE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Access denied (os error 5), sharing and lock violations (32, 33) on Windows.
+fn held_by_another_process(e: &std::io::Error) -> bool {
+    cfg!(windows) && matches!(e.raw_os_error(), Some(5 | 32 | 33))
+}
+
+fn retrying(
+    attempts: u32,
+    pause: std::time::Duration,
+    transient: impl Fn(&std::io::Error) -> bool,
+    mut op: impl FnMut() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    for _ in 1..attempts {
+        match op() {
+            Err(e) if transient(&e) => std::thread::sleep(pause),
+            r => return r,
+        }
+    }
+    op()
+}
+
 /// Writes `bytes` to `path` atomically: temp file in the same directory, fsync,
 /// rename over the target. Preserves the permissions of an existing file and
 /// writes through symlinks. Falls back to an in-place write when the directory
@@ -441,7 +467,7 @@ fn write_atomic_impl(path: &Path, bytes: &[u8], allow_in_place: bool, private: b
             fs::set_permissions(&tmp, permissions)?;
         }
         drop(file);
-        fs::rename(&tmp, &target)
+        retrying(RENAME_ATTEMPTS, RENAME_PAUSE, held_by_another_process, || fs::rename(&tmp, &target))
     })();
     if let Err(e) = result {
         let _ = fs::remove_file(&tmp);
@@ -537,6 +563,58 @@ mod tests {
         assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
         assert_eq!(fs::read(&target).unwrap(), b"new notebook");
         assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o640);
+    }
+
+    #[test]
+    fn replacing_is_retried_only_while_a_file_is_held() {
+        use std::io::{Error, ErrorKind};
+        let in_use = || Error::from_raw_os_error(32);
+        let transient = |e: &Error| e.raw_os_error() == Some(32);
+        let zero = std::time::Duration::ZERO;
+        for (fails, outcome) in [(0, true), (3, true), (RENAME_ATTEMPTS - 1, true), (RENAME_ATTEMPTS, false)] {
+            let mut calls = 0;
+            let r = retrying(RENAME_ATTEMPTS, zero, transient, || {
+                calls += 1;
+                if calls <= fails { Err(in_use()) } else { Ok(()) }
+            });
+            assert_eq!(r.is_ok(), outcome, "{fails} failures");
+            assert_eq!(calls, (fails + 1).min(RENAME_ATTEMPTS));
+        }
+        let mut calls = 0;
+        let r = retrying(RENAME_ATTEMPTS, zero, transient, || {
+            calls += 1;
+            Err(Error::from(ErrorKind::NotFound))
+        });
+        assert_eq!(r.unwrap_err().kind(), ErrorKind::NotFound);
+        assert_eq!(calls, 1, "other errors fail at once");
+
+        for code in [5, 32, 33] {
+            assert_eq!(held_by_another_process(&Error::from_raw_os_error(code)), cfg!(windows), "os error {code}");
+        }
+        assert!(!held_by_another_process(&Error::from(ErrorKind::NotFound)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn saving_waits_for_a_windows_file_lock_to_be_released() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        // No sharing at all (os error 32), and readers that don't allow deletion (os error 5).
+        for share in [0, FILE_SHARE_READ | FILE_SHARE_WRITE] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            fs::write(&path, b"old").unwrap();
+            let held = fs::OpenOptions::new().read(true).share_mode(share).open(&path).unwrap();
+            let release = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                drop(held);
+            });
+            let result = write_atomic(&path, b"new");
+            release.join().unwrap();
+            result.unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"new", "share mode {share}");
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "no temp file left behind");
+        }
     }
 
     #[cfg(unix)]
