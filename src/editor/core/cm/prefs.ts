@@ -46,7 +46,7 @@ import {
   selectHumpRight,
 } from "./editing";
 import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
-import { skipClosingQuote, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
+import { skipClosingBracket, skipClosingQuote, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
 
 // --- soft wraps ---------------------------------------------------------------
 
@@ -546,6 +546,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
   out.push(Prec.highest(EditorState.languageData.of(() => [{ closeBrackets: { brackets } }])));
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));
   if (k.pairQuotes) out.push(Prec.highest(skipClosingQuote));
+  if (k.pairBrackets) out.push(Prec.highest(skipClosingBracket));
   if (k.tabOutOfPair) out.push(tabOut);
   if (o.commentStyle) out.push(lineCommentStyle.of(o.commentStyle));
 

@@ -172,6 +172,56 @@ export function closesStringAt(state: EditorState, pos: number, quote: string): 
   return false;
 }
 
+// --- closing bracket -------------------------------------------------------------------------
+
+const OPEN_OF: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+
+/** Whether `pos` is inside a string or comment (brackets there don't count). */
+function inLiteral(state: EditorState, pos: number): boolean {
+  for (
+    let n: ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]> | null = syntaxTree(state).resolveInner(pos, 1);
+    n;
+    n = n.parent
+  )
+    if (/String|Char|Template|Comment|Rune|Heredoc/.test(n.type.name) && n.from < pos + 1 && n.to > pos) return true;
+  return false;
+}
+
+/**
+ * `close` at `pos` can be typed over: the next character is that closing
+ * bracket and its line is not short of closers (so typing over it leaves the
+ * brackets balanced), as IDEA's "Insert pair bracket" does for existing
+ * brackets, not only the ones it inserted.
+ */
+export function closesBracketAt(state: EditorState, pos: number, close: string): boolean {
+  const open = OPEN_OF[close];
+  if (!open || state.sliceDoc(pos, pos + 1) !== close || inLiteral(state, pos)) return false;
+  const line = state.doc.lineAt(pos);
+  let depth = 0;
+  for (let i = line.from; i < line.to; i++) {
+    const ch = state.sliceDoc(i, i + 1);
+    if ((ch === open || ch === close) && !inLiteral(state, i)) depth += ch === open ? 1 : -1;
+  }
+  return depth <= 0;
+}
+
+/** Typing a closing bracket right before the same closing bracket steps over it, as in IDEA. */
+export const skipClosingBracket = EditorView.inputHandler.of((view, _from, _to, text) => {
+  if (!OPEN_OF[text] || view.state.readOnly) return false;
+  const { state } = view;
+  const sel = state.selection;
+  if (!sel.ranges.every((r) => r.empty && closesBracketAt(state, r.head, text))) return false;
+  view.dispatch({
+    selection: EditorSelection.create(
+      sel.ranges.map((r) => EditorSelection.cursor(r.head + 1)),
+      sel.mainIndex,
+    ),
+    scrollIntoView: true,
+    userEvent: "input.type",
+  });
+  return true;
+});
+
 /** Typing a quote right before the closing quote of a string literal steps over it, as in IDEA. */
 export const skipClosingQuote = EditorView.inputHandler.of((view, _from, _to, text) => {
   if (!/^["'`]$/.test(text) || view.state.readOnly) return false;
