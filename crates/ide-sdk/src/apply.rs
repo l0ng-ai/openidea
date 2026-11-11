@@ -1561,6 +1561,24 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
                 }
             }
+            // A JUnit configuration runs the module's own Maven or Gradle command line: it needs
+            // that build's environment (its JDK), not another launcher or extra options.
+            "junit" => {
+                let name = Path::new(&c.command).file_name().map(|n| n.to_string_lossy().to_ascii_lowercase());
+                match name.as_deref() {
+                    Some(n) if n.starts_with("mvn") => apply_maven_env(c, root, s),
+                    Some(n) if n.starts_with("gradle") => {
+                        let build_dir =
+                            c.cwd.as_ref().map(|p| root.join(p.as_ref())).unwrap_or_else(|| root.to_path_buf());
+                        let env = gradle_build_env(root, &build_dir, &c.command, s, None);
+                        apply_java_home(c, &env, java_home_is_derived(c));
+                        for (key, value) in env {
+                            c.env.entry(key).or_insert(value);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             "maven" => {
                 apply_maven_env(c, root, s);
                 if let Some(mvn) = &mvn
