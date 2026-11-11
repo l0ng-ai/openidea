@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { EditorShownProvider } from "@/workbench/contributions";
+import { hideContextMenu, useContextMenuStore } from "@/ui";
 import type { AgentChange, AgentEntry, AgentTask } from "@/bindings";
 import { AgentsView } from "./AgentsView";
 import { SessionEditor, conversationRows } from "./SessionEditor";
@@ -102,6 +103,7 @@ let disposeActions: () => void;
 const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
 afterEach(() => {
   disposeActions();
+  hideContextMenu();
   vi.restoreAllMocks();
   vi.useRealTimers();
   if (scrollTopDescriptor) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTopDescriptor);
@@ -353,6 +355,66 @@ describe("message tags", () => {
     render(<SessionEditor input={input("A")} />);
     expect(await screen.findByText("@src/a.ts")).toHaveClass(tagStyles.tag!);
     expect(screen.getByText("/triage")).toHaveClass(tagStyles.accent!);
+  });
+});
+
+describe("the conversation selection", () => {
+  const labels = () =>
+    (useContextMenuStore.getState().menu?.items ?? []).flatMap((item) => ("label" in item ? [item.label] : []));
+  const select = (node: Node) => {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };
+
+  it("shows a Quote button after a mouse selection ends", async () => {
+    render(<SessionEditor input={input("A")} />);
+    select(await screen.findByText("Answer A"));
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    expect(screen.getByRole("button", { name: "Quote" })).toBeInTheDocument();
+    expect(labels()).toEqual([]);
+  });
+
+  it("shows no button for an empty selection", async () => {
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    window.getSelection()!.removeAllRanges();
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+  });
+
+  it("shows no button for a selection outside the conversation", async () => {
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    const outside = document.createElement("p");
+    outside.textContent = "selected elsewhere";
+    document.body.appendChild(outside);
+    select(outside);
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    outside.remove();
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+  });
+
+  it("hides the button when the conversation scrolls or Escape is pressed", async () => {
+    render(<SessionEditor input={input("A")} />);
+    select(await screen.findByText("Answer A"));
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    fireEvent.scroll(stream());
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+    select(screen.getByText("Answer A"));
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+  });
+
+  it("offers Copy alone on a right-click without a selection", async () => {
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    window.getSelection()!.removeAllRanges();
+    fireEvent.contextMenu(stream(), { clientX: 10, clientY: 10 });
+    expect(labels()).toEqual(["Copy"]);
   });
 });
 
