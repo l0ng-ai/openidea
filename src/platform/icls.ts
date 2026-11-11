@@ -40,12 +40,9 @@ const ATTRIBUTE_NAMES: Record<string, string> = {
   DEFAULT_DOC_MARKUP: "docCommentMarkup",
   DEFAULT_METADATA: "metadata",
   DEFAULT_OPERATION_SIGN: "operator",
+  DEFAULT_PARENTHS: "operator",
   DEFAULT_BRACES: "operator",
   DEFAULT_BRACKETS: "operator",
-  DEFAULT_PARENTHS: "operator",
-  DEFAULT_DOT: "operator",
-  DEFAULT_COMMA: "operator",
-  DEFAULT_SEMICOLON: "operator",
   DEFAULT_MARKUP_TAG: "markupTag",
   DEFAULT_MARKUP_ATTRIBUTE: "markupAttribute",
   BAD_CHARACTER: "invalid",
@@ -175,6 +172,49 @@ Object.assign(ATTRIBUTE_NAMES, {
   "PY.OPERATION_SIGN": "operator",
 });
 
+// WebStorm's JavaScript keys; TypeScript repeats them with a TS. prefix. Language Defaults serve both.
+const SCRIPT_KEYS: Record<string, string> = {
+  KEYWORD: "keyword",
+  NUMBER: "number",
+  STRING: "string",
+  VALID_STRING_ESCAPE: "escape",
+  INVALID_STRING_ESCAPE: "invalid",
+  BADCHARACTER: "invalid",
+  REGEXP: "regexp",
+  LINE_COMMENT: "lineComment",
+  BLOCK_COMMENT: "lineComment",
+  DOC_COMMENT: "docComment",
+  DOC_TAG: "docCommentTag",
+  DOC_TAG_VALUE: "docCommentTagValue",
+  DOC_MARKUP: "docCommentMarkup",
+  LOCAL_VARIABLE: "identifier",
+  PARAMETER: "parameter",
+  GLOBAL_VARIABLE: "globalVariable",
+  EXPORTED_VARIABLE: "globalVariable",
+  "EXPORTED.VARIABLE": "globalVariable",
+  INSTANCE_MEMBER_VARIABLE: "field",
+  STATIC_MEMBER_VARIABLE: "constant",
+  GLOBAL_FUNCTION: "functionDeclaration",
+  LOCAL_FUNCTION: "functionDeclaration",
+  EXPORTED_FUNCTION: "functionDeclaration",
+  INSTANCE_MEMBER_FUNCTION: "functionDeclaration",
+  STATIC_MEMBER_FUNCTION: "functionDeclaration",
+  CLASS: "className",
+  EXPORTED_CLASS: "className",
+  INTERFACE: "className",
+  "TYPE.ALIAS": "className",
+  TYPE_PARAMETER: "className",
+  DECORATOR: "metadata",
+  OPERATION_SIGN: "operator",
+};
+// WebStorm colours a function's calls with its declaration's key.
+const ALSO_CALLS = new Set<string>();
+for (const prefix of ["JS.", "TS."])
+  for (const [name, id] of Object.entries(SCRIPT_KEYS)) {
+    ATTRIBUTE_NAMES[prefix + name] = id;
+    if (id === "functionDeclaration") ALSO_CALLS.add(prefix + name);
+  }
+
 const COLOR_NAMES: Record<string, [string, "foreground" | "background"]> = {
   CARET_COLOR: ["caret", "foreground"],
   CARET_ROW_COLOR: ["caretRow", "background"],
@@ -192,6 +232,23 @@ const COLOR_NAMES: Record<string, [string, "foreground" | "background"]> = {
 // Preserve editor attributes without a standard exchange name on our own round trip.
 for (const attr of ATTRIBUTES)
   if (!Object.values(ATTRIBUTE_NAMES).includes(attr.id)) ATTRIBUTE_NAMES[`OPENIDEA_${attr.id}`] = attr.id;
+
+// One key colours an attribute, as IntelliJ shows it in the file the user sees: an explicit value replaces
+// its fallback's. TypeScript keys win over JavaScript (TS.* falls back to JS.*), then Python, then the
+// shared defaults; within a language, the key listed first above. DEFAULT_DOT, _COMMA and _SEMICOLON are
+// not mapped: the one punctuation colour here would spread them to every brace and operator.
+const KEY_ORDER = new Map(Object.keys(ATTRIBUTE_NAMES).map((name, i) => [name, i]));
+const LANGUAGE_PRECEDENCE = ["TS.", "JS.", "PY."];
+const precedence = (name: string) => {
+  const language = LANGUAGE_PRECEDENCE.findIndex((prefix) => name.startsWith(prefix));
+  return (language < 0 ? LANGUAGE_PRECEDENCE.length : language) * KEY_ORDER.size + KEY_ORDER.get(name)!;
+};
+const targets = (name: string): string[] =>
+  Object.hasOwn(ATTRIBUTE_NAMES, name)
+    ? ALSO_CALLS.has(name)
+      ? [ATTRIBUTE_NAMES[name]!, "functionCall"]
+      : [ATTRIBUTE_NAMES[name]!]
+    : [];
 
 // IntelliJ's EFFECT_TYPE codes. The box (0) and faded text (6) have no counterpart here; the bold and the
 // bold dotted line (4, 5) become an underline.
@@ -211,14 +268,10 @@ const children = (el: Element, tag: string) => Array.from(el.children).filter((e
 const color = (v: string | null): string | undefined =>
   v && /^[0-9a-f]{1,6}$/i.test(v) ? `#${v.padStart(6, "0").toLowerCase()}` : undefined;
 
-function orderedAttributes(section: Element): Element[] {
+function attributeEntries(section: Element): Element[] {
   const entries = children(section, "option");
   if (!entries.some((e) => e.getAttribute("name")?.startsWith("PY."))) return entries;
-  const priority = (e: Element) =>
-    e.getAttribute("name")?.startsWith("PY.") ? 2 : e.getAttribute("name")?.startsWith("DEFAULT_") ? 1 : 0;
-  return entries
-    .filter((e) => e.getAttribute("name") !== "DEFAULT_BLOCK_COMMENT")
-    .sort((a, b) => priority(a) - priority(b));
+  return entries.filter((e) => e.getAttribute("name") !== "DEFAULT_BLOCK_COMMENT");
 }
 
 export function parseIcls(xml: string): { scheme: CustomColorScheme; applied: number; skipped: number } {
@@ -248,6 +301,15 @@ export function parseIcls(xml: string): { scheme: CustomColorScheme; applied: nu
     }
     return undefined;
   };
+  const winners = new Map<string, Element>();
+  for (const entry of children(root, "attributes").flatMap(attributeEntries)) {
+    const name = entry.getAttribute("name") ?? "";
+    if (!inheritedValue(entry)) continue;
+    for (const id of targets(name)) {
+      const current = winners.get(id);
+      if (!current || precedence(name) < precedence(current.getAttribute("name")!)) winners.set(id, entry);
+    }
+  }
   let applied = 0;
   let skipped = 0;
   const merge = (id: string, value: TextAttributesOverride) => {
@@ -265,60 +327,58 @@ export function parseIcls(xml: string): { scheme: CustomColorScheme; applied: nu
         } else skipped++;
       }
     if (section.tagName === "attributes")
-      for (const entry of orderedAttributes(section)) {
+      for (const entry of attributeEntries(section)) {
         const name = entry.getAttribute("name") ?? "";
-        const id = Object.hasOwn(ATTRIBUTE_NAMES, name) ? ATTRIBUTE_NAMES[name] : undefined;
-        if (!id) {
-          skipped++;
-          continue;
-        }
         const value = inheritedValue(entry);
-        if (!value) {
+        const ids = targets(name).filter((id) => winners.get(id) === entry);
+        if (!value || !ids.length) {
           skipped++;
           continue;
         }
-        const attr = ATTRIBUTES.find((a) => a.id === id)!;
-        // An explicit TextAttributes value defaults to Font.PLAIN, not the last alias's style.
-        if (attr.token) merge(id, { bold: false, italic: false });
-        if (name.startsWith("PY.")) merge(id, { effect: "none" });
-        // IntelliJ draws no effect without an effect colour.
-        const drawn = children(value, "option").some(
-          (o) => o.getAttribute("name") === "EFFECT_COLOR" && color(o.getAttribute("value")),
-        );
-        for (const option of children(value, "option")) {
-          const name = option.getAttribute("name");
-          const raw = option.getAttribute("value");
-          const c = color(raw);
-          const field =
-            name === "FOREGROUND"
-              ? "foreground"
-              : name === "BACKGROUND"
-                ? "background"
-                : name === "EFFECT_COLOR"
-                  ? "effectColor"
-                  : undefined;
-          const supported =
-            field === "foreground"
-              ? !!attr.fg
-              : field === "background"
-                ? !!attr.bg || !!attr.token
-                : !!attr.effect || !!attr.token;
-          if (field && c && supported) {
-            merge(id, { [field]: c });
-            applied++;
-          } else if (name === "FONT_TYPE" && attr.token && raw && /^[0-3]$/.test(raw)) {
-            merge(id, { bold: !!(Number(raw) & 1), italic: !!(Number(raw) & 2) });
-            applied++;
-          } else if (
-            name === "EFFECT_TYPE" &&
-            drawn &&
-            (attr.token || attr.effect) &&
-            raw &&
-            Object.hasOwn(EFFECTS, raw)
-          ) {
-            merge(id, { effect: EFFECTS[raw] });
-            applied++;
-          } else skipped++;
+        for (const id of ids) {
+          const attr = ATTRIBUTES.find((a) => a.id === id)!;
+          // An explicit TextAttributes value defaults to Font.PLAIN, not the last alias's style.
+          if (attr.token) merge(id, { bold: false, italic: false });
+          if (name.startsWith("PY.")) merge(id, { effect: "none" });
+          // IntelliJ draws no effect without an effect colour.
+          const drawn = children(value, "option").some(
+            (o) => o.getAttribute("name") === "EFFECT_COLOR" && color(o.getAttribute("value")),
+          );
+          for (const option of children(value, "option")) {
+            const name = option.getAttribute("name");
+            const raw = option.getAttribute("value");
+            const c = color(raw);
+            const field =
+              name === "FOREGROUND"
+                ? "foreground"
+                : name === "BACKGROUND"
+                  ? "background"
+                  : name === "EFFECT_COLOR"
+                    ? "effectColor"
+                    : undefined;
+            const supported =
+              field === "foreground"
+                ? !!attr.fg
+                : field === "background"
+                  ? !!attr.bg || !!attr.token
+                  : !!attr.effect || !!attr.token;
+            if (field && c && supported) {
+              merge(id, { [field]: c });
+              applied++;
+            } else if (name === "FONT_TYPE" && attr.token && raw && /^[0-3]$/.test(raw)) {
+              merge(id, { bold: !!(Number(raw) & 1), italic: !!(Number(raw) & 2) });
+              applied++;
+            } else if (
+              name === "EFFECT_TYPE" &&
+              drawn &&
+              (attr.token || attr.effect) &&
+              raw &&
+              Object.hasOwn(EFFECTS, raw)
+            ) {
+              merge(id, { effect: EFFECTS[raw] });
+              applied++;
+            } else skipped++;
+          }
         }
       }
   }
