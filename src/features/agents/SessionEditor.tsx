@@ -75,7 +75,7 @@ import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
-import { currentTool, foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
+import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
 import { useRevealedText } from "./reveal";
 import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
 import {
@@ -272,20 +272,8 @@ function useLocalHead(status: AgentTask["status"] | null, root: string | null): 
   return local ? head : null;
 }
 
-/** The task's terminal and changes, at the end of its status line. */
-function StatusActions({
-  task,
-  changes,
-  changesOpen,
-  onToggleChanges,
-}: {
-  task: AgentTask;
-  changes: AgentChange[] | null;
-  changesOpen: boolean;
-  onToggleChanges: () => void;
-}) {
-  const tx = useTx();
-  const count = changes?.length ?? 0;
+/** The task's terminal, at the end of its status line. */
+function StatusActions({ task }: { task: AgentTask }) {
   return (
     <span className={styles.statusActions}>
       <IconButton
@@ -294,18 +282,6 @@ function StatusActions({
         title="Terminal"
         onClick={() => void executeAction("terminal.openAt", task.cwd)}
       />
-      <button
-        type="button"
-        className={styles.changesToggle}
-        aria-pressed={changesOpen}
-        disabled={count === 0 && !changesOpen}
-        aria-label={changesOpen ? tx("Hide changes") : tx("Show changes")}
-        title={changesOpen ? tx("Hide changes") : tx("Show changes")}
-        onClick={onToggleChanges}
-      >
-        <Icon name="toolwindow-changes" size={14} />
-        {count > 0 && <span>{count}</span>}
-      </button>
     </span>
   );
 }
@@ -315,16 +291,10 @@ function SessionStatus({
   task,
   entries,
   head,
-  changes,
-  changesOpen,
-  onToggleChanges,
 }: {
   task: AgentTask;
   entries: AgentEntry[] | null;
   head: string | null;
-  changes: AgentChange[] | null;
-  changesOpen: boolean;
-  onToggleChanges: () => void;
 }) {
   const tx = useTx();
   const project = useProject((s) => s.project);
@@ -357,7 +327,7 @@ function SessionStatus({
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
       </span>
       <Meters task={task} entries={entries} />
-      <StatusActions task={task} changes={changes} changesOpen={changesOpen} onToggleChanges={onToggleChanges} />
+      <StatusActions task={task} />
     </div>
   );
 }
@@ -2388,7 +2358,6 @@ function Tray({
   const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
   const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
   const busy = task.status === "running" || task.status === "starting";
-  const tool = entries && busy ? currentTool(entries) : null;
   const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   return (
     <div className={styles.tray}>
@@ -2445,10 +2414,6 @@ function Tray({
           <Spinner size={12} />
           {task.retry ? (
             <Retrying retry={task.retry} />
-          ) : tool ? (
-            <span className={styles.trayActivity} title={tool.title}>
-              {shortTitle(task, tool.title || tool.kind)}
-            </span>
           ) : (
             <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
           )}
@@ -2559,14 +2524,7 @@ function SessionComposer({
     );
   return (
     <div className={styles.composerArea}>
-      <SessionStatus
-        task={task}
-        entries={entries}
-        head={head}
-        changes={changes}
-        changesOpen={changesOpen}
-        onToggleChanges={onToggleChanges}
-      />
+      <SessionStatus task={task} entries={entries} head={head} />
       {task.status === "archived" && (
         <div className={styles.banner}>
           <span className={styles.bannerText}>
