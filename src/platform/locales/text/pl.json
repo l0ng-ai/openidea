@@ -1880,6 +1880,7 @@
   "Running": "Uruchomiono",
   "Running processes requires the desktop app.": "Uruchamianie procesów wymaga aplikacji stacjonarnej.",
   "Runs Gradle with --offline": "Uruchamia Gradle z opcją --offline",
+  "Runs Gradle with -x test": "Uruchamia Gradle z opcją -x test",
   "Runs Maven with -DskipTests": "Uruchamia Maven z opcją -DskipTests",
   "Runs Maven with -o": "Uruchamia Maven z opcją -o",
   "Runs Optimize Imports when the file has no errors, unless it would change the caret line.": "Uruchamia Optymalizację importów, gdy plik nie zawiera błędów, chyba że zmieniłoby to wiersz kursora.",

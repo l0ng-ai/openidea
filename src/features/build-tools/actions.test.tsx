@@ -174,4 +174,64 @@ describe("build tools feature", () => {
     render(<GradleView />);
     expect(screen.getByText("test")).not.toHaveClass(styles.skippedGoal!);
   });
+
+  it("toggles Gradle Skip Tests and runs tasks with -x test", async () => {
+    const started: unknown[] = [];
+    const off = registerAction({
+      id: "run.runConfig",
+      title: "Run",
+      hidden: true,
+      run: ({ arg }) => void started.push(arg),
+    });
+    const build = {
+      dir: "",
+      projects: [
+        {
+          path: ":",
+          name: "demo",
+          dir: "",
+          buildFile: "build.gradle.kts",
+          tasks: [{ name: "test", group: "verification", description: null }],
+        },
+      ],
+      command: "/p/gradlew",
+      env: {},
+      javaVersion: null,
+      syncedAt: null,
+      stale: false,
+      syncError: null,
+    };
+    const key = gradleProjectKey(build, build.projects[0]!);
+    act(() =>
+      useBuild.setState({
+        root: "/p",
+        model: { maven: mavenModel.maven, gradle: [build] },
+        expanded: { maven: new Set(), gradle: new Set([key, `${key}:tasks`, `${key}:tasks:verification`]) },
+      }),
+    );
+    await executeAction("gradle.toggleSkipTests");
+    expect(useBuild.getState().settings.gradle).toMatchObject({ skipTests: true });
+    expect(JSON.parse(localStorage.getItem("openidea.buildTools:/p")!).gradle.skipTests).toBe(true);
+    expect(
+      allActions()
+        .find((a) => a.id === "gradle.toggleSkipTests")!
+        .toggled?.(),
+    ).toBe(true);
+    render(<GradleView />);
+    const task = screen.getByText("test");
+    expect(task).toHaveClass(styles.skippedGoal!);
+    await act(async () => {
+      task.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    off();
+    expect(started).toHaveLength(1);
+    const { config } = started[0] as { config: RunConfig };
+    expect(config).toMatchObject({
+      name: "demo [test]",
+      command: "/p/gradlew",
+      args: ["test", "-x", "test"],
+      kind: "gradle",
+      isTest: false,
+    });
+  });
 });

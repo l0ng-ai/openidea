@@ -1945,6 +1945,7 @@
   "Running": "실행 중",
   "Running processes requires the desktop app.": "프로세스를 실행하려면 데스크톱 앱이 필요합니다.",
   "Runs Gradle with --offline": "--offline으로 Gradle을 실행합니다",
+  "Runs Gradle with -x test": "-x test로 Gradle을 실행합니다",
   "Runs Maven with -DskipTests": "-DskipTests로 Maven을 실행합니다",
   "Runs Maven with -o": "-o로 Maven을 실행합니다",
   "Runs Optimize Imports when the file has no errors, unless it would change the caret line.": "파일에 오류가 없으면 import 최적화를 실행합니다. 단, 캐럿 줄이 변경되는 경우는 제외합니다.",

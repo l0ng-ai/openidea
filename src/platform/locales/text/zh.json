@@ -2338,6 +2338,7 @@
   "Running": "正在运行",
   "Running processes requires the desktop app.": "运行进程需要桌面应用。",
   "Runs Gradle with --offline": "使用 --offline 运行 Gradle",
+  "Runs Gradle with -x test": "使用 -x test 运行 Gradle",
   "Runs Maven with -DskipTests": "使用 -DskipTests 运行 Maven",
   "Runs Maven with -o": "使用 -o 运行 Maven",
   "Runs Optimize Imports when the file has no errors, unless it would change the caret line.": "文件没有错误时运行“优化导入”，除非这会更改光标所在行。",
