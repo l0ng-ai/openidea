@@ -113,6 +113,50 @@ pub(crate) fn changes(cwd: &Path, base: &str) -> IdeResult<Vec<AgentChange>> {
     Ok(out)
 }
 
+/// Copies the task's `changes` (against `base`) from the worktree `cwd` into the
+/// local checkout `root`, uncommitted: the user reviews and commits them with the
+/// VCS tools. Files the checkout changed itself are left alone and reported, so
+/// accepting never destroys the user's own edits. Returns accepted and skipped paths.
+pub(crate) fn accept(
+    root: &Path,
+    cwd: &Path,
+    base: &str,
+    changes: &[AgentChange],
+) -> IdeResult<crate::AgentAcceptOutcome> {
+    let repo = repo_at(cwd)?;
+    let mut accepted = Vec::with_capacity(changes.len());
+    let mut skipped = Vec::new();
+    for change in changes {
+        let local = root.join(&change.rel_path);
+        let base_bytes = repo.file_bytes_at(&change.path.0, Some(base))?;
+        let current = std::fs::read(&change.path.0).ok();
+        let local_bytes = std::fs::read(&local).ok();
+        if local_bytes == current {
+            accepted.push(change.rel_path.clone());
+        } else if local_bytes == base_bytes {
+            match current {
+                Some(bytes) => {
+                    if let Some(parent) = local.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&local, bytes)?;
+                }
+                None => match std::fs::remove_file(&local) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                    _ => {}
+                },
+            }
+            accepted.push(change.rel_path.clone());
+        } else {
+            skipped.push(crate::AgentAcceptSkipped {
+                path: change.rel_path.clone(),
+                reason: "the checkout has changes of its own to it; accept it by hand".to_owned(),
+            });
+        }
+    }
+    Ok(crate::AgentAcceptOutcome { accepted, skipped })
+}
+
 /// Size and modification time of a file, `None` once it is gone.
 pub(crate) type Stamp = Option<(u64, u128)>;
 
@@ -390,5 +434,62 @@ mod tests {
         std::fs::write(elsewhere.join("keep.txt"), "x\n").unwrap();
         assert!(remove(&repo, &tmp.path().join("wt"), &elsewhere).is_err());
         assert!(elsewhere.join("keep.txt").exists());
+    }
+
+    fn accept_repo() -> (tempfile::TempDir, PathBuf, Created) {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(repo.join("gone.txt"), "bye\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+        let created = create(&repo, &tmp.path().join("wt"), "Edit A", None).unwrap();
+        (tmp, repo, created)
+    }
+
+    fn listed(cwd: &Path, base: &str) -> Vec<AgentChange> {
+        without_untouched(changes(cwd, base).unwrap(), &BTreeMap::new())
+    }
+
+    #[test]
+    fn accept_copies_new_modified_and_deleted_files_into_the_checkout() {
+        let (_tmp, repo, created) = accept_repo();
+        std::fs::write(created.path.join("a.txt"), "one\nTWO\n").unwrap();
+        std::fs::write(created.path.join("new.txt"), "x\n").unwrap();
+        std::fs::remove_file(created.path.join("gone.txt")).unwrap();
+
+        let outcome =
+            accept(&repo, &created.path, &created.base_commit, &listed(&created.path, &created.base_commit)).unwrap();
+        assert!(outcome.skipped.is_empty());
+        assert_eq!(outcome.accepted, ["a.txt", "gone.txt", "new.txt"]);
+        assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "one\nTWO\n");
+        assert_eq!(std::fs::read_to_string(repo.join("new.txt")).unwrap(), "x\n");
+        assert!(!repo.join("gone.txt").exists());
+
+        // Accepting again changes nothing: the checkout already matches.
+        let again =
+            accept(&repo, &created.path, &created.base_commit, &listed(&created.path, &created.base_commit)).unwrap();
+        assert!(again.skipped.is_empty());
+        assert_eq!(again.accepted, ["a.txt", "gone.txt", "new.txt"]);
+    }
+
+    #[test]
+    fn accept_leaves_files_the_checkout_changed_itself() {
+        let (_tmp, repo, created) = accept_repo();
+        std::fs::write(created.path.join("a.txt"), "one\nTWO\n").unwrap();
+        std::fs::write(created.path.join("gone.txt"), "bye\nbye\n").unwrap();
+        std::fs::write(repo.join("a.txt"), "one\nMINE\n").unwrap();
+
+        let outcome =
+            accept(&repo, &created.path, &created.base_commit, &listed(&created.path, &created.base_commit)).unwrap();
+        assert_eq!(outcome.accepted, ["gone.txt"]);
+        assert_eq!(outcome.skipped.len(), 1);
+        assert_eq!(outcome.skipped[0].path, "a.txt");
+        assert!(!outcome.skipped[0].reason.is_empty());
+        // The user's own edit survives; the other file comes over.
+        assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "one\nMINE\n");
+        assert_eq!(std::fs::read_to_string(repo.join("gone.txt")).unwrap(), "bye\nbye\n");
     }
 }
