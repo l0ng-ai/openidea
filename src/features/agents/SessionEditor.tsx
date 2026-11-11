@@ -59,7 +59,7 @@ import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
 import { openDiff, withChain, type DiffData } from "@/features/vcs/diffInput";
 import { Composer } from "./Composer";
-import { SelectionQuote, selectionIn } from "./SelectionQuote";
+import { selectionIn } from "./selection";
 import { SubmitButton } from "./SubmitButton";
 import {
   canSend,
@@ -631,7 +631,16 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
     const el = ref.current;
     if (!el || entries === null || !visible) return;
     const truncated = entries.length < previousLength.current;
+    // A message the user just sent: back to the end, where it shows, wherever they had scrolled.
+    const sent = previousLength.current > 0 && entries.slice(previousLength.current).some((e) => e.type === "user");
     previousLength.current = entries.length;
+    if (sent && !position.current.stick) {
+      scrollingUp.current = false;
+      position.current = { top: el.scrollTop, stick: true };
+      positions.set(key, position.current);
+      setAway(false);
+      return;
+    }
     if ((truncated || entries.length === 0) && el.scrollHeight - el.scrollTop - el.clientHeight < 40) {
       scrollingUp.current = false;
       position.current = { top: el.scrollTop, stick: true };
@@ -733,14 +742,13 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
         ))}
       </TurnFold>
     ) : row.kind === "process" ? (
-      <ProcessRun row={row} task={task} lastIndex={lastIndex} busy={busy} renderRow={renderRow} />
+      <ProcessRun row={row} task={task} lastIndex={lastIndex} busy={busy} onDiagramDrawn={onDiagramDrawn} />
     ) : (
       renderRow(row)
     );
   return (
     <div className={styles.streamArea}>
       {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
-      <SelectionQuote task={task} streamRef={ref} />
       <div
         ref={ref}
         // The conversation is read and copied like a document; focusable so ⌘F reaches it.
@@ -855,13 +863,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
             </div>
           ))
         )}
-        {subagent && subagentWorking(subagent.status) && (
-          <div className={styles.working}>
-            <Spinner size={12} />
-            <T>{subagent.status === "needsInput" ? "Waiting for your answer…" : "Working…"}</T>
-            {subagent.startedMs != null && <Elapsed since={subagent.startedMs} />}
-          </div>
-        )}
+        <WorkingRow task={task} entries={entries} subagent={subagent} />
       </div>
       {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
     </div>
@@ -1162,6 +1164,15 @@ function AgentMessage({
   );
 }
 
+/** The first line of reasoning, without its Markdown emphasis: what a folded thought was about. */
+export function thoughtPreview(text: string): string {
+  const line = text.split("\n").find((l) => l.trim()) ?? "";
+  return line
+    .replace(/^\s*(#+\s*|[-*]\s+)?/, "")
+    .replace(/[*_`]+/g, "")
+    .trim();
+}
+
 /** The agent's reasoning: open while it streams, folded after, as Settings › Agents › Chat says. */
 function ThoughtEntry({
   task,
@@ -1188,7 +1199,11 @@ function ThoughtEntry({
             ) : (
               <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
             )}
-            <T>{working ? "Thinking" : "Reasoning"}</T>
+            {working ? (
+              <T>Thinking</T>
+            ) : (
+              <span className={styles.thoughtPreview}>{thoughtPreview(text) || <T>Reasoning</T>}</span>
+            )}
           </summary>
         }
       >
@@ -1546,8 +1561,11 @@ type EntryRow = Extract<ConversationRow, { kind: "entry" }>;
 const liveTool = (entry: AgentEntry) =>
   entry.type === "tool" && (entry.status === "running" || entry.status === "pending");
 
-/** Reasoning and finished tool calls fold together; a running tool stays visible on its own. */
-const isProcessEntry = (entry: AgentEntry) => entry.type === "thought" || (entry.type === "tool" && !liveTool(entry));
+/**
+ * Reasoning and tool calls fold together, running ones included: the run keeps its place while
+ * a call finishes, and its summary line says what is running.
+ */
+const isProcessEntry = (entry: AgentEntry) => entry.type === "thought" || entry.type === "tool";
 
 /**
  * The conversation's rows from `from`: a run of reasoning and finished tool calls becomes
@@ -1594,11 +1612,11 @@ export function foldTurnRows(rows: ConversationRow[], turns: ReadonlyMap<number,
   return out;
 }
 
-/** "Reasoning · Edited 2 files · Read 4 files": what a run of work did. */
+/** "Edited 2 files · Read 4 files": what a run of work did; "Reasoning" when it only thought. */
 function workSummaryText(work: WorkSummary, tx: ReturnType<typeof useTx>, toolCalls: number): string[] {
   const parts = workParts(work).map((p) => tx(p.text).replace("{count}", String(p.count)));
   if (!parts.length && toolCalls) parts.push(`${toolCalls} ${tx(toolCalls === 1 ? "tool call" : "tool calls")}`);
-  if (work.thoughts) parts.unshift(tx("Reasoning"));
+  if (!parts.length && work.thoughts) parts.push(tx("Reasoning"));
   return parts;
 }
 
@@ -1643,14 +1661,13 @@ const ProcessRun = memo(function ProcessRun({
   task,
   lastIndex,
   busy,
-  renderRow,
+  onDiagramDrawn,
 }: {
   row: Extract<ConversationRow, { kind: "process" }>;
   task: AgentTask;
   lastIndex: number;
   busy: boolean;
-  /** Renders one non-folded row (a reasoning entry). */
-  renderRow: (row: EntryRow) => ReactElement;
+  onDiagramDrawn: () => void;
 }) {
   const tx = useTx();
   const tools = row.entries.filter(
@@ -1660,26 +1677,55 @@ const ProcessRun = memo(function ProcessRun({
   const { added, removed } = work;
   const working = busy && row.entries.some(({ index }) => index === lastIndex);
   const parts = workSummaryText(work, tx, tools.length);
+  // What the run is doing now: the call still running, or the reasoning it ends with.
+  const live = [...tools].reverse().find(({ entry }) => liveTool(entry))?.entry;
+  const last = row.entries.at(-1)!.entry;
+  const current = live
+    ? shortTitle(task, live.title || live.kind)
+    : working && last.type === "thought"
+      ? tx("Thinking")
+      : null;
+  // While the run grows, its open body follows the latest call unless scrolled up.
+  const body = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
+  useLayoutEffect(() => {
+    const el = body.current;
+    if (el && working && following.current) el.scrollTop = el.scrollHeight;
+  });
   return (
     <Fold
       className={clsx(styles.processRun, styles.process)}
       summary={
         <summary className={styles.processSummary}>
           <Icon name="chevron-right" size={12} className={styles.processChevron} />
-          {working && <Spinner size={12} />}
+          {(working || live) && <Spinner size={12} />}
           <span>{parts.join(" · ")}</span>
           {added > 0 && <span className={styles.added}>+{added}</span>}
           {removed > 0 && <span className={styles.removed}>−{removed}</span>}
+          {current && <span className={styles.processCurrent}>{current}</span>}
         </summary>
       }
     >
-      <div className={styles.processBody}>
+      <div
+        ref={body}
+        className={styles.processBody}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        }}
+      >
         {row.entries.map(({ index, entry }) =>
           entry.type === "tool" ? (
             <ToolEntry key={index} task={task} entry={entry} />
-          ) : (
-            renderRow({ kind: "entry", index, entry })
-          ),
+          ) : entry.type === "thought" ? (
+            <ThoughtEntry
+              key={index}
+              task={task}
+              text={entry.text}
+              working={busy && index === lastIndex}
+              onDiagramDrawn={onDiagramDrawn}
+            />
+          ) : null,
         )}
       </div>
     </Fold>
@@ -2357,8 +2403,6 @@ function Tray({
   const planShown = plan && plan.items.length > 0 && done < plan.items.length;
   const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
   const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
-  const busy = task.status === "running" || task.status === "starting";
-  const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   return (
     <div className={styles.tray}>
       {pending && <PendingPermission task={task} entry={pending} />}
@@ -2409,17 +2453,45 @@ function Tray({
         </div>
       )}
       {children}
-      {busy && !pending && (
-        <div className={styles.working} role="status">
-          <Spinner size={12} />
-          {task.retry ? (
-            <Retrying retry={task.retry} />
-          ) : (
-            <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
-          )}
-          {lastUser?.sentMs != null && !lastUser.doneMs && <Elapsed since={lastUser.sentMs} />}
-        </div>
+    </div>
+  );
+}
+
+/**
+ * The end of the conversation while the agent works on it: what it is doing (starting, working,
+ * retrying the API) and for how long. Hidden while it waits for an approval, which says so itself.
+ */
+function WorkingRow({
+  task,
+  entries,
+  subagent,
+}: {
+  task: AgentTask;
+  entries: AgentEntry[] | null;
+  subagent: SubagentEntry | null;
+}) {
+  if (subagent) {
+    if (!subagentWorking(subagent.status)) return null;
+    return (
+      <div className={styles.working} role="status">
+        <Spinner size={12} />
+        <T>{subagent.status === "needsInput" ? "Waiting for your answer…" : "Working…"}</T>
+        {subagent.startedMs != null && <Elapsed since={subagent.startedMs} />}
+      </div>
+    );
+  }
+  if (task.status !== "running" && task.status !== "starting") return null;
+  if (entries?.some((e) => e.type === "permission" && !e.chosen && !e.questions?.length)) return null;
+  const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
+  return (
+    <div className={styles.working} role="status">
+      <Spinner size={12} />
+      {task.retry ? (
+        <Retrying retry={task.retry} />
+      ) : (
+        <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
       )}
+      {lastUser?.sentMs != null && !lastUser.doneMs && <Elapsed since={lastUser.sentMs} />}
     </div>
   );
 }
