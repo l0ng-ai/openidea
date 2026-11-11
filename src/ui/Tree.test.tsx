@@ -181,6 +181,17 @@ describe("Tree keyboard navigation", () => {
     expect(onActivate).toHaveBeenLastCalledWith(expect.objectContaining({ id: "README.md" }), expect.anything());
   });
 
+  it("F4 and ⌘↓ go to onJumpToSource instead of activating when the tree has one", () => {
+    const onJumpToSource = vi.fn();
+    const { key, onActivate } = setup({ onJumpToSource });
+    key("End");
+    key("F4");
+    key("ArrowDown", { metaKey: true });
+    expect(onActivate).not.toHaveBeenCalled();
+    expect(onJumpToSource).toHaveBeenCalledTimes(2);
+    expect(onJumpToSource).toHaveBeenLastCalledWith(expect.objectContaining({ id: "README.md" }), expect.any(Set));
+  });
+
   it("extends the selection with Shift+Arrow", () => {
     const onSelectionChange = vi.fn();
     const { key } = setup({ defaultExpanded: ["src"], onSelectionChange });
