@@ -121,7 +121,20 @@ describe("scheme actions", () => {
   });
 });
 
-describe("doc comment scheme attributes", () => {
+describe("python scheme attributes", () => {
+  it("groups Python attributes as PyCharm does", () => {
+    schemePage("editor.colorScheme.python");
+    const tree = screen.getByRole("tree", { name: "Color scheme attributes" });
+    // The tree virtualizes; a collapsed group renders before its siblings, so a group near
+    // the top is enough to prove grouping, and expanding it shows its leaves.
+    expect(within(tree).getByRole("treeitem", { name: "Functions" })).toBeInTheDocument();
+    for (const flat of ["Byte string", "F-string", "Method call"])
+      expect(within(tree).queryByRole("treeitem", { name: flat })).toBeNull();
+    const functions = within(tree).getByRole("treeitem", { name: "Functions" });
+    act(() => fireEvent.mouseDown(within(functions).getByText("Functions").previousElementSibling!, { button: 0 }));
+    expect(within(tree).getByRole("treeitem", { name: "Method call" })).toBeInTheDocument();
+  });
+
   it("selects Python docstring tags and keywords from their preview", () => {
     schemePage("editor.colorScheme.python");
     const preview = screen.getByLabelText("Color scheme preview");
@@ -134,7 +147,9 @@ describe("doc comment scheme attributes", () => {
     act(() => fireEvent.click(keyword));
     expect(screen.getByRole("treeitem", { name: "Keyword", selected: true })).toBeInTheDocument();
   });
+});
 
+describe("doc comment scheme attributes", () => {
   it.each([
     ["en", "Doc comment", "Tag", "Tag value", "Markup"],
     ["zh", "文档注释", "标签", "标签值", "标记"],

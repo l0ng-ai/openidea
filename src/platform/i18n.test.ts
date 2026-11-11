@@ -283,6 +283,7 @@ describe("catalogs", () => {
     "Yarn",
     "Cargo",
     "CMake",
+    "f-string",
   ]);
   const translated = SUPPORTED_LOCALES.filter((locale) => locale !== "en").sort();
 
