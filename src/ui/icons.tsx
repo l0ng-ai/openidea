@@ -217,6 +217,7 @@ const ICONS = {
   "agent-cursor": "openidea/agents/cursor",
   "agent-opencode": "openidea/agents/opencode",
   "agent-qwen": "openidea/agents/qwen",
+  "agent-qodercn": "openidea/agents/qodercn",
   "agent-kimi": "openidea/agents/kimi",
   "agent-goose": "openidea/agents/goose",
   "agent-auggie": "openidea/agents/auggie",
