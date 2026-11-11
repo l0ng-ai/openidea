@@ -224,6 +224,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         refactor::refactor_undo_file_move,
         refactor::refactor_can_undo_file_move,
         caches::caches_schedule_invalidation,
+        caches::caches_local_data_info,
+        caches::caches_set_local_data_dir,
         caches::app_restart,
         nav::index_status,
         nav::index_file_extensions,
