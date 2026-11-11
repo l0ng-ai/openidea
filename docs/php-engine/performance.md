@@ -37,17 +37,31 @@ After these changes the inspections on `Builder.php` take about 80 ms.
 
 The Laravel benches (`php_laravel_app/*` on the fixture app, `php_laravel_real/*` on the application in `LARAVEL_APP_DIR`) are described in [laravel.md](laravel.md#performance-phase-821). Phase 9.4 tightened and added these budgets for the real application (Monica):
 
-| Bench                               | Budget | Monica (2026-11-11)                               |
-| ----------------------------------- | ------ | ------------------------------------------------- |
-| `php_laravel_real/model_cold`       | 400 ms | 230 ms (542 ms in 8.29)                           |
-| `php_laravel_real/model_warm_start` | 150 ms | 129 ms                                            |
-| `php_laravel_real/inspect_code`     | 20 s   | **24.3 s ✗** (74 s one file after another; 9.4.b) |
+| Bench                               | Budget | Monica (2026-11-11)          |
+| ----------------------------------- | ------ | ---------------------------- |
+| `php_laravel_real/model_cold`       | 400 ms | 230 ms (542 ms in 8.29)      |
+| `php_laravel_real/model_warm_start` | 150 ms | 129 ms                       |
+| `php_laravel_real/inspect_code`     | 20 s   | 5.7 s (24.3 s in 9.4; 9.4.b) |
 
 - **Cold model:** `laravel_model()` after `forget_laravel_model()`, which also drops the parts stored in the index database. The regression since 8.23 was per-provider work (every provider file parsed again by each part, one after another) and a second read of the configuration for Jetstream's computed route path. The parts of many files are now read in parallel (`PartReader::parts_of`), independent parts of the model are built at the same time, and the configuration is read once.
 - **Warm start:** a new engine on the cache of an earlier session. The per-file parts (configuration keys, translations, routes, provider registrations) are stored in the index database with the content hash, size and modification time of their text, so the new session neither reads nor parses the files that didn't change.
 - **Inspect Code:** `PhpEngine::inspect_files` inspects the scope's files in parallel (rayon) after building what they share, reports each as it finishes and stops on cancellation. The host's Inspect Code (`ops::analysis::inspect_code`) uses it. The bench runs every built-in inspection over the application's own PHP files and Blade templates (not `vendor/`).
 
 `cargo run --release -p ide-php --example model_profile -- <app>` prints the time of each part of the model, cold and in a new session.
+
+### Inspect Code scaling (phase 9.4.b)
+
+In 9.4 Inspect Code over Monica took 24.3 s on 16 threads and 74 s on one, scaling only about 3×. `cargo run --release -p ide-php --example inspect_profile -- <app> [threads…]` runs the batch in pools of each thread count and sums the time of each file, which shows how much the files slow each other down. With timers around each stage, the index database's reads (declaration lookups and summary decoding) took 2 s of the 72 s. Even parsing, which shares nothing between threads, ran 8× slower on 16 threads. The cause was the parser's stack guard (`syntax::stack::parser_stack`, from 8.29). Every Mago parse (each file, each docblock, each PHPDoc type) needs 40 MB of free stack for Mago's 512-level limit. A rayon worker has 2 MB, so each parse mapped a new 64 MB stack segment and unmapped it afterwards, and those calls serialize threads on the process's address space. The engine's threads now have stacks of that size (`PARSER_THREAD_STACK`, reserved address space, not committed memory): the worker, the background inspections, and a pool of its own (`on_parser_stacks`) for the batch and the index scan. Callers already on such threads keep their pool.
+
+Monica's own code, 896 files, release build, i7-10875H (8 cores, 16 threads), `inspect_profile`, 2026-11-11:
+
+| Threads | Before (2 MB stacks) | After  | Files' time summed, after |
+| ------- | -------------------- | ------ | ------------------------- |
+| 1       | 73.2 s               | 32.8 s | 31.5 s                    |
+| 4       | 29.2 s               | 11.4 s | 38.6 s                    |
+| 16      | 22.3 s               | 5.7 s  | 90.5 s                    |
+
+The bench `php_laravel_real/inspect_code` measures 5.7 s. The rest of the slow-down at 16 threads comes from hyper-threading, since the machine has 8 cores.
 
 ## Memory against Intelephense
 

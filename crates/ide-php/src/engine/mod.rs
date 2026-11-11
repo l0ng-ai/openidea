@@ -449,6 +449,7 @@ impl PhpEngine {
         let worker = shared.clone();
         let thread = std::thread::Builder::new()
             .name("openidea-php-engine".into())
+            .stack_size(crate::syntax::stack::PARSER_THREAD_STACK)
             .spawn(move || worker.run())
             .map_err(|e| IdeError::internal(format!("php engine: {e}")))?;
         let runner = shared.inspections.clone();

@@ -107,8 +107,12 @@ impl Runner {
     /// [`stop`](Self::stop) is called.
     pub(crate) fn start(self: &Arc<Self>, engine: Weak<PhpEngine>, sink: SharedSink) -> Option<JoinHandle<()>> {
         let runner = self.clone();
-        let spawned =
-            std::thread::Builder::new().name("openidea-php-inspections".into()).spawn(move || runner.run(engine, sink));
+        // Parses (the document, docblocks, PHPDoc types) stay on this
+        // thread's stack (`syntax::stack::parser_stack`).
+        let spawned = std::thread::Builder::new()
+            .name("openidea-php-inspections".into())
+            .stack_size(crate::syntax::stack::PARSER_THREAD_STACK)
+            .spawn(move || runner.run(engine, sink));
         match spawned {
             Ok(handle) => Some(handle),
             Err(e) => {

@@ -550,6 +550,10 @@ impl PhpEngine {
     /// resolver's framework facts) is built once before the files are
     /// spread over the threads, so no two threads build it at once. Stops
     /// when `cancel` fires; returns whether every file was inspected.
+    ///
+    /// The batch runs on threads with stacks large enough for a parse
+    /// ([`crate::syntax::stack::on_parser_stacks`], phase 9.4.b): the
+    /// caller's rayon pool when its threads have them, else the engine's.
     pub fn inspect_files<F: Sync>(
         &self,
         files: &[F],
@@ -563,21 +567,23 @@ impl PhpEngine {
         if files.is_empty() {
             return !cancel.is_cancelled();
         }
-        self.prepare_batch();
-        files
-            .par_iter()
-            .try_for_each(|file| {
-                if cancel.is_cancelled() {
-                    return Err(());
-                }
-                let diagnostics = match text_of(file) {
-                    Some(text) => Some(self.inspect_file(path_of(file), &text, cancel).ok_or(())?),
-                    None => None,
-                };
-                on_file(file, diagnostics);
-                Ok(())
-            })
-            .is_ok()
+        crate::syntax::stack::on_parser_stacks(|| {
+            self.prepare_batch();
+            files
+                .par_iter()
+                .try_for_each(|file| {
+                    if cancel.is_cancelled() {
+                        return Err(());
+                    }
+                    let diagnostics = match text_of(file) {
+                        Some(text) => Some(self.inspect_file(path_of(file), &text, cancel).ok_or(())?),
+                        None => None,
+                    };
+                    on_file(file, diagnostics);
+                    Ok(())
+                })
+                .is_ok()
+        })
     }
 
     /// Builds what every file of a batch shares, before the batch is spread

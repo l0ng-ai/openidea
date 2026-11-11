@@ -645,4 +645,14 @@ Monica's own code, 896 files, release build, 16 threads (`real_app_inspect_code`
 
 Both find the same 202 diagnostics. The slowest file takes 0.7 s, so there is no long tail; the work scales only about 3× on 16 threads, which points to contention somewhere shared (a lock, the index database's read transactions or the allocator). Switching the type cache from one mutex to a read-write lock didn't change it. Phase 9.4.b profiles it to get under the 20 s budget.
 
+**Phase 9.4.b (2026-11-11).** The contention was the parser's stack guard, not a lock. Each parse on a rayon worker's 2 MB stack mapped a new 64 MB stack segment of its own (see [performance.md](performance.md#inspect-code-scaling-phase-94b)). The batch now runs on threads with stacks large enough for a parse.
+
+| Run (`real_app_inspect_code`, 16 threads)          | 9.4          | 9.4.b |
+| -------------------------------------------------- | ------------ | ----- |
+| in parallel, first run (the model and caches cold) | 29.7 s       | 9.9 s |
+| in parallel, again                                 | **24.3 s ✗** | 6.0 s |
+| `php_laravel_real/inspect_code` (bench)            | —            | 5.7 s |
+
+Both runs find the same 202 diagnostics, and the parallel batch still matches the files inspected one by one. The test's own one-by-one loop (73 s) runs on the test's thread, which has a small stack.
+
 Making the batch parallel exposed a deadlock: the bundled stubs are loaded once per process inside a `OnceLock` with a parallel parse, and a worker of the global rayon pool could be the first to ask for them, then wait for itself. They are now parsed on a pool of their own, from a thread of its own (`BundledStubs::get`).

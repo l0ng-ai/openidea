@@ -915,7 +915,7 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
 
   Record the numbers in `laravel.md` and `performance.md`.
 
-- [ ] Phase 9.4.b: Inspect Code scaling
+- [x] Phase 9.4.b: Inspect Code scaling
       What 9.4 left (it fixed the cold model, stored the model's parts in the index database and made Inspect Code parallel): Inspect Code over Monica's own code takes 24.3 s in a release build (74 s one file after another), over the 20 s budget. The work has no long tail (the slowest file takes 0.7 s) but scales only about 3× on 16 threads (2.4× on 4), so something shared serializes it: find it with a profiler (candidates: the index database's read transaction per declaration lookup, `FileSummary` decoding of the same summaries in every thread, the allocator, the locks on open documents and stubs), fix it, and record the numbers in `laravel.md` and `performance.md`. Tests: `real_app_inspect_code` still finds the same diagnostics in parallel and one by one; `php_laravel_real/inspect_code` within its budget.
 
 - [ ] Phase 9.5: Laravel gaps

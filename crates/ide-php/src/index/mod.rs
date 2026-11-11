@@ -260,17 +260,20 @@ impl PhpIndex {
                 return Err(IdeError::cancelled());
             }
             let previous = self.records(chunk.iter().map(|(_, key)| key.as_str()))?;
-            let scanned: Vec<(&str, Scanned)> = chunk
-                .par_iter()
-                .map(|(path, key)| {
-                    let scanned = if cancel.is_cancelled() {
-                        Scanned::Skipped
-                    } else {
-                        scan(path, key, previous.get(key.as_str()), &known)
-                    };
-                    (key.as_str(), scanned)
-                })
-                .collect();
+            // Parsed on threads with room for a parse (phase 9.4.b).
+            let scanned: Vec<(&str, Scanned)> = crate::syntax::stack::on_parser_stacks(|| {
+                chunk
+                    .par_iter()
+                    .map(|(path, key)| {
+                        let scanned = if cancel.is_cancelled() {
+                            Scanned::Skipped
+                        } else {
+                            scan(path, key, previous.get(key.as_str()), &known)
+                        };
+                        (key.as_str(), scanned)
+                    })
+                    .collect()
+            });
             if cancel.is_cancelled() {
                 return Err(IdeError::cancelled());
             }
