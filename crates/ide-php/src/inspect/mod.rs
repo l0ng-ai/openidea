@@ -728,6 +728,12 @@ impl PhpEngine {
             let (start, end) = parsed.line_index().byte_range(range);
             out.extend(crate::refactor::inline_actions(self, &parsed, &path, start, end, only));
         }
+        if wanted(only, crate::refactor::MOVE_CLASS) {
+            let parsed = self.parsed_document(doc)?;
+            let path = self.document_path(doc)?;
+            let (start, end) = parsed.line_index().byte_range(range);
+            out.extend(crate::refactor::move_class_actions(self, &parsed, &path, start, end, only));
+        }
         if crate::refactor::GENERATE_KINDS.iter().any(|kind| wanted(only, kind)) {
             let parsed = self.parsed_document(doc)?;
             let path = self.document_path(doc)?;

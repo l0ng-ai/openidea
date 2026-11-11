@@ -973,7 +973,7 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
 
   Inline (5.4): "inline all usages and remove the declaration" for variables, methods and functions, and inlining inside closures. Tests: refactoring fixtures, plus frontend dialog tests.
 
-- [ ] Phase 9.7: Change signature, move class and generate, complete
+- [x] Phase 9.7: Change signature, move class and generate, complete
       **Change signature (5.5):**
   - update callable strings and arrays (`'f'`, `[$o, 'm']`, `[Foo::class, 'm']`), `new static`/`new self` and `$this->__construct()`
   - reorder, add and remove `@param` lines

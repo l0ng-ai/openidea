@@ -32,7 +32,10 @@ use ide_php::engine::{CACHE_SUBDIR, EngineConfig, PhpEngine};
 use ide_php::frameworks::laravel::LiveSchema;
 use ide_php::inspect::InspectionConfig;
 use ide_php::project::LayoutConfig;
-use ide_php::refactor::{CHANGE_SIGNATURE, ChangeSignature, EXTRACT_METHOD_DIALOG, ExtractMethod};
+use ide_php::refactor::{
+    CHANGE_SIGNATURE, ChangeSignature, EXTRACT_METHOD_DIALOG, ExtractMethod, GENERATE_CHOOSER, Generator,
+    MemberChooser, OVERRIDE_METHODS,
+};
 use ide_php::stubs::StubFilter;
 use ide_text::AppliedChange;
 use ide_workspace::documents::DocumentObserver;
@@ -566,6 +569,7 @@ impl crate::language_service::LanguageService for PhpService {
         let actions = engine.code_actions(doc, range, only)?;
         let mut actions: Vec<CodeAction> = actions.into_iter().map(|action| code_action(action, server)).collect();
         actions.extend(translation_action(only, server, || engine.laravel_translation_request(doc, range.start)));
+        member_choosers(&engine, doc, range, only, server, &mut actions);
         Some(Ok(actions))
     }
 
@@ -581,6 +585,7 @@ impl crate::language_service::LanguageService for PhpService {
         let actions = engine.code_actions(doc, range, only)?;
         let mut actions: Vec<CodeAction> = actions.into_iter().map(|action| code_action(action, server)).collect();
         actions.extend(translation_action(only, server, || engine.laravel_translation_request(doc, range.start)));
+        member_choosers(&engine, doc, range, only, server, &mut actions);
         // Change signature: the editor's dialog asks for the new signature,
         // then resolves the action (`resolve_code_action`).
         let wanted = only.is_empty()
@@ -639,6 +644,20 @@ impl crate::language_service::LanguageService for PhpService {
     /// ([`ide_php::refactor::ExtractMethod`]).
     fn resolve_code_action(&self, doc: DocId, action: &CodeAction, cancel: &CancellationToken) -> Answer<CodeAction> {
         let engine = self.0.engine()?;
+        if action.server == engine.server_id() && action.kind.as_deref() == Some(GENERATE_CHOOSER) {
+            let parsed = action.data.as_ref().and_then(|data| match data {
+                serde_json::Value::String(json) => serde_json::from_str::<MemberChooser>(json).ok(),
+                other => serde_json::from_value::<MemberChooser>(other.clone()).ok(),
+            });
+            let Some(data) = parsed else {
+                return Some(Err(ide_core::IdeError::invalid("The Generate request is malformed")));
+            };
+            let edit = match engine.generate_chosen(doc, &data)? {
+                Ok(edit) => edit,
+                Err(e) => return Some(Err(e)),
+            };
+            return Some(Ok(CodeAction { edit: Some(edit), data: None, ..action.clone() }));
+        }
         if action.server == engine.server_id() && action.kind.as_deref() == Some(EXTRACT_METHOD_DIALOG) {
             let parsed = action.data.as_ref().and_then(|data| match data {
                 serde_json::Value::String(json) => serde_json::from_str::<ExtractMethod>(json).ok(),
@@ -810,6 +829,44 @@ pub(crate) fn translation_action(
         server,
         open: None,
     })
+}
+
+/// The Generate actions with a member chooser (the editor's dialog picks the
+/// members, then resolves the action); each replaces the engine's action
+/// generating every member (`Generate getters` for `Generate getters…`,
+/// the single overrides for `Override methods…`).
+fn member_choosers(
+    engine: &PhpEngine,
+    doc: DocId,
+    range: Range,
+    only: &[String],
+    server: ide_core::ServerId,
+    actions: &mut Vec<CodeAction>,
+) {
+    let wanted = only.is_empty()
+        || only.iter().any(|o| {
+            GENERATE_CHOOSER == o || GENERATE_CHOOSER.strip_prefix(o.as_str()).is_some_and(|r| r.starts_with('.'))
+        });
+    if !wanted {
+        return;
+    }
+    for chooser in engine.generate_choosers(doc, range).unwrap_or_default() {
+        let plain = chooser.title.trim_end_matches('…');
+        let overrides = chooser.generator == Generator::Overrides;
+        actions.retain(|a| a.title != plain && !(overrides && a.kind.as_deref() == Some(OVERRIDE_METHODS)));
+        let Ok(data) = serde_json::to_string(&chooser) else { continue };
+        actions.push(CodeAction {
+            title: chooser.title.clone(),
+            kind: Some(GENERATE_CHOOSER.to_owned()),
+            is_preferred: false,
+            disabled_reason: None,
+            edit: None,
+            command: None,
+            data: Some(serde_json::Value::String(data)),
+            server,
+            open: None,
+        });
+    }
 }
 
 pub(crate) fn code_action(action: ide_php::imports::ImportAction, server: ide_core::ServerId) -> CodeAction {

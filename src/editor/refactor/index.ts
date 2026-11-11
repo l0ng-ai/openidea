@@ -4,3 +4,4 @@ export { startHierarchyRefactoring } from "./hierarchy";
 export { HierarchyDialog } from "./HierarchyDialog";
 export { ChangeSignatureDialog } from "./ChangeSignatureDialog";
 export { ExtractMethodDialog } from "./ExtractMethodDialog";
+export { MemberChooserDialog } from "./MemberChooserDialog";

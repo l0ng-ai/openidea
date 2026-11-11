@@ -753,8 +753,193 @@ fn generate_phpdoc_for_a_property() {
 }
 
 #[test]
+fn accessors_of_untyped_properties_take_their_var_type() {
+    let mut p = Project::new(PhpVersion::LATEST, &[("Tag.php", "<?php\nnamespace App;\n\nclass Tag\n{\n}\n")]);
+    let before = "<?php
+namespace App;
+
+/**
+ * @template T
+ */
+class Post
+{
+    /** @var string */
+    private $title;
+    /** @var list<Tag> */
+    private $tags;
+    /** @var T|null */
+    private $payload;
+    /** @var Tag */
+    private $main;
+/*|*/}
+";
+    let after = p.after(before, GENERATE_ACCESSORS, "Generate getters and setters");
+    for expected in [
+        "    public function getTitle(): string\n    {\n        return $this->title;\n    }",
+        "    public function setTitle(string $title): void\n",
+        "    /** @return list<Tag> */\n    public function getTags(): array\n",
+        "    /** @param list<Tag> $tags */\n    public function setTags(array $tags): void\n",
+        "    /** @return ?T */\n    public function getPayload()\n",
+        "    /** @param ?T $payload */\n    public function setPayload($payload): void\n",
+        "    public function getMain(): Tag\n",
+    ] {
+        assert!(after.contains(expected), "{expected}\n---\n{after}");
+    }
+}
+
+#[test]
+fn to_string_and_equals() {
+    let mut p = Project::new(PhpVersion::LATEST, &[("Color.php", "<?php\nnamespace App;\n\nclass Color\n{\n}\n")]);
+    let before = "<?php
+namespace App;
+
+class Point
+{
+    public static int $count = 0;
+
+    public function __construct(
+        private int $x,
+        private ?float $y,
+        private array $tags,
+        private Color $color,
+        private bool $visible,
+    ) {
+    }
+/*|*/}
+";
+    assert_eq!(
+        p.after(before, super::GENERATE_TO_STRING, "Generate __toString()"),
+        "<?php
+namespace App;
+
+class Point
+{
+    public static int $count = 0;
+
+    public function __construct(
+        private int $x,
+        private ?float $y,
+        private array $tags,
+        private Color $color,
+        private bool $visible,
+    ) {
+    }
+
+    public function __toString(): string
+    {
+        return sprintf('Point{x: %s, y: %s, tags: %s, color: %s, visible: %s}', $this->x, var_export($this->y, true), json_encode($this->tags), get_debug_type($this->color), var_export($this->visible, true));
+    }
+}
+"
+    );
+    let after = p.after(before, super::GENERATE_EQUALS, "Generate equals()");
+    assert!(
+        after.contains(
+            "    public function equals(mixed $other): bool
+    {
+        return $other instanceof self
+            && $this->x === $other->x
+            && $this->y === $other->y
+            && $this->tags === $other->tags
+            && $this->color == $other->color
+            && $this->visible === $other->visible;
+    }
+}
+"
+        ),
+        "{after}"
+    );
+    // Not when the class has them, not for interfaces; `$other` untyped
+    // before PHP 8.
+    let has = "<?php\nclass A\n{\n    public function __toString(): string\n    {\n        return '';\n    }\n\n    public function equals($o): bool\n    {\n        return true;\n    }\n/*|*/}\n";
+    assert!(p.titles(has, super::GENERATE_TO_STRING).is_empty());
+    assert!(p.titles(has, super::GENERATE_EQUALS).is_empty());
+    assert!(p.titles("<?php\ninterface I\n{\n/*|*/}\n", super::GENERATE_EQUALS).is_empty());
+    let mut old = Project::new(PhpVersion::new(7, 4), &[]);
+    let after = old.after("<?php\nclass A\n{\n/*|*/}\n", super::GENERATE_EQUALS, "Generate equals()");
+    assert!(
+        after.contains("public function equals($other): bool\n    {\n        return $other instanceof self;\n    }"),
+        "{after}"
+    );
+}
+
+#[test]
+fn member_choosers_generate_the_chosen_members() {
+    let p = Project::new(
+        PhpVersion::LATEST,
+        &[(
+            "Base.php",
+            "<?php\nclass Base\n{\n    public function a(): int\n    {\n        return 1;\n    }\n\n    protected function b(string $s): void\n    {\n    }\n}\n",
+        )],
+    );
+    let marked = "<?php\nclass Item extends Base\n{\n    private int $id;\n    private string $name;\n    private readonly string $sku;\n/*|*/}\n";
+    let (text, range) = selection(marked);
+    let doc = DocId(9);
+    p.engine.document_opened(doc, &p.root.join("src/a.php"), 1, &text);
+    let choosers = p.engine.generate_choosers(doc, range).expect("open");
+    let titles: Vec<&str> = choosers.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        [
+            "Generate getters…",
+            "Generate setters…",
+            "Generate getters and setters…",
+            "Generate constructor…",
+            "Generate constructor with promoted properties…",
+            "Generate __toString()…",
+            "Generate equals()…",
+            "Override methods…"
+        ]
+    );
+    let setters = &choosers[1];
+    let ids: Vec<&str> = setters.members.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["id", "name"], "readonly properties get no setter");
+    assert_eq!((setters.members[0].label.as_str(), setters.members[0].detail.as_str()), ("$id", "int"));
+    assert!(setters.members.iter().all(|m| m.selected));
+    let overrides = &choosers[7];
+    assert_eq!(overrides.members.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["Base::a()", "Base::b()"]);
+    assert!(overrides.members.iter().all(|m| !m.selected));
+    assert_eq!(overrides.members[1].detail, "protected function b(string $s): void");
+
+    // The data round-trips as JSON.
+    let json = serde_json::to_value(&choosers[2]).unwrap();
+    assert_eq!(json["generator"], "accessors");
+    let back: super::MemberChooser = serde_json::from_value(json).unwrap();
+    assert_eq!(back, choosers[2]);
+
+    let chosen = |index: usize, ids: &[&str]| {
+        let mut chooser = choosers[index].clone();
+        chooser.chosen = Some(ids.iter().map(|id| id.to_string()).collect());
+        p.engine.generate_chosen(doc, &chooser).expect("open").map(|edit| applied(&text, &edit))
+    };
+    let after = chosen(2, &["name", "sku"]).unwrap();
+    assert!(after.contains("function getName(): string") && after.contains("function setName(string $name)"));
+    assert!(after.contains("function getSku(): string") && !after.contains("setSku"));
+    assert!(!after.contains("getId"), "{after}");
+    let after = chosen(3, &["id"]).unwrap();
+    assert!(after.contains("public function __construct(int $id)\n    {\n        $this->id = $id;\n    }"), "{after}");
+    let after = chosen(7, &["Base::b()"]).unwrap();
+    assert!(after.contains("protected function b(string $s): void\n    {\n        parent::b($s);\n    }"), "{after}");
+    assert!(!after.contains("function a()"));
+    let after = chosen(5, &["id"]).unwrap();
+    assert!(after.contains("return sprintf('Item{id: %s}', $this->id);"), "{after}");
+    assert!(chosen(7, &[]).unwrap_err().message.contains("Nothing to generate"));
+    let mut unchosen = choosers[0].clone();
+    unchosen.chosen = None;
+    assert!(p.engine.generate_chosen(doc, &unchosen).unwrap().is_err());
+}
+
+#[test]
 fn generate_kinds_are_advertised() {
-    for kind in [IMPLEMENT_METHODS, OVERRIDE_METHODS, GENERATE_CONSTRUCTOR, GENERATE_ACCESSORS] {
+    for kind in [
+        IMPLEMENT_METHODS,
+        OVERRIDE_METHODS,
+        GENERATE_CONSTRUCTOR,
+        GENERATE_ACCESSORS,
+        super::GENERATE_TO_STRING,
+        super::GENERATE_EQUALS,
+        super::GENERATE_CHOOSER,
+    ] {
         assert!(ACTION_KINDS.contains(&kind), "{kind}");
         assert!(kind.starts_with("source.generate."), "{kind}");
     }

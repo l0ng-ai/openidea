@@ -33,6 +33,7 @@ import { SPELLING_INSPECTION } from "@/platform/inspections";
 import { editInspectionSettings, intentionControls } from "@/platform/inspectionControls";
 import { runInteractiveCodeAction } from "./interactiveCommand";
 import { isClientCommand, runCommand } from "./clientCommands";
+import { startMemberChooser } from "@/editor/refactor/memberChooser";
 import { tx } from "@/platform/i18n";
 
 const codeActionBackoff = featureBackoff();
@@ -188,6 +189,8 @@ export async function applyCodeAction(view: EditorView, action: EditorQuickFix) 
     showHint(view, action.disabledReason);
     return;
   }
+  // Generate with a member chooser: its dialog picks the members and applies the edit.
+  if (startMemberChooser(view, action)) return;
   // An action whose command the client runs (Laravel's "Create translation
   // key…"): its dialog applies the edit.
   if (!action.edit && isClientCommand(action.command)) {

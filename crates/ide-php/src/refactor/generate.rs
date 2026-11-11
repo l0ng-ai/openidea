@@ -29,6 +29,22 @@
 //!   are `getName()`, `isName()` for `bool` (a `bool` property already
 //!   named `isX`/`hasX` keeps its name); setters `setName(T $name): void`,
 //!   not for `readonly` properties; static properties get static accessors.
+//!   An untyped property's accessors take its `@var` type: as the native
+//!   type when PHP can declare it, and as `@return`/`@param` PHPDoc when
+//!   the native type says less (`list<Tag>`) or there is none (templates).
+//! - **Generate __toString()** (`source.generate.toString`, classes and
+//!   traits without one): `sprintf('Point{x: %s, y: %s}', …)` over the
+//!   non-static properties; strings, numbers and stringable objects as
+//!   they are, arrays through `json_encode`, other objects by their type
+//!   (`get_debug_type`), the rest through `var_export`.
+//! - **Generate equals()** (`source.generate.equals`, classes without one):
+//!   `$other instanceof self` and each non-static property equal (objects
+//!   with `==`, the rest with `===`); `mixed $other` from PHP 8.0.
+//! - **Member choosers** (`source.generate.chooser`, [`MemberChooser`]):
+//!   getters, setters, both, the constructors, `__toString()`, `equals()`
+//!   and Override methods with a dialog choosing the members; the host
+//!   offers them in place of the actions generating every member, and the
+//!   dialog resolves them ([`PhpEngine::generate_chosen`]).
 //! - **Generate PHPDoc** (`refactor.rewrite`, with the range on a property
 //!   without a docblock): `/** @var T */` with its declared, else default
 //!   value's, type. Functions and methods get theirs from the context
@@ -52,8 +68,10 @@ use super::hierarchy::{class_imports, class_reference, doc_start, member_removal
 use super::path_to;
 use crate::engine::PhpEngine;
 use crate::imports::{ImportAction, REWRITE, file_edit, wanted};
+use serde::{Deserialize, Serialize};
+
 use crate::inspect::fixes::{
-    MemberKind, doc_type, indent_unit, insert_member, line_indent, line_start, newline, starts_line,
+    MemberKind, doc_type, indent_unit, insert_member, line_indent, line_start, native_type, newline, starts_line,
 };
 use crate::names::{FileNames, NameKind, RelativeClass, fqn_eq};
 use crate::navigate::enclosing_class;
@@ -72,9 +90,24 @@ pub const IMPLEMENT_METHODS: &str = "source.generate.implementMethods";
 /// The code action kind of Override method.
 pub const OVERRIDE_METHODS: &str = "source.generate.overrideMethods";
 
+/// The code action kind of Generate `__toString()`.
+pub const GENERATE_TO_STRING: &str = "source.generate.toString";
+/// The code action kind of Generate `equals()`.
+pub const GENERATE_EQUALS: &str = "source.generate.equals";
+/// The code action kind of the Generate actions that open a member chooser
+/// (no edit; [`MemberChooser`] as data).
+pub const GENERATE_CHOOSER: &str = "source.generate.chooser";
+
 /// The kinds [`generate_actions`] answers.
-pub(crate) const GENERATE_KINDS: [&str; 5] =
-    [IMPLEMENT_METHODS, OVERRIDE_METHODS, GENERATE_CONSTRUCTOR, GENERATE_ACCESSORS, REWRITE];
+pub(crate) const GENERATE_KINDS: [&str; 7] = [
+    IMPLEMENT_METHODS,
+    OVERRIDE_METHODS,
+    GENERATE_CONSTRUCTOR,
+    GENERATE_ACCESSORS,
+    GENERATE_TO_STRING,
+    GENERATE_EQUALS,
+    REWRITE,
+];
 
 /// What the actions of one class share.
 struct Gen<'a> {
@@ -109,16 +142,58 @@ pub(crate) fn generate_actions(
     if !GENERATE_KINDS.iter().any(|kind| wanted(only, kind)) {
         return Vec::new();
     }
+    with_gen(engine, parsed, path, start, end, |g, touched| {
+        let mut out = Vec::new();
+        if wanted(only, IMPLEMENT_METHODS) {
+            out.extend(g.implement());
+        }
+        if wanted(only, OVERRIDE_METHODS) {
+            out.extend(g.overrides());
+        }
+        if wanted(only, GENERATE_CONSTRUCTOR) {
+            out.extend(g.constructors());
+        }
+        if wanted(only, GENERATE_ACCESSORS) {
+            out.extend(g.accessors(touched));
+        }
+        if touched.is_empty() {
+            let values = g.value_properties();
+            if wanted(only, GENERATE_TO_STRING) {
+                out.extend(g.to_string_action(&values));
+            }
+            if wanted(only, GENERATE_EQUALS) {
+                out.extend(g.equals_action(&values));
+            }
+        }
+        if wanted(only, REWRITE)
+            && let [property] = touched
+        {
+            out.extend(g.property_doc(property));
+        }
+        out
+    })
+    .unwrap_or_default()
+}
+
+/// Runs `f` with the class around bytes `start..end` of an open document
+/// and the properties the range touches; `None` when there is no class
+/// there (or the range is in a body, or the file has errors).
+fn with_gen<T>(
+    engine: &PhpEngine,
+    parsed: &ParsedFile,
+    path: &Path,
+    start: u32,
+    end: u32,
+    f: impl FnOnce(&Gen<'_>, &[&Property]) -> T,
+) -> Option<T> {
     let summary = FileSummary::extract(parsed);
     if summary.has_errors {
-        return Vec::new();
+        return None;
     }
     let (start, end) = (start.min(end), start.max(end));
-    let Some(class) = enclosing_class(&summary, start).filter(|class| end <= class.loc.end) else {
-        return Vec::new();
-    };
+    let class = enclosing_class(&summary, start).filter(|class| end <= class.loc.end)?;
     if in_body(parsed, start, end) {
-        return Vec::new();
+        return None;
     }
     let text = parsed.text();
     let g = Gen {
@@ -134,25 +209,7 @@ pub(crate) fn generate_actions(
     };
     let touched: Vec<&Property> =
         class.properties.iter().filter(|p| !p.has_hooks && p.loc.start <= end && start <= p.loc.end).collect();
-    let mut out = Vec::new();
-    if wanted(only, IMPLEMENT_METHODS) {
-        out.extend(g.implement());
-    }
-    if wanted(only, OVERRIDE_METHODS) {
-        out.extend(g.overrides());
-    }
-    if wanted(only, GENERATE_CONSTRUCTOR) {
-        out.extend(g.constructors());
-    }
-    if wanted(only, GENERATE_ACCESSORS) {
-        out.extend(g.accessors(&touched));
-    }
-    if wanted(only, REWRITE)
-        && let [property] = touched.as_slice()
-    {
-        out.extend(g.property_doc(property));
-    }
-    out
+    Some(f(&g, &touched))
 }
 
 /// Whether the range is inside a function-like body or an anonymous class
@@ -346,6 +403,8 @@ impl Gen<'_> {
     fn method_text(&self, indent: &str, header: &str, body: &[String]) -> String {
         let nl = self.nl;
         let unit = self.unit;
+        // A docblock line in front: on its own line.
+        let header = header.split('\n').collect::<Vec<_>>().join(&format!("{nl}{indent}"));
         let lines: String = body.iter().map(|line| format!("{indent}{unit}{line}{nl}")).collect();
         format!("{header}{nl}{indent}{{{nl}{lines}{indent}}}")
     }
@@ -407,6 +466,18 @@ impl Gen<'_> {
     // -------------------------------------------------------- override
 
     fn overrides(&self) -> Vec<ImportAction> {
+        self.override_candidates()
+            .into_iter()
+            .filter_map(|candidate| {
+                let title = format!("Override method '{}'", candidate.label);
+                self.override_action(title, std::slice::from_ref(&candidate))
+            })
+            .collect()
+    }
+
+    /// The methods a parent class declares that can be overridden here,
+    /// nearest parent first.
+    fn override_candidates(&self) -> Vec<Overridable> {
         if self.class.kind != ClassKind::Class {
             return Vec::new();
         }
@@ -424,25 +495,34 @@ impl Gen<'_> {
             let depth = model.parents.iter().position(|p| fqn_eq(NameKind::ClassLike, p, &m.self_class));
             (depth, m.declared().map(|d| d.loc.start))
         });
-        let mut out = Vec::new();
-        for candidate in candidates {
-            let Some(method) = candidate.declared() else { continue };
-            let declaring = &candidate.declaring;
-            let mut edits = Edits::default();
+        candidates
+            .into_iter()
+            .filter_map(|candidate| {
+                let method = candidate.declared()?.clone();
+                Some(Overridable {
+                    label: format!("{}::{}()", short(&candidate.self_class), method.name),
+                    method,
+                    declaring: candidate.declaring.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// One action overriding `methods`, in order.
+    fn override_action(&self, title: String, methods: &[Overridable]) -> Option<ImportAction> {
+        let mut edits = Edits::default();
+        let mut generated = Vec::new();
+        for Overridable { method, declaring, .. } in methods {
             let header = self.header(method, declaring, &mut edits.imports);
             let arguments: Vec<String> =
                 method.params.iter().map(|p| format!("{}${}", if p.variadic { "..." } else { "" }, p.name)).collect();
             let call = format!("parent::{}({});", method.name, arguments.join(", "));
             let returns = !is_no_value(method.return_type.as_ref())
                 && !["__construct", "__destruct", "__clone"].iter().any(|n| method.name.eq_ignore_ascii_case(n));
-            let body = vec![if returns { format!("return {call}") } else { call }];
-            if self.add_methods(&mut edits, &[(header, body)]).is_none() {
-                continue;
-            }
-            let title = format!("Override method '{}::{}()'", short(&candidate.self_class), method.name);
-            out.extend(self.action(title, OVERRIDE_METHODS, edits));
+            generated.push((header, vec![if returns { format!("return {call}") } else { call }]));
         }
-        out
+        self.add_methods(&mut edits, &generated)?;
+        self.action(title, OVERRIDE_METHODS, edits)
     }
 
     // ----------------------------------------------------- constructor
@@ -452,7 +532,19 @@ impl Gen<'_> {
         {
             return Vec::new();
         }
-        let parent = self.engine.class_model(&self.class.fqn).and_then(|model| {
+        let parent = self.parent_constructor();
+        let properties = self.constructor_properties();
+        let mut out = Vec::new();
+        out.extend(self.constructor(parent.as_ref(), &properties));
+        if self.can_promote(&properties) {
+            out.extend(self.promoted_constructor(parent.as_ref(), &properties));
+        }
+        out
+    }
+
+    /// The parent's constructor the generated one calls.
+    fn parent_constructor(&self) -> Option<(Method, std::sync::Arc<ClassLike>)> {
+        self.engine.class_model(&self.class.fqn).and_then(|model| {
             let ctor = model.method("__construct")?;
             let usable = !self.is_self(&ctor.self_class)
                 && ctor.visibility != Visibility::Private
@@ -460,20 +552,24 @@ impl Gen<'_> {
                 && ctor.origin == Origin::Declared
                 && ctor.declaring.kind == ClassKind::Class;
             usable.then(|| Some((ctor.declared()?.clone(), ctor.declaring.clone()))).flatten()
-        });
-        let properties: Vec<&Property> = self
-            .class
+        })
+    }
+
+    /// The properties a constructor sets: not static or promoted, without a
+    /// default value.
+    fn constructor_properties(&self) -> Vec<&Property> {
+        self.class
             .properties
             .iter()
             .filter(|p| !p.is_static && !p.is_promoted && !p.has_hooks && !p.is_abstract && p.default.is_none())
-            .collect();
-        let mut out = Vec::new();
-        out.extend(self.constructor(parent.as_ref(), &properties));
+            .collect()
+    }
+
+    /// Whether `properties` can become promoted parameters: from PHP 8.0,
+    /// each declared alone.
+    fn can_promote(&self, properties: &[&Property]) -> bool {
         let alone = |p: &Property| self.class.properties.iter().filter(|q| q.loc == p.loc).count() == 1;
-        if self.level >= PhpVersion::new(8, 0) && !properties.is_empty() && properties.iter().all(|p| alone(p)) {
-            out.extend(self.promoted_constructor(parent.as_ref(), &properties));
-        }
-        out
+        self.level >= PhpVersion::new(8, 0) && !properties.is_empty() && properties.iter().all(|p| alone(p))
     }
 
     /// The parent constructor's parameters and the `parent::__construct`
@@ -611,16 +707,9 @@ impl Gen<'_> {
         if !matches!(self.class.kind, ClassKind::Class | ClassKind::Trait) {
             return Vec::new();
         }
-        let model = self.engine.class_model(&self.class.fqn);
-        let has = |name: &str| match &model {
-            Some(model) => model.method(name).is_some_and(|m| self.is_self(&m.self_class)),
-            None => self.class.method(name).is_some(),
-        };
-        let all: Vec<&Property> = self.class.properties.iter().filter(|p| !p.has_hooks && !p.is_abstract).collect();
+        let all = self.accessor_properties();
         let chosen: &[&Property] = if touched.is_empty() { &all } else { touched };
-        let getters: Vec<&Property> = chosen.iter().copied().filter(|p| !has(&getter_name(p))).collect();
-        let setters: Vec<&Property> =
-            chosen.iter().copied().filter(|p| !p.is_readonly && !has(&setter_name(p))).collect();
+        let (getters, setters) = self.missing_accessors(chosen);
         let what = |plural: &str, singular: &str| match touched {
             [one] => format!("{singular} for '${}'", one.name),
             _ => plural.to_owned(),
@@ -652,7 +741,7 @@ impl Gen<'_> {
             if !getter && !setter {
                 continue;
             }
-            let ty = property.type_hint.as_ref().map(|hint| self.hint(hint, self.class, &mut edits.imports));
+            let (ty, doc) = self.property_types(property, &mut edits.imports);
             let static_word = if property.is_static { " static" } else { "" };
             let access = if property.is_static {
                 format!("self::${}", property.name)
@@ -661,7 +750,8 @@ impl Gen<'_> {
             };
             if getter {
                 let ret = ty.as_ref().map(|ty| format!(": {ty}")).unwrap_or_default();
-                let header = format!("public{static_word} function {}(){ret}", getter_name(property));
+                let doc = doc.as_ref().map(|doc| format!("/** @return {doc} */\n")).unwrap_or_default();
+                let header = format!("{doc}public{static_word} function {}(){ret}", getter_name(property));
                 methods.push((header, vec![format!("return {access};")]));
             }
             if setter {
@@ -669,7 +759,9 @@ impl Gen<'_> {
                     Some(ty) => format!("{ty} ${}", property.name),
                     None => format!("${}", property.name),
                 };
-                let header = format!("public{static_word} function {}({param}){void}", setter_name(property));
+                let doc =
+                    doc.as_ref().map(|doc| format!("/** @param {doc} ${} */\n", property.name)).unwrap_or_default();
+                let header = format!("{doc}public{static_word} function {}({param}){void}", setter_name(property));
                 methods.push((header, vec![format!("{access} = ${};", property.name)]));
             }
         }
@@ -704,5 +796,361 @@ impl Gen<'_> {
             edit: file_edit(self.path, vec![TextEdit { range: index.range(at, at), new_text }]),
             open: None,
         })
+    }
+}
+
+/// A parent's method that can be overridden.
+#[derive(Clone)]
+struct Overridable {
+    /// `Parent::name()`.
+    label: String,
+    method: Method,
+    declaring: std::sync::Arc<ClassLike>,
+}
+
+impl Gen<'_> {
+    /// The properties accessors are generated for.
+    fn accessor_properties(&self) -> Vec<&Property> {
+        self.class.properties.iter().filter(|p| !p.has_hooks && !p.is_abstract).collect()
+    }
+
+    /// Of `chosen`, those without a getter and those without a setter (and
+    /// not `readonly`).
+    fn missing_accessors<'p>(&self, chosen: &[&'p Property]) -> (Vec<&'p Property>, Vec<&'p Property>) {
+        let model = self.engine.class_model(&self.class.fqn);
+        let has = |name: &str| match &model {
+            Some(model) => model.method(name).is_some_and(|m| self.is_self(&m.self_class)),
+            None => self.class.method(name).is_some(),
+        };
+        let getters = chosen.iter().copied().filter(|p| !has(&getter_name(p))).collect();
+        let setters = chosen.iter().copied().filter(|p| !p.is_readonly && !has(&setter_name(p))).collect();
+        (getters, setters)
+    }
+
+    /// The `@var` type of an untyped property, in context.
+    fn var_type(&self, property: &Property) -> Option<Type> {
+        let var = property
+            .doc
+            .as_ref()
+            .and_then(|doc| doc.vars.iter().find(|var| var.name.as_deref().is_none_or(|name| name == property.name)))?;
+        let templates: Vec<&str> = self
+            .class
+            .doc
+            .as_ref()
+            .map(|doc| doc.templates.iter().map(|t| t.name.as_str()).collect())
+            .unwrap_or_default();
+        Some(Type::from_doc(&var.ty, &templates)).filter(|ty| *ty != Type::Mixed)
+    }
+
+    /// A property's type for its accessors: the declared one, else its
+    /// `@var` type, as a native type when PHP can declare it and as PHPDoc
+    /// when the native one says less (or there is none).
+    fn property_types(&self, property: &Property, imports: &mut Vec<String>) -> (Option<String>, Option<String>) {
+        if let Some(hint) = &property.type_hint {
+            return (Some(self.hint(hint, self.class, imports)), None);
+        }
+        let Some(ty) = self.var_type(property) else { return (None, None) };
+        let scope = self.names.scope_at(property.loc.start);
+        let native = native_type(&ty, scope, self.level);
+        let doc = doc_type(&ty, scope);
+        let says_less = native.is_none() || doc.contains(['<', '{', '-']);
+        (native, says_less.then_some(doc))
+    }
+
+    /// The properties `__toString()` and `equals()` use: not static.
+    fn value_properties(&self) -> Vec<&Property> {
+        self.class.properties.iter().filter(|p| !p.is_static && !p.has_hooks && !p.is_abstract).collect()
+    }
+
+    /// Whether the class (or a parent) has a concrete `name`.
+    fn declares(&self, name: &str) -> bool {
+        match self.engine.class_model(&self.class.fqn) {
+            Some(model) => model.method(name).is_some_and(|m| !m.is_abstract),
+            None => self.class.method(name).is_some(),
+        }
+    }
+
+    /// How `__toString()` writes a property's value for `sprintf`'s `%s`.
+    fn printed(&self, property: &Property) -> String {
+        let access = format!("$this->{}", property.name);
+        let ty = match &property.type_hint {
+            Some(hint) => Some(Type::from_hint(hint)),
+            None => self.var_type(property),
+        };
+        let Some(ty) = ty else { return format!("var_export({access}, true)") };
+        let members = ty.members();
+        let scalar = |t: &Type| {
+            matches!(
+                t,
+                Type::Int
+                    | Type::IntRange { .. }
+                    | Type::LiteralInt(_)
+                    | Type::Float
+                    | Type::LiteralFloat(_)
+                    | Type::String(_)
+                    | Type::LiteralString(_)
+                    | Type::Numeric
+            )
+        };
+        let stringable = |t: &Type| match t {
+            Type::Named { fqn, .. } => {
+                fqn.eq_ignore_ascii_case("Stringable")
+                    || self.engine.class_model(fqn).is_some_and(|model| {
+                        model.method("__toString").is_some()
+                            || model.interfaces.iter().any(|i| i.eq_ignore_ascii_case("Stringable"))
+                    })
+            }
+            _ => false,
+        };
+        if members.iter().all(|t| scalar(t) || stringable(t)) {
+            access
+        } else if members.iter().all(|t| matches!(t, Type::Array { .. } | Type::List { .. } | Type::Shape(_))) {
+            format!("json_encode({access})")
+        } else if members.iter().all(|t| matches!(t, Type::Named { .. } | Type::Object)) {
+            if self.level >= PhpVersion::new(8, 0) {
+                format!("get_debug_type({access})")
+            } else {
+                format!("get_class({access})")
+            }
+        } else {
+            format!("var_export({access}, true)")
+        }
+    }
+
+    /// `__toString()` listing `properties`: `Point{x: 1, y: 2}`.
+    fn to_string_action(&self, properties: &[&Property]) -> Option<ImportAction> {
+        if !matches!(self.class.kind, ClassKind::Class | ClassKind::Trait) || self.declares("__toString") {
+            return None;
+        }
+        let name = short(&self.class.fqn);
+        let fields: Vec<String> = properties.iter().map(|p| format!("{}: %s", p.name)).collect();
+        let format = format!("'{name}{{{}}}'", fields.join(", "));
+        let line = if properties.is_empty() {
+            format!("return {format};")
+        } else {
+            let values: Vec<String> = properties.iter().map(|p| self.printed(p)).collect();
+            format!("return sprintf({format}, {});", values.join(", "))
+        };
+        let mut edits = Edits::default();
+        self.add_methods(&mut edits, &[("public function __toString(): string".to_owned(), vec![line])])?;
+        self.action("Generate __toString()".into(), GENERATE_TO_STRING, edits)
+    }
+
+    /// `equals($other)`: the same class and the same `properties` (objects
+    /// compared with `==`, the rest with `===`).
+    fn equals_action(&self, properties: &[&Property]) -> Option<ImportAction> {
+        if self.class.kind != ClassKind::Class || self.declares("equals") {
+            return None;
+        }
+        let unit = self.unit;
+        let param = if self.level >= PhpVersion::new(8, 0) { "mixed $other" } else { "$other" };
+        let mut body = vec!["return $other instanceof self".to_owned()];
+        for property in properties {
+            let ty = match &property.type_hint {
+                Some(hint) => Some(Type::from_hint(hint)),
+                None => self.var_type(property),
+            };
+            let object =
+                ty.is_some_and(|ty| ty.members().iter().any(|t| matches!(t, Type::Named { .. } | Type::Object)));
+            let op = if object { "==" } else { "===" };
+            body.push(format!("{unit}&& $this->{name} {op} $other->{name}", name = property.name));
+        }
+        if let Some(last) = body.last_mut() {
+            last.push(';');
+        }
+        let mut edits = Edits::default();
+        self.add_methods(&mut edits, &[(format!("public function equals({param}): bool"), body)])?;
+        self.action("Generate equals()".into(), GENERATE_EQUALS, edits)
+    }
+
+    // ---------------------------------------------------- the chooser
+
+    fn chooser_property(&self, property: &Property, selected: bool) -> ChooserMember {
+        let detail = match &property.type_hint {
+            Some(hint) => self.hint(hint, self.class, &mut Vec::new()),
+            None => {
+                let scope = self.names.scope_at(property.loc.start);
+                self.var_type(property).map(|ty| doc_type(&ty, scope)).unwrap_or_default()
+            }
+        };
+        ChooserMember { id: property.name.clone(), label: format!("${}", property.name), detail, selected }
+    }
+
+    /// The member choosers this class offers; with properties `touched`,
+    /// only those start chosen.
+    fn choosers(&self, touched: &[&Property]) -> Vec<(Generator, String, Vec<ChooserMember>)> {
+        let mut out = Vec::new();
+        let members = |properties: &[&Property]| -> Vec<ChooserMember> {
+            properties
+                .iter()
+                .map(|p| self.chooser_property(p, touched.is_empty() || touched.iter().any(|t| t.name == p.name)))
+                .collect()
+        };
+        if matches!(self.class.kind, ClassKind::Class | ClassKind::Trait) {
+            let all = self.accessor_properties();
+            let (getters, setters) = self.missing_accessors(&all);
+            let both: Vec<&Property> =
+                all.iter().copied().filter(|p| getters.contains(p) || setters.contains(p)).collect();
+            for (generator, title, list) in [
+                (Generator::Getters, "Generate getters…", &getters),
+                (Generator::Setters, "Generate setters…", &setters),
+                (Generator::Accessors, "Generate getters and setters…", &both),
+            ] {
+                if !list.is_empty() {
+                    out.push((generator, title.to_owned(), members(list)));
+                }
+            }
+            if self.class.method("__construct").is_none() {
+                let properties = self.constructor_properties();
+                out.push((Generator::Constructor, "Generate constructor…".to_owned(), members(&properties)));
+                if self.can_promote(&properties) {
+                    let title = "Generate constructor with promoted properties…".to_owned();
+                    out.push((Generator::PromotedConstructor, title, members(&properties)));
+                }
+            }
+            let values = self.value_properties();
+            if !self.declares("__toString") {
+                out.push((Generator::ToString, "Generate __toString()…".to_owned(), members(&values)));
+            }
+            if self.class.kind == ClassKind::Class && !self.declares("equals") {
+                out.push((Generator::Equals, "Generate equals()…".to_owned(), members(&values)));
+            }
+        }
+        let overridable = self.override_candidates();
+        if !overridable.is_empty() {
+            let members = overridable
+                .iter()
+                .map(|o| ChooserMember {
+                    id: o.label.clone(),
+                    label: o.label.clone(),
+                    detail: self.header(&o.method, &o.declaring, &mut Vec::new()),
+                    selected: false,
+                })
+                .collect();
+            out.push((Generator::Overrides, "Override methods…".to_owned(), members));
+        }
+        out
+    }
+
+    /// The action `generator` makes for the members chosen (by id).
+    fn chosen_action(&self, generator: Generator, chosen: &[String]) -> Option<ImportAction> {
+        fn picked<'p>(properties: Vec<&'p Property>, chosen: &[String]) -> Vec<&'p Property> {
+            properties.into_iter().filter(|p| chosen.contains(&p.name)).collect()
+        }
+        let picked = |properties| picked(properties, chosen);
+        match generator {
+            Generator::Getters | Generator::Setters | Generator::Accessors => {
+                let properties = picked(self.accessor_properties());
+                let (getters, setters) = self.missing_accessors(&properties);
+                let none: Vec<&Property> = Vec::new();
+                let (getters, setters) = match generator {
+                    Generator::Getters => (&getters, &none),
+                    Generator::Setters => (&none, &setters),
+                    _ => (&getters, &setters),
+                };
+                if getters.is_empty() && setters.is_empty() {
+                    return None;
+                }
+                self.accessor_action("Generate getters and setters".into(), getters, setters)
+            }
+            Generator::Constructor => {
+                self.constructor(self.parent_constructor().as_ref(), &picked(self.constructor_properties()))
+            }
+            Generator::PromotedConstructor => {
+                let properties = picked(self.constructor_properties());
+                if !self.can_promote(&properties) {
+                    return None;
+                }
+                self.promoted_constructor(self.parent_constructor().as_ref(), &properties)
+            }
+            Generator::ToString => self.to_string_action(&picked(self.value_properties())),
+            Generator::Equals => self.equals_action(&picked(self.value_properties())),
+            Generator::Overrides => {
+                let methods: Vec<Overridable> =
+                    self.override_candidates().into_iter().filter(|o| chosen.contains(&o.label)).collect();
+                if methods.is_empty() {
+                    return None;
+                }
+                self.override_action("Override methods".into(), &methods)
+            }
+        }
+    }
+}
+
+/// The generators that open a member chooser (see [`MemberChooser`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Generator {
+    Getters,
+    Setters,
+    Accessors,
+    Constructor,
+    PromotedConstructor,
+    Overrides,
+    ToString,
+    Equals,
+}
+
+/// One member a chooser lists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChooserMember {
+    /// A property's name without `$`, a method's `Parent::name()`.
+    pub id: String,
+    pub label: String,
+    /// Its type, or a method's signature.
+    pub detail: String,
+    /// Chosen when the dialog opens.
+    pub selected: bool,
+}
+
+/// The `data` of a Generate action with a member chooser
+/// ([`GENERATE_CHOOSER`]): the editor's dialog picks the members (into
+/// `chosen`) and resolves the action ([`PhpEngine::generate_chosen`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberChooser {
+    /// Where the action was offered.
+    pub range: ide_core::Range,
+    pub generator: Generator,
+    /// The dialog's title (the action's, without `…`).
+    pub title: String,
+    pub members: Vec<ChooserMember>,
+    #[serde(default)]
+    pub chosen: Option<Vec<String>>,
+}
+
+impl PhpEngine {
+    /// The Generate actions with a member chooser at `range` of an open
+    /// document. `None` when the engine doesn't hold the document.
+    pub fn generate_choosers(&self, doc: ide_core::DocId, range: ide_core::Range) -> Option<Vec<MemberChooser>> {
+        let parsed = self.parsed_document(doc)?;
+        let path = self.document_path(doc)?;
+        let (start, end) = parsed.line_index().byte_range(range);
+        let found = with_gen(self, &parsed, &path, start, end, |g, touched| g.choosers(touched)).unwrap_or_default();
+        Some(
+            found
+                .into_iter()
+                .map(|(generator, title, members)| MemberChooser { range, generator, title, members, chosen: None })
+                .collect(),
+        )
+    }
+
+    /// The edit of a member chooser with its chosen members. `None` when
+    /// the engine doesn't hold the document.
+    pub fn generate_chosen(
+        &self,
+        doc: ide_core::DocId,
+        chooser: &MemberChooser,
+    ) -> Option<ide_core::IdeResult<ide_core::WorkspaceEdit>> {
+        let parsed = self.parsed_document(doc)?;
+        let path = self.document_path(doc)?;
+        let Some(chosen) = &chooser.chosen else {
+            return Some(Err(ide_core::IdeError::invalid("Choose the members first")));
+        };
+        let (start, end) = parsed.line_index().byte_range(chooser.range);
+        let action =
+            with_gen(self, &parsed, &path, start, end, |g, _| g.chosen_action(chooser.generator, chosen)).flatten();
+        Some(action.map(|action| action.edit).ok_or_else(|| ide_core::IdeError::invalid("Nothing to generate")))
     }
 }

@@ -6547,5 +6547,17 @@
   "The extracted code uses $this, so the method can't be static": "提取的代码使用了 $this，因此该方法不能是静态的",
   "The code is in a static context, so the method must be static": "代码位于静态上下文中，因此该方法必须是静态的",
   "Choose the new method's name and parameters first": "请先选择新方法的名称和形参",
-  "The selection can no longer be extracted": "所选代码已无法提取"
+  "The selection can no longer be extracted": "所选代码已无法提取",
+  "Select None": "全不选",
+  "Members": "成员",
+  "No members": "没有成员",
+  "Nothing to generate": "没有可生成的内容",
+  "Generate getters": "生成 Getter",
+  "Generate setters": "生成 Setter",
+  "Generate getters and setters": "生成 Getter 和 Setter",
+  "Generate constructor": "生成构造函数",
+  "Generate constructor with promoted properties": "生成带提升属性的构造函数",
+  "Generate __toString()": "生成 __toString()",
+  "Generate equals()": "生成 equals()",
+  "Override methods": "重写方法"
 }

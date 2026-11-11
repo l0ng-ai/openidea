@@ -35,7 +35,12 @@ export interface SignatureParameter {
 }
 
 export interface Signature {
+  /** For display: `name`, `Class::name`. */
   name: string;
+  /** The own name; a new one renames the function (servers that support it send it). */
+  functionName?: string;
+  /** A method's visibility; empty or absent for a function. */
+  visibility?: string;
   parameters: SignatureParameter[];
   returnType: string;
   constructor: boolean;
@@ -104,10 +109,40 @@ export function parameterText(p: Pick<SignatureParameter, "type" | "byRef" | "va
   return `${type}${p.byRef ? "&" : ""}${p.variadic ? "..." : ""}$${p.name.trim().replace(/^\$/, "")}${value}`;
 }
 
-/** The signature preview under the table. */
-export function signatureText(name: string, rows: readonly ParamRow[], returnType: string): string {
+/** The signature preview under the table, with the method's visibility when given. */
+export function signatureText(name: string, rows: readonly ParamRow[], returnType: string, visibility = ""): string {
   const ret = returnType.trim() ? `: ${returnType.trim()}` : "";
-  return `${name}(${rows.map(parameterText).join(", ")})${ret}`;
+  const prefix = visibility ? `${visibility} ` : "";
+  return `${prefix}${name}(${rows.map(parameterText).join(", ")})${ret}`;
+}
+
+/** The name and visibility the dialog edits. */
+export interface Head {
+  functionName: string;
+  visibility: string;
+}
+
+export function headOf(signature: Signature): Head {
+  return { functionName: signature.functionName ?? "", visibility: signature.visibility ?? "" };
+}
+
+/** The display name with its last part replaced by the new name: `Repo::find` → `Repo::get`. */
+export function displayName(signature: Signature, head: Head): string {
+  const name = head.functionName.trim();
+  if (!name || !signature.functionName) return signature.name;
+  const colon = signature.name.lastIndexOf("::");
+  const cut = colon >= 0 ? colon + 2 : signature.name.lastIndexOf("\\") + 1;
+  return `${signature.name.slice(0, cut)}${name}`;
+}
+
+const IDENTIFIER = /^[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*$/;
+
+/** What is wrong with the new name, or null. */
+export function headProblem(head: Head): string | null {
+  const name = head.functionName.trim();
+  if (!name) return "Enter a name";
+  if (!IDENTIFIER.test(name)) return tx`'${name}' is not a valid name`;
+  return null;
 }
 
 /** What is wrong with the table before asking the server (it checks the rest), or null. */
@@ -125,9 +160,11 @@ export function rowProblem(rows: readonly ParamRow[]): string | null {
   return null;
 }
 
-/** Whether the rows and return type differ from the signature. */
-export function isChanged(signature: Signature, rows: readonly ParamRow[], returnType: string): boolean {
+/** Whether the rows, return type, name or visibility differ from the signature. */
+export function isChanged(signature: Signature, rows: readonly ParamRow[], returnType: string, head?: Head): boolean {
   if (returnType.trim() !== signature.returnType) return true;
+  if (head && head.functionName.trim() !== (signature.functionName ?? "")) return true;
+  if (head && head.visibility !== (signature.visibility ?? "")) return true;
   if (rows.length !== signature.parameters.length) return true;
   return rows.some((row, i) => {
     const p = signature.parameters[i]!;
@@ -143,9 +180,11 @@ export function isChanged(signature: Signature, rows: readonly ParamRow[], retur
 }
 
 /** The new signature for the server. */
-export function changeOf(signature: Signature, rows: readonly ParamRow[], returnType: string): Signature {
+export function changeOf(signature: Signature, rows: readonly ParamRow[], returnType: string, head?: Head): Signature {
   return {
     ...signature,
+    ...(head && signature.functionName !== undefined ? { functionName: head.functionName.trim() } : {}),
+    ...(head && signature.visibility !== undefined ? { visibility: head.visibility } : {}),
     returnType: returnType.trim(),
     parameters: rows.map(({ key: _key, ...p }) => ({
       ...p,

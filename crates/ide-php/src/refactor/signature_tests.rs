@@ -176,7 +176,7 @@ fn reorder_rename_add_and_named_arguments_of_a_function() {
         .unwrap();
     assert_eq!(
         changed["util.php"],
-        "<?php\nnamespace App;\n\n/**\n * @param int $times how many\n * @param string $label the label\n */\nfunction repeat(string $label = 'x', int $times, bool $upper): string\n{\n    return str_repeat($label, $times);\n}\n"
+        "<?php\nnamespace App;\n\n/**\n * @param string $label the label\n * @param int $times how many\n * @param bool $upper\n */\nfunction repeat(string $label = 'x', int $times, bool $upper): string\n{\n    return str_repeat($label, $times);\n}\n"
     );
     assert_eq!(
         changed["main.php"],
@@ -384,4 +384,160 @@ fn changes_that_would_break_the_code_are_refused() {
 #[test]
 fn the_kind_is_advertised() {
     assert!(crate::imports::ACTION_KINDS.contains(&CHANGE_SIGNATURE));
+}
+
+#[test]
+fn renaming_updates_calls_overrides_and_callable_strings() {
+    let repo = r"<?php
+namespace App;
+
+class Repo
+{
+    public function fi/*|*/nd(int $id): ?string
+    {
+        return null;
+    }
+
+    public function all(): array
+    {
+        return array_map([$this, 'find'], [1, 2]);
+    }
+}
+
+class Cached extends Repo
+{
+    public function find(int $id): ?string
+    {
+        return parent::find($id);
+    }
+}
+
+class Other
+{
+    public function find(int $id): ?string
+    {
+        return null;
+    }
+}
+";
+    let main = r"<?php
+namespace App;
+
+$r = new Repo();
+$r->find(1);
+array_map([$r, 'find'], [1]);
+array_map([Repo::class, 'find'], [1]);
+array_map('App\Repo::find', [1]);
+array_map([new Other(), 'find'], [1]);
+(new Other())->find(2);
+";
+    let f = fixture(PhpVersion::LATEST, &[("Repo.php", repo), ("main.php", main)]);
+    let signature = f.signature();
+    assert_eq!((signature.function_name.as_str(), signature.visibility.as_str()), ("find", "public"));
+    let changed = f.change(|s| s.function_name = "get".into()).unwrap();
+    let repo = &changed["Repo.php"];
+    assert_eq!(repo.matches("public function get(int $id)").count(), 2, "{repo}");
+    assert!(repo.contains("return parent::get($id);"), "{repo}");
+    assert!(repo.contains("array_map([$this, 'get'], [1, 2]);"), "{repo}");
+    assert_eq!(repo.matches("function find(").count(), 1, "Other keeps its method: {repo}");
+    assert_eq!(
+        changed["main.php"],
+        r"<?php
+namespace App;
+
+$r = new Repo();
+$r->get(1);
+array_map([$r, 'get'], [1]);
+array_map([Repo::class, 'get'], [1]);
+array_map('App\Repo::get', [1]);
+array_map([new Other(), 'find'], [1]);
+(new Other())->find(2);
+"
+    );
+
+    // A function, with its import and a callable string; and a new name
+    // that clashes.
+    let util = "<?php\nnamespace App\\Util;\n\nfunction lo/*|*/okup(int $id): int\n{\n    return $id;\n}\n\nfunction other(): void\n{\n}\n";
+    let main = "<?php\nnamespace App;\n\nuse function App\\Util\\lookup;\n\nlookup(1);\narray_map('App\\Util\\lookup', [1]);\n";
+    let f = fixture(PhpVersion::LATEST, &[("util.php", util), ("main.php", main)]);
+    let changed = f
+        .change(|s| {
+            s.function_name = "find".into();
+            s.parameters.push(added("strict", "bool", "false", ""));
+        })
+        .unwrap();
+    assert!(changed["util.php"].contains("function find(int $id, bool $strict = false): int"));
+    assert_eq!(
+        changed["main.php"],
+        "<?php\nnamespace App;\n\nuse function App\\Util\\find;\n\nfind(1);\narray_map('App\\Util\\find', [1]);\n"
+    );
+    assert!(f.refused(|s| s.function_name = "other".into()).contains("other"));
+    assert!(f.refused(|s| s.function_name = "9x".into()).contains("not a valid name"));
+    assert!(f.refused(|s| s.function_name = "__get".into()).contains("magic"));
+    assert!(f.refused(|s| s.visibility = "private".into()).contains("no visibility"));
+}
+
+#[test]
+fn visibility_changes_across_the_hierarchy() {
+    let text = "<?php\nclass Base\n{\n    public function r/*|*/un(): void\n    {\n    }\n\n    function helper(): void\n    {\n    }\n}\n\nclass Child extends Base\n{\n    #[\\Override]\n    final public function run(): void\n    {\n    }\n}\n";
+    let f = fixture(PhpVersion::LATEST, &[("a.php", text)]);
+    let changed = f.change(|s| s.visibility = "protected".into()).unwrap();
+    let a = &changed["a.php"];
+    assert!(a.contains("    protected function run(): void"), "{a}");
+    assert!(a.contains("    final protected function run(): void"), "{a}");
+    assert!(f.refused(|s| s.visibility = "private".into()).contains("overridden"));
+    assert!(f.refused(|s| s.visibility = "internal".into()).contains("not a visibility"));
+
+    // No visibility written: one is added.
+    let marked = text.replacen("/*|*/", "", 1).replacen("function helper", "function hel/*|*/per", 1);
+    let f = fixture(PhpVersion::LATEST, &[("a.php", &marked)]);
+    assert_eq!(f.signature().visibility, "public");
+    let changed = f.change(|s| s.visibility = "private".into()).unwrap();
+    assert!(changed["a.php"].contains("    private function helper(): void"), "{}", changed["a.php"]);
+}
+
+#[test]
+fn param_lines_follow_the_new_order() {
+    let text = "<?php\n/**\n * Sums.\n *\n * @param int $a the first\n *   continued\n * @param int $b\n * @return int\n */\nfunction /*|*/sum(int $a, int $b): int\n{\n    return $a + $b;\n}\nsum(1, 2);\n";
+    let f = fixture(PhpVersion::LATEST, &[("a.php", text)]);
+    let changed = f
+        .change(|s| {
+            s.parameters.swap(0, 1);
+            s.parameters[1].name = "first".into();
+            s.parameters.push(added("c", "", "0", ""));
+        })
+        .unwrap();
+    assert_eq!(
+        changed["a.php"],
+        "<?php\n/**\n * Sums.\n *\n * @param int $b\n * @param int $first the first\n *   continued\n * @param mixed $c\n * @return int\n */\nfunction sum(int $b, int $first, $c = 0): int\n{\n    return $first + $b;\n}\nsum(2, 1);\n"
+    );
+    let changed = f
+        .change(|s| {
+            s.parameters.remove(0);
+            s.parameters.push(added("d", "float", "1.0", ""));
+        })
+        .unwrap();
+    assert!(
+        changed["a.php"].contains(" * Sums.\n *\n * @param int $b\n * @param float $d\n * @return int\n */\nfunction sum(int $b, float $d = 1.0): int"),
+        "{}",
+        changed["a.php"]
+    );
+    // A docblock without `@param` lines gets none.
+    let text = "<?php\n/** Sums. */\nfunction /*|*/sum(int $a): int\n{\n    return $a;\n}\n";
+    let f = fixture(PhpVersion::LATEST, &[("a.php", text)]);
+    let changed = f.change(|s| s.parameters.push(added("b", "int", "0", ""))).unwrap();
+    assert!(changed["a.php"].starts_with("<?php\n/** Sums. */\nfunction sum(int $a, int $b = 0)"));
+}
+
+#[test]
+fn constructors_change_at_new_self_static_and_direct_calls() {
+    let text = "<?php\nclass Money\n{\n    public function __con/*|*/struct(int $amount, string $currency = 'EUR')\n    {\n    }\n\n    public static function of(int $amount): static\n    {\n        return new static($amount);\n    }\n\n    public function copy(): self\n    {\n        return new self($this->amount(), 'USD');\n    }\n\n    public function reset(): void\n    {\n        $this->__construct(0);\n    }\n\n    public function amount(): int\n    {\n        return 1;\n    }\n}\n\nclass Other\n{\n    public function __construct(int $a)\n    {\n    }\n\n    public function make(): self\n    {\n        return new self(1);\n    }\n}\n";
+    let f = fixture(PhpVersion::LATEST, &[("a.php", text)]);
+    let changed = f.change(|s| s.parameters.swap(0, 1)).unwrap();
+    let a = &changed["a.php"];
+    assert!(a.contains("return new static(amount: $amount);"), "{a}");
+    assert!(a.contains("return new self('USD', $this->amount());"), "{a}");
+    assert!(a.contains("$this->__construct(amount: 0);"), "{a}");
+    assert!(a.contains("return new self(1);"), "{a}");
+    assert!(f.refused(|s| s.function_name = "make".into()).contains("constructor"));
 }

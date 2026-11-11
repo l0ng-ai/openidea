@@ -145,4 +145,41 @@ describe("ChangeSignatureDialog", () => {
     fireEvent.mouseDown(rows()[1]!);
     expect(button("Remove Parameter").disabled).toBe(false);
   });
+
+  it("renames the method and changes its visibility when the server sends them", async () => {
+    resolved = { status: "ok", data: { ...action(SIGNATURE), edit: { files: [] } } };
+    open({ ...SIGNATURE, name: "Cart::total", functionName: "total", visibility: "public" });
+    const name = screen.getAllByLabelText("Name")[0] as HTMLInputElement;
+    expect(name.value).toBe("total");
+    expect(preview()).toBe("public Cart::total(int $qty, float $price): float");
+    expect(button("Refactor").disabled).toBe(true);
+    fireEvent.change(name, { target: { value: "sum" } });
+    expect(preview()).toBe("public Cart::sum(int $qty, float $price): float");
+    expect(button("Refactor").disabled).toBe(false);
+    fireEvent.change(name, { target: { value: "9sum" } });
+    expect(screen.getByRole("alert").textContent).toBe("'9sum' is not a valid name");
+    fireEvent.change(name, { target: { value: "sum" } });
+    fireEvent.click(screen.getByLabelText("Visibility"));
+    fireEvent.click(screen.getByRole("option", { name: "Protected" }));
+    expect(preview()).toBe("protected Cart::sum(int $qty, float $price): float");
+    fireEvent.click(button("Refactor"));
+    await vi.waitFor(() => expect(lspResolveCodeAction).toHaveBeenCalledOnce());
+    const data = JSON.parse(lspResolveCodeAction.mock.calls[0]![1].data!);
+    expect(data.change.functionName).toBe("sum");
+    expect(data.change.visibility).toBe("protected");
+  });
+
+  it("keeps a constructor's name and a function's missing visibility", () => {
+    open({ ...SIGNATURE, functionName: "total", visibility: "" });
+    expect(screen.queryByLabelText("Visibility")).toBeNull();
+    open({
+      name: "Point::__construct",
+      functionName: "__construct",
+      visibility: "public",
+      returnType: "",
+      constructor: true,
+      parameters: [param(0, "y", "int")],
+    });
+    expect(screen.getAllByText("Point::__construct").length).toBeGreaterThan(0);
+  });
 });

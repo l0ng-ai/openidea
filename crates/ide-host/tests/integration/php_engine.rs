@@ -431,6 +431,68 @@ async fn extract_method_dialog_is_resolved_by_the_native_engine() {
     host.close_project("main");
 }
 
+/// Generate with a member chooser: the chooser replaces the action
+/// generating every member, and resolves with the members chosen; Move class
+/// creates the class's PSR-4 file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn generate_member_chooser_and_move_class_through_the_native_engine() {
+    use ide_php::refactor::{GENERATE_CHOOSER, Generator, MOVE_CLASS, MemberChooser};
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("shop");
+    write(&root.join("composer.json"), r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#);
+    let item = "<?php\nnamespace App;\n\nclass Item\n{\n    private int $id;\n    private string $name;\n}\n\nclass Price\n{\n}\n";
+    write(&root.join("src/Item.php"), item);
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let host = host(&base.join("app"), events.clone());
+    let project = host.open_project("main", &root).unwrap();
+    set_engine(&host, "native");
+    until("the engine to start", || project.php.engine().is_some()).await;
+    assert!(project.php.engine().unwrap().wait_idle(WAIT));
+
+    let doc = ops::doc::open(&host, "main", root.join("src/Item.php")).await.unwrap();
+    let caret = ide_core::Pos::new(7, 0);
+    let actions =
+        ops::lsp::lsp_code_actions(&host, "main", doc.id, ide_core::Range::new(caret, caret), vec![]).await.unwrap();
+    let titles: Vec<&str> = actions.iter().map(|a| a.title.as_str()).collect();
+    assert!(titles.contains(&"Generate getters…"), "{titles:?}");
+    assert!(!titles.contains(&"Generate getters"), "the chooser replaces it: {titles:?}");
+    let mut action = actions.into_iter().find(|a| a.title == "Generate getters…").unwrap();
+    assert_eq!(action.kind.as_deref(), Some(GENERATE_CHOOSER));
+    assert!(action.edit.is_none());
+    let Some(serde_json::Value::String(json)) = &action.data else { panic!("data: {:?}", action.data) };
+    let mut data: MemberChooser = serde_json::from_str(json).unwrap();
+    assert_eq!(data.generator, Generator::Getters);
+    assert_eq!(data.members.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["id", "name"]);
+    data.chosen = Some(vec!["name".into()]);
+    action.data = Some(serde_json::Value::String(serde_json::to_string(&data).unwrap()));
+    ops::lsp::lsp_apply_code_action(&host, "main", doc.id, action).await.unwrap();
+    let text = project.documents.snapshot(doc.id).unwrap().text;
+    assert!(text.contains("public function getName(): string"), "{text}");
+    assert!(!text.contains("getId"), "{text}");
+
+    // Move `Price` (line 11 now) into src/Price.php.
+    let at = text.lines().position(|line| line == "class Price").unwrap() as u32;
+    let caret = ide_core::Pos::new(at, 7);
+    let actions = ops::lsp::lsp_code_actions(
+        &host,
+        "main",
+        doc.id,
+        ide_core::Range::new(caret, caret),
+        vec!["refactor.move".into()],
+    )
+    .await
+    .unwrap();
+    let action = actions.into_iter().find(|a| a.kind.as_deref() == Some(MOVE_CLASS)).expect("Move class");
+    assert_eq!(action.title, "Move class 'Price' to src/Price.php");
+    ops::lsp::lsp_apply_code_action(&host, "main", doc.id, action).await.unwrap();
+    let moved = std::fs::read_to_string(root.join("src/Price.php")).unwrap().replace("\r\n", "\n");
+    assert_eq!(moved, "<?php\n\nnamespace App;\n\nclass Price\n{\n}\n");
+    let text = project.documents.snapshot(doc.id).unwrap().text;
+    assert!(!text.contains("class Price"), "{text}");
+    host.close_project("main");
+}
+
 /// Rename through the dispatch: the native engine's edit renames the calls,
 /// and the dynamic uses it leaves alone come back as possible usages.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

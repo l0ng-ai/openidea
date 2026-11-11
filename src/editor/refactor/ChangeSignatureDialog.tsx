@@ -1,9 +1,12 @@
 /** IDEA's Change Signature dialog (`changeSignature.ts`). */
 import { useState } from "react";
-import { Dialog, IconButton, Input, Spinner, T } from "@/ui";
+import { Dialog, IconButton, Input, Select, Spinner, T } from "@/ui";
 import { useTx } from "@/platform/i18n";
 import {
   changeOf,
+  displayName,
+  headOf,
+  headProblem,
   initialRows,
   isChanged,
   moveRow,
@@ -13,9 +16,16 @@ import {
   signatureText,
   useChangeSignatureDialog,
   type ChangeSignatureRequest,
+  type Head,
   type ParamRow,
 } from "./changeSignature";
 import styles from "./ChangeSignatureDialog.module.css";
+
+const VISIBILITIES = [
+  { value: "public", label: "Public" },
+  { value: "protected", label: "Protected" },
+  { value: "private", label: "Private" },
+];
 
 export function ChangeSignatureDialog() {
   const request = useChangeSignatureDialog((s) => s.request);
@@ -28,11 +38,14 @@ function ChangeSignatureDialogInner({ request }: { request: ChangeSignatureReque
   const { signature } = request.data;
   const [rows, setRows] = useState<ParamRow[]>(() => initialRows(signature));
   const [returnType, setReturnType] = useState(signature.returnType);
+  const [head, setHead] = useState<Head>(() => headOf(signature));
   const [selected, setSelected] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const problem = rowProblem(rows);
-  const ready = !busy && !problem && isChanged(signature, rows, returnType);
+  // Servers that send the own name let it change; a constructor keeps it.
+  const renamable = signature.functionName !== undefined && !signature.constructor;
+  const problem = (renamable ? headProblem(head) : null) ?? rowProblem(rows);
+  const ready = !busy && !problem && isChanged(signature, rows, returnType, head);
   const current = rows[selected];
 
   const close = () => {
@@ -61,7 +74,7 @@ function ChangeSignatureDialogInner({ request }: { request: ChangeSignatureReque
     if (!ready) return;
     setBusy(true);
     setError(null);
-    const outcome = await refactorChangeSignature(request, changeOf(signature, rows, returnType), preview);
+    const outcome = await refactorChangeSignature(request, changeOf(signature, rows, returnType, head), preview);
     if (useChangeSignatureDialog.getState().request !== request) return;
     setBusy(false);
     if (outcome.status === "done") close();
@@ -89,12 +102,40 @@ function ChangeSignatureDialogInner({ request }: { request: ChangeSignatureReque
       }
     >
       <div className={styles.body}>
-        <div className={styles.name}>
-          <span className={styles.label}>
-            <T>Name:</T>
-          </span>
-          <span className={styles.mono}>{signature.name}</span>
-        </div>
+        {renamable ? (
+          <label className={styles.field}>
+            <span className={styles.label}>
+              <T>Name:</T>
+            </span>
+            <Input
+              mono
+              aria-label="Name"
+              data-autofocus
+              value={head.functionName}
+              onChange={(e) => setHead((h) => ({ ...h, functionName: e.target.value }))}
+            />
+          </label>
+        ) : (
+          <div className={styles.name}>
+            <span className={styles.label}>
+              <T>Name:</T>
+            </span>
+            <span className={styles.mono}>{signature.name}</span>
+          </div>
+        )}
+        {head.visibility && (
+          <div className={styles.name}>
+            <span className={styles.label}>
+              <T>Visibility:</T>
+            </span>
+            <Select
+              aria-label="Visibility"
+              value={head.visibility}
+              options={VISIBILITIES.map((v) => ({ value: v.value, label: tx(v.label) }))}
+              onChange={(visibility) => setHead((h) => ({ ...h, visibility }))}
+            />
+          </div>
+        )}
         {!signature.constructor && (
           <label className={styles.field}>
             <span className={styles.label}>
@@ -181,7 +222,9 @@ function ChangeSignatureDialogInner({ request }: { request: ChangeSignatureReque
           <span className={styles.label}>
             <T>Signature preview:</T>
           </span>
-          <code className={styles.preview}>{signatureText(signature.name, rows, returnType)}</code>
+          <code className={styles.preview}>
+            {signatureText(displayName(signature, head), rows, returnType, head.visibility)}
+          </code>
         </div>
         {(error ?? problem) && (
           <span className={styles.error} role="alert">

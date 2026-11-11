@@ -349,6 +349,26 @@ impl PhpEngine {
         self.rename_edit(renaming, path, &here, new, cancel).map(|outcome| outcome.edit)
     }
 
+    /// Renames the function or method `decl` (seen from `path`) to `new`,
+    /// as a rename on its name would; Change signature's new name.
+    pub(crate) fn rename_callable(
+        &self,
+        decl: Decl,
+        old: &str,
+        path: &Path,
+        here: &FileSummary,
+        new: &str,
+        cancel: &CancellationToken,
+    ) -> IdeResult<RenameOutcome> {
+        let renaming = Renaming {
+            kind: RenameKind::of(&decl),
+            old: old.to_owned(),
+            range: Range::default(),
+            subject: Subject::Decls(vec![decl]),
+        };
+        self.rename_edit(renaming, path, here, new, cancel)
+    }
+
     /// Whether `path` is the bundled stubs' or a Composer package's.
     pub(crate) fn is_library(&self, path: &Path) -> bool {
         let key = path_key(path);

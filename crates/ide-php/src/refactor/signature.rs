@@ -29,7 +29,18 @@
 //!   middle makes the following ones named (PHP 8.0) or is filled with the
 //!   parameter's default (before 8.0). Named arguments follow their
 //!   parameter's new name. Calls in the changed bodies and nested calls are
-//!   rewritten together.
+//!   rewritten together. A constructor's calls include `new self(…)` and
+//!   `new static(…)` in the classes using it, and `$this->__construct(…)`.
+//! - **Docblocks:** the `@param` lines follow the new order; a removed
+//!   parameter's line goes and a new one gets a line, when the docblock
+//!   has `@param` lines at all.
+//! - **Name and visibility:** a new name renames the function or method
+//!   as rename does (declarations, calls, imports), and also the callable
+//!   strings naming it (`'f'`, `'Foo::m'`, `[$o, 'm']`, `[Foo::class,
+//!   'm']`, the class checked against the hierarchy). A new visibility is
+//!   written on the changed declaration and on the others of the hierarchy
+//!   that had the old one or would now be less visible; `private` is
+//!   refused for an overridden method.
 //!
 //! Refused: built-in and `vendor/` declarations (and methods overriding
 //! them), magic methods other than `__construct`, invalid or duplicate
@@ -46,8 +57,9 @@ use std::path::{Path, PathBuf};
 use ide_core::{CancellationToken, DocId, FileEdit, IdeError, IdeResult, Pos, Range, TextEdit, WorkspaceEdit};
 use mago_span::HasSpan;
 use mago_syntax::cst::{
-    Argument, ArgumentList, Block, Call, ClassLikeMemberSelector, Expression, Function, FunctionLikeParameter,
-    FunctionLikeParameterList, FunctionLikeReturnTypeHint, Method, MethodBody, Node, TriviaKind,
+    Argument, ArgumentList, ArrayElement, Block, Call, ClassLikeMemberSelector, Expression, Function,
+    FunctionLikeParameter, FunctionLikeParameterList, FunctionLikeReturnTypeHint, Method, MethodBody, Modifier, Node,
+    TriviaKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,12 +69,13 @@ use crate::engine::PhpEngine;
 use crate::index::path_key;
 use crate::names::{NameKind, fqn_eq};
 use crate::navigate::hierarchy::Subtypes;
-use crate::navigate::references::{Sought, UsageKind};
+use crate::navigate::references::{Sought, Usage, UsageKind};
 use crate::navigate::rename::{doc_variable_names, is_identifier};
 use crate::navigate::symbol::{Decl, MemberKind, Subject, file_text};
 use crate::stubs::PhpVersion;
 use crate::summary::{FileSummary, Visibility};
 use crate::syntax::{LineIndex, ParsedFile};
+use crate::types::Type;
 
 /// The code action kind of Change signature.
 pub const CHANGE_SIGNATURE: &str = "refactor.rewrite.changeSignature";
@@ -93,8 +106,15 @@ pub struct SignatureParameter {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Signature {
-    /// `name`, `Class::name` (not changed by the refactoring).
+    /// `name`, `Class::name` (for display; the new name is
+    /// [`Signature::function_name`]).
     pub name: String,
+    /// The function's or method's own name; a different one renames it
+    /// (with its calls, overrides and callable strings).
+    pub function_name: String,
+    /// A method's visibility (`public`, `protected`, `private`); empty for
+    /// a function.
+    pub visibility: String,
     pub parameters: Vec<SignatureParameter>,
     /// The return type as written; empty for none.
     pub return_type: String,
@@ -243,7 +263,33 @@ fn signature_of(text: &str, node: FnNode<'_>, name: String, constructor: bool) -
         })
         .collect();
     let return_type = node.return_hint().map(|hint| spanned(text, &hint.hint).to_owned()).unwrap_or_default();
-    Signature { name, parameters, return_type, constructor }
+    let (function_name, visibility) = match node {
+        FnNode::Function(f) => (lossy(f.name.value), String::new()),
+        FnNode::Method(m) => (lossy(m.name.value), method_visibility(m).to_owned()),
+    };
+    Signature { name, function_name, visibility, parameters, return_type, constructor }
+}
+
+/// A method's visibility as declared (`public` when none is written).
+fn method_visibility(method: &Method<'_>) -> &'static str {
+    method
+        .modifiers
+        .iter()
+        .find_map(|modifier| match modifier {
+            Modifier::Public(_) => Some("public"),
+            Modifier::Protected(_) => Some("protected"),
+            Modifier::Private(_) => Some("private"),
+            _ => None,
+        })
+        .unwrap_or("public")
+}
+
+fn visibility_rank(visibility: &str) -> u8 {
+    match visibility {
+        "private" => 0,
+        "protected" => 1,
+        _ => 2,
+    }
 }
 
 /// Whether `ty` looks like a type (names, `?`, `|`, `&`, parentheses).
@@ -333,6 +379,32 @@ fn checked(old: &Signature, change: &Signature) -> IdeResult<Signature> {
     }
     if old.constructor && !out.return_type.is_empty() {
         return invalid("A constructor has no return type".into());
+    }
+    out.function_name = out.function_name.trim().to_owned();
+    if out.function_name.is_empty() {
+        out.function_name = old.function_name.clone();
+    }
+    if out.function_name != old.function_name {
+        let name = &out.function_name;
+        if old.constructor {
+            return invalid("A constructor can't be renamed".into());
+        }
+        if !is_identifier(name) {
+            return invalid(format!("'{name}' is not a valid name"));
+        }
+        if is_magic(name) || name.eq_ignore_ascii_case("__construct") {
+            return invalid(format!("'{name}' is a name PHP reserves for magic methods"));
+        }
+    }
+    out.visibility = out.visibility.trim().to_ascii_lowercase();
+    if old.visibility.is_empty() {
+        if !out.visibility.is_empty() {
+            return invalid("A function has no visibility".into());
+        }
+    } else if out.visibility.is_empty() {
+        out.visibility = old.visibility.clone();
+    } else if !["public", "protected", "private"].contains(&out.visibility.as_str()) {
+        return invalid(format!("'{}' is not a visibility", out.visibility));
     }
     out.name = old.name.clone();
     out.constructor = old.constructor;
@@ -624,24 +696,125 @@ fn docblock_before(parsed: &ParsedFile, start: u32) -> Option<(u32, u32)> {
         .rfind(|&(_, end)| end <= start && slice(text, end, start).trim().is_empty())
 }
 
-/// The `@param … $name` lines of a docblock, whole lines.
-fn param_doc_lines(text: &str, doc: (u32, u32), name: &str) -> Vec<(u32, u32)> {
-    let mut out = Vec::new();
-    let wanted = format!("${name}");
+/// The `@param` entries of a docblock: the parameter named (without `$`)
+/// and the bytes of its whole lines (the tag's line and the description
+/// lines under it).
+fn param_doc_entries(text: &str, doc: (u32, u32)) -> Vec<(String, u32, u32)> {
+    let mut out: Vec<(String, u32, u32)> = Vec::new();
     let mut line_start = doc.0;
+    let mut open = false;
     for line in slice(text, doc.0, doc.1).split_inclusive('\n') {
         let end = line_start + line.len() as u32;
-        if line.contains("@param")
-            && line.match_indices(&wanted).any(|(at, _)| {
-                !line[at + wanted.len()..].chars().next().is_some_and(|c| c == '_' || c.is_alphanumeric())
-            })
-            && line.ends_with('\n')
-        {
-            out.push((line_start, end));
+        let content = line.trim().trim_start_matches("/**").trim_start_matches('*').trim();
+        let whole = line.ends_with('\n');
+        if let Some(rest) = content.strip_prefix("@param").filter(|rest| rest.starts_with([' ', '\t'])) {
+            open = false;
+            let name = rest.split_whitespace().find_map(|word| {
+                let word = word.trim_start_matches(['&', '.']);
+                word.strip_prefix('$')
+                    .map(|name| name.chars().take_while(|c| *c == '_' || c.is_alphanumeric()).collect::<String>())
+            });
+            if let Some(name) = name.filter(|name| !name.is_empty())
+                && whole
+            {
+                out.push((name, line_start, end));
+                open = true;
+            }
+        } else if open && whole && !content.is_empty() && !content.starts_with('@') && !content.starts_with('/') {
+            if let Some(last) = out.last_mut() {
+                last.2 = end;
+            }
+        } else {
+            open = false;
         }
         line_start = end;
     }
     out
+}
+
+/// The rewrite putting a declaration's `@param` lines in the new order:
+/// removed parameters' lines go, new parameters get one (when the docblock
+/// has `@param` lines at all), lines for unknown names stay last. `own`
+/// gives, for each new parameter, the name it has in this declaration now
+/// (`None` for a new one); `extra` are the parameters only this
+/// declaration has.
+fn param_doc_rewrites(
+    text: &str,
+    doc: (u32, u32),
+    new: &Signature,
+    own: &[Option<String>],
+    extra: &[String],
+    removed: &[String],
+) -> Vec<Rewrite> {
+    let entries = param_doc_entries(text, doc);
+    let Some(first) = entries.first() else { return Vec::new() };
+    let first_line = slice(text, first.1, first.2);
+    let prefix = &first_line[..first_line.find("@param").unwrap_or(0)];
+    let nl = crate::inspect::fixes::newline(text);
+    let entry = |name: &str| entries.iter().find(|(n, ..)| n == name).map(|(_, s, e)| Piece::Source(*s, *e));
+    let mut wanted: Vec<Piece> = Vec::new();
+    let mut used: HashSet<&str> = HashSet::new();
+    for (param, own) in new.parameters.iter().zip(own) {
+        match own {
+            Some(own) => {
+                if let Some(piece) = entry(own) {
+                    used.insert(own.as_str());
+                    wanted.push(piece);
+                }
+            }
+            None => {
+                let ty = if param.ty.is_empty() { "mixed" } else { param.ty.as_str() };
+                let dots = if param.variadic { "..." } else { "" };
+                wanted.push(Piece::Text(format!("{prefix}@param {ty} {dots}${}{nl}", param.name)));
+            }
+        }
+    }
+    for name in extra {
+        if let Some(piece) = entry(name) {
+            used.insert(name.as_str());
+            wanted.push(piece);
+        }
+    }
+    for (name, start, end) in &entries {
+        if !used.contains(name.as_str()) && !removed.contains(name) {
+            used.insert(name.as_str());
+            wanted.push(Piece::Source(*start, *end));
+        }
+    }
+    // One rewrite from the first entry to the last: the entries in the new
+    // order, then what stood between them (`@return` and the like).
+    let (from, to) = (first.1, entries[entries.len() - 1].2);
+    let mut pieces = wanted;
+    for pair in entries.windows(2) {
+        if pair[0].2 < pair[1].1 {
+            pieces.push(Piece::Source(pair[0].2, pair[1].1));
+        }
+    }
+    vec![Rewrite { start: from, end: to, pieces }]
+}
+
+/// The rewrite of a method's visibility when it changes from `old` to
+/// `new`: the changed declaration takes the new one, the others in its
+/// hierarchy when they had the old one or would now be less visible.
+fn visibility_rewrite(method: &Method<'_>, old: &str, new: &str, changed: bool) -> Option<Rewrite> {
+    if old == new {
+        return None;
+    }
+    let own = method_visibility(method);
+    if own == new || !(changed || own == old || visibility_rank(own) < visibility_rank(new)) {
+        return None;
+    }
+    let written = method.modifiers.iter().find_map(|modifier| match modifier {
+        Modifier::Public(k) | Modifier::Protected(k) | Modifier::Private(k) => Some(k.span),
+        _ => None,
+    });
+    Some(match written {
+        Some(span) => Rewrite::text(span.start.offset, span.end.offset, new),
+        None => {
+            let at = method.modifiers.first().map_or(method.function.span.start.offset, |m| m.span().start.offset);
+            Rewrite::text(at, at, format!("{new} "))
+        }
+    })
 }
 
 // ------------------------------------------------------------ calls
@@ -877,6 +1050,77 @@ struct CallSite<'a> {
     after_class: u32,
 }
 
+/// The classes of the object (or class) in front of the method name
+/// string at byte `at` of a callable array (`[$o, 'm']`, `[Foo::class,
+/// 'm']`).
+fn array_receiver(parsed: &ParsedFile, resolver: &crate::types::Resolver<'_>, at: u32) -> Vec<String> {
+    let mut first = None;
+    visit(Node::Program(parsed.program()), &mut |node| {
+        let Node::Expression(expr) = node else { return };
+        let elements = match expr {
+            Expression::Array(array) => &array.elements,
+            Expression::LegacyArray(array) => &array.elements,
+            _ => return,
+        };
+        let values: Vec<&Expression<'_>> = elements
+            .iter()
+            .filter_map(|element| match element {
+                ArrayElement::Value(element) => Some(element.value),
+                _ => None,
+            })
+            .collect();
+        if let [object, method] = values.as_slice()
+            && elements.len() == 2
+            && span_of(&Node::Expression(method)).0 < at
+            && at < span_of(&Node::Expression(method)).1
+        {
+            first = Some(span_of(&Node::Expression(object)));
+        }
+    });
+    let Some((start, end)) = first else { return Vec::new() };
+    let Some(ty) = crate::types::type_at(parsed, resolver, end) else { return Vec::new() };
+    let summary = FileSummary::extract(parsed);
+    let here = crate::navigate::enclosing_class(&summary, start).map(|class| class.fqn.clone());
+    let mut out = Vec::new();
+    for member in ty.members() {
+        let member = match member {
+            Type::ClassString(Some(inner)) => inner.as_ref(),
+            other => other,
+        };
+        match member {
+            Type::Named { fqn, .. } => out.push(fqn.clone()),
+            Type::LiteralString(name) => out.push(name.trim_start_matches('\\').to_owned()),
+            Type::Relative(_) | Type::GenericRelative { .. } => out.extend(here.clone()),
+            _ => return Vec::new(),
+        }
+    }
+    out
+}
+
+/// The `self`/`static` of `new self(…)` and `new static(…)` in the body of
+/// class `fqn` (not in anonymous classes inside it).
+fn self_instantiations(parsed: &ParsedFile, fqn: &str) -> Vec<(u32, u32)> {
+    let summary = FileSummary::extract(parsed);
+    let Some(class) = summary.class_likes.iter().find(|class| fqn_eq(NameKind::ClassLike, &class.fqn, fqn)) else {
+        return Vec::new();
+    };
+    let (from, to) = (class.loc.start, class.loc.end);
+    let mut anonymous: Vec<(u32, u32)> = Vec::new();
+    let mut found = Vec::new();
+    visit(Node::Program(parsed.program()), &mut |node| match node {
+        Node::AnonymousClass(class) => anonymous.push((class.span().start.offset, class.span().end.offset)),
+        Node::Expression(Expression::Instantiation(new)) => {
+            let (start, end) = span_of(&Node::Expression(new.class));
+            if matches!(new.class, Expression::Static(_) | Expression::Self_(_)) && from <= start && end <= to {
+                found.push((start, end));
+            }
+        }
+        _ => {}
+    });
+    found.retain(|(start, _)| !anonymous.iter().any(|(s, e)| s < start && start < e));
+    found
+}
+
 // ------------------------------------------------------------ the target
 
 /// A file the edit changes.
@@ -895,6 +1139,8 @@ struct Declaration {
 
 /// What a Change signature at the caret changes.
 struct Target {
+    /// The changed function or method.
+    decl: Decl,
     display: String,
     constructor: bool,
     /// The changed declaration first.
@@ -976,6 +1222,7 @@ impl PhpEngine {
                     return Err(library());
                 }
                 Ok(Target {
+                    decl: decl.clone(),
                     display: fqn.trim_start_matches('\\').to_owned(),
                     constructor: false,
                     declarations: vec![Declaration { path: target.path, name: target.range }],
@@ -1033,10 +1280,76 @@ impl PhpEngine {
                         }
                     }
                 }
-                Ok(Target { display: format!("{}::{name}", short(&declaring)), constructor, declarations, sought })
+                Ok(Target {
+                    decl: decl.clone(),
+                    display: format!("{}::{name}", short(&declaring)),
+                    constructor,
+                    declarations,
+                    sought,
+                })
             }
             _ => unreachable!("a function or method"),
         }
+    }
+
+    /// The callable strings among `possible` naming the changed function or
+    /// method: the file and the bytes of the name in each. A method's
+    /// class must be one whose method it is: the class named in the string
+    /// or by `X::class`, or the type of the array's object.
+    fn callable_strings(&self, target: &Target, old_name: &str, possible: &[Usage]) -> Vec<(PathBuf, u32, u32)> {
+        let family: Vec<&str> = target
+            .sought
+            .iter()
+            .filter_map(|sought| match sought {
+                Sought::Member { declaring, .. } => Some(declaring.as_str()),
+                _ => None,
+            })
+            .collect();
+        let resolver = self.resolver();
+        let its_method = |class: &str| {
+            self.class_model(class.trim_start_matches('\\'))
+                .and_then(|model| model.method(old_name).map(|m| m.declaring.fqn.clone()))
+                .is_some_and(|declaring| family.iter().any(|f| fqn_eq(NameKind::ClassLike, f, &declaring)))
+        };
+        let mut by_file: BTreeMap<String, (PathBuf, Vec<Range>)> = BTreeMap::new();
+        for usage in possible {
+            if !self.is_library(&usage.path) {
+                let entry = by_file.entry(path_key(&usage.path)).or_insert_with(|| (usage.path.clone(), Vec::new()));
+                entry.1.push(usage.range);
+            }
+        }
+        let mut out = Vec::new();
+        for (key, (file, ranges)) in by_file {
+            let Some(text) = file_text(self, &file) else { continue };
+            let parsed = ParsedFile::parse(&key, text);
+            let (index, text) = (parsed.line_index(), parsed.text());
+            for range in ranges {
+                let (start, end) = index.byte_range(range);
+                if start == 0 || !matches!(text.as_bytes()[start as usize - 1], b'\'' | b'"') {
+                    continue;
+                }
+                let written = slice(text, start, end);
+                let (class, name_start) = match written.rfind("::") {
+                    Some(at) => (Some(&written[..at]), start + at as u32 + 2),
+                    None => (None, start + written.rfind('\\').map_or(0, |at| at + 1) as u32),
+                };
+                if !slice(text, name_start, end).eq_ignore_ascii_case(old_name) {
+                    continue;
+                }
+                let names_it = match (&target.decl, class) {
+                    (Decl::Function(_), class) => class.is_none(),
+                    (_, Some(class)) => its_method(class),
+                    (_, None) => {
+                        let classes = array_receiver(&parsed, &resolver, start);
+                        !classes.is_empty() && classes.iter().all(|class| its_method(class))
+                    }
+                };
+                if names_it {
+                    out.push((file.clone(), name_start, end));
+                }
+            }
+        }
+        out
     }
 
     /// The changed declaration's signature.
@@ -1087,7 +1400,10 @@ impl PhpEngine {
         let mut variables: Vec<Sought> = Vec::new();
         // (file, body span, old → new)
         let mut bodies: Vec<(String, (u32, u32), Renames)> = Vec::new();
-        for declaration in &target.declarations {
+        if new.visibility == "private" && new.visibility != old.visibility && target.declarations.len() > 1 {
+            return Err(IdeError::invalid(format!("{} is overridden: it can't be private", target.display)));
+        }
+        for (i, declaration) in target.declarations.iter().enumerate() {
             let key = load(&mut files, &declaration.path)?;
             let work = files.get_mut(&key).expect("loaded");
             let decl_parsed = ParsedFile::parse(&key, work.text.as_str());
@@ -1096,6 +1412,9 @@ impl PhpEngine {
             let node = function_at(&decl_parsed, start).ok_or_else(|| IdeError::not_found("a declaration"))?;
             let (rewrites, renames, removed) = declaration_rewrites(text, node, &old, &new, &target.display)?;
             work.rewrites.extend(rewrites);
+            if let FnNode::Method(method) = node {
+                work.rewrites.extend(visibility_rewrite(method, &old.visibility, &new.visibility, i == 0));
+            }
 
             // A parameter name new to the function, already used in its body.
             let params: Vec<String> = node.params().parameters.iter().map(param_name).collect();
@@ -1125,11 +1444,11 @@ impl PhpEngine {
                 }
             }
             if let Some(doc) = docblock_before(&decl_parsed, node.start()) {
-                for name in &removed {
-                    for (start, end) in param_doc_lines(text, doc, name) {
-                        work.rewrites.push(Rewrite::text(start, end, ""));
-                    }
-                }
+                let all: Vec<String> = node.params().parameters.iter().map(param_name).collect();
+                let own: Vec<Option<String>> =
+                    new.parameters.iter().map(|p| p.old_index.and_then(|j| all.get(j as usize).cloned())).collect();
+                let extra = all.get(old.parameters.len()..).unwrap_or_default();
+                work.rewrites.extend(param_doc_rewrites(text, doc, &new, &own, extra, &removed));
             }
             if let Some(body) = node.body() {
                 bodies.push((key.clone(), (body.span().start.offset, body.span().end.offset), renames));
@@ -1158,6 +1477,33 @@ impl PhpEngine {
             }
         }
 
+        // A new name: the rename's edit, and the callable strings naming it
+        // (`'f'`, `'Foo::m'`, `[$o, 'm']`, `[Foo::class, 'm']`).
+        if new.function_name != old.function_name {
+            let here = FileSummary::extract(parsed);
+            let outcome =
+                self.rename_callable(target.decl.clone(), &old.function_name, path, &here, &new.function_name, cancel)?;
+            for file in outcome.edit.files {
+                let FileEdit::Edit { path: file, edits, .. } = file else { continue };
+                let file = PathBuf::from(file);
+                let key = load(&mut files, &file)?;
+                let work = files.get_mut(&key).expect("loaded");
+                let index = LineIndex::new(&work.text);
+                for edit in edits {
+                    let (start, end) = index.byte_range(edit.range);
+                    work.rewrites.push(Rewrite::text(start, end, edit.new_text));
+                }
+            }
+            for (file, start, end) in self.callable_strings(&target, &old.function_name, &outcome.possible_usages) {
+                let key = load(&mut files, &file)?;
+                files.get_mut(&key).expect("loaded").rewrites.push(Rewrite::text(
+                    start,
+                    end,
+                    new.function_name.clone(),
+                ));
+            }
+        }
+
         // The calls.
         let here = FileSummary::extract(parsed);
         let usages = self.find_usages(&target.sought, path, &here, false, cancel)?;
@@ -1171,6 +1517,28 @@ impl PhpEngine {
                 .or_insert_with(|| (usage.path.clone(), Vec::new()))
                 .1
                 .push(usage.range);
+        }
+        // `new self(…)` and `new static(…)` in the classes using the
+        // constructor.
+        if target.constructor {
+            for sought in &target.sought {
+                let Sought::Name { kind: NameKind::ClassLike, fqn } = sought else { continue };
+                let Some(model) = self.class_model(fqn) else { continue };
+                let Some(file) = self.class_path(&model.class, path, &here) else { continue };
+                if self.is_library(&file) {
+                    continue;
+                }
+                let Some(text) = file_text(self, &file) else { continue };
+                let class_parsed = ParsedFile::parse(&path_key(&file), text);
+                let index = class_parsed.line_index();
+                let ranges: Vec<Range> = self_instantiations(&class_parsed, &model.class.fqn)
+                    .into_iter()
+                    .map(|(start, end)| index.range(start, end))
+                    .collect();
+                if !ranges.is_empty() {
+                    by_file.entry(path_key(&file)).or_insert_with(|| (file.clone(), Vec::new())).1.extend(ranges);
+                }
+            }
         }
         for (_, (file, ranges)) in by_file {
             if cancel.is_cancelled() {

@@ -22,6 +22,8 @@ vi.mock("@/platform/ipc", async (orig) => {
 const {
   changeOf,
   changeSignatureData,
+  displayName,
+  headProblem,
   initialRows,
   isChanged,
   moveRow,
@@ -224,5 +226,31 @@ describe("Change Signature", () => {
     expect(applyWorkspaceEdit).not.toHaveBeenCalled();
     popup.onConfirm();
     await vi.waitFor(() => expect(applyWorkspaceEdit).toHaveBeenCalledWith(EDIT));
+  });
+});
+
+describe("name and visibility", () => {
+  it("replaces the last part of the display name", () => {
+    const head = { functionName: "find", visibility: "" };
+    expect(displayName({ ...SIGNATURE, functionName: "repeat" }, head)).toBe("App\\find");
+    expect(displayName({ ...SIGNATURE, name: "Repo::get", functionName: "get" }, head)).toBe("Repo::find");
+    expect(displayName({ ...SIGNATURE, name: "get", functionName: "get" }, head)).toBe("find");
+    // A server that doesn't send the own name: unchanged.
+    expect(displayName(SIGNATURE, head)).toBe("App\\repeat");
+  });
+
+  it("checks the new name and sends it with the visibility", () => {
+    expect(headProblem({ functionName: " ", visibility: "" })).toBe("Enter a name");
+    expect(headProblem({ functionName: "a-b", visibility: "" })).toContain("not a valid name");
+    expect(headProblem({ functionName: "find", visibility: "" })).toBeNull();
+    const signature = { ...SIGNATURE, functionName: "repeat", visibility: "public" };
+    const rows = initialRows(signature);
+    const head = { functionName: " times ", visibility: "private" };
+    expect(isChanged(signature, rows, "string", { functionName: "repeat", visibility: "public" })).toBe(false);
+    expect(isChanged(signature, rows, "string", head)).toBe(true);
+    const change = changeOf(signature, rows, "string", head);
+    expect([change.functionName, change.visibility]).toEqual(["times", "private"]);
+    // Not sent by the server: not sent back.
+    expect("functionName" in changeOf(SIGNATURE, rows, "string", head)).toBe(false);
   });
 });

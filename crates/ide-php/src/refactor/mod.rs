@@ -29,6 +29,7 @@
 //!   [`inline`].
 //! - **Pull members up / push members down** (not code actions: the
 //!   editor's hierarchy dialog asks for them): see [`hierarchy`].
+//! - **Move class** (`refactor.move.class`): see [`move_class`].
 //! - **Generate** (implement / override methods, constructor, getters and
 //!   setters, property PHPDoc; `source.generate.*`): see [`generate`].
 //!
@@ -47,6 +48,9 @@ pub mod hierarchy;
 mod hierarchy_tests;
 mod inline;
 mod method;
+mod move_class;
+#[cfg(test)]
+mod move_class_tests;
 pub(crate) mod names;
 pub mod signature;
 #[cfg(test)]
@@ -69,13 +73,18 @@ use crate::stubs::PhpVersion;
 use crate::summary::{ClassKind, FileSummary};
 use crate::syntax::ParsedFile;
 
-pub use generate::{GENERATE_ACCESSORS, GENERATE_CONSTRUCTOR, IMPLEMENT_METHODS, OVERRIDE_METHODS};
+pub use generate::{
+    ChooserMember, GENERATE_ACCESSORS, GENERATE_CHOOSER, GENERATE_CONSTRUCTOR, GENERATE_EQUALS, GENERATE_TO_STRING,
+    Generator, IMPLEMENT_METHODS, MemberChooser, OVERRIDE_METHODS,
+};
 pub(crate) use generate::{GENERATE_KINDS, generate_actions};
 pub(crate) use inline::inline_actions;
 pub use inline::{INLINE_FUNCTION, INLINE_FUNCTION_ALL, INLINE_METHOD, INLINE_METHOD_ALL, INLINE_VARIABLE};
 pub use method::{
     EXTRACT_FUNCTION, EXTRACT_METHOD, EXTRACT_METHOD_DIALOG, ExtractChoice, ExtractMethod, ExtractParameter,
 };
+pub use move_class::MOVE_CLASS;
+pub(crate) use move_class::move_class_actions;
 pub use signature::{CHANGE_SIGNATURE, ChangeSignature, Signature, SignatureParameter};
 
 /// The code action kind of Extract variable.
