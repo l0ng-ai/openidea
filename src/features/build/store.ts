@@ -160,7 +160,12 @@ export async function startBuild(
     }
   }
   upsertTask({ id: BUILD_TASK_ID, title: taskTitle, message: null, fraction: null, done: false, cancel });
-  return executeBuild(request, taskTitle, (files, onEvent) => backend.run(kind, file, request, files, onEvent, cmake));
+  return executeBuild(
+    request,
+    taskTitle,
+    (files, onEvent) => backend.run(kind, file, request, files, onEvent, cmake),
+    cancel,
+  );
 }
 
 /**
@@ -184,7 +189,12 @@ export async function startCompileFile(file: string, activate = true): Promise<B
     }
   }
   upsertTask({ id: BUILD_TASK_ID, title: taskTitle, message: null, fraction: null, done: false, cancel });
-  return executeBuild(request, taskTitle, (files, onEvent) => backend.compileFile(file, request, files, onEvent));
+  return executeBuild(
+    request,
+    taskTitle,
+    (files, onEvent) => backend.compileFile(file, request, files, onEvent),
+    cancel,
+  );
 }
 
 /** Streams one backend build into the Build tool window until it finishes. */
@@ -192,6 +202,7 @@ async function executeBuild(
   request: RequestId,
   taskTitle: string,
   invoke: (previous: string[], onEvent: (e: BuildEvent) => void) => Promise<BuildResult>,
+  cancel: () => void,
 ): Promise<BuildResult | null> {
   await maybeEditorService()
     ?.saveAll()
