@@ -439,29 +439,39 @@ pub fn gradle_env(
     env
 }
 
-/// Settings › Build Tools › Gradle → jdtls `java.import.gradle.*`: the Java import runs the
-/// same Gradle installation, user home and JVM as the IDE's own builds (paths resolved like
-/// [`gradle_env`]). Without it a project that ships no wrapper is never imported, and one whose
-/// caches live in a configured user home resolves no dependencies. The wrapper stays jdtls's
-/// default unless a local distribution is chosen.
-pub fn configure_gradle_runtime(cfg: &mut LanguageServerConfig, root: &Path, s: &Settings) {
+/// Settings › Build Tools › Gradle → jdtls `java.import.gradle.*`: the Java import of the Gradle
+/// build in `build_dir` runs the same Gradle installation, user home and JVM as the IDE's own
+/// Gradle runs ([`gradle_build_env`]: Gradle JVM, else the Project JDK, else an installed JDK
+/// this Gradle version runs on). Without it a project that ships no wrapper is never imported,
+/// one whose caches live in a configured user home resolves no dependencies, and an older Gradle
+/// fails on the JDK jdtls itself runs on. The wrapper stays jdtls's default unless a local
+/// distribution is chosen.
+pub fn configure_gradle_runtime(cfg: &mut LanguageServerConfig, root: &Path, build_dir: &Path, s: &Settings) {
     if cfg.name != "jdtls" {
         return;
     }
     let g = &s.languages.java.gradle;
-    let path = |p: PathBuf| Value::String(p.to_string_lossy().into_owned());
     let mut gradle = serde_json::Map::new();
     if g.distribution == ide_core::settings::GradleDistribution::Local
         && let Some(home) = setting_path(root, &g.home)
     {
-        gradle.insert("home".into(), path(home));
+        gradle.insert("home".into(), json!(home.to_string_lossy()));
         gradle.insert("wrapper".into(), json!({"enabled": false}));
     }
-    if let Some(home) = setting_path(root, &g.user_home) {
-        gradle.insert("user".into(), json!({"home": path(home)}));
+    let gradle_build = ["settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts"]
+        .iter()
+        .any(|f| build_dir.join(f).is_file());
+    let env = if gradle_build {
+        let command = gradle_command(root, build_dir, s);
+        gradle_build_env(root, build_dir, &command.to_string_lossy(), s, None)
+    } else {
+        gradle_env(root, s, Default::default())
+    };
+    if let Some(home) = env.get("GRADLE_USER_HOME") {
+        gradle.insert("user".into(), json!({"home": home}));
     }
-    if let Some(home) = setting_path(root, &g.jvm) {
-        gradle.insert("java".into(), json!({"home": path(home)}));
+    if let Some(home) = env.get("JAVA_HOME") {
+        gradle.insert("java".into(), json!({"home": home}));
     }
     if gradle.is_empty() {
         return;
@@ -1940,7 +1950,7 @@ mod maven_linkage_tests {
         cfg.settings = Some(json!({"java": {"import": {"gradle": {"enabled": true}}}}));
         let initial = cfg.clone();
         let mut settings = Settings::default();
-        configure_gradle_runtime(&mut cfg, root, &settings);
+        configure_gradle_runtime(&mut cfg, root, root, &settings);
         assert_eq!(cfg, initial, "no Gradle settings: jdtls keeps its own defaults and the wrapper");
 
         let g = &mut settings.languages.java.gradle;
@@ -1948,7 +1958,7 @@ mod maven_linkage_tests {
         g.home = "tools/gradle-5.2.1".into();
         g.user_home = "/caches/gradle".into();
         g.jvm = "/jdk/8".into();
-        configure_gradle_runtime(&mut cfg, root, &settings);
+        configure_gradle_runtime(&mut cfg, root, root, &settings);
         let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
         assert_eq!(gradle["enabled"], json!(true), "merged, not replaced");
         let resolved = |s: &str| json!(setting_path(root, s).unwrap().to_string_lossy());
@@ -1960,10 +1970,38 @@ mod maven_linkage_tests {
         // The wrapper distribution keeps the wrapper even with a home left over.
         let mut cfg = initial.clone();
         settings.languages.java.gradle.distribution = ide_core::settings::GradleDistribution::Wrapper;
-        configure_gradle_runtime(&mut cfg, root, &settings);
+        configure_gradle_runtime(&mut cfg, root, root, &settings);
         let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
         assert!(gradle.get("home").is_none() && gradle.get("wrapper").is_none());
         assert_eq!(gradle["user"]["home"], resolved("/caches/gradle"));
+    }
+
+    #[test]
+    fn gradle_import_of_a_gradle_build_runs_on_the_project_jdk_like_the_ides_builds() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("build.gradle"), "plugins { id 'java' }").unwrap();
+        let jdk = root.join("jdk11");
+        std::fs::create_dir_all(jdk.join("bin")).unwrap();
+        std::fs::write(jdk.join("bin").join(crate::exe("java")), "").unwrap();
+        std::fs::write(jdk.join("release"), "JAVA_VERSION=\"11.0.2\"\n").unwrap();
+        let mut settings = Settings::default();
+        settings.languages.java.jdk = jdk.to_string_lossy().into_owned();
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        configure_gradle_runtime(&mut cfg, root, root, &settings);
+        let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
+        let expected =
+            gradle_build_env(root, root, &gradle_command(root, root, &settings).to_string_lossy(), &settings, None);
+        assert_eq!(gradle["java"]["home"], json!(expected["JAVA_HOME"]));
+        assert!(expected["JAVA_HOME"].ends_with("jdk11"));
+        assert!(gradle.get("wrapper").is_none(), "the wrapper stays on");
+
+        // An explicit Gradle JVM wins over the Project JDK.
+        settings.languages.java.gradle.jvm = "/gradle-jdk".into();
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        configure_gradle_runtime(&mut cfg, root, root, &settings);
+        let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
+        assert_eq!(gradle["java"]["home"], json!(setting_path(root, "/gradle-jdk").unwrap().to_string_lossy()));
     }
 
     #[test]
