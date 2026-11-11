@@ -59,6 +59,7 @@ const BUILTIN: &[(&str, &str, Driver, &[&str], &str)] = &[
     ("cursor", "Cursor", Driver::Acp, &["cursor-agent", "acp"], "Run `cursor-agent login` in a terminal."),
     ("opencode", "OpenCode", Driver::Acp, &["opencode", "acp"], "Run `opencode auth login` in a terminal."),
     ("qwen", "Qwen Code", Driver::Acp, &["qwen", "--experimental-acp"], "Run `qwen` in a terminal and sign in."),
+    ("qoder", "Qoder", Driver::Acp, &["qodercli", "--acp"], "Run `qodercli login` in a terminal."),
     ("qodercn", "Qoder CN", Driver::Acp, &["qoderclicn", "--acp"], "Run `qoderclicn login` in a terminal."),
     ("kimi", "Kimi CLI", Driver::Acp, &["kimi", "acp"], "Run `kimi` in a terminal and sign in."),
     ("goose", "Goose", Driver::Acp, &["goose", "acp"], "Run `goose configure` in a terminal."),
@@ -409,6 +410,15 @@ fn is_executable(p: &Path) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn qoder_global_and_cn_editions_are_both_built_in() {
+        let info = |id: &str| describe(&load(None).into_iter().find(|s| s.id == id).unwrap());
+        let (global, cn) = (info("qoder"), info("qodercn"));
+        assert_eq!((global.name.as_str(), global.command.as_str()), ("Qoder", "qodercli --acp"));
+        assert_eq!((cn.name.as_str(), cn.command.as_str()), ("Qoder CN", "qoderclicn --acp"));
+        assert_eq!(global.login_hint.as_deref(), Some("Run `qodercli login` in a terminal."));
+    }
 
     #[test]
     fn qodercn_is_available_without_a_file_and_preserves_existing_customizations() {
