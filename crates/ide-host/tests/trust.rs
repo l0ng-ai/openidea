@@ -94,6 +94,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "remote_delete",
         "remote_mkdir",
         "remote_rename",
+        "remote_download_into",
         "remote_import_local",
         "remote_bootstrap_exec",
         "deploy_upload",

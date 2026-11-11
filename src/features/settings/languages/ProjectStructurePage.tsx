@@ -1,5 +1,5 @@
 /**
- * Settings › Project Structure (File › Project Structure…, ⌘; / Ctrl+Alt+Shift+S):
+ * File › Project Structure… (⌘; / Ctrl+Alt+Shift+S):
  * IntelliJ IDEA-style Project Structure configuration across Project, Modules
  * (Sources, Paths, Dependencies), Libraries, Facets, Artifacts, and SDKs.
  */
@@ -98,16 +98,6 @@ const ROLES: Array<{ role: FolderRole; label: string; title: string; kind: Folde
     cls: styles.testResourcesTitle!,
   },
   { role: "excluded", label: "Excluded", title: "Excluded Folders", kind: "excluded", cls: styles.excludedTitle! },
-];
-
-const SECTION_TABS: Array<{ id: ProjectStructureSectionId; label: string; icon: IconName }> = [
-  { id: "project", label: "Project", icon: "folder" },
-  { id: "modules", label: "Modules", icon: "module" },
-  { id: "dependencies", label: "Dependencies", icon: "build-dependencies" },
-  { id: "libraries", label: "Libraries", icon: "folder-library" },
-  { id: "facets", label: "Facets", icon: "file-config" },
-  { id: "artifacts", label: "Artifacts", icon: "file-archive" },
-  { id: "sdks", label: "SDKs", icon: "settings" },
 ];
 
 const PROJECT_JAVA_LEVEL_OPTIONS: SelectOption[] = JAVA_LANGUAGE_LEVELS.map((level) =>
@@ -622,7 +612,7 @@ export function dependencyCandidates(root: string | null, dependencies: readonly
   return out;
 }
 
-/** Settings › Project Structure › Modules › Dependencies. */
+/** Project Structure › Dependencies. */
 function ModuleDependenciesTab() {
   const workspaceProjects = useProject((s) => s.project?.workspace?.projects ?? null);
   // A workspace: every member is an equal root that picks the roots it depends on.
@@ -1936,6 +1926,8 @@ const NAV_GROUPS: Array<{
   },
 ];
 
+const NAV_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
+
 export function ProjectStructureDialog() {
   const open = useSettingsDialog((s) => s.projectStructureOpen);
   if (!open) return null;
@@ -1981,9 +1973,9 @@ function ProjectStructureDialogInner() {
   const onNavKeyDown = (e: React.KeyboardEvent) => {
     if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || e.altKey || e.metaKey || e.ctrlKey) return;
     e.preventDefault();
-    const idx = SECTION_TABS.findIndex((t) => t.id === section);
-    const nextIdx = e.key === "ArrowDown" ? Math.min(SECTION_TABS.length - 1, idx + 1) : Math.max(0, idx - 1);
-    const next = SECTION_TABS[nextIdx];
+    const idx = NAV_ITEMS.findIndex((t) => t.id === section);
+    const nextIdx = e.key === "ArrowDown" ? Math.min(NAV_ITEMS.length - 1, idx + 1) : Math.max(0, idx - 1);
+    const next = NAV_ITEMS[nextIdx];
     if (next) selectProjectStructureSection(next.id);
   };
 
@@ -2058,36 +2050,5 @@ function ProjectStructureDialogInner() {
         </SettingsFormContext.Provider>
       </PageContext.Provider>
     </Dialog>
-  );
-}
-
-export function ProjectStructurePage({ initialSection = "modules" }: { initialSection?: ProjectStructureSectionId }) {
-  const [section, setSection] = useState<ProjectStructureSectionId>(initialSection);
-
-  return (
-    <div className={styles.page}>
-      <div className={styles.sectionTabs} role="tablist" aria-label={tx("Project Structure sections")}>
-        {SECTION_TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            role="tab"
-            className={styles.sectionTab}
-            aria-selected={section === tab.id}
-            onClick={() => setSection(tab.id)}
-          >
-            <Icon name={tab.icon} size={14} />
-            {tab.label}
-          </button>
-        ))}
-      </div>
-      {section === "project" && <ProjectSection />}
-      {section === "modules" && <ModulesSection />}
-      {section === "dependencies" && <ModuleDependenciesTab />}
-      {section === "libraries" && <LibrariesSection />}
-      {section === "facets" && <FacetsSection />}
-      {section === "artifacts" && <ArtifactsSection />}
-      {section === "sdks" && <SdksSection />}
-    </div>
   );
 }

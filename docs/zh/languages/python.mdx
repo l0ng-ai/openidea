@@ -125,6 +125,12 @@ Python 调试使用 debugpy。开始调试时如果缺少 debugpy，OpenIDEA 会
 
 目前只有 Django 有专门支持：`manage.py runserver` 和 `manage.py test` 运行配置、**Django 测试** 配置类型（目标、settings 模块、选项）、在左侧栏运行单个 `TestCase` 测试，以及调试器的 Django 模式。Flask、FastAPI 等其他框架按普通脚本或命令行入口运行。
 
+### Django 模板
+
+Django 项目（上层目录有 `manage.py`）中 `templates` 目录里的 HTML 和文本文件以 **Django Template** 打开：模板标签、变量、过滤器和注释在 HTML 之上高亮，块标签（`{% block %}`、`{% if %}`、`{% for %}`、`{% with %}` 以及 Django 和其 contrib 库的其他块标签）可以折叠、缩进内容并高亮对应的结束标签。输入 `{%`、`{{` 或 `{#` 会自动补全成对符号，写完块标签会自动添加结束标签，输入 `{% end` 会补全当前打开块的结束标签。**使用行注释** 会把每一行放进各自的 `{# … #}`，多行的 **使用块注释** 则用 `{% comment %}`。HTML 语言服务器和 Emmet 在标签之间的标记中照常工作。
+
+其他位置含有 Django 标签的 HTML 文件会显示一个横幅，可以切换为 Django Template 或保留为 HTML；两种选择都会成为该文件的 **覆盖文件类型**。
+
 ## 限制
 
 - 同一时间只运行一个类型检查器。Ruff 只在有 Ruff 配置的项目中运行。

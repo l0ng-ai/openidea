@@ -506,6 +506,48 @@ fn reload_and_convert_encoding() {
 }
 
 #[test]
+fn external_changes_keep_a_chosen_encoding() {
+    // Valid UTF-8 bytes, so detection alone would read them as UTF-8.
+    let (first, changed) = (b"caf\xC3\xA9".as_slice(), b"caf\xC3\xA9 \xC3\xA8".as_slice());
+    for (encoding, reload) in [("windows-1252", true), ("gbk", true), ("windows-1252", false)] {
+        let f = fixture();
+        let path = f.root.join("legacy.txt");
+        fs::write(&path, first).unwrap();
+        let info = f.docs.open(&path).unwrap();
+        assert_eq!(info.encoding, "utf-8");
+        if reload {
+            f.docs.set_encoding(info.id, encoding, true).unwrap();
+        } else {
+            // Convert, then save: the file is now in the chosen encoding.
+            f.docs.replace_all(info.id, "café").unwrap();
+            f.docs.set_encoding(info.id, encoding, false).unwrap();
+            f.docs.save(info.id).unwrap();
+        }
+        let expected =
+            |bytes: &[u8]| encoding_rs::Encoding::for_label(encoding.as_bytes()).unwrap().decode(bytes).0.into_owned();
+        let changed = if reload { changed.to_vec() } else { ide_vfs::encode("café è", encoding, false).unwrap() };
+        fs::write(&path, &changed).unwrap();
+        f.docs.on_disk_changed(std::slice::from_ref(&path));
+        let snapshot = f.docs.snapshot(info.id).unwrap();
+        assert_eq!(snapshot.text, expected(&changed), "{encoding} reload={reload}");
+        assert_eq!(snapshot.encoding, encoding, "{encoding} reload={reload}");
+        assert!(!snapshot.dirty);
+    }
+}
+
+#[test]
+fn external_changes_redetect_an_encoding_the_user_never_chose() {
+    let f = fixture();
+    let path = f.root.join("plain.txt");
+    fs::write(&path, "plain").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    fs::write(&path, ide_vfs::encode("wide", "utf-16le", true).unwrap()).unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    let snapshot = f.docs.snapshot(info.id).unwrap();
+    assert_eq!((snapshot.text.as_str(), snapshot.encoding.as_str()), ("wide", "utf-16le"));
+}
+
+#[test]
 fn utf8_bom_is_added_and_removed_on_save() {
     let f = fixture();
     let path = f.root.join("bom.txt");
@@ -656,14 +698,14 @@ fn editorconfig_applies_on_open_and_save() {
 fn virtual_documents_are_read_only_and_keyed_by_uri() {
     let f = fixture();
     let uri = "jdt://contents/a.jar/p/C.class?=x";
-    let info = f.docs.open_virtual(uri, LanguageId::new("java"), "class C {}\n").unwrap();
+    let info = f.docs.open_virtual(uri, LanguageId::new("java"), "class C {}\n", "utf-8", false, true).unwrap();
     assert_eq!(info.uri.as_deref(), Some(uri));
     assert_eq!(info.path, PathBuf::from(uri));
     assert!(info.read_only && !info.dirty);
     assert_eq!(info.language.as_str(), "java");
 
     // Re-opening shares the document; edits and saves never reach a file.
-    let again = f.docs.open_virtual(uri, LanguageId::new("java"), "ignored").unwrap();
+    let again = f.docs.open_virtual(uri, LanguageId::new("java"), "ignored", "utf-8", false, true).unwrap();
     assert_eq!(again.id, info.id);
     assert_eq!(again.text, "class C {}\n");
     let err = f.docs.edit(info.id, info.version, change(0, 0, "x")).unwrap_err();
@@ -675,6 +717,68 @@ fn virtual_documents_are_read_only_and_keyed_by_uri() {
     f.docs.close(info.id);
     assert!(f.docs.snapshot(info.id).is_err());
     assert_eq!(*f.rec.log.lock(), vec!["open v0 java".to_owned(), "close".to_owned()]);
+}
+
+#[test]
+fn virtual_documents_carry_their_encoding_and_reload_capability() {
+    let f = fixture();
+    // Archive sources decoded by the backend report the charset actually used.
+    let uri = "jar:///m2/lib-1.0-sources.jar!/p/C.java";
+    let info = f.docs.open_virtual(uri, LanguageId::new("java"), "中文", "gbk", false, true).unwrap();
+    assert_eq!((info.encoding.as_str(), info.has_bom, info.can_reload_encoding), ("gbk", false, true));
+    let bom =
+        f.docs.open_virtual("jar:///m2/b.jar!/p/B.java", LanguageId::new("java"), "x", "utf-8", true, true).unwrap();
+    assert!(bom.has_bom);
+    // Server-generated content (decompiled) cannot be re-decoded.
+    let decompiled = f
+        .docs
+        .open_virtual(
+            "csharp:/p/App.csproj/decompiled/Lib.cs",
+            LanguageId::new("csharp"),
+            "class Lib {}",
+            "utf-8",
+            false,
+            false,
+        )
+        .unwrap();
+    assert!(!decompiled.can_reload_encoding);
+    // File-backed documents can always be re-read from disk.
+    let path = f.root.join("f.txt");
+    fs::write(&path, "x").unwrap();
+    assert!(f.docs.open(&path).unwrap().can_reload_encoding);
+}
+
+#[test]
+fn virtual_documents_reload_with_another_encoding_without_becoming_editable() {
+    let f = fixture();
+    let uri = "jdt://contents/a.jar/p/C.class?=x";
+    let info = f.docs.open_virtual(uri, LanguageId::new("java"), "涓枃", "utf-8", false, true).unwrap();
+    let encoding = f.docs.replace_virtual(info.id, "中文", "gbk", false).unwrap();
+    assert_eq!((encoding.encoding.as_str(), encoding.has_bom), ("gbk", false));
+    let snap = f.docs.snapshot(info.id).unwrap();
+    assert_eq!(snap.text, "中文");
+    assert_eq!(snap.encoding, "gbk");
+    assert!(snap.read_only && !snap.dirty, "reloading is not an edit");
+    assert!(snap.version > info.version);
+    assert_eq!(f.docs.virtual_uri(info.id).unwrap().as_deref(), Some(uri));
+    // The replacement reached observers and the event stream (editors resync).
+    assert!(f.rec.log.lock().iter().any(|l| l.starts_with("change v") && l.contains("中文")));
+    assert!(f.events.lock().iter().any(|e| matches!(e, IdeEvent::DocPatched { doc, .. } if *doc == info.id)));
+
+    // Read-only protection is unchanged.
+    assert_eq!(f.docs.edit(info.id, snap.version, change(0, 0, "x")).unwrap_err().kind, ErrorKind::PermissionDenied);
+    assert!(f.docs.set_encoding(info.id, "utf-8", false).is_err());
+    assert!(f.docs.set_encoding(info.id, "gbk", true).is_err(), "the op layer routes virtual reloads");
+    assert!(f.docs.set_bom(info.id, true).is_err());
+    f.docs.save(info.id).unwrap();
+
+    // Unknown encodings are refused; file-backed documents are not virtual.
+    assert!(f.docs.replace_virtual(info.id, "x", "not-an-encoding", false).is_err());
+    let path = f.root.join("f.txt");
+    fs::write(&path, "x").unwrap();
+    let file = f.docs.open(&path).unwrap();
+    assert!(f.docs.replace_virtual(file.id, "y", "utf-8", false).is_err());
+    assert_eq!(f.docs.virtual_uri(file.id).unwrap(), None);
 }
 
 #[test]

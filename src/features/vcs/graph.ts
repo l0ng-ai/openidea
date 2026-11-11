@@ -264,6 +264,54 @@ export function collapseLinear<
   return { commits: visible, graph };
 }
 
+/**
+ * A filtered log connects a commit to the nearest matching ancestor along every merge
+ * path. Ancestors that another of the commit's connections already reaches would each
+ * open a lane of their own without adding one, so their filtered edges are dropped;
+ * real parents and collapsed-fragment connections stay as they are.
+ */
+export function pruneFilteredEdges(commits: readonly GraphCommit[]): GraphCommit[] {
+  const positions = new Map(commits.map((c, i) => [c.id, i]));
+  const kindOf = (c: GraphCommit, i: number) => c.edgeTypes?.[i] ?? (c.dashed?.[i] ? "filtered" : "normal");
+  return commits.map((c) => {
+    if (c.parents.length < 2) return c;
+    if (!c.parents.some((_, i) => kindOf(c, i) === "filtered")) return c;
+    // Walk the parents shallowest first, tracking the rows the kept connections reach:
+    // a filtered parent already covered by them adds nothing (and a dropped one was
+    // covered itself, so its own reach is covered too). Parents only appear later in
+    // the log, so no walk goes past the deepest parent of the commit.
+    const limit = Math.max(...c.parents.map((p) => positions.get(p) ?? -1));
+    const drop = new Set<number>();
+    const covered = new Set<number>();
+    for (const i of c.parents
+      .map((_, i) => i)
+      .sort((a, b) => (positions.get(c.parents[a]!) ?? Infinity) - (positions.get(c.parents[b]!) ?? Infinity))) {
+      const pos = positions.get(c.parents[i]!);
+      if (kindOf(c, i) === "filtered" && pos != null && covered.has(pos)) {
+        drop.add(i);
+        continue;
+      }
+      for (const stack = pos == null ? [] : [pos]; stack.length;) {
+        const at = stack.pop()!;
+        if (covered.has(at)) continue;
+        covered.add(at);
+        for (const p of commits[at]!.parents) {
+          const next = positions.get(p);
+          if (next != null && next <= limit) stack.push(next);
+        }
+      }
+    }
+    if (!drop.size) return c;
+    const keep = c.parents.map((_, i) => i).filter((i) => !drop.has(i));
+    return {
+      ...c,
+      parents: keep.map((i) => c.parents[i]!),
+      ...(c.dashed ? { dashed: keep.map((i) => c.dashed![i]!) } : {}),
+      ...(c.edgeTypes ? { edgeTypes: keep.map((i) => c.edgeTypes![i]!) } : {}),
+    };
+  });
+}
+
 /** Ids reachable from the given heads (log order: children before parents). */
 export function reachableFrom(
   commits: ReadonlyArray<{ id: string; parents: readonly string[] }>,

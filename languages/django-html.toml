@@ -1,0 +1,23 @@
+id = "django-html"
+name = "Django Template"
+extensions = ["djhtml"]
+block-comment = ["{#", "#}"]
+indent = { tab-size = 2, insert-spaces = true }
+ui-mode = "Django Template"
+tree-sitter = "html"
+
+# Django projects: the HTML and text files in a `templates` folder.
+[[framework-files]]
+folder = "templates"
+extensions = ["html", "txt"]
+root-markers = ["manage.py"]
+
+# The markup between the template tags: completion and hover of tags and
+# attributes. The template tags are text to it. No formatter: HTML formatters
+# reflow template tags.
+[[language-servers]]
+name = "vscode-html-language-server"
+command = "vscode-html-language-server"
+args = ["--stdio"]
+initialization-options = { embeddedLanguages = { css = true, javascript = true } }
+install-hint = "npm i -g vscode-langservers-extracted"

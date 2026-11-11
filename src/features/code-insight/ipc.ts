@@ -1,6 +1,6 @@
 /** IPC helpers shared by the code-insight views. */
 import type { EditorView } from "@codemirror/view";
-import { activeEditor, editorsFor } from "@/editor/api";
+import { activeEditor, editorsFor, whenSynced } from "@/editor/api";
 import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
 import { executeAction } from "@/platform/actions";
 import { IpcError, call, commands, isCancelled, isTauri, unavailableText } from "@/platform/ipc";
@@ -69,6 +69,11 @@ export function caretContext(): CaretContext | null {
     word: wordAt(ed.view, head),
     view: ed.view,
   };
+}
+
+/** Language servers answer from the backend's copy: the caret's position is only valid there once the editor's edits reached it. */
+export function caretSynced(c: CaretContext): Promise<void> {
+  return c.view ? whenSynced(c.view) : Promise.resolve();
 }
 
 function wordAt(view: EditorView, offset: number): string | null {
