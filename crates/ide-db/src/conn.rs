@@ -417,7 +417,7 @@ fn binary_type(name: &str, text: bool) -> bool {
 }
 
 /// Bytes as text: UTF-8, else hex (grids) or with invalid sequences replaced (catalog names).
-fn bytes_text(bytes: Vec<u8>, mode: Cells) -> String {
+pub(crate) fn bytes_text(bytes: Vec<u8>, mode: Cells) -> String {
     match (String::from_utf8(bytes), mode) {
         (Ok(s), _) => s,
         (Err(e), Cells::Display) => hex(e.as_bytes()),
@@ -592,6 +592,13 @@ fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+}
+
+/// sqlx's handshake flags for `sql_mode`: with either enabled it sends
+/// `SET sql_mode=(SELECT CONCAT(...))`, a non-constant subquery that MySQL-protocol
+/// servers like StarRocks reject (#2452), so the StarRocks preset turns both off.
+fn mysql_mode_flags(vendor: &str) -> (bool, bool) {
+    if vendor == "starrocks" { (false, false) } else { (true, true) }
 }
 
 /// A MySQL `SET` value: numbers and keywords as they are, anything else quoted.
@@ -839,6 +846,8 @@ impl Pool {
                 if let Some(c) = &setup.collation {
                     opts = opts.collation(c);
                 }
+                let (pipes_as_concat, no_engine_substitution) = mysql_mode_flags(&source.vendor);
+                opts = opts.pipes_as_concat(pipes_as_concat).no_engine_substitution(no_engine_substitution);
                 if let Some(n) = setup.statement_cache {
                     opts = opts.statement_cache_capacity(n);
                 }
@@ -1033,7 +1042,7 @@ pub enum Held {
     Mysql(Box<bb8::PooledConnection<'static, MysqlManager>>),
     SqlServer(Box<bb8::PooledConnection<'static, MssqlConnectionManager>>),
     Clickhouse(crate::clickhouse::ClickhousePool),
-    Oracle(crate::oracle::OracleConnection),
+    Oracle(Box<crate::oracle::OracleConnection>),
 }
 
 impl Held {
@@ -1049,7 +1058,7 @@ impl Held {
                 }
                 Held::Clickhouse(p.clone())
             }
-            Pool::Oracle(p) => Held::Oracle(p.get().await?),
+            Pool::Oracle(p) => Held::Oracle(Box::new(p.get().await?)),
         })
     }
 
@@ -1463,6 +1472,15 @@ mod tests {
         assert!(Setup::of(&DataSource { properties: vec![prop("a; drop", "1")], ..s.clone() }).is_err());
         assert!(Setup::of(&DataSource { properties: vec![prop("connect_timeout", "0")], ..s.clone() }).is_err());
         assert!(Setup::of(&DataSource { properties: vec![prop("connect_timeout", "soon")], ..s }).is_err());
+    }
+
+    #[test]
+    fn starrocks_disables_the_non_constant_sql_mode_handshake() {
+        // MySQL and its other wire-compatible presets keep sqlx's defaults.
+        for vendor in ["", "mysql", "mariadb", "tidb"] {
+            assert_eq!(mysql_mode_flags(vendor), (true, true), "{vendor}");
+        }
+        assert_eq!(mysql_mode_flags("starrocks"), (false, false));
     }
 
     #[test]

@@ -139,6 +139,16 @@ impl ClientHandler {
             }
         };
         let Some(path) = uri_to_path(params.uri.as_str()) else { return };
+        if self.server.name == "jdtls"
+            && let Some(body) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics)
+            && mgr.first_message(&self.server.name, &body)
+        {
+            mgr.sink().emit(ide_core::IdeEvent::Notify {
+                level: ide_core::event::NotifyLevel::Error,
+                title: "Maven project could not be configured".into(),
+                body: Some(body),
+            });
+        }
         if !mgr.accepts_injected_diagnostics(&path, params.version) {
             return;
         }
@@ -303,6 +313,7 @@ impl Handler for ClientHandler {
                 self.progress(&mgr, json!({ "token": ANGULAR_LOADING, "value": { "kind": "end" } }))
             }
             "telemetry/event" | "$/logTrace" | "$/cancelRequest" => {}
+            "eslint/status" | "eslint/probeFailed" | "eslint/exitCalled" => {}
             other => tracing::trace!("[{}] unhandled notification {other}", self.server.name),
         }
     }
@@ -343,6 +354,10 @@ impl Handler for ClientHandler {
                 Ok(Value::Null)
             }
             "workspace/inlineValue/refresh" => Ok(Value::Null),
+            // vscode-eslint asks its client before using the project's eslint (approved: 4) and
+            // reports a missing library or configuration; diagnostics already say what's wrong.
+            "eslint/confirmESLintExecution" => Ok(json!(4)),
+            "eslint/noLibrary" | "eslint/noConfig" | "eslint/openDoc" => Ok(json!({})),
             other => Err((codes::METHOD_NOT_FOUND, format!("unsupported method {other}"))),
         }
     }

@@ -73,6 +73,8 @@ pub struct EditorAppearanceSettings {
     pub whitespace_inner: bool,
     pub whitespace_trailing: bool,
     pub indent_guides: bool,
+    /// Colour indent guides by depth (`--syn-rainbow-*`), while `indent_guides` is on.
+    pub rainbow_indent_guides: bool,
     /// Right margin and visual guides from Code Style.
     pub hard_wrap_guides: bool,
     pub intention_bulb: bool,
@@ -95,6 +97,7 @@ impl Default for EditorAppearanceSettings {
             whitespace_inner: true,
             whitespace_trailing: true,
             indent_guides: true,
+            rainbow_indent_guides: false,
             hard_wrap_guides: true,
             intention_bulb: true,
             distraction_free_width: 80,

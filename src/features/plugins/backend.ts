@@ -154,6 +154,8 @@ export interface PluginsBackend {
   saveWebFile(name: string, filters: FileFilter[] | undefined, bytes: Uint8Array): Promise<string | null>;
   /** Open dialog for a web view's `openidea.openFile`; `null` when cancelled. */
   openWebFile(filters: FileFilter[] | undefined): Promise<{ name: string; data: Uint8Array } | null>;
+  /** The bytes of a file on this machine, at most 64 MiB (a web custom editor's `document.bytes`). */
+  readFileBytes(path: string): Promise<Uint8Array>;
   /** Which of a plugin's declared secrets are stored (values never come back). */
   secrets(pluginId: string): Promise<PluginSecretState[]>;
   /** Stores a secret (`null` removes it). */
@@ -362,6 +364,7 @@ export const tauriPluginsBackend: PluginsBackend = {
     const data = fromBase64(await call(commands.pluginWebReadFile(path)));
     return { name: path.split(/[\\/]/).pop() ?? path, data };
   },
+  readFileBytes: async (path) => fromBase64(await call(commands.pluginWebReadFile(path))),
   secrets: (pluginId) => call(commands.pluginSecrets(pluginId)),
   setSecret: async (pluginId, name, value) => {
     await call(commands.pluginSetSecret(pluginId, name, value));
@@ -471,6 +474,9 @@ function samplePlugins(): PluginInfo[] {
     },
     publisher: null,
     previousVersion: null,
+    depends: [],
+    dependents: [],
+    extensionPoints: [],
   };
   return [
     {
@@ -723,6 +729,9 @@ export function createMemoryPluginsBackend(
     },
     saveWebFile: async () => null,
     openWebFile: async () => null,
+    readFileBytes: async () => {
+      throw new IpcError({ kind: "unavailable", message: "reading the document needs the desktop app" });
+    },
     secrets: async (pluginId) =>
       [...secrets.entries()]
         .filter(([k]) => k.startsWith(`${pluginId}/`))

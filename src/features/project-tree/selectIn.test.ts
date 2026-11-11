@@ -145,6 +145,8 @@ describe("Select In (⌥F1)", () => {
     expect(getAction("navigate.selectInProjectView")?.title).toBe("Select in Project View");
     await executeAction("navigate.selectIn");
     expect(useContextMenuStore.getState().menu?.items[1]).toMatchObject({ label: "Project View" });
+    // IDEA numbers the Select In rows so a digit picks the target.
+    expect(useContextMenuStore.getState().menu?.numbers).toBe(true);
     useContextMenuStore.setState({ menu: null });
     await executeAction("navigate.selectIn", { path: "/p/src/a.ts" });
     expect(useContextMenuStore.getState().menu).toBeNull();

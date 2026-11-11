@@ -27,6 +27,15 @@ vi.mock("mermaid", () => {
   return { default: { initialize: m.initialize, render: m.render } };
 });
 
+const files = vi.hoisted(() => ({ save: vi.fn(async (_options: unknown): Promise<string | null> => null) }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ save: files.save }));
+
+const backend = vi.hoisted(() => ({ invokeLocal: vi.fn(async (): Promise<unknown> => null) }));
+vi.mock("@/platform/tauriCore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/platform/tauriCore")>()),
+  invokeLocal: backend.invokeLocal,
+}));
+
 function preview(md: string): HTMLElement {
   const root = document.createElement("div");
   root.innerHTML = renderMarkdown(md);
@@ -48,6 +57,8 @@ describe("mermaid in the markdown preview", () => {
     resetMermaidForTests();
     m.render.mockClear();
     m.initialize.mockClear();
+    files.save.mockClear();
+    backend.invokeLocal.mockClear();
     document.body.innerHTML = "";
   });
 
@@ -120,6 +131,14 @@ describe("mermaid in the markdown preview", () => {
     expect(m.render).toHaveBeenCalledTimes(2);
     ids.add(m.render.mock.calls[1]![0]);
     expect(ids.size).toBe(2);
+  });
+
+  it("leaves a diagram it already drew in place on the next pass", async () => {
+    const root = preview(SEQ);
+    await renderMermaidIn(root, []).done;
+    const svg = root.querySelector("svg");
+    expect(renderMermaidIn(root, []).async).toBe(false);
+    expect(root.querySelector("svg")).toBe(svg);
   });
 
   it("applies a cached diagram with fresh SVG ids so copies don't share markers", async () => {
@@ -374,5 +393,128 @@ describe("mermaid in the markdown preview", () => {
     await pass.done;
     expect(m.render).not.toHaveBeenCalled();
     expect(root.querySelector("[data-mermaid]")?.getAttribute("data-mermaid-state")).toBe("pending");
+  });
+
+  it("puts full-screen and download tools on a drawn diagram", async () => {
+    const root = preview(SEQ);
+    await renderMermaidIn(root).done;
+    const tools = root.querySelector<HTMLElement>("[data-mermaid] > [data-mermaid-tools]")!;
+    expect(tools).not.toBeNull();
+    expect([...tools.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Full screen",
+      "Download image",
+    ]);
+  });
+
+  it("previews a diagram over the window and closes on Escape", async () => {
+    const root = preview(SEQ);
+    await renderMermaidIn(root).done;
+    const button = root.querySelector<HTMLButtonElement>('[data-mermaid-tools] button[aria-label="Full screen"]')!;
+    button.focus();
+    button.click();
+    const overlay = document.querySelector<HTMLElement>("[data-mermaid-preview]")!;
+    expect(overlay).not.toBeNull();
+    expect(overlay.getAttribute("role")).toBe("dialog");
+    expect(overlay.querySelector("svg")).not.toBeNull();
+    // The copy gets fresh ids, so it doesn't resolve its markers against the diagram behind it.
+    expect(overlay.querySelector("svg")!.getAttribute("id")).not.toBe(root.querySelector("svg")!.getAttribute("id"));
+
+    // The canvas fills the window and the fitted drawing is centred in it.
+    const pan = overlay.querySelector<HTMLElement>(".pan-zoom-content")!;
+    const canvas = pan.parentElement!;
+    expect(canvas.clientWidth).toBe(400);
+    const centered = "translate(0px, 150px) scale(1)";
+    expect(pan.style.transform).toBe(centered);
+
+    // The whole canvas is a drag surface, at the fitted size and once zoomed.
+    canvas.setPointerCapture = () => {};
+    const drag = (dx: number, dy: number) => {
+      canvas.dispatchEvent(new MouseEvent("pointerdown", { button: 0, clientX: 100, clientY: 100, bubbles: true }));
+      canvas.dispatchEvent(
+        new MouseEvent("pointermove", { buttons: 1, clientX: 100 + dx, clientY: 100 + dy, bubbles: true }),
+      );
+      canvas.dispatchEvent(new MouseEvent("pointerup", { clientX: 100 + dx, clientY: 100 + dy, bubbles: true }));
+    };
+    drag(40, 30);
+    expect(pan.style.transform).not.toBe(centered);
+
+    // Double-click returns the panned fitted view to the centre.
+    canvas.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    expect(pan.style.transform).toBe(centered);
+
+    // A plain wheel keeps scrolling the page; ⌘/Ctrl+wheel zooms.
+    canvas.dispatchEvent(
+      new WheelEvent("wheel", { deltaY: -120, clientX: 100, clientY: 100, bubbles: true, cancelable: true }),
+    );
+    expect(pan.style.transform).toBe(centered);
+    canvas.dispatchEvent(
+      new WheelEvent("wheel", {
+        deltaY: -120,
+        clientX: 100,
+        clientY: 100,
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    expect(pan.style.transform).not.toBe(centered);
+    // One notch is a gentle step, so the wheel zooms continuously rather than in jumps.
+    const zoom = Number(/scale\(([\d.]+)\)/.exec(pan.style.transform)?.[1]);
+    expect(zoom).toBeGreaterThan(1);
+    expect(zoom).toBeLessThan(1.3);
+
+    // Zoomed in, a drag still pans.
+    canvas.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    canvas.dispatchEvent(
+      new WheelEvent("wheel", {
+        deltaY: -120,
+        clientX: 100,
+        clientY: 100,
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    const zoomed = pan.style.transform;
+    drag(40, 30);
+    expect(pan.style.transform).not.toBe(zoomed);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(document.querySelector("[data-mermaid-preview]")).toBeNull();
+    expect(document.activeElement).toBe(button);
+  });
+
+  it("saves a diagram as a PNG through the file dialog", async () => {
+    const context = { fillStyle: "", scale: vi.fn(), fillRect: vi.fn(), drawImage: vi.fn() };
+    const getContext = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockReturnValue(context as unknown as CanvasRenderingContext2D);
+    const toDataURL = vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,AAAA");
+    class FakeImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_url: string) {
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    vi.stubGlobal("Image", FakeImage);
+    files.save.mockResolvedValueOnce("/tmp/diagram.png");
+    try {
+      const root = preview(SEQ);
+      await renderMermaidIn(root).done;
+      root.querySelector<HTMLButtonElement>('[data-mermaid-tools] button[aria-label="Download image"]')!.click();
+
+      await vi.waitFor(() => expect(backend.invokeLocal).toHaveBeenCalled());
+      expect(backend.invokeLocal).toHaveBeenCalledWith("plugin_web_save_file", {
+        path: "/tmp/diagram.png",
+        base64: "AAAA",
+      });
+      expect(context.drawImage).toHaveBeenCalled();
+      expect(files.save.mock.calls[0]![0]).toEqual(expect.objectContaining({ defaultPath: "mermaid-diagram.png" }));
+    } finally {
+      getContext.mockRestore();
+      toDataURL.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 });

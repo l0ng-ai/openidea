@@ -1,0 +1,77 @@
+---
+title: "冒烟测试"
+description: "在 fixtures 示例项目上，用真实语言服务器跑语言冒烟测试，以及通过真实 openidea-server 跑运行和调试冒烟测试。"
+---
+
+冒烟测试用 IDE 实际使用的工具端到端地检查每种语言：语言服务器、构建工具、测试运行器和调试器。它们运行在 [`fixtures/`](https://github.com/l0ng-ai/openidea/tree/main/fixtures) 中的示例项目上，每个项目都有少量源文件、能通过的测试、一个可选开启的失败测试和一处有意保留的警告。
+
+由于需要安装这些工具，冒烟测试不包含在 `cargo nextest run` 或 `pnpm test` 中。CI 在 **Language smoke** 工作流里用固定版本运行它们。
+
+| 套件                                      | 检查内容                                                     | 语言                                                    |
+| ----------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------- |
+| `crates/ide-host/tests/language_smoke.rs` | 经由应用命令所调用的 `ops` 检查代码智能                      | typescript、python、rust、go、java、kotlin、php         |
+| `crates/ide-host/tests/project_smoke.rs`  | 用构建工具和 SDK 打开示例项目                                | `maven_sync`、`jdk`、`gradle_sync`、`python_venv`       |
+| `smoke/run.test.ts`                       | 通过 run store 和真实的 `openidea-server` 执行运行与测试配置 | typescript、python、rust、go、java、kotlin、php         |
+| `smoke/debug.test.ts`                     | 用 IDE 安装的调试器调试入口点                                | typescript、python、rust、go、java、kotlin、c、cpp、php |
+
+## 语言冒烟测试
+
+针对每种语言，在其示例项目上用应用默认启动的语言服务器跑一遍日常清单：补全、跳转到定义、Find Usages、悬停、带快速修复的诊断、一个 intention、重命名、格式化、参数信息、Structure 视图、自动导入、Optimize Imports 和移动文件。每项检查都写明了要找什么，失败时能直接看出是哪项操作出了问题。
+
+```sh
+cargo test -p ide-host --test language_smoke -- --ignored --exact rust
+```
+
+这些测试用 `#[ignore]` 标注了所需的服务器（如 `#[ignore = "language smoke: needs vtsls"]`）。先装好对应的服务器；每种语言怎么装可以参考 CI 工作流。
+
+项目冒烟测试按应用的方式打开示例项目（从构建文件识别源码和测试根目录、索引、Go to Class / Symbol、Maven / Gradle 模型）。其中被 ignore 的测试会运行 Maven、Gradle、python3 和 JDK 21：
+
+```sh
+cargo test -p ide-host --test project_smoke -- --ignored --exact gradle_sync
+```
+
+## 运行与调试冒烟测试
+
+这两套是 Vitest 套件（`pnpm smoke`，配置在 `smoke/vitest.config.ts`），驱动**前端自己的模块**——run store、测试结果上报、调试器状态——连接真实的后端。`smoke/server.ts` 启动 `openidea-server --stdio`，`smoke/desktop.ts` 提供一个进程内的 Tauri 运行时，其命令经由远程开发同样的路由发给该服务端。
+
+先构建服务端，再运行某一种语言：
+
+```sh
+cargo build -p ide-host --bin openidea-server
+pnpm smoke smoke/run.test.ts -t '^rust$'
+pnpm smoke smoke/debug.test.ts -t '^rust$'
+```
+
+`-t` 是对测试名的匹配模式；记得加锚点（`'^c$'`），否则 `c` 也会选中 `cpp`。
+
+- **run**：检测示例项目的运行配置并启动，把输出解析成测试树，打开那个有意失败的测试，再重跑失败的测试。
+- **debug**：在入口点的 “Set a breakpoint here” 这一行打断点，从文件上下文启动 Debug（调试器需要显式选择时则用保存的配置），然后检查暂停的栈帧、变量、求值、Step Over 和 Resume。C 和 C++ 使用 GDB 自带的 DAP 解释器（GDB 14+），其他语言使用 IDE 安装的调试器。
+
+每个测试文件都会启动自己的服务端和工具链，所以文件逐个运行，单个测试超时 10 分钟。
+
+<Note>
+  在 macOS 上，CodeLLDB 和 Delve 可能需要开启开发者模式：`sudo DevToolsSecurity -enable`。IDE 会从 GitHub releases
+  下载部分调试器；遇到限流时设置 `GITHUB_TOKEN`（CI 就是这么做的）。
+</Note>
+
+## CI 中
+
+`.github/workflows/language-smoke.yml` 为每种语言（typescript、python、rust、go、java、kotlin、php、c、cpp）各跑一个任务。触发条件是推送到 `main`，以及改动了 `crates/`、`languages/`、`fixtures/`、`Cargo.toml`/`Cargo.lock`、`src/features/run/`、`src/features/debugger/`、`src/platform/`、`smoke/`、`package.json`/`pnpm-lock.yaml` 或该工作流本身的 PR。每个任务依次运行语言冒烟测试、相关的项目冒烟测试，然后是运行和调试冒烟测试。
+
+服务器版本固定在工作流的 `env` 里，避免某个服务器发版导致无关的 PR 失败；升级要有意为之：
+
+| 变量           | 固定版本            |
+| -------------- | ------------------- |
+| `VTSLS`        | 0.3.0               |
+| `TYPESCRIPT`   | 6.0.3               |
+| `BASEDPYRIGHT` | 1.40.2              |
+| `RUFF`         | 0.17.3              |
+| `GOPLS`        | v0.24.0             |
+| `JDTLS`        | 1.63.0-202610191322 |
+| `KOTLIN_LSP`   | 263.7084.0          |
+| `GRADLE`       | 8.14.3              |
+| `INTELEPHENSE` | 1.18.5              |
+
+## 什么时候跑
+
+改动了示例项目、`languages/` 中的语言定义、`ide-lsp`、`ide-dap`、运行或调试功能，或者某种语言工具的安装方式时，请为受影响的语言跑冒烟测试，并把命令和结果写进 PR 的 **How it was verified**。

@@ -59,16 +59,16 @@ pub struct Settings {
     /// Build, Execution, Deployment › Run Targets.
     pub run_targets: Vec<RunTarget>,
     pub cmake: CMakeSettings,
-    /// Tools › Agents › Chat.
+    /// Settings › Agents.
     pub agents: AgentSettings,
-    /// Tools › MCP Server (global only).
+    /// Agents › MCP Server (global only).
     pub mcp_server: McpServerSettings,
     /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
     #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
     pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
 }
 
-/// What the meters in an agent task's header show.
+/// Settings › Agents: what the conversation shows and how messages are sent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AgentSettings {
@@ -80,15 +80,182 @@ pub struct AgentSettings {
     pub show_usage_limits: bool,
     /// What the session has cost so far, as the agent reports it.
     pub show_cost: bool,
+    /// A finished turn's work folds into one line under its message, leaving the reply.
+    pub fold_turns: bool,
+    /// Streaming text is revealed at a steady pace rather than chunk by chunk.
+    pub smooth_text: bool,
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = ThinkingDisplay)]
+    pub thinking: ThinkingDisplay,
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = ToolCallDisplay)]
+    pub tool_calls: ToolCallDisplay,
+    /// A tool call's output (a command's, a diff) is shown without opening it.
+    pub expand_tool_output: bool,
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = SendKey)]
+    pub send_with: SendKey,
+    /// What sending does while the agent works: queue the message for after the turn, or
+    /// send it into the turn.
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = WhileRunning)]
+    pub while_running: WhileRunning,
+    /// Settings new tasks of an agent start with: agent id → option id → value.
+    #[serde(deserialize_with = "agent_defaults")]
+    #[specta(type = BTreeMap<String, BTreeMap<String, String>>)]
+    pub defaults: BTreeMap<String, BTreeMap<String, String>>,
+    /// MCP servers passed to coding agents in `session/new`, `session/load` and `session/fork`,
+    /// keyed by server name (`[agents.mcpServers.<name>]`).
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = BTreeMap<String, AgentMcpServer>)]
+    pub mcp_servers: BTreeMap<String, AgentMcpServer>,
 }
 
 impl Default for AgentSettings {
     fn default() -> Self {
-        Self { show_context_usage: true, show_work_time: true, show_usage_limits: true, show_cost: false }
+        Self {
+            show_context_usage: true,
+            show_work_time: true,
+            show_usage_limits: true,
+            show_cost: false,
+            fold_turns: true,
+            smooth_text: true,
+            thinking: ThinkingDisplay::Auto,
+            tool_calls: ToolCallDisplay::Grouped,
+            expand_tool_output: false,
+            send_with: SendKey::Enter,
+            while_running: WhileRunning::Queue,
+            defaults: BTreeMap::new(),
+            mcp_servers: BTreeMap::new(),
+        }
     }
 }
 
-/// Tools › MCP Server: agents use the IDE's built-in tools.
+/// Transport of an MCP server configured in Settings › Agents › MCP Servers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum McpTransport {
+    #[default]
+    Stdio,
+    Http,
+    Sse,
+}
+
+/// An MCP server passed to coding agents in `session/new`, `session/load` and `session/fork`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentMcpServer {
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = McpTransport)]
+    pub transport: McpTransport,
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// Agent provider ids this server is enabled for (e.g. `["claude", "codex"]`);
+    /// empty means enabled for all agents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<String>,
+}
+
+impl Default for AgentMcpServer {
+    fn default() -> Self {
+        Self {
+            transport: McpTransport::Stdio,
+            enabled: true,
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            url: None,
+            headers: BTreeMap::new(),
+            agents: Vec::new(),
+        }
+    }
+}
+
+/// A hand-edited value these settings don't know reads as the default, rather than
+/// failing the whole settings file.
+fn or_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    Ok(serde_json::from_value(serde_json::Value::deserialize(d)?).unwrap_or_default())
+}
+
+/// [`AgentSettings::defaults`], keeping only the text values of each agent's table.
+fn agent_defaults<'de, D>(d: D) -> Result<BTreeMap<String, BTreeMap<String, String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let serde_json::Value::Object(agents) = serde_json::Value::deserialize(d)? else { return Ok(BTreeMap::new()) };
+    Ok(agents
+        .into_iter()
+        .filter_map(|(agent, options)| match options {
+            serde_json::Value::Object(options) => Some((
+                agent,
+                options
+                    .into_iter()
+                    .filter_map(|(k, v)| match v {
+                        serde_json::Value::String(v) => Some((k, v)),
+                        _ => None,
+                    })
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect())
+}
+
+/// How the agent's reasoning shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ThinkingDisplay {
+    /// Open while it streams, folded once it ends.
+    #[default]
+    Auto,
+    Expanded,
+    Collapsed,
+}
+
+/// How tool calls between messages show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolCallDisplay {
+    /// A run of calls is one line saying what they did ("Read 4 files · Edited 2 files").
+    #[default]
+    Grouped,
+    /// Each call on its own line.
+    Each,
+}
+
+/// The key that sends a message; the other one starts a new line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SendKey {
+    #[default]
+    Enter,
+    ModEnter,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum WhileRunning {
+    #[default]
+    Queue,
+    Steer,
+}
+
+/// Agents › MCP Server: agents use the IDE's built-in tools.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct McpServerSettings {
@@ -1163,6 +1330,11 @@ pub struct ProjectStructureSettings {
     pub unmarked: Vec<String>,
     /// Content roots besides the project folder (absolute paths), shown and searched with it.
     pub content_roots: Vec<String>,
+    /// Other projects (absolute paths) this project depends on; indexed and navigable like content roots.
+    pub dependencies: Vec<String>,
+    /// Per-workspace-member dependencies: member root (IPC path) → the roots it depends on.
+    /// A member not listed here (or with an empty list) navigates only into itself.
+    pub member_dependencies: BTreeMap<String, Vec<String>>,
     /// "Exclude files": `;`-separated name patterns (`*.log;tmp*`) excluded at any depth.
     pub exclude_files: String,
     /// Project compiler output directory (relative to project root or absolute; empty = default).
@@ -1337,6 +1509,27 @@ mod tests {
     }
 
     #[test]
+    fn double_click_opens_diff_is_unset_by_default_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"vcs":{"commit":{"nonModal":true}}}"#).unwrap();
+        assert_eq!(old.vcs.commit.double_click_opens_diff, None);
+        // The unset value shows up as `null` in the defaults: `SettingsStore::set` only
+        // accepts a key path it finds there.
+        let json = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(json["vcs"]["commit"]["doubleClickOpensDiff"], serde_json::Value::Null);
+        for on in [true, false] {
+            let mut settings = Settings::default();
+            settings.vcs.commit.double_click_opens_diff = Some(on);
+            let json = serde_json::to_value(&settings).unwrap();
+            assert_eq!(json["vcs"]["commit"]["doubleClickOpensDiff"], on);
+            let restored: Settings = serde_json::from_value(json).unwrap();
+            assert_eq!(restored.vcs.commit.double_click_opens_diff, Some(on));
+        }
+        // Explicit `null` reads back as unset.
+        let cleared: Settings = serde_json::from_str(r#"{"vcs":{"commit":{"doubleClickOpensDiff":null}}}"#).unwrap();
+        assert_eq!(cleared.vcs.commit.double_click_opens_diff, None);
+    }
+
+    #[test]
     fn agent_meters_default_and_round_trip() {
         let old: Settings = serde_json::from_str(r#"{"agents":{"showCost":true}}"#).unwrap();
         assert!(old.agents.show_cost);
@@ -1348,6 +1541,22 @@ mod tests {
         assert_eq!(json["agents"]["showUsageLimits"], false);
         let restored: Settings = serde_json::from_value(json).unwrap();
         assert_eq!(restored.agents, settings.agents);
+    }
+
+    #[test]
+    fn hand_edited_agent_values_it_does_not_know_keep_the_rest() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"editor":{"fontSize":17},"agents":{"thinking":"open","sendWith":"modEnter",
+                "defaults":{"claude":{"model":"opus","effort":3},"codex":"x"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.editor.font_size, 17.0);
+        assert_eq!(settings.agents.thinking, ThinkingDisplay::Auto);
+        assert_eq!(settings.agents.send_with, SendKey::ModEnter);
+        assert_eq!(
+            settings.agents.defaults,
+            BTreeMap::from([("claude".into(), BTreeMap::from([("model".into(), "opus".into())]))])
+        );
     }
 
     #[test]

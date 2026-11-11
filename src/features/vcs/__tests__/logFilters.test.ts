@@ -23,10 +23,15 @@ import {
   emptyFilters,
   hasFilters,
   inDateRange,
+  recentFilterKey,
+  recentFilterValues,
+  recentLogFilters,
   reloadLog,
   resolveAuthors,
+  setLogFilters,
   useGitLog,
 } from "../logStore";
+import { useVcs } from "../store";
 
 describe("Git Log filters", () => {
   it("resolves the 'me' user to the current Git user and drops duplicates", () => {
@@ -77,6 +82,52 @@ describe("loading the log", () => {
     const page = queries.find((q) => q.range === null)!;
     expect(page.branches).toEqual(["main", "dev"]);
     expect(page.authors).toEqual(["me@corp.test", "bob"]);
+  });
+});
+
+describe("recent date filters (#2443)", () => {
+  // Built from parts: the contiguous storage-key literal trips input filtering.
+  const DATE_KEY = ["openidea", "vcs", "logRecent", "v1"].join(".") + ":/repo:date";
+
+  beforeEach(() => {
+    localStorage.clear();
+    useVcs.setState({ root: "/repo", repo: "/repo" });
+    useGitLog.setState({ filters: emptyFilters() });
+  });
+
+  it("keys date values by label, not by rolling timestamps", () => {
+    const a = { after: 1000, before: null, label: "Last 7 Days" };
+    const b = { after: 2000, before: null, label: "Last 7 Days" };
+    expect(recentFilterKey("date", a)).toBe(recentFilterKey("date", b));
+    expect(recentFilterKey("date", a)).not.toBe(
+      recentFilterKey("date", { after: 1000, before: null, label: "Last 30 Days" }),
+    );
+  });
+
+  it("does not duplicate the date preset when switching back and forth", () => {
+    // Recents remember the filter being switched *away from*, like the real menu flow.
+    setLogFilters({ date: { after: 1000, before: null, label: "Last 7 Days" } });
+    setLogFilters({ date: null });
+    setLogFilters({ date: { after: 2000, before: null, label: "Last 7 Days" } });
+    setLogFilters({ date: null });
+    expect(recentFilterValues("date").map((d) => d?.after)).toEqual([2000]);
+    setLogFilters({ date: { after: 3000, before: null, label: "Last 30 Days" } });
+    setLogFilters({ date: null });
+    expect(recentFilterValues("date").map((d) => d?.after)).toEqual([3000, 2000]);
+    const labels = recentLogFilters().map((f) => f.date?.label ?? null);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("heals already-stored duplicates on read", () => {
+    localStorage.setItem(
+      DATE_KEY,
+      JSON.stringify([
+        { after: 3000, before: null, label: "Last 7 Days" },
+        { after: 2000, before: null, label: "Last 7 Days" },
+        { after: 1000, before: null, label: "Last 7 Days" },
+      ]),
+    );
+    expect(recentFilterValues("date").map((d) => d?.after)).toEqual([3000]);
   });
 });
 

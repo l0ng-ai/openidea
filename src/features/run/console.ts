@@ -125,6 +125,11 @@ export class ConsoleModel {
     if (line) this.onLine?.(line.text, line.kind);
   }
 
+  /** The buffered output as plain-text chunks (the line still being written without a line break). */
+  textChunks(): OutputChunk[] {
+    return this.lines.map((l) => ({ kind: l.kind, text: l === this.open ? l.text : `${l.text}\n` }));
+  }
+
   /** Completes a trailing partial line (at process exit). */
   flush() {
     if (this.open) this.closeLine();

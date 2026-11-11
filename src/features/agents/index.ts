@@ -19,24 +19,45 @@ import {
   toolWindowService,
 } from "@/workbench/contributions";
 import { AgentsStatus } from "./AgentsStatus";
-import { HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW } from "./model";
+import {
+  AGENTS_GROUP,
+  HOME_KIND,
+  MCP_PAGE,
+  REGISTRY_PAGE,
+  SESSION_KIND,
+  TASK_DRAG,
+  TOOL_WINDOW,
+  providerIcon,
+} from "./model";
 import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { connect, disconnect, openHome, useAgents } from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
-import { taskActions } from "./taskActions";
+import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
 
-/** Settings › Tools › Agents (also used by the Settings window). */
+/** Settings › Agents › Coding Agents and Settings › Agents › External MCP Servers (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
-  return registerSettingsPage({
-    id: REGISTRY_PAGE,
-    title: "Agents",
-    group: "Tools",
-    order: 500,
-    keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
-    component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
-  });
+  const disposers = [
+    registerSettingsPage({
+      id: REGISTRY_PAGE,
+      title: "Coding Agents",
+      group: AGENTS_GROUP,
+      // First in Agents, which sits after Languages & Frameworks and before Tools.
+      order: 450,
+      keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
+      component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
+    }),
+    registerSettingsPage({
+      id: MCP_PAGE,
+      title: "External MCP Servers",
+      group: AGENTS_GROUP,
+      order: 475,
+      keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
+      component: lazyComponent(() => import("./McpServersPage").then((m) => m.McpServersPage)),
+    }),
+  ];
+  return () => disposers.forEach((d) => d());
 }
 
 export function activate(): () => void {
@@ -73,7 +94,8 @@ export function activate(): () => void {
       anchor: "right",
       order: 0.5,
       component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView)),
-      headerContent: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsLocationActions)),
+      headerMenu: useAgentsHeaderMenu,
+      plainTitle: true,
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),
       useBadge: () => {
         const n = useAgents(
@@ -89,7 +111,10 @@ export function activate(): () => void {
         const data = input.data as { task: string; title?: string };
         return useAgents.getState().tasks.get(data.task)?.title ?? data.title ?? "Agent Task";
       },
-      icon: () => "toolwindow-agents",
+      icon: (input) => {
+        const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
+        return task ? providerIcon(task.provider) : "toolwindow-agents";
+      },
       // Busy / done marker in the tab's trailing slot (#2233).
       trailing: (input) => createElement(TaskStatusMark, { task: (input.data as { task: string }).task }),
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
@@ -101,7 +126,10 @@ export function activate(): () => void {
       kind: HOME_KIND,
       component: lazyComponent(() => import("./HomeEditor").then((m) => m.HomeEditor)),
       title: () => "New Agent Task",
-      icon: () => "toolwindow-agents",
+      icon: (input) => {
+        const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
+        return task ? providerIcon(task.provider) : "toolwindow-agents";
+      },
       restorable: true,
     }),
     // An explicit editor drop sets the placement for subsequent sessions too.
@@ -148,6 +176,16 @@ export function activate(): () => void {
         icon: "plugin",
         keywords: ["agent", "acp", "registry", "install", "update"],
         run: () => void executeAction("file.settings", REGISTRY_PAGE),
+      },
+      {
+        id: "agents.mcpServers",
+        title: "External MCP Servers…",
+        description:
+          "Opens Settings › Agents › External MCP Servers: configures the User and Workspace MCP servers coding agents use.",
+        category: "Agents",
+        icon: "settings",
+        keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
+        run: () => void executeAction("file.settings", MCP_PAGE),
       },
       {
         id: "agents.sendToAgent",

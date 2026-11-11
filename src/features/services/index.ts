@@ -30,6 +30,7 @@ import {
   isComposeFile,
   setComposeFileOverride,
 } from "./compose";
+import { composeEditorExtension } from "./composeEditor";
 import { dockerGutter } from "./dockerGutter";
 import { gutterActions, registerDockerRunTypes } from "./runTypes";
 import { ServicesDialogHost } from "./dialogs";
@@ -93,6 +94,7 @@ export function activate(): () => void {
     addFileIconProvider(composeFileIcon),
     registerEditorBanner(composeAutoDetectBanner),
     registerEditorContribution({ id: "services.dockerGutter", order: 56, extensions: dockerGutter }),
+    registerEditorContribution({ id: "services.composeEditor", order: 57, extensions: composeEditorExtension }),
     registerDockerRunTypes(),
     registerActions([
       {

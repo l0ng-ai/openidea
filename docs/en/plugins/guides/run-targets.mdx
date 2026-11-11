@@ -1,0 +1,282 @@
+---
+title: "Run targets"
+description: "Contribute run configurations, parse test output into the test tree, start runs from code, wrap runs in containers with run targets, and run approved programs."
+---
+
+Everything a plugin runs goes through a `process:<program>` capability: the user approves
+the program, the IDE pins it by absolute path and content hash, and checks it again before
+every start. On top of that, a plugin can:
+
+| Goal                                                                   | Use                                                               | API       |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------- | --------- |
+| Offer a fixed command when the project has a marker file               | `[[contributes.runDetectors]]` (no code)                          | 1.0       |
+| Compute the project's configurations in code                           | `[[contributes.runConfigurations]]` + `run-configurations` export | 1.4       |
+| Turn test output into the IDE's test tree                              | `test-results` export, `framework = "plugin"`                     | 1.4       |
+| Start one of its configurations from a command                         | `host::start_run` (WIT `run.start`)                               | 1.4       |
+| Make every run of the project go through a wrapper (DDEV, a container) | `host::register_run_target` (WIT `run-targets`)                   | 1.4       |
+| Check the wrapper's runtime before each launch                         | `run-target-validation` export                                    | 1.5       |
+| Run a program and read its output                                      | `Project::run_process`, `host::run_command`, `host::start`        | 1.0 / 1.3 |
+
+## Run detectors
+
+A run detector is a static configuration offered in projects that contain one of its
+marker files at the root:
+
+```toml
+[[contributes.runDetectors]]
+id = "forge-test"
+name = "forge test"
+files = ["foundry.toml"]     # offered in projects with any of these at the root
+command = "forge"            # one program; becomes the process:forge capability
+args = ["test"]
+test = true                  # results go to the test tree
+# framework = "plugin"       # API 1.4: parse the output with the test-results export
+```
+
+The configuration appears among the detected ones while `process:<command>` is granted
+and starts the approved program. No code is needed.
+[Solidity](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/solidity)
+declares detectors for Foundry and Hardhat.
+
+## Configurations from code
+
+When the configurations depend on the project's content (scripts in a `package.json`, say),
+declare marker files and export `run-configurations`:
+
+```toml
+engines.openidea = "^1.4"
+
+[capabilities]
+required = ["process:openidea-example-tests"]
+
+[[contributes.runConfigurations]]
+files = ["example.tests"]   # 1–16 marker files; the export is asked only when one exists
+```
+
+```rust
+use openidea_plugin::{PluginRunConfiguration, RunConfigurations, register_plugin};
+
+impl RunConfigurations for TestRunner {
+    fn configurations(&mut self, _root: &str) -> Vec<PluginRunConfiguration> {
+        vec![PluginRunConfiguration {
+            id: "tests".into(),
+            name: "Example tests".into(),
+            program: "openidea-example-tests".into(),   // a declared, granted process: name
+            test: true,
+            framework: Some("plugin".into()),
+            ..Default::default()
+        }]
+    }
+}
+
+register_plugin!(TestRunner, run_configurations);
+```
+
+Each `PluginRunConfiguration` has `id`, `name`, `program`, `args`, an optional
+project-contained `cwd`, `test` and an optional `framework`. Return the complete list for
+the project root; it is refreshed when configurations are listed. The host keeps at most
+1000 entries / 4 MiB, keeps the last valid list when the export fails, and doesn't offer
+entries whose program isn't approved. The export runs without a window and can't prompt.
+
+## Test results
+
+With `framework = "plugin"` (on a detector or a returned configuration), the IDE feeds the
+run's output to the `test-results` export. Register `test_results` and implement
+`TestResults`:
+
+```rust
+use openidea_plugin::{PluginTestEvent, TestFailed, TestPassed, TestResults, TestStart};
+
+impl TestResults for TestRunner {
+    fn parse(&mut self, _config: &str, chunk: &str) -> Vec<PluginTestEvent> {
+        self.pending.push_str(chunk);           // chunks are not whole lines
+        let mut events = vec![];
+        while let Some(end) = self.pending.find('\n') {
+            let line: String = self.pending.drain(..=end).collect();
+            let Some((kind, name)) = line.trim().split_once(' ') else { continue };
+            let id = name.to_owned();
+            match kind {
+                "start" => events.push(PluginTestEvent::TestStarted(TestStart { id, parent: None, name: name.into(), location: None })),
+                "pass" => events.push(PluginTestEvent::Passed(TestPassed { id, duration_ms: None })),
+                "fail" => events.push(PluginTestEvent::Failed(TestFailed {
+                    id, duration_ms: None, message: "failed".into(), expected: None, actual: None, location: None,
+                })),
+                _ => {}
+            }
+        }
+        events
+    }
+
+    fn select_tests(&mut self, config: &str, tests: &[Vec<String>]) -> Option<Vec<String>> {
+        // Full replacement argv that runs only these tests; None when unsupported.
+        (config == "tests" && tests.iter().all(|p| p.len() == 1)).then(|| tests.iter().map(|p| p[0].clone()).collect())
+    }
+}
+```
+
+- `parse(config, chunk)` gets the short configuration id and sequential output chunks that
+  need not end at a line break: keep partial lines between calls.
+- Events: `SuiteStarted`, `TestStarted`, `Passed`, `Failed` (with `expected` / `actual` for a
+  comparison), `Skipped`, `Output`. Test ids are scoped to the run; a parent must already
+  exist. Locations are absolute project paths, 0-based lines, UTF-16 columns; durations are
+  milliseconds.
+- Each batch runs under the editor provider budget and returns at most 10,000 events /
+  4 MiB. A missing, failing or invalid parser switches that run to the built-in parsers.
+- `select_tests(config, tests)` receives test-tree name paths (parent suite to test, as
+  shown in the tree) and returns the **full** argument list that runs only them. It enables
+  **Rerun Failed Tests** and **Run** / **Debug** on test tree entries. The default returns
+  `None` (selection unsupported).
+
+## Start a run from code
+
+`host::start_run(config, &args, debug)` (API 1.4) starts one of this plugin's
+configurations (a detector id or one the export returned; the short id or
+`plugin:<plugin-id>:<config-id>`) in the invoking window's **Run** tool window, appending
+`args`. It returns an operation id; a `run-exited` event with `{id, config, status, killed}`
+follows, delivered to the owning plugin even without a subscription. From the
+[Test Runner](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/test-runner)
+example, where a gutter button passes the test name as the argument:
+
+```rust
+fn run_command(&mut self, _id: &str, _ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
+    let args = arg.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    host::start_run("tests", &args, false).map(Some)
+}
+```
+
+The IDE owns Stop, Rerun and target handling, and verifies the approved program at launch
+and on rerun. Debug uses the debugger of the source file named in the arguments (or the
+one chosen on the saved configuration) and returns `invalid` without one. Only valid from a
+command or event, not from activation or a provider.
+
+## Run targets
+
+A run target is a project-scoped wrapper: every run, test, script and interpreter launch
+that selects it is rewritten to go through a program the plugin owns, such as `ddev`, `lando`
+or a container CLI. Targets appear in **Settings › Build, Execution, Deployment › Run
+Targets** and in every run configuration's **Run on** selector, labelled with their plugin.
+
+```rust
+use openidea_plugin::{PluginRunTarget, host};
+
+let project = ctx.project().ok_or("Open a project first")?;
+host::register_run_target(&project, &PluginRunTarget {
+    id: "ddev".into(),
+    name: "DDEV".into(),
+    program: "ddev".into(),                                   // needs process:ddev
+    args: vec!["exec".into()],
+    workdir_args: vec!["--dir={cwd}".into(), "--".into()],
+    container_root: Some("/var/www/html".into()),
+    commands: vec![("composer".into(), vec!["composer".into()])],
+})?;
+```
+
+### How the command line is built
+
+The host builds argv directly, without a shell:
+
+- No override: `program + args + workdir_args + command + command arguments`.
+- An override whose name matches the command's program name (basename without `.exe`,
+  `.cmd` or `.bat`): `program + override + workdir_args + command arguments`. The override
+  replaces **both** `args` and the command name, so it includes the tool itself.
+
+With the target above, `php x.php` run from `public/` becomes
+`ddev exec --dir=/var/www/html/public -- php x.php`, and `composer install` becomes
+`ddev composer --dir=/var/www/html/public -- install`.
+
+- Each `workdir_args` element may contain `{cwd}`, replaced by the configuration's working
+  directory mapped under `container_root`. All `workdir_args` are omitted when there is no
+  `container_root` or the working directory is outside the project. Without `workdir_args`
+  the wrapper manages its directory itself.
+- When `container_root` is set, project paths in argv are mapped under it. Local absolute
+  tool paths outside the project become the tool's basename.
+- The wrapper process always starts in the configuration's **local** working directory, so
+  tools like DDEV find their project. Configuration env and env files reach the wrapper;
+  forwarding them into a container is up to the wrapper.
+
+**Per-command working directory** (API 1.5). `host::register_run_target_with_overrides`
+takes `PluginRunTargetWithOverrides`, whose `commands` are `PluginCommandOverride { name,
+args, workdir_args }`. `workdir_args: None` inherits the target's list, `Some(vec![])` omits
+it, `Some(args)` replaces it for that command:
+
+```rust
+use openidea_plugin::PluginCommandOverride;
+
+PluginCommandOverride { name: "composer".into(), args: vec!["composer".into()], workdir_args: Some(vec![]) }
+```
+
+With that, `composer install` becomes `ddev composer install` while `php x.php` keeps
+`ddev exec --dir=/var/www/html/public -- php x.php`.
+
+### Selecting a target
+
+Registration never changes a selection. The first registration asks the project's windows
+_"Use `<name>` for running PHP / Node / Composer in this project?"_ with **Use** and
+**Not now**; the answer is remembered per project, plugin and target id. **Use** makes it
+the project's default run target and its PHP and Node run-target choice. Interpreters also
+get a **Run in target** choice in Settings (default run target, **Local machine**, or a
+named target). Explicit per-configuration targets win.
+
+### Rules and limits
+
+- Each launch checks project trust, the wrapper's process grant and its executable pin
+  (including a per-project executable choice made in **Settings › Plugins**).
+- Debugging on a plugin target returns `invalid`; language servers, tool discovery and
+  version probes stay local.
+- A missing target fails the run rather than silently running locally.
+- At most 32 targets per plugin and project, 64 command overrides, 256 arguments per prefix
+  (16 KiB each), 256 KiB of metadata per registration.
+- Targets survive idle reclaim. Stopping, disabling, reloading or uninstalling the plugin
+  withdraws them; `host::unregister_run_target(&project, id)` removes one. In remote
+  projects registration and execution happen on the server.
+
+[Container Runner](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/container-runner)
+is a runnable example with a fake wrapper executable.
+
+### Validating a launch (API 1.5)
+
+Export `run-target-validation` to check the wrapper's runtime state right before Run or
+Test:
+
+```rust
+use openidea_plugin::{RunTargetLaunch, RunTargetValidation, register_plugin};
+
+impl RunTargetValidation for MyPlugin {
+    fn validate(&mut self, project: &str, _target_id: &str, _launch: &RunTargetLaunch) -> Result<(), String> {
+        if runtime_is_running(project) { Ok(()) } else { Err("Project runtime is stopped".into()) }
+    }
+}
+register_plugin!(MyPlugin, run_target_validation);
+```
+
+`RunTargetLaunch` has `operation` (`Run` or `Test`), the bare `program` being wrapped and the
+absolute local `cwd`; arguments and environment are not passed. `Err(message)` refuses the
+launch through the normal error path, prefixed with the plugin name (at most 4096 bytes). A
+trap or timeout (5 seconds by default) also refuses it. Plugins without the export keep
+launching as before.
+
+## Running programs
+
+| Function                                             | What it does                                                                                     |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `Project::run_process(program, &args, stdin)`        | Runs the pinned program in the project root and waits: `{ status, stdout, stderr }`, 4 MiB each. |
+| `host::run_command(&Command, Some(&project), stdin)` | API 1.3: the same, with environment variables added by `Command::env`.                           |
+| `host::start(&Command, Some(&project))`              | API 1.3: a `Child` left running: `poll`, `write`, `close_stdin`, `wait`, `kill`. At most 8.      |
+| `host::open_terminal(title, program, &args)`         | A Terminal tab running the program (see [Views](/en/plugins/guides/views)).                      |
+
+```rust
+use openidea_plugin::host::{self, Command};
+
+let project = ctx.project().ok_or("Open a project first")?;
+let out = host::run_command(&Command::new("forge").arg("build").env("FOUNDRY_PROFILE", "ci"), Some(&project), None)?;
+```
+
+- Only the pinned program of a `process:` grant runs, in a trusted project. In a remote
+  project it is resolved and run on the server.
+- Environment entries only add variables: a name already in the prepared environment
+  (including the login-shell `PATH`) is an error. At most 64 entries.
+- Calls are cancelled with the task or call and killed at timeout; run anything slow
+  inside `host::begin_task`. Dropping a `Child` kills it, and disabling or reclaiming the
+  plugin ends its children.
+- In **Settings › Plugins** the user can choose the executable of a `process:` grant
+  globally or per project; the plugin keeps calling its declared program name.

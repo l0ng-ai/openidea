@@ -1,0 +1,96 @@
+---
+title: "Migrate from another IDE"
+description: "Pick a familiar keymap, bring over settings, themes and run configurations, and map concepts from IntelliJ IDEA, VS Code and Eclipse."
+---
+
+OpenIDEA follows IntelliJ IDEA's model: a folder is a project, features live in tool windows, and almost everything is reachable from Search Everywhere or Find Action. This page covers what you can bring with you and where familiar things live.
+
+## Choose a keymap
+
+OpenIDEA ships six keymaps:
+
+| Keymap                                     | Based on                                                                                      |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| **macOS**                                  | IntelliJ IDEA's macOS keymap. The default on macOS.                                           |
+| **Windows**                                | IntelliJ IDEA's Windows keymap. The default on Windows and Linux.                             |
+| **VS Code (macOS)**, **VS Code (Windows)** | Visual Studio Code's default shortcuts. Actions VS Code has no shortcut for are left unbound. |
+| **Eclipse (macOS)**, **Eclipse**           | IntelliJ IDEA's Eclipse keymaps.                                                              |
+
+Switch keymaps in any of these places:
+
+- Welcome screen › **Customize** › **Keymap**
+- **Settings › Keymap**
+- **View › Quick Switch Scheme…** (`` ⌃` `` / `` Ctrl+` ``) › **Keymap**
+
+You can change single shortcuts on top of any keymap, or duplicate one into your own. See [Keymaps](/en/guide/keymap).
+
+## From IntelliJ IDEA and other JetBrains IDEs
+
+The defaults already match IDEA: the keymap, tool window numbers (`⌘1` / `Alt+1` for Project, `⌘9` / `Alt+9` for Git), `⇧⇧` / `Shift Shift` for Search Everywhere and `⌥↵` / `Alt+Enter` for context actions.
+
+### Import settings
+
+Use **File › Manage IDE Settings › Import Settings from JetBrains IDE…** and pick one of the JetBrains IDEs found on this computer. To use a `settings.zip` exported from a JetBrains IDE instead, choose **File › Manage IDE Settings › Import Settings…** and select the zip.
+
+A confirmation lists what will be imported before anything changes:
+
+- Color schemes (the `.icls` files) and the color scheme in use
+- Editor font: family, size, line spacing (as line height) and ligatures
+- Trailing-space stripping, final newline on save, sticky lines, whitespace display, soft wraps
+- **Confirm before exiting the IDE**
+
+Keymaps, code styles, live templates, inspection profiles and plugins are not imported; the confirmation lists the ones it skipped. Imported values go to the global settings.
+
+### Import a theme
+
+With a project open, go to **Settings › Plugins**, open the gear menu and choose:
+
+- **Import Theme from JetBrains IDE…** to pick a theme plugin installed in your JetBrains IDEs, or
+- **Import IntelliJ Theme from File…** for a theme plugin `.jar`, a Marketplace `.zip`, a plugin folder or a `.theme.json` file.
+
+The theme is converted into an OpenIDEA theme plugin and installed. Select it in **Settings › Appearance & Behavior › Appearance › Theme**. See [Themes and fonts](/en/guide/themes).
+
+### Import run configurations
+
+Run **Import Run Configurations from JetBrains (.run, .idea)** from Find Action, or use the import link in **Run › Edit Configurations…**. OpenIDEA reads the project's `.run` and `.idea` run configurations it can map; a notification says how many came in and why others were left out.
+
+### IdeaVim
+
+Vim mode reads `~/.ideavimrc` (or `~/.openideavimrc`). Turn it on with **Tools › Vim**. See [Vim mode](/en/guide/vim).
+
+## From VS Code
+
+Pick **VS Code (macOS)** or **VS Code (Windows)** as the keymap; then `⇧⌘P` / `Ctrl+Shift+P` opens Find Action and `⌘P` / `Ctrl+P` opens Go to File as you expect.
+
+| In VS Code           | In OpenIDEA                                                                                                    |
+| -------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Command Palette      | **Find Action** (`⇧⌘A` / `Ctrl+Shift+A` in the default keymap)                                                 |
+| Quick Open           | **Go to File** (`⇧⌘O` / `Ctrl+Shift+N`), or **Search Everywhere** (`⇧⇧` / `Shift Shift`)                       |
+| Explorer             | **Project** tool window (`⌘1` / `Alt+1`)                                                                       |
+| Problems panel       | **Problems** tool window (`⌘6` / `Alt+6`)                                                                      |
+| Integrated terminal  | **Terminal** tool window (`⌥F12` / `Alt+F12`)                                                                  |
+| Source Control       | **Commit** tool window (`⌘0` / `Alt+0`) and **Git** tool window (`⌘9` / `Alt+9`)                               |
+| Extensions           | **Settings › Plugins**                                                                                         |
+| `settings.json`      | **Settings** (`⌘,` / `Ctrl+Alt+S`), stored in `settings.toml`; per-project values in `.openidea/settings.toml` |
+| `launch.json`        | Run configurations: **Import Run Configurations from .vscode/launch.json**                                     |
+| Multi-root workspace | **File › New Workspace…** and **Attach Project…**                                                              |
+
+`.editorconfig` files are applied. VS Code settings and extensions are not imported.
+
+## From Eclipse
+
+Pick **Eclipse (macOS)** or **Eclipse** as the keymap.
+
+- **Formatter.** To keep using an Eclipse formatter profile for Java, open **Settings › Editor › Code Style › Java**, set **Formatting profile** to **Custom Eclipse formatter XML** and choose the exported XML file.
+- **Workspaces and projects.** Eclipse opens many projects in one workspace. OpenIDEA opens one project per window; to work on several folders together, create a workspace with **File › New Workspace…** or add folders with **Attach Project…**.
+- **Perspectives.** OpenIDEA has no perspectives. Arrange tool windows the way you like and save the arrangement with **Window › Tool Window Layouts › Save Current Layout as…**.
+
+## Concepts at a glance
+
+| Concept           | In OpenIDEA                                                                                                 |
+| ----------------- | ----------------------------------------------------------------------------------------------------------- |
+| Project           | A folder you open. Project settings and shared run configurations live in its `.openidea/` folder.          |
+| Tool window       | A panel at the window edge: Project, Git, Run, Debug, Terminal and others. Toggle with its number shortcut. |
+| Action            | Every command has an action you can run from **Find Action** and bind in **Settings › Keymap**.             |
+| Run configuration | What to run or debug and how; see [Run configurations](/en/guide/run).                                      |
+| Language server   | The process that provides code insight for a language; see [Languages](/en/languages/index).                |

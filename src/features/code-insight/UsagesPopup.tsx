@@ -169,7 +169,7 @@ function UsagesPopupInner() {
           )}
           {loading && (
             <span className={styles.searching} role="status" aria-label={tx("Searching for more usages")}>
-              <Spinner size={12} />
+              <Spinner size={16} variant="spokes" />
             </span>
           )}
           {filter && (
@@ -178,7 +178,7 @@ function UsagesPopupInner() {
             </span>
           )}
           <IconButton
-            icon="list"
+            icon="preview-details"
             size="small"
             title="Show Preview"
             pressed={preview}
@@ -212,7 +212,7 @@ function UsagesPopupInner() {
             }
             renderItem={(u) => (
               <div className={styles.row}>
-                <Icon name={fileIconName(basename(u.path), u.path)} size={14} className={styles.icon} />
+                <Icon name={fileIconName(basename(u.path), u.path)} size={16} className={styles.icon} />
                 <UsagePreview usage={u} />
                 <span className={styles.spacer} />
                 <span className={styles.where}>

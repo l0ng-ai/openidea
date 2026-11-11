@@ -41,11 +41,15 @@ pub fn arduino_sketch_root(project: &Path, path: &Path) -> Option<PathBuf> {
 }
 
 /// `dir` contains `marker`: a relative path, a file name pattern with one
-/// `*` (`*.csproj`), or a TOML file name (no pattern) and a dotted table it
-/// must contain (`pyproject.toml#tool.ruff`).
+/// `*` (`*.csproj`), or a TOML or JSON file name (no pattern) and a dotted table
+/// it must contain (`pyproject.toml#tool.ruff`, `package.json#eslintConfig`).
 fn has_marker(dir: &Path, marker: &str) -> bool {
     if let Some((file, table)) = marker.split_once('#') {
-        return has_toml_table(&dir.join(file), table);
+        return if file.ends_with(".json") {
+            has_json_object(&dir.join(file), table)
+        } else {
+            has_toml_table(&dir.join(file), table)
+        };
     }
     let Some((prefix, suffix)) = marker.split_once('*') else {
         return dir.join(marker).exists();
@@ -66,6 +70,13 @@ fn has_toml_table(file: &Path, table: &str) -> bool {
         }
     };
     table.split('.').try_fold(&value, |v, key| v.get(key)).is_some_and(toml::Value::is_table)
+}
+
+/// `file` parses as JSON and has the dotted object `key` (`eslintConfig`).
+fn has_json_object(file: &Path, key: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(file) else { return false };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
+    key.split('.').try_fold(&value, |v, key| v.get(key)).is_some_and(serde_json::Value::is_object)
 }
 
 /// `path` is (or, after its creation or removal, was) a root marker of the

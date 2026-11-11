@@ -110,6 +110,7 @@ pub enum EventKind {
     RunExited,
     TerminalExited,
     ContentTabAction,
+    ExtensionsChanged,
     FileOpened,
     FileSaved,
     FilesChanged,
@@ -120,13 +121,14 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::FileClosed,
         Self::SettingsChanged,
         Self::InputModeChanged,
         Self::RunExited,
         Self::TerminalExited,
         Self::ContentTabAction,
+        Self::ExtensionsChanged,
         Self::FileOpened,
         Self::FileSaved,
         Self::FilesChanged,
@@ -144,6 +146,7 @@ impl EventKind {
             Self::RunExited => "run-exited",
             Self::TerminalExited => "terminal-exited",
             Self::ContentTabAction => "content-tab-action",
+            Self::ExtensionsChanged => "extensions-changed",
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
@@ -163,7 +166,11 @@ impl EventKind {
     pub fn capability(self) -> Option<ide_extension::Capability> {
         match self {
             Self::ActionPerformed | Self::InputModeChanged => Some(ide_extension::Capability::InputEvents),
-            Self::Scheduled | Self::RunExited | Self::TerminalExited | Self::ContentTabAction => None,
+            Self::Scheduled
+            | Self::RunExited
+            | Self::TerminalExited
+            | Self::ContentTabAction
+            | Self::ExtensionsChanged => None,
             _ => Some(ide_extension::Capability::Events),
         }
     }
@@ -229,6 +236,8 @@ pub enum WorkbenchEvent {
     ContentTabAction(crate::ContentTabAction),
     FileClosed(String),
     SettingsChanged(Vec<String>),
+    /// Ids of extension points the receiving plugin declares whose contributions changed.
+    ExtensionsChanged(Vec<String>),
     InputModeChanged(InputMode),
     FileOpened(String),
     FileSaved(String),
@@ -247,6 +256,7 @@ impl WorkbenchEvent {
             Self::ContentTabAction(_) => EventKind::ContentTabAction,
             Self::FileClosed(_) => EventKind::FileClosed,
             Self::SettingsChanged(_) => EventKind::SettingsChanged,
+            Self::ExtensionsChanged(_) => EventKind::ExtensionsChanged,
             Self::InputModeChanged(_) => EventKind::InputModeChanged,
             Self::FileOpened(_) => EventKind::FileOpened,
             Self::FileSaved(_) => EventKind::FileSaved,

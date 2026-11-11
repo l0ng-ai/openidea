@@ -230,6 +230,27 @@ export function javaConstructedType(text: string): string | null {
 }
 
 /**
+ * The name an expression ends in — the last call's method (`a.b().c(0)` → `c`) or the last
+ * name (`a.b` → `b`) — with its offset in `text`. Null when it ends in something else.
+ */
+export function trailingName(text: string): { name: string; index: number } | null {
+  let end = text.trimEnd().length;
+  if (text[end - 1] === ")") {
+    // Back to the `(` that opens the trailing argument list.
+    let depth = 0;
+    let i = end - 1;
+    for (; i >= 0; i--) {
+      if (text[i] === ")") depth++;
+      else if (text[i] === "(" && --depth === 0) break;
+    }
+    if (i < 0) return null;
+    end = text.slice(0, i).trimEnd().length;
+  }
+  const m = /[A-Za-z_$][\w$]*$/.exec(text.slice(0, end));
+  return m ? { name: m[0], index: m.index } : null;
+}
+
+/**
  * Type of a Java expression from a jdtls-style hover (```java\nString java.lang.String.trim()\n```
  * or `String name`), for a call / name ending in `name`. Null when unclear.
  */

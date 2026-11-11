@@ -105,7 +105,7 @@ fn requests(message: &Value) -> Vec<Value> {
 async fn post(discovery: &Path, project: &Path, message: &Value, scope: &str) -> Result<(StatusCode, Bytes), String> {
     let not_running = || {
         format!(
-            "OpenIDEA's MCP server is not running. Start OpenIDEA, open {} in it, and turn on Settings › Tools › MCP Server",
+            "OpenIDEA's MCP server is not running. Start OpenIDEA, open {} in it, and turn on Settings › Agents › MCP Server",
             project.display()
         )
     };

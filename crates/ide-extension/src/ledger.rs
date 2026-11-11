@@ -420,7 +420,13 @@ pub fn resolve_program(name: &str, path_var: Option<&OsStr>) -> Result<PathBuf, 
         return if candidate.is_file() { Ok(candidate.to_path_buf()) } else { Err(format!("{name}: no such program")) };
     }
     let exts: Vec<String> = if cfg!(windows) {
-        std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT".into()).split(';').map(str::to_owned).collect()
+        let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT".into());
+        let pathext: Vec<String> = pathext.split(';').filter(|e| !e.is_empty()).map(str::to_owned).collect();
+        // A name given with its extension (`cargo.exe`) is looked up as written.
+        let has_ext = candidate.extension().is_some_and(|e| {
+            pathext.iter().any(|x| x.trim_start_matches('.').eq_ignore_ascii_case(&e.to_string_lossy()))
+        });
+        if has_ext { vec![String::new()] } else { pathext }
     } else {
         vec![String::new()]
     };
@@ -441,11 +447,13 @@ pub fn resolve_program(name: &str, path_var: Option<&OsStr>) -> Result<PathBuf, 
 /// `p` with its parent canonicalized but the file name as found: PATH
 /// entries like `/var` → `/private/var` (macOS) or `~` links collapse to
 /// their real directory, while a linked program (`cargo` → rustup) keeps
-/// its link name so the shim still dispatches on argv[0].
+/// its link name so the shim still dispatches on argv[0]. `dunce` keeps the
+/// path in its usual form on Windows: a `\\?\`-prefixed pin would never
+/// match the path the program was actually started with.
 fn canonical_dir(p: &Path) -> PathBuf {
     let Some(dir) = p.parent() else { return p.to_path_buf() };
     let Some(name) = p.file_name() else { return p.to_path_buf() };
-    std::fs::canonicalize(dir).map(|d| d.join(name)).unwrap_or_else(|_| p.to_path_buf())
+    dunce::canonicalize(dir).map(|d| d.join(name)).unwrap_or_else(|_| p.to_path_buf())
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -496,6 +504,20 @@ mod tests {
 
     fn caps(list: &[&str]) -> Vec<Capability> {
         list.iter().map(|s| s.parse().unwrap()).collect()
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pinned_program_path_has_no_verbatim_prefix() {
+        // std::fs::canonicalize returns \\?\-prefixed paths on Windows; a pin
+        // stored in that form would never match the plain path the program is
+        // started with. dunce keeps the usual form.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cargo.exe"), b"").unwrap();
+        let pinned = resolve_program("cargo.exe", Some(dir.path().as_os_str())).unwrap();
+        let shown = pinned.to_string_lossy();
+        assert!(!shown.starts_with(r"\\?\"), "verbatim prefix leaked into the pin: {shown}");
+        assert!(pinned.is_absolute());
     }
 
     fn req<'a>(version: &'a str, hash: &'a str, required: &[&str], optional: &[&str]) -> Request<'a> {

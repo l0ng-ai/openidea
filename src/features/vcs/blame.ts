@@ -7,6 +7,7 @@ import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { showContextMenu } from "@/ui";
 import { notifications } from "@/workbench/contributions";
+import { closeBlamePopup, scheduleCloseBlamePopup, scheduleOpenBlamePopup } from "./BlamePopup";
 import { formatDate } from "./model";
 import { useVcs } from "./store";
 
@@ -21,24 +22,55 @@ export function shortAuthor(name: string): string {
   return first.length > 12 ? `${first.slice(0, 11)}…` : first;
 }
 
-/** 0 (oldest) … 1 (newest) per line, for age colouring. */
-export function ageRanks(lines: readonly Pick<BlameLine, "timeMs" | "commit">[]): number[] {
-  const times = lines.filter((l) => !isUncommitted(l) && l.timeMs).map((l) => l.timeMs!);
-  if (!times.length) return lines.map(() => 1);
-  const min = Math.min(...times);
-  const max = Math.max(...times);
-  return lines.map((l) => (isUncommitted(l) || !l.timeMs ? 1 : max === min ? 1 : (l.timeMs - min) / (max - min)));
+const BLAME_PALETTE = [
+  "var(--project-color-5)",
+  "var(--project-color-7)",
+  "var(--project-color-4)",
+  "var(--project-color-8)",
+  "var(--project-color-6)",
+  "var(--project-color-1)",
+  "var(--project-color-2)",
+  "var(--project-color-9)",
+  "var(--project-color-3)",
+] as const;
+
+/** Assigns each distinct commit in the file a background tint ordered from oldest (cool) to newest (warm/green). */
+export function commitBackgrounds(lines: readonly Pick<BlameLine, "timeMs" | "commit">[]): Map<string, string> {
+  const unique = new Map<string, number>();
+  for (const l of lines) {
+    if (isUncommitted(l)) continue;
+    const prev = unique.get(l.commit);
+    const t = l.timeMs ?? 0;
+    if (prev === undefined || t > prev) unique.set(l.commit, t);
+  }
+  const sorted = [...unique.entries()].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
+  const out = new Map<string, string>();
+  const count = sorted.length;
+  for (let i = 0; i < count; i++) {
+    const [commit] = sorted[i]!;
+    const t = count <= 1 ? 1 : i / (count - 1);
+    const scaled = t * (BLAME_PALETTE.length - 1);
+    const idx = Math.floor(scaled);
+    const frac = Math.round((scaled - idx) * 100);
+    const hue =
+      frac === 0 || idx >= BLAME_PALETTE.length - 1
+        ? BLAME_PALETTE[idx]!
+        : `color-mix(in srgb, ${BLAME_PALETTE[idx + 1]!} ${frac}%, ${BLAME_PALETTE[idx]!})`;
+    const strength = count > BLAME_PALETTE.length && i % 2 === 1 ? 24 : 18;
+    out.set(commit, `color-mix(in srgb, ${hue} ${strength}%, var(--bg-editor-gutter))`);
+  }
+  return out;
 }
 
 class BlameMarker extends GutterMarker {
   constructor(
     readonly line: BlameLine,
-    readonly rank: number,
+    readonly bg = "",
   ) {
     super();
   }
   eq(o: BlameMarker) {
-    return o.line.commit === this.line.commit && o.rank === this.rank;
+    return o.line.commit === this.line.commit && o.bg === this.bg;
   }
   toDOM() {
     const el = document.createElement("span");
@@ -56,14 +88,16 @@ class BlameMarker extends GutterMarker {
     date.className = "cm-vcs-blame-date";
     date.textContent = formatDate(l.timeMs);
     el.append(date, author);
-    const pct = Math.round(25 + this.rank * 75);
-    el.style.color = `color-mix(in srgb, var(--fg-secondary) ${pct}%, var(--fg-gutter))`;
-    el.title = `${l.commit.slice(0, 8)}  ${l.author}  ${l.timeMs ? new Date(l.timeMs).toLocaleString() : ""}\n${l.summary}`;
+    if (this.bg) {
+      el.style.setProperty("--blame-bg", this.bg);
+      el.style.backgroundColor = this.bg;
+    }
+    el.dataset.commit = l.commit;
     return el;
   }
 }
 
-const spacer = new BlameMarker({ commit: "f", author: "Mmmmmmmm", timeMs: Date.UTC(2020, 11, 28), summary: "" }, 1);
+const spacer = new BlameMarker({ commit: "f", author: "Mmmmmmmm", timeMs: Date.UTC(2020, 11, 28), summary: "" });
 
 const setBlame = StateEffect.define<BlameLine[]>();
 
@@ -73,10 +107,13 @@ interface BlameState {
 }
 
 function build(lines: readonly BlameLine[], doc: Text): RangeSet<GutterMarker> {
-  const ranks = ageRanks(lines);
+  const bgs = commitBackgrounds(lines);
   const out = [];
   const n = Math.min(lines.length, doc.lines);
-  for (let i = 0; i < n; i++) out.push(new BlameMarker(lines[i]!, ranks[i]!).range(doc.line(i + 1).from));
+  for (let i = 0; i < n; i++) {
+    const line = lines[i]!;
+    out.push(new BlameMarker(line, bgs.get(line.commit) ?? "").range(doc.line(i + 1).from));
+  }
   return RangeSet.of(out);
 }
 
@@ -124,17 +161,25 @@ class BlameRefresher implements PluginValue {
 
 const blameTheme = EditorView.baseTheme({
   ".cm-vcs-blame": { cursor: "pointer", borderRight: "1px solid var(--border)" },
-  ".cm-vcs-blame .cm-gutterElement": { padding: "0 8px 0 6px" },
+  ".cm-vcs-blame .cm-gutterElement": { padding: "0", display: "flex", alignItems: "stretch" },
   ".cm-vcs-blame-line": {
+    flex: "1",
     display: "inline-flex",
+    alignItems: "center",
     gap: "8px",
+    padding: "0 8px 0 6px",
+    color: "var(--fg-secondary)",
     fontFamily: "var(--font-ui)",
     fontSize: "var(--fs-small)",
     whiteSpace: "nowrap",
   },
   ".cm-vcs-blame-date": { minWidth: "7ch", fontVariantNumeric: "tabular-nums" },
   ".cm-vcs-blame-author": { minWidth: "9ch" },
-  ".cm-vcs-blame .cm-gutterElement:hover .cm-vcs-blame-line": { color: "var(--fg-strong)" },
+  ".cm-vcs-blame .cm-gutterElement:hover .cm-vcs-blame-line, .cm-vcs-blame .cm-gutterElement.cm-vcs-blame-same-commit .cm-vcs-blame-line":
+    {
+      color: "var(--fg-strong)",
+      backgroundColor: "color-mix(in srgb, var(--fg-strong) 10%, var(--blame-bg, var(--bg-tree-hover)))",
+    },
 });
 
 export const blameCompartment = new Compartment();
@@ -154,6 +199,42 @@ function lineAt(view: EditorView, from: number): BlameLine | undefined {
   return found;
 }
 
+function highlightSameCommit(view: EditorView, commit: string | null) {
+  for (const el of view.dom.querySelectorAll<HTMLElement>(".cm-vcs-blame .cm-gutterElement")) {
+    const line = el.querySelector<HTMLElement>(".cm-vcs-blame-line");
+    el.classList.toggle("cm-vcs-blame-same-commit", !!commit && line?.dataset.commit === commit);
+  }
+}
+
+class BlameInteraction implements PluginValue {
+  private readonly onScroll = () => {
+    highlightSameCommit(this.view, null);
+    closeBlamePopup(this.view);
+  };
+  private readonly onLeave = (e: MouseEvent) => {
+    const gutterEl = this.view.dom.querySelector(".cm-vcs-blame");
+    if (gutterEl && e.relatedTarget instanceof Node && gutterEl.contains(e.relatedTarget)) return;
+    highlightSameCommit(this.view, null);
+    scheduleCloseBlamePopup();
+  };
+  constructor(private readonly view: EditorView) {
+    this.view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
+    this.view.dom.addEventListener("mouseout", this.onLeave);
+  }
+  update(u: ViewUpdate) {
+    if (u.docChanged) {
+      highlightSameCommit(this.view, null);
+      closeBlamePopup(this.view);
+    }
+  }
+  destroy() {
+    this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
+    this.view.dom.removeEventListener("mouseout", this.onLeave);
+    highlightSameCommit(this.view, null);
+    closeBlamePopup(this.view);
+  }
+}
+
 function blameExtension(lines: BlameLine[], path: string, live: boolean): Extension {
   return [
     blameField.init((state) => ({ lines, markers: build(lines, state.doc) })),
@@ -163,12 +244,26 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
         markers: (v) => v.state.field(blameField).markers,
         initialSpacer: () => spacer,
         domEventHandlers: {
+          mouseover(view, block, event) {
+            const l = lineAt(view, block.from);
+            const anchor = (event.target as HTMLElement | null)?.closest?.<HTMLElement>(".cm-gutterElement");
+            if (!l || isUncommitted(l) || !anchor) {
+              highlightSameCommit(view, null);
+              scheduleCloseBlamePopup();
+              return false;
+            }
+            highlightSameCommit(view, l.commit);
+            scheduleOpenBlamePopup({ view, anchor, line: l, path });
+            return false;
+          },
           click(view, block) {
+            closeBlamePopup(view);
             const l = lineAt(view, block.from);
             if (l && !isUncommitted(l)) void executeAction("vcs.showCommit", l.commit);
             return true;
           },
           contextmenu(view, block, event) {
+            closeBlamePopup(view);
             const l = lineAt(view, block.from);
             event.preventDefault();
             showContextMenu(event as MouseEvent, [
@@ -194,6 +289,7 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
         },
       }),
     ),
+    ViewPlugin.define((view) => new BlameInteraction(view)),
     // Static content (a merge pane's side) is not re-blamed on edits / HEAD moves.
     ...(live ? [ViewPlugin.define((view) => new BlameRefresher(view, path))] : []),
     blameTheme,
@@ -205,6 +301,7 @@ export function annotationsShown(view: EditorView): boolean {
 }
 
 function setAnnotations(view: EditorView, lines: BlameLine[] | null, path: string, live: boolean) {
+  if (!lines) closeBlamePopup(view);
   view.dispatch({ effects: blameCompartment.reconfigure(lines ? blameExtension(lines, path, live) : []) });
 }
 

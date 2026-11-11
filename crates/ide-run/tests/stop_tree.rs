@@ -99,8 +99,15 @@ fn config(line: &str) -> RunConfig {
 }
 
 fn holder_port(dir: &std::path::Path) -> u16 {
-    wait_for("the holder's port", || std::fs::metadata(dir.join("port")).is_ok());
-    std::fs::read_to_string(dir.join("port")).unwrap().trim().parse().unwrap()
+    // The file appears as soon as the holder creates it, before the port is written and
+    // the handle closed: on a loaded machine (defender, indexer) the first reads can hit
+    // a sharing violation or a partial write, so keep reading until it parses.
+    let mut port = None;
+    wait_for("the holder's port", || {
+        port = std::fs::read_to_string(dir.join("port")).ok().and_then(|s| s.trim().parse().ok());
+        port.is_some()
+    });
+    port.unwrap()
 }
 
 #[test]

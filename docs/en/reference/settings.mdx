@@ -1,0 +1,206 @@
+---
+title: "Settings reference"
+description: "Where OpenIDEA stores settings, how the global and project files combine, the Settings pages, and the most-used keys with their defaults."
+---
+
+Most settings are easiest to change in the Settings window (see [Settings](/en/guide/settings)). This page describes the files behind it, for when you want to edit, share or script them.
+
+## Files and layers
+
+Settings are combined from three layers, each overriding the one before:
+
+1. Built-in defaults.
+2. The global file, `settings.toml` in the configuration directory:
+   - macOS: `~/Library/Application Support/ai.l0ng.openidea/settings.toml`
+   - Windows: `%APPDATA%\ai.l0ng.openidea\settings.toml`
+   - Linux: `~/.config/ai.l0ng.openidea/settings.toml`
+3. The project file, `<project>/.openidea/settings.toml`, written when you save a page with **This project** selected.
+
+A file holds only the values that differ from the layer below. Tables merge key by key; a value or array in a higher layer replaces the lower one entirely (for example, setting `files.exclude` in a project replaces the global list).
+
+Some settings are ignored in the project file: `mcpServer` and imported color schemes (`editor.customSchemes`) are global only. Project trust is never read from settings.
+
+## File format
+
+The files are TOML. Keys use the camelCase names shown below; sections group them:
+
+```toml
+keymap = "intellij-windows"
+
+[appearance]
+theme = "dark"
+zoom = 110
+
+[editor]
+fontFamily = "JetBrains Mono"
+fontSize = 14
+
+[files]
+exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
+```
+
+- OpenIDEA keeps your comments and formatting when it writes a file.
+- If a file can't be parsed, or a value has the wrong type, that whole file is ignored and a warning is written to the [log](/en/reference/data-directories#logs). The other layers still apply.
+- OpenIDEA reads the files when a window loads its settings. After editing a file by hand, restart OpenIDEA (or reopen the project) to be sure the change is picked up.
+
+## Settings pages
+
+| Group                        | Pages                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Appearance & Behavior        | Appearance; System Settings (Language and Region, Date Formats, HTTP Proxy, Updates); Notifications                                                                                                                                                                                                                                                                             |
+| Keymap                       | Keymap                                                                                                                                                                                                                                                                                                                                                                          |
+| Editor                       | General (Auto Import, Appearance, Breadcrumbs, Code Completion, Code Folding, Editor Tabs, Gutter Icons, Inline Completion, Postfix Completion, Rich-Text Copy, Smart Keys, Sticky Lines); Code Editing; Font; Color Scheme; Code Style; Inspections; Natural Languages (Spelling); File and Code Templates; File Encodings; Live Templates; File Types; Inlay Hints; TODO; Vim |
+| Plugins                      | Plugins                                                                                                                                                                                                                                                                                                                                                                         |
+| Version Control              | Commit; Confirmation; Directory Mappings; Issue Navigation; Log; Shelf; Git; GitHub                                                                                                                                                                                                                                                                                             |
+| Project Structure            | Project Structure                                                                                                                                                                                                                                                                                                                                                               |
+| Build, Execution, Deployment | CMake; Gradle; Maven; Console; Debugger (Data Views, Stepping); Python Debugger; Run/Debug; Run Targets; Deployment (Options)                                                                                                                                                                                                                                                   |
+| Languages & Frameworks       | Language Servers; Go (Build Tags, Go Modules); Java; Markdown; Node.js; PHP; Python Interpreter; Prettier; oxfmt; Ruff; Ruby; Rust; TypeScript                                                                                                                                                                                                                                  |
+| Tools                        | Agents (Chat); Terminal; Actions on Save; External Tools; SSH Configurations; MCP Server                                                                                                                                                                                                                                                                                        |
+| Security                     | Project Trust                                                                                                                                                                                                                                                                                                                                                                   |
+
+Installed plugins can add pages, and file icon themes with options add one each. Plugin settings are stored under `[plugins.<plugin-id>]`.
+
+## Common keys
+
+### Top level
+
+| Key               | Default                                                 | Description                                                                                                                                              |
+| ----------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `keymap`          | `intellij-macos` on macOS, `intellij-windows` elsewhere | Active keymap: `intellij-macos`, `intellij-windows`, `vscode-macos`, `vscode-windows`, `eclipse-macos`, `eclipse-windows`, or the id of a custom keymap. |
+| `keymapOverrides` | empty                                                   | Action id → list of shortcuts on top of a bundled keymap; an empty list unbinds. See [Keymaps](/en/guide/keymap).                                        |
+| `customKeymaps`   | empty                                                   | Keymaps you created: `name`, `parent`, `overrides`.                                                                                                      |
+
+### `[general]`
+
+Settings › Appearance & Behavior › System Settings, unless noted.
+
+| Key                          | Default        | Description                                                                                                                                        |
+| ---------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reopenLastProject`          | `true`         | **Reopen projects on startup**.                                                                                                                    |
+| `openProjectIn`              | `"ask"`        | Where **Open…** puts a project while another is open: `ask`, `new` (new window), `same` (current window) or `attach` (add to the current project). |
+| `defaultProjectDirectory`    | `""`           | Starting folder of the Open and Clone dialogs; empty uses the OS default.                                                                          |
+| `saveOnIdle` / `idleSeconds` | `false` / `15` | **Save files if the IDE is idle for** the given number of seconds.                                                                                 |
+| `confirmExit`                | `true`         | **Confirm before exiting the IDE**.                                                                                                                |
+| `closeWithoutWelcome`        | `false`        | **Close the window instead of showing the Welcome screen**.                                                                                        |
+| `closeTabsWithWindow`        | `false`        | **Close all editor tabs when the window closes**.                                                                                                  |
+| `powerSaveMode`              | `false`        | **File › Power Save Mode**: no automatic popups or background highlighting.                                                                        |
+| `autoCheckUpdates`           | `true`         | **Check for updates automatically** (Updates page).                                                                                                |
+| `updateSource`               | `"auto"`       | **Update source**: `auto`, `github` or `cnb`.                                                                                                      |
+| `dateFormat.overrideSystem`  | `false`        | **Override system date and time format** (Date Formats page).                                                                                      |
+| `dateFormat.pattern`         | `"dd.MM.yyyy"` | Date pattern with `dd`, `MM`, `MMM`, `yy`, `yyyy`.                                                                                                 |
+| `dateFormat.use24Hour`       | `true`         | 24-hour time.                                                                                                                                      |
+| `dateFormat.pretty`          | `true`         | "Today", "Yesterday", "5 min ago".                                                                                                                 |
+
+### `[appearance]`
+
+Settings › Appearance & Behavior › Appearance, unless noted.
+
+| Key                                          | Default              | Description                                                                                                                                                                                    |
+| -------------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `theme`                                      | `"light"`            | `light` (Islands Light), `dark` (Islands Dark), `dark-hc` (High Contrast), `solarized-light`, `solarized-dark`, `one-light`, `one-dark`, or a plugin theme as `plugin:<plugin-id>/<theme-id>`. |
+| `syncWithOs`                                 | `false`              | **Sync with OS**.                                                                                                                                                                              |
+| `preferredLightTheme` / `preferredDarkTheme` | `"light"` / `"dark"` | Themes used with **Sync with OS**.                                                                                                                                                             |
+| `accent`                                     | `"#3871e1"`          | **Accent colour**.                                                                                                                                                                             |
+| `fileIconTheme`                              | `""`                 | A plugin's file icon theme as `<plugin-id>/<theme-id>`; empty uses the built-in icons.                                                                                                         |
+| `zoom`                                       | `100`                | **Zoom**, in percent (50 to 300).                                                                                                                                                              |
+| `useCustomFont`                              | `false`              | **Use custom font:** apply `uiFontFamily` and `uiFontSize`.                                                                                                                                    |
+| `uiFontFamily` / `uiFontSize`                | `"Inter"` / `13`     | UI font.                                                                                                                                                                                       |
+| `uiFontFallback`                             | `""`                 | **UI fallback font**.                                                                                                                                                                          |
+| `contrastScrollbars`                         | `false`              | **Use contrast scrollbars**.                                                                                                                                                                   |
+| `redGreenVision`                             | `false`              | **Adjust colors for red-green vision deficiency**.                                                                                                                                             |
+| `compactMode`                                | `false`              | **Compact mode**.                                                                                                                                                                              |
+| `showMainToolbar` / `showStatusBar`          | `true` / `true`      | **Show main toolbar**, **Show status bar**.                                                                                                                                                    |
+| `navigationBar`                              | `"statusBar"`        | **Navigation bar**: `top`, `statusBar` or `hidden`.                                                                                                                                            |
+| `mainMenuStyle`                              | `"hamburger"`        | **Main menu**: `hamburger` or `merged` (with the main toolbar).                                                                                                                                |
+| `ideAntialiasing` / `editorAntialiasing`     | `"greyscale"`        | `subpixel`, `greyscale` or `none`.                                                                                                                                                             |
+| `locale`                                     | `"en"`               | **Language** (Language and Region page): `en`, `zh`, `ko`, `fr`, `pl`, `pt`, `es`.                                                                                                             |
+
+### `[editor]`
+
+| Key                                      | Default                          | Description                                                                                            |
+| ---------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `fontFamily` / `fontSize` / `lineHeight` | `"JetBrains Mono"` / `13` / `22` | Editor › Font.                                                                                         |
+| `ligatures`                              | `false`                          | **Enable ligatures**.                                                                                  |
+| `fallbackFont`                           | `""`                             | **Fallback font**.                                                                                     |
+| `fontWeight` / `boldFontWeight`          | `400` / `700`                    | **Main font weight**, **Bold font weight**.                                                            |
+| `colorScheme`                            | `"theme-default"`                | Editor color scheme; `theme-default` follows the UI theme, otherwise a theme id or an imported scheme. |
+| `semanticHighlighting`                   | `false`                          | **Semantic highlighting** (Color Scheme › Language Defaults).                                          |
+| `rainbowBrackets`                        | `false`                          | **Rainbow brackets** (Color Scheme › Language Defaults).                                               |
+| `tabSize` / `insertSpaces`               | `4` / `true`                     | Default tab size, and whether indentation uses spaces.                                                 |
+| `softWrap`                               | `true`                           | Soft-wrap the files matching `general.softWrapFiles` (`*.md; *.txt; *.rst; *.adoc` by default).        |
+| `showWhitespace`                         | `false`                          | **Show whitespaces**.                                                                                  |
+| `stickyScroll`                           | `true`                           | **Show sticky lines while scrolling**.                                                                 |
+| `inlayHints`                             | `true`                           | Show inlay hints.                                                                                      |
+| `formatOnSave`                           | `false`                          | Reformat code on save (Tools › Actions on Save).                                                       |
+
+Sub-tables such as `[editor.general]`, `[editor.appearance]`, `[editor.completion]`, `[editor.tabs]`, `[editor.codeStyle]` and `[editor.encodings]` hold the options of the matching Editor pages.
+
+### `[files]`
+
+| Key                      | Default                                       | Description                                                                                                        |
+| ------------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `autoSave`               | `true`                                        | **Save files when switching to a different application or a built-in terminal**.                                   |
+| `syncOnFocus`            | `true`                                        | **Synchronize external changes when switching to the IDE window**.                                                 |
+| `exclude`                | `["**/.git", "**/node_modules", "**/target"]` | **Exclude patterns** (Editor › File Types): globs hidden from the project tree and skipped by search and indexing. |
+| `ignoredNames`           | a built-in list                               | **Ignore files and folders**: names hidden everywhere, such as `.DS_Store`.                                        |
+| `trimTrailingWhitespace` | `true`                                        | Remove trailing spaces on save.                                                                                    |
+| `ensureFinalNewline`     | `true`                                        | End every saved file with a line break.                                                                            |
+| `localHistoryDays`       | `5`                                           | **Keep local history for** this many days with changes.                                                            |
+| `localHistoryMaxMb`      | `512`                                         | **Maximum local history size per project**, in MB.                                                                 |
+
+### `[notifications]`
+
+| Key                         | Default     | Description                                                  |
+| --------------------------- | ----------- | ------------------------------------------------------------ |
+| `balloons`                  | `true`      | **Display balloon notifications**.                           |
+| `sound`                     | `false`     | **Play sound**.                                              |
+| `groups.<group-id>.display` | `"balloon"` | Popup type per group: `balloon`, `sticky` or `none`.         |
+| `groups.<group-id>.log`     | `true`      | Also list the notification in the Notifications tool window. |
+
+### `[terminal]`
+
+Settings › Tools › Terminal.
+
+| Key                                      | Default            | Description                                                                    |
+| ---------------------------------------- | ------------------ | ------------------------------------------------------------------------------ |
+| `shellPath`                              | `""`               | Shell command line; empty starts your login shell.                             |
+| `startDirectory`                         | `""`               | Start directory; empty is the project root, relative paths resolve against it. |
+| `env`                                    | empty              | Extra environment variables.                                                   |
+| `tabName`                                | `"Local"`          | Name of new tabs.                                                              |
+| `useEditorFont`                          | `true`             | Use the editor font; otherwise `fontFamily`, `fontSize`, `lineHeight`.         |
+| `overrideIdeShortcuts`                   | `true`             | Let the shell receive keys that are also IDE shortcuts.                        |
+| `escapeToEditor`                         | `false`            | Escape moves focus to the editor instead of reaching the shell.                |
+| `optionAsMeta`                           | `false`            | Use Option as Meta (macOS).                                                    |
+| `copyOnSelection` / `pasteOnMiddleClick` | `false` / `true`   | Clipboard behaviour.                                                           |
+| `cursorShape` / `cursorBlink`            | `"block"` / `true` | `block`, `underline` or `bar`.                                                 |
+
+### `[proxy]`
+
+Settings › Appearance & Behavior › System Settings › HTTP Proxy. Used by the IDE's own downloads, the updater and the HTTP client; with a manual proxy, processes started by the IDE get `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`.
+
+| Key                      | Default        | Description                                                                                   |
+| ------------------------ | -------------- | --------------------------------------------------------------------------------------------- |
+| `mode`                   | `"auto"`       | `none` (direct), `auto` (the system's `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`) or `manual`. |
+| `kind`                   | `"http"`       | `http` or `socks`.                                                                            |
+| `host` / `port`          | `""` / `80`    | Proxy address.                                                                                |
+| `noProxy`                | `""`           | Hosts reached directly, comma-separated; `*` matches any characters.                          |
+| `authenticate` / `login` | `false` / `""` | Proxy credentials. The password is kept in the saved passwords, not in `settings.toml`.       |
+
+### Other sections
+
+| Key                                              | Description                                                                                                                      |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `[actionsOnSave]`                                | `optimizeImports`, `cleanup` (Tools › Actions on Save).                                                                          |
+| `[mcpServer]`                                    | `enabled`: serve the IDE's tools to agents on 127.0.0.1 (Agents › IDE MCP Server, global only). See [MCP server](/en/guide/mcp). |
+| `[agents]`                                       | What agent task headers show (Tools › Agents › Chat).                                                                            |
+| `[languages]`                                    | Interpreters, SDKs and options per language, e.g. `[languages.java]`, `[languages.python]`, `[languages.go]`.                    |
+| `[languageServers]`                              | Per language server, by name: launch and protocol options, or a server defined here.                                             |
+| `[tools]`                                        | Language servers and debug adapters at a location you chose, by command name.                                                    |
+| `[vcs]`, `[console]`, `[debugger]`, `[run]`      | Version Control, Console, Debugger and Run/Debug pages.                                                                          |
+| `[inspections]`, `[spelling]`                    | Editor › Inspections, Editor › Natural Languages › Spelling.                                                                     |
+| `[ssh]`, `[deployment]`, `runTargets`, `[cmake]` | SSH Configurations, Deployment, Run Targets, CMake.                                                                              |
+| `[projectStructure]`                             | Source, test, resource and excluded folders (Project Structure).                                                                 |
+| `externalTools`                                  | Tools › External Tools entries.                                                                                                  |
+| `[plugins.<plugin-id>]`                          | Settings that plugins declare.                                                                                                   |
+
+The complete list of keys and their defaults is in the source: [`crates/ide-core/src/settings.rs`](https://github.com/l0ng-ai/openidea/blob/main/crates/ide-core/src/settings.rs) and the other `*_settings.rs` files next to it.

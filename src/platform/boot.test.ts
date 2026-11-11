@@ -54,26 +54,51 @@ it.each(resizeObserverMessages)("still times out an unresolved startup after %s"
   expect(document.querySelector("textarea")?.value).toContain("Startup did not finish within 30 seconds.");
 });
 
-it.each(resizeObserverMessages)("keeps actual errors with the same message fatal: %s", (message) => {
-  window.dispatchEvent(new ErrorEvent("error", { message, error: new Error(message) }));
-  expect(document.getElementById("splash")).toBeNull();
-  expect(document.querySelector("textarea")?.value).toContain(message);
+it.each(resizeObserverMessages)("ignores the loop notification delivered as an Error: %s", (message) => {
+  // WebKit (Tauri on Linux) reports the loop with an Error object; Blink as a bare message.
+  // No genuine startup failure carries these engine-generated strings.
+  window.dispatchEvent(new ErrorEvent("error", { message, filename: "tauri://localhost", error: new Error(message) }));
+  expect(document.getElementById("splash")).not.toBeNull();
+  expect(document.getElementById("boot-error")).toBeNull();
+  expect(document.documentElement.dataset.boot).toBeUndefined();
+  window.dispatchEvent(new Event("openidea:boot-ready"));
+  vi.advanceTimersByTime(30_000);
+  expect(document.getElementById("boot-error")).toBeNull();
 });
 
-it.each(resizeObserverMessages)("keeps rejections with the same message fatal: %s", (message) => {
+const reject = (reason: unknown) => {
   const event = new Event("unhandledrejection");
-  Object.defineProperty(event, "reason", { value: message });
+  Object.defineProperty(event, "reason", { value: reason });
   window.dispatchEvent(event);
-  expect(document.getElementById("splash")).toBeNull();
-  expect(document.querySelector("textarea")?.value).toContain(message);
+};
+
+it("keeps starting after an unhandled rejection", () => {
+  reject(new TypeError("Load failed"));
+  expect(document.getElementById("splash")).not.toBeNull();
+  expect(document.getElementById("boot-error")).toBeNull();
+  expect(document.documentElement.dataset.boot).toBeUndefined();
+  window.dispatchEvent(new Event("openidea:boot-ready"));
+  vi.advanceTimersByTime(30_000);
+  expect(document.getElementById("boot-error")).toBeNull();
 });
 
-it("handles startup rejections and preserves the first failure", () => {
-  const event = new Event("unhandledrejection");
-  Object.defineProperty(event, "reason", { value: { message: "startup rejected" } });
-  window.dispatchEvent(event);
+it("reports the first rejection when startup then times out", () => {
+  const error = new TypeError("Load failed");
+  // WebKit's network TypeErrors have no stack; JSON.stringify turns them into "{}".
+  Object.defineProperty(error, "stack", { value: undefined });
+  reject(error);
+  reject({ message: "later rejection" });
+  vi.advanceTimersByTime(30_000);
+  const details = document.querySelector("textarea")?.value;
+  expect(details).toContain("Startup did not finish within 30 seconds.");
+  expect(details).toContain("TypeError: Load failed");
+  expect(details).not.toContain("later rejection");
+});
+
+it("preserves the first failure", () => {
+  window.dispatchEvent(new ErrorEvent("error", { error: new Error("startup failed") }));
   window.dispatchEvent(new ErrorEvent("error", { message: "later failure" }));
-  expect(document.querySelector("textarea")?.value).toContain("startup rejected");
+  expect(document.querySelector("textarea")?.value).toContain("startup failed");
   expect(document.querySelector("textarea")?.value).not.toContain("later failure");
 });
 
@@ -164,4 +189,27 @@ it("preserves Safari error messages when its stack only lists locations", () => 
   window.dispatchEvent(new ErrorEvent("error", { error }));
   expect(document.querySelector("textarea")?.value).toContain("SyntaxError: Unsupported regular expression");
   expect(document.querySelector("textarea")?.value).toContain(error.stack);
+});
+
+it("names an outdated system web engine as the cause", () => {
+  const supports = vi.fn(() => false);
+  vi.stubGlobal("CSS", { supports });
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+  );
+  window.dispatchEvent(new ErrorEvent("error", { error: new SyntaxError("Unexpected token '.'") }));
+  const hint = document.querySelector("#boot-error p")?.textContent;
+  expect(supports).toHaveBeenCalledWith("container-type", "inline-size");
+  expect(hint).toContain("needs Safari 16 or later");
+  expect(hint).toContain("Software Update");
+  vi.unstubAllGlobals();
+});
+
+it("keeps the plain report hint on a current engine", () => {
+  vi.stubGlobal("CSS", { supports: () => true });
+  window.dispatchEvent(new ErrorEvent("error", { error: new Error("startup failed") }));
+  expect(document.querySelector("#boot-error p")?.textContent).toBe(
+    "Copy the details below and include them in a GitHub issue.",
+  );
+  vi.unstubAllGlobals();
 });

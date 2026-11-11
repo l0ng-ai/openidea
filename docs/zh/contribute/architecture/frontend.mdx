@@ -1,0 +1,156 @@
+---
+title: "前端架构"
+description: "React 工作台的组织方式：带 activate() 的功能模块、action 注册表、keymap 与键盘分发、上下文键与 when 子句、扩展点和服务。"
+---
+
+前端使用 React 19、zustand store，编辑器是 CodeMirror 6，由 Vite 打包，运行在系统 webview 中。
+
+## `src/` 目录
+
+| 路径               | 内容                                                                                                                                                                              |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `platform/`        | 全局基础设施：`ipc.ts`（`call`、`onIdeEvent`、`nextRequestId`）、action 注册表、keymap 与键盘分发、上下文键、i18n、项目 store、远程路由。                                         |
+| `workbench/`       | 外壳：标题栏、工具窗口条、编辑区、状态栏、浮层、通知，以及 `contributions.ts`——扩展点和跨功能服务。                                                                               |
+| `ui/`              | 设计系统基础组件（`Button`、`Dialog`、`Menu`、`Popup`、`Tree`、`List`、`Select`、`Tooltip`、`T` 等）和 `icons.tsx`。                                                              |
+| `editor/`          | `core`（创建 EditorView、与后端同步文档、标签页和分屏）、`api.ts`（其他代码扩展编辑器时遵循的契约）、`lsp`（基于语言服务器的编辑器功能）、`refactor`、`navigation`、`structure`。 |
+| `features/<name>/` | 每个目录一个功能（`search`、`vcs`、`debugger`、`run`、`terminal`、`database`、`plugins` 等），导出 `activate()`。                                                                 |
+| `bindings.ts`      | 生成的 IPC 绑定，禁止手改。                                                                                                                                                       |
+
+## 功能与 `activate()`
+
+每个功能导出 `activate(): void | (() => void)`：注册 action、工具窗口、状态栏项、编辑器扩展和服务，并返回一个撤销全部注册的 disposer。`src/features/index.ts` 按激活顺序列出所有功能，并把每个 `activate` 包在 `try` 里调用，一个功能抛错不会影响其他功能。`src/workbench/activate.ts` 先于它运行，提供功能依赖的外壳服务（工具窗口、通知）。
+
+一个完整的功能可以小到这样：
+
+```ts src/features/logcat/index.ts
+export function activate(): () => void {
+  const dispose = registerToolWindow({
+    id: "logcat",
+    title: "Logcat",
+    icon: "toolwindow-logcat",
+    anchor: "bottom",
+    stripe: "onUse",
+    order: 26,
+    component: lazyComponent(() => import("./LogcatView").then((m) => m.LogcatView)),
+    requiresProject: false,
+  });
+  return () => {
+    dispose();
+    resetLogcat();
+  };
+}
+```
+
+较重的视图请懒加载（`lazyComponent`），避免拖慢启动；`pnpm perf` 对初始包体积有预算。
+
+## 功能隔离
+
+**功能之间禁止互相 import。** 它们只通过三种方式通信：
+
+- **Action**：`executeAction("project.dontOpen")` 按稳定 id 调用另一个功能的行为，而无需 import 它。
+- **Contribution**：功能向 `src/workbench/contributions.ts`（或 `src/editor/api.ts`）里的扩展点注册内容；渲染该扩展点的一方并不知道是谁贡献的。
+- **服务**：跨功能服务只提供一次，通过访问函数获取（见下文）。
+
+多个功能都需要的共享代码放到 `platform/`、`ui/`、`workbench/` 或 `editor/api`，而不是放进某个功能再让别的功能去 import。
+
+## Action
+
+用户能触发的一切都是带稳定点分 id 的 action（`src/platform/actions.ts`）。菜单、快捷键、工具栏按钮、右键菜单和 Search Everywhere 的 Actions 标签页都解析到同一个注册表，所以功能只需注册一次：
+
+```ts
+registerAction({
+  id: "editor.formatDocument",
+  title: "Reformat Code",
+  category: "Code",
+  when: "editorFocus",
+  run: () => {
+    /* ... */
+  },
+});
+```
+
+主要字段：
+
+| 字段                               | 含义                                                                                                |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `id`                               | 稳定的点分 id，如 `navigate.searchEverywhere`。keymap、菜单、插件和测试都引用它，不要随意改名。     |
+| `title`、`category`、`description` | 用英文写；通过 `action.<id>` 消息键或源文本目录翻译（见[本地化](/zh/contribute/guidelines/i18n)）。 |
+| `when`                             | 启用条件，基于上下文键的 `when` 子句。                                                              |
+| `enabled`                          | 针对带参数的 action 或当前选区的额外启用判断。                                                      |
+| `keyWhen`                          | 仅对快捷键生效的额外条件，例如输入时把共用的快捷键让给编辑器。                                      |
+| `toggled`                          | 标记为开关型 action；Search Everywhere 中显示 ON/OFF 开关。                                         |
+| `icon`                             | `ui/icons` 中的图标名。                                                                             |
+| `hidden`                           | 不在 Search Everywhere 中显示（内部或带参数的 action）。                                            |
+
+用 `executeAction(id, arg?)` 执行 action。`registerAction` 返回 disposer。
+
+## Keymap 与键盘分发
+
+默认快捷键写在 `src/platform/keymaps/` 里，而不是写在 action 上。keymap 是 action id 到绑定的映射：
+
+```ts src/platform/keymaps/intellij-macos.ts
+export const intellijMacos: Record<string, string[]> = {
+  "navigate.searchEverywhere": ["Shift Shift"],
+  "navigate.gotoClass": ["Meta+O"],
+  "navigate.findAction": ["Meta+Shift+A"],
+  "navigate.back": ["Meta+[", "Meta+Alt+Left", "Button4", "SwipeRight"],
+  // ...
+};
+```
+
+预设：`intellij-macos`（macOS 默认）、`intellij-windows`（Windows 与 Linux 默认）、`vscode-macos`、`vscode-windows`、`eclipse-macos`、`eclipse-windows`。新增带默认快捷键的 action 时，两个 IntelliJ 预设都要加，其他预设有对应按键的也一并加上。
+
+绑定语法：修饰键 `Meta Ctrl Alt Shift` 用 `+` 连接到按键（`Meta+Shift+O`）；空格分隔组合键的多个击键（`Meta+K Meta+C`）；连按两次修饰键写作 `Shift Shift`；鼠标按键为 `Button1`…`Button5`。按键按物理位置匹配（`KeyboardEvent.code`）。
+
+`installKeyboardDispatcher` 在捕获阶段监听 `keydown`，因此 IDE 快捷键优先于 CodeMirror 的默认按键；它把击键与当前 keymap 及用户覆盖项匹配，然后运行第一个启用的 action（满足 `when` 和 `keyWhen`）。需要自己处理某个按键的组件注册一个 key claim（`registerKeyClaim`），比如 Vim 模式处理快捷键冲突时。
+
+## 上下文键与 `when` 子句
+
+组件把事实发布为上下文键（`src/platform/context.ts`）；action 和快捷键通过基于这些键的 `when` 表达式决定是否启用。
+
+```ts
+// 调试器发布自身状态
+setContext("debugSessionPaused", s?.status === "paused");
+
+// 单步 action 只在暂停时启用
+{ id: "debug.stepOver", title: "Step Over", category: "Debug", when: "debugSessionPaused", run }
+```
+
+语法：`||`、`&&`、`!`、括号，以及 `key`、`key == value`、`key != value`。空子句恒为真。子句编译一次后缓存。插件的菜单项使用同样的子句。
+
+## 扩展点（Contribution）
+
+`src/workbench/contributions.ts` 定义了工作台的扩展点，每个 `register*` 函数都返回 disposer。
+
+| 函数                                                                                       | 贡献内容                                                                                |
+| ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `registerToolWindow`                                                                       | 工具窗口；会自动注册一个切换它的 `toolwindow.<id>` action。                             |
+| `registerStatusItem`                                                                       | 状态栏项。                                                                              |
+| `registerOverlay`                                                                          | 渲染在工作台之上的弹出框和对话框（Search Everywhere、Settings 等）。                    |
+| `registerEditorKind`、`registerFileEditorProvider`                                         | 文本文件以外的编辑器标签页类型（diff 查看器、设置、欢迎页等），以及哪些文件用它们打开。 |
+| `registerTitleItem`                                                                        | 标题栏组件（VCS 分支、运行配置、运行/调试按钮等）。                                     |
+| `registerServiceView`、`registerServiceProvider`                                           | Services 工具窗口的内容。                                                               |
+| `registerWorkbenchBanner`                                                                  | 工作台中的横幅组件。                                                                    |
+| `registerCommitCheckProvider`、`registerEditorDropHandler`、`registerTextEditorWrapper` 等 | 供特定功能使用的更细的扩展点。                                                          |
+
+编辑器通过 `src/editor/api.ts` 扩展：`registerEditorContribution({ id, extensions })` 为每个文档添加 CodeMirror 扩展。`editor/core` 持有视图；LSP、VCS 装订线、断点、行内调试值都是 contribution，从不 import 编辑器内部实现。
+
+插件的 UI 贡献最终也落到这些函数上：后端先校验，`src/features/plugins/projection.ts` 再把每一项映射到现有的 `register*` 调用。见[插件宿主](/zh/contribute/architecture/plugin-host)。
+
+## 服务
+
+服务是只有一个实现的跨功能 API，由所属方提供：
+
+| 访问函数                                   | 提供方                                  |
+| ------------------------------------------ | --------------------------------------- |
+| `editorService()` / `maybeEditorService()` | `editor/core`（`provideEditorService`） |
+| `toolWindowService()`                      | 工作台（`provideToolWindowService`）    |
+| `notifications()`                          | 工作台（`provideNotificationService`）  |
+| `embeddedTerminal()`                       | 终端功能                                |
+| `maybeCommitService()`                     | VCS 功能                                |
+
+不带 `maybe` 的访问函数在没有提供方时会抛错，所以要在使用时调用，不要在模块加载时调用。
+
+## 与后端通信
+
+功能只通过 `@/platform/ipc` 的 `commands` 调用后端，用 `onIdeEvent` 监听事件；见 [IPC](/zh/contribute/architecture/ipc)。不少功能还为普通浏览器模式（`pnpm dev`）保留了内存版后端，单元测试和 E2E 测试都用它，由 `isTauri()` 决定使用哪一个。

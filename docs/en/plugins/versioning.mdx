@@ -1,0 +1,82 @@
+---
+title: "API versions and compatibility"
+description: "engines.openidea, the plugin API versions from 1.0 to 1.5, and the rules that keep released plugins loading in newer IDEs."
+---
+
+The plugin API has one version number: the version of the WIT package in [`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit) (`openidea:plugin@1.5.0` on `main`). The host's engine version and the SDK's `API_VERSION` always agree with it, and the SDK carries an identical copy of the WIT files.
+
+<Note>
+  The plugin system is a preview. The compatibility rules below hold for released 1.x versions; what is still unreleased
+  on `main` can change before it ships.
+</Note>
+
+## Versions
+
+| API   | Shipped with                 | Highlights                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ----- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.0.0 | OpenIDEA 0.1.36              | The base API: commands, events, storage, tasks, project and editor access, VCS, diagnostics, network and secrets, processes, declarative views and custom editors, settings, editor providers, syntax provider                                                                                                                                                                                                                                                                                       |
+| 1.1.0 | OpenIDEA 0.1.37              | `vcs.remotes`, `ui.copy-to-clipboard`, `ui.open-url`, opening a project file at a line from a view                                                                                                                                                                                                                                                                                                                                                                                                   |
+| 1.2.0 | OpenIDEA 0.1.38              | Background document indexers, pickers, input boxes and confirmations, plugin context keys for `when` clauses, the files selected in the Project view, a manifest `icon`, the `viewItem.context` menu                                                                                                                                                                                                                                                                                                 |
+| 1.3.0 | OpenIDEA 0.1.39              | Commit message and before-commit checks, Services detail panes, diagnostics while typing, hover, inlay hints, semantic tokens, file-changing code actions, HTTP endpoints, files outside the project (`fs.read`/`fs.write`, `project.write`, private plugin directory), batched `files-changed` events and path filters, workspace symbols, long-running processes, notifications with buttons, translations, multi-page settings, file template variables, web view PTYs, log tabs and content tabs |
+| 1.4.0 | OpenIDEA 0.1.40              | `net.http:`, `ipc:`, `ide.commands` and `database.sources` capabilities; editor and project snapshots, decorations, text search, Problems, Git log/blame/diff; output channels; OAuth loopback; runs, terminal sessions, run configurations, test result parsing and run targets; formatting and other language features; embedded languages; snippets; more menu locations; database sources; MCP tools                                                                                             |
+| 1.5.0 | Planned for the next release | `Project::notify` (a notification in one project's window), the `net:ask` capability, run target validation, per-command run target working-directory arguments                                                                                                                                                                                                                                                                                                                                      |
+
+The full list of what each version added is in [`plugins/README.md`](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md).
+
+## Declaring what you need
+
+`engines.openidea` in `plugin.toml` is a semver requirement on the plugin API:
+
+```toml
+engines.openidea = "^1.4"
+```
+
+- The IDE refuses to install or load a package whose requirement does not match its own API version.
+- Use the lowest version that has everything you use. `^1.0` loads in every 1.x IDE.
+- Some manifest features enforce a minimum: installing and `openidea-plugin check` refuse a manifest that uses them while still admitting an older API.
+
+| Feature                                                                                                                                                                                                                                                                                                                                                               | Requires |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| `icon`, the `viewItem.context` menu                                                                                                                                                                                                                                                                                                                                   | `^1.2`   |
+| `project.write`, `fs.write:`, `on-event:files-changed`; `endpoints`, `markerIcons`, `commitChecks`; the `semantic-tokens`, `diagnostics`, `hover` and `inlay-hints` provider kinds; settings `pages`, groups and arrays; the `commit.message` menu and submenus; view `group`, `when`, `header` and `location = "services"`; file template `fileName` and `variables` | `^1.3`   |
+| `net.http:`, `ipc:`, `ide.commands`, `database.sources`; the `file-closed`, `settings-changed`, `input-mode-changed`, `run-exited`, `terminal-exited` and `content-tab-action` events; `runConfigurations`, `snippets`, `mcpTools`, command `icon`, run detector `framework`; the API 1.4 provider kinds and injections; the API 1.4 menu locations                   | `^1.4`   |
+| `net:ask`                                                                                                                                                                                                                                                                                                                                                             | `^1.5`   |
+
+## The component's own version
+
+Besides the manifest, the IDE reads the API version a component was **built for**: the highest version among its `openidea:plugin/*` imports and exports. That is the version of the SDK (or WIT files) it was compiled against.
+
+- Installing and `openidea-plugin check` refuse a component of another major version, or of a newer minor than the IDE implements, with a message to update the IDE or rebuild with an older SDK.
+- They also link the component against the IDE. A component that imports a function the IDE lacks under the same version (built from unreleased WIT) is refused too.
+- `check` prints it: `code: dist/plugin.wasm (…, plugin API 1.4)`.
+
+So build against the SDK of the oldest IDE release you want to support. A plugin made by `openidea-plugin new` depends on the SDK at the tool's release tag:
+
+```toml
+openidea-plugin = { git = "https://github.com/l0ng-ai/openidea", tag = "v0.1.40" }
+```
+
+Change the tag to build against a later API. A component built from `main` uses the unreleased API and will not load in released IDEs.
+
+In a marketplace index, each version's `engine` is the manifest's requirement narrowed to the component's API (for example `^1.0, ^1.4`). A plugin can be listed in several versions; each IDE is offered the newest one it can load, and a plugin with none is shown as incompatible with the API it needs.
+
+## Compatibility rules
+
+wasmtime links components by semver: a component importing `openidea:plugin/x@1.0.0` links against a host that defines `@1.4.0`. Function types must match exactly, though, so a released 1.x only grows:
+
+1. **Released types and signatures never change.** No new record fields, variant or enum cases, renames or parameters. New things get new types and new functions. Sets that keep growing (completion kinds, icons, event kinds, …) are strings, and growing variants have an `other` case carrying a kind and JSON data, so older plugins and IDEs can pass them through.
+2. **Host interfaces (imports) may gain functions and interfaces.** Older components don't import them.
+3. **Plugin interfaces (exports) never gain functions once released.** New plugin-side features get new interfaces in new optional worlds.
+4. **The host checks each component's API version** as described above.
+5. **One version number** across `wit/`, the host and the SDK.
+6. **1.x calls are synchronous and pass documents whole.** WASI 0.3 async components are planned for 2.0, behind a host adapter that keeps 1.x plugins running.
+
+These rules are checked automatically:
+
+- `sdk/rust/openidea-plugin/tests/api_frozen.rs` compares `wit/` with the snapshot of the latest released version in [`sdk/rust/openidea-plugin/tests/api/released/`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin/tests/api/released) (currently 1.4.0). Every released interface, type, function and world must still exist unchanged.
+- `crates/ide-plugin/tests/api_compat.rs` checks that the versions agree, that the SDK's WIT copy matches, and that a simulated next-minor host still links every shipped component while another major does not.
+- The release workflow refuses a release whose `wit/` version has no snapshot.
+
+## Older manifests
+
+Manifests in the 0.1 format (`openidea-api = "0.1"`) still load their contributions, but 0.1 code no longer runs. Rebuild against the 1.x SDK.

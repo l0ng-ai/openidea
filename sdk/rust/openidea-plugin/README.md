@@ -33,7 +33,7 @@ and references. Existing indexers work without another export; declare
 cover exactly the name, using UTF-16 columns. The host merges native results,
 previews indexed renames and applies them as one undoable workspace edit.
 The existing `project.read` capability and trusted-project boundary apply.
-See [the indexing contract](../../../docs/plugins/indexing.md#find-usages-and-rename-api-13)
+See [the indexing contract](../../../plugins/indexing.md#find-usages-and-rename-api-13)
 and [the minimal fixture](../../../crates/ide-plugin/tests/fixtures/indexer).
 
 API 1.3 also adds diagnostics for unsaved documents. Declare

@@ -17,9 +17,11 @@ pub struct DevContainer {
     pub remote_env: BTreeMap<String, Option<String>>,
     pub post_start: Option<LifecycleCommand>,
     /// `forwardPorts` of the container itself (a number, `localhost:<port>` or
-    /// `127.0.0.1:<port>`), in order, without duplicates. Other entries, such as the port of
-    /// another Compose service, are left out.
+    /// `127.0.0.1:<port>`), in order, without duplicates.
     pub forward_ports: Vec<u16>,
+    /// `forwardPorts` of another host the container reaches, such as a Compose service
+    /// (`<host>:<port>`), in order, without duplicates.
+    pub forward_host_ports: Vec<(String, u16)>,
 }
 
 /// A lifecycle command in its three forms.
@@ -123,27 +125,41 @@ pub fn parse(text: &str) -> Result<DevContainer, String> {
     }
     // Only the desktop uses these: an entry it can't forward never makes the file unreadable.
     if let Some(Value::Array(ports)) = top.get("forwardPorts") {
-        for port in ports.iter().filter_map(container_port) {
-            if !config.forward_ports.contains(&port) {
-                config.forward_ports.push(port);
+        for entry in ports.iter().filter_map(forward_port) {
+            match entry {
+                (None, port) if !config.forward_ports.contains(&port) => config.forward_ports.push(port),
+                (Some(host), port) if !config.forward_host_ports.iter().any(|(h, p)| *h == host && *p == port) => {
+                    config.forward_host_ports.push((host, port));
+                }
+                _ => {}
             }
         }
     }
     Ok(config)
 }
 
-/// A `forwardPorts` entry that is a port of the container itself.
-fn container_port(v: &Value) -> Option<u16> {
-    let port = match v {
-        Value::Number(n) => n.as_u64()?,
+/// A `forwardPorts` entry: a port of the container itself (`None`), or of another host it
+/// reaches by name, such as a Compose service.
+fn forward_port(v: &Value) -> Option<(Option<String>, u16)> {
+    let (host, port) = match v {
+        Value::Number(n) => (None, n.as_u64()?),
         Value::String(s) => match s.trim().split_once(':') {
-            Some(("localhost" | "127.0.0.1", port)) => port.parse().ok()?,
+            Some(("localhost" | "127.0.0.1", port)) => (None, port.parse().ok()?),
+            Some((host, port)) if is_host_name(host) => (Some(host.to_owned()), port.parse().ok()?),
             Some(_) => return None,
-            None => s.trim().parse().ok()?,
+            None => (None, s.trim().parse().ok()?),
         },
         _ => return None,
     };
-    u16::try_from(port).ok().filter(|p| *p != 0)
+    Some((host, u16::try_from(port).ok().filter(|p| *p != 0)?))
+}
+
+/// A DNS name such as a Compose service or container name (letters, digits, `.`, `-`, `_`).
+fn is_host_name(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 253
+        && !host.starts_with(['-', '.'])
+        && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
 /// Expands `${localEnv:NAME}`, `${containerEnv:NAME}` and `${env:NAME}` (all the remote
@@ -239,7 +255,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.forward_ports, [8000, 5173, 3000]);
+        assert_eq!(c.forward_host_ports, [("db".to_owned(), 5432)]);
         assert!(parse(r#"{ "forwardPorts": "8000" }"#).unwrap().forward_ports.is_empty());
+    }
+
+    #[test]
+    fn forward_ports_of_compose_services() {
+        let c = parse(
+            r#"{ "forwardPorts": [8000, "selenium:4444", "selenium:7900", "selenium:4444", "my-db.local:5432",
+                "db:0", "db:x", "-db:1", ".db:1", "d b:1", "db/x:1", "db:1:2", ":5432"] }"#,
+        )
+        .unwrap();
+        assert_eq!(c.forward_ports, [8000]);
+        let hosts: Vec<_> = c.forward_host_ports.iter().map(|(h, p)| format!("{h}:{p}")).collect();
+        assert_eq!(hosts, ["selenium:4444", "selenium:7900", "my-db.local:5432"]);
     }
 
     #[test]
@@ -255,6 +284,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.forward_ports, [1, 65535, 8000]);
+        assert_eq!(config.forward_host_ports, [("db".to_owned(), 5432)]);
         assert_eq!(config.remote_env["PORT"].as_deref(), Some("8000"));
     }
 

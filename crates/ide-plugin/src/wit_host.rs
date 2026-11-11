@@ -64,6 +64,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
             "openidea:plugin/database": super::bindings::openidea::plugin::database,
             "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
         },
     });
 }
@@ -101,6 +102,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
             "openidea:plugin/database": super::bindings::openidea::plugin::database,
             "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
         },
     });
 }
@@ -138,6 +140,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
             "openidea:plugin/database": super::bindings::openidea::plugin::database,
             "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
         },
     });
 }
@@ -696,6 +699,22 @@ impl workspace::HostProject for StoreData {
         Ok(sandbox::read_text(&real).map_err(wit::Error::Failed))
     }
 
+    fn read_bytes(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<Vec<u8>> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&this)?.root.clone();
+        let real = match sandbox::resolve_in_root(&root, &path) {
+            Ok(real) => real,
+            Err(e) => {
+                let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
+                return Ok(Err(e));
+            }
+        };
+        // The bytes on disk: an unsaved text buffer does not apply, binary files are the point.
+        Ok(sandbox::read_bytes(&real).map_err(wit::Error::Failed))
+    }
+
     fn exists(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<bool> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
@@ -1143,6 +1162,11 @@ impl events::Host for StoreData {
                 | EventKind::TerminalExited
                 | EventKind::ContentTabAction
         ) && let Err(e) = self.host.require_api(kind.name(), 4)
+        {
+            return Ok(Err(to_wit(e)));
+        }
+        if kind == EventKind::ExtensionsChanged
+            && let Err(e) = self.host.require_api(kind.name(), 5)
         {
             return Ok(Err(to_wit(e)));
         }
@@ -2354,6 +2378,19 @@ impl bindings::openidea::plugin::database::Host for StoreData {
         self.deadline += waited;
         self.call_started += waited;
         Ok(result.map_err(to_wit))
+    }
+}
+impl bindings::openidea::plugin::extensions::Host for StoreData {
+    fn contributions(&mut self, point: String) -> Fallible<Vec<bindings::openidea::plugin::extensions::Contribution>> {
+        Ok(self
+            .host
+            .extension_contributions(&clip(point, 128))
+            .map(|list| {
+                list.into_iter()
+                    .map(|(plugin, data)| bindings::openidea::plugin::extensions::Contribution { plugin, data })
+                    .collect()
+            })
+            .map_err(to_wit))
     }
 }
 impl bindings::openidea::plugin::mcp::Host for StoreData {
