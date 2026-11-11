@@ -20,6 +20,7 @@ import {
   toCsv,
   toTsv,
 } from "./model";
+import { listsDatabases } from "./store";
 import { VENDORS, sourceUrl, vendorById, vendorOf, vendorPreset } from "./vendors";
 
 describe("clipboard formats", () => {
@@ -159,6 +160,15 @@ describe("connection targets", () => {
   it("splits a target back into source and database", () => {
     expect(splitTarget("pg")).toEqual({ id: "pg", database: null });
     expect(splitTarget("pg:my:db")).toEqual({ id: "pg", database: "my:db" });
+  });
+
+  it("lists databases under PostgreSQL and SQL Server hosts unless single-database mode", () => {
+    expect(listsDatabases({ driver: "postgres" })).toBe(true);
+    expect(listsDatabases({ driver: "sqlServer" })).toBe(true);
+    expect(listsDatabases({ driver: "postgres", options: { singleDatabase: true } })).toBe(false);
+    expect(listsDatabases({ driver: "sqlServer", options: { singleDatabase: true } })).toBe(false);
+    expect(listsDatabases({ driver: "mysql" })).toBe(false);
+    expect(listsDatabases(undefined)).toBe(false);
   });
 });
 

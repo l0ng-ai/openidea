@@ -497,9 +497,9 @@ export function consoleTints(s: Pick<DatabaseState, "consoles" | "sources">): Ma
   return out;
 }
 
-/** PostgreSQL data sources show their server's databases (IDEA's data source › database › schema). */
+/** PostgreSQL / SQL Server data sources show their server's databases (IDEA's data source › database › schema). */
 export function listsDatabases(source: DataSource | undefined): boolean {
-  return source?.driver === "postgres" && !source.options?.singleDatabase;
+  return (source?.driver === "postgres" || source?.driver === "sqlServer") && !source.options?.singleDatabase;
 }
 
 /**
