@@ -221,6 +221,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
         "term_",
         "settings_",
         "project_trust_",
+        // New Project writes only where the user chose and runs no code of an open project.
+        "scaffold_",
         "ssh_",
         "git_credential",
     ]

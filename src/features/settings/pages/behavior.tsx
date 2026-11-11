@@ -309,7 +309,7 @@ function Grid({ left, right }: { left: ReactNode; right: ReactNode }) {
 
 function MainMenuStyleRow() {
   const frameless = usePlatform((s) => s.framelessTitleBar);
-  const [mainMenuStyle, setMainMenuStyle] = useSetting<"hamburger" | "merged">("appearance.mainMenuStyle");
+  const [mainMenuStyle, setMainMenuStyle] = useSetting<"hamburger" | "merged" | "toolbar">("appearance.mainMenuStyle");
   if (!frameless) return null;
   return (
     <Row label="Main menu">
@@ -318,6 +318,7 @@ function MainMenuStyleRow() {
         options={[
           { value: "hamburger", label: "Hamburger button" },
           { value: "merged", label: "Merged with main toolbar" },
+          { value: "toolbar", label: "Separate toolbar" },
         ]}
         onChange={setMainMenuStyle}
         aria-label="Main menu"
@@ -357,11 +358,6 @@ function UiOptionsGrid() {
             k="appearance.mainMenuAlt"
             label="Open main menu with a lone Alt press"
             hint="When off, Alt key combinations still work but pressing Alt alone does not focus the main menu"
-          />
-          <BoundToggle
-            k="appearance.alwaysShowMainMenu"
-            label="Always show the main menu"
-            hint="Show menu titles instead of the hamburger button, even when the window is narrow"
           />
         </>
       }
