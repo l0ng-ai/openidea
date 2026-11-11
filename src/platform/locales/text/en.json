@@ -1329,5 +1329,6 @@
   "Featured": "Featured",
   "All Plugins": "All Plugins",
   "Examples": "Examples",
-  "Remove File": "Remove File"
+  "Remove File": "Remove File",
+  "Maven compiles with the project's javac before OpenIDEA launches the main class. OpenIDEA builds with the Java language server (ECJ); editor Problems stay on that compiler either way. Rebuild on a run configuration always uses Maven.": "Maven compiles with the project's javac before OpenIDEA launches the main class. OpenIDEA builds with the Java language server (ECJ); editor Problems stay on that compiler either way. Rebuild on a run configuration always uses Maven."
 }

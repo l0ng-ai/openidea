@@ -86,7 +86,7 @@ When the project uses Lombok (in its build file, an inherited parent POM or Grad
 
 jdtls imports Maven and Gradle projects (including the Gradle wrapper) automatically. A folder without a build file is opened as a plain Java project, and jars under `lib/` are added to its classpath. OpenIDEA also shows **Maven** and **Gradle** tool windows for running goals and tasks, reloading, profiles and dependency analysis. Their settings are in **Settings › Build, Execution, Deployment › Maven** and **Gradle**:
 
-- Maven: **JRE**, **Maven home path** (default: the project's `mvnw`, else `mvn` on `PATH`), **User settings file**, **Toolchains file**, **Local repository**, **Active profiles**, **Thread count** and **Use Maven Daemon (mvnd)**. The profiles you choose in the Maven tool window are passed to jdtls too, so the editor sees the same profile-specific dependencies.
+- Maven: **Build and run using** (OpenIDEA / jdtls ECJ by default, or **Maven** / project `javac` for Application launches), **JRE**, **Maven home path** (default: the project's `mvnw`, else `mvn` on `PATH`), **User settings file**, **Toolchains file**, **Local repository**, **Active profiles**, **Thread count** and **Use Maven Daemon (mvnd)**. The profiles you choose in the Maven tool window are passed to jdtls too, so the editor sees the same profile-specific dependencies. Editor **Problems** always come from jdtls/ECJ; choosing Maven only changes how Run/Debug builds the classpath. A run configuration **Build → Rebuild** also uses Maven/`javac`.
 - Gradle: **Build and run using** (Gradle or OpenIDEA), **Gradle JVM**, **Distribution** (wrapper or local installation), **Gradle home** and **Gradle user home**.
 
 The IDE passes its proxy settings to jdtls, so dependency resolution works behind a proxy. See [Build tools](/en/guide/build-tools) for the tool windows.
@@ -105,7 +105,7 @@ In a Maven project with Kotlin sources, OpenIDEA builds the Kotlin code in the b
 | WAR                               | **Tomcat Server** configuration on a local Tomcat installation (the IDE never writes into it)                            |
 | JUnit 4, JUnit 5 and TestNG tests | Maven (Surefire `-Dtest=…`) or Gradle (`--tests …`) test configurations                                                  |
 
-Gutter icons on main methods, test classes and test methods create these configurations, and Maven and Gradle run configurations are detected from the build files. For Gradle, **Build and run using** decides whether an Application runs as a Gradle `JavaExec` task (the default) or is launched by OpenIDEA on the classpath reported by jdtls.
+Gutter icons on main methods, test classes and test methods create these configurations, and Maven and Gradle run configurations are detected from the build files. For Gradle, **Build and run using** decides whether an Application runs as a Gradle `JavaExec` task (the default) or is launched by OpenIDEA on the classpath reported by jdtls. For Maven, the same setting chooses whether Application / Spring Boot launches are compiled with Maven/`javac` or with jdtls (ECJ); OpenIDEA still starts the process.
 
 Test results are read from the JUnit XML reports Maven and Gradle write, so passed tests are listed as well. The test tree supports rerunning failed tests. VM options of a Gradle run configuration are applied to the JVMs Gradle forks (`run`, `bootRun`, `test`). When a classpath is too long for the command line (common on Windows), it is moved into an argument file or a manifest-only jar.
 

@@ -6817,6 +6817,16 @@ export type MavenProject = {
 	env: { [key in string]: string },
 };
 
+/**
+ *  Who builds a Maven Application / Spring Boot launch before OpenIDEA starts it.
+ *  Mirrors Gradle's "Build and run using"; the process is still launched by OpenIDEA.
+ */
+export type MavenRunUsing = 
+/**  Maven/`javac` (`compile` / `test-compile`) then OpenIDEA on that classpath. */
+"maven" | 
+/**  jdtls workspace build (ECJ); the default. */
+"ide";
+
 /**  Build Tools › Maven. */
 export type MavenSettings = {
 	/**  JDK home used to run Maven; empty = Project JDK, else the POM's Java version. */
@@ -6850,6 +6860,8 @@ export type MavenSettings = {
 	threads?: string,
 	/**  Active Maven profiles (`-P`), comma-separated; empty leaves profiles to the POM/settings. */
 	activeProfiles?: string,
+	/**  "Build and run using": Maven/`javac` or the Java language server (ECJ) for Application launches. */
+	runUsing?: MavenRunUsing,
 };
 
 /**  A named environment variable or HTTP header for an MCP server. */

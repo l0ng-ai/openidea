@@ -86,7 +86,7 @@ jdtls 的工作区保存在 IDE 的数据目录（`lsp/jdtls/`）中，不在项
 
 jdtls 会自动导入 Maven 和 Gradle 项目（包括 Gradle wrapper）。没有构建文件的目录会作为普通 Java 项目打开，`lib/` 下的 jar 会加入类路径。OpenIDEA 还提供 **Maven** 和 **Gradle** 工具窗口，用来执行目标和任务、重新加载、切换 profile 以及分析依赖。相关设置在 **设置 › 构建、执行、部署 › Maven** 和 **Gradle**：
 
-- Maven：**JRE**、**Maven 主路径**（默认用项目的 `mvnw`，没有则用 `PATH` 上的 `mvn`）、**用户设置文件**、**Toolchains 文件**、**本地仓库**、**活动 profiles**、**线程数** 和 **使用 Maven Daemon (mvnd)**。在 Maven 工具窗口里选的 profile 也会传给 jdtls，编辑器看到的依赖与该 profile 一致。
+- Maven：**构建和运行使用**（默认 OpenIDEA / jdtls ECJ，或 **Maven** / 项目 `javac`，用于应用程序启动前的构建）、**JRE**、**Maven 主路径**（默认用项目的 `mvnw`，没有则用 `PATH` 上的 `mvn`）、**用户设置文件**、**Toolchains 文件**、**本地仓库**、**活动 profiles**、**线程数** 和 **使用 Maven Daemon (mvnd)**。在 Maven 工具窗口里选的 profile 也会传给 jdtls，编辑器看到的依赖与该 profile 一致。编辑器的 **问题** 始终来自 jdtls/ECJ；选 Maven 只改变 Run/Debug 如何构建类路径。运行配置上的 **构建 → 重新构建** 也会走 Maven/`javac`。
 - Gradle：**构建和运行使用**（Gradle 或 OpenIDEA）、**Gradle 使用的 JVM**、**分发**（Gradle 包装器或本地安装）、**Gradle 主路径** 和 **Gradle 用户主目录**。
 
 IDE 会把代理设置传给 jdtls，所以在代理环境下也能解析依赖。工具窗口的用法见[构建工具](/zh/guide/build-tools)。
@@ -105,7 +105,7 @@ IDE 会把代理设置传给 jdtls，所以在代理环境下也能解析依赖�
 | WAR                           | **Tomcat 服务器** 配置，运行在本地 Tomcat 安装上（IDE 不会往安装目录里写东西）   |
 | JUnit 4、JUnit 5、TestNG 测试 | Maven（Surefire `-Dtest=…`）或 Gradle（`--tests …`）测试配置                     |
 
-main 方法、测试类和测试方法旁的边栏图标会创建这些配置；Maven 和 Gradle 的运行配置会从构建文件中自动检测。对 Gradle 项目，**构建和运行使用** 决定“应用程序”是作为 Gradle 的 `JavaExec` 任务运行（默认），还是由 OpenIDEA 用 jdtls 给出的类路径直接启动。
+main 方法、测试类和测试方法旁的边栏图标会创建这些配置；Maven 和 Gradle 的运行配置会从构建文件中自动检测。对 Gradle 项目，**构建和运行使用** 决定“应用程序”是作为 Gradle 的 `JavaExec` 任务运行（默认），还是由 OpenIDEA 用 jdtls 给出的类路径直接启动。对 Maven 项目，同一设置决定应用程序 / Spring Boot 启动前用 Maven/`javac` 编译还是用 jdtls（ECJ）编译；进程仍由 OpenIDEA 启动。
 
 测试结果从 Maven 和 Gradle 生成的 JUnit XML 报告中读取，通过的测试也会列出；测试树支持只重跑失败的测试。Gradle 运行配置的 VM 选项会作用到 Gradle fork 出来的 JVM（`run`、`bootRun`、`test`）。类路径超出命令行长度限制时（Windows 上常见），会改用参数文件或只含 manifest 的 jar。
 

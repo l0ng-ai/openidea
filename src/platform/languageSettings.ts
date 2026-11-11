@@ -212,6 +212,8 @@ export interface LanguagesValid {
       threads: string;
       /** Comma-separated `-P` profiles; empty = POM/settings defaults. */
       activeProfiles: string;
+      /** "Build and run using": Maven/`javac` or jdtls (ECJ) for Application launches. */
+      runUsing: "maven" | "ide";
     };
   };
   /** Preview font size in px; `null` follows the editor font size. */
@@ -286,6 +288,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
       mvndHome: "",
       threads: "",
       activeProfiles: "",
+      runUsing: "ide",
     },
   },
   markdown: { previewFontSize: null },
@@ -456,6 +459,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         mvndHome: text(maven.mvndHome, d.java.maven.mvndHome),
         threads: text(maven.threads, d.java.maven.threads),
         activeProfiles: text(maven.activeProfiles, d.java.maven.activeProfiles),
+        runUsing: oneOf(maven.runUsing, ["maven", "ide"] as const, d.java.maven.runUsing),
       },
     },
     markdown: { previewFontSize: previewSize(markdown.previewFontSize) },

@@ -58,12 +58,14 @@ async fn resolve_launch(
             let non_java = build && compile::launch_has_non_java_sources(&project.root, &model, &module, test);
             let is_maven =
                 model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| project.root.join(&p.dir) == module));
+            let prefer_maven = settings.languages.java.maven.run_using == ide_core::settings::MavenRunUsing::Maven;
             let delegated = build
                 && delegates_to_external_build(
                     is_maven,
                     policy,
                     non_java,
                     cache::has_record(&project.root, &project.build_cache_dir(), &module),
+                    prefer_maven,
                 );
             let external = non_java || delegated;
             (model, external, delegated)
@@ -241,8 +243,15 @@ fn apply_library_classpath(
 /// Whether a launch should be built by the project's build system instead of jdtls.
 /// A Rebuild has to clean the output; jdtls' full build only recompiles sources, so
 /// Maven modules always delegate for it, even when every source is Java.
-fn delegates_to_external_build(is_maven: bool, policy: BuildPolicy, non_java: bool, has_record: bool) -> bool {
-    is_maven && (policy == BuildPolicy::Rebuild || non_java || has_record)
+/// `prefer_maven` is Settings › Maven › Build and run using = Maven (javac for Automatic/Make too).
+fn delegates_to_external_build(
+    is_maven: bool,
+    policy: BuildPolicy,
+    non_java: bool,
+    has_record: bool,
+    prefer_maven: bool,
+) -> bool {
+    is_maven && (prefer_maven || policy == BuildPolicy::Rebuild || non_java || has_record)
 }
 
 fn same_entry(a: &str, b: &str, windows: bool) -> bool {
@@ -323,12 +332,15 @@ mod tests {
 
     #[test]
     fn rebuild_delegates_maven_builds_to_the_build_system() {
-        assert!(delegates_to_external_build(true, BuildPolicy::Rebuild, false, false));
-        assert!(delegates_to_external_build(true, BuildPolicy::Automatic, true, false));
-        assert!(delegates_to_external_build(true, BuildPolicy::Make, false, true));
-        assert!(!delegates_to_external_build(true, BuildPolicy::Automatic, false, false));
-        assert!(!delegates_to_external_build(true, BuildPolicy::Make, false, false));
-        assert!(!delegates_to_external_build(false, BuildPolicy::Rebuild, false, false));
+        assert!(delegates_to_external_build(true, BuildPolicy::Rebuild, false, false, false));
+        assert!(delegates_to_external_build(true, BuildPolicy::Automatic, true, false, false));
+        assert!(delegates_to_external_build(true, BuildPolicy::Make, false, true, false));
+        assert!(!delegates_to_external_build(true, BuildPolicy::Automatic, false, false, false));
+        assert!(!delegates_to_external_build(true, BuildPolicy::Make, false, false, false));
+        assert!(!delegates_to_external_build(false, BuildPolicy::Rebuild, false, false, false));
+        assert!(delegates_to_external_build(true, BuildPolicy::Automatic, false, false, true));
+        assert!(delegates_to_external_build(true, BuildPolicy::Make, false, false, true));
+        assert!(!delegates_to_external_build(false, BuildPolicy::Automatic, false, false, true));
     }
 
     #[test]
