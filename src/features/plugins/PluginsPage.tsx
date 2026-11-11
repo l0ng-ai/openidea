@@ -1222,10 +1222,11 @@ function useSuggestions(market: readonly MarketPlugin[] | null): Map<string, str
   return useMemo(() => suggestedFor(market ?? [], present), [market, present]);
 }
 
-export function PluginsPage() {
+/** Opens on Available, where plugins are found; `initialTab` picks another. */
+export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab } = {}) {
   const { plugins, loaded, loading, error, installing, catalog, catalogError, market, marketUrl, marketError } =
     usePlugins();
-  const [tab, setTab] = useState<Tab>("installed");
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedCatalogId, setSelectedCatalogId] = useState<string | null>(null);
