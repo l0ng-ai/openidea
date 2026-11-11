@@ -616,17 +616,19 @@ impl AgentManager {
         self.tasks.read().values().filter_map(|t| t.state.lock().session_id.clone()).collect()
     }
 
-    /// Sessions on this machine that no task holds yet, newest first (#312).
+    /// Sessions of this project on this machine that no task holds yet, newest first. Reads
+    /// transcripts from disk: call it off the UI and command threads.
     pub fn external_sessions(&self) -> Vec<ExternalSession> {
         let mut out = Vec::new();
+        let root = self.shared.paths.project_root.clone();
         if let Some(spec) = self.shared.spec("claude")
             && let Some(dir) = native::claude::cli::config_dir(&spec.env)
         {
-            out.extend(external::claude_sessions(&dir));
+            out.extend(external::claude_sessions(&dir, &root));
         }
         let home = self.shared.paths.home_dir.clone().or_else(home_dir);
         if let Some(home) = home {
-            out.extend(external::codex_sessions(&home.join(".codex")));
+            out.extend(external::codex_sessions(&home.join(".codex"), &root));
         }
         let known = self.imported_session_ids();
         out.retain(|s| !known.contains(&s.session_id));

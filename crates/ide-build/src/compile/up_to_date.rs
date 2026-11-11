@@ -14,6 +14,20 @@ use std::fs;
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Record {
     fingerprint: LaunchFingerprint,
+    /// Output folders of the built projects that existed after the build, relative to the
+    /// project. Deleting one outside the IDE (`mvn clean` in a terminal) leaves every input
+    /// unchanged, so a build is skipped only while they are all still there.
+    #[serde(default)]
+    outputs: Vec<PathBuf>,
+}
+
+/// The build's output folders that exist now, relative to `root`.
+fn existing_outputs(root: &Path, fingerprint: &LaunchFingerprint) -> Vec<PathBuf> {
+    fingerprint
+        .project_dirs()
+        .flat_map(|dir| ["target/classes", "target/test-classes"].map(|out| dir.join(out)))
+        .filter(|rel| root.join(rel).is_dir())
+        .collect()
 }
 
 fn record_path(cache: &Path, root: &Path, file: Option<&Path>) -> PathBuf {
@@ -69,7 +83,7 @@ pub fn menu_up_to_date(
         restamp(root, &record.fingerprint.mtime_preserved_edits(&current));
         return false;
     }
-    true
+    record.outputs.iter().all(|out| root.join(out).is_dir())
 }
 
 /// Records a successful menu build as the baseline for future up-to-date
@@ -91,7 +105,8 @@ pub fn record_menu_build(
     if path.parent().is_some_and(|p| fs::create_dir_all(p).is_err()) {
         return;
     }
-    let bytes = match serde_json::to_vec(&Record { fingerprint: current }) {
+    let outputs = existing_outputs(root, &current);
+    let bytes = match serde_json::to_vec(&Record { fingerprint: current, outputs }) {
         Ok(bytes) => bytes,
         _ => return,
     };
@@ -148,6 +163,25 @@ mod tests {
         // The project scope is independent of the module scope.
         assert!(!menu_up_to_date(&cache, root, &model, None, &cancel));
         record_menu_build(&cache, root, &model, None, &cancel);
+        assert!(menu_up_to_date(&cache, root, &model, None, &cancel));
+    }
+
+    #[test]
+    fn deleted_outputs_invalidate_the_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root);
+        let cache = root.join("cache");
+        let cancel = CancellationToken::new();
+        for out in ["app/target/classes/t", "lib/target/classes/t", "app/target/test-classes"] {
+            fs::create_dir_all(root.join(out)).unwrap();
+        }
+        record_menu_build(&cache, root, &model, None, &cancel);
+        assert!(menu_up_to_date(&cache, root, &model, None, &cancel));
+        // `mvn clean` outside the IDE: no input changed, but the classes are gone.
+        fs::remove_dir_all(root.join("lib/target")).unwrap();
+        assert!(!menu_up_to_date(&cache, root, &model, None, &cancel));
+        fs::create_dir_all(root.join("lib/target/classes")).unwrap();
         assert!(menu_up_to_date(&cache, root, &model, None, &cancel));
     }
 
