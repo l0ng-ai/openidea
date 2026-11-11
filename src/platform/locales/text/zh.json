@@ -7587,5 +7587,15 @@
   "Suggested for This Project": "为当前项目推荐",
   "Featured": "精选",
   "All Plugins": "全部插件",
-  "Examples": "示例插件"
+  "Examples": "示例插件",
+  "Caches": "缓存",
+  "Local data directory": "本地数据目录",
+  "Current location": "当前位置",
+  "Custom directory": "自定义目录",
+  "Tools, language servers, indexes and caches live here. Empty means the OS default. Changing it restarts the IDE.": "工具、语言服务器、索引和缓存存放在此。留空则使用系统默认位置。修改后将重启 IDE。",
+  "The OPENIDEA_LOCAL_DATA_DIR environment variable is set and takes precedence.": "已设置 OPENIDEA_LOCAL_DATA_DIR 环境变量，其优先级更高。",
+  "Apply and Restart": "应用并重启",
+  "Reset to default": "恢复默认",
+  "Move existing data to the new location": "将现有数据移动到新位置",
+  "Could not change the local data directory": "无法更改本地数据目录"
 }
