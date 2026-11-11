@@ -514,6 +514,8 @@
   "Build": "构建",
   "Build Artifacts": "构建工件",
   "Build Module": "构建模块",
+  "Compile File": "编译文件",
+  "Compiles the current Java file with javac, without building its module": "使用 javac 仅编译当前 Java 文件，不构建其模块",
   "Build Project": "构建项目",
   "Build failed": "构建失败",
   "Build files changed since the last reload": "自上次重新加载以来构建文件已更改",
