@@ -2,25 +2,19 @@
 //!
 //! `[NSWindow zoom:]` runs one animated resize, and WebKit hides the page for the duration of an
 //! animated resize: the frame grows over an empty window and the content appears only at the end.
-//! Stepping the frame ourselves makes every step an ordinary (non-animated) resize, so the webview
-//! lays its content out again at each step and the content grows with the frame.
+//! Setting the frame in one ordinary (non-animated) resize lets the webview lay the page out at
+//! once, at its final size.
 //!
 //! The frame to go back to outlives the process in `window-zoom.json`, next to the window-state
 //! plugin's file. That plugin only ever saves the frame the window has now, so a window left zoomed
 //! when the app quits would come back filling the work area with nothing left to restore to.
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
-use std::time::Duration;
 
 use ide_core::{IdeError, IdeResult};
 use tauri::{Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
 
-/// The duration AppKit itself uses for an animated window resize: `NSWindow.animationResizeTime(_:)`
-/// returns 0.35 on a 60 Hz display, so matching it keeps the zoom in line with the system.
-const DURATION: Duration = Duration::from_millis(350);
-/// Fallback pacing where the webview cannot report presentation updates (Windows, Linux).
-const STEP: Duration = Duration::from_millis(16);
 /// Frames this close count as one frame: a window filling the work area and the work area itself,
 /// or a restored frame and the frame it was saved from, differ by the odd pixel.
 const SLACK: i64 = 2;
@@ -32,15 +26,8 @@ type Frame = (i32, i32, u32, u32);
 /// them. A destroyed window drops its entry, so a re-opened window never restores a stale frame.
 static ZOOMED: LazyLock<Mutex<HashMap<String, Frame>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Windows whose frame is being stepped right now; a second toggle would fight the first.
-static MOVING: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
-
 fn zoomed() -> std::sync::MutexGuard<'static, HashMap<String, Frame>> {
     ZOOMED.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn moving() -> std::sync::MutexGuard<'static, HashSet<String>> {
-    MOVING.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn err(e: tauri::Error) -> IdeError {
@@ -51,17 +38,6 @@ fn err(e: tauri::Error) -> IdeError {
 pub fn forget(label: &str) {
     let key = crate::windows::state_key(label).to_owned();
     zoomed().remove(&key);
-    moving().remove(label);
-}
-
-/// Clears the window's moving entry when its animation ends, panic included: an entry left behind
-/// would swallow every later double click on that window.
-struct Moving(String);
-
-impl Drop for Moving {
-    fn drop(&mut self) {
-        moving().remove(&self.0);
-    }
 }
 
 /// What a double click does from the frame the window has now.
@@ -92,88 +68,10 @@ fn same(a: Frame, b: Frame) -> bool {
         .all(|d| i64::from(d).abs() <= SLACK)
 }
 
-fn lerp(from: u32, to: u32, t: f64) -> u32 {
-    (from as f64 + (to as f64 - from as f64) * t).round() as u32
-}
-
-fn lerp_i(from: i32, to: i32, t: f64) -> i32 {
-    (from as f64 + (to as f64 - from as f64) * t).round() as i32
-}
-
-/// Resolves once the webview has presented the frame it is drawing now.
-///
-/// `_doAfterNextPresentationUpdate:` is the only synchronisation primitive WKWebView offers on
-/// macOS; without it the window moves on while the page still shows its previous size, which is
-/// the tearing a fixed timer produces.
-#[cfg(target_os = "macos")]
-fn next_presentation(window: &WebviewWindow) -> Option<std::sync::mpsc::Receiver<()>> {
-    use block2::RcBlock;
-    use objc2::runtime::AnyObject;
-
-    let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
-    let sent = window
-        .with_webview(move |webview| unsafe {
-            let view = webview.inner().cast::<AnyObject>();
-            // Private SPI: a WebKit without it would raise "unrecognized selector" and abort, so
-            // check first; dropping `tx` then makes the caller fall back to a fixed step.
-            let present = objc2::sel!(_doAfterNextPresentationUpdate:);
-            let responds: bool = objc2::msg_send![view, respondsToSelector: present];
-            if !responds {
-                return;
-            }
-            let block = RcBlock::new(move || {
-                let _ = tx.try_send(());
-            });
-            let _: () = objc2::msg_send![view, _doAfterNextPresentationUpdate: &*block];
-        })
-        .is_ok();
-    sent.then_some(rx)
-}
-
-/// Blocks until the webview presented, at most [`PRESENT_TIMEOUT`], so a missed callback cannot
-/// stall the animation.
-#[cfg(target_os = "macos")]
-fn wait_presentation(window: &WebviewWindow) {
-    const PRESENT_TIMEOUT: Duration = Duration::from_millis(60);
-    let presented = next_presentation(window).map(|rx| rx.recv_timeout(PRESENT_TIMEOUT));
-    if !matches!(presented, Some(Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Timeout))) {
-        std::thread::sleep(STEP);
-    }
-}
-
-/// Moves the window through `STEPS` frames, so the webview re-lays out at each one.
-fn step_to(window: WebviewWindow, from: Frame, to: Frame) {
-    let label = window.label().to_owned();
-    std::thread::spawn(move || {
-        let _moving = Moving(label);
-        let start = std::time::Instant::now();
-        loop {
-            let t = (start.elapsed().as_secs_f64() / DURATION.as_secs_f64()).min(1.0);
-            // Smoothstep, like AppKit's own window animations: gentle start, gentle settle.
-            let eased = t * t * (3.0 - 2.0 * t);
-            let last = t >= 1.0;
-            let frame = if last {
-                to
-            } else {
-                (
-                    lerp_i(from.0, to.0, eased),
-                    lerp_i(from.1, to.1, eased),
-                    lerp(from.2, to.2, eased),
-                    lerp(from.3, to.3, eased),
-                )
-            };
-            let _ = window.set_position(PhysicalPosition::new(frame.0, frame.1));
-            let _ = window.set_size(PhysicalSize::new(frame.2, frame.3));
-            if last {
-                break;
-            }
-            // Wait for the page to present this size before moving the frame again.
-            #[cfg(target_os = "macos")]
-            wait_presentation(&window);
-            #[cfg(not(target_os = "macos"))]
-            std::thread::sleep(STEP);
-        }
-    });
+/// Moves and resizes the window to `frame` in one step, without an animation.
+fn set_frame(window: &WebviewWindow, frame: Frame) -> IdeResult<()> {
+    window.set_position(PhysicalPosition::new(frame.0, frame.1)).map_err(err)?;
+    window.set_size(PhysicalSize::new(frame.2, frame.3)).map_err(err)
 }
 
 /// Reads the frame a screenshot of the window would show: outer position and inner size.
@@ -235,9 +133,6 @@ pub fn toggle(window: &WebviewWindow) -> IdeResult<bool> {
     }
     let label = window.label().to_owned();
     let key = crate::windows::state_key(window.label()).to_owned();
-    if moving().contains(&label) {
-        return Ok(zoomed().contains_key(&key));
-    }
     let current = frame_of(window)?;
     let Some(monitor) = window.current_monitor().map_err(err)?.or(window.primary_monitor().map_err(err)?) else {
         return Ok(false);
@@ -256,14 +151,12 @@ pub fn toggle(window: &WebviewWindow) -> IdeResult<bool> {
         Step::Zoom => {
             zoomed().insert(key.clone(), current);
             remember(window, &key, current);
-            moving().insert(label);
-            step_to(window.clone(), current, work);
+            set_frame(window, work)?;
             Ok(true)
         }
         Step::Restore(frame) => {
             zoomed().remove(&key);
-            moving().insert(label);
-            step_to(window.clone(), current, frame);
+            set_frame(window, frame)?;
             Ok(false)
         }
         // A window the window-state plugin restored maximized fills the work area with no frame
