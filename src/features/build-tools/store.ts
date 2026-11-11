@@ -352,7 +352,7 @@ export async function addProjects() {
       group: "tools",
       level: "warning",
       title: tx`Some Maven projects were not added`,
-      body: `These are outside the open project, and Maven only links POMs inside it: ${outside.slice(0, 3).join(", ")}${outside.length > 3 ? ` (+${outside.length - 3} more)` : ""}`,
+      body: tx`These are outside the open project, and Maven only links POMs inside it: ${outside.slice(0, 3).join(", ")}${outside.length > 3 ? ` (+${outside.length - 3} more)` : ""}`,
       key: "maven-add-outside-root",
     });
 }
