@@ -96,19 +96,22 @@ function MainMenuBar({ merged, onExpandedChange }: MainMenuProps & { merged: boo
   const previousFocus = useRef<HTMLElement | null>(null);
   const [fits, setFits] = useState(false);
   const pressedTitle = useRef(false);
-  const persistent = merged && fits;
+  // #1521: always show the menu titles instead of the hamburger button,
+  // even when the window is too narrow for the merged titles to fit.
+  const alwaysShow = useProject((s) => s.settings?.appearance?.alwaysShowMainMenu === true);
+  const persistent = (merged && fits) || alwaysShow;
   const showTitles = persistent || (!merged && expanded);
 
   useEffect(() => {
     let disposed = false;
-    if (merged)
+    if (merged || alwaysShow)
       void loadMenus().then((top) => {
         if (!disposed) setMenus(top);
       });
     return () => {
       disposed = true;
     };
-  }, [merged]);
+  }, [merged, alwaysShow]);
   useEffect(() => {
     if (!merged || open === null) return;
     let disposed = false;
@@ -132,15 +135,16 @@ function MainMenuBar({ merged, onExpandedChange }: MainMenuProps & { merged: boo
       const next = menus.length > 0 && slot.current!.clientWidth >= measure.current!.scrollWidth;
       setFits(next);
       // Each presentation's menu closes with it, and must not reopen when it returns.
+      // With "always show" the titles never collapse, so an open menu stays open.
       if (next) setExpanded(false);
-      else setOpen(null);
+      else if (!alwaysShow) setOpen(null);
     };
     const observer = new ResizeObserver(update);
     observer.observe(slot.current);
     observer.observe(measure.current);
     update();
     return () => observer.disconnect();
-  }, [merged, menus]);
+  }, [merged, menus, alwaysShow]);
 
   const close = () => {
     setOpen(null);

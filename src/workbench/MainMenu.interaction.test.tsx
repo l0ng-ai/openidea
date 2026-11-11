@@ -253,6 +253,30 @@ describe("main menu presentation", () => {
     expect(screen.getByRole("button", { name: "Main Menu" })).toBeInTheDocument();
   });
 
+  it.each(["hamburger", "merged"] as const)(
+    "%s shows titles instead of the hamburger button when always showing the main menu",
+    async (style) => {
+      // A narrow window where merged titles would not fit: the flag keeps them visible anyway.
+      if (style === "merged") available = 100;
+      act(() =>
+        useProject.setState({
+          settings: { appearance: { mainMenuStyle: style, alwaysShowMainMenu: true } } as Settings,
+        }),
+      );
+      render(<MainMenu />);
+      await screen.findByRole("menubar");
+      expect(screen.queryByRole("button", { name: "Main Menu" })).toBeNull();
+      expect(titles().getByRole("menuitem", { name: "File" })).toBeInTheDocument();
+      // Dismissing a menu keeps the titles instead of collapsing back to the button.
+      fireEvent.click(titles().getByRole("menuitem", { name: "File" }));
+      expect(await screen.findByRole("menu", { name: "File" })).toBeInTheDocument();
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(screen.getByRole("menubar")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Main Menu" })).toBeNull();
+    },
+  );
+
   it("applies the setting immediately and restores toolbar visibility when switching from an expanded hamburger", async () => {
     const expanded = vi.fn();
     render(<MainMenu onExpandedChange={expanded} />);

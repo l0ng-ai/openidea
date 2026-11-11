@@ -83,6 +83,7 @@ import {
   changeNodeDiff,
   changeNodeDiffData,
   diffInput,
+  openDiff,
   openVcsDiff,
   opensDiffOnActivate,
   vcsDiffInFront,
@@ -614,6 +615,17 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
     return editor?.onActiveInputChange?.(followDiff);
   }, [byKey, revealNode]);
 
+  // While the active tab shows one of this tree's diffs, a single selected file replaces it,
+  // keeping focus in the tree (a click or arrow key walks the changes).
+  const followSelection = (nodes: readonly ChangeNode[]) => {
+    const node = nodes.length === 1 ? nodes[0] : undefined;
+    if (mode === "dialog" || node?.type !== "file" || !node.path) return;
+    const active = maybeEditorService()?.activeInput?.();
+    if (active?.kind !== DIFF_KIND || active.key !== followedDiff.current) return;
+    if (diffInput(changeNodeDiff(node)).key === active.key) return;
+    void openDiff(changeNodeDiffData(roots, node), { preview: true, focus: false });
+  };
+
   // Reveal only after the ancestors have expanded, without moving keyboard focus.
   useLayoutEffect(() => {
     if (nodeToReveal) treeRef.current?.reveal(nodeToReveal.key);
@@ -773,6 +785,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               selectionKeys: [...sel],
               selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
             });
+            followSelection(nodes);
           }}
           onActivate={(n) => openNode(n, roots, mode === "dialog")}
           onContextMenu={(node, sel, e: MouseEvent) => {

@@ -358,6 +358,11 @@ function UiOptionsGrid() {
             label="Open main menu with a lone Alt press"
             hint="When off, Alt key combinations still work but pressing Alt alone does not focus the main menu"
           />
+          <BoundToggle
+            k="appearance.alwaysShowMainMenu"
+            label="Always show the main menu"
+            hint="Show menu titles instead of the hamburger button, even when the window is narrow"
+          />
         </>
       }
     />

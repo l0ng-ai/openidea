@@ -6988,6 +6988,8 @@
   "Servers": "服务器",
   "Open main menu with a lone Alt press": "单独按下 Alt 打开主菜单",
   "When off, Alt key combinations still work but pressing Alt alone does not focus the main menu": "关闭后，Alt 组合键仍然可用，但单独按下 Alt 不会聚焦主菜单",
+  "Always show the main menu": "始终显示主菜单",
+  "Show menu titles instead of the hamburger button, even when the window is narrow": "显示菜单标题而不是汉堡菜单按钮，即使窗口较窄",
   "the bundle of {gemfile} has no `debug` gem. Add `gem \"debug\"` to the Gemfile and run `bundle install`": "{gemfile} 的 bundle 中没有 `debug` gem。请在 Gemfile 中添加 `gem \"debug\"`，然后运行 `bundle install`",
   "No background tasks": "没有后台任务",
   "Status Bar Widgets": "状态栏微件",
@@ -7326,5 +7328,7 @@
   "Highlight occurrences of selected text": "高亮所选文本的匹配项",
   "Some shortcuts are already used by another app": "某些快捷键已被其他应用占用",
   "These shortcuts never reach the IDE: {shortcuts}. Open Keymap to reassign them.": "以下快捷键无法到达 IDE：{shortcuts}。请打开按键映射为其重新指定快捷键。",
-  "Open Keymap": "打开按键映射"
+  "Open Keymap": "打开按键映射",
+  "Show What's New after an update": "更新后显示“新功能”页面",
+  "Opens a page with the release notes when a new version starts. Help › What's New opens it any time.": "新版本首次启动时显示包含发行说明的页面。可随时通过“帮助 › 新功能”打开。"
 }

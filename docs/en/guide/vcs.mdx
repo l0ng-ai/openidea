@@ -181,7 +181,7 @@ Right-click a commit for **Copy Revision Number** (`⌥⇧⌘C` / `Ctrl+Alt+Shif
 
 ### Rewrite history
 
-From the log you can **Edit Commit Message…**, **Fixup…**, **Squash Into…**, **Drop Commit**, **Squash Commits…** and **Interactively Rebase from Here…**. The interactive rebase dialog lets you pick, reword, edit, squash, fixup, drop and reorder commits. These actions are disabled for commits that are already pushed.
+From the log you can **Edit Commit Message…**, **Fixup…**, **Squash Into…**, **Drop Commit**, **Squash Commits…** and **Interactively Rebase from Here…**. The interactive rebase dialog lets you pick, reword, edit, squash, fixup, drop and reorder commits. These actions also work for commits that are already pushed: rewriting them is confirmed first, and pushing afterwards needs a force push. Commits already pushed from a protected branch cannot be rewritten.
 
 Limits: interactive rebase doesn't support ranges with merge commits, and **Undo Commit…** works only on the latest commit (its changes go back to a changelist).
 

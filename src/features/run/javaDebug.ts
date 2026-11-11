@@ -86,6 +86,13 @@ export function jdwpLaunch(config: RunConfig, jdwpPort?: number): RunConfig | nu
   return null;
 }
 
+/**
+ * Surefire / Failsafe print this banner just before they start the forked test JVM. It comes from
+ * Maven itself, so unlike the fork's "Listening" line it is not held back until the tests run.
+ */
+const SGR = /\x1b\[[0-9;]*m/g; // eslint-disable-line no-control-regex
+export const isTestForkBanner = (line: string) => /^(?:\[INFO\])?\s*T E S T S$/.test(line.replace(SGR, "").trim());
+
 /** A Maven test launch: its Surefire / Failsafe fork holds the "Listening" line, so pin its JDWP port. */
 function needsPinnedPort(config: RunConfig): boolean {
   if (config.kind !== "maven" && !/(^|\/)mvnw?(\.cmd)?$/.test(config.command)) return false;
@@ -119,7 +126,9 @@ export async function debugWithAgent(config: RunConfig, show?: boolean): Promise
     launch,
     show,
     onLine: (line) => {
-      const port = jdwpListeningPort(line);
+      // The pinned port is attached when the fork starts: java-debug retries the connect for
+      // 30 s, which compiling and resolving dependencies before the tests can use up.
+      const port = jdwpListeningPort(line) ?? (pinned !== null && isTestForkBanner(line) ? pinned : null);
       if (port === null) return;
       if (sessionId) attach(port);
       else waiting.push(port);
@@ -127,8 +136,6 @@ export async function debugWithAgent(config: RunConfig, show?: boolean): Promise
   });
   if (!session) return true;
   sessionId = session.id;
-  // The pinned port needs no output line: java-debug retries the attach while the fork starts.
-  if (pinned !== null) attach(pinned);
   waiting.splice(0).forEach(attach);
   return true;
 }

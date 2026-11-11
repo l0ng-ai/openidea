@@ -608,8 +608,66 @@ pub async fn app_install_update(
     result
 }
 
+/// Release notes of `version` from the update manifest (`latest.json`), read
+/// through the configured source. An install records the notes it saw, so this
+/// is only for an update installed outside the app. `Ok(None)` when the manifest
+/// covers another version or carries no notes.
+#[tauri::command]
+#[specta::specta]
+pub async fn app_release_notes(app: AppHandle, version: String, source: UpdateSource) -> IdeResult<Option<String>> {
+    let endpoints = match update_endpoint_env() {
+        Some(url) => vec![url],
+        None => source_endpoints(config_endpoints(&app), source, is_nightly(&app.package_info().version.to_string())),
+    };
+    let client = ide_http::client::shared()?;
+    for endpoint in endpoints {
+        // A hanging endpoint must not leave the page on "Fetching release notes…".
+        let fetched = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let Ok(response) = client.get(&endpoint).send().await else {
+                return None;
+            };
+            if !response.status().is_success() {
+                return None;
+            }
+            response.text().await.ok()
+        })
+        .await;
+        let Ok(Some(text)) = fetched else { continue };
+        if let Some(notes) = notes_for(&text, &version) {
+            return Ok(Some(notes));
+        }
+    }
+    Ok(None)
+}
+
+/// The notes of `version` in a manifest, when that is the entry it lists.
+fn notes_for(manifest: &str, version: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(manifest).ok()?;
+    if value.get("version")?.as_str()? != version {
+        return None;
+    }
+    let notes = value.get("notes")?.as_str()?.trim();
+    (!notes.is_empty()).then(|| notes.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn release_notes_come_from_the_manifest_of_that_version() {
+        let manifest = serde_json::json!({
+            "version": "0.1.40",
+            "notes": "## What's new\n\n- dev containers",
+            "pub_date": "2026-11-01T00:00:00Z",
+        })
+        .to_string();
+        assert_eq!(notes_for(&manifest, "0.1.40").as_deref(), Some("## What's new\n\n- dev containers"));
+        // Another version, empty notes, or not JSON: nothing to show.
+        assert_eq!(notes_for(&manifest, "0.1.41"), None);
+        assert_eq!(notes_for(r#"{ "version": "0.1.40", "notes": "  " }"#, "0.1.40"), None);
+        assert_eq!(notes_for(r#"{ "version": "0.1.40" }"#, "0.1.40"), None);
+        assert_eq!(notes_for("not json", "0.1.40"), None);
+    }
+
     #[test]
     fn menu_configuration_follows_the_active_window_or_its_settings_parent() {
         for (source, target, allowed) in [

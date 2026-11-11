@@ -404,6 +404,55 @@ it.each([
   expect(openInput.mock.calls[0]![0].data).toMatchObject({ path, reveal });
 });
 
+describe("Compare Previous / Next File buttons (#2492)", () => {
+  const chained = (index: number) => {
+    texts.HEAD = "same\nold\n";
+    texts.abc123 = "same\nnew\n";
+    const items: DiffData[] = ["/p/a.ts", "/p/b.ts", "/p/c.ts"].map((path) => ({
+      path,
+      left: { type: "rev", rev: "HEAD" },
+      right: { type: "rev", rev: "abc123" },
+    }));
+    return diffInput(withChain(items, index));
+  };
+  const fileButtons = () => [
+    screen.getByRole("button", { name: "Compare Previous File" }),
+    screen.getByRole("button", { name: "Compare Next File" }),
+  ];
+
+  it("follows Next Difference in the toolbar and steps to the next file at once", async () => {
+    render(<DiffEditor input={chained(1)} />);
+    const toolbar = screen.getByRole("toolbar", { name: "Diff" });
+    expect(
+      within(toolbar)
+        .getAllByRole("button")
+        .slice(0, 4)
+        .map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Previous Difference", "Next Difference", "Compare Previous File", "Compare Next File"]);
+    fireEvent.click(fileButtons()[1]!);
+    await waitFor(() => expect(openInput).toHaveBeenCalledOnce());
+    expect(openInput.mock.calls[0]![0].data).toMatchObject({
+      path: "/p/c.ts",
+      reveal: "first",
+    });
+  });
+
+  it.each([
+    [0, [true, false]],
+    [1, [false, false]],
+    [2, [false, true]],
+  ])("disables the direction without a file at index %i", (index, disabled) => {
+    render(<DiffEditor input={chained(index)} />);
+    expect(fileButtons().map((b) => b.hasAttribute("disabled"))).toEqual(disabled);
+  });
+
+  it("has no file buttons for a single diff", () => {
+    render(<DiffEditor input={input} />);
+    expect(screen.queryByRole("button", { name: "Compare Next File" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Compare Previous File" })).toBeNull();
+  });
+});
+
 const doc = (s: string) => Text.of(s.split("\n"));
 
 describe("mapLine", () => {
