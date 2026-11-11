@@ -260,6 +260,8 @@ describe("catalogs", () => {
     "⌘Enter",
     "Fork",
     "Shell",
+    "ID",
+    "my-agent",
     "Java",
     "Python",
     "C/C++",
