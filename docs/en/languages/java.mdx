@@ -7,12 +7,12 @@ Java code insight comes from the Eclipse JDT Language Server (jdtls), extended w
 
 ## Language servers
 
-| Language               | Server                                    | Fallback                                                | Debugger                                |
-| ---------------------- | ----------------------------------------- | ------------------------------------------------------- | --------------------------------------- |
-| Java                   | Eclipse JDT Language Server (`jdtls`)     | `kmp-lsp`                                               | Microsoft java-debug, loaded into jdtls |
-| Kotlin                 | Kotlin LSP (JetBrains, `kotlin-lsp`)      | Kotlin Language Server (fwcd, `kotlin-language-server`) | Kotlin Debug Adapter (fwcd)             |
-| Groovy, Gradle scripts | `groovy-language-server` (you provide it) |                                                         |                                         |
-| JSP                    | none (highlighting only)                  |                                                         |                                         |
+| Language               | Server                                    | Fallback                                                           | Debugger                                |
+| ---------------------- | ----------------------------------------- | ------------------------------------------------------------------ | --------------------------------------- |
+| Java                   | Eclipse JDT Language Server (`jdtls`)     | `kmp-lsp`                                                          | Microsoft java-debug, loaded into jdtls |
+| Kotlin                 | Kotlin LSP (JetBrains, `kotlin-lsp`)      | Kotlin Language Server (fwcd, `kotlin-language-server`), `kmp-lsp` | Kotlin Debug Adapter (fwcd)             |
+| Groovy, Gradle scripts | `groovy-language-server` (you provide it) |                                                                    |                                         |
+| JSP                    | none (highlighting only)                  |                                                                    |                                         |
 
 A fallback starts only while the server listed before it is not installed. To pick one explicitly, open **Settings › Languages & Frameworks › Language Servers**, select either server and use **Language server for Java** (or Kotlin): **Automatic** uses the first one available, **None** turns code insight off. The choice can be global or for the current project.
 
