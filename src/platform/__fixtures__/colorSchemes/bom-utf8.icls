@@ -1,0 +1,7 @@
+﻿<scheme name="Bom Light" version="142" parent_scheme="Default">
+  <colors><option name="CARET_COLOR" value="ff00ff" /></colors>
+  <attributes>
+    <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="1122ff" /><option name="FONT_TYPE" value="1" /></value></option>
+    <option name="TEXT"><value><option name="FOREGROUND" value="334455" /><option name="BACKGROUND" value="f0f0f0" /></value></option>
+  </attributes>
+</scheme>

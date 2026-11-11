@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { BlockType, RectangleMarker, type BlockInfo } from "@codemirror/view";
 import {
+  alignLeftEdges,
+  dropInsetSlivers,
   cutOutGaps,
   fillGaps,
   fillRowEnds,
@@ -247,5 +249,57 @@ describe("fillGaps", () => {
   it("adds nothing without gaps", () => {
     const rows = [new RectangleMarker(C, 0, 0, 300, 20)];
     expect(fillGaps(rows, C, [], 0, 300)).toEqual(rows);
+  });
+});
+
+describe("alignLeftEdges", () => {
+  const C = "sel";
+  it("moves rectangles at the real line start to the rounded one and keeps their right edges", () => {
+    const out = alignLeftEdges(
+      [new RectangleMarker(C, 40.5, 0, 100, 20), new RectangleMarker(C, 40, 20, 300, 20)],
+      C,
+      40.5,
+      40,
+    );
+    expect(out.map((m) => [m.left, m.left + m.width!])).toEqual([
+      [40, 140.5],
+      [40, 340],
+    ]);
+  });
+
+  it("leaves rectangles that start elsewhere, and everything when the inset is whole", () => {
+    const m = new RectangleMarker(C, 80, 0, 50, 20);
+    expect(alignLeftEdges([m], C, 40.5, 40)).toEqual([m]);
+    const at = new RectangleMarker(C, 40, 0, 50, 20);
+    expect(alignLeftEdges([at], C, 40, 40)).toEqual([at]);
+  });
+});
+
+describe("dropInsetSlivers", () => {
+  const C = "sel";
+  it("drops rectangles covering only the inset before the text", () => {
+    const row = new RectangleMarker(C, 40, 0, 300, 20);
+    expect(dropInsetSlivers([row, new RectangleMarker(C, 40, 20, 0.5, 20)], 40, 40.5)).toEqual([row]);
+  });
+
+  it("leaves the middle rows whole when dropped after growing the rows", () => {
+    // Rows of 20px; the selection runs from row 0 to the start of row 3, where CodeMirror draws a sliver.
+    const rowAt = (y: number) => ({ top: Math.floor(y / 20) * 20, bottom: Math.floor(y / 20) * 20 + 20 });
+    const drawn = [
+      new RectangleMarker(C, 60, 2, 280, 16),
+      new RectangleMarker(C, 40, 18, 300, 44),
+      new RectangleMarker(C, 40, 62, 0.5, 16),
+    ];
+    const out = dropInsetSlivers(growToLineBoxes(drawn, C, rowAt), 40, 40.5);
+    expect(out.map((m) => [m.top, m.top + m.height])).toEqual([
+      [0, 20],
+      [20, 60],
+    ]);
+  });
+
+  it("keeps rectangles that reach into the text or start elsewhere", () => {
+    const into = new RectangleMarker(C, 40, 0, 8, 20);
+    const mid = new RectangleMarker(C, 80, 0, 0.5, 20);
+    expect(dropInsetSlivers([into, mid], 40, 40.5)).toEqual([into, mid]);
   });
 });

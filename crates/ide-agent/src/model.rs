@@ -630,3 +630,21 @@ pub struct AcpImportOutcome {
     #[serde(default)]
     pub reason: String,
 }
+
+/// What accepting a worktree task's changes copied into the local checkout.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAcceptOutcome {
+    /// Relative paths copied into the checkout (uncommitted), including ones already identical.
+    pub accepted: Vec<String>,
+    /// Files left alone because the checkout has its own edits to them.
+    pub skipped: Vec<AgentAcceptSkipped>,
+}
+
+/// A file accept left alone, with why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAcceptSkipped {
+    pub path: String,
+    pub reason: String,
+}

@@ -155,13 +155,24 @@ it("loads raw HTML images without allowing alternate sources or forged paths", a
   expect(container.querySelector("source, [srcset], [onerror]")).toBeNull();
 });
 
-it.each([PIXEL, "https://example.com/code.png", "http://localhost:9000/code.png"])(
-  "keeps an inline or web image: %s",
+it("keeps an inline image: a data URL loads without a request", () => {
+  render(<Markdown text={`![QR](${PIXEL})`} cwd="/repo" />);
+  expect(screen.getByRole("img")).toHaveAttribute("src", PIXEL);
+  expect(screen.getByRole("img")).toHaveAttribute("referrerpolicy", "no-referrer");
+  expect(readImage).not.toHaveBeenCalled();
+});
+
+it.each(["https://example.com/code.png", "http://localhost:9000/code.png"])(
+  "loads a web image in a reply only on a click: %s",
   (src) => {
-    render(<Markdown text={`![QR](${src})`} cwd="/repo" />);
-    expect(screen.getByRole("img")).toHaveAttribute("src", src);
-    expect(screen.getByRole("img")).toHaveAttribute("referrerpolicy", "no-referrer");
+    const { container } = render(<Markdown text={`![QR](${src})`} cwd="/repo" />);
+    const img = container.querySelector("img")!;
+    // Not fetched on render: a button stands in, the image is hidden with no src.
+    expect(img).not.toHaveAttribute("src");
     expect(readImage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: `Load image from ${new URL(src).host}` }));
+    expect(img).toHaveAttribute("src", src);
+    expect(img).toHaveAttribute("referrerpolicy", "no-referrer");
   },
 );
 
@@ -213,10 +224,23 @@ it.each(["javascript:alert(1)", "data:text/html,test", "/tmp/%ZZ.png", "/tmp/cod
 );
 
 it("reports network or decode failures without leaving a broken source", () => {
-  render(<Markdown text="![QR](https://example.com/gone.png)" cwd="/repo" />);
-  fireEvent.error(screen.getByRole("img"));
-  expect(screen.getByRole("img")).not.toHaveAttribute("src");
-  expect(screen.getByRole("img")).toHaveAttribute("alt", "Unable to load image: https://example.com/gone.png");
+  const { container } = render(<Markdown text="![QR](https://example.com/gone.png)" cwd="/repo" />);
+  fireEvent.click(screen.getByRole("button", { name: "Load image from example.com" }));
+  const img = container.querySelector("img")!;
+  fireEvent.error(img);
+  expect(img).not.toHaveAttribute("src");
+  expect(img).toHaveAttribute("alt", "Unable to load image: https://example.com/gone.png");
+});
+
+it("drops a reply attribute that names another host, so nothing fetches on render", () => {
+  const { container } = render(
+    <Markdown
+      text={'<video poster="https://example.com/p.jpg"></video><p background="//evil.test/x">x</p>'}
+      cwd="/repo"
+    />,
+  );
+  expect(container.querySelector("[poster]")).toBeNull();
+  expect(container.querySelector("[background]")).toBeNull();
 });
 
 describe("mermaid diagrams in a reply", () => {

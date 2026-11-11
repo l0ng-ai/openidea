@@ -3,8 +3,8 @@
 use crate::state::AppState;
 use ide_agent::registry::AgentRegistry;
 use ide_agent::{
-    AcpImportOutcome, AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider,
-    AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpServer, McpServerInput, NewAgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt,
+    AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
@@ -380,6 +380,19 @@ pub async fn agent_rollback_changes(
     paths: Option<Vec<String>>,
 ) -> IdeResult<()> {
     agent::rollback_changes(&state.host, window.label(), task, paths).await
+}
+
+/// Accept: copies a worktree task's changed files among `paths` (all without) into the
+/// local checkout, uncommitted; files the checkout changed itself are left alone and reported.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_accept_changes(
+    window: Window,
+    state: State<'_, AppState>,
+    task: String,
+    paths: Option<Vec<String>>,
+) -> IdeResult<AgentAcceptOutcome> {
+    agent::accept_changes(&state.host, window.label(), task, paths).await
 }
 
 /// Content of `path` when the task started (left side of its diff).

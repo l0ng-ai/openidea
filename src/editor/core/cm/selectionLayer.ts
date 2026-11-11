@@ -157,6 +157,35 @@ export function cutOutGaps(
   return out;
 }
 
+/**
+ * Moves the rectangles that start at `from` to `to`, keeping their right edges. CodeMirror starts the rows a selection
+ * runs through from the line start at the lines' left padding rounded down to whole pixels (`parseInt`), and a row
+ * that starts at a line's first character at the real padding, so with a fractional inset one row of a selection
+ * started a device pixel to the right of the others.
+ */
+export function alignLeftEdges(
+  markers: readonly RectangleMarker[],
+  className: string,
+  from: number,
+  to: number,
+): RectangleMarker[] {
+  if (Math.abs(to - from) < 0.01) return [...markers];
+  return markers.map((m) =>
+    m.width !== null && Math.abs(m.left - from) < 0.01
+      ? new RectangleMarker(className, to, m.top, m.width - (to - from), m.height)
+      : m,
+  );
+}
+
+/**
+ * Drops the rectangles that start at `from` and end by `to`, covering only the inset before a line's text. A selection
+ * that ends at the start of a line made CodeMirror paint that line from its rounded edge (`from`) to the first
+ * character (`to`): a sliver left of the text, a device pixel wide with a fractional inset. IDEA paints nothing there.
+ */
+export function dropInsetSlivers(markers: readonly RectangleMarker[], from: number, to: number): RectangleMarker[] {
+  return markers.filter((m) => m.width === null || Math.abs(m.left - from) >= 0.01 || m.left + m.width > to + 0.01);
+}
+
 /** Adds one rectangle from `left` to `right` over each of `gaps` (layer coordinates). */
 export function fillGaps(
   markers: readonly RectangleMarker[],
@@ -204,6 +233,21 @@ function lineRightEdge(view: EditorView): { rightSide: number; pad: number } {
   const scroller = view.scrollDOM.getBoundingClientRect();
   const base = scroller.left - view.scrollDOM.scrollLeft * view.scaleX;
   return { rightSide: view.contentDOM.getBoundingClientRect().right - pad - base, pad };
+}
+
+/**
+ * Where CodeMirror starts a selection running through a line start (`rounded`: the left padding cut to whole pixels)
+ * and where it starts one beginning at a line's first character (`real`: the padding as it is), in layer coordinates.
+ */
+function lineLeftEdge(view: EditorView): { rounded: number; real: number } | null {
+  const line = view.contentDOM.querySelector(".cm-line");
+  if (!line) return null;
+  const style = getComputedStyle(line);
+  const scroller = view.scrollDOM.getBoundingClientRect();
+  const left = view.contentDOM.getBoundingClientRect().left - (scroller.left - view.scrollDOM.scrollLeft * view.scaleX);
+  const rounded = left + parseInt(style.paddingLeft) + Math.min(0, parseInt(style.textIndent));
+  const real = left + parseFloat(style.paddingLeft) + Math.min(0, parseFloat(style.textIndent));
+  return Number.isFinite(rounded) && Number.isFinite(real) ? { rounded, real } : null;
 }
 
 /** Layer y = document y + this offset. */
@@ -275,6 +319,7 @@ const snappedSelectionLayer = layer({
     if (!ranges.length) return [];
     const dpr = window.devicePixelRatio || 1;
     const edge = view.textDirection === Direction.LTR ? lineRightEdge(view) : null;
+    const start = view.textDirection === Direction.LTR ? lineLeftEdge(view) : null;
     const offset = layerOffset(view);
     const out: RectangleMarker[] = [];
     for (const r of ranges) {
@@ -285,15 +330,21 @@ const snappedSelectionLayer = layer({
         first: hasTextBlockAt(view, from, 1),
         last: hasTextBlockAt(view, to, -1),
       });
-      if (!lines.length) continue;
+      // The sliver CodeMirror draws on a line the selection ends at the start of marks that line as the last row for
+      // growToLineBoxes, so it goes only after the rows are grown. Then every row starts at the rounded edge: a pixel
+      // left of the text, as IDEA leaves a gap between them.
+      const aligned = start
+        ? alignLeftEdges(dropInsetSlivers(lines, start.rounded, start.real), CLASS, start.real, start.rounded)
+        : lines;
+      if (!aligned.length) continue;
       const full = edge
         ? fillRowEnds(
-            widenToRightEdge(lines, CLASS, edge.rightSide, edge.pad),
+            widenToRightEdge(aligned, CLASS, edge.rightSide, edge.pad),
             CLASS,
             rowsPastEnd(view, offset, r),
             edge.rightSide + edge.pad,
           )
-        : lines;
+        : aligned;
       // Block widgets: cut them all out of CodeMirror's rectangles, then paint the ones the selection runs through
       // with one rectangle each, so a translucent selection colour never doubles up over them.
       const widgets = lineWidgets(view, offset, r);

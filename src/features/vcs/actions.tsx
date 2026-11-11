@@ -27,6 +27,7 @@ import {
 import { setAmend, useCommit } from "./commitStore";
 import { gotoConflict, resolveAtCaret, showConflictsDialog } from "./conflictsUi";
 import { focusedDiffNavigator } from "./diffNavigator";
+import { showDiffWindow } from "./DiffWindow";
 import {
   changeNodeDiff,
   changeNodeDiffData,
@@ -412,6 +413,24 @@ export function registerVcsActions(): () => void {
         for (const path of paths.slice(0, 5)) {
           await openDiff({ ...groupDiffData(tree, path), line }, { preview: paths.length === 1 });
         }
+      },
+    },
+    {
+      id: "vcs.showDiffInNewWindow",
+      title: "Show Diff in New Window",
+      category: "Git",
+      icon: "diff",
+      when: VCS,
+      keyWhen: "!editorTextFocus",
+      run: ({ arg }) => {
+        const requested = arg && typeof arg === "object" && "left" in arg && "right" in arg ? (arg as DiffData) : null;
+        const path = selectedPaths(arg)[0];
+        const data = requested ?? focusedDiffNavigator()?.viewer?.()?.data ?? (path ? workingDiffData(path) : null);
+        if (!data) {
+          notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
+          return;
+        }
+        showDiffWindow(data, () => void openDiff(data, { preview: true }));
       },
     },
     {

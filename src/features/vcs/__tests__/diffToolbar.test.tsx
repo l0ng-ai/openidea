@@ -1,3 +1,4 @@
+import { registerAction } from "@/platform/actions";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { EditorInput } from "@/workbench/contributions";
@@ -78,6 +79,19 @@ beforeEach(() => {
 });
 
 describe("Diff toolbar", () => {
+  it("opens the displayed revisions in a separate window through the registered action", async () => {
+    const run = vi.fn();
+    const off = registerAction({ id: "vcs.showDiffInNewWindow", title: "Show Diff in New Window", run });
+    try {
+      render(<DiffEditor input={input} />);
+      fireEvent.click(screen.getByRole("button", { name: "Show Diff in New Window" }));
+      await waitFor(() => expect(run).toHaveBeenCalled());
+      expect(run.mock.calls[0]![0].arg).toBe(input.data);
+    } finally {
+      off();
+    }
+  });
+
   it("can start an embedded comparison side by side without overwriting saved viewer preferences", async () => {
     localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode: "unified" }));
     const mounted = render(<DiffEditor input={{ ...input, data: { ...(input.data as object), mode: "split" } }} />);

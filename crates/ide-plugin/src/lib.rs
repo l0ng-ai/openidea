@@ -21,8 +21,8 @@ pub use runtime::{
     component_api, host_api,
 };
 pub use sandbox::{
-    MAX_READ_BYTES, inside_root, read_text, resolve_in_root, resolve_new_in_root, resolve_real,
-    resolve_writable_in_root,
+    MAX_READ_BYTES, inside_root, inside_roots, read_text, resolve_in_root, resolve_in_roots, resolve_new_in_root,
+    resolve_new_in_roots, resolve_real, resolve_writable_in_root, resolve_writable_in_roots,
 };
 pub use types::*;
 pub use wasmtime::component::Component;

@@ -740,7 +740,8 @@ function linkAt(view: EditorView, x: number, y: number): { from: number; to: num
   const pos = view.posAtCoords({ x, y }, false);
   if (pos == null) return null;
   const links = knownLinks(view);
-  const ref = (links && linkReference(view.state.doc, links, pos)) ?? textReference(view.state.doc, pos);
+  const ref =
+    (links && linkReference(view.state.doc, links, pos, docOf(view)?.path ?? "")) ?? textReference(view.state.doc, pos);
   if (ref) return { from: ref.from, to: ref.to, link: true };
   const word = navigationWord(view, pos);
   return word && word.from < word.to ? { from: word.from, to: word.to, link: false } : null;

@@ -1258,15 +1258,6 @@ impl AgentManager {
         };
         // A copy of the task (a fork) may work in the same worktree.
         let shared = self.tasks.read().values().any(|t| t.id != id && t.state.lock().task.cwd.0 == cwd);
-        if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
-            // On Windows the agent's processes lock the folder (their working directory,
-            // open files) until they have exited.
-            if let Some(peer) = live {
-                let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
-            }
-            let worktrees = self.shared.paths.worktrees_dir.clone();
-            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
-        }
         self.tasks.write().remove(id);
         *task.deleted.lock() = true;
         let _ = std::fs::remove_file(self.shared.paths.store_dir.join(format!("{id}.json")));
@@ -1276,7 +1267,17 @@ impl AgentManager {
         {
             let _ = std::fs::remove_dir_all(self.shared.paths.store_dir.join(saved));
         }
+        // The list drops the task now; removing a large worktree's folder can take a while.
         self.shared.emit(AgentEvent::Removed { id: id.to_owned() });
+        if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
+            // On Windows the agent's processes lock the folder (their working directory,
+            // open files) until they have exited.
+            if let Some(peer) = live {
+                let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
+            }
+            let worktrees = self.shared.paths.worktrees_dir.clone();
+            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
+        }
         Ok(())
     }
 
@@ -1327,6 +1328,41 @@ impl AgentManager {
         }
         task.persist();
         Ok(())
+    }
+
+    /// Accept: copies the task's changed files among `rel_paths` (all with `None`) from its
+    /// worktree into the local checkout, uncommitted, for the user to review and commit.
+    /// Files the checkout changed itself are left alone and reported. Only worktree tasks
+    /// have anything to accept.
+    pub async fn accept_changes(&self, id: &str, rel_paths: Option<Vec<String>>) -> IdeResult<AgentAcceptOutcome> {
+        let task = self.task(id)?;
+        if task.state.lock().busy {
+            return Err(IdeError::invalid("the agent is working: stop it before accepting its changes"));
+        }
+        let (isolation, cwd, base, root, before) = {
+            let s = task.state.lock();
+            (
+                s.task.isolation,
+                s.task.cwd.0.clone(),
+                s.task.base_commit.clone(),
+                s.task.project_root.clone().map(|p| p.0).unwrap_or_else(|| self.shared.paths.project_root.clone()),
+                (*s.before).clone(),
+            )
+        };
+        if isolation != Isolation::Worktree {
+            return Err(IdeError::invalid("the task works in the local checkout: there is nothing to accept"));
+        }
+        let Some(base) = base else {
+            return Err(IdeError::invalid("the task has no base revision to accept from"));
+        };
+        blocking(move || {
+            let wanted: Vec<AgentChange> = worktree::without_untouched(worktree::changes(&cwd, &base)?, &before)
+                .into_iter()
+                .filter(|c| rel_paths.as_ref().is_none_or(|p| p.contains(&c.rel_path)))
+                .collect();
+            worktree::accept(&root, &cwd, &base, &wanted)
+        })
+        .await
     }
 
     /// Stops every agent (project closed).

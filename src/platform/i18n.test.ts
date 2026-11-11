@@ -285,6 +285,7 @@ describe("catalogs", () => {
     "Yarn",
     "Cargo",
     "CMake",
+    "f-string",
     "Tailwind CSS",
   ]);
   const translated = SUPPORTED_LOCALES.filter((locale) => locale !== "en").sort();
