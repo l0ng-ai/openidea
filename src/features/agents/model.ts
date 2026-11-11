@@ -7,8 +7,12 @@ export const HOME_KEY = "agent:new";
 export const TOOL_WINDOW = "agents";
 /** MIME of a dragged agent task (a tree row or the docked conversation bar): the payload is the task id. */
 export const TASK_DRAG = "application/x-openidea-agent-task";
-/** Settings › Tools › Agents: the ACP Registry. */
-export const REGISTRY_PAGE = "tools.agents";
+/** Settings › Agents › Coding Agents: the agents this machine runs. */
+export const REGISTRY_PAGE = "agents.list";
+/** The Settings folder holding the agent pages. */
+export const AGENTS_GROUP = "Agents";
+/** Settings › Agents › External MCP Servers: User and Workspace MCP configurations. */
+export const MCP_PAGE = "agents.mcpServers";
 
 export const sessionKey = (task: string) => `agent:${task}`;
 
@@ -49,11 +53,14 @@ const PROVIDER_ICONS = new Set([
   "cursor",
   "opencode",
   "qwen",
+  "qoder",
+  "qodercn",
   "kimi",
   "goose",
   "auggie",
   "kiro",
   "vibe",
+  "omp",
 ]);
 
 /** The agent's logo; custom agents get the generic agents icon. */
@@ -92,6 +99,23 @@ export function upsertEntry(entries: AgentEntry[], index: number, entry: AgentEn
   if (index > entries.length) return null;
   const next = entries.slice();
   next[index] = entry;
+  return next;
+}
+
+/**
+ * `entries` with `text` appended to the message at `index`, which read its first `from`
+ * UTF-16 units when the backend last sent it; `null` when the copy here can't take it (a
+ * gap, or another kind of entry), so the conversation is loaded again. A copy loaded while
+ * the text streamed may already hold some of it.
+ */
+export function appendEntry(entries: AgentEntry[], index: number, from: number, text: string): AgentEntry[] | null {
+  const entry = entries[index];
+  if (!entry || (entry.type !== "agent" && entry.type !== "thought")) return null;
+  const have = entry.text.length;
+  if (have < from) return null;
+  if (have >= from + text.length) return entries;
+  const next = entries.slice();
+  next[index] = { ...entry, text: entry.text + text.slice(have - from) };
   return next;
 }
 
@@ -144,7 +168,10 @@ export function replyTimes(entries: AgentEntry[]): Map<number, ReplyTimes> {
   entries.forEach((entry, i) => {
     if (entry.type === "user" && !entry.steered) current = entry;
     else if (entry.type === "agent" && current)
-      out.set(i, { sentMs: current.sentMs ?? null, doneMs: current.doneMs ?? null });
+      out.set(i, {
+        sentMs: current.sentMs ?? null,
+        doneMs: current.doneMs ?? null,
+      });
   });
   return out;
 }

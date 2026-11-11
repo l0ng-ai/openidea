@@ -205,6 +205,19 @@ test("keeps latest reply actions visible and quotes into the draft without shift
   );
 });
 
+test("copies a mouse selection with Ctrl+C and pops up no Quote button", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const reply = await openReply(page, "Selectable answer");
+  const box = (await reply.locator("p").first().boundingBox())!;
+  await page.mouse.move(box.x + 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2);
+  await page.mouse.up();
+  await page.keyboard.press("ControlOrMeta+c");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("Selectable answer");
+  await expect(page.getByRole("button", { name: "Quote", exact: true })).toHaveCount(0);
+});
+
 test("keeps chat history readable and selections free of timestamps and status labels", async ({ page, context }) => {
   await page.setViewportSize({ width: 1800, height: 1000 });
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -278,8 +291,10 @@ test("keeps chat history readable and selections free of timestamps and status l
   expect(selected).not.toMatch(/AM|PM|5s|Reasoning|Requesting task context/);
   await page.keyboard.press("ControlOrMeta+c");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
+  // The finished turn's reasoning is folded with its work.
+  await stream.locator("[class*='_turnFold_'] > summary").click();
   await stream.locator("[class*='_thought_'] > summary").click();
-  await expect(stream.getByText("Requesting task context", { exact: true })).toBeVisible();
+  await expect(stream.locator("[class*='_thoughtPreview_']")).toHaveText("Requesting task context");
   await expect(stream.locator("[class*='_thoughtBody_'] strong")).toHaveText("Requesting task context");
   await page.evaluate(async (id) => {
     const path = "/src/features/agents/store.ts";

@@ -1,0 +1,65 @@
+---
+title: "Roadmap"
+description: "Goals, scope and completion criteria of the current OpenIDEA milestone."
+---
+
+The roadmap states direction and completion criteria, not dates. When a milestone is done, the [changelog](/en/changelog) says so.
+
+## Milestone 1
+
+### 1. Language support
+
+Within the current architecture (LSP, DAP and the IDE's own index), make the languages and frameworks covered by the major commercial IDEs work as well as we can:
+
+| Area    | Languages and frameworks                                  |
+| ------- | --------------------------------------------------------- |
+| JVM     | Java, Kotlin, Spring                                      |
+| Python  | Python, Django, Flask                                     |
+| Go      | Go                                                        |
+| Web     | JavaScript, TypeScript and the major front-end frameworks |
+| PHP     | PHP, Laravel                                              |
+| Ruby    | Ruby, Rails                                               |
+| Systems | C, C++, Rust                                              |
+| .NET    | C#, .NET, Unity                                           |
+| Data    | SQL and database tools                                    |
+
+Every language is checked against the same list: completion, navigation, find usages, refactoring, inspections, formatting, run, test, debug, build tools and its main frameworks. See [Language support](/en/languages/index) for where each language stands.
+
+Capabilities the architecture can't provide (such as structural search that needs a full semantic model, or deep cross-language refactoring) are stated on each language's page.
+
+### 2. Plugin ecosystem: SDK and marketplace
+
+**Develop**
+
+- The plugin API becomes stable and follows semantic versioning; breaking changes only come with a major version.
+- Complete documentation, with an API reference generated from the interface definitions.
+- The Rust SDK, project templates and the `openidea-plugin` CLI cover developing, debugging, testing and packaging.
+
+**Publish**
+
+- Authors register as publishers and submit new versions themselves; signatures, compatibility and package contents are checked automatically, and the review rules are public.
+- Security: signature checks, permission display, revocation and key rotation (already in place), plus a process for reporting and removing malicious plugins.
+
+**Discover and install**
+
+- Search, category filters, and plugin pages with README, screenshots, release history, required permissions and compatible versions.
+- A web marketplace: browse plugins without opening the IDE, and install them into the IDE with one click.
+
+**Ecosystem**
+
+- Official plugins serve as API examples for every extension point, and the first community plugins get help getting listed.
+
+Done when: a third-party author can build a language, tool window or theme plugin from the documentation alone and publish it to the marketplace, and users can find and install it from the IDE or the web, without any change to the host.
+
+### 3. Basic agent support
+
+- Connect agents that speak ACP, including ones users add themselves.
+- A chat panel that can send the selection, files and problems to the agent as context.
+- Agent edits are shown as diffs and applied after review; tool calls need the user's permission.
+- A built-in MCP server lets external agents use the IDE's code intelligence, run and debug features.
+
+Done when: mainstream agents can go from request to code change to diff review to running tests, entirely inside the IDE.
+
+## Not planned
+
+- **Loading IntelliJ Platform plugins**: the plugin models differ, so they can't be loaded directly. Themes can be imported (see [Themes and fonts](/en/guide/themes)); other plugins need to be ported to the OpenIDEA plugin API.

@@ -45,6 +45,7 @@ import { confirm } from "@/workbench/messages";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { editorContext } from "./editorContext";
 import { pluginsBackend } from "./backend";
+import { askNetPermission } from "./netAsk";
 import { usePluginT } from "./pluginText";
 import { setPluginOutput } from "./views/outputStore";
 import { PLUGIN_LOG_EDITOR_KIND } from "./views/logEditor";
@@ -373,7 +374,7 @@ async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | 
     case "pickDirectory": {
       if (signal.aborted) return null;
       try {
-        const { open } = await import("@tauri-apps/plugin-dialog");
+        const { open } = await import("@/platform/dialog");
         if (signal.aborted) return null;
         const selected = await open({
           directory: true,
@@ -408,13 +409,19 @@ async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | 
       return (await confirm({ title: prompt.title, message: prompt.message, ok: tx("OK"), signal, verbatim: true }))
         ? []
         : null;
+    case "netPermission":
+      // The host's own question: answered before this (`answerPrompt`).
+      return null;
   }
 }
 
-async function answerPrompt(promptId: string, prompt: Prompt) {
+async function answerPrompt(promptId: string, prompt: Prompt, pluginId: string) {
   const controller = new AbortController();
   openPrompts.set(promptId, controller);
-  const answer = await askUser(prompt, controller.signal);
+  const answer =
+    prompt.kind === "netPermission"
+      ? await askNetPermission(pluginId, prompt.host, prompt.sessionOnly, controller.signal)
+      : await askUser(prompt, controller.signal);
   openPrompts.delete(promptId);
   if (controller.signal.aborted) return;
   await pluginsBackend()
@@ -599,7 +606,7 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       void openExternalUrl(e.url);
       return true;
     case "promptRequested":
-      void answerPrompt(e.promptId, e.prompt);
+      void answerPrompt(e.promptId, e.prompt, e.pluginId);
       return true;
     case "promptClosed":
       openPrompts.get(e.promptId)?.abort();

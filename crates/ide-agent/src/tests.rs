@@ -35,6 +35,9 @@ struct FakeAgent {
     /// Without `loadSession` (a session lives only as long as its process).
     no_load: bool,
     auth_on_new: bool,
+    auth_on_load: bool,
+    authenticate_method: Option<String>,
+    authenticated: AtomicBool,
     request_error: Option<(i64, String)>,
     auth_methods: Vec<Value>,
     /// Hold the late mode reply until the prompt's permission request is already waiting.
@@ -127,9 +130,9 @@ impl Handler for FakeAgent {
 
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
         self.calls.lock().push(method.to_owned());
-        if (method == "session/new" && self.auth_on_new)
-            || (method == "session/prompt" && params.pointer("/prompt/0/text") == Some(&json!("auth")))
-        {
+        let needs_auth = !self.authenticated.load(Ordering::Acquire)
+            && ((method == "session/new" && self.auth_on_new) || (method == "session/load" && self.auth_on_load));
+        if needs_auth || (method == "session/prompt" && params.pointer("/prompt/0/text") == Some(&json!("auth"))) {
             return Err(self
                 .request_error
                 .clone()
@@ -175,6 +178,16 @@ impl Handler for FakeAgent {
             "session/load" => {
                 self.say(&session, "replayed history");
                 Ok(json!({}))
+            }
+            "authenticate" if self.authenticate_method.is_some() => {
+                let id = params.get("methodId").and_then(Value::as_str).unwrap_or_default();
+                self.calls.lock().push(format!("authenticate {id}"));
+                if Some(id) == self.authenticate_method.as_deref() {
+                    self.authenticated.store(true, Ordering::Release);
+                    Ok(json!({}))
+                } else {
+                    Err((codes::INVALID_PARAMS, format!("unexpected methodId {id}")))
+                }
             }
             "session/set_config_option" | "session/set_mode" => {
                 self.calls.lock().push(format!("{method} {}", params.get("value").or(params.get("modeId")).unwrap()));
@@ -694,6 +707,91 @@ async fn registry_sign_in_errors_use_the_advertised_terminal_login() {
         assert!(error.ends_with("\n\nThis account is not eligible."), "{error}");
         mgr.shutdown();
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn authenticates_and_retries_session_setup_once_on_auth_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let methods = vec![
+        json!({"id": "cli_login", "_meta": {"terminal-auth": {"command": "copilot", "args": ["login"]}}}),
+        json!({"id": "github_oauth", "name": "GitHub OAuth"}),
+    ];
+    let agent = Arc::new(FakeAgent {
+        auth_on_new: true,
+        authenticate_method: Some("github_oauth".into()),
+        request_error: Some((-32000, "Authentication required".into())),
+        auth_methods: methods.clone(),
+        ..Default::default()
+    });
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "copilot".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert_eq!(
+        agent
+            .calls
+            .lock()
+            .iter()
+            .filter(|c| c.starts_with("session/") || c.starts_with("authenticate"))
+            .collect::<Vec<_>>(),
+        ["session/new", "authenticate", "authenticate github_oauth", "session/new", "session/prompt"],
+    );
+
+    // Resuming after an IDE restart also authenticates once and retries `session/load`.
+    mgr.shutdown();
+    let agent2 = Arc::new(FakeAgent {
+        auth_on_load: true,
+        auth_on_new: true,
+        authenticate_method: Some("github_oauth".into()),
+        request_error: Some((-32000, "Authentication required".into())),
+        auth_methods: methods.clone(),
+        ..Default::default()
+    });
+    let mgr2 = manager(tmp.path(), agent2.clone());
+    mgr2.prompt(&task.id, text("again"), false).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for(&mgr2, &task.id, AgentStatus::Ready).await;
+    assert_eq!(
+        agent2
+            .calls
+            .lock()
+            .iter()
+            .filter(|c| c.starts_with("session/") || c.starts_with("authenticate"))
+            .collect::<Vec<_>>(),
+        ["session/load", "authenticate", "authenticate github_oauth", "session/load", "session/prompt"],
+    );
+
+    // If `authenticate` fails during `session/load`, fallback to `session/new` does not try it again.
+    mgr2.shutdown();
+    let agent3 = Arc::new(FakeAgent {
+        auth_on_load: true,
+        auth_on_new: true,
+        request_error: Some((-32000, "Authentication required".into())),
+        auth_methods: methods,
+        ..Default::default()
+    });
+    let mgr3 = manager(tmp.path(), agent3.clone());
+    mgr3.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr3, &task.id, AgentStatus::Failed).await;
+    assert_eq!(
+        agent3
+            .calls
+            .lock()
+            .iter()
+            .filter(|c| c.starts_with("session/") || c.starts_with("authenticate"))
+            .collect::<Vec<_>>(),
+        ["session/load", "authenticate", "session/new"],
+    );
+    mgr3.shutdown();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2521,14 +2619,154 @@ async fn session_settings_win_over_discovery_in_memory_and_on_disk() {
         let saved = options("saved", "low");
         let discovered = options("discovered", "high");
         if discovery_first {
-            mgr.shared.remember_discovered("claude", &discovered, &[]);
+            mgr.shared.remember_discovered("claude", &discovered, &[], &[]);
         }
         mgr.shared.remember("claude", Some(&saved), None, Some("saved"));
-        mgr.shared.remember_discovered("claude", &discovered, &[]);
+        mgr.shared.remember_discovered("claude", &discovered, &[], &[]);
         let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
         for mgr in [&mgr, &restored] {
             assert_eq!(model_of(&mgr.shared.known_config("claude")).as_deref(), Some("saved"));
             assert_eq!(mgr.shared.known.lock()["claude"].thought_levels["saved"], saved[1..]);
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovered_effort_levels_fill_models_no_session_has_reported() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let effort = |values: &[&str], current: &str| {
+        config::options_of(&json!({ "configOptions": [
+            { "id": "effort", "category": "thought_level", "type": "select", "currentValue": current,
+              "options": values.iter().map(|v| json!({ "value": v })).collect::<Vec<_>>() }
+        ] }))
+    };
+    let model = config::options_of(&json!({ "configOptions": [
+        { "id": "model", "category": "model", "type": "select", "currentValue": "sonnet",
+          "options": [{ "value": "sonnet" }, { "value": "opus" }] }
+    ] }));
+    // A session already reported sonnet's levels; discovery adds opus's.
+    let reported = [model.clone(), effort(&["low", "high"], "high")].concat();
+    mgr.shared.remember("claude", Some(&reported), None, Some("sonnet"));
+    let levels =
+        [("sonnet".to_owned(), effort(&["low"], "low")), ("opus".to_owned(), effort(&["low", "max"], "default"))];
+    mgr.shared.remember_discovered("claude", &model, &[], &levels);
+    let known = mgr.shared.known.lock();
+    assert_eq!(known["claude"].thought_levels["sonnet"], effort(&["low", "high"], "high"), "the session's report wins");
+    assert_eq!(known["claude"].thought_levels["opus"], effort(&["low", "max"], "default"));
+}
+
+#[test]
+fn streamed_text_is_sent_as_appends() {
+    let mut streamed = HashMap::new();
+    let agent = |t: &str| AgentEntry::Agent { text: t.into() };
+    let first = entry_event("t", &mut streamed, None, 3, &agent("Hé"));
+    assert!(matches!(first, AgentEvent::Entry { index: 3, .. }), "the first sight of a message is whole");
+    let next = entry_event("t", &mut streamed, None, 3, &agent("Hé 👋 there"));
+    assert!(
+        matches!(&next, AgentEvent::Append { subagent: None, index: 3, from: 2, text, .. } if text == " 👋 there"),
+        "{next:?}"
+    );
+    let sub = entry_event("t", &mut streamed, Some("s".into()), 3, &agent("Hé 👋 there!"));
+    assert!(matches!(sub, AgentEvent::Entry { .. }), "each session streams on its own");
+    let after = entry_event("t", &mut streamed, None, 3, &agent("Hé 👋 there."));
+    assert!(
+        matches!(&after, AgentEvent::Append { from: 11, text, .. } if text == "."),
+        "from counts UTF-16 units: {after:?}"
+    );
+    let replaced = entry_event("t", &mut streamed, None, 3, &agent("Other"));
+    assert!(matches!(replaced, AgentEvent::Entry { .. }), "text that doesn't extend the sent text is sent whole");
+    let thought = entry_event("t", &mut streamed, None, 4, &AgentEntry::Thought { text: "hmm…".into() });
+    assert!(matches!(thought, AgentEvent::Entry { index: 4, .. }), "a new message starts whole");
+    let tool = AgentEntry::Error { message: "x".into() };
+    entry_event("t", &mut streamed, None, 4, &tool);
+    let again = entry_event("t", &mut streamed, None, 4, &AgentEntry::Thought { text: "hmm… ok".into() });
+    assert!(matches!(again, AgentEvent::Entry { .. }), "an entry replaced by another kind forgets its text");
+
+    let long = "é".repeat(5000);
+    entry_event("t", &mut streamed, None, 5, &agent(&long));
+    assert!(streamed[&None].tail.len() <= 64, "only the end of what was sent is kept");
+    let on = entry_event("t", &mut streamed, None, 5, &agent(&format!("{long}!")));
+    assert!(matches!(&on, AgentEvent::Append { from: 5000, text, .. } if text == "!"), "{on:?}");
+    let rewritten = entry_event("t", &mut streamed, None, 5, &agent(&format!("{}x!??", "é".repeat(4999))));
+    assert!(matches!(rewritten, AgentEvent::Entry { .. }), "a rewritten end is sent whole");
+}
+
+#[test]
+fn error_messages_keep_the_agents_details() {
+    let details = json!({ "details": "spawn claude ENOENT" });
+    assert_eq!(with_details("Internal error".into(), Some(&details)), "Internal error: spawn claude ENOENT");
+    assert_eq!(
+        with_details("Internal error".into(), Some(&json!("model not found"))),
+        "Internal error: model not found"
+    );
+    assert_eq!(with_details(String::new(), Some(&details)), "spawn claude ENOENT");
+    assert_eq!(with_details("spawn claude ENOENT".into(), Some(&details)), "spawn claude ENOENT");
+    assert_eq!(with_details("Internal error".into(), Some(&json!({ "other": 1 }))), "Internal error");
+    assert_eq!(with_details("Internal error".into(), None), "Internal error");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rolling_back_restores_the_start_of_the_task_and_keeps_the_users_own_edits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = dunce::canonicalize(tmp.path()).unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "{args:?}");
+    };
+    let write = |rel: &str, text: &str| std::fs::write(dir.join(rel), text).unwrap();
+    let read = |rel: &str| std::fs::read_to_string(dir.join(rel)).unwrap();
+    git(&["init", "-q", "-b", "main"]);
+    write(".gitignore", "store/\nworktrees/\nagents/\nmodels.json\n");
+    write("mine.txt", "base\n");
+    write("other.txt", "base\n");
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "init"]);
+    // The user's own uncommitted edit, before the task starts.
+    write("mine.txt", "my edit\n");
+
+    let mgr = manager(&dir, Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Hello"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    mgr.cancel(&task.id, None).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    // What the agent did.
+    write("mine.txt", "my edit\nand the agent's\n");
+    write("other.txt", "agent\n");
+    write("new.txt", "agent\n");
+    async fn changed(mgr: &AgentManager, id: &str) -> Vec<String> {
+        mgr.changes(id).await.unwrap().into_iter().map(|c| c.rel_path).collect()
+    }
+    assert_eq!(changed(&mgr, &task.id).await, ["mine.txt", "new.txt", "other.txt"]);
+
+    mgr.rollback_changes(&task.id, Some(vec!["other.txt".into()])).await.unwrap();
+    assert_eq!(read("other.txt"), "base\n");
+    assert_eq!(changed(&mgr, &task.id).await, ["mine.txt", "new.txt"]);
+
+    // After a restart, from the saved copy.
+    mgr.shutdown();
+    let mgr = manager(&dir, Arc::new(FakeAgent::default()));
+    mgr.rollback_changes(&task.id, None).await.unwrap();
+    assert_eq!(read("mine.txt"), "my edit\n", "the user's edit stays");
+    assert!(!dir.join("new.txt").exists());
+    assert!(changed(&mgr, &task.id).await.is_empty());
+
+    mgr.delete(&task.id, false).await.unwrap();
+    assert!(!dir.join("store").join(format!("{}.before", task.id)).exists());
 }

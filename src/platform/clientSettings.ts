@@ -15,6 +15,8 @@ export const CLIENT_SETTINGS_KEYS = [
   "general.openProjectIn",
   "general.updateSource",
   "general.autoCheckUpdates",
+  "general.showWhatsNewAfterUpdate",
+  "general.lastRunVersion",
   "general.dateFormat",
   "editor.fontFamily",
   "editor.fontSize",
@@ -83,10 +85,12 @@ export const CLIENT_SETTINGS_KEYS = [
   "run.showOnStart",
   "vcs.showDirtyDirectories",
   "vcs.git.inlineBlame",
+  "vcs.git.showBranchInProjectView",
   "vcs.git.showPushDialog",
   "vcs.git.pushDialogOnlyProtected",
   "vcs.git.combineStashAndShelf",
   "vcs.commit.nonModal",
+  "vcs.commit.doubleClickOpensDiff",
   "vcs.commit.showRightMargin",
 ] as const;
 

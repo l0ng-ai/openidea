@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 interface lifecycle {
     use types.{context, error};
@@ -72,4 +72,23 @@ interface syntax-provider {
     highlights: func(language: string, text: string) -> list<token>;
     outline: func(language: string, text: string) -> list<symbol>;
     folding: func(language: string, text: string) -> list<fold>;
+}
+
+/// Optional pre-launch gate for targets owned by this plugin (API 1.5).
+interface run-target-validation {
+    enum operation { run, test }
+    record launch-info {
+        operation: operation,
+        /// Bare program name before wrapping; no arguments or environment.
+        program: string,
+        /// Absolute working directory on the machine hosting the plugin.
+        cwd: string,
+    }
+    /// Called after trust, ownership, process grants and executable pin checks.
+    /// An error refuses the launch without changing the selected target. The
+    /// host prefixes and bounds the message. Missing exports allow the launch.
+    /// Calls wake reclaimed instances, use the host call timeout (5s by default),
+    /// and are cancelled with the launch. Traps/timeouts refuse the launch.
+    /// For remote projects this runs on the server, where the plugin lives.
+    validate: func(project: string, target-id: string, launch: launch-info) -> result<_, string>;
 }

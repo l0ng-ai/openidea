@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin>
+  <extension point="org.eclipse.jdt.ls.core.delegateCommandHandler">
+    <delegateCommandHandler class="ai.openidea.jvminspect.InspectCommand">
+      <command id="openidea.jvm.vms"/>
+      <command id="openidea.jvm.classes"/>
+      <command id="openidea.jvm.instances"/>
+      <command id="openidea.jvm.fields"/>
+      <command id="openidea.jvm.referrers"/>
+    </delegateCommandHandler>
+  </extension>
+</plugin>

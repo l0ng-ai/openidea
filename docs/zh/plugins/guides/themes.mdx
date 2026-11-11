@@ -1,0 +1,625 @@
+---
+title: "主题"
+description: "编写配色主题插件：主题文件与编辑器配色方案文件、主题如何生效、导入 IntelliJ 主题、移植 VS Code 主题，以及完整的 token 参考。"
+---
+
+OpenIDEA 内置七个主题：Islands 浅色、Islands 深色、高对比度、Solarized 浅色、Solarized 深色、One 浅色和 One 深色。
+其他主题都来自 **主题插件**。
+
+主题插件是纯数据插件。和 IntelliJ 主题（一个 `.theme.json` 加一个可选的 `.icls` 编辑器配色方案）一样，它没有代码：
+没有 WebAssembly，不需要编译，也不需要任何权限。
+
+```text
+my-theme/
+├─ plugin.toml                    # 清单
+└─ themes/
+   ├─ my-theme.theme.json         # 界面颜色（IntelliJ：.theme.json）
+   └─ my-theme.scheme.json        # 编辑器颜色，可选（IntelliJ：.icls）
+```
+
+最快的起步方式是 `openidea-plugin new my-theme --template theme`，它会复制
+[Harbor Night](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/harbor-night)：
+一个设置了全部可设置 token 的完整深色主题。
+
+## 清单
+
+```toml
+id = "acme.harbor-night"
+name = "Harbor Night"
+version = "1.0.0"
+description = "A dark theme: slate surfaces, a teal accent and a warm syntax palette."
+authors = ["You <you@example.com>"]
+license = "MIT"
+engines.openidea = "^1.0"
+categories = ["themes"]
+
+[[contributes.themes]]             # 每个主题一条；一个插件可以包含多个主题
+path = "themes/harbor-night.theme.json"
+editor-scheme = "themes/harbor-night.scheme.json"   # 可选
+```
+
+没有 `wasm`，也没有 `[capabilities]`。路径相对包目录，且不能超出包目录。清单的其他字段见 [清单](/zh/plugins/manifest)。
+
+## 主题文件
+
+```jsonc
+{
+  "id": "harbor-night", // 插件内唯一
+  "name": "Harbor Night", // 显示在设置中
+  "kind": "dark", // "dark" 或 "light"：所基于的内置主题
+  "tokens": {
+    "--bg-app": "#14171c",
+    "--accent": "#2b9e93",
+  },
+}
+```
+
+- **`tokens`** 是 [`src/styles/tokens.css`](https://github.com/l0ng-ai/openidea/blob/main/src/styles/tokens.css)
+  中的 CSS 变量，也是 IDE 唯一的颜色来源。组件从不直接写颜色值，所以每个表面、边框、文字颜色、语法颜色和状态颜色都可以通过 token 设置。
+  下文的“Token 参考”列出了全部 token。
+- **`kind`** 选择内置的基础主题。主题生效时，IDE 实际运行在 Islands 深色或 Islands 浅色上，主题没有设置的 token
+  都保留基础主题的值。图标也会使用与 kind 对应的浅色或深色版本。只设置部分 token 的主题依然协调，但把所有 token 都列出来，
+  可以在 IDE 自身配色变化时保持稳定。
+- token 名称是 `--` 加小写字母、数字和 `-`（最多 64 字节）。
+- 取值是普通的 CSS 值：十六进制（`#rgb`、`#rrggbb`、`#rrggbbaa`）、`rgb()`、`hsl()`、`color-mix()`、`var(--other-token)`，
+  少数非颜色 token 可以用关键字（`italic`、`normal`、`none`）或阴影列表。`url()`、`image()`、`;`、花括号、`<`、`>`、`\`
+  和换行都会被拒绝。
+- 允许 `//` 和 `/* */` 注释，与 VS Code 主题文件相同。
+- tokens.css 中由其他 token 推导出的 token（例如 `--bg-editor` 是 `var(--bg-island)`，覆盖率和火焰图颜色由状态颜色混合而来）
+  会自动跟随变化，当然也可以单独设置。
+- 尺寸（`--fs-*`、`--h-*`、`--radius-*`）和字体（`--font-ui`、`--font-mono`）也能覆盖，但主题通常不动它们，
+  以免影响紧凑模式和用户的字体设置。
+
+### 编辑器配色方案文件
+
+```jsonc
+{
+  "name": "Harbor Night",
+  "tokens": { "--syn-keyword": "#e0a46e", "--caret": "#5ce0d2" },
+}
+```
+
+它的 token 合并到主题的 token 之上，两者都设置时以配色方案为准。按惯例它包含参考中的 _语法_、_编辑器_ 和 _ANSI 调色板_ 几组，
+也就是 IntelliJ 放在 `.icls` 文件里的部分。拆分只是为了组织文件：主题也可以把全部 token 都放进主题文件。
+
+## 主题如何生效
+
+选中的主题会作为一份作用于 `:root` 的样式表注入，优先级高于内置主题，同时 `data-theme` 切换为主题的 `kind`。
+有三样东西仍然叠加在它之上：
+
+- 在 **设置 › 外观与行为 › 外观** 中选择的 **强调色**（非默认值时），
+- **设置 › 编辑器 › 配色方案** 中明确选择的配色方案或属性覆盖，
+- 只改变尺寸的外观选项（紧凑模式）。
+
+所选主题会被记住。插件被禁用或卸载后，恢复为内置主题。
+
+工具窗口侧栏的提示框使用 `--bg-stripe-tooltip`、`--fg-stripe-tooltip`、`--border-stripe-tooltip` 和 `--shadow-stripe-tooltip`。
+主题没有设置时，沿用基础主题对应的提示框 token。
+
+## 安装、应用与迭代
+
+没有构建步骤：包就是文件夹本身。
+
+<Steps>
+  <Step title="从模板开始">
+    运行 `openidea-plugin new my-theme --template theme`（或复制 `plugins/official/harbor-night`），然后修改
+    `id`、`name` 和主题文件名。
+  </Step>
+  <Step title="修改颜色">`kind` 要如实填写（浅色背景用 `light`）。</Step>
+  <Step title="安装">
+    在 **设置 › 插件** 中打开齿轮菜单，选择 **从磁盘安装插件…**（也可以在查找操作中执行这个动作）并选择包文件夹； 或选择
+    **从插件包文件安装…**，再选择其中的 `plugin.toml` 或该文件夹的 `.zip`。
+  </Step>
+  <Step title="应用">
+    在 **设置 › 插件** 中选中该插件，点击主题旁的 **应用**。**使用默认主题** 可以切回。插件主题也会列在 **设置 ›
+    外观与行为 › 外观** 的 **主题** 中。
+  </Step>
+</Steps>
+
+想不重新安装就反复修改，可以用 `openidea-plugin link` 链接文件夹（直接从原处读取），或者把它放进（或软链接到）受信任项目的
+`<project>/.openidea/plugins/<name>/`。之后在插件上点 **重新加载**，或执行 **重新加载插件** 动作，即可加载修改。
+文件或取值无效时，**设置 › 插件** 会显示加载错误以及所在文件和行号。
+
+分享主题的方式与其他插件相同，见 [打包](/zh/plugins/publishing/packaging)。
+
+## 导入 IntelliJ 主题
+
+要使用已经装在 JetBrains IDE 里的主题，在 **设置 › 插件** 中打开齿轮菜单（需要已打开项目）：
+
+- **从 JetBrains IDE 导入主题…** 列出本机 JetBrains IDE（以及 Android Studio）中安装的主题插件，每个 IDE 的每个插件一行，
+  各 IDE 正在使用的主题所属插件排在前面。它读取每个 IDE 最新版本的设置目录：`~/Library/Application Support/JetBrains`（macOS）、
+  `%APPDATA%\JetBrains`（Windows）、`~/.config/JetBrains` 和 `~/.local/share/JetBrains`（Linux）。
+- **从文件导入 IntelliJ 主题…** 接受从 JetBrains Marketplace 下载的主题插件（`.jar`，或包含插件 `lib/*.jar` 的 `.zip`），
+  或者一个 `.theme.json`（其 `editorScheme` 文件从同一目录读取）。
+
+整个插件会转换成一个 OpenIDEA 主题插件 `intellij.<plugin id>`，包含其中的每个主题及其编辑器配色方案。它通过常规的安装页面安装，
+当前使用的主题不会改变：请在 **设置 › 外观与行为 › 外观** 的 **主题** 中选择。再次导入同一插件会替换它。
+这两个命令也是动作（`plugins.importInstalledIntellijTheme`、`plugins.importIntellijTheme`）。
+
+### 移植 IntelliJ 主题以便发布
+
+只移植许可证允许再分发的主题，保留其许可证文件，并在 `authors` 和 `description` 中注明原作者。
+
+仓库中的 `scripts/theme/import-intellij-theme.ts` 可以把 IntelliJ 的 `.theme.json`（以及可选的 `.icls` 编辑器配色方案）
+转换为一个插件文件夹，发布前可以再编辑。它只依赖 Node 22。
+
+```sh
+pnpm theme:import-intellij path/to/MyTheme.theme.json path/to/MyTheme.icls --out ~/my-theme --author "Original Author"
+# 或：node scripts/theme/import-intellij-theme.ts …
+```
+
+它按下表映射各个 key，解析主题 `colors` 部分中的命名颜色和 `*` 通配符，并根据 `"dark"`（或 `.icls` 的 `parent_scheme`）确定 `kind`。
+没有 IntelliJ 对应项的 token 保留该 kind 的内置值。只附带 `.theme.json` 且其中写了 `editorScheme` 路径的主题，需要把那个
+`.icls` 作为第二个参数传入；完全没有 `.icls` 的主题保留内置的语法颜色。
+
+#### `.theme.json` 到 UI 主题
+
+| OpenIDEA token                                     | IntelliJ `ui` key（取第一个存在的）                                        |
+| -------------------------------------------------- | -------------------------------------------------------------------------- |
+| `--bg-app`                                         | `Panel.background`                                                         |
+| `--bg-frame`                                       | `MainWindow.background`, `MainToolbar.background`                          |
+| `--bg-island`, `--bg-elev`                         | `ToolWindow.background`                                                    |
+| `--bg-popup`                                       | `Popup.background`, `PopupMenu.background`                                 |
+| `--bg-hover`                                       | `List.hoverBackground`, `Tree.hoverBackground`                             |
+| `--bg-selected`, `--bg-tree-selected`              | `List.selectionBackground`, `Tree.selectionBackground`                     |
+| `--bg-tree-selected-inactive`                      | `Tree.selectionInactiveBackground`                                         |
+| `--bg-input`, `--bg-field`                         | `TextField.background`                                                     |
+| `--border`                                         | `Borders.color`                                                            |
+| `--border-strong`, `--border-window`               | `Component.borderColor`, `Borders.ContrastBorderColor`                     |
+| `--fg`, `--fg-emphasis`                            | `Label.foreground`                                                         |
+| `--fg-secondary`, `--fg-muted`                     | `Label.infoForeground`, `Component.infoForeground`                         |
+| `--fg-subtle`, `--fg-faint`                        | `Label.disabledForeground`                                                 |
+| `--accent`                                         | `Button.default.startBackground`, `Component.focusColor`                   |
+| `--fg-on-accent`, `--fg-button-primary`            | `Button.default.foreground`                                                |
+| `--link`, `--link-hover`                           | `Link.activeForeground`, `Link.hoverForeground`                            |
+| `--danger`, `--warning`                            | `Component.errorFocusColor`, `Component.warningFocusColor`                 |
+| `--bg-tooltip`, `--fg-tooltip`, `--border-tooltip` | `ToolTip.background`, `.foreground`, `.borderColor`                        |
+| `--bg-button`, `--border-button`                   | `Button.startBackground`, `Button.startBorderColor`                        |
+| `--bg-tab-selected`                                | `EditorTabs.underlinedTabBackground`                                       |
+| `--border-tab-selected`                            | `EditorTabs.underlinedBorderColor`（Islands）, `EditorTabs.underlineColor` |
+| `--fg-completion-match`                            | `CompletionPopup.matchForeground`                                          |
+| `--bg-toolbar-hover`, `--bg-toolbar-pressed`       | `ActionButton.hoverBackground`, `ActionButton.pressedBackground`           |
+| `--bg-stripe-hover`, `--bg-stripe-selected`        | `ToolWindow.Button.hoverBackground`, `.selectedBackground`                 |
+| `--scrollbar-thumb`, `--scrollbar-thumb-hover`     | `ScrollBar.Mac.thumbColor`, `ScrollBar.Mac.hoverThumbColor`                |
+| `--bg-toggle-*`                                    | `ToggleButton.onBackground`, `.offBackground`, `.buttonColor`              |
+| `--bg-feedback-*`, `--border-feedback-*`           | `Banner.infoBackground`, `Banner.errorBorderColor`, …                      |
+
+完整的表是 [`src/features/plugins/intellijTheme.ts`](https://github.com/l0ng-ai/openidea/blob/main/src/features/plugins/intellijTheme.ts)
+中的 `UI_KEYS`。
+
+#### `.icls` 到编辑器配色方案
+
+| OpenIDEA token                                                                        | `.icls` 选项                                                                                         |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `--fg-editor`, `--bg-editor`                                                          | 属性 `TEXT`（前景、背景）                                                                            |
+| `--caret`, `--bg-current-line`                                                        | 颜色 `CARET_COLOR`, `CARET_ROW_COLOR`                                                                |
+| `--bg-editor-selection`, `--fg-editor-selection`                                      | 颜色 `SELECTION_BACKGROUND`, `SELECTION_FOREGROUND`                                                  |
+| `--fg-line-number`, `--fg-line-number-current`                                        | 颜色 `LINE_NUMBERS_COLOR`, `LINE_NUMBER_ON_CARET_ROW_COLOR`                                          |
+| `--bg-editor-gutter`                                                                  | 颜色 `EDITOR_GUTTER_BACKGROUND`，否则使用编辑器背景（与新 UI 一致；`GUTTER_BACKGROUND` 属于经典 UI） |
+| `--border-indent-guide`, `--border-right-margin`, `--fg-whitespace`                   | 颜色 `INDENT_GUIDE`, `RIGHT_MARGIN_COLOR`, `WHITESPACES`                                             |
+| `--vcs-*`, `--gutter-*`                                                               | 颜色 `FILESTATUS_*`, `MODIFIED_LINES_COLOR`, `ADDED_LINES_COLOR`, `DELETED_LINES_COLOR`              |
+| `--syn-keyword`, `--syn-string`, `--syn-number`                                       | `DEFAULT_KEYWORD`, `DEFAULT_STRING`, `DEFAULT_NUMBER`                                                |
+| `--syn-comment`（+ `--syn-comment-style`）, `--syn-doc-comment`                       | `DEFAULT_LINE_COMMENT`（+ `FONT_TYPE`）, `DEFAULT_DOC_COMMENT`                                       |
+| `--syn-doc-comment-tag`, `--syn-doc-comment-tag-value`, `--syn-doc-markup`（+ `-bg`） | `DEFAULT_DOC_COMMENT_TAG`, `DEFAULT_DOC_COMMENT_TAG_VALUE`, `DEFAULT_DOC_MARKUP`                     |
+| `--syn-function`, `--syn-function-call`                                               | `DEFAULT_FUNCTION_DECLARATION`, `DEFAULT_FUNCTION_CALL`                                              |
+| `--syn-type`, `--syn-constant`, `--syn-property`                                      | `DEFAULT_CLASS_NAME`, `DEFAULT_CONSTANT`, `DEFAULT_INSTANCE_FIELD`                                   |
+| `--syn-variable`, `--syn-param`, `--syn-builtin`                                      | `DEFAULT_LOCAL_VARIABLE`, `DEFAULT_PARAMETER`, `DEFAULT_PREDEFINED_SYMBOL`                           |
+| `--syn-annotation`, `--syn-decorator`                                                 | `DEFAULT_METADATA`                                                                                   |
+| `--syn-punct`, `--syn-escape`                                                         | `DEFAULT_OPERATION_SIGN`, `DEFAULT_VALID_STRING_ESCAPE`                                              |
+| `--syn-tag`, `--syn-attribute`, `--syn-todo`, `--syn-invalid`                         | `DEFAULT_TAG`, `DEFAULT_ATTRIBUTE`, `TODO_DEFAULT_ATTRIBUTES`, `BAD_CHARACTER`                       |
+| `--syn-rainbow-1` … `--syn-rainbow-5`（语义高亮）                                     | `RAINBOW_COLOR1` … `RAINBOW_COLOR5`                                                                  |
+| `--wave-error`, `--wave-warning`                                                      | `ERRORS_ATTRIBUTES`, `WARNING_ATTRIBUTES`（效果颜色）                                                |
+| `--bg-matched-brace`, `--bg-identifier-under-caret`                                   | `MATCHED_BRACE_ATTRIBUTES`, `IDENTIFIER_UNDER_CARET_ATTRIBUTES`                                      |
+| `--bg-text-search-result`, `--bg-search-match`                                        | `TEXT_SEARCH_RESULT_ATTRIBUTES`, `SEARCH_RESULT_ATTRIBUTES`                                          |
+| `--syn-self`, `--syn-keyword-arg`, `--syn-docstring`, `--syn-predefined`              | `PY.SELF_PARAMETER`, `PY.KEYWORD_ARGUMENT`, `PY.DOC_COMMENT`, `PY.BUILTIN_NAME`                      |
+| `--ansi-*`                                                                            | `CONSOLE_*_OUTPUT`（`CONSOLE_DARKGRAY_OUTPUT` 为亮黑，`CONSOLE_GRAY_OUTPUT` 为白色）                 |
+
+完整的表是同一文件中的 `ICLS_COLORS` 和 `ICLS_ATTRIBUTES`。写成 `<value />` 的属性没有自己的颜色，与 IntelliJ 一样按普通文本
+（`TEXT` 的前景色）显示，而不是使用父配色方案的颜色。
+
+## 移植 VS Code 主题
+
+VS Code 主题（扩展中的 `themes/*.json`）包含 `type`（`dark` / `light` / `hc`）、`colors`（工作台）和 `tokenColors`（TextMate scope）。
+根据 `type` 设置 `kind`，然后手动映射：
+
+| OpenIDEA token                                                                                         | VS Code `colors` key                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--bg-frame`                                                                                           | `titleBar.activeBackground`, `activityBar.background`                                                                                                                                                |
+| `--bg-island`, `--bg-app`                                                                              | `editor.background`, `sideBar.background`                                                                                                                                                            |
+| `--bg-elev`                                                                                            | `sideBarSectionHeader.background`, `editorGroupHeader.tabsBackground`                                                                                                                                |
+| `--bg-popup`, `--border-popup`                                                                         | `editorWidget.background`, `editorWidget.border`                                                                                                                                                     |
+| `--bg-hover`                                                                                           | `list.hoverBackground`                                                                                                                                                                               |
+| `--bg-selected`, `--bg-tree-selected`                                                                  | `list.activeSelectionBackground`                                                                                                                                                                     |
+| `--bg-tree-selected-inactive`                                                                          | `list.inactiveSelectionBackground`                                                                                                                                                                   |
+| `--border`                                                                                             | `panel.border`, `sideBar.border`                                                                                                                                                                     |
+| `--fg`                                                                                                 | `foreground`, `sideBar.foreground`                                                                                                                                                                   |
+| `--fg-muted`, `--fg-subtle`                                                                            | `descriptionForeground`, `disabledForeground`                                                                                                                                                        |
+| `--accent`, `--fg-on-accent`                                                                           | `button.background`, `button.foreground`                                                                                                                                                             |
+| `--focus-ring-soft`                                                                                    | `focusBorder`                                                                                                                                                                                        |
+| `--link`                                                                                               | `textLink.foreground`                                                                                                                                                                                |
+| `--bg-input`, `--bg-field`                                                                             | `input.background`                                                                                                                                                                                   |
+| `--bg-tab-selected`, `--border-tab-selected`                                                           | `tab.activeBackground`, `tab.activeBorderTop`                                                                                                                                                        |
+| `--scrollbar-thumb`, `--scrollbar-thumb-hover`                                                         | `scrollbarSlider.background`, `scrollbarSlider.hoverBackground`                                                                                                                                      |
+| `--danger`, `--warning`, `--info`                                                                      | `errorForeground`, `editorWarning.foreground`, `editorInfo.foreground`                                                                                                                               |
+| `--vcs-modified`, `--vcs-added`, `--vcs-deleted`, `--vcs-untracked`, `--vcs-ignored`, `--vcs-conflict` | `gitDecoration.modifiedResourceForeground`, `.addedResourceForeground`, `.deletedResourceForeground`, `.untrackedResourceForeground`, `.ignoredResourceForeground`, `.conflictingResourceForeground` |
+| `--fg-editor`                                                                                          | `editor.foreground`                                                                                                                                                                                  |
+| `--caret`                                                                                              | `editorCursor.foreground`                                                                                                                                                                            |
+| `--bg-current-line`                                                                                    | `editor.lineHighlightBackground`                                                                                                                                                                     |
+| `--bg-editor-selection`, `--bg-editor-selection-inactive`, `--fg-editor-selection`                     | `editor.selectionBackground`, `editor.inactiveSelectionBackground`, `editor.selectionForeground`                                                                                                     |
+| `--fg-line-number`, `--fg-line-number-current`                                                         | `editorLineNumber.foreground`, `editorLineNumber.activeForeground`                                                                                                                                   |
+| `--border-indent-guide`, `--border-indent-guide-active`                                                | `editorIndentGuide.background1`, `editorIndentGuide.activeBackground1`                                                                                                                               |
+| `--fg-whitespace`                                                                                      | `editorWhitespace.foreground`                                                                                                                                                                        |
+| `--bg-text-search-result`, `--bg-text-search-result-current`                                           | `editor.findMatchHighlightBackground`, `editor.findMatchBackground`                                                                                                                                  |
+| `--bg-matched-brace`                                                                                   | `editorBracketMatch.background`                                                                                                                                                                      |
+| `--syn-bracket-1` … `--syn-bracket-3`（彩虹括号）                                                      | `editorBracketHighlight.foreground1` … `foreground3`                                                                                                                                                 |
+| `--bg-identifier-under-caret`, `-write`                                                                | `editor.wordHighlightBackground`, `editor.wordHighlightStrongBackground`                                                                                                                             |
+| `--wave-error`, `--wave-warning`                                                                       | `editorError.foreground`, `editorWarning.foreground`                                                                                                                                                 |
+| `--gutter-modified`, `--gutter-added`, `--gutter-deleted`                                              | `editorGutter.modifiedBackground`, `.addedBackground`, `.deletedBackground`                                                                                                                          |
+| `--fg-inlay`, `--bg-inlay`                                                                             | `editorInlayHint.foreground`, `editorInlayHint.background`                                                                                                                                           |
+| `--ansi-*`                                                                                             | `terminal.ansiBlack` … `terminal.ansiBrightWhite`                                                                                                                                                    |
+
+`tokenColors` 按 TextMate scope 映射到语法 token：
+
+| OpenIDEA token                                            | Scope                                                          |
+| --------------------------------------------------------- | -------------------------------------------------------------- |
+| `--syn-keyword`                                           | `keyword`, `storage.type`, `storage.modifier`                  |
+| `--syn-string`                                            | `string`                                                       |
+| `--syn-escape`                                            | `constant.character.escape`                                    |
+| `--syn-number`                                            | `constant.numeric`                                             |
+| `--syn-constant`                                          | `constant.language`, `variable.other.constant`                 |
+| `--syn-comment`, `--syn-doc-comment`                      | `comment`, `comment.block.documentation`                       |
+| `--syn-function`, `--syn-function-call`                   | `entity.name.function`, `meta.function-call`                   |
+| `--syn-type`                                              | `entity.name.type`, `entity.name.class`, `support.class`       |
+| `--syn-variable`, `--syn-param`                           | `variable`, `variable.parameter`                               |
+| `--syn-property`                                          | `variable.other.property`, `variable.other.member`             |
+| `--syn-builtin`, `--syn-predefined`                       | `support.function`, `support.variable`                         |
+| `--syn-self`                                              | `variable.language.self`, `variable.language.this`             |
+| `--syn-annotation`, `--syn-decorator`                     | `meta.decorator`, `storage.type.annotation`                    |
+| `--syn-punct`                                             | `punctuation`, `keyword.operator`                              |
+| `--syn-tag`, `--syn-attribute`                            | `entity.name.tag`, `entity.other.attribute-name`               |
+| `--syn-regexp`                                            | `string.regexp`                                                |
+| `--syn-markup-heading`, `--syn-markup-code`, `--syn-link` | `markup.heading`, `markup.inline.raw`, `markup.underline.link` |
+| `--syn-invalid`                                           | `invalid`                                                      |
+
+注释上的 `fontStyle: "italic"` 对应 `"--syn-comment-style": "italic"`。
+
+## 测试主题
+
+- 安装（或链接）并应用主题后，逐一检查：带选中项的项目工具窗口、几种语言的编辑器、随处搜索、弹出菜单、提示框、设置、
+  终端（`ls --color`）、差异视图，以及提交工具窗口中的版本控制颜色。
+- 文字与背景至少要达到 WCAG AA 对比度（4.5:1）。内置主题由 `src/features/settings/__tests__/contrast.test.ts` 检查。
+- 修改仓库自带的模板时：`pnpm vitest run scripts/theme` 会对照 tokens.css 校验模板并保证 token 参考是最新的，
+  `cargo test -p ide-plugin` 会通过插件宿主加载模板。
+
+## Token 参考
+
+以下是两个基础主题的取值，由 `src/styles/tokens.css` 生成（`pnpm gen:theme-docs` 会重新生成 `plugins/themes.md` 中的副本）。
+标为 _UI 主题_ 的分组按惯例放在主题文件中，标为 _编辑器配色方案_ 的分组放在配色方案文件中。
+
+共 256 个可设置的 token：UI 主题文件 125 个，编辑器配色方案文件 131 个。
+
+### 表面（UI 主题）
+
+| Token                   | Islands 深色 | Islands 浅色 |
+| ----------------------- | ------------ | ------------ |
+| `--bg-app`              | `#191a1c`    | `#ffffff`    |
+| `--bg-elev`             | `#212326`    | `#f7f8f9`    |
+| `--bg-popup`            | `#26282c`    | `#ffffff`    |
+| `--bg-floating-toolbar` | `#33353b`    | `#ffffff`    |
+| `--bg-hover`            | `#2e2f30`    | `#ededed`    |
+| `--bg-selected`         | `#2a4371`    | `#d0dffe`    |
+| `--bg-selected-strong`  | `#2e4d89`    | `#bdd3ff`    |
+| `--bg-current-line`     | `#1f2024`    | `#f5f8fe`    |
+| `--bg-debug-line`       | `#2a5091`    | `#d4e2ff`    |
+| `--bg-backdrop`         | `#26282c`    | `#e9eaee`    |
+| `--bg-input`            | `#191a1c`    | `#ffffff`    |
+
+### 线条（UI 主题）
+
+| Token             | Islands 深色 | Islands 浅色 |
+| ----------------- | ------------ | ------------ |
+| `--border`        | `#26282c`    | `#e9eaee`    |
+| `--border-popup`  | `#33353b`    | `#d1d3d9`    |
+| `--border-strong` | `#40434a`    | `#d1d3d9`    |
+| `--border-window` | `#40434a`    | `#d1d3d9`    |
+| `--control-off`   | `#5f6269`    | `#c3c5cb`    |
+
+### 文字（UI 主题）
+
+| Token            | Islands 深色 | Islands 浅色 |
+| ---------------- | ------------ | ------------ |
+| `--fg-strong`    | `#dfe1e5`    | `#000000`    |
+| `--fg-emphasis`  | `#d1d3d9`    | `#000000`    |
+| `--fg`           | `#d1d3d9`    | `#000000`    |
+| `--fg-secondary` | `#9fa2a8`    | `#5f6269`    |
+| `--fg-muted`     | `#8c8f95`    | `#6c707e`    |
+| `--fg-subtle`    | `#73767c`    | `#73767c`    |
+| `--fg-faint`     | `#5f6269`    | `#9fa2a8`    |
+| `--fg-gutter`    | `#4b5059`    | `#aeb3c2`    |
+| `--fg-icon`      | `#ced0d6`    | `#6c707e`    |
+
+### 强调色（UI 主题）
+
+| Token          | Islands 深色 | Islands 浅色 |
+| -------------- | ------------ | ------------ |
+| `--accent`     | `#3871e1`    | `#3871e1`    |
+| `--link`       | `#71a1fe`    | `#2f5eb9`    |
+| `--link-hover` | `#92b7ff`    | `#2e4d89`    |
+
+### 图表（UI 主题）
+
+| Token            | Islands 深色 | Islands 浅色 |
+| ---------------- | ------------ | ------------ |
+| `--chart-series` | `#e07a7c`    | `#d9686a`    |
+
+### 状态（UI 主题）
+
+| Token                 | Islands 深色 | Islands 浅色 |
+| --------------------- | ------------ | ------------ |
+| `--danger`            | `#f57e84`    | `#c54e58`    |
+| `--warning`           | `#d59637`    | `#a56906`    |
+| `--success`           | `#6db083`    | `#338555`    |
+| `--db-connected`      | `#2fe02f`    | `#00ff00`    |
+| `--db-connected-ring` | `#1d6b1d`    | `#5b995b`    |
+| `--info`              | `#548af7`    | `#3871e1`    |
+
+### 版本控制（UI 主题）
+
+| Token                    | Islands 深色 | Islands 浅色 |
+| ------------------------ | ------------ | ------------ |
+| `--vcs-modified`         | `#70aeff`    | `#0033b3`    |
+| `--vcs-added`            | `#73bd79`    | `#067d17`    |
+| `--vcs-deleted`          | `#6f737a`    | `#6c707e`    |
+| `--vcs-untracked`        | `#e88f89`    | `#b23247`    |
+| `--vcs-ignored`          | `#d69a6b`    | `#8c4f00`    |
+| `--vcs-conflict`         | `#de6a66`    | `#de1b2e`    |
+| `--gutter-modified`      | `#375fad`    | `#88adf7`    |
+| `--gutter-added`         | `#549159`    | `#7fc784`    |
+| `--gutter-deleted`       | `#868a91`    | `#767a8a`    |
+| `--diff-modified`        | `#385570`    | `#c2d8f2`    |
+| `--diff-inserted`        | `#294436`    | `#bee6be`    |
+| `--diff-deleted`         | `#484a4a`    | `#d6d6d6`    |
+| `--diff-modified-stripe` | `#43698d`    | `#b6d2f2`    |
+| `--diff-inserted-stripe` | `#447152`    | `#aadeaa`    |
+| `--diff-deleted-stripe`  | `#656e76`    | `#c8c8c8`    |
+| `--diff-conflict-stripe` | `#8f5247`    | `#ffc8bd`    |
+
+### 语法（编辑器配色方案）
+
+| Token                                | Islands 深色                        | Islands 浅色                        |
+| ------------------------------------ | ----------------------------------- | ----------------------------------- |
+| `--syn-keyword`                      | `#cf8e6d`                           | `#0033b3`                           |
+| `--syn-string`                       | `#6aab73`                           | `#067d17`                           |
+| `--syn-type`                         | `#bcbec4`                           | `#000000`                           |
+| `--syn-function`                     | `#56a8f5`                           | `#00627a`                           |
+| `--syn-function-call`                | `#bcbec4`                           | `#080808`                           |
+| `--syn-comment`                      | `#7a7e85`                           | `#8c8c8c`                           |
+| `--syn-comment-style`                | `normal`                            | `italic`                            |
+| `--syn-doc-comment`                  | `#5f826b`                           | `#8c8c8c`                           |
+| `--syn-doc-comment-tag`              | `#67a37c`                           | `#8c8c8c`                           |
+| `--syn-doc-comment-tag-effect`       | `none`                              | `underline #999999`                 |
+| `--syn-doc-comment-tag-value`        | `#abadb3`                           | `#3d3d3d`                           |
+| `--syn-doc-markup`                   | `#68a67e`                           | `#8c8c8c`                           |
+| `--syn-doc-markup-bg`                | `transparent`                       | `#e2ffe2`                           |
+| `--syn-docstring`                    | `#5f826b`                           | `#067d17`                           |
+| `--syn-annotation`                   | `#b3ae60`                           | `#9e880d`                           |
+| `--syn-decorator`                    | `#b3ae60`                           | `#9e880d`                           |
+| `--syn-number`                       | `#2aacb8`                           | `#1750eb`                           |
+| `--syn-punct`                        | `#bcbec4`                           | `#080808`                           |
+| `--syn-variable`                     | `#bcbec4`                           | `#080808`                           |
+| `--syn-global`                       | `var(--syn-variable)`               | `var(--syn-variable)`               |
+| `--syn-namespace`                    | `var(--fg-editor)`                  | `var(--fg-editor)`                  |
+| `--syn-param`                        | `#bcbec4`                           | `#080808`                           |
+| `--syn-property`                     | `#c77dbb`                           | `#871094`                           |
+| `--syn-constant`                     | `#c77dbb`                           | `#871094`                           |
+| `--syn-python-local-variable`        | `var(--syn-variable)`               | `var(--syn-variable)`               |
+| `--syn-python-global-variable`       | `var(--syn-global)`                 | `var(--syn-global)`                 |
+| `--syn-python-instance-attribute`    | `var(--syn-variable)`               | `var(--syn-variable)`               |
+| `--syn-python-class-attribute`       | `var(--syn-property)`               | `var(--syn-property)`               |
+| `--syn-python-constant`              | `var(--syn-constant)`               | `var(--syn-constant)`               |
+| `--syn-python-property`              | `var(--syn-property)`               | `var(--syn-property)`               |
+| `--syn-python-type-parameter`        | `var(--syn-type)`                   | `var(--syn-type)`                   |
+| `--syn-python-builtin`               | `var(--syn-builtin)`                | `var(--syn-builtin)`                |
+| `--syn-python-predefined-definition` | `var(--syn-predefined)`             | `var(--syn-predefined)`             |
+| `--syn-python-predefined-usage`      | `var(--syn-predefined)`             | `var(--syn-predefined)`             |
+| `--syn-python-fstring`               | `#a5c261`                           | `var(--syn-string)`                 |
+| `--syn-python-bytes`                 | `#a5c261`                           | `var(--syn-string)`                 |
+| `--syn-python-docstring-tag`         | `var(--syn-doc-comment-tag)`        | `var(--syn-doc-comment-tag)`        |
+| `--syn-python-docstring-tag-effect`  | `var(--syn-doc-comment-tag-effect)` | `var(--syn-doc-comment-tag-effect)` |
+| `--syn-python-docstring-keyword`     | `var(--syn-doc-comment-tag-value)`  | `var(--syn-doc-comment-tag-value)`  |
+| `--syn-php-variable`                 | `var(--syn-property)`               | `var(--syn-property)`               |
+| `--syn-php-function-call`            | `var(--syn-function)`               | `var(--syn-function)`               |
+| `--syn-builtin`                      | `#8888c6`                           | `#000080`                           |
+| `--syn-self`                         | `#94558d`                           | `#94558d`                           |
+| `--syn-keyword-arg`                  | `#aa4926`                           | `#660099`                           |
+| `--syn-predefined`                   | `#b200b2`                           | `#b200b2`                           |
+| `--syn-escape`                       | `#cf8e6d`                           | `#0037a6`                           |
+| `--syn-regexp`                       | `#42c3d4`                           | `#264eff`                           |
+| `--syn-tag`                          | `#d5b778`                           | `#0033b3`                           |
+| `--syn-attribute`                    | `#bcbec4`                           | `#174ad4`                           |
+| `--syn-todo`                         | `#8bb33d`                           | `#008dde`                           |
+| `--syn-link`                         | `#548af7`                           | `#006dcc`                           |
+| `--syn-markup-heading`               | `#cf8e6d`                           | `#871094`                           |
+| `--syn-markup-code`                  | `#6aab73`                           | `#067d17`                           |
+| `--syn-invalid`                      | `#f75464`                           | `#f50000`                           |
+| `--syn-inline-value`                 | `#868a91`                           | `#8c8c8c`                           |
+| `--syn-rainbow-1`                    | `#6fafbd`                           | `#9b3b6a`                           |
+| `--syn-rainbow-2`                    | `#d79b6e`                           | `#114d77`                           |
+| `--syn-rainbow-3`                    | `#9fbf6b`                           | `#9c6a2c`                           |
+| `--syn-rainbow-4`                    | `#c98bc6`                           | `#005910`                           |
+| `--syn-rainbow-5`                    | `#8e9cf0`                           | `#bc5150`                           |
+| `--syn-bracket-1`                    | `#e8c25b`                           | `#0431fa`                           |
+| `--syn-bracket-2`                    | `#d78bd6`                           | `#319331`                           |
+| `--syn-bracket-3`                    | `#4ea7f0`                           | `#7b3814`                           |
+
+### 编辑器（编辑器配色方案）
+
+| Token                               | Islands 深色             | Islands 浅色             |
+| ----------------------------------- | ------------------------ | ------------------------ |
+| `--fg-editor`                       | `#bcbec4`                | `#080808`                |
+| `--caret`                           | `#ced0d6`                | `#000000`                |
+| `--fg-line-number`                  | `#4b5059`                | `#aeb3c2`                |
+| `--fg-line-number-current`          | `#a1a3ab`                | `#767a8a`                |
+| `--border-gutter`                   | `#26282c`                | `#ebecf0`                |
+| `--border-indent-guide`             | `#323438`                | `#ebecf0`                |
+| `--border-indent-guide-active`      | `#4e5157`                | `#aeb3c2`                |
+| `--border-right-margin`             | `#323438`                | `#ebecf0`                |
+| `--bg-editor-selection`             | `#214283`                | `#a6d2ff`                |
+| `--bg-editor-selection-inactive`    | `#1d3460`                | `#c9e3ff`                |
+| `--fg-editor-selection`             | `inherit`                | `inherit`                |
+| `--bg-text-search-result`           | `#114957`                | `#fcd47e`                |
+| `--bg-text-search-result-current`   | `#165e70`                | `#f2bf57`                |
+| `--bg-matched-brace`                | `#43454a`                | `#93d9d9`                |
+| `--matched-brace-weight`            | `var(--fw-code-bold)`    | `inherit`                |
+| `--bg-matched-tag`                  | `#3f4045`                | `#c9ecec`                |
+| `--bg-fold-placeholder`             | `#393b40`                | `#e9f5e6`                |
+| `--fg-fold-placeholder`             | `#868991`                | `#414d41`                |
+| `--fg-fold-marker`                  | `#6f737a`                | `#8b8e94`                |
+| `--fg-whitespace`                   | `#6f737a`                | `#b5b7bd`                |
+| `--fg-unused`                       | `#6f737a`                | `#8c8c8c`                |
+| `--bg-identifier-under-caret`       | `#373b39`                | `#edebfc`                |
+| `--bg-identifier-under-caret-write` | `#402f33`                | `#fce8f4`                |
+| `--fg-inlay`                        | `#868a91`                | `#73767c`                |
+| `--bg-inlay`                        | `#393b40`                | `#00000012`              |
+| `--wave-error`                      | `#fa6675`                | `#f50000`                |
+| `--wave-warning`                    | `#f2c55c`                | `#f2bf57`                |
+| `--editor-error-decoration`         | `underline wavy #fa6675` | `underline wavy #f50000` |
+| `--editor-warning-decoration`       | `underline wavy #f2c55c` | `none`                   |
+| `--editor-warning-background`       | `transparent`            | `#fcf4d4`                |
+| `--bg-breakpoint-line`              | `#40252b`                | `#faeae6`                |
+| `--fg-completion-match`             | `#538af9`                | `#2f5eb9`                |
+| `--bg-editor-inline`                | `#212326`                | `#f7f8f9`                |
+| `--bg-editor-banner`                | `#233558`                | `#f7f8ff`                |
+| `--fg-weak-warning`                 | `#6f737a`                | `#a8adbd`                |
+| `--fg-bulb`                         | `#f2c55c`                | `#ffaf0f`                |
+
+### ANSI 调色板（编辑器配色方案）
+
+| Token                   | Islands 深色 | Islands 浅色 |
+| ----------------------- | ------------ | ------------ |
+| `--ansi-black`          | `#000000`    | `#000000`    |
+| `--ansi-red`            | `#f0524f`    | `#e5372a`    |
+| `--ansi-green`          | `#5c962c`    | `#367a29`    |
+| `--ansi-yellow`         | `#a68a0d`    | `#ad8d2b`    |
+| `--ansi-blue`           | `#3993d4`    | `#3866d1`    |
+| `--ansi-magenta`        | `#a771bf`    | `#a33cae`    |
+| `--ansi-cyan`           | `#00a3a3`    | `#3c8b8d`    |
+| `--ansi-white`          | `#808080`    | `#8b8e94`    |
+| `--ansi-bright-black`   | `#595959`    | `#73767c`    |
+| `--ansi-bright-red`     | `#ff4050`    | `#f05046`    |
+| `--ansi-bright-green`   | `#4fc414`    | `#2e9b3f`    |
+| `--ansi-bright-yellow`  | `#e5bf00`    | `#b58e00`    |
+| `--ansi-bright-blue`    | `#1fb0ff`    | `#3d82f0`    |
+| `--ansi-bright-magenta` | `#ed7eed`    | `#c04bcf`    |
+| `--ansi-bright-cyan`    | `#00e5e5`    | `#1b9ea3`    |
+| `--ansi-bright-white`   | `#ffffff`    | `#5f6269`    |
+
+### 终端 ANSI 调色板（编辑器配色方案）
+
+| Token                            | Islands 深色 | Islands 浅色 |
+| -------------------------------- | ------------ | ------------ |
+| `--terminal-ansi-black`          | `#000000`    | `#000000`    |
+| `--terminal-ansi-red`            | `#f27481`    | `#c93645`    |
+| `--terminal-ansi-green`          | `#6bcc62`    | `#357d1f`    |
+| `--terminal-ansi-yellow`         | `#e0ce70`    | `#b2a400`    |
+| `--terminal-ansi-blue`           | `#5594fa`    | `#225cd6`    |
+| `--terminal-ansi-magenta`        | `#c092fa`    | `#6e32e5`    |
+| `--terminal-ansi-cyan`           | `#47ccbd`    | `#007a80`    |
+| `--terminal-ansi-white`          | `#ced0d6`    | `#bec0c5`    |
+| `--terminal-ansi-bright-black`   | `#4e5157`    | `#6c707e`    |
+| `--terminal-ansi-bright-red`     | `#ff6b7a`    | `#ff5462`    |
+| `--terminal-ansi-bright-green`   | `#67ff59`    | `#3dcc3d`    |
+| `--terminal-ansi-bright-yellow`  | `#ffec1a`    | `#d4bb00`    |
+| `--terminal-ansi-bright-blue`    | `#3399ff`    | `#009dff`    |
+| `--terminal-ansi-bright-magenta` | `#d970ff`    | `#d659ff`    |
+| `--terminal-ansi-bright-cyan`    | `#40ffe9`    | `#31c4b3`    |
+| `--terminal-ansi-bright-white`   | `#ffffff`    | `#d2d4d9`    |
+
+### 阴影与窗口控件（UI 主题）
+
+| Token                     | Islands 深色                                                                                       | Islands 浅色                                                                                     |
+| ------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `--shadow-popup`          | `0 6px 20px rgba(0, 0, 0, 0.45)`                                                                   | `0 6px 20px rgba(0, 0, 0, 0.12)`                                                                 |
+| `--shadow-dialog`         | `0 0 0 0.5px rgba(0, 0, 0, 0.6), 0 10px 24px rgba(0, 0, 0, 0.35), 0 24px 72px rgba(0, 0, 0, 0.45)` | `0 0 0 0.5px rgba(0, 0, 0, 0.1), 0 10px 24px rgba(0, 0, 0, 0.1), 0 24px 72px rgba(0, 0, 0, 0.2)` |
+| `--traffic-close`         | `#ff5f57`                                                                                          | `#ff5f57`                                                                                        |
+| `--traffic-close-border`  | `#e0443e`                                                                                          | `#e0443e`                                                                                        |
+| `--traffic-close-pressed` | `#bf4942`                                                                                          | `#bf4942`                                                                                        |
+| `--traffic-glyph`         | `#4d0000`                                                                                          | `#4d0000`                                                                                        |
+| `--traffic-off`           | `#4b4c4f`                                                                                          | `#dddddd`                                                                                        |
+| `--traffic-off-border`    | `#404144`                                                                                          | `#c8c8c8`                                                                                        |
+
+### 附加（UI 主题）
+
+| Token                     | Islands 深色                     | Islands 浅色                     |
+| ------------------------- | -------------------------------- | -------------------------------- |
+| `--bg-stripe-tooltip`     | `var(--bg-tooltip)`              | `#27282e`                        |
+| `--fg-stripe-tooltip`     | `var(--fg-tooltip)`              | `#ffffff`                        |
+| `--border-stripe-tooltip` | `var(--border-tooltip)`          | `#383a42`                        |
+| `--shadow-stripe-tooltip` | `var(--shadow-tooltip)`          | `0 2px 8px rgba(0, 0, 0, 0.24)`  |
+| `--bg-tooltip`            | `#33353b`                        | `#ffffff`                        |
+| `--fg-tooltip`            | `#d1d3d9`                        | `#000000`                        |
+| `--border-tooltip`        | `#33353b`                        | `#d1d3d9`                        |
+| `--bg-control`            | `#26282c`                        | `#ffffff`                        |
+| `--bg-control-hover`      | `#33353b`                        | `#f7f8f9`                        |
+| `--bg-active`             | `#40434a`                        | `#dddfe4`                        |
+| `--bg-scrim`              | `rgba(0, 0, 0, 0.45)`            | `rgba(0, 0, 0, 0.16)`            |
+| `--fg-on-accent`          | `#ffffff`                        | `#ffffff`                        |
+| `--shadow-tooltip`        | `0 4px 12px rgba(0, 0, 0, 0.4)`  | `0 4px 12px rgba(0, 0, 0, 0.12)` |
+| `--shadow-balloon`        | `0 8px 24px rgba(0, 0, 0, 0.45)` | `0 8px 24px rgba(0, 0, 0, 0.14)` |
+
+### Islands 约定（UI 主题）
+
+| Token                            | Islands 深色          | Islands 浅色          |
+| -------------------------------- | --------------------- | --------------------- |
+| `--bg-frame`                     | `#26282c`             | `#e9eaee`             |
+| `--bg-island`                    | `#191a1c`             | `#ffffff`             |
+| `--bg-stripe-hover`              | `#ffffff17`           | `#00000012`           |
+| `--bg-stripe-selected`           | `#ffffff29`           | `#00000020`           |
+| `--fg-stripe-selected-active`    | `#ffffff`             | `#ffffff`             |
+| `--fg-stripe-label`              | `#9fa2a8`             | `#5f6269`             |
+| `--bg-tab-selected`              | `#233558`             | `#e3ebfe`             |
+| `--border-tab-selected`          | `#2e4d89`             | `#a7c5ff`             |
+| `--bg-tab-selected-inactive`     | `#26282c`             | `#e9eaee`             |
+| `--border-tab-selected-inactive` | `#40434a`             | `#d1d3d9`             |
+| `--bg-tab-hover`                 | `#ffffff17`           | `#00000012`           |
+| `--border-editor-tabs`           | `#26282c`             | `#e9eaee`             |
+| `--bg-tree-selected`             | `#2a4371`             | `#d0dffe`             |
+| `--bg-tree-selected-inactive`    | `#33353b`             | `#e9eaee`             |
+| `--bg-tree-hover`                | `#ffffff10`           | `#00000008`           |
+| `--bg-toolbar-hover`             | `#ffffff17`           | `#00000012`           |
+| `--bg-toolbar-pressed`           | `#ffffff29`           | `#00000020`           |
+| `--bg-toolbar-selected`          | `#2e4d89`             | `#d0dffe`             |
+| `--bg-toolbar-selected-hover`    | `#2f5eb9`             | `#bdd3ff`             |
+| `--bg-button-primary-hover`      | `var(--accent-hover)` | `var(--accent-hover)` |
+| `--fg-button-primary`            | `#ffffff`             | `#ffffff`             |
+| `--bg-button`                    | `transparent`         | `#ffffff`             |
+| `--border-button`                | `#40434a`             | `#d1d3d9`             |
+| `--bg-field`                     | `#191a1c`             | `#ffffff`             |
+| `--bg-checkbox`                  | `#191a1c`             | `#ffffff`             |
+| `--border-checkbox`              | `#5f6269`             | `#a8adbd`             |
+| `--bg-toggle-on`                 | `#338555`             | `#4e9d6c`             |
+| `--fg-toggle-on`                 | `#ffffff`             | `#ffffff`             |
+| `--bg-toggle-off`                | `#191a1c`             | `#f7f8f9`             |
+| `--fg-toggle-off`                | `#73767c`             | `#73767c`             |
+| `--border-toggle`                | `#5f6269`             | `#c3c5cb`             |
+| `--bg-toggle-knob`               | `#5f6269`             | `#c3c5cb`             |
+| `--focus-ring-soft`              | `#3d6185`             | `#97c3f3`             |
+| `--scrollbar-thumb`              | `#ffffff33`           | `#00000033`           |
+| `--scrollbar-thumb-hover`        | `#ffffff59`           | `#00000080`           |
+| `--bg-search-match`              | `#ba9752`             | `#fee6b1`             |
+| `--bg-search-match-current`      | `#f2c55c`             | `#fcd47e`             |
+| `--fg-search-match`              | `#191a1c`             | `#000000`             |
+| `--bg-dialog`                    | `#191a1c`             | `#f7f8f9`             |
+| `--bg-popup-inline`              | `#26282c`             | `#f7f8f9`             |
+| `--bg-popup-advertiser`          | `#26282c`             | `#f7f8f9`             |
+| `--bg-feedback-info`             | `#233558`             | `#f7f8ff`             |
+| `--border-feedback-info`         | `#2e4d89`             | `#bdd3ff`             |
+| `--bg-feedback-error`            | `#56272b`             | `#fff6f5`             |
+| `--border-feedback-error`        | `#80383e`             | `#ffc4c5`             |
+| `--bg-feedback-warning`          | `#44321d`             | `#fff6e9`             |
+| `--border-feedback-warning`      | `#694820`             | `#f4cd9a`             |
+| `--bg-feedback-success`          | `#203b2a`             | `#f5faf3`             |
+| `--border-feedback-success`      | `#29583c`             | `#bbdbc2`             |
+| `--bg-counter`                   | `#73767c`             | `#8b8e94`             |
+| `--fg-counter`                   | `#000000`             | `#ffffff`             |
+| `--bg-progress-track`            | `#40434a`             | `#dddfe4`             |

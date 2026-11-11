@@ -1,0 +1,249 @@
+---
+title: "Version control"
+description: "Commit, branch, merge, rebase, stash and review history with the built-in Git integration."
+---
+
+OpenIDEA has built-in Git support. Git is the only version control system it supports.
+
+It reads repository state (status, diffs, blame, log) in-process, and runs the `git` executable for everything that changes the repository, so hooks, credentials, signing and your Git config behave as on the command line. You need Git installed. OpenIDEA finds it through `OPENIDEA_GIT`, then `PATH`, then the usual install locations; set an explicit path in **Settings › Version Control › Git › Path to Git executable** and click **Test** to check it.
+
+## Where to find things
+
+| Place                                                             | What it has                                                                                                                                              |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Git** main menu                                                 | Commit, push, pull, fetch, merge, rebase, branches, tags, reset, worktrees, log, patches, stash and shelf, current-file actions, GitHub, remotes, clone. |
+| **Commit** tool window (left)                                     | Local changes, changelists, commit message, Shelf and Stash tabs.                                                                                        |
+| **Git** tool window (bottom)                                      | **Log**, history tabs, **Console** (the Git commands the IDE ran), **Worktrees**.                                                                        |
+| Branch widget (title bar)                                         | The current branch; click it for the branches popup.                                                                                                     |
+| **VCS Operations…** popup                                         | The most common Git actions in one list.                                                                                                                 |
+| **Git** submenu in the Project view, editor and tab context menus | Actions for the selected files.                                                                                                                          |
+
+| Action                         | macOS           | Windows/Linux                |
+| ------------------------------ | --------------- | ---------------------------- |
+| Commit tool window             | `⌘0`            | `Alt+0`                      |
+| Git tool window                | `⌘9`            | `Alt+9`                      |
+| VCS Operations…                | `⌃V`            | ``Alt+` ``                   |
+| Branches…                      | none            | ``Ctrl+Shift+` ``            |
+| Commit…                        | `⌘K`            | `Ctrl+K`                     |
+| Commit and Push…               | `⌥⌘K`           | `Ctrl+Alt+K`                 |
+| Push…                          | `⇧⌘K`           | `Ctrl+Shift+K`               |
+| Update Project…                | `⌘T`            | `Ctrl+T`                     |
+| Rollback…                      | `⌥⌘Z`           | `Ctrl+Alt+Z`                 |
+| Show Diff                      | `⌘D`            | `Ctrl+D`                     |
+| Add to VCS                     | `⌥⌘A`           | `Ctrl+Alt+A`                 |
+| New Branch…                    | `⌥⌘N`           | `Ctrl+Alt+N`                 |
+| Next / previous change         | `⌃⌥⇧↓` / `⌃⌥⇧↑` | `Ctrl+Alt+Shift+Down` / `Up` |
+| Recent Changes (local history) | `⌥⇧C`           | `Alt+Shift+C`                |
+
+**Annotate with Git Blame**, **Show Git Log**, **Show History**, **Pull…**, **Fetch**, **Merge…**, **Rebase…**, **Stash Changes…** and **Resolve Conflicts…** have no default shortcut; assign one in the [keymap](/en/guide/keymap) if you use them often.
+
+## Get a repository
+
+- **Git › Clone…** opens **Clone Repository**. Enter a **URL:** and **Directory:**, and optionally check **Shallow clone with a history truncated to** N commits. The **GitHub** source in the sidebar lists your GitHub repositories (see [GitHub](/en/guide/github)).
+- When creating a project, check **Create Git repository** in the New Project dialog.
+
+There is no action to run `git init` in a project that is already open; run it in the terminal and OpenIDEA picks the repository up.
+
+OpenIDEA finds the repository that contains the project and nested repositories up to four levels deep (skipping folders such as `node_modules`, `target` and `build`). Status, commit, fetch and update cover all of them; branch and log actions work on the selected repository. Submodules show as nested repositories, without submodule commands.
+
+## Commit changes
+
+The **Commit** tool window lists your changes in groups: **Merge Conflicts**, **Changes** (one group per changelist) and **Unversioned Files**. With **View Options › Group By › Staging State**, the changes split into **Staged Changes** and **Unstaged Changes**.
+
+<Steps>
+  <Step title="Choose what to commit">
+    Check the files to include. Unversioned files and conflicts are not included by default, and only the active
+    changelist is checked. `Space` toggles the selected item. A partially staged file includes only its staged hunks.
+  </Step>
+  <Step title="Write the message">
+    Type in the message box. The **Commit Message History** button (or `⌃M` / `Ctrl+M`) offers your last 20 messages.
+    During a merge, cherry-pick or revert the message is pre-filled from Git; otherwise from `commit.template`.
+  </Step>
+  <Step title="Commit">
+    Click **Commit**, or press `⌘Enter` / `Ctrl+Enter` in the message box. **Commit and Push…** (`⌥⌘Enter` /
+    `Ctrl+Alt+Enter` in the message box) commits and then pushes.
+  </Step>
+</Steps>
+
+Check **Amend** (`⌃⌥M` / `Alt+M`) to amend the last commit; the button changes to **Amend Commit**.
+
+Double-click a file (or press `Enter`) to see its diff; **Preview Diff** shows it next to the tree. The file context menu has **Show Diff**, **Jump to Source**, **Rollback…**, **Add to VCS**, **Add to .gitignore**, **Stage**, **Unstage**, **Move to Another Changelist…**, **Shelve Changes…**, **Create Patch…**, **Copy as Patch to Clipboard**, **Show History**, **Show Local History** and **Annotate with Git Blame**.
+
+### Partial commits
+
+To commit only part of a file, open its diff from the Commit tool window. Each changed block has an **Include in commit** checkbox in the gutter; uncheck the blocks to leave out. The file's checkbox in the tree becomes partly checked. OpenIDEA commits the selected blocks through a temporary index, so your working tree and staging area stay as they are. Selection works per block, not per line.
+
+The diff toolbar also has **Stage Change (git add hunk)** if you prefer the staging area.
+
+### Changelists
+
+Changelists group local changes without touching Git. The default list is called **Changes**; new changes go to the active list. Changelists are saved per project in `.openidea/changelists.json`.
+
+- **New Changelist…**, **Edit Changelist…** (`F2` or `⇧F6` / `Shift+F6`), **Delete Changelist**, **Set Active Changelist**.
+- **Move to Another Changelist…** (`⇧⌘M` / `Alt+Shift+M`), or drag files between lists.
+- Right-click a changelist and choose **Commit…** to commit just that list.
+
+### Commit options and checks
+
+The gear button (**Commit Options**) next to **Commit** has:
+
+- **Author:** to commit as someone else (`Name <email>`), and **Sign-off commit**.
+- **Commit Checks**: **Reformat code**, **Optimize imports**, **Cleanup** (applies fix-all code actions) and **Run Git hooks** (off adds `--no-verify`).
+- **Advanced Commit Checks**: **Analyze code** (errors and warnings from the language servers) and **Check TODO** (TODO and FIXME in added lines).
+
+Before committing, OpenIDEA also warns about committing in detached HEAD or during a rebase, file names that cause problems on other systems, files larger than 50 MB, and CRLF line endings. A warning stops the commit once; click **Commit Anyway** to go ahead. There is no "run tests" check.
+
+### Modal commit
+
+With **Use non-modal commit interface** turned off (**Settings › Version Control › Commit**), there is no Commit tool window: **Local Changes**, **Shelf** and **Stash** become tabs of the Git tool window, and **Commit…** opens a **Commit Changes** dialog.
+
+## Changes in the editor
+
+The editor gutter marks added, modified and deleted lines compared with HEAD. Click a marker to open a popup with **Previous Change**, **Next Change**, **Rollback**, **Show Diff** and **Copy Original Text**. **Rollback…** with the caret on changed lines rolls back just those lines.
+
+## Roll back, add and ignore
+
+- **Rollback…** opens **Rollback Changes**: pick the files, optionally **Delete local copies of added files**.
+- **Add to VCS** adds untracked files. When you create or delete files, OpenIDEA asks whether to add or remove them in Git; change this under **Settings › Version Control › Confirmation**.
+- **Add to .gitignore** writes a rule to the nearest `.gitignore` or to `.git/info/exclude`.
+
+## Diff viewer
+
+Diffs open in an editor tab.
+
+| Action                     | macOS         | Windows/Linux              |
+| -------------------------- | ------------- | -------------------------- |
+| Next / previous difference | `F7` / `⇧F7`  | `F7` / `Shift+F7`          |
+| Next / previous file       | `⌃⇧→` / `⌃⇧←` | `Alt+Shift+Right` / `Left` |
+| Accept left side           | `⌃⌘→`         | `Ctrl+Alt+R`               |
+| Accept right side          | `⌃⌘←`         | `Ctrl+Alt+A`               |
+| Jump to source             | `F4` or `⌘↓`  | `F4`                       |
+| Diff settings              | `⇧⌘D`         | `Ctrl+Shift+D`             |
+
+The toolbar switches between **Side-by-side Viewer** and **Unified Viewer**, and sets whitespace handling (**Do not ignore**, **Trim whitespaces**, **Ignore whitespaces**, **Ignore whitespaces and empty lines**), highlighting (words, lines or none), **Collapse Unchanged Fragments**, **Synchronize Scrolling** and **Align Changes**. When the right side is your working file you can edit it, use **Revert Change**, or **Stage Change (git add hunk)**. Gutter arrows apply a change from one side to the other.
+
+Other ways to compare:
+
+- **Compare with Branch or Revision…** and **Compare with Revision…** for the current file, or for folders (a list of changed files).
+- **Compare With…** (`⌘D` / `Ctrl+D` in the Project view), **Compare Files**, **Compare Directories** (with copy left/right) and **View › Compare with Clipboard**.
+
+## Branches
+
+Click the branch widget in the title bar (or **Git › Branches…**) to open the branches popup. Type to search branches and actions. The popup shows **Recent**, **Local**, **Remote** and **Tags**, and at the top **Update Project…**, **Commit…**, **Push…**, **New Branch…** and **Checkout Tag or Revision…**. The gear button toggles grouping by prefix, recent branches and tags.
+
+Select a branch (`→` or `Enter`) for its actions:
+
+- **Checkout**, **New Branch from '…'…**, **Checkout and Rebase onto '…'**
+- **Compare with '…'**, **Show Diff with Working Tree**, **Show History**
+- **Rebase '…' onto '…'**, **Merge '…' into '…'**, and for remote branches **Pull into '…' Using Rebase** / **Using Merge**
+- **Update**, **Push…**, **Rename…**, **Add to Favorites**, **Delete**
+
+If local changes block a checkout, you can choose **Smart Checkout** (stash, check out, unstash), **Force Checkout** or **Don't Checkout**. A deleted branch can be brought back with **Restore** in the notification.
+
+With several repositories, the popup shows branches common to all of them, plus a submenu per repository.
+
+## Sync with remotes
+
+- **Fetch** fetches all repositories. OpenIDEA also checks for incoming commits in the background (after 20 seconds, then every 15 minutes); see **Explicitly check for incoming commits on remotes** in the Git settings.
+- **Update Project…** (`⌘T` / `Ctrl+T`) pulls all repositories, by merge or by rebase. Uncommitted changes are stashed and restored. The **Update Project** dialog only shows when **Show options before Update** is on.
+- **Pull…** pulls a chosen remote branch into the current branch, with `--rebase`, `--ff-only`, `--no-ff`, `--squash` and other options.
+- **Push…** (`⇧⌘K` / `Ctrl+Shift+K`) lists outgoing commits and their files. Edit the target branch, pick a remote, and choose **Force (with lease)**, **Set upstream** or push tags. Force push is not allowed to protected branches (`master; main` by default). If the push is rejected, OpenIDEA offers to merge or rebase and push again.
+- **Manage Remotes…** adds, edits and removes remotes.
+
+HTTPS passwords and SSH passphrases are asked for in a dialog and can be remembered; saved HTTPS credentials are listed under **Settings › Version Control › Git › Passwords**.
+
+## Merge, rebase and conflicts
+
+**Git › Merge…** and **Git › Rebase…** open dialogs with the common Git options (`--no-ff`, `--ff-only`, `--squash`, `--no-commit`; `--onto`, `--rebase-merges`, `--keep-empty`). While a merge, rebase, cherry-pick or revert is in progress, the title bar shows a widget with **Resolve Conflicts…** and **Continue** / **Abort**, and the Git menu enables **Abort Merge**, **Continue Rebase**, **Skip Commit**, **Abort Rebase** and the cherry-pick and revert equivalents. A merge is concluded by committing.
+
+When conflicts appear, a notification and the **Conflicts** dialog list the files. For each file choose **Accept Yours**, **Accept Theirs** or **Merge…**.
+
+**Merge…** opens a three-way merge editor: your side, the result and their side.
+
+- Click the arrows in the gutter to accept a change, or the cross to ignore it. Hold the modifier key to resolve the whole conflict with one side.
+- The toolbar applies all non-conflicting changes (from the left, the right or both), **Resolve Simple Conflicts**, compares any two of the versions, and shows how many changes and conflicts remain.
+- Click **Apply** to save the result and mark the file resolved, or **Accept Yours** / **Accept Theirs** for the whole file.
+
+Files with conflict markers show a banner with **Resolve conflicts…**, and the markers are reported as errors. **Accept Yours / Theirs / Both (Conflict at Caret)** resolve one conflict in the text editor.
+
+## Git log
+
+The **Log** tab of the Git tool window shows the commit graph.
+
+- **Filters**: text or hash (with regex and match case), branch, user, date and paths; **Recent Filters** brings back earlier ones.
+- **Go to Hash/Branch/Tag** (`⌘F` / `Ctrl+F` in the log).
+- **Graph Options**: sort by date, topologically or incoming first; first parent only; no merges.
+- **View Options**: reference display, details pane, and columns (**Author**, **Date**, **Hash**, **Signature**, **GitHub Commit Checks**).
+- The branches pane on the left filters the log by branch and has branch actions.
+- The details pane shows the changed files, the commit message, who committed it, which branches contain it and its signature.
+
+Right-click a commit for **Copy Revision Number** (`⌥⇧⌘C` / `Ctrl+Alt+Shift+C`), **Create Patch…**, **Cherry-Pick**, **Checkout Revision**, **Browse Repository at Revision**, **Compare with Local**, **Reset Current Branch to Here…**, **Revert Commit**, **Undo Commit…**, **New Branch…**, **New Tag…**, **View in Browser** and more. With two commits selected, **Compare Versions** diffs them.
+
+### Rewrite history
+
+From the log you can **Edit Commit Message…**, **Fixup…**, **Squash Into…**, **Drop Commit**, **Squash Commits…** and **Interactively Rebase from Here…**. The interactive rebase dialog lets you pick, reword, edit, squash, fixup, drop and reorder commits. These actions also work for commits that are already pushed: rewriting them is confirmed first, and pushing afterwards needs a force push. Commits already pushed from a protected branch cannot be rewritten.
+
+Limits: interactive rebase doesn't support ranges with merge commits, and **Undo Commit…** works only on the latest commit (its changes go back to a changelist).
+
+### Tags, reset and worktrees
+
+- **Git › New Tag…** creates a tag on a commit (annotated when you enter a message). **New Tag…** in the log creates a lightweight tag.
+- **Git › Reset HEAD…** and **Reset Current Branch to Here…** reset with **Soft**, **Mixed** (default), **Hard** or **Keep**.
+- **Git › New Worktree…** and **Worktrees…** create, list, remove and open worktrees in a new window.
+
+## Stash, shelf and patches
+
+**Stash** uses `git stash`:
+
+- **Stash Changes…**: a message, **Keep index** and **Include untracked files**. Stashes always include all changes; there is no per-file stash.
+- **Unstash Changes…**: apply or pop a stash, reinstate the index, or create a branch from it.
+- The **Stash** tab of the Commit tool window lists stashes with apply, pop and drop.
+
+**Shelf** is managed by the IDE and stored as patches in `.openidea/shelf`:
+
+- **Shelve Changes…** lets you pick files and a name; the changes are then reverted.
+- **Unshelve…** applies a shelf (or one file of it) with a three-way merge, into a changelist you choose.
+- The **Shelf** tab shows shelves with diff, compare with local, patch export, rename and delete.
+
+Turn on **Combine stashes and shelves in one tab** in the Git settings to show both in one tab.
+
+**Git › Patch** has **Create Patch…**, **Apply Patch…** and **Apply Patch from Clipboard…**.
+
+## Blame and history
+
+- **Annotate with Git Blame** shows author and date per line in the gutter (also from the gutter's context menu). Click an entry to open the commit in the log. **Show inline blame for the current line** in the Git settings shows the author at the end of the caret line.
+- **Show History** opens the file's history in a tab of the Git tool window.
+- **Show History for Selection** shows the commits that changed the selected lines.
+- **Show Current Revision** reveals the commit of the caret line in the log.
+
+### Local history
+
+Local history keeps snapshots of your files independent of Git, including deleted files and labelled states such as the one taken before a refactoring.
+
+- **Git › Current File › Local History** (or **Local History › Show History** in the Project view) opens the history of a file or folder. Select a revision and click **Revert** (or **Restore** for a deleted file).
+- **Put Label…** marks the current state.
+- **Recent Changes** (`⌥⇧C` / `Alt+Shift+C`) lists recent edits across the project.
+
+Retention is set in the **Local History** section of **Settings › Appearance & Behavior › System Settings**: 5 working days and 512 MB per project by default. Files over 2 MB are not snapshotted automatically.
+
+## Settings
+
+**Settings › Version Control** has these pages:
+
+| Page                   | Main options                                                                                                                                                                                               |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Commit**             | Non-modal commit interface, clearing the message after commit, message inspections (blank line after subject, subject and body length, right margin), default commit checks.                               |
+| **Confirmation**       | What to do when files are created or deleted, **Show options before Update**, confirm before dropping commits, highlight modified folders in the Project view, history row limit.                          |
+| **Directory Mappings** | The detected repositories (read-only).                                                                                                                                                                     |
+| **Issue Navigation**   | Regex patterns that turn issue IDs in commit messages into links (presets for JIRA, YouTrack and GitHub).                                                                                                  |
+| **Log**                | Reference and time display, visible columns.                                                                                                                                                               |
+| **Shelf**              | Remove applied files from the shelf.                                                                                                                                                                       |
+| **Git**                | Git executable, inline blame, commit warnings, sign-off default, push options and protected branches, update method (merge or rebase), incoming-commit checks, saved passwords, combining stash and shelf. |
+| **GitHub**             | See [GitHub](/en/guide/github).                                                                                                                                                                            |
+
+## Not supported
+
+- Mercurial, Subversion, Perforce and other systems.
+- `git init` for an open project, submodule commands, editable directory mappings.
+- Per-line partial commits (block level only) and per-file stashes.
+- Git LFS beyond the large-file warning.

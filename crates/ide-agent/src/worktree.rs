@@ -93,8 +93,9 @@ fn retrying(attempts: u32, pause: Duration, mut op: impl FnMut() -> std::io::Res
 pub(crate) fn changes(cwd: &Path, base: &str) -> IdeResult<Vec<AgentChange>> {
     let Some(repo) = Repo::discover(cwd)? else { return Ok(Vec::new()) };
     let root = repo.root().to_path_buf();
-    let stats = repo.numstat_with_worktree(base)?;
-    let stat = |rel: &str| stats.iter().find(|(p, ..)| p == rel).map_or((0, 0), |&(_, a, r)| (a, r));
+    let stats: std::collections::HashMap<String, (u32, u32)> =
+        repo.numstat_with_worktree(base)?.into_iter().map(|(p, a, r)| (p, (a, r))).collect();
+    let stat = |rel: &str| stats.get(rel).copied().unwrap_or((0, 0));
     let mut out: Vec<AgentChange> = repo
         .diff_with_worktree(base)?
         .into_iter()
@@ -103,8 +104,9 @@ pub(crate) fn changes(cwd: &Path, base: &str) -> IdeResult<Vec<AgentChange>> {
             AgentChange { path: IpcPath(root.join(&f.path)), rel_path: f.path, kind: f.kind, added, removed }
         })
         .collect();
+    let tracked: std::collections::HashSet<String> = out.iter().map(|c| c.rel_path.clone()).collect();
     for s in repo.status()? {
-        if s.unstaged == Some(ChangeKind::Untracked) && !out.iter().any(|c| c.rel_path == s.rel_path) {
+        if s.unstaged == Some(ChangeKind::Untracked) && !tracked.contains(&s.rel_path) {
             let added = std::fs::read_to_string(&*s.path).map_or(0, |t| t.lines().count() as u32);
             out.push(AgentChange { path: s.path, rel_path: s.rel_path, kind: ChangeKind::Added, added, removed: 0 });
         }
@@ -116,7 +118,7 @@ pub(crate) fn changes(cwd: &Path, base: &str) -> IdeResult<Vec<AgentChange>> {
 /// Size and modification time of a file, `None` once it is gone.
 pub(crate) type Stamp = Option<(u64, u128)>;
 
-fn stamp(path: &Path) -> Stamp {
+pub(crate) fn stamp(path: &Path) -> Stamp {
     let meta = std::fs::metadata(path).ok()?;
     let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
     Some((meta.len(), modified))
@@ -124,12 +126,86 @@ fn stamp(path: &Path) -> Stamp {
 
 /// The files already changed in `cwd` against `HEAD`, stamped so later edits to them show.
 pub(crate) fn snapshot(cwd: &Path) -> IdeResult<BTreeMap<String, Stamp>> {
-    Ok(changes(cwd, "HEAD")?.into_iter().map(|c| (c.rel_path, stamp(&c.path))).collect())
+    // Paths and stamps only: no diff and no line counts, which read every untracked file
+    // and held up starting a task in a checkout with many of them.
+    let Some(repo) = Repo::discover(cwd)? else { return Ok(BTreeMap::new()) };
+    Ok(repo.status()?.into_iter().map(|s| (s.rel_path, stamp(&s.path))).collect())
 }
 
 /// Drops the changes that were there before the task and haven't been touched since.
 pub(crate) fn without_untouched(changes: Vec<AgentChange>, before: &BTreeMap<String, Stamp>) -> Vec<AgentChange> {
     changes.into_iter().filter(|c| before.get(&c.rel_path).is_none_or(|s| *s != stamp(&c.path))).collect()
+}
+
+/// Files larger than this that were changed before the task keep no copy: they can't be rolled back.
+const SAVED_MAX: u64 = 8 * 1024 * 1024;
+
+fn saved_name(rel: &str) -> String {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hash = DefaultHasher::new();
+    rel.hash(&mut hash);
+    format!("{:016x}", hash.finish())
+}
+
+/// Copies the files in `before` (already changed in the checkout at `cwd` when the task started)
+/// into `dir`, so rolling back the task's changes to them restores the user's own edits.
+/// Whether anything was saved.
+pub(crate) fn save_before(cwd: &Path, before: &BTreeMap<String, Stamp>, dir: &Path) -> IdeResult<bool> {
+    let Some(repo) = Repo::discover(cwd)? else { return Ok(false) };
+    let mut saved = false;
+    for (rel, stamp) in before {
+        let path = repo.root().join(rel);
+        if stamp.is_none() || !std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= SAVED_MAX) {
+            continue;
+        }
+        std::fs::create_dir_all(dir)?;
+        std::fs::copy(&path, dir.join(saved_name(rel)))?;
+        saved = true;
+    }
+    Ok(saved)
+}
+
+/// Rolls `change` back: to the copy saved when the task started when the file had changes
+/// then (`before`, `saved` holding the copies), otherwise to `base` (removed when `base`
+/// lacks it).
+pub(crate) fn restore(
+    cwd: &Path,
+    base: &str,
+    change: &AgentChange,
+    before: &BTreeMap<String, Stamp>,
+    saved: Option<&Path>,
+) -> IdeResult<()> {
+    let path = &change.path.0;
+    let content = match before.get(&change.rel_path) {
+        Some(None) => None,
+        Some(Some(_)) => {
+            let copy =
+                saved.map(|d| d.join(saved_name(&change.rel_path))).filter(|p| p.is_file()).ok_or_else(|| {
+                    IdeError::invalid(format!(
+                        "{} had changes of yours when the task started that weren't saved; roll it back in Git instead",
+                        change.rel_path
+                    ))
+                })?;
+            Some(std::fs::read(copy)?)
+        }
+        None => {
+            let repo = Repo::discover(cwd)?.ok_or_else(|| IdeError::invalid("not in a git repository"))?;
+            repo.file_bytes_at(path, Some(base))?
+        }
+    };
+    match content {
+        Some(bytes) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, bytes)?;
+        }
+        None => match std::fs::remove_file(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        },
+    }
+    Ok(())
 }
 
 pub(crate) fn file_at(cwd: &Path, path: &Path, rev: &str) -> IdeResult<Option<String>> {

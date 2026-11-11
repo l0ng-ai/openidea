@@ -7,6 +7,7 @@ import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { gutterIconMarkup, showContextMenu } from "@/ui";
+import { emptyGutterSpacer, gutterSpacer } from "@/editor/api";
 import { notifications, onEndpointsChanged, searchEndpoints, type EndpointEntry } from "@/workbench/contributions";
 import { appendGeneratedRequests } from "./generatedRequests";
 import { METHODS } from "./language";
@@ -90,6 +91,8 @@ class EndpointMarker extends GutterMarker {
   }
 }
 
+const endpointSpacer = gutterSpacer(styles.runMarker ?? "");
+
 export function endpointEditorExtension(ctx: EditorDocContext): Extension {
   if (ctx.language === "http") return EditorState.languageData.of(() => [{ openideaCompletion: endpointCompletion }]);
   if (ctx.virtual) return [];
@@ -137,6 +140,9 @@ export function endpointEditorExtension(ctx: EditorDocContext): Extension {
           view.state.field(marks).map((m) => new EndpointMarker().range(m.pos)),
           true,
         ),
+      // One icon of width only while the file has endpoints; other files keep a narrow gutter.
+      initialSpacer: () => emptyGutterSpacer,
+      updateSpacer: (_spacer, update) => (update.state.field(marks).length ? endpointSpacer : emptyGutterSpacer),
       domEventHandlers: {
         mousedown: (view, line, event) => {
           if ((event as MouseEvent).button !== 0) return false;

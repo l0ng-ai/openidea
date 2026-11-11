@@ -13,16 +13,16 @@ pub mod attach;
 mod cargo;
 pub mod connection;
 pub mod jdwp;
+mod jvm_memory;
 pub mod kotlin;
-mod kotlin_jdwp;
 mod session;
-pub mod target;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
 use futures::future::join_all;
 use ide_core::{DebugSessionId, IdeError, IdeResult, SharedSink};
 use ide_language::LanguageRegistry;
+pub use jvm_memory::*;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -127,6 +127,14 @@ pub struct DebugCapabilities {
     pub log_points: bool,
     /// HotSwap ("Reload Changed Classes"): java-debug's `redefineClasses` request.
     pub hot_code_replace: bool,
+    /// The session debugs a JVM, so it has a Memory view; [`DebugManager::jvm_memory_classes`]
+    /// says why when it has no data (platform, remote JVM, ...).
+    pub jvm_memory: bool,
+    /// The session has a JVM inspector: instances, fields and referrers while suspended. Can
+    /// change during the session ([`ide_core::event::DebugEvent::Capabilities`]).
+    pub jvm_instances: bool,
+    /// The session can be asked for a heap dump ([`DebugManager::jvm_heap_dump`]).
+    pub jvm_heap: bool,
 }
 
 /// Result of [`DebugManager::redefine_classes`].
@@ -303,6 +311,7 @@ pub struct DebugManager {
     data_breakpoints: Mutex<Vec<DataBreakpoint>>,
     /// In-flight stops, by session: a second Stop sets `stop_force`, the waiting one kills.
     stopping: Mutex<HashMap<DebugSessionId, Arc<Session>>>,
+    jvm_finder: Mutex<jvm_memory::JvmFinder>,
 }
 
 /// rdbg (Ruby's debug gem) starts the debuggee itself and ignores `launch`'s program,
@@ -567,7 +576,19 @@ pub(crate) fn capabilities_from(caps: &Value) -> DebugCapabilities {
         hit_conditional_breakpoints: has("supportsHitConditionalBreakpoints"),
         log_points: has("supportsLogPoints"),
         hot_code_replace: false,
+        jvm_memory: false,
+        jvm_instances: false,
+        jvm_heap: false,
     }
+}
+
+pub(crate) fn session_capabilities(session: &Session) -> DebugCapabilities {
+    let mut caps = capabilities_from(&session.caps.lock());
+    caps.hot_code_replace = HOT_CODE_REPLACE_ADAPTERS.contains(&session.adapter.as_str());
+    caps.jvm_memory = JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str());
+    caps.jvm_instances = session.jvm_inspector.lock().is_some();
+    caps.jvm_heap = JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str());
+    caps
 }
 
 /// States of a file's line breakpoints that no session has been sent.
@@ -658,7 +679,13 @@ impl DebugManager {
             function_breakpoints: Mutex::default(),
             data_breakpoints: Mutex::default(),
             stopping: Mutex::default(),
+            jvm_finder: Mutex::new(Arc::new(jvm_memory::find_local_jvm)),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_jvm_finder(&self, finder: jvm_memory::JvmFinder) {
+        *self.jvm_finder.lock() = finder;
     }
 
     fn session(&self, s: DebugSessionId) -> IdeResult<Arc<Session>> {
@@ -698,17 +725,6 @@ impl DebugManager {
         owner: SessionOwner,
         custom_command: impl FnOnce(&str) -> Option<String>,
     ) -> IdeResult<DebugSessionId> {
-        self.start_prepared(config, owner, custom_command, |_, _| Ok(())).await
-    }
-
-    /// Configure a target adapter before any host tool resolution or launch.
-    pub async fn start_prepared(
-        &self,
-        config: LaunchConfig,
-        owner: SessionOwner,
-        custom_command: impl FnOnce(&str) -> Option<String>,
-        prepare: impl FnOnce(&mut AdapterSpec, &mut Value) -> IdeResult<()>,
-    ) -> IdeResult<DebugSessionId> {
         let mut arguments = launch_arguments(&config)?;
         // An IDE-side marker (never sent to the adapter): the session is a Flutter
         // one regardless of what the working directory holds.
@@ -722,22 +738,6 @@ impl DebugManager {
         let dbg = adapter::find_config(&self.languages, &config.adapter)
             .ok_or_else(|| IdeError::unavailable(format!("unknown debug adapter `{}`", config.adapter)))?;
         let mut spec = adapter::resolve(&dbg, cwd.clone());
-        prepare(&mut spec, &mut arguments)?;
-        if spec.target.is_some() {
-            return self
-                .start_session(
-                    DebugSessionId::next(),
-                    owner,
-                    config.name,
-                    config.adapter,
-                    None,
-                    config.request,
-                    arguments,
-                    spec,
-                    None,
-                )
-                .await;
-        }
         if config.adapter == kotlin::ADAPTER
             && let Some(home) = arguments
                 .as_object_mut()
@@ -781,6 +781,18 @@ impl DebugManager {
         let debug_server = take_debug_server(&mut arguments)?;
         if let Some(server) = &debug_server {
             spec.server_host = server.host.clone();
+        }
+        if config.adapter == "gdb" && config.request == "launch" && debug_server.is_none() {
+            // GDB's DAP env replaces the entire inferior environment. Ordinary run overrides
+            // instead belong on the adapter process, which the inferior inherits. Explicit
+            // launch JSON keeps GDB's replacement semantics.
+            let explicit_env = config.extra_json.as_deref().is_some_and(|extra| {
+                serde_json::from_str::<Value>(extra).is_ok_and(|extra| extra.get("env").is_some())
+            });
+            if !explicit_env {
+                spec.env.extend(config.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+                arguments.as_object_mut().unwrap().remove("env");
+            }
         }
         if let Some(cargo) = arguments.as_object_mut().and_then(|o| o.remove("cargo")) {
             let cargo_args: Vec<String> = cargo
@@ -890,22 +902,12 @@ impl DebugManager {
         if request != "launch" && request != "attach" {
             return Err(IdeError::invalid(format!("request must be `launch` or `attach`, got `{request}`")));
         }
-        let io = self.launcher.launch(spec.clone(), reuse_port).await.map_err(|e| {
-            if spec.target.is_some() {
-                IdeError::new(e.kind, format!("{}\nargv: {:?} {:?}", e.message, spec.command, spec.args))
-            } else {
-                e
-            }
-        })?;
+        let io = self.launcher.launch(spec.clone(), reuse_port).await?;
+        let launch_after_configuration = io.launch_after_configuration && request == "launch";
         let stderr = io.stderr.clone();
         let (conn, incoming) = {
             let stderr = stderr.clone();
-            Connection::start_with_target(
-                io.reader,
-                io.writer,
-                Box::new(move |line| adapter::push_line(&stderr, line)),
-                spec.target.clone(),
-            )
+            Connection::start_with_output(io.reader, io.writer, Box::new(move |line| adapter::push_line(&stderr, line)))
         };
         let rdbg_pid = (adapter_name == "rdbg" && request == "launch")
             .then(|| io.child.as_ref().and_then(tokio::process::Child::id))
@@ -939,16 +941,13 @@ impl DebugManager {
         let configured = tokio::select! {
             biased;
             _ = session.startup_cancel.cancelled() => return Err(IdeError::cancelled()),
-            result = self.configure(&session, arguments) => result,
+            result = self.configure(&session, arguments, launch_after_configuration) => result,
         };
         match configured {
             Ok(()) => Ok(id),
             Err(e) => {
                 let e = if session.conn.is_closed() {
                     let mut msg = format!("debug adapter `{}` exited during startup", session.adapter);
-                    if session.spec.target.is_some() {
-                        msg.push_str(&format!("\nargv: {:?} {:?}", session.spec.command, session.spec.args));
-                    }
                     let tail = stderr.lock().join("\n");
                     if !tail.is_empty() {
                         msg.push_str(":\n");
@@ -959,17 +958,6 @@ impl DebugManager {
                         msg.push_str(hint);
                     }
                     IdeError::unavailable(msg)
-                } else if session.spec.target.is_some() {
-                    IdeError::new(
-                        e.kind,
-                        format!(
-                            "{}\nargv: {:?} {:?}\n{}",
-                            e.message,
-                            session.spec.command,
-                            session.spec.args,
-                            stderr.lock().join("\n")
-                        ),
-                    )
                 } else {
                     e
                 };
@@ -980,7 +968,7 @@ impl DebugManager {
         }
     }
 
-    async fn configure(&self, s: &Arc<Session>, mut arguments: Value) -> IdeResult<()> {
+    async fn configure(&self, s: &Arc<Session>, mut arguments: Value, launch_in_config: bool) -> IdeResult<()> {
         if s.adapter == kotlin::ADAPTER {
             let project = arguments
                 .get("projectRoot")
@@ -1007,8 +995,8 @@ impl DebugManager {
                     "pathFormat": "path",
                     "supportsVariableType": true,
                     "supportsVariablePaging": false,
-                    "supportsRunInTerminalRequest": s.spec.target.is_none(),
-                    "supportsStartDebuggingRequest": s.spec.target.is_none(),
+                    "supportsRunInTerminalRequest": true,
+                    "supportsStartDebuggingRequest": true,
                     "supportsProgressReporting": true,
                     "supportsInvalidatedEvent": false,
                     "supportsMemoryReferences": false,
@@ -1019,13 +1007,31 @@ impl DebugManager {
             .await?;
         *s.caps.lock() = if caps.is_object() { caps } else { json!({}) };
 
-        // The Kotlin adapter ignores the resolved classpath and project runtime on launch.
+        // The Kotlin adapters ignore the resolved classpath and project runtime on launch.
         let request = if s.adapter == kotlin::ADAPTER && s.request == "launch" {
             session::start_kotlin_debuggee(s, &mut arguments).await?;
             "attach"
         } else {
             &s.request
         };
+        // Both blocks below run before the Kotlin link replaces the JVM's address with its own.
+        if request == "attach"
+            && let Some(target) = jvm_memory::attach_target(&arguments)
+        {
+            let _ = s.attach_target.set(target);
+        }
+        if cfg!(unix)
+            && s.request == "attach"
+            && JVM_MEMORY_ADAPTERS.contains(&s.adapter.as_str())
+            && let Some(port) = jvm_memory::local_jdwp_port(&arguments)
+        {
+            if jdwp::is_listen_relay(port) {
+                s.listen_relay.store(true, Ordering::Release);
+            } else {
+                let finder = self.jvm_finder.lock().clone();
+                jvm_memory::find_attached_jvm(s, port, finder).await;
+            }
+        }
         if s.adapter == kotlin::ADAPTER {
             let host = arguments
                 .get("hostName")
@@ -1038,24 +1044,39 @@ impl DebugManager {
                 .and_then(|p| u16::try_from(p).ok())
                 .filter(|p| *p != 0)
                 .ok_or_else(|| IdeError::invalid("Invalid Kotlin JDWP port"))?;
-            let (relay, port) = kotlin_jdwp::StartupRelay::start(host, port).await?;
-            *s.kotlin_relay.lock() = Some(relay);
+            let (link, port) = ide_jdwp::JdwpLink::start(host, port, kotlin::link_options()).await?;
+            *s.jvm_inspector.lock() = Some(Arc::new(ide_jdwp::LinkInspector::new(link.clone())));
+            jvm_memory::watch_link(s, &link);
+            *s.jdwp_link.lock() = Some(link);
             arguments["hostName"] = json!("127.0.0.1");
             arguments["port"] = json!(port);
         }
+        s.jvm_located.send_replace(true);
         // Launch/attach may wait for a slow runtime or a remote target. Let the adapter report
         // failure; Stop cancels configuration and a closed connection fails the pending reply.
         // Many adapters answer only after `configurationDone`, so don't wait for the reply yet.
-        let launch = s.conn.send_request(request, arguments)?;
-        let mut launch = Box::pin(async move { launch.await.unwrap_or(Err(DapError::Closed)) });
+        // GDB 15 is the exception: its `launch` starts the program itself (14 runs at
+        // `configurationDone`, 16+ defers the launch there), so its launch waits below.
+        let mut launch = if launch_in_config {
+            None
+        } else {
+            let reply = s.conn.send_request(request, arguments.clone())?;
+            Some(Box::pin(async move { reply.await.unwrap_or(Err(DapError::Closed)) }))
+        };
         let mut initialized = s.initialized.subscribe();
         let mut launch_result = None;
-        let got_initialized = tokio::select! {
-            r = initialized.wait_for(|v| *v) => { r.map_err(|_| DapError::Closed)?; true }
-            r = &mut launch => {
-                r?;
-                launch_result = Some(());
-                false
+        let got_initialized = match launch.as_mut() {
+            Some(launch) => tokio::select! {
+                r = initialized.wait_for(|v| *v) => { r.map_err(|_| DapError::Closed)?; true }
+                r = launch => {
+                    r?;
+                    launch_result = Some(());
+                    false
+                }
+            },
+            None => {
+                initialized.wait_for(|v| *v).await.map_err(|_| DapError::Closed)?;
+                true
             }
         };
         if !got_initialized {
@@ -1113,11 +1134,20 @@ impl DebugManager {
             }
         }
         s.configured.store(true, Ordering::Release);
-        if launch_result.is_none() {
-            launch.await?;
+        match launch.as_mut() {
+            Some(launch) => {
+                if launch_result.is_none() {
+                    launch.await?;
+                }
+            }
+            None => {
+                // GDB 15: the breakpoints are in, so its `run` cannot miss them.
+                let reply = s.conn.send_request(request, arguments)?;
+                reply.await.unwrap_or(Err(DapError::Closed))?;
+            }
         }
-        if let Some(relay) = s.kotlin_relay.lock().as_mut() {
-            relay.release();
+        if let Some(link) = s.jdwp_link.lock().as_ref() {
+            link.release();
         }
         Ok(())
     }
@@ -1350,8 +1380,9 @@ impl DebugManager {
     }
 
     pub async fn threads(&self, s: DebugSessionId) -> IdeResult<Vec<ThreadInfo>> {
-        let body = self.session(s)?.conn.request_timeout("threads", Value::Null, REQUEST_TIMEOUT).await?;
-        Ok(body
+        let session = self.session(s)?;
+        let body = session.conn.request_timeout("threads", Value::Null, REQUEST_TIMEOUT).await?;
+        let threads: Vec<ThreadInfo> = body
             .get("threads")
             .and_then(Value::as_array)
             .map(|t| {
@@ -1362,7 +1393,8 @@ impl DebugManager {
                     })
                     .collect()
             })
-            .unwrap_or_default())
+            .unwrap_or_default();
+        Ok(threads)
     }
 
     pub async fn stack_trace(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<Vec<StackFrame>> {
@@ -1491,8 +1523,11 @@ impl DebugManager {
 
     pub async fn resume(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<()> {
         let session = self.session(s)?;
+        let ticket = session.suspended.ticket();
         let body = session.conn.request_timeout("continue", json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
+        // DAP: a response without the flag continued every thread.
         let all = body.get("allThreadsContinued").and_then(Value::as_bool).unwrap_or(true);
+        session.suspended.resumed(ticket, thread_id, all);
         session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: all });
         Ok(())
     }
@@ -1532,7 +1567,10 @@ impl DebugManager {
             StepKind::Out => "stepOut",
         };
         let session = self.session(s)?;
+        let ticket = session.suspended.ticket();
         session.conn.request_timeout(command, json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
+        // A step runs its thread; other threads stopped by their own events stay stopped.
+        session.suspended.resumed(ticket, thread_id, false);
         session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
         Ok(())
     }
@@ -1630,10 +1668,12 @@ impl DebugManager {
     /// Step into a specific call of the current line (Smart Step Into).
     pub async fn step_in_target(&self, s: DebugSessionId, thread_id: i64, target_id: i64) -> IdeResult<()> {
         let session = self.session(s)?;
+        let ticket = session.suspended.ticket();
         session
             .conn
             .request_timeout("stepIn", json!({ "threadId": thread_id, "targetId": target_id }), REQUEST_TIMEOUT)
             .await?;
+        session.suspended.resumed(ticket, thread_id, false);
         session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
         Ok(())
     }
@@ -1667,10 +1707,68 @@ impl DebugManager {
     }
 
     pub fn capabilities(&self, s: DebugSessionId) -> IdeResult<DebugCapabilities> {
+        Ok(session_capabilities(&*self.session(s)?))
+    }
+
+    /// Class table of the session's JVM (`GC.class_histogram -all`, or counted by the debugger
+    /// while suspended where no histogram can be taken), with deltas against the session's
+    /// previous snapshot from the same source.
+    pub async fn jvm_memory_classes(&self, s: DebugSessionId) -> IdeResult<JvmMemoryResult> {
         let session = self.session(s)?;
-        let mut caps = capabilities_from(&session.caps.lock());
-        caps.hot_code_replace = HOT_CODE_REPLACE_ADAPTERS.contains(&session.adapter.as_str());
-        Ok(caps)
+        jvm_memory::session_classes(session).await
+    }
+
+    /// Writes a heap dump of the session's JVM to `dir/dump.hprof`, one class-table or dump
+    /// request per session at a time. Anything but `Ready` deletes `dir`, unless `s` is not a
+    /// session. On `cancel` the result is `Cancelled` at once, while a dump the JVM is writing
+    /// still holds the session's turn until the JVM answers.
+    pub async fn jvm_heap_dump(
+        &self,
+        s: DebugSessionId,
+        dir: PathBuf,
+        cancel: ide_core::CancellationToken,
+    ) -> IdeResult<JvmHeapOutcome> {
+        let session = self.session(s)?;
+        jvm_memory::session_heap_dump(session, dir, cancel).await
+    }
+
+    /// Gives the session the backend for [`Self::jvm_memory_instances`] and the debugger's class
+    /// counts; the UI is told to reload the session's capabilities.
+    pub fn set_jvm_inspector(
+        &self,
+        s: DebugSessionId,
+        inspector: Arc<dyn ide_jvm_inspect::JvmInspector>,
+    ) -> IdeResult<()> {
+        let session = self.session(s)?;
+        if session.ended.is_cancelled() {
+            return Err(no_session(s));
+        }
+        jvm_memory::set_inspector(&session, inspector);
+        Ok(())
+    }
+
+    /// Up to `limit` (clamped to `1..=MAX_INSTANCES`) instances of `class_name` while suspended.
+    pub async fn jvm_memory_instances(
+        &self,
+        s: DebugSessionId,
+        class_name: String,
+        limit: u32,
+    ) -> IdeResult<JvmInstancesResult> {
+        jvm_memory::instances(&*self.session(s)?, &class_name, limit).await
+    }
+
+    pub async fn jvm_memory_fields(&self, s: DebugSessionId, object: JvmObjectRef) -> IdeResult<JvmFieldsResult> {
+        jvm_memory::fields(&*self.session(s)?, object).await
+    }
+
+    /// Objects that point at `object`; `limit` 0 means `DEFAULT_REFERRERS`, at most `MAX_REFERRERS`.
+    pub async fn jvm_memory_referrers(
+        &self,
+        s: DebugSessionId,
+        object: JvmObjectRef,
+        limit: u32,
+    ) -> IdeResult<JvmReferrersResult> {
+        jvm_memory::referrers(&*self.session(s)?, object, limit).await
     }
 
     /// HotSwap: reloads the classes compiled since the session started (or since the

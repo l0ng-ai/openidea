@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
+const debugEvaluateIn = vi.hoisted(() =>
+  vi.fn(async () => ({
+    status: "ok" as const,
+    data: { name: "result", value: "4", typeName: "int", variablesReference: 0, evaluateName: null },
+  })),
+);
+
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
   const ok = <T,>(data: T) => Promise.resolve({ status: "ok" as const, data });
@@ -8,6 +15,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     ...real,
     commands: {
       ...real.commands,
+      debugJvmMemoryClasses: () => ok({ status: "unavailable", reason: { kind: "programExited" } }),
+      debugEvaluateIn,
       debugScopes: () => ok([{ name: "Locals", variablesReference: 1, expensive: false }]),
       debugVariables: () =>
         ok([
@@ -29,8 +38,11 @@ const confirmTerminate = vi.hoisted(() => vi.fn(async () => false));
 vi.mock("@/workbench/confirmTerminate", () => ({ confirmTerminate }));
 
 import type { RunConfig } from "@/platform/ipc";
+import { setLocale } from "@/platform/i18n";
 import { useDebug, type DebugSession } from "../state";
 import { DebugTabs, DebugToolWindow } from "../ui/DebugToolWindow";
+import { DebuggerOverlays } from "../ui/Overlays";
+import { useOverlays } from "../ui/popoverStore";
 
 const session: DebugSession = {
   id: 1,
@@ -48,11 +60,32 @@ const session: DebugSession = {
   frames: [{ id: 7, name: "main", path: "/p/app/main.py", line: 11, column: 0, presentationHint: null }],
   selectedFrame: 7,
   hits: 1,
+  stops: 0,
   exitCode: null,
   caps: null,
 };
 
 describe("debug tool window", () => {
+  it.each(["gdb", "debugpy"])("evaluates expressions in the variable field and dialog under %s", async (adapter) => {
+    debugEvaluateIn.mockClear();
+    useDebug.setState({ sessions: { 1: { ...session, adapter } }, active: 1 });
+    const { unmount } = render(<DebugToolWindow />);
+    fireEvent.click(screen.getByRole("tab", { name: "Threads & Variables" }));
+    const field = screen.getByPlaceholderText(/Evaluate expression/);
+    fireEvent.change(field, { target: { value: "count + 1" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    const context = adapter === "gdb" ? "watch" : "repl";
+    await vi.waitFor(() => expect(debugEvaluateIn).toHaveBeenCalledWith(1, 7, "count + 1", context));
+    unmount();
+    debugEvaluateIn.mockClear();
+    useOverlays.setState({ evaluate: { expression: "count + 1" } });
+    const dialog = render(<DebuggerOverlays />);
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate" }));
+    await vi.waitFor(() => expect(debugEvaluateIn).toHaveBeenCalledWith(1, 7, "count + 1", context));
+    dialog.unmount();
+    useOverlays.setState({ evaluate: null });
+  });
+
   it("offers Hot Reload and Hot Restart for Dart and Flutter sessions only", () => {
     const hot = () => ["debug.hotReload", "debug.hotRestart"].map((name) => !!screen.queryByRole("button", { name }));
     useDebug.setState({ sessions: { 1: { ...session, status: "running" } }, active: 1 });
@@ -62,6 +95,62 @@ describe("debug tool window", () => {
     useDebug.setState({ sessions: { 1: { ...session, adapter: "dart", status: "running" } }, active: 1 });
     render(<DebugToolWindow />);
     expect(hot()).toEqual([true, true]);
+  });
+
+  it("shows the Memory tab only for sessions with jvmMemory", async () => {
+    const withCaps = (jvmMemory: boolean) => ({ ...session, caps: { jvmMemory } as DebugSession["caps"] });
+    useDebug.setState({ sessions: { 1: withCaps(false) }, active: 1 });
+    const { unmount } = render(<DebugToolWindow />);
+    expect(screen.queryByRole("tab", { name: "Memory" })).toBeNull();
+    unmount();
+    useDebug.setState({ sessions: { 1: withCaps(true) }, active: 1 });
+    render(<DebugToolWindow />);
+    const memory = screen.getByRole("tab", { name: "Memory" });
+    fireEvent.click(memory);
+    expect(memory.getAttribute("aria-selected")).toBe("true");
+    expect(await screen.findByText("The program has exited.")).toBeTruthy();
+    // Switching to a session without the capability leaves the tab it no longer has.
+    act(() => useDebug.setState({ sessions: { 1: withCaps(false) } }));
+    expect(screen.queryByText("The program has exited.")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Threads & Variables" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("shows the Memory tab for a java-debug attach session", () => {
+    const attach = {
+      ...session,
+      adapter: "java-debug",
+      launch: { request: "attach" } as DebugSession["launch"],
+      caps: { jvmMemory: true } as DebugSession["caps"],
+    };
+    useDebug.setState({ sessions: { 1: attach }, active: 1 });
+    render(<DebugToolWindow />);
+    expect(screen.getByRole("tab", { name: "Memory" })).toBeTruthy();
+  });
+
+  it("keeps the Memory tab selected when the session pauses", async () => {
+    const caps = { jvmMemory: true } as DebugSession["caps"];
+    useDebug.setState({ sessions: { 1: { ...session, caps, status: "running" } }, active: 1 });
+    render(<DebugToolWindow />);
+    const memory = screen.getByRole("tab", { name: "Memory" });
+    fireEvent.click(memory);
+    expect(await screen.findByText("The program has exited.")).toBeTruthy();
+    act(() => useDebug.setState({ sessions: { 1: { ...session, caps, status: "paused" } } }));
+    expect(memory.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("The program has exited.")).toBeTruthy();
+  });
+
+  it("renames the view tabs when the locale switches to Chinese", async () => {
+    const caps = { jvmMemory: true } as DebugSession["caps"];
+    useDebug.setState({ sessions: { 1: { ...session, caps } }, active: 1 });
+    render(<DebugToolWindow />);
+    expect(screen.getByRole("tab", { name: "Memory" })).toBeTruthy();
+    try {
+      await act(() => setLocale("zh"));
+      const tabs = screen.getAllByRole("tab").map((t) => t.textContent);
+      expect(tabs).toEqual(["线程和变量", "控制台", "内存"]);
+    } finally {
+      await act(() => setLocale("en"));
+    }
   });
 
   it("says a PHP Remote Debug session listens for Xdebug while nothing is suspended", () => {
@@ -104,6 +193,11 @@ describe("debug tool window", () => {
     expect(console.getAttribute("aria-selected")).toBe("true");
     act(() => useDebug.setState({ sessions: { 1: session } }));
     expect(variables.getAttribute("aria-selected")).toBe("true");
+    // Stepping from the Console keeps it in front.
+    fireEvent.click(console);
+    act(() => useDebug.setState({ sessions: { 1: { ...session, status: "running" } } }));
+    act(() => useDebug.setState({ sessions: { 1: { ...session, stopReason: "step" } } }));
+    expect(console.getAttribute("aria-selected")).toBe("true");
   });
 
   it("renders session tabs, views, frames and typed variables", async () => {

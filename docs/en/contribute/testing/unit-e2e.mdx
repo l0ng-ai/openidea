@@ -1,0 +1,69 @@
+---
+title: "Unit and E2E tests"
+description: "Running and writing Rust tests with cargo nextest, frontend tests with Vitest, and UI flows with Playwright."
+---
+
+| Layer                                        | Runner                              | Command                                         |
+| -------------------------------------------- | ----------------------------------- | ----------------------------------------------- |
+| Rust crates                                  | cargo-nextest (or `cargo test`)     | `cargo nextest run --workspace`                 |
+| Frontend modules and components              | Vitest + jsdom + Testing Library    | `pnpm test`, or `pnpm vitest run <path>`        |
+| UI flows                                     | Playwright (Chromium)               | `pnpm e2e`                                      |
+| Real language servers, toolchains, debuggers | ignored Rust tests and `pnpm smoke` | see [Smoke tests](/en/contribute/testing/smoke) |
+
+## Rust
+
+```sh
+cargo nextest run --workspace              # everything, as CI does
+cargo nextest run -p ide-text              # one crate
+cargo nextest run -p ide-host --test vcs_flow   # one integration test file
+```
+
+- Unit tests sit next to the code (`#[cfg(test)]` modules or a `tests.rs`); integration tests in `crates/<crate>/tests/`. `ide-host` has the most: opening projects, trust, VCS flows, run configurations, plugins, the remote protocol.
+- Tests that need real external tools (language servers, Docker, build tools) are `#[ignore]`d with a reason and run explicitly with `-- --ignored`.
+- Use `NullSink` when a crate wants an `EventSink` and the test doesn't care about events.
+- CI runs the suite on macOS, Ubuntu 22.04 and Windows with `--no-fail-fast`. Test fixtures write LF files, so CI sets `git config --global core.autocrlf false`; do the same on Windows if fixture comparisons fail.
+- The CI test run also regenerates `src/bindings.ts` (the `export_bindings` test) and fails if it differs from the committed file.
+
+Plugins have their own workspaces: see [Plugin host › Testing the host](/en/contribute/architecture/plugin-host#testing-the-host).
+
+## Frontend unit tests
+
+`pnpm test` runs `vitest run` over `src/**/*.test.{ts,tsx}`, `perf/**/*.test.ts` and `scripts/**/*.test.ts` in jsdom. The full suite takes several minutes, so while iterating run a subset:
+
+```sh
+pnpm vitest run src/platform/keymap.test.ts
+pnpm vitest run src/features/search
+pnpm test:watch                            # watch mode
+```
+
+<Warning>
+`pnpm test -- <path>` ignores the path and runs the whole suite. Use `pnpm vitest run <path>`.
+</Warning>
+
+What to know when writing them:
+
+- Tests live next to the module (`foo.test.ts`) or in a feature's `__tests__/` folder.
+- `src/test/setup.ts` makes jsdom look like macOS (so ⌘ keymaps apply; opt into Windows explicitly) and gives elements a size so virtualized lists render rows.
+- Outside Tauri, `isTauri()` is false and features use their in-memory backends. To simulate a backend event, use `emitLocalIdeEvent` from `@/platform/ipc`.
+- Some tests are repository checks rather than unit tests: the text catalogs (`src/platform/locales/*.test.ts`), WebKit compatibility (`src/platform/webkitCompatibility.test.ts`), the theme token reference (`scripts/theme/theme.test.ts`). They run in `pnpm test` too.
+
+## End-to-end tests
+
+`pnpm e2e` runs Playwright against the UI in **plain-browser mode**: Vite serves the frontend (port 1450, or `OPENIDEA_E2E_PORT`), the shell injects a sample project, and features fall back to in-memory backends — no Tauri, no Rust build, no network.
+
+```sh
+pnpm exec playwright install chromium      # once
+pnpm e2e                                   # all specs
+pnpm e2e e2e/editor.spec.ts                # one file
+pnpm e2e -g "opens a file"                 # by test name
+```
+
+- Specs are `e2e/*.spec.ts`. Import `test` and `expect` from `e2e/fixtures.ts`; its `workbench` fixture opens the sample project (`acme-api`) and helpers like `openFromTree` and `doubleShift` cover common steps.
+- Specs use the macOS keymap (`Meta+…`) on every OS; the fixture forces it.
+- To exercise code paths that need a desktop backend, `stubDesktop(page)` switches the page to desktop mode over a stub: you register handlers per command name (`window.__ipc.handlers.lsp_goto = …`), push values into a `Channel` with `send`, and emit `IdeEvent`s with `emit`. Unhandled commands fail as `unavailable`. `ipcCalls(page, cmd)` returns the calls made.
+- Standalone pages for focused component tests are `e2e/*.html` + `e2e/*.fixture.ts`.
+- In CI, E2E runs in the `mcr.microsoft.com/playwright` container matching the `@playwright/test` version, with one retry; on failure the HTML report and traces (`trace: "retain-on-failure"`) are uploaded as an artifact.
+
+## Verifying in the real app
+
+Unit and E2E tests don't run the Rust backend inside the webview. For UI or runtime behaviour, run `pnpm tauri dev` and check the change in the app. Debug builds include the Tauri MCP bridge, so the check can be scripted; find the port with `pnpm dev:status` (see [Development setup](/en/contribute/setup#mcp-bridge-and-ports)). The repository's agent skill `.agents/skills/verify` describes driving the app that way and capturing screenshots.

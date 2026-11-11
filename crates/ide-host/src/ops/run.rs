@@ -280,14 +280,11 @@ async fn start_inner(
             let token = cancel.clone();
             let config = host
                 .blocking(move || {
-                    let operation =
-                        if config.extras.params.get("plugin.targetOperation").is_some_and(|op| op == "debug") {
-                            ide_plugin::RunTargetOperation::Debug
-                        } else if config.is_test {
-                            ide_plugin::RunTargetOperation::Test
-                        } else {
-                            ide_plugin::RunTargetOperation::Run
-                        };
+                    let operation = if config.is_test {
+                        ide_plugin::RunTargetOperation::Test
+                    } else {
+                        ide_plugin::RunTargetOperation::Run
+                    };
                     plugins.prepare_run_target_launch(&root, &id, &config, operation, &token)
                 })
                 .await?;
@@ -340,7 +337,7 @@ async fn start_inner(
     // what makes the setting take effect without reopening the project.
     if config.kind == "maven" {
         ide_sdk::apply::prepare_maven_run(&mut config, root, &settings);
-    } else if matches!(config.kind.as_str(), "gradle" | "tomcat") {
+    } else if matches!(config.kind.as_str(), "gradle" | "tomcat" | "junit") {
         ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
     } else {
         ide_sdk::apply::resolve_run_command(&mut config, root, &settings);

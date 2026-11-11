@@ -2,8 +2,7 @@
 import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
-import { executeAction, getAction } from "@/platform/actions";
-import { evaluateWhen, useContextKeys } from "@/platform/context";
+import { executeAction } from "@/platform/actions";
 import { basename, useProject } from "@/platform/project";
 import { call, commands, type Scope, type Variable } from "@/platform/ipc";
 import {
@@ -25,6 +24,7 @@ import {
 import { setMuted, useBreakpoints } from "../breakpoints/store";
 import { frameLabel, groupFrames } from "../frames";
 import { blurDebugView, focusDebugView } from "./focusedView";
+import { useActionEnabled } from "./useActionEnabled";
 import {
   addWatch,
   closeSessionTab,
@@ -39,19 +39,14 @@ import {
   type DebugSession,
 } from "../state";
 import { remoteWaitingNote } from "../remote";
+import { MemoryView } from "../memory/MemoryView";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
 import styles from "./DebugToolWindow.module.css";
-import { tx } from "@/platform/i18n";
-
-function useActionEnabled(id: string): boolean {
-  const ctx = useContextKeys();
-  const a = getAction(id);
-  return !!a && evaluateWhen(a.when, ctx);
-}
+import { tx, useTx } from "@/platform/i18n";
 
 function ToolButton({ action, icon, tone }: { action: string; icon: string; tone?: "danger" }) {
   const enabled = useActionEnabled(action);
@@ -104,7 +99,7 @@ function MoreActions() {
   );
 }
 
-type Tab = "variables" | "console";
+type Tab = "variables" | "console" | "memory";
 
 function statusText(s: DebugSession): string {
   if (s.status === "terminated") return s.exitCode != null ? `Finished · exit code ${s.exitCode}` : "Finished";
@@ -142,6 +137,7 @@ export function DebugTabs() {
 }
 
 export function DebugToolWindow() {
+  const tx = useTx();
   const active = useDebug((s) => (s.active != null ? s.sessions[s.active] : undefined));
   const muted = useBreakpoints((s) => s.muted);
   const [view, setView] = useState<{
@@ -153,9 +149,18 @@ export function DebugToolWindow() {
     setView({
       session: active.startedAt,
       status: active.status,
-      tab: active.status === "starting" ? "console" : active.status === "paused" ? "variables" : view.tab,
+      // A breakpoint or exception brings Threads & Variables to the front; finishing a step keeps
+      // the tab the user is on (e.g. Console, to watch the output while stepping), and so does Memory.
+      tab:
+        active.status === "starting"
+          ? "console"
+          : active.status === "paused" && view.tab !== "memory" && active.stopReason !== "step"
+            ? "variables"
+            : view.tab,
     });
-  const tab = view.tab;
+  const hasMemory = !!active && sessionSupports("jvmMemory", active);
+  // The selected session may be one without the Memory tab.
+  const tab: Tab = view.tab === "memory" && !hasMemory ? "variables" : view.tab;
 
   if (!active) {
     return (
@@ -176,6 +181,7 @@ export function DebugToolWindow() {
             [
               ["variables", "Threads & Variables"],
               ["console", "Console"],
+              ...(hasMemory ? [["memory", "Memory"] as const] : []),
             ] as const
           ).map(([id, label]) => (
             <button
@@ -188,7 +194,7 @@ export function DebugToolWindow() {
               className={clsx(styles.tab, tab === id && styles.tabActive)}
               onClick={() => setView({ session: active.startedAt, status: active.status, tab: id })}
             >
-              {label}
+              {tx(label)}
             </button>
           ))}
         </div>
@@ -231,6 +237,8 @@ export function DebugToolWindow() {
       <div role="tabpanel" id={`debug-panel-${tab}`} aria-labelledby={`debug-tab-${tab}`} className={styles.panel}>
         {tab === "variables" ? (
           <ThreadsAndVariables session={active} />
+        ) : tab === "memory" ? (
+          <MemoryView key={active.id} session={active} />
         ) : (
           <DebugConsole key={active.id} session={active} />
         )}
@@ -512,7 +520,11 @@ function VariablesPane({ session }: { session: DebugSession }) {
     const e = expression.trim();
     if (!e) return;
     try {
-      setLastEval({ expression: e, result: await evaluate(e, "repl", session), error: null });
+      setLastEval({
+        expression: e,
+        result: await evaluate(e, session.adapter === "gdb" ? "watch" : "repl", session),
+        error: null,
+      });
     } catch (err) {
       setLastEval({ expression: e, result: null, error: err instanceof Error ? err.message : String(err) });
     }

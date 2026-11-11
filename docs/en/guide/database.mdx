@@ -1,0 +1,166 @@
+---
+title: "Databases"
+description: "Connect to SQL databases, browse schemas, run queries in a console, and view, edit, import and export data."
+---
+
+The **Database** tool window connects to SQLite, PostgreSQL, MySQL/MariaDB, Microsoft SQL Server, Oracle and ClickHouse, plus databases that speak one of their protocols. Drivers are built into the IDE; there are no JDBC drivers to download.
+
+Open it from **Tools › Database** or **View › Tool Windows › Database**. The **Tools** menu also has **New Data Source…** and **Open Query Console**.
+
+## Supported databases
+
+**New › Data Source** lists these presets:
+
+| Engine     | Presets                                                                                      |
+| ---------- | -------------------------------------------------------------------------------------------- |
+| PostgreSQL | PostgreSQL, Amazon Redshift, CockroachDB, Greenplum, Neon, Supabase, TimescaleDB, YugabyteDB |
+| MySQL      | MySQL, MariaDB, Amazon Aurora MySQL, OceanBase (MySQL mode), SingleStore, StarRocks, TiDB    |
+| SQL Server | Microsoft SQL Server                                                                         |
+| Oracle     | Oracle 19 or later (built-in thin driver, no client library)                                 |
+| ClickHouse | ClickHouse (over HTTP)                                                                       |
+| SQLite     | SQLite                                                                                       |
+
+Presets set the default port and, where needed, SSL (for example Redshift, Neon and Supabase require SSL).
+
+## Add a data source
+
+Click **+** in the Database tool window (or press `⌘N` / `Alt+Insert` there) and choose:
+
+- **Data Source ›** a preset from the list above.
+- **Data Source from File…** to open a SQLite file.
+- **Data Source from URL…** to paste a URL such as `postgresql://user@localhost:5432/db`. Schemes like `mysql://`, `mariadb://`, `sqlserver://`, `oracle://`, `clickhouse://`, `sqlite:path` and `jdbc:` URLs are accepted.
+- **Import from Clipboard** to read a connection URL from the clipboard.
+
+The data source dialog has a name, an optional **Color:** (tints the tree and console tabs), **Global** (make it available in all projects) and a comment, then these tabs:
+
+<AccordionGroup>
+  <Accordion title="General">
+    **Driver:**, **Host:**, **Port:**, **User:**, **Password:** with **Save password**, **Database:** and **URL:**. Editing the URL fills in the fields, and the other way round. Set **Connection type:** to **URL only** to connect with the URL alone. For SQLite there is a **File:** field instead; the file must exist.
+
+    **Test Connection** shows the server version or the error.
+
+  </Accordion>
+  <Accordion title="Options">
+    - **Read-only**: blocks writes at the session level where the database supports it (PostgreSQL, MySQL, SQLite, Oracle, ClickHouse) and disables grid editing.
+    - **Transaction control:** **Auto** or **Manual** (ClickHouse is always Auto).
+    - **Default schema:** (PostgreSQL `search_path`) or **Current schema:** (Oracle).
+    - **Time zone:**, a keep-alive query interval, and **Auto-disconnect after** a number of idle seconds.
+    - **Single database mode** (PostgreSQL): show only the configured database.
+    - **Startup script:** runs on every new connection.
+  </Accordion>
+  <Accordion title="SSH/SSL">
+    **Use SSH tunnel** with a saved SSH configuration or custom fields (host or `~/.ssh/config` alias, port, user, and authentication by **OpenSSH config and authentication agent**, **Password** or **Key pair**).
+
+    SSL **Mode:** **Disable**, **Prefer**, **Require**, **Verify CA** or **Verify Full**, with optional **CA file:**, **Client certificate file:** and **Client key file:**. Not available for SQLite.
+
+  </Accordion>
+  <Accordion title="Schemas">
+    Choose which databases (PostgreSQL) and schemas appear in the tree: all, a picked list, or name patterns with `*` and `?`. **Load Names from Server** fetches the list. **Object filter:** limits tables, views, routines and sequences by name. **Show internal system schemas** and **Show template databases** (PostgreSQL) are off by default.
+  </Accordion>
+  <Accordion title="Advanced">
+    Driver properties as name/value pairs, for example `statement_timeout` (PostgreSQL), `sql_mode` (MySQL, set as session variables), `journal_mode` (SQLite pragmas), `NLS_DATE_FORMAT` (Oracle) or `max_threads` (ClickHouse). `connect_timeout` (seconds) works for every driver.
+  </Accordion>
+</AccordionGroup>
+
+### Where settings and passwords are stored
+
+- Project data sources: `.openidea/data-sources.toml` in the project.
+- Global data sources: `data-sources.toml` in the IDE's data directory (see [Data directories](/en/reference/data-directories)).
+- Passwords are never written to these files. Saved passwords go to the OS credential store (Keychain, Windows Credential Manager or Secret Service). Unsaved ones are kept in memory for the session; OpenIDEA asks for them when it connects.
+
+## Browse the database
+
+The tree shows data source › database (PostgreSQL) › schema › `tables`, `views`, `materialized views`, `routines` and `sequences`. Tables contain `columns`, `keys`, `foreign keys`, `indexes` and `triggers`. Nodes load when you expand them. Turn on **Separate Procedures and Functions** in the tool window's options menu to split `routines`.
+
+Double-click a table to edit its data, a data source to open its console, and a routine, sequence or trigger to see its DDL. Type in **Filter objects** to filter the tree.
+
+| Action                                     | macOS            | Windows/Linux      |
+| ------------------------------------------ | ---------------- | ------------------ |
+| New… (data source, console, table, column) | `⌘N`             | `Alt+Insert`       |
+| Data Source Properties…                    | `⇧Enter`         | `Shift+Enter`      |
+| Refresh                                    | `⌘R`             | `Ctrl+F5`          |
+| Deactivate (disconnect)                    | `⌘F2`            | `Ctrl+F2`          |
+| Edit Data                                  | `F4`             | `F4`               |
+| Go to DDL                                  | `⌘B`             | `Ctrl+B`           |
+| Quick Documentation                        | `F1`             | `Ctrl+Q`           |
+| Jump to Query Console…                     | `⌘⇧F10`          | `Ctrl+Shift+F10`   |
+| Rename…                                    | `⇧F6`            | `Shift+F6`         |
+| Modify Table…                              | `⌘F6`            | `Ctrl+F6`          |
+| Drop…                                      | `Delete` or `⌘⌫` | `Delete`           |
+| Copy Reference                             | `⌘⌥⇧C`           | `Ctrl+Alt+Shift+C` |
+| Duplicate (data source)                    | `⌘D`             | `Ctrl+D`           |
+| Generate DDL to Clipboard                  | `⌘⌥⇧G`           | `Ctrl+Alt+Shift+G` |
+| Generate DDL to Query Console              | `⌘⌥⇧B`           | `Ctrl+Alt+Shift+B` |
+
+These keys work while the Database tree has focus. The context menu also has **Truncate…**, **Run SQL Script…** (runs every statement of a `.sql` file), **Import Data from File…**, **Go to Referenced Table** (on foreign keys), SQL templates (select, insert, update, delete) and **Remove Data Source…**.
+
+**Modify Table…** and **New › Table** open a dialog to add, drop or change columns (name, data type, not null, primary key, default) with a live SQL preview. SQLite can only rename or drop existing columns. ClickHouse tables can't be modified this way.
+
+## Query console
+
+Each data source has a query console, a `.sql` file kept in the IDE's data directory. Open it with **Query Console** (`⌘⇧L` / `Ctrl+Shift+Q`), from the tree, or with **Tools › Open Query Console**. Any writable `.sql` file in the project gets the same toolbar, so you can bind it to a data source and run it.
+
+The console toolbar has:
+
+- **Execute** (`⌘Enter` / `Ctrl+Enter`): runs the selected statements, or the statement at the caret.
+- **Explain Plan**: shows the plan in a **Query Plan** tab.
+- **Cancel Running Statement**. Cancelling inside a manual transaction rolls it back.
+- **Browse Query History**: the last 500 statements per data source, with search and **Paste**.
+- A row limit (100 to 50,000; default 500).
+- **Tx: Auto** / **Tx: Manual**. In manual mode **Commit** and **Roll Back** appear.
+- A schema picker (PostgreSQL, MySQL, SQL Server, Oracle) and the data source picker.
+
+Statements are split on `;`, respecting strings, comments and PostgreSQL dollar quoting. Oracle PL/SQL blocks are kept whole, and a line with only `/` ends a statement. Parameters such as `:id`, `?`, `$1` or `@name` open a **Parameters** dialog; values are inserted as SQL text, so quote strings.
+
+SQL completion knows the connected schema: tables after `FROM`/`JOIN` (with join conditions from foreign keys), columns in scope, and each dialect's keywords and functions. Unresolved tables and columns are flagged, and Go to Declaration, Quick Documentation and Reformat Code work in the console. See [SQL](/en/languages/sql) for SQL files in general.
+
+## Results and data editing
+
+Results appear in the **Services** tool window under the **Database** tab: an **Output** tab logs every statement, and each result set gets a **Result N** tab (up to 12).
+
+- **Table** or **Chart** view (bar or line, with X/Y columns and an aggregation).
+- Paging with page sizes 10 to 1,000; click the row count to count all rows.
+- **Search in results** and a per-column local filter on the loaded rows.
+- A side panel with **Record**, **Value** and **Aggregates** (count, distinct, nulls, sum, average, median, min, max).
+- JSON values get a JSON editor with **Reformat** and **Open in Window**.
+
+### Edit data
+
+**Edit Data** (`F4`) opens a table in an editor tab with server-side paging (100 to 5,000 rows), a `WHERE` filter and an `ORDER BY` field (both with completion). Click a column header to sort; `Shift`-click to add more sort columns.
+
+- Double-click, `Enter` or `F2` edits a cell; `Shift+Enter` opens a larger editor. Pasting tab-separated text fills several cells.
+- **Add Row**, **Delete Rows**, **Set NULL** (`⌘⌫` / `Ctrl+Backspace`), **Set DEFAULT** (`⌘⇧⌫` / `Ctrl+Shift+Backspace`). `Space` toggles booleans.
+- **Submit** (`⌘Enter` / `Ctrl+Enter`) sends all pending changes in one transaction; **Revert** (`⌘⌥Z` / `Ctrl+Alt+Z`) discards them.
+
+Console results are editable the same way when the query is a plain select from one table that includes the primary key. Tables without a primary key, joins, aggregates, `UNION` queries, read-only data sources and ClickHouse results are read-only.
+
+## Export and import
+
+The export button offers **Export Data…** and quick copies: **Copy as CSV**, **Copy as TSV**, **Copy as JSON**, **Copy as SQL Inserts**, **Copy as Markdown** and **Copy as One-Row**. The **Export Data** dialog adds **Transpose**, column and row headers, a preview, **Copy to Clipboard** and **Export to File**. Export covers the rows that are loaded (the current page).
+
+**Import Data from File…** loads CSV, TSV or TXT into a table: the separator is detected, the first row can be a header matched to columns by name, and empty values can become `NULL`. The import runs in one transaction. It is not available for ClickHouse.
+
+## Oracle
+
+Oracle connections use a built-in pure-Rust thin driver, so no Oracle client library or `ORACLE_HOME` is needed. It
+supports Oracle Database 19 or later.
+
+On **General**, set host, port (1521) and the service name (for example `ORCLPDB1`) in **Database:**. A full TNS
+descriptor, or a TNS alias resolved from `tnsnames.ora` (`TNS_ADMIN` or `$ORACLE_HOME/network/admin`), also works there.
+URLs such as `oracle://scott@db.example.com:1521/ORCLPDB1` and `jdbc:oracle:thin:@//db.example.com:1521/ORCLPDB1` are
+accepted too.
+
+If login fails with `ORA-01017` although the password is right, the account may only have old 10G password verifiers;
+setting the same password again (`ALTER USER … IDENTIFIED BY …`) creates the newer ones.
+
+The tree shows packages (their DDL is the specification and body) next to tables, views, routines and sequences.
+Oracle schemas are database users; system accounts appear only with **Show internal system schemas**.
+
+## Not supported
+
+- MongoDB, Redis, Snowflake, BigQuery and other non-listed databases; JDBC drivers.
+- SQL Server `GO` batch separators.
+- A "run the whole console" action (use a selection, or **Run SQL Script…**).
+- Exporting more than the loaded page.
+- Date pickers and foreign key lookups in the grid.
+- Session-level read-only mode on SQL Server (only grid editing is blocked).

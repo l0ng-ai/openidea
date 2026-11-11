@@ -8,6 +8,7 @@
 use ide_core::error::ErrorKind;
 use ide_core::ipc_path::to_ipc;
 use ide_host::plugins::*;
+use ide_host::{Host, HostConfig};
 use ide_plugin::{EditorContext, HostError, Invocation, Limits};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
@@ -97,6 +98,44 @@ impl PluginWorkspace for TestWorkspace {
 
     fn projects(&self) -> Vec<PathBuf> {
         std::iter::once(self.root.clone()).chain(self.other_roots.lock().iter().cloned()).collect()
+    }
+    /// Find in Files over the fixture's files on disk.
+    fn search_text(
+        &self,
+        _client: Option<&str>,
+        root: &Path,
+        query: ide_plugin::TextQuery,
+        limit: u32,
+        cancel: &ide_core::CancellationToken,
+    ) -> Result<ide_plugin::TextSearch, HostError> {
+        let query = ide_search::SearchQuery {
+            pattern: query.pattern,
+            is_regex: query.regex,
+            case_sensitive: query.case_sensitive,
+            whole_word: query.whole_word,
+            include: query.include,
+            exclude: query.exclude,
+            scope: ide_search::SearchScope::Project,
+            max_matches: limit,
+            context: Default::default(),
+        };
+        let files = Mutex::new(Vec::new());
+        let summary = ide_search::search(root, &query, &|_| None, cancel, &|file| files.lock().push(file))
+            .map_err(|e| HostError::Failed(e.to_string()))?;
+        let matches = files
+            .into_inner()
+            .into_iter()
+            .flat_map(|file| {
+                file.matches.into_iter().map(move |m| ide_plugin::TextMatch {
+                    location: ide_plugin::Location {
+                        path: PathBuf::from(&file.path.0),
+                        range: ide_core::Range::new(ide_core::Pos::new(m.line, 0), ide_core::Pos::new(m.line, 0)),
+                    },
+                    line: m.text,
+                })
+            })
+            .collect();
+        Ok(ide_plugin::TextSearch { matches, limit_hit: summary.limit_hit })
     }
     fn buffer_text(&self, path: &Path) -> Option<String> {
         if path.ends_with("event-barrier.txt") {
@@ -448,6 +487,29 @@ fn read_file_is_confined_to_the_project() {
     let err = f.host.run_command("misbehave", "read", Some("src/notes.txt"), inv).unwrap_err().message;
     assert!(err.contains("no project is open"), "{err}");
     assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), to_ipc(&f.project));
+    assert_eq!(f.status("misbehave"), PluginStatus::Active);
+}
+
+/// `project.read-bytes` returns the exact bytes on disk, where `read-file`
+/// wants UTF-8, and follows `read-file`'s confinement rules.
+#[test]
+fn read_bytes_reads_the_project_file_exactly_and_stays_inside() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_pkg());
+    let binary = [0x25u8, 0x50, 0x44, 0x46, 0x00, 0xff, 0x1b, 0x7f];
+    std::fs::write(f.project.join("logo.bin"), binary).unwrap();
+    let hex = binary.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
+    assert_eq!(f.run("misbehave", "read-bytes", Some("logo.bin")).unwrap().unwrap(), format!("8 {hex}"));
+    let abs = f.project.join("logo.bin");
+    assert_eq!(f.run("misbehave", "read-bytes", Some(abs.to_str().unwrap())).unwrap().unwrap(), format!("8 {hex}"));
+    // The same refusal and not-found behaviour as `read-file`; like every
+    // refusal, it is the plugin's to handle: it keeps running.
+    let err = f.run("misbehave", "read-bytes", Some("../secret.txt")).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    let err = f.run("misbehave", "read-bytes", Some("src/missing.bin")).unwrap_err();
+    assert!(err.contains("not found"), "{err}");
+    let err = f.run("misbehave", "read-bytes", Some("src")).unwrap_err();
+    assert!(err.contains("not a file"), "{err}");
     assert_eq!(f.status("misbehave"), PluginStatus::Active);
 }
 
@@ -2740,9 +2802,12 @@ fn official_mybatis_navigates_between_interface_and_xml() {
     let xml = "<mapper namespace=\"com.acme.UserMapper\">\n  <select id=\"findById\">select 1</select>\n</mapper>\n";
     std::fs::write(&java_path, java).unwrap();
     std::fs::write(&xml_path, xml).unwrap();
-    // Noise the index has to skip.
-    for i in 0..200 {
-        std::fs::write(f.project.join(format!("src/f{i}.xml")), "<beans/>").unwrap();
+    // Noise: other mappers, some large, that the lookup must not read one by one.
+    let filler = "  <select id=\"q\">select 1</select>\n".repeat(3000);
+    for i in 0..600 {
+        let body = if i % 50 == 0 { filler.as_str() } else { "" };
+        let other = format!("<mapper namespace=\"com.acme.Other{i}\">\n{body}</mapper>\n");
+        std::fs::write(f.project.join(format!("src/f{i}.xml")), other).unwrap();
     }
     let doc = |path: &Path, language: &str, text: &str| ide_plugin::ProviderDocument {
         path: path.to_path_buf(),
@@ -2751,9 +2816,9 @@ fn official_mybatis_navigates_between_interface_and_xml() {
         text: text.into(),
     };
     let jdoc = doc(&java_path, "java", java);
-    // The first call indexes the XML files; on a slow machine that runs past the
-    // edit-path budget, so the answer is dropped (the index is kept) and calls
-    // queued behind it are skipped. The editor asks again; so does this.
+    // The first call searches the XML files; on a slow machine that can run past the
+    // edit-path budget, so the answer is dropped and calls queued behind it are
+    // skipped. The editor asks again; so does this.
     let deadline = Instant::now() + Duration::from_secs(10);
     let markers = loop {
         let markers = f.host.provide_line_markers(&jdoc);
@@ -2782,7 +2847,7 @@ fn official_mybatis_navigates_between_interface_and_xml() {
         "not its language"
     );
 
-    // Warm (index cached): well inside the edit-path budget.
+    // Warm (lookup cached): well inside the edit-path budget.
     let slow = f.host.info_of("openidea.mybatis").unwrap().stats.slow_calls;
     let mut times = Vec::new();
     for _ in 0..20 {
@@ -5723,6 +5788,7 @@ fn api14_denies_new_privileges_and_requires_an_invoking_window() {
         ("open-editors", "", "editor.read"),
         ("open-editor", "a.txt", "project.read"),
         ("search-text", "needle", "project.read"),
+        ("read-bytes", "a.txt", "project.read"),
         ("problems", "", "project.read"),
         ("decorations", "a.txt", "project.read"),
         ("clear-decorations", "", "project.read"),
@@ -5751,6 +5817,158 @@ fn api14_denies_new_privileges_and_requires_an_invoking_window() {
     assert!(f.run("api14", "undeclared-secret", Some("value")).unwrap_err().contains("undeclared"));
     f.run("api14", "delete-secret", None).unwrap();
     assert_eq!(f.host.declared_secret("api14", "token"), None);
+}
+
+/// `net:ask`: a first request to a host outside the manifest asks the user
+/// from an invoking window ("once" allows this request, "always" remembers
+/// the host, refusal and dismissal deny). Background calls are denied without
+/// a dialog, plain HTTP still needs `net.http:<host>`, and a remembered host
+/// is listed in the permissions, where it can be revoked.
+#[test]
+fn net_ask_asks_once_remembers_always_and_revokes() {
+    use ide_plugin::Prompt;
+    let f = fixture(Limits::default());
+    f.host.install_from_dir(&sample("api14"), &Consent::default()).unwrap();
+    let (port, seen) = http_server("relay ok", |_| Duration::ZERO);
+    let url = format!("http://127.0.0.1:{port}/");
+
+    // Merely declaring an optional capability is not enough: the user must grant it.
+    let err = f.run("api14", "fetch", Some(&url)).unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    f.host.set_capability("api14", "net:ask", true).unwrap();
+
+    // Plain HTTP elsewhere stays out of the ask flow entirely.
+    let err = f.run("api14", "fetch", Some("http://example.com/")).unwrap_err();
+    assert!(err.contains("net.http:example.com") && err.contains("not granted"), "{err}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+
+    // Background (no invoking window): denied like before, no dialog.
+    let err = f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).unwrap_err();
+    assert!(err.message.contains("net:127.0.0.1") && err.message.contains("not granted"), "{err:?}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert!(seen.lock().is_empty(), "nothing connected");
+
+    // From a window: the question names the full host. "Allow once" lets
+    // this request through and remembers nothing.
+    let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&["once"]));
+    assert_eq!(result.unwrap().as_deref(), Some("relay ok"));
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: false });
+    assert_eq!(f.host.info_of("api14").unwrap().net_hosts, Vec::<String>::new());
+    assert_eq!(seen.lock().len(), 1);
+
+    // The next request asks again; "Always allow" remembers the host.
+    let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&["always"]));
+    assert_eq!(result.unwrap().as_deref(), Some("relay ok"));
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: false });
+    assert_eq!(f.host.info_of("api14").unwrap().net_hosts, ["127.0.0.1".to_owned()]);
+
+    // Remembered: connecting without a dialog from a window and in the background.
+    let result = f.host.run_command("api14", "fetch", Some(&url), f.inv()).map_err(|e| e.message).unwrap();
+    assert_eq!(result.as_deref(), Some("relay ok"));
+    let result =
+        f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).map_err(|e| e.message).unwrap();
+    assert_eq!(result.as_deref(), Some("relay ok"));
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert_eq!(seen.lock().len(), 4);
+
+    // The permissions list the host; revoking it asks again, and refusing denies.
+    f.host.revoke_net_host("api14", "127.0.0.1").unwrap();
+    assert_eq!(f.host.info_of("api14").unwrap().net_hosts, Vec::<String>::new());
+    let (result, prompt) = net_ask_run_and_answer(&f, &url, None);
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: false });
+    let err = result.unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+    // Refusal throttles even a different host, without making any connection.
+    let err = f.run("api14", "fetch", Some("https://other.example/")).unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert_eq!(seen.lock().len(), 4);
+
+    f.host.uninstall("api14").unwrap();
+    let ledger = ide_extension::ledger::Ledger::load(&f.plugins_dir);
+    assert!(ledger.get(&ide_extension::ledger::Subject::Installed("api14".into())).is_none());
+}
+
+#[test]
+fn net_ask_session_hosts_are_ephemeral_and_cleared_with_plugin_grants() {
+    use ide_extension::ledger::{Ledger, Subject};
+    use ide_plugin::Prompt;
+    let f = fixture(Limits::default());
+    f.host.set_net_hosts_session_only();
+    f.host.install_from_dir(&sample("api14"), &Consent::all()).unwrap();
+    let (port, seen) = http_server("session ok", |_| Duration::ZERO);
+    let url = format!("http://127.0.0.1:{port}/");
+    let subject = Subject::Installed("api14".into());
+
+    for (answer, reset) in [("session", "disable"), ("always", "revoke"), ("session", "uninstall")] {
+        let err = f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).unwrap_err();
+        assert!(err.message.contains("not granted"), "{err:?}");
+        assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+
+        let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&[answer]));
+        assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: true });
+        assert_eq!(result.unwrap().as_deref(), Some("session ok"));
+        for invocation in [f.inv(), Invocation::default()] {
+            let result = f.host.run_command("api14", "fetch", Some(&url), invocation).unwrap();
+            assert_eq!(result.as_deref(), Some("session ok"));
+        }
+        let err =
+            f.host.run_command("api14", "fetch", Some("https://other.example/"), Invocation::default()).unwrap_err();
+        assert!(err.message.contains("not granted"), "{err:?}");
+        assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+        assert!(f.host.info_of("api14").unwrap().net_hosts.is_empty());
+        assert!(Ledger::load(&f.plugins_dir).get(&subject).unwrap().net_hosts.is_empty());
+
+        match reset {
+            "disable" => {
+                f.host.set_enabled("api14", false).unwrap();
+                f.host.set_enabled("api14", true).unwrap();
+            }
+            "revoke" => {
+                f.host.set_capability("api14", "net:ask", false).unwrap();
+                f.host.set_capability("api14", "net:ask", true).unwrap();
+            }
+            "uninstall" => {
+                f.host.uninstall("api14").unwrap();
+                assert!(Ledger::load(&f.plugins_dir).get(&subject).is_none());
+                f.host.install_from_dir(&sample("api14"), &Consent::all()).unwrap();
+            }
+            _ => unreachable!(),
+        }
+    }
+    let err = f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).unwrap_err();
+    assert!(err.message.contains("not granted"), "{err:?}");
+    assert_eq!(seen.lock().len(), 9);
+}
+
+/// Runs api14's `fetch` in its window; once the `net:ask` question arrives,
+/// answers it (`None`: dismisses). Returns the command's result and the prompt.
+fn net_ask_run_and_answer(
+    f: &Fixture,
+    url: &str,
+    answer: Option<&[&str]>,
+) -> (Result<Option<String>, String>, ide_plugin::Prompt) {
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.run("api14", "fetch", Some(url)));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (client, prompt_id, prompt) = loop {
+            let asked = f.take_events().into_iter().find_map(|(client, e)| match e {
+                PluginEvent::PromptRequested { prompt_id, prompt, .. } => Some((client, prompt_id, prompt)),
+                _ => None,
+            });
+            if let Some(asked) = asked {
+                break asked;
+            }
+            assert!(Instant::now() < deadline && !running.is_finished(), "the fetch never asked");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(client.as_deref(), Some("main"), "asks in the window that ran the command");
+        let answer = answer.map(|a| a.iter().map(|s| (*s).to_owned()).collect());
+        assert!(f.host.answer_prompt(&prompt_id, answer));
+        assert!(!f.host.answer_prompt(&prompt_id, None), "an answer counts once");
+        (running.join().unwrap(), prompt)
+    })
 }
 
 #[test]
@@ -6117,4 +6335,242 @@ fn api14_stage3_terminal_calls_are_denied_without_process_grants() {
     let f = execution_fixture();
     f.host.set_capability("execution", "process:execution-tool", false).unwrap();
     assert!(f.run("execution", "terminal", None).unwrap_err().contains("not granted"));
+}
+
+// ─── Project window groups ────────────────────────────────────────────────────
+// A group's container root holds only `.openidea` metadata; the files live in
+// the member projects. The plugin surface reaches them like the editor and the
+// language servers do.
+
+/// A real host over a project window group with the members `alpha` (holding a
+/// nested `inner` member, for deepest resolution) and `beta`.
+struct GroupFixture {
+    base: PathBuf,
+    host: Arc<Host>,
+    plugins: Arc<PluginHost>,
+    root: PathBuf,
+    alpha: PathBuf,
+    inner: PathBuf,
+    beta: PathBuf,
+    _runtime: tokio::runtime::Runtime,
+    _tmp: tempfile::TempDir,
+}
+
+impl GroupFixture {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let (root, alpha, beta) = (base.join("workspace"), base.join("alpha"), base.join("beta"));
+        let inner = alpha.join("inner");
+        for dir in [alpha.join("src"), inner.join("mappers"), beta.join("src")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        ide_workspace::workspace::Workspace::save(
+            &root,
+            "Group",
+            vec![alpha.clone(), inner.clone(), beta.clone()],
+            true,
+        )
+        .unwrap();
+        std::fs::write(alpha.join("src/needle.php"), "alpha needle\n").unwrap();
+        std::fs::write(inner.join("mappers/route.idx"), "def route:item\nref route:item\n").unwrap();
+        std::fs::write(beta.join("src/Notes.txt"), "beta needle\n").unwrap();
+        std::fs::write(base.join("secret.txt"), "top secret").unwrap();
+
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let host = Arc::new(Host::new(HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("data"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+            owner: |w| w,
+            runtime: runtime.handle().clone(),
+            project_environment: false,
+        }));
+        for dir in [&root, &alpha, &beta] {
+            host.trust.decide(dir, true, false).unwrap();
+        }
+        {
+            let _guard = runtime.enter();
+            let project = host.open_project("main", &root).unwrap();
+            assert!(project.index.wait_idle(Duration::from_secs(30)));
+        }
+        let plugins = Arc::new(
+            PluginHost::new(base.join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap(),
+        );
+        plugins.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(&host)))));
+        plugins.set_project_policy(Arc::new(|_| true));
+        Self { base, host, plugins, root, alpha, inner, beta, _runtime: runtime, _tmp: tmp }
+    }
+
+    /// Runs an installed plugin's `command` with `root` (default: the group
+    /// container) as the invoking project.
+    fn run(&self, id: &str, command: &str, arg: Option<&str>, root: Option<&Path>) -> Result<Option<String>, String> {
+        let inv = Invocation {
+            client: Some("main".into()),
+            workspace_root: Some(dunce::canonicalize(root.unwrap_or(&self.root)).unwrap()),
+            ..Default::default()
+        };
+        self.plugins.run_command(id, command, arg, inv).map_err(|e| e.message)
+    }
+
+    /// Installs `dir` with everything granted.
+    fn install(&self, dir: &Path) {
+        self.plugins.install_from_dir(dir, &Consent::all()).unwrap();
+    }
+
+    /// The roots the plugin surface lists, sorted and deduplicated.
+    fn listed_roots(&self) -> Vec<PathBuf> {
+        HostWorkspace(Arc::downgrade(&self.host)).projects()
+    }
+}
+
+impl Drop for GroupFixture {
+    fn drop(&mut self) {
+        self.host.close_project("main");
+    }
+}
+
+/// `projects()` lists the members with their own roots, and the member roots of
+/// the container are exactly the workspace manifest's.
+#[test]
+fn projects_list_the_workspace_members() {
+    let f = GroupFixture::new();
+    assert_eq!(
+        f.listed_roots(),
+        [f.alpha.clone(), f.inner.clone(), f.beta.clone(), f.root.clone()]
+            .iter()
+            .map(|p| dunce::canonicalize(p).unwrap())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        HostWorkspace(Arc::downgrade(&f.host)).member_roots(&f.root),
+        [f.alpha.clone(), f.inner.clone(), f.beta.clone()]
+            .iter()
+            .map(|p| dunce::canonicalize(p).unwrap())
+            .collect::<Vec<_>>()
+    );
+    // A member has no members of its own.
+    assert!(HostWorkspace(Arc::downgrade(&f.host)).member_roots(&f.alpha).is_empty());
+}
+
+/// `project-of(path)` resolves to the deepest member project containing the
+/// path, where the container and every member appear.
+#[test]
+fn project_of_resolves_to_the_deepest_workspace_member() {
+    let f = GroupFixture::new();
+    f.install(&sample("path-events"));
+    let project =
+        |path: &Path| f.run("test.path-events", "project", Some(path.to_str().unwrap()), None).unwrap().unwrap();
+    assert_eq!(project(&f.alpha.join("src/needle.php")), to_ipc(&f.alpha));
+    // The nested member, not its containing member.
+    assert_eq!(project(&f.inner.join("mappers/route.idx")), to_ipc(&f.inner));
+    assert_eq!(project(&f.beta.join("src/Notes.txt")), to_ipc(&f.beta));
+    // The container itself is still a project.
+    assert_eq!(project(&f.root), to_ipc(&f.root));
+    // And a path in no project resolves to none.
+    assert!(
+        f.run("test.path-events", "project", Some(f.base.join("secret.txt").to_str().unwrap()), None)
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// `project.read` and `project.write` reach the member files through the
+/// group's project, and never leave the group's roots.
+#[test]
+fn project_reads_and_writes_reach_workspace_members() {
+    let f = GroupFixture::new();
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-group-writer", "project.write"));
+    let notes = f.beta.join("src/Notes.txt");
+    assert_eq!(f.run("misbehave", "read", Some(notes.to_str().unwrap()), None).unwrap().unwrap(), "beta needle\n");
+    // Writing into a member creates its missing parent directories.
+    let fresh = f.beta.join("src/generated/mapper.xml");
+    f.run("misbehave", "projwrite", Some(fresh.to_str().unwrap()), None).unwrap();
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "written inside the project\n");
+    // `ctx.project()` is still the group's project.
+    assert_eq!(f.run("misbehave", "root", None, None).unwrap().unwrap(), to_ipc(&f.root));
+    // What is outside every root of the group stays refused, unwritten.
+    let outside = f.base.join("secret.txt");
+    let err = f.run("misbehave", "read", Some(outside.to_str().unwrap()), None).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    let err = f.run("misbehave", "projwrite", Some(outside.to_str().unwrap()), None).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "top secret");
+    // A member-scoped project reads its own files only: its root is the member.
+    assert_eq!(f.run("misbehave", "read", Some("src/Notes.txt"), Some(&f.beta)).unwrap().unwrap(), "beta needle\n");
+}
+
+/// Find in Files covers the members: search from the container finds member
+/// matches, a member-scoped project sees only its own.
+#[test]
+fn project_search_reaches_workspace_members() {
+    let f = GroupFixture::new();
+    f.install(&sample("api14"));
+    let search = |root: &Path, needle: &str| f.run("api14", "search-text", Some(needle), Some(root)).unwrap().unwrap();
+    // From the container: matches in the members come through.
+    let all = search(&f.root, "needle");
+    assert!(all.contains("needle.php"), "{all}");
+    assert!(all.contains("Notes.txt"), "{all}");
+    // The container holds no sources: `.openidea` metadata never matches.
+    assert!(!all.contains("workspace.json"), "{all}");
+    // From a member: only that member's matches.
+    let own = search(&f.beta, "needle");
+    assert!(own.contains("Notes.txt"), "{own}");
+    assert!(!own.contains("needle.php"), "{own}");
+    // What is outside every root is never found.
+    assert!(!search(&f.root, "top secret").contains("secret.txt"));
+}
+
+/// The document-indexer covers member files: discovery offers them, indexing
+/// one publishes its navigation, and files outside the group stay out.
+#[test]
+fn document_indexer_covers_workspace_members() {
+    let f = GroupFixture::new();
+    f.install(&sample("indexer"));
+    let mapping = f.inner.join("mappers/route.idx");
+    // Discovery: the member file is in the window's project scope.
+    let files = f
+        ._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, f.plugins.clone(), "main"))
+        .unwrap();
+    assert!(files.paths.iter().any(|p| p.0 == mapping), "{:?}", files.paths);
+    // Indexing the member file through the window's project publishes it: the
+    // open document is indexed at its version, like an editor click resolves.
+    let project = f.host.project("main").unwrap();
+    let doc = project.documents.open(&mapping).unwrap();
+    f._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_index(
+            &f.host,
+            f.plugins.clone(),
+            "main",
+            vec![mapping.clone()],
+            ide_core::RequestId::next(),
+        ))
+        .unwrap();
+    let result = f
+        .plugins
+        .navigation_at(&f.root, &mapping, doc.version, ide_core::Pos::new(1, 5), Some("main"), |_| None)
+        .unwrap();
+    assert_eq!(result.targets[0].path.0, mapping);
+    // A file outside the group is never offered, and indexing skips it.
+    let outside = f.base.join("escape.idx");
+    std::fs::write(&outside, "def outside:item\n").unwrap();
+    let files = f
+        ._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, f.plugins.clone(), "main"))
+        .unwrap();
+    assert!(!files.paths.iter().any(|p| p.0 == outside), "{:?}", files.paths);
+    f._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_index(
+            &f.host,
+            f.plugins.clone(),
+            "main",
+            vec![outside.clone()],
+            ide_core::RequestId::next(),
+        ))
+        .unwrap();
+    assert!(f.plugins.navigation_at(&f.root, &outside, 1, ide_core::Pos::new(0, 4), Some("main"), |_| None).is_none());
 }

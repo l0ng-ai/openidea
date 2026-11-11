@@ -72,7 +72,7 @@ function serializeEnvPairs(rows: ReadonlyArray<{ name: string; value: string }>)
 
 async function pickLocalPath(directory: boolean, defaultPath?: string): Promise<string | null> {
   if (!isTauri() || isRemoteWindow()) return null;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({ directory, multiple: false, defaultPath: defaultPath || undefined });
   return typeof picked === "string" ? picked : Array.isArray(picked) ? (picked[0] ?? null) : null;
 }

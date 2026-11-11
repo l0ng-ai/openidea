@@ -34,6 +34,9 @@ const appRestart = vi.fn(async () => null);
 const cancelRequest = vi.fn(async () => null);
 const appBuildInfo = vi.fn(async () => ({ version: "0.1.21" }));
 const settingsSet = vi.fn(async () => ({ status: "ok", data: { general: {}, appearance: {} } }));
+const recordInstalledUpdate = vi.fn();
+
+vi.mock("@/platform/releaseNotes", () => ({ recordInstalledUpdate }));
 
 vi.mock("@/platform/ipc", async (orig) => {
   const actual = await orig<typeof import("@/platform/ipc")>();
@@ -65,12 +68,12 @@ const {
   installUpdate,
   notifyUpdate,
   progressText,
-  updateSource,
   CHECK_TASK_ID,
   INSTALL_TASK_ID,
   UPDATE_KEY,
 } = await import("../updates");
 const { provideNotificationService } = await import("@/workbench/contributions");
+const { updateSource } = await import("@/platform/updateSource");
 const { useProject } = await import("@/platform/project");
 const { useTasks } = await import("@/workbench/tasks");
 
@@ -118,10 +121,30 @@ describe("Install and Restart", () => {
     await done;
     expect(task(INSTALL_TASK_ID)?.done).toBe(true);
     expect(appRestart).toHaveBeenCalledTimes(1);
+    expect(recordInstalledUpdate).toHaveBeenCalledWith("0.1.22", null);
     const installed = notes.at(-1)!;
     expect(installed).toMatchObject({ title: "OpenIDEA 0.1.22 is installed", key: UPDATE_KEY, sticky: true });
     installed.actions![0]!.run();
     expect(appRestart).toHaveBeenCalledTimes(2);
+  });
+
+  it("puts only the first paragraph in the balloon, the page keeps the whole notes", async () => {
+    const longNotes = "A short summary.\n\n## What's new\n\n- " + "detail ".repeat(80);
+    await notifyUpdate({ version: "0.1.22", currentVersion: "0.1.21", notes: longNotes, date: null });
+    expect(notes.at(-1)?.body).toBe("A short summary.");
+
+    notes.at(-1)!.actions![0]!.run();
+    install.resolve(ok(null));
+    await tick();
+    expect(recordInstalledUpdate).toHaveBeenCalledWith("0.1.22", longNotes);
+  });
+
+  it("remembers the notes of the update it installed, for the page after the restart", async () => {
+    await notifyUpdate({ version: "0.1.22", currentVersion: "0.1.21", notes: "## Fixed\n- a crash", date: null });
+    notes[0]!.actions![0]!.run();
+    install.resolve(ok(null));
+    await tick();
+    expect(recordInstalledUpdate).toHaveBeenCalledWith("0.1.22", "## Fixed\n- a crash");
   });
 
   it("joins the running install on repeated clicks (balloon, log entry, a second check)", async () => {
@@ -151,6 +174,7 @@ describe("Install and Restart", () => {
     install.resolve({ status: "error", error: { kind: "unavailable", message: "connection reset" } });
     await failed;
     expect(appRestart).not.toHaveBeenCalled();
+    expect(recordInstalledUpdate).not.toHaveBeenCalled();
     expect(task(INSTALL_TASK_ID)?.done).toBe(true);
     expect(notes.at(-1)).toMatchObject({
       level: "error",
@@ -400,6 +424,68 @@ describe("Check for Updates", () => {
     check.resolve(ok({ enabled: true, update: null }));
     await done;
     expect(notes.at(-1)?.title).toBe("OpenIDEA 0.1.21 is up to date");
+  });
+});
+
+describe("automatic nightly update prompts", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const update = (currentVersion: string): UpdateInfo => ({
+    version: "0.1.41",
+    currentVersion,
+    notes: null,
+    date: null,
+  });
+  const startupCheck = async (currentVersion: string) => {
+    notes = [];
+    await notifyUpdate(update(currentVersion));
+    return notes.length;
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.useFakeTimers({ toFake: ["Date"], now: 10 * DAY });
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("leaves stable prompts to the backend announcement policy", async () => {
+    expect(await startupCheck("0.1.40")).toBe(1);
+    expect(await startupCheck("0.1.40")).toBe(1);
+  });
+
+  it("asks a nightly build at most once a day", async () => {
+    const nightly = "0.1.41-nightly.202611081417";
+    expect(await startupCheck(nightly)).toBe(1);
+    vi.setSystemTime(11 * DAY - 1);
+    expect(await startupCheck(nightly)).toBe(0);
+    vi.setSystemTime(11 * DAY);
+    expect(await startupCheck(nightly)).toBe(1);
+  });
+
+  it("does not prompt twice a day for periodic nightly checks, but always answers a manual check", async () => {
+    const nightly = "0.1.41-nightly.202611081417";
+    const dispose = installUpdateChecks();
+    await tick();
+    try {
+      const available = updateListeners.get("updateAvailable")!;
+      available({ update: update(nightly) });
+      await tick();
+      expect(notes).toHaveLength(1);
+      vi.setSystemTime(10 * DAY + 4 * 60 * 60 * 1000);
+      available({ update: { ...update(nightly), version: "0.1.42-nightly.202611090200" } });
+      await tick();
+      expect(notes).toHaveLength(1);
+      const done = checkForUpdates();
+      check.resolve(ok({ enabled: true, update: update(nightly) }));
+      await done;
+      expect(notes.at(-1)).toMatchObject({ title: "OpenIDEA 0.1.41 is available", userInitiated: true });
+      notes = [];
+      vi.setSystemTime(11 * DAY);
+      available({ update: { ...update(nightly), version: "0.1.42-nightly.202611091400" } });
+      await tick();
+      expect(notes).toHaveLength(1);
+    } finally {
+      dispose();
+    }
   });
 });
 

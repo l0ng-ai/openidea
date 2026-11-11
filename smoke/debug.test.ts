@@ -1,16 +1,18 @@
 /**
  * Debugging each language's `fixtures/` project the way the editor does: a breakpoint on the
- * entry point's "Set a breakpoint here" line, Debug from the file's context, then the paused
- * frame, its variables, evaluation, Step Over and Resume, with the debugger the IDE installs.
+ * entry point's "Set a breakpoint here" line, Debug from the file's context (or a saved
+ * configuration, when the debugger is an explicit choice), then the paused frame, its
+ * variables, evaluation, Step Over and Resume, with the debugger the IDE installs (GDB:
+ * the toolchain's own, 14+ for its DAP interpreter).
  */
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { get } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, expect, test } from "vitest";
 import { Channel } from "@tauri-apps/api/core";
-import { commands, type InstallEvent } from "@/bindings";
+import { commands, type HeapProgress, type InstallEvent } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, nextRequestId, onIdeEvent } from "@/platform/ipc";
 import { useBuildModel } from "@/platform/buildModel";
@@ -19,7 +21,7 @@ import { activate as activateBuildTools } from "@/features/build-tools";
 import { useBuild } from "@/features/build-tools/store";
 import { activate as activateDebugger } from "@/features/debugger";
 import { addBreakpoint } from "@/features/debugger/breakpoints/store";
-import { activeSession, evaluate, useDebug } from "@/features/debugger/state";
+import { activeSession, evaluate, sessionSupports, useDebug } from "@/features/debugger/state";
 import { activate as activateRun } from "@/features/run";
 import { resetRuns, useRun } from "@/features/run/store";
 import { activateWorkbench } from "@/workbench/activate";
@@ -33,12 +35,22 @@ interface Case {
   setup?: (root: string) => void;
   /** The IDE's tool that debugs it. */
   debugger: string;
+  /** A system tool that ships with the toolchain (the IDE does not install it). */
+  system?: boolean;
+  /** A saved configuration to debug (the debugger is its explicit choice), instead of the file's context. */
+  configId?: string;
   /** The entry point, debugged from its context. */
   file: string;
   /** A variable of the paused frame. */
   variable: string;
   /** An expression evaluated there (Evaluate Expression), and its value. */
   evaluate: [string, RegExp];
+  /** JVM languages: the live instances of a class the paused program holds (Memory tab). */
+  memory?: { className: string; instances: number };
+  /** JVM languages: a class of the heap snapshot captured there and its instance count. */
+  heap?: { className: string; instances: number };
+  /** JVM languages: that class's instances, a field of the first one and its referrers (Show Instances). */
+  instances?: { className: string; count: number; field: string };
   /** A server: the breakpoint is in this request's handler, and the session is stopped at the end. */
   request?: string;
 }
@@ -81,6 +93,9 @@ const CASES: Record<string, Case> = {
     file: "src/main/java/com/example/orders/App.java",
     variable: "book",
     evaluate: ["book.size()", /^3$/],
+    memory: { className: "com.example.orders.OrderBook", instances: 1 },
+    heap: { className: "com.example.orders.OrderBook", instances: 1 },
+    instances: { className: "com.example.orders.OrderBook", count: 1, field: "orders" },
   },
   kotlin: {
     fixture: "kotlin-gradle",
@@ -88,6 +103,32 @@ const CASES: Record<string, Case> = {
     file: "src/main/kotlin/com/example/library/App.kt",
     variable: "library",
     evaluate: ["library", /Library/],
+    // Gradle forks the JVM and the debugger attaches to it: the attach-session path.
+    memory: { className: "com.example.library.Book", instances: 3 },
+    heap: { className: "com.example.library.Book", instances: 3 },
+    instances: { className: "com.example.library.Book", count: 3, field: "title" },
+  },
+  // GDB's own DAP interpreter (GDB 14+), the configuration's explicit debugger choice:
+  // the C/C++ default stays lldb-dap. GDB 15.0.50.20240403-0ubuntu1 says `15`.
+  c: {
+    fixture: "c-app",
+    setup: (root) => execFileSync("make", ["app-c"], { cwd: root, stdio: "ignore" }),
+    debugger: "gdb",
+    system: true,
+    configId: "user:app-c",
+    file: "src/main.c",
+    variable: "value",
+    evaluate: ["print value", / = [0-9]/],
+  },
+  cpp: {
+    fixture: "c-app",
+    setup: (root) => execFileSync("make", ["app-cpp"], { cwd: root, stdio: "ignore" }),
+    debugger: "gdb",
+    system: true,
+    configId: "user:app-cpp",
+    file: "src/main.cpp",
+    variable: "line",
+    evaluate: ["print line", / = /],
   },
   php: {
     fixture: "php-app",
@@ -214,7 +255,12 @@ const pausedOrEnded = () => {
 async function smoke(language: string) {
   const c = CASES[language]!;
   const root = await open(c);
-  await install(c.debugger);
+  if (c.system) {
+    // GDB ships with the toolchain (14+ for its DAP interpreter); the IDE does not install it.
+    execFileSync(c.debugger, ["--version"], { stdio: "pipe" });
+  } else {
+    await install(c.debugger);
+  }
 
   const path = join(root, c.file);
   const content = readFileSync(path, "utf8");
@@ -222,7 +268,13 @@ async function smoke(language: string) {
   const line = marker + 1;
   addBreakpoint(path, line);
 
-  await executeAction("run.debugContext", { path, content });
+  if (c.configId) {
+    const config = (await call(commands.runConfigs())).find((cfg) => cfg.id === c.configId);
+    expect(config, c.configId).toBeTruthy();
+    await executeAction("debug.startConfig", config);
+  } else {
+    await executeAction("run.debugContext", { path, content });
+  }
   if (c.request) void requestWhenListening(c.request);
   const s = await until("the breakpoint", pausedOrEnded, 5 * 60_000);
   expect(s.stopReason, `${s.stopDescription}\n${shown()}`).toBe("breakpoint");
@@ -236,6 +288,108 @@ async function smoke(language: string) {
 
   const value = await evaluate(c.evaluate[0], "repl", s);
   expect(value.value, c.evaluate[0]).toMatch(c.evaluate[1]);
+  if (c.debugger === "gdb") {
+    const expression = await evaluate(c.variable, "watch", s);
+    expect(expression.value).toBeTruthy();
+    const environment = await evaluate("environment_ok", "watch", s);
+    expect(environment.value).toBe("1");
+  }
+
+  if (c.memory) {
+    const memory = await call(commands.debugJvmMemoryClasses(s.id));
+    if (memory.status === "ready") {
+      const row = memory.snapshot.rows.find((r) => r.name === c.memory!.className);
+      expect(row?.instances, `${c.memory.className} in the histogram\n${shown()}`).toBe(c.memory.instances);
+    } else {
+      // Attaching to a suspended JVM older than 17 hangs, so the backend refuses it by design.
+      const { reason } = memory;
+      const refused = reason.kind === "unsafeWhileSuspended" && reason.javaMajor > 0 && reason.javaMajor < 17;
+      expect(refused, `memory unavailable: ${JSON.stringify(reason)}\n${shown()}`).toBe(true);
+    }
+  }
+
+  if (c.heap) {
+    const { className, instances } = c.heap;
+    const snapshots = join(base, "home", "data", "cache", "heap-snapshots");
+    const dirs = () =>
+      existsSync(snapshots)
+        ? readdirSync(snapshots, { withFileTypes: true })
+            .filter((e) => e.isDirectory())
+            .map((e) => e.name)
+        : [];
+    const phases: string[] = [];
+    const progress = new Channel<HeapProgress>();
+    progress.onmessage = (p) => {
+      const phase = p.type === "dumping" ? "dumping" : p.phase;
+      if (phases.at(-1) !== phase) phases.push(phase);
+    };
+    const since = Date.now();
+    const captured = await call(commands.debugHeapCapture(s.id, nextRequestId(), progress));
+    const captureMs = Date.now() - since;
+    if (captured.status === "unavailable") {
+      // The same refusal as the class table's, for the same reason.
+      const { reason } = captured;
+      const refused =
+        reason.kind === "memory" &&
+        reason.reason.kind === "unsafeWhileSuspended" &&
+        reason.reason.javaMajor > 0 &&
+        reason.reason.javaMajor < 17;
+      expect(refused, `heap unavailable: ${JSON.stringify(reason)}\n${shown()}`).toBe(true);
+    } else {
+      if (captured.status !== "ready") throw new Error(`heap capture: ${JSON.stringify(captured)}\n${shown()}`);
+      const { snapshot } = captured;
+      const held = dirs();
+      expect(held, "snapshot directories while open").toHaveLength(1);
+      const dumpBytes = statSync(join(snapshots, held[0]!, "dump.hprof")).size;
+      const classes = await call(commands.debugHeapClasses(snapshot.id));
+      const row = classes.find((r) => r.name === className);
+      expect(row?.count, `${className} in the heap snapshot`).toBe(instances);
+      expect(row!.shallow, `${className} shallow size`).toBeGreaterThan(0);
+      expect(row!.retained, `${className} retained size`).toBeGreaterThanOrEqual(row!.shallow);
+      const page = await call(commands.debugHeapDominators(snapshot.id, null, row!.classIndex, 0, 1));
+      expect(page.rows, `${className} dominator rows`).toHaveLength(1);
+      const path = await call(commands.debugHeapPath(snapshot.id, page.rows[0]!.object));
+      const last = path?.steps.at(-1)?.via;
+      expect(last?.kind, `path to a GC root: ${JSON.stringify(path)}`).toBe("root");
+      await call(commands.debugHeapClose(snapshot.id));
+      expect(dirs(), "snapshot directories after close").toEqual([]);
+      const origin = snapshot.origin;
+      const java = origin.kind === "captured" ? `JDK ${origin.javaVersion}, dump ${origin.dumpMs} ms` : origin.kind;
+      console.info(
+        `${language}: heap snapshot in ${captureMs} ms (${java}, analysis ${snapshot.summary.analysisMs} ms, ` +
+          `${dumpBytes} bytes, ${snapshot.summary.objects} objects; ${phases.join(" → ")}); ` +
+          `${className} ${row!.count} / ${row!.shallow} B / retained ${row!.retained} B, ${page.total} reachable; ` +
+          `path ${path!.steps.length + path!.omitted} steps to ${last?.kind === "root" ? last.root : "?"}`,
+      );
+    }
+  }
+
+  if (c.instances) {
+    const { className, count, field } = c.instances;
+    // The inspector comes up beside the session (jdtls bundle, Kotlin JDWP link).
+    await until("the JVM inspector", () => {
+      const session = useDebug.getState().sessions[s.id] ?? null;
+      const backend = session?.jvmBackend;
+      if (backend && backend.kind !== "ready") throw new Error(`JVM inspector ${JSON.stringify(backend)}\n${shown()}`);
+      return sessionSupports("jvmInstances", session);
+    });
+    const listed = await call(commands.debugJvmMemoryInstances(s.id, className, 1000));
+    expect(listed.status, `instances: ${JSON.stringify(listed)}\n${shown()}`).toBe("ready");
+    if (listed.status !== "ready") return;
+    expect(listed.instances, `${className} instances`).toHaveLength(count);
+    const first = listed.instances[0]!;
+    if (!("id" in first)) throw new Error(`${className} instance without an id: ${JSON.stringify(first)}`);
+    const object = { generation: listed.generation, id: first.id };
+    const fields = await call(commands.debugJvmMemoryFields(s.id, object));
+    if (fields.status !== "ready") throw new Error(`fields: ${JSON.stringify(fields)}\n${shown()}`);
+    const held = fields.fields.find((f) => f.name === field)?.value;
+    if (!held || !("id" in held)) throw new Error(`${className}.${field}: ${JSON.stringify(fields.fields)}`);
+    const heldRef = { generation: listed.generation, id: held.id };
+    const referrers = await call(commands.debugJvmMemoryReferrers(s.id, heldRef, 50));
+    if (referrers.status !== "ready") throw new Error(`referrers: ${JSON.stringify(referrers)}\n${shown()}`);
+    const back = referrers.referrers.find((r) => "id" in r.value && r.value.id === first.id);
+    expect(back?.via, `referrers of ${className}.${field}: ${JSON.stringify(referrers)}`).toContain(field);
+  }
 
   // Python 3.12 reports a conditional expression's line twice: Step Over may stop on it
   // (and its breakpoint) again.

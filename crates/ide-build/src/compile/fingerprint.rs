@@ -79,23 +79,26 @@ fn scan(
     Ok(())
 }
 
-/// `None` means an input cannot be resolved safely: build normally without reuse.
-/// All filesystem work belongs on the caller's blocking thread.
-pub fn launch_fingerprint(
+/// One planned step as fingerprinted: resolved program, args, cwd and env.
+type StepFingerprint = (PathBuf, Vec<String>, PathBuf, BTreeMap<String, String>);
+
+/// Environment, planned steps and input paths shared by every Maven build
+/// fingerprint: the filtered process environment plus the wrapper, settings
+/// and JDK files the planned invocation reads.
+struct Collected {
+    inputs: Vec<PathBuf>,
+    environment: BTreeMap<String, String>,
+    steps: Vec<StepFingerprint>,
+    inherited_hash: u64,
+}
+
+fn collect(
     root: &Path,
-    model: &BuildModel,
-    module: &Path,
-    test: bool,
+    projects: &[&maven::MavenProject],
+    plan: &BuildPlan,
     local_repo: Option<PathBuf>,
-    cancel: &CancellationToken,
-) -> IdeResult<Option<LaunchFingerprint>> {
-    let Some(m) = &model.maven else { return Ok(None) };
-    let projects = maven_launch_projects(root, m, module, test);
-    if projects.is_empty() {
-        return Ok(None);
-    }
-    let Some(mut inputs) = maven::launch_inputs(root, &projects, local_repo) else { return Ok(None) };
-    let plan = launch_plan(root, model, module, test, BuildKind::Build)?;
+) -> IdeResult<Option<Collected>> {
+    let Some(mut inputs) = maven::launch_inputs(root, projects, local_repo) else { return Ok(None) };
     let mut environment: BTreeMap<String, String> = std::env::vars()
         .map(|(key, value)| (key.to_ascii_uppercase(), value))
         .filter(|(key, _)| {
@@ -165,23 +168,132 @@ pub fn launch_fingerprint(
             Path::new(home).join(if cfg!(windows) { "bin/java.exe" } else { "bin/java" }),
         ]);
     }
-    let steps: Vec<_> =
-        plan.steps.iter().map(|s| (process::program_path(&s.program, &s.env), &s.args, &s.cwd, &s.env)).collect();
+    let steps = plan
+        .steps
+        .iter()
+        .map(|s| (process::program_path(&s.program, &s.env), s.args.clone(), s.cwd.clone(), s.env.clone()))
+        .collect();
     // Profiles and plugins can read arbitrary environment variables. Keep a signature
     // of the inherited environment without persisting unrelated credentials.
     let inherited: BTreeMap<_, _> = std::env::vars_os().collect();
     let mut inherited_hash = std::hash::DefaultHasher::new();
     inherited.hash(&mut inherited_hash);
-    let parameters =
-        serde_json::to_string(&(root, module, test, steps, environment, inherited_hash.finish(), projects))
-            .map_err(|e| IdeError::internal(e.to_string()))?;
+    Ok(Some(Collected { inputs, environment, steps, inherited_hash: inherited_hash.finish() }))
+}
+
+/// Scans every input, storing project inputs relative to the project.
+fn scan_all(
+    root: &Path,
+    inputs: Vec<PathBuf>,
+    cancel: &CancellationToken,
+) -> IdeResult<BTreeMap<PathBuf, Option<Stamp>>> {
     let mut files = BTreeMap::new();
     for path in inputs {
         scan(root, &path, &mut files, &mut HashSet::new(), cancel)?;
     }
     // Store project inputs relative to the project, including each file's relative path.
-    let files = files.into_iter().map(|(p, stamp)| (p.strip_prefix(root).unwrap_or(&p).to_path_buf(), stamp)).collect();
-    Ok(Some(LaunchFingerprint { version: 2, parameters, files }))
+    Ok(files.into_iter().map(|(p, stamp)| (p.strip_prefix(root).unwrap_or(&p).to_path_buf(), stamp)).collect())
+}
+
+/// `None` means an input cannot be resolved safely: build normally without reuse.
+/// All filesystem work belongs on the caller's blocking thread.
+pub fn launch_fingerprint(
+    root: &Path,
+    model: &BuildModel,
+    module: &Path,
+    test: bool,
+    local_repo: Option<PathBuf>,
+    cancel: &CancellationToken,
+) -> IdeResult<Option<LaunchFingerprint>> {
+    let Some(m) = &model.maven else { return Ok(None) };
+    let projects = maven_launch_projects(root, m, module, test);
+    if projects.is_empty() {
+        return Ok(None);
+    }
+    let plan = launch_plan(root, model, module, test, BuildKind::Build)?;
+    let Some(collected) = collect(root, &projects, &plan, local_repo)? else { return Ok(None) };
+    let Collected { inputs, environment, steps, inherited_hash } = collected;
+    let parameters = serde_json::to_string(&(root, module, test, steps, environment, inherited_hash, projects))
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+    Ok(Some(LaunchFingerprint { version: 2, parameters, files: scan_all(root, inputs, cancel)? }))
+}
+
+/// Inputs fingerprint of a menu build (`Build Project` / `Build Module`): the
+/// built modules' sources, resources and POM chain plus the exact planned
+/// steps, so an unchanged project skips Maven entirely (#2476). Only `Build`
+/// callers reuse it, never `Rebuild` or `Artifacts`; `None` disables reuse.
+/// All filesystem work belongs on the caller's blocking thread.
+pub fn menu_fingerprint(
+    root: &Path,
+    model: &BuildModel,
+    file: Option<&Path>,
+    cancel: &CancellationToken,
+) -> IdeResult<Option<LaunchFingerprint>> {
+    let plan = plan(root, model, BuildKind::Build, file, None)?;
+    if plan.system != BuildSystem::Maven {
+        return Ok(None);
+    }
+    let Some(m) = &model.maven else { return Ok(None) };
+    let projects: Vec<&maven::MavenProject> = match file {
+        Some(file) => {
+            // The innermost linked project owning the file, as in single-file compilation.
+            let rel = rel_str(root, file);
+            let module = m
+                .projects
+                .iter()
+                .filter(|p| rel == p.dir || rel.starts_with(&format!("{}/", p.dir)) || p.dir.is_empty())
+                .max_by_key(|p| p.dir.len());
+            match module {
+                Some(project) if project.packaging != "pom" => {
+                    maven_launch_projects(root, m, &subdir(root, &project.dir), true)
+                }
+                _ => return Ok(None),
+            }
+        }
+        // A project build walks every linked project.
+        None => m.projects.iter().collect(),
+    };
+    if projects.is_empty() {
+        return Ok(None);
+    }
+    let Some(collected) = collect(root, &projects, &plan, None)? else { return Ok(None) };
+    let Collected { inputs, environment, steps, inherited_hash } = collected;
+    let scope = file.map(|f| rel_str(root, f));
+    let parameters = serde_json::to_string(&("menu-build", scope, steps, environment, inherited_hash))
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+    Ok(Some(LaunchFingerprint { version: 2, parameters, files: scan_all(root, inputs, cancel)? }))
+}
+
+impl LaunchFingerprint {
+    /// Folders (relative to the project) of the Maven projects whose POM is an input.
+    pub(super) fn project_dirs(&self) -> impl Iterator<Item = &Path> {
+        self.files
+            .keys()
+            .filter(|p| p.is_relative() && p.file_name().is_some_and(|n| n == "pom.xml"))
+            .map(|pom| pom.parent().unwrap_or(Path::new("")))
+    }
+
+    /// Relative paths whose content changed while `(length, mtime)` stayed the same
+    /// compared to `previous` (timestamp-preserving external edits, coarse-granularity
+    /// filesystems). Timestamp-incremental builders (Maven, the Kotlin plugin) would
+    /// skip these sources as "unchanged", so the rebuild the fingerprint triggers
+    /// compiles nothing and the stale outputs get re-recorded as fresh. Callers
+    /// re-stamp the returned paths before building. Inputs without a content hash
+    /// (directories, files outside the project) are never reported.
+    pub fn mtime_preserved_edits(&self, current: &Self) -> Vec<PathBuf> {
+        let mut edits = Vec::new();
+        for (path, current_stamp) in &current.files {
+            let Some(current_stamp) = current_stamp else { continue };
+            let Some(previous_stamp) = self.files.get(path).and_then(|stamp| stamp.as_ref()) else { continue };
+            let (len, mtime, Some(current_hash)) = current_stamp else { continue };
+            let (prev_len, prev_mtime, Some(prev_hash)) = previous_stamp else { continue };
+            if current_hash != prev_hash && len == prev_len && mtime == prev_mtime {
+                edits.push(path.clone());
+            }
+        }
+        edits.sort();
+        edits
+    }
 }
 
 #[cfg(test)]
@@ -280,6 +392,60 @@ mod tests {
         fs::File::options().write(true).open(&source).unwrap().set_modified(mtime).unwrap();
         let after = fingerprint(root, &model);
         assert_ne!(before, after, "a same-length, same-mtime content change must invalidate the fingerprint");
+    }
+
+    #[test]
+    fn mtime_preserved_edits_only_reports_lying_timestamps() {
+        fn stamp(len: u64, hash: &str) -> Option<Stamp> {
+            Some((len, SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(42), Some(hash.into())))
+        }
+        fn prints(
+            previous: BTreeMap<PathBuf, Option<Stamp>>,
+            current: BTreeMap<PathBuf, Option<Stamp>>,
+        ) -> Vec<PathBuf> {
+            let previous = LaunchFingerprint { version: 2, parameters: String::new(), files: previous };
+            let current = LaunchFingerprint { version: 2, parameters: String::new(), files: current };
+            previous.mtime_preserved_edits(&current)
+        }
+        // Same length and mtime, different content: the builder would skip it.
+        assert_eq!(
+            prints([("a.java".into(), stamp(5, "old"))].into(), [("a.java".into(), stamp(5, "new"))].into()),
+            vec![PathBuf::from("a.java")]
+        );
+        // A normal edit bumps the mtime: the builder already sees it.
+        let mut touched = stamp(5, "new").unwrap();
+        touched.1 += std::time::Duration::from_secs(1);
+        assert!(
+            prints([("a.java".into(), stamp(5, "old"))].into(), [("a.java".into(), Some(touched))].into()).is_empty()
+        );
+        // Added, deleted, and hash-less inputs (directories, files outside the
+        // project) carry no comparable content: never reported.
+        assert!(
+            prints(
+                [("gone.java".into(), stamp(5, "old")), ("dir".into(), None)].into(),
+                [("new.java".into(), stamp(5, "new")), ("dir".into(), None)].into()
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn lying_source_is_found_against_a_real_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root);
+        let source = root.join("lib/src/main/kotlin/Channel.kt");
+        let before = fingerprint(root, &model).unwrap();
+        let mtime = fs::metadata(&source).unwrap().modified().unwrap();
+        // Same 5-byte length, different content, preserved mtime.
+        write(root, "lib/src/main/kotlin/Channel.kt", "valve");
+        fs::File::options().write(true).open(&source).unwrap().set_modified(mtime).unwrap();
+        let after = fingerprint(root, &model).unwrap();
+        assert_eq!(before.mtime_preserved_edits(&after), [PathBuf::from("lib/src/main/kotlin/Channel.kt")]);
+        // A normal edit (mtime advances) needs no repair.
+        write(root, "lib/src/main/kotlin/Channel.kt", "valve!");
+        let normal = fingerprint(root, &model).unwrap();
+        assert!(before.mtime_preserved_edits(&normal).is_empty());
     }
 
     #[test]

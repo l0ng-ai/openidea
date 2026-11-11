@@ -135,6 +135,39 @@ it("shows Allow All inside the mode popup when both options exist", () => {
   expect(onChange).toHaveBeenNthCalledWith(2, "allow_all", "on");
 });
 
+it("shows Codex's collaboration mode next to its approval mode and sends Plan", () => {
+  const onChange = vi.fn();
+  render(
+    <ConfigPickers
+      config={[
+        {
+          id: "mode",
+          name: "Mode",
+          category: "mode",
+          description: null,
+          current: "workspace-write",
+          via: "option",
+          values: [value("read-only", "Read-only"), value("workspace-write", "Workspace access")],
+        },
+        {
+          id: "collaboration_mode",
+          name: "Collaboration mode",
+          category: "collaboration_mode",
+          description: null,
+          current: "default",
+          via: "option",
+          values: [value("default", "Default"), value("plan", "Plan")],
+        },
+      ]}
+      onChange={onChange}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Collaboration mode" })).toHaveTextContent("Default");
+  fireEvent.click(screen.getByRole("button", { name: "Collaboration mode" }));
+  fireEvent.click(screen.getByRole("option", { name: "Plan" }));
+  expect(onChange).toHaveBeenCalledExactlyOnceWith("collaboration_mode", "plan");
+});
+
 it("sends the complete nested model id through ConfigPickers", () => {
   const onChange = vi.fn();
   render(<ConfigPickers config={[config([value("9router/cmc/Beam")])]} onChange={onChange} />);

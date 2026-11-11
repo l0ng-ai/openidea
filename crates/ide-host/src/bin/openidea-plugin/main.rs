@@ -368,7 +368,9 @@ fn check(dir: &Path) -> Result<(), String> {
         let manifest = Manifest::load(&dir)?;
         println!("{} {} — {}", preview.id, preview.version, preview.name);
         if manifest.legacy {
-            println!("  note: plugin.toml uses the 0.1 format (`openidea-api`); see plugins/README.md to move to 0.2");
+            println!(
+                "  note: plugin.toml uses the 0.1 format (`openidea-api`); its code no longer runs: rebuild it against the 1.x SDK and declare `engines.openidea` (see plugins/README.md)"
+            );
         }
         if let Some(wasm) = &manifest.wasm {
             let engine = PluginEngine::new()?;
@@ -651,6 +653,11 @@ fn cmd_index(args: &[String]) -> Result<(), String> {
                 engine: package::engine_requirement(&m.engine, built_for.as_ref()),
                 categories: m.categories(),
                 icon: plugin_icon(&ide_extension::Package::new(m.clone(), scratch.clone()))?,
+                homepage: m.homepage.clone().filter(|h| !h.trim().is_empty()),
+                notes: m.change_notes.clone().filter(|n| !n.trim().is_empty()),
+                downloads: None,
+                featured: false,
+                suggest: Vec::new(),
             })
         })();
         let entry = entry.map_err(|e| format!("{}: {e}", path.display()))?;

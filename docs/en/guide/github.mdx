@@ -1,0 +1,146 @@
+---
+title: "GitHub"
+description: "Review, create, check out and merge GitHub pull requests, and clone your repositories, through the GitHub CLI."
+---
+
+OpenIDEA works with GitHub through the [GitHub CLI](https://cli.github.com) (`gh`). It uses gh's login and calls the GitHub API through `gh api`. It has no account manager or token field of its own and never stores your credentials.
+
+## Set up
+
+<Steps>
+  <Step title="Install gh">
+    Install the GitHub CLI. OpenIDEA looks for it in `OPENIDEA_GH` (a full path), then on `PATH`, then in
+    `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/snap/bin` (macOS/Linux) or `C:\Program Files\GitHub CLI\gh.exe`
+    (Windows).
+  </Step>
+  <Step title="Sign in">
+    Run `gh auth login` in a terminal. If you open the **Pull Requests** tool window while signed out, it shows **Not
+    logged in to GitHub** with a **Run gh auth login** button that runs the command in the built-in terminal. Click
+    **Retry** when you are done.
+  </Step>
+  <Step title="Open a project with a GitHub remote">
+    The project needs a Git remote on `github.com`. With one GitHub remote, OpenIDEA connects to it automatically. With
+    several, the tool window asks you to pick a **Repository**; the choice is remembered per project. To switch later,
+    use **Change Repository or Account…** in the tool window's `⋮` menu.
+  </Step>
+</Steps>
+
+<Note>Only `github.com` is supported. GitHub Enterprise hosts, GitLab and Bitbucket are not.</Note>
+
+## Menu and shortcuts
+
+The **Git › GitHub** menu (also in the editor context menu under **Git**) has:
+
+- **View Pull Requests**: opens the Pull Requests tool window.
+- **Create Pull Request…**
+- **Checkout Pull Request…**: checks out the selected pull request, or asks for a number.
+- **Open on GitHub**: opens the selected pull request, or the repository, in the browser.
+
+| Action                                                  | macOS | Windows/Linux  |
+| ------------------------------------------------------- | ----- | -------------- |
+| Create Pull Request… (in the Pull Requests tool window) | `⌘N`  | `Alt+Insert`   |
+| Refresh the list, a pull request or a timeline          | `⌘R`  | `Ctrl+F5`      |
+| Toggle viewed/not viewed state                          | `⌘⇧S` | `Ctrl+Shift+S` |
+
+## Browse pull requests
+
+The **Pull Requests** tool window opens on the left. The first tab lists the repository's pull requests; each pull request you open gets its own `#N` tab.
+
+- **Search**: type text or GitHub search qualifiers and press `Enter`. The history button (or `⌥↓` / `Alt+Down`) shows your last 10 searches.
+- **Quick Filters** (funnel button): **Open**, **Your pull requests**, **Assigned to you**, **Review requests**.
+- **Filter chips**: **State**, **Author**, **Label**, **Assignee**, **Review** and **Sort**. Press `Delete` or `Backspace` on a chip to reset it.
+- Rows show unread markers, labels, state, merge conflicts, assignee and reviewer avatars, and the count of unresolved comments.
+
+Right-click a pull request for **View Pull Request**, **Checkout Branch**, **Open in Worktree**, **View Pull Request in Browser**, **Copy Pull Request URL** and **Refresh List**.
+
+## Pull request details
+
+Double-click a pull request (or press `Enter`) to open its details tab:
+
+- The title, state and a **View Timeline** link.
+- A commit picker: review all commits together or one commit at a time.
+- The source branch, with **Checkout**, **Open in Worktree**, **Show in Git Log** and **Copy Branch Name**.
+- The changed files. Double-click a file to open its diff. Mark files with **Mark as Viewed** / **Mark as Not Viewed** (or the checkbox in the all-commits view).
+- Status: check runs (with a **Details…** list that opens each job on GitHub), merge conflicts (with a **Resolve** link that checks out the branch and merges the base into it locally), required reviews and reviewer states.
+
+The buttons below depend on your role and the pull request state:
+
+| You are                       | Buttons                                                                                          |
+| ----------------------------- | ------------------------------------------------------------------------------------------------ |
+| The author                    | **Request Review…**, the merge button once approved, **Close Pull Request** (under More Actions) |
+| A reviewer                    | **Submit Review…**, and merge once approved                                                      |
+| Anyone else                   | **Set Myself as Reviewer**                                                                       |
+| Any, on a draft               | **Post Pull Request** (marks it ready for review)                                                |
+| Any, on a closed pull request | **Reopen Pull Request**                                                                          |
+
+The merge button offers the methods the repository allows: **Merge…**, **Squash and Merge…** (both let you edit the commit message) and **Rebase**.
+
+## Review code
+
+### Comment in the diff
+
+Pull request diffs compare the merge base with the head. OpenIDEA fetches the pull request ref and base branch first if they are missing locally.
+
+- Hover a line and click **+** in the gutter to comment. Drag to select several lines.
+- Choose **Start Review** (comments stay pending until you submit) or **Add Single Comment**. OpenIDEA remembers which one you used last.
+- Existing threads show inline under their lines. Set which ones under **Show Review Threads** in the diff settings: **All**, **Unresolved Only** (default) or **Do Not Show**.
+- The diff toolbar has **Refresh Review Data**, **Submit Review…**, **Previous Comment** and **Next Comment**. Past the last change, `F7` moves to the next file of the pull request.
+
+To mark each file as viewed when you open it, turn on **Automatically mark opened files as viewed** in **Settings › Version Control › GitHub**.
+
+### Submit a review
+
+**Submit Review…** opens a small popup. Write an optional summary, then choose **Approve**, **Request Changes** or **Comment**. The trash button discards all pending comments. Authors can't approve or request changes on their own pull requests.
+
+### Timeline
+
+**View Timeline** opens the pull request's conversation in an editor tab: the description, commits, reviews, review threads and events, newest at the bottom. You can:
+
+- Add a comment (`⌘Enter` / `Ctrl+Enter` to send), with `@` mention completion.
+- Edit or delete your comments, and add reactions.
+- Reply to review threads and **Resolve** or unresolve them.
+- Apply a suggested change with **Apply Locally**, or apply and commit it in one go with **Commit…**. Suggestions can only be applied while the pull request's branch is checked out.
+- Delete the head branch from the banner after the pull request is merged.
+
+### Review mode
+
+When the checked-out branch is the head of an open pull request, the branch widget shows `#N on branch` and review mode turns on:
+
+- Review threads appear inline in the regular editor, with the gutter **+** to add comments and change markers against the pull request base.
+- The editor's corner toolbar has **Previous Comment**, **Next Comment** and a **Review Mode** menu (**Disable Review Mode**, **Show Unresolved Comments Only**, **Show All Comments**).
+- The editor context menu adds **Show Review Diff**.
+- If your local branch is behind the remote, the branch widget offers **Update to Enable Review Mode…**.
+
+Review mode is on by default and remembered per project.
+
+## Create a pull request
+
+**Create Pull Request…** opens a tab titled "New Pull Request at owner/repo":
+
+1. Pick the **Base branch** and the **Head branch** (local or remote, and the repository when you have forks).
+2. Check the commits and changed files.
+3. Fill in the title and description. The title defaults to the only commit's subject or the branch name; the description is pre-filled from the repository's pull request template.
+4. Optionally set **Reviewers:**, **Assignees:** and **Labels:**.
+5. Click **Create Pull Request**, or use the arrow for **Create Draft Pull Request**.
+
+If the head branch exists only locally, OpenIDEA asks for a remote branch name and pushes it first. If a pull request already exists for the branches, it offers to open it instead.
+
+## Check out a pull request
+
+- **Checkout Branch** (or **Checkout Pull Request…**) runs `gh pr checkout`, which also works for pull requests from forks.
+- **Open in Worktree** creates a Git worktree next to the repository (named `<repo>_PR_<n>`) on the pull request head and opens it in a new window.
+
+## Clone from GitHub
+
+**Git › Clone…** opens **Clone Repository**. Choose **GitHub** in the sidebar to list the repositories you own, collaborate on or can access through an organization, most recently pushed first. Search with **Search repositories**, then double-click a repository (or press `Enter`) to clone it. The URL uses HTTPS, or SSH when gh's `git_protocol` for github.com is `ssh`.
+
+## Commit checks in the Git log
+
+The Git log can show the GitHub check status of each commit. Turn on the **GitHub Commit Checks** column in the log's **View Options › Columns**, or in **Settings › Version Control › Log**. Click a commit's icon to list its check runs; click a run to open it on GitHub.
+
+## Not supported
+
+- GitHub Enterprise, GitLab, Bitbucket.
+- Issues, gists, notifications and creating or sharing repositories.
+- Opening a file or line on GitHub, or copying a permalink.
+- Managing GitHub Actions (re-running jobs, reading logs).

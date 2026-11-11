@@ -115,7 +115,7 @@ const GENERAL = editorPage({
     {
       title: "Mouse Control",
       items: [
-        { t: "check", key: `${P}.general.wheelZoom`, label: "Change font size with Command+Mouse Wheel" },
+        { t: "check", key: `${P}.general.wheelZoom`, label: "Change font size with Ctrl/Command+Mouse Wheel" },
         { t: "check", key: `${P}.general.dragAndDrop`, label: "Enable drag-and-drop functionality in editor" },
       ],
     },
@@ -274,7 +274,12 @@ const APPEARANCE = editorPage({
             { t: "check", key: `${P}.appearance.whitespaceTrailing`, label: "Trailing" },
           ],
         },
-        { t: "check", key: `${P}.appearance.indentGuides`, label: "Show indent guides" },
+        {
+          t: "check",
+          key: `${P}.appearance.indentGuides`,
+          label: "Show indent guides",
+          children: [{ t: "check", key: `${P}.appearance.rainbowIndentGuides`, label: "Rainbow indent guides" }],
+        },
         { t: "check", key: `${P}.appearance.intentionBulb`, label: "Show intention bulb" },
         {
           t: "number",
@@ -830,6 +835,11 @@ const INLAY: Item[] = [
   },
 ];
 
+const CODE_VISION_POSITIONS = [
+  { value: "top", label: "Top" },
+  { value: "right", label: "Right" },
+];
+
 const INLAY_HINTS = editorPage({
   id: "editor.inlayHints",
   title: "Inlay Hints",
@@ -840,8 +850,33 @@ const INLAY_HINTS = editorPage({
     {
       title: "Code Vision",
       items: [
-        { t: "check", key: `${P}.inlay.codeVisionUsages`, label: "Usages" },
-        { t: "check", key: `${P}.inlay.codeVisionAuthor`, label: "Code author" },
+        {
+          t: "check",
+          key: `${P}.inlay.codeVisionUsages`,
+          label: "Usages",
+          children: [
+            {
+              t: "select",
+              key: `${P}.inlay.codeVisionUsagesPosition`,
+              label: "Position",
+              options: CODE_VISION_POSITIONS,
+            },
+            { t: "check", key: `${P}.inlay.codeVisionNoUsages`, label: "Show “no usages”" },
+          ],
+        },
+        {
+          t: "check",
+          key: `${P}.inlay.codeVisionAuthor`,
+          label: "Code author",
+          children: [
+            {
+              t: "select",
+              key: `${P}.inlay.codeVisionAuthorPosition`,
+              label: "Position",
+              options: CODE_VISION_POSITIONS,
+            },
+          ],
+        },
       ],
     },
     { title: "Languages", items: [{ t: "custom", label: "Show inlay hints for:", component: InlayLanguages }] },

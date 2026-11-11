@@ -46,7 +46,7 @@ import { showSelectionHistory } from "./selectionHistoryKind";
 import { openLogTab, revealCommit, selectGitTab, useGitLog } from "./logStore";
 import { isModalCommit, openCommit, pushAfterCommit } from "./commitUi";
 import { allRepos, runRemote } from "./ops";
-import { showPushDialog, showUpdateDialog, type PushTarget } from "./remoteUi";
+import { showPushDialog, showUpdateDialog, type PushTarget, type UpdateTarget } from "./remoteUi";
 import { comparePathsWithRevision, showDirectoryWorkingDiff } from "./comparePaths";
 import { showCloneDialog } from "./clone";
 import {
@@ -57,7 +57,7 @@ import {
   showRebaseDialog,
   showWorktrees,
 } from "./gitMenuDialogs";
-import { refreshNow, repoName, useVcs } from "./store";
+import { currentRepo, refreshNow, repoName, repoOf, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
@@ -269,7 +269,7 @@ export function registerVcsActions(): () => void {
       icon: "git-pull",
       when: VCS,
       keywords: ["pull"],
-      run: showUpdateDialog,
+      run: ({ arg }) => showUpdateDialog(arg && typeof arg === "object" ? (arg as UpdateTarget) : {}),
     },
     {
       id: "vcs.pull",
@@ -595,8 +595,10 @@ export function registerVcsActions(): () => void {
         const commit = arg && typeof arg === "object" && "id" in arg ? (arg as import("@/bindings").Commit) : null;
         const id = typeof arg === "string" ? arg : commit?.id;
         if (!id) return;
+        const active = maybeEditorService()?.activePath();
+        const repo = commit ? commitRepo(commit) : ((active ? repoOf(active) : null) ?? currentRepo());
         showGitWindow();
-        void revealCommit(id, commit ? commitRepo(commit) : undefined);
+        void revealCommit(id, repo);
       },
     },
     ...(["gitignore", "localExclude"] as const).map((destination): Action => ({

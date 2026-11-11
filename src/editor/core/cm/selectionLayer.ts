@@ -42,23 +42,47 @@ export function widenToRightEdge(
 export type RowBox = { top: number; bottom: number };
 
 /**
- * Grows a selection's outer rectangles to whole line boxes (`rowAt(y)` gives the box of the row at `y`).
- * CodeMirror sizes the first and last row of a selection to the text's glyph box, so the line's leading
- * stayed unselected above and below it; IDEA fills the full line height.
+ * Fits a selection's rectangles to whole line boxes (`rowAt(y)` gives the box of the row at `y`).
+ * CodeMirror sizes the first and last row of a selection to the text's glyph box: shorter than the
+ * line height, the leading stayed unselected; taller (a larger font size with the default line
+ * height), the glyph box reached into the rows above and below. Probing each outer row at its
+ * vertical midpoint and aligning the row seams to the line boxes keeps every selected row exact.
  */
 export function growToLineBoxes(
   markers: readonly RectangleMarker[],
   className: string,
   rowAt: (y: number) => RowBox,
+  edges: { first: boolean; last: boolean } = { first: true, last: true },
 ): RectangleMarker[] {
   if (!markers.length) return [];
   const top = Math.min(...markers.map((m) => m.top));
   const bottom = Math.max(...markers.map((m) => m.top + m.height));
-  return markers.map((m) => {
+  const firstSample = edges.first ? markers.find((m) => Math.abs(m.top - top) < 0.5) : undefined;
+  const lastSample = edges.last ? markers.find((m) => Math.abs(m.top + m.height - bottom) < 0.5) : undefined;
+  const firstRow = firstSample ? rowAt(firstSample.top + firstSample.height / 2) : null;
+  const lastRow = lastSample ? rowAt(lastSample.top + lastSample.height / 2) : null;
+  return markers.flatMap((m) => {
+    if (m.width !== null && m.width <= 0) return [];
     const end = m.top + m.height;
-    const t = Math.abs(m.top - top) < 0.5 ? Math.min(m.top, rowAt(m.top + 0.5).top) : m.top;
-    const b = Math.abs(end - bottom) < 0.5 ? Math.max(end, rowAt(end - 0.5).bottom) : end;
-    return t !== m.top || b !== end ? new RectangleMarker(className, m.left, t, m.width, b - t) : m;
+    const isFirst = firstRow !== null && Math.abs(m.top - top) < 0.5;
+    const isLast = lastRow !== null && Math.abs(end - bottom) < 0.5;
+    let t = m.top;
+    let b = end;
+    if (isFirst && isLast) {
+      t = firstRow.top;
+      b = lastRow.bottom;
+    } else if (isFirst) {
+      t = firstRow.top;
+      b = firstRow.bottom;
+    } else if (isLast) {
+      t = lastRow.top;
+      b = lastRow.bottom;
+    } else {
+      if (firstRow) t = firstRow.bottom;
+      if (lastRow) b = lastRow.top;
+    }
+    if (b - t <= 0) return [];
+    return [t !== m.top || b !== end ? new RectangleMarker(className, m.left, t, m.width, b - t) : m];
   });
 }
 
@@ -133,6 +157,35 @@ export function cutOutGaps(
   return out;
 }
 
+/**
+ * Moves the rectangles that start at `from` to `to`, keeping their right edges. CodeMirror starts the rows a selection
+ * runs through from the line start at the lines' left padding rounded down to whole pixels (`parseInt`), and a row
+ * that starts at a line's first character at the real padding, so with a fractional inset one row of a selection
+ * started a device pixel to the right of the others.
+ */
+export function alignLeftEdges(
+  markers: readonly RectangleMarker[],
+  className: string,
+  from: number,
+  to: number,
+): RectangleMarker[] {
+  if (Math.abs(to - from) < 0.01) return [...markers];
+  return markers.map((m) =>
+    m.width !== null && Math.abs(m.left - from) < 0.01
+      ? new RectangleMarker(className, to, m.top, m.width - (to - from), m.height)
+      : m,
+  );
+}
+
+/**
+ * Drops the rectangles that start at `from` and end by `to`, covering only the inset before a line's text. A selection
+ * that ends at the start of a line made CodeMirror paint that line from its rounded edge (`from`) to the first
+ * character (`to`): a sliver left of the text, a device pixel wide with a fractional inset. IDEA paints nothing there.
+ */
+export function dropInsetSlivers(markers: readonly RectangleMarker[], from: number, to: number): RectangleMarker[] {
+  return markers.filter((m) => m.width === null || Math.abs(m.left - from) >= 0.01 || m.left + m.width > to + 0.01);
+}
+
 /** Adds one rectangle from `left` to `right` over each of `gaps` (layer coordinates). */
 export function fillGaps(
   markers: readonly RectangleMarker[],
@@ -182,6 +235,21 @@ function lineRightEdge(view: EditorView): { rightSide: number; pad: number } {
   return { rightSide: view.contentDOM.getBoundingClientRect().right - pad - base, pad };
 }
 
+/**
+ * Where CodeMirror starts a selection running through a line start (`rounded`: the left padding cut to whole pixels)
+ * and where it starts one beginning at a line's first character (`real`: the padding as it is), in layer coordinates.
+ */
+function lineLeftEdge(view: EditorView): { rounded: number; real: number } | null {
+  const line = view.contentDOM.querySelector(".cm-line");
+  if (!line) return null;
+  const style = getComputedStyle(line);
+  const scroller = view.scrollDOM.getBoundingClientRect();
+  const left = view.contentDOM.getBoundingClientRect().left - (scroller.left - view.scrollDOM.scrollLeft * view.scaleX);
+  const rounded = left + parseInt(style.paddingLeft) + Math.min(0, parseInt(style.textIndent));
+  const real = left + parseFloat(style.paddingLeft) + Math.min(0, parseFloat(style.textIndent));
+  return Number.isFinite(rounded) && Number.isFinite(real) ? { rounded, real } : null;
+}
+
 /** Layer y = document y + this offset. */
 function layerOffset(view: EditorView): number {
   const scroller = view.scrollDOM.getBoundingClientRect();
@@ -192,9 +260,27 @@ function layerOffset(view: EditorView): number {
 function rowAt(view: EditorView, offset: number, y: number): RowBox {
   const block = textBlock(view.lineBlockAtHeight(y - offset), y - offset);
   const lh = view.defaultLineHeight;
-  if (block.height < lh * 1.5) return { top: offset + block.top, bottom: offset + block.bottom };
-  const top = block.top + Math.min(Math.floor((y - offset - block.top) / lh), Math.round(block.height / lh) - 1) * lh;
-  return { top: offset + top, bottom: offset + top + lh };
+  if ((!view.lineWrapping && !block.widgetLineBreaks) || block.height < lh * 1.5)
+    return { top: offset + block.top, bottom: offset + block.bottom };
+  const rows = Math.max(1, Math.round(block.height / lh));
+  const rh = block.height / rows;
+  const idx = Math.max(0, Math.min(rows - 1, Math.floor((y - offset - block.top) / rh)));
+  return { top: offset + block.top + idx * rh, bottom: offset + block.top + (idx + 1) * rh };
+}
+
+/** Whether `pos` resolves to a text block on `side` (as opposed to a standalone block widget). */
+function hasTextBlockAt(view: EditorView, pos: number, side: 1 | -1): boolean {
+  const line = view.lineBlockAt(pos);
+  if (!Array.isArray(line.type)) return line.type === BlockType.Text;
+  let best: BlockInfo | undefined;
+  for (const l of line.type as readonly BlockInfo[]) {
+    if (l.from > pos) break;
+    if (l.to < pos) continue;
+    if (l.from < pos && l.to > pos) return l.type === BlockType.Text;
+    if (!best || (l.type === BlockType.Text && (best.type !== l.type || (side < 0 ? l.from < pos : l.to > pos))))
+      best = l;
+  }
+  return (best ?? line).type === BlockType.Text;
 }
 
 /** The line boxes (layer coordinates) of the visible rows that `r` runs past the end of. */
@@ -233,18 +319,32 @@ const snappedSelectionLayer = layer({
     if (!ranges.length) return [];
     const dpr = window.devicePixelRatio || 1;
     const edge = view.textDirection === Direction.LTR ? lineRightEdge(view) : null;
+    const start = view.textDirection === Direction.LTR ? lineLeftEdge(view) : null;
     const offset = layerOffset(view);
     const out: RectangleMarker[] = [];
     for (const r of ranges) {
-      const lines = growToLineBoxes(RectangleMarker.forRange(view, CLASS, r), CLASS, (y) => rowAt(view, offset, y));
+      if (r.to <= view.viewport.from || r.from >= view.viewport.to) continue;
+      const from = Math.max(r.from, view.viewport.from);
+      const to = Math.min(r.to, view.viewport.to);
+      const lines = growToLineBoxes(RectangleMarker.forRange(view, CLASS, r), CLASS, (y) => rowAt(view, offset, y), {
+        first: hasTextBlockAt(view, from, 1),
+        last: hasTextBlockAt(view, to, -1),
+      });
+      // The sliver CodeMirror draws on a line the selection ends at the start of marks that line as the last row for
+      // growToLineBoxes, so it goes only after the rows are grown. Then every row starts at the rounded edge: a pixel
+      // left of the text, as IDEA leaves a gap between them.
+      const aligned = start
+        ? alignLeftEdges(dropInsetSlivers(lines, start.rounded, start.real), CLASS, start.real, start.rounded)
+        : lines;
+      if (!aligned.length) continue;
       const full = edge
         ? fillRowEnds(
-            widenToRightEdge(lines, CLASS, edge.rightSide, edge.pad),
+            widenToRightEdge(aligned, CLASS, edge.rightSide, edge.pad),
             CLASS,
             rowsPastEnd(view, offset, r),
             edge.rightSide + edge.pad,
           )
-        : lines;
+        : aligned;
       // Block widgets: cut them all out of CodeMirror's rectangles, then paint the ones the selection runs through
       // with one rectangle each, so a translucent selection colour never doubles up over them.
       const widgets = lineWidgets(view, offset, r);

@@ -10,6 +10,10 @@ use specta::Type;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// Pinned Compose Specification JSON Schema URL associated with `yaml-language-server`.
+pub const COMPOSE_SCHEMA_URL: &str =
+    "https://raw.githubusercontent.com/compose-spec/compose-go/v2.16.2/schema/compose-spec.json";
+
 mod markers;
 pub mod plugin_point;
 mod registry;
@@ -113,6 +117,10 @@ pub struct LanguageServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Environment variables the server can't start without (PowerShell Editor
+    /// Services' `PSES_BUNDLE_PATH`): while one is unset it counts as missing.
+    #[serde(default)]
+    pub requires_env: Vec<String>,
     /// Files whose presence marks a workspace root, e.g. `Cargo.toml`;
     /// `file#table` requires the TOML file to contain that dotted table, e.g.
     /// `pyproject.toml#tool.ruff`.
@@ -176,30 +184,11 @@ pub struct LanguageServerConfig {
     /// Set on plugin languages: start exactly this approved program.
     #[serde(skip)]
     pub pinned: Option<ProgramPin>,
-    /// Host-only transport configuration; never accepted from language definitions.
-    #[serde(skip)]
-    pub target: Option<ServerTarget>,
-    /// Separates instances when languages sharing a server select different targets.
-    #[serde(skip)]
-    pub target_key: Option<String>,
-}
-
-/// A prepared plugin wrapper. The LSP client never resolves container binaries on the host.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ServerTarget {
-    pub id: String,
-    pub origin: Option<ide_core::ServerId>,
-    pub project_root: PathBuf,
-    pub container_root: String,
-    pub mapping: ide_core::path_mapping::PathMapping,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct DebuggerConfig {
-    /// Placement in plugin run targets; absent means unsupported.
-    #[serde(default)]
-    pub target_placement: Option<String>,
     /// DAP adapter name, e.g. `codelldb`, `debugpy`, `js-debug`, `delve`.
     pub adapter: String,
     pub command: String,

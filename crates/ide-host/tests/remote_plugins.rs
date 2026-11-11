@@ -616,16 +616,16 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     assert_eq!(settings["run"]["defaultTarget"], "");
     let config = json!({"id":"wrapped-php", "name":"Wrapped PHP", "kind":"php", "command":"php", "args":["x.php", "literal ; $(touch bad)"], "env":{}, "detected":false, "isTest":false, "target":id});
     invoke(&peer, "run_start", json!({"config":config, "onOutput":{"$channel":38}})).await.unwrap();
-    until("remote wrapped run", 5, || project.join("wrapped.txt").exists()).await;
-    assert_eq!(
-        std::fs::read_to_string(project.join("wrapped.txt")).unwrap(),
-        "<wrapped>\n<--cwd=/container>\n<php>\n<x.php>\n<literal ; $(touch bad)>\n"
-    );
+    let wrapped = "<wrapped>\n<--cwd=/container>\n<php>\n<x.php>\n<literal ; $(touch bad)>\n";
+    until("remote wrapped run", 5, || std::fs::read_to_string(project.join("wrapped.txt")).is_ok_and(|s| s == wrapped))
+        .await;
     assert!(!project.join("bad").exists());
     let composer = json!({"id":"composer", "name":"Composer", "kind":"shell", "command":"composer", "args":["install"], "env":{}, "detected":false, "isTest":false, "target":id});
     invoke(&peer, "run_start", json!({"config":composer, "onOutput":{"$channel":39}})).await.unwrap();
-    until("remote composer override", 5, || project.join("composer.txt").exists()).await;
-    assert_eq!(std::fs::read_to_string(project.join("composer.txt")).unwrap(), "<composer>\n<install>\n");
+    until("remote composer override", 5, || {
+        std::fs::read_to_string(project.join("composer.txt")).is_ok_and(|s| s == "<composer>\n<install>\n")
+    })
+    .await;
     invoke(
         &peer,
         "plugin_run_command",
@@ -908,5 +908,142 @@ async fn api14_database_sources_credentials_and_disable_lifetime_run_on_the_serv
     assert_eq!(sync(&peer, &desktop, &[]).await.removed, [id]);
     assert!(invoke(&peer, "db_sources", json!({})).await.unwrap().as_array().unwrap().is_empty());
     assert!(store.get(internal).is_none());
+    plugins.host().shutdown();
+}
+
+async fn command_rpc_fixture() -> (tempfile::TempDir, Arc<RemotePlugins>, Peer, Arc<Client>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let peer_slot = Arc::new(OnceLock::new());
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: tmp.path().join("config"),
+        data_dir: tmp.path().join("data"),
+        local_data_dir: tmp.path().join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(|_: IdeEvent| {})),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    let plugins = RemotePlugins::start(&tmp.path().join("data"), &host, peer_slot.clone()).unwrap();
+    plugins.host().install_from_dir(&fixture("misbehave"), &Consent::all()).unwrap();
+    plugins.host().install_from_dir(&fixture("jobs"), &Consent::all()).unwrap();
+    let mut dispatcher = Dispatcher::standard();
+    plugins.register(&mut dispatcher);
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (sr, sw) = tokio::io::split(server_io);
+    tokio::spawn(rpc::serve(host, dispatcher, peer_slot, sr, sw));
+    let (cr, cw) = tokio::io::split(client_io);
+    let client = Arc::new(Client::default());
+    let peer = Peer::connect(cr, cw, client.clone());
+    let _: Value = peer.request("initialize", json!({ "version": rpc::PROTOCOL_VERSION }), None).await.unwrap();
+
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    invoke(&peer, "open_project", json!({ "path": project })).await.unwrap();
+    invoke(&peer, "project_trust_set", json!({ "path": project, "trusted": true, "folder": false })).await.unwrap();
+
+    (tmp, plugins, peer, client)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_command_requests_do_not_activate_the_remote_plugin() {
+    let (_tmp, plugins, peer, _client) = command_rpc_fixture().await;
+    invoke(&peer, "cancel_request", json!({ "id": 91 })).await.unwrap();
+    let error = invoke(
+        &peer,
+        "plugin_run_command",
+        json!({ "pluginId": "misbehave", "commandId": "echo", "arg": "not delivered", "request": 91 }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::Cancelled, "{error:?}");
+    assert_eq!(plugins.host().info_of("misbehave").unwrap().status, PluginStatus::Inactive);
+    let reply = invoke(
+        &peer,
+        "plugin_run_command",
+        json!({ "pluginId": "misbehave", "commandId": "echo", "arg": "next request", "request": 92 }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply, "next request");
+    plugins.host().shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_a_running_remote_command_releases_its_prompt_and_command_lane() {
+    let (_tmp, plugins, peer, client) = command_rpc_fixture().await;
+    let pending = tokio::spawn({
+        let peer = peer.clone();
+        async move {
+            invoke(&peer, "plugin_run_command", json!({ "pluginId": "jobs", "commandId": "input", "request": 93 }))
+                .await
+        }
+    });
+    until("the command's input prompt", 5, || {
+        client.plugin_events.lock().iter().any(|event| matches!(event.event, PluginEvent::PromptRequested { .. }))
+    })
+    .await;
+    invoke(&peer, "cancel_request", json!({ "id": 93 })).await.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(1), pending).await;
+    if result.is_err() {
+        plugins.host().cancel("jobs");
+    }
+    let error = result.expect("request cancellation must stop the running command").unwrap().unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::Cancelled, "{error:?}");
+    assert_eq!(plugins.host().info_of("jobs").unwrap().stats.crashes, 0);
+    assert_eq!(
+        invoke(
+            &peer,
+            "plugin_run_command",
+            json!({ "pluginId": "jobs", "commandId": "selection", "paths": ["/next/file"], "request": 94 }),
+        )
+        .await
+        .unwrap(),
+        "/next/file"
+    );
+    plugins.host().shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_one_request_does_not_interrupt_another_running_command() {
+    let (_tmp, plugins, peer, client) = command_rpc_fixture().await;
+    let active = tokio::spawn({
+        let peer = peer.clone();
+        async move {
+            invoke(&peer, "plugin_run_command", json!({ "pluginId": "jobs", "commandId": "input", "request": 95 }))
+                .await
+        }
+    });
+    until("the active command's input prompt", 5, || {
+        client.plugin_events.lock().iter().any(|event| matches!(event.event, PluginEvent::PromptRequested { .. }))
+    })
+    .await;
+    let prompt = client
+        .plugin_events
+        .lock()
+        .iter()
+        .find_map(|message| match &message.event {
+            PluginEvent::PromptRequested { prompt_id, .. } => Some(prompt_id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let cancelled = tokio::spawn({
+        let peer = peer.clone();
+        async move {
+            invoke(&peer, "plugin_run_command", json!({ "pluginId": "jobs", "commandId": "selection", "request": 96 }))
+                .await
+        }
+    });
+    invoke(&peer, "cancel_request", json!({ "id": 96 })).await.unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(1), cancelled).await.unwrap().unwrap().unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(!active.is_finished(), "request cancellation must not cancel another invocation");
+    assert_eq!(
+        invoke(&peer, "plugin_answer_prompt", json!({ "promptId": prompt, "answer": ["kept running"] })).await.unwrap(),
+        true
+    );
+    assert_eq!(tokio::time::timeout(Duration::from_secs(1), active).await.unwrap().unwrap().unwrap(), "kept running");
+    assert_eq!(plugins.host().info_of("jobs").unwrap().stats.crashes, 0);
     plugins.host().shutdown();
 }

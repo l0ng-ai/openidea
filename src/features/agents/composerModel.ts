@@ -171,9 +171,9 @@ export function atEdgeLine(text: string, caret: number, dir: -1 | 1): boolean {
   return dir < 0 ? !text.slice(0, caret).includes("\n") : !text.slice(caret).includes("\n");
 }
 
-/** The settings shown in the composer: model, mode, permissions, approvals, effort. */
+/** The settings shown in the composer: model, mode, collaboration mode, permissions, approvals, effort. */
 export function mainOptions(config: readonly AgentConfigOption[]): AgentConfigOption[] {
-  const order = ["model", "mode", "permissions", "approval", "thought_level"];
+  const order = ["model", "mode", "collaboration_mode", "permissions", "approval", "thought_level"];
   return order.flatMap((c) => config.filter((o) => o.category === c).slice(0, 1));
 }
 

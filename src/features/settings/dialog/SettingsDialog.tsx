@@ -68,6 +68,7 @@ const GROUP_DESCRIPTIONS: Record<string, string> = {
   Editor: "Configure code editing: completion, folding, tabs, fonts, colors, code style and inspections.",
   "Build, Execution, Deployment": "Configure build tools, run configurations, debugger and deployment.",
   "Languages & Frameworks": "Configure language servers, interpreters, SDKs and framework support.",
+  Agents: "Install coding agents and configure how they launch, chat and connect to the IDE.",
   Tools: "Configure external tools, terminal, database and other integrations.",
   "Version Control": "Configure the settings related to version control used in your project",
 };

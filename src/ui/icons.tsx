@@ -3,7 +3,8 @@
  * (Apache-2.0 / MIT, see THIRD_PARTY_LICENSES.md), vendored as-is under
  * `./expui/<group>/<name>.svg` with their `_dark` and `@20x20` variants. File types
  * whose JetBrains icons are not open source use OpenIDEA's own icons drawn in the same
- * style, under `./openidea/<group>/<name>.svg` (paths prefixed `openidea/`). Names are the
+ * style, under `./openidea/<group>/<name>.svg` (paths prefixed `openidea/`). Project type
+ * logos under `./brands/` come from Simple Icons (CC0-1.0; see THIRD_PARTY_LICENSES.md). Names are the
  * contract used by actions (`Action.icon`) and contributions (`ToolWindowContribution.icon`).
  *
  * Rendering: the SVG markup is bundled as raw strings and inlined, so there are no
@@ -24,13 +25,49 @@ import clsx from "clsx";
 import { create } from "zustand";
 import styles from "./icons.module.css";
 
-const RAW = import.meta.glob<string>(["./expui/**/*.svg", "./openidea/**/*.svg"], {
+const RAW = import.meta.glob<string>(["./expui/**/*.svg", "./openidea/**/*.svg", "./brands/*.svg"], {
   query: "?raw",
   import: "default",
   eager: true,
 });
 
 const ICONS = {
+  "project-flutter": "brands/flutter",
+  "project-vite": "brands/vite",
+  "project-angular": "brands/angular",
+  "project-astro": "brands/astro",
+  "project-cpp": "brands/cpp",
+  "project-dart": "brands/dart",
+  "project-django": "brands/django",
+  "project-dotnet": "brands/dotnet",
+  "project-elixir": "brands/elixir",
+  "project-express": "brands/express",
+  "project-fastapi": "brands/fastapi",
+  "project-flask": "brands/flask",
+  "project-go": "brands/go",
+  "project-haskell": "brands/haskell",
+  "project-html": "brands/html",
+  "project-java": "brands/java",
+  "project-kotlin": "brands/kotlin",
+  "project-ktor": "brands/ktor",
+  "project-laravel": "brands/laravel",
+  "project-nestjs": "brands/nestjs",
+  "project-nextjs": "brands/nextjs",
+  "project-node": "brands/node",
+  "project-nuxt": "brands/nuxt",
+  "project-phoenix": "brands/phoenix",
+  "project-php": "brands/php",
+  "project-python": "brands/python",
+  "project-quarkus": "brands/quarkus",
+  "project-rails": "brands/rails",
+  "project-ruby": "brands/ruby",
+  "project-rust": "brands/rust",
+  "project-scala": "brands/scala",
+  "project-spring-boot": "brands/spring-boot",
+  "project-sveltekit": "brands/sveltekit",
+  "project-swift": "brands/swift",
+  "project-symfony": "brands/symfony",
+  "project-zig": "brands/zig",
   // Files & folders
   folder: "nodes/folder",
   "folder-open": "nodes/folder",
@@ -68,6 +105,7 @@ const ICONS = {
   "file-md": "fileTypes/markdown",
   "file-image": "fileTypes/image",
   paperclip: "openidea/general/paperclip",
+  image: "openidea/general/image",
   "file-config": "fileTypes/config",
   "file-python": "fileTypes/python",
   "file-jupyter": "fileTypes/jupyter",
@@ -213,11 +251,14 @@ const ICONS = {
   "agent-cursor": "openidea/agents/cursor",
   "agent-opencode": "openidea/agents/opencode",
   "agent-qwen": "openidea/agents/qwen",
+  "agent-qoder": "openidea/agents/qoder",
+  "agent-qodercn": "openidea/agents/qoder",
   "agent-kimi": "openidea/agents/kimi",
   "agent-goose": "openidea/agents/goose",
   "agent-auggie": "openidea/agents/auggie",
   "agent-kiro": "openidea/agents/kiro",
   "agent-vibe": "openidea/agents/vibe",
+  "agent-omp": "openidea/agents/omp",
   "toolwindow-maven": "toolwindows/maven",
   "toolwindow-gradle": "toolwindows/gradle",
   "toolwindow-build": "toolwindows/build",
@@ -257,12 +298,16 @@ const ICONS = {
   "split-horizontal": "general/splitHorizontally",
   "editor-only": "general/editorOnly",
   "editor-preview": "general/editorPreview",
+  "preview-details": "general/previewHorizontally",
   "preview-only": "general/previewOnly",
   maximize: "image/fitContent",
+  fullscreen: "openidea/general/fullscreen",
+  download: "openidea/general/download",
   "zoom-in": "openidea/general/zoomIn",
   "zoom-out": "openidea/general/zoomOut",
   "actual-size": "openidea/general/actualZoom",
   chessboard: "openidea/general/chessboard",
+  eyedropper: "openidea/general/eyedropper",
   minimize: "general/openInToolWindow",
   "main-menu": "openidea/general/mainMenu",
   "window-minimize": "openidea/general/windowMinimize",
@@ -371,12 +416,19 @@ const ICONS = {
   success: "status/success",
   // Run / debug
   run: "run/run",
+  "test-passed": "run/testPassed",
+  "test-failed": "run/testFailed",
+  "test-ignored": "run/testIgnored",
+  "test-pending": "run/testNotRunYet",
+  "test-show-passed": "run/showPassed",
+  "test-show-ignored": "run/showIgnored",
   debug: "run/debug",
   "run-coverage": "run/runWithCoverage",
   profile: "run/profile",
   "toolwindow-coverage": "toolwindows/coverage",
   "toolwindow-profiler": "toolwindows/profiler",
   "toolwindow-logcat": "openidea/fileTypes/log",
+  "gutter-navigate": "general/autoscrollToSource",
   "gutter-run": "gutter/run",
   "gutter-run-all": "actions/runAll",
   "gutter-run-passed": "gutter/runSuccess",
@@ -414,6 +466,7 @@ const ICONS = {
   "breakpoint-exception": "breakpoints/breakpointException",
   "mute-breakpoint": "run/muteBreakpoints",
   "view-breakpoints": "run/viewBreakpoints",
+  "heap-snapshot": "actions/profileMemory",
   // Build tools (Maven / Gradle tool windows)
   "maven-project": "maven/mavenProject",
   "maven-module": "maven/mavenModule",
@@ -673,7 +726,7 @@ interface Prepared {
 
 function raw(path: string): string | undefined {
   if (path.startsWith(EXTERNAL_PREFIX)) return EXTERNAL.get(path);
-  return RAW[path.startsWith("openidea/") ? `./${path}.svg` : `./expui/${path}.svg`];
+  return RAW[path.startsWith("openidea/") || path.startsWith("brands/") ? `./${path}.svg` : `./expui/${path}.svg`];
 }
 
 function parse(svg: string): Variant {

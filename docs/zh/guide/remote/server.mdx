@@ -1,0 +1,93 @@
+---
+title: "openidea-server"
+description: "运行在远程主机上的 IDE 后端：桌面端如何安装和启动它、它的文件放在哪里，以及如何离线安装。"
+---
+
+`openidea-server` 是不带界面的 OpenIDEA 后端。在远程窗口中，它运行在项目所在的地方（SSH 主机、WSL 发行版或开发容器），
+承担桌面端在本地时要做的工作：文件系统、索引、语言服务器、终端、运行、调试、构建工具和 Git。桌面窗口只负责显示界面，并把命令发给它。
+
+你不需要手动启动它。打开远程项目时（[SSH](/zh/guide/remote/ssh)、[容器](/zh/guide/remote/containers)），桌面端会按需在主机上安装服务端，
+通过 SSH 连接（或 `wsl.exe` / `docker exec`）以 `openidea-server --stdio` 启动，并经由标准输入输出与它通信。一个服务端进程只服务一个桌面窗口，
+窗口断开后即退出。
+
+## 支持的主机
+
+每个版本都会发布以下平台的服务端构建：
+
+| 系统  | 架构                                                          |
+| ----- | ------------------------------------------------------------- |
+| Linux | `x86_64`、`aarch64`（musl 静态构建，不依赖主机的 glibc 版本） |
+| macOS | `aarch64`、`x86_64`                                           |
+
+桌面端用 `uname -sm` 识别主机平台。其他平台（包括 Windows 主机）不受支持。开发容器必须是 Linux。
+
+## 安装过程
+
+每次连接时，桌面端都会检查主机上是否已有与自身版本相同的服务端。没有的话：
+
+1. 先在本机查找该平台的服务端二进制（见[离线安装](#离线安装)）。
+2. 找不到就从 [GitHub Releases](https://github.com/l0ng-ai/openidea/releases) 下载当前版本的 `openidea-server-<os>-<arch>.gz`，
+   校验 SHA-256 后缓存到本机本地数据目录的 `server/<version>/<os>-<arch>/` 下。
+3. 把二进制上传到主机，并删除同一版本的旧构建。
+
+桌面端和服务端始终是同一版本。升级 OpenIDEA 后，下一次连接会在旧版本旁边安装新的服务端。
+
+## 主机上的文件
+
+| 路径                                                   | 内容                                                                 |
+| ------------------------------------------------------ | -------------------------------------------------------------------- |
+| `~/.openidea/server/<version>/<build>/openidea-server` | 已安装的服务端，每个版本、每个构建一个文件夹。                       |
+| `~/.openidea/config/`                                  | 主机端的设置，包括 `languages/` 中的自定义语言定义。                 |
+| `~/.openidea/data/`                                    | OpenIDEA 在主机上安装的工具（语言服务器、调试器、JDK）、缓存和索引。 |
+
+想释放空间，可以删除 `~/.openidea/server/` 下的旧版本文件夹。删除 `~/.openidea/data/` 后，OpenIDEA 会在需要时重新安装工具。
+
+## 环境
+
+SSH 执行的命令默认只有很精简的环境，所以服务端启动时会读取你的登录 shell 环境。shell 配置文件中的 `PATH` 等变量因此会作用于终端、运行和语言服务器。
+修改之后，在远程窗口中使用**文件 › 重新加载环境**即可，无需重新连接。
+
+| 变量                   | 作用                                                                                                                                      |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENIDEA_SERVER_HOME` | 用该文件夹代替 `~/.openidea` 存放 `config/` 和 `data/`。必须出现在服务端进程启动时的环境中。已安装的二进制仍在 `~/.openidea/server/` 下。 |
+| `OPENIDEA_LOG`         | 服务端输出到 stderr 的日志过滤级别，例如 `debug` 或 `ide_lsp=debug`。默认 `info`。                                                        |
+
+## 离线安装
+
+本机访问不了 GitHub 时，可以自己提供服务端二进制。桌面端按以下顺序查找：
+
+1. 环境变量 `OPENIDEA_SERVER_BINARY` 指向的文件（需在启动 OpenIDEA 时已设置）。
+2. 本机[本地数据目录](/zh/reference/data-directories)中的 `server/<os>-<arch>/openidea-server`，例如 `server/linux-x86_64/openidea-server`。
+3. 主机与本机平台相同时，OpenIDEA 可执行文件旁边的 `openidea-server`。
+
+从与你的 OpenIDEA 版本对应的 Release 下载 `openidea-server-<os>-<arch>.gz`，用 `gunzip` 解压后放到上述任一位置。版本必须与桌面端一致：
+协议版本不同的服务端会被拒绝。
+
+如果主机上已经装有当前版本的某个构建，在无法下载时桌面端会直接使用它。
+
+### 从源码构建
+
+```bash
+cargo build --release -p ide-host --bin openidea-server
+```
+
+在主机平台上构建（或交叉编译到该平台），然后把 `OPENIDEA_SERVER_BINARY` 指向 `target/release/openidea-server`（交叉编译时为对应 target 的目录）。
+
+## 命令行
+
+这些参数是给桌面端用的，不过 `--version` 可以用来检查已安装的构建。
+
+| 参数                      | 含义                                                                             |
+| ------------------------- | -------------------------------------------------------------------------------- |
+| `--version`               | 输出服务端版本和协议版本后退出。                                                 |
+| `--stdio`                 | 通过标准输入输出服务一个桌面客户端，日志写到 stderr。                            |
+| `--connect <host> <port>` | 通过标准输入输出中转一个到 `<host>:<port>` 的 TCP 连接，用于开发容器的端口转发。 |
+
+```bash
+ls ~/.openidea/server/*/*/openidea-server
+~/.openidea/server/<version>/<build>/openidea-server --version
+```
+
+## 插件
+
+窗口连接时，桌面端的代码插件及其贡献的语言会发送到服务端，插件在服务端运行，紧挨着项目。

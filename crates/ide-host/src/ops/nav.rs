@@ -8,7 +8,7 @@ use ide_language::{FileReference, WebReference};
 use ide_workspace::file_refs::{self, PathCompletion};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A web reference no language server resolves and where it points: `class="card"` →
 /// `.card` selectors, `id` → `#id` selectors, `href="#top"` → the element, `var(--x)` →
@@ -112,6 +112,68 @@ pub async fn web_goto(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeRes
     .await
 }
 
+/// The file a Python import path names: `a.b.c` is `a/b/c.py(i)` or `a/b/c/__init__.py(i)`
+/// in the project or one of its content roots (an attached dependency project included);
+/// `.x` names it relative to `from`'s directory. Neither the language server (it analyses a
+/// single root) nor the definition index resolves a package segment, so ⌘B on the `a.b` of
+/// `from a.b import x` needs this.
+pub async fn nav_resolve_module(host: &Host, window: &str, name: String, from: IpcPath) -> IdeResult<Option<IpcPath>> {
+    let project = host.project(window)?;
+    blocking(move || {
+        let dots = name.len() - name.trim_start_matches('.').len();
+        let parts: Vec<&str> = name.split('.').filter(|s| !s.is_empty()).collect();
+        if parts.is_empty() {
+            return Ok(None);
+        }
+        let rel = parts.iter().collect::<PathBuf>();
+        let bases: Vec<PathBuf> = if dots > 0 {
+            let dir = PathBuf::from(from);
+            let dir = dir.parent().map(Path::to_path_buf).unwrap_or(dir);
+            let base = (0..dots.saturating_sub(1)).fold(dir, |p, _| p.parent().map(Path::to_path_buf).unwrap_or(p));
+            vec![base]
+        } else {
+            crate::project::navigation_roots(&project, &from)
+        };
+        for base in bases {
+            let dir = base.join(&rel);
+            for candidate in
+                [dir.with_extension("py"), dir.with_extension("pyi"), dir.join("__init__.py"), dir.join("__init__.pyi")]
+            {
+                if candidate.is_file() {
+                    return Ok(Some(IpcPath::from(candidate)));
+                }
+            }
+        }
+        Ok(None)
+    })
+    .await
+}
+
+/// Index definitions named `name` in the other roots `from` may navigate into (its configured
+/// dependencies and extra content roots — see `navigation_roots`): the cross-root answer when
+/// the language server cannot resolve an import into an attached dependency project. `from`'s
+/// own root is left out: the server sees it, so a name it could not resolve there is not
+/// answered by every declaration that happens to share it (any `save` for `repo.save()`).
+pub async fn nav_index_definitions(
+    host: &Host,
+    window: &str,
+    name: String,
+    from: IpcPath,
+) -> IdeResult<Vec<SymbolMatch>> {
+    let project = host.project(window)?;
+    blocking(move || {
+        let roots = crate::project::navigation_roots(&project, &from);
+        let Some((_own, roots)) = roots.split_first() else { return Ok(Vec::new()) };
+        if roots.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Filter inside the index: a cap applied before the root filter can fill with
+        // own-root matches and evict the dependency roots entirely.
+        Ok(project.index.symbols_named_within(&name, None, roots, 500))
+    })
+    .await
+}
+
 /// The existing file or directory a path written in `from` names (`href`, `url()`, a string literal).
 pub async fn fs_resolve_reference(
     host: &Host,
@@ -181,6 +243,12 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("remove_recent", |c| async move { remove_recent(&c.host, &c.window, c.arg("path")?) });
     d.add("recent_files", |c| async move { recent_files(&c.host, &c.window) });
     d.add("web_goto", |c| async move { web_goto(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?).await });
+    d.add("nav_resolve_module", |c| async move {
+        nav_resolve_module(&c.host, &c.window, c.arg("name")?, c.arg("from")?).await
+    });
+    d.add("nav_index_definitions", |c| async move {
+        nav_index_definitions(&c.host, &c.window, c.arg("name")?, c.arg("from")?).await
+    });
     d.add("fs_resolve_reference", |c| async move {
         fs_resolve_reference(&c.host, &c.window, c.arg("from")?, c.arg("value")?).await
     });

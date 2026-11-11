@@ -20,7 +20,7 @@ parking_lot.workspace = true
 futures.workspace = true
 sqlx.workspace = true
 tiberius.workspace = true
-oracle.workspace = true
+oracledb.workspace = true
 bb8.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
 dirs.workspace = true

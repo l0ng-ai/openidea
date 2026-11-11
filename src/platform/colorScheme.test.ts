@@ -58,6 +58,21 @@ describe("color schemes", () => {
     expect(css).toContain("--syn-constant: #224466 !important");
   });
 
+  it("groups Python attributes as PyCharm's color settings page does", () => {
+    const python = (name: string) => ATTRIBUTES.find((a) => a.id === `py${name}`)!;
+    expect(python("FString").name).toBe("String › f-string › Expression braces");
+    expect(python("Bytes").name).toBe("String › Binary (bytes)");
+    expect(python("Docstring").name).toBe("Docstring › Text");
+    expect(python("MethodCall").name).toBe("Functions › Method call");
+    expect(python("NestedFunction").name).toBe("Functions › Nested function definition");
+    expect(python("Self").name).toBe("Parameters › 'self' parameter");
+    expect(python("PredefinedDefinition").name).toBe("Special names › Definition");
+    expect(python("PredefinedUsage").name).toBe("Special names › Usage");
+    expect(python("Parentheses").name).toBe("Braces and Operators › Parentheses");
+    // Attribute ids (the override and .icls keys) keep their old, stable names.
+    for (const a of ATTRIBUTES.filter((a) => a.path[0] === "Python")) expect(a.id).toMatch(/^py[A-Z]/);
+  });
+
   it("resolves scheme attribute state and editor defaults", () => {
     expect(resolvedAttribute("light", "lineComment")).toMatchObject({
       foreground: "#8c8c8c",
@@ -114,6 +129,30 @@ describe("color schemes", () => {
     expect(upright).toContain("--syn-static-italic: normal !important");
     const pythonItalic = schemeCss("theme-default", { light: { pyStaticSymbol: { italic: true } } }, root);
     expect(pythonItalic).toContain("--syn-python-static-italic: italic !important");
+  });
+
+  it("leaves selected text in syntax colours until a selection foreground is set (#2446)", () => {
+    expect(ATTRIBUTES.find((a) => a.id === "selectionForeground")).toMatchObject({
+      name: "Selection foreground",
+      path: ["General", "Editor"],
+      fg: "--fg-editor-selection",
+    });
+    // The `inherit` default is not a colour: the settings page shows no foreground.
+    expect(resolvedAttribute("light", "selectionForeground")).toEqual({});
+    expect(resolvedAttribute("dark", "selectionForeground")).toEqual({});
+    const customs = {
+      "custom-sel": {
+        name: "Sel",
+        parent: "dark" as const,
+        attributes: { selectionForeground: { foreground: "#112233" } },
+      },
+    };
+    expect(resolvedAttribute("custom-sel", "selectionForeground", customs)).toMatchObject({
+      foreground: "#112233",
+    });
+    expect(schemeCss("dark", { dark: { selectionForeground: { foreground: "#112233" } } })).toContain(
+      "--fg-editor-selection: #112233 !important",
+    );
   });
 
   it("applies an explicit scheme over a plugin theme of the same base", () => {

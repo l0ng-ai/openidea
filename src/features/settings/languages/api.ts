@@ -135,7 +135,7 @@ export async function choosePath(opts: {
   defaultPath?: string;
 }): Promise<string | null> {
   if (!isTauri()) return null;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     directory: opts.directory,
     multiple: false,

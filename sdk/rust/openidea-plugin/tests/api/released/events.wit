@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 /// Workbench events, delivered in batches to `event-handler.handle`.
 interface events {
@@ -32,6 +32,9 @@ interface events {
     /// API 1.4 also delivers `file-closed` (JSON path string), `settings-changed`
     /// (JSON array of the plugin's changed setting keys), and `input-mode-changed`
     /// (JSON {path, mode, sub}) through `other`. The last needs `events.input`.
+    /// API 1.5 also delivers `extensions-changed` (JSON array of the extension
+    /// points this plugin declares whose contributions changed) through `other`,
+    /// to the declaring plugin only and without a capability.
     /// Kinds: `file-opened`, `file-saved`, `files-changed` (batched disk changes
     /// as `other`, with created/modified/removed path lists in JSON), `editor-focused` (the focused editor
     /// changed), `vcs-changed` (a repository's state changed: commit,

@@ -59,11 +59,14 @@ const BUILTIN: &[(&str, &str, Driver, &[&str], &str)] = &[
     ("cursor", "Cursor", Driver::Acp, &["cursor-agent", "acp"], "Run `cursor-agent login` in a terminal."),
     ("opencode", "OpenCode", Driver::Acp, &["opencode", "acp"], "Run `opencode auth login` in a terminal."),
     ("qwen", "Qwen Code", Driver::Acp, &["qwen", "--experimental-acp"], "Run `qwen` in a terminal and sign in."),
+    ("qoder", "Qoder", Driver::Acp, &["qodercli", "--acp"], "Run `qodercli login` in a terminal."),
+    ("qodercn", "Qoder CN", Driver::Acp, &["qoderclicn", "--acp"], "Run `qoderclicn login` in a terminal."),
     ("kimi", "Kimi CLI", Driver::Acp, &["kimi", "acp"], "Run `kimi` in a terminal and sign in."),
     ("goose", "Goose", Driver::Acp, &["goose", "acp"], "Run `goose configure` in a terminal."),
     ("auggie", "Auggie", Driver::Acp, &["auggie", "--acp"], "Run `auggie login` in a terminal."),
     ("kiro", "Kiro", Driver::Acp, &["kiro-cli", "acp"], "Run `kiro-cli login` in a terminal."),
     ("vibe", "Mistral Vibe", Driver::Acp, &["vibe-acp"], "Run `vibe` in a terminal and sign in."),
+    ("omp", "OMP", Driver::Acp, &["omp", "acp"], "Run `omp` in a terminal and sign in."),
 ];
 
 fn builtins() -> Vec<ProviderSpec> {
@@ -182,6 +185,14 @@ pub(crate) fn builtin_name(id: &str) -> Option<&'static str> {
 /// The built-in spec of `id`.
 pub(crate) fn builtin_spec(id: &str) -> Option<ProviderSpec> {
     builtins().into_iter().find(|s| s.id == id)
+}
+
+/// The ACP adapters of Claude Code and Codex, which the native drivers replace: they still
+/// launch, but are listed only once customized through an agent file or used by a task.
+const UNLISTED: &[&str] = &["claude-acp", "codex-acp"];
+
+pub(crate) fn is_unlisted(spec: &ProviderSpec) -> bool {
+    UNLISTED.contains(&spec.id.as_str()) && builtin_spec(&spec.id).as_ref() == Some(spec)
 }
 
 /// Public launch metadata, keeping the built-in defaults separate from agent-file overrides.
@@ -401,6 +412,45 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn qoder_global_and_cn_editions_are_both_built_in() {
+        let info = |id: &str| describe(&load(None).into_iter().find(|s| s.id == id).unwrap());
+        let (global, cn) = (info("qoder"), info("qodercn"));
+        assert_eq!((global.name.as_str(), global.command.as_str()), ("Qoder", "qodercli --acp"));
+        assert_eq!((cn.name.as_str(), cn.command.as_str()), ("Qoder CN", "qoderclicn --acp"));
+        assert_eq!(global.login_hint.as_deref(), Some("Run `qodercli login` in a terminal."));
+    }
+
+    #[test]
+    fn qodercn_is_available_without_a_file_and_preserves_existing_customizations() {
+        let dir = tempfile::tempdir().unwrap();
+        let qodercn = load(None).into_iter().find(|s| s.id == "qodercn").unwrap();
+        assert_eq!(qodercn.driver, Driver::Acp);
+        assert!(!is_unlisted(&qodercn));
+        let info = describe(&qodercn);
+        assert_eq!(info.name, "Qoder CN");
+        assert_eq!(info.command, "qoderclicn --acp");
+        assert_eq!(info.source, AgentSource::Builtin);
+        assert!(info.command_editable);
+        assert_eq!(info.login_hint.as_deref(), Some("Run `qoderclicn login` in a terminal."));
+
+        std::fs::write(
+            dir.path().join("qodercn.toml"),
+            "command = \"/custom/qoderclicn\"\nargs = [\"--acp\"]\n[env]\nK = \"v\"\n",
+        )
+        .unwrap();
+        let specs = load(Some(dir.path()));
+        assert_eq!(specs.iter().filter(|s| s.id == "qodercn").count(), 1);
+        let custom = specs.iter().find(|s| s.id == "qodercn").unwrap();
+        assert_eq!(custom.command, "/custom/qoderclicn");
+        assert_eq!(custom.env, [("K".into(), "v".into())]);
+        set_builtin_command(dir.path(), "qodercn", None).unwrap();
+        let reset = load(Some(dir.path())).into_iter().find(|s| s.id == "qodercn").unwrap();
+        assert_eq!(reset.command, "qoderclicn");
+        assert_eq!(reset.args, ["--acp"]);
+        assert_eq!(reset.env, custom.env);
+    }
+
+    #[test]
     fn login_hints_cover_all_builtin_commands_and_preserve_separate_login_tools() {
         for spec in builtins() {
             let separate = matches!(spec.id.as_str(), "claude-acp" | "codex-acp" | "vibe");
@@ -588,6 +638,15 @@ mod tests {
         set_builtin_env(dir.path(), "claude", BTreeMap::new()).unwrap();
         assert!(!dir.path().join("claude.toml").exists());
         set_builtin_env(dir.path(), "not-a-builtin", env).unwrap_err();
+    }
+
+    #[test]
+    fn acp_adapters_of_native_agents_are_unlisted_until_customized() {
+        let dir = tempfile::tempdir().unwrap();
+        let unlisted = |dir: &Path| load(Some(dir)).into_iter().filter(is_unlisted).map(|s| s.id).collect::<Vec<_>>();
+        assert_eq!(unlisted(dir.path()), ["claude-acp", "codex-acp"]);
+        set_builtin_env(dir.path(), "codex-acp", BTreeMap::from([("A".to_owned(), "1".to_owned())])).unwrap();
+        assert_eq!(unlisted(dir.path()), ["claude-acp"]);
     }
 
     #[test]

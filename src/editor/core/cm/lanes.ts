@@ -67,6 +67,8 @@ class OverviewLane {
   private scroller: HTMLElement;
   private resize: ResizeObserver | null = null;
   private scheduled = false;
+  /** Set while a resize burst is being coalesced; see [`scheduleMarksLater`]. */
+  private markTimer: number | undefined;
   private lastKey = "";
   /** The last pointer position over the editor, to re-check the thumb when it scrolls. */
   private pointer: { x: number; y: number } | null = null;
@@ -102,15 +104,29 @@ class OverviewLane {
   }
 
   update(u: ViewUpdate) {
+    // A window resize reaches the editor once per frame: keep the thumb current, which is one
+    // measure, and coalesce the mark maths that walks every mark's line block.
+    if (u.geometryChanged) {
+      this.scheduleThumb();
+      this.scheduleMarksLater();
+      return;
+    }
     if (
       u.docChanged ||
-      u.geometryChanged ||
       u.heightChanged ||
       u.viewportChanged ||
       u.selectionSet ||
       u.startState.facet(scrollbarMarks) !== u.state.facet(scrollbarMarks)
     )
       this.schedule();
+  }
+
+  /** Recomputes the marks once a resize burst has stopped instead of on every step of it. */
+  private scheduleMarksLater() {
+    this.markTimer ??= window.setTimeout(() => {
+      this.markTimer = undefined;
+      this.schedule();
+    }, 120);
   }
 
   private schedule() {
@@ -301,6 +317,7 @@ class OverviewLane {
   };
 
   destroy() {
+    if (this.markTimer !== undefined) window.clearTimeout(this.markTimer);
     this.dom.removeEventListener("mousedown", this.onMouseDown);
     this.thumb.removeEventListener("mousedown", this.onThumbMouseDown);
     this.view.dom.removeEventListener("mousemove", this.onPointerMove);

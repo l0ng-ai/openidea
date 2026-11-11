@@ -235,6 +235,14 @@ pub async fn plugin_set_capability(
     blocking(move || host.set_capability(&id, &capability, granted)).await
 }
 
+/// Revokes one host remembered through net:ask.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_revoke_net_host(state: State<'_, AppState>, id: String, host: String) -> IdeResult<PluginInfo> {
+    let plugins = state.plugins.clone();
+    blocking(move || plugins.revoke_net_host(&id, &host)).await
+}
+
 /// Links a development plugin folder (`openidea-plugin link` does the same from a terminal).
 #[tauri::command]
 #[specta::specta]
@@ -340,6 +348,7 @@ pub async fn plugin_run_command(
     paths: Option<Vec<PathBuf>>,
     settings_scope: Option<SettingsScope>,
     command_chain: Option<Vec<String>>,
+    request: Option<ide_core::RequestId>,
 ) -> IdeResult<Option<String>> {
     let host = state.plugins.clone();
     let project = state.project(window.label()).ok();
@@ -351,7 +360,7 @@ pub async fn plugin_run_command(
         selected_paths: paths.unwrap_or_default(),
         global_settings: matches!(settings_scope, Some(SettingsScope::Global)),
     };
-    blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
+    ide_host::plugins::commands::run_command(&state.host, host, plugin_id, command_id, arg, invocation, request).await
 }
 
 /// Workbench events from this window (only the kinds of `plugin_event_kinds`).

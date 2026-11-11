@@ -25,6 +25,7 @@ import {
 } from "./composerModel";
 import {
   age,
+  appendEntry,
   attentionChange,
   branchLabel,
   entriesKey,
@@ -92,12 +93,30 @@ describe("mergeMatches", () => {
 
 describe("agent composer", () => {
   it("completes @files and /commands anywhere at a word boundary", () => {
-    expect(completionAt("fix @src/le", 11)).toEqual({ kind: "file", query: "src/le", from: 4, to: 11 });
-    expect(completionAt("/rev", 4)).toEqual({ kind: "command", query: "rev", from: 0, to: 4 });
-    expect(completionAt("run /rev", 8)).toEqual({ kind: "command", query: "rev", from: 4, to: 8 });
+    expect(completionAt("fix @src/le", 11)).toEqual({
+      kind: "file",
+      query: "src/le",
+      from: 4,
+      to: 11,
+    });
+    expect(completionAt("/rev", 4)).toEqual({
+      kind: "command",
+      query: "rev",
+      from: 0,
+      to: 4,
+    });
+    expect(completionAt("run /rev", 8)).toEqual({
+      kind: "command",
+      query: "rev",
+      from: 4,
+      to: 8,
+    });
     expect(completionAt("a@b", 3)).toBeNull();
     const c = completionAt("see @le and", 7)!;
-    expect(applyCompletion("see @le and", c, "@src/lexer.rs")).toEqual({ text: "see @src/lexer.rs and", caret: 18 });
+    expect(applyCompletion("see @le and", c, "@src/lexer.rs")).toEqual({
+      text: "see @src/lexer.rs and",
+      caret: 18,
+    });
     const cmds = [
       { name: "init", description: "", hint: null },
       { name: "review", description: "", hint: null },
@@ -153,7 +172,11 @@ describe("agent composer", () => {
       ],
       images: [],
     });
-    expect(prompt).toEqual({ text: "look at @src/a.rs:3-5 and @b.rs", files: ["/w/src/a.rs", "/w/b.rs"], images: [] });
+    expect(prompt).toEqual({
+      text: "look at @src/a.rs:3-5 and @b.rs",
+      files: ["/w/src/a.rs", "/w/b.rs"],
+      images: [],
+    });
     expect(mentionOf("a.rs", { from: 3, to: 3 })).toBe("@a.rs:3");
     // A folder counts while `@src/` is left as typed, not once a file inside it was picked.
     const folder = { path: "/w/src", rel: "src/" };
@@ -182,7 +205,12 @@ describe("agent composer", () => {
     const permissions = option("allow_all", ["off", "on"], "off");
     permissions.category = "permissions";
     expect(mainOptions([...config, permissions]).map((o) => o.id)).toEqual(["model", "mode", permissions.id]);
-    const approvals = { ...option("openidea.cursor.approval", ["ask", "bypass"], "ask"), category: "approval" };
+    const collaboration = option("collaboration_mode", ["default", "plan"], "default");
+    expect(mainOptions([...config, collaboration]).map((o) => o.id)).toEqual(["model", "mode", collaboration.id]);
+    const approvals = {
+      ...option("openidea.cursor.approval", ["ask", "bypass"], "ask"),
+      category: "approval",
+    };
     expect(mainOptions([...config, permissions, approvals]).map((o) => o.id)).toEqual([
       "model",
       "mode",
@@ -203,7 +231,9 @@ describe("agent composer", () => {
         "https://agentclientprotocol.com/protocol/session-modes#autopilot",
       ].map(modeIcon),
     ).toEqual(["lock", "edit", "todo", "run", "unlock", "edit", "eye", "lock", "run", "run"]);
-    expect(bypassDefaults([...config, permissions])).toEqual({ allow_all: "on" });
+    expect(bypassDefaults([...config, permissions])).toEqual({
+      allow_all: "on",
+    });
     expect(usageLabel({ used: 24_000, size: 200_000 })).toEqual({
       short: "12%",
       detail: "24k / 200k tokens",
@@ -224,14 +254,30 @@ describe("usage meters", () => {
 
   it("names usage-limit windows and says when they reset", () => {
     const hour = 3_600_000;
-    expect(limitLabel({ window: "five_hour", usedPercent: 19.4, resetsMs: 2 * hour + 51 * 60_000 }, 0)).toEqual({
+    expect(
+      limitLabel(
+        {
+          window: "five_hour",
+          usedPercent: 19.4,
+          resetsMs: 2 * hour + 51 * 60_000,
+        },
+        0,
+      ),
+    ).toEqual({
       short: "5h 19%",
       percent: 19,
       detail: "5-hour limit: 19% used, resets in 2h 51m",
     });
-    expect(limitLabel({ window: "seven_day", usedPercent: 120, resetsMs: 5 * 24 * hour + 3 * hour }, 0).detail).toBe(
-      "Weekly limit: 100% used, resets in 5d 3h",
-    );
+    expect(
+      limitLabel(
+        {
+          window: "seven_day",
+          usedPercent: 120,
+          resetsMs: 5 * 24 * hour + 3 * hour,
+        },
+        0,
+      ).detail,
+    ).toBe("Weekly limit: 100% used, resets in 5d 3h");
     expect(limitLabel({ window: "spend_limit", usedPercent: 7, resetsMs: null }, 0)).toEqual({
       short: "spend_limit 7%",
       percent: 7,
@@ -280,6 +326,22 @@ describe("agents model", () => {
     expect(upsertEntry([a], 0, b)).toEqual([b]);
     expect(upsertEntry([a], 1, b)).toEqual([a, b]);
     expect(upsertEntry([a], 3, b)).toBeNull();
+  });
+
+  it("appends streamed text from where the copy here stands", () => {
+    const u: AgentEntry = { type: "user", text: "q", attachments: [] };
+    const a: AgentEntry = { type: "agent", text: "He" };
+    expect(appendEntry([u, a], 1, 2, "llo")).toEqual([u, { type: "agent", text: "Hello" }]);
+    // Loaded while it streamed: part of the text is already here.
+    expect(appendEntry([u, { type: "agent", text: "Hel" }], 1, 2, "llo")?.[1]).toEqual({
+      type: "agent",
+      text: "Hello",
+    });
+    const whole = [u, { type: "agent", text: "Hello" } as AgentEntry];
+    expect(appendEntry(whole, 1, 2, "llo")).toBe(whole);
+    expect(appendEntry([u, { type: "agent", text: "H" }], 1, 2, "llo")).toBeNull();
+    expect(appendEntry([u, a], 0, 0, "x")).toBeNull();
+    expect(appendEntry([u, a], 2, 0, "x")).toBeNull();
   });
 
   it("notifies on finish, failure and questions only", () => {
@@ -365,9 +427,17 @@ describe("turns", () => {
 
 describe("retryParts", () => {
   it("counts down to the next attempt and shows the limit when known", () => {
-    const retry = { attempt: 3, maxRetries: 10, retryAtMs: 5_400, error: "Connection error." };
+    const retry = {
+      attempt: 3,
+      maxRetries: 10,
+      retryAtMs: 5_400,
+      error: "Connection error.",
+    };
     expect(retryParts(retry, 1_000)).toEqual({ attempt: "3/10", wait: 5 });
-    expect(retryParts({ ...retry, maxRetries: null }, 9_000)).toEqual({ attempt: "3", wait: 0 });
+    expect(retryParts({ ...retry, maxRetries: null }, 9_000)).toEqual({
+      attempt: "3",
+      wait: 0,
+    });
   });
 });
 
@@ -383,5 +453,32 @@ describe("typed path references", () => {
     expect(resolveTyped("/r/idea", "/etc/hosts")).toBe("/etc/hosts");
     expect(resolveTyped("C:\\r\\idea", "../kalo/a.ts")).toBe("C:/r/kalo/a.ts");
     expect(resolveTyped("C:\\r", "../../x")).toBe("C:/x");
+  });
+});
+
+describe("new task defaults", () => {
+  it("start a draft with the agent's defaults until the draft picks", async () => {
+    const { draftConfig } = await import("./store");
+    const option = (id: string, current: string, values: string[]) =>
+      ({
+        id,
+        name: id,
+        description: null,
+        category: id,
+        current,
+        values: values.map((value) => ({ value, name: value, description: null })),
+        via: "option",
+      }) as AgentConfigOption;
+    const provider = {
+      id: "claude",
+      config: [option("model", "sonnet", ["sonnet", "opus"]), option("mode", "default", ["default", "plan"])],
+    } as unknown as Parameters<typeof draftConfig>[0];
+    const draft = { provider: "claude", config: {}, isolation: "local", base: null } as unknown as Parameters<
+      typeof draftConfig
+    >[1];
+    const current = (d: typeof draft, defaults: Record<string, string>) =>
+      draftConfig(provider, d, defaults).map((o) => o.current);
+    expect(current(draft, { model: "opus", mode: "nope" })).toEqual(["opus", "default"]);
+    expect(current({ ...draft, config: { model: "sonnet" } }, { model: "opus" })).toEqual(["sonnet", "default"]);
   });
 });

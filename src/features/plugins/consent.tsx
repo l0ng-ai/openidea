@@ -39,6 +39,11 @@ export function capabilityDescription(cap: CapabilityInfo): string {
       "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing",
     );
   }
+  if (cap.id === "net:ask") {
+    return tx(
+      "Ask to connect to a host that is not on the list the first time it tries; you allow or refuse each host, and can revoke the allowed ones",
+    );
+  }
   if (cap.id.startsWith("net.http:")) {
     const host = cap.id.slice(9);
     return tx`Connect to ${host} over unencrypted HTTP (from the machine the project is on)`;

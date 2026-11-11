@@ -13,10 +13,10 @@ import {
   commands,
   isTauri,
   isCancelled,
-  nextRequestId,
   type DebugCapabilities,
   type DebugEvent,
   type DebugSessionId,
+  type JvmBackendState,
   type LaunchConfig,
   type RunId,
   type RunConfig,
@@ -25,7 +25,13 @@ import {
   type Variable,
 } from "@/platform/ipc";
 import { confirmTerminate } from "@/workbench/confirmTerminate";
-import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
+import {
+  maybeEditorService,
+  notifications,
+  runOutput,
+  toolWindowService,
+  useDebugRunSessions,
+} from "@/workbench/contributions";
 import { startedPort } from "@/platform/serverPort";
 import { breakpointsOf, consumeTemporary, flushBreakpoints, refreshStates, resetStatuses } from "./breakpoints/store";
 import { interpolateLog, logParts, suspends } from "./breakpoints/model";
@@ -63,9 +69,13 @@ export interface DebugSession {
   selectedFrame: number | null;
   /** Breakpoint hits in this session. */
   hits: number;
+  /** `stopped` events of this session; unlike the global `stopSeq`, no other session or value edit moves it. */
+  stops: number;
   exitCode: number | null;
   /** What the adapter supports (fetched after start). */
   caps: DebugCapabilities | null;
+  /** State of the backend that reads a JVM's objects; absent until the backend reports one. */
+  jvmBackend?: JvmBackendState;
   /** A cancelled JDT build may have lost class-file deltas needed by this session. */
   hotSwapNeedsRestart?: boolean;
 }
@@ -192,6 +202,7 @@ function blank(id: DebugSessionId, p: Partial<DebugSession> = {}): DebugSession 
     frames: [],
     selectedFrame: null,
     hits: 0,
+    stops: 0,
     exitCode: null,
     caps: null,
     ...p,
@@ -286,7 +297,7 @@ function dropFinished() {
  * An attach to `process` this soon after a session on it ended may be to such a JVM.
  */
 const RELISTEN_MS = 3000;
-function justDetached(process: RunId | null | undefined): boolean {
+export function justDetached(process: RunId | null | undefined): boolean {
   if (process == null) return false;
   const now = Date.now();
   return Object.values(useDebug.getState().sessions).some(
@@ -355,6 +366,8 @@ export function publishContext() {
     "debugCanHotSwap",
     Object.values(useDebug.getState().sessions).some((x) => isLive(x) && !!x.caps?.hotCodeReplace),
   );
+  // Refresh Memory View acts on the selected session only.
+  setContext("debugHasJvmMemory", !!s && isLive(s) && sessionSupports("jvmMemory", s));
 }
 
 // --- console -----------------------------------------------------------------
@@ -381,6 +394,21 @@ export function sessionHttpPort(id: DebugSessionId): number | undefined {
 function republishForPorts() {
   const published = useDebugRunSessions.getState().serviceSessions;
   if (published.some((d) => d.httpPort !== sessionHttpPort(d.id))) publishContext();
+}
+
+/** Sessions attached to a process Run started: their Console follows its output. */
+const processOutput = new Map<DebugSessionId, () => void>();
+
+/** Shows the output of the Run process `process` in the Console of `session`, as a launched program's. */
+function followProcessOutput(session: DebugSessionId, process: RunId) {
+  processOutput.get(session)?.();
+  const unsubscribe = runOutput()?.subscribe(process, (kind, text) => appendConsoleQueued(session, kind, text));
+  if (unsubscribe) processOutput.set(session, unsubscribe);
+}
+
+function unfollowProcessOutput(session: DebugSessionId) {
+  processOutput.get(session)?.();
+  processOutput.delete(session);
 }
 
 export function appendConsole(session: DebugSessionId, category: string, raw: string) {
@@ -575,13 +603,7 @@ export async function startSession(
     await flushBreakpoints();
     options.preparation?.signal.throwIfAborted();
     const adapterStarted = performance.now();
-    const request = nextRequestId();
-    const signal = options.preparation?.signal;
-    const cancel = () => void commands.cancelRequest(request).catch(() => undefined);
-    signal?.addEventListener("abort", cancel, { once: true });
-    const id = await call(commands.debugStart(launch, request)).finally(() =>
-      signal?.removeEventListener("abort", cancel),
-    );
+    const id = await call(commands.debugStart(launch));
     console.info("Debug adapter started", { name: launch.name, ms: performance.now() - adapterStarted });
     owned.add(id);
     if (afterDetach) dropFinished();
@@ -612,7 +634,8 @@ export async function startSession(
             name: launch.name,
             runConfig: options.runConfig,
             startedAt: preparation?.startedAt ?? startedAt,
-            adapter: launch.adapter,
+            // The backend may start another adapter than the one asked for; `launch` keeps the request for Rerun.
+            adapter: cur.adapter || launch.adapter,
             launch: options.rerunnable === false ? null : launch,
             process: options.process ?? null,
             status: cur.status === "starting" ? "running" : cur.status,
@@ -622,6 +645,7 @@ export async function startSession(
       };
     });
     settleStart(id);
+    if (options.process != null) followProcessOutput(id, options.process);
     publishContext();
     void refreshExceptionFilters();
     void loadCapabilities(id);
@@ -653,7 +677,7 @@ export async function startSession(
         sticky: true,
         actions: [
           {
-            label: "Install and Debug",
+            label: missing.action ?? "Install and Debug",
             run: () => void executeAction("tools.install", missing.tool).then(() => startSession(launch, options)),
           },
         ],
@@ -746,7 +770,10 @@ export function removeSession(id: DebugSessionId) {
     active: st.active != null && sessions[st.active] ? st.active : neighbour,
     console,
   });
-  for (const goneId of gone) owned.delete(goneId);
+  for (const goneId of gone) {
+    owned.delete(goneId);
+    unfollowProcessOutput(goneId);
+  }
   updateExecutionPoint();
   publishContext();
 }
@@ -1079,6 +1106,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
         frames: [],
         selectedFrame: null,
         hits: s.hits + (isBp ? 1 : 0),
+        stops: s.stops + 1,
       });
       useDebug.setState((st) => ({ active: id, stopSeq: st.stopSeq + 1 }));
       publishContext();
@@ -1130,6 +1158,12 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
     case "terminated":
       markTerminated(id);
       break;
+    case "capabilities":
+      void loadCapabilities(id);
+      break;
+    case "jvmBackend":
+      patch(id, { jvmBackend: event.state });
+      break;
   }
 }
 
@@ -1137,6 +1171,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
 export function resetSessions() {
   const { sessions } = useDebug.getState();
   for (const s of Object.values(sessions)) if (s.parent == null && isLive(s)) void stopSession(s.id);
+  for (const id of [...processOutput.keys()]) unfollowProcessOutput(id);
   pendingOutput.length = 0;
   cancelOutputFlush();
   ansiStreams.clear();

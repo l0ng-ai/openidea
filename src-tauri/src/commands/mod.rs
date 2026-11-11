@@ -22,9 +22,11 @@ pub mod deploy;
 pub mod doc;
 pub mod docker;
 pub mod env;
+pub mod file_dialog;
 pub mod fonts;
 pub mod fs;
 pub mod github;
+pub mod heap;
 pub mod history;
 pub mod http;
 pub mod java;
@@ -37,6 +39,7 @@ pub mod plugin;
 pub mod profiler;
 pub mod refactor;
 pub mod run;
+pub mod scaffold;
 pub mod sdk;
 pub mod search;
 pub mod spell;
@@ -66,6 +69,8 @@ pub(crate) fn sender<T: tauri::ipc::IpcResponse + Send + Sync + 'static>(
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![
         app::app_info,
+        file_dialog::file_dialog_needs_gtk,
+        file_dialog::gtk_pick_paths,
         mcp::mcp_ui_ready,
         mcp::mcp_respond,
         mcp::mcp_server_status,
@@ -120,9 +125,16 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_registry_list,
         agent::agent_registry_install,
         agent::agent_registry_remove,
+        agent::agent_mcp_list,
+        agent::agent_mcp_save,
+        agent::agent_mcp_set_enabled,
+        agent::agent_mcp_remove,
+        agent::agent_mcp_import,
         agent::agent_commands,
         agent::agent_entries,
         agent::agent_create,
+        agent::agent_external_sessions,
+        agent::agent_import_session,
         agent::agent_prompt,
         agent::agent_unqueue,
         agent::agent_send_queued_now,
@@ -139,6 +151,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_delete,
         agent::agent_changes,
         agent::agent_base_text,
+        agent::agent_rollback_changes,
         notebook::notebook_open,
         notebook::notebook_get,
         notebook::notebook_edit,
@@ -181,6 +194,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         doc::doc_snapshot,
         doc::doc_ui_mode,
         doc::doc_set_encoding,
+        doc::doc_set_bom,
         doc::doc_set_line_ending,
         doc::doc_outline,
         doc::doc_folding,
@@ -218,6 +232,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         nav::recent_files,
         nav::remove_recent,
         nav::web_goto,
+        nav::nav_resolve_module,
+        nav::nav_index_definitions,
         nav::fs_resolve_reference,
         nav::path_completions,
         nav::web_unresolved_references,
@@ -264,6 +280,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lsp::lsp_servers,
         lsp::lsp_resend_diagnostics,
         lsp::lsp_restart,
+        lsp::lsp_restart_named,
         lsp::apply_workspace_edit,
         lsp::prepare_workspace_edit,
         lsp::undo_workspace_edit,
@@ -330,6 +347,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_edit_remote,
         vcs::vcs_worktrees,
         vcs::vcs_add_worktree,
+        vcs::vcs_move_worktree,
         vcs::vcs_remove_worktree,
         vcs::vcs_diff_with_worktree,
         vcs::vcs_compare_scope,
@@ -370,6 +388,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         run::run_import_sources,
         run::run_import_configs,
         run::run_system_env,
+        run::run_env_files,
         run::run_start,
         run::run_stop,
         run::run_stdin,
@@ -397,6 +416,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         build::maven_exclude_dependency,
         build::maven_goto_declaration,
         build::build_run,
+        build::build_compile_file,
         java::java_resolve_launch,
         java::java_debug_server,
         java::java_build_workspace,
@@ -426,6 +446,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         tools::jdk_download_releases,
         tools::jdk_download_location,
         tools::jdk_download,
+        scaffold::scaffold_catalog,
+        scaffold::scaffold_options,
+        scaffold::scaffold_requirements,
+        scaffold::scaffold_create,
         sdk::sdk_detect,
         sdk::sdk_python_interpreter,
         sdk::sdk_python_effective,
@@ -449,6 +473,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::window_open_deployment,
         window::window_cycle,
         window::window_toggle_fullscreen,
+        window::window_toggle_zoom,
         window::window_flash_taskbar,
         window::window_set_titlebar_height,
         window::window_is_fullscreen,
@@ -472,6 +497,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::app_update_status,
         window::app_update_announcement,
         window::app_install_update,
+        window::app_release_notes,
         debug::debug_exception_filters,
         debug::debug_set_exception_breakpoints,
         debug::debug_set_variable,
@@ -487,6 +513,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         debug::debug_free_port,
         debug::debug_listen_for_jvm,
         debug::debug_redefine_classes,
+        debug::debug_jvm_memory_classes,
+        debug::debug_jvm_memory_instances,
+        debug::debug_jvm_memory_fields,
+        debug::debug_jvm_memory_referrers,
         coverage::coverage_prepare,
         coverage::coverage_collect,
         coverage::coverage_import,
@@ -495,6 +525,14 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         web::web_open,
         profiler::profiler_prepare,
         profiler::profiler_collect,
+        heap::debug_heap_capture,
+        heap::debug_heap_open,
+        heap::debug_heap_classes,
+        heap::debug_heap_dominators,
+        heap::debug_heap_path,
+        heap::debug_heap_compare,
+        heap::debug_heap_save,
+        heap::debug_heap_close,
         plugin::plugin_subscribe,
         plugin::plugin_list,
         plugin::plugin_set_enabled,
@@ -502,6 +540,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_install_dir,
         plugin::plugin_grant,
         plugin::plugin_set_capability,
+        plugin::plugin_revoke_net_host,
         plugin::plugin_link,
         plugin::plugin_unlink,
         plugin::plugin_assets,
@@ -600,6 +639,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         http::http_requests,
         http::http_environments,
         http::http_execute,
+        http::http_curl,
+        http::http_from_curl,
+        http::http_environment_file,
         http::http_history,
         http::http_history_get,
         http::http_history_clear,

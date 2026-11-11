@@ -59,7 +59,6 @@ import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
 import { loadRunTemplates } from "./runTemplates";
-import { recordRun } from "./services";
 import { startedPort } from "@/platform/serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
 import { gradleBootLaunch, gradleDelegation, gradleTestLaunch } from "./gradleRun";
@@ -116,6 +115,8 @@ interface SessionRuntime {
   generation: number;
   /** Called with every complete output line (e.g. waiting for a JDWP agent). */
   lineListeners: Array<(text: string) => void>;
+  /** Called with output as shown (the Debug console of a debugger attached to this process). */
+  outputListeners: Set<OutputListener>;
   /** Called once the process exited (run executors: collect a coverage report…). */
   onExit?: (exitCode: number | null, stopped: boolean) => void;
   /** User input typed into the console, not yet sent (IDEA: Enter sends the line). */
@@ -542,7 +543,9 @@ function flush(sessionId: string) {
   const chunks = rt.queue.splice(0);
   for (const c of chunks) {
     const text = c.kind === "stdout" && rt.stdout ? rt.stdout.feed(c.text) : c.text;
-    if (text) rt.console.append({ ...c, text });
+    if (!text) continue;
+    rt.console.append({ ...c, text });
+    for (const l of rt.outputListeners) l(c.kind, text);
   }
   bump(sessionId);
 }
@@ -552,6 +555,7 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
   if (!rt) return;
   if (rt.terminal) {
     rt.terminal.append(chunk);
+    for (const l of rt.outputListeners) l(chunk.kind, chunk.text);
     return;
   }
   rt.queue.push(chunk);
@@ -664,6 +668,7 @@ function newRuntime(config: RunConfig): SessionRuntime {
     flushedAt: -Infinity,
     generation: 0,
     lineListeners: [],
+    outputListeners: new Set(),
     input: "",
     terminal: null,
     terminalSize: null,
@@ -826,8 +831,6 @@ export async function startRun(
     useRun.setState((s) => ({ sessions: [...s.sessions, created], activeSession: created.id }));
   }
   bump(session.id);
-  // The Services tool window lists the configuration again after a restart.
-  recordRun(config.id);
   const sessionId = session.id;
   const rt = runtimes.get(sessionId)!;
   const generation = rt.generation;
@@ -1157,6 +1160,22 @@ function notifyExit(sessionId: string, code: number | null) {
       { label: "Rerun", run: () => void startRun(rerunConfig(session), sessionId, session.baseConfig) },
     ],
   });
+}
+
+type OutputListener = (kind: OutputChunk["kind"], text: string) => void;
+
+/**
+ * Follows the output of the session running `process`: the output so far, then
+ * each chunk as it is shown, until the returned function is called.
+ */
+export function subscribeOutput(process: RunId, listener: OutputListener): () => void {
+  const session = useRun.getState().sessions.find((s) => s.runId === process);
+  const rt = session && runtimes.get(session.id);
+  if (!rt) return () => {};
+  flush(session.id);
+  if (!rt.terminal) for (const c of rt.console.textChunks()) listener(c.kind, c.text);
+  rt.outputListeners.add(listener);
+  return () => void rt.outputListeners.delete(listener);
 }
 
 /** Handles the `runExited` backend event. */

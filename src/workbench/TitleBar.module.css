@@ -126,11 +126,16 @@
 /* Frameless window (Windows, Linux): caption buttons sit flush with the right and top edges. */
 .frameless {
   padding-right: 0;
+  /* The main menu button leads the left stripe, so the bar starts where the
+     stripe's own padding does and the two share a centre line. */
+  padding-left: var(--stripe-outer-padding);
 }
+/* The button heads the tool window stripe below it, so it takes the stripe's
+   size: both shrink in compact mode. */
 .mainMenuButton {
   flex: none;
-  width: 30px;
-  height: 30px;
+  width: var(--stripe-icon-button);
+  height: var(--stripe-icon-button);
   margin-right: 4px;
   padding: 0;
   display: inline-flex;
@@ -147,11 +152,13 @@
   outline-offset: -2px;
 }
 /* Preserve the menu's natural width while allowing its slot to yield to toolbar controls. */
+/* Ends where the stripe column below it does, the bar's padding being the
+   stripe's own. */
 .mainMenuSlot {
   position: relative;
   flex: 0 1 auto;
-  min-width: 34px;
-  height: 30px;
+  min-width: calc(var(--stripe-icon-button) + var(--island-gap));
+  height: var(--stripe-icon-button);
   overflow: hidden;
 }
 .mainMenuSlot ~ .item,
@@ -170,6 +177,16 @@
   height: 100%;
   display: flex;
   align-items: center;
+}
+/* Main menu › Separate toolbar: the titles in their own row below the title bar. */
+.menuRow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  -webkit-user-select: none;
+  user-select: none;
 }
 /* The main menu titles. */
 .menuBar {

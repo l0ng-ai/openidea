@@ -529,6 +529,27 @@ fn css_selectors_are_found_by_exact_name() {
 }
 
 #[test]
+fn symbols_named_within_keeps_out_of_root_matches_from_evicting_a_root() {
+    let f = Fixture::new(&[
+        ("a/w.rs", "struct Decoder;\nstruct Decoder;\n"),
+        ("b/x.rs", "struct Decoder;\nstruct Decoder;\nstruct Decoder;\n"),
+        ("dep/b.rs", "struct Decoder;\n"),
+    ]);
+    let idx = f.open();
+    let own = f.root.join("a");
+    let dep = f.root.join("dep");
+    // Unfiltered, the cap fills in rel-path order — own root, then the out-of-root
+    // content root b/ — so dep/ is evicted before the caller's root filter runs.
+    let unfiltered = idx.symbols_named("Decoder", None, 3);
+    let unfiltered: Vec<&str> = unfiltered.iter().map(|m| m.rel_path.as_ref()).collect();
+    assert_eq!(unfiltered, vec!["a/w.rs", "a/w.rs", "b/x.rs"]);
+    let found: Vec<String> =
+        idx.symbols_named_within("Decoder", None, &[own, dep], 3).into_iter().map(|m| m.rel_path).collect();
+    assert_eq!(found, vec!["a/w.rs".to_string(), "a/w.rs".to_string(), "dep/b.rs".to_string()]);
+    assert!(idx.symbols_named_within("Decoder", None, &[f.root.join("none")], 3).is_empty());
+}
+
+#[test]
 fn content_roots_and_excludes_change_without_reopening() {
     let fx = Fixture::new(&[("src/main.rs", "fn alpha() {}\n"), ("src/gen/out.rs", "fn generated() {}\n")]);
     let shared = fx._dir.path().join("shared-lib");

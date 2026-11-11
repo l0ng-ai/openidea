@@ -1,6 +1,8 @@
 use ide_core::CancellationToken;
 use ide_core::error::ErrorKind;
-use ide_search::{FileMatches, LineMatch, SearchQuery, SearchScope, SearchSummary, replace_in_text, search};
+use ide_search::{
+    FileMatches, LineMatch, SearchQuery, SearchScope, SearchSummary, TextSource, replace_in_text, search,
+};
 use serde::Serialize;
 use std::path::Path;
 use std::sync::Mutex;
@@ -652,9 +654,15 @@ type Row = (String, u32, Vec<(u32, u32)>);
 fn run_context(root: &Path, context: ide_search::SearchContext) -> Vec<Row> {
     let out = Mutex::new(Vec::new());
     let q = SearchQuery { context, ..query("foo") };
-    ide_search::search_in_context(root, &q, None, Some(&toy_literals), &|_| None, &CancellationToken::new(), &|f| {
-        out.lock().unwrap().push(f)
-    })
+    ide_search::search_in_context(
+        root,
+        &q,
+        None,
+        Some(&toy_literals),
+        TextSource::detected(&|_| None),
+        &CancellationToken::new(),
+        &|f| out.lock().unwrap().push(f),
+    )
     .unwrap();
     let mut rows: Vec<_> = out
         .into_inner()
@@ -723,4 +731,69 @@ fn a_project_inside_a_repository_keeps_the_repositorys_gitignore() {
     std::fs::create_dir(p.path().join(".git")).unwrap();
     let (views, _) = run(&p.path().join("app"), &query("hit"));
     assert_eq!(paths(&views), ["src/a.txt"]);
+}
+
+fn gbk(text: &str) -> Vec<u8> {
+    encoding_rs::GBK.encode(text).0.into_owned()
+}
+
+fn utf16(text: &str, le: bool) -> Vec<u8> {
+    let units = text.encode_utf16();
+    if le {
+        [0xFF, 0xFE].into_iter().chain(units.flat_map(u16::to_le_bytes)).collect()
+    } else {
+        [0xFE, 0xFF].into_iter().chain(units.flat_map(u16::to_be_bytes)).collect()
+    }
+}
+
+#[test]
+fn non_utf8_files_are_searched_as_text() {
+    let java = gbk("class A {\n    //中文搜索验证 Chinese Chinese Chinese\n    log.info(\"新增档案开始\");\n}\n");
+    // Only bytes past the first read buffer are not UTF-8.
+    let late = [b"x\n".repeat(200_000), gbk("新增档案开始\n")].concat();
+    let p = project(&[
+        ("src/A.java", &java),
+        ("src/late.log", &late),
+        ("le.txt", &utf16("a\n新增档案开始\n", true)),
+        ("be.txt", &utf16("新增档案开始\n", false)),
+        ("utf8.txt", "新增档案开始\n".as_bytes()),
+        ("bin.dat", &[gbk("新增档案开始").as_slice(), &[0, 0, 1, 2]].concat()),
+    ]);
+
+    let (views, summary) = run(p.path(), &query("新增档案开始"));
+    assert_eq!(paths(&views), ["be.txt", "le.txt", "src/A.java", "src/late.log", "utf8.txt"]);
+    assert_eq!(summary.matches, 5);
+    let line = |path: &str| views.iter().find(|v| v.rel_path == path).unwrap().matches[0].clone();
+    assert_eq!((line("le.txt").line, line("le.txt").ranges), (1, vec![(0, 6)]));
+    assert_eq!((line("src/late.log").line, line("src/late.log").text), (200_000, "新增档案开始".to_owned()));
+    assert_eq!(line("src/A.java").text, "    log.info(\"新增档案开始\");");
+
+    // ASCII matches in a GBK file show its other characters decoded.
+    let (views, _) = run(p.path(), &query("Chinese"));
+    assert_eq!(paths(&views), ["src/A.java"]);
+    assert_eq!(views[0].matches[0].text, "    //中文搜索验证 Chinese Chinese Chinese");
+    assert_eq!(views[0].matches[0].ranges, [(13, 20), (21, 28), (29, 36)]);
+}
+
+#[test]
+fn non_utf8_files_use_the_given_decoder() {
+    // Text too short to detect reliably decodes with the configured encoding.
+    let p = project(&[("a.txt", &gbk("中文\n"))]);
+    let out = Mutex::new(Vec::new());
+    let decode = |_: &Path, bytes: &[u8]| ide_vfs::decode_text(bytes, Some("gbk"));
+    let source = TextSource { overlay: &|_| None, decode: &decode };
+    ide_search::search_in_context(p.path(), &query("中文"), None, None, source, &CancellationToken::new(), &|f| {
+        out.lock().unwrap().push(f)
+    })
+    .unwrap();
+    let files = out.into_inner().unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].matches[0].text, "中文");
+}
+
+#[test]
+fn search_context_reads_non_utf8_files() {
+    use ide_search::SearchContext as C;
+    let p = project(&[("a.rs", &gbk("foo(\"新增\"); // 中文 foo\n"))]);
+    assert_eq!(run_context(p.path(), C::InComments), vec![("a.rs".to_owned(), 0, vec![(17, 20)])]);
 }

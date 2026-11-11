@@ -15,8 +15,17 @@ import {
   showContextMenu,
   startPointerDrag,
 } from "@/ui";
-import { SESSION_KIND, TASK_DRAG, age, branchLabel, groupTasks, sessionKey, type TaskGroup } from "./model";
-import { openHome, useAgents } from "./store";
+import {
+  SESSION_KIND,
+  TASK_DRAG,
+  age,
+  branchLabel,
+  groupTasks,
+  providerIcon,
+  sessionKey,
+  type TaskGroup,
+} from "./model";
+import { importExternalSession, openHome, refreshExternalSessions, useAgents } from "./store";
 import { taskMenu } from "./taskActions";
 import { SessionEditor } from "./SessionEditor";
 import { HomeEditor } from "./HomeEditor";
@@ -26,17 +35,11 @@ import { useTx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 
 export function AgentsHeaderActions() {
-  return <IconButton icon="plus" action="agents.newTask" />;
-}
-
-export function AgentsLocationActions() {
-  const location = useAgents((s) => s.sessionLocation);
-  const tx = useTx();
   return (
-    <div role="group" aria-label={tx("Conversation location")} className={styles.location}>
-      <IconButton icon="open-in-tool-window" action="agents.useToolWindow" pressed={location === "toolWindow"} />
-      <IconButton icon="editor-only" action="agents.useEditor" pressed={location === "editor"} />
-    </div>
+    <>
+      <IconButton icon="plus" action="agents.newTask" />
+      <IconButton icon="settings" action="agents.mcpServers" />
+    </>
   );
 }
 
@@ -59,7 +62,7 @@ const sessionPayloadTask = (payload: string): string | null => {
   }
 };
 
-export function TaskStatusIcon({ status }: { status: Status }) {
+function TaskStatusIcon({ status }: { status: Status }) {
   switch (status) {
     case "needsInput":
       return <Icon name="warning" size={13} label="Needs input" />;
@@ -90,6 +93,19 @@ export function AgentsView() {
   const inline = docked !== null || homeOpen;
   const historyRef = useRef<HTMLButtonElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const external = useAgents((s) => s.external);
+  const externalError = useAgents((s) => s.externalError);
+  const [importing, setImporting] = useState<string | null>(null);
+  // Sessions started elsewhere (a terminal, another editor) list on demand (#312).
+  useEffect(() => {
+    if (historyOpen) void refreshExternalSessions();
+  }, [historyOpen]);
+  const importSession = (provider: string, sessionId: string) => {
+    setImporting(`${provider}:${sessionId}`);
+    void importExternalSession(provider, sessionId)
+      .catch(() => {})
+      .finally(() => setImporting(null));
+  };
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["g:archived"]));
   const [selected, setSelected] = useState<Set<string>>(() => {
     const task = sessionTask(maybeEditorService()?.activeInput?.());
@@ -195,10 +211,12 @@ export function AgentsView() {
                 if (inline && !e.metaKey && !e.ctrlKey && !e.shiftKey) showTask(n.task.id);
               }}
             >
-              <TaskStatusIcon status={n.task.status} />
+              <Icon name={providerIcon(n.task.provider)} size={16} label={providerName(n.task.provider)} />
               <span className={styles.title} data-unread={unread.has(n.task.id) || undefined}>
                 {n.task.title}
               </span>
+              {/* Ready tasks say so by their group; the others show what they're doing. */}
+              {n.task.status !== "ready" && <TaskStatusIcon status={n.task.status} />}
               {unread.has(n.task.id) && (
                 <span className={styles.unreadDot} role="img" aria-label={tx("Unread")} title={tx("Unread")} />
               )}
@@ -207,10 +225,7 @@ export function AgentsView() {
                   {basename(n.task.projectRoot ?? project.root)}
                 </span>
               )}
-              <span className={styles.detail}>
-                {providerName(n.task.provider)}
-                {n.task.isolation === "worktree" ? ` · ${branchLabel(n.task.branch)}` : ""}
-              </span>
+              {n.task.isolation === "worktree" && <span className={styles.detail}>{branchLabel(n.task.branch)}</span>}
               <span className={styles.age}>{age(n.task.updatedMs ?? 0)}</span>
             </span>
           )
@@ -283,6 +298,37 @@ export function AgentsView() {
               <T>Agent sessions</T>
             </div>
             {taskList}
+            {(external.length > 0 || externalError) && (
+              <>
+                <div className={styles.historyTitle}>
+                  <T>Sessions from other apps</T>
+                </div>
+                {externalError ? (
+                  <div className={styles.empty}>{externalError}</div>
+                ) : (
+                  <div className={styles.external}>
+                    {external.map((s) => {
+                      const key = `${s.provider}:${s.sessionId}`;
+                      return (
+                        <div key={key} className={styles.row} title={s.cwd ?? s.sessionId}>
+                          <Icon name={providerIcon(s.provider)} size={16} label={providerName(s.provider)} />
+                          <span className={styles.title}>{s.title}</span>
+                          <span className={styles.age}>{age(s.updatedMs ?? 0)}</span>
+                          <button
+                            type="button"
+                            className={styles.link}
+                            disabled={importing === key}
+                            onClick={() => importSession(s.provider, s.sessionId)}
+                          >
+                            <T>Import</T>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
           </Popup>
         )}
       </div>

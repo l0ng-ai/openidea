@@ -11,6 +11,7 @@ import clsx from "clsx";
 import type {
   CapabilityInfo,
   CatalogPlugin,
+  DependencyState,
   MarketPlugin,
   PluginIcon as PluginIconData,
   PluginInfo,
@@ -33,6 +34,8 @@ import {
 } from "@/ui";
 import { RISK_LABEL, sortByRisk, capabilityDescription } from "./consent";
 import { pluginIconName } from "./pluginIcon";
+import { formatDownloads, groupMarket, isExample, monogram, suggestedFor, suggestionPaths } from "./market";
+import { projectHas } from "./workspaceContains";
 import { localizeContributions, usePluginCatalogs, usePluginT } from "./pluginText";
 import { itemsOf, uiPoint } from "./projection";
 import {
@@ -49,6 +52,7 @@ import {
   reloadPlugin,
   setAllInstalledEnabled,
   setPluginCapability,
+  revokePluginNetHost,
   setPluginEnabled,
   uninstallPlugin,
   updateAllPlugins,
@@ -63,13 +67,28 @@ import { pluginsBackend } from "./backend";
 import { confirm } from "@/workbench/messages";
 import { tx } from "@/platform/i18n";
 
-const STATUS: Record<PluginStatus, { label: string; tone: "success" | "accent" | "neutral" | "danger" | "warning" }> = {
+const STATUS: Record<
+  PluginStatus,
+  {
+    label: string;
+    tone: "success" | "accent" | "neutral" | "danger" | "warning";
+  }
+> = {
   active: { label: "Running", tone: "success" },
   inactive: { label: "Enabled", tone: "accent" },
   static: { label: "Enabled", tone: "accent" },
   disabled: { label: "Disabled", tone: "neutral" },
   needsConsent: { label: "Needs permission", tone: "warning" },
   failed: { label: "Failed", tone: "danger" },
+  blocked: { label: "Blocked", tone: "warning" },
+};
+
+const DEPENDENCY_STATE: Record<DependencyState, { label: string; tone: "success" | "neutral" | "warning" }> = {
+  satisfied: { label: "Installed", tone: "success" },
+  missing: { label: "Not installed", tone: "warning" },
+  disabled: { label: "Disabled", tone: "neutral" },
+  version: { label: "Wrong version", tone: "warning" },
+  blocked: { label: "Cannot run", tone: "warning" },
 };
 
 /** Human names of the built-in contribution points (others show their id). */
@@ -118,13 +137,55 @@ export function catalogState(
 
 const vendorOf = (authors: readonly string[]) => authors.join(", ");
 
-function PluginIcon({ id, icon, large }: { id: string; icon: PluginIconData | null | undefined; large?: boolean }) {
+/** The marketplace's newer version of an installed plugin, if there is one this IDE can load. */
+function useMarketUpdate(plugin: PluginInfo): MarketPlugin | undefined {
+  return usePlugins((s) =>
+    plugin.source === "installed"
+      ? s.market?.find((m) => m.id === plugin.id && m.compatible && compareVersions(m.version, plugin.version) > 0)
+      : undefined,
+  );
+}
+
+function PluginIcon({
+  id,
+  icon,
+  large,
+  name,
+}: {
+  id: string;
+  icon: PluginIconData | null | undefined;
+  large?: boolean;
+  /** Without an icon: its first letter on a tint of its own instead of the generic icon. */
+  name?: string;
+}) {
+  if (!icon && name) {
+    const { letter, tone } = monogram(id, name);
+    return (
+      <span
+        className={clsx(styles.icon, large && styles.iconLarge, styles.monogram, styles[`tone${tone}`])}
+        aria-hidden
+      >
+        {letter}
+      </span>
+    );
+  }
+  // A plugin's own icon fills the tile, as the initials do; the generic one sits on a plate.
   return (
-    <span className={clsx(styles.icon, large && styles.iconLarge)} aria-hidden>
-      <Icon name={pluginIconName(id, icon)} size={large ? 32 : 20} />
+    <span className={clsx(styles.icon, large && styles.iconLarge, icon && styles.ownIcon)} aria-hidden>
+      <Icon name={pluginIconName(id, icon)} size={icon ? (large ? 56 : 32) : large ? 32 : 20} />
     </span>
   );
 }
+
+function ExampleTag() {
+  return (
+    <span className={styles.exampleTag} title={exampleNote()}>
+      <T>Example</T>
+    </span>
+  );
+}
+
+const exampleNote = () => tx("Shows how to use the plugin API; not maintained as a product.");
 
 function ListHeader({ title, count }: { title: string; count: number }) {
   return (
@@ -137,6 +198,7 @@ function ListHeader({ title, count }: { title: string; count: number }) {
 
 function InstalledRow({ plugin, selected, onSelect }: { plugin: PluginInfo; selected: boolean; onSelect: () => void }) {
   const busy = usePlugins((s) => !!s.busy[plugin.id]);
+  const update = useMarketUpdate(plugin);
   return (
     <li className={clsx(styles.row, selected && styles.rowSelected, !plugin.enabled && styles.rowDisabled)}>
       <button
@@ -148,13 +210,17 @@ function InstalledRow({ plugin, selected, onSelect }: { plugin: PluginInfo; sele
       >
         <PluginIcon id={plugin.id} icon={plugin.icon} />
         <span className={styles.rowText}>
-          <span className={styles.rowName}>{plugin.name}</span>
+          <span className={styles.rowTitle}>
+            <span className={styles.rowName}>{plugin.name}</span>
+            {plugin.source === "installed" && isExample(plugin) && <ExampleTag />}
+          </span>
           <span className={styles.rowMeta}>
             <span className={styles.rowVendor}>{vendorOf(plugin.authors) || plugin.id}</span>
             <span>{plugin.version}</span>
             {plugin.source !== "installed" && (
               <span className={styles.devTag}>{plugin.source === "linked" ? tx("linked") : tx("dev")}</span>
             )}
+            {update && <Badge tone="accent">{tx("Update")}</Badge>}
             {plugin.status === "failed" && (
               <Badge dot tone="danger">
                 <T>Failed</T>
@@ -235,6 +301,80 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
       {children}
     </section>
   );
+}
+
+/** What a plugin needs, who needs it and the extension points it offers; nothing when it has none. */
+function Relations({ plugin }: { plugin: PluginInfo }) {
+  return (
+    <>
+      {plugin.depends.length > 0 && (
+        <Section title="Requires">
+          <ul className={styles.items} aria-label={tx("Required plugins")}>
+            {plugin.depends.map((dep) => (
+              <li key={dep.id} className={styles.item}>
+                <span className={styles.itemMain}>
+                  {dep.name ?? dep.id}
+                  {dep.version ? ` ${dep.version}` : ""}
+                  {dep.optional ? ` ${tx("(optional)")}` : ""}
+                </span>
+                <Badge tone={DEPENDENCY_STATE[dep.state].tone}>{DEPENDENCY_STATE[dep.state].label}</Badge>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+      {plugin.dependents.length > 0 && (
+        <Section title="Required by">
+          <ul className={styles.items} aria-label={tx("Plugins that require this one")}>
+            {plugin.dependents.map((dependent) => (
+              <li key={dependent.id} className={styles.item}>
+                <span className={styles.itemMain}>{dependent.name}</span>
+                {!dependent.enabled && <Badge tone="neutral">{tx("Disabled")}</Badge>}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+      {plugin.extensionPoints.length > 0 && (
+        <Section title="Extension points">
+          <ul className={styles.items} aria-label={tx("Extension points this plugin offers")}>
+            {plugin.extensionPoints.map((point) => (
+              <li key={point.id} className={styles.item}>
+                <span className={styles.itemMain} title={point.description || point.id}>
+                  <span className={styles.mono}>{point.id}</span>
+                </span>
+                <span className={styles.muted}>
+                  {point.contributors.length > 0
+                    ? tx`Contributed by ${point.contributors.join(", ")}`
+                    : tx("No contributions")}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+    </>
+  );
+}
+
+/** Asks before disabling a plugin that enabled plugins need: they stop with it. */
+async function toggleEnabled(plugin: PluginInfo): Promise<void> {
+  const needing = plugin.dependents.filter((d) => d.enabled).map((d) => d.name);
+  if (plugin.enabled && plugin.status !== "failed" && needing.length > 0) {
+    const names = needing.join(", ");
+    const confirmed = await confirm({
+      title: tx("Disable plugin"),
+      message:
+        needing.length === 1
+          ? tx`${names} needs ${plugin.name} and stops while it is disabled. Disable it anyway?`
+          : tx`${names} need ${plugin.name} and stop while it is disabled. Disable it anyway?`,
+      ok: tx("Disable"),
+      icon: "warning",
+    });
+    if (!confirmed) return;
+  }
+  // Enabling an enabled plugin stops and starts it again: that is "Restart".
+  await setPluginEnabled(plugin.id, !plugin.enabled || plugin.status === "failed");
 }
 
 function DetailTabs({ notes, overview }: { notes: string | null; overview: ReactNode }) {
@@ -338,7 +478,14 @@ function ProgramPermission({ plugin, cap, disabled }: { plugin: PluginInfo; cap:
       const message = reset
         ? tx("Revalidate the default executable? If it is unavailable, this permission will be revoked.")
         : tx`Allow ${plugin.name} to run ${selected}? This is equivalent to running arbitrary code on this machine.`;
-      if (!(await confirm({ title: tx("Approve plugin executable"), message, ok: tx("Allow"), icon: "warning" })))
+      if (
+        !(await confirm({
+          title: tx("Approve plugin executable"),
+          message,
+          ok: tx("Allow"),
+          icon: "warning",
+        }))
+      )
         return;
       await pluginsBackend().chooseProgram(plugin.id, cap.id, scope, selected);
       await refreshPlugins();
@@ -376,7 +523,7 @@ function ProgramPermission({ plugin, cap, disabled }: { plugin: PluginInfo; cap:
 }
 
 function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean }) {
-  if (plugin.capabilities.length === 0) {
+  if (plugin.capabilities.length === 0 && plugin.netHosts.length === 0) {
     return (
       <div className={styles.muted}>
         <T>No special permissions.</T>
@@ -402,7 +549,30 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
           />
         </CapabilityRow>
       ))}
+      {plugin.netHosts.map((host) => (
+        <NetHostRow key={host} plugin={plugin} host={host} disabled={busy || !confirmed} />
+      ))}
     </ul>
+  );
+}
+
+/** A host the user allowed through `net:ask` ("always"); removing it asks again next time. */
+function NetHostRow({ plugin, host, disabled }: { plugin: PluginInfo; host: string; disabled: boolean }) {
+  return (
+    <li className={styles.capabilityItem}>
+      <div className={styles.capabilityHeader}>
+        <span className={styles.mono}>{`net:${host}`}</span>
+        <Badge tone={RISK_LABEL.medium.tone}>{RISK_LABEL.medium.label}</Badge>
+      </div>
+      <p className={styles.capabilityDescription}>
+        {tx("Allowed when the plugin asked at first use. Remove it to be asked again.")}
+      </p>
+      <div className={styles.programPermission}>
+        <Button disabled={disabled} onClick={() => void revokePluginNetHost(plugin.id, host)}>
+          {tx("Remove")}
+        </Button>
+      </div>
+    </li>
   );
 }
 
@@ -436,6 +606,8 @@ function Homepage({ value }: { value: string }) {
 
 function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
   const busy = usePlugins((s) => !!s.busy[plugin.id]);
+  const installing = usePlugins((s) => s.installing);
+  const update = useMarketUpdate(plugin);
   const status = STATUS[plugin.status];
   const [confirmUninstall, setConfirmUninstall] = useState(false);
 
@@ -492,6 +664,8 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
         </div>
       ))}
 
+      <Relations plugin={plugin} />
+
       <Section title="Permissions">
         <CapabilityList plugin={plugin} busy={busy} />
       </Section>
@@ -526,6 +700,7 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
             {plugin.source !== "installed" && (
               <Badge tone="warning">{plugin.source === "linked" ? tx("Linked plugin") : tx("Project plugin")}</Badge>
             )}
+            {plugin.source === "installed" && isExample(plugin) && <ExampleTag />}
             {plugin.source === "installed" &&
               (plugin.publisher ? (
                 <Badge tone="success">{tx`Signed by ${plugin.publisher}`}</Badge>
@@ -536,12 +711,21 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
         </div>
         <div className={styles.headerActions}>
           {busy && <Spinner size={14} label="Working" />}
+          {update && (
+            <Button
+              size="small"
+              variant="primary"
+              disabled={busy || installing}
+              onClick={() => void installFromMarket(update.id)}
+            >
+              {tx`Update to ${update.version}`}
+            </Button>
+          )}
           <Button
             size="small"
             variant={plugin.enabled ? "secondary" : "primary"}
             disabled={busy}
-            // Enabling an enabled plugin stops and starts it again: that is "Restart".
-            onClick={() => void setPluginEnabled(plugin.id, !plugin.enabled || plugin.status === "failed")}
+            onClick={() => void toggleEnabled(plugin)}
           >
             {plugin.enabled ? (plugin.status === "failed" ? "Restart" : "Disable") : "Enable"}
           </Button>
@@ -689,14 +873,27 @@ function gearMenu(plugins: readonly PluginInfo[], updates: number, actions: Gear
       run: () => void updateAllPlugins(),
     },
     { kind: "separator" },
-    { label: "Install Plugin from Disk…", icon: "package", run: () => actions.install(false) },
-    { label: "Install Plugin from Package File…", run: () => actions.install(true) },
+    {
+      label: "Install Plugin from Disk…",
+      icon: "package",
+      run: () => actions.install(false),
+    },
+    {
+      label: "Install Plugin from Package File…",
+      run: () => actions.install(true),
+    },
     { label: "Plugin Repository…", run: actions.editRepository },
     ...(actions.canImport
       ? [
           { kind: "separator" as const },
-          { label: "Import Theme from JetBrains IDE…", run: actions.importInstalledIntellij },
-          { label: "Import IntelliJ Theme from File…", run: actions.importIntellijFile },
+          {
+            label: "Import Theme from JetBrains IDE…",
+            run: actions.importInstalledIntellij,
+          },
+          {
+            label: "Import IntelliJ Theme from File…",
+            run: actions.importIntellijFile,
+          },
         ]
       : []),
     { kind: "separator" },
@@ -778,7 +975,11 @@ function CategoryFilter({
   const counts = new Map<Category, number>();
   for (const m of market) for (const c of categoriesOf(m)) counts.set(c, (counts.get(c) ?? 0) + 1);
   const options = [
-    { value: "all" as const, label: tx("All Categories"), detail: String(market.length) },
+    {
+      value: "all" as const,
+      label: tx("All Categories"),
+      detail: String(market.length),
+    },
     ...CATEGORIES.filter((c) => counts.has(c)).map((c) => ({
       value: c,
       label: categoryLabel(c),
@@ -796,10 +997,46 @@ function CategoryFilter({
   );
 }
 
-function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selected: boolean; onSelect: () => void }) {
+const publisherOf = (m: MarketPlugin) => m.publisherName || m.publisher;
+
+/** Install / Update in a row or the details; what is installed otherwise. */
+function MarketAction({
+  entry,
+  compact,
+  onInstalled,
+}: {
+  entry: MarketPlugin;
+  compact?: boolean;
+  onInstalled?: (id: string) => void;
+}) {
+  const installing = usePlugins((s) => s.installing);
   const update = isUpdate(entry);
+  if (!entry.compatible) {
+    return compact ? <Badge tone="warning">{tx("Incompatible")}</Badge> : null;
+  }
+  if (entry.installed && !update) {
+    return compact ? <span className={styles.installedTag}>{tx("Installed")}</span> : null;
+  }
+  const label = update ? (compact ? tx("Update") : tx`Update to ${entry.version}`) : tx("Install");
   return (
-    <li className={clsx(styles.row, selected && styles.rowSelected)}>
+    <Button
+      size="small"
+      variant={update || !compact ? "primary" : "secondary"}
+      disabled={installing}
+      aria-label={compact ? `${update ? tx("Update") : tx("Install")} ${entry.name}` : undefined}
+      onClick={(e) => {
+        e.stopPropagation();
+        void installFromMarket(entry.id).then((id) => id && onInstalled?.(id));
+      }}
+    >
+      {label}
+    </Button>
+  );
+}
+
+function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selected: boolean; onSelect: () => void }) {
+  return (
+    <li className={clsx(styles.row, styles.marketRow, selected && styles.rowSelected)}>
       <button
         type="button"
         className={styles.rowMain}
@@ -807,99 +1044,189 @@ function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selecte
         onClick={onSelect}
         title={entry.description || entry.name}
       >
-        <PluginIcon id={entry.id} icon={entry.icon} />
+        <PluginIcon id={entry.id} icon={entry.icon} name={entry.name} />
         <span className={styles.rowText}>
-          <span className={styles.rowName}>{entry.name}</span>
+          <span className={styles.rowTitle}>
+            <span className={styles.rowName}>{entry.name}</span>
+            {isExample(entry) && <ExampleTag />}
+          </span>
+          {entry.description && <span className={styles.rowDescription}>{entry.description}</span>}
           <span className={styles.rowMeta}>
-            <span className={styles.rowVendor}>{entry.publisher}</span>
-            <span>{entry.version}</span>
+            {!isExample(entry) && <span className={styles.rowVendor}>{publisherOf(entry)}</span>}
+            {entry.downloads != null && (
+              <span className={styles.downloads} title={tx`${entry.downloads} downloads`}>
+                <Icon name="download" size={12} />
+                {formatDownloads(entry.downloads)}
+              </span>
+            )}
           </span>
         </span>
       </button>
-      {update ? (
-        <Badge tone="accent">{tx("Update")}</Badge>
-      ) : entry.installed ? (
-        <Badge tone="neutral">{tx("Installed")}</Badge>
-      ) : !entry.compatible ? (
-        <Badge tone="warning">{tx("Incompatible")}</Badge>
-      ) : null}
+      <MarketAction entry={entry} compact />
     </li>
   );
 }
 
-function MarketDetails({ entry, onInstalled }: { entry: MarketPlugin; onInstalled: (id: string) => void }) {
-  const installing = usePlugins((s) => s.installing);
-  const update = isUpdate(entry);
-  const install = async () => {
-    const id = await installFromMarket(entry.id);
-    if (id) onInstalled(id);
-  };
+function MarketGroup({
+  title,
+  entries,
+  selectedId,
+  onSelect,
+  note,
+  idPrefix,
+}: {
+  title: string;
+  entries: readonly MarketPlugin[];
+  selectedId: string | undefined;
+  onSelect: (id: string) => void;
+  note?: string;
+  idPrefix: string;
+}) {
+  if (entries.length === 0) return null;
+  return (
+    <>
+      <ListHeader title={title} count={entries.length} />
+      {note && <li className={styles.groupNote}>{note}</li>}
+      {entries.map((m) => (
+        <MarketRow
+          key={`${idPrefix}:${m.id}`}
+          entry={m}
+          selected={m.id === selectedId}
+          onSelect={() => onSelect(m.id)}
+        />
+      ))}
+    </>
+  );
+}
+
+function MarketDetails({
+  entry,
+  suggestedBy,
+  onInstalled,
+}: {
+  entry: MarketPlugin;
+  suggestedBy: string | undefined;
+  onInstalled: (id: string) => void;
+}) {
+  const example = isExample(entry);
+  const overview = (
+    <>
+      {entry.description && <p className={styles.description}>{entry.description}</p>}
+      <dl className={styles.facts}>
+        <dt>
+          <T>Id</T>
+        </dt>
+        <dd className={styles.mono}>{entry.id}</dd>
+        <dt>
+          <T>Category</T>
+        </dt>
+        <dd>{categoriesOf(entry).map(categoryLabel).join(", ")}</dd>
+        {entry.homepage && (
+          <>
+            <dt>
+              <T>Homepage</T>
+            </dt>
+            <Homepage value={entry.homepage} />
+          </>
+        )}
+        {entry.installed && (
+          <>
+            <dt>
+              <T>Installed</T>
+            </dt>
+            <dd>{entry.installed}</dd>
+          </>
+        )}
+      </dl>
+      {(entry.capabilities?.length ?? 0) > 0 && (
+        <Section title="Permissions">
+          <ul className={styles.items}>
+            {(entry.capabilities ?? []).map((c) => (
+              <li key={c} className={clsx(styles.item, styles.mono)}>
+                {c}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+    </>
+  );
   return (
     <div className={styles.details} aria-label={`${entry.name} details`}>
       <header className={styles.header}>
-        <PluginIcon id={entry.id} icon={entry.icon} large />
+        <PluginIcon id={entry.id} icon={entry.icon} name={entry.name} large />
         <div className={styles.headerText}>
           <h2 className={styles.title}>{entry.name}</h2>
-          <div className={styles.authors}>{entry.authors?.length ? vendorOf(entry.authors) : entry.publisher}</div>
+          <div className={styles.authors}>{entry.authors?.length ? vendorOf(entry.authors) : publisherOf(entry)}</div>
           <div className={styles.titleLine}>
             <span className={styles.version}>{entry.version}</span>
-            <Badge tone="success">{tx`Signed by ${entry.publisher}`}</Badge>
+            {example && <ExampleTag />}
+            <Badge tone="success">{tx`Signed by ${publisherOf(entry)}`}</Badge>
+            {entry.downloads != null && (
+              <span className={styles.downloads}>
+                <Icon name="download" size={12} />
+                {tx`${formatDownloads(entry.downloads)} downloads`}
+              </span>
+            )}
           </div>
         </div>
         <div className={styles.headerActions}>
-          {entry.compatible && (!entry.installed || update) && (
-            <Button size="small" variant="primary" disabled={installing} onClick={() => void install()}>
-              {update ? tx`Update to ${entry.version}` : tx("Install")}
-            </Button>
-          )}
+          <MarketAction entry={entry} onInstalled={onInstalled} />
         </div>
       </header>
-      <div className={styles.marketOverview}>
-        {!entry.compatible && (
-          <p className={clsx(styles.notice, styles.detailsNotice)} role="note">
-            <Icon name="info" size={14} />
-            <span>{tx`Needs plugin API ${entry.engine}. Update OpenIDEA to install it.`}</span>
-          </p>
-        )}
-        {entry.description && <p className={styles.description}>{entry.description}</p>}
-        <dl className={styles.facts}>
-          <dt>
-            <T>Id</T>
-          </dt>
-          <dd className={styles.mono}>{entry.id}</dd>
-          <dt>
-            <T>Category</T>
-          </dt>
-          <dd>{categoriesOf(entry).map(categoryLabel).join(", ")}</dd>
-          {entry.installed && (
-            <>
-              <dt>
-                <T>Installed</T>
-              </dt>
-              <dd>{entry.installed}</dd>
-            </>
-          )}
-        </dl>
-        {(entry.capabilities?.length ?? 0) > 0 && (
-          <Section title="Permissions">
-            <ul className={styles.items}>
-              {(entry.capabilities ?? []).map((c) => (
-                <li key={c} className={clsx(styles.item, styles.mono)}>
-                  {c}
-                </li>
-              ))}
-            </ul>
-          </Section>
-        )}
-      </div>
+      {!entry.compatible && (
+        <p className={clsx(styles.notice, styles.detailsNotice)} role="note">
+          <Icon name="info" size={14} />
+          <span>{tx`Needs plugin API ${entry.engine}. Update OpenIDEA to install it.`}</span>
+        </p>
+      )}
+      {example && (
+        <p className={clsx(styles.notice, styles.detailsNotice)} role="note">
+          <Icon name="info" size={14} />
+          <span>
+            {tx(
+              "This plugin shows how to use the plugin API and is not maintained as a product. Build on it in your own repository.",
+            )}
+          </span>
+        </p>
+      )}
+      {suggestedBy && (
+        <p className={clsx(styles.notice, styles.suggestNotice, styles.detailsNotice)} role="note">
+          <Icon name="info" size={14} />
+          <span>{tx`Suggested because this project has ${suggestedBy}.`}</span>
+        </p>
+      )}
+      <DetailTabs notes={entry.notes ?? null} overview={overview} />
     </div>
   );
 }
 
-export function PluginsPage() {
+/** Each marketplace plugin the open project has a suggestion path for (id → path). */
+function useSuggestions(market: readonly MarketPlugin[] | null): Map<string, string> {
+  const root = useProject((s) => s.project?.root);
+  const [present, setPresent] = useState<ReadonlySet<string>>(new Set());
+  const paths = useMemo(() => suggestionPaths(market ?? []), [market]);
+  useEffect(() => {
+    let live = true;
+    if (!root || paths.length === 0) {
+      setPresent(new Set());
+      return;
+    }
+    void projectHas(paths).then((found) => {
+      if (live) setPresent(found);
+    });
+    return () => {
+      live = false;
+    };
+  }, [root, paths]);
+  return useMemo(() => suggestedFor(market ?? [], present), [market, present]);
+}
+
+/** Opens on Available, where plugins are found; `initialTab` picks another. */
+export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab } = {}) {
   const { plugins, loaded, loading, error, installing, catalog, catalogError, market, marketUrl, marketError } =
     usePlugins();
-  const [tab, setTab] = useState<Tab>("installed");
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedCatalogId, setSelectedCatalogId] = useState<string | null>(null);
@@ -920,7 +1247,13 @@ export function PluginsPage() {
       }),
     [market, query, category],
   );
-  const selectedMarket = marketShown.find((m) => m.id === selectedMarketId) ?? null;
+  const suggestions = useSuggestions(market);
+  const browsing = !query.trim() && category === "all";
+  const groups = useMemo(
+    () => groupMarket(marketShown, query, browsing, suggestions),
+    [marketShown, query, browsing, suggestions],
+  );
+  const marketOrder = [...groups.suggested, ...groups.featured, ...groups.community, ...groups.examples];
 
   const shown = useMemo(() => filterPlugins(plugins, query), [plugins, query]);
   const downloaded = shown.filter((p) => p.source === "installed");
@@ -933,7 +1266,16 @@ export function PluginsPage() {
     () => (category === "all" ? filterCatalog(catalog ?? [], query) : []),
     [catalog, query, category],
   );
-  const selectedEntry = catalogShown.find((c) => c.id === selectedCatalogId) ?? catalogShown[0] ?? null;
+  // The clicked plugin; else the first one listed, so the details are never empty.
+  const pickedCatalog = catalogShown.find((c) => c.id === selectedCatalogId) ?? null;
+  const selectedMarket = pickedCatalog
+    ? null
+    : (marketShown.find((m) => m.id === selectedMarketId) ?? marketOrder[0] ?? null);
+  const selectedEntry = selectedMarket ? null : (pickedCatalog ?? catalogShown[0] ?? null);
+  const selectMarket = (id: string) => {
+    setSelectedCatalogId(null);
+    setSelectedMarketId(id);
+  };
 
   const showInstalled = (id: string | null) => {
     if (!id) return;
@@ -973,11 +1315,6 @@ export function PluginsPage() {
             },
           ]}
         />
-        <span title={tx("The plugin system is a preview: its API and the plugins may still change.")}>
-          <Badge tone="accent">
-            <T>Preview</T>
-          </Badge>
-        </span>
         <span className={styles.spacer} />
         {(loading || installing) && <Spinner size={14} label={installing ? "Installing plugin" : "Loading plugins"} />}
         <IconButton icon="settings" title="Manage Plugins" aria-haspopup="menu" onClick={openGear} />
@@ -991,13 +1328,18 @@ export function PluginsPage() {
 
       <div className={styles.body}>
         <div className={styles.side}>
-          <SearchField
-            className={styles.search}
-            value={query}
-            onChange={setQuery}
-            placeholder={tab === "installed" ? "Search installed plugins" : "Search plugins"}
-            aria-label="Filter plugins"
-          />
+          <div className={styles.searchRow}>
+            <SearchField
+              className={styles.searchField}
+              value={query}
+              onChange={setQuery}
+              placeholder={tab === "installed" ? "Search installed plugins" : "Search plugins"}
+              aria-label="Filter plugins"
+            />
+            {tab === "marketplace" && (market?.length ?? 0) > 0 && (
+              <CategoryFilter market={market ?? []} value={category} onChange={setCategory} />
+            )}
+          </div>
           {tab === "installed" ? (
             <ul className={styles.list} aria-label={tx("Installed plugins")}>
               {downloaded.length > 0 && <ListHeader title="Downloaded" count={downloaded.length} />}
@@ -1035,21 +1377,36 @@ export function PluginsPage() {
             </ul>
           ) : (
             <ul className={styles.list} aria-label={tx("Available plugins")}>
-              {(market?.length ?? 0) > 0 && (
-                <li className={styles.marketItem}>
-                  <CategoryFilter market={market ?? []} value={category} onChange={setCategory} />
-                </li>
-              )}
               {marketError && <li className={clsx(styles.listEmpty, styles.errorText)}>{marketError}</li>}
-              {marketShown.length > 0 && <ListHeader title="Marketplace" count={marketShown.length} />}
-              {marketShown.map((m) => (
-                <MarketRow
-                  key={`market:${m.id}`}
-                  entry={m}
-                  selected={m.id === selectedMarket?.id}
-                  onSelect={() => setSelectedMarketId(m.id)}
-                />
-              ))}
+              <MarketGroup
+                idPrefix="suggested"
+                title={tx("Suggested for This Project")}
+                entries={groups.suggested}
+                selectedId={selectedMarket?.id}
+                onSelect={selectMarket}
+              />
+              <MarketGroup
+                idPrefix="featured"
+                title={tx("Featured")}
+                entries={groups.featured}
+                selectedId={selectedMarket?.id}
+                onSelect={selectMarket}
+              />
+              <MarketGroup
+                idPrefix="community"
+                title={browsing ? tx("All Plugins") : tx("Marketplace")}
+                entries={groups.community}
+                selectedId={selectedMarket?.id}
+                onSelect={selectMarket}
+              />
+              <MarketGroup
+                idPrefix="examples"
+                title={tx("Examples")}
+                note={exampleNote()}
+                entries={groups.examples}
+                selectedId={selectedMarket?.id}
+                onSelect={selectMarket}
+              />
               {catalogShown.length > 0 && <ListHeader title="Local" count={catalogShown.length} />}
               {catalogShown.map((c) => (
                 <CatalogRow
@@ -1086,6 +1443,7 @@ export function PluginsPage() {
           <MarketDetails
             key={`market:${selectedMarket.id}`}
             entry={selectedMarket}
+            suggestedBy={suggestions.get(selectedMarket.id)}
             onInstalled={(id) => {
               setTab("installed");
               setSelectedId(id);

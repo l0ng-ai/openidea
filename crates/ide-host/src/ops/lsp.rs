@@ -546,42 +546,6 @@ pub async fn lsp_virtual_document(host: &Host, window: &str, uri: String) -> Ide
     if uri.starts_with("git-revision:") {
         return crate::ops::vcs::revision_virtual_document(host, window, &uri).await;
     }
-    if uri.starts_with("openidea-target:") && uri.contains("/0/") {
-        host.require_trust(window)?;
-        let project = host.project(window)?;
-        let plugins =
-            host.plugin_host().ok_or_else(|| IdeError::unavailable("container document reader is unavailable"))?;
-        for registration in plugins.run_targets(&project.root) {
-            let prefix = format!(
-                "openidea-target://{}/0/",
-                percent_encoding::utf8_percent_encode(&registration.id, percent_encoding::NON_ALPHANUMERIC)
-            );
-            if let Some(suffix) = uri.strip_prefix(&prefix) {
-                let path = ide_core::path_mapping::file_path(&format!("file:///{suffix}"))
-                    .filter(|p| p.starts_with('/') && !p.split('/').any(|s| s == ".." || s == "."))
-                    .ok_or_else(|| IdeError::invalid("invalid container document URI"))?;
-                let container_root = registration
-                    .target
-                    .container_root
-                    .ok_or_else(|| IdeError::invalid("invalid container document URI"))?;
-                let target = ide_language::ServerTarget {
-                    id: registration.id,
-                    origin: None,
-                    project_root: project.root.clone(),
-                    mapping: ide_core::path_mapping::PathMapping::new(&project.root.to_string_lossy(), &container_root),
-                    container_root,
-                };
-                let title = std::path::Path::new(&path)
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                let language_id = host.languages.detect(std::path::Path::new(&path), None);
-                let text = host.blocking(move || super::lsp_target::read(&plugins, &target, &path)).await?;
-                return Ok(VirtualDocument { uri, text, title, language_id, description: None, decompiled: false });
-            }
-        }
-        return Err(IdeError::unavailable("plugin run target is no longer available"));
-    }
     host.project(window)?.lsp.virtual_document(&uri).await
 }
 
@@ -1475,6 +1439,28 @@ pub async fn lsp_restart(host: &Host, window: &str, server: ServerId) -> IdeResu
     project.lsp.restart(server).await?;
     if java && let Some(bridge) = &project.kotlin_bridge {
         bridge.schedule();
+    }
+    Ok(())
+}
+
+/// Restarts the language servers named `name` in every open project, so a tool installed or
+/// updated from one window is what all of them run (not only that window's project).
+pub async fn lsp_restart_named(host: &Host, name: &str) -> IdeResult<()> {
+    for project in host.projects() {
+        let ids: Vec<ServerId> = project.lsp.servers().into_iter().filter(|s| s.name == name).map(|s| s.id).collect();
+        if ids.is_empty() {
+            continue;
+        }
+        for id in ids {
+            if let Err(e) = project.lsp.restart(id).await {
+                tracing::warn!(server = name, root = %project.root.display(), "restart after a tool update: {e}");
+            }
+        }
+        if name == "jdtls"
+            && let Some(bridge) = &project.kotlin_bridge
+        {
+            bridge.schedule();
+        }
     }
     Ok(())
 }

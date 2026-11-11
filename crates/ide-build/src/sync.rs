@@ -73,6 +73,9 @@ struct GradleCache {
     /// The projects as Gradle evaluated them; empty in caches from before they were read.
     #[serde(default)]
     projects: Vec<ReportedProject>,
+    /// The projects report how their resources are processed; older caches are stale.
+    #[serde(default)]
+    resources: bool,
 }
 
 /// Init script printing every project, its source sets and Java version once configured.
@@ -244,11 +247,12 @@ pub fn apply_gradle_cache(root: &Path, cache_dir: &Path, model: &mut GradleModel
             }
         }
     }
-    // A successful sync from before projects were cached has not seen computed includes.
-    let without_projects = cache.error.is_none() && cache.projects.is_empty();
+    // A successful sync from before projects were cached has not seen computed includes,
+    // nor, before resources were read, which launches need Gradle to process them.
+    let outdated = cache.error.is_none() && (cache.projects.is_empty() || !cache.resources);
     model.synced_at = Some(cache.at_ms);
     model.sync_error = cache.error;
-    model.stale = without_projects || cache.hash != hash_gradle_files(&gradle::build_files(root, model));
+    model.stale = outdated || cache.hash != hash_gradle_files(&gradle::build_files(root, model));
 }
 
 // ---------------------------------------------------------------- processes
@@ -341,7 +345,13 @@ pub fn sync_maven(
         // `-T1` keeps mvnd serial: its default parallel build interleaves the
         // `dependency:tree` output of concurrent modules, which the sync parses
         // as one stream. mvn is serial anyway, so this only pins the daemon.
-        let mut args: Vec<String> = vec!["-B".into(), "-fae".into(), "-Dstyle.color=never".into(), "-T1".into()];
+        let mut args: Vec<String> = vec![
+            "-B".into(),
+            "-fae".into(),
+            "-Dstyle.color=never".into(),
+            "-T1".into(),
+            maven::LOCAL_REPO_TRACKING_ARG.into(),
+        ];
         args.extend(sync_maven_options(&options.maven_options));
         if options.offline {
             args.push("-o".into());
@@ -456,6 +466,7 @@ pub fn sync_gradle_model(
         error: (!out.success).then(|| error_summary(&out.text)),
         tasks: if out.success { gradle::parse_tasks(&out.text) } else { Vec::new() },
         projects,
+        resources: true,
     };
     write_cache(&cache_dir, GRADLE_CACHE, &cache)
 }
@@ -707,6 +718,7 @@ mod tests {
             test,
             src: src.iter().map(|p| core_src(p)).collect(),
             res: res.iter().map(|p| core_src(p)).collect(),
+            processed: None,
         };
         // A settings script's own println comes first; task listing lines follow.
         let out = format!(
@@ -731,6 +743,15 @@ mod tests {
         );
         let projects = parse_reported_projects(&out);
         assert_eq!(projects.len(), 3, "the malformed line is skipped");
+        // As the init script prints a set whose resources Gradle filters or renames.
+        let processed = parse_reported_projects(&format!(
+            "@openidea-model\t{}",
+            r#"{"path":":","dir":"/p","sourceSets":[{"name":"main","test":false,"src":[],"res":[],"processed":{"task":"processResources","dir":"/p/build/resources/main"}}]}"#
+        ));
+        assert_eq!(
+            processed[0].source_sets[0].processed,
+            Some(gradle::ProcessedResources { task: "processResources".into(), dir: "/p/build/resources/main".into() })
+        );
         let src = |p: &str| PathBuf::from(core_src(p));
         assert_eq!(
             gradle::reported_source_roots(&projects),
@@ -796,12 +817,18 @@ mod tests {
                     ..Default::default()
                 })
                 .collect(),
+            resources: true,
         };
         write_cache(&cache_dir, GRADLE_CACHE, &cache).unwrap();
         apply_gradle_cache(&root, &cache_dir, &mut model);
         assert_eq!(model.projects[1].tasks.len(), 1);
         assert!(model.projects[0].tasks.iter().any(|t| t.name == "wrapper"), "root keeps its defaults");
         assert!(!model.stale);
+        write_cache(&cache_dir, GRADLE_CACHE, &GradleCache { resources: false, ..cache.clone() }).unwrap();
+        let mut m = gradle::load(&root).unwrap();
+        apply_gradle_cache(&root, &cache_dir, &mut m);
+        assert!(m.stale, "synced before resource processing was read");
+        write_cache(&cache_dir, GRADLE_CACHE, &cache).unwrap();
 
         let stale_after = |script: &str| {
             std::fs::write(root.join("app/build.gradle"), script).unwrap();
@@ -835,6 +862,7 @@ mod tests {
                 dir: root.to_string_lossy().into_owned(),
                 ..Default::default()
             }],
+            resources: true,
             ..Default::default()
         };
         write_cache(&cache_dir, GRADLE_CACHE, &cache).unwrap();

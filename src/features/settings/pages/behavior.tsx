@@ -309,7 +309,7 @@ function Grid({ left, right }: { left: ReactNode; right: ReactNode }) {
 
 function MainMenuStyleRow() {
   const frameless = usePlatform((s) => s.framelessTitleBar);
-  const [mainMenuStyle, setMainMenuStyle] = useSetting<"hamburger" | "merged">("appearance.mainMenuStyle");
+  const [mainMenuStyle, setMainMenuStyle] = useSetting<"hamburger" | "merged" | "toolbar">("appearance.mainMenuStyle");
   if (!frameless) return null;
   return (
     <Row label="Main menu">
@@ -318,6 +318,7 @@ function MainMenuStyleRow() {
         options={[
           { value: "hamburger", label: "Hamburger button" },
           { value: "merged", label: "Merged with main toolbar" },
+          { value: "toolbar", label: "Separate toolbar" },
         ]}
         onChange={setMainMenuStyle}
         aria-label="Main menu"
@@ -431,7 +432,7 @@ function DefaultDirectoryRow() {
   const [dir, setDir] = useSetting<string>("general.defaultProjectDirectory");
   const id = useId();
   const browse = async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({
       directory: true,
       multiple: false,

@@ -1,0 +1,23 @@
+id = "zig"
+name = "Zig"
+group = "Zig"
+icon = "project-zig"
+description = "A Zig package from zig init."
+
+[[requires]]
+program = "zig"
+version-args = ["version"]
+min = "0.14"
+hint = "Install Zig 0.14 or later: https://ziglang.org/download/"
+
+[[fields]]
+id = "minimal"
+label = "Minimal"
+type = "checkbox"
+default = "false"
+hint = "Only build.zig and build.zig.zon, without sample code."
+
+[[steps]]
+label = "Running zig init"
+program = "zig"
+args = ["init", { when = { minimal = "true" }, args = ["--minimal"] }]

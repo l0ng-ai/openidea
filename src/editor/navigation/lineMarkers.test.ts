@@ -165,8 +165,12 @@ describe("marker candidates", () => {
 });
 
 /** A server answering implementation and type hierarchy requests over the files above. */
-function server(impls: Record<string, Location[]>, supers: Record<string, HierarchyItem[]>) {
-  const calls = { implementations: [] as Pos[][], supertypes: 0 };
+function server(
+  impls: Record<string, Location[]>,
+  supers: Record<string, HierarchyItem[]>,
+  subtypes: Record<string, HierarchyItem[]> = {},
+) {
+  const calls = { implementations: [] as Pos[][], supertypes: 0, subtypes: 0 };
   const outlines: Record<string, OutlineItem[]> = {
     [SHAPE_PATH]: SHAPE_OUTLINE,
     "/p/Circle.java": CIRCLE_OUTLINE,
@@ -181,6 +185,12 @@ function server(impls: Record<string, Location[]>, supers: Record<string, Hierar
       supertypes: async (p) => {
         calls.supertypes++;
         return supers[p] ?? [];
+      },
+      subtypes: async (p) => {
+        calls.subtypes++;
+        // A path without an entry: the server has no type hierarchy for it.
+        if (!(p in subtypes)) throw new IpcError({ kind: "unavailable", message: "no type hierarchy" });
+        return subtypes[p]!;
       },
       outline: async (p) => outlines[p] ?? [],
     },
@@ -234,6 +244,21 @@ describe("markers from server answers", () => {
       [0, "implemented", "Is implemented by Circle"],
       [2, "overridden", "Is overridden in Circle"],
     ]);
+  });
+
+  it("uses the type hierarchy's subtypes when implementation requests are empty", async () => {
+    const circle: HierarchyItem = {
+      ...hier("Circle", "class", "/p/Circle.java"),
+      selectionRange: { start: { line: 0, col: 13 }, end: { line: 0, col: 19 } },
+    };
+    const { deps, calls } = server({}, {}, { "/p/Base.java": [circle] });
+    const candidates = markerCandidates(BASE_OUTLINE, lines(BASE));
+    const cache = emptyCache();
+    await fillMarkers("/p/Base.java", candidates, ALL, deps("/p/Base.java"), cache);
+    const markers = cachedMarkers(candidates, ALL, cache);
+    // Pyrefly answers implementation requests with nothing; the hierarchy still knows Circle.
+    expect(markers.map((m) => [m.line, m.kind, m.tooltip])).toEqual([[0, "implemented", "Is implemented by Circle"]]);
+    expect(calls.subtypes).toBeGreaterThan(0);
   });
 
   it("marks implementing and overriding methods from the type hierarchy", async () => {
@@ -381,5 +406,153 @@ describe("clicking a marker", () => {
       }),
     );
     expect(nav.openPopup.mock.calls[0]![0].items).toHaveLength(2);
+  });
+});
+
+describe("overriders of a type's methods from its subtypes", () => {
+  // Shapes and names as jdtls answers them (outline names carry the signature).
+  const REPO = [
+    "public interface Repo<T> {",
+    "    void save(T item);",
+    "    void save(T item, int times);",
+    "    T find(String id);",
+    "    default int count() { return 0; }",
+    "    void flush();",
+    "    void onlyAnon();",
+    "}",
+  ];
+  const REPO_OUTLINE = [
+    item(
+      "Repo<T>",
+      "interface",
+      0,
+      7,
+      [
+        item("save(T)", "method", 1, 1, [], 9),
+        item("save(T, int)", "method", 2, 2, [], 9),
+        item("find(String)", "method", 3, 3, [], 6),
+        item("count()", "method", 4, 4, [], 16),
+        item("flush()", "method", 5, 5, [], 9),
+        item("onlyAnon()", "method", 6, 6, [], 9),
+      ],
+      17,
+    ),
+  ];
+  const ORDER_REPO_OUTLINE = [
+    item("OrderRepo", "class", 0, 7, [
+      item("save(Order)", "method", 1, 1),
+      item("save(Order, int)", "method", 2, 2),
+      item("find(String)", "method", 3, 3),
+      item("count()", "method", 4, 4),
+      // An overload, not an override.
+      item("save(String)", "method", 5, 5),
+      item("onlyAnon()", "method", 6, 6),
+    ]),
+  ];
+  const SUB_REPO_OUTLINE = [item("SubRepo", "class", 0, 3, [item("find(String)", "method", 1, 1)])];
+  // jdtls lists anonymous classes as subtypes, nested under the field they initialize.
+  const ANON_OUTLINE = [
+    item("Anon", "class", 0, 9, [
+      item("repo", "field", 2, 8, [
+        item("new Repo() {...}", "class", 2, 8, [
+          item("save(String)", "method", 3, 3),
+          item("save(String, int)", "method", 4, 4),
+          item("find(String)", "method", 5, 5),
+          item("flush()", "method", 6, 6),
+          item("onlyAnon()", "method", 7, 7),
+        ]),
+      ]),
+    ]),
+  ];
+  const at = (name: string, path: string, line: number, col = 4): HierarchyItem => ({
+    ...hier(name, "class", path),
+    selectionRange: { start: { line, col }, end: { line, col: col + name.length } },
+  });
+  const orderRepo = at("OrderRepo", "/p/OrderRepo.java", 0);
+  const subRepo = at("SubRepo", "/p/SubRepo.java", 0);
+  const anon = at("new Repo() {...}", "/p/Anon.java", 2, 30);
+
+  function repoServer(subtypes: Record<string, HierarchyItem[]>) {
+    const calls = { implementations: [] as Pos[][], subtypes: 0 };
+    const outlines: Record<string, OutlineItem[]> = {
+      "/p/Repo.java": REPO_OUTLINE,
+      "/p/OrderRepo.java": ORDER_REPO_OUTLINE,
+      "/p/SubRepo.java": SUB_REPO_OUTLINE,
+      "/p/Anon.java": ANON_OUTLINE,
+    };
+    const deps: MarkerDeps = {
+      implementations: async (positions) => {
+        calls.implementations.push(positions);
+        return positions.map(() => [loc("/p/OrderRepo.java", 1)]);
+      },
+      supers: {
+        supertypes: async () => [],
+        subtypes: async (p) => {
+          calls.subtypes++;
+          return subtypes[p] ?? [];
+        },
+        outline: async (p) => outlines[p] ?? [],
+      },
+      readFiles: async (paths) => new Map(paths.map((p) => [p, null])),
+    };
+    return { calls, deps };
+  }
+  const targetsOf = (cache: ReturnType<typeof emptyCache>, candidates: MarkerCandidate[]) =>
+    cachedMarkers(candidates, ALL, cache).map((m) => [
+      m.line,
+      m.targets.map((t) => `${t.path.slice(3)}:${t.range.start.line}`).sort(),
+    ]);
+
+  it("walks the subtypes once instead of asking for each method", async () => {
+    const { deps, calls } = repoServer({
+      "/p/Repo.java": [orderRepo, anon],
+      "/p/OrderRepo.java": [subRepo],
+    });
+    const candidates = markerCandidates(REPO_OUTLINE, lines(REPO));
+    const cache = emptyCache();
+    await fillMarkers("/p/Repo.java", candidates, ALL, deps, cache);
+    // Repo, OrderRepo, Anon and SubRepo: fewer requests than the six methods.
+    expect(calls.subtypes).toBe(4);
+    // Only the generic save(T) overloads need the server: save(Order) / save(String) may or may not override them.
+    expect(calls.implementations).toEqual([
+      [
+        { line: 1, col: 9 },
+        { line: 2, col: 9 },
+      ],
+    ]);
+    expect(targetsOf(cache, candidates)).toEqual([
+      [0, ["Anon.java:2", "OrderRepo.java:0", "SubRepo.java:0"]],
+      [1, ["OrderRepo.java:1"]],
+      [2, ["OrderRepo.java:1"]],
+      [3, ["Anon.java:5", "OrderRepo.java:3", "SubRepo.java:1"]],
+      [4, ["OrderRepo.java:4"]],
+      [5, ["Anon.java:6"]],
+      [6, ["Anon.java:7", "OrderRepo.java:6"]],
+    ]);
+  });
+
+  it("needs one request for a type without subtypes", async () => {
+    const { deps, calls } = repoServer({});
+    const candidates = markerCandidates(REPO_OUTLINE, lines(REPO));
+    const cache = emptyCache();
+    await fillMarkers("/p/Repo.java", candidates, ALL, deps, cache);
+    expect(calls.subtypes).toBe(1);
+    expect(calls.implementations).toEqual([]);
+    expect(cachedMarkers(candidates, ALL, cache)).toEqual([]);
+  });
+
+  it("asks for each method when the walk would cost more than it saves", async () => {
+    const { deps, calls } = repoServer({ "/p/Repo.java": [orderRepo], "/p/OrderRepo.java": [subRepo] });
+    // Two methods: walking Repo, OrderRepo and SubRepo would take more requests than asking twice.
+    const candidates = markerCandidates(REPO_OUTLINE, lines(REPO)).filter((c) => !c.method || c.line >= 5);
+    await fillMarkers("/p/Repo.java", candidates, ALL, deps, emptyCache());
+    expect(calls.subtypes).toBe(1);
+    expect(calls.implementations).toEqual([
+      [
+        { line: 0, col: 17 },
+        { line: 5, col: 9 },
+        { line: 6, col: 9 },
+      ],
+    ]);
   });
 });

@@ -1,4 +1,5 @@
 /** The Services tree (Docker → Containers / Images / Volumes / Networks), built from a snapshot. */
+import { tx } from "@/platform/i18n";
 import type { DockerContainer, DockerImage, DockerNetwork, DockerSnapshot, DockerVolume } from "@/platform/ipc";
 
 export type GroupKind = "devContainers" | "containers" | "images" | "networks" | "volumes";
@@ -201,7 +202,7 @@ export function nodeLabel(n: ServiceNode): string {
     case "docker":
       return "Docker";
     case "group":
-      return GROUPS.find(([g]) => g === n.group)![1];
+      return tx(GROUPS.find(([g]) => g === n.group)![1]);
     case "compose":
       return `Docker-compose: ${n.project}`;
     case "container":

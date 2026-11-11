@@ -47,6 +47,7 @@ import {
   copyText,
   hideNativeScrollbar,
   lazyComponent,
+  lockDragCursor,
   Scrollbar,
 } from "@/ui";
 import { hasPrimaryModifier } from "@/platform/keymap";
@@ -59,7 +60,6 @@ import {
   goToChild,
   goToParent,
   initLogBranchFilter,
-  isPushed,
   isMine,
   loadMore,
   logState,
@@ -143,7 +143,9 @@ function useLogRepositories() {
   const roots = useVcs((s) => s.roots);
   const repo = tab?.repo;
   const repositories = tab?.repositories;
-  return useMemo(() => (repositories?.length ? repositories : repo ? [repo] : roots), [repo, roots, repositories]);
+  const key = (repositories?.length ? repositories : repo ? [repo] : roots).join("\0");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => (repositories?.length ? repositories : repo ? [repo] : roots), [key]);
 }
 
 function useReadOnlyLog() {
@@ -282,10 +284,13 @@ export function LogView() {
 
   // On mount, when the window switches to another project and when another of its
   // repositories is selected (its branches are needed to notice its refs moving).
+  const mounted = useRef(false);
   useEffect(() => {
     lastRefs.current = null;
     allRefs.current = null;
-    void reloadLog({ preserve: logState(scope ?? undefined).commits.length > 0 }, scope ?? undefined);
+    const state = logState(scope ?? undefined);
+    if (mounted.current || !state.loading) void reloadLog({ preserve: state.commits.length > 0 }, scope ?? undefined);
+    mounted.current = true;
     if (!readOnly) void loadBranches().catch(() => undefined);
   }, [root, repo, readOnly, scope]);
 
@@ -1149,10 +1154,7 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
   const vcs = useVcs.getState();
   const head = (repo ? vcs.heads[repo]?.head : vcs.branch?.head) ?? null;
   const { outgoing } = useGitLog.getState();
-  const pushed = (x: Commit) =>
-    commitRepo(x) === undefined ? !!outgoing && !outgoing.has(x.id) : isPushed(commitKey(x));
   if (many) {
-    const anyPushed = selection.some(pushed);
     return [
       { kind: "action", action: "vcs.log.copyRevision", arg: selection, label: "Copy Revision Numbers" },
       { kind: "action", action: "vcs.log.createPatch", arg: selection },
@@ -1163,11 +1165,10 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
       { kind: "separator" },
       { kind: "action", action: "vcs.log.revert", arg: selection, label: "Revert Commits" },
       { kind: "separator" },
-      { kind: "action", action: "vcs.log.squashCommits", arg: selection, disabled: anyPushed },
-      { kind: "action", action: "vcs.log.dropCommit", arg: selection, label: "Drop Commits", disabled: anyPushed },
+      { kind: "action", action: "vcs.log.squashCommits", arg: selection },
+      { kind: "action", action: "vcs.log.dropCommit", arg: selection, label: "Drop Commits" },
     ];
   }
-  const pushedCommit = pushed(c);
   // Without an upstream there is no outgoing set: allow pushing up to any commit of HEAD.
   const canPushHere =
     !!head &&
@@ -1208,11 +1209,11 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
     { kind: "action", action: "vcs.log.revert", arg: c },
     { kind: "action", action: "vcs.log.undoCommit", arg: c },
     { kind: "separator" },
-    { kind: "action", action: "vcs.log.editMessage", arg: c, disabled: pushedCommit },
-    { kind: "action", action: "vcs.log.fixup", arg: c, disabled: pushedCommit },
-    { kind: "action", action: "vcs.log.squashInto", arg: c, disabled: pushedCommit },
-    { kind: "action", action: "vcs.log.dropCommit", arg: c, disabled: pushedCommit },
-    { kind: "action", action: "vcs.log.interactiveRebase", arg: c, disabled: pushedCommit },
+    { kind: "action", action: "vcs.log.editMessage", arg: c },
+    { kind: "action", action: "vcs.log.fixup", arg: c },
+    { kind: "action", action: "vcs.log.squashInto", arg: c },
+    { kind: "action", action: "vcs.log.dropCommit", arg: c },
+    { kind: "action", action: "vcs.log.interactiveRebase", arg: c },
     { kind: "action", action: "vcs.log.pushUpToHere", arg: c, disabled: !canPushHere },
     { kind: "separator" },
     ...(branchActions.length > 2 ? [{ label: "Branches", submenu: branchActions }] : branchActions),
@@ -1401,6 +1402,11 @@ function CommitList() {
   const selectedSet = useMemo(() => new Set(selection), [selection]);
   const revealTick = useGitLog((s) => s.revealTick);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const selectedIndex = useMemo(
+    () => (selected ? commits.findIndex((c) => commitKey(c) === selected) : -1),
+    [commits, selected],
+  );
+  const lastRevealed = useRef(0);
   // Recycled rows can emit enter events without the pointer moving.
   const hoverPointer = useRef<{ x: number; y: number } | null>(null);
   const previousRows = useRef(commits);
@@ -1408,7 +1414,7 @@ function CommitList() {
     const element = scrollRef.current;
     const previous = previousRows.current;
     previousRows.current = commits;
-    if (!element || previous === commits) return;
+    if (!element || previous === commits || (revealTick !== lastRevealed.current && selectedIndex >= 0)) return;
     const top = Math.max(0, Math.floor((element.scrollTop - ROW) / ROW));
     // Preserve the first surviving visible commit and its pixel offset.
     for (let i = top; i < previous.length; i++) {
@@ -1417,7 +1423,7 @@ function CommitList() {
       element.scrollTop += (next - i) * ROW;
       break;
     }
-  }, [commits]);
+  }, [commits, revealTick, selectedIndex]);
   const finished = done;
   const virtualizer = useVirtualizer({
     count: commits.length + (finished ? 0 : 1),
@@ -1435,15 +1441,11 @@ function CommitList() {
     if (!finished && !loading && last && last.index >= commits.length - PAGE) void loadMore(scope ?? undefined);
   }, [last, commits.length, finished, loading, active, scope]);
 
-  const selectedIndex = useMemo(
-    () => (selected ? commits.findIndex((c) => commitKey(c) === selected) : -1),
-    [commits, selected],
-  );
   useLayoutEffect(() => {
-    if (selectedIndex >= 0) virtualizer.scrollToIndex(selectedIndex, { align: "center" });
-    // Only on explicit reveal requests.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [revealTick]);
+    if (revealTick === lastRevealed.current || selectedIndex < 0) return;
+    lastRevealed.current = revealTick;
+    virtualizer.scrollToIndex(selectedIndex, { align: "center" });
+  }, [revealTick, selectedIndex, virtualizer]);
 
   const visible = useRef(commits);
   visible.current = commits;
@@ -1888,10 +1890,17 @@ function LogColumnHeader({
     element: HTMLElement;
     pointerId: number;
   } | null>(null);
-  const resizeDrag = useRef<{ x: number; width: number; element: HTMLElement; pointerId: number } | null>(null);
+  const resizeDrag = useRef<{
+    x: number;
+    width: number;
+    element: HTMLElement;
+    pointerId: number;
+    releaseCursor: () => void;
+  } | null>(null);
   const cancel = useCallback(() => {
     const captures = [press.current, resizeDrag.current];
     press.current = null;
+    resizeDrag.current?.releaseCursor();
     resizeDrag.current = null;
     for (const capture of captures)
       if (capture?.element.hasPointerCapture?.(capture.pointerId))
@@ -1993,7 +2002,13 @@ function LogColumnHeader({
             if (e.button !== 0) return;
             e.preventDefault();
             e.stopPropagation();
-            resizeDrag.current = { x: e.clientX, width, element: e.currentTarget, pointerId: e.pointerId };
+            resizeDrag.current = {
+              x: e.clientX,
+              width,
+              element: e.currentTarget,
+              pointerId: e.pointerId,
+              releaseCursor: lockDragCursor("ew-resize"),
+            };
             e.currentTarget.setPointerCapture(e.pointerId);
           }}
           onPointerMove={(e) => {
@@ -2001,13 +2016,16 @@ function LogColumnHeader({
               resize(resizeDrag.current.width + e.clientX - resizeDrag.current.x);
           }}
           onPointerUp={(e) => {
+            resizeDrag.current?.releaseCursor();
             resizeDrag.current = null;
             if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
           }}
           onPointerCancel={() => {
+            resizeDrag.current?.releaseCursor();
             resizeDrag.current = null;
           }}
           onLostPointerCapture={() => {
+            resizeDrag.current?.releaseCursor();
             resizeDrag.current = null;
           }}
           onKeyDown={(e) => {
@@ -2504,7 +2522,8 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
     return () => {
       alive = false;
     };
-  }, [idsKey, chosen, fromParents, parentIndex, commitRoot, filesKey, many, readOnly, showLineStats]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idsKey, fromParents, parentIndex, commitRoot, filesKey, many, readOnly, showLineStats]);
 
   const groupByDirectory = useLogOptions((s) => s.groupByDirectory);
   const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(() => new Set());
@@ -2726,6 +2745,10 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
               }}
               renderNode={(n) => <ChangedFileRow node={n} flat={!groupByDirectory} />}
               onActivate={(n) => n.file && void showChangesDiff([n.file])}
+              onJumpToSource={(n, sel) => {
+                const files = sel.has(n.key) ? filesUnder(tree, sel) : filesUnder([n]);
+                void executeAction("vcs.log.changes.jumpToSource", files);
+              }}
               onContextMenu={onFileMenu}
               aria-label="Changed files"
               className={styles.fileTree}

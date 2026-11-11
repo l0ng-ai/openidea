@@ -25,7 +25,7 @@ use tokio::io::AsyncBufReadExt;
 const UP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The Dev Containers CLI: the IDE-managed copy (Settings › Tools) or one on `PATH`.
+/// The Dev Containers CLI: the IDE-managed copy (Settings › Languages & Frameworks › Language Servers) or one on `PATH`.
 fn cli(data_dir: &Path) -> IdeResult<PathBuf> {
     ide_tools::Tools::new(data_dir)
         .info("devcontainer", &[])
@@ -34,7 +34,7 @@ fn cli(data_dir: &Path) -> IdeResult<PathBuf> {
         .map(ide_core::IpcPath::into_path_buf)
         .ok_or_else(|| {
             IdeError::unavailable(
-                "The Dev Containers CLI is not installed. Install it in Settings › Tools › Dev Containers CLI.",
+                "The Dev Containers CLI is not installed. Install it in Settings › Languages & Frameworks › Language Servers.",
             )
         })
 }
@@ -396,7 +396,7 @@ echo '{{"outcome":"success","containerId":"{ID}","remoteUser":"vscode","remoteWo
             Up { container: up.container.clone(), user: up.user.clone(), folder: up.folder.clone() },
             bin.clone(),
         ));
-        let tunnel = Tunnel::listen(exec, 0, 8000).await.unwrap();
+        let tunnel = Tunnel::listen(exec, 0, "localhost", 8000).await.unwrap();
         let mut reply = String::new();
         for _ in 0..50 {
             use tokio::io::AsyncReadExt;

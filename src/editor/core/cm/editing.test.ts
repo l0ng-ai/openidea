@@ -419,6 +419,27 @@ describe("toggle comment where the tokens depend on the syntax context", () => {
   // JavaScript, where the tokens are `/* … */`.
   const wrap = (body: string) => `const a = (\n  <div>\n    ${body}\n  </div>\n);`;
 
+  it.each(["JSX", "TSX"])("comments a JSX expression child with Ctrl+/ in %s", async (name) => {
+    const mode = await languages.find((l) => l.name === name)!.load();
+    const v = make("const view = <section>\n  |{label}\n</section>;", mode);
+    commentLine(v);
+    expect(v.state.doc.line(2).text).toBe("  {/* {label} */}");
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe("const view = <section>\n  {label}\n</section>;");
+  });
+
+  it.each(["JSX", "TSX"])("comments a selected JSX child subtree with Ctrl+/ in %s", async (name) => {
+    const mode = await languages.find((l) => l.name === name)!.load();
+    const original = "const view = <main>\n  <aside>\n    <strong>ready</strong>\n  </aside>\n</main>;";
+    const v = make(original.replace("<aside>", "[<aside>").replace("</aside>", "</aside>]"), mode);
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe(
+      "const view = <main>\n  {/* <aside>\n    <strong>ready</strong>\n  </aside> */}\n</main>;",
+    );
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe(original);
+  });
+
   it("takes a JSX line comment back out, with the caret", async () => {
     const tsx = await languages.find((l) => l.name === "TSX")!.load();
     const v = make(wrap("|</div>"), tsx);

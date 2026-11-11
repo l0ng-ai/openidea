@@ -52,6 +52,8 @@ fn search_dirs(file: Option<&Path>, root: Option<&Path>) -> Vec<PathBuf> {
 }
 
 fn parse_env(text: &str) -> IdeResult<EnvMap> {
+    // Editors on Windows (Notepad) save UTF-8 with a byte order mark, which serde_json rejects.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| IdeError::invalid(format!("invalid environment file: {e}")))?;
     let mut out = EnvMap::new();
@@ -74,14 +76,33 @@ fn parse_env(text: &str) -> IdeResult<EnvMap> {
     Ok(out)
 }
 
+/// The nearest `name` in `dirs`, decoded like the editor opens it (a BOM, UTF-16, or a
+/// legacy encoding such as GBK from Notepad's ANSI), so a file that shows fine in the editor
+/// is never skipped as unreadable.
 fn read_first(dirs: &[PathBuf], name: &str) -> IdeResult<EnvMap> {
     for d in dirs {
         let p = d.join(name);
-        if let Ok(text) = std::fs::read_to_string(&p) {
-            return parse_env(&text).map_err(|e| IdeError::invalid(format!("{}: {}", p.display(), e.message)));
+        if !p.is_file() {
+            continue;
         }
+        let text = ide_vfs::load_text(&p).map_err(|e| IdeError::invalid(format!("{}: {}", p.display(), e.message)))?;
+        return parse_env(&text.text).map_err(|e| IdeError::invalid(format!("{}: {}", p.display(), e.message)));
     }
     Ok(EnvMap::new())
+}
+
+/// The public (or private) environment file that applies to `file`: the nearest existing one,
+/// else a new one next to `file` holding a sample environment to fill in.
+pub fn environment_file(file: &Path, root: Option<&Path>, private: bool) -> IdeResult<PathBuf> {
+    let name = if private { PRIVATE_FILE } else { PUBLIC_FILE };
+    if let Some(found) = search_dirs(Some(file), root).into_iter().map(|d| d.join(name)).find(|p| p.is_file()) {
+        return Ok(found);
+    }
+    let dir = file.parent().ok_or_else(|| IdeError::invalid("the request file has no folder"))?;
+    let path = dir.join(name);
+    std::fs::write(&path, "{\n  \"dev\": {\n    \"name\": \"value\"\n  }\n}\n")
+        .map_err(|e| IdeError::internal(format!("cannot create {}: {e}", path.display())))?;
+    Ok(path)
 }
 
 impl Environments {
@@ -261,5 +282,37 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         let envs = Environments::load(Some(&other.path().join("s.http")), Some(root)).unwrap();
         assert_eq!(envs.names(), vec!["dev"]);
+    }
+
+    #[test]
+    fn reads_env_files_in_the_encodings_windows_editors_save() {
+        let utf16: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain("{\"dev\":{\"name\":\"测试环境\"}}".encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        // Notepad's "ANSI" on a Chinese system: GBK.
+        let gbk: Vec<u8> =
+            [&b"{\"dev\":{\"name\":\""[..], &[0xB2, 0xE2, 0xCA, 0xD4, 0xBB, 0xB7, 0xBE, 0xB3], b"\"}}"].concat();
+        for bytes in ["\u{feff}{\"dev\":{\"name\":\"测试环境\"}}".as_bytes().to_vec(), utf16, gbk] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join(PUBLIC_FILE), &bytes).unwrap();
+            let envs = Environments::load(Some(&tmp.path().join("a.http")), Some(tmp.path())).unwrap();
+            assert_eq!(envs.names(), vec!["dev"]);
+            assert_eq!(envs.variables(Some("dev"))["name"], "测试环境");
+        }
+    }
+
+    #[test]
+    fn an_environment_file_is_found_up_the_tree_or_created_next_to_the_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = tmp.path().join("api");
+        std::fs::create_dir_all(&api).unwrap();
+        let request = api.join("a.http");
+        std::fs::write(tmp.path().join(PUBLIC_FILE), "{}").unwrap();
+        assert_eq!(environment_file(&request, Some(tmp.path()), false).unwrap(), tmp.path().join(PUBLIC_FILE));
+        let private = environment_file(&request, Some(tmp.path()), true).unwrap();
+        assert_eq!(private, api.join(PRIVATE_FILE));
+        let envs = Environments::load(Some(&request), Some(tmp.path())).unwrap();
+        assert_eq!(envs.names(), vec!["dev"], "the new file is a valid environment file");
     }
 }

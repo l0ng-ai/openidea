@@ -7,8 +7,8 @@
 //! <id>.json`): loading that session, from this connection or a fresh one, starts it that
 //! way.
 
-mod cli;
-mod history;
+pub(crate) mod cli;
+pub(crate) mod history;
 mod settings;
 mod tools;
 mod translate;
@@ -69,9 +69,17 @@ pub(crate) fn connect(
     Ok(super::serve(shim, client))
 }
 
+/// What discovery found: ACP `availableCommands`, `configOptions` for the configured model,
+/// and each model's effort option by model value (`None`: none).
+pub(crate) struct Discovered {
+    pub commands: Vec<Value>,
+    pub options: Value,
+    pub efforts: Vec<(String, Option<Value>)>,
+}
+
 /// Discover the slash commands and the model, mode and effort options without a prompt,
 /// ACP session, or pending session file.
-pub(crate) async fn discover(spec: ProviderSpec, cwd: PathBuf) -> Result<(Vec<Value>, Value), String> {
+pub(crate) async fn discover(spec: ProviderSpec, cwd: PathBuf) -> Result<Discovered, String> {
     tokio::time::timeout(Duration::from_secs(5), async move {
         let spec = tokio::task::spawn_blocking(move || (spec.resolve_for_launch(&cwd), cwd));
         let (spec, cwd) = spec.await.map_err(|e| e.to_string())?;
@@ -100,7 +108,11 @@ pub(crate) async fn discover(spec: ProviderSpec, cwd: PathBuf) -> Result<(Vec<Va
         .flatten()
         .unwrap_or_default();
         let settings = Settings::from_cli(&init, &applied);
-        Ok((settings.commands.clone(), settings.options()))
+        Ok(Discovered {
+            commands: settings.commands.clone(),
+            options: settings.options(),
+            efforts: settings.efforts_by_model(),
+        })
     })
     .await
     .map_err(|_| "Claude Code command discovery timed out".to_owned())?
