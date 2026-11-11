@@ -903,6 +903,20 @@ export const commands = {
 	 *  and language servers waiting for a JDK (jdtls) start on it.
 	 */
 	jdkDownload: (vendor: string, version: number, location: string | null, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("jdk_download", { vendor, version, location, request, onEvent })),
+	/**  The project generators File › New Project offers, in list order. */
+	scaffoldCatalog: () => __TAURI_INVOKE<GeneratorInfo[]>("scaffold_catalog"),
+	/**
+	 *  The fields a generator's project service adds for `values`; cancellable with
+	 *  `cancel_request(request)`.
+	 */
+	scaffoldOptions: (generator: string, values: { [key in string]: string }, request: RequestId) => typedError<Field[], IdeError>(__TAURI_INVOKE("scaffold_options", { generator, values, request })),
+	/**  The programs a generator needs for `values`, and whether they are installed. */
+	scaffoldRequirements: (generator: string, values: { [key in string]: string }) => typedError<Requirement[], IdeError>(__TAURI_INVOKE("scaffold_requirements", { generator, values })),
+	/**
+	 *  Creates a project, streaming progress through `on_event`, and returns its directory,
+	 *  trusted. Cancellable with `cancel_request(request)`; a failed or cancelled run leaves nothing.
+	 */
+	scaffoldCreate: (req: CreateRequest, request: RequestId, onEvent: Channel<ScaffoldEvent>) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("scaffold_create", { req, request, onEvent })),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
@@ -2578,6 +2592,11 @@ export type CheckoutOutcome = { kind: "done" } |
  */
 { kind: "conflicts"; files: string[] };
 
+export type ChoiceOption = {
+	value: string,
+	label: string,
+};
+
 export type ClassifiedReference = {
 	/**  Optional for older Java extensions; missing means unclassified. */
 	access?: ReferenceAccess | null,
@@ -3120,6 +3139,15 @@ export type CreatePullRequest = {
 	push: boolean,
 };
 
+export type CreateRequest = {
+	generator: string,
+	/**  The parent directory; the project is `<location>/<name>`. */
+	location: IpcPath,
+	name: string,
+	git: boolean,
+	values: { [key in string]: string },
+};
+
 /**  Imported editor colour scheme on top of a built-in base. */
 export type CustomColorScheme = CustomColorScheme_Serialize | CustomColorScheme_Deserialize;
 
@@ -3637,6 +3665,17 @@ export type DeletedTag = {
 	name: string,
 	/**  What the tag pointed at: its tag object (annotated tags) or commit. */
 	target: string,
+};
+
+export type Dependency = {
+	id: string,
+	name: string,
+	description: string,
+};
+
+export type DependencyGroup = {
+	name: string,
+	items: Dependency[],
 };
 
 /**  A plugin another one requires. */
@@ -4407,6 +4446,26 @@ export type FacetConfig = {
 	webRoot?: string,
 };
 
+export type Field = {
+	id: string,
+	label: string,
+	kind: FieldKind,
+	/**
+	 *  A template over the fields before it: `{{id}}`, `{{id|filter}}` (filters:
+	 *  `path`, `ident`, `kebab`, `snake`, `pascal`, `lower`, `json`).
+	 */
+	default: string,
+	/**  Shown only while each listed field has one of its values. */
+	visible: { [key in string]: string[] },
+	hint: string,
+};
+
+export type FieldKind = { type: "text"; pattern: string | null; placeholder: string } | { type: "choice"; options: ChoiceOption[]; segmented: boolean } | { type: "checkbox" } | 
+/**  An installed SDK of this kind (`jdk`); the value is its home, empty = automatic. */
+{ type: "sdk"; sdk: string } | 
+/**  Several ids out of grouped items; the value is comma-separated. */
+{ type: "dependencies"; groups: DependencyGroup[] };
+
 export type FieldValue = { kind: "label"; value: string } | { kind: "readonlyText"; value: {
 	text: string,
 	multiline: boolean,
@@ -4737,6 +4796,21 @@ export type GeneralSettings = {
 	showWhatsNewAfterUpdate?: boolean,
 	/**  The version the app last started with, so the first start after an update is recognisable. */
 	lastRunVersion?: string,
+};
+
+/**  One entry of File › New Project. */
+export type GeneratorInfo = {
+	id: string,
+	name: string,
+	group: string,
+	icon: string,
+	order: number,
+	description: string,
+	/**  Offer "Create Git repository". */
+	git: boolean,
+	fields: Field[],
+	/**  More fields come from `scaffold_options` (a project service's metadata). */
+	dynamic: boolean,
 };
 
 /**  A repository of the signed-in account (owned, collaborator, or organization member). */
@@ -8085,6 +8159,16 @@ export type RepositoryComparison = {
 /**  A cancellable, streaming backend request issued by the UI. */
 export type RequestId = number;
 
+/**  A program a generator needs, and whether this machine has it. */
+export type Requirement = {
+	program: string,
+	min: string | null,
+	/**  The version found; `None` when the program is missing or reports none. */
+	found: string | null,
+	satisfied: boolean,
+	hint: string,
+};
+
 /**  `git reset` modes offered by Reset Current Branch to Here. */
 export type ResetMode = "soft" | "mixed" | "hard" | "keep";
 
@@ -8386,6 +8470,13 @@ export type RustSettings = {
 	/**  Extra arguments for rustfmt (rust-analyzer `rustfmt.extraArgs`), space-separated. */
 	rustfmtArgs?: string,
 };
+
+/**  Progress of `scaffold_create`. */
+export type ScaffoldEvent = 
+/**  A new step began. */
+{ type: "step"; text: string } | 
+/**  A line of a tool's output. */
+{ type: "line"; text: string };
 
 export type Scope = {
 	name: string,

@@ -4432,6 +4432,7 @@ dependencies = [
  "ide-plugin",
  "ide-remote",
  "ide-run",
+ "ide-scaffold",
  "ide-sdk",
  "ide-search",
  "ide-spell",
@@ -4761,6 +4762,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-scaffold"
+version = "0.1.41"
+dependencies = [
+ "ide-core",
+ "ide-tools",
+ "ide-vcs",
+ "insta",
+ "serde",
+ "serde_json",
+ "specta",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
 name = "ide-sdk"
 version = "0.1.41"
 dependencies = [
@@ -4785,6 +4802,7 @@ name = "ide-search"
 version = "0.1.41"
 dependencies = [
  "criterion",
+ "encoding_rs",
  "globset",
  "grep-matcher",
  "grep-regex",
@@ -6571,6 +6589,7 @@ dependencies = [
  "ide-profiler",
  "ide-remote",
  "ide-run",
+ "ide-scaffold",
  "ide-sdk",
  "ide-search",
  "ide-spell",
