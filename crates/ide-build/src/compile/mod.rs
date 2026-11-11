@@ -5,8 +5,12 @@
 
 mod fingerprint;
 mod parse;
+mod single;
 
 pub use fingerprint::{LaunchFingerprint, launch_fingerprint};
+pub use single::{
+    SingleFileTarget, compile_file_plan, find_javac, javac_step, single_file_classpath, single_file_target,
+};
 
 use crate::process::{self, Stream};
 use crate::{BuildModel, maven};
