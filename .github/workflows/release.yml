@@ -1,23 +1,27 @@
 name: Release
 on:
   push:
+    branches: ["**"]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v0.1.0); must already exist"
-        required: true
+        description: "Existing version tag (e.g. v0.1.0); leave empty to release the selected branch"
+        required: false
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  group: release-${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || github.sha }}
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || format('build-{0}', github.sha) }}
+  SOURCE_REF: ${{ inputs.tag || github.sha }}
+  VERSION_RELEASE: ${{ inputs.tag != '' || github.ref_type == 'tag' }}
   COMMUNITY_PLUGINS_INDEX: https://github.com/l0ng-ai/openidea-plugins/releases/download/index/index.json
 
 jobs:
@@ -29,8 +33,9 @@ jobs:
       official_plugin_keys: ${{ steps.plugin-keys.outputs.keys }}
     steps:
       - uses: actions/checkout@v5
-        with: { ref: "${{ env.TAG }}" }
+        with: { ref: "${{ env.SOURCE_REF }}" }
       - name: Tag matches app version
+        if: env.VERSION_RELEASE == 'true'
         run: |
           app="v$(jq -r .version src-tauri/tauri.conf.json)"
           if [ "$app" != "$TAG" ]; then
@@ -40,6 +45,7 @@ jobs:
       # A shipped plugin API is frozen: its WIT must be the snapshot api_frozen.rs checks later
       # versions against (plugins/README.md, "Evolving the plugin API").
       - name: Plugin API snapshot matches wit/
+        if: env.VERSION_RELEASE == 'true'
         run: |
           api() { sed -n 's/^package openidea:plugin@\(.*\);$/\1/p' "$1/plugin.wit"; }
           snapshot=sdk/rust/openidea-plugin/tests/api/released
@@ -76,7 +82,9 @@ jobs:
             }
             const { data } = await github.rest.repos.createRelease({
               owner, repo, tag_name: tag, name: `OpenIDEA ${tag}`,
-              draft: true, prerelease: tag.includes("-"), generate_release_notes: true,
+              target_commitish: context.sha,
+              draft: true, prerelease: process.env.VERSION_RELEASE !== "true" || tag.includes("-"),
+              generate_release_notes: true,
             });
             core.setOutput("id", data.id);
 
@@ -110,7 +118,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-        with: { ref: "${{ env.TAG }}" }
+        with: { ref: "${{ env.SOURCE_REF }}" }
       - uses: pnpm/action-setup@v5
         with: { version: 11 }
       - uses: actions/setup-node@v5
@@ -144,6 +152,17 @@ jobs:
             [ -n "${!v}" ] && { echo "$v<<__EOF__"; echo "${!v}"; echo "__EOF__"; } >> "$GITHUB_ENV"
           done
           true
+      - name: Disable updater artifacts without a signing key
+        if: env.TAURI_SIGNING_PRIVATE_KEY == ''
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const path = "src-tauri/tauri.conf.json";
+          const config = JSON.parse(readFileSync(path, "utf8"));
+          config.bundle.createUpdaterArtifacts = false;
+          writeFileSync(path, JSON.stringify(config, null, 2) + "\n");
+          NODE
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -152,7 +171,7 @@ jobs:
           tagName: ${{ env.TAG }}
           args: --target ${{ matrix.target }}
           # The parallel builds would race on one latest.json; `updater-manifest` writes it once.
-          uploadUpdaterJson: false
+          includeUpdaterJson: false
       # tauri-action notarizes the .app but not the DMG around it; notarize and
       # staple the DMG too, then replace the uploaded asset.
       - name: Notarize DMG
@@ -206,7 +225,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
-        with: { ref: "${{ env.TAG }}" }
+        with: { ref: "${{ env.SOURCE_REF }}" }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
       - uses: Swatinem/rust-cache@v2
@@ -254,7 +273,7 @@ jobs:
           fi
       - uses: actions/checkout@v5
         if: steps.key.outputs.skip != 'true'
-        with: { ref: "${{ env.TAG }}" }
+        with: { ref: "${{ env.SOURCE_REF }}" }
       - uses: dtolnay/rust-toolchain@stable
         if: steps.key.outputs.skip != 'true'
         with: { targets: wasm32-wasip2 }
@@ -314,6 +333,10 @@ jobs:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         with:
           script: |
+            if (process.env.VERSION_RELEASE !== "true") {
+              core.notice("branch builds do not publish an updater manifest");
+              return;
+            }
             const { owner, repo } = context.repo;
             const release_id = Number(process.env.RELEASE_ID);
             const tag = process.env.TAG;
@@ -381,6 +404,7 @@ jobs:
   # The China mirror the updater's CNB source reads; a failure here leaves the GitHub release as is.
   cnb-mirror:
     needs: publish
+    if: inputs.tag != '' || github.ref_type == 'tag'
     uses: ./.github/workflows/cnb-mirror.yml
-    with: { tag: "${{ github.event.inputs.tag || github.ref_name }}" }
+    with: { tag: "${{ inputs.tag || github.ref_name }}" }
     secrets: inherit

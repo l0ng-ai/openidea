@@ -37,3 +37,15 @@ are listed through [l0ng-ai/openidea-plugins](https://github.com/l0ng-ai/openide
 see [`plugins/README.md`](plugins/README.md) § 8.1.
 
 A check on each PR adds `needs-info` when the verification section is missing, and removes it once it's filled in.
+
+## Release builds
+
+Every branch push runs the Release workflow and publishes a GitHub prerelease tagged
+`build-<commit SHA>` after all builds succeed. Installers, Windows portable archives
+and remote server binaries are attached directly to the release, not uploaded as
+Actions artifacts. Signing secrets are optional; without the updater signing key,
+the workflow builds unsigned installers without updater artifacts.
+
+Push a `v*` tag matching the app version for a versioned release. The Release workflow
+can also run manually: leave `tag` empty to build the selected branch, or enter an
+existing version tag. Branch builds do not publish an updater manifest or run the CNB mirror.
