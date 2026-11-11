@@ -439,6 +439,36 @@ pub fn gradle_env(
     env
 }
 
+/// Settings › Build Tools › Gradle → jdtls `java.import.gradle.*`: the Java import runs the
+/// same Gradle installation, user home and JVM as the IDE's own builds (paths resolved like
+/// [`gradle_env`]). Without it a project that ships no wrapper is never imported, and one whose
+/// caches live in a configured user home resolves no dependencies. The wrapper stays jdtls's
+/// default unless a local distribution is chosen.
+pub fn configure_gradle_runtime(cfg: &mut LanguageServerConfig, root: &Path, s: &Settings) {
+    if cfg.name != "jdtls" {
+        return;
+    }
+    let g = &s.languages.java.gradle;
+    let path = |p: PathBuf| Value::String(p.to_string_lossy().into_owned());
+    let mut gradle = serde_json::Map::new();
+    if g.distribution == ide_core::settings::GradleDistribution::Local
+        && let Some(home) = setting_path(root, &g.home)
+    {
+        gradle.insert("home".into(), path(home));
+        gradle.insert("wrapper".into(), json!({"enabled": false}));
+    }
+    if let Some(home) = setting_path(root, &g.user_home) {
+        gradle.insert("user".into(), json!({"home": path(home)}));
+    }
+    if let Some(home) = setting_path(root, &g.jvm) {
+        gradle.insert("java".into(), json!({"home": path(home)}));
+    }
+    if gradle.is_empty() {
+        return;
+    }
+    merge(cfg.settings.get_or_insert_with(|| json!({})), json!({"java": {"import": {"gradle": gradle}}}));
+}
+
 /// Maven options from settings, placed before the goals: `-s <settings.xml>`,
 /// `-t <toolchains.xml>`, `-Dmaven.repo.local=<dir>`, `-T <count>` and `-P <profiles>`.
 pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
@@ -1901,6 +1931,39 @@ mod maven_linkage_tests {
         assert_eq!(default_maven_repository_in(home), Some(home.join("m2repo")));
         std::fs::write(&settings, "<settings><localRepository>${env.REPO}</localRepository></settings>").unwrap();
         assert_eq!(default_maven_repository_in(home), Some(home.join(".m2/repository")));
+    }
+
+    #[test]
+    fn gradle_import_runs_the_gradle_the_ide_builds_with() {
+        let root = Path::new("/p");
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        cfg.settings = Some(json!({"java": {"import": {"gradle": {"enabled": true}}}}));
+        let initial = cfg.clone();
+        let mut settings = Settings::default();
+        configure_gradle_runtime(&mut cfg, root, &settings);
+        assert_eq!(cfg, initial, "no Gradle settings: jdtls keeps its own defaults and the wrapper");
+
+        let g = &mut settings.languages.java.gradle;
+        g.distribution = ide_core::settings::GradleDistribution::Local;
+        g.home = "tools/gradle-5.2.1".into();
+        g.user_home = "/caches/gradle".into();
+        g.jvm = "/jdk/8".into();
+        configure_gradle_runtime(&mut cfg, root, &settings);
+        let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
+        assert_eq!(gradle["enabled"], json!(true), "merged, not replaced");
+        let resolved = |s: &str| json!(setting_path(root, s).unwrap().to_string_lossy());
+        assert_eq!(gradle["home"], json!(root.join("tools/gradle-5.2.1").to_string_lossy()));
+        assert_eq!(gradle["wrapper"]["enabled"], json!(false));
+        assert_eq!(gradle["user"]["home"], resolved("/caches/gradle"));
+        assert_eq!(gradle["java"]["home"], resolved("/jdk/8"));
+
+        // The wrapper distribution keeps the wrapper even with a home left over.
+        let mut cfg = initial.clone();
+        settings.languages.java.gradle.distribution = ide_core::settings::GradleDistribution::Wrapper;
+        configure_gradle_runtime(&mut cfg, root, &settings);
+        let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
+        assert!(gradle.get("home").is_none() && gradle.get("wrapper").is_none());
+        assert_eq!(gradle["user"]["home"], resolved("/caches/gradle"));
     }
 
     #[test]
