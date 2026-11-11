@@ -8,6 +8,13 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	/**
+	 *  True when the plugin's dialogs can't be shown here: Linux with no portal service on the session
+	 *  bus (running or activatable) and no `zenity`.
+	 */
+	fileDialogNeedsGtk: () => __TAURI_INVOKE<boolean>("file_dialog_needs_gtk"),
+	/**  Shows a GTK file chooser attached to `window`. `None` when the user cancels. */
+	gtkPickPaths: (options: GtkPickOptions) => typedError<IpcPath[] | null, IdeError>(__TAURI_INVOKE("gtk_pick_paths", { options })),
 	mcpUiReady: (ready: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_ui_ready", { ready })),
 	mcpRespond: (id: number, allow: boolean, error: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_respond", { id, allow, error })),
 	mcpServerStatus: () => typedError<McpServerStatus, IdeError>(__TAURI_INVOKE("mcp_server_status")),
@@ -4892,6 +4899,21 @@ export type GradleTask = {
 	/**  Lower-case group (`build`, `build setup`, `other`). */
 	group: string,
 	description: string | null,
+};
+
+export type GtkFilter = {
+	name: string,
+	extensions: string[],
+};
+
+export type GtkPickOptions = {
+	title: string | null,
+	defaultPath: string | null,
+	directory: boolean,
+	multiple: boolean,
+	/**  A save dialog: one path, with overwrite confirmation. */
+	save: boolean,
+	filters: GtkFilter[],
 };
 
 /**  GutterAction data. */

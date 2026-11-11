@@ -82,7 +82,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
 
   const browse = async () => {
     if (!isTauri()) return;
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({
       directory: true,
       multiple: false,

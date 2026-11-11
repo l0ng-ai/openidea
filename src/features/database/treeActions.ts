@@ -149,7 +149,7 @@ export async function insertScript(n: DbNode, kind: ScriptKind) {
 
 /** SQL Scripts › Run SQL Script…: picks a `.sql` file and runs all its statements. */
 async function runScriptFile(id: string) {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const file = await open({
     multiple: false,
     directory: false,

@@ -22,6 +22,7 @@ pub mod deploy;
 pub mod doc;
 pub mod docker;
 pub mod env;
+pub mod file_dialog;
 pub mod fonts;
 pub mod fs;
 pub mod github;
@@ -66,6 +67,8 @@ pub(crate) fn sender<T: tauri::ipc::IpcResponse + Send + Sync + 'static>(
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![
         app::app_info,
+        file_dialog::file_dialog_needs_gtk,
+        file_dialog::gtk_pick_paths,
         mcp::mcp_ui_ready,
         mcp::mcp_respond,
         mcp::mcp_server_status,
