@@ -39,7 +39,7 @@ impl std::error::Error for TypeParseError {}
 pub fn parse_doc_type(text: &str, templates: &[&str]) -> Result<Type, TypeParseError> {
     // Mago's PHPDoc parser and the conversion recurse as deep as the type
     // nests, up to Mago's limit.
-    crate::syntax::stack::parser_stack(|| parse_on_stack(text, templates))
+    crate::syntax::stack::phpdoc_stack(text.as_bytes(), || parse_on_stack(text, templates))
 }
 
 fn parse_on_stack(text: &str, templates: &[&str]) -> Result<Type, TypeParseError> {

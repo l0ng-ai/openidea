@@ -125,13 +125,17 @@ impl SymfonyProvider {
                 None => Type::named(configured),
             });
         }
+        // Service ids are case-sensitive, class names aren't: an id written as a string is a class
+        // only when spelled as one (Symfony's own tests have a service `foo` next to a class `Foo`).
         if !class.is_empty() {
-            return Some(match resolver.class_model(class) {
-                Some(model) => Type::named(model.fqn()),
-                None => Type::named(class),
-            });
+            return match resolver.class_model(class) {
+                Some(model) => (string.is_empty() || model.fqn() == class.trim_start_matches('\\'))
+                    .then(|| Type::named(model.fqn())),
+                None => Some(Type::named(class)),
+            };
         }
-        let model = resolver.class_model(string.trim_start_matches('\\'))?;
+        let id = string.trim_start_matches('\\');
+        let model = resolver.class_model(id).filter(|model| model.fqn() == id)?;
         Some(Type::named(model.fqn()))
     }
 

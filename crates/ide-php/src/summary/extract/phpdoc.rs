@@ -290,7 +290,7 @@ impl Extractor<'_> {
         // The PHPDoc parser and the walks below recurse as deep as a type
         // nests (up to Mago's limit): a union of 300 string literals in an AWS
         // SDK client overflowed a 2 MB debug-build stack.
-        crate::syntax::stack::parser_stack(|| self.doc_block(trivia, outer))
+        crate::syntax::stack::phpdoc_stack(trivia.value, || self.doc_block(trivia, outer))
     }
 
     fn doc_block(&self, trivia: &mago_syntax::cst::Trivia<'_>, outer: &[String]) -> Option<Box<DocBlock>> {

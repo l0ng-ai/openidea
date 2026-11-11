@@ -12,6 +12,14 @@ This file is the user guide (phases 8.1–8.29 of [ROADMAP.md](ROADMAP.md), desi
 - [Known limits](#known-limits)
 - [Measurements](#measurements)
 
+## Status
+
+Final verification (phase 9.8, 2026-11-11, release builds, `vendor/` installed):
+
+- `real_app_checklist`, `real_app_eloquent_columns` and `real_app_inspect_code` pass on Monica and Bagisto. Monica: 70 models (63 with a certain schema), 2 unknown-column problems in 891 files; Inspect Code finds 202 diagnostics in 896 files, 13.9 s in parallel (7.3 s again), 108.9 s one by one. Bagisto: 127 models (105 certain), all three checks pass.
+- `language_smoke` `php` (the Intelephense fallback) and `php_native` pass.
+- What's still missing is listed in [Known limits](#known-limits). Nothing new was found in Laravel support during the verification.
+
 ## Turning it on
 
 Laravel support turns on by itself when the project is a Laravel project: `composer.json` requires `laravel/framework`, `composer.lock` lists it, or there's an `artisan` file at a content root. Settings › PHP › Laravel › Laravel support forces it on or off.

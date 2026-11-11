@@ -62,6 +62,36 @@ pub fn parser_stack<R>(parse: impl FnOnce() -> R) -> R {
     stacker::maybe_grow(PARSER_RED_ZONE, PARSER_STACK, parse)
 }
 
+/// What a PHPDoc parse needs besides its nesting: the parser, the walks over its
+/// tree and the conversion to a type, at their shallowest.
+const PHPDOC_BASE: usize = 256 << 10;
+
+/// What one level of PHPDoc nesting may take, parsed, walked and converted: the
+/// PHP parser's 64 KB a level in a debug build (32 MB for 512, phase 8.29), so
+/// more than enough in a release build.
+const PHPDOC_LEVEL: usize = 64 << 10;
+
+/// The bytes that may open a level in Mago's PHPDoc type parser: brackets,
+/// and the union, intersection, nullable, conditional and unary operators
+/// (`A|B|C` recurses once per `|`). Text between them can't nest.
+const PHPDOC_NESTING: &[u8] = b"<({[|&?:-!";
+
+/// Runs `parse`, a parse of PHPDoc `text` (a type or a docblock), with stack
+/// for as deep as `text` can nest: each level needs one of
+/// [`PHPDOC_NESTING`]. Most types and docblocks have a handful, so the parse
+/// stays on the current stack instead of mapping a [`PARSER_STACK`] segment
+/// as [`parser_stack`] does on a request thread, which took about a
+/// millisecond per method's parameters and made completion on Laravel's query
+/// builder 80 times slower (phase 9.8).
+pub fn phpdoc_stack<R>(text: &[u8], parse: impl FnOnce() -> R) -> R {
+    let levels = 1 + text.iter().filter(|byte| PHPDOC_NESTING.contains(byte)).count();
+    let needed = PHPDOC_BASE.saturating_add(levels.saturating_mul(PHPDOC_LEVEL));
+    if needed >= PARSER_RED_ZONE {
+        return parser_stack(parse);
+    }
+    stacker::maybe_grow(needed, PARSER_STACK, parse)
+}
+
 /// The stack of the engine's own threads (its worker, the background
 /// inspections and [`on_parser_stacks`]'s pool): with this much, a parse
 /// started anywhere but deep in a recursive walk stays on the thread's stack
@@ -127,6 +157,54 @@ mod tests {
     use rayon::prelude::*;
 
     use super::*;
+
+    #[test]
+    fn phpdoc_parses_as_deep_as_the_stack_allows_stay_in_place_and_fit() {
+        // On a 2 MB thread (a request's), types and docblocks nested as deep
+        // as `phpdoc_stack` lets run on the thread's own stack: if a level
+        // took more than `PHPDOC_LEVEL`, this would overflow (in a debug
+        // build, where levels are largest).
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(|| {
+                // Leave room for this frame and the docblock's `@param` and `$x`.
+                let left = stacker::remaining_stack().unwrap() - (64 << 10);
+                let budget = (left - PHPDOC_BASE) / PHPDOC_LEVEL - 2;
+                assert!(budget >= 8, "only {budget} levels fit");
+                let count = |text: &str| text.bytes().filter(|byte| PHPDOC_NESTING.contains(byte)).count();
+                // As many levels of `open … close` as the budget allows.
+                let nested = |open: &str, inner: &str, close: &str| {
+                    let times = budget / (count(open) + count(close)).max(1);
+                    format!("{}{inner}{}", open.repeat(times), close.repeat(times))
+                };
+                let joined = |item: &str, separator: &str| {
+                    (0..budget).map(|i| format!("{item}{i}")).collect::<Vec<_>>().join(separator)
+                };
+                let types = [
+                    nested("array<", "int", ">"),
+                    nested("list<array{a: ", "int", "}>"),
+                    nested("?", "int", ""),
+                    nested("(T is int ? ", "int", " : string)"),
+                    nested("callable(", "int", "): void"),
+                    joined("I", "|"),
+                    joined("I", "&"),
+                ];
+                for ty in &types {
+                    // The whole budget, within the thread's stack: no new segment.
+                    let needed = PHPDOC_BASE + (1 + count(ty)) * PHPDOC_LEVEL;
+                    assert!(needed <= left && count(ty) + 2 >= budget / 3, "{ty}: {needed} of {left}");
+                    let parsed = phpdoc_stack(ty.as_bytes(), || crate::types::parse_doc_type(ty, &["T"]));
+                    assert!(parsed.is_ok(), "{ty}: {parsed:?}");
+                    let source = format!("<?php\n/** @param {ty} $x */\nfunction f($x) {{}}\n");
+                    let file = super::super::ParsedFile::parse("deep.php", source.as_str());
+                    let summary = crate::summary::FileSummary::extract(&file);
+                    assert_eq!(summary.functions.len(), 1, "{ty}");
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[test]
     fn parallel_work_runs_on_threads_with_room_for_a_parse() {

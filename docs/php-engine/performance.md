@@ -1,5 +1,15 @@
 # PHP engine performance budgets
 
+## Status
+
+Final verification (phase 9.8, 2026-11-11, `pnpm perf:rust` with the corpora and `LARAVEL_APP_DIR` on Monica):
+
+- **Fixed:** `php_laravel/completion_after_keystroke` had grown to 473 ms and `hover_after_keystroke` to 73 ms (budget 50 ms; 5.7 ms and 2.1 ms in the table below). Every PHPDoc type and docblock parse went through `parser_stack`, which maps a fresh 64 MB stack segment on a thread with a default 2 MB stack (each request's), about a millisecond for one method's parameters. Phase 8.29 added that guard and 9.4.b moved batch work to big-stack threads, but requests still paid it. `phpdoc_stack` now gives the parse only as much stack as its text can nest (64 KB for each `<({[|&?:-!`), so most parses stay where they are. Now 13 ms and 4.1 ms; `php_fixture` completion went from 5.2 ms to 0.8 ms.
+- **Over budget:** `php_laravel_real/model_warm_start` is 155 ms against 150 ms (129 ms in 9.4). Follow-up phase 9.8.b.
+- Everything else in `rust.php_*` is within budget: Monica's Inspect Code takes 6.3 s (budget 20 s), its cold model 231 ms (400 ms), Laravel's cold index 1.8 s.
+- Outside the PHP engine, `plugins/load_50` (119 ms, budget 20 ms), `search_5k/literal` and `regex` (114 ms and 117 ms, budget 100 ms) and `syntax_2mb/outline_after_keystroke_incremental` (394 ms, budget 350 ms) were over in the full run. They're recorded here and not investigated.
+- Memory (`memory` test, laravel/framework): the engine uses 179 MB after requests (peak 180 MB), Intelephense 333 MB.
+
 Phase 6.3 of the [roadmap](ROADMAP.md). The budgets are criterion benches in `crates/ide-php/benches/engine.rs`, gated by `pnpm perf:rust` against `perf/budgets.json` (`rust.php_…`, means in µs).
 
 | Bench                                                      | Budget | Measured (2026-11-07) |

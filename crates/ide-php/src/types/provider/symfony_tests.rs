@@ -241,8 +241,22 @@ fn container_get_by_class_id() {
             ("function f(ContainerInterface $c) { $c->get('mailer.default')/*|*/; }", "mixed"),
             ("function f(Psr $c) { $c->get('mailer.default')/*|*/; }", "mixed"),
             ("function f(ContainerInterface $c, string $id) { $c->get($id)/*|*/; }", "mixed"),
+            // Service ids are case-sensitive: `app\service\mailer` isn't the class, though PHP
+            // finds classes ignoring case (Symfony's DI tests use ids like `foo` next to a `Foo`).
+            ("function f(ContainerInterface $c) { $c->get('app\\service\\mailer')/*|*/; }", "mixed"),
+            ("function f(Psr $c) { $c->get('App\\Service\\mailer')/*|*/; }", "mixed"),
             // Not a container.
             ("function f(Mailer $m) { $m->get(Mailer::class)/*|*/; }", "mixed"),
+        ],
+    );
+    // A global class and a service id that differ only in case (Symfony's DI tests).
+    let with_foo: &[&str] = &[LIBRARIES, FRAMEWORK_BUNDLE, APP, "<?php class Foo {}"];
+    check(
+        with_foo,
+        &[
+            ("function f(ContainerInterface $c) { $c->get('foo')/*|*/; }", "mixed"),
+            ("function f(ContainerInterface $c) { $c->get('Foo')/*|*/; }", "Foo"),
+            ("function f(ContainerInterface $c) { $c->get(\\Foo::class)/*|*/; }", "Foo"),
         ],
     );
 }
