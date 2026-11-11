@@ -319,13 +319,13 @@ export async function saveSource(
   const id = source.id ?? "";
   if (password !== undefined) await call(commands.dbSetPassword(id, password, !!source.savePassword));
   if (sshSecret !== undefined) await call(commands.dbSetSshSecret(id, sshSecret, !!source.ssh?.saveSecret));
-  forget(id);
+  // What the tree had loaded for this source is reloaded with the new settings, so its
+  // expanded nodes don't stay on Loading.
+  const st = useDatabase.getState();
+  const loaded = id in st.databases || Object.keys(st.schemas).some((t) => splitTarget(t).id === id);
   await loadSources();
-  // Properties save leaves the tree expanded; reload the top level so it is not stuck on Loading.
-  const src = sourceById(id);
-  if (!src) return;
-  if (listsDatabases(src)) await loadDatabases(id);
-  else await loadSchemas(id);
+  if (loaded) await refresh(id);
+  else forget(id);
 }
 
 /** Copy/Paste › Duplicate: a copy of data source `id` named `<name> [2]` (its password is not copied). */

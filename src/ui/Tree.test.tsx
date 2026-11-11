@@ -199,30 +199,6 @@ describe("Tree keyboard navigation", () => {
     expect(loadChildren).toHaveBeenCalledWith(expect.objectContaining({ id: "src" }));
     expect(tree.textContent).toContain("Loading");
   });
-
-  it("reloads when an expanded node's children become undefined", () => {
-    const loadChildren = vi.fn();
-    let children: N[] | undefined = [{ id: "main" }];
-    const view = () => (
-      <Tree<N>
-        aria-label="Files"
-        roots={data}
-        getKey={(n) => n.id}
-        getLabel={(n) => n.id}
-        getChildren={(n) => (n.id === "src" ? children : n.children)}
-        isExpandable={(n) => n.id === "src" || !!n.children}
-        defaultExpanded={["src"]}
-        loadChildren={loadChildren}
-      />
-    );
-    const { rerender } = render(view());
-    expect(screen.getByRole("tree").textContent).toContain("main");
-    expect(loadChildren).not.toHaveBeenCalled();
-    children = undefined;
-    rerender(view());
-    expect(loadChildren).toHaveBeenCalledWith(expect.objectContaining({ id: "src" }));
-    expect(screen.getByRole("tree").textContent).toContain("Loading");
-  });
 });
 
 describe("Tree speed search", () => {

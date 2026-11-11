@@ -551,8 +551,7 @@ export function DatabaseView() {
               if (o) void openObjectDdl(o.id, o.schema, o.kind, o.name);
             }
           }}
-          // Tables open the data editor; sources / databases open a query console (Enter / double-click).
-          activateExpandable={(n) => n.kind === "table" || n.kind === "source" || n.kind === "database"}
+          activateExpandable={(n) => n.kind === "table"}
           onContextMenu={(n, _sel, e) => {
             const items = nodeMenu(n);
             if (items.length) showContextMenu(e, items);

@@ -373,28 +373,6 @@ export function Tree<T>(props: TreeProps<T>) {
     if (open && getChildren(row.node) === undefined) void loadChildren?.(row.node);
   };
 
-  // If cache is cleared while a node stays expanded (e.g. data source Properties save),
-  // re-request children; expand alone only loads on the open transition.
-  const loadChildrenRef = useRef(loadChildren);
-  const getChildrenRef = useRef(getChildren);
-  loadChildrenRef.current = loadChildren;
-  getChildrenRef.current = getChildren;
-  const loadingKeys = useRef(new Set<string>());
-  useEffect(() => {
-    const load = loadChildrenRef.current;
-    if (!load) return;
-    for (const row of allRows) {
-      if (!row.expandable || !row.expanded || row.loading) continue;
-      if (getChildrenRef.current(row.node) !== undefined) {
-        loadingKeys.current.delete(row.key);
-        continue;
-      }
-      if (loadingKeys.current.has(row.key)) continue;
-      loadingKeys.current.add(row.key);
-      void Promise.resolve(load(row.node)).finally(() => loadingKeys.current.delete(row.key));
-    }
-  }, [allRows]);
-
   const commitSelection = useCallback(
     (next: Set<string>, leadKey: string | null) => {
       if (!selectedControlled) setSelectedInner(next);
