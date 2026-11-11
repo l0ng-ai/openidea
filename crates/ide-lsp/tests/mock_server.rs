@@ -1685,6 +1685,59 @@ async fn progress_tasks_and_busy_status() {
     assert!(tasks[2].3);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_progress_task_that_stops_reporting_is_marked_but_stays_open() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    peer.notify(
+        "$/progress",
+        json!({ "token": "mvn", "value": {
+            "kind": "begin",
+            "title": "Initialize Workspace",
+            "message": "Importing Maven project(s) - https://maven.example/",
+            "percentage": 44,
+        } }),
+    )
+    .unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    // The import is blocked on a repository that never answers: nothing reports again.
+    tokio::time::advance(Duration::from_secs(200)).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let marked = h.events.lock().iter().rev().find_map(|e| match e {
+        IdeEvent::Task { title, message, fraction, done, .. } if title == "Initialize Workspace" && !done => {
+            Some((message.clone(), *fraction))
+        }
+        _ => None,
+    });
+    let (message, fraction) = marked.expect("the task stays open");
+    let message = message.expect("the last message is kept");
+    assert!(message.contains("no progress for 180 s"), "{message}");
+    assert_eq!(fraction, Some(0.44), "the bar keeps its last value");
+    assert!(
+        !h.events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Task { title, done: true, .. } if title == "Initialize Workspace")),
+        "a stalled task must not be closed"
+    );
+
+    // A late report brings it back to Busy and finishes in the same task.
+    peer.notify(
+        "$/progress",
+        json!({ "token": "mvn", "value": { "kind": "report", "message": "halfway", "percentage": 60 } }),
+    )
+    .unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    peer.notify("$/progress", json!({ "token": "mvn", "value": { "kind": "end" } })).unwrap();
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert!(
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, message: Some(m), done: true, .. } if title == "Initialize Workspace" && m == "halfway")),
+        "the same task ends with the final message"
+    );
+}
+
 /// While a server says it is loading the project (rust-analyzer: `serverStatus`
 /// not quiescent) an empty or withdrawn answer is asked again once loading moves
 /// on. `$/progress` alone (background indexing, `cargo check`) doesn't wait.
