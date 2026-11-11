@@ -2278,6 +2278,8 @@
   "more": "de plus",
   "Usages": "Utilisations",
   "Code author": "Auteur du code",
+  "Position": "Position",
+  "Show “no usages”": "Afficher « aucune utilisation »",
   "Usages Detected": "Utilisations détectées",
   "Usages actions": "Actions sur les utilisations",
   "Usages of '{symbol}'": "Utilisations de '{symbol}'",

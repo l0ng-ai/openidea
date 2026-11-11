@@ -2374,6 +2374,8 @@
   "more": "más",
   "Usages": "Usos",
   "Code author": "Autor del código",
+  "Position": "Posición",
+  "Show “no usages”": "Mostrar «sin usos»",
   "Usages Detected": "Usos detectados",
   "Usages actions": "Acciones de usos",
   "Usages of '{symbol}'": "Usos de '{symbol}'",

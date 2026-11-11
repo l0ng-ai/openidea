@@ -2353,6 +2353,8 @@
   "more": "więcej",
   "Usages": "Użycia",
   "Code author": "Autor kodu",
+  "Position": "Pozycja",
+  "Show “no usages”": "Pokazuj „brak użyć”",
   "Usages Detected": "Wykryto użycia",
   "Usages actions": "Akcje użyć",
   "Usages of '{symbol}'": "Użycia symbolu '{symbol}'",
