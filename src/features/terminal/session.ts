@@ -323,8 +323,16 @@ export class TerminalSession {
       { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
+    this.host.addEventListener("wheel", this.onWheelZoom, { capture: true, passive: false });
     this.disposables.push({ dispose: registerFontZoomSurface(this.host, (delta) => this.stepFontSize(delta)) });
   }
+
+  private onWheelZoom = (e: WheelEvent) => {
+    if ((!e.ctrlKey && !e.metaKey) || e.deltaY === 0 || !editorPrefs().general.wheelZoom) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.stepFontSize(e.deltaY < 0 ? 1 : -1);
+  };
 
   private onMiddleClick = (e: MouseEvent) => {
     if (e.button !== 1 || !workflowSettings().terminal.pasteOnMiddleClick) return;
@@ -786,6 +794,7 @@ export class TerminalSession {
     this.pendingInput = "";
     this.resizeObserver?.disconnect();
     this.host.removeEventListener("mousedown", this.onMiddleClick);
+    this.host.removeEventListener("wheel", this.onWheelZoom, { capture: true });
     if (this.ptyId !== null && !this.opts.command?.spawn) void commands.termKill(this.ptyId);
     this.ptyId = null;
     this.disposables.forEach((d) => d.dispose());

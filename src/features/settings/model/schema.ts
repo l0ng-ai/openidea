@@ -103,7 +103,7 @@ export interface ValidSettings extends WorkflowSettings {
   languageServers: Record<string, LanguageServerEntry>;
   /** Tools › Agents › Chat: the meters in an agent task's header. */
   agents: Required<AgentSettings>;
-  /** Tools › MCP Server (global). */
+  /** Agents › IDE MCP Server (global). */
   mcpServer: { enabled: boolean };
 }
 

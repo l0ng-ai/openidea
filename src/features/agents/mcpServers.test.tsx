@@ -80,7 +80,8 @@ class FakeMcpBackend implements McpBackend {
       args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
       url: null,
     });
-    this.servers = [...this.servers, importedServer];
+    // Like the backend, a server already in the workspace is not imported again.
+    if (!this.servers.some((s) => s.id === importedServer.id)) this.servers = [...this.servers, importedServer];
     return this.servers;
   });
 }
@@ -157,15 +158,24 @@ describe("McpServersPage", () => {
     await waitFor(() => expect(screen.getByText("filesystem")).toBeInTheDocument());
   });
 
-  it("imports workspace MCP servers when Import is clicked", async () => {
+  it("imports workspace MCP servers from the project and says how many were added", async () => {
     const backend = new FakeMcpBackend();
     render(<McpServersPage backend={backend} />);
 
     await waitFor(() => expect(screen.getByText("slack-official")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import from Project" }));
 
     await waitFor(() => expect(backend.imported).toBe(1));
     await waitFor(() => expect(screen.getByText("imported-fs")).toBeInTheDocument());
+    expect(screen.getByRole("status")).toHaveTextContent("Imported 1 MCP server from the project.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Import from Project" }));
+    await waitFor(() => expect(backend.imported).toBe(2));
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "No new MCP servers in the project's .mcp.json or .vscode/mcp.json.",
+      ),
+    );
   });
 
   it("deletes a user MCP server from the More Actions menu", async () => {

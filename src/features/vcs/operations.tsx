@@ -602,6 +602,7 @@ export function ChangesBetweenDialog({
   onShowDiff,
   swapped = false,
   onSelect,
+  listOnly = false,
 }: {
   from: Revision;
   to: Revision | null;
@@ -615,6 +616,8 @@ export function ChangesBetweenDialog({
   swapped?: boolean;
   /** Reports the selected file (the Compare tool window's Jump to Source / Swap Sides). */
   onSelect?: (file: ComparisonFile | null) => void;
+  /** Files only, each diff opening in the editor (the Compare tool window's narrow sidebar). */
+  listOnly?: boolean;
 }) {
   const [root] = useState(currentRepoRoot);
   const [repo] = useState(currentRepo);
@@ -741,6 +744,8 @@ export function ChangesBetweenDialog({
           diffFor={diffFor}
           getColor={(f) => KIND_COLOR[f.kind === "untracked" ? "added" : f.kind]}
           ariaLabel="Changed files"
+          inlineDiff={!listOnly}
+          openOnActivate={listOnly}
           renderDetails={(n) =>
             n.file ? (
               <>

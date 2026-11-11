@@ -54,7 +54,7 @@ exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
 | Version Control              | Commit; Confirmation; Directory Mappings; Issue Navigation; Log; Shelf; Git; GitHub                                                                                                                                                                                                                                                                                             |
 | Project Structure            | Project Structure                                                                                                                                                                                                                                                                                                                                                               |
 | Build, Execution, Deployment | CMake; Gradle; Maven; Console; Debugger (Data Views, Stepping); Python Debugger; Run/Debug; Run Targets; Deployment (Options)                                                                                                                                                                                                                                                   |
-| Languages & Frameworks       | Language Servers; Go (Build Tags, Go Modules); Java; Markdown; Node.js; PHP; Python Interpreter; Prettier; oxfmt; Ruff; Ruby; Rust; TypeScript; Plugin Formatters                                                                                                                                                                                                               |
+| Languages & Frameworks       | Language Servers; Go (Build Tags, Go Modules); Java; Markdown; Node.js; PHP; Python Interpreter; Prettier; oxfmt; Ruff; Ruby; Rust; TypeScript                                                                                                                                                                                                                                  |
 | Tools                        | Agents (Chat); Terminal; Actions on Save; External Tools; SSH Configurations; MCP Server                                                                                                                                                                                                                                                                                        |
 | Security                     | Project Trust                                                                                                                                                                                                                                                                                                                                                                   |
 
@@ -188,19 +188,19 @@ Settings › Appearance & Behavior › System Settings › HTTP Proxy. Used by t
 
 ### Other sections
 
-| Key                                              | Description                                                                                                                 |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `[actionsOnSave]`                                | `optimizeImports`, `cleanup` (Tools › Actions on Save).                                                                     |
-| `[mcpServer]`                                    | `enabled`: serve the IDE's tools to agents on 127.0.0.1 (Tools › MCP Server, global only). See [MCP server](/en/guide/mcp). |
-| `[agents]`                                       | What agent task headers show (Tools › Agents › Chat).                                                                       |
-| `[languages]`                                    | Interpreters, SDKs and options per language, e.g. `[languages.java]`, `[languages.python]`, `[languages.go]`.               |
-| `[languageServers]`                              | Per language server, by name: launch and protocol options, or a server defined here.                                        |
-| `[tools]`                                        | Language servers and debug adapters at a location you chose, by command name.                                               |
-| `[vcs]`, `[console]`, `[debugger]`, `[run]`      | Version Control, Console, Debugger and Run/Debug pages.                                                                     |
-| `[inspections]`, `[spelling]`                    | Editor › Inspections, Editor › Natural Languages › Spelling.                                                                |
-| `[ssh]`, `[deployment]`, `runTargets`, `[cmake]` | SSH Configurations, Deployment, Run Targets, CMake.                                                                         |
-| `[projectStructure]`                             | Source, test, resource and excluded folders (Project Structure).                                                            |
-| `externalTools`                                  | Tools › External Tools entries.                                                                                             |
-| `[plugins.<plugin-id>]`                          | Settings that plugins declare.                                                                                              |
+| Key                                              | Description                                                                                                                      |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `[actionsOnSave]`                                | `optimizeImports`, `cleanup` (Tools › Actions on Save).                                                                          |
+| `[mcpServer]`                                    | `enabled`: serve the IDE's tools to agents on 127.0.0.1 (Agents › IDE MCP Server, global only). See [MCP server](/en/guide/mcp). |
+| `[agents]`                                       | What agent task headers show (Tools › Agents › Chat).                                                                            |
+| `[languages]`                                    | Interpreters, SDKs and options per language, e.g. `[languages.java]`, `[languages.python]`, `[languages.go]`.                    |
+| `[languageServers]`                              | Per language server, by name: launch and protocol options, or a server defined here.                                             |
+| `[tools]`                                        | Language servers and debug adapters at a location you chose, by command name.                                                    |
+| `[vcs]`, `[console]`, `[debugger]`, `[run]`      | Version Control, Console, Debugger and Run/Debug pages.                                                                          |
+| `[inspections]`, `[spelling]`                    | Editor › Inspections, Editor › Natural Languages › Spelling.                                                                     |
+| `[ssh]`, `[deployment]`, `runTargets`, `[cmake]` | SSH Configurations, Deployment, Run Targets, CMake.                                                                              |
+| `[projectStructure]`                             | Source, test, resource and excluded folders (Project Structure).                                                                 |
+| `externalTools`                                  | Tools › External Tools entries.                                                                                                  |
+| `[plugins.<plugin-id>]`                          | Settings that plugins declare.                                                                                                   |
 
 The complete list of keys and their defaults is in the source: [`crates/ide-core/src/settings.rs`](https://github.com/l0ng-ai/openidea/blob/main/crates/ide-core/src/settings.rs) and the other `*_settings.rs` files next to it.
