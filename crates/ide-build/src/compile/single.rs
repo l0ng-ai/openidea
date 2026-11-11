@@ -79,6 +79,14 @@ pub fn find_javac(env: &BTreeMap<String, String>) -> String {
 /// so `-am` stays cheap). Entries are platform-separated (`;` on Windows).
 pub fn single_file_classpath(root: &Path, model: &BuildModel, target: &SingleFileTarget) -> IdeResult<String> {
     let mut entries: Vec<String> = Vec::new();
+    // The module's own classes first: the file almost always uses classes next to it.
+    let own: &[&str] = if target.test { &["target/test-classes", "target/classes"] } else { &["target/classes"] };
+    for out in own {
+        let path = target.module.join(out);
+        if path.is_dir() {
+            entries.push(path.to_string_lossy().into_owned());
+        }
+    }
     if let Some(m) = &model.maven {
         // Upstream reactor modules first: their freshly built classes shadow
         // installed snapshots of the same artifacts.
@@ -139,6 +147,16 @@ pub fn javac_step(target: &SingleFileTarget, file: &Path, classpath: &str, javac
     step.args.push(target.out_dir.to_string_lossy().into_owned());
     step.args.push("-cp".into());
     step.args.push(classpath.to_owned());
+    // Classes of the module that were never built (or are older than their source) are read
+    // from its sources; only `file` is written, so a test compile never puts main classes
+    // into test-classes.
+    let sources = source_roots(target);
+    if !sources.is_empty() {
+        let separator = if cfg!(windows) { ";" } else { ":" };
+        step.args.push("-sourcepath".into());
+        step.args.push(sources.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(separator));
+        step.args.push("-implicit:none".into());
+    }
     if let Some(version) = target.java_version {
         step.args.push("--release".into());
         step.args.push(version.to_string());
@@ -146,6 +164,27 @@ pub fn javac_step(target: &SingleFileTarget, file: &Path, classpath: &str, javac
     step.args.push(file.to_string_lossy().into_owned());
     step.env = target.top.env.clone();
     Ok(step)
+}
+
+/// The module's Java source folders that exist, generated ones included; test sources see
+/// the main ones too.
+fn source_roots(target: &SingleFileTarget) -> Vec<PathBuf> {
+    let scopes: &[(&str, &str)] = if target.test {
+        &[("src/test/java", "target/generated-test-sources"), ("src/main/java", "target/generated-sources")]
+    } else {
+        &[("src/main/java", "target/generated-sources")]
+    };
+    let mut roots = Vec::new();
+    for (src, generated) in scopes {
+        roots.push(target.module.join(src));
+        let generated = target.module.join(generated);
+        let mut dirs: Vec<PathBuf> =
+            fs::read_dir(&generated).into_iter().flatten().flatten().map(|d| d.path()).filter(|p| p.is_dir()).collect();
+        dirs.sort();
+        roots.extend(dirs);
+    }
+    roots.retain(|p| p.is_dir());
+    roots
 }
 
 /// Resolves the classpath and plans the `javac` invocation for one Java source.
@@ -243,6 +282,11 @@ mod tests {
         assert!(args.contains("-d ") && args.contains("test-classes"), "{args}");
         assert!(args.contains("-cp /repo/a.jar"), "{args}");
         assert!(args.contains("MainTest.java"), "{args}");
+        // Test sources resolve their own and the main sources, without writing them.
+        let sourcepath = step.args.iter().position(|a| a == "-sourcepath").map(|i| step.args[i + 1].clone());
+        let roots = sourcepath.expect("a -sourcepath");
+        assert!(roots.contains("src/test/java") && roots.contains("src/main/java"), "{roots}");
+        assert!(step.args.iter().any(|a| a == "-implicit:none"), "{args}");
         // No `JAVA_HOME`: plain `javac` from `PATH`.
         assert_eq!(find_javac(&BTreeMap::new()), exe);
     }
@@ -275,6 +319,11 @@ mod tests {
         // Reactor class directories first, so fresh outputs shadow installed snapshots.
         let lib = root.join("lib/target/classes").to_string_lossy().into_owned();
         assert!(cp.starts_with(&lib), "{cp}");
+        // The module's own classes come first once they exist.
+        fs::create_dir_all(root.join("app/target/classes")).unwrap();
+        let cp = single_file_classpath(root, &model, &target).unwrap();
+        let own = root.join("app/target/classes").to_string_lossy().into_owned();
+        assert!(cp.starts_with(&format!("{own}:{lib}")), "{cp}");
         assert!(cp.contains("/repo/a.jar"), "{cp}");
         assert!(cp.contains("/repo/b.jar"), "{cp}");
         assert!(cp.split(separator).count() >= 3, "{cp}");
