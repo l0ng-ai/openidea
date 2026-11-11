@@ -1443,6 +1443,28 @@ pub async fn lsp_restart(host: &Host, window: &str, server: ServerId) -> IdeResu
     Ok(())
 }
 
+/// Restarts the language servers named `name` in every open project, so a tool installed or
+/// updated from one window is what all of them run (not only that window's project).
+pub async fn lsp_restart_named(host: &Host, name: &str) -> IdeResult<()> {
+    for project in host.projects() {
+        let ids: Vec<ServerId> = project.lsp.servers().into_iter().filter(|s| s.name == name).map(|s| s.id).collect();
+        if ids.is_empty() {
+            continue;
+        }
+        for id in ids {
+            if let Err(e) = project.lsp.restart(id).await {
+                tracing::warn!(server = name, root = %project.root.display(), "restart after a tool update: {e}");
+            }
+        }
+        if name == "jdtls"
+            && let Some(bridge) = &project.kotlin_bridge
+        {
+            bridge.schedule();
+        }
+    }
+    Ok(())
+}
+
 /// Applies a (previewed) workspace edit, e.g. after rename confirmation.
 pub async fn apply_workspace_edit(host: &Host, window: &str, edit: WorkspaceEdit) -> IdeResult<()> {
     let project = host.project(window)?;

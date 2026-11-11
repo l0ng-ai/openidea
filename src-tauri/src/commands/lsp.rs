@@ -411,6 +411,13 @@ pub async fn lsp_restart(window: Window, state: State<'_, AppState>, server: Ser
     ide_host::ops::lsp::lsp_restart(&state.host, window.label(), server).await
 }
 
+/// Restarts the language servers named `name` in every open project (after a tool update).
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_restart_named(state: State<'_, AppState>, name: String) -> IdeResult<()> {
+    ide_host::ops::lsp::lsp_restart_named(&state.host, &name).await
+}
+
 /// Applies a (previewed) workspace edit, e.g. after rename confirmation.
 #[tauri::command]
 #[specta::specta]
