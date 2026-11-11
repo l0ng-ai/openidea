@@ -45,6 +45,9 @@ struct FakeAgent {
     empty_config: AtomicBool,
     /// Blocks `session/new` until discovery times out (see `acp::discover` test timeout).
     hold_session_new: AtomicBool,
+    /// Sleeps this long at the start of `session/set_config_option`, after noting the time.
+    delay_config: Duration,
+    config_entered: Mutex<Option<std::time::Instant>>,
     /// Config options `session/new` reports after the model one (per-model efforts, say).
     extra_options: Mutex<Vec<Value>>,
     model_options: Mutex<HashMap<String, Vec<Value>>>,
@@ -195,6 +198,10 @@ impl Handler for FakeAgent {
                 }
             }
             "session/set_config_option" | "session/set_mode" => {
+                if method == "session/set_config_option" && !self.delay_config.is_zero() {
+                    *self.config_entered.lock() = Some(std::time::Instant::now());
+                    std::thread::sleep(self.delay_config);
+                }
                 self.calls.lock().push(format!("{method} {}", params.get("value").or(params.get("modeId")).unwrap()));
                 if params["configId"] == "model" && !self.model_options.lock().is_empty() {
                     return Ok(json!({"configOptions": self.options_for(params["value"].as_str().unwrap())}));
@@ -2670,6 +2677,45 @@ async fn composer_commands_discover_cursor_effort_and_fast() {
             .next()
             .is_some_and(|levels| { levels.iter().any(|o| o.category.as_deref() == Some("thought_level")) })
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn config_choice_shows_before_the_agent_answers() {
+    let agent = Arc::new(FakeAgent {
+        extra_options: Mutex::new(vec![json!({
+            "id": "fast", "category": "model_config", "type": "select", "currentValue": "true",
+            "options": [{"value": "true", "name": "On"}, {"value": "false", "name": "Off"}]
+        })]),
+        delay_config: Duration::from_millis(300),
+        ..Default::default()
+    });
+    let mgr = manager(tempfile::tempdir().unwrap().path(), agent.clone());
+    let shown: Arc<Mutex<Option<std::time::Instant>>> = Arc::default();
+    let mark = shown.clone();
+    mgr.subscribe(Arc::new(move |e| {
+        if let AgentEvent::Task { task } = e
+            && task.config.iter().any(|o| o.id == "fast" && o.current.as_deref() == Some("false"))
+            && mark.lock().is_none()
+        {
+            *mark.lock() = Some(std::time::Instant::now());
+        }
+    }));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.set_config(&task.id, "fast", "false".into()).await.unwrap();
+    let shown = shown.lock().clone().expect("the switch moved");
+    let entered = agent.config_entered.lock().clone().expect("the agent received the change");
+    assert!(shown < entered, "the composer updates before the agent answers");
 }
 
 #[tokio::test(flavor = "multi_thread")]

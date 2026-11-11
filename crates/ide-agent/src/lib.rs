@@ -907,14 +907,38 @@ impl AgentManager {
             }
             o.clone()
         };
+        let previous = target.current.clone();
+        // Cursor's `session/set_config_option` (Fast, effort) can take seconds. Show the
+        // choice first so the switch and slider move immediately.
+        apply_config_choice(&task, option, &value);
+        task.persist();
+        task.emit_task();
+
         let live = task.live.lock().clone().filter(|l| !l.peer.is_closed());
         let mut model_options =
-            target.category.as_deref() != Some("model") || target.current.as_deref() == Some(value.as_str());
+            target.category.as_deref() != Some("model") || previous.as_deref() == Some(value.as_str());
         if let Some(live) = live.filter(|_| option != config::CURSOR_APPROVAL) {
             let (method, mut params) = config::set_request(&target, &value);
             params["sessionId"] = json!(live.session);
-            let reply: Value =
-                live.peer.request(method, params, None).await.map_err(|e| IdeError::internal(task.describe(e)))?;
+            let reply: Value = match live.peer.request(method, params, None).await {
+                Ok(reply) => reply,
+                Err(e) => {
+                    {
+                        let mut s = task.state.lock();
+                        s.wanted.retain(|c| c.id != option);
+                        if let Some(prev) = previous.clone() {
+                            s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: prev });
+                        }
+                        if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
+                            o.current = previous.clone();
+                        }
+                        s.task.model = model_of(&s.task.config).or(s.task.model.take());
+                    }
+                    task.persist();
+                    task.emit_task();
+                    return Err(IdeError::internal(task.describe(e)));
+                }
+            };
             if let Some(options) = reply.get("configOptions") {
                 config::merge_update(&mut task.state.lock().task.config, options);
                 model_options = true;
@@ -925,8 +949,6 @@ impl AgentManager {
             if !model_options {
                 s.task.config.retain(|o| o.category.as_deref() != Some("thought_level"));
             }
-            s.wanted.retain(|c| c.id != option);
-            s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: value.clone() });
             if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
                 o.current = Some(value);
             }
@@ -2512,6 +2534,16 @@ fn retry_of(update: &Value, now: f64) -> Option<AgentRetry> {
         retry_at_ms: now + n("retryDelayMs").unwrap_or(0) as f64,
         error: update.get("error").and_then(Value::as_str).filter(|e| !e.is_empty()).map(str::to_owned),
     })
+}
+
+fn apply_config_choice(task: &Task, option: &str, value: &str) {
+    let mut s = task.state.lock();
+    s.wanted.retain(|c| c.id != option);
+    s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: value.to_owned() });
+    if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
+        o.current = Some(value.to_owned());
+    }
+    s.task.model = model_of(&s.task.config).or(s.task.model.take());
 }
 
 fn model_of(config: &[AgentConfigOption]) -> Option<String> {
