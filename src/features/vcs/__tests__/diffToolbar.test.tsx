@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { EditorInput } from "@/workbench/contributions";
 import { Chunk, getChunks } from "@codemirror/merge";
-import { Text } from "@codemirror/state";
+import { StateEffect, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { ContextMenuHost, iconMarkup } from "@/ui";
 
@@ -686,6 +686,27 @@ describe("Diff navigation caret", () => {
       fireEvent.click(button);
       expect(view().state.doc.lineAt(view().state.selection.main.head).number).toBe(2);
       expect(view().hasFocus).toBe(true);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it.each(["split", "unified"] as const)("leaves the scrolling to the smooth scroll in the %s viewer", async (mode) => {
+    const { mounted, view } = await reveal(mode);
+    try {
+      // A scrollIntoView in the same update sets scrollTop at once and cuts the animation off.
+      let instant = false;
+      view().dispatch({
+        effects: StateEffect.appendConfig.of(
+          EditorView.updateListener.of((u) => {
+            if (u.transactions.some((tr) => tr.scrollIntoView || tr.effects.length)) instant = true;
+          }),
+        ),
+      });
+      instant = false;
+      fireEvent.click(await screen.findByRole("button", { name: "Next Difference" }));
+      expect(view().state.doc.lineAt(view().state.selection.main.head).number).toBe(2);
+      expect(instant).toBe(false);
     } finally {
       mounted.unmount();
     }
