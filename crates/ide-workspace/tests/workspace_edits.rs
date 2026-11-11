@@ -163,6 +163,21 @@ fn undo_id(events: &Mutex<Vec<IdeEvent>>) -> u32 {
 }
 
 #[test]
+fn undo_keeps_the_encoding_chosen_for_a_file_opened_after_the_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("legacy.txt");
+    std::fs::write(&path, b"abc\xC3\xA9").unwrap();
+    let (docs, events) = recorded_documents();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    let info = docs.open(&path).unwrap();
+    docs.set_encoding(info.id, "windows-1252", true).unwrap();
+    assert_eq!(docs.snapshot(info.id).unwrap().text, "newÃ©");
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    let snapshot = docs.snapshot(info.id).unwrap();
+    assert_eq!((snapshot.text.as_str(), snapshot.encoding.as_str()), ("abcÃ©", "windows-1252"));
+}
+
+#[test]
 fn stale_document_version_rejects_the_whole_edit() {
     let tmp = tempfile::tempdir().unwrap();
     let a = tmp.path().join("a.txt");
