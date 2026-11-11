@@ -253,6 +253,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         command: name.into(),
         args: vec![],
         env: Default::default(),
+        requires_env: Vec::new(),
         root_markers: vec!["mock.toml".into()],
         require_root_marker: false,
         initialization_options: Some(toml::Value::Table(toml::toml! { flag = true nested = { deep = 1 } })),
