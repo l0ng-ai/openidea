@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { call, commands, type FormatterChoice } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { Row, Section, Select, Toggle } from "../components/Form";
-import { useSetting } from "../components/context";
-export function PluginFormattersPage() {
+import { Row, Section, Select } from "../../components/Form";
+import { useSetting } from "../../components/context";
+
+/** Code Style › Formatter: a plugin formatter per language; hidden while no enabled plugin provides one. */
+export function PluginFormattersSection() {
   const [known, setKnown] = useState<string[]>([]);
   const [choices, setChoices] = useState<FormatterChoice[]>([]);
   const [selected, setSelected] = useSetting<Record<string, string>>("languages.pluginFormatters");
-  const [save, setSave] = useSetting<boolean>("editor.formatOnSave");
   useEffect(() => {
     let active = true;
     void call(commands.pluginFormatters())
@@ -30,6 +31,7 @@ export function PluginFormattersPage() {
   ].filter(
     (l) => l !== "*" && (selected?.[l] || choices.some((c) => c.languages.includes(l) || c.languages.includes("*"))),
   );
+  if (!languages.length) return null;
   return (
     <Section title="Plugin Formatters">
       {languages.map((language) => (
@@ -50,7 +52,6 @@ export function PluginFormattersPage() {
           />
         </Row>
       ))}
-      <Toggle label="Format on save" checked={save} onChange={setSave} />
     </Section>
   );
 }

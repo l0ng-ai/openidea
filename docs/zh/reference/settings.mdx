@@ -54,7 +54,7 @@ exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
 | 版本控制         | 提交；确认；目录映射；问题导航；日志；搁置；Git；GitHub                                                                                                                                                                                                         |
 | 项目结构         | 项目结构                                                                                                                                                                                                                                                        |
 | 构建、执行、部署 | CMake；Gradle；Maven；控制台；调试器（数据视图、单步执行）；Python 调试器；运行/调试；运行目标；部署（选项）                                                                                                                                                    |
-| 语言和框架       | 语言服务器；Go（构建标签、Go 模块）；Java；Markdown；Node.js；PHP；Python 解释器；Prettier；oxfmt；Ruff；Ruby；Rust；TypeScript；插件格式化工具                                                                                                                 |
+| 语言和框架       | 语言服务器；Go（构建标签、Go 模块）；Java；Markdown；Node.js；PHP；Python 解释器；Prettier；oxfmt；Ruff；Ruby；Rust；TypeScript                                                                                                                                 |
 | 工具             | 智能体（聊天）；终端；保存时操作；外部工具；SSH 配置；MCP 服务器                                                                                                                                                                                                |
 | 安全             | 项目信任                                                                                                                                                                                                                                                        |
 
@@ -188,19 +188,19 @@ exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
 
 ### 其他配置节
 
-| 键                                               | 说明                                                                                                                 |
-| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| `[actionsOnSave]`                                | `optimizeImports`、`cleanup`（工具 › 保存时操作）。                                                                  |
-| `[mcpServer]`                                    | `enabled`：在 127.0.0.1 上把 IDE 的工具提供给智能体（工具 › MCP 服务器，仅全局）。参见 [MCP Server](/zh/guide/mcp)。 |
-| `[agents]`                                       | 智能体任务标题栏显示哪些信息（工具 › 智能体 › 聊天）。                                                               |
-| `[languages]`                                    | 各语言的解释器、SDK 和选项，例如 `[languages.java]`、`[languages.python]`、`[languages.go]`。                        |
-| `[languageServers]`                              | 按名称配置各语言服务器的启动和协议选项，或在这里定义新的服务器。                                                     |
-| `[tools]`                                        | 放在自定义位置的语言服务器和调试适配器，按命令名配置。                                                               |
-| `[vcs]`、`[console]`、`[debugger]`、`[run]`      | 版本控制、控制台、调试器和运行/调试页面。                                                                            |
-| `[inspections]`、`[spelling]`                    | 编辑器 › 检查、编辑器 › 自然语言 › 拼写。                                                                            |
-| `[ssh]`、`[deployment]`、`runTargets`、`[cmake]` | SSH 配置、部署、运行目标、CMake。                                                                                    |
-| `[projectStructure]`                             | 源代码、测试、资源和排除文件夹（项目结构）。                                                                         |
-| `externalTools`                                  | 工具 › 外部工具中的条目。                                                                                            |
-| `[plugins.<plugin-id>]`                          | 插件声明的设置。                                                                                                     |
+| 键                                               | 说明                                                                                                                       |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `[actionsOnSave]`                                | `optimizeImports`、`cleanup`（工具 › 保存时操作）。                                                                        |
+| `[mcpServer]`                                    | `enabled`：在 127.0.0.1 上把 IDE 的工具提供给智能体（智能体 › IDE MCP 服务器，仅全局）。参见 [MCP Server](/zh/guide/mcp)。 |
+| `[agents]`                                       | 智能体任务标题栏显示哪些信息（工具 › 智能体 › 聊天）。                                                                     |
+| `[languages]`                                    | 各语言的解释器、SDK 和选项，例如 `[languages.java]`、`[languages.python]`、`[languages.go]`。                              |
+| `[languageServers]`                              | 按名称配置各语言服务器的启动和协议选项，或在这里定义新的服务器。                                                           |
+| `[tools]`                                        | 放在自定义位置的语言服务器和调试适配器，按命令名配置。                                                                     |
+| `[vcs]`、`[console]`、`[debugger]`、`[run]`      | 版本控制、控制台、调试器和运行/调试页面。                                                                                  |
+| `[inspections]`、`[spelling]`                    | 编辑器 › 检查、编辑器 › 自然语言 › 拼写。                                                                                  |
+| `[ssh]`、`[deployment]`、`runTargets`、`[cmake]` | SSH 配置、部署、运行目标、CMake。                                                                                          |
+| `[projectStructure]`                             | 源代码、测试、资源和排除文件夹（项目结构）。                                                                               |
+| `externalTools`                                  | 工具 › 外部工具中的条目。                                                                                                  |
+| `[plugins.<plugin-id>]`                          | 插件声明的设置。                                                                                                           |
 
 完整的配置键和默认值见源码：[`crates/ide-core/src/settings.rs`](https://github.com/l0ng-ai/openidea/blob/main/crates/ide-core/src/settings.rs) 及同目录下的其他 `*_settings.rs` 文件。

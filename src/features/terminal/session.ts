@@ -16,6 +16,7 @@ import { fitScheduler, settledResize } from "./fit";
 import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
+import { installSelectionHighlights, type SelectionHighlightController } from "./highlight";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
@@ -206,6 +207,9 @@ export class TerminalSession {
   private readonly searchAddon = new SearchAddon({ highlightLimit: 2000 });
   private searchDecorations: ISearchOptions["decorations"] | null = null;
   private readonly searchListeners = new Set<(r: TerminalSearchResult) => void>();
+  private selectingSearchMatch = false;
+  private searchSelection = false;
+  private readonly selectionHighlights: SelectionHighlightController;
   private readonly opts: SessionOptions;
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
@@ -309,7 +313,9 @@ export class TerminalSession {
         if (workflowSettings().terminal.audibleBell) beep();
       }),
       this.term.onSelectionChange(() => {
-        if (workflowSettings().terminal.copyOnSelection && this.term.hasSelection()) this.copySelection();
+        this.searchSelection = this.selectingSearchMatch && this.term.hasSelection();
+        if (!this.searchSelection && workflowSettings().terminal.copyOnSelection && this.term.hasSelection())
+          this.copySelection();
       }),
       // Mouse reporting off: ignore the application's requests to enable mouse tracking.
       this.term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
@@ -318,13 +324,25 @@ export class TerminalSession {
         return modes.length > 0 && modes.every((m) => MOUSE_MODES.has(m));
       }),
     );
+    this.selectionHighlights = installSelectionHighlights(this.term, {
+      isSearchSelection: () => this.searchSelection,
+    });
+    this.disposables.push(this.selectionHighlights);
     this.disposables.push(
       { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.clipboardTarget) },
       { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
+    this.host.addEventListener("wheel", this.onWheelZoom, { capture: true, passive: false });
     this.disposables.push({ dispose: registerFontZoomSurface(this.host, (delta) => this.stepFontSize(delta)) });
   }
+
+  private onWheelZoom = (e: WheelEvent) => {
+    if ((!e.ctrlKey && !e.metaKey) || e.deltaY === 0 || !editorPrefs().general.wheelZoom) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.stepFontSize(e.deltaY < 0 ? 1 : -1);
+  };
 
   private onMiddleClick = (e: MouseEvent) => {
     if (e.button !== 1 || !workflowSettings().terminal.pasteOnMiddleClick) return;
@@ -377,6 +395,7 @@ export class TerminalSession {
     o.cursorStyle = CURSOR[t.cursorShape];
     o.cursorBlink = t.cursorBlink;
     o.macOptionIsMeta = t.optionAsMeta;
+    this.selectionHighlights.refresh();
     this.scheduleFit();
   }
 
@@ -748,6 +767,7 @@ export class TerminalSession {
       this.clearSearch();
       return false;
     }
+    this.selectionHighlights.clear();
     this.searchDecorations ??= readSearchDecorations();
     const options: ISearchOptions = {
       ...opts,
@@ -755,6 +775,7 @@ export class TerminalSession {
       decorations: this.searchDecorations,
     };
     try {
+      this.selectingSearchMatch = true;
       return direction === "next"
         ? this.searchAddon.findNext(query, options)
         : this.searchAddon.findPrevious(query, options);
@@ -762,12 +783,16 @@ export class TerminalSession {
       // Invalid regular expression.
       this.clearSearch();
       return false;
+    } finally {
+      this.selectingSearchMatch = false;
     }
   }
 
   clearSearch() {
     this.searchAddon.clearDecorations();
     this.term.clearSelection();
+    this.searchSelection = false;
+    this.selectionHighlights.clear();
     for (const l of this.searchListeners) l({ index: -1, count: 0 });
   }
 
@@ -786,6 +811,7 @@ export class TerminalSession {
     this.pendingInput = "";
     this.resizeObserver?.disconnect();
     this.host.removeEventListener("mousedown", this.onMiddleClick);
+    this.host.removeEventListener("wheel", this.onWheelZoom, { capture: true });
     if (this.ptyId !== null && !this.opts.command?.spawn) void commands.termKill(this.ptyId);
     this.ptyId = null;
     this.disposables.forEach((d) => d.dispose());

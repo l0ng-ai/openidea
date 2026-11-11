@@ -27,6 +27,9 @@ struct Harness {
 }
 impl Harness {
     fn new() -> Self {
+        Self::with_timeout(Duration::from_millis(250))
+    }
+    fn with_timeout(timeout: Duration) -> Self {
         ide_ssh::secrets::testing::use_memory_store();
         let tmp = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
@@ -56,7 +59,7 @@ impl Harness {
             PluginHost::new(
                 tmp.path().join("plugins"),
                 Arc::new(move |w: Option<&str>, e| out.lock().unwrap().push((w.unwrap_or_default().to_owned(), e))),
-                Limits { timeout: Duration::from_millis(250), ..Default::default() },
+                Limits { timeout, ..Default::default() },
             )
             .unwrap(),
         );
@@ -202,7 +205,8 @@ async fn database_imports_are_denied_without_the_optional_grant() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn official_api_examples_install_and_render_real_component_contributions() {
-    let f = Harness::new();
+    // The real examples' first calls compile and scan; 250 ms is too tight on Windows runners.
+    let f = Harness::with_timeout(Duration::from_secs(10));
     f.host.set_project_trust(&f.root, true, false).await.unwrap();
     let official = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/official");
     for name in ["blame-annotations", "todo-finder"] {

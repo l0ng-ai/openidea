@@ -275,6 +275,63 @@
   width: 220px;
   margin-left: 6px;
 }
+.targetPopup {
+  /* What a list row (ui/List.module.css) adds around its name: the inset from the popup edge
+     plus row padding, then the icon and the gap after it. */
+  --target-row-inset: calc(6px + 8px);
+  --target-row-leading: calc(14px + 6px);
+  min-width: 260px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* Rows are out of flow inside the virtual list: this hidden column gives the popup their width. */
+.targetSizer {
+  width: max-content;
+  /* As wide as the longest branch name, up to a cap (Popup limits it to the window). */
+  max-width: min(640px, 70vw);
+  box-sizing: border-box;
+  height: 0;
+  padding-inline: var(--target-row-inset);
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+}
+/* Stands in for the row's branch icon, so a name is measured with the row around it. */
+.targetSizer > span {
+  padding-left: var(--target-row-leading);
+  white-space: nowrap;
+}
+.targetListWrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 4px 0;
+  box-sizing: content-box;
+}
+.targetList {
+  flex: 1;
+}
+.targetRow {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.targetIcon {
+  flex: none;
+  color: var(--fg-subtle);
+}
+.targetName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* Fits the remote and target fields into a 22px tree row. */
 .pushRowTarget {
   --h-field: var(--h-control-small);

@@ -238,6 +238,7 @@ function TerminalOptions() {
           />
           <BoundToggle k="terminal.shellIntegration" label="Shell integration" />
           <BoundToggle k="terminal.highlightHyperlinks" label="Highlight hyperlinks" />
+          <BoundToggle k="terminal.highlightSelection" label="Highlight occurrences of selected text" />
           {isMac && <BoundToggle k="terminal.optionAsMeta" label="Use Option as Meta key" />}
         </>
       }

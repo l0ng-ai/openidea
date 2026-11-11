@@ -1058,8 +1058,31 @@ pub async fn vcs_remove_worktree(
         } else {
             project.with_repo_at(repo.as_deref(), |r| Ok(r.root().join(&path)))?
         };
-        check_worktree_removal(&project.root, &path)?;
+        check_worktree_away_from_project(
+            &project.root,
+            &path,
+            "Cannot remove a worktree containing the open project.",
+        )?;
         let result = project.with_repo_at(repo.as_deref(), |r| r.remove_worktree(&path, force));
+        project.refresh_repositories();
+        result
+    })
+    .await
+}
+
+/// Move Worktree…: moves the linked worktree at `path` to `to`.
+pub async fn vcs_move_worktree(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    path: PathBuf,
+    to: PathBuf,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        check_worktree_away_from_project(&project.root, &path, "Cannot move a worktree containing the open project.")?;
+        let result = project.with_repo_at(repo.as_deref(), |r| r.move_worktree(&path, &to));
         project.refresh_repositories();
         result
     })
@@ -1486,6 +1509,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_add_worktree", |c| async move {
         vcs_add_worktree(&c.host, &c.window, c.arg("repo")?, c.arg("path")?, c.arg("commitish")?, c.arg("newBranch")?)
             .await
+    });
+    d.add("vcs_move_worktree", |c| async move {
+        vcs_move_worktree(&c.host, &c.window, c.arg("repo")?, c.arg("path")?, c.arg("to")?).await
     });
     d.add("vcs_remove_worktree", |c| async move {
         vcs_remove_worktree(&c.host, &c.window, c.arg("repo")?, c.arg("path")?, c.arg("force")?).await

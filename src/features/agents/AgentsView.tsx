@@ -25,7 +25,7 @@ import {
   sessionKey,
   type TaskGroup,
 } from "./model";
-import { openHome, useAgents } from "./store";
+import { importExternalSession, openHome, refreshExternalSessions, useAgents } from "./store";
 import { taskMenu } from "./taskActions";
 import { SessionEditor } from "./SessionEditor";
 import { HomeEditor } from "./HomeEditor";
@@ -35,7 +35,12 @@ import { useTx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 
 export function AgentsHeaderActions() {
-  return <IconButton icon="plus" action="agents.newTask" />;
+  return (
+    <>
+      <IconButton icon="plus" action="agents.newTask" />
+      <IconButton icon="settings" action="agents.mcpServers" />
+    </>
+  );
 }
 
 type Node = { kind: "group"; group: TaskGroup } | { kind: "task"; task: AgentTask };
@@ -88,6 +93,19 @@ export function AgentsView() {
   const inline = docked !== null || homeOpen;
   const historyRef = useRef<HTMLButtonElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const external = useAgents((s) => s.external);
+  const externalError = useAgents((s) => s.externalError);
+  const [importing, setImporting] = useState<string | null>(null);
+  // Sessions started elsewhere (a terminal, another editor) list on demand (#312).
+  useEffect(() => {
+    if (historyOpen) void refreshExternalSessions();
+  }, [historyOpen]);
+  const importSession = (provider: string, sessionId: string) => {
+    setImporting(`${provider}:${sessionId}`);
+    void importExternalSession(provider, sessionId)
+      .catch(() => {})
+      .finally(() => setImporting(null));
+  };
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["g:archived"]));
   const [selected, setSelected] = useState<Set<string>>(() => {
     const task = sessionTask(maybeEditorService()?.activeInput?.());
@@ -280,6 +298,37 @@ export function AgentsView() {
               <T>Agent sessions</T>
             </div>
             {taskList}
+            {(external.length > 0 || externalError) && (
+              <>
+                <div className={styles.historyTitle}>
+                  <T>Sessions from other apps</T>
+                </div>
+                {externalError ? (
+                  <div className={styles.empty}>{externalError}</div>
+                ) : (
+                  <div className={styles.external}>
+                    {external.map((s) => {
+                      const key = `${s.provider}:${s.sessionId}`;
+                      return (
+                        <div key={key} className={styles.row} title={s.cwd ?? s.sessionId}>
+                          <Icon name={providerIcon(s.provider)} size={16} label={providerName(s.provider)} />
+                          <span className={styles.title}>{s.title}</span>
+                          <span className={styles.age}>{age(s.updatedMs ?? 0)}</span>
+                          <button
+                            type="button"
+                            className={styles.link}
+                            disabled={importing === key}
+                            onClick={() => importSession(s.provider, s.sessionId)}
+                          >
+                            <T>Import</T>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
           </Popup>
         )}
       </div>

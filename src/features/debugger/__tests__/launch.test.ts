@@ -1,7 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
-import { debugUnsupportedReason, launchConfigFor } from "../launch";
+import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "../launch";
+
+const ipc = vi.hoisted(() => {
+  const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
+  return { ok, runEnvFiles: vi.fn((_files: string[]) => ok({} as Record<string, string>)) };
+});
+
+vi.mock("@/platform/ipc", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/platform/ipc")>();
+  const { ok: _ok, ...cmds } = ipc;
+  return { ...real, commands: { ...real.commands, ...cmds } };
+});
 
 const rc = (p: Partial<RunConfig>): RunConfig => ({
   id: "x",
@@ -20,7 +31,10 @@ const rc = (p: Partial<RunConfig>): RunConfig => ({
 const extra = (l: { extraJson: string | null } | null) => JSON.parse(l?.extraJson ?? "{}");
 
 const originalPlatform = usePlatform.getState();
-beforeEach(() => usePlatform.setState({ os: "linux" }));
+beforeEach(() => {
+  usePlatform.setState({ os: "linux" });
+  vi.clearAllMocks();
+});
 afterEach(() => usePlatform.setState(originalPlatform));
 
 describe("run config → launch config", () => {
@@ -493,4 +507,19 @@ it("raw and typed Go debug configurations inherit custom tags unless explicitly 
       expect(extra(launch).__goUseTags).toBe(useTags !== "false");
     }
   }
+});
+
+describe("withEnvFiles", () => {
+  it("leaves configurations without .env files alone (no backend call)", async () => {
+    const config = rc({ env: { A: "1" } });
+    await expect(withEnvFiles(config, "/p")).resolves.toBe(config);
+    expect(ipc.runEnvFiles).not.toHaveBeenCalled();
+  });
+
+  it("loads .env files under the explicit variables, resolved against the project root", async () => {
+    ipc.runEnvFiles.mockResolvedValueOnce({ status: "ok", data: { FROM_FILE: "file", A: "file" } });
+    const out = await withEnvFiles(rc({ env: { A: "explicit" }, envFiles: [".env", "env/local.env"] }), "/p");
+    expect(ipc.runEnvFiles).toHaveBeenCalledWith(["/p/.env", "/p/env/local.env"]);
+    expect(out.env).toEqual({ FROM_FILE: "file", A: "explicit" });
+  });
 });

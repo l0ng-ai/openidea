@@ -12,6 +12,7 @@ import type {
   AgentLimit,
   AgentProvider,
   AgentTask,
+  ExternalSession,
   Isolation,
 } from "@/bindings";
 import { useProject } from "@/platform/project";
@@ -77,6 +78,10 @@ interface AgentsState {
   lastComposer: string;
   /** First messages of past tasks, newest first (New Task page ↑). */
   history: string[];
+  /** Sessions on this machine that no task holds yet (#312). */
+  external: ExternalSession[];
+  /** Why the external sessions could not be listed. */
+  externalError: string | null;
   /** The composer asked to take focus (`seq` tells repeated requests apart). */
   focus: { key: string; seq: number } | null;
   /** Task shown inside the Agents tool window instead of an editor tab. */
@@ -138,6 +143,8 @@ export const useAgents = create<AgentsState>(() => ({
   composers: new Map(),
   lastComposer: HOME,
   history: load<string[]>(HISTORY_KEY, []),
+  external: [],
+  externalError: null,
   focus: null,
   docked: null,
   sessionLocation: load<unknown>(SESSION_LOCATION_KEY, null) === "toolWindow" ? "toolWindow" : "editor",
@@ -516,6 +523,15 @@ export async function refreshChanges(task: string): Promise<void> {
   }
 }
 
+/** Rollback: the task's changed files `relPaths` (all with `null`) back as they were when it started. */
+export async function rollbackChanges(task: string, relPaths: string[] | null): Promise<void> {
+  try {
+    await call(commands.agentRollbackChanges(task, relPaths));
+  } finally {
+    await refreshChanges(task);
+  }
+}
+
 const pendingChanges = new Map<string, ReturnType<typeof setTimeout>>();
 function scheduleChanges(task: string) {
   if (pendingChanges.has(task)) return;
@@ -704,6 +720,26 @@ export async function startTask(
   remember(composer.text.trim());
   updateComposer(HOME, emptyDraft());
   if ((await editorService().closeInput?.(HOME_KEY)) !== false) openTask(task.id);
+}
+
+/** Sessions on this machine that no task holds yet (a terminal, another editor: #312). */
+export async function refreshExternalSessions() {
+  try {
+    const external = await call(commands.agentExternalSessions());
+    useAgents.setState({ external, externalError: null });
+  } catch (e) {
+    useAgents.setState({ externalError: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+/** Imports an external session as a task and opens it: its first turn loads it (#312). */
+export async function importExternalSession(provider: string, sessionId: string) {
+  const task = await call(commands.agentImportSession(provider, sessionId));
+  useAgents.setState((s) => ({
+    tasks: s.tasks.has(task.id) ? s.tasks : new Map(s.tasks).set(task.id, task),
+    external: s.external.filter((e) => !(e.provider === provider && e.sessionId === sessionId)),
+  }));
+  openTask(task.id);
 }
 
 function remember(text: string) {

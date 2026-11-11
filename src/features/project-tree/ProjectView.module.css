@@ -66,6 +66,22 @@
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
 }
+.suffix {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-left: 6px;
+  overflow: hidden;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.suffixSegment {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
 .detail {
   min-width: 0;
   margin-left: 4px;

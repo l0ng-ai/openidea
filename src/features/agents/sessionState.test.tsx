@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { EditorShownProvider } from "@/workbench/contributions";
+import { hideContextMenu, useContextMenuStore } from "@/ui";
 import type { AgentChange, AgentEntry, AgentTask } from "@/bindings";
 import { AgentsView } from "./AgentsView";
 import { SessionEditor, conversationRows } from "./SessionEditor";
@@ -21,6 +22,15 @@ const backend = vi.hoisted(() => ({
   fetched: [] as string[],
   entryError: null as string | null,
   entryWait: null as Promise<void> | null,
+  external: [] as Array<{
+    provider: string;
+    sessionId: string;
+    title: string;
+    cwd: string | null;
+    updatedMs: number;
+  }>,
+  imported: [] as Array<[string, string]>,
+  externalError: null as string | null,
 }));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
@@ -38,6 +48,16 @@ vi.mock("@/platform/ipc", async (original) => ({
     agentRespond: async (task: string, permission: number, option: string | null) => {
       backend.answers.push([task, permission, option]);
       return { status: "ok", data: null };
+    },
+    agentExternalSessions: async () => {
+      if (backend.externalError !== null) throw new Error(backend.externalError);
+      return { status: "ok", data: backend.external };
+    },
+    agentImportSession: async (provider: string, sessionId: string) => {
+      backend.imported.push([provider, sessionId]);
+      const found = backend.external.find((e) => e.provider === provider && e.sessionId === sessionId);
+      if (!found) throw new Error("unknown session");
+      return { status: "ok", data: { ...task("imported"), id: "imported", title: found.title, provider } };
     },
   },
 }));
@@ -102,6 +122,7 @@ let disposeActions: () => void;
 const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
 afterEach(() => {
   disposeActions();
+  hideContextMenu();
   vi.restoreAllMocks();
   vi.useRealTimers();
   if (scrollTopDescriptor) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTopDescriptor);
@@ -116,6 +137,9 @@ beforeEach(() => {
   disconnect();
   localStorage.clear();
   backend.changes = [];
+  backend.external = [];
+  backend.imported = [];
+  backend.externalError = null;
   backend.entries = new Map([
     ["A", [{ type: "agent", text: "Answer A" }, subagent]],
     [entriesKey("A", "child"), [{ type: "agent", text: "Child answer" }]],
@@ -127,6 +151,8 @@ beforeEach(() => {
     homeOpen: false,
     tasks: new Map([task("A"), task("B")].map((t) => [t.id, t])),
     entries: new Map(backend.entries),
+    external: [],
+    externalError: null,
   });
 });
 
@@ -353,6 +379,66 @@ describe("message tags", () => {
     render(<SessionEditor input={input("A")} />);
     expect(await screen.findByText("@src/a.ts")).toHaveClass(tagStyles.tag!);
     expect(screen.getByText("/triage")).toHaveClass(tagStyles.accent!);
+  });
+});
+
+describe("the conversation selection", () => {
+  const labels = () =>
+    (useContextMenuStore.getState().menu?.items ?? []).flatMap((item) => ("label" in item ? [item.label] : []));
+  const select = (node: Node) => {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };
+
+  it("shows a Quote button after a mouse selection ends", async () => {
+    render(<SessionEditor input={input("A")} />);
+    select(await screen.findByText("Answer A"));
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    expect(screen.getByRole("button", { name: "Quote" })).toBeInTheDocument();
+    expect(labels()).toEqual([]);
+  });
+
+  it("shows no button for an empty selection", async () => {
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    window.getSelection()!.removeAllRanges();
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+  });
+
+  it("shows no button for a selection outside the conversation", async () => {
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    const outside = document.createElement("p");
+    outside.textContent = "selected elsewhere";
+    document.body.appendChild(outside);
+    select(outside);
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    outside.remove();
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+  });
+
+  it("hides the button when the conversation scrolls or Escape is pressed", async () => {
+    render(<SessionEditor input={input("A")} />);
+    select(await screen.findByText("Answer A"));
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    fireEvent.scroll(stream());
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+    select(screen.getByText("Answer A"));
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+  });
+
+  it("offers Copy alone on a right-click without a selection", async () => {
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    window.getSelection()!.removeAllRanges();
+    fireEvent.contextMenu(stream(), { clientX: 10, clientY: 10 });
+    expect(labels()).toEqual(["Copy"]);
   });
 });
 
@@ -1062,14 +1148,14 @@ describe("session state across tasks and hosts", () => {
     useAgents.setState({ docked: "A", sessionLocation: "toolWindow" });
     render(<AgentsView />);
     await screen.findByText("Answer A");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Show changes" })).toBeEnabled());
+    await screen.findByRole("button", { name: /1 changed file/ });
     expect(screen.queryByRole("complementary", { name: "Changes" })).toBeNull();
     const markVisible = vi.spyOn(await import("./store"), "markVisible");
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const message = screen.getByRole("textbox", { name: "Message" });
     fireEvent.change(message, { target: { value: "Draft to keep" } });
     const conversation = stream();
-    fireEvent.click(screen.getByRole("button", { name: "Show changes" }));
+    fireEvent.click(screen.getByRole("button", { name: /1 changed file/ }));
     expect(screen.getByRole("complementary", { name: "Changes" })).toBeVisible();
     expect(screen.getByText("Answer A")).not.toBeVisible();
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
@@ -1192,5 +1278,38 @@ describe("meters in the task header", () => {
     expect(screen.queryByText("12%")).toBeNull();
     expect(screen.queryByText("5h 19%")).toBeNull();
     expect(screen.getByText("$0.42")).toBeInTheDocument();
+  });
+});
+
+describe("sessions from other apps", () => {
+  const openHistory = async () => {
+    act(() => useAgents.setState({ docked: "A" }));
+    render(<AgentsView />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
+    await waitFor(() => expect(screen.getByText("Sessions from other apps")).toBeInTheDocument());
+  };
+
+  it("lists external sessions in the history popup and imports one as a task", async () => {
+    backend.external = [
+      { provider: "claude", sessionId: "abc", title: "Login fix", cwd: "/work/app", updatedMs: Date.now() },
+      { provider: "codex", sessionId: "thread-1", title: "Add tests", cwd: null, updatedMs: 0 },
+    ];
+    await openHistory();
+    expect(screen.getByText("Login fix")).toBeInTheDocument();
+    expect(screen.getByText("Add tests")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "Import" })[0]!);
+    });
+    expect(backend.imported).toEqual([["claude", "abc"]]);
+    const state = useAgents.getState();
+    expect(state.tasks.get("imported")?.title).toBe("Login fix");
+    expect(state.external.map((e) => e.sessionId)).toEqual(["thread-1"]);
+  });
+
+  it("shows listing errors instead of the section", async () => {
+    backend.externalError = "no home";
+    await openHistory();
+    expect(screen.getByText("no home")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Import" })).toBeNull();
   });
 });

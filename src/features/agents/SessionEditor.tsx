@@ -32,6 +32,7 @@ import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { basename, relativeDir, useProject } from "@/platform/project";
 import { notifications, useEditorShown, type EditorInput } from "@/workbench/contributions";
+import { confirm } from "@/workbench/messages";
 import {
   Button,
   Checkbox,
@@ -58,6 +59,7 @@ import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
 import { openDiff, withChain, type DiffData } from "@/features/vcs/diffInput";
 import { Composer } from "./Composer";
+import { SelectionQuote, selectionIn } from "./SelectionQuote";
 import { SubmitButton } from "./SubmitButton";
 import {
   canSend,
@@ -73,7 +75,7 @@ import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
-import { currentTool, foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
+import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
 import { useRevealedText } from "./reveal";
 import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
 import {
@@ -108,6 +110,7 @@ import {
   loadEntries,
   markVisible,
   refreshChanges,
+  rollbackChanges,
   editQueued,
   forkTask,
   rerunFrom,
@@ -269,20 +272,8 @@ function useLocalHead(status: AgentTask["status"] | null, root: string | null): 
   return local ? head : null;
 }
 
-/** The task's terminal and changes, at the end of its status line. */
-function StatusActions({
-  task,
-  changes,
-  changesOpen,
-  onToggleChanges,
-}: {
-  task: AgentTask;
-  changes: AgentChange[] | null;
-  changesOpen: boolean;
-  onToggleChanges: () => void;
-}) {
-  const tx = useTx();
-  const count = changes?.length ?? 0;
+/** The task's terminal, at the end of its status line. */
+function StatusActions({ task }: { task: AgentTask }) {
   return (
     <span className={styles.statusActions}>
       <IconButton
@@ -291,18 +282,6 @@ function StatusActions({
         title="Terminal"
         onClick={() => void executeAction("terminal.openAt", task.cwd)}
       />
-      <button
-        type="button"
-        className={styles.changesToggle}
-        aria-pressed={changesOpen}
-        disabled={count === 0 && !changesOpen}
-        aria-label={changesOpen ? tx("Hide changes") : tx("Show changes")}
-        title={changesOpen ? tx("Hide changes") : tx("Show changes")}
-        onClick={onToggleChanges}
-      >
-        <Icon name="toolwindow-changes" size={14} />
-        {count > 0 && <span>{count}</span>}
-      </button>
     </span>
   );
 }
@@ -312,16 +291,10 @@ function SessionStatus({
   task,
   entries,
   head,
-  changes,
-  changesOpen,
-  onToggleChanges,
 }: {
   task: AgentTask;
   entries: AgentEntry[] | null;
   head: string | null;
-  changes: AgentChange[] | null;
-  changesOpen: boolean;
-  onToggleChanges: () => void;
 }) {
   const tx = useTx();
   const project = useProject((s) => s.project);
@@ -354,7 +327,7 @@ function SessionStatus({
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
       </span>
       <Meters task={task} entries={entries} />
-      <StatusActions task={task} changes={changes} changesOpen={changesOpen} onToggleChanges={onToggleChanges} />
+      <StatusActions task={task} />
     </div>
   );
 }
@@ -767,6 +740,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   return (
     <div className={styles.streamArea}>
       {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
+      <SelectionQuote task={task} streamRef={ref} />
       <div
         ref={ref}
         // The conversation is read and copied like a document; focusable so ⌘F reaches it.
@@ -964,13 +938,6 @@ function Retrying({ retry }: { retry: AgentRetry }) {
 function Elapsed({ since }: { since: number }) {
   const now = useNow(1000);
   return <span className={styles.muted}>{formatDuration(now - since)}</span>;
-}
-
-/** Text selected in `stream`, or "" when the selection is elsewhere. */
-function selectionIn(stream: HTMLElement): string {
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
-  return stream.contains(sel.getRangeAt(0).commonAncestorContainer) ? sel.toString() : "";
 }
 
 interface RangeSet {
@@ -2391,7 +2358,6 @@ function Tray({
   const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
   const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
   const busy = task.status === "running" || task.status === "starting";
-  const tool = entries && busy ? currentTool(entries) : null;
   const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   return (
     <div className={styles.tray}>
@@ -2448,10 +2414,6 @@ function Tray({
           <Spinner size={12} />
           {task.retry ? (
             <Retrying retry={task.retry} />
-          ) : tool ? (
-            <span className={styles.trayActivity} title={tool.title}>
-              {shortTitle(task, tool.title || tool.kind)}
-            </span>
           ) : (
             <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
           )}
@@ -2562,14 +2524,7 @@ function SessionComposer({
     );
   return (
     <div className={styles.composerArea}>
-      <SessionStatus
-        task={task}
-        entries={entries}
-        head={head}
-        changes={changes}
-        changesOpen={changesOpen}
-        onToggleChanges={onToggleChanges}
-      />
+      <SessionStatus task={task} entries={entries} head={head} />
       {task.status === "archived" && (
         <div className={styles.banner}>
           <span className={styles.bannerText}>
@@ -2757,6 +2712,43 @@ function ChangesPane({
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
   const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
+  const rollback = async () => {
+    const chosen = (changes ?? []).filter((c) => selected.has(c.path));
+    const count = chosen.length || changes?.length || 0;
+    if (!count) return;
+    const ok = await confirm({
+      title: "Rollback Changes",
+      message: (
+        <>
+          <p>
+            {count === 1
+              ? tx`Roll back the changes to ${basename((chosen[0] ?? changes![0]!).path)}?`
+              : tx`Roll back the changes to ${count} files?`}
+          </p>
+          <p>
+            {task.isolation === "worktree"
+              ? tx("They go back to how they were when the task started, in the task's worktree.")
+              : tx(
+                  "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.",
+                )}
+          </p>
+        </>
+      ),
+      ok: "Rollback",
+      icon: "warning",
+    });
+    if (!ok) return;
+    try {
+      await rollbackChanges(task.id, chosen.length ? chosen.map((c) => c.relPath) : null);
+      setSelected(new Set());
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot roll back the changes"),
+        body: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
   return (
     <aside className={styles.changes} aria-label={tx("Changes")}>
       <div className={styles.changesHeader}>
@@ -2770,6 +2762,12 @@ function ChangesPane({
           </span>
         )}
         <span className={styles.bannerSpacer} />
+        <IconButton
+          icon="revert"
+          title={selected.size ? "Rollback Selected Changes…" : "Rollback All Changes…"}
+          disabled={!changes?.length || task.status === "starting" || task.status === "running"}
+          onClick={() => void rollback()}
+        />
         <IconButton icon="refresh" title="Refresh" onClick={() => void refreshChanges(task.id)} />
         {!docked && <IconButton icon="chevron-right" title={tx("Hide changes")} size="small" onClick={onHide} />}
       </div>

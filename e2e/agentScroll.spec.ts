@@ -68,6 +68,8 @@ async function openHistory(page: Page) {
 
 for (const placement of ["editor", "toolWindow"] as const) {
   test(`lets small upward wheel steps leave the end while replies stream in the ${placement}`, async ({ page }) => {
+    // Streams into an 80-turn conversation for several seconds: close to 30 s on CI runners.
+    test.slow();
     const stream = await openHistory(page);
     await page.evaluate(
       async ({ id, placement }) => {

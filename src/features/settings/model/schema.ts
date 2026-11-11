@@ -103,7 +103,7 @@ export interface ValidSettings extends WorkflowSettings {
   languageServers: Record<string, LanguageServerEntry>;
   /** Tools › Agents › Chat: the meters in an agent task's header. */
   agents: Required<AgentSettings>;
-  /** Tools › MCP Server (global). */
+  /** Agents › IDE MCP Server (global). */
   mcpServer: { enabled: boolean };
 }
 
@@ -191,6 +191,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     sendWith: "enter",
     whileRunning: "queue",
     defaults: {},
+    mcpServers: {},
   },
   mcpServer: { enabled: false },
   ...DEFAULT_WORKFLOW,
@@ -212,14 +213,39 @@ type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
 const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
 const str = (v: unknown, d: string) => (typeof v === "string" && v.trim() ? v : d);
+const stringMap = (v: unknown): Record<string, string> =>
+  Object.fromEntries(Object.entries(obj(v)).filter((e): e is [string, string] => typeof e[1] === "string"));
+
 /** Agent id → option id → value, keeping only string values. */
 function agentDefaults(v: unknown): Record<string, Record<string, string>> {
-  return Object.fromEntries(
-    Object.entries(obj(v)).map(([agent, options]) => [
-      agent,
-      Object.fromEntries(Object.entries(obj(options)).filter((e): e is [string, string] => typeof e[1] === "string")),
-    ]),
-  );
+  return Object.fromEntries(Object.entries(obj(v)).map(([agent, options]) => [agent, stringMap(options)]));
+}
+
+function agentMcpServers(v: unknown): Required<AgentSettings>["mcpServers"] {
+  const out: Required<AgentSettings>["mcpServers"] = {};
+  for (const [name, raw] of Object.entries(obj(v))) {
+    if (!name.trim()) continue;
+    const s = obj(raw);
+    const transport = oneOf(s.transport, ["stdio", "http", "sse"] as const, "stdio");
+    const enabled = bool(s.enabled, true);
+    const command = typeof s.command === "string" && s.command.trim() ? s.command.trim() : null;
+    const args = stringList(s.args);
+    const env = stringMap(s.env);
+    const url = typeof s.url === "string" && s.url.trim() ? s.url.trim() : null;
+    const headers = stringMap(s.headers);
+    const agents = stringList(s.agents);
+    out[name] = {
+      transport,
+      enabled,
+      ...(command ? { command } : {}),
+      ...(args.length ? { args } : {}),
+      ...(Object.keys(env).length ? { env } : {}),
+      ...(url ? { url } : {}),
+      ...(Object.keys(headers).length ? { headers } : {}),
+      ...(agents.length ? { agents } : {}),
+    };
+  }
+  return out;
 }
 
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[], d: T): T =>
@@ -331,6 +357,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       sendWith: oneOf(agents.sendWith, ["enter", "modEnter"] as const, d.agents.sendWith),
       whileRunning: oneOf(agents.whileRunning, ["queue", "steer"] as const, d.agents.whileRunning),
       defaults: agentDefaults(agents.defaults),
+      mcpServers: agentMcpServers(agents.mcpServers),
     },
     mcpServer: { enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled) },
     ...validateWorkflow(root),

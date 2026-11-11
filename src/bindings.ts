@@ -151,6 +151,16 @@ export const commands = {
 	agentRegistryInstall: (id: string, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("agent_registry_install", { id, request, onEvent })),
 	/**  Removes a registry agent: its agent file and installed files. */
 	agentRegistryRemove: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_registry_remove", { id })),
+	/**  Lists configured and discovered MCP servers across User, Workspace, Plugin, and Built-In scopes. */
+	agentMcpList: () => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_list")),
+	/**  Creates or updates a User or Workspace MCP server and returns the updated list. */
+	agentMcpSave: (input: McpServerInput) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_save", { input })),
+	/**  Enables or disables an MCP server and returns the updated list. */
+	agentMcpSetEnabled: (id: string, enabled: boolean) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_set_enabled", { id, enabled })),
+	/**  Removes a User or Workspace MCP server and returns the updated list. */
+	agentMcpRemove: (id: string) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_remove", { id })),
+	/**  Copies MCP servers from `.mcp.json` and `.vscode/mcp.json` into the workspace settings once. */
+	agentMcpImport: () => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_import")),
 	/**
 	 *  Slash commands to complete for `provider` in `task`'s directory, or in the project
 	 *  before a task exists (skills and custom commands on disk included).
@@ -159,6 +169,10 @@ export const commands = {
 	/**  Entries of `task`'s conversation, or of its subagent `subagent`'s. */
 	agentEntries: (task: string, subagent: string | null) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task, subagent })),
 	agentCreate: (request: NewAgentTask) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_create", { request })),
+	/**  Sessions on this machine that no task holds yet, newest first (#312). */
+	agentExternalSessions: () => typedError<ExternalSession[], IdeError>(__TAURI_INVOKE("agent_external_sessions")),
+	/**  Imports an external session as a task: its first turn loads and replays it (#312). */
+	agentImportSession: (provider: string, sessionId: string) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_import_session", { provider, sessionId })),
 	/**  Sends a message; while the agent works it is queued, or with `now` it interrupts the turn. */
 	agentPrompt: (task: string, prompt: AgentPrompt, now: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_prompt", { task, prompt, now })),
 	/**  Drops a queued message and returns it (to edit it). */
@@ -193,6 +207,8 @@ export const commands = {
 	agentChanges: (task: string) => typedError<AgentChange[], IdeError>(__TAURI_INVOKE("agent_changes", { task })),
 	/**  Content of `path` when the task started (left side of its diff). */
 	agentBaseText: (task: string, path: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path })),
+	/**  Rollback: the task's changed files among `paths` (all without) back as they were when it started. */
+	agentRollbackChanges: (task: string, paths: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rollback_changes", { task, paths })),
 	notebookOpen: (path: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_open", { path })),
 	notebookGet: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_get", { id })),
 	notebookEdit: (id: string, version: number, edit: NotebookEdit) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_edit", { id, version, edit })),
@@ -533,6 +549,8 @@ export const commands = {
 	/**  Re-emits the language servers' current diagnostics (the UI loaded after they arrived). */
 	lspResendDiagnostics: () => typedError<null, IdeError>(__TAURI_INVOKE("lsp_resend_diagnostics")),
 	lspRestart: (server: ServerId) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_restart", { server })),
+	/**  Restarts the language servers named `name` in every open project (after a tool update). */
+	lspRestartNamed: (name: string) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_restart_named", { name })),
 	/**  Applies a (previewed) workspace edit, e.g. after rename confirmation. */
 	applyWorkspaceEdit: (edit: WorkspaceEdit) => typedError<null, IdeError>(__TAURI_INVOKE("apply_workspace_edit", { edit })),
 	prepareWorkspaceEdit: (edit: WorkspaceEdit) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("prepare_workspace_edit", { edit })),
@@ -654,6 +672,7 @@ export const commands = {
 	vcsEditRemote: (repo: string | null, edit: RemoteEdit) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_edit_remote", { repo, edit })),
 	vcsWorktrees: (repo: string | null) => typedError<Worktree[], IdeError>(__TAURI_INVOKE("vcs_worktrees", { repo })),
 	vcsAddWorktree: (repo: string | null, path: string, commitish: string, newBranch: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_add_worktree", { repo, path, commitish, newBranch })),
+	vcsMoveWorktree: (repo: string | null, path: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_move_worktree", { repo, path, to })),
 	vcsRemoveWorktree: (repo: string | null, path: string, force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_remove_worktree", { repo, path, force })),
 	/**  Compare with Local: tracked files that differ between `rev` and the working tree. */
 	vcsDiffWithWorktree: (repo: string | null, rev: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_diff_with_worktree", { repo, rev })),
@@ -725,6 +744,8 @@ export const commands = {
 	runImportConfigs: (source: RunImportSource, existing: RunConfig_Deserialize[]) => typedError<RunImport_Serialize, IdeError>(__TAURI_INVOKE("run_import_configs", { source, existing })),
 	/**  The environment runs inherit when "Include system environment variables" is on. */
 	runSystemEnv: () => __TAURI_INVOKE<{ [key in string]: string }>("run_system_env"),
+	/**  Variables of the `.env` files a debug launch names, for the debugger to start with. */
+	runEnvFiles: (files: string[]) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("run_env_files", { files })),
 	runStart: (config: RunConfig_Deserialize, onOutput: Channel<OutputChunk>, request: number | null) => typedError<RunInfo, IdeError>(__TAURI_INVOKE("run_start", { config, onOutput, request })),
 	runStop: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_stop", { id })),
 	runStdin: (id: RunId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_stdin", { id, data })),
@@ -1480,8 +1501,8 @@ export const commands = {
 	 *  else to a free one. Nothing needs to listen there yet; connections are opened per use.
 	 */
 	remoteForwardPort: (remotePort: number) => typedError<ForwardedPort, IdeError>(__TAURI_INVOKE("remote_forward_port", { remotePort })),
-	/**  Stops forwarding `remote_port`. */
-	remoteStopForwarding: (remotePort: number) => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_forwarding", { remotePort })),
+	/**  Stops forwarding `remote_port` of `host` (`None`: the remote host itself). */
+	remoteStopForwarding: (remotePort: number, host: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_forwarding", { remotePort, host })),
 	/**
 	 *  Runs a command on the window's remote server; `args` and the result are JSON
 	 *  text. Streaming arguments are `{ "$channel": id }`; their values arrive on
@@ -1715,6 +1736,41 @@ export type AgentLimit = {
 	resetsMs: number | null,
 };
 
+/**  An MCP server passed to coding agents in `session/new`, `session/load` and `session/fork`. */
+export type AgentMcpServer = AgentMcpServer_Serialize | AgentMcpServer_Deserialize;
+
+/**  An MCP server passed to coding agents in `session/new`, `session/load` and `session/fork`. */
+export type AgentMcpServer_Deserialize = {
+	transport?: McpTransport,
+	enabled?: boolean,
+	command?: string | null,
+	args?: string[],
+	env?: { [key in string]: string },
+	url?: string | null,
+	headers?: { [key in string]: string },
+	/**
+	 *  Agent provider ids this server is enabled for (e.g. `["claude", "codex"]`);
+	 *  empty means enabled for all agents.
+	 */
+	agents?: string[],
+};
+
+/**  An MCP server passed to coding agents in `session/new`, `session/load` and `session/fork`. */
+export type AgentMcpServer_Serialize = {
+	transport: McpTransport,
+	enabled: boolean,
+	command?: string | null,
+	args?: string[],
+	env?: { [key in string]: string },
+	url?: string | null,
+	headers?: { [key in string]: string },
+	/**
+	 *  Agent provider ids this server is enabled for (e.g. `["claude", "codex"]`);
+	 *  empty means enabled for all agents.
+	 */
+	agents?: string[],
+};
+
 export type AgentPermissionOption = {
 	id: string,
 	name: string,
@@ -1845,6 +1901,11 @@ export type AgentSettings_Deserialize = {
 	whileRunning?: WhileRunning,
 	/**  Settings new tasks of an agent start with: agent id → option id → value. */
 	defaults?: { [key in string]: { [key in string]: string } },
+	/**
+	 *  MCP servers passed to coding agents in `session/new`, `session/load` and `session/fork`,
+	 *  keyed by server name (`[agents.mcpServers.<name>]`).
+	 */
+	mcpServers?: { [key in string]: AgentMcpServer_Deserialize },
 };
 
 /**  Settings › Agents: what the conversation shows and how messages are sent. */
@@ -1873,6 +1934,11 @@ export type AgentSettings_Serialize = {
 	whileRunning: WhileRunning,
 	/**  Settings new tasks of an agent start with: agent id → option id → value. */
 	defaults: { [key in string]: { [key in string]: string } },
+	/**
+	 *  MCP servers passed to coding agents in `session/new`, `session/load` and `session/fork`,
+	 *  keyed by server name (`[agents.mcpServers.<name>]`).
+	 */
+	mcpServers: { [key in string]: AgentMcpServer_Serialize },
 };
 
 /**  Where an agent comes from. */
@@ -4244,6 +4310,19 @@ export type ExternalFormatterSettings = {
 	runOnSave?: boolean,
 };
 
+/**  A session on this machine that no task holds yet. */
+export type ExternalSession = {
+	/**  The [`crate::AgentProvider`] id that owns it (`claude`, `codex`). */
+	provider: string,
+	/**  The id resuming it names (`--resume`, `thread/resume`). */
+	sessionId: string,
+	title: string,
+	/**  Where it ran, when the transcript names one. */
+	cwd: string | null,
+	/**  File modification time, ms since the epoch. */
+	updatedMs: number | null,
+};
+
 /**  Tools › External Tools entry. */
 export type ExternalTool = {
 	id?: string,
@@ -4542,6 +4621,11 @@ export type FormatterChoice = {
 export type ForwardedPort = {
 	remotePort: number,
 	localPort: number,
+	/**
+	 *  The host the port belongs to, as a dev container reaches it (a Compose service from
+	 *  `forwardPorts`); `None` for the remote host itself.
+	 */
+	host: string | null,
 };
 
 /**  One occurrence of a duplicated code fragment. */
@@ -4674,6 +4758,7 @@ export type GitOperation =
 export type GitSettings = {
 	/**  Show blame after the current editor line. */
 	inlineBlame?: boolean,
+	showBranchInProjectView?: boolean,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,
 	/**  Default of Update Project: `merge` | `rebase`. */
@@ -6140,6 +6225,47 @@ export type MavenSettings = {
 	activeProfiles?: string,
 };
 
+/**  A named environment variable or HTTP header for an MCP server. */
+export type McpKeyValue = {
+	name: string,
+	value: string,
+};
+
+/**  Where an MCP server configuration is stored (`settings.toml` vs `.openidea/settings.toml`). */
+export type McpScope = "user" | "workspace";
+
+/**  One configured Model Context Protocol (MCP) server. */
+export type McpServer = {
+	id: string,
+	name: string,
+	scope: McpScope,
+	transport: McpTransport,
+	enabled: boolean,
+	command: string | null,
+	args: string[],
+	env: McpKeyValue[],
+	url: string | null,
+	headers: McpKeyValue[],
+	/**  Agent provider ids this server is enabled for; empty means enabled for all agents. */
+	agents?: string[],
+};
+
+/**  Payload for creating or updating a user or workspace MCP server. */
+export type McpServerInput = {
+	id?: string | null,
+	name: string,
+	scope: McpScope,
+	transport: McpTransport,
+	enabled?: boolean,
+	command?: string | null,
+	args?: string[],
+	env?: McpKeyValue[],
+	url?: string | null,
+	headers?: McpKeyValue[],
+	/**  Agent provider ids this server is enabled for; empty means enabled for all agents. */
+	agents?: string[],
+};
+
 /**  Agents › MCP Server: agents use the IDE's built-in tools. */
 export type McpServerSettings = {
 	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
@@ -6161,6 +6287,9 @@ export type McpServerStatus = {
 	/**  The stdio bridge: this executable and its arguments. */
 	stdioCommand: string[],
 };
+
+/**  Transport of an MCP server configured in Settings › Agents › MCP Servers. */
+export type McpTransport = "stdio" | "http" | "sse";
 
 export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null };
 
@@ -8721,6 +8850,7 @@ export type TerminalSettings = {
 	overrideIdeShortcuts?: boolean,
 	shellIntegration?: boolean,
 	highlightHyperlinks?: boolean,
+	highlightSelection?: boolean,
 	optionAsMeta?: boolean,
 	/**  Escape moves focus to the editor instead of reaching the shell. */
 	escapeToEditor?: boolean,

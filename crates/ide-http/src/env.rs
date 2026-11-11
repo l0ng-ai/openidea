@@ -76,12 +76,17 @@ fn parse_env(text: &str) -> IdeResult<EnvMap> {
     Ok(out)
 }
 
+/// The nearest `name` in `dirs`, decoded like the editor opens it (a BOM, UTF-16, or a
+/// legacy encoding such as GBK from Notepad's ANSI), so a file that shows fine in the editor
+/// is never skipped as unreadable.
 fn read_first(dirs: &[PathBuf], name: &str) -> IdeResult<EnvMap> {
     for d in dirs {
         let p = d.join(name);
-        if let Ok(text) = std::fs::read_to_string(&p) {
-            return parse_env(&text).map_err(|e| IdeError::invalid(format!("{}: {}", p.display(), e.message)));
+        if !p.is_file() {
+            continue;
         }
+        let text = ide_vfs::load_text(&p).map_err(|e| IdeError::invalid(format!("{}: {}", p.display(), e.message)))?;
+        return parse_env(&text.text).map_err(|e| IdeError::invalid(format!("{}: {}", p.display(), e.message)));
     }
     Ok(EnvMap::new())
 }
@@ -280,11 +285,21 @@ mod tests {
     }
 
     #[test]
-    fn reads_env_files_saved_with_a_byte_order_mark() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join(PUBLIC_FILE), "\u{feff}{\"dev\":{\"host\":\"h\"}}").unwrap();
-        let envs = Environments::load(Some(&tmp.path().join("a.http")), Some(tmp.path())).unwrap();
-        assert_eq!(envs.names(), vec!["dev"]);
+    fn reads_env_files_in_the_encodings_windows_editors_save() {
+        let utf16: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain("{\"dev\":{\"name\":\"测试环境\"}}".encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        // Notepad's "ANSI" on a Chinese system: GBK.
+        let gbk: Vec<u8> =
+            [&b"{\"dev\":{\"name\":\""[..], &[0xB2, 0xE2, 0xCA, 0xD4, 0xBB, 0xB7, 0xBE, 0xB3], b"\"}}"].concat();
+        for bytes in ["\u{feff}{\"dev\":{\"name\":\"测试环境\"}}".as_bytes().to_vec(), utf16, gbk] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join(PUBLIC_FILE), &bytes).unwrap();
+            let envs = Environments::load(Some(&tmp.path().join("a.http")), Some(tmp.path())).unwrap();
+            assert_eq!(envs.names(), vec!["dev"]);
+            assert_eq!(envs.variables(Some("dev"))["name"], "测试环境");
+        }
     }
 
     #[test]

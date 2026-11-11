@@ -396,7 +396,7 @@ echo '{{"outcome":"success","containerId":"{ID}","remoteUser":"vscode","remoteWo
             Up { container: up.container.clone(), user: up.user.clone(), folder: up.folder.clone() },
             bin.clone(),
         ));
-        let tunnel = Tunnel::listen(exec, 0, 8000).await.unwrap();
+        let tunnel = Tunnel::listen(exec, 0, "localhost", 8000).await.unwrap();
         let mut reply = String::new();
         for _ in 0..50 {
             use tokio::io::AsyncReadExt;

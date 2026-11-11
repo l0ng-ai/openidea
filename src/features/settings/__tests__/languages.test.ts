@@ -318,7 +318,6 @@ describe("language pages", () => {
       "Ruby",
       "Rust",
       "TypeScript",
-      "Plugin Formatters",
     ]);
   });
 
