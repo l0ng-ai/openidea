@@ -34,7 +34,7 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_FILE: &str = "plugin.toml";
 /// The plugin API (engine) version this host implements.
-pub const ENGINE_VERSION: &str = "1.5.0";
+pub const ENGINE_VERSION: &str = "1.6.0";
 /// The 0.1 API, still accepted for contribution-only packages and 0.1 components.
 pub const LEGACY_API: &str = "0.1";
 /// Marketplace categories, in the order they are shown.
@@ -368,7 +368,7 @@ impl Manifest {
         let mut seen = BTreeSet::new();
         for event in &self.activation {
             if matches!(event, ActivationEvent::Event(kind) if kind == "websocket-ready") {
-                self.needs_api(&format!("`{event}`"), 5)?;
+                self.needs_api(&format!("`{event}`"), 6)?;
             }
             if matches!(event, ActivationEvent::Event(kind) if matches!(kind.as_str(), "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action"))
             {
@@ -866,11 +866,7 @@ mod net_ask_api_tests {
     use super::*;
     #[test]
     fn api_1_5_declarations_require_api_1_5() {
-        for declaration in [
-            "[capabilities]\nrequired = [\"net:ask\"]",
-            "[capabilities]\noptional = [\"net:ask\"]",
-            "activation = [\"on-event:websocket-ready\"]",
-        ] {
+        for declaration in ["[capabilities]\nrequired = [\"net:ask\"]", "[capabilities]\noptional = [\"net:ask\"]"] {
             for engine in ["^1.4", "^1.5"] {
                 let manifest = format!(
                     "id = 'test'\nname = 'Test'\nversion = '0.1.0'\nwasm = 'plugin.wasm'\nengines.openidea = '{engine}'\n{declaration}\n"
@@ -881,6 +877,22 @@ mod net_ask_api_tests {
                 } else {
                     assert!(parsed.unwrap_err().contains("new in plugin API 1.5"), "{engine}");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn websocket_ready_requires_api_1_6() {
+        let declaration = "activation = [\"on-event:websocket-ready\"]";
+        for engine in ["^1.5", "^1.6"] {
+            let manifest = format!(
+                "id = 'test'\nname = 'Test'\nversion = '0.1.0'\nwasm = 'plugin.wasm'\nengines.openidea = '{engine}'\n{declaration}\n"
+            );
+            let parsed = Manifest::parse(&manifest);
+            if engine == "^1.6" {
+                parsed.unwrap();
+            } else {
+                assert!(parsed.unwrap_err().contains("new in plugin API 1.6"), "{engine}");
             }
         }
     }

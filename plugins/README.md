@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.5.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.6.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -859,7 +859,7 @@ log/blame return empty lists and diff returns `None`.
 
 | Kind                 | Capability     | Delivered                                                                                                                                  |
 | -------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `websocket-ready`    | `events`       | API 1.5: a bounded host-owned WebSocket has frames or a final close state to drain                                                         |
+| `websocket-ready`    | `events`       | API 1.6: a bounded host-owned WebSocket has frames or a final close state to drain                                                         |
 | `file-opened`        | `events`       | a file opens in an editor                                                                                                                  |
 | `file-closed`        | `events`       | API 1.4, `Event::Other`: JSON path string                                                                                                  |
 | `settings-changed`   | `events`       | API 1.4, `Event::Other`: JSON array of this plugin's changed setting keys (effective values)                                               |
@@ -911,7 +911,7 @@ and `unsubscribe(kind)` removes it. Filters survive idle reclaim and disappear
 on disable, uninstall or reload. Each window's events use its current project;
 files outside that project do not match.
 
-API 1.5 adds host-owned background WebSockets for plugins that consume event
+API 1.6 adds host-owned background WebSockets for plugins that consume event
 streams. A connection is bound to the explicit project passed to
 `WebSocket::connect`; `send` and `drain` reject the handle when called with a
 different project. `WebSocket::connect` requires the endpoint's `net:<host>` grant,
@@ -2412,7 +2412,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 is planned with the next release. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 is planned with the next release; API 1.6.0 is in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a

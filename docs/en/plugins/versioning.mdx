@@ -1,9 +1,9 @@
 ---
 title: "API versions and compatibility"
-description: "engines.openidea, the plugin API versions from 1.0 to 1.5, and the rules that keep released plugins loading in newer IDEs."
+description: "engines.openidea, the plugin API versions from 1.0 to 1.6, and the rules that keep released plugins loading in newer IDEs."
 ---
 
-The plugin API has one version number: the version of the WIT package in [`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit) (`openidea:plugin@1.5.0` on `main`). The host's engine version and the SDK's `API_VERSION` always agree with it, and the SDK carries an identical copy of the WIT files.
+The plugin API has one version number: the version of the WIT package in [`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit) (`openidea:plugin@1.6.0` on `main`). The host's engine version and the SDK's `API_VERSION` always agree with it, and the SDK carries an identical copy of the WIT files.
 
 <Note>
   The plugin system is a preview. The compatibility rules below hold for released 1.x versions; what is still unreleased
@@ -20,6 +20,7 @@ The plugin API has one version number: the version of the WIT package in [`wit/`
 | 1.3.0 | OpenIDEA 0.1.39              | Commit message and before-commit checks, Services detail panes, diagnostics while typing, hover, inlay hints, semantic tokens, file-changing code actions, HTTP endpoints, files outside the project (`fs.read`/`fs.write`, `project.write`, private plugin directory), batched `files-changed` events and path filters, workspace symbols, long-running processes, notifications with buttons, translations, multi-page settings, file template variables, web view PTYs, log tabs and content tabs |
 | 1.4.0 | OpenIDEA 0.1.40              | `net.http:`, `ipc:`, `ide.commands` and `database.sources` capabilities; editor and project snapshots, decorations, text search, Problems, Git log/blame/diff; output channels; OAuth loopback; runs, terminal sessions, run configurations, test result parsing and run targets; formatting and other language features; embedded languages; snippets; more menu locations; database sources; MCP tools                                                                                             |
 | 1.5.0 | Planned for the next release | `Project::notify` (a notification in one project's window), the `net:ask` capability, run target validation, per-command run target working-directory arguments                                                                                                                                                                                                                                                                                                                                      |
+| 1.6.0 | In development on `main`     | Bounded, project-bound background WebSockets for event-stream plugins                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 The full list of what each version added is in [`plugins/README.md`](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md).
 
@@ -41,6 +42,7 @@ engines.openidea = "^1.4"
 | `project.write`, `fs.write:`, `on-event:files-changed`; `endpoints`, `markerIcons`, `commitChecks`; the `semantic-tokens`, `diagnostics`, `hover` and `inlay-hints` provider kinds; settings `pages`, groups and arrays; the `commit.message` menu and submenus; view `group`, `when`, `header` and `location = "services"`; file template `fileName` and `variables` | `^1.3`   |
 | `net.http:`, `ipc:`, `ide.commands`, `database.sources`; the `file-closed`, `settings-changed`, `input-mode-changed`, `run-exited`, `terminal-exited` and `content-tab-action` events; `runConfigurations`, `snippets`, `mcpTools`, command `icon`, run detector `framework`; the API 1.4 provider kinds and injections; the API 1.4 menu locations                   | `^1.4`   |
 | `net:ask`                                                                                                                                                                                                                                                                                                                                                             | `^1.5`   |
+| `on-event:websocket-ready` and background WebSockets                                                                                                                                                                                                                                                                                                                  | `^1.6`   |
 
 ## The component's own version
 
