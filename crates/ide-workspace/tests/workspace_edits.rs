@@ -516,6 +516,18 @@ fn duplicate_edits_keep_versions_and_apply_one_replacement() {
 }
 
 #[test]
+fn repeated_inserts_at_one_position_all_apply_once_per_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("main.ts");
+    std::fs::write(&path, "f(").unwrap();
+    let docs = documents();
+    let close = TextEdit { range: Range::new(Pos::new(0, 2), Pos::new(0, 2)), new_text: ")".into() };
+    let entry = FileEdit::Edit { path: path.clone().into(), version: None, edits: vec![close.clone(), close] };
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![entry.clone(), entry], ..Default::default() }).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "f())");
+}
+
+#[test]
 fn undo_accepts_typing_that_was_reverted_to_the_saved_refactoring() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("main.ts");
