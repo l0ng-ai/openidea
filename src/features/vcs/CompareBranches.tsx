@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { Commit } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
-import { Dialog, List, Spinner, Tabs, T } from "@/ui";
+import { Dialog, List, Spinner, Tabs, T, tooltipAttrs } from "@/ui";
 import { openDialog } from "./dialogs";
 import { formatTime } from "./model";
 import { showCompareRevisions } from "./operations";
@@ -51,7 +51,16 @@ function RangeDialog(props: { title: string; from: string; to: string; repo: str
     };
   }, [from, to, repo]);
   return (
-    <Dialog open title={title} onClose={onClose} width={640} buttons={[{ label: "Close", role: "cancel" }]}>
+    <Dialog
+      open
+      title={title}
+      onClose={onClose}
+      width={640}
+      minWidth={420}
+      resizable="both"
+      className={styles.listDialog}
+      buttons={[{ label: "Close", role: "cancel" }]}
+    >
       <CommitList commits={commits} error={error} onClose={onClose} />
     </Dialog>
   );
@@ -67,7 +76,7 @@ function CommitList({
   onClose: () => void;
 }) {
   return (
-    <div style={{ height: 320, display: "flex", flexDirection: "column" }}>
+    <div className={styles.commitListBody}>
       {error ? (
         <div className={styles.error} style={{ padding: 14 }}>
           {error}
@@ -93,9 +102,11 @@ function CommitList({
             void executeAction("vcs.showCommit", c);
           }}
           renderItem={(c) => (
-            <span className={styles.commitRow} style={{ flex: 1, padding: 0 }}>
+            <span className={styles.commitRow} style={{ flex: 1, minWidth: 0, padding: 0 }}>
               <span className={styles.commitHash}>{c.shortId}</span>
-              <span className={styles.commitSubject}>{c.summary}</span>
+              <span className={styles.commitSubject} {...tooltipAttrs(c.message || c.summary, undefined, true)}>
+                {c.summary}
+              </span>
               <span className={styles.commitMeta}>{c.author}</span>
               <span className={styles.commitMeta}>{formatTime(c.timeMs)}</span>
             </span>
@@ -129,6 +140,9 @@ function CompareDialog({ branch, current, onClose }: { branch: string; current: 
       title={tx`Compare ${current} with ${branch}`}
       onClose={onClose}
       width={640}
+      minWidth={420}
+      resizable="both"
+      className={styles.listDialog}
       buttons={[
         {
           label: "Show Diff",
