@@ -385,8 +385,83 @@ fn quick_fixes_create_components_and_views_and_add_props() {
     assert_eq!(found[0].0, "Add 'fontSize' to the @props of <x-plain>");
     assert_eq!(edits[0].new_text, "@props(['fontSize'])\n\n");
     assert_eq!(edits[0].range, Range::new(Pos::new(0, 0), Pos::new(0, 0)));
-    // Not for declared props, class components or `class`.
+    // Not for declared props or `class`; a class component's constructor
+    // gets the parameter instead.
     assert!(fixes("<x-badge sta/*|*/tus=\"x\" />").is_empty());
-    assert!(fixes("<x-alert fo/*|*/o=\"x\" />").is_empty());
+    let titles = |found: Vec<(String, WorkspaceEdit)>| found.into_iter().map(|(title, _)| title).collect::<Vec<_>>();
+    assert_eq!(titles(fixes("<x-alert fo/*|*/o=\"x\" />")), ["Add constructor parameter '$foo' to <x-alert>"]);
     assert!(fixes("<x-badge cla/*|*/ss=\"x\" />").is_empty());
+}
+
+#[test]
+fn quick_fix_adds_constructor_parameters_to_class_components() {
+    let divider =
+        class("App\\View\\Components", "Divider", "    public function render()\n    {\n        return '';\n    }");
+    let project = Project::app_with(&[
+        ("app/Ui/Icon.php", &class("App\\Ui", "Icon", "    public function __construct(public string $name) {}")),
+        ("app/View/Components/Divider.php", &divider),
+        ("app/Providers/ComponentServiceProvider.php", PROVIDER),
+    ]);
+    let fixes = |source: &str| -> Vec<(String, WorkspaceEdit)> {
+        let template = Template::new(&project, PAGE, source);
+        let range = Range::new(template.pos, template.pos);
+        project.engine.blade_quick_fixes(&template.blade(), range).into_iter().map(|a| (a.title, a.edit)).collect()
+    };
+    let edit = |found: &[(String, WorkspaceEdit)]| -> (PathBuf, TextEdit) {
+        let [FileEdit::Edit { path, edits, .. }] = found[0].1.files.as_slice() else { panic!("{found:?}") };
+        (PathBuf::from(path.clone()), edits[0].clone())
+    };
+    // After optional parameters: optional too.
+    let found = fixes("<x-alert type=\"info\" font-si/*|*/ze=\"lg\" />");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, "Add constructor parameter '$fontSize' to <x-alert>");
+    let (path, text_edit) = edit(&found);
+    assert_eq!(path, project.root.join("app/View/Components/Alert.php"));
+    assert_eq!(text_edit.new_text, ", public ?string $fontSize = null");
+    assert_eq!(text_edit.range, Range::new(Pos::new(9, 92), Pos::new(9, 92)));
+    // A bound attribute is `mixed`.
+    let found = fixes("<x-icon name=\"x\" :si/*|*/ze=\"1\" />");
+    let (path, text_edit) = edit(&found);
+    assert_eq!(path, project.root.join("app/Ui/Icon.php"));
+    assert_eq!(text_edit.new_text, ", public mixed $size");
+    assert_eq!(text_edit.range, Range::new(Pos::new(8, 51), Pos::new(8, 51)));
+    // No constructor yet: a new one before the first method.
+    let found = fixes("<x-divider lab/*|*/el=\"x\" />");
+    let (path, text_edit) = edit(&found);
+    assert_eq!(path, project.root.join("app/View/Components/Divider.php"));
+    assert_eq!(text_edit.new_text, "    public function __construct(public string $label)\n    {\n    }\n\n");
+    assert_eq!(text_edit.range, Range::new(Pos::new(8, 0), Pos::new(8, 0)));
+    // Not for parameters it takes, `class`, `::` attributes or anonymous
+    // components.
+    assert!(fixes("<x-alert ty/*|*/pe=\"x\" />").is_empty());
+    assert!(fixes("<x-icon cla/*|*/ss=\"x\" />").is_empty());
+    assert!(fixes("<x-icon ::si/*|*/ze=\"x\" />").is_empty());
+    assert!(fixes("<x-badge sta/*|*/tus=\"x\" />").is_empty());
+}
+
+#[test]
+fn aware_completes_the_props_of_enclosing_components() {
+    let project = Project::app_with(&[
+        ("resources/views/components/menu.blade.php", "@props(['color' => 'gray', 'size'])\n<ul>{{ $slot }}</ul>\n"),
+        ("resources/views/components/menu/item.blade.php", "<li>{{ $slot }}</li>\n"),
+        ("resources/views/components/lonely.blade.php", "<p></p>\n"),
+        (
+            "resources/views/nav.blade.php",
+            "<x-menu color=\"red\">\n    <x-alert>\n        <x-menu.item>Home</x-menu.item>\n    </x-alert>\n</x-menu>\n<x-menu.item />\n",
+        ),
+    ]);
+    let item = "resources/views/components/menu/item.blade.php";
+    let labels = project.blade_labels(item, "@aware(['/*|*/'])\n<li>{{ $slot }}</li>\n");
+    assert_eq!(labels, ["color", "size", "type", "message"]);
+    // Not the entries listed already; keys with defaults too.
+    let labels = project.blade_labels(item, "@aware(['color' => 'gray', 'si/*|*/'])\n<li></li>\n");
+    assert_eq!(labels, ["size", "type", "message"]);
+    // Not in the default's value, nor in a component no tag encloses.
+    assert!(project.blade_labels(item, "@aware(['color' => '/*|*/'])\n").is_empty());
+    let lonely = "resources/views/components/lonely.blade.php";
+    assert!(project.blade_labels(lonely, "@aware(['/*|*/'])\n").is_empty());
+    // The parents themselves.
+    let catalog = project.engine.laravel_blade().unwrap();
+    let parents = project.engine.laravel_parent_components(catalog.component("menu.item").unwrap());
+    assert_eq!(parents.iter().map(|parent| parent.tag.as_str()).collect::<Vec<_>>(), ["menu", "alert"]);
 }

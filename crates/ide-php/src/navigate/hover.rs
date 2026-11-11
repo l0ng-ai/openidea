@@ -448,6 +448,9 @@ impl PhpEngine {
         let mut docs = match origin {
             AttributeOrigin::Relation { method } => format!("Eloquent relation, defined by `{method}()`"),
             AttributeOrigin::Accessor { method } => format!("Eloquent accessor `{method}()`"),
+            AttributeOrigin::Count { method } if method.is_empty() => {
+                "Count of a relation's models, loaded by `withCount()`".to_owned()
+            }
             AttributeOrigin::Count { method } => {
                 format!("Count of the `{method}()` relation's models, loaded by `withCount('{method}')`")
             }

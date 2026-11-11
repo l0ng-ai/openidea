@@ -246,6 +246,12 @@ pub const DYNAMIC_COMPONENT: &str = "dynamic-component";
 /// before it (neither a slot nor self-closing) that no `</x-…>` closes
 /// before it. Its name after `x-`.
 pub fn enclosing_component(text: &str, offset: u32) -> Option<String> {
+    enclosing_components(text, offset).pop()
+}
+
+/// Every component whose body `offset` is in (see
+/// [`enclosing_component`]), the outermost first.
+pub fn enclosing_components(text: &str, offset: u32) -> Vec<String> {
     let offset = (offset as usize).min(text.len());
     // (position, Some(opened name) | None for a closing tag with its name).
     let mut events: Vec<(usize, bool, String)> = Vec::new();
@@ -272,7 +278,7 @@ pub fn enclosing_component(text: &str, offset: u32) -> Option<String> {
             open.truncate(at);
         }
     }
-    open.pop()
+    open
 }
 
 /// The value of attribute `attribute` of the `<x-{tag}` tag the caret at

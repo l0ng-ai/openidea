@@ -48,9 +48,14 @@
 //!   builder's methods (a relation's also the Eloquent builder's); after
 //!   `$model->` the relation properties, accessors, cast attributes and
 //!   migrated columns, each with where it comes from, and the `*_count` of
-//!   the relations a `withCount()`, `loadCount()` or `$withCount` of the
-//!   project counts (`posts_count`, or the alias of `'posts as
-//!   drafts_count'`). Dynamic `where*` calls aren't listed.
+//!   the relations the model's `$withCount` counts, or the query that
+//!   loaded it (`posts_count`, or the alias of `'posts as drafts_count'`).
+//!   Dynamic `where*` calls aren't listed.
+//! - **Counts:** `withCount()` on a model, builder or relation and
+//!   `loadCount()` on a model or collection give the model type an object
+//!   shape argument with the counts (`Post<object{tags_count: int}>`),
+//!   which templates carry to what the query loads; `$post->loadCount(…);`
+//!   as a statement refines `$post` from there on.
 //! - **Scopes:** the raw `Builder $query` parameter of a local scope is the
 //!   model's builder ([`TypeProvider::parameter`]).
 //! - **Accessors:** `fooBar(): Attribute` without `@return` is typed by the
@@ -68,8 +73,8 @@ use super::{
     AttributeOrigin, CallKind, CallSite, MagicMember, MagicTarget, ParameterSite, Source, TypeProvider, provided,
 };
 use crate::frameworks::laravel::validation::rule_type;
-use crate::summary::{ClassKind, Column, LaravelFacts, ModelCasts, RequestRules, Visibility};
-use crate::types::{ClassModel, Context, LazyType, Resolver, Type};
+use crate::summary::{ClassKind, Column, LaravelFacts, ModelCasts, RequestRules, Visibility, counted_spec};
+use crate::types::{ClassModel, Context, LazyType, Resolver, ShapeField, ShapeKey, Type};
 
 const APPLICATION: &str = "Illuminate\\Foundation\\Application";
 const CONTAINER: &str = "Illuminate\\Contracts\\Container\\Container";
@@ -149,6 +154,11 @@ const RELATION_CLOSURES: &[&str] = &[
     "loadCount",
     "withExists",
 ];
+
+/// Methods counting the models of relations (`posts_count`): on a model,
+/// its builder or a relation (`withCount`), on a model or a collection of
+/// them (`loadCount`).
+const COUNTING: &[&str] = &["withCount", "loadCount"];
 
 /// Query builder methods joining a table (its first argument).
 pub(crate) const JOINS: &[&str] =
@@ -518,6 +528,20 @@ impl LaravelProvider {
         if !raw {
             return None;
         }
+        // The model with its arguments: the counts its query loads.
+        let is_model = |ty: &Type| match ty {
+            Type::Named { fqn, .. } => fqn.trim_start_matches('\\').eq_ignore_ascii_case(&model),
+            _ => false,
+        };
+        let model = receiver
+            .members()
+            .iter()
+            .find_map(|member| match member {
+                member if is_model(member) => Some(member.clone()),
+                Type::Named { args, .. } => args.iter().find(|arg| is_model(arg)).cloned(),
+                _ => None,
+            })
+            .unwrap_or_else(|| Type::named(&model));
         // Eloquent's collection, or the subclass the declaration names.
         let class = core
             .members()
@@ -527,7 +551,7 @@ impl LaravelProvider {
                 _ => None,
             })
             .unwrap_or_else(|| COLLECTION.to_owned());
-        Some(Type::generic(&class, vec![Type::Int, Type::named(&model)]))
+        Some(Type::generic(&class, vec![Type::Int, model]))
     }
 
     /// The factory class of `model` by Laravel's convention
@@ -770,14 +794,17 @@ impl LaravelProvider {
     }
 
     /// The relation property `name` (`posts_count`, `blog_posts_count`, an
-    /// alias) counts, when some `withCount()`, `loadCount()` or `$withCount`
-    /// of the project counts a relation of model `class` under that name.
+    /// alias) counts, when the `$withCount` of model `class` (or of a parent)
+    /// counts a relation of the model under that name. What a query's
+    /// `withCount()` counts is in the type of the models it loads
+    /// ([`Self::counting`]).
     fn count_relation(resolver: &Resolver<'_>, class: &str, name: &str) -> Option<String> {
+        let model = resolver.class_model(class)?;
         let facts = resolver.laravel();
         let counted: Vec<&str> = facts
             .counted
             .iter()
-            .filter(|counted| counted.property == name)
+            .filter(|counted| counted.property == name && model.is_subclass_of(&counted.class))
             .map(|counted| counted.relation.as_str())
             .collect();
         if counted.is_empty() {
@@ -787,6 +814,90 @@ impl LaravelProvider {
             .into_iter()
             .find(|found| counted.iter().any(|relation| found.name.eq_ignore_ascii_case(relation)))
             .map(|found| found.name)
+    }
+
+    /// `ty` after `withCount(specs)` or `loadCount(specs)` (`specs` the
+    /// counted relations, comma-separated, `'posts as drafts'` with an
+    /// alias): a model, or the model a builder, relation or collection is
+    /// about, gets an object shape argument with the count properties of
+    /// the relations it has (`Post<object{tags_count: int}>`). Template
+    /// substitution carries it to what the query loads (`get()`, `first()`,
+    /// a `foreach`), so `$post->tags_count` follows the query that loaded
+    /// `$post`.
+    fn counting(resolver: &Resolver<'_>, ty: Type, specs: &str) -> Type {
+        let is_model = |ty: &Type| match ty {
+            Type::Named { fqn, .. } => resolver.class_model(fqn).is_some_and(|class| class.is_subclass_of(MODEL)),
+            _ => false,
+        };
+        Type::union(ty.members().iter().map(|member| {
+            let Type::Named { fqn, args } = member else { return member.clone() };
+            if is_model(member) {
+                return Self::with_counts(resolver, member, specs);
+            }
+            let about = resolver.class_model(fqn).is_some_and(|class| {
+                class.is_subclass_of(ELOQUENT_BUILDER)
+                    || class.is_subclass_of(RELATION)
+                    || class.is_subclass_of(COLLECTION)
+            });
+            let Some(at) = args.iter().position(is_model).filter(|_| about) else { return member.clone() };
+            let mut args = args.clone();
+            args[at] = Self::with_counts(resolver, &args[at], specs);
+            Type::generic(fqn, args)
+        }))
+    }
+
+    /// Model type `model` with the counts of `specs` (see
+    /// [`Self::counting`]) added to its object shape argument; relations
+    /// the model doesn't have aren't counted.
+    fn with_counts(resolver: &Resolver<'_>, model: &Type, specs: &str) -> Type {
+        let Type::Named { fqn, args } = model else { return model.clone() };
+        let relations = Self::model_relations(resolver, fqn);
+        let mut fields: Vec<ShapeField> = args
+            .iter()
+            .find_map(|arg| match arg {
+                Type::ObjectShape(fields) => Some(fields.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        for spec in specs.split(',') {
+            let Some((relation, property)) = counted_spec(spec, snake) else { continue };
+            let key = ShapeKey::String(property);
+            if !relations.iter().any(|found| found.name.eq_ignore_ascii_case(&relation))
+                || fields.iter().any(|field| field.key == key)
+            {
+                continue;
+            }
+            fields.push(ShapeField { key, ty: Type::Int, optional: false });
+        }
+        if fields.is_empty() {
+            return model.clone();
+        }
+        let mut args: Vec<Type> = args.iter().filter(|arg| !matches!(arg, Type::ObjectShape(_))).cloned().collect();
+        args.push(Type::ObjectShape(fields));
+        Type::generic(fqn, args)
+    }
+
+    /// The count properties the type of a model, `ty`, says its query
+    /// loaded ([`Self::counting`]), for model class `class`.
+    fn counted_in(ty: &Type, class: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for member in ty.members() {
+            let Type::Named { fqn, args } = member else { continue };
+            if !fqn.trim_start_matches('\\').eq_ignore_ascii_case(class) {
+                continue;
+            }
+            for arg in args {
+                let Type::ObjectShape(fields) = arg else { continue };
+                for field in fields {
+                    if let ShapeKey::String(name) = &field.key
+                        && !out.contains(name)
+                    {
+                        out.push(name.clone());
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Any relation of model `class` counted as `name` (`posts_count`) the
@@ -835,9 +946,11 @@ impl LaravelProvider {
         }
     }
 
-    /// The magic properties of a model: relations, accessors, casts and
-    /// migrated columns (in that order, the first of a name winning).
-    fn attributes(resolver: &Resolver<'_>, model: &ClassModel, out: &mut Vec<MagicMember>) {
+    /// The magic properties of a model: relations, accessors, casts,
+    /// migrated columns and counts (in that order, the first of a name
+    /// winning); `counted` are the count properties the query that loaded
+    /// it gives it ([`Self::counted_in`]).
+    fn attributes(resolver: &Resolver<'_>, model: &ClassModel, counted: &[String], out: &mut Vec<MagicMember>) {
         let class = model.fqn().to_owned();
         let mut found: Vec<MagicMember> = Vec::new();
         let push = |found: &mut Vec<MagicMember>, name: String, origin: AttributeOrigin| {
@@ -901,14 +1014,28 @@ impl LaravelProvider {
             };
             push(&mut found, column.name.clone(), origin);
         }
-        // `withCount('posts')` loads `posts_count`: only the relations some
-        // `withCount()`, `loadCount()` or `$withCount` counts.
+        // `withCount('posts')` loads `posts_count`: only the relations the
+        // model's `$withCount` counts, and those the query that loaded the
+        // model did (`counted`, from its type).
         let relations = Self::model_relations(resolver, &class);
-        for counted in &facts.counted {
+        let mut counts: Vec<(String, Option<String>)> = Vec::new();
+        for counted in facts.counted.iter().filter(|counted| model.is_subclass_of(&counted.class)) {
             if let Some(relation) = relations.iter().find(|r| r.name.eq_ignore_ascii_case(&counted.relation)) {
-                let origin = AttributeOrigin::Count { method: relation.name.clone() };
-                push(&mut found, counted.property.clone(), origin);
+                counts.push((counted.property.clone(), Some(relation.name.clone())));
             }
+        }
+        for property in counted {
+            // An alias (`'comments as replies'`) doesn't say its relation.
+            let relation = relations.iter().find(|r| format!("{}_count", snake(&r.name)) == *property);
+            counts.push((property.clone(), relation.map(|r| r.name.clone())));
+        }
+        for (name, relation) in counts {
+            if model.property(&name).is_some() || found.iter().any(|known| known.name == name) {
+                continue;
+            }
+            let origin = AttributeOrigin::Count { method: relation.unwrap_or_default() };
+            let target = MagicTarget::Attribute { class: class.clone(), ty: Type::Int, origin };
+            found.push(MagicMember { name, is_static: false, target });
         }
         out.extend(found);
     }
@@ -937,7 +1064,7 @@ impl LaravelProvider {
                 Self::scopes(resolver, model.fqn(), true, &mut out);
                 Self::forwarded_methods(resolver, ELOQUENT_BUILDER, true, &mut out);
                 Self::forwarded_methods(resolver, QUERY_BUILDER, true, &mut out);
-                Self::attributes(resolver, &model, &mut out);
+                Self::attributes(resolver, &model, &Self::counted_in(receiver, model.fqn()), &mut out);
             } else if model.is_subclass_of(FORM_REQUEST) {
                 Self::request_fields(resolver, &model, &mut out);
             }
@@ -1248,6 +1375,20 @@ impl TypeProvider for LaravelProvider {
                     Some(arg) if arg.name.is_none() && arg.int.is_some() => "n",
                     _ => "",
                 };
+                // `withCount('posts', 'tags as labels')`, `withCount(['posts'
+                // => fn ($q) => …])`: every relation counted.
+                let string = if is_one_of(COUNTING, site.name) {
+                    let specs: Vec<&str> = site
+                        .args
+                        .iter()
+                        .flat_map(|arg| arg.string.iter().chain(arg.strings.iter()))
+                        .map(String::as_str)
+                        .filter(|spec| !spec.contains(','))
+                        .collect();
+                    specs.join(",")
+                } else {
+                    string.to_owned()
+                };
                 let payload = format!("call:{}:{class}:{counted}:{string}", site.name);
                 let next = (site.next)();
                 Some(provided(self.key(), payload, vec![receiver, next.clone()], next))
@@ -1277,6 +1418,17 @@ impl TypeProvider for LaravelProvider {
                 let [name, class, counted, string] = rest.splitn(4, ':').collect::<Vec<_>>()[..] else {
                     return None;
                 };
+                if is_one_of(COUNTING, name) {
+                    let ty = self.resolve_call(name, (class, false), "", args, resolver, context);
+                    // A relation forwards `withCount` to its query, and
+                    // keeps itself.
+                    let base =
+                        ty.or_else(|| args.get(1).filter(|core| **core != Type::Mixed).cloned()).or_else(|| {
+                            let receiver = args.first()?;
+                            Self::is_a(resolver, receiver, context, &[RELATION]).then(|| receiver.clone())
+                        })?;
+                    return Some(Self::counting(resolver, base, string));
+                }
                 let ty = self.resolve_call(name, (class, counted == "n"), string, args, resolver, context);
                 if is_one_of(JOINS, name) && !string.is_empty() {
                     // The builder remembers the joined table (`'users as u'`)
@@ -1302,6 +1454,18 @@ impl TypeProvider for LaravelProvider {
             return Vec::new();
         }
         Self::members_of(resolver, receiver, context)
+    }
+
+    fn receiver_refining_methods(&self) -> &'static [&'static str] {
+        &["loadCount"]
+    }
+
+    /// `$post->loadCount('tags')` (and on a collection of models) counts
+    /// on the object itself.
+    fn refines_receiver(&self, receiver: &Type, method: &str, resolver: &Resolver<'_>, context: &Context) -> bool {
+        method.eq_ignore_ascii_case("loadCount")
+            && Self::installed(resolver)
+            && Self::is_a(resolver, receiver, context, &[MODEL, COLLECTION])
     }
 
     fn closure_parameters(

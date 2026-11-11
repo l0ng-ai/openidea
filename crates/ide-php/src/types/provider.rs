@@ -39,7 +39,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-use mago_syntax::cst::{Access, Argument, ArgumentList, ClassLikeConstantSelector, Expression};
+use mago_syntax::cst::{Access, Argument, ArgumentList, ArrayElement, ClassLikeConstantSelector, Expression};
 
 pub use self::laravel::LaravelProvider;
 pub use self::symfony::SymfonyProvider;
@@ -80,6 +80,9 @@ pub struct SiteArg {
     pub string: Option<String>,
     /// The value of an integer literal argument.
     pub int: Option<i64>,
+    /// The string literals of an array literal argument: its values, and
+    /// its string keys (`['posts', 'tags' => fn ($q) => …]`).
+    pub strings: Vec<String>,
 }
 
 /// The [`SiteArg`]s of a call's arguments, from the syntax alone: `Foo::class`
@@ -118,9 +121,29 @@ pub(crate) fn site_args(scope: &NameScope, list: &ArgumentList<'_>) -> Vec<SiteA
                     Type::LiteralInt(value) => arg.int = Some(value),
                     _ => {}
                 },
+                Expression::Array(array) => arg.strings = array_strings(array.elements.iter()),
+                Expression::LegacyArray(array) => arg.strings = array_strings(array.elements.iter()),
                 _ => {}
             }
             arg
+        })
+        .collect()
+}
+
+/// The string literal values and keys of array elements.
+fn array_strings<'e>(elements: impl Iterator<Item = &'e ArrayElement<'e>>) -> Vec<String> {
+    let string = |expr: &Expression<'_>| match expr {
+        Expression::Literal(literal) => match literal_type(literal) {
+            Type::LiteralString(string) => Some(string),
+            _ => None,
+        },
+        _ => None,
+    };
+    elements
+        .filter_map(|element| match element {
+            ArrayElement::Value(element) => string(element.value),
+            ArrayElement::KeyValue(element) => string(element.key),
+            _ => None,
         })
         .collect()
 }
@@ -355,6 +378,20 @@ pub trait TypeProvider: Send + Sync {
         None
     }
 
+    /// The method names (any case) [`TypeProvider::refines_receiver`] may
+    /// answer `true` for.
+    fn receiver_refining_methods(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Whether method `method` of `receiver` returns the receiver itself,
+    /// with a more precise type that holds for the object from then on
+    /// (Eloquent's `$post->loadCount('tags')`): called as a statement on a
+    /// variable, the variable takes the call's type.
+    fn refines_receiver(&self, _receiver: &Type, _method: &str, _resolver: &Resolver<'_>, _context: &Context) -> bool {
+        false
+    }
+
     /// The type of a method's parameter, given what its hint or PHPDoc
     /// declares: `None` keeps the declared type. (Eloquent: the raw
     /// `Builder $query` of a model's local scope is the model's builder.)
@@ -478,6 +515,20 @@ impl TypeProviders {
         self.providers
             .iter()
             .find_map(|(_, provider)| provider.closure_parameters(receiver, method, key, resolver, context))
+    }
+
+    /// Whether some provider may refine a receiver through method `method`
+    /// (a cheap check before typing the receiver).
+    pub fn may_refine_receiver(&self, method: &str) -> bool {
+        self.providers.iter().any(|(_, provider)| {
+            provider.receiver_refining_methods().iter().any(|name| name.eq_ignore_ascii_case(method))
+        })
+    }
+
+    /// Whether some provider says method `method` refines `receiver`; see
+    /// [`TypeProvider::refines_receiver`].
+    pub fn refines_receiver(&self, receiver: &Type, method: &str, resolver: &Resolver<'_>, context: &Context) -> bool {
+        self.providers.iter().any(|(_, provider)| provider.refines_receiver(receiver, method, resolver, context))
     }
 
     /// The first answer for a method parameter's type; see

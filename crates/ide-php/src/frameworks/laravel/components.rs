@@ -25,8 +25,12 @@
 //!   (`:type="$x"`) whose value the class component's constructor parameter
 //!   doesn't accept (`PhpParams`, the same check as PHP calls).
 //! - **Quick-fixes** ([`PhpEngine::blade_quick_fixes`]): create the missing
-//!   component or view, and add an attribute an anonymous component doesn't
-//!   declare to its `@props`.
+//!   component or view, add an attribute an anonymous component doesn't
+//!   declare to its `@props`, and one a class component's constructor
+//!   doesn't take to its constructor (a promoted public parameter).
+//! - **`@aware([...])`** in a component's view completes the props of the
+//!   components whose tags enclose this one's in some template
+//!   ([`PhpEngine::laravel_parent_components`]).
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -40,11 +44,12 @@ use super::blade::{BladeCatalog, BladeComponent, ComponentAttribute, class_files
 use super::livewire::rendered_view;
 use super::parts::PartReader;
 use super::providers::split_arrow;
-use super::views::{call_arguments, path_expression, provider_files, string_literal};
+use super::views::{call_arguments, is_blade, path_expression, provider_files, string_literal};
 use super::{LaravelProject, ViewTable};
 use crate::blade::structure::{self, DIAGNOSTIC_SOURCE, INSPECTIONS};
 use crate::blade::tags::{
-    DYNAMIC_COMPONENT, TagPlace, attribute_value_at, component_tags, enclosing_component, is_builtin, tag_place,
+    DYNAMIC_COMPONENT, TagPlace, attribute_value_at, component_tags, enclosing_component, enclosing_components,
+    is_builtin, tag_place,
 };
 use crate::blade::{BladeDocument, Compiled, NodeKind, camel, compile_full, parse};
 use crate::complete::{Completion, CompletionKind, Completions};
@@ -472,6 +477,67 @@ impl PhpEngine {
         out
     }
 
+    /// The components whose tags enclose a tag of `component` in some
+    /// template of the project (`<x-menu><x-menu.item /></x-menu>` makes
+    /// `menu` a parent of `menu.item`): whose data `@aware` reads.
+    pub fn laravel_parent_components(&self, component: &BladeComponent) -> Vec<BladeComponent> {
+        let (Some(catalog), Some(views)) = (self.laravel_blade(), self.laravel_views()) else { return Vec::new() };
+        let mut names: Vec<String> = Vec::new();
+        for view in views.views().iter().filter(|view| is_blade(&view.path)) {
+            let Some(text) = self.current_text(&view.path) else { continue };
+            if !text.contains(component.tag.as_str()) {
+                continue;
+            }
+            for tag in component_tags(&text).iter().filter(|tag| tag.name(&text) == component.tag) {
+                for parent in enclosing_components(&text, tag.start) {
+                    if parent != component.tag && !names.contains(&parent) {
+                        names.push(parent);
+                    }
+                }
+            }
+        }
+        names.iter().filter_map(|name| catalog.component(name).cloned()).collect()
+    }
+
+    /// Completion of an entry of `@aware([...])` in a component's view: the
+    /// props (and class components' constructor parameters) of the
+    /// components whose tags enclose this one's somewhere, camel case, but
+    /// not those the view lists already; `None` elsewhere.
+    pub(super) fn aware_completion(
+        &self,
+        blade: &BladeDocument,
+        offset: u32,
+        lines: &LineIndex,
+    ) -> Option<Completions> {
+        let text = blade.text;
+        let entries = structure::aware(text);
+        let at = entries.iter().find(|entry| entry.span.start <= offset && offset <= entry.span.end)?;
+        let catalog = self.laravel_blade()?;
+        let own = crate::project::normalize(blade.path);
+        let replace = lines.range(at.span.start, offset);
+        let tab = lines.range(at.span.start, at.span.end);
+        let listed: Vec<&str> =
+            entries.iter().filter(|entry| entry.span != at.span).map(|entry| entry.name.as_str()).collect();
+        let mut items: Vec<Completion> = Vec::new();
+        for component in catalog.components.iter().filter(|component| component.view.as_deref() == Some(own.as_path()))
+        {
+            for parent in self.laravel_parent_components(component) {
+                for attribute in self.laravel_component_attributes(&parent) {
+                    let name = camel(&attribute.name);
+                    if listed.contains(&name.as_str()) || items.iter().any(|known| known.label == name) {
+                        continue;
+                    }
+                    let detail = match &attribute.detail {
+                        Some(detail) => format!("{detail} · x-{}", parent.tag),
+                        None => format!("x-{}", parent.tag),
+                    };
+                    items.push(item(name, Some(detail), CompletionKind::Property, replace, tab));
+                }
+            }
+        }
+        Some(Completions { items, incomplete: false })
+    }
+
     /// The slots of the component whose body `offset` of `text` is in.
     fn enclosing_slots(&self, text: &str, offset: u32) -> Vec<ComponentAttribute> {
         let Some(catalog) = self.laravel_blade() else { return Vec::new() };
@@ -706,7 +772,62 @@ impl PhpEngine {
         }
         let (start, _) = lines.byte_range(range);
         out.extend(self.add_prop_fix(text, start));
+        out.extend(self.add_constructor_param_fix(text, start));
         out
+    }
+
+    /// "Add constructor parameter '$name' to <x-tag>" on an attribute of a
+    /// class component's tag that its constructor doesn't take: a promoted
+    /// public parameter (so the view sees it too), `string` for a plain
+    /// attribute and `mixed` for a bound one, optional (`= null`) after
+    /// optional parameters. Added to the class's constructor, or to a new
+    /// one; `None` when the class inherits a constructor or ends with a
+    /// variadic parameter.
+    fn add_constructor_param_fix(&self, text: &str, offset: u32) -> Option<ImportAction> {
+        let TagPlace::Attribute { component, name, bound } = tag_place(text, offset)? else { return None };
+        let written = &text[name.start as usize..name.end as usize];
+        let plain = !written.is_empty()
+            && written.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            && written.as_bytes()[0].is_ascii_alphabetic()
+            && !["class", "style", "id"].contains(&written);
+        if !plain || text.as_bytes().get(name.start.wrapping_sub(2) as usize..name.start as usize) == Some(b"::") {
+            return None;
+        }
+        let catalog = self.laravel_blade()?;
+        let found = catalog.component(&component)?;
+        let (class, path) = found.class.as_ref()?;
+        if path.as_os_str().is_empty()
+            || self.laravel_component_attributes(found).iter().any(|attribute| attribute.name == kebab(&camel(written)))
+        {
+            return None;
+        }
+        let param = camel(written);
+        let class_text = self.current_text(path)?;
+        let parsed = ParsedFile::parse("component.php", class_text.as_str());
+        let summary = FileSummary::extract(&parsed);
+        let declared =
+            summary.class_likes.iter().find(|known| known.fqn.trim_start_matches('\\').eq_ignore_ascii_case(class))?;
+        let params = declared.method("__construct").map(|ctor| ctor.params.as_slice()).unwrap_or_default();
+        if params.last().is_some_and(|last| last.variadic) {
+            return None;
+        }
+        let ty = if bound { "mixed" } else { "string" };
+        let declaration = if params.iter().any(|known| known.default.is_some()) {
+            let nullable = if bound { "mixed".to_owned() } else { format!("?{ty}") };
+            format!("public {nullable} ${param} = null")
+        } else {
+            format!("public {ty} ${param}")
+        };
+        let (from, to, new_text) = self.constructor_param(&class_text, declared, &declaration)?;
+        let lines = LineIndex::new(&class_text);
+        let edit = TextEdit { range: lines.range(from, to), new_text };
+        Some(ImportAction {
+            title: format!("Add constructor parameter '${param}' to <x-{component}>"),
+            kind: QUICKFIX,
+            preferred: false,
+            edit: file_edit(path, vec![edit]),
+            open: None,
+        })
     }
 
     /// "Add 'name' to the @props of <x-tag>" on an attribute of an

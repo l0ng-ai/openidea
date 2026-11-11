@@ -595,16 +595,14 @@ namespace App\Models {
 "#;
     let summary = FileSummary::extract(&ParsedFile::parse("team.php", source));
     let rendered = summary.render();
-    let counts: Vec<&str> = rendered.lines().filter(|line| line.starts_with("laravel counts ")).collect();
+    let counts: Vec<&str> = rendered.lines().filter(|line| line.contains(" counts ")).collect();
+    // Only `$withCount`, with its class: what the calls count follows
+    // their queries.
     assert_eq!(
         counts,
         [
-            "laravel counts members as members_count",
-            "laravel counts BlogPosts as blog_posts_count",
-            "laravel counts projects as projects_count",
-            "laravel counts tasks as tasks_count",
-            "laravel counts tasks as open_tasks",
-            "laravel counts invites as invites_count",
+            "laravel App\\Models\\Team counts members as members_count",
+            "laravel App\\Models\\Team counts BlogPosts as blog_posts_count",
         ]
     );
 }

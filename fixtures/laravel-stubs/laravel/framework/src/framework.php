@@ -534,7 +534,10 @@ namespace Illuminate\Database\Eloquent {
      * @template TModel of Model
      * @extends \Illuminate\Support\Collection<TKey, TModel>
      */
-    class Collection extends \Illuminate\Support\Collection {}
+    class Collection extends \Illuminate\Support\Collection {
+        /** @return $this */
+        public function loadCount($relations) { return $this; }
+    }
 
     abstract class Model {
         /** @var array<int, string> */
@@ -556,6 +559,8 @@ namespace Illuminate\Database\Eloquent {
         /** @return Collection */
         public static function all($columns = ['*']) { return new Collection(); }
         public function load($relations): static { return $this; }
+        /** @return $this */
+        public function loadCount($relations) { return $this; }
         public function update(array $attributes = [], array $options = []): bool { return true; }
         public function delete(): ?bool { return true; }
         public function getRouteKeyName(): string { return ''; }

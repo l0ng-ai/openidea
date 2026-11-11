@@ -641,13 +641,30 @@ impl<'a> Resolver<'a> {
     }
 
     /// Property `name` on each member of `receiver`: a class's, or an object
-    /// shape's; `mixed` when none has it.
+    /// shape's; `mixed` when none has it. A class type with an object shape
+    /// argument (what the Laravel provider gives a model whose query counted
+    /// relations: `Post<object{tags_count: int}>`) has the shape's
+    /// properties too, after the class's own.
     fn property_on(&self, receiver: &Type, name: &str, context: &Context, depth: usize) -> Type {
         let mut answers = Vec::new();
         for ty in receiver.members() {
             let answer = match ty {
                 Type::ObjectShape(fields) => operators::shape_property(fields, name),
-                ty => self.on_member(ty, context, &mut |receiver| self.property_at(receiver, name, context, depth)),
+                ty => {
+                    let own =
+                        self.on_member(ty, context, &mut |receiver| self.property_at(receiver, name, context, depth));
+                    match (own, ty) {
+                        (Some(own), _) if own != Type::Mixed => Some(own),
+                        (own, Type::Named { args, .. }) => args
+                            .iter()
+                            .find_map(|arg| match arg {
+                                Type::ObjectShape(fields) => operators::shape_property(fields, name),
+                                _ => None,
+                            })
+                            .or(own),
+                        (own, _) => own,
+                    }
+                }
             };
             answers.extend(answer);
         }

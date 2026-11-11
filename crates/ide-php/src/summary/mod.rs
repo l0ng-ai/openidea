@@ -41,7 +41,7 @@ mod symfony;
 pub(crate) use extract::{doc_before, inline_vars, type_hint};
 pub use laravel::{
     Binding, Cast, Column, CountedRelation, LaravelFacts, ModelCasts, RenamedColumn, RequestRules, RouteFileKind,
-    RoutePath, RouteRegistration, RuleEntry, RuleMethod, Table,
+    RoutePath, RouteRegistration, RuleEntry, RuleMethod, Table, counted_spec,
 };
 pub use symfony::{RepositoryEntity, RouteAttribute, SymfonyFacts};
 
@@ -66,9 +66,10 @@ use crate::types::LazyType;
 /// tables, inferred returns of raw Eloquent relations; 18: dropped and
 /// renamed columns, counted relations, inferred returns of raw
 /// `Attribute` accessors; 19: `config()` parts of route file paths; 20:
-/// shapes of inferred array literals; 21: shapes of constant array values),
-/// so stored summaries are rebuilt.
-pub const SCHEMA_VERSION: u32 = 21;
+/// shapes of inferred array literals; 21: shapes of constant array values;
+/// 22: only `$withCount` counts relations, with its class), so stored
+/// summaries are rebuilt.
+pub const SCHEMA_VERSION: u32 = 22;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

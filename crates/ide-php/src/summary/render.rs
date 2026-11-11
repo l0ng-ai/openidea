@@ -98,7 +98,7 @@ fn laravel(out: &mut String, facts: &LaravelFacts) {
         let _ = writeln!(out, "{line}");
     }
     for counted in &facts.counted {
-        let _ = writeln!(out, "laravel counts {} as {}", counted.relation, counted.property);
+        let _ = writeln!(out, "laravel {} counts {} as {}", counted.class, counted.relation, counted.property);
     }
     for model in &facts.casts {
         let casts: Vec<String> =

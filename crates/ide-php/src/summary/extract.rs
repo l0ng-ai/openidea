@@ -715,7 +715,7 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
             node.implements.as_ref().map(|implements| cx.class_names(&implements.types)).unwrap_or_default();
         cx.provided_properties(&mut class, &node.members);
         cx.model_casts(&class.fqn, &node.members);
-        cx.counted_property(&node.members);
+        cx.counted_property(&class.fqn, &node.members);
         cx.request_rules(&class.fqn, &node.members);
         cx.routes(&node.attribute_lists, &node.members);
         cx.entity_repository(&class.fqn, class.repository.as_deref());
@@ -784,7 +784,6 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
     }
 
     fn walk_in_method_call(&self, node: &'ast MethodCall<'arena>, cx: &mut Extractor<'f>) {
-        cx.counted_relations(&node.method, &node.argument_list);
         cx.method_binding(node.object, &node.method, &node.argument_list);
         cx.method_routes(node.object, &node.method, &node.argument_list);
         cx.rule_method(&node.method, &node.argument_list);
@@ -793,7 +792,6 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
     fn walk_in_static_method_call(&self, node: &'ast StaticMethodCall<'arena>, cx: &mut Extractor<'f>) {
         cx.static_binding(node.class, &node.method, &node.argument_list);
         cx.migration(node.class, &node.method, &node.argument_list);
-        cx.counted_relations(&node.method, &node.argument_list);
         cx.static_routes(node.class, &node.method, &node.argument_list);
         cx.repository_constructor(node.class, &node.method, &node.argument_list);
         cx.rule_method(&node.method, &node.argument_list);

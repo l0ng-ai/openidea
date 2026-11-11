@@ -33,9 +33,10 @@ pub struct LaravelFacts {
     /// (`Validator::make($data, $this->rules())`), so what they return,
     /// in the class and its subclasses, is a rules array.
     pub rule_methods: Vec<RuleMethod>,
-    /// The relations `withCount(…)` and `loadCount(…)` calls and `$withCount`
-    /// properties name, with the property each loads (`posts_count`, or the
-    /// alias of `'posts as drafts_count'`).
+    /// The relations models' `$withCount` properties name, with the
+    /// property each loads (`posts_count`, or the alias of `'posts as
+    /// drafts_count'`). What `withCount(…)` and `loadCount(…)` calls count
+    /// follows the query instead (the type of the models it loads).
     pub counted: Vec<CountedRelation>,
 }
 
@@ -202,13 +203,32 @@ pub struct RenamedColumn {
     pub loc: Loc,
 }
 
-/// A relation counted by `withCount('posts')` and the like.
+/// A relation a model's `$withCount` property counts on every query.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CountedRelation {
+    /// The class declaring the property (FQN, without the leading `\`).
+    pub class: String,
     /// The relation method's name.
     pub relation: String,
     /// The property the count is loaded as (`posts_count`, or the alias).
     pub property: String,
+}
+
+/// `posts` (or `posts as drafts_count`) counted by `withCount()`: the
+/// relation and the property its count is loaded as (`posts_count`, the
+/// snake case of the relation, or the alias). `None` for nested paths and
+/// anything that isn't a relation name.
+pub fn counted_spec(spec: &str, snake: impl Fn(&str) -> String) -> Option<(String, String)> {
+    let lower = spec.to_ascii_lowercase();
+    let (relation, property) = match lower.find(" as ") {
+        Some(at) => (spec[..at].trim(), Some(spec[at + 4..].trim().to_owned())),
+        None => (spec.trim(), None),
+    };
+    if relation.is_empty() || relation.contains(['.', ' ', ':']) {
+        return None;
+    }
+    let property = property.filter(|alias| !alias.is_empty()).unwrap_or_else(|| format!("{}_count", snake(relation)));
+    Some((relation.to_owned(), property))
 }
 
 impl Table {

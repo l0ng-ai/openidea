@@ -471,6 +471,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 {
                     self.env.reachable = false;
                 }
+                self.refine_receiver(statement.expression);
             }
             Statement::Echo(echo) => echo.values.iter().for_each(|value| self.expr(value)),
             Statement::EchoTag(echo) => echo.values.iter().for_each(|value| self.expr(value)),
@@ -1249,6 +1250,32 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
             if matches!(when, AssertWhen::Always) {
                 self.env = self.narrowed_env(&self.env, variable, &target, negated);
             }
+        }
+    }
+
+    /// `$post->loadCount('tags');`: a call the providers say returns its
+    /// receiver, refined ([`crate::types::provider::TypeProvider::refines_receiver`]),
+    /// gives the variable the call's type from here on.
+    fn refine_receiver(&mut self, expression: &'a Expression<'a>) {
+        let Expression::Call(Call::Method(call)) = expression else { return };
+        let (Expression::Variable(Variable::Direct(variable)), ClassLikeMemberSelector::Identifier(method)) =
+            (call.object, &call.method)
+        else {
+            return;
+        };
+        let resolver = self.types.resolver;
+        let method = String::from_utf8_lossy(method.value);
+        if !self.env.reachable || !resolver.providers().may_refine_receiver(&method) {
+            return;
+        }
+        let receiver = self.type_of(call.object);
+        let context = self.types.context(self.frames);
+        if !resolver.providers().refines_receiver(&receiver, &method, resolver, &context) {
+            return;
+        }
+        let ty = self.type_of(expression);
+        if !matches!(ty, Type::Mixed | Type::Never) {
+            self.env = self.update(&self.env, variable, |_| ty.clone());
         }
     }
 

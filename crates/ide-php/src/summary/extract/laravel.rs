@@ -12,9 +12,9 @@
 //!   `morphs()`; the columns `dropColumn()`, `dropTimestamps()` and the
 //!   like drop and `renameColumn()` renames (`Schema::dropColumns()` too),
 //!   outside `down()` methods.
-//! - **Counted relations:** the relations `withCount(…)` and `loadCount(…)`
-//!   name (strings, list items and array keys; `'posts as drafts_count'`
-//!   loads `drafts_count`), and those of a class's `$withCount` property.
+//! - **Counted relations:** the relations of a class's `$withCount`
+//!   property (strings, list items and array keys; `'posts as
+//!   drafts_count'` loads `drafts_count`), with the class.
 //! - **Casts:** the array of a class's `$casts` property, or the array a
 //!   `casts()` method returns.
 //! - **Rules:** the keys of the array a class's `rules()` method returns,
@@ -44,7 +44,7 @@ use super::Extractor;
 use crate::names::{NameKind, Resolution};
 use crate::summary::{
     Binding, Cast, Column, CountedRelation, DocType, Loc, ModelCasts, RenamedColumn, RequestRules, RouteFileKind,
-    RoutePath, RouteRegistration, RuleEntry, RuleMethod, Table,
+    RoutePath, RouteRegistration, RuleEntry, RuleMethod, Table, counted_spec,
 };
 use crate::types::ops::literal_type;
 use crate::types::{LazyType, Type};
@@ -131,18 +131,11 @@ fn string_list(args: &[&Expression<'_>]) -> Vec<String> {
     out
 }
 
-/// `posts` (or `posts as drafts_count`) counted by `withCount()`.
-fn counted(spec: &str) -> Option<CountedRelation> {
-    let lower = spec.to_ascii_lowercase();
-    let (relation, property) = match lower.find(" as ") {
-        Some(at) => (spec[..at].trim(), Some(spec[at + 4..].trim().to_owned())),
-        None => (spec.trim(), None),
-    };
-    if relation.is_empty() || relation.contains(['.', ' ', ':']) {
-        return None;
-    }
-    let property = property.filter(|alias| !alias.is_empty()).unwrap_or_else(|| format!("{}_count", snake(relation)));
-    Some(CountedRelation { relation: relation.to_owned(), property })
+/// `posts` (or `posts as drafts_count`) counted by class `class`'s
+/// `$withCount`.
+fn counted(class: &str, spec: &str) -> Option<CountedRelation> {
+    let (relation, property) = counted_spec(spec, snake)?;
+    Some(CountedRelation { class: class.trim_start_matches('\\').to_owned(), relation, property })
 }
 
 /// `BlogPost` → `blog_post`.
@@ -375,38 +368,28 @@ impl Extractor<'_> {
 
     // ---------------------------------------------------- counted relations
 
-    /// `withCount('posts')`, `loadCount(['posts', 'tags as labels_count'])`.
-    pub(super) fn counted_relations(&mut self, selector: &ClassLikeMemberSelector<'_>, list: &ArgumentList<'_>) {
-        let Some(method) = method_name(selector) else { return };
-        if !method.eq_ignore_ascii_case("withCount") && !method.eq_ignore_ascii_case("loadCount") {
-            return;
-        }
-        for arg in args(list) {
-            self.counted_value(arg);
-        }
-    }
-
-    /// The `$withCount` property of a class (a model counting relations
-    /// on every query).
-    pub(super) fn counted_property(&mut self, members: &Sequence<'_, ClassLikeMember<'_>>) {
+    /// The `$withCount` property of class `class` (a model counting
+    /// relations on every query). What `withCount()` and `loadCount()`
+    /// calls count is in the type of the models they load instead.
+    pub(super) fn counted_property(&mut self, class: &str, members: &Sequence<'_, ClassLikeMember<'_>>) {
         for member in members {
             let ClassLikeMember::Property(Property::Plain(property)) = member else { continue };
             for item in &property.items {
                 if let PropertyItem::Concrete(item) = item
                     && item.variable.name == b"$withCount"
                 {
-                    self.counted_value(item.value);
+                    self.counted_value(class, item.value);
                 }
             }
         }
     }
 
-    fn counted_value(&mut self, value: &Expression<'_>) {
+    fn counted_value(&mut self, class: &str, value: &Expression<'_>) {
         let elements = match value {
             Expression::Array(array) => array.elements.iter(),
             Expression::LegacyArray(array) => array.elements.iter(),
             other => {
-                if let Some(found) = string(other).as_deref().and_then(counted) {
+                if let Some(found) = string(other).and_then(|spec| counted(class, &spec)) {
                     self.add_counted(found);
                 }
                 return;
@@ -419,7 +402,7 @@ impl Extractor<'_> {
                 ArrayElement::KeyValue(element) => string(element.key),
                 _ => None,
             };
-            if let Some(found) = spec.as_deref().and_then(counted) {
+            if let Some(found) = spec.and_then(|spec| counted(class, &spec)) {
                 self.add_counted(found);
             }
         }

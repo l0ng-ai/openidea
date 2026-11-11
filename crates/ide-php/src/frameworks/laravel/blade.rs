@@ -525,6 +525,9 @@ impl PhpEngine {
         if let Some(found) = self.component_completion(blade, offset, &lines) {
             return Some(found);
         }
+        if let Some(found) = self.aware_completion(blade, offset, &lines) {
+            return Some(found);
+        }
         let catalog = self.laravel_blade()?;
         match tag_place(blade.text, offset)? {
             TagPlace::Name(span) => {

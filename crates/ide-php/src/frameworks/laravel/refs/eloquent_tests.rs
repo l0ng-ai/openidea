@@ -242,10 +242,14 @@ fn types_relation_closures_collections_and_factories() {
         ("Post::factory(3)->make()/*|*/;", collection("Post")),
         ("Post::factory()->count(2)->state([])->create()/*|*/;", collection("Post")),
         ("Post::factory()->createOne()/*|*/;", "App\\Models\\Post".to_owned()),
-        // `*_count` after a `withCount` of the relation.
-        ("Post::withCount('tags')->get();\n        $post->tags_count/*|*/;", "int".to_owned()),
-        ("User::query()->withCount(['posts'])->get();\n        $user->posts_count/*|*/;", "int".to_owned()),
-        ("Post::withCount('comments as replies');\n        $post->replies/*|*/;", "int".to_owned()),
+        // `*_count` after a `withCount` of the relation, on the models
+        // that query loads.
+        (
+            "foreach (Post::withCount('tags')->get() as $p) {\n            $p->tags_count/*|*/;\n        }",
+            "int".to_owned(),
+        ),
+        ("$u = User::query()->withCount(['posts'])->first();\n        $u->posts_count/*|*/;", "int".to_owned()),
+        ("Post::withCount('comments as replies')->first()->replies/*|*/;", "int".to_owned()),
         // A column of that name wins (and is an int too).
         ("$post->comments_count/*|*/;", "int".to_owned()),
     ];
@@ -253,9 +257,9 @@ fn types_relation_closures_collections_and_factories() {
         assert_eq!(project.eloquent_type(body), expected, "{body}");
     }
     // `withCount` loads `*_count` properties: listed with the attributes.
-    let found = project.eloquent_labels(PROBE, &controller("Post::withCount('tags');\n        $post->tags_c/*|*/"));
+    let found = project.eloquent_labels(PROBE, &controller("Post::withCount('tags')->first()->tags_c/*|*/"));
     assert_eq!(names(&found), ["tags_count"]);
-    let hover = project.eloquent_hover(PROBE, &controller("Post::withCount('tags');\n        $post->tags_c/*|*/ount;"));
+    let hover = project.eloquent_hover(PROBE, &controller("Post::withCount('tags')->first()->tags_c/*|*/ount;"));
     assert!(hover.contains("withCount('tags')"), "{hover}");
 }
 
@@ -266,12 +270,42 @@ fn counts_only_after_a_matching_with_count() {
     assert_eq!(project.eloquent_type("$post->tags_count/*|*/;"), "mixed");
     assert!(project.eloquent_labels(PROBE, &controller("$post->tags_c/*|*/")).is_empty());
     // Counting another relation doesn't count this one.
-    assert_eq!(project.eloquent_type("Post::withCount('comments');\n        $post->tags_count/*|*/;"), "mixed");
-    // `loadCount`, and a model's `$withCount`.
-    assert_eq!(project.eloquent_type("$post->loadCount('tags');\n        $post->tags_count/*|*/;"), "int");
+    assert_eq!(project.eloquent_type("Post::withCount('comments')->first()->tags_count/*|*/;"), "mixed");
+    // Another query's `withCount` doesn't count this model's.
+    assert_eq!(project.eloquent_type("Post::withCount('tags')->get();\n        $post->tags_count/*|*/;"), "mixed");
+    let other = "$counted = Post::withCount('tags')->get();\n        $plain = Post::query()->get();\n        ";
+    assert_eq!(project.eloquent_type(&format!("{other}$plain->first()->tags_count/*|*/;")), "mixed");
+    assert_eq!(project.eloquent_type(&format!("{other}$counted->first()->tags_count/*|*/;")), "int");
+    // The type says what was counted.
+    assert_eq!(
+        project.eloquent_type("Post::withCount('tags', 'comments as replies')->first()/*|*/;"),
+        "App\\Models\\Post<object{tags_count: int, replies: int}>|null"
+    );
+    // Through a relation, scopes and fluent calls, and `$this`-returning
+    // model methods.
+    let cases = [
+        "$user->posts()->withCount('tags')->get()->first()->tags_count/*|*/;",
+        "Post::withCount('tags')->where('status', 'draft')->latest()->first()->tags_count/*|*/;",
+        "Post::query()->withCount('tags')->first()->load('author')->tags_count/*|*/;",
+        "Post::withCount(['tags' => fn ($q) => $q])->first()->tags_count/*|*/;",
+    ];
+    for body in cases {
+        assert_eq!(project.eloquent_type(body), "int", "{body}");
+    }
+    // `loadCount` on a model, also as a statement (from there on), and on
+    // a collection.
+    assert_eq!(project.eloquent_type("$post->loadCount('tags')->tags_count/*|*/;"), "int");
+    assert_eq!(
+        project.eloquent_type("$post->tags_count;\n        $post->loadCount('tags');\n        $post->tags_count/*|*/;"),
+        "int"
+    );
+    assert_eq!(project.eloquent_type("$post->tags_count/*|*/;\n        $post->loadCount('tags');"), "mixed");
+    assert_eq!(project.eloquent_type("Post::all()->loadCount('tags')->first()->tags_count/*|*/;"), "int");
+    // A model's `$withCount` counts on every query.
     let source = post_with(&project, "protected $withCount = ['author'];/*|*/");
     let (post_doc, _) = project.open(POST, &source);
     assert_eq!(project.eloquent_type("$post->author_count/*|*/;"), "int");
+    assert_eq!(project.eloquent_type("$user->author_count/*|*/;"), "mixed");
     project.engine.document_closed(post_doc);
     // The inspection doesn't know every `withCount` (scopes, packages):
     // the count of any relation is fine there.

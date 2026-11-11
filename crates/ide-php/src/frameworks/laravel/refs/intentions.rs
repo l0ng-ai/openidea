@@ -459,7 +459,12 @@ impl PhpEngine {
     /// The edit adding parameter `declaration` to the class's constructor,
     /// or a constructor taking it (before the first method). `None` when the
     /// class inherits a constructor it would have to call.
-    fn constructor_param(&self, text: &str, class: &ClassLike, declaration: &str) -> Option<(u32, u32, String)> {
+    pub(crate) fn constructor_param(
+        &self,
+        text: &str,
+        class: &ClassLike,
+        declaration: &str,
+    ) -> Option<(u32, u32, String)> {
         let nl = newline(text);
         if let Some(ctor) = class.method("__construct") {
             return match ctor.params.last() {
