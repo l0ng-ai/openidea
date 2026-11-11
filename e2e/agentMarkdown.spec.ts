@@ -461,3 +461,45 @@ for (const theme of ["dark", "light"] as const) {
     for (const { text, ratio } of contrasts) expect(ratio, `${theme}: ${text}`).toBeGreaterThanOrEqual(4.5);
   });
 }
+
+test("draws a diagram without reaching the hosts its configuration names", async ({ page }) => {
+  const asked: string[] = [];
+  await page.route(/^https:\/\/([a-z\d-]+\.)*example\.com\//, (route) => {
+    asked.push(new URL(route.request().url()).pathname);
+    return route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") });
+  });
+  const at = (name: string) => `https://images.example.com/${name}`;
+  const fence = (...lines: string[]) => ["```mermaid", ...lines, "```"].join("\n");
+  const diagrams = [
+    fence(
+      `%%{init: {"themeCSS": ".nodeLabel{background-image:url(${at("theme-css")})} svg{background-image:url(${at("theme-css-root")})}"}}%%`,
+      "flowchart TD",
+      "    A[One]-->B[Two]",
+    ),
+    fence(
+      `%%{init: {"fontFamily": "x;background-image:url(${at("font-family")})"}}%%`,
+      "flowchart TD",
+      "    A[One]-->B[Two]",
+    ),
+    fence(
+      "---",
+      "config:",
+      `  themeCSS: ".nodeLabel{background-image:url(${at("front-matter")})}"`,
+      "---",
+      "flowchart TD",
+      "    A[One]-->B[Two]",
+    ),
+  ];
+  const reply = await openReply(page, `Diagrams:\n\n${diagrams.join("\n\n")}`);
+  await expect(reply.locator("[data-mermaid-state='ok'] .mermaid-output svg")).toHaveCount(diagrams.length);
+  await page.evaluate(
+    (src) =>
+      new Promise<void>((done) => {
+        const img = new Image();
+        img.onload = img.onerror = () => done();
+        img.src = src;
+      }),
+    "https://example.com/after",
+  );
+  expect(asked).toEqual(["/after"]);
+});

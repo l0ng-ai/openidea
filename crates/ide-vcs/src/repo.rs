@@ -71,7 +71,7 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
     let pack_dir = common_dir.join("objects").join("pack");
     let cache = Cache { stamp: stamp(&files), files, repo: ts, pack_stamp: pack_stamp(&pack_dir), pack_dir };
     Ok(Some(Repo {
-        execution_allowed: std::sync::atomic::AtomicBool::new(true),
+        execution_allowed: std::sync::atomic::AtomicBool::new(false),
         root,
         git_dir,
         inner: std::sync::Mutex::new(cache),

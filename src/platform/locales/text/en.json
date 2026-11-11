@@ -349,6 +349,7 @@
   "Listening for Xdebug on port {port}": "Listening for Xdebug on port {port}",
   "Port {port} is already in use: another IDE or debug session may be listening on it. Stop it or choose another port.": "Port {port} is already in use: another IDE or debug session may be listening on it. Stop it or choose another port.",
   "Unable to load image: {path}": "Unable to load image: {path}",
+  "Load image from {host}": "Load image from {host}",
   "Updates": "Updates",
   "Update source": "Update source",
   "Current version": "Current version",

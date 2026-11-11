@@ -6820,6 +6820,7 @@
   "Stage and Retry": "暂存并重试",
   "Show Files": "显示文件",
   "Unable to load image: {path}": "无法加载图片：{path}",
+  "Load image from {host}": "加载来自 {host} 的图片",
   "Updates": "更新",
   "Update source": "更新源",
   "Current version": "当前版本",

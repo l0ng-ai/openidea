@@ -180,6 +180,8 @@ function configure(mermaid: Mermaid, key: string) {
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: "strict",
+    // These go into the diagram's stylesheet as written: a diagram setting them could fetch from any host.
+    secure: ["themeCSS", "fontFamily", "altFontFamily"],
     suppressErrorRendering: true,
     theme: "base",
     // Each diagram type defaults to "neo": the start state is hard-coded

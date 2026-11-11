@@ -118,6 +118,24 @@ pub fn inside_roots(roots: &[PathBuf], path: &str) -> Result<bool, String> {
 /// be created) or that names a symlink itself (to delete or rename it): the
 /// directory part is resolved through symlinks, the final name is kept as is,
 /// and the result must stay inside `root`.
+/// Whether a path (relative to the project root) goes through git's own `.git` folder or file.
+/// git runs what it finds in `.git` (hooks, `gpg.program`, filters), so a content write must
+/// never reach it. Names are normalized for trailing dots and spaces and NTFS stream suffixes;
+/// the caller also checks the short-name-resolved path via [`resolve_real`].
+pub fn names_git_dir(rel: &Path) -> bool {
+    rel.components().any(|part| {
+        let name = part.as_os_str().to_string_lossy();
+        let name = name.split(':').next().unwrap_or_default().trim_end_matches(['.', ' ']);
+        name.eq_ignore_ascii_case(".git")
+    })
+}
+
+/// A resolved write destination that reaches git's own `.git` metadata, judged by the name
+/// given and by the name the file system resolves it to.
+fn reaches_git_dir(root: &Path, real: &Path) -> bool {
+    real.strip_prefix(root).is_ok_and(names_git_dir) || resolve_real(real).strip_prefix(root).is_ok_and(names_git_dir)
+}
+
 pub fn resolve_new_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
     let outside = || format!("{path}: access outside the project root is not allowed");
     if path.is_empty() {
@@ -154,6 +172,9 @@ pub fn resolve_new_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
     if !real.starts_with(&root) {
         return Err(outside());
     }
+    if reaches_git_dir(&root, &real) {
+        return Err(format!("{path}: writing git's own files is not allowed"));
+    }
     Ok(real)
 }
 
@@ -164,6 +185,9 @@ pub fn resolve_writable_in_root(root: &Path, path: &str) -> Result<PathBuf, Stri
     let real = resolve_write_target(&joined, 40).map_err(|e| format!("{path}: {e}"))?;
     if !real.starts_with(&root) {
         return Err(format!("{path}: access outside the project root is not allowed"));
+    }
+    if reaches_git_dir(&root, &real) {
+        return Err(format!("{path}: writing git's own files is not allowed"));
     }
     Ok(real)
 }
@@ -557,6 +581,55 @@ mod tests {
         assert!(resolve_new_in_root(&root, "src/../../x.txt").unwrap_err().contains("outside"));
         assert!(resolve_new_in_root(&root, "/etc/new.txt").is_err());
         assert!(resolve_new_in_root(&root, "").is_err());
+    }
+
+    /// Advisory #4: a content write may not reach git's own `.git` metadata, which git runs as
+    /// code (hooks, `gpg.program`, filters). The `.git` folder is inside the project root, so the
+    /// root confinement alone does not stop it.
+    #[test]
+    fn writes_cannot_reach_git_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join(".git/config"), "[core]\n").unwrap();
+        // An ordinary write is fine; each refusal below is the `.git` rule.
+        assert!(resolve_new_in_root(&root, "src/ok.txt").is_ok());
+        assert!(resolve_writable_in_root(&root, "src/ok.txt").is_ok());
+        for rel in [
+            ".git/config",
+            ".git/hooks/pre-commit",
+            ".GIT/config",
+            "src/../.git/config",
+            ".git./config",
+            ".git /config",
+        ] {
+            assert!(resolve_new_in_root(&root, rel).unwrap_err().contains("git's own files"), "new: {rel}");
+            assert!(resolve_writable_in_root(&root, rel).unwrap_err().contains("git's own files"), "writable: {rel}");
+        }
+        assert!(names_git_dir(Path::new("a/.git/b")));
+        assert!(!names_git_dir(Path::new("a/git/b")));
+        assert!(!names_git_dir(Path::new(".github/workflows/ci.yml")));
+    }
+
+    #[test]
+    fn git_folder_is_recognised_under_every_spelling_that_opens_it() {
+        for path in [
+            "proj/.git/hooks/pre-commit",
+            "proj/.git/config",
+            "proj/sub/.git",
+            "proj/.GIT/config",
+            "proj/.git./config",
+            "proj/.git /config",
+            "proj/.git::$INDEX_ALLOCATION/config",
+        ] {
+            assert!(names_git_dir(Path::new(path)), "{path}");
+        }
+        for path in ["proj/.gitignore", "proj/.github/workflows/ci.yml", "proj/src/git/.gitkeep", "proj/a.git/x"] {
+            assert!(!names_git_dir(Path::new(path)), "{path}");
+        }
+        // A project opened from inside a git folder is git's own files all the way down.
+        assert!(names_git_dir(Path::new("repo/.git/modules/lib/hooks/pre-commit")));
     }
 
     #[cfg(unix)]
