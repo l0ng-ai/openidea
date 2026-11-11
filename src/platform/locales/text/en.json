@@ -591,6 +591,7 @@
   "Invalid log stream configuration": "Invalid log stream configuration",
   "Find in Logs": "Find in Logs",
   "Waiting for output…": "Waiting for output…",
+  "Vue 2 (Options API) template navigation needs 'strictFunctionTypes': true (or 'strict': true) in the compilerOptions of jsconfig.json / tsconfig.json — without it the Vue 2.7 types infer methods and computed on this as any, so jump-to-definition and hover in templates resolve to nothing. Add the option (create jsconfig.json if the project has none), then reopen the file or restart the language server.": "Vue 2 (Options API) template navigation needs 'strictFunctionTypes': true (or 'strict': true) in the compilerOptions of jsconfig.json / tsconfig.json — without it the Vue 2.7 types infer methods and computed on this as any, so jump-to-definition and hover in templates resolve to nothing. Add the option (create jsconfig.json if the project has none), then reopen the file or restart the language server.",
   "Soft-wrap": "Soft-wrap",
   "Clear": "Clear",
   "\n[Process finished]": "\n[Process finished]",
