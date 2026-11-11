@@ -54,10 +54,6 @@
   align-items: center;
   gap: 2px;
 }
-.statusActions > .changesToggle {
-  height: var(--h-control-small);
-  padding: 0 4px;
-}
 .statusText {
   flex: 1 1 0;
   min-width: 0;
@@ -471,6 +467,31 @@
 .markdown :global(ol) {
   margin: 0 0 8px;
   padding-left: 20px;
+  list-style: none;
+}
+/* Markers are drawn as pseudo-elements: WebKit paints a selection box around a native marker,
+   leaving a broken stripe down the gutter when a list is selected. */
+.markdown :global(li) {
+  position: relative;
+}
+.markdown :global(li)::before {
+  position: absolute;
+  right: calc(100% + 6px);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.markdown :global(ul > li)::before {
+  content: "•";
+}
+.markdown :global(ul ul > li)::before {
+  content: "◦";
+}
+.markdown :global(ul ul ul > li)::before {
+  content: "▪";
+}
+.markdown :global(ol > li)::before {
+  content: counter(list-item) ".";
+  font-variant-numeric: tabular-nums;
 }
 .markdown :global(a) {
   color: var(--link);
@@ -521,7 +542,9 @@
 }
 .markdown :global(li:has(> input[type="checkbox"])) {
   margin-left: -20px;
-  list-style: none;
+}
+.markdown :global(li:has(> input[type="checkbox"]))::before {
+  content: none;
 }
 .markdown > :global(:first-child) {
   margin-top: 0;
@@ -1230,33 +1253,6 @@
   text-overflow: ellipsis;
 }
 
-.changesToggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: var(--h-control);
-  padding: 0 8px;
-  border: 0;
-  border-radius: var(--radius-small);
-  background: transparent;
-  color: var(--fg-subtle);
-  font: inherit;
-  font-size: var(--fs-small);
-  cursor: pointer;
-}
-.changesToggle:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--fg-strong);
-}
-.changesToggle[aria-pressed="true"] {
-  background: var(--bg-selected);
-  color: var(--fg-strong);
-}
-.changesToggle:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
 /* An open AskUserQuestion: every question with its options, answered at once above the composer. */
 .questionCard {
   flex: none;
@@ -1545,12 +1541,6 @@
 }
 .planCurrent {
   color: var(--fg);
-}
-.trayActivity {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 /* A one-button toolbar, not a round bubble: the popup's large arc would turn it into a circle. */
 .quotePopup {
