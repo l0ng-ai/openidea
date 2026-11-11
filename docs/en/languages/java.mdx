@@ -141,5 +141,6 @@ Navigation between MyBatis mapper interfaces and their XML statements is availab
 - One jdtls runs per project window. With several large projects open at once, memory adds up. Lower `-Xmx` in **JVM options** or close windows you are not using. **Share JDT LS across builds** helps only within one window.
 - Without jdtls (for example with `kmp-lsp` only), Application configurations, classpath-based features and Java debugging are not available.
 - Java tests run through Maven or Gradle. A project without either build tool has no test runner.
+- The jdtls compiler (ECJ) is stricter than javac in some places. Known case: a generic method call used directly as an `if`, `while`, `for` or `do` condition or a ternary condition — for example `if (getCacheObject(key))` with a `<T> T getCacheObject(String key)` method — compiles with javac but ECJ reports `Type mismatch: cannot convert from Object to boolean`. Assigning the call to a `boolean` variable first compiles on both (see [#2624](https://github.com/l0ng-ai/openidea/issues/2624)).
 - The Kotlin bridge is Maven only and exposes compiled Kotlin classes to Java. It does not give Java-to-Kotlin source navigation or refactoring.
 - Groovy needs a `groovy-language-server` you build yourself, and JSP has syntax highlighting only.

@@ -141,5 +141,6 @@ MyBatis mapper 接口与 XML 语句之间的跳转由 MyBatis Navigator 插件�
 - 每个项目窗口运行一个 jdtls，同时打开多个大项目时内存会叠加。可以在 **JVM 选项** 中调低 `-Xmx`，或关闭暂时不用的窗口。**在构建间共享 JDT LS** 只在单个窗口内有效。
 - 没有 jdtls 时（例如只用 `kmp-lsp`），“应用程序”配置、依赖类路径的功能和 Java 调试都不可用。
 - Java 测试通过 Maven 或 Gradle 运行，两者都没有的项目没有测试运行器。
+- jdtls 自带的 ECJ 编译器有些地方比 javac 严格。已知例子：把泛型方法调用直接用作 `if`、`while`、`for`、`do` 条件或三元运算符条件——例如 `<T> T getCacheObject(String key)` 方法配合 `if (getCacheObject(key))`——javac 可以编译，ECJ 则报 `Type mismatch: cannot convert from Object to boolean`。先把调用赋值给 `boolean` 变量即可两边都编译通过（见 [#2624](https://github.com/l0ng-ai/openidea/issues/2624)）。
 - Kotlin 桥接只支持 Maven，只把编译后的 Kotlin 类暴露给 Java，不提供从 Java 到 Kotlin 源码的跳转或重构。
 - Groovy 需要自行构建 `groovy-language-server`，JSP 只有语法高亮。
