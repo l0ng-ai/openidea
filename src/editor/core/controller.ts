@@ -25,6 +25,7 @@ import {
   getFileDecoration,
   menuGroupItems,
   notifications,
+  openFileExternally,
   resolveFileEditor,
   textEditorWrapperFor,
   useContributions,
@@ -1071,8 +1072,10 @@ export class EditorController implements SlotHost {
     }
     await this.projectTransition;
     this.checkOpening(generation);
-    // Images, binary and huge files open in a contributed viewer unless already open as text.
+    // Files opened with another application, then images/binary/huge files in a
+    // contributed viewer, unless already open as text.
     if (!o.asText && !findTab(useTabs.getState(), fileKey(path))) {
+      if (await openFileExternally(path)) return;
       const viewer = await resolveFileEditor(path);
       if (viewer) {
         try {

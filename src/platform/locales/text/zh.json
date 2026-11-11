@@ -3733,6 +3733,8 @@
   "File name patterns": "文件名模式",
   "* matches any characters, ? one (e.g. *.foo, Jenkinsfile).": "* 匹配任意字符，? 匹配一个字符（例如 *.foo、Jenkinsfile）。",
   "Hashbang patterns": "Hashbang 模式",
+  "Files opened in associated applications": "在关联的应用程序中打开的文件",
+  "Files matching these patterns open in their system application instead of an editor.": "匹配这些模式的文件将使用系统应用程序打开，而不是在编辑器中打开。",
   "Interpreters run by a #! first line, e.g. node for #!/usr/bin/env node.": "由首行 #! 运行的解释器，例如 #!/usr/bin/env node 对应 node。",
   "Also recognized by its first line:": "也可通过首行识别：",
   "Default (IDE)": "默认 (IDE)",

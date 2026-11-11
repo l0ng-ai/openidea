@@ -202,6 +202,8 @@
   "Finder": "Finder",
   "Explorer": "Explorer",
   "Files": "Files",
+  "Files opened in associated applications": "Files opened in associated applications",
+  "Files matching these patterns open in their system application instead of an editor.": "Files matching these patterns open in their system application instead of an editor.",
   "Show in Finder": "Show in Finder",
   "Show in Explorer": "Show in Explorer",
   "Show in Files": "Show in Files",
