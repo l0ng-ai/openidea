@@ -163,12 +163,14 @@ pub async fn doc_selection_ranges(
 
 #[tauri::command]
 #[specta::specta]
-pub fn history_list(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<HistoryEntry>> {
-    ide_host::ops::doc::history_list(&state.host, window.label(), path)
+pub async fn history_list(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<HistoryEntry>> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::doc::history_list(&host, &label, path)).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn history_content(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<String> {
-    ide_host::ops::doc::history_content(&state.host, window.label(), id)
+pub async fn history_content(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<String> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::doc::history_content(&host, &label, id)).await
 }

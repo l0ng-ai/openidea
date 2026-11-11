@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { EditorInput } from "@/workbench/contributions";
 import { Chunk, getChunks } from "@codemirror/merge";
-import { Text } from "@codemirror/state";
+import { StateEffect, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { ContextMenuHost, iconMarkup } from "@/ui";
 
@@ -51,6 +51,7 @@ import { DiffEditorTab } from "../diff-editor-tab";
 import { diffInput, withChain, type DiffData } from "../diffInput";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { useProject } from "@/platform/project";
+import { useVcs } from "../store";
 import { applyKeymapSettings, installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { setContext } from "@/platform/context";
 import { registerCompareActions } from "../compare";
@@ -97,6 +98,30 @@ describe("Diff toolbar", () => {
     const mounted = render(<DiffEditor input={{ ...input, data: { ...(input.data as object), mode: "split" } }} />);
     await waitFor(() => expect(mounted.container.querySelectorAll(".cm-editor")).toHaveLength(2));
     expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).mode).toBe("unified");
+    mounted.unmount();
+    localStorage.removeItem("openidea.vcs.diffOptions");
+  });
+  it.each([
+    {
+      name: "an added file",
+      left: { type: "text", text: "", label: "(does not exist)", absent: true },
+      right: { type: "rev", rev: "abc123" },
+    },
+    {
+      name: "a deleted file",
+      left: { type: "rev", rev: "HEAD" },
+      right: { type: "text", text: "", label: "(deleted)", absent: true },
+    },
+  ])("shows $name alone, full width, keeping the saved side-by-side mode", async ({ left, right }) => {
+    localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode: "split" }));
+    const mounted = render(<DiffEditor input={{ ...input, data: { path: "/p/a.ts", left, right } } as EditorInput} />);
+    await waitFor(() => expect(mounted.container.querySelectorAll(".cm-editor")).toHaveLength(1));
+    expect(mounted.container.querySelector(".cm-mergeView")).toBeNull();
+    // Nothing to compare word by word: the lines are tinted, without darker fragments.
+    expect(mounted.container.querySelector(".cm-changedText, .cm-diffWord")).toBeNull();
+    expect(screen.getByRole("button", { name: "Side-by-side Viewer" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Unified Viewer" })).toBeDisabled();
+    expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).mode).toBe("split");
     mounted.unmount();
     localStorage.removeItem("openidea.vcs.diffOptions");
   });
@@ -159,6 +184,18 @@ describe("Diff toolbar", () => {
     expect(screen.queryByText("Contents differ only in line separators")).toBeNull();
   });
 
+  it("titles a revision with its short commit id, HEAD resolved, and the file's repository path", async () => {
+    const before = useVcs.getState();
+    useVcs.setState({ roots: ["/p"], heads: { "/p": { head: "main", headCommit: "81a179900123456789abcdef" } } });
+    const mounted = render(
+      <DiffEditor input={{ ...input, data: { ...(input.data as object), path: "/p/src/a.ts", mode: "split" } }} />,
+    );
+    await waitFor(() => expect(mounted.container.querySelectorAll(".cm-editor")).toHaveLength(2));
+    expect(screen.getByTitle("81a17990 src/a.ts")).toBeInTheDocument();
+    expect(screen.getByTitle("abc123 src/a.ts")).toBeInTheDocument();
+    mounted.unmount();
+    useVcs.setState({ roots: before.roots, heads: before.heads });
+  });
   it("puts Jump to Source right after Next Difference, in the navigation group", async () => {
     render(<DiffEditor input={input} />);
     await screen.findByRole("button", { name: "Jump to Source" });
@@ -649,6 +686,27 @@ describe("Diff navigation caret", () => {
       fireEvent.click(button);
       expect(view().state.doc.lineAt(view().state.selection.main.head).number).toBe(2);
       expect(view().hasFocus).toBe(true);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it.each(["split", "unified"] as const)("leaves the scrolling to the smooth scroll in the %s viewer", async (mode) => {
+    const { mounted, view } = await reveal(mode);
+    try {
+      // A scrollIntoView in the same update sets scrollTop at once and cuts the animation off.
+      let instant = false;
+      view().dispatch({
+        effects: StateEffect.appendConfig.of(
+          EditorView.updateListener.of((u) => {
+            if (u.transactions.some((tr) => tr.scrollIntoView || tr.effects.length)) instant = true;
+          }),
+        ),
+      });
+      instant = false;
+      fireEvent.click(await screen.findByRole("button", { name: "Next Difference" }));
+      expect(view().state.doc.lineAt(view().state.selection.main.head).number).toBe(2);
+      expect(instant).toBe(false);
     } finally {
       mounted.unmount();
     }

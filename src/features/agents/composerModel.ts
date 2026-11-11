@@ -15,8 +15,10 @@ import { tx } from "@/platform/i18n";
 export interface FileRef {
   /** Absolute path (in the task's directory). */
   path: string;
-  /** As written after `@`. */
+  /** As written after `@`; the file name when `attached`. */
   rel: string;
+  /** Sent without an `@` mention: a file from outside the project, shown as a chip. */
+  attached?: boolean;
 }
 
 export interface ComposerDraft {
@@ -142,19 +144,22 @@ export function mentionOf(rel: string, lines?: { from: number; to: number }): st
   return lines.from === lines.to ? `@${rel}:${lines.from}` : `@${rel}:${lines.from}-${lines.to}`;
 }
 
-/** The prompt to send: files still mentioned in the text (each once), and the images. */
+/** Whether `text` still holds the `@rel` mention, with or without a line range. */
+export const isMentioned = (text: string, rel: string) =>
+  new RegExp(`@${escapeRe(rel)}(?![\\w./-])|@${escapeRe(rel)}:`).test(text);
+
+/** The prompt to send: attached files, files still mentioned in the text (each once), and the images. */
 export function toPrompt(draft: ComposerDraft): AgentPrompt {
   const seen = new Set<string>();
   const files = draft.files.filter((f) => {
-    if (seen.has(f.path) || !new RegExp(`@${escapeRe(f.rel)}(?![\\w./-])|@${escapeRe(f.rel)}:`).test(draft.text))
-      return false;
+    if (seen.has(f.path) || !(f.attached || isMentioned(draft.text, f.rel))) return false;
     seen.add(f.path);
     return true;
   });
   return { text: draft.text.trim(), files: files.map((f) => f.path), images: draft.images };
 }
 
-export const canSend = (d: ComposerDraft) => !!d.text.trim() || d.images.length > 0;
+export const canSend = (d: ComposerDraft) => !!d.text.trim() || d.images.length > 0 || d.files.some((f) => f.attached);
 
 /**
  * ↑ / ↓ through sent messages (newest first). `index` −1 is the unsent draft. Returns the

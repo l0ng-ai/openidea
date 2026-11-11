@@ -26,6 +26,7 @@ import {
   TAB_LIMIT,
   actionItem,
   fileItem,
+  folderItem,
   matchActions,
   matchSettings,
   mergeActionResults,
@@ -40,6 +41,8 @@ import {
 
 export interface SeDeps {
   findFiles(query: string, limit: number): Promise<FileMatch[]>;
+  /** Directories by name or path (`relPath` ending in `/`), listed with the files. */
+  findDirs?(query: string, limit: number): Promise<FileMatch[]>;
   findSymbols(query: string, filter: SymbolFilter, limit: number): Promise<SymbolMatch[]>;
   /** Optional language-server symbols; rejects with `unavailable` when no server. */
   workspaceSymbols?(request: RequestId, query: string): Promise<WorkspaceSymbol[]>;
@@ -253,12 +256,24 @@ export class SeController {
               ? (path: string) => (!scope || scope(path)) && (!filter || passesFilter(filter, path))
               : null;
           // Over-fetch so a narrowed scope still fills the section.
-          const fetched = await this.deps.findFiles(text, keep ? limit * 4 + 1 : limit + 1);
-          const matches = keep ? fetched.filter((m) => keep(m.path)) : fetched;
+          const want = keep ? limit * 4 + 1 : limit + 1;
+          // Directories rank with the files (equal scores: the file first); a file type filter
+          // and a `File.kt:42` query ask for files only.
+          const withDirs = !!this.deps.findDirs && !!text && !filter && q.line === null;
+          const [fetched, dirs] = await Promise.all([
+            this.deps.findFiles(text, want),
+            withDirs ? this.deps.findDirs!(text, want).catch(() => []) : [],
+          ]);
+          const merged = dirs.length
+            ? [...fetched.map((m) => ({ m, folder: false })), ...dirs.map((m) => ({ m, folder: true }))].sort(
+                (a, b) => b.m.score - a.m.score || Number(a.folder) - Number(b.folder),
+              )
+            : fetched.map((m) => ({ m, folder: false }));
+          const matches = keep ? merged.filter(({ m }) => keep(m.path)) : merged;
           this.set(
             id,
             gen,
-            matches.slice(0, limit).map((m) => fileItem(m, q.line, q.col)),
+            matches.slice(0, limit).map(({ m, folder }) => (folder ? folderItem(m) : fileItem(m, q.line, q.col))),
             matches.length > limit,
             false,
           );

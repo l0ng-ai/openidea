@@ -169,6 +169,25 @@ pub async fn remote_rename(state: &Host, connection: FsConnection, from: String,
     state.remote.remote_rename(&connection, &from, &to).await
 }
 
+/// Remote Host › Download to…: remote files and folders into a local folder, each under its
+/// own name.
+pub async fn remote_download_into(
+    window: &str,
+    state: &Host,
+    connection: FsConnection,
+    paths: Vec<String>,
+    target: IpcPath,
+    request: RequestId,
+) -> IdeResult<TransferReport> {
+    let project = state.project(window)?;
+    let token = state.begin_request(request);
+    let (mut report, done) = progress(project.sink.clone(), "Downloading", token.clone());
+    let r = state.remote.download_into(&connection, &paths, &target, &token, &mut report).await;
+    done();
+    state.end_request(request);
+    r
+}
+
 pub async fn deploy_test_connection(state: &Host, connection: FsConnection, path: String) -> IdeResult<()> {
     state.remote.test_connection(&connection, &path).await
 }
@@ -197,6 +216,17 @@ pub(crate) fn register(d: &mut crate::rpc::Dispatcher) {
     d.add("remote_of", |c| async move { Ok(remote_of(&c.host, c.arg("path")?)) });
     d.add("remote_delete", |c| async move { remote_delete(&c.host, c.arg("connection")?, c.arg("path")?).await });
     d.add("remote_mkdir", |c| async move { remote_mkdir(&c.host, c.arg("connection")?, c.arg("path")?).await });
+    d.add("remote_download_into", |c| async move {
+        remote_download_into(
+            &c.window,
+            &c.host,
+            c.arg("connection")?,
+            c.arg("paths")?,
+            c.arg("target")?,
+            c.arg("request")?,
+        )
+        .await
+    });
     d.add("remote_rename", |c| async move {
         remote_rename(&c.host, c.arg("connection")?, c.arg("from")?, c.arg("to")?).await
     });

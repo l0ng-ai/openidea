@@ -25,7 +25,7 @@ const directory = (e: DirectoryCompareEntry) => e.leftKind === "dir" || e.rightK
 export function directoryDiff(left: string, right: string, entry: DirectoryCompareEntry): DiffData | null {
   if (directory(entry)) return null;
   const data = compareFilesData(join(left, entry.path), join(right, entry.path));
-  const missing = (): DiffSide => ({ type: "text", text: "", label: tx("(does not exist)") });
+  const missing = (): DiffSide => ({ type: "text", text: "", label: tx("(does not exist)"), absent: true });
   return {
     ...data,
     title: entry.path,
