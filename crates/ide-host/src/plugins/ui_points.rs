@@ -67,6 +67,7 @@ pub const KEYMAPS: &str = "keymaps";
 pub const STATUS_BAR: &str = "statusBar";
 pub const SETTINGS: &str = "settings";
 pub const VIEWS: &str = "views";
+pub const EDITOR_ANNOTATIONS: &str = "editorAnnotations";
 pub const CUSTOM_EDITORS: &str = "customEditors";
 pub const FILE_ICONS: &str = "fileIcons";
 pub const MARKER_ICONS: &str = "markerIcons";
@@ -655,6 +656,37 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
 
 pub fn view_icon_asset(id: &str) -> String {
     format!("viewIcon/{id}")
+}
+
+/// Cached editor annotations are supplied by a declared plugin command.
+/// A native view refresh invalidates the snapshot without extending WIT.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct EditorAnnotationsDecl {
+    id: String,
+    command: String,
+    refresh_view: String,
+    protocol: u32,
+}
+
+pub(super) fn editor_annotations(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: EditorAnnotationsDecl = decode(EDITOR_ANNOTATIONS, decl)?;
+    validate_item_id(&d.id, "editor annotations id")?;
+    if !pkg.manifest.declares(&ide_extension::Capability::EditorRead) {
+        return Err("editorAnnotations: declare editor.read so the user can grant access".into());
+    }
+    declared_command(pkg, EDITOR_ANNOTATIONS, &d.command)?;
+    if d.protocol != 1 {
+        return Err("editorAnnotations: only protocol 1 is supported".into());
+    }
+    let native_view =
+        pkg.manifest.declarations(VIEWS).iter().any(|v| {
+            v.get("id").and_then(toml::Value::as_str) == Some(d.refresh_view.as_str()) && v.get("web").is_none()
+        });
+    if !native_view {
+        return Err("editorAnnotations: refreshView must name a declared native view".into());
+    }
+    Ok(UiDecl::new(d.id.clone(), d.id.clone(), json(&d)?))
 }
 
 #[derive(Debug, Deserialize, Serialize)]

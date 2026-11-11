@@ -157,6 +157,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
+| `editorAnnotations` | `id`, `command` (a declared command), `refreshView` (a declared native view), `protocol` (`1`; API 1.5) — cached line labels and hover cards in the text editor; needs `editor.read`                                                   | yes           |
 
 A `viewItem.context` menu needs `view`, the id of one of the plugin's own
 views. It adds the commands to the right-click menu of the items in that
@@ -445,6 +446,10 @@ working. New in 1.5:
   `host::subscribe` or `activation = ["on-event:extensions-changed"]`; only the
   declaring plugin receives it. In native tests,
   `MockHost::set_extension_contributions(point, [(plugin, json)])` provides them.
+- [Editor annotations](#editor-annotations-api-15): an `editorAnnotations`
+  contribution labels editor lines and shows Markdown in a resizable hover
+  card, fed by a declared command and invalidated by a declared native view.
+  Needs `editor.read`; older hosts skip the contribution.
 
 ### API 1.4
 
@@ -851,6 +856,67 @@ lines are uncommitted; `line` is zero-based and dates are Unix seconds.
 `vcs_diff` uses disk text (including staged and unstaged changes) against HEAD or
 `against`, and stops with an error if output exceeds 4 MiB. Without a repository,
 log/blame return empty lists and diff returns `None`.
+
+### Editor annotations (API 1.5)
+
+An `editorAnnotations` contribution shows a short label at the end of editor
+lines and, on hover, Markdown in a floating card the user can resize in eight
+directions. The plugin declares the command that produces the data and a native
+view whose refresh invalidates it:
+
+```toml
+[[contributes.editorAnnotations]]
+id = "blame"
+command = "blame-annotations"
+refreshView = "conversation"
+protocol = 1
+```
+
+The declared command receives the editor context and a JSON argument:
+
+```json
+{
+  "schemaVersion": 1,
+  "requestId": "annotations-1",
+  "operation": "snapshot",
+  "path": "/project/src/main.rs",
+  "documentText": "…"
+}
+```
+
+`operation` is `snapshot` for the line labels or `conversation` with a
+`promptId` for the hover card. The command returns a JSON string (at most
+1 MiB) with the same `requestId` and `path`:
+
+```json
+{
+  "schemaVersion": 1,
+  "requestId": "annotations-1",
+  "path": "/project/src/main.rs",
+  "documentVersion": 1,
+  "state": "ready",
+  "mode": "line",
+  "lines": [{ "line": 0, "promptId": "p1" }],
+  "prompts": [{
+    "id": "p1",
+    "label": "model-a",
+    "markdown": "**Prompt**",
+    "hasMessages": false
+  }]
+}
+```
+
+`state` is `ready`, `unavailable` or `stale`; `mode` is `line` (the current
+line only), `all` or `off`; an optional `message` is shown beside the labels.
+`line` is zero-based. Hovering a label sends `operation: "conversation"` with
+that `promptId`; return `hasMessages: true` and the Markdown to show. The host
+asks again when the `refreshView` view refreshes or the plugin's settings
+change. The command needs `editor.read`, checked before the document text
+reaches the plugin. A host without this point skips the contribution, so a
+package can still install there.
+
+The [annotations fixture](../crates/ide-plugin/tests/fixtures/annotations/)
+implements the protocol in a few lines.
 
 ### Events
 

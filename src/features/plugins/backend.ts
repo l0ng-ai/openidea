@@ -76,6 +76,8 @@ export interface PluginsBackend {
     paths: string[],
     settingsScope?: "global" | "project",
     commandChain?: string[],
+    /** Aborting rejects the call and cancels that backend request. */
+    signal?: AbortSignal,
   ): Promise<string | null>;
   /** Workbench events plugins subscribed to (see `eventKinds`). */
   postEvents(events: WorkbenchEvent[]): Promise<void>;
@@ -229,10 +231,40 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginUninstall(id));
   },
   reload: (id) => call(commands.pluginReload(id)),
-  runCommand: (pluginId, commandId, arg, editor, paths, settingsScope, commandChain) =>
-    call(
-      commands.pluginRunCommand(pluginId, commandId, arg, editor, paths, settingsScope ?? null, commandChain ?? null),
-    ),
+  runCommand: async (pluginId, commandId, arg, editor, paths, settingsScope, commandChain, signal) => {
+    signal?.throwIfAborted();
+    const request = signal ? nextRequestId() : null;
+    const run = () =>
+      call(
+        commands.pluginRunCommand(
+          pluginId,
+          commandId,
+          arg,
+          editor,
+          paths,
+          settingsScope ?? null,
+          commandChain ?? null,
+          request,
+        ),
+      );
+    if (!signal) return run();
+    // An abort settles this call even while the backend keeps working: a plugin
+    // that ignores its cancellation must not hold the caller (or a serialized
+    // queue behind it) open forever.
+    let abort = () => {};
+    const aborted = new Promise<never>((_, reject) => {
+      abort = () => {
+        if (request !== null) void commands.cancelRequest(request).catch(() => {});
+        reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      };
+      signal.addEventListener("abort", abort, { once: true });
+    });
+    try {
+      return await Promise.race([run(), aborted]);
+    } finally {
+      signal.removeEventListener("abort", abort);
+    }
+  },
   postEvents: async (events) => {
     await commands.pluginPostEvents(events, editorContext());
   },

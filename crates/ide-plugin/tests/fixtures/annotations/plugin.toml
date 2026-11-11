@@ -1,0 +1,27 @@
+id = "annotations"
+name = "Editor Annotations"
+version = "0.1.0"
+description = "Minimal editorAnnotations fixture: labels editor lines and shows Markdown in the hover card."
+authors = ["OpenIDEA contributors"]
+engines.openidea = "^1.5"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["editor.read"]
+
+[[contributes.commands]]
+id = "snapshot"
+title = "Annotations: Snapshot"
+category = "Annotations"
+
+[[contributes.views]]
+id = "refresh"
+title = "Annotations"
+location = "right"
+
+[[contributes.editorAnnotations]]
+id = "fixture"
+command = "snapshot"
+refreshView = "refresh"
+protocol = 1
