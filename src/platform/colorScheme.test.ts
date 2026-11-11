@@ -58,6 +58,21 @@ describe("color schemes", () => {
     expect(css).toContain("--syn-constant: #224466 !important");
   });
 
+  it("groups Python attributes as PyCharm's color settings page does", () => {
+    const python = (name: string) => ATTRIBUTES.find((a) => a.id === `py${name}`)!;
+    expect(python("FString").name).toBe("String › f-string › Expression braces");
+    expect(python("Bytes").name).toBe("String › Binary (bytes)");
+    expect(python("Docstring").name).toBe("Docstring › Text");
+    expect(python("MethodCall").name).toBe("Functions › Method call");
+    expect(python("NestedFunction").name).toBe("Functions › Nested function definition");
+    expect(python("Self").name).toBe("Parameters › 'self' parameter");
+    expect(python("PredefinedDefinition").name).toBe("Special names › Definition");
+    expect(python("PredefinedUsage").name).toBe("Special names › Usage");
+    expect(python("Parentheses").name).toBe("Braces and Operators › Parentheses");
+    // Attribute ids (the override and .icls keys) keep their old, stable names.
+    for (const a of ATTRIBUTES.filter((a) => a.path[0] === "Python")) expect(a.id).toMatch(/^py[A-Z]/);
+  });
+
   it("resolves scheme attribute state and editor defaults", () => {
     expect(resolvedAttribute("light", "lineComment")).toMatchObject({
       foreground: "#8c8c8c",
