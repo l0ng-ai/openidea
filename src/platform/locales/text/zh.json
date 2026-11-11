@@ -307,6 +307,7 @@
   "Edited within moved code": "移动代码中的修改",
   "The language server JDK ({path}) must be a full JDK with jdk.compiler, jdk.jdi and jdk.unsupported for Java language support and debugging. jdtls needs JDK {version} or newer. Download JDK {version}, choose a full JDK in {setting}, or set it to Auto.": "语言服务器 JDK（{path}）必须是包含 jdk.compiler、jdk.jdi 和 jdk.unsupported 的完整 JDK，才能支持 Java 语言功能和调试。jdtls 需要 JDK {version} 或更高版本。请下载 JDK {version}，在 {setting} 中选择完整 JDK，或设为自动。",
   "Apple's clangd does not run clang-tidy, so checks from .clang-tidy are not shown. Install clangd (LLVM) to get them.": "Apple 的 clangd 不运行 clang-tidy，因此不会显示 .clang-tidy 中配置的检查。请安装 clangd（LLVM）以启用这些检查。",
+  "Vue 2 (Options API) template navigation needs 'strictFunctionTypes': true (or 'strict': true) in the compilerOptions of jsconfig.json / tsconfig.json — without it the Vue 2.7 types infer methods and computed on this as any, so jump-to-definition and hover in templates resolve to nothing. Add the option (create jsconfig.json if the project has none), then reopen the file or restart the language server.": "Vue 2（Options API）的模板跳转需要在 jsconfig.json / tsconfig.json 的 compilerOptions 里设置 'strictFunctionTypes': true（或 'strict': true）：缺少该选项时，Vue 2.7 的类型会把 this 上的 methods、computed 推断为 any，模板内跳转定义和悬停都无法解析。加上该选项（若项目还没有配置文件则新建 jsconfig.json），然后重新打开文件或重启语言服务即可。",
   "Auto-detect ({defaultProgram})": "自动检测（{defaultProgram}）",
   "Custom executable": "自定义可执行文件",
   "Found on PATH": "已在 PATH 中找到",

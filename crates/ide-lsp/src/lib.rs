@@ -33,6 +33,7 @@ mod tsserver_bridge;
 pub mod types;
 mod uri;
 mod virtual_doc;
+mod vue_navigation;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
 pub use inspect::{FileInspection, InspectHost, InspectOptions};
@@ -843,6 +844,7 @@ impl LspManager {
             self.schedule_pull(doc, Some(&server), Duration::ZERO);
         }
         self.check_clang_tidy(&server).await;
+        self.check_vue_navigation(&server).await;
         server.refresh_busy_status(&self.sink);
         server.announce_ready(generation);
         self.spawn_supervisor(server, generation, peer);
@@ -1060,8 +1062,11 @@ impl LspManager {
                 if s.name == compose::SERVER && compose_added {
                     me.reconfigure_soon();
                 }
+                let hint = me.clone();
                 let server = s.clone();
                 self.runtime.spawn(async move { me.check_clang_tidy(&server).await });
+                let server = s.clone();
+                self.runtime.spawn(async move { hint.check_vue_navigation(&server).await });
             }
         }
     }
