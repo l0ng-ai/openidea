@@ -286,6 +286,7 @@
   "Decorator": "装饰器",
   "Keyword argument": "关键字实参",
   "Nested function definition": "嵌套函数定义",
+  "Local variable": "局部变量",
   "Local variables": "局部变量",
   "Global variable": "全局变量",
   "Instance attribute": "实例属性",
