@@ -3212,6 +3212,33 @@ async fn rename_merges_the_servers_that_can_rename_there() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_rename_the_server_withdraws_while_analysing_is_asked_again_then_explained() {
+    let h = harness(&[("dart", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "count = 1\n");
+    h.wait_status("dart", ServerStatus::Ready).await;
+    let dart = h.launcher.state("dart");
+    let r = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":5}});
+    dart.respond("textDocument/rename", json!({ "changes": { uri_of(&path): [{ "range": r, "newText": "total" }] } }));
+    // Withdrawn while the server analyses an edit, then answered.
+    dart.errors.lock().insert("textDocument/rename".into(), (-32801, "Document was modified".into()));
+    let renaming = {
+        let mgr = h.mgr.clone();
+        tokio::spawn(async move { mgr.rename(doc, Pos::new(0, 1), "total".into(), Default::default()).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    dart.errors.lock().clear();
+    let edit = renaming.await.unwrap().unwrap().edit;
+    assert_eq!(edits_in(&edit, &path), [(rng(0, 0, 0, 5), "total".into())]);
+    assert!(dart.requested("textDocument/rename").len() >= 2);
+
+    // Withdrawn every time: an error that says so, not a silent cancellation.
+    dart.errors.lock().insert("textDocument/rename".into(), (-32801, "Document was modified".into()));
+    let err = h.mgr.rename(doc, Pos::new(0, 1), "total".into(), Default::default()).await.unwrap_err();
+    assert_ne!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(err.message.contains("try again"), "{}", err.message);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn angular_server_is_asked_about_typescript_only_in_component_templates() {
     let servers = [("vtsls", incremental_caps()), ("angular-language-server", incremental_caps())];
     let h = harness_for("typescript", "ts", &servers, &[]);

@@ -3885,6 +3885,7 @@
   "Use ; to separate patterns. * matches every file.": "패턴은 ;로 구분합니다. *는 모든 파일과 일치합니다.",
   "Function and method suggestions get (); the caret goes inside unless there are no parameters.": "함수 및 메서드 제안에 ()가 추가되며, 매개변수가 없는 경우를 제외하고 캐럿이 괄호 안에 위치합니다.",
   "Insert paired brackets (), [], {}": "쌍 괄호 (), [], {} 삽입",
+  "Also pairs <> for generics where the syntax says a type starts.": "문법이 타입의 시작을 나타내는 곳에서는 제네릭용 <>도 완성합니다.",
   "word": "단어",
   "Runs of consecutive matching lines collapse into one expandable “<N internal lines>” row.": "연속으로 일치하는 줄은 펼칠 수 있는 하나의 “<N internal lines>” 행으로 접힙니다.",
   "Confirm closing a tab with a running process": "실행 중인 프로세스가 있는 탭을 닫을 때 확인",
