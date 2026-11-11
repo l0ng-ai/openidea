@@ -79,8 +79,11 @@ impl Drop for OpenSnapshot {
         if !self.remove_dir {
             return;
         }
-        // The user's own dump that happens to sit inside `dir`.
-        if matches!(self.info.origin, HeapOrigin::File { .. }) && self.dump.starts_with(&self.dir) {
+        // The user's own dump that happens to sit inside `dir` (an opened file is analyzed from a
+        // private copy, which goes with the directory).
+        if matches!(&self.info.origin, HeapOrigin::File { path } if **path == self.dump)
+            && self.dump.starts_with(&self.dir)
+        {
             return;
         }
         // A link is not followed: only a real directory is deleted.

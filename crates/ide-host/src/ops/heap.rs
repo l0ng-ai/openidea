@@ -185,8 +185,25 @@ async fn open(
     }
     let dir = new_snapshot_dir(host).await?;
     let origin = HeapOrigin::File { path: path.clone().into() };
+    // The snapshot maps its dump for as long as it is open; a file that something else truncates or
+    // rewrites meanwhile would crash the app, so it works on a private copy (a clone on APFS / btrfs).
+    let copy = {
+        let (path, dir) = (path.clone(), dir.clone());
+        host.blocking(move || private_copy(&path, &dir)).await
+    };
+    let dump = match copy {
+        Ok(Ok(dump)) => dump,
+        Ok(Err((needed, available))) => {
+            remove_dir(host, dir).await;
+            return Ok(HeapOpenResult::NotEnoughDiskSpace { needed, available });
+        }
+        Err(e) => {
+            remove_dir(host, dir).await;
+            return Err(e);
+        }
+    };
     let analyzed =
-        analyze(host, window, origin, path, dir, AnalyzeOptions::default(), true, cancel, on_progress).await?;
+        analyze(host, window, origin, dump, dir, AnalyzeOptions::default(), true, cancel, on_progress).await?;
     Ok(match analyzed {
         Analyzed::Ready(snapshot) => HeapOpenResult::Ready { snapshot },
         Analyzed::NotEnoughDiskSpace { needed, available } => HeapOpenResult::NotEnoughDiskSpace { needed, available },
@@ -430,6 +447,20 @@ async fn remove_dir(host: &Host, dir: PathBuf) {
             Ok(())
         })
         .await;
+}
+
+/// Copies an opened dump into its snapshot directory; `Err((needed, available))` when the disk
+/// can't hold the copy.
+fn private_copy(source: &Path, dir: &Path) -> IdeResult<Result<PathBuf, (u64, u64)>> {
+    let needed = std::fs::metadata(source)?.len();
+    if let Some(available) = ide_heap::free_bytes(dir)
+        && available < needed
+    {
+        return Ok(Err((needed, available)));
+    }
+    let target = dir.join("opened.hprof");
+    std::fs::copy(source, &target)?;
+    Ok(Ok(target))
 }
 
 /// Written beside `target` and renamed over it: `target` may be the dump of an open snapshot,

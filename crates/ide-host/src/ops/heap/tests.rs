@@ -88,6 +88,8 @@ async fn open_and_query_a_dump() {
     assert_eq!(info.label, "sample.hprof");
     assert_eq!(info.origin, ide_heap::HeapOrigin::File { path: path.clone().into() });
     assert_eq!(f.snapshot_dirs().len(), 1);
+    // The snapshot reads a private copy: the user's file may change while it is open.
+    std::fs::write(&path, b"").unwrap();
 
     let classes = debug_heap_classes(&f.host, WINDOW, info.id).await.unwrap();
     let node = classes.iter().find(|c| c.name == "Node").unwrap();
