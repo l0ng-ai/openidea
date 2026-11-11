@@ -14,6 +14,7 @@ use ide_extension::{MANIFEST_FILE, Manifest};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// The official marketplace: the index the release workflow publishes with
 /// the app, next to the signed packages of the official plugins.
@@ -93,22 +94,29 @@ fn safe_suggestions(paths: Vec<String>) -> Vec<String> {
     paths.into_iter().filter(ok).take(MAX_SUGGESTIONS).collect()
 }
 
+/// Whether `url` is read over the network: `http(s)://…`, not `file://…` or a local path.
+fn remote(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
+/// Whether an index read from `base` may send the IDE to `href` (resolved). One read over
+/// the network names nothing on this machine: the IDE would read the file for it, or sign
+/// in to the share it names.
+pub fn reachable_from(base: &str, href: &str) -> bool {
+    !remote(base) || remote(href)
+}
+
+/// The slowest transfer a read over the network waits for, in bytes per second: with
+/// `READ_GRACE`, the largest index is given up on after about five minutes, the largest
+/// package after a little over an hour.
+const SLOWEST_READ: usize = 64 << 10;
+/// What a read over the network may take before its first byte.
+const READ_GRACE: Duration = Duration::from_secs(30);
+
 /// Reads `url`: `http(s)://…`, `file://…` or a local path.
 pub fn read_url(url: &str, max: usize) -> Result<Vec<u8>, String> {
-    if url.starts_with("https://") || url.starts_with("http://") {
-        let client = ide_http::client::shared().map_err(|e| e.message)?;
-        let url = url.to_owned();
-        return super::api::net_runtime().block_on(async move {
-            let response = client.get(&url).send().await.map_err(|e| format!("{url}: {e}"))?;
-            if !response.status().is_success() {
-                return Err(format!("{url}: HTTP {}", response.status()));
-            }
-            let bytes = response.bytes().await.map_err(|e| format!("{url}: {e}"))?;
-            if bytes.len() > max {
-                return Err(format!("{url}: larger than {} MiB", max >> 20));
-            }
-            Ok(bytes.to_vec())
-        });
+    if remote(url) {
+        return read_remote(url, max, READ_GRACE + Duration::from_secs((max / SLOWEST_READ) as u64));
     }
     let path = url.strip_prefix("file://").unwrap_or(url);
     let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
@@ -116,6 +124,35 @@ pub fn read_url(url: &str, max: usize) -> Result<Vec<u8>, String> {
         return Err(format!("{path}: larger than {} MiB", max >> 20));
     }
     Ok(bytes)
+}
+
+/// Reads `url` over http(s): no more than `max` bytes, whatever the server announces or
+/// sends, and within `deadline` from the request to the last byte. The marketplace is read
+/// with nobody asking, so its server decides neither how much is kept nor for how long.
+fn read_remote(url: &str, max: usize, deadline: Duration) -> Result<Vec<u8>, String> {
+    let client = ide_http::client::shared().map_err(|e| e.message)?;
+    super::api::net_runtime().block_on(async move {
+        let failed = |e: reqwest::Error| match e.is_timeout() {
+            true => format!("{url}: no answer in time"),
+            false => format!("{url}: {e}"),
+        };
+        let too_large = || format!("{url}: larger than {} MiB", max >> 20);
+        let mut response = client.get(url).timeout(deadline).send().await.map_err(failed)?;
+        if !response.status().is_success() {
+            return Err(format!("{url}: HTTP {}", response.status()));
+        }
+        if response.content_length().is_some_and(|announced| announced > max as u64) {
+            return Err(too_large());
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(failed)? {
+            if bytes.len() + chunk.len() > max {
+                return Err(too_large());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
+    })
 }
 
 /// The index at `url`, following `moved`, with downloads made absolute against
@@ -132,11 +169,24 @@ fn read_index(url: &str) -> IdeResult<Index> {
                 if url.starts_with("https://") && !next.starts_with("https://") {
                     return Err(IdeError::invalid(format!("the marketplace moved to {next}, which isn't https")));
                 }
+                if !reachable_from(&url, &next) {
+                    return Err(IdeError::invalid("the marketplace moved to an address that is not on the network"));
+                }
                 url = next;
             }
             None => {
                 for e in &mut index.plugins {
                     e.download = resolve(&url, &e.download);
+                }
+                // Judged here, against where this index was read: the address in use may be
+                // an index on this machine that moved to it.
+                let listed = index.plugins.len();
+                index.plugins.retain(|e| reachable_from(&url, &e.download));
+                if index.plugins.len() < listed {
+                    tracing::warn!(
+                        "plugin marketplace: {} downloads are not on the network; they are not offered",
+                        listed - index.plugins.len()
+                    );
                 }
                 return Ok(index);
             }
@@ -295,13 +345,23 @@ impl PluginHost {
                 entry.name, entry.version, entry.engine
             )));
         }
-        let bytes = read_url(&resolve(&url, &entry.download), MAX_PACKAGE).map_err(IdeError::unavailable)?;
+        let download = resolve(&url, &entry.download);
+        // An index read by this version holds only downloads it may reach. The one kept by an
+        // earlier version does not say where it was read: it is judged against the marketplace in use.
+        if !reachable_from(&url, &download) {
+            return Err(IdeError::invalid(format!(
+                "the marketplace's download of {} {} is not on the network",
+                entry.id, entry.version
+            )));
+        }
+        let bytes = read_url(&download, MAX_PACKAGE).map_err(IdeError::unavailable)?;
         let downloads = self.plugins_dir.join(DOWNLOADS);
         std::fs::create_dir_all(&downloads)?;
         let archive = downloads.join(format!("{}-{}.{}", entry.id, entry.version, package::PACKAGE_EXTENSION));
         std::fs::write(&archive, bytes)?;
-        let dir = self.unpack_package(&archive)?;
+        let dir = self.unpack_package(&archive);
         let _ = std::fs::remove_file(&archive);
+        let dir = dir?;
         let manifest = Manifest::load(&dir).map_err(IdeError::invalid)?;
         let files = self.package_files_in(&dir)?;
         let digest = package::package_digest(&dir, &files)?;
@@ -507,5 +567,44 @@ mod tests {
         let paths = ["pom.xml", "config/routes.rb", "/etc/passwd", "../x", "a//b", "C:x", "*.php", ""];
         assert_eq!(safe_suggestions(paths.iter().map(|p| p.to_string()).collect()), ["pom.xml", "config/routes.rb"]);
         assert_eq!(safe_suggestions(vec!["a".into(); 20]).len(), MAX_SUGGESTIONS);
+    }
+
+    #[test]
+    fn an_index_read_over_the_network_reaches_only_the_network() {
+        let base = "https://x.dev/market/index.json";
+        let reaches = |href: &str| reachable_from(base, &resolve(base, href));
+        for href in ["p/a.oiplugin", "../a.oiplugin", "https://cdn.dev/a"] {
+            assert!(reaches(href), "{href}");
+        }
+        for href in ["/etc/passwd", "//attacker/share/a", "file:///etc/passwd", "file://attacker/share/a"] {
+            assert!(!reaches(href), "{href}");
+        }
+        #[cfg(windows)]
+        for href in [r"C:\Users\me\.ssh\id_ed25519", r"\\attacker\share\a", r"\\?\UNC\attacker\share\a"] {
+            assert!(!reaches(href), "{href}");
+        }
+        // A local index names what whoever put it there chose.
+        assert!(reachable_from("/srv/market/index.json", "/srv/market/a.oiplugin"));
+    }
+
+    #[test]
+    fn a_server_that_stops_answering_does_not_hold_the_read() {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}/index.json", listener.local_addr().unwrap().port());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                    line.clear();
+                }
+                // The headers, then nothing for longer than the read waits.
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n");
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        });
+        let err = read_remote(&url, MAX_INDEX, Duration::from_millis(300)).unwrap_err();
+        assert!(err.contains("no answer in time"), "{err}");
     }
 }

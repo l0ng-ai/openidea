@@ -5,8 +5,9 @@ use crate::Host;
 use crate::rpc::Dispatcher;
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
-    AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
-    ExternalSession, McpScope, McpServer, McpServerInput, NewAgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt,
+    AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpScope, McpServer, McpServerInput,
+    NewAgentTask,
 };
 use ide_core::error::ErrorKind;
 use ide_core::{IdeError, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
@@ -42,6 +43,24 @@ pub fn set_env(
 ) -> IdeResult<()> {
     host.require_trust(window)?;
     host.project(window)?.agents.set_builtin_env(&id, env)
+}
+
+/// Saves a new custom ACP agent through its agent file.
+pub fn save_custom_agent(host: &Host, window: &str, input: CustomAgentInput) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.save_custom_agent(input)
+}
+
+/// Removes a custom agent's file (registry installs go through `registry_remove`).
+pub fn remove_custom_agent(host: &Host, window: &str, id: String) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.remove_custom_agent(&id)
+}
+
+/// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents.
+pub fn import_acp_agents(host: &Host, window: &str, text: String) -> IdeResult<Vec<AcpImportOutcome>> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.import_acp_agents(&text)
 }
 
 /// Where ACP Registry agents are saved (`<config>/agents`, like the user's own) and installed.
@@ -297,6 +316,18 @@ pub async fn rollback_changes(host: &Host, window: &str, task: String, paths: Op
     host.project(window)?.agents.rollback_changes(&task, paths).await
 }
 
+/// Accept: copies a worktree task's changed files among `paths` (all without) into the
+/// local checkout, uncommitted; files the checkout changed itself are left alone and reported.
+pub async fn accept_changes(
+    host: &Host,
+    window: &str,
+    task: String,
+    paths: Option<Vec<String>>,
+) -> IdeResult<AgentAcceptOutcome> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.accept_changes(&task, paths).await
+}
+
 type McpServerMap = std::collections::BTreeMap<String, ide_core::settings::AgentMcpServer>;
 
 fn mcp_maps(host: &Host, window: &str) -> (McpServerMap, McpServerMap, Option<std::sync::Arc<crate::Project>>) {
@@ -448,6 +479,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_base_text", |c| async move { base_text(&c.host, &c.window, c.arg("task")?, c.arg("path")?).await });
     d.add("agent_rollback_changes", |c| async move {
         rollback_changes(&c.host, &c.window, c.arg("task")?, c.arg("paths")?).await
+    });
+    d.add("agent_accept_changes", |c| async move {
+        accept_changes(&c.host, &c.window, c.arg("task")?, c.arg("paths")?).await
     });
 }
 

@@ -69,7 +69,7 @@ pub struct TransferError {
 }
 
 impl TransferReport {
-    fn fail(&mut self, path: impl Into<String>, e: IdeError) {
+    pub(crate) fn fail(&mut self, path: impl Into<String>, e: IdeError) {
         self.errors.push(TransferError { path: path.into(), message: e.message });
     }
 }

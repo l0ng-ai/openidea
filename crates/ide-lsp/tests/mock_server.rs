@@ -7,7 +7,7 @@ use ide_core::{
 use ide_jsonrpc::{Handler, NoopHandler, Peer};
 use ide_language::{LanguageConfig, LanguageRegistry, LanguageServerConfig};
 use ide_lsp::types::*;
-use ide_lsp::{LaunchError, Launcher, LspManager};
+use ide_lsp::{KotlinDebugServer, KotlinDebugUnavailable, LaunchError, Launcher, LspManager};
 use ide_text::AppliedChange;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -3212,6 +3212,33 @@ async fn rename_merges_the_servers_that_can_rename_there() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_rename_the_server_withdraws_while_analysing_is_asked_again_then_explained() {
+    let h = harness(&[("dart", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "count = 1\n");
+    h.wait_status("dart", ServerStatus::Ready).await;
+    let dart = h.launcher.state("dart");
+    let r = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":5}});
+    dart.respond("textDocument/rename", json!({ "changes": { uri_of(&path): [{ "range": r, "newText": "total" }] } }));
+    // Withdrawn while the server analyses an edit, then answered.
+    dart.errors.lock().insert("textDocument/rename".into(), (-32801, "Document was modified".into()));
+    let renaming = {
+        let mgr = h.mgr.clone();
+        tokio::spawn(async move { mgr.rename(doc, Pos::new(0, 1), "total".into(), Default::default()).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    dart.errors.lock().clear();
+    let edit = renaming.await.unwrap().unwrap().edit;
+    assert_eq!(edits_in(&edit, &path), [(rng(0, 0, 0, 5), "total".into())]);
+    assert!(dart.requested("textDocument/rename").len() >= 2);
+
+    // Withdrawn every time: an error that says so, not a silent cancellation.
+    dart.errors.lock().insert("textDocument/rename".into(), (-32801, "Document was modified".into()));
+    let err = h.mgr.rename(doc, Pos::new(0, 1), "total".into(), Default::default()).await.unwrap_err();
+    assert_ne!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(err.message.contains("try again"), "{}", err.message);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn angular_server_is_asked_about_typescript_only_in_component_templates() {
     let servers = [("vtsls", incremental_caps()), ("angular-language-server", incremental_caps())];
     let h = harness_for("typescript", "ts", &servers, &[]);
@@ -6297,6 +6324,208 @@ async fn hierarchy_refactorings_name_the_servers_without_them() {
     assert_eq!(e.message, "plain doesn't support Pull Members Up");
 }
 
+// ------------------------------------------------------------------ kotlin-lsp debug server
+
+type KotlinDebug = Result<KotlinDebugServer, KotlinDebugUnavailable>;
+
+fn kotlin_lsp_harness() -> (Harness, Arc<MockState>) {
+    let h = harness_for("kotlin", "kt", &[("kotlin-lsp", incremental_caps())], &[]);
+    let s = h.launcher.state("kotlin-lsp");
+    s.respond("workspace/executeCommand", json!(4711));
+    (h, s)
+}
+
+fn spawn_kotlin_debug_server(
+    h: &Harness,
+    path: &Path,
+    import_wait: Duration,
+    cancel: &CancellationToken,
+) -> tokio::task::JoinHandle<KotlinDebug> {
+    let (mgr, path, cancel) = (h.mgr.clone(), path.to_owned(), cancel.clone());
+    tokio::spawn(async move { mgr.kotlin_debug_server(&path, import_wait, &cancel).await })
+}
+
+async fn joined(debug: tokio::task::JoinHandle<KotlinDebug>) -> KotlinDebug {
+    tokio::time::timeout(Duration::from_secs(10), debug).await.expect("kotlin_debug_server returned").unwrap()
+}
+
+fn import_progress(s: &MockState, value: Value) {
+    s.peer().notify("$/progress", json!({ "token": "import", "value": value })).unwrap();
+}
+
+fn import_finished(s: &MockState, folders: &[(&Path, &str)]) {
+    let folders: Vec<Value> = folders
+        .iter()
+        .map(|(dir, status)| json!({ "folderUri": format!("{}/", uri_of(dir)), "tool": "gradle", "status": status }))
+        .collect();
+    s.peer().notify("intellij/workspaceImportState", json!({ "phase": "FINISHED", "folders": folders })).unwrap();
+}
+
+fn debug_server_requests(s: &MockState) -> Vec<Value> {
+    s.requested("workspace/executeCommand")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn waits_for_the_import_before_starting_the_debug_server() {
+    // kotlin-lsp sends the progress end and FINISHED within the same millisecond, in either order.
+    for finished_first in [false, true] {
+        let (h, s) = kotlin_lsp_harness();
+        let main = h.root.join("Main.kt");
+        std::fs::write(&main, "fun main() {}").unwrap();
+        let debug = spawn_kotlin_debug_server(&h, &main, Duration::from_secs(10), &CancellationToken::new());
+        h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+        // Repeats every few seconds while the project stays usable: never waited for.
+        s.peer()
+            .notify("$/progress", json!({ "token": "index", "value": { "kind": "begin", "title": "Indexing" } }))
+            .unwrap();
+        import_progress(&s, json!({ "kind": "begin", "title": "Importing" }));
+        h.wait_status("kotlin-lsp", ServerStatus::Busy).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(debug_server_requests(&s).is_empty(), "started while importing");
+
+        if finished_first {
+            import_finished(&s, &[(&h.root, "SUCCESS")]);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(debug_server_requests(&s).is_empty(), "started while the Importing task runs");
+            import_progress(&s, json!({ "kind": "end" }));
+        } else {
+            import_progress(&s, json!({ "kind": "end" }));
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(debug_server_requests(&s).is_empty(), "started before FINISHED");
+            import_finished(&s, &[(&h.root, "SUCCESS")]);
+        }
+
+        assert_eq!(joined(debug).await, Ok(KotlinDebugServer { port: 4711, root: h.root.clone() }));
+        assert_eq!(
+            debug_server_requests(&s),
+            vec![json!({ "command": "start_debug_server", "arguments": [uri_of(&h.root)] })],
+            "finished_first: {finished_first}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn still_importing_after_the_wait_is_reported() {
+    let (h, s) = kotlin_lsp_harness();
+    let r = h.mgr.kotlin_debug_server(&h.root, Duration::from_millis(200), &CancellationToken::new()).await;
+    assert_eq!(r, Err(KotlinDebugUnavailable::StillImporting));
+    assert!(debug_server_requests(&s).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_the_import_wait_reports_still_importing() {
+    let (h, s) = kotlin_lsp_harness();
+    let cancel = CancellationToken::new();
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(60), &cancel);
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!debug.is_finished());
+    cancel.cancel();
+    assert_eq!(joined(debug).await, Err(KotlinDebugUnavailable::StillImporting));
+    assert!(debug_server_requests(&s).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_import_of_the_module_is_reported() {
+    // Another module that failed does not keep this one from debugging.
+    for other_module_failed in [false, true] {
+        let (h, s) = kotlin_lsp_harness();
+        let main = h.root.join("app/Main.kt");
+        let debug = spawn_kotlin_debug_server(&h, &main, Duration::from_secs(10), &CancellationToken::new());
+        h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+        let lib = h.root.join("lib");
+        let (folders, expected) = if other_module_failed {
+            (
+                vec![(h.root.as_path(), "SUCCESS"), (lib.as_path(), "FAILED")],
+                Ok(KotlinDebugServer { port: 4711, root: h.root.clone() }),
+            )
+        } else {
+            (vec![(h.root.as_path(), "FAILED")], Err(KotlinDebugUnavailable::ImportFailed))
+        };
+        import_finished(&s, &folders);
+        assert_eq!(joined(debug).await, expected, "other_module_failed: {other_module_failed}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_import_is_reported_through_a_symlinked_root() {
+    // The debugged path names the root through a symlink, the folder URI names its target,
+    // and the file does not exist yet.
+    let (h, s) = kotlin_lsp_harness();
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("project");
+    std::os::unix::fs::symlink(&h.root, &link).unwrap();
+    let debug =
+        spawn_kotlin_debug_server(&h, &link.join("app/Main.kt"), Duration::from_secs(10), &CancellationToken::new());
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    import_finished(&s, &[(&h.root, "FAILED")]);
+    assert_eq!(joined(debug).await, Err(KotlinDebugUnavailable::ImportFailed));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_finished_import_does_not_count_after_a_restart() {
+    let (h, s) = kotlin_lsp_harness();
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(10), &CancellationToken::new());
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    import_finished(&s, &[(&h.root, "SUCCESS")]);
+    assert!(joined(debug).await.is_ok());
+
+    let id = h.mgr.servers()[0].id;
+    h.mgr.restart(id).await.unwrap();
+    let r = h.mgr.kotlin_debug_server(&h.root, Duration::from_millis(300), &CancellationToken::new()).await;
+    assert_eq!(r, Err(KotlinDebugUnavailable::StillImporting));
+    assert_eq!(debug_server_requests(&s).len(), 1);
+
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(10), &CancellationToken::new());
+    import_finished(&s, &[(&h.root, "SUCCESS")]);
+    assert_eq!(joined(debug).await, Ok(KotlinDebugServer { port: 4711, root: h.root.clone() }));
+    assert_eq!(debug_server_requests(&s).len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_kotlin_lsp_the_reason_is_not_configured() {
+    let wait = Duration::from_secs(1);
+    let cancel = CancellationToken::new();
+    let h = harness_for("kotlin", "kt", &[("kotlin-language-server", incremental_caps())], &[]);
+    assert_eq!(h.mgr.kotlin_debug_server(&h.root, wait, &cancel).await, Err(KotlinDebugUnavailable::NotConfigured));
+
+    let (h, s) = kotlin_lsp_harness();
+    s.missing.store(true, Ordering::SeqCst);
+    assert_eq!(h.mgr.kotlin_debug_server(&h.root, wait, &cancel).await, Err(KotlinDebugUnavailable::NotInstalled));
+
+    let (h, _) = kotlin_lsp_harness();
+    h.mgr.set_config_hook(Box::new(|cfg, _| cfg.launch_error = Some("needs JDK 21".into())));
+    assert_eq!(
+        h.mgr.kotlin_debug_server(&h.root, wait, &cancel).await,
+        Err(KotlinDebugUnavailable::NotStarted("needs JDK 21".into()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_debug_server_error_is_reported() {
+    let (h, s) = kotlin_lsp_harness();
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "boom".into()));
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(10), &CancellationToken::new());
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    import_finished(&s, &[(&h.root, "SUCCESS")]);
+    match joined(debug).await {
+        Err(KotlinDebugUnavailable::Failed(m)) => assert!(m.contains("boom"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+
+    s.errors.lock().clear();
+    for port in [json!(0), json!(65536), json!("4711"), Value::Null] {
+        s.respond("workspace/executeCommand", port.clone());
+        match h.mgr.kotlin_debug_server(&h.root, Duration::from_secs(1), &CancellationToken::new()).await {
+            Err(KotlinDebugUnavailable::Failed(m)) => {
+                assert_eq!(m, format!("unexpected debug server port: {port}"))
+            }
+            other => panic!("{port}: {other:?}"),
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn injected_documents_route_and_resolve_without_exposing_virtual_files() {
     for encoding in ["utf-16", "utf-8"] {
@@ -6484,4 +6713,70 @@ async fn missing_injected_server_uses_the_normal_single_install_notification() {
     assert_eq!(h.statuses("embedded").iter().filter(|s| **s == ServerStatus::Missing).count(), 1);
     h.mgr.did_close(host);
     h.mgr.shutdown_all().await;
+}
+
+/// #2248: `go.mod` files are served by gopls with the language id it
+/// understands, and its pushed diagnostics reach the Problems view.
+#[tokio::test(flavor = "multi_thread")]
+async fn gomod_files_are_served_by_gopls() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let registry = Arc::new(LanguageRegistry::load(None).unwrap());
+    // The bundled configs route Go files of every kind to gopls.
+    for lang in ["go", "go.mod", "go.work"] {
+        let cfg = registry.get(&LanguageId::new(lang)).unwrap_or_else(|| panic!("{lang} has no language definition"));
+        assert!(cfg.language_servers.iter().any(|s| s.name == "gopls"), "{lang} is not served by gopls");
+    }
+    let launcher = Arc::new(MockLauncher::default());
+    *launcher.state("gopls").caps.lock() = incremental_caps();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = {
+        let events = events.clone();
+        Arc::new(move |e: IdeEvent| events.lock().push(e))
+    };
+    let mgr = LspManager::with_launcher(root.clone(), registry, sink, launcher.clone());
+    let text = "module example.com/app\n\ngo 1.22\n";
+    let path = root.join("go.mod");
+    std::fs::write(&path, text).unwrap();
+    assert!(mgr.serves_path(&path));
+    mgr.did_open(DocId::next(), &path, &LanguageId::new("go.mod"), 1, text);
+    let gopls = launcher.state("gopls");
+    eventually(|| !gopls.notified("textDocument/didOpen").is_empty()).await;
+    // gopls only treats the file as a module file for the `go.mod` id.
+    let opened = &gopls.notified("textDocument/didOpen")[0]["textDocument"];
+    assert_eq!(opened["languageId"], json!("go.mod"));
+    // The module root (the go.mod itself is the marker) scopes the server.
+    let init = &gopls.requested("initialize")[0];
+    assert_eq!(init["rootUri"], json!(uri_of(&root)));
+    // Same startup options as when a `.go` file launches the server first.
+    assert_eq!(init["initializationOptions"]["semanticTokens"], json!(true));
+    // Pushed go.mod diagnostics surface with gopls as their source.
+    gopls
+        .peer()
+        .notify(
+            "textDocument/publishDiagnostics",
+            json!({ "uri": uri_of(&path), "diagnostics": [{
+                "range": {"start": {"line": 2, "character": 3}, "end": {"line": 2, "character": 7}},
+                "severity": 1, "message": "missing requirement", "source": "gopls" }] }),
+        )
+        .unwrap();
+    eventually(|| {
+        events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Diagnostics { path: p, source, .. } if p.0 == path && source == "gopls"))
+    })
+    .await;
+    let items = events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Diagnostics { path: p, items, .. } if p.0 == path => Some(items.clone()),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].message, "missing requirement");
+    mgr.shutdown_all().await;
 }

@@ -3,8 +3,8 @@
 use crate::state::AppState;
 use ide_agent::registry::AgentRegistry;
 use ide_agent::{
-    AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
-    ExternalSession, McpServer, McpServerInput, NewAgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt,
+    AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
@@ -60,6 +60,32 @@ pub fn agent_set_env(
     env: std::collections::BTreeMap<String, String>,
 ) -> IdeResult<()> {
     agent::set_env(&state.host, window.label(), id, env)
+}
+
+/// Saves a new custom ACP agent through its agent file; refuses built-in and
+/// ACP Registry ids and taken ids.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_custom_save(window: Window, state: State<'_, AppState>, input: CustomAgentInput) -> IdeResult<()> {
+    agent::save_custom_agent(&state.host, window.label(), input)
+}
+
+/// Removes a custom agent's file (registry installs go through `agent_registry_remove`).
+#[tauri::command]
+#[specta::specta]
+pub fn agent_custom_remove(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
+    agent::remove_custom_agent(&state.host, window.label(), id)
+}
+
+/// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_custom_import(
+    window: Window,
+    state: State<'_, AppState>,
+    text: String,
+) -> IdeResult<Vec<AcpImportOutcome>> {
+    agent::import_acp_agents(&state.host, window.label(), text)
 }
 
 /// Agents of the ACP Registry this machine can run, with what is installed; the list
@@ -354,6 +380,19 @@ pub async fn agent_rollback_changes(
     paths: Option<Vec<String>>,
 ) -> IdeResult<()> {
     agent::rollback_changes(&state.host, window.label(), task, paths).await
+}
+
+/// Accept: copies a worktree task's changed files among `paths` (all without) into the
+/// local checkout, uncommitted; files the checkout changed itself are left alone and reported.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_accept_changes(
+    window: Window,
+    state: State<'_, AppState>,
+    task: String,
+    paths: Option<Vec<String>>,
+) -> IdeResult<AgentAcceptOutcome> {
+    agent::accept_changes(&state.host, window.label(), task, paths).await
 }
 
 /// Content of `path` when the task started (left side of its diff).

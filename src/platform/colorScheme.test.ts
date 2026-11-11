@@ -58,6 +58,58 @@ describe("color schemes", () => {
     expect(css).toContain("--syn-constant: #224466 !important");
   });
 
+  it("offers a C# scheme page and scopes its overrides to C# editors", () => {
+    expect(ATTRIBUTES.find((a) => a.id === "csharp.className")?.path).toEqual(["C#"]);
+    const css = schemeCss("dark", { dark: { "csharp.keyword": { foreground: "#224466" } } });
+    expect(css).toContain('.cm-editor[data-language="C#"]');
+    expect(css).toContain("--syn-keyword: #224466 !important");
+  });
+
+  it("groups Python attributes as PyCharm's color settings page does", () => {
+    const python = (name: string) => ATTRIBUTES.find((a) => a.id === `py${name}`)!;
+    expect(python("Number").name).toBe("Number");
+    expect(python("Keyword").name).toBe("Keyword");
+    expect(python("LineComment").name).toBe("Line comment");
+    expect(python("String").name).toBe("String › Text (unicode)");
+    expect(python("ValidEscape").name).toBe("String › Escape sequence › Valid");
+    expect(python("InvalidEscape").name).toBe("String › Escape sequence › Invalid");
+    expect(python("FString").name).toBe("String › f-string › Expression braces");
+    expect(python("Bytes").name).toBe("String › Binary (bytes)");
+    expect(python("Docstring").name).toBe("Docstring › Text");
+    expect(python("OperationSign").name).toBe("Braces and Operators › Operation sign");
+    expect(python("Parentheses").name).toBe("Braces and Operators › Parentheses");
+    expect(python("FunctionDeclaration").name).toBe("Functions › Function definition");
+    expect(python("FunctionCall").name).toBe("Functions › Function call");
+    expect(python("MethodCall").name).toBe("Functions › Method call");
+    expect(python("NestedFunction").name).toBe("Functions › Nested function definition");
+    expect(python("Parameter").name).toBe("Parameters › Parameter");
+    expect(python("Self").name).toBe("Parameters › 'self' parameter");
+    expect(python("KeywordArg").name).toBe("Keyword argument");
+    expect(python("PredefinedDefinition").name).toBe("Special names › Definition");
+    expect(python("PredefinedUsage").name).toBe("Special names › Usage");
+    expect(python("Builtin").name).toBe("Special names › Built-in name");
+    expect(python("Decorator").name).toBe("Special names › Decorator");
+    expect(python("ClassDefinition").name).toBe("Classes › Class definition");
+    expect(python("LocalVariable").name).toBe("Identifiers › Local variables");
+    expect(python("GlobalVariable").name).toBe("Identifiers › Global variable");
+    // Attribute ids (the override and .icls keys) keep their old, stable names.
+    for (const a of ATTRIBUTES.filter((a) => a.path[0] === "Python")) {
+      expect(a.id).toMatch(/^py[A-Z]/);
+      expect(a.language).toBe("Python");
+    }
+  });
+
+  it("scopes Python overrides to Python editors and falls back to the shared token like JetBrains", () => {
+    // Shared token: a Python override lands in the language block, not on :root.
+    expect(ATTRIBUTES.find((a) => a.id === "pyKeyword")?.token).toBe("keyword");
+    const css = schemeCss("dark", { dark: { pyKeyword: { foreground: "#224466" } } });
+    expect(css).toContain('.cm-editor[data-language="Python"]');
+    expect(css).toContain("--syn-keyword: #224466 !important");
+    expect(css.indexOf('.cm-editor[data-language="Python"]')).toBeGreaterThan(css.indexOf(":root"));
+    // Unset values resolve through the shared scheme token, as JetBrains' fallback keys do.
+    expect(resolvedAttribute("dark", "pyKeyword")).toMatchObject({ foreground: "#cf8e6d" });
+  });
+
   it("resolves scheme attribute state and editor defaults", () => {
     expect(resolvedAttribute("light", "lineComment")).toMatchObject({
       foreground: "#8c8c8c",
@@ -114,6 +166,25 @@ describe("color schemes", () => {
     expect(upright).toContain("--syn-static-italic: normal !important");
     const pythonItalic = schemeCss("theme-default", { light: { pyStaticSymbol: { italic: true } } }, root);
     expect(pythonItalic).toContain("--syn-python-static-italic: italic !important");
+  });
+
+  it("mirrors Console Colors ANSI overrides to the terminal palette (#2698)", () => {
+    expect(ATTRIBUTES.filter((a) => a.path[0] === "Console Colors")).toHaveLength(17);
+    const root = document.documentElement;
+    root.dataset.theme = "light";
+    const css = schemeCss(
+      "theme-default",
+      {
+        light: {
+          ansiRed: { foreground: "#aa0000" },
+          consoleBackground: { background: "#101010" },
+        },
+      },
+      root,
+    );
+    expect(css).toContain("--ansi-red: #aa0000 !important");
+    expect(css).toContain("--terminal-ansi-red: #aa0000 !important");
+    expect(css).toContain("--bg-console: #101010 !important");
   });
 
   it("leaves selected text in syntax colours until a selection foreground is set (#2446)", () => {

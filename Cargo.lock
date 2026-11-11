@@ -4711,6 +4711,7 @@ name = "ide-profiler"
 version = "0.1.42"
 dependencies = [
  "ide-core",
+ "ide-jvm-attach",
  "ide-run",
  "serde",
  "serde_json",
@@ -4964,9 +4965,9 @@ dependencies = [
 name = "ide-web"
 version = "0.1.42"
 dependencies = [
+ "dirs 6.0.0",
  "ide-core",
  "open",
- "parking_lot",
  "percent-encoding",
  "serde",
  "specta",

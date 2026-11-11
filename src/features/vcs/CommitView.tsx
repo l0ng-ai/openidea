@@ -349,6 +349,12 @@ export function nodeMenu(
         }
       : { kind: "action", action: "vcs.showDiff", arg: first?.path },
     {
+      kind: "action",
+      action: "vcs.showDiffInNewWindow",
+      arg: first?.path ? (opts?.roots ? changeNodeDiffData(opts.roots, first) : changeNodeDiff(first)) : undefined,
+      disabled: !first?.path,
+    },
+    {
       label: "Jump to Source",
       icon: "external-link",
       shortcut: "F4",
