@@ -2713,8 +2713,8 @@ async fn config_choice_shows_before_the_agent_answers() {
         .unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     mgr.set_config(&task.id, "fast", "false".into()).await.unwrap();
-    let shown = shown.lock().clone().expect("the switch moved");
-    let entered = agent.config_entered.lock().clone().expect("the agent received the change");
+    let shown = (*shown.lock()).expect("the switch moved");
+    let entered = (*agent.config_entered.lock()).expect("the agent received the change");
     assert!(shown < entered, "the composer updates before the agent answers");
 }
 
