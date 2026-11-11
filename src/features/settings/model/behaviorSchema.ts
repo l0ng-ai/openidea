@@ -69,6 +69,10 @@ export interface GeneralExtras {
   openProjectIn: OpenProjectIn;
   updateSource: UpdateSourceSetting;
   autoCheckUpdates: boolean;
+  /** System Settings › Updates: show the What's New page after the app starts a new version. */
+  showWhatsNewAfterUpdate: boolean;
+  /** Version the app last started with; empty on the first run. */
+  lastRunVersion: string;
   defaultProjectDirectory: string;
   saveOnIdle: boolean;
   idleSeconds: number;
@@ -127,6 +131,8 @@ export const DEFAULT_GENERAL_EXTRAS: GeneralExtras = {
   openProjectIn: "ask",
   updateSource: "auto",
   autoCheckUpdates: true,
+  showWhatsNewAfterUpdate: true,
+  lastRunVersion: "",
   defaultProjectDirectory: "",
   saveOnIdle: false,
   idleSeconds: 15,
@@ -201,6 +207,8 @@ export function validateGeneralExtras(raw: unknown): GeneralExtras {
     openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same"] as const, d.openProjectIn),
     updateSource: oneOf(g.updateSource, ["auto", "github", "cnb"] as const, d.updateSource),
     autoCheckUpdates: bool(g.autoCheckUpdates, d.autoCheckUpdates),
+    showWhatsNewAfterUpdate: bool(g.showWhatsNewAfterUpdate, d.showWhatsNewAfterUpdate),
+    lastRunVersion: typeof g.lastRunVersion === "string" ? g.lastRunVersion : d.lastRunVersion,
     defaultProjectDirectory: typeof g.defaultProjectDirectory === "string" ? g.defaultProjectDirectory : "",
     saveOnIdle: bool(g.saveOnIdle, d.saveOnIdle),
     idleSeconds: int(g.idleSeconds, d.idleSeconds, IDLE_LIMITS),

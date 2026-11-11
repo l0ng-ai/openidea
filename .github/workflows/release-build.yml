@@ -251,7 +251,28 @@ jobs:
               core.setFailed(`latest.json would miss ${missing.join(", ")}`);
               return;
             }
-            const manifest = { version: tag.replace(/^v/, ""), notes: "", pub_date: new Date().toISOString(), platforms };
+            // The update's notes: the release body without its Download section. That
+            // section only matters on the release page, and What's new follows it.
+            const { data: release } = await github.rest.repos.getRelease({ owner, repo, release_id });
+            const withoutDownloadSection = (body) => {
+              const kept = [];
+              let skip = 0;
+              for (const line of body.split(/\r?\n/)) {
+                const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+                if (heading) {
+                  const level = heading[1].length;
+                  if (!skip && level <= 3 && /^download$/i.test(heading[2].trim())) {
+                    skip = level;
+                    continue;
+                  }
+                  if (skip && level <= skip) skip = 0;
+                }
+                if (!skip) kept.push(line);
+              }
+              return kept.join("\n").trim();
+            };
+            const notes = withoutDownloadSection(String(release.body ?? ""));
+            const manifest = { version: tag.replace(/^v/, ""), notes, pub_date: new Date().toISOString(), platforms };
             const old = assets.find((a) => a.name === "latest.json");
             if (old) await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: old.id });
             await github.rest.repos.uploadReleaseAsset({
