@@ -218,7 +218,7 @@ describe("MemoryView", () => {
       render(<MemoryView session={session} />);
       expect(
         await screen.findByText(
-          "Memory 视图需要本机上以 -XX:+StartAttachListener 启动的 JVM。由 IDE 调试的程序会自动添加该选项。",
+          "内存视图需要本机上以 -XX:+StartAttachListener 启动的 JVM。由 IDE 调试的程序会自动添加该选项。",
         ),
       ).toBeTruthy();
       expect(screen.getByRole("button", { name: "刷新内存视图" }).getAttribute("data-tooltip")).toBe("刷新内存视图");

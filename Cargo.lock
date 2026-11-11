@@ -4489,7 +4489,7 @@ dependencies = [
 
 [[package]]
 name = "ide-jdwp"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "ide-jvm-inspect",
  "proptest",
@@ -4518,7 +4518,7 @@ dependencies = [
 
 [[package]]
 name = "ide-jvm-attach"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "libc",
  "tempfile",
@@ -4527,7 +4527,7 @@ dependencies = [
 
 [[package]]
 name = "ide-jvm-inspect"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "futures",
  "serde",
