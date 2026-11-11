@@ -88,7 +88,7 @@ import { inclusionGutter } from "./hunkInclusion";
 import { hunksOverlapping } from "./hunks";
 import { effectiveKind, stripSlash } from "./model";
 import { errorMessage, logConsole, readWorkingText, runOp, saveAll } from "./ops";
-import { refreshNow, useVcs } from "./store";
+import { refreshNow, repoOf, useVcs } from "./store";
 import styles from "./DiffEditor.module.css";
 
 /** Commands of the focused diff viewer (diff.* actions, vcs.nextChange / prevChange). */
@@ -252,12 +252,14 @@ export function DiffEditor({
   const [chunkInfo, setChunkInfo] = useState({ count: 0, current: -1, moves: 0, whitespaceOnly: false });
   const [busy, setBusy] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const viewsRef = useRef<Views | null>(null);
   const staticsRef = useRef(statics);
   const focusedSide = useRef<Side>("b");
   /** Bumped when the views are rebuilt, so the find bar re-applies its query. */
   const [viewsGen, setViewsGen] = useState(0);
   const version = useVcs((s) => s.version);
+  const heads = useVcs((s) => s.heads);
   const leftKey = sideKey(left);
   const rightKey = sideKey(right);
   const contextKey = JSON.stringify(data.context ?? null);
@@ -576,6 +578,27 @@ export function DiffEditor({
       });
       views = { a: null, b: view, merge: null, panes: null, destroy: () => view.destroy() };
       if (scrollTop != null) requestAnimationFrame(() => (view.scrollDOM.scrollTop = scrollTop));
+    }
+    // The labels and the find bar above side-by-side panes start the right side where its pane
+    // does, wherever the divider (dragged, see UnalignedPanes) and the window put it.
+    const root = rootRef.current;
+    if (views.a && root && typeof ResizeObserver !== "undefined") {
+      const paneB = views.b.dom;
+      const align = () =>
+        root.style.setProperty(
+          "--diff-b-start",
+          `${paneB.getBoundingClientRect().left - root.getBoundingClientRect().left}px`,
+        );
+      const observer = new ResizeObserver(align);
+      observer.observe(root);
+      observer.observe(paneB);
+      align();
+      const destroyPanes = views.destroy;
+      views.destroy = () => {
+        observer.disconnect();
+        root.style.removeProperty("--diff-b-start");
+        destroyPanes();
+      };
     }
     viewsRef.current = views;
     const built = viewerHost(views, dataRef.current, opts.mode, () => focusedSide.current);
@@ -1106,8 +1129,23 @@ export function DiffEditor({
   const canStage = editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
   const hasSource = !!source;
 
+  /** IDEA's title of a revision: its short commit id (HEAD resolved) and the file's path in the repository. */
+  const revTitle = (s: DiffSide): { label: string; file: string | null } => {
+    if (s.type !== "rev") return { label: sideLabel(s), file: null };
+    const file = s.path ?? path;
+    const root = repoOf(file);
+    const commit = !s.label && s.rev === "HEAD" && root ? heads[root]?.headCommit : null;
+    return {
+      label: commit ? commit.slice(0, 8) : sideLabel(s),
+      file: root && file.startsWith(`${root}/`) ? file.slice(root.length + 1) : file,
+    };
+  };
+  const titleA = revTitle(left);
+  const titleB = revTitle(right);
+
   return (
     <div
+      ref={rootRef}
       className={styles.root}
       onKeyDown={onKeyDown}
       onFocusCapture={() => {
@@ -1278,8 +1316,9 @@ export function DiffEditor({
       </div>
       {opts.mode === "split" ? (
         <div className={styles.labels}>
-          <span className={styles.label} title={sideLabel(left)}>
-            {sideLabel(left)}
+          <span className={styles.label} title={[titleA.label, titleA.file].filter(Boolean).join(" ")}>
+            {titleA.label}
+            {titleA.file && <span className={styles.labelFile}>{titleA.file}</span>}
             {eolDiffers && eolA && <span className={styles.badge}>{badgeA}</span>}
             {editableA && (
               <span className={styles.badge}>
@@ -1287,8 +1326,9 @@ export function DiffEditor({
               </span>
             )}
           </span>
-          <span className={styles.label} title={sideLabel(right)}>
-            {sideLabel(right)}
+          <span className={styles.label} title={[titleB.label, titleB.file].filter(Boolean).join(" ")}>
+            {titleB.label}
+            {titleB.file && <span className={styles.labelFile}>{titleB.file}</span>}
             {eolDiffers && eolB && <span className={styles.badge}>{badgeB}</span>}
             {editableB && (
               <span className={styles.badge}>{left.type === "rev" ? tx("working copy") : tx("editable")}</span>
