@@ -38,6 +38,7 @@ pub mod plugin;
 pub mod profiler;
 pub mod refactor;
 pub mod run;
+pub mod scaffold;
 pub mod sdk;
 pub mod search;
 pub mod spell;
@@ -443,6 +444,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         tools::jdk_download_releases,
         tools::jdk_download_location,
         tools::jdk_download,
+        scaffold::scaffold_catalog,
+        scaffold::scaffold_options,
+        scaffold::scaffold_requirements,
+        scaffold::scaffold_create,
         sdk::sdk_detect,
         sdk::sdk_python_interpreter,
         sdk::sdk_python_effective,

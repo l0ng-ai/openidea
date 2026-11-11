@@ -1,0 +1,34 @@
+id = "symfony"
+name = "Symfony"
+group = "PHP"
+icon = "project-symfony"
+order = 2
+description = "A Symfony application from composer create-project."
+
+[[requires]]
+program = "php"
+min = "8.2"
+hint = "Install PHP 8.2 or later: https://www.php.net/downloads"
+
+[[requires]]
+program = "composer"
+hint = "Install Composer: https://getcomposer.org/download/"
+
+[[fields]]
+id = "webapp"
+label = "Full web application"
+type = "checkbox"
+default = "true"
+hint = "Adds Twig, Doctrine, forms, security and the other web packages (symfony/webapp-pack)."
+
+[[steps]]
+label = "Running composer create-project symfony/skeleton"
+program = "composer"
+cwd = "parent"
+args = ["create-project", "symfony/skeleton", "{{name}}", "--prefer-dist", "--no-interaction"]
+
+[[after]]
+label = "Adding the web application packages"
+program = "composer"
+args = ["require", "webapp", "--no-interaction"]
+when = { webapp = "true" }

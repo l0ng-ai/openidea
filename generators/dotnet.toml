@@ -1,0 +1,48 @@
+id = "dotnet"
+name = ".NET"
+group = ".NET"
+icon = "project-dotnet"
+description = "A .NET project from dotnet new."
+
+[[requires]]
+program = "dotnet"
+hint = "Install the .NET SDK: https://dotnet.microsoft.com/download"
+
+[[fields]]
+id = "template"
+label = "Template:"
+type = "choice"
+options = [
+    { value = "console", label = "Console App" },
+    { value = "classlib", label = "Class Library" },
+    { value = "webapi", label = "ASP.NET Core Web API" },
+    { value = "mvc", label = "ASP.NET Core MVC" },
+    { value = "blazor", label = "Blazor Web App" },
+    { value = "xunit", label = "xUnit Test Project" },
+]
+default = "console"
+
+[[fields]]
+id = "lang"
+label = "Language:"
+type = "choice"
+segmented = true
+options = [{ value = "C#", label = "C#" }, { value = "F#", label = "F#" }]
+default = "C#"
+visible = { template = ["console", "classlib", "webapi", "mvc", "xunit"] }
+
+[[steps]]
+label = "Running dotnet new"
+program = "dotnet"
+args = [
+    "new", "{{template}}", "--name", "{{name}}", "--output", ".",
+    { when = { template = ["console", "classlib", "webapi", "mvc", "xunit"] }, args = ["--language", "{{lang}}"] },
+]
+env = { DOTNET_CLI_TELEMETRY_OPTOUT = "1", DOTNET_NOLOGO = "1" }
+
+[[after]]
+label = "Adding a .gitignore"
+program = "dotnet"
+args = ["new", "gitignore"]
+env = { DOTNET_CLI_TELEMETRY_OPTOUT = "1", DOTNET_NOLOGO = "1" }
+optional = true

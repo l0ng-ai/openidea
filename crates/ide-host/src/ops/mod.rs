@@ -26,6 +26,7 @@ mod python;
 pub mod refactor;
 pub mod routes;
 pub mod run;
+pub mod scaffold;
 pub mod sdk;
 pub mod search;
 pub mod spell;
@@ -78,6 +79,7 @@ pub fn register_all(d: &mut crate::rpc::Dispatcher) {
     coverage::register(d);
     build::register(d);
     tools::register(d);
+    scaffold::register(d);
     sdk::register(d);
     java::register(d);
     debug::register(d);
