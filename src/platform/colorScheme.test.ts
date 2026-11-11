@@ -58,6 +58,13 @@ describe("color schemes", () => {
     expect(css).toContain("--syn-constant: #224466 !important");
   });
 
+  it("offers a C# scheme page and scopes its overrides to C# editors", () => {
+    expect(ATTRIBUTES.find((a) => a.id === "csharp.className")?.path).toEqual(["C#"]);
+    const css = schemeCss("dark", { dark: { "csharp.keyword": { foreground: "#224466" } } });
+    expect(css).toContain('.cm-editor[data-language="C#"]');
+    expect(css).toContain("--syn-keyword: #224466 !important");
+  });
+
   it("groups Python attributes as PyCharm's color settings page does", () => {
     const python = (name: string) => ATTRIBUTES.find((a) => a.id === `py${name}`)!;
     expect(python("FString").name).toBe("String › f-string › Expression braces");
