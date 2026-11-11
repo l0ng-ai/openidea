@@ -82,6 +82,7 @@ export interface DocMeta {
   language: string;
   uiMode: string | null;
   encoding: string;
+  hasBom: boolean;
   lineEnding: LineEnding;
   readOnly: boolean;
   dirty: boolean;
@@ -248,6 +249,7 @@ export class DocModel {
       language: info.language,
       uiMode: uiMode ?? this.desc?.name ?? null,
       encoding: info.encoding,
+      hasBom: info.hasBom,
       lineEnding: info.lineEnding,
       // Library sources (External Libraries) open read-only, like IDEA's.
       readOnly: info.readOnly || (!this.virtual && isLibraryPath(info.path)),

@@ -54,6 +54,7 @@ import { skipClosingQuote, smartBackspace, smartBackspaceApplies, tabOut } from 
 import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
 import { LINE_INSET } from "./lineInset";
+import { codeLensPositions } from "./codeLens";
 
 // --- soft wraps ---------------------------------------------------------------
 
@@ -557,7 +558,12 @@ export function prefsExtension(o: PrefsOptions): Extension {
   const { prefs } = o;
   const g = prefs.general;
   const k = prefs.smartKeys;
-  const out: Extension[] = [];
+  const out: Extension[] = [
+    codeLensPositions.of({
+      usages: prefs.inlay.codeVisionUsagesPosition,
+      author: prefs.inlay.codeVisionAuthorPosition,
+    }),
+  ];
   if (!o.readOnly)
     out.push(markdownImages({ path: o.path, folder: g.markdownImageFolder, pattern: g.markdownImageNamePattern }));
   if (g.scrollPastEnd) out.push(scrollPastEnd());
