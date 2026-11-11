@@ -52,6 +52,11 @@ impl Project {
     /// The actions of `kind` for `marked`: one `/*|*/` is a caret, two
     /// surround a selection. Each with the text after its edit.
     fn actions(&mut self, marked: &str, kind: &str) -> Vec<(String, String)> {
+        self.kinds(marked, kind).into_iter().map(|(_, title, text)| (title, text)).collect()
+    }
+
+    /// As [`Project::actions`], with each action's kind first.
+    fn kinds(&mut self, marked: &str, kind: &str) -> Vec<(&'static str, String, String)> {
         let (text, range) = selection(marked);
         let doc = DocId(self.next_doc);
         self.next_doc += 1;
@@ -62,16 +67,20 @@ impl Project {
             .into_iter()
             .map(|action| {
                 assert!(action.kind.starts_with(kind), "{}", action.kind);
-                (action.title.clone(), applied(&text, &action.edit))
+                let after = match action.edit.files.len() {
+                    1 => applied(&text, &action.edit),
+                    n => format!("<{n} files>"),
+                };
+                (action.kind, action.title.clone(), after)
             })
             .collect()
     }
 
-    /// The text after the one action of `kind`, `None` without one.
+    /// The text after the one action of exactly `kind`, `None` without one.
     fn extract(&mut self, marked: &str, kind: &str) -> Option<String> {
-        let mut found = self.actions(marked, kind);
+        let mut found: Vec<_> = self.kinds(marked, kind).into_iter().filter(|(k, ..)| *k == kind).collect();
         assert!(found.len() <= 1, "{found:?}");
-        found.pop().map(|(_, text)| text)
+        found.pop().map(|(_, _, text)| text)
     }
 
     fn variable(&mut self, marked: &str) -> Option<String> {
@@ -85,6 +94,34 @@ impl Project {
     /// Extract method or function, whichever is offered.
     fn method(&mut self, marked: &str) -> Option<String> {
         self.extract(marked, EXTRACT_METHOD).or_else(|| self.extract(marked, EXTRACT_FUNCTION))
+    }
+
+    /// The Extract Method dialog's data for `marked`, and the text after
+    /// resolving it with the defaults changed by `change`.
+    fn dialog(
+        &mut self,
+        marked: &str,
+        change: impl FnOnce(&mut ExtractChoice),
+    ) -> (Option<ExtractMethod>, Result<String, String>) {
+        let (text, range) = selection(marked);
+        let doc = DocId(self.next_doc);
+        self.next_doc += 1;
+        self.engine.document_opened(doc, &self.root.join("src/a.php"), 1, &text);
+        let info = self.engine.extract_method_info(doc, range);
+        let result = match &info {
+            None => Err("no dialog".to_owned()),
+            Some(info) => {
+                let mut choice = info.defaults.clone();
+                change(&mut choice);
+                let data = ExtractMethod { change: Some(choice), ..info.clone() };
+                match self.engine.extract_method_edit(doc, &data).expect("open") {
+                    Ok(edit) => Ok(applied(&text, &edit)),
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+        };
+        self.engine.document_closed(doc);
+        (info, result)
     }
 
     /// Inline variable.
@@ -517,9 +554,8 @@ fn extract_method_is_refused_where_control_or_variables_would_change() {
         // Expressions that write.
         "<?php\nfunction f($a)\n{\n    echo /*|*/($a = 1) + 2/*|*/;\n}\n",
         "<?php\nfunction f($a)\n{\n    echo /*|*/$a++ + 2/*|*/;\n}\n",
-        // Inside closures, arrow functions, anonymous classes, defaults.
-        "<?php\n$f = function ($a) {\n    /*|*/echo $a;/*|*/\n};\n",
-        "<?php\n$f = fn($a) => /*|*/$a + 1/*|*/;\n",
+        // Inside anonymous classes, defaults (closures: see
+        // `extract_from_closures_and_arrow_functions`).
         "<?php\n$o = new class {\n    public function f($a) {\n        /*|*/echo $a;/*|*/\n    }\n};\n",
         "<?php\nfunction f($a = /*|*/1 + 2/*|*/) {\n}\n",
         // Declarations.
@@ -539,6 +575,186 @@ fn extract_method_is_refused_where_control_or_variables_would_change() {
     assert!(found.contains("    extracted($a);\n"), "{found}");
     // Not when only other kinds are asked for.
     assert!(p.actions("<?php\n$a = 1;\n/*|*/echo $a;/*|*/\n", EXTRACT_VARIABLE).is_empty());
+}
+
+#[test]
+fn extract_from_closures_and_arrow_functions() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    // Statements of a closure in a method: a method of the class, called
+    // with `$this` inside the closure.
+    let before = "<?php\nclass Shop\n{\n    public function run(array $items, int $rate): array\n    {\n        return array_map(function (int $item) use ($rate) {\n            /*|*/$price = $item * $rate;\n            echo $price;/*|*/\n            return $price;\n        }, $items);\n    }\n}\n";
+    let after = "<?php\nclass Shop\n{\n    public function run(array $items, int $rate): array\n    {\n        return array_map(function (int $item) use ($rate) {\n            $price = $this->extracted($item, $rate);\n            return $price;\n        }, $items);\n    }\n\n    private function extracted(int $item, int $rate): int\n    {\n        $price = $item * $rate;\n        echo $price;\n\n        return $price;\n    }\n}\n";
+    assert_eq!(p.method(before).as_deref(), Some(after));
+    // The closure's last return is kept.
+    let found = p
+        .method("<?php\nfunction f(array $a): array\n{\n    return array_map(function (int $x): int {\n        /*|*/$y = $x + 1;\n        return $y * 2;/*|*/\n    }, $a);\n}\n")
+        .unwrap();
+    assert!(found.contains("        return extracted($x);\n"), "{found}");
+    assert!(found.contains("function extracted(int $x): int\n{\n    $y = $x + 1;\n    return $y * 2;\n}\n"), "{found}");
+    // A static closure makes a static method.
+    let found = p
+        .method("<?php\nclass A\n{\n    public function f(array $a): array\n    {\n        return array_map(static function (int $x) {\n            /*|*/echo $x;/*|*/\n            return $x;\n        }, $a);\n    }\n}\n")
+        .unwrap();
+    assert!(found.contains("            self::extracted($x);\n"), "{found}");
+    assert!(found.contains("    private static function extracted(int $x): void\n"), "{found}");
+    // An arrow function's expression, at the top level.
+    assert_eq!(
+        p.method("<?php\n$f = fn(int $a) => /*|*/$a * 2 + 1/*|*/;\n").as_deref(),
+        Some(
+            "<?php\n$f = fn(int $a) => extracted($a);\n\nfunction extracted(int $a): int\n{\n    return $a * 2 + 1;\n}\n"
+        )
+    );
+    // Top-level closure statements.
+    let found = p.method("<?php\n$f = function ($a) {\n    /*|*/echo $a;/*|*/\n};\n").unwrap();
+    assert!(found.contains("    extracted($a);\n};\n\nfunction extracted($a): void\n"), "{found}");
+    // `$this` in a static closure is refused; the whole closure is an
+    // expression of the method.
+    assert_eq!(
+        p.method("<?php\nclass A\n{\n    private int $n = 1;\n\n    public function f()\n    {\n        $g = static function () {\n            /*|*/echo $this->n;/*|*/\n        };\n    }\n}\n"),
+        None
+    );
+    let found = p
+        .method("<?php\nclass A\n{\n    public function f(int $k)\n    {\n        $g = /*|*/fn($x) => $x + $k/*|*/;\n        return $g;\n    }\n}\n")
+        .unwrap();
+    assert!(found.contains("        $g = $this->extracted($k);\n"), "{found}");
+}
+
+#[test]
+fn the_dialog_chooses_name_parameters_visibility_and_return_type() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    let before = "<?php\nclass Shop\n{\n    public function total(int $a, int $b): int\n    {\n        /*|*/$c = $a * 2 + $b;/*|*/\n        return $c;\n    }\n}\n";
+    let (info, after) = p.dialog(before, |c| {
+        c.name = "combine".into();
+        c.parameters.reverse();
+        c.parameters[1].name = "first".into();
+        c.parameters[0].ty = "float|int".into();
+        c.visibility = "protected".into();
+        c.is_static = true;
+        c.return_type = String::new();
+    });
+    let info = info.unwrap();
+    assert!(!info.function);
+    assert_eq!(info.class_name, "Shop");
+    assert_eq!(info.defaults.name, "extracted");
+    assert_eq!(info.defaults.visibility, "private");
+    assert_eq!(info.defaults.return_type, "int");
+    assert_eq!(info.duplicates, 0);
+    assert!(!info.static_required && !info.uses_this);
+    let names: Vec<(&str, &str)> =
+        info.defaults.parameters.iter().map(|p| (p.old_name.as_str(), p.ty.as_str())).collect();
+    assert_eq!(names, [("a", "int"), ("b", "int")]);
+    assert_eq!(
+        after.unwrap(),
+        "<?php\nclass Shop\n{\n    public function total(int $a, int $b): int\n    {\n        $c = self::combine($b, $a);\n        return $c;\n    }\n\n    protected static function combine(float|int $b, int $first)\n    {\n        $c = $first * 2 + $b;\n\n        return $c;\n    }\n}\n"
+    );
+    // An excluded parameter isn't passed.
+    let (_, after) = p.dialog(before, |c| c.parameters[1].included = false);
+    let after = after.unwrap();
+    assert!(after.contains("$c = $this->extracted($a);"), "{after}");
+    assert!(after.contains("private function extracted(int $a): int\n"), "{after}");
+    // Refused choices.
+    type Change = Box<dyn Fn(&mut ExtractChoice)>;
+    let refused: [(&str, Change); 6] = [
+        ("not a valid name", Box::new(|c| c.name = "1x".into())),
+        ("already has a method named 'Total'", Box::new(|c| c.name = "Total".into())),
+        ("two parameters named '$a'", Box::new(|c| c.parameters[1].name = "a".into())),
+        ("already used by the extracted code", Box::new(|c| c.parameters[0].name = "c".into())),
+        ("not a visibility", Box::new(|c| c.visibility = "internal".into())),
+        (
+            "don't match the selection",
+            Box::new(|c| {
+                c.parameters.pop();
+            }),
+        ),
+    ];
+    for (message, change) in refused {
+        let (_, after) = p.dialog(before, |c| change(c));
+        let error = after.unwrap_err();
+        assert!(error.contains(message), "{message}: {error}");
+    }
+    // `$this` keeps it an instance method; a static method keeps it static.
+    let this = "<?php\nclass A\n{\n    private int $n = 1;\n\n    public function f(): int\n    {\n        return /*|*/$this->n + 1/*|*/;\n    }\n}\n";
+    let (info, after) = p.dialog(this, |c| c.is_static = true);
+    assert!(info.unwrap().uses_this);
+    assert!(after.unwrap_err().contains("can't be static"));
+    let statics = "<?php\nclass A\n{\n    public static function f(int $n): int\n    {\n        return /*|*/$n + 1/*|*/;\n    }\n}\n";
+    let (info, after) = p.dialog(statics, |c| c.is_static = false);
+    let info = info.unwrap();
+    assert!(info.static_required && info.defaults.is_static);
+    assert!(after.unwrap_err().contains("must be static"));
+    // Functions: no visibility.
+    let (info, after) = p.dialog("<?php\n$a = 1;\n/*|*/echo $a;/*|*/\n", |c| c.name = "show".into());
+    assert!(info.unwrap().function);
+    assert_eq!(after.unwrap(), "<?php\n$a = 1;\nshow($a);\n\nfunction show(int $a): void\n{\n    echo $a;\n}\n");
+    // Nothing to extract: no dialog.
+    assert!(p.dialog("<?php\n$a = 1;\necho /*|*/$a/*|*/;\n", |_| {}).0.is_none());
+}
+
+#[test]
+fn duplicates_of_the_extracted_code_are_found_and_replaced() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    let class = |a: &str, b: &str, c: &str| {
+        format!(
+            "<?php\nclass Report\n{{\n    public function a(array $rows): int\n    {{\n{a}\n    }}\n\n    public function b(array $lines): int\n    {{\n{b}\n    }}\n\n    public static function c(array $xs): int\n    {{\n{c}\n    }}\n}}\n"
+        )
+    };
+    // Statements: the same code with other names (and spacing); a
+    // different constant isn't a copy.
+    let before = class(
+        "        /*|*/$total = count($rows) * 2;/*|*/\n        return $total;",
+        "        $sum = count($lines)  *  2;\n        $other = count($lines) * 3;\n        return $sum + $other;",
+        "        $n = count($xs) * 2;\n        return $n;",
+    );
+    let (info, after) = p.dialog(&before, |_| {});
+    let info = info.unwrap();
+    assert_eq!(info.duplicates, 2);
+    assert!(info.defaults.replace_duplicates);
+    // The copy in the static method needs a static method.
+    assert_eq!(
+        after.unwrap(),
+        class(
+            "        $total = $this->extracted($rows);\n        return $total;",
+            "        $sum = $this->extracted($lines);\n        $other = count($lines) * 3;\n        return $sum + $other;",
+            "        $n = count($xs) * 2;\n        return $n;",
+        )
+        .replace(
+            "    public function b(",
+            "    private function extracted(array $rows): int\n    {\n        $total = count($rows) * 2;\n\n        return $total;\n    }\n\n    public function b("
+        )
+    );
+    let (_, after) = p.dialog(&before, |c| c.is_static = true);
+    let after = after.unwrap();
+    assert!(after.contains("$n = self::extracted($xs);"), "{after}");
+    assert!(after.contains("$sum = self::extracted($lines);"), "{after}");
+    // Not replaced when not asked.
+    let (_, after) = p.dialog(&before, |c| c.replace_duplicates = false);
+    assert!(after.unwrap().contains("$sum = count($lines)  *  2;"));
+    // Expressions; two uses of one variable must stay one variable.
+    let before = class(
+        "        return /*|*/$rows[0] + $rows[1]/*|*/;",
+        "        $k = [1];\n        return $lines[0] + $lines[1] + $k[0] + $k[2];",
+        "        return $xs[0] + 1;",
+    );
+    let (info, after) = p.dialog(&before, |_| {});
+    assert_eq!(info.unwrap().duplicates, 1);
+    let after = after.unwrap();
+    assert!(after.contains("return $this->extracted($lines) + $k[0] + $k[2];"), "{after}");
+    // A copy whose variable is read later where the selection's isn't is
+    // not replaced.
+    let before = class(
+        "        /*|*/$t = count($rows);\n        echo $t;/*|*/\n        return 1;",
+        "        $t = count($lines);\n        echo $t;\n        return $t;",
+        "        return 1;",
+    );
+    assert_eq!(p.dialog(&before, |_| {}).0.unwrap().duplicates, 0);
+    // Functions: copies anywhere in the file.
+    let (info, after) = p.dialog(
+        "<?php\nfunction f(int $a): int\n{\n    return /*|*/$a * 3/*|*/;\n}\n\n$b = 2;\necho $b * 3;\n",
+        |_| {},
+    );
+    assert_eq!(info.unwrap().duplicates, 1);
+    let after = after.unwrap();
+    assert!(after.contains("echo extracted($b);\n"), "{after}");
 }
 
 // ------------------------------------------------------------ inline
@@ -718,6 +934,99 @@ fn inlined_names_are_qualified_for_another_namespace() {
         p.inline_call("<?php\nnamespace App;\n\n$x = Util\\/*|*/make(1);\n").as_deref(),
         Some("<?php\nnamespace App;\n\n$x = new \\App\\Model\\Item(\\strlen('a') + 1);\n")
     );
+}
+
+#[test]
+fn inline_inside_closures() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    // A closure's own variable.
+    assert_eq!(
+        p.inline_variable("<?php\n$f = function (int $a) {\n    $b/*|*/ = $a + 1;\n    return $b * 2;\n};\n")
+            .as_deref(),
+        Some("<?php\n$f = function (int $a) {\n    return ($a + 1) * 2;\n};\n")
+    );
+    assert_eq!(
+        p.inline_variable(&method(
+            "        return array_map(function ($i) {\n            $k = 3;\n            return $i * /*|*/$k;\n        }, $items);"
+        ))
+        .as_deref(),
+        Some(method("        return array_map(function ($i) {\n            return $i * 3;\n        }, $items);").as_str())
+    );
+    // Parameters and captures stay.
+    assert_eq!(p.inline_variable("<?php\n$f = function (int $a) {\n    return $a/*|*/ + 1;\n};\n"), None);
+    assert_eq!(
+        p.inline_variable("<?php\n$c = 1;\n$f = function () use ($c) {\n    $c = 2;\n    return $c/*|*/;\n};\n"),
+        None
+    );
+    // A call inside a closure.
+    let greet = "<?php\nfunction greet(string $name): string\n{\n    return 'Hello ' . $name;\n}\n\n";
+    assert_eq!(
+        p.inline_call(&format!("{greet}$f = function (string $who) {{\n    echo gr/*|*/eet($who);\n}};\n")).as_deref(),
+        Some(format!("{greet}$f = function (string $who) {{\n    echo 'Hello ' . $who;\n}};\n").as_str())
+    );
+}
+
+#[test]
+fn inline_all_calls_and_remove_the_declaration() {
+    let util = "<?php\nnamespace App;\n\n/**\n * Twice.\n */\nfunction twice(int $n): int\n{\n    return $n * 2;\n}\n\necho twice(1);\n";
+    let mut p = Project::with_files(
+        PhpVersion::LATEST,
+        &[("util.php", util), ("Other.php", "<?php\nnamespace App;\n\n$x = twice(5) + 1;\n")],
+    );
+    // From a call or the declaration: every call, in every file, and the
+    // function with its doc comment.
+    let marked = "<?php\nnamespace App;\n\n$y = twi/*|*/ce(3);\n";
+    let (text, range) = selection(marked);
+    let doc = DocId(100);
+    p.engine.document_opened(doc, &p.root.join("src/a.php"), 1, &text);
+    let actions = p.engine.code_actions(doc, range, &[INLINE_FUNCTION_ALL.to_owned()]).unwrap();
+    p.engine.document_closed(doc);
+    let [action] = actions.as_slice() else { panic!("{actions:?}") };
+    assert_eq!(action.title, "Inline all calls of 'twice' and remove the function");
+    let mut changed: Vec<(String, String)> = action
+        .edit
+        .files
+        .iter()
+        .map(|file| {
+            let FileEdit::Edit { path, edits, .. } = file else { panic!("{file:?}") };
+            let path: PathBuf = path.to_path_buf();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let before = if name == "a.php" { text.clone() } else { std::fs::read_to_string(&path).unwrap() };
+            let mut document = ide_text::Document::new(&before);
+            document.apply_edits(edits).unwrap();
+            (name, document.text().to_string())
+        })
+        .collect();
+    changed.sort();
+    assert_eq!(
+        changed,
+        [
+            ("Other.php".to_owned(), "<?php\nnamespace App;\n\n$x = (5 * 2) + 1;\n".to_owned()),
+            ("a.php".to_owned(), "<?php\nnamespace App;\n\n$y = 3 * 2;\n".to_owned()),
+            ("util.php".to_owned(), "<?php\nnamespace App;\n\necho 1 * 2;\n".to_owned()),
+        ]
+    );
+    // Methods: from the declaration's name.
+    let class = "<?php\nclass Shop\n{\n    public function total(int $a): int\n    {\n        return $this->double($a) + $this->double(1);\n    }\n\n    private function dou/*|*/ble(int $n): int\n    {\n        return $n * 2;\n    }\n}\n";
+    let found = p.actions(class, INLINE_METHOD_ALL);
+    let [(title, after)] = found.as_slice() else { panic!("{found:?}") };
+    assert_eq!(title, "Inline all calls of 'double' and remove the method");
+    assert_eq!(
+        after,
+        "<?php\nclass Shop\n{\n    public function total(int $a): int\n    {\n        return ($a * 2) + (1 * 2);\n    }\n}\n"
+    );
+    // Refused: a call that can't be inlined, a callable string, an
+    // overriding method, no calls.
+    let refused = [
+        "<?php\nfunction f($n)\n{\n    if ($n) {\n        return 1;\n    }\n    return 2;\n}\n$a = /*|*/f(1);\n",
+        "<?php\nfunction g($n)\n{\n    return $n;\n}\n$a = /*|*/g(1);\n$b = array_map('g', [1]);\n",
+        "<?php\nclass A\n{\n    public function v()\n    {\n        return 1;\n    }\n}\n\nfinal class B extends A\n{\n    public function v()\n    {\n        return 2;\n    }\n\n    public function w()\n    {\n        return $this->/*|*/v();\n    }\n}\n",
+        "<?php\nfunction unused/*|*/_one($n)\n{\n    return $n;\n}\n",
+    ];
+    for marked in refused {
+        assert!(p.actions(marked, INLINE_FUNCTION_ALL).is_empty(), "{marked}");
+        assert!(p.actions(marked, INLINE_METHOD_ALL).is_empty(), "{marked}");
+    }
 }
 
 #[test]

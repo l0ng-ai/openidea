@@ -44,7 +44,7 @@ import { DOCUMENTATION_WINDOW } from "./docs";
 import { prefetchMarkdown } from "./markdown";
 import { outsideProjectBanner } from "./outsideProject";
 import { implementationGutter, registerNavigationActions } from "@/editor/navigation";
-import { ChangeSignatureDialog, HierarchyDialog } from "@/editor/refactor";
+import { ChangeSignatureDialog, ExtractMethodDialog, HierarchyDialog } from "@/editor/refactor";
 
 export function lspExtensions(ctx: EditorDocContext): Extension[] {
   return [
@@ -83,6 +83,7 @@ export function activate(): () => void {
     registerOverlay({ id: "editor-lsp.popups", component: LspPopups }),
     registerOverlay({ id: "editor-lsp.hierarchyDialog", component: HierarchyDialog }),
     registerOverlay({ id: "editor-lsp.changeSignatureDialog", component: ChangeSignatureDialog }),
+    registerOverlay({ id: "editor-lsp.extractMethodDialog", component: ExtractMethodDialog }),
     // Laravel: "Create translation key…" asks for the text per locale.
     registerOverlay({ id: "editor-lsp.createTranslationDialog", component: CreateTranslationDialog }),
     registerCreateTranslation(),

@@ -3,3 +3,4 @@ export { askUsagesDetected, fileUsages, safeDelete, viewUsages } from "./safeDel
 export { startHierarchyRefactoring } from "./hierarchy";
 export { HierarchyDialog } from "./HierarchyDialog";
 export { ChangeSignatureDialog } from "./ChangeSignatureDialog";
+export { ExtractMethodDialog } from "./ExtractMethodDialog";

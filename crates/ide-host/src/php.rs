@@ -32,7 +32,7 @@ use ide_php::engine::{CACHE_SUBDIR, EngineConfig, PhpEngine};
 use ide_php::frameworks::laravel::LiveSchema;
 use ide_php::inspect::InspectionConfig;
 use ide_php::project::LayoutConfig;
-use ide_php::refactor::{CHANGE_SIGNATURE, ChangeSignature};
+use ide_php::refactor::{CHANGE_SIGNATURE, ChangeSignature, EXTRACT_METHOD_DIALOG, ExtractMethod};
 use ide_php::stubs::StubFilter;
 use ide_text::AppliedChange;
 use ide_workspace::documents::DocumentObserver;
@@ -603,6 +603,30 @@ impl crate::language_service::LanguageService for PhpService {
                 open: None,
             });
         }
+        // Extract method: the editor's dialog chooses the name, parameters
+        // and so on, then resolves the action.
+        let wanted = only.is_empty()
+            || only.iter().any(|o| {
+                EXTRACT_METHOD_DIALOG == o
+                    || EXTRACT_METHOD_DIALOG.strip_prefix(o.as_str()).is_some_and(|r| r.starts_with('.'))
+            });
+        if wanted
+            && range.start != range.end
+            && let Some(info) = engine.extract_method_info(doc, range)
+            && let Ok(data) = serde_json::to_string(&info)
+        {
+            actions.push(CodeAction {
+                title: if info.function { "Extract function…" } else { "Extract method…" }.to_owned(),
+                kind: Some(EXTRACT_METHOD_DIALOG.to_owned()),
+                is_preferred: false,
+                disabled_reason: None,
+                edit: None,
+                command: None,
+                data: Some(serde_json::Value::String(data)),
+                server,
+                open: None,
+            });
+        }
         Some(Ok(CodeActionQuery {
             actions,
             advertised_kinds: Some(ide_php::imports::ACTION_KINDS.iter().map(|k| k.to_string()).collect()),
@@ -610,9 +634,25 @@ impl crate::language_service::LanguageService for PhpService {
     }
 
     /// Change signature, with the new signature the editor's dialog put in
-    /// the action's `data` ([`ide_php::refactor::ChangeSignature`]).
+    /// the action's `data` ([`ide_php::refactor::ChangeSignature`]), and
+    /// Extract method with the dialog's choice
+    /// ([`ide_php::refactor::ExtractMethod`]).
     fn resolve_code_action(&self, doc: DocId, action: &CodeAction, cancel: &CancellationToken) -> Answer<CodeAction> {
         let engine = self.0.engine()?;
+        if action.server == engine.server_id() && action.kind.as_deref() == Some(EXTRACT_METHOD_DIALOG) {
+            let parsed = action.data.as_ref().and_then(|data| match data {
+                serde_json::Value::String(json) => serde_json::from_str::<ExtractMethod>(json).ok(),
+                other => serde_json::from_value::<ExtractMethod>(other.clone()).ok(),
+            });
+            let Some(data) = parsed else {
+                return Some(Err(ide_core::IdeError::invalid("The Extract Method request is malformed")));
+            };
+            let edit = match engine.extract_method_edit(doc, &data)? {
+                Ok(edit) => edit,
+                Err(e) => return Some(Err(e)),
+            };
+            return Some(Ok(CodeAction { edit: Some(edit), data: None, ..action.clone() }));
+        }
         if action.server != engine.server_id() || action.kind.as_deref() != Some(CHANGE_SIGNATURE) {
             return None;
         }

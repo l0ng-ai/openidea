@@ -965,7 +965,7 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
 
   Tests: caret and inspection fixtures, plus `real_app_checklist` on Monica and Bagisto with no new false positives.
 
-- [ ] Phase 9.6: Extract method and inline, complete
+- [x] Phase 9.6: Extract method and inline, complete
       Extract method (5.3):
   - a dialog (frontend, en/zh) for name, parameters (rename, reorder, include or exclude), visibility, static and return type, built on an engine query in the style of the other refactoring dialogs
   - detection of duplicates of the extracted code in the class, with an option to replace them

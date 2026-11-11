@@ -72,8 +72,10 @@ use crate::syntax::ParsedFile;
 pub use generate::{GENERATE_ACCESSORS, GENERATE_CONSTRUCTOR, IMPLEMENT_METHODS, OVERRIDE_METHODS};
 pub(crate) use generate::{GENERATE_KINDS, generate_actions};
 pub(crate) use inline::inline_actions;
-pub use inline::{INLINE_FUNCTION, INLINE_METHOD, INLINE_VARIABLE};
-pub use method::{EXTRACT_FUNCTION, EXTRACT_METHOD};
+pub use inline::{INLINE_FUNCTION, INLINE_FUNCTION_ALL, INLINE_METHOD, INLINE_METHOD_ALL, INLINE_VARIABLE};
+pub use method::{
+    EXTRACT_FUNCTION, EXTRACT_METHOD, EXTRACT_METHOD_DIALOG, ExtractChoice, ExtractMethod, ExtractParameter,
+};
 pub use signature::{CHANGE_SIGNATURE, ChangeSignature, Signature, SignatureParameter};
 
 /// The code action kind of Extract variable.

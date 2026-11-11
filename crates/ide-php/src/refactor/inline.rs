@@ -44,13 +44,21 @@
 //!   called polymorphically (`$obj->`, `static::`) that a subclass
 //!   overrides, unless they are private or final.
 //!
+//! - **Inline all calls and remove the declaration**
+//!   (`refactor.inline.method.all`, `refactor.inline.function.all`): see
+//!   [`inline_all`].
+//!
+//! Inline variable works in closures too (their parameters and `use`
+//! captures are refused like parameters), and calls are inlined wherever
+//! they are, closures included.
+//!
 //! The rules are our own, after IntelliJ's documented Inline Variable and
 //! Inline Method behaviour.
 
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 
-use ide_core::{CancellationToken, TextEdit};
+use ide_core::{CancellationToken, FileEdit, TextEdit, WorkspaceEdit};
 use mago_span::HasSpan;
 use mago_syntax::cst::{
     Access, ArrayElement, Assignment, AssignmentOperator, Call, ClassLikeMemberSelector, Expression, Function,
@@ -64,12 +72,14 @@ use super::{
 };
 use crate::engine::PhpEngine;
 use crate::imports::{ImportAction, file_edit, removal, wanted};
+use crate::index::path_key;
 use crate::inspect::fixes::{line_indent, newline, starts_line};
 use crate::names::{FileNames, NameKind, NameRole, Resolution, fqn_eq};
 use crate::navigate::enclosing_class;
 use crate::navigate::hierarchy::Subtypes;
+use crate::navigate::references::{Sought, UsageKind};
 use crate::navigate::symbol::{Decl, MemberKind, Subject, file_text};
-use crate::summary::{ClassKind, FileSummary};
+use crate::summary::{ClassKind, FileSummary, Visibility};
 use crate::syntax::ParsedFile;
 use crate::types::{Defined, ExprTypes, Flow, Frame};
 
@@ -79,6 +89,10 @@ pub const INLINE_VARIABLE: &str = "refactor.inline.variable";
 pub const INLINE_METHOD: &str = "refactor.inline.method";
 /// The code action kind of Inline function.
 pub const INLINE_FUNCTION: &str = "refactor.inline.function";
+/// The code action kind of "Inline all calls and remove the method".
+pub const INLINE_METHOD_ALL: &str = "refactor.inline.method.all";
+/// The code action kind of "Inline all calls and remove the function".
+pub const INLINE_FUNCTION_ALL: &str = "refactor.inline.function.all";
 
 /// The Inline actions for the caret (or selection start) at bytes
 /// `start..end` of an open document, filtered by `only`.
@@ -92,7 +106,8 @@ pub(crate) fn inline_actions(
 ) -> Vec<ImportAction> {
     let want_variable = wanted(only, INLINE_VARIABLE);
     let want_call = wanted(only, INLINE_METHOD) || wanted(only, INLINE_FUNCTION);
-    if !want_variable && !want_call {
+    let want_all = wanted(only, INLINE_METHOD_ALL) || wanted(only, INLINE_FUNCTION_ALL);
+    if !want_variable && !want_call && !want_all {
         return Vec::new();
     }
     let summary = FileSummary::extract(parsed);
@@ -107,6 +122,12 @@ pub(crate) fn inline_actions(
     }
     if want_call
         && let Some(action) = inline_call(engine, parsed, path, &summary, at)
+        && wanted(only, action.kind)
+    {
+        out.push(action);
+    }
+    if want_all
+        && let Some(action) = inline_all(engine, parsed, path, &summary, at)
         && wanted(only, action.kind)
     {
         out.push(action);
@@ -278,27 +299,49 @@ fn inline_variable(
     if bare == "this" || SUPERGLOBALS.contains(&bare.as_str()) {
         return None;
     }
-    let (scope, scope_at) = scope_of(&nodes)?;
-    let parameters = match scope {
-        Scope::Method(method) => Some(&method.parameter_list),
-        Scope::Function(function) => Some(&function.parameter_list),
-        Scope::TopLevel => None,
+    let file_names = FileNames::resolve(parsed);
+    let resolver = engine.resolver();
+    let types = ExprTypes::new(parsed, &file_names, summary, &resolver);
+    // The innermost function-like: a closure's variables are its own.
+    let closure_at = nodes.iter().rposition(|n| {
+        matches!(
+            n,
+            Node::Closure(_) | Node::ArrowFunction(_) | Node::AnonymousClass(_) | Node::Method(_) | Node::Function(_)
+        )
+    });
+    let (scope_root, scope_at, frames) = match closure_at.map(|i| (i, nodes[i])) {
+        Some((i, Node::Closure(closure))) => {
+            let captured = closure.use_clause.iter().flat_map(|clause| clause.variables.iter().map(|v| &v.variable));
+            if closure.parameter_list.parameters.iter().map(|p| &p.variable).chain(captured).any(|v| v.name == name) {
+                return None;
+            }
+            let at = nodes.last().map_or(offset, |n| n.span().start.offset);
+            let (_, frames) = types.locate(at).variable?;
+            if !matches!(frames.last(), Some(Frame::Closure(c)) if c.span() == closure.span()) {
+                return None;
+            }
+            (Node::Block(&closure.body), i, frames)
+        }
+        _ => {
+            let (scope, scope_at) = scope_of(&nodes)?;
+            let parameters = match scope {
+                Scope::Method(method) => Some(&method.parameter_list),
+                Scope::Function(function) => Some(&function.parameter_list),
+                Scope::TopLevel => None,
+            };
+            if parameters.is_some_and(|list| list.parameters.iter().any(|p| p.variable.name == name)) {
+                return None;
+            }
+            let class = match scope {
+                Scope::Method(method) => Some(enclosing_class(summary, method.span().start.offset)?.fqn.clone()),
+                _ => None,
+            };
+            (scope_node(scope, program), scope_at, frames_of(scope, class))
+        }
     };
-    if parameters.is_some_and(|list| list.parameters.iter().any(|p| p.variable.name == name)) {
-        return None;
-    }
-    let scope_root = scope_node(scope, program);
     if has_hidden_variables(scope_root) {
         return None;
     }
-    let file_names = FileNames::resolve(parsed);
-    let resolver = engine.resolver();
-    let class = match scope {
-        Scope::Method(method) => Some(enclosing_class(summary, method.span().start.offset)?.fqn.clone()),
-        _ => None,
-    };
-    let frames = frames_of(scope, class);
-    let types = ExprTypes::new(parsed, &file_names, summary, &resolver);
     let flow = types.flow(&frames);
     if flow.is_dynamic() {
         return None;
@@ -444,14 +487,14 @@ enum Shape<'a> {
 }
 
 /// A text replacement in the callee's file.
-struct Splice {
-    start: u32,
-    end: u32,
-    text: String,
+pub(super) struct Splice {
+    pub(super) start: u32,
+    pub(super) end: u32,
+    pub(super) text: String,
 }
 
 /// `text` with the splices applied, and a map from old offsets to new ones.
-fn spliced(text: &str, mut splices: Vec<Splice>) -> (String, impl Fn(u32) -> u32) {
+pub(super) fn spliced(text: &str, mut splices: Vec<Splice>) -> (String, impl Fn(u32) -> u32) {
     splices.sort_by_key(|s| s.start);
     let mut out = String::with_capacity(text.len());
     let mut at = 0usize;
@@ -976,6 +1019,150 @@ fn inline_call(
         kind,
         preferred: false,
         edit: file_edit(path, edits),
+        open: None,
+    })
+}
+
+// ------------------------------------------------------------ all calls
+
+/// Where the declaration's doc comment starts, when one is right before it.
+fn with_doc_comment(text: &str, start: u32) -> u32 {
+    let before = text[..start as usize].trim_end();
+    if !before.ends_with("*/") {
+        return start;
+    }
+    match before.rfind("/**") {
+        Some(at) if !before[at..before.len() - 2].contains("*/") => at as u32,
+        _ => start,
+    }
+}
+
+/// "Inline all calls and remove the function / method": with the caret on
+/// the declaration's name or a call, every call in the project is inlined
+/// (as [`inline_call`] does it; refused when one of them can't be) and the
+/// declaration is removed with its doc comment. Refused for methods that
+/// override or implement another, abstract and magic methods, and
+/// declarations used other than by calls (callable strings and arrays,
+/// `f(...)`, dynamic calls that may reach them).
+fn inline_all(
+    engine: &PhpEngine,
+    parsed: &ParsedFile,
+    path: &Path,
+    summary: &FileSummary,
+    offset: u32,
+) -> Option<ImportAction> {
+    let resolver = engine.resolver();
+    let found = engine
+        .at_caret(parsed, summary, &resolver, offset)
+        .or_else(|| engine.at_caret(parsed, summary, &resolver, offset.saturating_sub(1)))?;
+    let Subject::Decls(decls) = found.subject else { return None };
+    let [decl] = decls.as_slice() else { return None };
+    let (sought, kind, what, name) = match decl {
+        Decl::Function(fqn) => (
+            Sought::Name { kind: NameKind::Function, fqn: fqn.clone() },
+            INLINE_FUNCTION_ALL,
+            "function",
+            fqn.rsplit('\\').next().unwrap_or(fqn).to_owned(),
+        ),
+        Decl::Member(member) if member.kind == MemberKind::Method => {
+            let method = member.model.method(&member.name)?;
+            if method.info.overrides.is_some() || method.is_abstract || member.name.starts_with("__") {
+                return None;
+            }
+            (
+                Sought::Member {
+                    kind: MemberKind::Method,
+                    name: member.name.clone(),
+                    declaring: method.info.declaring.fqn.clone(),
+                    private: method.info.visibility == Visibility::Private,
+                },
+                INLINE_METHOD_ALL,
+                "method",
+                member.name.clone(),
+            )
+        }
+        _ => return None,
+    };
+    let [target] = engine.decl_targets(decl, path, summary).try_into().ok()?;
+    if engine.is_library(&target.path) || target.path.starts_with(engine.stub_dir()) {
+        return None;
+    }
+    let cancel = CancellationToken::new();
+    let sought = std::slice::from_ref(&sought);
+    if !engine.possible_usages(sought, path, &cancel).ok()?.is_empty() {
+        return None;
+    }
+    let usages = engine.find_usages(sought, path, summary, false, &cancel).ok()?;
+    if !usages.iter().any(|u| u.kind == UsageKind::Code)
+        || usages.iter().any(|u| !matches!(u.kind, UsageKind::Code | UsageKind::Doc))
+    {
+        return None;
+    }
+    let mut by_file: BTreeMap<String, (PathBuf, Vec<ide_core::Range>)> = BTreeMap::new();
+    for usage in usages.iter().filter(|u| u.kind == UsageKind::Code) {
+        by_file.entry(path_key(&usage.path)).or_insert_with(|| (usage.path.clone(), Vec::new())).1.push(usage.range);
+    }
+    by_file.entry(path_key(&target.path)).or_insert_with(|| (target.path.clone(), Vec::new()));
+    let mut files = Vec::new();
+    for (key, (file, ranges)) in by_file {
+        let own;
+        let own_summary;
+        let (file_parsed, file_summary) = if key == path_key(path) {
+            (parsed, summary)
+        } else {
+            own = ParsedFile::parse(&file.to_string_lossy(), file_text(engine, &file)?);
+            own_summary = FileSummary::extract(&own);
+            if own_summary.has_errors {
+                return None;
+            }
+            (&own, &own_summary)
+        };
+        let index = file_parsed.line_index();
+        let mut edits: Vec<TextEdit> = Vec::new();
+        for range in ranges {
+            let action = inline_call(engine, file_parsed, &file, file_summary, index.byte(range.start))?;
+            let [FileEdit::Edit { edits: inlined, .. }] = action.edit.files.as_slice() else { return None };
+            edits.extend(inlined.iter().cloned());
+        }
+        if key == path_key(&target.path) {
+            let text = file_parsed.text();
+            let name_offset = index.byte(target.range.start);
+            let mut span = None;
+            visit(Node::Program(file_parsed.program()), &mut |node| match node {
+                Node::Function(function) if function.name.span.start.offset == name_offset => {
+                    span = Some(span_of(&node));
+                }
+                Node::Method(method) if method.name.span.start.offset == name_offset => span = Some(span_of(&node)),
+                _ => {}
+            });
+            let (start, end) = span?;
+            let (mut from, to) = removal(text, with_doc_comment(text, start), end);
+            // The last member: the blank line before it goes instead.
+            if text[to as usize..].trim_start().starts_with('}') {
+                while let Some(rest) = text[..from as usize].strip_suffix('\n') {
+                    let gap = if rest.ends_with('\n') {
+                        1
+                    } else if rest.ends_with("\n\r") {
+                        2
+                    } else {
+                        break;
+                    };
+                    from -= gap;
+                }
+            }
+            edits.push(TextEdit { range: index.range(from, to), new_text: String::new() });
+        }
+        edits.sort_by_key(|e| (e.range.start, e.range.end));
+        if edits.windows(2).any(|w| w[1].range.start < w[0].range.end) {
+            return None;
+        }
+        files.push(FileEdit::Edit { path: file.into(), edits, version: None });
+    }
+    Some(ImportAction {
+        title: format!("Inline all calls of '{name}' and remove the {what}"),
+        kind,
+        preferred: false,
+        edit: WorkspaceEdit { files, preconditions: Vec::new() },
         open: None,
     })
 }
