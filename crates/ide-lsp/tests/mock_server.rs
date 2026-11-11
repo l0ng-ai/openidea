@@ -6003,7 +6003,7 @@ async fn gomod_files_are_served_by_gopls() {
             IdeEvent::Diagnostics { path: p, items, .. } if p.0 == path => Some(items.clone()),
             _ => None,
         })
-        .last()
+        .next_back()
         .unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].message, "missing requirement");
