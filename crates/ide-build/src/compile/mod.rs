@@ -4,11 +4,13 @@
 //! for the Build tool window, the Problems view and the editor.
 
 mod fingerprint;
+mod launch_resources;
 mod parse;
 mod single;
 mod up_to_date;
 
 pub use fingerprint::{LaunchFingerprint, launch_fingerprint, menu_fingerprint};
+pub use launch_resources::process_launch_resources;
 pub use single::{
     SingleFileTarget, compile_file_plan, find_javac, javac_step, single_file_classpath, single_file_target,
 };

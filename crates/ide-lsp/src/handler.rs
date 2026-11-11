@@ -231,14 +231,9 @@ impl ClientHandler {
         };
         let Some(path) = uri_to_path(params.uri.as_str()) else { return };
         if self.server.name == "jdtls"
-            && let Some(body) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics)
-            && mgr.first_message(&self.server.name, &body)
+            && let Some(failure) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics)
         {
-            mgr.sink().emit(ide_core::IdeEvent::Notify {
-                level: ide_core::event::NotifyLevel::Error,
-                title: "Maven project could not be configured".into(),
-                body: Some(body),
-            });
+            self.build_plan_failure(mgr, failure);
         }
         if !mgr.accepts_injected_diagnostics(&path, params.version) {
             return;
@@ -252,6 +247,17 @@ impl ClientHandler {
         }
         let shown = self.server.set_diagnostics(path.clone(), params.diagnostics);
         mgr.emit_diagnostics(&self.server, path, shown, self.encoding());
+    }
+
+    /// Once per unresolved plugin, whether m2e marked a `pom.xml` or only logged it.
+    fn build_plan_failure(&self, mgr: &LspManager, (plugin, body): (String, String)) {
+        if mgr.first_message(&self.server.name, &format!("build plan: {plugin}")) {
+            mgr.sink().emit(ide_core::IdeEvent::Notify {
+                level: ide_core::event::NotifyLevel::Error,
+                title: "Maven project could not be configured".into(),
+                body: Some(body),
+            });
+        }
     }
 
     fn show_message(&self, mgr: &LspManager, params: &Value) {
@@ -374,6 +380,12 @@ impl Handler for ClientHandler {
                     && text.contains(" to import Gradle project ")
                 {
                     self.show_message(&mgr, &json!({ "type": 1, "message": text.lines().next().unwrap_or(text) }));
+                }
+                if self.server.name == "jdtls"
+                    && params.get("type").and_then(Value::as_u64) == Some(1)
+                    && let Some(failure) = crate::jdtls::logged_build_plan_failure(text)
+                {
+                    self.build_plan_failure(&mgr, failure);
                 }
                 match params.get("type").and_then(Value::as_u64) {
                     Some(1) if self.server.name == "jdtls" && text.contains(crate::jdtls::reserved_names::IMPORT_FAILURE) => {

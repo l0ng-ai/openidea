@@ -352,6 +352,22 @@ pub struct IndexEntry {
     /// the IDE before showing it.
     #[serde(default)]
     pub icon: Option<PluginIcon>,
+    /// Where to read more: the manifest's homepage, else the registry's source repository.
+    #[serde(default)]
+    pub homepage: Option<String>,
+    /// This version's release notes (the manifest's `change-notes`).
+    #[serde(default)]
+    pub notes: Option<String>,
+    /// Downloads of the plugin's packages, as counted by whoever serves them.
+    #[serde(default)]
+    pub downloads: Option<u64>,
+    /// Picked by the marketplace's maintainers.
+    #[serde(default)]
+    pub featured: bool,
+    /// Project-relative paths whose presence makes the plugin worth suggesting
+    /// (`pom.xml`, `config/routes.rb`).
+    #[serde(default)]
+    pub suggest: Vec<String>,
 }
 
 impl IndexEntry {
@@ -685,7 +701,31 @@ mod tests {
             engine: "^1.0".into(),
             categories: Vec::new(),
             icon: None,
+            homepage: None,
+            notes: None,
+            downloads: None,
+            featured: false,
+            suggest: Vec::new(),
         }
+    }
+
+    #[test]
+    fn listing_details_are_optional() {
+        let mut json = serde_json::to_value(entry("acme.a", "acme")).unwrap();
+        for key in ["homepage", "notes", "downloads", "featured", "suggest"] {
+            json.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(serde_json::from_value::<IndexEntry>(json).unwrap(), entry("acme.a", "acme"));
+        let full = IndexEntry {
+            homepage: Some("https://example.com".into()),
+            notes: Some("Fixes".into()),
+            downloads: Some(42),
+            featured: true,
+            suggest: vec!["pom.xml".into()],
+            ..entry("acme.a", "acme")
+        };
+        let back: IndexEntry = serde_json::from_str(&serde_json::to_string(&full).unwrap()).unwrap();
+        assert_eq!(back, full);
     }
 
     fn version(id: &str, version: &str, engine: &str) -> IndexEntry {

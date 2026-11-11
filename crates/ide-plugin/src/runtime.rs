@@ -356,6 +356,13 @@ pub trait HostApi: Send + Sync {
     }
     /// Roots of the open projects.
     fn projects(&self) -> Vec<std::path::PathBuf>;
+    /// Roots of the workspace members attached to the project at `root` (a
+    /// project window group's folders, as the editor and LSP resolve them).
+    /// Empty for a plain project.
+    fn member_roots(&self, root: &Path) -> Vec<std::path::PathBuf> {
+        let _ = root;
+        Vec::new()
+    }
     /// The most specific open project containing a document (including a new file).
     fn project_of(&self, path: &Path) -> Option<std::path::PathBuf> {
         if !path.is_absolute() {

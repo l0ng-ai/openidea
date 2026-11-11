@@ -2155,11 +2155,13 @@ async fn attach_session_reports_capability() {
         let id = h.start(remote_attach(adapter, project.path())).await.unwrap();
         let caps = h.manager.capabilities(id).unwrap();
         assert!(caps.jvm_memory, "{adapter}");
+        assert_eq!(caps.jvm_heap, caps.jvm_memory, "{adapter}");
     }
 
     let id = h.start(config()).await.unwrap();
     let caps = h.manager.capabilities(id).unwrap();
     assert!(!caps.jvm_memory);
+    assert_eq!(caps.jvm_heap, caps.jvm_memory);
     assert_eq!(
         h.manager.jvm_memory_classes(id).await.unwrap(),
         JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::NoJvmProcess, can_count_when_paused: false }

@@ -169,9 +169,9 @@ export const commands = {
 	/**  Entries of `task`'s conversation, or of its subagent `subagent`'s. */
 	agentEntries: (task: string, subagent: string | null) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task, subagent })),
 	agentCreate: (request: NewAgentTask) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_create", { request })),
-	/**  Sessions on this machine that no task holds yet, newest first (#312). */
+	/**  Sessions of the project on this machine that no task holds yet, newest first. */
 	agentExternalSessions: () => typedError<ExternalSession[], IdeError>(__TAURI_INVOKE("agent_external_sessions")),
-	/**  Imports an external session as a task: its first turn loads and replays it (#312). */
+	/**  Imports an external session as a task: its first turn loads and replays it. */
 	agentImportSession: (provider: string, sessionId: string) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_import_session", { provider, sessionId })),
 	/**  Sends a message; while the agent works it is queued, or with `now` it interrupts the turn. */
 	agentPrompt: (task: string, prompt: AgentPrompt, now: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_prompt", { task, prompt, now })),
@@ -298,8 +298,9 @@ export const commands = {
 	 *  without opening it: previews of closed files.
 	 */
 	docUiMode: (path: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("doc_ui_mode", { path })),
-	/**  "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label. */
-	docSetEncoding: (doc: DocId, encoding: string, reload: boolean) => typedError<string, IdeError>(__TAURI_INVOKE("doc_set_encoding", { doc, encoding, reload })),
+	/**  "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state. */
+	docSetEncoding: (doc: DocId, encoding: string, reload: boolean) => typedError<DocumentEncoding, IdeError>(__TAURI_INVOKE("doc_set_encoding", { doc, encoding, reload })),
+	docSetBom: (doc: DocId, hasBom: boolean) => typedError<DocumentEncoding, IdeError>(__TAURI_INVOKE("doc_set_bom", { doc, hasBom })),
 	docSetLineEnding: (doc: DocId, lineEnding: LineEnding) => typedError<null, IdeError>(__TAURI_INVOKE("doc_set_line_ending", { doc, lineEnding })),
 	/**
 	 *  Structure view: LSP document symbols when available (with tree-sitter
@@ -903,6 +904,20 @@ export const commands = {
 	 *  and language servers waiting for a JDK (jdtls) start on it.
 	 */
 	jdkDownload: (vendor: string, version: number, location: string | null, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("jdk_download", { vendor, version, location, request, onEvent })),
+	/**  The project generators File › New Project offers, in list order. */
+	scaffoldCatalog: () => __TAURI_INVOKE<GeneratorInfo[]>("scaffold_catalog"),
+	/**
+	 *  The fields a generator's project service adds for `values`; cancellable with
+	 *  `cancel_request(request)`.
+	 */
+	scaffoldOptions: (generator: string, values: { [key in string]: string }, request: RequestId) => typedError<Field[], IdeError>(__TAURI_INVOKE("scaffold_options", { generator, values, request })),
+	/**  The programs a generator needs for `values`, and whether they are installed. */
+	scaffoldRequirements: (generator: string, values: { [key in string]: string }) => typedError<Requirement[], IdeError>(__TAURI_INVOKE("scaffold_requirements", { generator, values })),
+	/**
+	 *  Creates a project, streaming progress through `on_event`, and returns its directory,
+	 *  trusted. Cancellable with `cancel_request(request)`; a failed or cancelled run leaves nothing.
+	 */
+	scaffoldCreate: (req: CreateRequest, request: RequestId, onEvent: Channel<ScaffoldEvent>) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("scaffold_create", { req, request, onEvent })),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
@@ -1157,6 +1172,24 @@ export const commands = {
 	 *  run that is gone, remote, or has no JVM with an attach listener.
 	 */
 	profilerGcBeforeStop: (run: RunId) => typedError<number, IdeError>(__TAURI_INVOKE("profiler_gc_before_stop", { run })),
+	/**  Dumps the session's JVM and analyzes the dump; cancel with `request`. */
+	debugHeapCapture: (session: DebugSessionId, request: RequestId, onProgress: Channel<HeapProgress>) => typedError<HeapCaptureResult, IdeError>(__TAURI_INVOKE("debug_heap_capture", { session, request, onProgress })),
+	/**  Analyzes an `.hprof` file; cancel with `request`. */
+	debugHeapOpen: (path: IpcPath, request: RequestId, onProgress: Channel<HeapProgress>) => typedError<HeapOpenResult, IdeError>(__TAURI_INVOKE("debug_heap_open", { path, request, onProgress })),
+	debugHeapClasses: (snapshot: HeapSnapshotId) => typedError<HeapClassRow[], IdeError>(__TAURI_INVOKE("debug_heap_classes", { snapshot })),
+	/**  A page of the dominator tree: under `parent`, of type `classIndex`, or both. */
+	debugHeapDominators: (snapshot: HeapSnapshotId, parent: number | null, classIndex: number | null, offset: number, limit: number) => typedError<HeapObjectPage, IdeError>(__TAURI_INVOKE("debug_heap_dominators", { snapshot, parent, classIndex, offset, limit })),
+	/**  The shortest path from `object` to a GC root; `null` when it is unreachable. */
+	debugHeapPath: (snapshot: HeapSnapshotId, object: HeapObjectRef) => typedError<{
+	steps: HeapPathStep[],
+	/**  Steps left out between `steps[omitted_after - 1]` and `steps[omitted_after]`; 0 for none. */
+	omitted: number,
+	omittedAfter: number,
+} | null, IdeError>(__TAURI_INVOKE("debug_heap_path", { snapshot, object })),
+	debugHeapCompare: (base: HeapSnapshotId, current: HeapSnapshotId) => typedError<HeapClassDiff[], IdeError>(__TAURI_INVOKE("debug_heap_compare", { base, current })),
+	/**  Copies the snapshot's dump to `path`, replacing a file there. */
+	debugHeapSave: (snapshot: HeapSnapshotId, path: IpcPath) => typedError<null, IdeError>(__TAURI_INVOKE("debug_heap_save", { snapshot, path })),
+	debugHeapClose: (snapshot: HeapSnapshotId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_heap_close", { snapshot })),
 	/**  Routes this window's plugin events to `on_event` (replaces an earlier subscription). */
 	pluginSubscribe: (onEvent: Channel<PluginEvent_Deserialize>) => __TAURI_INVOKE<void>("plugin_subscribe", { onEvent }),
 	/**
@@ -2142,12 +2175,10 @@ export type AppearanceSettings = {
 	projectColorsInToolbar?: boolean,
 	dndWithAltOnly?: boolean,
 	menuIcons?: boolean,
-	/**  `hamburger` | `merged`: main menu presentation in the frameless title bar. */
+	/**  `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar. */
 	mainMenuStyle?: string,
 	/**  A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
 	mainMenuAlt?: boolean,
-	/**  Always show the main menu titles instead of the hamburger button (#1521). */
-	alwaysShowMainMenu?: boolean,
 	/**  `subpixel` | `greyscale` | `none` */
 	ideAntialiasing?: string,
 	editorAntialiasing?: string,
@@ -2566,6 +2597,11 @@ export type CheckoutOutcome = { kind: "done" } |
  */
 { kind: "conflicts"; files: string[] };
 
+export type ChoiceOption = {
+	value: string,
+	label: string,
+};
+
 export type ClassifiedReference = {
 	/**  Optional for older Java extensions; missing means unclassified. */
 	access?: ReferenceAccess | null,
@@ -2684,6 +2720,13 @@ export type CodeStyleSettings_Serialize = {
 	/**  The markers are regular expressions. */
 	formatterTagsRegexp: boolean,
 };
+
+/**  Editor › Inlay Hints › Code Vision position (IDEA's "Default position for metrics"). */
+export type CodeVisionPosition = 
+/**  A row of its own above the declaration. */
+"top" | 
+/**  After the end of the declaration's first line. */
+"right";
 
 /**  ColorInfo data. */
 export type ColorInfo = {
@@ -3106,6 +3149,15 @@ export type CreatePullRequest = {
 	draft: boolean,
 	/**  Push the current branch (setting its upstream) before creating. */
 	push: boolean,
+};
+
+export type CreateRequest = {
+	generator: string,
+	/**  The parent directory; the project is `<location>/<name>`. */
+	location: IpcPath,
+	name: string,
+	git: boolean,
+	values: { [key in string]: string },
 };
 
 /**  Imported editor colour scheme on top of a built-in base. */
@@ -3534,6 +3586,8 @@ export type DebugCapabilities = {
 	 *  change during the session ([`ide_core::event::DebugEvent::Capabilities`]).
 	 */
 	jvmInstances: boolean,
+	/**  The session can be asked for a heap dump ([`DebugManager::jvm_heap_dump`]). */
+	jvmHeap: boolean,
 };
 
 /**  A completion the adapter offers for an expression (DAP `completions`). */
@@ -3623,6 +3677,17 @@ export type DeletedTag = {
 	name: string,
 	/**  What the tag pointed at: its tag object (annotated tags) or commit. */
 	target: string,
+};
+
+export type Dependency = {
+	id: string,
+	name: string,
+	description: string,
+};
+
+export type DependencyGroup = {
+	name: string,
+	items: Dependency[],
 };
 
 /**  A plugin another one requires. */
@@ -3958,6 +4023,12 @@ export type DockerVolume = {
 	labels?: { [key in string]: string },
 };
 
+/**  Encoding and BOM currently applied to an open document. */
+export type DocumentEncoding = {
+	encoding: string,
+	hasBom: boolean,
+};
+
 /**  What the UI needs to show an opened document. */
 export type DocumentInfo = {
 	id: DocId,
@@ -3966,6 +4037,7 @@ export type DocumentInfo = {
 	version: number,
 	language: LanguageId,
 	encoding: string,
+	hasBom: boolean,
 	lineEnding: LineEnding,
 	readOnly: boolean,
 	dirty: boolean,
@@ -4393,6 +4465,26 @@ export type FacetConfig = {
 	webRoot?: string,
 };
 
+export type Field = {
+	id: string,
+	label: string,
+	kind: FieldKind,
+	/**
+	 *  A template over the fields before it: `{{id}}`, `{{id|filter}}` (filters:
+	 *  `path`, `ident`, `kebab`, `snake`, `pascal`, `lower`, `json`).
+	 */
+	default: string,
+	/**  Shown only while each listed field has one of its values. */
+	visible: { [key in string]: string[] },
+	hint: string,
+};
+
+export type FieldKind = { type: "text"; pattern: string | null; placeholder: string } | { type: "choice"; options: ChoiceOption[]; segmented: boolean } | { type: "checkbox" } | 
+/**  An installed SDK of this kind (`jdk`); the value is its home, empty = automatic. */
+{ type: "sdk"; sdk: string } | 
+/**  Several ids out of grouped items; the value is comma-separated. */
+{ type: "dependencies"; groups: DependencyGroup[] };
+
 export type FieldValue = { kind: "label"; value: string } | { kind: "readonlyText"; value: {
 	text: string,
 	multiline: boolean,
@@ -4725,6 +4817,21 @@ export type GeneralSettings = {
 	lastRunVersion?: string,
 };
 
+/**  One entry of File › New Project. */
+export type GeneratorInfo = {
+	id: string,
+	name: string,
+	group: string,
+	icon: string,
+	order: number,
+	description: string,
+	/**  Offer "Create Git repository". */
+	git: boolean,
+	fields: Field[],
+	/**  More fields come from `scaffold_options` (a project service's metadata). */
+	dynamic: boolean,
+};
+
 /**  A repository of the signed-in account (owned, collaborator, or organization member). */
 export type GhAccountRepo = {
 	/**  `owner/name`. */
@@ -4976,6 +5083,129 @@ export type GutterAction = {
 export type HeadChange = {
 	before: string,
 	after: string,
+};
+
+export type HeapCaptureResult = { status: "ready"; snapshot: HeapSnapshotInfo } | { status: "unavailable"; reason: JvmHeapUnavailable } | { status: "cancelled" };
+
+/**  One class name in two snapshots; a side without the name has zeros. */
+export type HeapClassDiff = {
+	name: string,
+	baseCount: number,
+	count: number,
+	baseShallow: number,
+	shallow: number,
+	baseRetained: number,
+	retained: number,
+	/**
+	 *  Several classes have this name on one side or both, so the sides cannot be matched: each
+	 *  side shows the sum over its classes, and there is no difference to show.
+	 */
+	ambiguous: boolean,
+};
+
+export type HeapClassRow = {
+	/**  Type slot, as `classIndex` in [`crate::HeapIndex::dominated`]. */
+	classIndex: number,
+	name: string,
+	count: number,
+	shallow: number,
+	retained: number,
+	unreachableCount: number,
+	/**
+	 *  Another class has the same name (several class loaders): nothing joined by name, such as a
+	 *  second snapshot, can tell them apart.
+	 */
+	ambiguous: boolean,
+};
+
+/**  How an object is held by the next step of a path to a GC root. */
+export type HeapEdge = 
+/**  An instance field; the name is empty when the dump does not show which one. */
+{ kind: "field"; name: string } | { kind: "element"; index: number } | { kind: "static"; name: string } | 
+/**  From an instance to its class. */
+{ kind: "classOf" } | { kind: "superClass" } | { kind: "classLoader" } | 
+/**  `thread` is the name of the thread whose root it is, when the dump has it. */
+{ kind: "root"; root: HeapRootKind; thread: string | null };
+
+export type HeapObjectPage = {
+	rows: HeapObjectRow[],
+	/**  Rows of every page together. */
+	total: number,
+};
+
+/**
+ *  An object of one snapshot: its index in the [`crate::HeapIndex`] columns. Any value may
+ *  arrive over IPC; queries answer an index that names no object with nothing.
+ */
+export type HeapObjectRef = number;
+
+export type HeapObjectRow = {
+	object: HeapObjectRef,
+	className: string,
+	/**  The object's hprof id in hex, `0x1300`. */
+	address: string,
+	shallow: number,
+	retained: number,
+	/**  Has children in the dominator tree. */
+	hasChildren: boolean,
+	/**  The text of a `java.lang.String`, or the name of the class a class object stands for. */
+	preview: string | null,
+};
+
+export type HeapOpenResult = { status: "ready"; snapshot: HeapSnapshotInfo } | 
+/**  Bytes, for the index next to the dump. */
+{ status: "notEnoughDiskSpace"; needed: number; available: number } | { status: "cancelled" };
+
+export type HeapOrigin = 
+/**  Dumped from a live debug session. */
+{ kind: "captured"; session: DebugSessionId; pid: number; javaVersion: string; takenWhileSuspended: boolean; dumpMs: number } | 
+/**  An `.hprof` the user opened; it is never deleted. */
+{ kind: "file"; path: IpcPath };
+
+export type HeapPathStep = {
+	object: HeapObjectRow,
+	/**  How the next step holds this object; on the last step, the root. */
+	via: HeapEdge,
+};
+
+export type HeapPhase = "reading" | "linking" | "dominators" | "retained" | "paths" | "saving";
+
+export type HeapProgress = { type: "dumping" } | { type: "analyzing"; phase: HeapPhase; done: number; total: number };
+
+export type HeapRootKind = "unknown" | "jniGlobal" | "jniLocal" | "javaFrame" | "nativeStack" | "stickyClass" | "threadBlock" | "monitorUsed" | "threadObject";
+
+/**  A path from an object up to its GC root. A long one keeps only the steps nearest each end. */
+export type HeapRootPath = {
+	steps: HeapPathStep[],
+	/**  Steps left out between `steps[omitted_after - 1]` and `steps[omitted_after]`; 0 for none. */
+	omitted: number,
+	omittedAfter: number,
+};
+
+export type HeapSnapshotId = number;
+
+export type HeapSnapshotInfo = {
+	id: HeapSnapshotId,
+	label: string,
+	origin: HeapOrigin,
+	summary: HeapSummary,
+	/**  Unix time in milliseconds when the snapshot was opened. */
+	createdMs: number,
+};
+
+/**  Counts over instances and arrays; class objects (class dumps) are left out. */
+export type HeapSummary = {
+	/**  `reachable_objects + unreachable_objects`. */
+	objects: number,
+	reachableObjects: number,
+	reachableBytes: number,
+	unreachableObjects: number,
+	unreachableBytes: number,
+	/**  Class dumps in the dump. */
+	classes: number,
+	weakEdgesSkipped: number,
+	sizeSource: SizeSource,
+	analysisMs: number,
 };
 
 export type HierarchyChoice = {
@@ -5306,6 +5536,19 @@ export type IndexEntry = {
 	 *  the IDE before showing it.
 	 */
 	icon?: PluginIcon | null,
+	/**  Where to read more: the manifest's homepage, else the registry's source repository. */
+	homepage?: string | null,
+	/**  This version's release notes (the manifest's `change-notes`). */
+	notes?: string | null,
+	/**  Downloads of the plugin's packages, as counted by whoever serves them. */
+	downloads?: number | null,
+	/**  Picked by the marketplace's maintainers. */
+	featured?: boolean,
+	/**
+	 *  Project-relative paths whose presence makes the plugin worth suggesting
+	 *  (`pom.xml`, `config/routes.rb`).
+	 */
+	suggest?: string[],
 };
 
 export type IndexStatus = {
@@ -5353,6 +5596,12 @@ export type InlayHintsSettings = {
 	codeVisionUsages?: boolean,
 	/**  Code vision: last author of a declaration (VCS blame) beside its usages. */
 	codeVisionAuthor?: boolean,
+	/**  Code vision: "no usages" on declarations nothing uses (IDEA shows it; clicking searches everywhere). */
+	codeVisionNoUsages?: boolean,
+	/**  Code vision: where the usages go, above the declaration or at the end of its line. */
+	codeVisionUsagesPosition?: CodeVisionPosition,
+	/**  Code vision: where the author goes, above the declaration or at the end of its line. */
+	codeVisionAuthorPosition?: CodeVisionPosition,
 };
 
 export type InlayKind = "type" | "parameter" | "other";
@@ -5689,6 +5938,12 @@ export type JvmFilePresentation = {
 	path: string,
 	presentation: JvmPresentation,
 };
+
+export type JvmHeapUnavailable = 
+/**  The reason a class table could not be read applies to the dump too. */
+{ kind: "memory"; reason: JvmMemoryUnavailable } | 
+/**  Bytes. */
+{ kind: "notEnoughDiskSpace"; needed: number; available: number } | { kind: "dumpFailed"; message: string } | { kind: "dumpTimedOut"; seconds: number };
 
 export type JvmInspectUnavailable = 
 /**  The session has no inspector: not a JVM session, not ready yet, or turned off. */
@@ -6245,6 +6500,8 @@ export type MarketPlugin = {
 	installed: string | null,
 	/**  Whether this IDE can load `entry` (the newest version it can, else the newest). */
 	compatible: boolean,
+	/**  The publisher's display name, as the index lists it. */
+	publisherName?: string | null,
 } & IndexEntry;
 
 export type Markup = {
@@ -6414,6 +6671,11 @@ export type McpServerInput = {
 export type McpServerSettings = {
 	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
 	enabled?: boolean,
+	/**
+	 *  Run the tools that change the project or start processes without asking first
+	 *  (IDEA's brave mode). Read from the IDE's own settings only, never a project's.
+	 */
+	runWithoutConfirmation?: boolean,
 };
 
 /**  What Settings › Agents › MCP Server shows. */
@@ -7960,6 +8222,16 @@ export type RepositoryComparison = {
 /**  A cancellable, streaming backend request issued by the UI. */
 export type RequestId = number;
 
+/**  A program a generator needs, and whether this machine has it. */
+export type Requirement = {
+	program: string,
+	min: string | null,
+	/**  The version found; `None` when the program is missing or reports none. */
+	found: string | null,
+	satisfied: boolean,
+	hint: string,
+};
+
 /**  `git reset` modes offered by Reset Current Branch to Here. */
 export type ResetMode = "soft" | "mixed" | "hard" | "keep";
 
@@ -8261,6 +8533,13 @@ export type RustSettings = {
 	/**  Extra arguments for rustfmt (rust-analyzer `rustfmt.extraArgs`), space-separated. */
 	rustfmtArgs?: string,
 };
+
+/**  Progress of `scaffold_create`. */
+export type ScaffoldEvent = 
+/**  A new step began. */
+{ type: "step"; text: string } | 
+/**  A line of a tool's output. */
+{ type: "line"; text: string };
 
 export type Scope = {
 	name: string,
@@ -8604,6 +8883,24 @@ export type SignatureHelp = {
 	activeSignature: number,
 	activeParameter: number,
 };
+
+/**
+ *  Where the sizes of instances came from.
+ * 
+ *  Class objects (mirrors) are approximate in every case: HotSpot leaves the fields it injects
+ *  into `java.lang.Class` out of the dump, so their layout size is short by a fixed amount per
+ *  mirror. With a histogram that amount is fitted to its `java.lang.Class` row; otherwise (or when
+ *  the fit is rejected) it comes from a table measured per JDK and reference size, within a few
+ *  bytes per mirror, or is 32 when the JDK is unknown.
+ */
+export type SizeSource = 
+/**  The JVM's class histogram from the capture. */
+"jvm" | 
+/**
+ *  The smallest distance between neighbouring objects of a type, in a dump the IDE did not
+ *  capture.
+ */
+"addressGaps" | "layout";
 
 export type SkipReason = 
 /**  A configuration with this name already exists. */

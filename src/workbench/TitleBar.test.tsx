@@ -164,6 +164,29 @@ describe("merged title bar menu", () => {
   );
 });
 
+it("puts the main menu in its own row below the title bar with the Separate toolbar style", async () => {
+  const savedPlatform = usePlatform.getState();
+  const savedProject = useProject.getState();
+  const model = vi
+    .spyOn(commands, "menuModel")
+    .mockResolvedValue([{ kind: "submenu", id: "file", label: "File", children: [] }]);
+  usePlatform.setState({ os: "windows", framelessTitleBar: true, overlayTitleBar: false });
+  useProject.setState({ settings: { appearance: { mainMenuStyle: "toolbar" } } as Settings });
+  try {
+    const { container } = render(<TitleBar />);
+    await act(async () => {});
+    const header = container.querySelector("header")!;
+    const menubar = screen.getByRole("menubar");
+    expect(header.contains(menubar)).toBe(false);
+    expect(header.nextElementSibling?.contains(menubar)).toBe(true);
+    expect(screen.queryByRole("button", { name: "Main Menu" })).toBeNull();
+  } finally {
+    usePlatform.setState(savedPlatform);
+    useProject.setState(savedProject);
+    model.mockRestore();
+  }
+});
+
 describe("compact window header", () => {
   it("shows the window title and follows it, without toolbar widgets", async () => {
     document.title = "demo – src/main.rs";

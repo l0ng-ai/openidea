@@ -321,16 +321,25 @@ export function initProjectTree(
   clearTimeout(persistTimer);
   modeExpanded.clear();
   autoExpanded.clear();
-  const previousMode = get().mode;
+  const previous = get();
+  const previousMode = previous.mode;
   const mode =
     unity && previousMode === "project" ? "unity" : !unity && previousMode === "unity" ? "project" : previousMode;
+  // Keep the remaining members' types visible while the workspace is rescanned.
+  const projectTypes = new Map<string, ProjectType>();
+  if (root === previous.root && members) {
+    for (const member of members) {
+      const type = previous.projectTypes.get(member);
+      if (type) projectTypes.set(member, type);
+    }
+  }
   set({
     unity,
     mode,
     root,
     name,
     members,
-    projectTypes: new Map(),
+    projectTypes,
     listings: new Map(),
     expanded: initialExpanded(root, mode, members),
     selected: new Set(),

@@ -355,7 +355,27 @@ export const commentBlock: Command = (view) => {
 
 /** ⌘/ in a language without line comments (CSS, HTML…): the block comment of the lines. */
 function blockCommentLines(view: EditorView): boolean {
-  return uncommentBlock(view, selectedLines(view.state)) || toggleComment(view);
+  const ranges = selectedLines(view.state);
+  if (uncommentBlock(view, ranges)) return true;
+  const { state } = view;
+  if (
+    ranges.every(
+      (r) =>
+        state.sliceDoc(r.from, r.from + 1) === "{" &&
+        commentPairs(state, state.doc.lineAt(r.from).from)[0]?.open === "{/*",
+    )
+  ) {
+    view.dispatch({
+      changes: ranges.flatMap((r) => [
+        { from: r.from, insert: "{/* " },
+        { from: r.to, insert: " */}" },
+      ]),
+      scrollIntoView: true,
+      userEvent: "input.comment",
+    });
+    return true;
+  }
+  return toggleComment(view);
 }
 
 // --- Enter in a line comment ------------------------------------------------------

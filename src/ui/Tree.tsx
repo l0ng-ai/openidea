@@ -105,6 +105,11 @@ export interface TreeProps<T> {
   /** Enter / double-click on a leaf (or on nodes `activateExpandable` accepts). */
   onActivate?: (node: T, e: KeyboardEvent | MouseEvent) => void;
   activateExpandable?: boolean | ((node: T) => boolean);
+  /**
+   * Jump to Source (F4 / ⌘↓) on the lead row. Without it the key activates like Enter; trees
+   * whose activation opens a diff pass this to open the file itself.
+   */
+  onJumpToSource?: (node: T, selection: ReadonlySet<string>) => void;
   /** Nodes Next / Previous Occurrence stops at (`TreeHandle.selectOccurrence`); default: leaves. */
   isOccurrence?: (node: T) => boolean;
   onContextMenu?: (node: T | null, selection: Set<string>, e: MouseEvent) => void;
@@ -247,6 +252,7 @@ export function Tree<T>(props: TreeProps<T>) {
     getColor,
     multiSelect = true,
     onActivate,
+    onJumpToSource,
     activateExpandable = false,
     onContextMenu,
     speedSearch = true,
@@ -495,11 +501,13 @@ export function Tree<T>(props: TreeProps<T>) {
       return;
     }
     const range = e.shiftKey && multiSelect;
-    // Jump to Source (F4 / ⌘↓) activates like Enter.
+    // Jump to Source (F4 / ⌘↓): the tree's own handler, else it activates like Enter.
     if (e.key === "F4" || (e.key === "ArrowDown" && e.metaKey && !e.shiftKey && !e.altKey)) {
       if (!row) return;
       setQuery("");
-      activate(row, e);
+      if (onJumpToSource) {
+        if (!row.loading) onJumpToSource(row.node, selected);
+      } else activate(row, e);
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -582,6 +590,17 @@ export function Tree<T>(props: TreeProps<T>) {
       return;
     }
     if (e.button !== 0) return;
+    // The second press of a double-click starts the browser's word selection,
+    // which in a virtualized tree spills onto the rows an expanding folder just
+    // inserted and highlights neighbouring labels. Prevent it: rows are
+    // controls, not text (the shared List does the same via `user-select`), the
+    // first press already selected, and the dblclick below still fires, so
+    // activation keeps working. Rows can host editors (inline rename), so this
+    // is scoped to repeated clicks instead of unselecting all row content.
+    if (e.detail >= 2) {
+      e.preventDefault();
+      return;
+    }
     setQuery("");
     if (e.shiftKey) selectIndex(i, "range");
     else if (e.metaKey || e.ctrlKey) selectIndex(i, "toggle");

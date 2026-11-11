@@ -2,6 +2,7 @@
 //! that is unavailable, counted by the debugger; and the JVM's objects through the debugger.
 
 mod fallback;
+mod heap;
 mod inspect;
 mod scan;
 mod snapshot;
@@ -20,6 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
+pub use heap::*;
 pub use inspect::{JvmFieldsResult, JvmInspectUnavailable, JvmInstancesResult, JvmObjectRef, JvmReferrersResult};
 pub(crate) use inspect::{fields, instances, referrers, set_inspector, watch_link};
 #[cfg(all(test, unix))]

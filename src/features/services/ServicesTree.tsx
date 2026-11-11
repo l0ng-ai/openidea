@@ -272,7 +272,14 @@ export function ServicesTreeView() {
             </div>
           </SplitPanel>
           <SplitHandle />
-          <SplitPanel id="services-detail" minSize="200px">
+          <SplitPanel
+            id="services-detail"
+            minSize="200px"
+            // The panel library puts `overflow: auto` inline; the detail content
+            // (a console, a log) owns its scrolling, so the pane must not add a second
+            // bar. A column flex box lets that content fill the pane.
+            style={{ overflow: "hidden", height: "100%", display: "flex", flexDirection: "column" }}
+          >
             {selected && Detail && shown ? (
               <Detail key={selected.item.key} item={selected.item} />
             ) : (

@@ -1,7 +1,7 @@
 import { tx } from "@/platform/i18n";
 import type { JvmMemoryUnavailable } from "@/platform/ipc";
 
-/** Why the class table could not be read. */
+/** Why the class table could not be read; a heap capture refused for the same reason reuses it. */
 export function unavailableText(reason: JvmMemoryUnavailable): string {
   switch (reason.kind) {
     case "attachedJvmNotFound":
