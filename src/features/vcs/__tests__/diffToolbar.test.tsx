@@ -86,6 +86,30 @@ describe("Diff toolbar", () => {
     mounted.unmount();
     localStorage.removeItem("openidea.vcs.diffOptions");
   });
+  it.each([
+    {
+      name: "an added file",
+      left: { type: "text", text: "", label: "(does not exist)", absent: true },
+      right: { type: "rev", rev: "abc123" },
+    },
+    {
+      name: "a deleted file",
+      left: { type: "rev", rev: "HEAD" },
+      right: { type: "text", text: "", label: "(deleted)", absent: true },
+    },
+  ])("shows $name alone, full width, keeping the saved side-by-side mode", async ({ left, right }) => {
+    localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode: "split" }));
+    const mounted = render(<DiffEditor input={{ ...input, data: { path: "/p/a.ts", left, right } } as EditorInput} />);
+    await waitFor(() => expect(mounted.container.querySelectorAll(".cm-editor")).toHaveLength(1));
+    expect(mounted.container.querySelector(".cm-mergeView")).toBeNull();
+    // Nothing to compare word by word: the lines are tinted, without darker fragments.
+    expect(mounted.container.querySelector(".cm-changedText, .cm-diffWord")).toBeNull();
+    expect(screen.getByRole("button", { name: "Side-by-side Viewer" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Unified Viewer" })).toBeDisabled();
+    expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).mode).toBe("split");
+    mounted.unmount();
+    localStorage.removeItem("openidea.vcs.diffOptions");
+  });
   it("shows a binary notice for disk comparisons instead of identical empty text", async () => {
     probe.mockResolvedValue({ status: "ok", data: { size: 3, binary: true, tooLarge: false } });
     const binaryInput = {
