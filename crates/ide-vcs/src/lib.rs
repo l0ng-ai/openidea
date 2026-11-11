@@ -711,6 +711,8 @@ mod clone_tests {
 
 /// Creates an empty repository in `dir` (`git init`).
 pub fn init(dir: &Path) -> IdeResult<()> {
+    // `git init` runs nothing a repository config names, so the configured git runs as it is.
+    let _scope = ExecutionScope::enter(true);
     cli::run(dir, &["init", "-q"], None).map(|_| ())
 }
 

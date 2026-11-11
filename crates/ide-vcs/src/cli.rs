@@ -961,6 +961,8 @@ mod index_lock_tests {
         )
         .unwrap();
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Hooks run only in a trusted repository.
+        let _scope = crate::ExecutionScope::enter(true);
         let out = run_raw(dir.path(), &["switch", "-q", "other"], None).unwrap();
         assert_eq!(out.code, Some(1));
         assert_eq!(std::fs::read_to_string(dir.path().join("hook-runs")).unwrap(), "ran\n");

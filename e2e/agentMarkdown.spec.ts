@@ -144,20 +144,26 @@ test("styles quotes, rules, images and task lists", async ({ page }) => {
   expect(await css(reply, "li:has(> input)", "list-style-type")).toBe("none");
 });
 
-test("loads local and web reply images", async ({ page }) => {
-  await page.route("https://images.example.com/code.gif", (route) =>
-    route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") }),
-  );
+test("loads local reply images, and web ones when asked", async ({ page }) => {
+  let fetched = 0;
+  await page.route("https://images.example.com/code.gif", (route) => {
+    fetched++;
+    return route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") });
+  });
   const reply = await openReply(
     page,
     "![Local QR](/tmp/code.png)\n\n![Web QR](https://images.example.com/code.gif)",
     PIXEL,
   );
-  for (const name of ["Local QR", "Web QR"]) {
-    await expect
-      .poll(() => reply.getByRole("img", { name }).evaluate((img: HTMLImageElement) => img.naturalWidth))
-      .toBe(1);
-  }
+  const width = (name: string) =>
+    reply.getByRole("img", { name, includeHidden: true }).evaluate((img: HTMLImageElement) => img.naturalWidth);
+  await expect.poll(() => width("Local QR")).toBe(1);
+  const load = reply.getByRole("button", { name: "Load image from images.example.com" });
+  await expect(load).toBeVisible();
+  expect(fetched).toBe(0);
+  await load.click();
+  await expect.poll(() => width("Web QR")).toBe(1);
+  expect(fetched).toBe(1);
 });
 
 test("copies reply Markdown with the keyboard and keeps code copying separate", async ({ page, context }) => {

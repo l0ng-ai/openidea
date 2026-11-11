@@ -194,21 +194,26 @@ pub fn resolve_writable_in_root(root: &Path, path: &str) -> Result<PathBuf, Stri
 
 /// [`resolve_writable_in_root`] over several roots, as [`resolve_in_roots`] does.
 pub fn resolve_writable_in_roots(roots: &[PathBuf], path: &str) -> Result<PathBuf, String> {
-    let (project_root, members) = match roots.split_first() {
-        Some((project_root, members)) => (project_root, members),
-        None => return Err(format!("{path}: access outside the project root is not allowed")),
+    first_root_resolving(roots, path, resolve_writable_in_root)
+}
+
+/// [`resolve_new_in_root`] over several roots, as [`resolve_in_roots`] does.
+pub fn resolve_new_in_roots(roots: &[PathBuf], path: &str) -> Result<PathBuf, String> {
+    first_root_resolving(roots, path, resolve_new_in_root)
+}
+
+/// `resolve` against the project root, then each member; the project root's refusal when none
+/// accepts `path`.
+fn first_root_resolving(
+    roots: &[PathBuf],
+    path: &str,
+    resolve: fn(&Path, &str) -> Result<PathBuf, String>,
+) -> Result<PathBuf, String> {
+    let Some((project_root, members)) = roots.split_first() else {
+        return Err(format!("{path}: access outside the project root is not allowed"));
     };
-    match resolve_writable_in_root(project_root, path) {
-        Ok(real) => Ok(real),
-        Err(project_root_error) => {
-            for root in members {
-                if let Ok(real) = resolve_writable_in_root(root, path) {
-                    return Ok(real);
-                }
-            }
-            Err(project_root_error)
-        }
-    }
+    resolve(project_root, path)
+        .or_else(|refusal| members.iter().find_map(|root| resolve(root, path).ok()).ok_or(refusal))
 }
 
 fn resolve_write_target(path: &Path, links_left: usize) -> Result<PathBuf, std::io::Error> {
