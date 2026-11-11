@@ -447,6 +447,30 @@ export function registerFileEditorProvider(p: FileEditorProvider): () => void {
   };
 }
 
+/**
+ * Opens locations under a URI scheme a feature owns (a notebook cell's
+ * `vscode-notebook-cell:` URI): the editor hands them over instead of opening
+ * them as a server-provided virtual document.
+ */
+export interface UriOpener {
+  scheme: string;
+  open(uri: string, options: OpenOptions): Promise<void>;
+}
+
+const uriOpeners = new Map<string, UriOpener>();
+
+export function registerUriOpener(o: UriOpener): () => void {
+  uriOpeners.set(o.scheme, o);
+  return () => {
+    if (uriOpeners.get(o.scheme) === o) uriOpeners.delete(o.scheme);
+  };
+}
+
+export function uriOpenerFor(uri: string): UriOpener | undefined {
+  const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]+):/.exec(uri)?.[1];
+  return scheme ? uriOpeners.get(scheme.toLowerCase()) : undefined;
+}
+
 /** The non-text editor input for `path`, or null for the text editor. Provider failures fall through. */
 export async function resolveFileEditor(path: string): Promise<FileEditorResolution | null> {
   const providers = [...fileEditorProviders.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));

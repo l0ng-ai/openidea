@@ -28,6 +28,7 @@ import {
   openFileExternally,
   resolveFileEditor,
   textEditorWrapperFor,
+  uriOpenerFor,
   useContributions,
   useStandaloneEditor,
   useTextEditorWrappers,
@@ -1057,6 +1058,8 @@ export class EditorController implements SlotHost {
   }
 
   private async openFileRequest(path: string, o: OpenOptions, generation: OpenRequest): Promise<void> {
+    const opener = uriOpenerFor(path);
+    if (opener) return opener.open(path, o);
     if (isVirtualUri(path)) return this.openVirtualRequest(path, o, generation);
     if (isClassFile(path)) {
       await this.projectTransition;

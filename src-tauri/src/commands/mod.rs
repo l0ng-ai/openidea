@@ -159,6 +159,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_accept_changes,
         notebook::notebook_open,
         notebook::notebook_get,
+        notebook::notebook_cell_docs,
         notebook::notebook_edit,
         notebook::notebook_save,
         notebook::notebook_reload,

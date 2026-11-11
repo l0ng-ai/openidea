@@ -225,6 +225,7 @@ export const commands = {
 	agentAcceptChanges: (task: string, paths: string[] | null) => typedError<AgentAcceptOutcome, IdeError>(__TAURI_INVOKE("agent_accept_changes", { task, paths })),
 	notebookOpen: (path: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_open", { path })),
 	notebookGet: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_get", { id })),
+	notebookCellDocs: (id: string) => typedError<NotebookCellDoc[], IdeError>(__TAURI_INVOKE("notebook_cell_docs", { id })),
 	notebookEdit: (id: string, version: number, edit: NotebookEdit) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_edit", { id, version, edit })),
 	notebookSave: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_save", { id })),
 	notebookReload: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_reload", { id })),
@@ -7120,6 +7121,14 @@ export type NotebookCell = {
 	outputs: unknown[],
 	executionCount: number | null,
 	attachments: unknown,
+};
+
+/**  The document the language servers know a code cell by. */
+export type NotebookCellDoc = {
+	cell: string,
+	doc: DocId,
+	/**  Also the `path` of the cell's diagnostics and of locations in it. */
+	uri: string,
 };
 
 export type NotebookEdit = { type: "setSource"; cell: string; source: string } | { type: "insertCell"; after: string | null; cellType: string } | { type: "deleteCell"; cell: string } | { type: "moveCell"; cell: string; before: string | null } | { type: "setCellType"; cell: string; cellType: string } | { type: "setOutputs"; cell: string; outputs: unknown[]; executionCount: number | null };
