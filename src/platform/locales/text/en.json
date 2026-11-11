@@ -1329,5 +1329,7 @@
   "Featured": "Featured",
   "All Plugins": "All Plugins",
   "Examples": "Examples",
-  "Remove File": "Remove File"
+  "Remove File": "Remove File",
+  "Delegate IDE build/run actions to Maven": "Delegate IDE build/run actions to Maven",
+  "Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server.": "Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server."
 }

@@ -1203,6 +1203,8 @@ pub struct MavenSettings {
     pub threads: String,
     /// Active Maven profiles (`-P`), comma-separated; empty leaves profiles to the POM/settings.
     pub active_profiles: String,
+    /// Delegate IDE build/run actions to Maven: launches build with Maven (`javac`) instead of jdtls (ECJ).
+    pub delegate_build: bool,
 }
 
 impl MavenSettings {
@@ -1707,10 +1709,12 @@ mod maven_linkage_tests {
     fn maven_runner_jre_defaults_and_round_trips() {
         let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
         assert!(old.runner_jre.is_empty());
+        assert!(!old.delegate_build);
         assert!(MavenSettings::default().runner_jre.is_empty());
-        let settings = MavenSettings { runner_jre: "/opt/jdk-21".into(), ..old };
+        let settings = MavenSettings { runner_jre: "/opt/jdk-21".into(), delegate_build: true, ..old };
         let encoded = serde_json::to_string(&settings).unwrap();
         assert!(encoded.contains(r#""runnerJre":"/opt/jdk-21""#));
+        assert!(encoded.contains(r#""delegateBuild":true"#));
         assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
     }
 

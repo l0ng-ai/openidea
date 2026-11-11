@@ -6851,6 +6851,8 @@ export type MavenSettings = {
 	threads?: string,
 	/**  Active Maven profiles (`-P`), comma-separated; empty leaves profiles to the POM/settings. */
 	activeProfiles?: string,
+	/**  Delegate IDE build/run actions to Maven: launches build with Maven (`javac`) instead of jdtls (ECJ). */
+	delegateBuild?: boolean,
 };
 
 /**  A named environment variable or HTTP header for an MCP server. */

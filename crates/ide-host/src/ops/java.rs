@@ -48,7 +48,7 @@ async fn resolve_launch(
     let build = policy != BuildPolicy::NoBuild;
     let full = policy == BuildPolicy::Rebuild;
     let build_kind = if full { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
-    let (model, external, delegated) = {
+    let (model, external, delegated, prefer_maven) = {
         let project = project.clone();
         let settings = settings.clone();
         let module = module.clone();
@@ -58,15 +58,17 @@ async fn resolve_launch(
             let non_java = build && compile::launch_has_non_java_sources(&project.root, &model, &module, test);
             let is_maven =
                 model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| project.root.join(&p.dir) == module));
+            let prefer_maven = settings.languages.java.maven.delegate_build;
             let delegated = build
                 && delegates_to_external_build(
                     is_maven,
                     policy,
                     non_java,
                     cache::has_record(&project.root, &project.build_cache_dir(), &module),
+                    prefer_maven,
                 );
             let external = non_java || delegated;
-            (model, external, delegated)
+            (model, external, delegated, prefer_maven)
         })
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
@@ -79,6 +81,7 @@ async fn resolve_launch(
     tokio::task::spawn_blocking(move || {
         let _external_build = external_build;
         let built = if delegated {
+            let policy = delegated_policy(policy, prefer_maven, info.error_count);
             let outputs = project.java_launch_snapshots.lock().build(
                 &project.root,
                 &model,
@@ -169,6 +172,17 @@ async fn resolve_launch(
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+/// With Settings › Maven › Delegate IDE build/run actions to Maven, javac's verdict replaces
+/// JDT's. Classes JDT wrote for sources with errors look up to date to Maven's incremental
+/// compiler, so a launch JDT reports errors for recompiles everything.
+fn delegated_policy(policy: BuildPolicy, prefer_maven: bool, jdt_errors: u32) -> BuildPolicy {
+    if prefer_maven && jdt_errors > 0 && matches!(policy, BuildPolicy::Automatic | BuildPolicy::Make) {
+        BuildPolicy::Rebuild
+    } else {
+        policy
+    }
+}
+
 fn apply_external_build_result(info: &mut JavaLaunchInfo, failure: Option<String>, clean: bool) {
     info.build = Some(if let Some(failure) = failure {
         info.hints.push(failure);
@@ -241,8 +255,15 @@ fn apply_library_classpath(
 /// Whether a launch should be built by the project's build system instead of jdtls.
 /// A Rebuild has to clean the output; jdtls' full build only recompiles sources, so
 /// Maven modules always delegate for it, even when every source is Java.
-fn delegates_to_external_build(is_maven: bool, policy: BuildPolicy, non_java: bool, has_record: bool) -> bool {
-    is_maven && (policy == BuildPolicy::Rebuild || non_java || has_record)
+/// `prefer_maven` is Settings › Maven › Delegate IDE build/run actions to Maven.
+fn delegates_to_external_build(
+    is_maven: bool,
+    policy: BuildPolicy,
+    non_java: bool,
+    has_record: bool,
+    prefer_maven: bool,
+) -> bool {
+    is_maven && (prefer_maven || policy == BuildPolicy::Rebuild || non_java || has_record)
 }
 
 fn same_entry(a: &str, b: &str, windows: bool) -> bool {
@@ -322,13 +343,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn delegated_launches_with_jdt_errors_recompile_with_maven() {
+        assert_eq!(delegated_policy(BuildPolicy::Make, true, 1), BuildPolicy::Rebuild);
+        assert_eq!(delegated_policy(BuildPolicy::Automatic, true, 2), BuildPolicy::Rebuild);
+        assert_eq!(delegated_policy(BuildPolicy::Make, true, 0), BuildPolicy::Make);
+        assert_eq!(delegated_policy(BuildPolicy::Make, false, 1), BuildPolicy::Make);
+        assert_eq!(
+            delegated_policy(BuildPolicy::MakeAndContinueOnErrors, true, 1),
+            BuildPolicy::MakeAndContinueOnErrors
+        );
+    }
+
+    #[test]
     fn rebuild_delegates_maven_builds_to_the_build_system() {
-        assert!(delegates_to_external_build(true, BuildPolicy::Rebuild, false, false));
-        assert!(delegates_to_external_build(true, BuildPolicy::Automatic, true, false));
-        assert!(delegates_to_external_build(true, BuildPolicy::Make, false, true));
-        assert!(!delegates_to_external_build(true, BuildPolicy::Automatic, false, false));
-        assert!(!delegates_to_external_build(true, BuildPolicy::Make, false, false));
-        assert!(!delegates_to_external_build(false, BuildPolicy::Rebuild, false, false));
+        assert!(delegates_to_external_build(true, BuildPolicy::Rebuild, false, false, false));
+        assert!(delegates_to_external_build(true, BuildPolicy::Automatic, true, false, false));
+        assert!(delegates_to_external_build(true, BuildPolicy::Make, false, true, false));
+        assert!(!delegates_to_external_build(true, BuildPolicy::Automatic, false, false, false));
+        assert!(!delegates_to_external_build(true, BuildPolicy::Make, false, false, false));
+        assert!(!delegates_to_external_build(false, BuildPolicy::Rebuild, false, false, false));
+        assert!(delegates_to_external_build(true, BuildPolicy::Automatic, false, false, true));
+        assert!(delegates_to_external_build(true, BuildPolicy::Make, false, false, true));
+        assert!(!delegates_to_external_build(false, BuildPolicy::Automatic, false, false, true));
     }
 
     #[test]

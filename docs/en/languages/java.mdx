@@ -86,7 +86,7 @@ When the project uses Lombok (in its build file, an inherited parent POM or Grad
 
 jdtls imports Maven and Gradle projects (including the Gradle wrapper) automatically. A folder without a build file is opened as a plain Java project, and jars under `lib/` are added to its classpath. OpenIDEA also shows **Maven** and **Gradle** tool windows for running goals and tasks, reloading, profiles and dependency analysis. Their settings are in **Settings › Build, Execution, Deployment › Maven** and **Gradle**:
 
-- Maven: **JRE**, **Maven home path** (default: the project's `mvnw`, else `mvn` on `PATH`), **User settings file**, **Toolchains file**, **Local repository**, **Active profiles**, **Thread count** and **Use Maven Daemon (mvnd)**. The profiles you choose in the Maven tool window are passed to jdtls too, so the editor sees the same profile-specific dependencies.
+- Maven: **Delegate IDE build/run actions to Maven** (Run and Debug build with Maven's `javac` instead of jdtls), **JRE**, **Maven home path** (default: the project's `mvnw`, else `mvn` on `PATH`), **User settings file**, **Toolchains file**, **Local repository**, **Active profiles**, **Thread count** and **Use Maven Daemon (mvnd)**. The profiles you choose in the Maven tool window are passed to jdtls too, so the editor sees the same profile-specific dependencies.
 - Gradle: **Build and run using** (Gradle or OpenIDEA), **Gradle JVM**, **Distribution** (wrapper or local installation), **Gradle home** and **Gradle user home**.
 
 The IDE passes its proxy settings to jdtls, so dependency resolution works behind a proxy. See [Build tools](/en/guide/build-tools) for the tool windows.

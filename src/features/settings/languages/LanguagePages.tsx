@@ -529,6 +529,7 @@ export function GradlePage() {
 }
 
 export function MavenPage() {
+  const [delegateBuild, setDelegateBuild] = useSetting<boolean>("languages.java.maven.delegateBuild");
   const [daemon, setDaemon] = useSetting<boolean>("languages.java.maven.daemon");
   const [threads, setThreads] = useSetting<string>("languages.java.maven.threads");
   const [activeProfiles, setActiveProfiles] = useSetting<string>("languages.java.maven.activeProfiles");
@@ -536,6 +537,12 @@ export function MavenPage() {
   return (
     <div className={styles.page}>
       <Section>
+        <Toggle
+          label="Delegate IDE build/run actions to Maven"
+          checked={delegateBuild}
+          onChange={setDelegateBuild}
+          hint="Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server."
+        />
         <SdkRow
           k="languages.java.maven.runnerJre"
           label="JRE"

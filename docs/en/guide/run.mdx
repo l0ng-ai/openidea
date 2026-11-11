@@ -144,6 +144,8 @@ Add tasks under **Modify options › Add before launch task**. They run in order
 
 For Java, Maven and Gradle configurations, the **Build** option picks how the project is built first: **Automatic (incremental)**, **Build (Make)**, **Rebuild**, **No build** or **Build, no error check**.
 
+Maven modules are built by jdtls (ECJ) for **Automatic** and **Build (Make)**, and by Maven for **Rebuild**. Turn on **Settings › Build, Execution, Deployment › Maven › Delegate IDE build/run actions to Maven** to build them with Maven (the project's `javac`) every time; editor **Problems** still come from jdtls.
+
 ### Compound configurations
 
 A **Compound** configuration starts several configurations at once. Run it to start all of them, or Debug it to debug each of them. Stop from the run widget stops them all.
