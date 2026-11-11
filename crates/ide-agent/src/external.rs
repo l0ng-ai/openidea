@@ -8,6 +8,7 @@
 use super::native::claude::history;
 use serde::Serialize;
 use specta::Type;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 /// A session on this machine that no task holds yet.
@@ -62,11 +63,28 @@ fn message_text(e: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Claude Code transcripts: `<config>/projects/*/<id>.jsonl`.
-pub fn claude_sessions(config_dir: &Path) -> Vec<ExternalSession> {
+/// Whether a session that ran in `cwd` belongs to the project at `root` (in it or below it).
+fn in_project(cwd: Option<&str>, root: &Path) -> bool {
+    cwd.is_some_and(|cwd| Path::new(cwd).starts_with(root))
+}
+
+/// Claude Code transcripts of the project at `root`: `<config>/projects/<escaped cwd>/<id>.jsonl`.
+/// Only the folders named after `root` or a folder below it are read, so other projects'
+/// transcripts (often gigabytes) are never opened.
+pub fn claude_sessions(config_dir: &Path, root: &Path) -> Vec<ExternalSession> {
     let mut out = Vec::new();
     let projects = config_dir.join("projects");
-    let dirs: Vec<PathBuf> = std::fs::read_dir(&projects).into_iter().flatten().flatten().map(|d| d.path()).collect();
+    let escaped = history::escape(root);
+    let dirs: Vec<PathBuf> = std::fs::read_dir(&projects)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|d| {
+            let name = d.file_name().to_string_lossy().into_owned();
+            name == escaped || name.starts_with(&format!("{escaped}-"))
+        })
+        .map(|d| d.path())
+        .collect();
     for dir in dirs {
         let files: Vec<PathBuf> = std::fs::read_dir(&dir)
             .into_iter()
@@ -93,6 +111,10 @@ pub fn claude_sessions(config_dir: &Path) -> Vec<ExternalSession> {
                 .filter_map(|e| e.get("cwd").and_then(serde_json::Value::as_str))
                 .next()
                 .map(str::to_owned);
+            // Escaping is lossy (`a/b-c` and `a/b/c` share a folder): the transcript decides.
+            if !in_project(cwd.as_deref(), root) {
+                continue;
+            }
             out.push(ExternalSession {
                 provider: "claude".to_owned(),
                 session_id: id,
@@ -138,12 +160,13 @@ fn codex_user_text(line: &serde_json::Value) -> Option<String> {
 
 /// One rollout file's session, or `None` when it names no `session_meta`.
 fn codex_file(path: &Path) -> Option<ExternalSession> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let file = std::fs::File::open(path).ok()?;
     let mut id: Option<(String, Option<String>)> = None;
     let mut title: Option<String> = None;
     // `session_meta` is first, but cap the scan: giant rollouts must not stall listing.
-    for line in text.lines().take(400) {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+    for line in std::io::BufReader::new(file).lines().take(400) {
+        let Ok(line) = line else { break };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
         if id.is_none()
             && let Some(meta) = codex_meta(&v)
         {
@@ -183,11 +206,11 @@ fn rollout_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Codex sessions: `<home>/.codex/sessions/**`.
-pub fn codex_sessions(codex_home: &Path) -> Vec<ExternalSession> {
+/// Codex sessions of the project at `root`: `<home>/.codex/sessions/**`.
+pub fn codex_sessions(codex_home: &Path, root: &Path) -> Vec<ExternalSession> {
     let mut files = Vec::new();
     rollout_files(&codex_home.join("sessions"), 4, &mut files);
-    files.iter().filter_map(|p| codex_file(p)).collect()
+    files.iter().filter_map(|p| codex_file(p)).filter(|s| in_project(s.cwd.as_deref(), root)).collect()
 }
 
 #[cfg(test)]
@@ -222,7 +245,7 @@ mod tests {
             ],
         );
         write(&tmp.path().join("projects/-work-app/empty.jsonl"), &[]);
-        let sessions = claude_sessions(tmp.path());
+        let sessions = claude_sessions(tmp.path(), Path::new("/work/app"));
         assert_eq!(sessions.len(), 1);
         let s = &sessions[0];
         assert_eq!((s.provider.as_str(), s.session_id.as_str()), ("claude", "abc123"));
@@ -234,8 +257,8 @@ mod tests {
     #[test]
     fn claude_title_falls_back_to_the_first_prompt() {
         let tmp = tempfile::tempdir().unwrap();
-        write(&tmp.path().join("projects/-x/def456.jsonl"), &[claude_user("u1", "hello there")]);
-        let sessions = claude_sessions(tmp.path());
+        write(&tmp.path().join("projects/-work-app/def456.jsonl"), &[claude_user("u1", "hello there")]);
+        let sessions = claude_sessions(tmp.path(), Path::new("/work/app"));
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].title, "hello there");
     }
@@ -253,7 +276,7 @@ mod tests {
             ],
         );
         write(&tmp.path().join("sessions/notes.jsonl"), &[json!({"nope": true})]);
-        let sessions = codex_sessions(tmp.path());
+        let sessions = codex_sessions(tmp.path(), Path::new("/work"));
         assert_eq!(sessions.len(), 1);
         let s = &sessions[0];
         assert_eq!((s.provider.as_str(), s.session_id.as_str()), ("codex", "thread-1"));
@@ -264,7 +287,39 @@ mod tests {
     #[test]
     fn missing_directories_list_nothing() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(claude_sessions(&tmp.path().join("nope")).is_empty());
-        assert!(codex_sessions(&tmp.path().join("nope")).is_empty());
+        assert!(claude_sessions(&tmp.path().join("nope"), Path::new("/work")).is_empty());
+        assert!(codex_sessions(&tmp.path().join("nope"), Path::new("/work")).is_empty());
+    }
+
+    #[test]
+    fn only_sessions_of_the_project_are_listed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user = |cwd: &str| {
+            json!({"type": "user", "uuid": "u1", "parentUuid": null,
+                "message": {"role": "user", "content": "hi"}, "cwd": cwd})
+        };
+        write(&tmp.path().join("projects/-work-app/in-root.jsonl"), &[user("/work/app")]);
+        write(&tmp.path().join("projects/-work-app-web/below.jsonl"), &[user("/work/app/web")]);
+        // `/work/app-old` escapes like a folder below `/work/app`; its transcript says otherwise.
+        write(&tmp.path().join("projects/-work-app-old/sibling.jsonl"), &[user("/work/app-old")]);
+        write(&tmp.path().join("projects/-other/elsewhere.jsonl"), &[user("/other")]);
+        let mut ids: Vec<String> =
+            claude_sessions(tmp.path(), Path::new("/work/app")).into_iter().map(|s| s.session_id).collect();
+        ids.sort();
+        assert_eq!(ids, ["below", "in-root"]);
+
+        let rollout = |name: &str, cwd: &str| {
+            write(
+                &tmp.path().join(format!("codex/sessions/2026/01/02/{name}.jsonl")),
+                &[json!({"payload": {"type": "session_meta", "payload": {"id": name, "cwd": cwd}}})],
+            )
+        };
+        rollout("mine", "/work/app/api");
+        rollout("theirs", "/other");
+        let codex: Vec<String> = codex_sessions(&tmp.path().join("codex"), Path::new("/work/app"))
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect();
+        assert_eq!(codex, ["mine"]);
     }
 }
