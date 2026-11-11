@@ -1623,6 +1623,30 @@ impl Task {
         })
     }
 
+    /// Runs `method` and, on an auth error, tries the agent's own ACP `authenticate` once before retrying.
+    async fn request_with_auth(
+        &self,
+        peer: &acp::Conn,
+        init: &acp::Negotiated,
+        tried_auth: &mut bool,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, RpcError> {
+        let first = peer.request(method, params.clone(), None).await;
+        if !*tried_auth
+            && let Err(RpcError::Server { code, ref message, .. }) = first
+            && acp::auth_required(code, message)
+            && let Some(method_id) = init.agent_auth_method()
+        {
+            *tried_auth = true;
+            match peer.request::<_, Value>("authenticate", json!({ "methodId": method_id }), None).await {
+                Ok(_) => return peer.request(method, params, None).await,
+                Err(e) => tracing::debug!(task = %self.id, method_id, error = %e, "agent authenticate failed"),
+            }
+        }
+        first
+    }
+
     async fn ensure_session(self: &Arc<Self>) -> Result<Live, String> {
         let _guard = self.connecting.lock().await;
         if let Some(live) = self.live.lock().clone()
@@ -1665,12 +1689,12 @@ impl Task {
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
 
+        let mut tried_auth = false;
         let mut session = None;
         if let (Some(id), true) = (saved, can_load) {
             self.replaying.store(true, Ordering::Release);
-            let loaded: Result<Value, RpcError> = peer
-                .request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": mcp_servers }), None)
-                .await;
+            let params = json!({ "sessionId": &id, "cwd": &cwd_s, "mcpServers": &mcp_servers });
+            let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
             tokio::time::sleep(REPLAY_GRACE).await;
             self.replaying.store(false, Ordering::Release);
             match loaded {
@@ -1682,8 +1706,9 @@ impl Task {
         let (session_id, result) = match session {
             Some(s) => s,
             None => {
-                let v: Value = peer
-                    .request("session/new", json!({ "cwd": cwd_s, "mcpServers": mcp_servers }), None)
+                let params = json!({ "cwd": &cwd_s, "mcpServers": &mcp_servers });
+                let v = self
+                    .request_with_auth(&peer, &init, &mut tried_auth, "session/new", params)
                     .await
                     .map_err(|e| self.sign_in_error(&e, Some(&sign_in_message)).unwrap_or_else(|| self.describe(e)))?;
                 let id = v.get("sessionId").and_then(Value::as_str).ok_or("the agent returned no session")?.to_owned();
