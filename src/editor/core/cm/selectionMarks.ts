@@ -39,6 +39,8 @@ const theme = EditorView.baseTheme({
   ".cm-openidea-selected": {
     "--openidea-selected-bg": "var(--editor-selection-inactive, var(--bg-editor-selection-inactive))",
     // Capped at `1lh` so a font taller than the line height does not bleed into the rows above and below.
+    // Safari before 16.4 has no `lh` and drops the shorthand, keeping the plain colour before it.
+    backgroundColor: "var(--openidea-selected-bg)",
     background: "linear-gradient(var(--openidea-selected-bg), var(--openidea-selected-bg)) center / 100% 1lh no-repeat",
     WebkitBoxDecorationBreak: "clone",
     boxDecorationBreak: "clone",
