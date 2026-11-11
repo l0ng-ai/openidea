@@ -5767,7 +5767,6 @@
   "File icon theme": "Motyw ikon plików",
   "Plugin not enabled": "Wtyczka nie jest włączona",
   "Problems the {plugin} plugin reports. Severity \"As reported\" keeps the level the plugin assigns; a code below can override it.": "Problemy zgłaszane przez wtyczkę {plugin}. Poziom ważności \"Zgodnie ze zgłoszeniem\" zachowuje poziom przypisany przez wtyczkę; kod poniżej może go nadpisać.",
-  "The plugin system is a preview: its API and the plugins may still change.": "System wtyczek działa w wersji zapoznawczej: jego interfejs API oraz wtyczki mogą ulec zmianie.",
   "'{expected}' expected": "Oczekiwano '{expected}'",
   "Unexpected token": "Niekontrolowany token",
   "Syntax": "Składnia",
