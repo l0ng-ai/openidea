@@ -272,20 +272,8 @@ function useLocalHead(status: AgentTask["status"] | null, root: string | null): 
   return local ? head : null;
 }
 
-/** The task's terminal and changes, at the end of its status line. */
-function StatusActions({
-  task,
-  changes,
-  changesOpen,
-  onToggleChanges,
-}: {
-  task: AgentTask;
-  changes: AgentChange[] | null;
-  changesOpen: boolean;
-  onToggleChanges: () => void;
-}) {
-  const tx = useTx();
-  const count = changes?.length ?? 0;
+/** The task's terminal, at the end of its status line. */
+function StatusActions({ task }: { task: AgentTask }) {
   return (
     <span className={styles.statusActions}>
       <IconButton
@@ -294,18 +282,6 @@ function StatusActions({
         title="Terminal"
         onClick={() => void executeAction("terminal.openAt", task.cwd)}
       />
-      <button
-        type="button"
-        className={styles.changesToggle}
-        aria-pressed={changesOpen}
-        disabled={count === 0 && !changesOpen}
-        aria-label={changesOpen ? tx("Hide changes") : tx("Show changes")}
-        title={changesOpen ? tx("Hide changes") : tx("Show changes")}
-        onClick={onToggleChanges}
-      >
-        <Icon name="toolwindow-changes" size={14} />
-        {count > 0 && <span>{count}</span>}
-      </button>
     </span>
   );
 }
@@ -315,16 +291,10 @@ function SessionStatus({
   task,
   entries,
   head,
-  changes,
-  changesOpen,
-  onToggleChanges,
 }: {
   task: AgentTask;
   entries: AgentEntry[] | null;
   head: string | null;
-  changes: AgentChange[] | null;
-  changesOpen: boolean;
-  onToggleChanges: () => void;
 }) {
   const tx = useTx();
   const project = useProject((s) => s.project);
@@ -357,7 +327,7 @@ function SessionStatus({
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
       </span>
       <Meters task={task} entries={entries} />
-      <StatusActions task={task} changes={changes} changesOpen={changesOpen} onToggleChanges={onToggleChanges} />
+      <StatusActions task={task} />
     </div>
   );
 }
@@ -2559,14 +2529,7 @@ function SessionComposer({
     );
   return (
     <div className={styles.composerArea}>
-      <SessionStatus
-        task={task}
-        entries={entries}
-        head={head}
-        changes={changes}
-        changesOpen={changesOpen}
-        onToggleChanges={onToggleChanges}
-      />
+      <SessionStatus task={task} entries={entries} head={head} />
       {task.status === "archived" && (
         <div className={styles.banner}>
           <span className={styles.bannerText}>
