@@ -4271,11 +4271,15 @@ version = "0.1.41"
 dependencies = [
  "futures",
  "ide-core",
+ "ide-jdwp",
  "ide-jsonrpc",
+ "ide-jvm-attach",
+ "ide-jvm-inspect",
  "ide-language",
  "libc",
  "memchr",
  "parking_lot",
+ "percent-encoding",
  "portable-pty",
  "serde",
  "serde_json",
@@ -4400,6 +4404,7 @@ dependencies = [
  "ide-http",
  "ide-index",
  "ide-jsonrpc",
+ "ide-jvm-attach",
  "ide-language",
  "ide-lsp",
  "ide-mcp",
@@ -4483,6 +4488,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-jdwp"
+version = "0.1.41"
+dependencies = [
+ "ide-jvm-inspect",
+ "proptest",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ide-jsonrpc"
 version = "0.1.41"
 dependencies = [
@@ -4497,6 +4514,26 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "ide-jvm-attach"
+version = "0.1.41"
+dependencies = [
+ "libc",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "ide-jvm-inspect"
+version = "0.1.41"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "specta",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -4564,6 +4601,7 @@ dependencies = [
  "globset",
  "ide-core",
  "ide-jsonrpc",
+ "ide-jvm-inspect",
  "ide-language",
  "ide-text",
  "ide-vfs",

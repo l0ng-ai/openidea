@@ -50,6 +50,12 @@ export interface ListProps<T> {
   /** Move the active row with the pointer (popup choosers). */
   hoverSelects?: boolean;
   empty?: ReactNode;
+  /**
+   * Body of a `role="grid"`: a `rowgroup` of `row`s numbered after the grid's `headerRows`,
+   * instead of a listbox of options. `renderItem` then renders the row's `gridcell`s. Rows carry
+   * `aria-selected`, which only a grid's rows may, and the rowgroup names the active one.
+   */
+  tableBody?: { headerRows: number };
   className?: string;
   "aria-label"?: string;
   "aria-labelledby"?: string;
@@ -131,6 +137,7 @@ export function List<T>({
   focusable = true,
   hoverSelects = false,
   empty,
+  tableBody,
   className,
   overscan = 8,
   ...aria
@@ -157,7 +164,8 @@ export function List<T>({
     if (active >= 0 && active < items.length) virtualizer.scrollToIndex(active, { align: "auto" });
   }, [active, items.length, viewportHeight, virtualizer]);
 
-  // Options are virtualised: expose position / count of selectable rows to assistive tech.
+  // Options are virtualised: expose position / count of selectable rows (or the table row index)
+  // to assistive tech.
   const optionIndex = useMemo(() => {
     const idx: number[] = [];
     let n = 0;
@@ -188,8 +196,8 @@ export function List<T>({
     <div
       ref={scrollRef}
       id={id}
-      role="listbox"
-      aria-multiselectable={onSelect ? true : undefined}
+      role={tableBody ? "rowgroup" : "listbox"}
+      aria-multiselectable={onSelect && !tableBody ? true : undefined}
       aria-label={aria["aria-label"]}
       aria-labelledby={aria["aria-labelledby"]}
       aria-activedescendant={
@@ -219,11 +227,12 @@ export function List<T>({
             <div
               key={v.key}
               id={`${baseId}-${v.index}`}
-              role="option"
+              role={tableBody ? "row" : "option"}
               aria-selected={selected}
               data-lead={isActive || undefined}
-              aria-posinset={optionIndex.idx[v.index]}
-              aria-setsize={optionIndex.count}
+              aria-posinset={tableBody ? undefined : optionIndex.idx[v.index]}
+              aria-setsize={tableBody ? undefined : optionIndex.count}
+              aria-rowindex={tableBody ? tableBody.headerRows + optionIndex.idx[v.index]! : undefined}
               className={clsx(styles.row, selected && styles.active)}
               style={style}
               onPointerMove={hoverSelects && !isActive ? () => setActive(v.index) : undefined}

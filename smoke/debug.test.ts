@@ -21,7 +21,7 @@ import { activate as activateBuildTools } from "@/features/build-tools";
 import { useBuild } from "@/features/build-tools/store";
 import { activate as activateDebugger } from "@/features/debugger";
 import { addBreakpoint } from "@/features/debugger/breakpoints/store";
-import { activeSession, evaluate, useDebug } from "@/features/debugger/state";
+import { activeSession, evaluate, sessionSupports, useDebug } from "@/features/debugger/state";
 import { activate as activateRun } from "@/features/run";
 import { resetRuns, useRun } from "@/features/run/store";
 import { activateWorkbench } from "@/workbench/activate";
@@ -45,6 +45,10 @@ interface Case {
   variable: string;
   /** An expression evaluated there (Evaluate Expression), and its value. */
   evaluate: [string, RegExp];
+  /** JVM languages: the live instances of a class the paused program holds (Memory tab). */
+  memory?: { className: string; instances: number };
+  /** JVM languages: that class's instances, a field of the first one and its referrers (Show Instances). */
+  instances?: { className: string; count: number; field: string };
   /** A server: the breakpoint is in this request's handler, and the session is stopped at the end. */
   request?: string;
 }
@@ -87,6 +91,8 @@ const CASES: Record<string, Case> = {
     file: "src/main/java/com/example/orders/App.java",
     variable: "book",
     evaluate: ["book.size()", /^3$/],
+    memory: { className: "com.example.orders.OrderBook", instances: 1 },
+    instances: { className: "com.example.orders.OrderBook", count: 1, field: "orders" },
   },
   kotlin: {
     fixture: "kotlin-gradle",
@@ -94,6 +100,9 @@ const CASES: Record<string, Case> = {
     file: "src/main/kotlin/com/example/library/App.kt",
     variable: "library",
     evaluate: ["library", /Library/],
+    // Gradle forks the JVM and the debugger attaches to it: the attach-session path.
+    memory: { className: "com.example.library.Book", instances: 3 },
+    instances: { className: "com.example.library.Book", count: 3, field: "title" },
   },
   // GDB's own DAP interpreter (GDB 14+), the configuration's explicit debugger choice:
   // the C/C++ default stays lldb-dap. GDB 15.0.50.20240403-0ubuntu1 says `15`.
@@ -280,6 +289,46 @@ async function smoke(language: string) {
     expect(expression.value).toBeTruthy();
     const environment = await evaluate("environment_ok", "watch", s);
     expect(environment.value).toBe("1");
+  }
+
+  if (c.memory) {
+    const memory = await call(commands.debugJvmMemoryClasses(s.id));
+    if (memory.status === "ready") {
+      const row = memory.snapshot.rows.find((r) => r.name === c.memory!.className);
+      expect(row?.instances, `${c.memory.className} in the histogram\n${shown()}`).toBe(c.memory.instances);
+    } else {
+      // Attaching to a suspended JVM older than 17 hangs, so the backend refuses it by design.
+      const { reason } = memory;
+      const refused = reason.kind === "unsafeWhileSuspended" && reason.javaMajor > 0 && reason.javaMajor < 17;
+      expect(refused, `memory unavailable: ${JSON.stringify(reason)}\n${shown()}`).toBe(true);
+    }
+  }
+
+  if (c.instances) {
+    const { className, count, field } = c.instances;
+    // The inspector comes up beside the session (jdtls bundle, Kotlin JDWP link).
+    await until("the JVM inspector", () => {
+      const session = useDebug.getState().sessions[s.id] ?? null;
+      const backend = session?.jvmBackend;
+      if (backend && backend.kind !== "ready") throw new Error(`JVM inspector ${JSON.stringify(backend)}\n${shown()}`);
+      return sessionSupports("jvmInstances", session);
+    });
+    const listed = await call(commands.debugJvmMemoryInstances(s.id, className, 1000));
+    expect(listed.status, `instances: ${JSON.stringify(listed)}\n${shown()}`).toBe("ready");
+    if (listed.status !== "ready") return;
+    expect(listed.instances, `${className} instances`).toHaveLength(count);
+    const first = listed.instances[0]!;
+    if (!("id" in first)) throw new Error(`${className} instance without an id: ${JSON.stringify(first)}`);
+    const object = { generation: listed.generation, id: first.id };
+    const fields = await call(commands.debugJvmMemoryFields(s.id, object));
+    if (fields.status !== "ready") throw new Error(`fields: ${JSON.stringify(fields)}\n${shown()}`);
+    const held = fields.fields.find((f) => f.name === field)?.value;
+    if (!held || !("id" in held)) throw new Error(`${className}.${field}: ${JSON.stringify(fields.fields)}`);
+    const heldRef = { generation: listed.generation, id: held.id };
+    const referrers = await call(commands.debugJvmMemoryReferrers(s.id, heldRef, 50));
+    if (referrers.status !== "ready") throw new Error(`referrers: ${JSON.stringify(referrers)}\n${shown()}`);
+    const back = referrers.referrers.find((r) => "id" in r.value && r.value.id === first.id);
+    expect(back?.via, `referrers of ${className}.${field}: ${JSON.stringify(referrers)}`).toContain(field);
   }
 
   // Python 3.12 reports a conditional expression's line twice: Step Over may stop on it

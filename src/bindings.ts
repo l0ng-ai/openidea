@@ -1121,6 +1121,14 @@ export const commands = {
 	debugListenForJvm: (request: RequestId, host: string, port: number) => typedError<number, IdeError>(__TAURI_INVOKE("debug_listen_for_jvm", { request, host, port })),
 	/**  HotSwap (Reload Changed Classes) in a java-debug session. */
 	debugRedefineClasses: (session: DebugSessionId) => typedError<HotSwapResult, IdeError>(__TAURI_INVOKE("debug_redefine_classes", { session })),
+	/**  The debuggee JVM's loaded classes (instances and shallow bytes), or why they cannot be read. */
+	debugJvmMemoryClasses: (session: DebugSessionId) => typedError<JvmMemoryResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_classes", { session })),
+	/**  Up to `limit` live instances of the class in the stopped JVM. */
+	debugJvmMemoryInstances: (session: DebugSessionId, className: string, limit: number) => typedError<JvmInstancesResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_instances", { session, className, limit })),
+	/**  The fields (or array elements) of an instance in the stopped JVM. */
+	debugJvmMemoryFields: (session: DebugSessionId, object: JvmObjectRef) => typedError<JvmFieldsResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_fields", { session, object })),
+	/**  The objects that hold a reference to `object`; `limit` 0 selects the default. */
+	debugJvmMemoryReferrers: (session: DebugSessionId, object: JvmObjectRef, limit: number) => typedError<JvmReferrersResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_referrers", { session, object, limit })),
 	/**
 	 *  How to run `config` with coverage: the command to launch and where its report will be,
 	 *  or which tool is missing.
@@ -3510,6 +3518,16 @@ export type DebugCapabilities = {
 	logPoints: boolean,
 	/**  HotSwap ("Reload Changed Classes"): java-debug's `redefineClasses` request. */
 	hotCodeReplace: boolean,
+	/**
+	 *  The session debugs a JVM, so it has a Memory view; [`DebugManager::jvm_memory_classes`]
+	 *  says why when it has no data (platform, remote JVM, ...).
+	 */
+	jvmMemory: boolean,
+	/**
+	 *  The session has a JVM inspector: instances, fields and referrers while suspended. Can
+	 *  change during the session ([`ide_core::event::DebugEvent::Capabilities`]).
+	 */
+	jvmInstances: boolean,
 };
 
 /**  A completion the adapter offers for an expression (DAP `completions`). */
@@ -3538,7 +3556,9 @@ export type DebugEvent =
  *  java-debug's `hotcodereplace` event: `change_type` is `BUILD_COMPLETE` (classes
  *  changed and can be reloaded), `STARTING`, `END`, `WARNING` or `ERROR`.
  */
-{ kind: "hotCodeReplace"; changeType: string; message: string };
+{ kind: "hotCodeReplace"; changeType: string; message: string } | 
+/**  The session's capabilities changed after it started: fetch them again. */
+{ kind: "capabilities" } | { kind: "jvmBackend"; state: JvmBackendState };
 
 /**  A debug adapter session. */
 export type DebugSessionId = number;
@@ -5632,9 +5652,94 @@ export type JetBrainsSettings = {
 	files: { [key in string]: string },
 };
 
+/**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */
+export type JvmBackendState = { kind: "ready" } | 
+/**  Turned off for the rest of the session: the debug adapter lacks what it needs. */
+{ kind: "unsupported"; detail: string } | 
+/**  The Kotlin JDWP link only forwards now; inspecting stops. */
+{ kind: "degraded"; detail: string } | { kind: "closed" };
+
+export type JvmClassRow = {
+	name: string,
+	module: string | null,
+	instances: number,
+	bytes: number,
+	/**  Change since the previous snapshot; `None` on the first one and for ambiguous rows. */
+	deltaInstances: number | null,
+	deltaBytes: number | null,
+	/**  Several classes share this name (different class loaders), so it has no delta. */
+	ambiguous: boolean,
+};
+
+/**  For arrays `name` is `"[i]"`. */
+export type JvmField = {
+	name: string,
+	value: JvmValue,
+};
+
+export type JvmFieldsResult = { status: "ready"; fields: JvmField[] } | { status: "unavailable"; reason: JvmInspectUnavailable };
+
 export type JvmFilePresentation = {
 	path: string,
 	presentation: JvmPresentation,
+};
+
+export type JvmInspectUnavailable = 
+/**  The session has no inspector: not a JVM session, not ready yet, or turned off. */
+{ kind: "noBackend" } | 
+/**  The debug adapter lacks what the inspector needs; turned off for the session. */
+{ kind: "unsupported"; detail: string } | { kind: "notSuspended" } | 
+/**  The object is from an earlier stop, or the program stopped or resumed meanwhile. */
+{ kind: "stale" } | { kind: "collected" } | { kind: "classNotLoaded" } | { kind: "vmNotFound" } | 
+/**  Transient: ask again. */
+{ kind: "timedOut" } | { kind: "backendClosed" };
+
+export type JvmInstancesResult = { status: "ready"; 
+/**  Goes into the [`JvmObjectRef`] of each instance. */
+generation: number; instances: JvmValue[]; 
+/**  The limit was reached; there may be more. */
+truncated: boolean } | { status: "unavailable"; reason: JvmInspectUnavailable };
+
+export type JvmMemoryResult = { status: "ready"; snapshot: JvmMemorySnapshot } | { status: "unavailable"; reason: JvmMemoryUnavailable; 
+/**  The debugger could count the classes if the program were paused. */
+canCountWhenPaused: boolean };
+
+export type JvmMemorySnapshot = {
+	/**  Largest `bytes` first. */
+	rows: JvmClassRow[],
+	totalInstances: number,
+	totalBytes: number,
+	/**  Empty when unknown. */
+	javaVersion: string,
+	takenWhileSuspended: boolean,
+	/**  A previous snapshot from the same source exists; deltas are against it. */
+	hasBaseline: boolean,
+	/**  Wall time of the histogram or count request. */
+	elapsedMs: number,
+	source: JvmMemorySource,
+};
+
+export type JvmMemorySource = 
+/**  `GC.class_histogram -all`: sizes, and objects not yet collected. */
+"histogram" | 
+/**  JDWP `InstanceCounts`: reachable objects only, no sizes (`bytes` is 0). */
+"debugger";
+
+export type JvmMemoryUnavailable = 
+/**  An attach session whose JVM is remote, or local but not found by its JDWP port. */
+{ kind: "attachedJvmNotFound" } | 
+/**
+ *  An attach through the IDE's listen-mode relay: the JVM connected to the IDE, so it has
+ *  no JDWP listener to be found by.
+ */
+{ kind: "listenModeNotSupported" } | { kind: "unsupportedPlatform" } | { kind: "noJvmProcess" } | { kind: "listenerNotRunning" } | 
+/**  `java_major` is 0 when the version is unknown. */
+{ kind: "unsafeWhileSuspended"; javaMajor: number } | { kind: "programExited" } | { kind: "timedOut" };
+
+export type JvmObjectRef = {
+	/**  The `generation` of the [`JvmInstancesResult`] the object came from. */
+	generation: number,
+	id: number,
 };
 
 export type JvmPresentation = {
@@ -5643,7 +5748,19 @@ export type JvmPresentation = {
 	runnable: boolean,
 };
 
+export type JvmReferrer = {
+	value: JvmValue,
+	/**  Field names, or `"[i]"` for array slots, through which `value` points at the object. */
+	via: string[],
+};
+
+export type JvmReferrersResult = { status: "ready"; referrers: JvmReferrer[]; truncated: boolean } | { status: "unavailable"; reason: JvmInspectUnavailable };
+
 export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
+
+export type JvmValue = { kind: "null" } | { kind: "primitive"; typeName: string; text: string } | 
+/**  `text` is `None` when `length` exceeds [`STRING_PREVIEW_CHARS`]. */
+{ kind: "string"; id: number; text: string | null; length: number } | { kind: "boxed"; id: number; typeName: string; text: string } | { kind: "object"; id: number; typeName: string } | { kind: "array"; id: number; typeName: string; length: number };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
 export type LanguageCodeStyle = LanguageCodeStyle_Serialize | LanguageCodeStyle_Deserialize;
