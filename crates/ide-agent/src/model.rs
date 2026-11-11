@@ -602,3 +602,31 @@ pub struct McpServerInput {
 fn default_true() -> bool {
     true
 }
+
+/// Payload for creating a custom ACP agent (always the ACP driver); the id
+/// becomes the `<config>/agents/<id>.toml` file name.
+#[derive(Clone, Debug, Deserialize, Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CustomAgentInput {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+/// What importing one entry of a JetBrains `acp.json` file did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpImportOutcome {
+    /// The `agent_servers` key the entry was imported from.
+    pub name: String,
+    /// The id its agent file would get (also when skipped).
+    pub id: String,
+    pub saved: bool,
+    /// Why the entry was skipped; empty when it was saved.
+    #[serde(default)]
+    pub reason: String,
+}

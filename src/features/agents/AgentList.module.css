@@ -76,6 +76,19 @@
   font-size: var(--fs-small);
   overflow-wrap: anywhere;
 }
+.customActions {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+.customNotice {
+  margin: 0;
+  padding: 0 12px 6px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
 
 .details {
   flex: 1;

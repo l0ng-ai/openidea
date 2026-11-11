@@ -522,6 +522,30 @@ impl AgentManager {
         provider::set_builtin_env(&dir, id, env)
     }
 
+    /// Saves a new custom ACP agent through its agent file.
+    pub fn save_custom_agent(&self, input: CustomAgentInput) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::save_custom(&dir, &input)
+    }
+
+    /// Removes a custom agent's file (registry installs go through `registry_remove`).
+    pub fn remove_custom_agent(&self, id: &str) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::remove_custom(&dir, id)
+    }
+
+    /// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents.
+    pub fn import_acp_agents(&self, text: &str) -> IdeResult<Vec<AcpImportOutcome>> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::import_acp(&dir, text)
+    }
+
     /// Re-reads configured/installed agents, drops cached probes, and notifies subscribers.
     pub fn reload_providers(&self) {
         let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
