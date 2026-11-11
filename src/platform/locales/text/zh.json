@@ -7015,6 +7015,8 @@
   "Gradle Tasks": "Gradle 任务",
   "IDE MCP Server": "IDE MCP 服务器",
   "Enable MCP server": "启用 MCP 服务器",
+  "Run tools without confirmation (brave mode)": "运行工具时不再确认（勇敢模式）",
+  "Run configurations, terminal commands and other tools that change a project start without asking, for unattended agents. Only the IDE's own settings can turn this on, not a project's.": "运行配置、终端命令以及其他会修改项目的工具直接执行、不再询问，适合无人值守的智能体。只能在 IDE 自身的设置里开启，项目设置无法开启。",
   "Running on port {port}": "正在端口 {port} 上运行",
   "Failed to start: {error}": "启动失败：{error}",
   "Not running": "未运行",
