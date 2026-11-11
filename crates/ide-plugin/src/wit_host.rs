@@ -1267,6 +1267,11 @@ impl tasks::HostTask for StoreData {
     }
 }
 
+/// Headroom reserved before `StoreData::deadline` so a timed-out host subprocess
+/// or HTTP request can unwind as a recoverable `wit::Error` in guest code instead
+/// of immediately tripping the Wasm epoch trap on re-entry.
+const HOST_IO_UNWIND_GRACE: Duration = Duration::from_millis(250);
+
 impl StoreData {
     /// Lets the running call reach `from` plus the background budget (the
     /// longer of it and what was left), so a task that keeps saying it is alive
@@ -1283,6 +1288,26 @@ impl StoreData {
     /// can't be interrupted by the epoch callback, so they get this as timeout).
     fn remaining(&self) -> Duration {
         self.deadline.saturating_duration_since(Instant::now())
+    }
+
+    /// Budget handed to a blocking host I/O call (`process.run`, `net.fetch`),
+    /// leaving room before `self.deadline` when possible so a timed-out I/O call
+    /// returns `Err` to the guest instead of trapping the Wasm instance.
+    fn io_timeout(&self) -> Duration {
+        let rem = self.remaining();
+        if !self.host_io_grace_used && rem > HOST_IO_UNWIND_GRACE * 2 { rem - HOST_IO_UNWIND_GRACE } else { rem }
+    }
+
+    /// Grants at most one short unwind window per call when a blocking host I/O
+    /// call failed at or near `self.deadline` without caller cancellation.
+    fn grant_io_error_grace(&mut self) {
+        if !self.host_io_grace_used && !self.cancel.is_set() {
+            self.host_io_grace_used = true;
+            let min_deadline = Instant::now() + HOST_IO_UNWIND_GRACE;
+            if min_deadline > self.deadline {
+                self.deadline = min_deadline;
+            }
+        }
     }
 }
 
@@ -1371,13 +1396,15 @@ impl net::Host for StoreData {
             url: req.url,
             headers: req.headers.into_iter().map(|h| (h.name, h.value)).collect(),
             body: req.body,
-            timeout: wanted.min(self.remaining()),
+            timeout: wanted.min(self.io_timeout()),
             grants,
         };
         let token = self.cancel.token();
-        Ok(self
-            .host
-            .fetch(request, &token)
+        let outcome = self.host.fetch(request, &token);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome
             .map(|r| net::Response {
                 status: r.status,
                 headers: r.headers.into_iter().map(|(name, value)| net::Header { name, value }).collect(),
@@ -1466,8 +1493,12 @@ impl process::Host for StoreData {
         };
         let cwd = self.cwd_of(cwd)?;
         let token = self.cancel.token();
-        let timeout = self.remaining();
-        Ok(self.host.run_process(cmd, cwd.as_deref(), stdin, &token, timeout).map(to_output).map_err(to_wit))
+        let timeout = self.io_timeout();
+        let outcome = self.host.run_process(cmd, cwd.as_deref(), stdin, &token, timeout);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome.map(to_output).map_err(to_wit))
     }
 
     fn run_command(
@@ -1482,8 +1513,12 @@ impl process::Host for StoreData {
         };
         let cwd = self.cwd_of(cwd)?;
         let token = self.cancel.token();
-        let timeout = self.remaining();
-        Ok(self.host.run_process(cmd, cwd.as_deref(), stdin, &token, timeout).map(to_output).map_err(to_wit))
+        let timeout = self.io_timeout();
+        let outcome = self.host.run_process(cmd, cwd.as_deref(), stdin, &token, timeout);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome.map(to_output).map_err(to_wit))
     }
 
     fn start(&mut self, cmd: process::Command, cwd: Option<Resource<ProjectRes>>) -> Fallible<Resource<ChildRes>> {
