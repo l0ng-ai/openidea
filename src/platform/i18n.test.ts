@@ -296,6 +296,20 @@ describe("catalogs", () => {
     expect(Object.keys(texts).sort()).toEqual([...SUPPORTED_LOCALES].sort());
   });
 
+  it("list every key once", () => {
+    // JSON.parse keeps the last of two equal keys, so a merge that adds a key twice goes unnoticed.
+    for (const dir of [LOCALES_DIR, join(LOCALES_DIR, "text")]) {
+      for (const file of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+        const keys = [...readFileSync(join(dir, file), "utf8").matchAll(/^ {2}("(?:[^"\\]|\\.)*"):/gm)].map(
+          (m) => JSON.parse(m[1]!) as string,
+        );
+        const seen = new Set<string>();
+        const repeated = keys.filter((key) => seen.has(key) || !seen.add(key));
+        expect(repeated, `${file} in ${dir}`).toEqual([]);
+      }
+    }
+  });
+
   it("translate source text into non-empty text", () => {
     for (const [locale, catalog] of Object.entries(texts))
       for (const [source, text] of Object.entries(catalog)) expect(text.trim(), `${locale}:${source}`).not.toBe("");
