@@ -2430,6 +2430,8 @@
   "more": "더보기",
   "Usages": "사용 위치",
   "Code author": "코드 작성자",
+  "Position": "위치",
+  "Show “no usages”": "‘사용 위치 없음’ 표시",
   "Usages Detected": "사용 위치 감지됨",
   "Usages actions": "사용 위치 액션",
   "Usages of '{symbol}'": "'{symbol}'의 사용 위치",

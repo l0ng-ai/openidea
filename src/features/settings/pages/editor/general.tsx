@@ -846,7 +846,26 @@ const INLAY_HINTS = editorPage({
       title: "Code Vision",
       items: [
         { t: "check", key: `${P}.inlay.codeVisionUsages`, label: "Usages" },
+        { t: "check", key: `${P}.inlay.codeVisionNoUsages`, label: "Show “no usages”" },
+        {
+          t: "select",
+          key: `${P}.inlay.codeVisionUsagesPosition`,
+          label: "Position",
+          options: [
+            { value: "top", label: "Top" },
+            { value: "right", label: "Right" },
+          ],
+        },
         { t: "check", key: `${P}.inlay.codeVisionAuthor`, label: "Code author" },
+        {
+          t: "select",
+          key: `${P}.inlay.codeVisionAuthorPosition`,
+          label: "Position",
+          options: [
+            { value: "top", label: "Top" },
+            { value: "right", label: "Right" },
+          ],
+        },
       ],
     },
     { title: "Languages", items: [{ t: "custom", label: "Show inlay hints for:", component: InlayLanguages }] },

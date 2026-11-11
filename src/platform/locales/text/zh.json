@@ -2830,6 +2830,8 @@
   "more": "更多",
   "Usages": "用法",
   "Code author": "代码作者",
+  "Position": "位置",
+  "Show “no usages”": "显示“无用法”",
   "Usages Detected": "检测到用法",
   "Usages actions": "用法操作",
   "Usages of '{symbol}'": "'{symbol}' 的用法",
