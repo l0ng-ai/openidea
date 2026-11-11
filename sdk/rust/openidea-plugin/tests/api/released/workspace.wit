@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 interface workspace {
     use types.{error, location};
@@ -66,6 +66,12 @@ interface workspace {
         /// contents win over the disk. A missing path is `not-found`.
         /// Requires `project.read`.
         read-file: func(path: string) -> result<string, error>;
+        /// Reads the bytes of a file inside the project (absolute, or
+        /// relative to the root) — images, archives, fonts — at most 16 MiB,
+        /// as `fs.read-bytes` allows; paths leaving the root are refused and
+        /// a missing path is `not-found`. The file on disk: unsaved editor
+        /// contents don't apply. Requires `project.read`.
+        read-bytes: func(path: string) -> result<list<u8>, error>;
         /// Replaces the text of a file inside the project (absolute, or
         /// relative to the root), or creates it with missing parent
         /// directories; paths leaving the root are refused. Written in one

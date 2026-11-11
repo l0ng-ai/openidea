@@ -4,7 +4,7 @@ use crate::state::AppState;
 use ide_agent::registry::AgentRegistry;
 use ide_agent::{
     AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
-    McpServer, McpServerInput, NewAgentTask,
+    ExternalSession, McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
@@ -164,6 +164,25 @@ pub fn agent_entries(
 #[specta::specta]
 pub async fn agent_create(window: Window, state: State<'_, AppState>, request: NewAgentTask) -> IdeResult<AgentTask> {
     agent::create(&state.host, window.label(), request).await
+}
+
+/// Sessions on this machine that no task holds yet, newest first (#312).
+#[tauri::command]
+#[specta::specta]
+pub fn agent_external_sessions(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ExternalSession>> {
+    agent::external_sessions(&state.host, window.label())
+}
+
+/// Imports an external session as a task: its first turn loads and replays it (#312).
+#[tauri::command]
+#[specta::specta]
+pub fn agent_import_session(
+    window: Window,
+    state: State<'_, AppState>,
+    provider: String,
+    session_id: String,
+) -> IdeResult<AgentTask> {
+    agent::import_session(&state.host, window.label(), provider, session_id)
 }
 
 /// Sends a message; while the agent works it is queued, or with `now` it interrupts the turn.

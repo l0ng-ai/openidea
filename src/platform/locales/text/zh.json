@@ -343,6 +343,8 @@
   "Editor and Preview": "编辑器和预览",
   "Preview Only": "仅预览",
   "Add Maven Projects": "添加 Maven 项目",
+  "Some Maven projects were not added": "部分 Maven 项目未能添加",
+  "These are outside the open project, and Maven only links POMs inside it: {join}{more}": "这些项目位于已打开项目之外，而 Maven 仅链接项目内的 POM：{join}{more}",
   "Unlink Maven Projects": "取消链接 Maven 项目",
   "Unlink Maven projects?": "取消链接 Maven 项目？",
   "Remove this project and its modules from Maven? Files will remain in the Project view.": "从 Maven 中移除此项目及其模块？文件将保留在项目视图中。",
@@ -2333,6 +2335,7 @@
   "Services": "服务",
   "Services actions": "服务操作",
   "Session finished": "会话已结束",
+  "Sessions from other apps": "来自其他应用的智能体会话",
   "Set Active Changelist": "设置活动更改列表",
   "Set DEFAULT": "设为默认值",
   "Set NULL": "设为 NULL",
@@ -2364,7 +2367,6 @@
   "Show Commit in Git Log": "在 Git 日志中显示提交",
   "Show Container Log": "显示容器日志",
   "Show Context Actions": "显示上下文操作",
-  "Show changes": "显示更改",
   "Show Coverage": "显示覆盖率",
   "Show Debug Tool Window": "显示调试工具窗口",
   "Show Diff": "显示差异",
@@ -7321,5 +7323,6 @@
   "Imported 1 MCP server from the project.": "已从项目导入 1 个 MCP 服务器。",
   "Imported {count} MCP servers from the project.": "已从项目导入 {count} 个 MCP 服务器。",
   "Show branch and incoming/outgoing commits in the Project view": "在项目视图中显示分支及传入/传出提交",
-  "Up to date with {upstream}": "已与 {upstream} 同步"
+  "Up to date with {upstream}": "已与 {upstream} 同步",
+  "Highlight occurrences of selected text": "高亮所选文本的匹配项"
 }
