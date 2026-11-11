@@ -257,7 +257,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let model = fixture(root);
+        fixture(root);
         let script = root.join("mvnw");
         fs::write(
             &script,
