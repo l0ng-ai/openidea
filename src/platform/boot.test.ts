@@ -95,6 +95,27 @@ it("reports the first rejection when startup then times out", () => {
   expect(details).not.toContain("later rejection");
 });
 
+it("counts the startup timeout only while the window shows", () => {
+  const hidden = (value: boolean) => {
+    Object.defineProperty(document, "hidden", { configurable: true, value });
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
+  try {
+    vi.advanceTimersByTime(20_000);
+    // Behind another window: no frames, so the splash can't finish; that isn't a failure.
+    hidden(true);
+    vi.advanceTimersByTime(60_000);
+    expect(document.getElementById("boot-error")).toBeNull();
+    hidden(false);
+    vi.advanceTimersByTime(9_000);
+    expect(document.getElementById("boot-error")).toBeNull();
+    vi.advanceTimersByTime(1_000);
+    expect(document.querySelector("textarea")?.value).toContain("Startup did not finish within 30 seconds.");
+  } finally {
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+  }
+});
+
 it("preserves the first failure", () => {
   window.dispatchEvent(new ErrorEvent("error", { error: new Error("startup failed") }));
   window.dispatchEvent(new ErrorEvent("error", { message: "later failure" }));
