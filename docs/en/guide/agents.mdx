@@ -11,24 +11,24 @@ OpenIDEA does not include a model or an account of its own: it starts the agent 
 
 These agents are built in. Install the agent's own CLI and sign in once in a terminal; OpenIDEA finds it on `PATH`.
 
-| Agent             | Command OpenIDEA starts                               | Sign in with          |
-| ----------------- | ----------------------------------------------------- | --------------------- |
-| Claude Code       | `claude`                                              | `claude`              |
-| Codex             | `codex app-server`                                    | `codex login`         |
-| Claude Code (ACP) | `npx -y @agentclientprotocol/claude-agent-acp@0.97.0` | `claude`              |
-| Codex (ACP)       | `npx -y @agentclientprotocol/codex-acp@2.3.0`         | `codex login`         |
-| Gemini CLI        | `gemini --experimental-acp`                           | `gemini`              |
-| GitHub Copilot    | `copilot --acp`                                       | `copilot`             |
-| Cursor            | `cursor-agent acp`                                    | `cursor-agent login`  |
-| OpenCode          | `opencode acp`                                        | `opencode auth login` |
-| Qwen Code         | `qwen --experimental-acp`                             | `qwen`                |
-| Kimi CLI          | `kimi acp`                                            | `kimi`                |
-| Goose             | `goose acp`                                           | `goose configure`     |
-| Auggie            | `auggie --acp`                                        | `auggie login`        |
-| Kiro              | `kiro-cli acp`                                        | `kiro-cli login`      |
-| Mistral Vibe      | `vibe-acp`                                            | `vibe`                |
+| Agent          | Command OpenIDEA starts     | Sign in with          |
+| -------------- | --------------------------- | --------------------- |
+| Claude Code    | `claude`                    | `claude`              |
+| Codex          | `codex app-server`          | `codex login`         |
+| Gemini CLI     | `gemini --experimental-acp` | `gemini`              |
+| GitHub Copilot | `copilot --acp`             | `copilot`             |
+| Cursor         | `cursor-agent acp`          | `cursor-agent login`  |
+| OpenCode       | `opencode acp`              | `opencode auth login` |
+| Qwen Code      | `qwen --experimental-acp`   | `qwen`                |
+| Qoder          | `qodercli --acp`            | `qodercli login`      |
+| Qoder CN       | `qoderclicn --acp`          | `qoderclicn login`    |
+| Kimi CLI       | `kimi acp`                  | `kimi`                |
+| Goose          | `goose acp`                 | `goose configure`     |
+| Auggie         | `auggie --acp`              | `auggie login`        |
+| Kiro           | `kiro-cli acp`              | `kiro-cli login`      |
+| Mistral Vibe   | `vibe-acp`                  | `vibe`                |
 
-**Claude Code** and **Codex** are driven through their own protocols (Claude Code's stream-json mode and `codex app-server`); the "(ACP)" variants use the official ACP adapters through `npx` instead. If an agent needs you to sign in, the task tells you which command to run.
+**Claude Code** and **Codex** are driven through their own protocols (Claude Code's stream-json mode and `codex app-server`). Their ACP adapters (`claude-acp`, `codex-acp`) are no longer listed; tasks that already use them keep working, and an [agent file](#add-a-custom-agent) for either id lists it again. If an agent needs you to sign in, the task tells you which command to run.
 
 Agents are unavailable in a project you have not marked as trusted.
 

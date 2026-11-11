@@ -210,6 +210,7 @@ impl Host {
                     let bundles: Vec<PathBuf> = ide_tools::managed_bundle(&data_dir, "java-debug")
                         .into_iter()
                         .chain(ide_sdk::java::usages_bundle(&data_dir))
+                        .chain(ide_sdk::java::jvm_inspect_bundle(&data_dir))
                         .chain(ide_sdk::java::kotlin_bridge_bundle(&data_dir))
                         .collect();
                     let min_java = ide_sdk::java::jdtls_min_java(cfg);
@@ -245,6 +246,7 @@ impl Host {
                         &bundles,
                         lombok.jar(),
                     );
+                    ide_sdk::apply::configure_gradle_runtime(cfg, root, server_root, &effective);
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);

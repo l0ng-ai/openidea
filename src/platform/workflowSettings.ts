@@ -19,6 +19,7 @@ export interface IssueLinkValid {
 
 export interface GitSettingsValid {
   inlineBlame: boolean;
+  showBranchInProjectView: boolean;
   executable: string;
   updateMethod: UpdateMethod;
   autoUpdateOnPushRejected: boolean;
@@ -117,6 +118,7 @@ export interface TerminalSettingsValid {
   overrideIdeShortcuts: boolean;
   shellIntegration: boolean;
   highlightHyperlinks: boolean;
+  highlightSelection: boolean;
   optionAsMeta: boolean;
   escapeToEditor: boolean;
   cursorShape: CursorShape;
@@ -190,6 +192,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     historyLimit: 1000,
     git: {
       inlineBlame: false,
+      showBranchInProjectView: false,
       executable: "",
       updateMethod: "merge",
       autoUpdateOnPushRejected: false,
@@ -274,6 +277,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     overrideIdeShortcuts: true,
     shellIntegration: true,
     highlightHyperlinks: true,
+    highlightSelection: true,
     optionAsMeta: false,
     escapeToEditor: false,
     cursorShape: "block",
@@ -321,6 +325,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
     historyLimit: num(v.historyLimit, d.historyLimit, L.historyLimit, true),
     git: {
       inlineBlame: bool(g.inlineBlame, d.git.inlineBlame),
+      showBranchInProjectView: bool(g.showBranchInProjectView, d.git.showBranchInProjectView),
       executable: text(g.executable, d.git.executable).trim(),
       updateMethod: oneOf(g.updateMethod, ["merge", "rebase"] as const, d.git.updateMethod),
       autoUpdateOnPushRejected: bool(g.autoUpdateOnPushRejected, d.git.autoUpdateOnPushRejected),
@@ -441,6 +446,7 @@ export function validateTerminal(raw: unknown): TerminalSettingsValid {
     overrideIdeShortcuts: bool(v.overrideIdeShortcuts, d.overrideIdeShortcuts),
     shellIntegration: bool(v.shellIntegration, d.shellIntegration),
     highlightHyperlinks: bool(v.highlightHyperlinks, d.highlightHyperlinks),
+    highlightSelection: bool(v.highlightSelection, d.highlightSelection),
     optionAsMeta: bool(v.optionAsMeta, d.optionAsMeta),
     escapeToEditor: bool(v.escapeToEditor, d.escapeToEditor),
     cursorShape: oneOf(v.cursorShape, ["block", "underline", "bar"] as const, d.cursorShape),

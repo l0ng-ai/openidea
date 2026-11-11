@@ -22,6 +22,15 @@ const backend = vi.hoisted(() => ({
   fetched: [] as string[],
   entryError: null as string | null,
   entryWait: null as Promise<void> | null,
+  external: [] as Array<{
+    provider: string;
+    sessionId: string;
+    title: string;
+    cwd: string | null;
+    updatedMs: number;
+  }>,
+  imported: [] as Array<[string, string]>,
+  externalError: null as string | null,
 }));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
@@ -39,6 +48,16 @@ vi.mock("@/platform/ipc", async (original) => ({
     agentRespond: async (task: string, permission: number, option: string | null) => {
       backend.answers.push([task, permission, option]);
       return { status: "ok", data: null };
+    },
+    agentExternalSessions: async () => {
+      if (backend.externalError !== null) throw new Error(backend.externalError);
+      return { status: "ok", data: backend.external };
+    },
+    agentImportSession: async (provider: string, sessionId: string) => {
+      backend.imported.push([provider, sessionId]);
+      const found = backend.external.find((e) => e.provider === provider && e.sessionId === sessionId);
+      if (!found) throw new Error("unknown session");
+      return { status: "ok", data: { ...task("imported"), id: "imported", title: found.title, provider } };
     },
   },
 }));
@@ -118,6 +137,9 @@ beforeEach(() => {
   disconnect();
   localStorage.clear();
   backend.changes = [];
+  backend.external = [];
+  backend.imported = [];
+  backend.externalError = null;
   backend.entries = new Map([
     ["A", [{ type: "agent", text: "Answer A" }, subagent]],
     [entriesKey("A", "child"), [{ type: "agent", text: "Child answer" }]],
@@ -129,6 +151,8 @@ beforeEach(() => {
     homeOpen: false,
     tasks: new Map([task("A"), task("B")].map((t) => [t.id, t])),
     entries: new Map(backend.entries),
+    external: [],
+    externalError: null,
   });
 });
 
@@ -259,7 +283,7 @@ describe("process folding", () => {
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    const summary = await screen.findByText("Reasoning · Read 2 files");
+    const summary = await screen.findByText("Read 2 files");
     const fold = summary.closest("details")!;
     expect(fold.open).toBe(false);
     // Folded content is rendered once opened, a level at a time.
@@ -267,12 +291,13 @@ describe("process folding", () => {
       details.open = true;
       fireEvent(details, new Event("toggle"));
     };
-    expect(screen.queryByText("Reasoning")).toBeNull();
-    open(fold);
-    const thought = (await screen.findAllByText("Reasoning"))[0]!.closest("details")!;
     expect(screen.queryByText("think one")).toBeNull();
+    open(fold);
+    // A folded thought shows its first line; opening it shows the rest.
+    const thought = (await screen.findByText("think one")).closest("details")!;
+    expect(thought.open).toBe(false);
     open(thought);
-    expect(await screen.findByText("think one")).toBeInTheDocument();
+    expect(thought.querySelector(`.${styles.thoughtBody}`)).toHaveTextContent("think one");
   });
 });
 
@@ -289,7 +314,7 @@ describe("turn folding", () => {
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Final reply");
-    const summary = screen.getByText("Reasoning · Ran 1 command · Read 1 file · 1 message");
+    const summary = screen.getByText("Ran 1 command · Read 1 file · 1 message");
     const fold = summary.closest("details")!;
     expect(fold).toHaveClass(styles.turnFold!);
     expect(fold).toHaveTextContent("12s");
@@ -317,6 +342,56 @@ describe("turn folding", () => {
     expect(stream().querySelector(`.${styles.turnFold}`)).toBeNull();
     // The turn isn't over: its latest message is no final reply yet.
     expect(stream().querySelector(`.${styles.agentMessage} > .${styles.messageFooter}`)).toBeNull();
+    // What the agent is doing ends the conversation, below its latest output.
+    const working = within(stream()).getByText("Working…").closest(`.${styles.working}`);
+    expect(stream().lastElementChild).toBe(working);
+  });
+});
+
+describe("opened runs", () => {
+  it("stay open when the finished turn folds them away and is opened again", async () => {
+    const asked = {
+      type: "user",
+      text: "Question",
+      attachments: [],
+      steered: false,
+      sentMs: 1000,
+      doneMs: null,
+    } as const;
+    const setTask = (status: AgentTask["status"]) => ({
+      tasks: new Map(useAgents.getState().tasks).set("A", { ...useAgents.getState().tasks.get("A")!, status }),
+    });
+    useAgents.setState({
+      entries: new Map([["A", [asked, tool("one"), tool("two"), { type: "agent", text: "Interim" }] as AgentEntry[]]]),
+      ...setTask("running"),
+    });
+    render(<SessionEditor input={input("A")} />);
+    const toggle = (details: HTMLDetailsElement) => {
+      details.open = !details.open;
+      fireEvent(details, new Event("toggle"));
+    };
+    toggle((await screen.findByText("Read 2 files")).closest("details")!);
+    act(() =>
+      useAgents.setState({
+        entries: new Map([
+          [
+            "A",
+            [
+              { ...asked, doneMs: 9000 },
+              tool("one"),
+              tool("two"),
+              { type: "agent", text: "Interim" },
+              { type: "agent", text: "Done" },
+            ] as AgentEntry[],
+          ],
+        ]),
+        ...setTask("ready"),
+      }),
+    );
+    const turn = screen.getByText("Read 2 files · 1 message").closest("details")!;
+    expect(turn).toHaveClass(styles.turnFold!);
+    toggle(turn);
+    expect(screen.getByText("Read 2 files").closest("details")!.open).toBe(true);
   });
 });
 
@@ -369,44 +444,13 @@ describe("the conversation selection", () => {
     selection.addRange(range);
   };
 
-  it("shows a Quote button after a mouse selection ends", async () => {
+  it("offers Quote on a right-click, not as a button when the selection ends", async () => {
     render(<SessionEditor input={input("A")} />);
     select(await screen.findByText("Answer A"));
     fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
-    expect(screen.getByRole("button", { name: "Quote" })).toBeInTheDocument();
-    expect(labels()).toEqual([]);
-  });
-
-  it("shows no button for an empty selection", async () => {
-    render(<SessionEditor input={input("A")} />);
-    await screen.findByText("Answer A");
-    window.getSelection()!.removeAllRanges();
-    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
     expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
-  });
-
-  it("shows no button for a selection outside the conversation", async () => {
-    render(<SessionEditor input={input("A")} />);
-    await screen.findByText("Answer A");
-    const outside = document.createElement("p");
-    outside.textContent = "selected elsewhere";
-    document.body.appendChild(outside);
-    select(outside);
-    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
-    outside.remove();
-    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
-  });
-
-  it("hides the button when the conversation scrolls or Escape is pressed", async () => {
-    render(<SessionEditor input={input("A")} />);
-    select(await screen.findByText("Answer A"));
-    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
-    fireEvent.scroll(stream());
-    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
-    select(screen.getByText("Answer A"));
-    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+    fireEvent.contextMenu(stream(), { clientX: 120, clientY: 90 });
+    expect(labels()).toContain("Quote");
   });
 
   it("offers Copy alone on a right-click without a selection", async () => {
@@ -419,6 +463,27 @@ describe("the conversation selection", () => {
 });
 
 describe("scrolling", () => {
+  it("returns to the end when the user sends a message while scrolled up", async () => {
+    const reply = { type: "agent", text: "Initial reply" } as AgentEntry;
+    useAgents.setState({ entries: new Map([["A", [reply]]]) });
+    render(<SessionEditor input={input("A")} />);
+    const el = stream();
+    let height = 1000;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    fireEvent.wheel(el, { deltaY: -200 });
+    el.scrollTop = 200;
+    fireEvent.scroll(el);
+    expect(screen.getByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
+    height = 1100;
+    const sent = { type: "user", text: "Next", attachments: [], steered: false, sentMs: 1, doneMs: null } as AgentEntry;
+    act(() => useAgents.setState({ entries: new Map([["A", [reply, sent]]]) }));
+    expect(el.scrollTop).toBe(1100);
+    expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+  });
+
   it.each(["wheel", "touch", "ArrowUp", "PageUp", "Home", "Shift+Space"])(
     "releases following before an upward %s scroll, even within the bottom threshold",
     async (method) => {
@@ -614,22 +679,16 @@ describe("scrolling", () => {
 });
 
 describe("tool calls", () => {
-  it.each(["pending", "running"] as const)(
-    "keeps %s tools outside folds with their output expanded",
-    async (status) => {
-      backend.entries.set("A", [
-        tool("done one"),
-        tool("done two"),
-        tool("live", { status, output: "Reading files…" }),
-      ]);
-      useAgents.setState({ entries: new Map(backend.entries) });
-      render(<SessionEditor input={input("A")} />);
-      const output = await screen.findByText("Reading files…");
-      expect(output.closest("details")!.open).toBe(true);
-      expect(output.closest(`.${styles.processRun}`)).toBeNull();
-      expect(screen.getByText("Read 2 files").closest("details")!.open).toBe(false);
-    },
-  );
+  it.each(["pending", "running"] as const)("keeps %s tools in their run, named on its summary", async (status) => {
+    backend.entries.set("A", [tool("done one"), tool("done two"), tool("live", { status, output: "Reading files…" })]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const summary = (await screen.findByText("Read 3 files")).closest("summary")!;
+    expect(summary.closest("details")!).toHaveClass(styles.processRun!);
+    expect(summary.closest("details")!.open).toBe(false);
+    expect(summary.querySelector(`.${styles.processCurrent}`)).toHaveTextContent("live");
+    expect(screen.queryByText("Reading files…")).toBeNull();
+  });
 
   it("folds consecutive finished tool calls into one collapsed row", async () => {
     const edit = (id: string) => tool(id, { kind: "edit", diffs: [{ path: "/project/a.ts", added: 2, removed: 1 }] });
@@ -1124,14 +1183,14 @@ describe("session state across tasks and hosts", () => {
     useAgents.setState({ docked: "A", sessionLocation: "toolWindow" });
     render(<AgentsView />);
     await screen.findByText("Answer A");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Show changes" })).toBeEnabled());
+    await screen.findByRole("button", { name: /1 changed file/ });
     expect(screen.queryByRole("complementary", { name: "Changes" })).toBeNull();
     const markVisible = vi.spyOn(await import("./store"), "markVisible");
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const message = screen.getByRole("textbox", { name: "Message" });
     fireEvent.change(message, { target: { value: "Draft to keep" } });
     const conversation = stream();
-    fireEvent.click(screen.getByRole("button", { name: "Show changes" }));
+    fireEvent.click(screen.getByRole("button", { name: /1 changed file/ }));
     expect(screen.getByRole("complementary", { name: "Changes" })).toBeVisible();
     expect(screen.getByText("Answer A")).not.toBeVisible();
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
@@ -1254,5 +1313,38 @@ describe("meters in the task header", () => {
     expect(screen.queryByText("12%")).toBeNull();
     expect(screen.queryByText("5h 19%")).toBeNull();
     expect(screen.getByText("$0.42")).toBeInTheDocument();
+  });
+});
+
+describe("sessions from other apps", () => {
+  const openHistory = async () => {
+    act(() => useAgents.setState({ docked: "A" }));
+    render(<AgentsView />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
+    await waitFor(() => expect(screen.getByText("Sessions from other apps")).toBeInTheDocument());
+  };
+
+  it("lists external sessions in the history popup and imports one as a task", async () => {
+    backend.external = [
+      { provider: "claude", sessionId: "abc", title: "Login fix", cwd: "/work/app", updatedMs: Date.now() },
+      { provider: "codex", sessionId: "thread-1", title: "Add tests", cwd: null, updatedMs: 0 },
+    ];
+    await openHistory();
+    expect(screen.getByText("Login fix")).toBeInTheDocument();
+    expect(screen.getByText("Add tests")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "Import" })[0]!);
+    });
+    expect(backend.imported).toEqual([["claude", "abc"]]);
+    const state = useAgents.getState();
+    expect(state.tasks.get("imported")?.title).toBe("Login fix");
+    expect(state.external.map((e) => e.sessionId)).toEqual(["thread-1"]);
+  });
+
+  it("shows listing errors instead of the section", async () => {
+    backend.externalError = "no home";
+    await openHistory();
+    expect(screen.getByText("no home")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Import" })).toBeNull();
   });
 });

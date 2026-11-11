@@ -276,6 +276,16 @@ describe("terminal find", () => {
     const d = buildSearchDecorations((n) => (n === "--match" ? "#8fa5d6" : n === "--bg-app" ? "#000000" : ""));
     for (const v of Object.values(d)) expect(v).toMatch(/^#[0-9a-f]{6}$/);
     expect(d.matchOverviewRuler).toBe("#8fa5d6");
+
+    const fromSearchTokens = buildSearchDecorations((n) => {
+      if (n === "--bg-app") return "#191a1c";
+      if (n === "--bg-search-match") return "#ba9752";
+      if (n === "--bg-search-match-current") return "#f2c55c";
+      return "";
+    });
+    expect(fromSearchTokens.matchBackground).toBe("#ba9752");
+    expect(fromSearchTokens.activeMatchBackground).toBe("#f2c55c");
+    expect(fromSearchTokens.activeMatchBorder).toBe("#f2c55c");
   });
 });
 

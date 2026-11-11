@@ -1,0 +1,189 @@
+id = "kotlin"
+name = "Kotlin"
+group = "Kotlin"
+icon = "project-kotlin"
+description = "A Kotlin/JVM application built with Gradle or Maven."
+
+[[fields]]
+id = "build"
+label = "Build system:"
+type = "choice"
+segmented = true
+options = [{ value = "gradle", label = "Gradle" }, { value = "maven", label = "Maven" }]
+default = "gradle"
+
+[[fields]]
+id = "jdk"
+label = "JDK:"
+type = "sdk"
+sdk = "jdk"
+
+[[fields]]
+id = "jvm"
+label = "JVM target:"
+type = "choice"
+options = ["25", "21", "17", "11"]
+default = "21"
+
+[[fields]]
+id = "group"
+label = "Group:"
+type = "text"
+pattern = '^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*$'
+default = "com.example"
+
+[[fields]]
+id = "artifact"
+label = "Artifact:"
+type = "text"
+pattern = '^[A-Za-z0-9_.-]+$'
+default = "{{name|kebab}}"
+
+[[fields]]
+id = "package"
+label = "Package:"
+type = "text"
+pattern = '^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*$'
+default = "{{group}}.{{artifact|ident}}"
+
+[[files]]
+path = "settings.gradle.kts"
+when = { build = "gradle" }
+content = '''
+rootProject.name = "{{artifact}}"
+'''
+
+[[files]]
+path = "build.gradle.kts"
+when = { build = "gradle" }
+content = '''
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+plugins {
+    kotlin("jvm") version "2.2.21"
+    application
+}
+
+group = "{{group}}"
+version = "1.0-SNAPSHOT"
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation(kotlin("test"))
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.fromTarget("{{jvm}}")
+    }
+}
+
+java {
+    targetCompatibility = JavaVersion.toVersion({{jvm}})
+}
+
+application {
+    mainClass = "{{package}}.MainKt"
+}
+
+tasks.test {
+    useJUnitPlatform()
+}
+'''
+
+[[files]]
+path = "pom.xml"
+when = { build = "maven" }
+content = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>{{group}}</groupId>
+    <artifactId>{{artifact}}</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <kotlin.version>2.2.21</kotlin.version>
+        <kotlin.compiler.jvmTarget>{{jvm}}</kotlin.compiler.jvmTarget>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-stdlib</artifactId>
+            <version>${kotlin.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-test-junit5</artifactId>
+            <version>${kotlin.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <sourceDirectory>src/main/kotlin</sourceDirectory>
+        <testSourceDirectory>src/test/kotlin</testSourceDirectory>
+        <plugins>
+            <plugin>
+                <groupId>org.jetbrains.kotlin</groupId>
+                <artifactId>kotlin-maven-plugin</artifactId>
+                <version>${kotlin.version}</version>
+                <executions>
+                    <execution>
+                        <id>compile</id>
+                        <goals><goal>compile</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>test-compile</id>
+                        <goals><goal>test-compile</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.4</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+'''
+
+[[files]]
+path = "src/main/kotlin/{{package|path}}/Main.kt"
+content = '''
+package {{package}}
+
+fun main() {
+    println("Hello, World!")
+}
+'''
+
+[[files]]
+path = ".gitignore"
+content = '''
+target/
+build/
+.gradle/
+.kotlin/
+.idea/
+'''
+
+[[after]]
+label = "Generating the Gradle wrapper"
+program = "gradle"
+args = ["wrapper", "--no-daemon", "-q"]
+when = { build = "gradle" }
+env = { JAVA_HOME = "{{jdk}}" }
+optional = true
+
+[settings.java]
+jdk = "{{jdk}}"

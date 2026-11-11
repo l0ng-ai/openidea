@@ -71,6 +71,12 @@ export const UPDATES_PAGE: PageSpec = {
           hint: "At startup and every 4 hours while OpenIDEA runs. Each new version is announced once per session.",
         },
         {
+          kind: "toggle",
+          key: "general.showWhatsNewAfterUpdate",
+          label: "Show What's New after an update",
+          hint: "Opens a page with the release notes when a new version starts. Help › What's New opens it any time.",
+        },
+        {
           kind: "select",
           key: "general.updateSource",
           label: "Update source",

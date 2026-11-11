@@ -13,6 +13,7 @@ import { shortcutLabel } from "@/platform/keymap";
 import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
 import { notifications, runExecutors } from "@/workbench/contributions";
 import {
+  canDebugProduced,
   choiceItems,
   executeContext,
   launchProduced,
@@ -105,8 +106,7 @@ export function targetMenuItems(target: RunTarget, path: string, content: string
     choices.length > 1
       ? { submenu: choiceItems(choices, debug).filter((i) => i.kind !== "header") }
       : { run: () => void launch(target, path, debug, content) };
-  // Like IDEA, Debug only where a debugger can run it.
-  const debuggable = !p || !!(p.debug || p.config?.debugAdapter || p.missing);
+  const debuggable = !p || canDebugProduced(p);
   return [
     { label: tx`Run '${name}'`, icon: "run", shortcut: shortcutLabel("run.runContext"), ...pick(false) } as MenuItem,
     ...(debuggable

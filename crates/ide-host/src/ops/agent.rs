@@ -6,7 +6,7 @@ use crate::rpc::Dispatcher;
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
     AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
-    McpScope, McpServer, McpServerInput, NewAgentTask,
+    ExternalSession, McpScope, McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::error::ErrorKind;
 use ide_core::{IdeError, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
@@ -179,6 +179,20 @@ pub async fn commands(
 /// Entries of `task`'s conversation, or of its subagent `subagent`'s.
 pub fn entries(host: &Host, window: &str, task: String, subagent: Option<String>) -> IdeResult<Vec<AgentEntry>> {
     host.project(window)?.agents.entries(&task, subagent)
+}
+
+/// Sessions of the project on this machine that no task holds yet, newest first. Reads
+/// transcripts from disk on the blocking pool.
+pub async fn external_sessions(host: &Host, window: &str) -> IdeResult<Vec<ExternalSession>> {
+    let agents = host.project(window)?.agents.clone();
+    tokio::task::spawn_blocking(move || agents.external_sessions()).await.map_err(join_err)
+}
+
+/// Imports an external session as a task: its first turn loads and replays it.
+pub async fn import_session(host: &Host, window: &str, provider: String, session_id: String) -> IdeResult<AgentTask> {
+    host.require_trust(window)?;
+    let agents = host.project(window)?.agents.clone();
+    tokio::task::spawn_blocking(move || agents.import_session(&provider, &session_id)).await.map_err(join_err)?
 }
 
 pub async fn create(host: &Host, window: &str, mut request: NewAgentTask) -> IdeResult<AgentTask> {
@@ -398,6 +412,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_commands", |c| async move { commands(&c.host, &c.window, c.arg("provider")?, c.arg("task")?).await });
     d.add("agent_entries", |c| async move { entries(&c.host, &c.window, c.arg("task")?, c.arg("subagent")?) });
     d.add("agent_create", |c| async move { create(&c.host, &c.window, c.arg("request")?).await });
+    d.add("agent_external_sessions", |c| async move { external_sessions(&c.host, &c.window).await });
+    d.add("agent_import_session", |c| async move {
+        import_session(&c.host, &c.window, c.arg("provider")?, c.arg("sessionId")?).await
+    });
     d.add("agent_prompt", |c| async move {
         prompt(&c.host, &c.window, c.arg("task")?, c.arg("prompt")?, c.arg("now")?).await
     });

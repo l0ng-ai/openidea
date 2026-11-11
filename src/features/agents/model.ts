@@ -11,7 +11,7 @@ export const TASK_DRAG = "application/x-openidea-agent-task";
 export const REGISTRY_PAGE = "agents.list";
 /** The Settings folder holding the agent pages. */
 export const AGENTS_GROUP = "Agents";
-/** Settings › Agents › Model Context Protocol (MCP): User and Workspace MCP configurations. */
+/** Settings › Agents › External MCP Servers: User and Workspace MCP configurations. */
 export const MCP_PAGE = "agents.mcpServers";
 
 export const sessionKey = (task: string) => `agent:${task}`;
@@ -53,6 +53,8 @@ const PROVIDER_ICONS = new Set([
   "cursor",
   "opencode",
   "qwen",
+  "qoder",
+  "qodercn",
   "kimi",
   "goose",
   "auggie",

@@ -10,7 +10,7 @@ use ide_ssh::{Output, RemoteProcess, Session, Sig};
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -116,6 +116,105 @@ pub fn remote_command(config: &RunConfig, target: &RunTarget, root: &Path, remot
 /// Unlike SSH/container shell configurations, plugin wrappers never accept a shell line.
 pub fn argv_command(config: &RunConfig, target: &RunTarget, root: &Path, remote_root: &str) -> RemoteCommand {
     target_command(config, target, root, remote_root, false)
+}
+
+/// `java` flags whose value is a path list that may point outside the project
+/// (`~/.m2` jars, `--module-path` entries): deployment sync only uploads the
+/// project root, so these entries need their own sync + rewrite (#2641).
+const PATH_LIST_FLAGS: [&str; 6] =
+    ["-cp", "-classpath", "--class-path", "-p", "--module-path", "--upgrade-module-path"];
+
+/// The separator of a `-cp` value on this (client) machine.
+pub fn classpath_separator() -> char {
+    if cfg!(windows) { ';' } else { ':' }
+}
+
+fn split_path_list(value: &str) -> Vec<&str> {
+    value.split(classpath_separator()).filter(|e| !e.is_empty()).collect()
+}
+
+/// Absolute classpath entries of `args` that live outside the project root.
+/// Unresolved placeholders (`${…}`), wildcards and relative entries pass through:
+///
+/// callers map the project root already, and only concrete local files can be synced.
+pub fn external_classpath_entries(args: &[String], root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if PATH_LIST_FLAGS.contains(&args[i].as_str()) && i + 1 < args.len() {
+            let value = &args[i + 1];
+            if !value.contains("${") {
+                for entry in split_path_list(value) {
+                    if entry.contains('*') {
+                        continue;
+                    }
+                    let path = PathBuf::from(entry);
+                    if path.is_absolute() && !path.starts_with(root) && !out.contains(&path) {
+                        out.push(path);
+                    }
+                }
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The remote home of an outside-root dependency: mirrored under `.remote-libs`
+/// (never `.openidea*`: deployment excludes those names), so the layout stays
+/// debuggable and collision-free per client machine.
+pub fn external_lib_remote(remote_root: &str, local: &Path) -> String {
+    let spelling = local.to_string_lossy().replace('\\', "/");
+    let stripped = spelling.trim_start_matches('/').replace(':', "");
+    join(remote_root.trim_end_matches('/'), &format!(".remote-libs/{stripped}"))
+}
+
+/// Rewrites the outside-root classpath entries of `args` onto their synced remote
+/// copies; returns the new args and the (local entry, remote base) pairs to upload.
+/// Entries inside the project root are untouched: `target_command` maps those.
+pub fn rewrite_external_classpath(
+    args: &[String],
+    root: &Path,
+    remote_root: &str,
+) -> (Vec<String>, Vec<(PathBuf, String)>) {
+    let mut table: Vec<(PathBuf, String)> = Vec::new();
+    let mut out = args.to_vec();
+    let mut i = 0;
+    while i < out.len() {
+        if PATH_LIST_FLAGS.contains(&out[i].as_str()) && i + 1 < out.len() {
+            let value = out[i + 1].clone();
+            if !value.contains("${") {
+                let mut rewritten = Vec::new();
+                let mut changed = false;
+                for entry in split_path_list(&value) {
+                    let path = PathBuf::from(entry);
+                    if !entry.contains('*') && path.is_absolute() && !path.starts_with(root) {
+                        let remote = match table.iter().find(|(p, _)| p == &path) {
+                            Some((_, r)) => r.clone(),
+                            None => {
+                                let r = external_lib_remote(remote_root, &path);
+                                table.push((path, r.clone()));
+                                r
+                            }
+                        };
+                        rewritten.push(remote);
+                        changed = true;
+                    } else {
+                        rewritten.push(entry.to_owned());
+                    }
+                }
+                if changed {
+                    out[i + 1] = rewritten.join(&classpath_separator().to_string());
+                }
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    (out, table)
 }
 
 fn target_command(
@@ -380,5 +479,52 @@ mod tests {
         assert_eq!(replace_root("/work/proj2/x:/work/proj/y", "/work/proj", "/srv"), "/work/proj2/x:/srv/y");
         assert_eq!(replace_root("/work/proj", "/work/proj", "/srv"), "/srv");
         assert_eq!(replace_root(r"C:\p\src/a.py C:\p2", r"C:\p", "/srv"), r"/srv/src/a.py C:\p2");
+    }
+
+    /// Unix/Windows spellings of the same layout: one inside-root entry, one
+    /// `~/.m2` jar twice, a placeholder value, a wildcard and a module path.
+    fn classpath_fixture() -> (PathBuf, Vec<String>, String, String) {
+        let (root, classes, m2) = if cfg!(windows) {
+            (r"C:\proj", r"C:\proj\target\classes", r"C:\Users\me\.m2\a.jar")
+        } else {
+            ("/proj", "/proj/target/classes", "/home/me/.m2/a.jar")
+        };
+        let sep = classpath_separator();
+        let args = vec![
+            "-cp".to_owned(),
+            format!("{classes}{sep}{m2}{sep}{m2}"),
+            "-p".to_owned(),
+            m2.to_owned(),
+            "-cp".to_owned(),
+            "${classpath}".to_owned(),
+            "-cp".to_owned(),
+            "/elsewhere/lib/*".to_owned(),
+        ];
+        (PathBuf::from(root), args, m2.to_owned(), classes.to_owned())
+    }
+
+    #[test]
+    fn collects_outside_root_classpath_entries_once() {
+        let (root, args, m2, _) = classpath_fixture();
+        let entries = external_classpath_entries(&args, &root);
+        assert_eq!(entries, vec![PathBuf::from(m2)]);
+    }
+
+    #[test]
+    fn rewrites_outside_root_entries_onto_remote_lib_copies() {
+        let (root, args, m2, classes) = classpath_fixture();
+        let (rewritten, table) = rewrite_external_classpath(&args, &root, "/srv/app");
+        let remote = if cfg!(windows) {
+            "/srv/app/.remote-libs/C/Users/me/.m2/a.jar".to_owned()
+        } else {
+            "/srv/app/.remote-libs/home/me/.m2/a.jar".to_owned()
+        };
+        assert_eq!(table, vec![(PathBuf::from(m2), remote.clone())]);
+        let sep = classpath_separator();
+        assert_eq!(rewritten[1], format!("{classes}{sep}{remote}{sep}{remote}"));
+        assert_eq!(rewritten[3], remote);
+        // Placeholders and wildcards pass through untouched.
+        assert_eq!(rewritten[5], "${classpath}");
+        assert_eq!(rewritten[7], "/elsewhere/lib/*");
     }
 }

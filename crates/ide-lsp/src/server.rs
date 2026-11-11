@@ -74,6 +74,22 @@ pub struct Progress {
     pub message: Option<String>,
     /// Set while the server accepts `window/workDoneProgress/cancel` for it.
     pub cancel: Option<ide_core::task::CancelHandle>,
+    /// When the server last reported on this token; a task that stops reporting is stuck.
+    pub last: tokio::time::Instant,
+    /// Last percentage, so a stalled task does not lose its bar.
+    pub fraction: Option<f32>,
+    /// Marked after the stale window of silence. The task stays visible, but no longer
+    /// counts as busy: the work may resume and finish in the same task.
+    pub stalled: bool,
+}
+
+impl Progress {
+    /// Nothing came for `stale` and the task is not already marked: the work behind it is
+    /// blocked on something that never answers (an HTTP read with no response header, Maven
+    /// waiting for a repository). Its task must not hold the IDE while that lasts.
+    pub fn silent(&self, stale: Duration) -> bool {
+        !self.stalled && tokio::time::Instant::now() >= self.last + stale
+    }
 }
 
 pub struct Server {
@@ -231,6 +247,8 @@ impl Server {
         st.restarting = false;
         *self.start_cancel.lock() = CancellationToken::new();
         *self.started.lock() = Some(Instant::now());
+        // A crash report quotes only this instance's output, not its predecessors'.
+        self.stderr.lock().clear();
         self.phase.send_replace(Phase::Starting);
         Some(st.generation)
     }
@@ -542,9 +560,10 @@ impl Server {
         self.publish(sink);
     }
 
-    /// Whether the server reports work in progress (indexing, analysis).
+    /// Whether the server reports work in progress (indexing, analysis). A task marked
+    /// stuck stays visible but no longer holds the server busy.
     pub fn is_busy(&self) -> bool {
-        !self.progress.lock().is_empty() || *self.loading.lock() == Some(true)
+        self.progress.lock().values().any(|p| !p.stalled) || *self.loading.lock() == Some(true)
     }
 
     /// Whether the server says it is still loading the project, so an empty
@@ -562,6 +581,16 @@ impl Server {
         }
         self.refresh_busy_status(sink);
         self.phase_ended();
+    }
+
+    /// Whether progress token `token` is still running on this instance.
+    pub fn has_progress(&self, token: &str) -> bool {
+        self.progress.lock().contains_key(token)
+    }
+
+    /// Whether token `token` has reported nothing for `stale`.
+    pub fn progress_silent(&self, token: &str, stale: Duration) -> bool {
+        self.progress.lock().get(token).is_some_and(|p| p.silent(stale))
     }
 
     /// Called after a `$/progress` task ended.
@@ -669,7 +698,7 @@ impl Server {
         if buf.len() == STDERR_LINES {
             buf.pop_front();
         }
-        buf.push_back(line);
+        buf.push_back(ide_core::output_encoding::strip_ansi(&line));
     }
 
     pub fn stderr_tail(&self, n: usize) -> String {
@@ -830,7 +859,15 @@ mod tests {
             s.set_diagnostics(path.clone(), vec![lsp::Diagnostic::default()]);
             s.progress.lock().insert(
                 "old".into(),
-                Progress { task: TaskId::next(), title: "Old work".into(), message: None, cancel: None },
+                Progress {
+                    task: TaskId::next(),
+                    title: "Old work".into(),
+                    message: None,
+                    cancel: None,
+                    last: tokio::time::Instant::now(),
+                    fraction: None,
+                    stalled: false,
+                },
             );
             let seen = Arc::new(Mutex::new(Vec::new()));
             let manager = Arc::new(Mutex::new(std::sync::Weak::<crate::LspManager>::new()));
@@ -867,6 +904,49 @@ mod tests {
     fn server() -> Server {
         let cfg: LanguageServerConfig = toml::from_str("name = \"s\"\ncommand = \"s\"").unwrap();
         Server::new(cfg, PathBuf::from("/p"), LanguageId::new("vue"))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_progress_task_turns_silent_once_its_reports_stop() {
+        let stale = Duration::from_secs(180);
+        let mut p = Progress {
+            task: TaskId::next(),
+            title: "Importing Maven project(s)".into(),
+            message: Some("https://maven.example/".into()),
+            cancel: None,
+            last: tokio::time::Instant::now(),
+            fraction: Some(0.44),
+            stalled: false,
+        };
+        assert!(!p.silent(stale));
+        tokio::time::advance(stale).await;
+        assert!(p.silent(stale), "no report for the whole window");
+        // A report puts the task back to work, whatever it was doing.
+        p.last = tokio::time::Instant::now();
+        p.stalled = true;
+        assert!(!p.silent(stale));
+        p.stalled = false;
+        assert!(!p.silent(stale));
+    }
+
+    #[test]
+    fn a_stalled_progress_task_does_not_keep_the_server_busy() {
+        let s = server();
+        s.progress.lock().insert(
+            "p".into(),
+            Progress {
+                task: TaskId::next(),
+                title: "Importing Maven project(s)".into(),
+                message: None,
+                cancel: None,
+                last: tokio::time::Instant::now(),
+                fraction: None,
+                stalled: true,
+            },
+        );
+        assert!(!s.is_busy(), "a stuck task must not hold wait_idle or ReferencesIncomplete::Indexing");
+        s.progress.lock().get_mut("p").unwrap().stalled = false;
+        assert!(s.is_busy(), "a reporting task keeps the server busy");
     }
 
     #[test]
@@ -1077,6 +1157,19 @@ mod tests {
         assert_eq!(s.effective_config().command, "successor");
         assert_eq!(*s.resolved_binary.read(), Some(PathBuf::from("successor")));
         assert_eq!(s.stderr_tail(5), "successor output");
+    }
+
+    #[test]
+    fn crash_report_quotes_only_the_crashed_instance_without_colour_codes() {
+        let s = server();
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let first = s.begin_start().unwrap();
+        s.push_stderr(first, "\x1b[31;1mfirst failure\x1b[0m".into());
+        assert_eq!(s.stderr_tail(5), "first failure");
+        assert!(s.on_closed(first, &sink, Some(1)).is_some());
+        let second = s.begin_start().unwrap();
+        s.push_stderr(second, "\x1b[31;1m\x1b[31;1msecond failure\x1b[0m".into());
+        assert_eq!(s.stderr_tail(5), "second failure");
     }
 
     #[test]

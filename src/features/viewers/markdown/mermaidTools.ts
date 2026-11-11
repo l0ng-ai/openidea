@@ -156,7 +156,7 @@ function naturalSize(svg: SVGSVGElement): { w: number; h: number } {
 
 async function saveDiagram(svg: SVGSVGElement): Promise<void> {
   try {
-    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { save } = await import("@/platform/dialog");
     const path = await save({
       title: tx("Save diagram"),
       defaultPath: "mermaid-diagram.png",

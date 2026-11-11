@@ -95,6 +95,9 @@ impl Launcher for ProcessLauncher {
         on_stderr: Box<dyn Fn(String) + Send + Sync>,
         cancel: &CancellationToken,
     ) -> Result<(Peer, Option<PathBuf>), LaunchError> {
+        if !required_env_set(config) {
+            return Err(LaunchError::Missing);
+        }
         let search = server_search_path(config);
         let binary = match &config.pinned {
             // A plugin's server: the approved program, unchanged since.
@@ -125,11 +128,21 @@ impl Launcher for ProcessLauncher {
     }
 
     fn available(&self, config: &LanguageServerConfig, root: &Path) -> bool {
+        if !required_env_set(config) {
+            return false;
+        }
         if let Some(pin) = &config.pinned {
             return pin.path.is_file();
         }
         ide_core::tool_path::find_command(&config.command, &server_search_path(config), root).is_some()
     }
+}
+
+fn required_env_set(config: &LanguageServerConfig) -> bool {
+    config.requires_env.iter().all(|key| match config.env.get(key) {
+        Some(value) => !value.is_empty(),
+        None => ide_core::process::host_var_os(key).is_some_and(|v| !v.is_empty()),
+    })
 }
 
 /// A configured `PATH` (e.g. a selected toolchain prepended) also resolves the binary.
@@ -313,6 +326,24 @@ mod tests {
         std::fs::create_dir_all(root.join("apps/web/node_modules/@angular/core")).unwrap();
         assert_eq!(marked_root(root, &file, &markers), Some(root.join("apps/web")));
         assert_eq!(marked_root(root, &root.join("apps/api/main.ts"), &markers), None);
+    }
+
+    #[test]
+    fn a_server_needing_an_unset_variable_is_missing() {
+        let exe = std::env::current_exe().unwrap();
+        let mut config: LanguageServerConfig =
+            toml::from_str(&format!("name = \"x\"\ncommand = {:?}", exe.to_string_lossy())).unwrap();
+        let root = exe.parent().unwrap();
+        assert!(ProcessLauncher.available(&config, root));
+        config.requires_env = vec!["OPENIDEA_TEST_NEVER_SET".into()];
+        assert!(!ProcessLauncher.available(&config, root));
+        let handler: Arc<dyn Handler> = Arc::new(ide_jsonrpc::NoopHandler);
+        let launched = ProcessLauncher.launch(&config, root, handler, Box::new(|_| {}));
+        assert!(matches!(launched, Err(LaunchError::Missing)));
+        config.env.insert("OPENIDEA_TEST_NEVER_SET".into(), String::new());
+        assert!(!ProcessLauncher.available(&config, root));
+        config.env.insert("OPENIDEA_TEST_NEVER_SET".into(), "/bundle".into());
+        assert!(ProcessLauncher.available(&config, root));
     }
 
     #[test]

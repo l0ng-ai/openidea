@@ -36,7 +36,7 @@ import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
 
-/** Settings › Agents › Coding Agents and Settings › Agents › Model Context Protocol (MCP) (also used by the Settings window). */
+/** Settings › Agents › Coding Agents and Settings › Agents › External MCP Servers (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
   const disposers = [
     registerSettingsPage({
@@ -50,7 +50,7 @@ export function activateSettingsPages(): () => void {
     }),
     registerSettingsPage({
       id: MCP_PAGE,
-      title: "Model Context Protocol (MCP)",
+      title: "External MCP Servers",
       group: AGENTS_GROUP,
       order: 475,
       keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
@@ -179,9 +179,9 @@ export function activate(): () => void {
       },
       {
         id: "agents.mcpServers",
-        title: "Model Context Protocol (MCP)…",
+        title: "External MCP Servers…",
         description:
-          "Opens Settings › Agents › Model Context Protocol (MCP): configures User and Workspace MCP servers.",
+          "Opens Settings › Agents › External MCP Servers: configures the User and Workspace MCP servers coding agents use.",
         category: "Agents",
         icon: "settings",
         keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],

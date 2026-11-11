@@ -8,7 +8,7 @@
 /// `fs` and `workspace`, and everything else goes through the imports below,
 /// gated by the capabilities granted in `plugin.toml` (a missing one returns
 /// `error::denied`).
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 world plugin {
     import log;
@@ -37,6 +37,7 @@ world plugin {
     import database;
     import mcp;
     import settings;
+    import extensions;
 
     export lifecycle;
     export commands;
@@ -200,3 +201,8 @@ world language-injections { export injections; }
 world plugin-mcp { include plugin; export mcp-provider; }
 /// Export-only MCP tools, composed with the base plugin world.
 world mcp-tools { export mcp-provider; }
+
+/// A plugin that validates launches through its run targets (API 1.5).
+world plugin-run-target-validation { include plugin; export run-target-validation; }
+/// Export-only validation, composed with the base plugin world.
+world run-target-validator { export run-target-validation; }

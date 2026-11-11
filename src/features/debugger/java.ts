@@ -16,6 +16,7 @@ import {
   type JavaPreparation,
 } from "@/platform/javaLaunch";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
+import { withEnvFiles } from "./launch";
 
 export const JAVA_ADAPTER = "java-debug";
 export const KOTLIN_ADAPTER = "kotlin-debug-adapter";
@@ -111,6 +112,7 @@ export async function javaLaunchConfig(
   preparation?: JavaPreparation,
 ): Promise<LaunchConfig> {
   const cwd = rc.cwd ? join(root, rc.cwd) : root;
+  rc = await withEnvFiles(rc, root);
   const parsed = parseJavaArgs(rc.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${rc.name}'`);
   preparation?.signal.throwIfAborted();

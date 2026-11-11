@@ -253,6 +253,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         command: name.into(),
         args: vec![],
         env: Default::default(),
+        requires_env: Vec::new(),
         root_markers: vec!["mock.toml".into()],
         require_root_marker: false,
         initialization_options: Some(toml::Value::Table(toml::toml! { flag = true nested = { deep = 1 } })),
@@ -1685,6 +1686,59 @@ async fn progress_tasks_and_busy_status() {
     assert!(tasks[2].3);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_progress_task_that_stops_reporting_is_marked_but_stays_open() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    peer.notify(
+        "$/progress",
+        json!({ "token": "mvn", "value": {
+            "kind": "begin",
+            "title": "Initialize Workspace",
+            "message": "Importing Maven project(s) - https://maven.example/",
+            "percentage": 44,
+        } }),
+    )
+    .unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    // The import is blocked on a repository that never answers: nothing reports again.
+    tokio::time::advance(Duration::from_secs(200)).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let marked = h.events.lock().iter().rev().find_map(|e| match e {
+        IdeEvent::Task { title, message, fraction, done, .. } if title == "Initialize Workspace" && !done => {
+            Some((message.clone(), *fraction))
+        }
+        _ => None,
+    });
+    let (message, fraction) = marked.expect("the task stays open");
+    let message = message.expect("the last message is kept");
+    assert!(message.contains("no progress for 180 s"), "{message}");
+    assert_eq!(fraction, Some(0.44), "the bar keeps its last value");
+    assert!(
+        !h.events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Task { title, done: true, .. } if title == "Initialize Workspace")),
+        "a stalled task must not be closed"
+    );
+
+    // A late report brings it back to Busy and finishes in the same task.
+    peer.notify(
+        "$/progress",
+        json!({ "token": "mvn", "value": { "kind": "report", "message": "halfway", "percentage": 60 } }),
+    )
+    .unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    peer.notify("$/progress", json!({ "token": "mvn", "value": { "kind": "end" } })).unwrap();
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert!(
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, message: Some(m), done: true, .. } if title == "Initialize Workspace" && m == "halfway")),
+        "the same task ends with the final message"
+    );
+}
+
 /// While a server says it is loading the project (rust-analyzer: `serverStatus`
 /// not quiescent) an empty or withdrawn answer is asked again once loading moves
 /// on. `$/progress` alone (background indexing, `cargo check`) doesn't wait.
@@ -2655,6 +2709,160 @@ async fn alternative_java_server_uses_lsp_without_jdt_commands() {
     assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
     assert!(error.message.contains("jdtls"));
     assert!(h.launcher.state("kmp-lsp").requested("workspace/executeCommand").is_empty());
+}
+
+async fn jvm_inspect_harness() -> (Harness, Arc<MockState>, ide_lsp::JdtJvmInspector) {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, path) = h.open("Sample.java", "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let inspector = ide_lsp::JdtJvmInspector::new(h.mgr.clone(), path);
+    let state = h.launcher.state("jdtls");
+    (h, state, inspector)
+}
+
+fn attach_target(generation: u64) -> ide_jvm_inspect::VmTarget {
+    ide_jvm_inspect::VmTarget { pid: None, attach_host: Some("localhost".into()), attach_port: Some(5005), generation }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_instances_round_trip() {
+    use ide_jvm_inspect::{JvmInspector, JvmValue};
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    s.respond("workspace/executeCommand", json!({"ok": [{"kind": "object", "id": 7, "typeName": "Foo"}]}));
+    let found = inspector.instances(&attach_target(3), "com.acme.Foo", 25).await.unwrap();
+    assert_eq!(found, vec![JvmValue::Object { id: 7, type_name: "Foo".into() }]);
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0]["command"], "openidea.jvm.instances");
+    assert_eq!(
+        asked[0]["arguments"],
+        json!([{"pid": null, "host": "localhost", "port": 5005, "generation": 3}, "com.acme.Foo", 25])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_commands_carry_their_arguments_and_decode_their_replies() {
+    use ide_jvm_inspect::{ClassCount, JvmField, JvmInspector, JvmReferrer, JvmValue, VmTarget};
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    let launch = VmTarget { pid: Some(4242), attach_host: None, attach_port: None, generation: 9 };
+    let target = json!({"pid": 4242, "host": null, "port": null, "generation": 9});
+
+    s.respond("workspace/executeCommand", json!({"ok": [{"name": "int[]", "instances": 12}]}));
+    let counts = inspector.class_counts(&launch).await.unwrap();
+    assert_eq!(counts, vec![ClassCount { name: "int[]".into(), instances: 12 }]);
+
+    // gson leaves out null members: a long string has no `text`.
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": [{"name": "[0]", "value": {"kind": "string", "id": 9, "length": 50000000}}]}),
+    );
+    let fields = inspector.fields(&launch, 5).await.unwrap();
+    assert_eq!(
+        fields,
+        vec![JvmField { name: "[0]".into(), value: JvmValue::Str { id: 9, text: None, length: 50_000_000 } }]
+    );
+
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": [{"value": {"kind": "array", "id": 3, "typeName": "Object[]", "length": 2}, "via": ["[1]"]}]}),
+    );
+    let referrers = inspector.referrers(&launch, 5, 50).await.unwrap();
+    assert_eq!(
+        referrers,
+        vec![JvmReferrer {
+            value: JvmValue::Array { id: 3, type_name: "Object[]".into(), length: 2 },
+            via: vec!["[1]".into()]
+        }]
+    );
+
+    let asked = s.requested("workspace/executeCommand");
+    let seen: Vec<_> = asked.iter().map(|p| (p["command"].clone(), p["arguments"].clone())).collect();
+    assert_eq!(
+        seen,
+        vec![
+            (json!("openidea.jvm.classes"), json!([target])),
+            (json!("openidea.jvm.fields"), json!([target, 5])),
+            (json!("openidea.jvm.referrers"), json!([target, 5, 50])),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_error_maps_to_inspect_error() {
+    use ide_jvm_inspect::{InspectError, JvmInspector};
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    let target = attach_target(1);
+    let cases = [
+        (json!({"error": "stale"}), InspectError::Stale),
+        (json!({"error": "collected", "detail": "gone"}), InspectError::Collected),
+        (json!({"error": "classNotLoaded"}), InspectError::ClassNotLoaded),
+        (json!({"error": "notSuspended"}), InspectError::NotSuspended),
+        (json!({"error": "vmNotFound"}), InspectError::VmNotFound),
+        (json!({"error": "timedOut"}), InspectError::TimedOut),
+        (json!({"error": "unsupported", "detail": "x"}), InspectError::Unsupported("x".into())),
+    ];
+    for (reply, expected) in cases {
+        s.respond("workspace/executeCommand", reply.clone());
+        assert_eq!(inspector.fields(&target, 1).await.unwrap_err(), expected, "{reply}");
+    }
+    s.respond("workspace/executeCommand", json!({"error": "surprise", "detail": "d"}));
+    assert!(
+        matches!(inspector.fields(&target, 1).await.unwrap_err(), InspectError::Failed(m) if m.contains("surprise"))
+    );
+    s.respond("workspace/executeCommand", json!("neither"));
+    assert!(matches!(inspector.fields(&target, 1).await.unwrap_err(), InspectError::Failed(_)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_missing_bundle_is_unsupported() {
+    use ide_jvm_inspect::{InspectError, JvmInspector};
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    s.errors.lock().insert(
+        "workspace/executeCommand".into(),
+        (-32603, "No delegateCommandHandler for openidea.jvm.classes".into()),
+    );
+    assert_eq!(
+        inspector.class_counts(&attach_target(1)).await.unwrap_err(),
+        InspectError::Unsupported("the JVM inspector bundle is not loaded".into())
+    );
+}
+
+/// The bundle waits without bound on the JDT LS thread pool, so the client never has two commands
+/// in flight.
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_sends_one_command_at_a_time() {
+    use ide_jvm_inspect::JvmInspector;
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let most = Arc::new(AtomicUsize::new(0));
+    *s.responder.lock() = Some(Arc::new({
+        let (in_flight, most) = (in_flight.clone(), most.clone());
+        move |_, method, _| {
+            (method == "workspace/executeCommand").then(|| {
+                most.fetch_max(in_flight.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(80));
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                json!({"ok": []})
+            })
+        }
+    }));
+    let target = attach_target(1);
+    let (a, b, c) =
+        tokio::join!(inspector.fields(&target, 1), inspector.fields(&target, 2), inspector.fields(&target, 3));
+    assert!(a.is_ok() && b.is_ok() && c.is_ok());
+    assert_eq!(s.requested("workspace/executeCommand").len(), 3);
+    assert_eq!(most.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn debug_server_port_maps_to_module() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, path) = h.open("Sample.java", "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    h.launcher.state("jdtls").respond("workspace/executeCommand", json!(4711));
+    assert_eq!(h.mgr.java_debug_server_module(4711), None);
+    assert_eq!(h.mgr.java_debug_server(&path).await.unwrap(), 4711);
+    assert_eq!(h.mgr.java_debug_server_module(4711), Some(path));
+    assert_eq!(h.mgr.java_debug_server_module(4712), None);
 }
 
 #[tokio::test(flavor = "multi_thread")]

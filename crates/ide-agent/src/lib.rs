@@ -10,6 +10,7 @@
 mod acp;
 mod config;
 mod conversation;
+mod external;
 pub mod mcp;
 mod model;
 mod native;
@@ -19,6 +20,7 @@ mod skills;
 mod timeline;
 mod worktree;
 
+pub use external::ExternalSession;
 pub use model::*;
 
 use conversation::{Conversation, SavedSubagent, Session};
@@ -478,8 +480,11 @@ impl AgentManager {
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.
     pub fn providers(&self) -> Vec<AgentProvider> {
         let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
+        let in_use: std::collections::HashSet<String> =
+            self.tasks.read().values().map(|t| t.state.lock().task.provider.clone()).collect();
         let list = specs
             .iter()
+            .filter(|p| !provider::is_unlisted(p) || in_use.contains(&p.id))
             .map(|p| {
                 let mut info = provider::describe(p);
                 info.config = self.shared.known_config(&p.id);
@@ -580,6 +585,93 @@ impl AgentManager {
         let s = task.state.lock();
         let timeline = s.conversation.timeline(&subagent).ok_or_else(|| IdeError::not_found("no such subagent"))?;
         Ok(timeline.entries.clone())
+    }
+
+    /// Session ids the tasks already hold (native drivers reuse the CLI's own id).
+    fn imported_session_ids(&self) -> HashSet<String> {
+        self.tasks.read().values().filter_map(|t| t.state.lock().session_id.clone()).collect()
+    }
+
+    /// Sessions of this project on this machine that no task holds yet, newest first. Reads
+    /// transcripts from disk: call it off the UI and command threads.
+    pub fn external_sessions(&self) -> Vec<ExternalSession> {
+        let mut out = Vec::new();
+        let root = self.shared.paths.project_root.clone();
+        if let Some(spec) = self.shared.spec("claude")
+            && let Some(dir) = native::claude::cli::config_dir(&spec.env)
+        {
+            out.extend(external::claude_sessions(&dir, &root));
+        }
+        let home = self.shared.paths.home_dir.clone().or_else(home_dir);
+        if let Some(home) = home {
+            out.extend(external::codex_sessions(&home.join(".codex"), &root));
+        }
+        let known = self.imported_session_ids();
+        out.retain(|s| !known.contains(&s.session_id));
+        out.sort_by(|a, b| b.updated_ms.total_cmp(&a.updated_ms));
+        out.truncate(50);
+        out
+    }
+
+    /// Imports an external session as a task: its first turn loads and replays it (#312).
+    pub fn import_session(&self, provider: &str, session_id: &str) -> IdeResult<AgentTask> {
+        if !matches!(provider, "claude" | "codex") {
+            return Err(IdeError::invalid(format!("cannot import {provider} sessions")));
+        }
+        let spec = self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
+        if self.imported_session_ids().contains(session_id) {
+            return Err(IdeError::invalid("that session is already a task"));
+        }
+        let found = self
+            .external_sessions()
+            .into_iter()
+            .find(|s| s.provider == provider && s.session_id == session_id)
+            .ok_or_else(|| IdeError::not_found(format!("unknown {provider} session {session_id}")))?;
+        let root = self.shared.paths.project_root.clone();
+        let cwd = found.cwd.map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| root.clone());
+        let config = self.shared.known_config(&spec.id);
+        let now = now_ms();
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let task = AgentTask {
+            project_root: Some(IpcPath(root)),
+            id,
+            title: found.title,
+            provider: spec.id.clone(),
+            model: model_of(&config),
+            status: AgentStatus::Ready,
+            isolation: Isolation::Local,
+            cwd: IpcPath(cwd),
+            branch: None,
+            base: None,
+            base_commit: None,
+            error: None,
+            created_ms: now,
+            updated_ms: now,
+            config,
+            commands: self.shared.known_commands(&spec.id),
+            usage: None,
+            queue: Vec::new(),
+            capabilities: self.shared.probes.lock().get(&spec.id).map(|p| p.capabilities).unwrap_or_default(),
+            resets_ms: None,
+            retry: None,
+            background: Box::default(),
+        };
+        let file = TaskFile {
+            task: task.clone(),
+            session_id: Some(session_id.to_owned()),
+            entries: Vec::new(),
+            wanted: Vec::new(),
+            before: BTreeMap::new(),
+            saved: None,
+            subagents: Vec::new(),
+            pending_rollback: 0,
+            title_renamed: true,
+        };
+        let handle = Task::restore(file, self.shared.clone());
+        self.tasks.write().insert(task.id.clone(), handle.clone());
+        handle.emit_task();
+        handle.persist();
+        Ok(task)
     }
 
     /// Creates the task (and its worktree) and sends `req.prompt` as its first message.
@@ -1142,15 +1234,6 @@ impl AgentManager {
         };
         // A copy of the task (a fork) may work in the same worktree.
         let shared = self.tasks.read().values().any(|t| t.id != id && t.state.lock().task.cwd.0 == cwd);
-        if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
-            // On Windows the agent's processes lock the folder (their working directory,
-            // open files) until they have exited.
-            if let Some(peer) = live {
-                let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
-            }
-            let worktrees = self.shared.paths.worktrees_dir.clone();
-            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
-        }
         self.tasks.write().remove(id);
         *task.deleted.lock() = true;
         let _ = std::fs::remove_file(self.shared.paths.store_dir.join(format!("{id}.json")));
@@ -1160,7 +1243,17 @@ impl AgentManager {
         {
             let _ = std::fs::remove_dir_all(self.shared.paths.store_dir.join(saved));
         }
+        // The list drops the task now; removing a large worktree's folder can take a while.
         self.shared.emit(AgentEvent::Removed { id: id.to_owned() });
+        if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
+            // On Windows the agent's processes lock the folder (their working directory,
+            // open files) until they have exited.
+            if let Some(peer) = live {
+                let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
+            }
+            let worktrees = self.shared.paths.worktrees_dir.clone();
+            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
+        }
         Ok(())
     }
 
@@ -1620,6 +1713,30 @@ impl Task {
         })
     }
 
+    /// Runs `method` and, on an auth error, tries the agent's own ACP `authenticate` once before retrying.
+    async fn request_with_auth(
+        &self,
+        peer: &acp::Conn,
+        init: &acp::Negotiated,
+        tried_auth: &mut bool,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, RpcError> {
+        let first = peer.request(method, params.clone(), None).await;
+        if !*tried_auth
+            && let Err(RpcError::Server { code, ref message, .. }) = first
+            && acp::auth_required(code, message)
+            && let Some(method_id) = init.agent_auth_method()
+        {
+            *tried_auth = true;
+            match peer.request::<_, Value>("authenticate", json!({ "methodId": method_id }), None).await {
+                Ok(_) => return peer.request(method, params, None).await,
+                Err(e) => tracing::debug!(task = %self.id, method_id, error = %e, "agent authenticate failed"),
+            }
+        }
+        first
+    }
+
     async fn ensure_session(self: &Arc<Self>) -> Result<Live, String> {
         let _guard = self.connecting.lock().await;
         if let Some(live) = self.live.lock().clone()
@@ -1662,12 +1779,12 @@ impl Task {
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
 
+        let mut tried_auth = false;
         let mut session = None;
         if let (Some(id), true) = (saved, can_load) {
             self.replaying.store(true, Ordering::Release);
-            let loaded: Result<Value, RpcError> = peer
-                .request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": mcp_servers }), None)
-                .await;
+            let params = json!({ "sessionId": &id, "cwd": &cwd_s, "mcpServers": &mcp_servers });
+            let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
             tokio::time::sleep(REPLAY_GRACE).await;
             self.replaying.store(false, Ordering::Release);
             match loaded {
@@ -1679,8 +1796,9 @@ impl Task {
         let (session_id, result) = match session {
             Some(s) => s,
             None => {
-                let v: Value = peer
-                    .request("session/new", json!({ "cwd": cwd_s, "mcpServers": mcp_servers }), None)
+                let params = json!({ "cwd": &cwd_s, "mcpServers": &mcp_servers });
+                let v = self
+                    .request_with_auth(&peer, &init, &mut tried_auth, "session/new", params)
                     .await
                     .map_err(|e| self.sign_in_error(&e, Some(&sign_in_message)).unwrap_or_else(|| self.describe(e)))?;
                 let id = v.get("sessionId").and_then(Value::as_str).ok_or("the agent returned no session")?.to_owned();
@@ -2424,6 +2542,11 @@ fn title_of(prompt: &AgentPrompt) -> String {
 
 fn now_ms() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64)
+}
+
+/// The user's home, for tools that keep state there (Codex sessions).
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
 }
 
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {

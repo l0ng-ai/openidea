@@ -205,6 +205,8 @@ describe("agent composer", () => {
     const permissions = option("allow_all", ["off", "on"], "off");
     permissions.category = "permissions";
     expect(mainOptions([...config, permissions]).map((o) => o.id)).toEqual(["model", "mode", permissions.id]);
+    const collaboration = option("collaboration_mode", ["default", "plan"], "default");
+    expect(mainOptions([...config, collaboration]).map((o) => o.id)).toEqual(["model", "mode", collaboration.id]);
     const approvals = {
       ...option("openidea.cursor.approval", ["ask", "bypass"], "ask"),
       category: "approval",

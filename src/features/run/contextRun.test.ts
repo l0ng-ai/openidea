@@ -3,7 +3,7 @@ import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { menuGroupItems, registerMenuGroup } from "@/workbench/contributions";
 import type { MenuItem } from "@/ui";
-import { choiceItems, contextMenuItems } from "./contextRun";
+import { canDebugProduced, choiceItems, contextMenuItems } from "./contextRun";
 import { OPTIMISTIC, produceContextChoices } from "./producers";
 import { gutterTestState, markerIcon, targetMenuItems } from "./runGutter";
 import { useRun } from "./store";
@@ -197,5 +197,24 @@ describe("run gutter popup", () => {
     );
     // `main` targets never show results.
     expect(gutterTestState({ line: 0, kind: "main", name: "main", path: [] }, path)).toBeNull();
+  });
+});
+
+describe("Debug entry", () => {
+  const config = (c: Partial<RunConfig>) =>
+    ({ id: "c", name: "c", command: "", args: [], cwd: "", env: {}, ...c }) as RunConfig;
+  it("is offered for Maven and Gradle tests, which run with a JDWP agent", () => {
+    const mavenTest = config({ kind: "maven", command: "mvn", args: ["test", "-Dtest=A#b"], isTest: true });
+    expect(canDebugProduced({ name: "A.b", scope: "element", config: mavenTest })).toBe(true);
+    const gradleTest = config({
+      kind: "gradle",
+      command: "./gradlew",
+      args: [":app:test", "--tests", "A.b"],
+      isTest: true,
+    });
+    expect(canDebugProduced({ name: "A.b", scope: "element", config: gradleTest })).toBe(true);
+    expect(
+      canDebugProduced({ name: "lint", scope: "file", config: config({ kind: "npm", args: ["run", "lint"] }) }),
+    ).toBe(false);
   });
 });

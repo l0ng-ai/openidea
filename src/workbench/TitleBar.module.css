@@ -178,6 +178,16 @@
   display: flex;
   align-items: center;
 }
+/* Main menu › Separate toolbar: the titles in their own row below the title bar. */
+.menuRow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  -webkit-user-select: none;
+  user-select: none;
+}
 /* The main menu titles. */
 .menuBar {
   flex: none;

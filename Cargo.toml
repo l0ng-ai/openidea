@@ -5,7 +5,7 @@ members = ["crates/*", "src-tauri"]
 exclude = ["sdk", "plugins"]
 
 [workspace.package]
-version = "0.1.40"
+version = "0.1.42"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"
@@ -43,10 +43,15 @@ ide-ssh = { path = "crates/ide-ssh" }
 ide-remote = { path = "crates/ide-remote" }
 ide-host = { path = "crates/ide-host" }
 ide-mcp = { path = "crates/ide-mcp" }
+ide-scaffold = { path = "crates/ide-scaffold" }
 ide-notebook = { path = "crates/ide-notebook" }
 ide-extension = { path = "crates/ide-extension" }
 ide-plugin = { path = "crates/ide-plugin" }
 ide-cli = { path = "crates/ide-cli" }
+ide-jvm-attach = { path = "crates/ide-jvm-attach" }
+ide-jvm-inspect = { path = "crates/ide-jvm-inspect" }
+ide-jdwp = { path = "crates/ide-jdwp" }
+ide-heap = { path = "crates/ide-heap" }
 
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }
@@ -82,6 +87,7 @@ trash = "5"
 blake3 = "1"
 dunce = "1"
 dirs = "6"
+memmap2 = "0.9"
 zip = { version = "9.2.3", default-features = false, features = ["deflate"] }
 
 # search, index, language
