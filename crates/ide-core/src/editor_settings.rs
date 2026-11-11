@@ -333,6 +333,23 @@ pub struct InlayHintsSettings {
     pub code_vision_usages: bool,
     /// Code vision: last author of a declaration (VCS blame) beside its usages.
     pub code_vision_author: bool,
+    /// Code vision: "no usages" on declarations nothing uses (IDEA shows it; clicking searches everywhere).
+    pub code_vision_no_usages: bool,
+    /// Code vision: where the usages go, above the declaration or at the end of its line.
+    pub code_vision_usages_position: CodeVisionPosition,
+    /// Code vision: where the author goes, above the declaration or at the end of its line.
+    pub code_vision_author_position: CodeVisionPosition,
+}
+
+/// Editor › Inlay Hints › Code Vision position (IDEA's "Default position for metrics").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum CodeVisionPosition {
+    /// A row of its own above the declaration.
+    #[default]
+    Top,
+    /// After the end of the declaration's first line.
+    Right,
 }
 
 impl Default for InlayHintsSettings {
@@ -344,6 +361,9 @@ impl Default for InlayHintsSettings {
             disabled_languages: Vec::new(),
             code_vision_usages: true,
             code_vision_author: true,
+            code_vision_no_usages: true,
+            code_vision_usages_position: CodeVisionPosition::Top,
+            code_vision_author_position: CodeVisionPosition::Top,
         }
     }
 }

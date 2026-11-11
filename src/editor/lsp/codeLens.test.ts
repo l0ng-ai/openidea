@@ -118,6 +118,18 @@ describe("background usage counts", () => {
     expect(executeAction).toHaveBeenCalledWith("find.showUsages");
   });
 
+  it('leaves out "no usages" when Show “no usages” is off', async () => {
+    ipc.lspReferences.mockResolvedValue(refs(0));
+    useProject.setState({
+      settings: {
+        editor: { inlay: { codeVisionUsages: true, codeVisionAuthor: false, codeVisionNoUsages: false } },
+      } as never,
+    });
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual([]);
+  });
+
   it("does not cache an incomplete count while indexing, and retries on server refresh", async () => {
     ipc.lspReferences.mockResolvedValueOnce(refs(0, "indexing"));
     const view = editor();

@@ -181,6 +181,17 @@ describe("Tree keyboard navigation", () => {
     expect(onActivate).toHaveBeenLastCalledWith(expect.objectContaining({ id: "README.md" }), expect.anything());
   });
 
+  it("F4 and ⌘↓ go to onJumpToSource instead of activating when the tree has one", () => {
+    const onJumpToSource = vi.fn();
+    const { key, onActivate } = setup({ onJumpToSource });
+    key("End");
+    key("F4");
+    key("ArrowDown", { metaKey: true });
+    expect(onActivate).not.toHaveBeenCalled();
+    expect(onJumpToSource).toHaveBeenCalledTimes(2);
+    expect(onJumpToSource).toHaveBeenLastCalledWith(expect.objectContaining({ id: "README.md" }), expect.any(Set));
+  });
+
   it("extends the selection with Shift+Arrow", () => {
     const onSelectionChange = vi.fn();
     const { key } = setup({ defaultExpanded: ["src"], onSelectionChange });
@@ -522,5 +533,35 @@ describe("Tree indents", () => {
     // Loading placeholders are `role="presentation"`, not tree items.
     const placeholder = tree.querySelector<HTMLElement>('[role="presentation"]');
     expect(placeholder?.style.paddingLeft).toBe("calc(24px + 1 * var(--tree-indent, 20px))");
+  });
+});
+
+describe("Tree double-click", () => {
+  it("selects on the first press without cancelling its default", () => {
+    const { tree } = setup();
+    const row = within(tree).getByRole("treeitem", { name: "README.md" });
+    expect(fireEvent.mouseDown(row, { button: 0, detail: 1 })).toBe(true);
+    expect(row).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("cancels the second press so double-clicking cannot select label text, and still activates", () => {
+    const { tree, onActivate } = setup();
+    const row = within(tree).getByRole("treeitem", { name: "README.md" });
+    fireEvent.mouseDown(row, { button: 0, detail: 1 });
+    // The browser starts its word selection on this press; cancelling it keeps
+    // the labels unselected (jsdom reports cancellation through dispatchEvent).
+    expect(fireEvent.mouseDown(row, { button: 0, detail: 2 })).toBe(false);
+    fireEvent.doubleClick(row);
+    expect(onActivate).toHaveBeenCalledWith(expect.objectContaining({ id: "README.md" }), expect.anything());
+    expect(row).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("still expands a folder on double-click", () => {
+    const { tree } = setup();
+    const row = within(tree).getByRole("treeitem", { name: "src" });
+    fireEvent.mouseDown(row, { button: 0, detail: 1 });
+    fireEvent.mouseDown(row, { button: 0, detail: 2 });
+    fireEvent.doubleClick(row);
+    expect(labels(tree)).toEqual(["src", "main", "util.ts", "README.md"]);
   });
 });

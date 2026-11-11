@@ -321,7 +321,7 @@ fn python_sdk_with_version(path: &Path, source: &str, root: Option<&Path>, versi
 }
 
 /// The prefix of a conda interpreter: `<env>/bin/python` on Unix, `<env>/python.exe` on Windows.
-fn conda_env_home(python: &Path) -> Option<PathBuf> {
+pub(crate) fn conda_env_home(python: &Path) -> Option<PathBuf> {
     let dir = python.parent()?;
     let bin = dir.file_name().is_some_and(|n| n == "bin" || n.eq_ignore_ascii_case("Scripts"));
     Some(if bin { dir.parent()? } else { dir }.to_path_buf())

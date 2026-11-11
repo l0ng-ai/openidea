@@ -19,6 +19,8 @@
   <a href="#plugins">Plugins</a>
   &nbsp;·&nbsp;
   <a href="#community">Community</a>
+  &nbsp;·&nbsp;
+  <a href="#sponsor">Sponsor</a>
 </p>
 
 https://github.com/user-attachments/assets/234dd54c-1255-4b3a-b35c-533d78d737c0
@@ -67,6 +69,17 @@ the [official plugins](plugins/official). The plugin API is still a preview.
   <img src=".github/assets/wechat-group.png" alt="WeChat group QR code" width="200">
 
 - Contributing: see [CONTRIBUTING.md](CONTRIBUTING.md) and the [contributor docs](https://openidea.sh/en/contribute/setup).
+
+## Sponsor
+
+If OpenIDEA saves you time, you can support its development with Alipay or WeChat Pay.
+
+<table>
+  <tr>
+    <td align="center"><img src=".github/assets/sponsor-alipay.png" alt="Alipay QR code" width="200"><br>Alipay</td>
+    <td align="center"><img src=".github/assets/sponsor-wechat.png" alt="WeChat Pay QR code" width="200"><br>WeChat Pay</td>
+  </tr>
+</table>
 
 ## License
 

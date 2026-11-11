@@ -677,7 +677,7 @@ export async function startSession(
         sticky: true,
         actions: [
           {
-            label: "Install and Debug",
+            label: missing.action ?? "Install and Debug",
             run: () => void executeAction("tools.install", missing.tool).then(() => startSession(launch, options)),
           },
         ],

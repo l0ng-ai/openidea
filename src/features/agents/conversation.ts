@@ -1,5 +1,7 @@
 /** Reading an agent conversation: quoting, file links, turn times and finding text. */
 
+import { opensOtherShare } from "@/platform/paths";
+
 /** `text` as a Markdown quote for the composer, followed by an empty line to type in. */
 export function quoteText(text: string): string {
   const lines = text.replace(/\s+$/, "").split("\n");
@@ -24,7 +26,7 @@ const PATH = /^(?:\.\/)?([\w.@-]+(?:\/[\w.@-]+)*\.[A-Za-z][A-Za-z0-9]*)(?::(\d+)
 
 /** Explicit Markdown links can also name files with spaces or non-ASCII names. */
 export function fileHref(href: string, cwd: string): PathLink | null {
-  if (!href || href.startsWith("#") || href.startsWith("//") || /^[a-z][a-z\d+.-]*:/i.test(href)) return null;
+  if (!href || href.startsWith("#") || /^[a-z][a-z\d+.-]*:/i.test(href)) return null;
   let decoded: string;
   try {
     decoded = decodeURIComponent(href);
@@ -34,6 +36,7 @@ export function fileHref(href: string, cwd: string): PathLink | null {
   const match = /^(.*?)(?::(\d+)(?::(\d+))?|#L(\d+))?$/.exec(decoded);
   if (!match?.[1] || [...decoded].some((char) => char.charCodeAt(0) < 32)) return null;
   const path = match[1].startsWith("/") ? match[1] : `${cwd.replace(/\/$/, "")}/${match[1]}`;
+  if (opensOtherShare(path, match[1], cwd)) return null;
   const link: PathLink = { path };
   const line = match[2] ?? match[4];
   if (line) link.line = Math.max(0, Number(line) - 1);

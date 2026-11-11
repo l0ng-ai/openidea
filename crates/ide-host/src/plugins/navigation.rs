@@ -204,7 +204,11 @@ impl PluginHost {
         if text.len() > MAX_DOCUMENT_BYTES {
             return Err(IdeError::invalid("navigation document is too large"));
         }
-        let real = ide_plugin::resolve_in_root(root, &path.to_string_lossy()).map_err(IdeError::invalid)?;
+        // A project window group's members are project scope: a member's file
+        // is indexed into the group's graph like any file of the group root.
+        let mut roots = vec![root.to_path_buf()];
+        roots.extend(crate::project::workspace_member_roots(root));
+        let real = ide_plugin::resolve_in_roots(&roots, &path.to_string_lossy()).map_err(IdeError::invalid)?;
         if real != path {
             return Err(IdeError::invalid("navigation requires a canonical project path"));
         }

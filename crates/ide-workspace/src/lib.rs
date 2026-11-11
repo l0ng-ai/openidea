@@ -21,7 +21,7 @@ pub mod unity;
 pub mod window_groups;
 pub mod workspace;
 
-pub use documents::{DetectLanguage, DocumentInfo, Documents, TextSnapshot};
+pub use documents::{DetectLanguage, DocumentEncoding, DocumentInfo, Documents, TextSnapshot};
 pub use editorconfig::{EditorConfig, EditorConfigProps};
 pub use file_defaults::FileDefaults;
 pub use file_moves::{FileMove, FileMoves, UndoOutcome};
