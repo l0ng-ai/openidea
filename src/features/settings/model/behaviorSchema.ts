@@ -40,6 +40,8 @@ export interface AppearanceExtras {
   mainMenuStyle: "hamburger" | "merged";
   /** A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
   mainMenuAlt: boolean;
+  /** Always show the main menu titles instead of the hamburger button (#1521). */
+  alwaysShowMainMenu: boolean;
   ideAntialiasing: Antialiasing;
   editorAntialiasing: Antialiasing;
   showToolWindowBars: boolean;
@@ -107,6 +109,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   menuIcons: true,
   mainMenuStyle: "hamburger",
   mainMenuAlt: true,
+  alwaysShowMainMenu: false,
   ideAntialiasing: "greyscale",
   editorAntialiasing: "greyscale",
   showToolWindowBars: true,
@@ -171,6 +174,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     menuIcons: b("menuIcons"),
     mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged"], d.mainMenuStyle),
     mainMenuAlt: b("mainMenuAlt"),
+    alwaysShowMainMenu: b("alwaysShowMainMenu"),
     ideAntialiasing: oneOf(a.ideAntialiasing, AA, d.ideAntialiasing),
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
     showToolWindowBars: b("showToolWindowBars"),

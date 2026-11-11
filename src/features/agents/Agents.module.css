@@ -187,3 +187,15 @@
   border-bottom: 1px solid var(--border);
   font-weight: 600;
 }
+/* Imported sessions below the task list: compact rows, not growing space. */
+.external {
+  flex: none;
+  overflow-y: auto;
+  padding: 4px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.external > .row {
+  flex: none;
+}

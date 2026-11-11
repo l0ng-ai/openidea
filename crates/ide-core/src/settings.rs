@@ -578,6 +578,8 @@ pub struct AppearanceSettings {
     pub main_menu_style: String,
     /// A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`).
     pub main_menu_alt: bool,
+    /// Always show the main menu titles instead of the hamburger button (#1521).
+    pub always_show_main_menu: bool,
     /// `subpixel` | `greyscale` | `none`
     pub ide_antialiasing: String,
     pub editor_antialiasing: String,
@@ -655,6 +657,7 @@ impl Default for AppearanceSettings {
             menu_icons: true,
             main_menu_style: "hamburger".into(),
             main_menu_alt: true,
+            always_show_main_menu: false,
             ide_antialiasing: "greyscale".into(),
             editor_antialiasing: "greyscale".into(),
             show_tool_window_bars: true,
@@ -1570,6 +1573,11 @@ mod tests {
         let off: Settings = serde_json::from_str(r#"{"appearance":{"mainMenuAlt":false}}"#).unwrap();
         assert!(!off.appearance.main_menu_alt);
         assert_eq!(serde_json::to_value(off).unwrap()["appearance"]["mainMenuAlt"], false);
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"compactMode":true}}"#).unwrap();
+        assert!(!old.appearance.always_show_main_menu);
+        let shown: Settings = serde_json::from_str(r#"{"appearance":{"alwaysShowMainMenu":true}}"#).unwrap();
+        assert!(shown.appearance.always_show_main_menu);
+        assert_eq!(serde_json::to_value(shown).unwrap()["appearance"]["alwaysShowMainMenu"], true);
     }
 
     #[test]

@@ -4,6 +4,7 @@
   "They go back to how they were when the task started, in the task's worktree.": "They go back to how they were when the task started, in the task's worktree.",
   "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.": "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.",
   "Cannot roll back the changes": "Cannot roll back the changes",
+  "Cannot connect": "Cannot connect",
   "Rollback Selected Changes…": "Rollback Selected Changes…",
   "Rollback All Changes…": "Rollback All Changes…",
   "JUnit": "JUnit",
@@ -609,6 +610,8 @@
   "Stop All": "Stop All",
   "Open in Browser": "Open in Browser",
   "Build Module": "Build Module",
+  "Compile File": "Compile File",
+  "Compiles the current Java file with javac, without building its module": "Compiles the current Java file with javac, without building its module",
   "Build Artifacts": "Build Artifacts",
   "Build Module '{target}'": "Build Module '{target}'",
   "Build cancelled": "Build cancelled",
@@ -985,5 +988,6 @@
   "Imported 1 MCP server from the project.": "Imported 1 MCP server from the project.",
   "Imported {count} MCP servers from the project.": "Imported {count} MCP servers from the project.",
   "Show branch and incoming/outgoing commits in the Project view": "Show branch and incoming/outgoing commits in the Project view",
-  "Up to date with {upstream}": "Up to date with {upstream}"
+  "Up to date with {upstream}": "Up to date with {upstream}",
+  "Highlight occurrences of selected text": "Highlight occurrences of selected text"
 }

@@ -142,11 +142,30 @@
     window.removeEventListener("unhandledrejection", onRejection);
     window.removeEventListener("openidea:boot-error", onBootError);
     window.removeEventListener("openidea:boot-ready", onReady);
+    document.removeEventListener("visibilitychange", onVisibility);
   };
-  const timer = window.setTimeout(
-    () => show(rejection === undefined ? text.timeout : `${text.timeout}\n\nUnhandled rejection: ${rejection}`),
-    30_000,
-  );
+  // The timeout counts only while the window shows: a hidden or covered window gets no
+  // animation frames, and the splash waits for those to finish startup.
+  let remaining = 30_000;
+  let armedAt = 0;
+  let timer;
+  const arm = () => {
+    if (failed || ready || timer !== undefined || document.hidden) return;
+    armedAt = Date.now();
+    timer = window.setTimeout(
+      () => show(rejection === undefined ? text.timeout : `${text.timeout}\n\nUnhandled rejection: ${rejection}`),
+      remaining,
+    );
+  };
+  const onVisibility = () => {
+    if (!document.hidden) return arm();
+    if (timer === undefined) return;
+    window.clearTimeout(timer);
+    timer = undefined;
+    remaining -= Date.now() - armedAt;
+  };
+  arm();
+  document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("error", onError, true);
   window.addEventListener("unhandledrejection", onRejection);
   window.addEventListener("openidea:boot-error", onBootError);

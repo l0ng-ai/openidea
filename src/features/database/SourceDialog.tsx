@@ -175,7 +175,7 @@ function blank(): DataSource {
 }
 
 async function pickFile(title: string): Promise<string | null> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const file = await open({ multiple: false, directory: false, title });
   return typeof file === "string" ? file : null;
 }
@@ -384,6 +384,8 @@ export function SourceDialog({
   const vendor = vendorOf(s);
   const sqlite = s.driver === "sqlite";
   const postgres = s.driver === "postgres";
+  /** Drivers that can list every database on the host (tree level + Schemas tab). */
+  const serverDatabases = postgres || s.driver === "sqlServer";
   const clickhouse = s.driver === "clickhouse";
   const oracle = s.driver === "oracle";
   const urlOnly = !sqlite && !!s.urlOnly;
@@ -487,7 +489,7 @@ export function SourceDialog({
   const loadNames = async () => {
     const id = initial?.id;
     if (!id) return;
-    await Promise.all([postgres ? loadDatabases(id) : Promise.resolve(), loadSchemas(id)]);
+    await Promise.all([serverDatabases ? loadDatabases(id) : Promise.resolve(), loadSchemas(id)]);
   };
 
   const tabs: Array<{ id: Tab; label: string }> = [
@@ -702,7 +704,7 @@ export function SourceDialog({
         fallback={300}
         onChange={(autoDisconnectSecs) => setOptions({ autoDisconnectSecs })}
       />
-      {postgres && (
+      {serverDatabases && (
         <>
           <span />
           <Checkbox
@@ -927,7 +929,7 @@ export function SourceDialog({
   const schemasTab = (
     <>
       <div className={styles.formWide}>
-        {postgres && (
+        {serverDatabases && (
           <NamePicker
             allLabel={tx("All databases")}
             addLabel={tx("Add databases pattern")}

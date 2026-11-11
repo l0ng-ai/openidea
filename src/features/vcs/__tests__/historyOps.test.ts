@@ -84,22 +84,23 @@ describe("Git Log commit actions", () => {
     expect(items.every((i) => !("arg" in i) || i.arg === c)).toBe(true);
   });
 
-  it("disables history rewriting for pushed commits", () => {
+  it("offers history rewriting for pushed commits too (IDEA allows it; the run confirms)", () => {
     const local = commit("Local", "1".repeat(40));
     const pushed = commit("Pushed", "2".repeat(40));
     useGitLog.setState({ outgoing: new Set([local.id]) });
+    const rewriting = (c: Commit) =>
+      commitMenu(c).flatMap((i) =>
+        i.kind === "action" &&
+        i.disabled &&
+        ["editMessage", "fixup", "squashInto", "dropCommit", "interactiveRebase"].some((a) => i.action.endsWith(a))
+          ? [i.action]
+          : [],
+      );
+    expect(rewriting(local)).toEqual([]);
+    expect(rewriting(pushed)).toEqual([]);
+    // Push All up to Here keeps its own rule: it cannot push past a pushed commit.
     const disabled = (c: Commit) => commitMenu(c).flatMap((i) => (i.kind === "action" && i.disabled ? [i.action] : []));
-    expect(disabled(local)).not.toContain("vcs.log.editMessage");
-    expect(disabled(pushed)).toEqual(
-      expect.arrayContaining([
-        "vcs.log.editMessage",
-        "vcs.log.fixup",
-        "vcs.log.squashInto",
-        "vcs.log.dropCommit",
-        "vcs.log.interactiveRebase",
-        "vcs.log.pushUpToHere",
-      ]),
-    );
+    expect(disabled(pushed)).toContain("vcs.log.pushUpToHere");
     useGitLog.setState({ outgoing: null });
   });
 

@@ -149,7 +149,7 @@ export function ImportDialog({ id, schema, table }: { id: string; schema: string
 
   const choose = async () => {
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
+      const { open } = await import("@/platform/dialog");
       const f = await open({
         multiple: false,
         directory: false,

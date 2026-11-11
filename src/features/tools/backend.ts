@@ -38,7 +38,7 @@ export const tauriToolsBackend: ToolsBackend = {
     await call(commands.lspRestartNamed(name));
   },
   chooseExecutable: async (title, defaultPath) => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({ directory: false, multiple: false, title, defaultPath: defaultPath || undefined });
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },

@@ -90,7 +90,7 @@ function PromptDialog(props: {
 }
 
 async function pickDirectory(title: string): Promise<string | null> {
-  const { open: openDialog } = await import("@tauri-apps/plugin-dialog");
+  const { open: openDialog } = await import("@/platform/dialog");
   const dir = await openDialog({ multiple: false, directory: true, title });
   return typeof dir === "string" ? dir : null;
 }

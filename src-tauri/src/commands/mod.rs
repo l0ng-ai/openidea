@@ -22,6 +22,7 @@ pub mod deploy;
 pub mod doc;
 pub mod docker;
 pub mod env;
+pub mod file_dialog;
 pub mod fonts;
 pub mod fs;
 pub mod github;
@@ -66,6 +67,8 @@ pub(crate) fn sender<T: tauri::ipc::IpcResponse + Send + Sync + 'static>(
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![
         app::app_info,
+        file_dialog::file_dialog_needs_gtk,
+        file_dialog::gtk_pick_paths,
         mcp::mcp_ui_ready,
         mcp::mcp_respond,
         mcp::mcp_server_status,
@@ -128,6 +131,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_commands,
         agent::agent_entries,
         agent::agent_create,
+        agent::agent_external_sessions,
+        agent::agent_import_session,
         agent::agent_prompt,
         agent::agent_unqueue,
         agent::agent_send_queued_now,
@@ -408,6 +413,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         build::maven_exclude_dependency,
         build::maven_goto_declaration,
         build::build_run,
+        build::build_compile_file,
         java::java_resolve_launch,
         java::java_debug_server,
         java::java_build_workspace,
