@@ -10,6 +10,7 @@ import { shortcutLabel } from "@/platform/keymap";
 import { synchronizeDocumentIndexes, toolWindowService } from "@/workbench/contributions";
 import {
   caretContext,
+  caretSynced,
   caretPoint,
   hint,
   lspRequest,
@@ -228,6 +229,7 @@ export async function fetchUsages(
   let classified: ClassifiedReference[] = [];
   let note: string | null = null;
   let librariesSkipped = false;
+  await caretSynced(c);
   await synchronizeDocumentIndexes(c.path);
   if (c.view && c.view.state.doc !== before) throw new IpcError({ kind: "cancelled", message: "", data: null });
   let settled = false;
