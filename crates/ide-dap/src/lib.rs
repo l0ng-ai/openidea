@@ -621,9 +621,9 @@ fn step_settled(session: &Session, sent: Result<Value, DapError>) -> Result<Valu
     sent
 }
 
-/// Delve compiles the debuggee to `__debug_bin` in the session's cwd (on Windows
-/// `__debug_bin.exe` plus `__debug_bin.exe<digits>` in DAP mode) and removes it on a
-/// graceful exit — a shutdown it doesn't always reach, so the files pile up. Sweep
+/// Delve compiles the debuggee to `__debug_bin` in the session's cwd (in DAP mode a
+/// temp-file name, `__debug_bin<digits>`; on Windows with `.exe` before the digits) and
+/// removes it on a graceful exit — a shutdown it doesn't always reach, so the files pile up. Sweep
 /// the leftovers once the session is down. Runs after `session_closed`, so Delve
 /// has already exited or been killed and holds no file locks; a leftover of a
 /// still-building run is removed on that run's own shutdown.
@@ -632,14 +632,10 @@ fn remove_delve_binaries(cwd: &Path) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        // Windows writes `__debug_bin.exe` (and `.exe<digits>` in DAP mode); other
-        // platforms keep the bare name. Suffixes like `.go` are user files.
-        let suffix = name.strip_prefix("__debug_bin");
-        let leftover = suffix.is_some_and(|s| {
-            s.is_empty()
-                || s == ".exe"
-                || (s.starts_with(".exe") && s[".exe".len()..].chars().all(|c| c.is_ascii_digit()))
-        });
+        // `__debug_bin`, then `.exe` on Windows, then DAP mode's temp-file digits.
+        // Suffixes like `.go` are user files.
+        let suffix = name.strip_prefix("__debug_bin").map(|s| s.strip_prefix(".exe").unwrap_or(s));
+        let leftover = suffix.is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()));
         if !leftover || entry.file_type().is_ok_and(|t| !t.is_file()) {
             continue;
         }

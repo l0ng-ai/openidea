@@ -219,8 +219,9 @@ export function changesArg(arg: unknown): LogChange[] {
 }
 
 /**
- * Show Diff: the first file, with every file of the pane in the chain (F7 moves along).
- * `preview`: in the editor's preview tab without taking focus (selection in the pane).
+ * Show Diff: the first file, with every file of the pane in the chain (F7 moves along), in the
+ * editor's preview tab, so looking through a commit's files reuses one tab.
+ * `preview`: without taking focus (selection in the pane).
  */
 export async function showChangesDiff(changes: readonly LogChange[], preview = false) {
   const first = changes[0];
@@ -237,7 +238,7 @@ export async function showChangesDiff(changes: readonly LogChange[], preview = f
       },
     };
     if (!preview && vcsDiffInFront()) (await import("./diffDialog")).openMergeDiffDialog(input);
-    else await editorService().openInput(input, { preview, focus: !preview });
+    else await editorService().openInput(input, { preview: true, focus: !preview });
     return;
   }
   const all = useLogChanges.getState().all;
@@ -249,7 +250,7 @@ export async function showChangesDiff(changes: readonly LogChange[], preview = f
   // Selection preview stays a preview tab even under the modal interface; an explicit
   // diff opens where the commit interface puts it.
   if (preview) await openDiff(data, { preview: true, focus: false });
-  else await openVcsDiff(data);
+  else await openVcsDiff(data, { preview: true });
 }
 
 /** Compare with Local (`side` after) / Compare Before with Local: the revision ↔ the working file. */
