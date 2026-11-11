@@ -471,6 +471,31 @@
 .markdown :global(ol) {
   margin: 0 0 8px;
   padding-left: 20px;
+  list-style: none;
+}
+/* Markers are drawn as pseudo-elements: WebKit paints a selection box around a native marker,
+   leaving a broken stripe down the gutter when a list is selected. */
+.markdown :global(li) {
+  position: relative;
+}
+.markdown :global(li)::before {
+  position: absolute;
+  right: calc(100% + 6px);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.markdown :global(ul > li)::before {
+  content: "•";
+}
+.markdown :global(ul ul > li)::before {
+  content: "◦";
+}
+.markdown :global(ul ul ul > li)::before {
+  content: "▪";
+}
+.markdown :global(ol > li)::before {
+  content: counter(list-item) ".";
+  font-variant-numeric: tabular-nums;
 }
 .markdown :global(a) {
   color: var(--link);
@@ -521,7 +546,9 @@
 }
 .markdown :global(li:has(> input[type="checkbox"])) {
   margin-left: -20px;
-  list-style: none;
+}
+.markdown :global(li:has(> input[type="checkbox"]))::before {
+  content: none;
 }
 .markdown > :global(:first-child) {
   margin-top: 0;
