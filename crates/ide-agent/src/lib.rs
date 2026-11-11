@@ -10,6 +10,7 @@
 mod acp;
 mod config;
 mod conversation;
+mod external;
 pub mod mcp;
 mod model;
 mod native;
@@ -19,6 +20,7 @@ mod skills;
 mod timeline;
 mod worktree;
 
+pub use external::ExternalSession;
 pub use model::*;
 
 use conversation::{Conversation, SavedSubagent, Session};
@@ -583,6 +585,91 @@ impl AgentManager {
         let s = task.state.lock();
         let timeline = s.conversation.timeline(&subagent).ok_or_else(|| IdeError::not_found("no such subagent"))?;
         Ok(timeline.entries.clone())
+    }
+
+    /// Session ids the tasks already hold (native drivers reuse the CLI's own id).
+    fn imported_session_ids(&self) -> HashSet<String> {
+        self.tasks.read().values().filter_map(|t| t.state.lock().session_id.clone()).collect()
+    }
+
+    /// Sessions on this machine that no task holds yet, newest first (#312).
+    pub fn external_sessions(&self) -> Vec<ExternalSession> {
+        let mut out = Vec::new();
+        if let Some(spec) = self.shared.spec("claude")
+            && let Some(dir) = native::claude::cli::config_dir(&spec.env)
+        {
+            out.extend(external::claude_sessions(&dir));
+        }
+        let home = self.shared.paths.home_dir.clone().or_else(home_dir);
+        if let Some(home) = home {
+            out.extend(external::codex_sessions(&home.join(".codex")));
+        }
+        let known = self.imported_session_ids();
+        out.retain(|s| !known.contains(&s.session_id));
+        out.sort_by(|a, b| b.updated_ms.total_cmp(&a.updated_ms));
+        out.truncate(50);
+        out
+    }
+
+    /// Imports an external session as a task: its first turn loads and replays it (#312).
+    pub fn import_session(&self, provider: &str, session_id: &str) -> IdeResult<AgentTask> {
+        if !matches!(provider, "claude" | "codex") {
+            return Err(IdeError::invalid(format!("cannot import {provider} sessions")));
+        }
+        let spec = self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
+        if self.imported_session_ids().contains(session_id) {
+            return Err(IdeError::invalid("that session is already a task"));
+        }
+        let found = self
+            .external_sessions()
+            .into_iter()
+            .find(|s| s.provider == provider && s.session_id == session_id)
+            .ok_or_else(|| IdeError::not_found(format!("unknown {provider} session {session_id}")))?;
+        let root = self.shared.paths.project_root.clone();
+        let cwd = found.cwd.map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| root.clone());
+        let config = self.shared.known_config(&spec.id);
+        let now = now_ms();
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let task = AgentTask {
+            project_root: Some(IpcPath(root)),
+            id,
+            title: found.title,
+            provider: spec.id.clone(),
+            model: model_of(&config),
+            status: AgentStatus::Ready,
+            isolation: Isolation::Local,
+            cwd: IpcPath(cwd),
+            branch: None,
+            base: None,
+            base_commit: None,
+            error: None,
+            created_ms: now,
+            updated_ms: now,
+            config,
+            commands: self.shared.known_commands(&spec.id),
+            usage: None,
+            queue: Vec::new(),
+            capabilities: self.shared.probes.lock().get(&spec.id).map(|p| p.capabilities).unwrap_or_default(),
+            resets_ms: None,
+            retry: None,
+            background: Box::default(),
+        };
+        let file = TaskFile {
+            task: task.clone(),
+            session_id: Some(session_id.to_owned()),
+            entries: Vec::new(),
+            wanted: Vec::new(),
+            before: BTreeMap::new(),
+            saved: None,
+            subagents: Vec::new(),
+            pending_rollback: 0,
+            title_renamed: true,
+        };
+        let handle = Task::restore(file, self.shared.clone());
+        self.tasks.write().insert(task.id.clone(), handle.clone());
+        handle.emit_task();
+        handle.persist();
+        Ok(task)
     }
 
     /// Creates the task (and its worktree) and sends `req.prompt` as its first message.
@@ -2427,6 +2514,11 @@ fn title_of(prompt: &AgentPrompt) -> String {
 
 fn now_ms() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64)
+}
+
+/// The user's home, for tools that keep state there (Codex sessions).
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
 }
 
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
