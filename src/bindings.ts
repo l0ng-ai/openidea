@@ -5522,6 +5522,19 @@ export type IndexEntry = {
 	 *  the IDE before showing it.
 	 */
 	icon?: PluginIcon | null,
+	/**  Where to read more: the manifest's homepage, else the registry's source repository. */
+	homepage?: string | null,
+	/**  This version's release notes (the manifest's `change-notes`). */
+	notes?: string | null,
+	/**  Downloads of the plugin's packages, as counted by whoever serves them. */
+	downloads?: number | null,
+	/**  Picked by the marketplace's maintainers. */
+	featured?: boolean,
+	/**
+	 *  Project-relative paths whose presence makes the plugin worth suggesting
+	 *  (`pom.xml`, `config/routes.rb`).
+	 */
+	suggest?: string[],
 };
 
 export type IndexStatus = {
@@ -6473,6 +6486,8 @@ export type MarketPlugin = {
 	installed: string | null,
 	/**  Whether this IDE can load `entry` (the newest version it can, else the newest). */
 	compatible: boolean,
+	/**  The publisher's display name, as the index lists it. */
+	publisherName?: string | null,
 } & IndexEntry;
 
 export type Markup = {

@@ -1255,5 +1255,15 @@
   "{program} {found} is installed, but this project needs {min} or later.": "{program} {found} is installed, but this project needs {min} or later.",
   "{program} is not installed.": "{program} is not installed.",
   "Create a project, open a folder from disk or clone a repository from version control.": "Create a project, open a folder from disk or clone a repository from version control.",
-  "New Project": "New Project"
+  "New Project": "New Project",
+  "{path} already exists and is not empty": "{path} already exists and is not empty",
+  "Example": "Example",
+  "Shows how to use the plugin API; not maintained as a product.": "Shows how to use the plugin API; not maintained as a product.",
+  "{count} downloads": "{count} downloads",
+  "This plugin shows how to use the plugin API and is not maintained as a product. Build on it in your own repository.": "This plugin shows how to use the plugin API and is not maintained as a product. Build on it in your own repository.",
+  "Suggested because this project has {path}.": "Suggested because this project has {path}.",
+  "Suggested for This Project": "Suggested for This Project",
+  "Featured": "Featured",
+  "All Plugins": "All Plugins",
+  "Examples": "Examples"
 }

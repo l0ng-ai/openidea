@@ -31,6 +31,7 @@ const MAX_STAGED_FILES: usize = 256;
 const MAX_STAGED_BYTES: usize = 16 << 20;
 /// `moved` links followed before giving up (a loop, or a misconfiguration).
 const MAX_MOVES: usize = 3;
+const MAX_SUGGESTIONS: usize = 8;
 
 /// A marketplace entry with what is installed.
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
@@ -42,6 +43,9 @@ pub struct MarketPlugin {
     pub installed: Option<String>,
     /// Whether this IDE can load `entry` (the newest version it can, else the newest).
     pub compatible: bool,
+    /// The publisher's display name, as the index lists it.
+    #[serde(default)]
+    pub publisher_name: Option<String>,
 }
 
 impl MarketPlugin {
@@ -74,6 +78,19 @@ fn safe_icon(icon: PluginIcon) -> Option<PluginIcon> {
     // Before sanitising too: an index may hold megabytes of it.
     let clean = |svg: String| (svg.len() <= MAX_PLUGIN_ICON).then(|| sanitize_svg(&svg).ok()).flatten();
     Some(PluginIcon { light: clean(icon.light)?, dark: icon.dark.and_then(clean) })
+}
+
+/// Paths an index suggests a plugin for, as the UI may look them up: relative,
+/// inside the project, and few.
+fn safe_suggestions(paths: Vec<String>) -> Vec<String> {
+    let ok = |p: &String| {
+        !p.is_empty()
+            && p.len() <= 128
+            && !p.starts_with('/')
+            && !p.contains(['\\', ':', '\0', '*', '?'])
+            && p.split('/').all(|part| !matches!(part, "" | "." | ".."))
+    };
+    paths.into_iter().filter(ok).take(MAX_SUGGESTIONS).collect()
 }
 
 /// Reads `url`: `http(s)://…`, `file://…` or a local path.
@@ -253,7 +270,9 @@ impl PluginHost {
                     .map(|p| p.manifest().version.clone());
                 let mut entry = entry.clone();
                 entry.icon = entry.icon.and_then(safe_icon);
-                MarketPlugin { entry, installed, compatible }
+                entry.suggest = safe_suggestions(std::mem::take(&mut entry.suggest));
+                let publisher_name = index.publishers.iter().find(|p| p.id == entry.publisher).map(|p| p.name.clone());
+                MarketPlugin { entry, installed, compatible, publisher_name }
             })
             .collect()
     }
@@ -481,5 +500,12 @@ mod tests {
         #[cfg(windows)]
         assert_eq!(resolve(r"C:\market\index.json", "a.oiplugin"), r"C:\market\a.oiplugin");
         assert_eq!(resolve("https://x.dev/index.json", "https://cdn.dev/a"), "https://cdn.dev/a");
+    }
+
+    #[test]
+    fn suggestions_stay_inside_the_project() {
+        let paths = ["pom.xml", "config/routes.rb", "/etc/passwd", "../x", "a//b", "C:x", "*.php", ""];
+        assert_eq!(safe_suggestions(paths.iter().map(|p| p.to_string()).collect()), ["pom.xml", "config/routes.rb"]);
+        assert_eq!(safe_suggestions(vec!["a".into(); 20]).len(), MAX_SUGGESTIONS);
     }
 }
