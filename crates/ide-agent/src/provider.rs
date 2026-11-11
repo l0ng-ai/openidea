@@ -312,6 +312,8 @@ pub(crate) fn save_custom(custom_dir: &Path, input: &CustomAgentInput) -> IdeRes
 
 /// Removes a custom agent's file; refuses built-in, ACP Registry and missing ids.
 pub(crate) fn remove_custom(custom_dir: &Path, id: &str) -> IdeResult<()> {
+    let id = validated_custom_id(id)?;
+    let id = id.as_str();
     if builtin_spec(id).is_some() {
         return Err(IdeError::invalid(format!("{id} is a built-in agent and cannot be removed")));
     }
@@ -908,6 +910,13 @@ mod tests {
         save_custom(dir.path(), &custom_input("mine")).unwrap();
         save_custom(dir.path(), &custom_input("mine")).unwrap_err();
         remove_custom(dir.path(), "claude").unwrap_err();
+        // An id that isn't a plain file stem never reaches outside the agents directory.
+        let outside = dir.path().join("outside.toml");
+        std::fs::write(&outside, "command = \"/bin/sh\"\n").unwrap();
+        let agents = dir.path().join("agents");
+        std::fs::create_dir(&agents).unwrap();
+        remove_custom(&agents, "../outside").unwrap_err();
+        assert!(outside.exists());
         std::fs::write(
             dir.path().join("amp-acp.toml"),
             "command = \"/registry/amp\"\n[registry]\nid = \"amp-acp\"\nversion = \"1.0\"\n",

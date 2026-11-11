@@ -266,6 +266,10 @@
   font-size: var(--fs-small);
   overflow-wrap: anywhere;
 }
+/* Inside a dialog the form needs the body inset the dialog doesn't give it. */
+.dialogForm {
+  padding: 12px 16px 4px;
+}
 .form > .rowHint:last-child {
   margin-bottom: 0;
 }

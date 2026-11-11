@@ -836,7 +836,7 @@ describe("custom agents", () => {
     const commands = new FakeCommands();
     openList(commands);
     await waitFor(() => expect(commands.providers).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole("button", { name: "Add custom agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Custom Agent…" }));
     const dialog = await screen.findByRole("dialog", { name: "Add Custom Agent" });
     fireEvent.change(within(dialog).getByRole("textbox", { name: "Name" }), { target: { value: "My Agent" } });
     expect(within(dialog).getByRole("textbox", { name: "ID" })).toHaveValue("my-agent");

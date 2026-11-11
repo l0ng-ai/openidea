@@ -376,7 +376,7 @@ export function AgentList({
         )}
         <div className={styles.customActions}>
           <Button size="small" variant="secondary" disabled={busy} onClick={() => setAdding(true)}>
-            <T>Add custom agent</T>
+            <T>Add Custom Agent…</T>
           </Button>
           <Button size="small" variant="secondary" disabled={busy || importing} onClick={() => void importAcpJson()}>
             {importing ? <T>Importing…</T> : <T>Import acp.json</T>}
@@ -712,7 +712,7 @@ function CustomAgentModal({
         { label: "Cancel", role: "cancel", onClick: onClose },
       ]}
     >
-      <div className={styles.form}>
+      <div className={`${styles.form} ${styles.dialogForm}`}>
         {error && (
           <p className={styles.error} role="alert" style={{ gridColumn: "1 / -1" }}>
             {error}
