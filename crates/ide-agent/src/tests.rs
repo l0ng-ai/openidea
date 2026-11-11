@@ -43,6 +43,11 @@ struct FakeAgent {
     /// Hold the late mode reply until the prompt's permission request is already waiting.
     hold_late_mode: bool,
     empty_config: AtomicBool,
+    /// Blocks `session/new` until discovery times out (see `acp::discover` test timeout).
+    hold_session_new: AtomicBool,
+    /// Sleeps this long at the start of `session/set_config_option`, after noting the time.
+    delay_config: Duration,
+    config_entered: Mutex<Option<std::time::Instant>>,
     /// Config options `session/new` reports after the model one (per-model efforts, say).
     extra_options: Mutex<Vec<Value>>,
     model_options: Mutex<HashMap<String, Vec<Value>>>,
@@ -157,6 +162,9 @@ impl Handler for FakeAgent {
                 )
             }
             "session/new" => {
+                if self.hold_session_new.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_secs(5));
+                }
                 if self.empty_config.load(Ordering::Acquire) {
                     return Ok(json!({"sessionId": "s1"}));
                 }
@@ -190,6 +198,10 @@ impl Handler for FakeAgent {
                 }
             }
             "session/set_config_option" | "session/set_mode" => {
+                if method == "session/set_config_option" && !self.delay_config.is_zero() {
+                    *self.config_entered.lock() = Some(std::time::Instant::now());
+                    std::thread::sleep(self.delay_config);
+                }
                 self.calls.lock().push(format!("{method} {}", params.get("value").or(params.get("modeId")).unwrap()));
                 if params["configId"] == "model" && !self.model_options.lock().is_empty() {
                     return Ok(json!({"configOptions": self.options_for(params["value"].as_str().unwrap())}));
@@ -2629,6 +2641,92 @@ async fn session_settings_win_over_discovery_in_memory_and_on_disk() {
             assert_eq!(mgr.shared.known.lock()["claude"].thought_levels["saved"], saved[1..]);
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn provider_reload_does_not_start_acp_discovery() {
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tempfile::tempdir().unwrap().path(), agent.clone());
+    mgr.reload_providers();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(agent.calls.lock().is_empty(), "reload must not spawn cursor-agent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn composer_commands_discover_cursor_effort_and_fast() {
+    let agent = Arc::new(FakeAgent {
+        extra_options: Mutex::new(vec![
+            json!({"id": "effort", "type": "select", "currentValue": "medium",
+                "options": [{"value": "low"}, {"value": "medium"}, {"value": "high"}]}),
+            json!({"id": "fast", "type": "select", "currentValue": "false",
+                "options": [{"value": "false", "name": "Off"}, {"value": "true", "name": "On"}]}),
+        ]),
+        ..Default::default()
+    });
+    let mgr = manager(tempfile::tempdir().unwrap().path(), agent.clone());
+    mgr.commands("cursor", None).await.unwrap();
+    let calls = agent.calls.lock();
+    assert!(calls.iter().any(|m| m.as_str() == "session/new"));
+    assert_eq!(calls.iter().filter(|m| m.as_str() == "initialize").count(), 1);
+    let cursor = mgr.providers().into_iter().find(|p| p.id == "cursor").unwrap();
+    assert_eq!(cursor.config.iter().find(|o| o.id == "fast").unwrap().current.as_deref(), Some("false"));
+    assert!(
+        cursor
+            .thought_levels
+            .values()
+            .next()
+            .is_some_and(|levels| { levels.iter().any(|o| o.category.as_deref() == Some("thought_level")) })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn config_choice_shows_before_the_agent_answers() {
+    let agent = Arc::new(FakeAgent {
+        extra_options: Mutex::new(vec![json!({
+            "id": "fast", "category": "model_config", "type": "select", "currentValue": "true",
+            "options": [{"value": "true", "name": "On"}, {"value": "false", "name": "Off"}]
+        })]),
+        delay_config: Duration::from_millis(300),
+        ..Default::default()
+    });
+    let mgr = manager(tempfile::tempdir().unwrap().path(), agent.clone());
+    let shown: Arc<Mutex<Option<std::time::Instant>>> = Arc::default();
+    let mark = shown.clone();
+    mgr.subscribe(Arc::new(move |e| {
+        if let AgentEvent::Task { task } = e
+            && task.config.iter().any(|o| o.id == "fast" && o.current.as_deref() == Some("false"))
+            && mark.lock().is_none()
+        {
+            *mark.lock() = Some(std::time::Instant::now());
+        }
+    }));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.set_config(&task.id, "fast", "false".into()).await.unwrap();
+    let shown = (*shown.lock()).expect("the switch moved");
+    let entered = (*agent.config_entered.lock()).expect("the agent received the change");
+    assert!(shown < entered, "the composer updates before the agent answers");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_times_out_when_session_new_hangs() {
+    let agent = Arc::new(FakeAgent { hold_session_new: AtomicBool::new(true), ..Default::default() });
+    let mgr = manager(tempfile::tempdir().unwrap().path(), agent.clone());
+    let started = std::time::Instant::now();
+    mgr.commands("cursor", None).await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(10), "discovery should time out quickly in tests");
+    let cursor = mgr.providers().into_iter().find(|p| p.id == "cursor").unwrap();
+    assert!(!cursor.config.iter().any(|o| o.category.as_deref() == Some("model")));
 }
 
 #[tokio::test(flavor = "multi_thread")]

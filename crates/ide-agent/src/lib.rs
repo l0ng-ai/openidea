@@ -182,9 +182,15 @@ impl Shared {
                     let shared = self.clone();
                     // Keep the lookup alive if a composer unmounts while it is waiting.
                     self.runtime.spawn(async move {
-                        if let Ok(found) =
-                            native::claude::discover(spec.clone(), shared.paths.project_root.clone()).await
-                        {
+                        tracing::info!("agent {}: settings discovery started", spec.id);
+                        let discovered = if spec.driver == provider::Driver::Acp {
+                            acp::discover::run(&shared, &spec).await.map(|_| None)
+                        } else if spec.driver == provider::Driver::Claude {
+                            native::claude::discover(spec.clone(), shared.paths.project_root.clone()).await.map(Some)
+                        } else {
+                            return;
+                        };
+                        if let Ok(Some(found)) = discovered {
                             let commands =
                                 config::commands_of(&json!({ "availableCommands": found.commands }), &spec.id);
                             let options = config::options_of(&json!({ "configOptions": found.options }));
@@ -203,6 +209,8 @@ impl Shared {
                                 shared.remember_discovered(&spec.id, &options, &commands, &levels);
                             })
                             .await;
+                        } else if let Err(e) = discovered {
+                            tracing::info!("agent {}: settings discovery failed: {e}", spec.id);
                         }
                         let _ = done.send(true);
                     });
@@ -225,12 +233,17 @@ impl Shared {
     fn knows_all_levels(&self, provider: &str) -> bool {
         let cache = self.known.lock();
         let Some(known) = cache.get(provider) else { return false };
-        known
+        let models: Vec<&str> = known
             .config
             .iter()
             .filter(|o| o.category.as_deref() == Some("model"))
-            .flat_map(|o| &o.values)
-            .all(|v| known.thought_levels.contains_key(&v.value))
+            .flat_map(|o| o.values.iter().map(|v| v.value.as_str()))
+            .collect();
+        // No advertised models yet: nothing to attach effort levels to.
+        if models.is_empty() {
+            return false;
+        }
+        models.iter().all(|id| known.thought_levels.contains_key(*id))
     }
 
     fn root_key(&self) -> String {
@@ -512,7 +525,9 @@ impl AgentManager {
             let new = specs.iter().find(|p| &p.id == id);
             matches!((old, new), (Some(a), Some(b)) if a.command == b.command && a.args == b.args && a.env == b.env)
         });
-        *prev = specs;
+        *prev = specs.clone();
+        drop(probes);
+        drop(prev);
         list
     }
 
@@ -587,10 +602,16 @@ impl AgentManager {
         let mut offered = offered;
         if task.is_none()
             && (offered.is_empty() || !self.shared.has_config(&provider) || !self.shared.knows_all_levels(&provider))
-            && let Some(spec) = self.shared.spec(&provider).filter(|s| s.driver == provider::Driver::Claude)
+            && let Some(spec) = self
+                .shared
+                .spec(&provider)
+                .filter(|s| matches!(s.driver, provider::Driver::Claude | provider::Driver::Acp))
         {
+            let claude = spec.driver == provider::Driver::Claude;
             self.shared.fetch_settings(spec).await;
-            offered = self.shared.known_commands(&provider);
+            if claude {
+                offered = self.shared.known_commands(&provider);
+            }
         }
         for &(name, description) in builtin_commands(&provider) {
             if !offered.iter().any(|c| c.name == name) {
@@ -923,14 +944,38 @@ impl AgentManager {
             }
             o.clone()
         };
+        let previous = target.current.clone();
+        // Cursor's `session/set_config_option` (Fast, effort) can take seconds. Show the
+        // choice first so the switch and slider move immediately.
+        apply_config_choice(&task, option, &value);
+        task.persist();
+        task.emit_task();
+
         let live = task.live.lock().clone().filter(|l| !l.peer.is_closed());
         let mut model_options =
-            target.category.as_deref() != Some("model") || target.current.as_deref() == Some(value.as_str());
+            target.category.as_deref() != Some("model") || previous.as_deref() == Some(value.as_str());
         if let Some(live) = live.filter(|_| option != config::CURSOR_APPROVAL) {
             let (method, mut params) = config::set_request(&target, &value);
             params["sessionId"] = json!(live.session);
-            let reply: Value =
-                live.peer.request(method, params, None).await.map_err(|e| IdeError::internal(task.describe(e)))?;
+            let reply: Value = match live.peer.request(method, params, None).await {
+                Ok(reply) => reply,
+                Err(e) => {
+                    {
+                        let mut s = task.state.lock();
+                        s.wanted.retain(|c| c.id != option);
+                        if let Some(prev) = previous.clone() {
+                            s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: prev });
+                        }
+                        if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
+                            o.current = previous.clone();
+                        }
+                        s.task.model = model_of(&s.task.config).or(s.task.model.take());
+                    }
+                    task.persist();
+                    task.emit_task();
+                    return Err(IdeError::internal(task.describe(e)));
+                }
+            };
             if let Some(options) = reply.get("configOptions") {
                 config::merge_update(&mut task.state.lock().task.config, options);
                 model_options = true;
@@ -941,8 +986,6 @@ impl AgentManager {
             if !model_options {
                 s.task.config.retain(|o| o.category.as_deref() != Some("thought_level"));
             }
-            s.wanted.retain(|c| c.id != option);
-            s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: value.clone() });
             if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
                 o.current = Some(value);
             }
@@ -2545,7 +2588,7 @@ fn with_details(message: String, data: Option<&Value>) -> String {
     }
 }
 
-fn client_info() -> Value {
+pub(crate) fn client_info() -> Value {
     json!({ "name": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") })
 }
 
@@ -2602,6 +2645,16 @@ fn retry_of(update: &Value, now: f64) -> Option<AgentRetry> {
         retry_at_ms: now + n("retryDelayMs").unwrap_or(0) as f64,
         error: update.get("error").and_then(Value::as_str).filter(|e| !e.is_empty()).map(str::to_owned),
     })
+}
+
+fn apply_config_choice(task: &Task, option: &str, value: &str) {
+    let mut s = task.state.lock();
+    s.wanted.retain(|c| c.id != option);
+    s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: value.to_owned() });
+    if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
+        o.current = Some(value.to_owned());
+    }
+    s.task.model = model_of(&s.task.config).or(s.task.model.take());
 }
 
 fn model_of(config: &[AgentConfigOption]) -> Option<String> {

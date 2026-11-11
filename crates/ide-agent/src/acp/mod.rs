@@ -14,6 +14,7 @@
 //! - Agent → client ([`Dialect`]): `session/update`s are normalized ([`normalize`]) and
 //!   permission requests get the v1 `toolCall`.
 
+pub(crate) mod discover;
 mod normalize;
 
 use ide_jsonrpc::{Handler, Peer, RpcError, codes};
@@ -57,6 +58,9 @@ fn client_capabilities() -> Value {
         "terminal": false,
         // Subagents as sessions of their own (ACP subagents RFD; v2 baseline).
         "subagents": {},
+        // Cursor exposes model parameters (e.g. Composer `fast`) as separate config options
+        // only when the client advertises this flag (undocumented Cursor ACP extension).
+        "_meta": { "parameterizedModelPicker": true },
     })
 }
 
