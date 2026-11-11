@@ -8809,6 +8809,7 @@ export type TerminalSettings = {
 	overrideIdeShortcuts?: boolean,
 	shellIntegration?: boolean,
 	highlightHyperlinks?: boolean,
+	highlightSelection?: boolean,
 	optionAsMeta?: boolean,
 	/**  Escape moves focus to the editor instead of reaching the shell. */
 	escapeToEditor?: boolean,

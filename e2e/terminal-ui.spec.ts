@@ -59,3 +59,38 @@ for (const { width, split } of [{ width: 220 }, { width: 280 }, { width: 520 }, 
     await expect(terminal.locator(".xterm-helper-textarea:focus")).toHaveCount(1);
   });
 }
+
+test("terminal highlights visible occurrences of selected text in a single overlay layer", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const path = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(path);
+    layout.showToolWindow("terminal", true);
+  });
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise((r) => requestAnimationFrame(r));
+    const path = "/src/features/terminal/runtime.ts";
+    const { activeSession } = await import(path);
+    const s = activeSession()!;
+    s.term.reset();
+    await new Promise<void>((resolve) => s.term.write("needle other needle\r\nneedle gamma gamma\r\n", resolve));
+    s.term.select(0, 0, 6);
+  });
+
+  await expect(terminal.locator(".openidea-terminal-selection-matches")).toHaveCount(1);
+  await expect(terminal.locator(".openidea-terminal-selection-match:visible")).toHaveCount(2);
+  if (process.env.OPENIDEA_TERMINAL_SHOTS)
+    await terminal.screenshot({ path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/terminal-selection-matches.png` });
+
+  await page.evaluate(async () => {
+    const path = "/src/features/terminal/runtime.ts";
+    const { activeSession } = await import(path);
+    activeSession()!.term.clearSelection();
+  });
+  await expect(terminal.locator(".openidea-terminal-selection-match:visible")).toHaveCount(0);
+});
