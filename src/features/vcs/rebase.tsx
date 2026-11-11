@@ -46,7 +46,7 @@ function refuse(title: string, body: string) {
   void showError(title, body);
 }
 
-/** IDEA forbids rewriting the history of a protected branch (force push is not allowed there). */
+/** Pushed history of a protected branch cannot be rewritten (force push is not allowed there). */
 const protectedProblem = (branch: { head: string | null; upstream: string | null } | null) =>
   protectedBranchProblem(branch ?? { head: null, upstream: null }, isProtectedBranch);
 
@@ -90,7 +90,8 @@ export async function undoCommit(commit: Commit) {
   const repo = commitRepo(commit) ?? currentRepo();
   await refreshNow();
   const branch = useVcs.getState().branch;
-  const problem = undoCommitProblem(commit, branch) ?? protectedProblem(branch);
+  // Protected branches refuse only rewrites of history that is already pushed.
+  const problem = undoCommitProblem(commit, branch) ?? (headPushed(branch) ? protectedProblem(branch) : null);
   if (problem) return refuse("Cannot undo commit", problem);
   if (headPushed(branch)) {
     const ok = await confirmDialog({
@@ -132,11 +133,6 @@ async function rangeFrom(target: Commit, verb: string): Promise<(RebaseRange & {
     refuse(`Cannot ${verb}`, `A ${op} is in progress`);
     return null;
   }
-  const protectedProblemResult = protectedProblem(branch);
-  if (protectedProblemResult) {
-    refuse(`Cannot ${verb}`, protectedProblemResult);
-    return null;
-  }
   const parent = target.parents[0];
   try {
     const history = await call(
@@ -156,6 +152,12 @@ async function rangeFrom(target: Commit, verb: string): Promise<(RebaseRange & {
       return null;
     }
     if (await rangeTouchesUpstream(branch, range, repo)) {
+      // Protected branches refuse only rewrites of history that is already pushed.
+      const protectedBranch = protectedProblem(branch);
+      if (protectedBranch) {
+        refuse(`Cannot ${verb}`, protectedBranch);
+        return null;
+      }
       const ok = await confirmDialog({
         title: verb.replace(/^\w/, (c) => c.toUpperCase()),
         message: pushedWarning(verb.replace(/^\w/, (c) => c.toUpperCase())),
