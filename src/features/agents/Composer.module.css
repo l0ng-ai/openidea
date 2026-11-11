@@ -16,7 +16,7 @@
     inset 0 0 0 1px var(--focus-ring),
     0 0 0 1px var(--focus-ring);
 }
-/* A file or folder dragged over it from the Project view. */
+/* A file or folder dragged over it from the Project view or the OS. */
 .fileOver {
   box-shadow:
     inset 0 0 0 1px var(--focus-ring),
@@ -393,8 +393,26 @@
   opacity: 0;
 }
 .image:hover .removeImage,
+.attachment:hover .removeImage,
 .removeImage:focus-visible {
   opacity: 1;
+}
+
+.attachment {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  height: 44px;
+  padding: 0 10px;
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.attachmentName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* `@` / `/` completion; Popup keeps the list within the viewport. */
