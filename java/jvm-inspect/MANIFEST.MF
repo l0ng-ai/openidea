@@ -1,0 +1,9 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: OpenIDEA JVM inspect
+Bundle-SymbolicName: ai.openidea.jvminspect;singleton:=true
+Bundle-Version: 1.0.0
+Bundle-RequiredExecutionEnvironment: JavaSE-21
+Require-Bundle: org.eclipse.jdt.ls.core,org.eclipse.core.runtime,
+ org.eclipse.equinox.common,org.eclipse.jdt.debug
+

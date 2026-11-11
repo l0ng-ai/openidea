@@ -72,6 +72,75 @@ pub fn kill_tree_of(pid: u32) {
     let _ = pid;
 }
 
+/// Whether a process with this id exists. PID reuse makes this conservative: a reused id keeps
+/// whatever was tied to the old process alive, a live process is never reported dead.
+pub fn process_alive(pid: u32) -> bool {
+    // `kill(0, 0)` would signal the caller's own process group.
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        // Above `i32::MAX` the id would wrap to a negative value, which `kill` reads as a group.
+        let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+        // SAFETY: signal 0 delivers nothing; it only checks that the process exists and is reachable.
+        unsafe { libc::kill(pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GetLastError, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        // SAFETY: plain call; a non-null result is a process handle owned by this function.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            // A process we may not open still exists.
+            // SAFETY: reads the thread's last error, set by the call above.
+            return unsafe { GetLastError() } == ERROR_ACCESS_DENIED;
+        }
+        // SAFETY: `handle` is valid and nobody else owns it.
+        let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+        let mut code = 0u32;
+        // SAFETY: a live process handle opened with query access; one out-parameter.
+        let ok = unsafe { GetExitCodeProcess(handle.as_raw_handle(), &mut code) };
+        // A handle that cannot be queried is not evidence that the process is gone.
+        ok == 0 || code == STILL_ACTIVE as u32
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        true
+    }
+}
+
+/// The program and everything it started: an adapter may report the launcher shell, whose
+/// child is the debugged program, so stopping only the reported pid leaves the program alive.
+#[cfg(unix)]
+pub fn process_tree(pid: i32) -> Vec<i32> {
+    use std::collections::HashMap;
+    let Ok(out) = std::process::Command::new("ps").args(["-A", "-o", "pid=,ppid="]).output() else {
+        return vec![pid];
+    };
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut it = line.split_whitespace();
+        let (Some(p), Some(parent)) = (it.next(), it.next()) else { continue };
+        let (Ok(p), Ok(parent)) = (p.parse::<i32>(), parent.parse::<i32>()) else { continue };
+        children.entry(parent).or_default().push(p);
+    }
+    let mut tree = vec![pid];
+    let mut at = 0;
+    while at < tree.len() {
+        if let Some(kids) = children.get(&tree[at]) {
+            tree.extend(kids.iter().copied());
+        }
+        at += 1;
+    }
+    tree
+}
+
 /// [`kill_tree`] that first asks the group to exit: `SIGTERM`, then `grace`, then `SIGKILL`.
 /// Git removes its `index.lock` on `SIGTERM`, where `SIGKILL` leaves it behind and the next
 /// git command fails. Windows has no such signal to send from outside the child's console,
@@ -730,6 +799,30 @@ fn append_path_entries(path: &OsStr, extra: &OsStr) -> OsString {
 mod tests {
     use super::*;
 
+    #[test]
+    fn process_alive_tells_live_from_dead_pids() {
+        assert!(process_alive(std::process::id()));
+        assert!(!process_alive(0));
+        let mut cmd = if cfg!(windows) {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/C", "exit 0"]);
+            cmd
+        } else {
+            Command::new("true")
+        };
+        let mut child = cmd.spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        drop(child);
+        assert!(!process_alive(pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_alive_rejects_ids_that_are_not_a_single_process() {
+        assert!(!process_alive(u32::MAX));
+    }
+
     #[cfg(unix)]
     #[test]
     fn kill_tree_of_reaches_what_the_child_started() {
@@ -1049,6 +1142,25 @@ mod tests {
             assert_eq!(find_executable("agent", &search), Some(a.join("agent")));
         }
         assert_eq!(find_executable("nope", &search), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_tree_lists_the_child_of_a_shell() {
+        let mut cmd = Command::new("sh");
+        own_group(&mut cmd).args(["-c", "sleep 5 & wait"]);
+        let mut child = cmd.spawn().unwrap();
+        let sh_pid = child.id() as i32;
+        // The shell forks `sleep` after it starts, so the tree grows a moment later.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut tree = process_tree(sh_pid);
+        while tree.len() < 2 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            tree = process_tree(sh_pid);
+        }
+        kill_tree(&mut child);
+        assert_eq!(tree[0], sh_pid, "the pid itself comes first");
+        assert!(tree.len() >= 2 && tree[1..].iter().all(|p| *p != sh_pid), "the shell's child follows: {tree:?}");
     }
 }
 
