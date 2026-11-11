@@ -314,10 +314,12 @@ pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: Got
         && let Some(plugins) = crate::plugins::editor_plugin_host()
     {
         let project = host.project(window)?;
-        let (path, version) = project.documents.identity(doc)?;
-        if let Some(found) = plugins.navigation_at(&project.root, &path, version, pos, Some(window), |p| {
-            project.documents.by_path(p).and_then(|id| project.documents.version(id).ok())
-        }) {
+        // A notebook cell is a language-server document only: no plugin navigates in it.
+        if let Ok((path, version)) = project.documents.identity(doc)
+            && let Some(found) = plugins.navigation_at(&project.root, &path, version, pos, Some(window), |p| {
+                project.documents.by_path(p).and_then(|id| project.documents.version(id).ok())
+            })
+        {
             return Ok(found.targets);
         }
     }

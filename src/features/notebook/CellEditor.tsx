@@ -7,6 +7,7 @@ import {
   highlightSpecialChars,
   keymap,
   lineNumbers,
+  tooltips,
 } from "@codemirror/view";
 import { defaultKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/language";
@@ -17,6 +18,7 @@ import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { selectionMarks } from "@/editor/core/cm/selectionMarks";
 import { seamlessSelection } from "@/editor/core/cm/selectionLayer";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
+import { tooltipBounds } from "@/editor/core/cm/setup";
 import { tx } from "@/platform/i18n";
 import type { CellReveal, NotebookSession } from "./session";
 import styles from "./Notebook.module.css";
@@ -57,6 +59,8 @@ export function CellEditor({
     if (!host.current) return;
     const language = new Compartment();
     const configuration = [
+      // Completion and hover popups leave the cell, whose border clips its content.
+      tooltips({ parent: document.body, tooltipSpace: tooltipBounds }),
       openideaTheme,
       syntaxHighlighting(openideaHighlightStyle),
       lineNumbers(),
