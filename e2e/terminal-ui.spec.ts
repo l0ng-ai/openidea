@@ -93,6 +93,36 @@ test("terminal highlights visible occurrences of selected text in a single overl
     activeSession()!.term.clearSelection();
   });
   await expect(terminal.locator(".openidea-terminal-selection-match:visible")).toHaveCount(0);
+
+  // Full-scrollback trim shifts a visible match into the cached margin row above viewportY; scrolling up must highlight it.
+  await page.evaluate(async () => {
+    const path = "/src/features/terminal/runtime.ts";
+    const { activeSession } = await import(path);
+    const s = activeSession()!;
+    const rows = s.term.rows;
+    s.term.options.scrollback = 4;
+    s.term.reset();
+    const total = rows + 4;
+    let payload = "";
+    for (let i = 0; i < total - 1; i++) {
+      payload += `${i === 4 ? "needle hit" : `row-${i}`}\r\n`;
+    }
+    payload += "needle sel";
+    await new Promise<void>((resolve) => s.term.write(payload, resolve));
+    s.term.select(0, total - 1, 6);
+  });
+  await expect(terminal.locator(".openidea-terminal-selection-match:visible")).toHaveCount(1);
+
+  await page.evaluate(async () => {
+    await new Promise((r) => setTimeout(r, 100));
+    const path = "/src/features/terminal/runtime.ts";
+    const { activeSession } = await import(path);
+    const s = activeSession()!;
+    await new Promise<void>((resolve) => s.term.write("\r\nnext", resolve));
+    s.term.scrollLines(-1);
+  });
+  await expect(terminal.locator(".openidea-terminal-selection-match:visible")).toHaveCount(1);
+  await expect(terminal.locator(".openidea-terminal-selection-match:visible")).toHaveCSS("top", "0px");
 });
 
 test("terminal ⌘F highlights active/inactive search matches and seeds with a new selection", async ({
