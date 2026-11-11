@@ -1,10 +1,12 @@
 /** Imperative prompt dialogs of the Services view, rendered by one overlay. */
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { create } from "zustand";
-import type { DockerConnection, DockerEndpoint, DockerRegistry, SshConfigHost } from "@/platform/ipc";
-import { commands } from "@/platform/ipc";
+import { SshConfigSelect } from "@/features/settings/components/SshConfigSelect";
+import { executeAction } from "@/platform/actions";
+import type { DockerConnection, DockerEndpoint, DockerRegistry } from "@/platform/ipc";
+import type { SshConfigValid } from "@/platform/remoteSettings";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { Button, Dialog, Input, Select, T } from "@/ui";
-import type { SelectOption } from "@/ui";
 import { errorMessage, newId, saveConnection, saveRegistry, testRegistryLogin } from "./store";
 import styles from "./Services.module.css";
 
@@ -130,75 +132,53 @@ export function openConnectionDialog(existing?: DockerConnection) {
   open((close) => <ConnectionDialog existing={existing} onDone={close} />);
 }
 
-/** `ssh://user@alias:port` of a `~/.ssh/config` host: the alias stays in the URL so
- * the system `ssh` that docker runs applies the entry's key and jump hosts. */
-export function sshHostUrl(host: Pick<SshConfigHost, "alias" | "user" | "port">): string {
-  return `ssh://${host.user ? `${host.user}@` : ""}${host.alias}${host.port ? `:${host.port}` : ""}`;
-}
-
-/** What a `~/.ssh/config` host resolves to, e.g. `ops@10.0.0.9:2222 · ~/.ssh/id_build`. */
-export function sshHostDetail(host: SshConfigHost): string {
-  const where = `${host.user ? `${host.user}@` : ""}${host.hostname}${host.port ? `:${host.port}` : ""}`;
-  return host.identityFiles[0] ? `${where} · ${host.identityFiles[0]}` : where;
+/** `ssh://[user@]host[:port]` of an SSH configuration whose authentication is the OpenSSH
+ * config: the alias stays in the URL so the system `ssh` that docker runs applies the
+ * entry's user, key and jump hosts. */
+export function sshConfigUrl(c: Pick<SshConfigValid, "user" | "host" | "port">): string {
+  return `ssh://${c.user ? `${c.user}@` : ""}${c.host}${c.port ? `:${c.port}` : ""}`;
 }
 
 /**
- * The alias of the `~/.ssh/config` host an Engine API URL was filled from, to show
- * the selection: an exact `ssh://[user@]alias[:port]` URL whose user and port the
- * entry agrees with. Anything else (a `tcp://` URL, a different user) is manual.
+ * The id of the SSH configuration an Engine API URL was filled from, to show the selection:
+ * an exact `ssh://[user@]host[:port]` URL matching an OpenSSH-config configuration's user,
+ * host and port. Anything else (a `tcp://` URL, a different user or port) is manual.
  */
-export function sshHostForUrl(url: string, hosts: readonly SshConfigHost[]): string {
+export function sshConfigForUrl(url: string, configs: readonly SshConfigValid[]): string {
   const m = /^ssh:\/\/(?:([^@/\s]+)@)?([A-Za-z0-9._-]+)(?::(\d+))?$/i.exec(url.trim());
   if (!m) return "";
-  const host = hosts.find(
-    (h) =>
-      h.alias.toLowerCase() === (m[2] ?? "").toLowerCase() &&
-      (!m[1] || h.user === m[1]) &&
-      (!m[3] || h.port === Number(m[3])),
+  const config = configs.find(
+    (c) =>
+      c.auth === "openSsh" &&
+      c.host.trim().toLowerCase() === (m[2] ?? "").toLowerCase() &&
+      (!m[1] || c.user === m[1]) &&
+      (!m[3] || c.port === Number(m[3])),
   );
-  return host?.alias ?? "";
+  return config?.id ?? "";
 }
 
-const SSH_SELECT_NONE = "None — type the Engine API URL below";
-
-/** The SSH configuration picker of the TCP/SSH kind: the `Host` entries of `~/.ssh/config`. */
-function SshHostSelect({
-  hosts,
-  host,
-  onPick,
-}: {
-  hosts: SshConfigHost[];
-  host: string;
-  onPick: (alias: string) => void;
-}) {
-  const options: SelectOption[] = [
-    { value: "", label: hosts.length ? SSH_SELECT_NONE : "No hosts in ~/.ssh/config", disabled: !hosts.length },
-    ...hosts.map((h) => ({ value: h.alias, label: h.alias, detail: sshHostDetail(h) })),
-  ];
-  return (
-    <Select aria-label="SSH configuration" value={sshHostForUrl(host, hosts)} options={options} onChange={onPick} />
-  );
-}
+/** Settings › Tools › SSH Configurations, where the TCP/SSH kind's picker is edited. */
+const SSH_SETTINGS_PAGE = "tools.sshConfigurations";
 
 function ConnectionDialog({ existing, onDone }: { existing?: DockerConnection; onDone: () => void }) {
   const ep = existing?.endpoint;
+  const sshConfigs = useWorkflowSettings((w) => w.ssh.configs);
   const [name, setName] = useState(existing?.name ?? "Docker");
   const [kind, setKind] = useState<EndpointKind>(ep?.kind ?? "socket");
   const [path, setPath] = useState(ep?.kind === "socket" ? ep.path : "/var/run/docker.sock");
   const [host, setHost] = useState(ep?.kind === "tcp" ? ep.host : "");
   const [tls, setTls] = useState(ep?.kind === "tcp" ? (ep.tlsCertDir ?? "") : "");
   const [context, setContext] = useState(ep?.kind === "context" ? ep.name : "");
-  // The `~/.ssh/config` hosts offered by the TCP/SSH kind, loaded once.
-  const [sshHosts, setSshHosts] = useState<SshConfigHost[]>([]);
-  const sshHostsFetched = useRef(false);
-  useEffect(() => {
-    if (kind !== "tcp" || sshHostsFetched.current) return;
-    sshHostsFetched.current = true;
-    commands
-      .sshConfigHosts()
-      .then(setSshHosts)
-      .catch(() => setSshHosts([]));
-  }, [kind]);
+  // The configuration picked in the dropdown; shown even when docker cannot use it yet.
+  const [picked, setPicked] = useState(() => (ep?.kind === "tcp" ? sshConfigForUrl(ep.host, sshConfigs) : ""));
+  const fromUrl = sshConfigForUrl(host, sshConfigs);
+  const shown = fromUrl || picked;
+  const unusable = !fromUrl && sshConfigs.find((c) => c.id === picked && c.auth !== "openSsh");
+  const pickSsh = (id: string) => {
+    setPicked(id);
+    const config = sshConfigs.find((c) => c.id === id);
+    if (config?.auth === "openSsh" && config.host.trim()) setHost(sshConfigUrl(config));
+  };
   const endpoint = endpointFrom(kind, { path, host, tls, context });
   const ok = !!endpoint && name.trim().length > 0;
   const submit = async () => {
@@ -250,19 +230,26 @@ function ConnectionDialog({ existing, onDone }: { existing?: DockerConnection; o
             <span className={styles.fieldLabel}>
               <T>SSH configuration:</T>
             </span>
-            <SshHostSelect
-              hosts={sshHosts}
-              host={host}
-              onPick={(alias) => {
-                const picked = sshHosts.find((h) => h.alias === alias);
-                if (picked) setHost(sshHostUrl(picked));
-              }}
-            />
-            <span className={styles.hint}>
-              <T>
-                Picking a host fills the URL below; the system ssh connects with that entry's key, user and jump hosts.
-              </T>
-            </span>
+            <div className={styles.fieldRow}>
+              <SshConfigSelect
+                value={shown}
+                onChange={pickSsh}
+                none="None — type the Engine API URL below"
+                aria-label="SSH configuration"
+              />
+              <Button
+                title="Settings › Tools › SSH Configurations"
+                aria-label="Edit SSH Configurations"
+                onClick={() => void executeAction("file.settings", SSH_SETTINGS_PAGE)}
+              >
+                …
+              </Button>
+            </div>
+            {unusable && (
+              <span className={styles.hint}>
+                <T>Docker over SSH uses the system ssh: choose a configuration with OpenSSH config authentication.</T>
+              </span>
+            )}
             <label className={styles.fieldLabel} htmlFor="docker-conn-host">
               <T>Engine API URL:</T>
             </label>

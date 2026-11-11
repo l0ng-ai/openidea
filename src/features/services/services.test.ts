@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
-import type { DockerContainer, DockerSnapshot, SshConfigHost } from "@/platform/ipc";
+import type { DockerContainer, DockerSnapshot } from "@/platform/ipc";
+import type { SshConfigValid } from "@/platform/remoteSettings";
 import { fileIconName } from "@/ui/icons";
 import {
   composeFileIcon,
@@ -54,7 +55,7 @@ import {
   splitLayerInstruction,
   unitsToBytes,
 } from "./dashboard";
-import { endpointFrom, sshHostDetail, sshHostForUrl, sshHostUrl } from "./dialogs";
+import { endpointFrom, sshConfigForUrl, sshConfigUrl } from "./dialogs";
 import { dockerItems } from "./docker";
 import { setDockerFilters, useServices } from "./store";
 import { addServiceMenu, expandableKeys, indexTree, setProviderRoots, useServicesTree } from "./tree";
@@ -210,30 +211,34 @@ describe("services tree host", () => {
     expect(endpointFrom("default", f)).toEqual({ kind: "default" });
   });
 
-  it("fills the Engine API URL from a ~/.ssh/config host and shows the selection", () => {
-    const box: SshConfigHost = {
-      alias: "build-server",
-      hostname: "10.0.0.9",
-      user: "ops",
+  it("fills the Engine API URL from an OpenSSH-config SSH configuration and shows the selection", () => {
+    const box: SshConfigValid = {
+      id: "ssh1",
+      name: "Build server",
+      host: "build-server",
       port: 2222,
-      identityFiles: ["~/.ssh/id_build"],
+      user: "ops",
+      auth: "openSsh",
+      keyFile: "",
+      saveSecret: false,
     };
-    const bare: SshConfigHost = { alias: "bare", hostname: "bare", user: "", port: null, identityFiles: [] };
-    const hosts = [box, bare];
-    expect(sshHostUrl(box)).toBe("ssh://ops@build-server:2222");
-    expect(sshHostUrl(bare)).toBe("ssh://bare");
-    expect(sshHostDetail(box)).toBe("ops@10.0.0.9:2222 · ~/.ssh/id_build");
-    expect(sshHostDetail(bare)).toBe("bare");
-    // The selection follows the URL the field holds.
-    expect(sshHostForUrl("ssh://ops@build-server:2222", hosts)).toBe("build-server");
-    expect(sshHostForUrl(" ssh://build-server:2222 ", hosts)).toBe("build-server");
-    expect(sshHostForUrl("ssh://bare", hosts)).toBe("bare");
-    // Another user or port than the entry's, or a tcp URL, is not a selection.
-    expect(sshHostForUrl("ssh://root@build-server", hosts)).toBe("");
-    expect(sshHostForUrl("ssh://build-server:22", hosts)).toBe("");
-    expect(sshHostForUrl("tcp://build-host:2376", hosts)).toBe("");
-    expect(sshHostForUrl("ssh://", hosts)).toBe("");
-    expect(sshHostForUrl("", hosts)).toBe("");
+    const bare: SshConfigValid = { ...box, id: "ssh2", name: "", host: "bare", port: null, user: "", auth: "openSsh" };
+    const password: SshConfigValid = { ...box, id: "ssh3", host: "vault", user: "root", port: null, auth: "password" };
+    const configs = [box, bare, password];
+    expect(sshConfigUrl(box)).toBe("ssh://ops@build-server:2222");
+    expect(sshConfigUrl(bare)).toBe("ssh://bare");
+    // The selection follows the URL the field holds; only OpenSSH-config configurations match.
+    expect(sshConfigForUrl("ssh://ops@build-server:2222", configs)).toBe("ssh1");
+    expect(sshConfigForUrl(" ssh://build-server:2222 ", configs)).toBe("ssh1");
+    expect(sshConfigForUrl("ssh://build-server", configs)).toBe("ssh1");
+    expect(sshConfigForUrl("ssh://bare", configs)).toBe("ssh2");
+    // Another user or port than the configuration's, a tcp URL or a password configuration is not a selection.
+    expect(sshConfigForUrl("ssh://root@build-server", configs)).toBe("");
+    expect(sshConfigForUrl("ssh://build-server:22", configs)).toBe("");
+    expect(sshConfigForUrl("ssh://root@vault", configs)).toBe("");
+    expect(sshConfigForUrl("tcp://build-host:2376", configs)).toBe("");
+    expect(sshConfigForUrl("ssh://", configs)).toBe("");
+    expect(sshConfigForUrl("", configs)).toBe("");
   });
 });
 

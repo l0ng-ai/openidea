@@ -1,7 +1,7 @@
 use crate::state::AppState;
 use ide_core::remote_settings::SshConfiguration;
 use ide_core::{IdeError, IdeEvent, IdeResult};
-use ide_ssh::{SshConfigHost, SshTarget};
+use ide_ssh::SshTarget;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::State;
@@ -66,15 +66,6 @@ pub fn ssh_askpass_answer(state: State<'_, AppState>, id: u64, answer: Option<St
         server.answer(id, answer, remember);
     }
     state.sink.emit(IdeEvent::AskpassDone { id });
-}
-
-/// The `Host` entries of `~/.ssh/config` (and its Includes), for picking one in a
-/// connection form — a Docker connection's Engine API URL can simply be
-/// `ssh://alias`, which the system `ssh` that docker runs resolves like any other.
-#[tauri::command]
-#[specta::specta]
-pub fn ssh_config_hosts(_state: State<'_, AppState>) -> Vec<SshConfigHost> {
-    ide_ssh::config_hosts(ide_ssh::default_config_path().as_deref())
 }
 
 /// Settings › Git › Saved credentials: `scheme://host` of every saved entry.

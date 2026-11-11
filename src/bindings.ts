@@ -1526,12 +1526,6 @@ export const commands = {
 	 *  (run in a terminal tab, so prompts and host-key questions are answered there).
 	 */
 	sshTerminalCommand: (id: string) => typedError<SshTerminalCommand, IdeError>(__TAURI_INVOKE("ssh_terminal_command", { id })),
-	/**
-	 *  The `Host` entries of `~/.ssh/config` (and its Includes), for picking one in a
-	 *  connection form — a Docker connection's Engine API URL can simply be
-	 *  `ssh://alias`, which the system `ssh` that docker runs resolves like any other.
-	 */
-	sshConfigHosts: () => __TAURI_INVOKE<SshConfigHost[]>("ssh_config_hosts"),
 	deployCoverage: (paths: IpcPath[]) => typedError<DeploymentCoverage[], IdeError>(__TAURI_INVOKE("deploy_coverage", { paths })),
 	deployUpload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_upload", { paths, server, request })),
 	deployDownload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_download", { paths, server, request })),
@@ -9099,20 +9093,6 @@ export type SshAuth = "password" |
 "keyPair" | 
 /**  `~/.ssh/config` (HostName, User, Port, IdentityFile, ProxyJump) and the SSH agent. */
 "openSsh";
-
-/**  One `Host` entry of `~/.ssh/config` an `ssh` command line can use by alias. */
-export type SshConfigHost = {
-	/**  The `Host` pattern as written, e.g. `build-server`. */
-	alias: string,
-	/**  `HostName`, or the alias when the entry has none. */
-	hostname: string,
-	/**  `User`; empty when unset (`ssh` picks its own default). */
-	user: string,
-	/**  `Port`; the SSH default (22) when unset. */
-	port: number | null,
-	/**  `IdentityFile`s in order, `~/` expanded to the home directory. */
-	identityFiles: string[],
-};
 
 /**  A named SSH host, shared by terminals, deployment, run targets and data sources. */
 export type SshConfiguration = {
