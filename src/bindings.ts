@@ -4036,6 +4036,13 @@ export type DocumentInfo = {
 	readOnly: boolean,
 	dirty: boolean,
 	/**
+	 *  Whether "Reload with Encoding" can re-decode this document's source
+	 *  bytes: true for files and virtual documents the backend can re-read
+	 *  (archive entries, JDT sources with an editable attachment encoding,
+	 *  Git revisions); false for server-generated content (decompiled code).
+	 */
+	canReloadEncoding: boolean,
+	/**
 	 *  Larger than `ide_vfs::LARGE_FILE_THRESHOLD`: language servers, syntax
 	 *  structure and folding are disabled; the editor should drop heavy features.
 	 */
@@ -9750,6 +9757,18 @@ export type VirtualDocument = {
 	description: string | null,
 	/**  Generated Java from a decompiler, rather than real source or a disassembler stub. */
 	decompiled: boolean,
+	/**
+	 *  Charset the content was decoded with (a WHATWG label, e.g. `gbk`);
+	 *  `utf-8` for text the server decoded itself.
+	 */
+	encoding: string,
+	hasBom: boolean,
+	/**
+	 *  "Reload with Encoding" can re-decode the origin's bytes (archive
+	 *  entries, JDT sources with an editable attachment encoding); false for
+	 *  server-generated content such as decompiled code.
+	 */
+	canReloadEncoding: boolean,
 };
 
 /**  Declared (or conventional) visibility of an outline symbol. */

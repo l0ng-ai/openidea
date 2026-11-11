@@ -544,7 +544,7 @@ pub async fn lsp_goto_implementation(
 /// classes and disk class files. Cached per project.
 pub async fn lsp_virtual_document(host: &Host, window: &str, uri: String) -> IdeResult<VirtualDocument> {
     if uri.starts_with("git-revision:") {
-        return crate::ops::vcs::revision_virtual_document(host, window, &uri).await;
+        return crate::ops::vcs::revision_virtual_document(host, window, &uri, None).await;
     }
     host.project(window)?.lsp.virtual_document(&uri).await
 }
