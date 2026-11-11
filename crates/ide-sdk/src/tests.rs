@@ -26,6 +26,7 @@ fn server(name: &str) -> LanguageServerConfig {
         command: name.into(),
         args: vec![],
         env: BTreeMap::new(),
+        requires_env: Vec::new(),
         root_markers: vec![],
         require_root_marker: false,
         initialization_options: None,
