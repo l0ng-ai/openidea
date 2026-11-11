@@ -748,6 +748,14 @@ export async function closeSessionTab(id: DebugSessionId): Promise<boolean> {
     await stopSession(s.id);
   }
   removeSession(s.id);
+  // As in IDEA, the tool window goes away with its last tab.
+  if (!Object.keys(useDebug.getState().sessions).length) {
+    try {
+      toolWindowService().hide("debug");
+    } catch {
+      // Workbench not ready (tests).
+    }
+  }
   return true;
 }
 
