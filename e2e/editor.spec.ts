@@ -210,3 +210,15 @@ test("Markdown preview highlights ⌘F matches and selected word occurrences", a
     )
     .toEqual({ current: ["Order"], other: ["Order", "Order"] });
 });
+
+test("the bookmark gutter takes no width until the file has a bookmark", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const column = editor.locator(".cm-gutter.cm-openidea-bookmarks");
+  const width = () => column.evaluate((el) => el.getBoundingClientRect().width);
+  await expect.poll(width).toBe(0);
+
+  await editor.locator(".cm-content").click();
+  await page.keyboard.press("F3");
+  await expect(column.locator(".cm-openidea-bookmark")).toBeVisible();
+  await expect.poll(width).toBeGreaterThan(0);
+});
