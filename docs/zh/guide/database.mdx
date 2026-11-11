@@ -66,6 +66,7 @@ description: "连接 SQL 数据库、浏览架构、在查询控制台中执行�
 
 - 项目数据源：项目中的 `.openidea/data-sources.toml`。
 - 全局数据源：IDE 数据目录下的 `data-sources.toml`（见 [数据目录](/zh/reference/data-directories)）。
+- 项目打开时，可以手动或让编码代理编辑这些文件：数据库工具窗口会自动读取改动，设置被修改或被删除的数据源的连接会被关闭。
 - 密码从不写入这些文件。保存的密码放在操作系统凭据存储中（钥匙串、Windows 凭据管理器或 Secret Service）；未保存的密码只在本次会话的内存中，连接时会询问。
 
 ## 浏览数据库
