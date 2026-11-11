@@ -99,7 +99,7 @@ Vite::asset('resources/js/app.js'); // vite.config.* inputs and the build manife
 
 - **Configuration keys** in `config()`, `Config::get()` and `config()->get()`, nested segment by segment, including package configuration merged with `mergeConfigFrom`. Keys a file sets with `config([...])` or `Config::set()` count as defined.
 - **Environment keys** in `env()`. A key missing from `.env.example` has a quick-fix that adds it. Find Usages and Rename also start from a `.env` line.
-- **Translation keys** in `__()`, `trans()`, `trans_choice()`, `Lang::get()` and `@lang`, for PHP and JSON files, every locale and package namespaces (`shop::app.title`). Rename edits every locale file and every caller. The **Create Translation Key** action (on any translation string, in PHP or Blade) asks for the text in each locale and writes the chosen locale files.
+- **Translation keys** in `__()`, `trans()`, `trans_choice()`, `Lang::get()` and `@lang`, for PHP and JSON files, every locale and package namespaces (`shop::app.title`). Rename edits every locale file and every caller. Find Usages and Rename also start from a key of a JSON locale file (`lang/fr.json`). The **Create Translation Key** action (on any translation string, in PHP or Blade) asks for the text in each locale and writes the chosen locale files.
 - **Vite assets** in `@vite` and `Vite::asset()`.
 
 ### Validation
@@ -166,7 +166,7 @@ Abilities complete and resolve in `Gate::allows/denies/authorize`, `$user->can/c
 return Inertia::render('Posts/Index', [...]);   // page files below resources/js/Pages, Vue, React or Svelte
 ```
 
-- **Livewire:** components found below the Livewire namespace or registered with `Livewire::component('alias', Class::class)`, in `@livewire(…)`, `<livewire:…>`, `Livewire::test()` and `Livewire::visit()`. Goto opens the class or its view; Find Usages and Rename also start from the class or the alias.
+- **Livewire:** components found below the Livewire namespace or registered with `Livewire::component('alias', Class::class)`, in `@livewire(…)`, `<livewire:…>`, `Livewire::test()` and `Livewire::visit()`. Goto opens the class or its view; Find Usages and Rename also start from the class or the alias. A component found by its class is renamed with it: renaming the class renames the last segment of its name everywhere (`<livewire:posts.create-post>` becomes `<livewire:posts.edit-post>`), and renaming that segment in a PHP string renames the class and its file.
 - **Inertia:** page names in `Inertia::render()`, `inertia()` and `Route::inertia()`. A missing page has a **Create page** quick-fix. Find Usages and Rename also start from a page file. The page folders come from the settings, else from `ide.json`, else `resources/js/Pages`.
 
 ### Code generation
@@ -300,8 +300,7 @@ Not read: `helperCode` and any other key not listed here.
 
 - **Routes:** URLs copied or opened from a route hint keep their `{param}` placeholders. Route lenses show only in documents open in the engine. A route file path computed by `Config::get('…')` or `config()->get('…')`, rather than `config('…')`, isn't followed. Concord's convention-based registrations (views and routes of `BaseModuleServiceProvider` without explicit calls) aren't read. `PhpUndefinedController` leaves a missing class written `[Foo::class, 'bar']` to `PhpUndefinedClass`, and skips action strings with escapes (`'Admin\FooController@bar'`). On the pinned Monica and Bagisto it reports 9 actions, all real dead routes (methods the controllers don't have).
 - **Views and Blade:** variables passed to a template aren't carried through `@include` beyond one level, nor to `@each`'s item. A missing constructor parameter of a class component has no quick-fix (only a missing `@props` entry does), and `@aware` entries don't complete from the parent component. `Blade::component()` calls made outside a provider's code (`callAfterResolving`, `$blade->component`) aren't read.
-- **Livewire:** a component found by its class (not registered with an alias) can't be renamed by its name; renaming the class doesn't edit `<livewire:…>` tags.
-- **Translations:** Find Usages doesn't start from a JSON locale file.
+- **Livewire:** rename doesn't start from a `<livewire:…>` tag or `@livewire('…')` in a template (only from PHP strings, the class and the alias). A discovered name's folder segments (`posts.` of `posts.create-post`) aren't renamed (they follow the namespace), and the view the component renders isn't moved.
 - **Validation:** `in:` values come from attributes named like the field, not from the Form Request's own model. `Rule::in()` with variadic strings isn't completed. `unique`/`exists` with more than two parameters aren't converted to `Rule::` objects. Only the common shapes of `Gate::guessPolicyNamesUsing` callbacks are followed.
 - **Eloquent:** `*_count` properties are offered once any `withCount()` of the project counts the relation, not along the query that loaded the model. Tables of a database schema other than the default one aren't used. A query builder's table is lost through a variable reassigned in a loop.
 - **Artisan:** option keys aren't checked (an unknown `--opt` isn't reported), and a key renamed in a signature isn't renamed in the calls.

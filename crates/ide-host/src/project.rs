@@ -315,10 +315,15 @@ impl Host {
             LanguageId::new("blade"),
             Arc::new(crate::blade::BladeService::new(&root, documents.clone(), php.clone())),
         );
-        // Laravel usages and renames from `.env` lines and Inertia pages.
+        // Laravel usages and renames from `.env` lines, JSON locale files and
+        // Inertia pages.
         services.register(
             LanguageId::new("dotenv"),
             Arc::new(crate::laravel_files::DotenvService { documents: documents.clone(), php: php.clone() }),
+        );
+        services.register(
+            LanguageId::new("json"),
+            Arc::new(crate::laravel_files::TranslationJsonService { documents: documents.clone(), php: php.clone() }),
         );
         let pages =
             Arc::new(crate::laravel_files::InertiaPageService { documents: documents.clone(), php: php.clone() });

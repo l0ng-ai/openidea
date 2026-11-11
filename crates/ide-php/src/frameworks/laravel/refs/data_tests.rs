@@ -352,6 +352,68 @@ fn translation_keys_complete_goto_hover_and_usages() {
 }
 
 #[test]
+fn finds_usages_of_and_renames_translation_keys_from_json_locale_files() {
+    let project = Project::app();
+    let cancel = CancellationToken::new();
+    let fr = project.root.join("lang/fr.json");
+    let text = std::fs::read_to_string(&fr).unwrap();
+    let describe = |usages: Vec<crate::navigate::Usage>| {
+        let mut out: Vec<(String, u32, String)> =
+            usages.iter().map(|usage| project.describe(&usage.path, usage.range)).collect();
+        out.sort();
+        out
+    };
+    // On `"Read more"` (line 1): the Blade echo and the key in both locales.
+    let on_key = Pos::new(1, 8);
+    let found = project.engine.laravel_translation_json_references(&fr, &text, on_key, true, &cancel).unwrap().unwrap();
+    assert_eq!(
+        describe(found),
+        [
+            ("lang/en.json".to_owned(), 1, "Read more".to_owned()),
+            ("lang/fr.json".to_owned(), 1, "Read more".to_owned()),
+            ("resources/views/posts/_card.blade.php".to_owned(), 4, "Read more".to_owned()),
+        ]
+    );
+    let found =
+        project.engine.laravel_translation_json_references(&fr, &text, on_key, false, &cancel).unwrap().unwrap();
+    assert_eq!(describe(found), [("resources/views/posts/_card.blade.php".to_owned(), 4, "Read more".to_owned())]);
+    // On a translation, off the keys, and in other JSON files: not answered.
+    assert!(project.engine.laravel_translation_json_references(&fr, &text, Pos::new(1, 22), true, &cancel).is_none());
+    assert!(project.engine.laravel_translation_json_references(&fr, &text, Pos::new(0, 0), true, &cancel).is_none());
+    let composer = project.root.join("composer.json");
+    let composer_text = std::fs::read_to_string(&composer).unwrap();
+    assert!(
+        project
+            .engine
+            .laravel_translation_json_references(&composer, &composer_text, Pos::new(1, 6), true, &cancel)
+            .is_none()
+    );
+
+    // Rename: the key in every locale and every usage.
+    assert_eq!(
+        project.engine.laravel_translation_json_prepare_rename(&fr, &text, on_key),
+        Some(Range::new(Pos::new(1, 5), Pos::new(1, 14)))
+    );
+    let edit =
+        project.engine.laravel_translation_json_rename(&fr, &text, on_key, "Continue", &cancel).unwrap().unwrap();
+    assert_eq!(
+        text_edits(&project, &edit),
+        [
+            ("lang/en.json".to_owned(), 1, "Continue".to_owned()),
+            ("lang/fr.json".to_owned(), 1, "Continue".to_owned()),
+            ("resources/views/posts/_card.blade.php".to_owned(), 4, "Continue".to_owned()),
+        ]
+    );
+    // An unsaved buffer: its own key moved to another line.
+    let edited = text.replacen("{\n", "{\n\n", 1);
+    let edit =
+        project.engine.laravel_translation_json_rename(&fr, &edited, Pos::new(2, 8), "Continue", &cancel).unwrap();
+    let edits = text_edits(&project, &edit.unwrap());
+    assert!(edits.contains(&("lang/fr.json".to_owned(), 2, "Continue".to_owned())), "{edits:?}");
+    assert!(!edits.contains(&("lang/fr.json".to_owned(), 1, "Continue".to_owned())), "{edits:?}");
+}
+
+#[test]
 fn reports_undefined_translations_with_a_create_fix() {
     let mut project = Project::app();
     let source = "<?php\n__('messages.nope');\n__('messages.welcome');\n__('Some sentence');\n__('pkg::x.y');\n__('messages.status.archived');\n__('Read more');\n";

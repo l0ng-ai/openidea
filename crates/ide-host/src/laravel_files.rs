@@ -4,6 +4,9 @@
 //! - [`DotenvService`] (`dotenv`): on a key of the project's `.env` or
 //!   `.env.example`, its `env('KEY')` usages, and renaming it in both files
 //!   and every usage.
+//! - [`TranslationJsonService`] (`json`): on a key of one of the project's
+//!   JSON locale files (`lang/fr.json`), its `__('…')` usages and the key in
+//!   the other locales, and renaming it in all of them.
 //! - [`InertiaPageService`] (Vue, Svelte, TSX and JSX): on the word naming
 //!   an Inertia page's file (`Index` in `Posts/Index.vue`, the component's
 //!   name), the page's `Inertia::render('Posts/Index')` usages, and renaming
@@ -67,6 +70,42 @@ impl LanguageService for DotenvService {
         let info = local(&self.documents, doc)?;
         let engine = self.php.engine()?;
         let edit = engine.laravel_env_rename(&info.path, &info.text, pos, new_name, cancel)?;
+        Some(edit.map(|edit| Renamed { edit, ..Renamed::default() }))
+    }
+}
+
+/// See the module documentation.
+pub(crate) struct TranslationJsonService {
+    pub(crate) documents: Arc<Documents>,
+    pub(crate) php: Arc<PhpEngineSlot>,
+}
+
+impl LanguageService for TranslationJsonService {
+    fn references(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        include_declaration: bool,
+        _project_wide: bool,
+        cancel: &CancellationToken,
+    ) -> Answer<References> {
+        let info = local(&self.documents, doc)?;
+        let engine = self.php.engine()?;
+        let found =
+            engine.laravel_translation_json_references(&info.path, &info.text, pos, include_declaration, cancel)?;
+        Some(found.map(locations))
+    }
+
+    fn prepare_rename(&self, doc: DocId, pos: Pos) -> Answer<Option<Range>> {
+        let info = local(&self.documents, doc)?;
+        let engine = self.php.engine()?;
+        engine.laravel_translation_json_prepare_rename(&info.path, &info.text, pos).map(|range| Ok(Some(range)))
+    }
+
+    fn rename(&self, doc: DocId, pos: Pos, new_name: &str, cancel: &CancellationToken) -> Answer<Renamed> {
+        let info = local(&self.documents, doc)?;
+        let engine = self.php.engine()?;
+        let edit = engine.laravel_translation_json_rename(&info.path, &info.text, pos, new_name, cancel)?;
         Some(edit.map(|edit| Renamed { edit, ..Renamed::default() }))
     }
 }
@@ -237,6 +276,81 @@ mod tests {
             .collect();
         files.sort();
         let mut expected = vec![env, example, config];
+        expected.sort();
+        assert_eq!(files, expected);
+        php.shutdown();
+    }
+
+    #[test]
+    fn finds_usages_of_and_renames_translation_keys_from_json_locale_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let write = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        write("composer.json", r#"{"require": {"laravel/framework": "^11.0"}}"#);
+        let view = write("app/Http/Home.php", "<?php\n\nfunction home()\n{\n    return __('Read more');\n}\n");
+        let en = write("lang/en.json", "{\n    \"Read more\": \"Read more\"\n}\n");
+        let fr = write("lang/fr.json", "{\n    \"Read more\": \"Lire la suite\"\n}\n");
+        let other = write("package.json", "{\n    \"Read more\": \"x\"\n}\n");
+        let documents = Arc::new(Documents::new(
+            Arc::new(|_: IdeEvent| {}),
+            Box::new(|path: &Path, _| {
+                LanguageId::new(if path.extension().is_some_and(|e| e == "json") { "json" } else { "php" })
+            }),
+        ));
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let php = Arc::new(PhpEngineSlot::new(&root, &root.join(".cache"), sink, documents.clone()));
+        let service = TranslationJsonService { documents: documents.clone(), php: php.clone() };
+        let doc = documents.open(&fr).unwrap().id;
+        let other_doc = documents.open(&other).unwrap().id;
+        let cancel = CancellationToken::new();
+        // Without the engine: not handled.
+        assert!(service.references(doc, Pos::new(1, 8), true, true, &cancel).is_none());
+
+        let mut settings = ide_core::settings::Settings::default();
+        settings.languages.php.engine = ide_core::settings::PhpEngineKind::Native;
+        php.apply(&settings);
+        let engine = php.engine().expect("the engine");
+        assert!(engine.wait_idle(std::time::Duration::from_secs(60)));
+
+        let refs = service.references(doc, Pos::new(1, 8), true, true, &cancel).unwrap().unwrap();
+        let mut found: Vec<(std::path::PathBuf, u32)> = refs
+            .locations
+            .into_iter()
+            .map(|l| (std::path::PathBuf::from(l.path.clone()), l.range.start.line))
+            .collect();
+        found.sort();
+        let mut expected = vec![(en.clone(), 1), (fr.clone(), 1), (view.clone(), 4)];
+        expected.sort();
+        assert_eq!(found, expected);
+        // On a translation, or in a JSON file that isn't a locale's: left to
+        // the language servers.
+        assert!(service.references(doc, Pos::new(1, 22), true, true, &cancel).is_none());
+        assert!(service.references(other_doc, Pos::new(1, 8), true, true, &cancel).is_none());
+
+        assert_eq!(
+            service.prepare_rename(doc, Pos::new(1, 8)).unwrap().unwrap(),
+            Some(Range::new(Pos::new(1, 5), Pos::new(1, 14)))
+        );
+        let renamed = service.rename(doc, Pos::new(1, 8), "Continue", &cancel).unwrap().unwrap();
+        let mut files: Vec<std::path::PathBuf> = renamed
+            .edit
+            .files
+            .iter()
+            .map(|file| match file {
+                FileEdit::Edit { path, edits, .. } => {
+                    assert!(edits.iter().all(|edit| edit.new_text == "Continue"));
+                    std::path::PathBuf::from(path.clone())
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        files.sort();
+        let mut expected = vec![en, fr, view];
         expected.sort();
         assert_eq!(files, expected);
         php.shutdown();

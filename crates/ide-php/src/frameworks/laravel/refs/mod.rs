@@ -1618,6 +1618,9 @@ impl PhpEngine {
             return Some(None);
         }
         let lines = parsed.line_index();
+        if let Some((_, (from, to))) = self.discovered_livewire(&cx, &subject) {
+            return Some(Some(lines.range(subject.start + from as u32, subject.start + to as u32)));
+        }
         Some(subject.kind.rename_target(&cx, &subject.value, subject.at).map(|target| {
             if subject.declaration {
                 lines.range(subject.start, subject.end)
@@ -1638,6 +1641,9 @@ impl PhpEngine {
         cancel: &CancellationToken,
     ) -> Option<IdeResult<WorkspaceEdit>> {
         let (cx, subject) = self.ref_subject(parsed, path, offset)?;
+        if let Some((component, _)) = self.discovered_livewire(&cx, &subject) {
+            return Some(self.rename_discovered_livewire(&component, new_name, cancel));
+        }
         let kind = subject.kind;
         let target = if subject.prefix > 0 { None } else { kind.rename_target(&cx, &subject.value, subject.at) };
         let Some(target) = target else {

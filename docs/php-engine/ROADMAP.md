@@ -931,13 +931,22 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
 
   Tests: caret, rename and inspection fixtures, plus `real_app_checklist` on Monica and Bagisto with no new false positives.
 
-- [ ] Phase 9.5.b: Laravel gaps, the rest
+- [x] Phase 9.5.b: Laravel gaps, the rest
       What 9.5 left (it did the Artisan items: `PhpUnknownArtisanCommand` with `vendor/` installed, and the `artisanOption` kind for the keys of `Artisan::call('x', ['--opt' => …])`):
   - **Livewire:** renaming a component class or alias edits `<livewire:…>` tags and `@livewire(…)` names. Discovered (unaliased) names can be renamed.
   - **Views:** variables passed to a template are carried through nested `@include` and to `@each`'s item variable.
   - **Eloquent:** `*_count` properties follow the query that loaded the model (flow-sensitive), not project-wide `withCount` calls.
   - **Translations:** find usages starting from a JSON locale file.
   - **Blade components:** an "add constructor parameter" quick-fix for class components, and `@aware` completion from the parent.
+
+  Tests: caret, rename and inspection fixtures, plus `real_app_checklist` on Monica and Bagisto with no new false positives.
+
+- [ ] Phase 9.5.c: Laravel gaps, views, Eloquent and components
+      What 9.5.b left (it did the Livewire rename both ways and find usages and rename from JSON locale files):
+  - **Views:** variables passed to a template are carried through nested `@include` and to `@each`'s item variable.
+  - **Eloquent:** `*_count` properties follow the query that loaded the model (flow-sensitive), not project-wide `withCount` calls.
+  - **Blade components:** an "add constructor parameter" quick-fix for class components, and `@aware` completion from the parent.
+  - **Livewire in Blade:** rename starting from a `<livewire:…>` tag or `@livewire('…')` in a template (the Blade service answers no rename yet).
 
   Tests: caret, rename and inspection fixtures, plus `real_app_checklist` on Monica and Bagisto with no new false positives.
 

@@ -20,17 +20,24 @@
 //! `Livewire::component('alias', …)` registration, and from the component's
 //! class (its usages include the names' usages,
 //! [`PhpEngine::livewire_class_usages`]). A registered alias can be renamed
-//! (with its registration and tags); a discovered name follows its class.
+//! (with its registration and tags). A discovered name follows its class:
+//! renaming the class renames the last segment of every usage of the name
+//! ([`PhpEngine::livewire_class_rename_edits`]), and renaming the last
+//! segment of a usage renames the class
+//! ([`PhpEngine::rename_discovered_livewire`]).
 
 use std::path::Path;
 
-use ide_core::{CancellationToken, IdeResult};
+use ide_core::{CancellationToken, FileEdit, IdeError, IdeResult, WorkspaceEdit};
 
-use super::{CalleePattern, Declared, PlacePattern, Position, RefContext, RefItem, ReferenceKind, RenameTarget};
+use super::{
+    CalleePattern, Declared, PlacePattern, Position, RefContext, RefItem, ReferenceKind, RenameTarget, Subject,
+};
 use crate::blade::tags::{LIVEWIRE_PREFIXES, tag_at_with};
 use crate::engine::PhpEngine;
-use crate::frameworks::laravel::LivewireComponents;
+use crate::frameworks::laravel::blade::kebab;
 use crate::frameworks::laravel::views::is_blade;
+use crate::frameworks::laravel::{LivewireComponent, LivewireComponents};
 use crate::names::{NameKind, fqn_eq};
 use crate::navigate::{Target, Usage, UsageKind};
 use crate::syntax::ParsedFile;
@@ -212,7 +219,108 @@ impl ReferenceKind for LivewireParameterKind {
     }
 }
 
+/// The byte the last segment of a component's name starts at (`create-post`
+/// in `posts.create-post`, `users` in `admin::users`): the part a class
+/// rename changes.
+fn last_segment_start(name: &str) -> usize {
+    let dot = name.rfind('.').map_or(0, |dot| dot + 1);
+    let colons = name.rfind("::").map_or(0, |colons| colons + 2);
+    dot.max(colons)
+}
+
+/// `create-post` → `CreatePost`.
+fn studly(name: &str) -> String {
+    name.split('-')
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map(|first| first.to_ascii_uppercase().to_string() + chars.as_str()).unwrap_or_default()
+        })
+        .collect()
+}
+
+/// The class short name a discovered component renamed to `segment` (the
+/// last segment of its name) gets, when `segment` is one Livewire derives
+/// from a class name (`create-post` from `CreatePost`).
+pub(crate) fn class_for_segment(segment: &str) -> Option<String> {
+    let class = studly(segment);
+    let valid = segment.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+        && segment.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && kebab(&class) == segment;
+    valid.then_some(class)
+}
+
 impl PhpEngine {
+    /// The discovered (not aliased) component a `livewireComponent` usage
+    /// names, with the byte range of the last segment of its name: renaming
+    /// it renames the class ([`Self::rename_discovered_livewire`]). `None`
+    /// for anything else, and for a package's component.
+    pub(super) fn discovered_livewire(
+        &self,
+        cx: &RefContext<'_>,
+        subject: &Subject,
+    ) -> Option<(LivewireComponent, (usize, usize))> {
+        if subject.kind.id() != LivewireComponentKind.id() || subject.declaration || subject.prefix > 0 {
+            return None;
+        }
+        let components = LivewireComponentKind::components(cx);
+        let component = components.get(&subject.value).filter(|component| component.alias.is_none())?;
+        if self.is_library(&component.path) {
+            return None;
+        }
+        let start = last_segment_start(&component.name);
+        Some((component.clone(), (start, component.name.len())))
+    }
+
+    /// Renames a discovered component to `segment`, the new last segment of
+    /// its name: its class (`posts.edit-post` → `App\Livewire\Posts\EditPost`,
+    /// with its file and usages), which renames every usage of the name.
+    pub(super) fn rename_discovered_livewire(
+        &self,
+        component: &LivewireComponent,
+        segment: &str,
+        cancel: &CancellationToken,
+    ) -> IdeResult<WorkspaceEdit> {
+        let Some(class) = class_for_segment(segment) else {
+            return Err(IdeError::invalid(format!("'{segment}' is not a valid component name")));
+        };
+        self.rename_class(&component.class, &component.path, &class, cancel)
+    }
+
+    /// The edits a rename of class `fqn` to the short name `new` makes to the
+    /// names of the Livewire components Livewire found by that class (not
+    /// those registered with an alias): the last segment of each usage
+    /// (`<livewire:counter>`, `@livewire('counter')`, `Livewire::test(…)`)
+    /// becomes `new` in kebab case. Empty outside Laravel projects with
+    /// Livewire.
+    pub(crate) fn livewire_class_rename_edits(
+        &self,
+        fqn: &str,
+        new: &str,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Vec<FileEdit>> {
+        let Some(cx) = self.ref_context() else { return Ok(Vec::new()) };
+        let Some(components) = self.laravel_livewire() else { return Ok(Vec::new()) };
+        let fqn = fqn.trim_start_matches('\\');
+        let segment = kebab(new);
+        let mut out = Vec::new();
+        for component in components.components.iter().filter(|c| c.alias.is_none()) {
+            if !fqn_eq(NameKind::ClassLike, &component.class, fqn) {
+                continue;
+            }
+            let start = last_segment_start(&component.name);
+            if component.name[start..] == segment {
+                continue;
+            }
+            let target = RenameTarget {
+                key: component.name.clone(),
+                range: (start, component.name.len()),
+                declarations: vec![],
+            };
+            out.extend(self.kind_rename(&cx, &LivewireComponentKind, target, &segment, cancel)?.files);
+        }
+        Ok(out)
+    }
+
     /// The usages of the names of the Livewire components of class `fqn`
     /// (`@livewire('counter')`, `<livewire:counter />`,
     /// `Livewire::test('counter')`), and the aliases registering it, for

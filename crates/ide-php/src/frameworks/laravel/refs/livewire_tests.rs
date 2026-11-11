@@ -11,6 +11,7 @@ use super::*;
 use crate::blade::BladeDocument;
 use crate::frameworks::laravel::LaravelPackages;
 use crate::frameworks::laravel::ide_json::IdeJson;
+use crate::frameworks::laravel::refs::livewire::class_for_segment;
 use crate::navigate::Target;
 
 const COUNTER: &str = r#"<?php
@@ -619,10 +620,124 @@ fn renames_a_registered_livewire_alias() {
     let provider = LIVEWIRE_PROVIDER.replace("component('ticker'", "component('tic/*|*/ker'");
     let edits = project.rename("app/Providers/LivewireServiceProvider.php", &provider, "clicker");
     assert_eq!(edits.len(), 3, "{edits:?}");
-    // A discovered name follows its class.
+    // A discovered name follows its class: it is renamed with it.
     let (doc, pos) = project.open(PROBE, &probe("Livewire::test('coun/*|*/ter');"));
-    assert_eq!(project.engine.prepare_rename(doc, pos), Some(None));
+    assert_eq!(project.engine.prepare_rename(doc, pos), Some(Some(Range::new(Pos::new(11, 20), Pos::new(11, 27)))));
     assert!(!LivewireComponentKind.valid_name("a b") && LivewireComponentKind.valid_name("admin::stats-x"));
+}
+
+const LIVE_POSTS_VIEW: &str = "resources/views/posts/live.blade.php";
+
+/// The fixture app with Livewire and a template using `posts.create-post`
+/// as tags and a directive (and a tag of another name).
+fn with_create_post_usages() -> Project {
+    Project::with_packages_and(&[(
+        LIVE_POSTS_VIEW,
+        "<div>\n    <livewire:posts.create-post />\n    @livewire('posts.create-post', ['a' => 1])\n    <livewire:posts.create-posts />\n</div>\n",
+    )])
+}
+
+/// A rename's text edits as `(path, line, replaced text, new text)`,
+/// sorted, and the files it moves (relative).
+type Renamed = (Vec<(String, u32, String, String)>, Vec<(String, String)>);
+
+fn rename_with_files(project: &mut Project, rel: &str, source: &str, new_name: &str) -> IdeResult<Renamed> {
+    let (doc, pos) = project.open(rel, source);
+    let edit = project.engine.rename(doc, pos, new_name, &CancellationToken::new()).unwrap();
+    let edit = match edit {
+        Ok(edit) => edit,
+        Err(e) => {
+            project.engine.document_closed(doc);
+            return Err(e);
+        }
+    };
+    let relative = |path: &PathBuf| path.strip_prefix(&project.root).unwrap().to_string_lossy().replace('\\', "/");
+    let (mut edits, mut moves) = (Vec::new(), Vec::new());
+    for file in &edit.files {
+        match file {
+            FileEdit::Edit { path, edits: text_edits, .. } => {
+                let path = PathBuf::from(path.clone());
+                for edit in text_edits {
+                    let (rel, line, text) = project.describe(&path, edit.range);
+                    edits.push((rel, line, text, edit.new_text.clone()));
+                }
+            }
+            FileEdit::Rename { from, to } => {
+                moves.push((relative(&PathBuf::from(from.clone())), relative(&PathBuf::from(to.clone()))));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    project.engine.document_closed(doc);
+    edits.sort();
+    Ok((edits, moves))
+}
+
+fn edit(path: &str, line: u32, old: &str, new: &str) -> (String, u32, String, String) {
+    (path.to_owned(), line, old.to_owned(), new.to_owned())
+}
+
+#[test]
+fn renaming_a_component_class_renames_its_discovered_name() {
+    let mut project = with_create_post_usages();
+    let class = "app/Livewire/Posts/CreatePost.php";
+    let (edits, moves) = rename_with_files(
+        &mut project,
+        class,
+        &CREATE_POST.replace("class CreatePost", "class Create/*|*/Post"),
+        "EditPost",
+    )
+    .unwrap();
+    assert_eq!(
+        edits,
+        [
+            edit(class, 7, "CreatePost", "EditPost"),
+            edit(LIVE_POSTS_VIEW, 1, "create-post", "edit-post"),
+            edit(LIVE_POSTS_VIEW, 2, "create-post", "edit-post"),
+        ]
+    );
+    assert_eq!(moves, [(class.to_owned(), "app/Livewire/Posts/EditPost.php".to_owned())]);
+
+    // A class registered with an alias keeps the alias; its discovered name
+    // (`counter`) follows.
+    let mut project = with_ticker();
+    project.open(PROBE, &probe("Livewire::test('counter/*|*/');"));
+    let (edits, _) = rename_with_files(
+        &mut project,
+        "app/Livewire/Counter.php",
+        &COUNTER.replace("class Counter", "class Coun/*|*/ter"),
+        "Clicker",
+    )
+    .unwrap();
+    assert!(edits.contains(&edit(PROBE, 11, "counter", "clicker")), "{edits:?}");
+    assert!(!edits.iter().any(|edit| edit.2 == "ticker"), "{edits:?}");
+}
+
+#[test]
+fn renaming_a_discovered_name_renames_its_class() {
+    let mut project = with_create_post_usages();
+    let source = probe("Livewire::test('posts.create-p/*|*/ost');");
+    let (doc, pos) = project.open(PROBE, &source);
+    // The last segment: the rest comes from the namespace.
+    assert_eq!(project.engine.prepare_rename(doc, pos), Some(Some(Range::new(Pos::new(11, 26), Pos::new(11, 37)))));
+    project.engine.document_closed(doc);
+
+    let (edits, moves) = rename_with_files(&mut project, PROBE, &source, "edit-post").unwrap();
+    assert_eq!(
+        edits,
+        [
+            edit(PROBE, 11, "create-post", "edit-post"),
+            edit("app/Livewire/Posts/CreatePost.php", 7, "CreatePost", "EditPost"),
+            edit(LIVE_POSTS_VIEW, 1, "create-post", "edit-post"),
+            edit(LIVE_POSTS_VIEW, 2, "create-post", "edit-post"),
+        ]
+    );
+    assert_eq!(moves, [("app/Livewire/Posts/CreatePost.php".to_owned(), "app/Livewire/Posts/EditPost.php".to_owned())]);
+    // Names no class gives.
+    for bad in ["Edit-Post", "edit--post", "edit.post", "edit post", "-edit", ""] {
+        assert!(rename_with_files(&mut project, PROBE, &source, bad).is_err(), "{bad}");
+    }
+    assert_eq!(class_for_segment("edit-post2").as_deref(), Some("EditPost2"));
 }
 
 const PAGE_CONTROLLER: &str = r#"<?php

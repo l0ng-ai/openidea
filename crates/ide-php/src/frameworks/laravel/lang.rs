@@ -588,7 +588,7 @@ fn php_files_below(base: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
 
 /// The keys of a JSON object's top level, decoded, with the byte range of
 /// each one's first literal (inside its quotes), found in one pass.
-fn top_level_keys(text: &str) -> std::collections::HashMap<String, (u32, u32)> {
+pub(crate) fn top_level_keys(text: &str) -> std::collections::HashMap<String, (u32, u32)> {
     let bytes = text.as_bytes();
     let mut out = std::collections::HashMap::new();
     let mut depth = 0usize;

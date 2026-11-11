@@ -323,6 +323,32 @@ impl PhpEngine {
         Some(self.rename_edit(renaming, &path, &here, new_name, cancel))
     }
 
+    /// Renames the class-like `fqn`, declared in `path`, to the short name
+    /// `new`, as a rename on its name would (usages, its file, and the names
+    /// of a Livewire component it is).
+    pub(crate) fn rename_class(
+        &self,
+        fqn: &str,
+        path: &Path,
+        new: &str,
+        cancel: &CancellationToken,
+    ) -> IdeResult<WorkspaceEdit> {
+        if self.is_library(path) {
+            return Err(IdeError::invalid("a library class can't be renamed"));
+        }
+        let Some(text) = file_text(self, path) else {
+            return Err(IdeError::invalid("the class's file can't be read"));
+        };
+        let here = FileSummary::extract(&ParsedFile::parse(&path_key(path), text));
+        let renaming = Renaming {
+            kind: RenameKind::ClassLike,
+            old: short_name(fqn).to_owned(),
+            range: Range::default(),
+            subject: Subject::Decls(vec![Decl::ClassLike(fqn.to_owned())]),
+        };
+        self.rename_edit(renaming, path, &here, new, cancel).map(|outcome| outcome.edit)
+    }
+
     /// Whether `path` is the bundled stubs' or a Composer package's.
     pub(crate) fn is_library(&self, path: &Path) -> bool {
         let key = path_key(path);
@@ -639,6 +665,17 @@ impl PhpEngine {
                 let range = line_index.range(start, end);
                 let edits = &mut files.entry(key.clone()).or_insert_with(|| (file_path.clone(), Vec::new())).1;
                 edits.push(TextEdit { range, new_text: new.clone() });
+            }
+        }
+
+        // A Livewire component found by its class: its name follows the
+        // class (`<livewire:old-name>`, `@livewire('old-name')`, …).
+        if let Some((_, fqn)) = renamed_name.as_ref().filter(|(kind, _)| *kind == NameKind::ClassLike) {
+            for file in self.livewire_class_rename_edits(fqn, &new, cancel)? {
+                let FileEdit::Edit { path: file, edits: more, .. } = file else { continue };
+                let file = PathBuf::from(file);
+                let edits = &mut files.entry(path_key(&file)).or_insert_with(|| (file.clone(), Vec::new())).1;
+                edits.extend(more);
             }
         }
 
