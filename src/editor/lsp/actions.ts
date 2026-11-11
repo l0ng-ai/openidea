@@ -298,8 +298,7 @@ export function registerLspActions(): () => void {
         showNothingHere();
       },
     },
-    // "Symbol" keeps the keymap entry apart from Project View › Rename File… (issue #2801).
-    editorAction("refactor.rename", "Rename Symbol…", "Refactor", startRename),
+    editorAction("refactor.rename", "Rename…", "Refactor", startRename),
     editorAction("refactor.extractVariable", "Introduce Variable…", "Refactor", (v) =>
       runRefactoring(v, "extractVariable"),
     ),
