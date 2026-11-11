@@ -7,8 +7,8 @@
 //! it in the Maven or Gradle cache.
 
 use ide_core::{Pos, Range};
+use ide_vfs::LoadedText;
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// An entry of an archive named by a `jar:` URI.
@@ -57,29 +57,32 @@ impl JarEntry {
     }
 }
 
-/// The text of `entry` in the archive `jar`, when it is a UTF-8 file.
-pub(crate) fn read_entry(jar: &Path, entry: &str) -> Option<String> {
-    let mut zip = zip::ZipArchive::new(std::fs::File::open(jar).ok()?).ok()?;
-    let mut file = zip.by_name(entry).ok()?;
-    let mut text = String::new();
-    file.read_to_string(&mut text).ok()?;
-    Some(text)
+/// The text of `entry` in the archive `jar`, decoded like a file opened in the
+/// editor; `encoding` decodes with it instead of detecting ("Reload with
+/// Encoding"). `None` for binary or unreadable entries.
+pub(crate) fn read_entry(jar: &Path, entry: &str, encoding: Option<&str>) -> Option<LoadedText> {
+    let path = ide_vfs::archive_entry_path(jar, entry);
+    let loaded = match encoding {
+        Some(enc) => ide_vfs::load_text_as(&path, enc).ok()?,
+        None => ide_vfs::load_text(&path).ok()?,
+    };
+    (!loaded.binary).then_some(loaded)
 }
 
 /// The library source for a class entry: its `.kt` / `.java` file in the
 /// artifact's sources jar, as `(uri, text)`.
-pub(crate) fn class_source(uri: &str) -> Option<(String, String)> {
+pub(crate) fn class_source(uri: &str, encoding: Option<&str>) -> Option<(String, LoadedText)> {
     let jar = parse(uri)?;
     let class = jar.entry.strip_suffix(".class")?;
     for sources in sources_jars(&jar.jar) {
-        if let Some((entry, text)) = source_entry(&sources, class) {
+        if let Some((entry, text)) = source_entry(&sources, class, encoding) {
             return Some((jar.uri_of(&sources, &entry), text));
         }
     }
     None
 }
 
-pub(crate) fn source_in_archive(uri: &str, sources: &Path) -> Option<(String, String)> {
+pub(crate) fn source_in_archive(uri: &str, sources: &Path, encoding: Option<&str>) -> Option<(String, LoadedText)> {
     let jar = if uri.starts_with("jdt://contents/") {
         let path = uri.split('?').next()?.strip_prefix("jdt://contents/")?;
         let parts: Vec<_> = path.split('/').collect();
@@ -96,7 +99,7 @@ pub(crate) fn source_in_archive(uri: &str, sources: &Path) -> Option<(String, St
         parse(uri)?
     };
     let class = jar.entry.strip_suffix(".class")?;
-    let (entry, text) = source_entry(sources, class)?;
+    let (entry, text) = source_entry(sources, class, encoding)?;
     Some((jar.uri_of(sources, &entry), text))
 }
 
@@ -117,8 +120,8 @@ fn sources_jars(jar: &Path) -> Vec<PathBuf> {
 }
 
 /// The source file of `class` (`pkg/Name`, `pkg/Outer$Inner`, `pkg/FileKt`) in `sources`.
-fn source_entry(sources: &Path, class: &str) -> Option<(String, String)> {
-    let mut zip = zip::ZipArchive::new(std::fs::File::open(sources).ok()?).ok()?;
+fn source_entry(sources: &Path, class: &str, encoding: Option<&str>) -> Option<(String, LoadedText)> {
+    let zip = zip::ZipArchive::new(std::fs::File::open(sources).ok()?).ok()?;
     let (package, name) = class.rsplit_once('/').unwrap_or(("", class));
     let outer = name.split('$').next().unwrap_or(name);
     let dir = if package.is_empty() { String::new() } else { format!("{package}/") };
@@ -127,13 +130,9 @@ fn source_entry(sources: &Path, class: &str) -> Option<(String, String)> {
     if let Some(file) = outer.strip_suffix("Kt").filter(|f| !f.is_empty()) {
         candidates.push(format!("{dir}{file}.kt"));
     }
-    let read = |zip: &mut zip::ZipArchive<std::fs::File>, entry: &str| {
-        let mut text = String::new();
-        zip.by_name(entry).ok()?.read_to_string(&mut text).ok()?;
-        Some(text)
-    };
+    let read = |entry: &str| read_entry(sources, entry, encoding);
     for entry in &candidates {
-        if let Some(text) = read(&mut zip, entry) {
+        if let Some(text) = read(entry) {
             return Some((entry.clone(), text));
         }
     }
@@ -145,8 +144,8 @@ fn source_entry(sources: &Path, class: &str) -> Option<(String, String)> {
         .collect();
     let jvm_name = format!("@file:JvmName(\"{outer}\")");
     for entry in kotlin_files {
-        if let Some(text) = read(&mut zip, &entry)
-            && text.contains(&jvm_name)
+        if let Some(text) = read(&entry)
+            && text.text.contains(&jvm_name)
         {
             return Some((entry, text));
         }
@@ -233,11 +232,15 @@ mod tests {
     use std::io::Write;
 
     fn jar(path: &Path, entries: &[(&str, &str)]) {
+        jar_bytes(path, &entries.iter().map(|(n, t)| (*n, t.as_bytes())).collect::<Vec<_>>());
+    }
+
+    fn jar_bytes(path: &Path, entries: &[(&str, &[u8])]) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
-        for (name, text) in entries {
+        for (name, bytes) in entries {
             zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
-            zip.write_all(text.as_bytes()).unwrap();
+            zip.write_all(bytes).unwrap();
         }
         zip.finish().unwrap();
     }
@@ -274,12 +277,12 @@ mod tests {
             "jdt://contents/lib-1.jar/p/Lib.java?=project/escaped-jar-path",
             "jar:file:///m2/g/lib/1/lib-1.jar!/p/Lib$Inner.class",
         ] {
-            let (uri, text) = source_in_archive(uri, &sources).unwrap();
+            let (uri, text) = source_in_archive(uri, &sources, None).unwrap();
             assert!(uri.ends_with("library%20sources.zip!/p/Lib.java"), "{uri}");
-            assert!(text.contains("class Lib"));
+            assert!(text.text.contains("class Lib"));
         }
-        assert!(source_in_archive("jdt://contents/lib.jar/p/Missing.class", &sources).is_none());
-        assert!(source_in_archive("csharp:/p/App.csproj/decompiled/Lib.cs", &sources).is_none());
+        assert!(source_in_archive("jdt://contents/lib.jar/p/Missing.class", &sources, None).is_none());
+        assert!(source_in_archive("csharp:/p/App.csproj/decompiled/Lib.cs", &sources, None).is_none());
     }
 
     #[test]
@@ -312,20 +315,103 @@ mod tests {
                 ("org/springframework/boot/Builder.class", "Builder.kt"),
                 ("Root.class", "Root.java"),
             ] {
-                let (source_uri, text) = class_source(&uri(class)).unwrap_or_else(|| panic!("{class} in {binary:?}"));
+                let (source_uri, text) =
+                    class_source(&uri(class), None).unwrap_or_else(|| panic!("{class} in {binary:?}"));
                 let dir = class.rsplit_once('/').map_or(String::new(), |(p, _)| format!("{p}/"));
                 assert!(source_uri.ends_with(&format!("-sources.jar!/{dir}{file}")), "{source_uri}");
                 assert_eq!(
-                    parse(&source_uri).and_then(|e| read_entry(&e.jar, &e.entry)).as_deref(),
-                    Some(text.as_str())
+                    parse(&source_uri).and_then(|e| read_entry(&e.jar, &e.entry, None)).map(|l| l.text),
+                    Some(text.text.clone())
                 );
             }
-            assert_eq!(class_source(&uri("org/springframework/boot/Missing.class")), None);
+            assert!(class_source(&uri("org/springframework/boot/Missing.class"), None).is_none());
         }
         // No sources jar: nothing to show from here.
         let lone = tmp.path().join("lone/x-1.jar");
         jar(&lone, &[]);
-        assert_eq!(class_source(&format!("jar://{}!/X.class", lone.to_string_lossy().replace('\\', "/"))), None);
+        assert!(class_source(&format!("jar://{}!/X.class", lone.to_string_lossy().replace('\\', "/")), None).is_none());
+    }
+
+    /// The reported case: a library source file saved as GBK bytes, not UTF-8.
+    const GBK_SAMPLE: &str = "package example.encoding;\n\n/** 中文编码测试。 */\npublic final class EncodingSample {\n    public static String message() {\n        return \"中文编码测试：是否启用\";\n    }\n}\n";
+
+    #[test]
+    fn archive_entries_decode_like_files_opened_in_the_editor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gbk = encoding_rs::GBK.encode(GBK_SAMPLE).0.into_owned();
+        // encoding_rs' encode() falls back to UTF-8 for UTF-16 (WHATWG has no encoder for it).
+        let mut utf16 = vec![0xFF, 0xFE];
+        utf16.extend(GBK_SAMPLE.encode_utf16().flat_map(u16::to_le_bytes));
+        let cases: Vec<(&str, Vec<u8>, &str, &str, bool)> = vec![
+            ("utf8.java", GBK_SAMPLE.as_bytes().to_vec(), GBK_SAMPLE, "utf-8", false),
+            ("bom.java", [b"\xEF\xBB\xBF", GBK_SAMPLE.as_bytes()].concat(), GBK_SAMPLE, "utf-8", true),
+            ("gbk.java", gbk, GBK_SAMPLE, "gbk", false),
+            ("utf16.java", utf16, GBK_SAMPLE, "utf-16le", true),
+        ];
+        for (name, bytes, text, encoding, has_bom) in cases {
+            let jar_path = tmp.path().join(format!("lib-{name}.jar"));
+            jar_bytes(&jar_path, &[(&format!("p/{name}"), &bytes)]);
+            let loaded = read_entry(&jar_path, &format!("p/{name}"), None).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(loaded.text, text, "{name}");
+            assert_eq!(loaded.encoding, encoding, "{name}");
+            assert_eq!(loaded.has_bom, has_bom, "{name}");
+            assert!(!loaded.binary, "{name}");
+        }
+        // Binary entries are not shown as text.
+        let jar_path = tmp.path().join("bin.jar");
+        jar_bytes(&jar_path, &[("p/img.png", &[0x89, b'P', b'N', b'G', 0, 0, 0, 0])]);
+        assert!(read_entry(&jar_path, "p/img.png", None).is_none());
+        assert!(read_entry(&jar_path, "p/missing.java", None).is_none());
+    }
+
+    #[test]
+    fn reload_decodes_archive_entries_with_the_chosen_encoding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jar_path = tmp.path().join("lib.jar");
+        let gbk = encoding_rs::GBK.encode(GBK_SAMPLE).0.into_owned();
+        jar_bytes(&jar_path, &[("p/EncodingSample.java", &gbk)]);
+        let loaded = read_entry(&jar_path, "p/EncodingSample.java", Some("gbk")).unwrap();
+        assert_eq!((loaded.text.as_str(), loaded.encoding.as_str()), (GBK_SAMPLE, "gbk"));
+        // An explicit encoding wins over detection, even when it decodes to replacement characters.
+        let forced = read_entry(&jar_path, "p/EncodingSample.java", Some("utf-8")).unwrap();
+        assert!(forced.text.contains('\u{FFFD}'));
+        assert_eq!(forced.encoding, "utf-8");
+        assert!(read_entry(&jar_path, "p/EncodingSample.java", Some("not-an-encoding")).is_none());
+    }
+
+    #[test]
+    fn class_sources_in_maven_caches_decode_non_utf8() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m2 = tmp.path().join("m2/com/example/encoding-sample/1.0.0");
+        let gbk = encoding_rs::GBK.encode(GBK_SAMPLE).0.into_owned();
+        let facade = "@file:JvmName(\"SampleUtils\")\npackage example.encoding\n\n/** 中文注释。 */\nfun message() = \"中文编码测试：是否启用\"\n";
+        let facade_gbk = encoding_rs::GBK.encode(facade).0.into_owned();
+        jar(&m2.join("encoding-sample-1.0.0.jar"), &[]);
+        jar_bytes(
+            &m2.join("encoding-sample-1.0.0-sources.jar"),
+            &[("example/encoding/EncodingSample.java", &gbk), ("example/encoding/Renamed.kt", &facade_gbk)],
+        );
+        let uri = |class: &str| {
+            format!("jar://{}!/{class}", m2.join("encoding-sample-1.0.0.jar").to_string_lossy().replace('\\', "/"))
+        };
+        for (class, text) in
+            [("example/encoding/EncodingSample.class", GBK_SAMPLE), ("example/encoding/SampleUtils.class", facade)]
+        {
+            let (source_uri, loaded) = class_source(&uri(class), None).unwrap_or_else(|| panic!("{class}"));
+            assert!(
+                source_uri.ends_with("-sources.jar!/example/encoding/EncodingSample.java")
+                    || source_uri.ends_with("-sources.jar!/example/encoding/Renamed.kt")
+            );
+            assert_eq!(loaded.text, text, "{class}");
+            assert_eq!(loaded.encoding, "gbk", "{class}");
+            // The manually attached archive path decodes the same way.
+            let jdt = "jdt://contents/encoding-sample-1.0.0.jar/example.encoding/EncodingSample.class?=project/x";
+            let (_, attached) = source_in_archive(jdt, &m2.join("encoding-sample-1.0.0-sources.jar"), None).unwrap();
+            assert_eq!((attached.text.as_str(), attached.encoding.as_str()), (GBK_SAMPLE, "gbk"));
+        }
+        // Reload with an explicit encoding re-reads the same source.
+        let (_, reloaded) = class_source(&uri("example/encoding/EncodingSample.class"), Some("gbk")).unwrap();
+        assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), (GBK_SAMPLE, "gbk"));
     }
 
     #[test]

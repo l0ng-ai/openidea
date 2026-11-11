@@ -25,6 +25,11 @@ pub struct DocumentInfo {
     pub line_ending: LineEnding,
     pub read_only: bool,
     pub dirty: bool,
+    /// Whether "Reload with Encoding" can re-decode this document's source
+    /// bytes: true for files and virtual documents the backend can re-read
+    /// (archive entries, JDT sources with an editable attachment encoding,
+    /// Git revisions); false for server-generated content (decompiled code).
+    pub can_reload_encoding: bool,
     /// Larger than `ide_vfs::LARGE_FILE_THRESHOLD`: language servers, syntax
     /// structure and folding are disabled; the editor should drop heavy features.
     #[specta(optional)]
@@ -143,6 +148,7 @@ struct DocState {
     observed: bool,
     binary: bool,
     dirty: bool,
+    can_reload_encoding: bool,
     /// Disk state we last loaded or wrote; changes matching it are our own.
     disk_mtime: f64,
     disk_len: u64,
@@ -339,6 +345,7 @@ impl Documents {
             line_ending: st.doc.line_ending(),
             read_only: st.read_only,
             dirty: st.dirty,
+            can_reload_encoding: st.can_reload_encoding,
             large: st.large,
             editorconfig: st.editorconfig.clone(),
             uri: st.uri.clone(),
@@ -412,6 +419,7 @@ impl Documents {
             observed,
             binary: loaded.binary,
             dirty: false,
+            can_reload_encoding: true,
             disk_mtime: loaded.mtime_ms,
             disk_len: disk_len(path),
             closed: false,
@@ -449,8 +457,19 @@ impl Documents {
 
     /// Opens (or re-references) a read-only virtual document: contents a
     /// language server provides for a non-`file:` URI. It is keyed by the URI,
-    /// never touches the disk and cannot be edited or saved.
-    pub fn open_virtual(&self, uri: &str, language: LanguageId, text: &str) -> IdeResult<DocumentInfo> {
+    /// never touches the disk and cannot be edited or saved. `encoding` /
+    /// `has_bom` describe how the content was decoded (not a guess);
+    /// `can_reload_encoding` tells whether [`Documents::replace_virtual`] can
+    /// re-decode it ("Reload with Encoding").
+    pub fn open_virtual(
+        &self,
+        uri: &str,
+        language: LanguageId,
+        text: &str,
+        encoding: &str,
+        has_bom: bool,
+        can_reload_encoding: bool,
+    ) -> IdeResult<DocumentInfo> {
         let _operation = self.operations.lock();
         let key = PathBuf::from(uri);
         if let Some(info) = self.reopen(&key) {
@@ -462,8 +481,8 @@ impl Documents {
             doc: Document::new(text),
             language,
             ui_mode: None,
-            encoding: "utf-8".into(),
-            has_bom: false,
+            encoding: encoding.into(),
+            has_bom,
             native_to_ascii: false,
             read_only: true,
             large,
@@ -471,6 +490,7 @@ impl Documents {
             observed: true,
             binary: false,
             dirty: false,
+            can_reload_encoding,
             disk_mtime: 0.0,
             disk_len: 0,
             closed: false,
@@ -866,6 +886,38 @@ impl Documents {
             st.encoding = encoding.to_owned();
             st.has_bom = has_bom;
             self.set_dirty(doc, st, true);
+            Ok(DocumentEncoding { encoding: st.encoding.clone(), has_bom: st.has_bom })
+        })
+    }
+
+    /// The URI of a virtual document, or `None` for a file-backed one.
+    pub fn virtual_uri(&self, doc: DocId) -> IdeResult<Option<String>> {
+        self.with_doc(doc, |st| Ok(st.uri.clone()))
+    }
+
+    /// Re-decoded content of a virtual document ("Reload with Encoding"):
+    /// replaces the text and the encoding label, keeping the document
+    /// read-only and clean. The caller re-reads the origin (archive entry,
+    /// language server, Git blob) with the chosen encoding first.
+    pub fn replace_virtual(
+        &self,
+        doc: DocId,
+        text: &str,
+        encoding: &str,
+        has_bom: bool,
+    ) -> IdeResult<DocumentEncoding> {
+        self.with_doc(doc, |st| {
+            if st.uri.is_none() {
+                return Err(IdeError::invalid("not a virtual document"));
+            }
+            ide_vfs::encode("", encoding, false)?;
+            st.doc.set_line_ending(LineEnding::detect(text));
+            self.replace_locked(doc, st, text)?;
+            st.encoding = encoding.to_owned();
+            st.has_bom = has_bom;
+            st.large = text.len() as u64 > ide_vfs::LARGE_FILE_THRESHOLD;
+            // Reloading is not an edit: the buffer matches its source again.
+            self.set_dirty(doc, st, false);
             Ok(DocumentEncoding { encoding: st.encoding.clone(), has_bom: st.has_bom })
         })
     }
