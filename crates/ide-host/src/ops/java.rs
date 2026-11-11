@@ -6,6 +6,7 @@ use crate::rpc::Dispatcher;
 
 use super::build::load;
 use ide_build::compile;
+use ide_core::error::ErrorKind;
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId};
 use ide_lsp::jdtls::{JavaBuildStatus, JavaLaunchInfo};
 use ide_run::BuildPolicy;
@@ -15,6 +16,7 @@ use std::path::PathBuf;
 /// Builds the workspace (when `build`), then resolves the runtime (or test)
 /// classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 /// A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
+/// Resources a Gradle build filters or renames are processed by Gradle, replacing the language server's plain copies.
 pub async fn java_resolve_launch(
     host: &Host,
     window: &str,
@@ -103,6 +105,18 @@ async fn resolve_launch(
         }
         info.class_paths = class_paths;
         apply_library_classpath(&mut info, &project.root, &settings.project_structure.libraries, test);
+        if build && !delegated {
+            let cache_dir = project.build_cache_dir();
+            match compile::process_launch_resources(&project.root, &model, &cache_dir, &info.class_paths, &cancel) {
+                Ok(tasks) if !tasks.is_empty() => tracing::info!(?tasks, "Processed launch resources with Gradle"),
+                Ok(_) => {}
+                Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+                Err(e) => info.hints.push(format!(
+                    "Gradle could not process the resources, so they are used as they are in the source folders:\n{}",
+                    e.message
+                )),
+            }
+        }
         let compile_ms = started.elapsed().as_millis() - lsp_ms;
         // The module/project JDK, else the JDK jdtls compiles the module against, else one matching its Java version.
         let project_jdk = ide_sdk::apply::module_jdk(&project.root, &module, &settings);

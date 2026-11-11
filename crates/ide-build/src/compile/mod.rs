@@ -4,9 +4,11 @@
 //! for the Build tool window, the Problems view and the editor.
 
 mod fingerprint;
+mod launch_resources;
 mod parse;
 
 pub use fingerprint::{LaunchFingerprint, launch_fingerprint};
+pub use launch_resources::process_launch_resources;
 
 use crate::process::{self, Stream};
 use crate::{BuildModel, maven};
