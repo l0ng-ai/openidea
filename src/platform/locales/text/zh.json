@@ -4074,6 +4074,7 @@
   "Reference a File (@)": "引用文件 (@)",
   "Attach Image…": "附加图片…",
   "Remove Image": "移除图片",
+  "Remove File": "移除文件",
   "Image too large": "图片太大",
   "Send to Agent": "发送给 Agent",
   "Enable Vim emulation": "启用 Vim 模拟",
