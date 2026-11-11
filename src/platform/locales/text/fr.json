@@ -3698,6 +3698,8 @@
   "Use ; to separate patterns. * matches every file.": "Utilisez ; pour séparer les motifs. * correspond à tous les fichiers.",
   "Function and method suggestions get (); the caret goes inside unless there are no parameters.": "Les suggestions de fonctions et de méthodes reçoivent () ; le curseur se place à l'intérieur sauf s'il n'y a pas de paramètres.",
   "Insert paired brackets (), [], {}": "Insérer les parenthèses appariées (), [], {}",
+  "Insert paired angle brackets <>": "Insérer les crochets angulaires appariés <>",
+  "Off by default: `<` also opens tags in HTML, XML and JSX.": "Désactivé par défaut : `<` ouvre aussi les balises en HTML, XML et JSX.",
   "word": "mot",
   "Runs of consecutive matching lines collapse into one expandable “<N internal lines>” row.": "Les suites de lignes correspondantes consécutives se réduisent en une ligne dépliable « <N lignes internes> ».",
   "Confirm closing a tab with a running process": "Confirmer la fermeture d'un onglet avec un processus en cours",

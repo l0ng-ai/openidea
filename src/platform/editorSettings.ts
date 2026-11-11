@@ -154,6 +154,8 @@ export const EDITOR_EXTRA_DEFAULTS = {
     smartHome: true,
     camelHumps: false,
     pairBrackets: true,
+    /** Angle-bracket pairing is opt-in: `<` also opens tags in HTML / XML / JSX, so pairing it by default would surprise. */
+    pairAngleBrackets: false,
     pairQuotes: true,
     surroundSelection: true,
     tabOutOfPair: true,

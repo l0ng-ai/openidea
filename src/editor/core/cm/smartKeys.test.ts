@@ -3,6 +3,7 @@ import { EditorSelection, EditorState, type Extension } from "@codemirror/state"
 import { EditorView } from "@codemirror/view";
 import { indentService, indentUnit } from "@codemirror/language";
 import { closeBrackets, insertBracket } from "@codemirror/autocomplete";
+import { validateEditorExtras } from "@/platform/editorSettings";
 import {
   autoIndentBackspace,
   insertTab,
@@ -11,6 +12,7 @@ import {
   tabOut,
   tabOutOfScope,
 } from "./smartKeys";
+import { prefsExtension } from "./prefs";
 
 /** One unit (2) deeper after a (non-blank) line ending in `{`, one less on a line starting with `}`. */
 const braces = indentService.of((cx, pos) => {
@@ -169,5 +171,59 @@ describe("tab out of pairs", () => {
     v.dispatch({ selection: { anchor: 0 } });
     v.dispatch({ changes: { from: 0, insert: "c" }, selection: { anchor: 6 } });
     expect(tabOutOfScope(v)).toBe(false);
+  });
+});
+
+describe("angle brackets pairing", () => {
+  /** The real wiring: prefsExtension feeds closeBrackets() its brackets list. */
+  const prefs = (smartKeys: Record<string, unknown>) =>
+    [
+      closeBrackets(),
+      prefsExtension({
+        prefs: validateEditorExtras({ smartKeys }),
+        path: "",
+        softWrap: false,
+        showWhitespace: false,
+        hardWrapAt: 120,
+        readOnly: false,
+      }),
+    ] satisfies Extension[];
+  const type = (v: EditorView, ch: string) => {
+    const tr = insertBracket(v.state, ch);
+    if (tr) v.dispatch(tr);
+    else v.dispatch(v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" }));
+  };
+
+  it("stays off by default: typing < inserts nothing but <", () => {
+    const v = make("a|", prefs({}));
+    type(v, "<");
+    expect(show(v)).toBe("a<|");
+    expect(tabOutOfScope(v)).toBe(false);
+  });
+
+  it("does not pair before a word character, so tag openers like <div stay literal", () => {
+    const v = make("a|div", prefs({ pairAngleBrackets: true }));
+    type(v, "<");
+    expect(show(v)).toBe("a<|div");
+  });
+
+  it("pairs <> when 'Insert paired angle brackets <>' is on and Tabs out of it", () => {
+    const v = make("a|", prefs({ pairAngleBrackets: true }));
+    type(v, "<");
+    expect(show(v)).toBe("a<|>");
+    type(v, "x");
+    expect(show(v)).toBe("a<x|>");
+    expect(insertTab(v)).toBe(true);
+    expect(show(v)).toBe("a<x>|");
+    // Once out, Tab inserts whitespace again.
+    insertTab(v);
+    expect(show(v)).toBe("a<x>  |");
+  });
+
+  it("typing > skips the auto-inserted one instead of doubling it", () => {
+    const v = make("a|", prefs({ pairAngleBrackets: true }));
+    type(v, "<");
+    type(v, ">");
+    expect(show(v)).toBe("a<>|");
   });
 });

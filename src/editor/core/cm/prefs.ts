@@ -594,7 +594,12 @@ export function prefsExtension(o: PrefsOptions): Extension {
     out.push(pasteReindentFilter(k.reformatOnPaste));
 
   // Pairing: closeBrackets() reads the brackets list from language data; ours comes first.
-  const brackets = [...(k.pairBrackets ? ["(", "[", "{"] : []), ...(k.pairQuotes ? ["'", '"'] : [])];
+  // `<` pairs only when the opt-in angle-bracket setting is on (it doubles as a tag opener in HTML / XML / JSX).
+  const brackets = [
+    ...(k.pairBrackets ? ["(", "[", "{"] : []),
+    ...(k.pairQuotes ? ["'", '"'] : []),
+    ...(k.pairAngleBrackets ? ["<"] : []),
+  ];
   out.push(Prec.highest(EditorState.languageData.of(() => [{ closeBrackets: { brackets } }])));
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));
   if (k.pairQuotes) out.push(Prec.highest(skipClosingQuote));

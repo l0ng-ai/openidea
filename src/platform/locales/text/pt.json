@@ -3797,6 +3797,8 @@
   "Use ; to separate patterns. * matches every file.": "Use ; para separar padrões. * corresponde a todos os arquivos.",
   "Function and method suggestions get (); the caret goes inside unless there are no parameters.": "Sugestões de funções e métodos recebem (); o cursor fica no interior a menos que não haja parâmetros.",
   "Insert paired brackets (), [], {}": "Inserir parênteses emparelhados (), [], {}",
+  "Insert paired angle brackets <>": "Inserir parênteses angulares emparelhados <>",
+  "Off by default: `<` also opens tags in HTML, XML and JSX.": "Desativado por padrão: `<` também abre tags em HTML, XML e JSX.",
   "word": "palavra",
   "Runs of consecutive matching lines collapse into one expandable “<N internal lines>” row.": "Sequências de linhas correspondentes consecutivas são recolhidas em uma linha expansível “<N linhas internas>”.",
   "Confirm closing a tab with a running process": "Confirmar o fechamento de uma aba com um processo em execução",

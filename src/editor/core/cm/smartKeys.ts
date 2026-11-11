@@ -95,7 +95,8 @@ export const smartBackspace: Command = (view) => {
 
 // --- Tab out of brackets / quotes ------------------------------------------------------------
 
-const PAIRS: Record<string, string> = { "(": ")", "[": "]", "{": "}", '"': '"', "'": "'", "`": "`" };
+// `<` only lands here as an inserted pair when smartKeys.pairAngleBrackets turned its auto-pairing on.
+const PAIRS: Record<string, string> = { "(": ")", "[": "]", "{": "}", "<": ">", '"': '"', "'": "'", "`": "`" };
 
 interface Scope {
   from: number;

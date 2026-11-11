@@ -675,6 +675,12 @@ const SMART_KEYS = editorPage({
           hint: "⌥← / ⌥→ and ⌥⌫ stop at humps of camelCase names.",
         },
         { t: "check", key: `${P}.smartKeys.pairBrackets`, label: "Insert paired brackets (), [], {}" },
+        {
+          t: "check",
+          key: `${P}.smartKeys.pairAngleBrackets`,
+          label: "Insert paired angle brackets <>",
+          hint: "Off by default: `<` also opens tags in HTML, XML and JSX.",
+        },
         { t: "check", key: `${P}.smartKeys.pairQuotes`, label: "Insert pair quote" },
         { t: "check", key: `${P}.smartKeys.surroundSelection`, label: "Surround selection on typing quote or brace" },
         { t: "check", key: `${P}.smartKeys.tabOutOfPair`, label: "Jump outside closing bracket/quote with Tab" },
