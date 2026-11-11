@@ -8,6 +8,7 @@
 use ide_core::error::ErrorKind;
 use ide_core::ipc_path::to_ipc;
 use ide_host::plugins::*;
+use ide_host::{Host, HostConfig};
 use ide_plugin::{EditorContext, HostError, Invocation, Limits};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
@@ -6334,4 +6335,242 @@ fn api14_stage3_terminal_calls_are_denied_without_process_grants() {
     let f = execution_fixture();
     f.host.set_capability("execution", "process:execution-tool", false).unwrap();
     assert!(f.run("execution", "terminal", None).unwrap_err().contains("not granted"));
+}
+
+// ─── Project window groups ────────────────────────────────────────────────────
+// A group's container root holds only `.openidea` metadata; the files live in
+// the member projects. The plugin surface reaches them like the editor and the
+// language servers do.
+
+/// A real host over a project window group with the members `alpha` (holding a
+/// nested `inner` member, for deepest resolution) and `beta`.
+struct GroupFixture {
+    base: PathBuf,
+    host: Arc<Host>,
+    plugins: Arc<PluginHost>,
+    root: PathBuf,
+    alpha: PathBuf,
+    inner: PathBuf,
+    beta: PathBuf,
+    _runtime: tokio::runtime::Runtime,
+    _tmp: tempfile::TempDir,
+}
+
+impl GroupFixture {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let (root, alpha, beta) = (base.join("workspace"), base.join("alpha"), base.join("beta"));
+        let inner = alpha.join("inner");
+        for dir in [alpha.join("src"), inner.join("mappers"), beta.join("src")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        ide_workspace::workspace::Workspace::save(
+            &root,
+            "Group",
+            vec![alpha.clone(), inner.clone(), beta.clone()],
+            true,
+        )
+        .unwrap();
+        std::fs::write(alpha.join("src/needle.php"), "alpha needle\n").unwrap();
+        std::fs::write(inner.join("mappers/route.idx"), "def route:item\nref route:item\n").unwrap();
+        std::fs::write(beta.join("src/Notes.txt"), "beta needle\n").unwrap();
+        std::fs::write(base.join("secret.txt"), "top secret").unwrap();
+
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let host = Arc::new(Host::new(HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("data"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+            owner: |w| w,
+            runtime: runtime.handle().clone(),
+            project_environment: false,
+        }));
+        for dir in [&root, &alpha, &beta] {
+            host.trust.decide(dir, true, false).unwrap();
+        }
+        {
+            let _guard = runtime.enter();
+            let project = host.open_project("main", &root).unwrap();
+            assert!(project.index.wait_idle(Duration::from_secs(30)));
+        }
+        let plugins = Arc::new(
+            PluginHost::new(base.join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap(),
+        );
+        plugins.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(&host)))));
+        plugins.set_project_policy(Arc::new(|_| true));
+        Self { base, host, plugins, root, alpha, inner, beta, _runtime: runtime, _tmp: tmp }
+    }
+
+    /// Runs an installed plugin's `command` with `root` (default: the group
+    /// container) as the invoking project.
+    fn run(&self, id: &str, command: &str, arg: Option<&str>, root: Option<&Path>) -> Result<Option<String>, String> {
+        let inv = Invocation {
+            client: Some("main".into()),
+            workspace_root: Some(dunce::canonicalize(root.unwrap_or(&self.root)).unwrap()),
+            ..Default::default()
+        };
+        self.plugins.run_command(id, command, arg, inv).map_err(|e| e.message)
+    }
+
+    /// Installs `dir` with everything granted.
+    fn install(&self, dir: &Path) {
+        self.plugins.install_from_dir(dir, &Consent::all()).unwrap();
+    }
+
+    /// The roots the plugin surface lists, sorted and deduplicated.
+    fn listed_roots(&self) -> Vec<PathBuf> {
+        HostWorkspace(Arc::downgrade(&self.host)).projects()
+    }
+}
+
+impl Drop for GroupFixture {
+    fn drop(&mut self) {
+        self.host.close_project("main");
+    }
+}
+
+/// `projects()` lists the members with their own roots, and the member roots of
+/// the container are exactly the workspace manifest's.
+#[test]
+fn projects_list_the_workspace_members() {
+    let f = GroupFixture::new();
+    assert_eq!(
+        f.listed_roots(),
+        [f.alpha.clone(), f.inner.clone(), f.beta.clone(), f.root.clone()]
+            .iter()
+            .map(|p| dunce::canonicalize(p).unwrap())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        HostWorkspace(Arc::downgrade(&f.host)).member_roots(&f.root),
+        [f.alpha.clone(), f.inner.clone(), f.beta.clone()]
+            .iter()
+            .map(|p| dunce::canonicalize(p).unwrap())
+            .collect::<Vec<_>>()
+    );
+    // A member has no members of its own.
+    assert!(HostWorkspace(Arc::downgrade(&f.host)).member_roots(&f.alpha).is_empty());
+}
+
+/// `project-of(path)` resolves to the deepest member project containing the
+/// path, where the container and every member appear.
+#[test]
+fn project_of_resolves_to_the_deepest_workspace_member() {
+    let f = GroupFixture::new();
+    f.install(&sample("path-events"));
+    let project =
+        |path: &Path| f.run("test.path-events", "project", Some(path.to_str().unwrap()), None).unwrap().unwrap();
+    assert_eq!(project(&f.alpha.join("src/needle.php")), to_ipc(&f.alpha));
+    // The nested member, not its containing member.
+    assert_eq!(project(&f.inner.join("mappers/route.idx")), to_ipc(&f.inner));
+    assert_eq!(project(&f.beta.join("src/Notes.txt")), to_ipc(&f.beta));
+    // The container itself is still a project.
+    assert_eq!(project(&f.root), to_ipc(&f.root));
+    // And a path in no project resolves to none.
+    assert!(
+        f.run("test.path-events", "project", Some(f.base.join("secret.txt").to_str().unwrap()), None)
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// `project.read` and `project.write` reach the member files through the
+/// group's project, and never leave the group's roots.
+#[test]
+fn project_reads_and_writes_reach_workspace_members() {
+    let f = GroupFixture::new();
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-group-writer", "project.write"));
+    let notes = f.beta.join("src/Notes.txt");
+    assert_eq!(f.run("misbehave", "read", Some(notes.to_str().unwrap()), None).unwrap().unwrap(), "beta needle\n");
+    // Writing into a member creates its missing parent directories.
+    let fresh = f.beta.join("src/generated/mapper.xml");
+    f.run("misbehave", "projwrite", Some(fresh.to_str().unwrap()), None).unwrap();
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "written inside the project\n");
+    // `ctx.project()` is still the group's project.
+    assert_eq!(f.run("misbehave", "root", None, None).unwrap().unwrap(), to_ipc(&f.root));
+    // What is outside every root of the group stays refused, unwritten.
+    let outside = f.base.join("secret.txt");
+    let err = f.run("misbehave", "read", Some(outside.to_str().unwrap()), None).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    let err = f.run("misbehave", "projwrite", Some(outside.to_str().unwrap()), None).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "top secret");
+    // A member-scoped project reads its own files only: its root is the member.
+    assert_eq!(f.run("misbehave", "read", Some("src/Notes.txt"), Some(&f.beta)).unwrap().unwrap(), "beta needle\n");
+}
+
+/// Find in Files covers the members: search from the container finds member
+/// matches, a member-scoped project sees only its own.
+#[test]
+fn project_search_reaches_workspace_members() {
+    let f = GroupFixture::new();
+    f.install(&sample("api14"));
+    let search = |root: &Path, needle: &str| f.run("api14", "search-text", Some(needle), Some(root)).unwrap().unwrap();
+    // From the container: matches in the members come through.
+    let all = search(&f.root, "needle");
+    assert!(all.contains("needle.php"), "{all}");
+    assert!(all.contains("Notes.txt"), "{all}");
+    // The container holds no sources: `.openidea` metadata never matches.
+    assert!(!all.contains("workspace.json"), "{all}");
+    // From a member: only that member's matches.
+    let own = search(&f.beta, "needle");
+    assert!(own.contains("Notes.txt"), "{own}");
+    assert!(!own.contains("needle.php"), "{own}");
+    // What is outside every root is never found.
+    assert!(!search(&f.root, "top secret").contains("secret.txt"));
+}
+
+/// The document-indexer covers member files: discovery offers them, indexing
+/// one publishes its navigation, and files outside the group stay out.
+#[test]
+fn document_indexer_covers_workspace_members() {
+    let f = GroupFixture::new();
+    f.install(&sample("indexer"));
+    let mapping = f.inner.join("mappers/route.idx");
+    // Discovery: the member file is in the window's project scope.
+    let files = f
+        ._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, f.plugins.clone(), "main"))
+        .unwrap();
+    assert!(files.paths.iter().any(|p| p.0 == mapping), "{:?}", files.paths);
+    // Indexing the member file through the window's project publishes it: the
+    // open document is indexed at its version, like an editor click resolves.
+    let project = f.host.project("main").unwrap();
+    let doc = project.documents.open(&mapping).unwrap();
+    f._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_index(
+            &f.host,
+            f.plugins.clone(),
+            "main",
+            vec![mapping.clone()],
+            ide_core::RequestId::next(),
+        ))
+        .unwrap();
+    let result = f
+        .plugins
+        .navigation_at(&f.root, &mapping, doc.version, ide_core::Pos::new(1, 5), Some("main"), |_| None)
+        .unwrap();
+    assert_eq!(result.targets[0].path.0, mapping);
+    // A file outside the group is never offered, and indexing skips it.
+    let outside = f.base.join("escape.idx");
+    std::fs::write(&outside, "def outside:item\n").unwrap();
+    let files = f
+        ._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, f.plugins.clone(), "main"))
+        .unwrap();
+    assert!(!files.paths.iter().any(|p| p.0 == outside), "{:?}", files.paths);
+    f._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_index(
+            &f.host,
+            f.plugins.clone(),
+            "main",
+            vec![outside.clone()],
+            ide_core::RequestId::next(),
+        ))
+        .unwrap();
+    assert!(f.plugins.navigation_at(&f.root, &outside, 1, ide_core::Pos::new(0, 4), Some("main"), |_| None).is_none());
 }
