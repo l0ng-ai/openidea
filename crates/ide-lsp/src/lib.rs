@@ -33,9 +33,11 @@ mod tsserver_bridge;
 pub mod types;
 mod uri;
 mod virtual_doc;
+mod vue_navigation;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
 pub use inspect::{FileInspection, InspectHost, InspectOptions};
+pub use jdtls::jvm_inspect::JdtJvmInspector;
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
 pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
@@ -212,6 +214,8 @@ pub struct LspManager {
     shutting_down: AtomicBool,
     execution_allowed: AtomicBool,
     java_usages_warned: AtomicBool,
+    /// java-debug DAP port → the module path whose jdtls serves it.
+    debug_servers: Mutex<HashMap<u16, PathBuf>>,
     configuration_cache: Arc<Mutex<jdtls::configuration::ConfigurationCache>>,
     /// `window/showMessage` texts already surfaced; servers repeat them on every restart/reconfigure.
     shown_messages: Mutex<HashSet<(String, String)>>,
@@ -420,6 +424,7 @@ impl LspManager {
             shutting_down: AtomicBool::new(false),
             execution_allowed: AtomicBool::new(true),
             java_usages_warned: AtomicBool::new(false),
+            debug_servers: Mutex::new(HashMap::new()),
             configuration_cache: Arc::new(Mutex::new(Default::default())),
             shown_messages: Mutex::new(HashSet::new()),
             virtual_origins: Mutex::new(HashMap::new()),
@@ -839,6 +844,7 @@ impl LspManager {
             self.schedule_pull(doc, Some(&server), Duration::ZERO);
         }
         self.check_clang_tidy(&server).await;
+        self.check_vue_navigation(&server).await;
         server.refresh_busy_status(&self.sink);
         server.announce_ready(generation);
         self.spawn_supervisor(server, generation, peer);
@@ -1056,8 +1062,11 @@ impl LspManager {
                 if s.name == compose::SERVER && compose_added {
                     me.reconfigure_soon();
                 }
+                let hint = me.clone();
                 let server = s.clone();
                 self.runtime.spawn(async move { me.check_clang_tidy(&server).await });
+                let server = s.clone();
+                self.runtime.spawn(async move { hint.check_vue_navigation(&server).await });
             }
         }
     }

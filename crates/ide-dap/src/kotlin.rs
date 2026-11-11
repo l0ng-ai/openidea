@@ -9,6 +9,13 @@ use std::{
 
 pub const ADAPTER: &str = "kotlin-debug-adapter";
 
+/// The adapter attaches to a JVM the IDE starts, through the JDWP link. It resumes the VM while
+/// constructing its debuggee, before its breakpoint hooks exist, so the link holds resumes back
+/// until the attach is done.
+pub(crate) fn link_options() -> ide_jdwp::LinkOptions {
+    ide_jdwp::LinkOptions { hold_resumes: true }
+}
+
 pub struct SourceMirror {
     dir: tempfile::TempDir,
     paths: HashMap<PathBuf, PathBuf>,

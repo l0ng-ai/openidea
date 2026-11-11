@@ -83,7 +83,6 @@ pub async fn app_metrics(app: AppHandle, state: State<'_, AppState>) -> IdeResul
         m.index_files += status.files;
         m.index_symbols += status.symbols;
         m.indexing |= status.indexing;
-        let project = project_name(&p.root);
         for s in p.lsp.servers() {
             if matches!(s.status, ServerStatus::Starting | ServerStatus::Ready | ServerStatus::Busy) {
                 m.language_servers += 1;
@@ -93,7 +92,10 @@ pub async fn app_metrics(app: AppHandle, state: State<'_, AppState>) -> IdeResul
                     pid,
                     category: MemoryCategory::LanguageServer,
                     label: s.name,
-                    detail: Some(project.clone()),
+                    // A project can attach several roots (additional content
+                    // roots); name the server's own workspace root, not the
+                    // project folder, so rows of one name don't collide.
+                    detail: Some(project_name(s.root.as_ref())),
                     with_children: true,
                 });
             }
@@ -232,4 +234,25 @@ pub async fn clear_caches(window: Window, state: State<'_, AppState>) -> IdeResu
         Ok(ClearCachesResult { syntax_trees, rss_before_bytes, rss_after_bytes: own_footprint() })
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Language server rows are named by the server's own workspace root, not
+    /// the project folder: one project window can attach additional content
+    /// roots, and a server per root would otherwise show up as rows with the
+    /// same label and detail (e.g. "pyrefly MindSpeed" twice for MindSpeed +
+    /// Megatron-LM).
+    #[test]
+    fn server_row_detail_is_the_server_root_folder() {
+        let project = std::path::Path::new("B:/Program/Project/Ascend/MindSpeed");
+        let megatron = std::path::PathBuf::from("B:/Program/Project/Source/Megatron-LM");
+        assert_eq!(project_name(project), "MindSpeed");
+        assert_ne!(project_name(&megatron), project_name(project));
+        // IPC paths are `/`-separated on every OS, so `file_name` sees the
+        // folder without a Windows special case.
+        assert_eq!(project_name(&megatron), "Megatron-LM");
+    }
 }

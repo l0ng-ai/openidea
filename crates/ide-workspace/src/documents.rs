@@ -21,6 +21,7 @@ pub struct DocumentInfo {
     pub version: u32,
     pub language: LanguageId,
     pub encoding: String,
+    pub has_bom: bool,
     pub line_ending: LineEnding,
     pub read_only: bool,
     pub dirty: bool,
@@ -39,6 +40,14 @@ pub struct DocumentInfo {
     /// HTML templates).
     #[specta(optional)]
     pub ui_mode: Option<String>,
+}
+
+/// Encoding and BOM currently applied to an open document.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentEncoding {
+    pub encoding: String,
+    pub has_bom: bool,
 }
 
 /// Current text and identity of a document, for analyses (outline, folding).
@@ -326,6 +335,7 @@ impl Documents {
             version: st.doc.version(),
             language: st.language.clone(),
             encoding: st.encoding.clone(),
+            has_bom: st.has_bom,
             line_ending: st.doc.line_ending(),
             read_only: st.read_only,
             dirty: st.dirty,
@@ -822,7 +832,7 @@ impl Documents {
     /// Changes the document's encoding. `reload`: re-decode the file on disk with
     /// it (refused while there are unsaved changes); otherwise convert: the text
     /// is kept and the next save writes it in the new encoding.
-    pub fn set_encoding(&self, doc: DocId, encoding: &str, reload: bool) -> IdeResult<String> {
+    pub fn set_encoding(&self, doc: DocId, encoding: &str, reload: bool) -> IdeResult<DocumentEncoding> {
         self.with_doc(doc, |st| {
             if st.uri.is_some() {
                 return Err(read_only_error(&st.path));
@@ -842,7 +852,7 @@ impl Documents {
                 self.replace_locked(doc, st, &loaded.text)?;
                 // Reloading is not an edit: the buffer matches the file again.
                 self.set_dirty(doc, st, false);
-                return Ok(loaded.encoding);
+                return Ok(DocumentEncoding { encoding: st.encoding.clone(), has_bom: st.has_bom });
             }
             if st.read_only {
                 return Err(read_only_error(&st.path));
@@ -856,7 +866,24 @@ impl Documents {
             st.encoding = encoding.to_owned();
             st.has_bom = has_bom;
             self.set_dirty(doc, st, true);
-            Ok(st.encoding.clone())
+            Ok(DocumentEncoding { encoding: st.encoding.clone(), has_bom: st.has_bom })
+        })
+    }
+
+    /// Adds or removes the BOM on a UTF-8 document; the change is written on save.
+    pub fn set_bom(&self, doc: DocId, has_bom: bool) -> IdeResult<DocumentEncoding> {
+        self.with_doc(doc, |st| {
+            if st.uri.is_some() || st.read_only {
+                return Err(read_only_error(&st.path));
+            }
+            if st.encoding != "utf-8" || st.native_to_ascii {
+                return Err(IdeError::invalid("the BOM can only be changed for UTF-8 documents"));
+            }
+            if st.has_bom != has_bom {
+                st.has_bom = has_bom;
+                self.set_dirty(doc, st, true);
+            }
+            Ok(DocumentEncoding { encoding: st.encoding.clone(), has_bom: st.has_bom })
         })
     }
 

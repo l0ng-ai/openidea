@@ -116,8 +116,38 @@ describe("scheme actions", () => {
   it("shows a malformed-file error without staging any changes", async () => {
     mocks.read.mockResolvedValueOnce({ status: "ok", data: '<scheme name="bad">' });
     await run("import");
-    await waitFor(() => expect(mocks.error).toHaveBeenCalledWith("Color Scheme", "Invalid .icls color scheme"));
+    await waitFor(() =>
+      expect(mocks.error).toHaveBeenCalledWith("Import Scheme", expect.stringContaining("Invalid .icls color scheme")),
+    );
     expect(useSettingsDialog.getState().staged).toEqual({});
+  });
+
+  it("offers .xml scheme files in the chooser and imports one (#2714)", async () => {
+    mocks.open.mockResolvedValueOnce("/downloads/Material Darker.xml");
+    mocks.read.mockResolvedValueOnce({
+      status: "ok",
+      data: readFileSync("src/platform/__fixtures__/colorSchemes/material-darker.xml", "utf8"),
+    });
+    await run("import");
+    expect(mocks.open).toHaveBeenCalledWith({
+      multiple: false,
+      filters: [{ name: "IntelliJ Color Scheme", extensions: ["icls", "xml"] }],
+    });
+    expect(value("colorScheme")).toMatch(/^custom-/);
+    expect(screen.getByRole("status")).toHaveTextContent("Applied 12 values; skipped 3");
+    const schemes = value("customSchemes") as Record<string, { name: string }>;
+    expect(Object.values(schemes).some((s) => s.name === "Material Darker")).toBe(true);
+  });
+
+  it("names a scheme without a name attribute after its file (#2714)", async () => {
+    mocks.open.mockResolvedValueOnce("/downloads/one-dark-wrapped.xml");
+    mocks.read.mockResolvedValueOnce({
+      status: "ok",
+      data: readFileSync("src/platform/__fixtures__/colorSchemes/one-dark-wrapped.xml", "utf8"),
+    });
+    await run("import");
+    const schemes = value("customSchemes") as Record<string, { name: string }>;
+    expect(Object.values(schemes).some((s) => s.name === "one-dark-wrapped")).toBe(true);
   });
 });
 

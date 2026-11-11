@@ -31,7 +31,7 @@ pub(super) fn transcript(config_dir: &Path, cwd: &Path, id: &str) -> PathBuf {
 }
 
 /// The project directory name Claude Code uses for `cwd`.
-pub(super) fn escape(cwd: &Path) -> String {
+pub(crate) fn escape(cwd: &Path) -> String {
     cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 

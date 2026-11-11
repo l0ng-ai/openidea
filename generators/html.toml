@@ -1,0 +1,39 @@
+id = "html"
+name = "Static Website"
+group = "JavaScript"
+icon = "project-html"
+order = 9
+description = "An HTML page with a stylesheet and a script."
+
+[[files]]
+path = "index.html"
+content = '''
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{name}}</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <h1>Hello, World!</h1>
+    <script src="script.js"></script>
+  </body>
+</html>
+'''
+
+[[files]]
+path = "style.css"
+content = '''
+body {
+  font-family: system-ui, sans-serif;
+  margin: 2rem;
+}
+'''
+
+[[files]]
+path = "script.js"
+content = '''
+console.log("Hello, World!");
+'''

@@ -26,6 +26,7 @@ pub mod file_dialog;
 pub mod fonts;
 pub mod fs;
 pub mod github;
+pub mod heap;
 pub mod history;
 pub mod http;
 pub mod java;
@@ -38,6 +39,7 @@ pub mod plugin;
 pub mod profiler;
 pub mod refactor;
 pub mod run;
+pub mod scaffold;
 pub mod sdk;
 pub mod search;
 pub mod spell;
@@ -192,6 +194,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         doc::doc_snapshot,
         doc::doc_ui_mode,
         doc::doc_set_encoding,
+        doc::doc_set_bom,
         doc::doc_set_line_ending,
         doc::doc_outline,
         doc::doc_folding,
@@ -443,6 +446,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         tools::jdk_download_releases,
         tools::jdk_download_location,
         tools::jdk_download,
+        scaffold::scaffold_catalog,
+        scaffold::scaffold_options,
+        scaffold::scaffold_requirements,
+        scaffold::scaffold_create,
         sdk::sdk_detect,
         sdk::sdk_python_interpreter,
         sdk::sdk_python_effective,
@@ -505,6 +512,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         debug::debug_free_port,
         debug::debug_listen_for_jvm,
         debug::debug_redefine_classes,
+        debug::debug_jvm_memory_classes,
+        debug::debug_jvm_memory_instances,
+        debug::debug_jvm_memory_fields,
+        debug::debug_jvm_memory_referrers,
         coverage::coverage_prepare,
         coverage::coverage_collect,
         coverage::coverage_import,
@@ -513,6 +524,14 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         web::web_open,
         profiler::profiler_prepare,
         profiler::profiler_collect,
+        heap::debug_heap_capture,
+        heap::debug_heap_open,
+        heap::debug_heap_classes,
+        heap::debug_heap_dominators,
+        heap::debug_heap_path,
+        heap::debug_heap_compare,
+        heap::debug_heap_save,
+        heap::debug_heap_close,
         plugin::plugin_subscribe,
         plugin::plugin_list,
         plugin::plugin_set_enabled,

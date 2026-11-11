@@ -21,6 +21,32 @@
 
 use std::collections::BTreeMap;
 
+/// Removes ANSI escape sequences (colour, cursor movement).
+pub fn strip_ansi(s: &str) -> String {
+    if !s.contains('\u{1b}') {
+        return s.to_owned();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'[') {
+            chars.next();
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() || c == '~' {
+                    break;
+                }
+            }
+        } else {
+            chars.next();
+        }
+    }
+    out
+}
+
 /// Decodes complete lines or collected output from IDE-managed tools, preferring UTF-8.
 /// Windows launcher/native diagnostics fall back to the system ANSI code page.
 /// Callers must buffer incomplete lines so multibyte characters are never split.

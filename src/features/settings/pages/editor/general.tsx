@@ -835,6 +835,11 @@ const INLAY: Item[] = [
   },
 ];
 
+const CODE_VISION_POSITIONS = [
+  { value: "top", label: "Top" },
+  { value: "right", label: "Right" },
+];
+
 const INLAY_HINTS = editorPage({
   id: "editor.inlayHints",
   title: "Inlay Hints",
@@ -845,8 +850,33 @@ const INLAY_HINTS = editorPage({
     {
       title: "Code Vision",
       items: [
-        { t: "check", key: `${P}.inlay.codeVisionUsages`, label: "Usages" },
-        { t: "check", key: `${P}.inlay.codeVisionAuthor`, label: "Code author" },
+        {
+          t: "check",
+          key: `${P}.inlay.codeVisionUsages`,
+          label: "Usages",
+          children: [
+            {
+              t: "select",
+              key: `${P}.inlay.codeVisionUsagesPosition`,
+              label: "Position",
+              options: CODE_VISION_POSITIONS,
+            },
+            { t: "check", key: `${P}.inlay.codeVisionNoUsages`, label: "Show “no usages”" },
+          ],
+        },
+        {
+          t: "check",
+          key: `${P}.inlay.codeVisionAuthor`,
+          label: "Code author",
+          children: [
+            {
+              t: "select",
+              key: `${P}.inlay.codeVisionAuthorPosition`,
+              label: "Position",
+              options: CODE_VISION_POSITIONS,
+            },
+          ],
+        },
       ],
     },
     { title: "Languages", items: [{ t: "custom", label: "Show inlay hints for:", component: InlayLanguages }] },

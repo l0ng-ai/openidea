@@ -592,17 +592,19 @@ impl AgentManager {
         self.tasks.read().values().filter_map(|t| t.state.lock().session_id.clone()).collect()
     }
 
-    /// Sessions on this machine that no task holds yet, newest first (#312).
+    /// Sessions of this project on this machine that no task holds yet, newest first. Reads
+    /// transcripts from disk: call it off the UI and command threads.
     pub fn external_sessions(&self) -> Vec<ExternalSession> {
         let mut out = Vec::new();
+        let root = self.shared.paths.project_root.clone();
         if let Some(spec) = self.shared.spec("claude")
             && let Some(dir) = native::claude::cli::config_dir(&spec.env)
         {
-            out.extend(external::claude_sessions(&dir));
+            out.extend(external::claude_sessions(&dir, &root));
         }
         let home = self.shared.paths.home_dir.clone().or_else(home_dir);
         if let Some(home) = home {
-            out.extend(external::codex_sessions(&home.join(".codex")));
+            out.extend(external::codex_sessions(&home.join(".codex"), &root));
         }
         let known = self.imported_session_ids();
         out.retain(|s| !known.contains(&s.session_id));
@@ -1232,15 +1234,6 @@ impl AgentManager {
         };
         // A copy of the task (a fork) may work in the same worktree.
         let shared = self.tasks.read().values().any(|t| t.id != id && t.state.lock().task.cwd.0 == cwd);
-        if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
-            // On Windows the agent's processes lock the folder (their working directory,
-            // open files) until they have exited.
-            if let Some(peer) = live {
-                let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
-            }
-            let worktrees = self.shared.paths.worktrees_dir.clone();
-            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
-        }
         self.tasks.write().remove(id);
         *task.deleted.lock() = true;
         let _ = std::fs::remove_file(self.shared.paths.store_dir.join(format!("{id}.json")));
@@ -1250,7 +1243,17 @@ impl AgentManager {
         {
             let _ = std::fs::remove_dir_all(self.shared.paths.store_dir.join(saved));
         }
+        // The list drops the task now; removing a large worktree's folder can take a while.
         self.shared.emit(AgentEvent::Removed { id: id.to_owned() });
+        if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
+            // On Windows the agent's processes lock the folder (their working directory,
+            // open files) until they have exited.
+            if let Some(peer) = live {
+                let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
+            }
+            let worktrees = self.shared.paths.worktrees_dir.clone();
+            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
+        }
         Ok(())
     }
 

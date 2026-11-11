@@ -1,0 +1,15 @@
+[package]
+name = "ide-jvm-inspect"
+description = "Shared types and the JvmInspector trait for inspecting live JVM instances while a debug session is suspended"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+futures.workspace = true
+serde.workspace = true
+specta.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

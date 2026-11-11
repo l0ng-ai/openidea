@@ -1,0 +1,28 @@
+[package]
+name = "ide-heap"
+description = "HotSpot .hprof parser and heap-snapshot analysis for the debugger's JVM Memory view"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ide-core.workspace = true
+memmap2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+specta.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false }
+proptest.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "heap"
+harness = false

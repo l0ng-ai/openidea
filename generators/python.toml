@@ -1,0 +1,41 @@
+id = "python"
+name = "Python"
+group = "Python"
+icon = "project-python"
+description = "A Python project managed by uv."
+
+[[requires]]
+program = "uv"
+hint = "Install uv: https://docs.astral.sh/uv/getting-started/installation/"
+
+[[fields]]
+id = "kind"
+label = "Type:"
+type = "choice"
+segmented = true
+options = [
+    { value = "--app", label = "Application" },
+    { value = "--package", label = "Packaged application" },
+    { value = "--lib", label = "Library" },
+]
+default = "--app"
+
+[[fields]]
+id = "python"
+label = "Python version:"
+type = "text"
+placeholder = "Latest installed"
+hint = "A version such as 3.13; uv downloads it when missing."
+
+[[steps]]
+label = "Running uv init"
+program = "uv"
+args = [
+    "init", "{{kind}}", "--name", "{{name|kebab}}", "--vcs", "none", "--no-workspace",
+    { if-set = "python", args = ["--python", "{{python}}"] },
+]
+
+[[after]]
+label = "Creating the virtual environment"
+program = "uv"
+args = ["sync"]
