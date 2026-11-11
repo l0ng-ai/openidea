@@ -3,6 +3,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import type { Commit } from "@/bindings";
 import { collapseLinear, computeGraph, hideLongEdges, linearizeMerges } from "../graph";
 import { commitKey, graphCommit } from "../multiRoot";
+import { presentLogGraph } from "../logPresentation";
+import { DEFAULT_LOG_OPTIONS } from "../logOptions";
 import { GraphCell } from "../GitLog";
 import { toLogChanges } from "../logChanges";
 
@@ -27,6 +29,35 @@ describe("graph projections", () => {
     const [file] = toLogChanges([{ path: "a.ts", kind: "modified", oldPath: null }], c);
     expect(file!.before).toBe("hidden");
     expect(c.parents).toEqual(["hidden"]);
+  });
+
+  it("gives a filtered merge pyramid one connection instead of one lane per hidden path", () => {
+    // What the backend returns for an author filter over a merge pyramid: the top
+    // row connects to every hidden path's nearest match, while its first connection
+    // already reaches the rest — the extra lanes stretched the graph column (#2670).
+    const row = (id: string, realParents: string[], graphParents: string[], dashed: boolean[]) => ({
+      ...commit(id, realParents),
+      repo: "/repo",
+      graphParents,
+      graphDashed: dashed,
+    });
+    const all = [
+      row("v0", ["m1"], ["v1", "v2", "v3"], [true, true, true]),
+      row("v1", ["v2"], ["v2"], [false]),
+      row("v2", ["v3"], ["v3"], [false]),
+      row("v3", ["base"], ["base"], [false]),
+      row("base", [], [], []),
+    ];
+    const { rows, graph } = presentLogGraph(
+      all,
+      DEFAULT_LOG_OPTIONS,
+      { expanded: new Set(), collapsed: new Set(), merges: new Set() },
+      new Set(),
+    );
+    expect(graph[0]!.parents).toEqual([commitKey({ id: "v1", repo: "/repo" })]);
+    expect(rows[0]!.width).toBe(1);
+    expect(rows[0]!.down).toHaveLength(1);
+    expect(rows[0]!.down[0]!.dashed).toBe(true);
   });
 
   it("preserves filter dashes even when collapse hides no additional commits", () => {
