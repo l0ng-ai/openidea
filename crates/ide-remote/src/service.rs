@@ -286,6 +286,70 @@ impl RemoteService {
         r
     }
 
+    /// Remote Host › Download to…: `remotes` (folders recursively) into the local folder `dir`,
+    /// each under its own name, without the server path above it. Existing files are replaced.
+    pub async fn download_into(
+        &self,
+        connection: &FsConnection,
+        remotes: &[String],
+        dir: &Path,
+        cancel: &CancellationToken,
+        progress: &mut (dyn FnMut(&str, usize, usize) + Send),
+    ) -> IdeResult<TransferReport> {
+        let fs = self.fs(connection).await?;
+        let mut report = TransferReport::default();
+        let mut folders = Vec::new();
+        let mut jobs = Vec::new();
+        for remote in remotes {
+            let Some(top) = download_target(dir, remote, remote) else {
+                report.skipped += 1;
+                continue;
+            };
+            match fs.stat(remote).await {
+                Ok(Some(e)) if e.is_dir => {
+                    folders.push(top);
+                    let mut entries = Vec::new();
+                    if let Err(e) = remote_tree(&fs, remote, cancel, &mut entries).await {
+                        report.fail(remote.clone(), e);
+                    }
+                    for entry in entries {
+                        match download_target(dir, remote, &entry.path) {
+                            Some(local) if entry.is_dir => folders.push(local),
+                            Some(local) => jobs.push((entry.path, local)),
+                            None => report.skipped += 1,
+                        }
+                    }
+                }
+                Ok(Some(_)) => jobs.push((remote.clone(), top)),
+                Ok(None) => report.fail(remote.clone(), IdeError::not_found(format!("{remote} does not exist"))),
+                Err(e) => report.fail(remote.clone(), e),
+            }
+        }
+        for folder in &folders {
+            if let Err(e) = tokio::fs::create_dir_all(folder).await {
+                report.fail(folder.display().to_string(), e.into());
+            }
+        }
+        for (i, (remote, local)) in jobs.iter().enumerate() {
+            if cancel.is_cancelled() {
+                break;
+            }
+            progress(remote, i, jobs.len());
+            if let Some(parent) = local.parent()
+                && let Err(e) = tokio::fs::create_dir_all(parent).await
+            {
+                report.fail(remote.clone(), e.into());
+                continue;
+            }
+            match fs.download(remote, local).await {
+                Ok(()) => report.files += 1,
+                Err(e) => report.fail(remote.clone(), e),
+            }
+        }
+        fs.close().await;
+        Ok(report)
+    }
+
     // --- save hook -----------------------------------------------------------------
 
     /// After a document save: uploads a remote file's copy, or (automatic upload)
@@ -495,5 +559,72 @@ fn cache_key(connection: &FsConnection) -> String {
     match connection {
         FsConnection::Local => "local".to_owned(),
         FsConnection::Sftp { ssh } => format!("sftp-{ssh}"),
+    }
+}
+
+/// Files and folders under remote folder `dir` (symlinked folders are not followed).
+async fn remote_tree(
+    fs: &RemoteFs,
+    dir: &str,
+    cancel: &CancellationToken,
+    out: &mut Vec<RemoteEntry>,
+) -> IdeResult<()> {
+    for e in fs.list(dir).await? {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let descend = e.is_dir && !e.is_symlink;
+        let path = e.path.clone();
+        out.push(e);
+        if descend {
+            Box::pin(remote_tree(fs, &path, cancel, out)).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Where remote `path`, inside the downloaded `selected` file or folder, lands under local `dir`:
+/// `dir/<name of selected>/<rest>`. `None` for a name that would leave `dir`.
+fn download_target(dir: &Path, selected: &str, path: &str) -> Option<PathBuf> {
+    let selected = selected.trim_end_matches('/');
+    let name = selected.rsplit('/').next()?;
+    let rest = path.trim_end_matches('/').strip_prefix(selected)?;
+    if !rest.is_empty() && !rest.starts_with('/') {
+        return None;
+    }
+    let mut local = dir.to_path_buf();
+    for part in std::iter::once(name).chain(rest.split('/').filter(|p| !p.is_empty())) {
+        if matches!(part, "" | "." | "..") || part.contains('\\') || (cfg!(windows) && part.contains(':')) {
+            return None;
+        }
+        local.push(part);
+    }
+    Some(local)
+}
+
+#[cfg(test)]
+mod download_into_tests {
+    use super::*;
+
+    #[test]
+    fn downloads_keep_only_the_selected_name() {
+        let dir = Path::new("/p/project");
+        let selected = "/home/u/www/site/current/drush";
+        assert_eq!(download_target(dir, selected, selected), Some(dir.join("drush")));
+        assert_eq!(download_target(dir, "/home/u/www/site/current/drush/", selected), Some(dir.join("drush")));
+        assert_eq!(
+            download_target(dir, selected, "/home/u/www/site/current/drush/src/a.php"),
+            Some(dir.join("drush").join("src").join("a.php"))
+        );
+        assert_eq!(download_target(dir, "/srv/app.log", "/srv/app.log"), Some(dir.join("app.log")));
+    }
+
+    #[test]
+    fn names_that_would_leave_the_folder_are_refused() {
+        let dir = Path::new("/p/project");
+        assert_eq!(download_target(dir, "/srv/a", "/srv/a/../../etc/passwd"), None);
+        assert_eq!(download_target(dir, "/srv/a", "/srv/ab/x"), None, "a sibling with the same prefix");
+        assert_eq!(download_target(dir, "/", "/etc"), None, "the root has no name");
+        assert_eq!(download_target(dir, "/srv/..", "/srv/.."), None);
     }
 }

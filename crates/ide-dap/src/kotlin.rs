@@ -9,11 +9,15 @@ use std::{
 
 pub const ADAPTER: &str = "kotlin-debug-adapter";
 
-/// The adapter attaches to a JVM the IDE starts, through the JDWP link. It resumes the VM while
-/// constructing its debuggee, before its breakpoint hooks exist, so the link holds resumes back
-/// until the attach is done.
-pub(crate) fn link_options() -> ide_jdwp::LinkOptions {
-    ide_jdwp::LinkOptions { hold_resumes: true }
+/// fwcd's adapter or kotlin-lsp's: both debug a JVM the IDE starts, through the JDWP link.
+pub fn is_kotlin(adapter: &str) -> bool {
+    adapter == ADAPTER || adapter == crate::kotlin_lsp::ADAPTER
+}
+
+/// fwcd's adapter resumes the VM while constructing its debuggee, before its breakpoint hooks
+/// exist, so only its link holds resumes back until the attach is done.
+pub(crate) fn link_options(adapter: &str) -> ide_jdwp::LinkOptions {
+    ide_jdwp::LinkOptions { hold_resumes: adapter == ADAPTER }
 }
 
 pub struct SourceMirror {

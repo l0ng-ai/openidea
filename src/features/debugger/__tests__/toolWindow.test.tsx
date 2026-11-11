@@ -1,10 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+const adapterData = vi.hoisted(() => ({
+  /** Value of a `library` variable the adapter computes asynchronously; null leaves it out. */
+  library: null as string | null,
+  scopes: vi.fn(),
+  memoryClasses: vi.fn(),
+  /** Value the adapter answers a watch with. */
+  watch: "Collecting data…",
+}));
 
 const debugEvaluateIn = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (..._args: unknown[]) => ({
     status: "ok" as const,
-    data: { name: "result", value: "4", typeName: "int", variablesReference: 0, evaluateName: null },
+    data: { name: "result", value: "4", typeName: "int" as string | null, variablesReference: 0, evaluateName: null },
   })),
 );
 
@@ -15,11 +24,30 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     ...real,
     commands: {
       ...real.commands,
-      debugJvmMemoryClasses: () => ok({ status: "unavailable", reason: { kind: "programExited" } }),
+      debugJvmMemoryClasses: () => {
+        adapterData.memoryClasses();
+        return ok({ status: "unavailable", reason: { kind: "programExited" } });
+      },
       debugEvaluateIn,
-      debugScopes: () => ok([{ name: "Locals", variablesReference: 1, expensive: false }]),
+      debugSetVariable: () =>
+        ok({ name: "count", value: "4", typeName: "int", variablesReference: 0, evaluateName: "count" }),
+      debugScopes: () => {
+        adapterData.scopes();
+        return ok([{ name: "Locals", variablesReference: 1, expensive: false }]);
+      },
       debugVariables: () =>
         ok([
+          ...(adapterData.library == null
+            ? []
+            : [
+                {
+                  name: "library",
+                  value: adapterData.library,
+                  typeName: "Library",
+                  variablesReference: 0,
+                  evaluateName: "library",
+                },
+              ]),
           { name: "count", value: "3", typeName: "int", variablesReference: 0, evaluateName: "count" },
           { name: "label", value: "'hi'", typeName: "str", variablesReference: 0, evaluateName: "label" },
           {
@@ -39,7 +67,7 @@ vi.mock("@/workbench/confirmTerminate", () => ({ confirmTerminate }));
 
 import type { RunConfig } from "@/platform/ipc";
 import { setLocale } from "@/platform/i18n";
-import { useDebug, type DebugSession } from "../state";
+import { handleDebugEvent, setVariableValue, useDebug, type DebugSession } from "../state";
 import { DebugTabs, DebugToolWindow } from "../ui/DebugToolWindow";
 import { DebuggerOverlays } from "../ui/Overlays";
 import { useOverlays } from "../ui/popoverStore";
@@ -262,5 +290,89 @@ describe("debug tool window", () => {
     await act(async () => fireEvent.click(screen.getAllByRole("button", { name: "Close Tab" })[0]!));
     expect(useDebug.getState().active).toBeNull();
     expect(useDebug.getState().sessions).toEqual({});
+  });
+});
+
+describe("variables the adapter computes after the stop", () => {
+  const tick = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  const setup = () => {
+    adapterData.library = "Collecting data…";
+    adapterData.scopes.mockClear();
+    useDebug.setState({ sessions: { 1: session }, active: 1, stopSeq: 1, variablesEpoch: 0 });
+    return render(<DebugToolWindow />);
+  };
+
+  it("shows the value sent after an invalidation, unmarked as changed", async () => {
+    setup();
+    expect(await screen.findByText("Collecting data…")).toBeTruthy();
+    adapterData.library = "com.example.library.Library@1";
+    act(() => handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] }));
+    const value = await screen.findByText("com.example.library.Library@1");
+    expect(screen.queryByText("Collecting data…")).toBeNull();
+    expect(value.closest("[role=treeitem]")?.querySelector("[class*=changed]")).toBeNull();
+  });
+
+  it("shows the watch value the adapter computes after an invalidation", async () => {
+    adapterData.watch = "Collecting data…";
+    const answer = async (...args: unknown[]) => ({
+      status: "ok" as const,
+      data: {
+        name: String(args[2]),
+        value: adapterData.watch,
+        typeName: null as string | null,
+        variablesReference: 0,
+        evaluateName: null,
+      },
+    });
+    debugEvaluateIn.mockImplementation(answer);
+    useDebug.setState({ watches: ['library.search("java").size'] });
+    try {
+      setup();
+      const watch = () => screen.getByText('library.search("java").size').closest("[role=treeitem]")!;
+      await waitFor(() => expect(watch().textContent).toContain("Collecting data…"));
+      adapterData.watch = "1";
+      act(() => handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] }));
+      await waitFor(() => expect(watch().textContent).not.toContain("Collecting data…"));
+      expect(watch().textContent).toContain("1");
+    } finally {
+      debugEvaluateIn.mockImplementation(async () => ({
+        status: "ok" as const,
+        data: { name: "result", value: "4", typeName: "int", variablesReference: 0, evaluateName: null },
+      }));
+      useDebug.setState({ watches: [] });
+    }
+  });
+
+  it("reloads after Set Value", async () => {
+    setup();
+    await screen.findByText("Collecting data…");
+    adapterData.library = "Library@2";
+    await act(() => setVariableValue({ container: 1, name: "count", evaluateName: "count" }, "4", session));
+    expect(await screen.findByText("Library@2")).toBeTruthy();
+  });
+
+  it("does nothing for an invalidation while the program runs", async () => {
+    setup();
+    await screen.findByText("Collecting data…");
+    act(() => useDebug.setState({ sessions: { 1: { ...session, status: "running" } } }));
+    adapterData.scopes.mockClear();
+    adapterData.library = "Library@3";
+    act(() => handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] }));
+    await tick();
+    expect(adapterData.scopes).not.toHaveBeenCalled();
+    expect(useDebug.getState().variablesEpoch).toBe(0);
+  });
+
+  it("does not ask the Memory view again", async () => {
+    const caps = { jvmMemory: true } as DebugSession["caps"];
+    useDebug.setState({ sessions: { 1: { ...session, caps } }, active: 1, variablesEpoch: 0 });
+    render(<DebugToolWindow />);
+    fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
+    expect(await screen.findByText("The program has exited.")).toBeTruthy();
+    adapterData.memoryClasses.mockClear();
+    act(() => handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] }));
+    await tick();
+    expect(useDebug.getState().variablesEpoch).toBe(1);
+    expect(adapterData.memoryClasses).not.toHaveBeenCalled();
   });
 });
