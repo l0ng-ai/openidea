@@ -1,0 +1,383 @@
+//! The link's state machine, kept under `Shared::core`.
+
+use super::ledger::{DISPOSE_CHUNK, Ledger};
+use super::suspends::Suspends;
+use super::{LinkError, LinkState, OWN_IDS};
+use crate::codec::{Header, Reader};
+use crate::ids::{EVENT_CLASS_PREPARE, IdSizes, ReplyIds, dispose_body, event_kind, object_ids, stop_of};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use tokio::sync::{OwnedMutexGuard, oneshot};
+
+/// The right to have an injected command in flight. Each pending command holds a clone, so the
+/// next command waits for the previous reply even when its caller stopped waiting.
+pub(super) type Turn = Arc<OwnedMutexGuard<()>>;
+
+pub(super) type Answer = oneshot::Sender<Result<Vec<u8>, LinkError>>;
+
+/// A command of the link's own. None of them invokes a method or otherwise waits for the VM to
+/// run: the JVM answers each one straight away, which `upstream::forward` relies on when an
+/// adapter command reuses a pending id.
+pub(super) enum OwnCommand {
+    IdSizes,
+    /// `VirtualMachine.DisposeObjects`; the reply is dropped.
+    Dispose,
+    /// `ids`: where the reply carries ObjectIDs the ledger must count.
+    Inject {
+        ids: ReplyIds,
+        answer: Answer,
+        _turn: Turn,
+    },
+}
+
+#[derive(Default)]
+pub(super) struct Core {
+    pub(super) hold: bool,
+    pub(super) connected: bool,
+    pub(super) handshaken: bool,
+    pub(super) released: bool,
+    /// A suspending event started a stop, and some thread is still suspended.
+    pub(super) stopped: bool,
+    /// The thread the link's commands run on: the last of `event_threads`; `None` while running
+    /// or for a stop whose thread is unknown.
+    pub(super) thread: Option<u64>,
+    /// Threads an event stopped that are still suspended, oldest first. fwcd suspends only the
+    /// event's thread and resumes each thread alone, so earlier ones can stay stopped.
+    pub(super) event_threads: Vec<u64>,
+    pub(super) suspends: Suspends,
+    /// A suspending event whose thread the link could not read: any resume ends it, as it
+    /// cannot be told apart from the others.
+    pub(super) unattributed: bool,
+    /// Adapter `VirtualMachine.Suspend` (`None`) and `ThreadReference.Suspend` commands
+    /// counted on their way to the JVM and not answered yet, by packet id.
+    pub(super) suspending: HashMap<u32, Option<u64>>,
+    pub(super) generation: u64,
+    pub(super) degraded: Option<String>,
+    pub(super) closed: bool,
+    pub(super) sizes: Option<IdSizes>,
+    /// Body of the current stop's event when it arrived before `sizes`.
+    pub(super) unread_stop: Option<Vec<u8>>,
+    /// Ids of adapter invokes the JVM has not answered yet.
+    pub(super) invokes: HashSet<u32>,
+    /// The link's commands the JVM has not answered yet. An entry leaves only when its reply
+    /// arrives or the link closes: a caller that stops waiting leaves it here, so the late
+    /// reply is still counted and never taken for the adapter's.
+    pub(super) own: HashMap<u32, OwnCommand>,
+    /// Adapter commands with an id in [`OWN_IDS`] the JVM has not answered yet, per id.
+    pub(super) adapter_reserved: HashMap<u32, u32>,
+    pub(super) next_own: u32,
+    pub(super) ledger: Ledger,
+}
+
+/// Who gets a reply from the JVM.
+pub(super) enum Route {
+    Own(OwnCommand),
+    Adapter,
+    /// In [`OWN_IDS`] but nobody is waiting for it.
+    Nobody,
+}
+
+impl Core {
+    pub(super) fn state(&self) -> LinkState {
+        if self.closed {
+            LinkState::Closed
+        } else if let Some(reason) = &self.degraded {
+            LinkState::Degraded(reason.clone())
+        } else if !self.connected {
+            LinkState::Connecting
+        } else if !self.handshaken {
+            LinkState::Handshaking
+        } else if self.stopped {
+            LinkState::Suspended { generation: self.generation, thread: self.thread }
+        } else if self.hold && !self.released {
+            LinkState::Held
+        } else {
+            LinkState::Ready
+        }
+    }
+
+    /// Call under the JVM writer lock, so the id is pending before an adapter command with the
+    /// same id can be written. `command` must not invoke (see [`OwnCommand`]).
+    pub(super) fn register_own(&mut self, command: OwnCommand) -> u32 {
+        loop {
+            let id = self.next_own;
+            self.next_own = if id + 1 >= OWN_IDS.end { OWN_IDS.start } else { id + 1 };
+            if !self.own.contains_key(&id) && !self.adapter_reserved.contains_key(&id) {
+                self.own.insert(id, command);
+                return id;
+            }
+        }
+    }
+
+    /// Two pending commands never share a reserved id (see `upstream::forward`), so a reply's
+    /// id alone names its owner.
+    pub(super) fn route_reply(&mut self, id: u32) -> Route {
+        if let Some(own) = self.own.remove(&id) {
+            return Route::Own(own);
+        }
+        if OWN_IDS.contains(&id) {
+            let Some(pending) = self.adapter_reserved.get_mut(&id) else {
+                return Route::Nobody;
+            };
+            *pending -= 1;
+            if *pending == 0 {
+                self.adapter_reserved.remove(&id);
+            }
+        }
+        self.invokes.remove(&id);
+        Route::Adapter
+    }
+
+    pub(super) fn own_reply(&mut self, command: OwnCommand, header: &Header, body: Vec<u8>) {
+        match command {
+            OwnCommand::IdSizes if header.error() == 0 => match IdSizes::parse(&body) {
+                Ok(sizes) => {
+                    self.sizes = Some(sizes);
+                    if let Some(event) = self.unread_stop.take()
+                        && let Some(stop) = stop_of(&event, &sizes)
+                    {
+                        self.thread = stop.thread;
+                        self.event_threads.extend(self.thread);
+                        if self.count_event(stop.suspend_policy, stop.thread) {
+                            self.unattributed = false;
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!("JDWP link: malformed IDSizes reply: {e}"),
+            },
+            OwnCommand::IdSizes => tracing::warn!("JDWP link: IDSizes failed with error {}", header.error()),
+            OwnCommand::Dispose => {}
+            OwnCommand::Inject { ids, answer, _turn } => {
+                let result = self.count(ids, header, body);
+                // The caller may have given up; the ids are counted either way.
+                let _ = answer.send(result);
+            }
+        }
+    }
+
+    fn count(&mut self, layout: ReplyIds, header: &Header, body: Vec<u8>) -> Result<Vec<u8>, LinkError> {
+        if header.error() != 0 {
+            return Err(LinkError::Jdwp(header.error()));
+        }
+        let sizes = self.sizes.ok_or_else(|| LinkError::Protocol("no id sizes".into()))?;
+        match object_ids(layout, &body, &sizes) {
+            Ok(ids) => {
+                self.ledger.record(&ids);
+                Ok(body)
+            }
+            Err(e) => {
+                // Leaking ids is safe; releasing ids the JVM did not hand out aborts it.
+                tracing::warn!("JDWP link: reply {:#x} does not match {layout:?}, its ids leak: {e}", header.id);
+                Err(LinkError::Protocol(e.to_string()))
+            }
+        }
+    }
+
+    /// Where an injected command would run: the current stop's generation and thread, and the
+    /// id sizes to write the thread with.
+    pub(super) fn target(&self) -> Result<(u64, u64, IdSizes), LinkError> {
+        if self.closed {
+            return Err(LinkError::Closed);
+        }
+        if self.degraded.is_some() {
+            return Err(LinkError::Degraded);
+        }
+        match (self.stopped, self.sizes, self.thread) {
+            (true, Some(sizes), Some(thread)) => Ok((self.generation, thread, sizes)),
+            _ => Err(LinkError::NotSuspended),
+        }
+    }
+
+    /// Whether stop `generation` still lets the link write a command of its own.
+    pub(super) fn still_stopped(&self, generation: u64) -> Result<(), LinkError> {
+        if self.closed {
+            Err(LinkError::Closed)
+        } else if self.degraded.is_some() {
+            Err(LinkError::Degraded)
+        } else if self.stopped && self.generation == generation {
+            Ok(())
+        } else {
+            Err(LinkError::Stale)
+        }
+    }
+
+    /// `DisposeObjects` packets for everything in the ledger, to write right after the
+    /// adapter's resume. None while `Degraded`: the link sends nothing then, and leaks.
+    pub(super) fn disposals(&mut self) -> Vec<Vec<u8>> {
+        let Some(sizes) = self.sizes.filter(|_| !self.closed && self.degraded.is_none()) else {
+            return Vec::new();
+        };
+        let entries = self.ledger.drain();
+        entries
+            .chunks(DISPOSE_CHUNK)
+            .map(|chunk| {
+                let body = dispose_body(chunk, &sizes);
+                let id = self.register_own(OwnCommand::Dispose);
+                let mut packet = Header::command_bytes(id, 1, 14, body.len()).to_vec();
+                packet.extend_from_slice(&body);
+                packet
+            })
+            .collect()
+    }
+
+    /// Terminal. Pending commands fail and the ledger is dropped unreleased: after
+    /// `VirtualMachine.Dispose` the ids are gone anyway.
+    pub(super) fn close(&mut self) {
+        self.closed = true;
+        self.own.clear();
+        self.ledger.clear();
+    }
+
+    /// A `Composite` event: any event whose policy suspends something starts a new stop, except
+    /// while a stop is current for one raised during an adapter invoke (the JVM runs threads for
+    /// the invoke and suspends them again once it returns) or a class prepare (fwcd resumes
+    /// those with `VirtualMachine.Resume` and shows no stop for them): that stop goes on.
+    pub(super) fn event(&mut self, body: &[u8]) {
+        match self.sizes {
+            Some(sizes) => {
+                if let Some(stop) = stop_of(body, &sizes).filter(|stop| stop.suspend_policy != 0) {
+                    if self.stopped && event_kind(body) == Some(EVENT_CLASS_PREPARE) {
+                        self.count_class_prepare(stop.suspend_policy, stop.thread);
+                        return;
+                    }
+                    self.count_event(stop.suspend_policy, stop.thread);
+                    if !(self.stopped && self.invoking()) {
+                        self.begin_stop(stop.thread, None);
+                    }
+                }
+            }
+            None => {
+                let mut r = Reader::new(body);
+                if r.u8().is_ok_and(|policy| policy != 0) && r.count().is_ok_and(|n| n > 0) {
+                    self.unattributed = true;
+                    self.begin_stop(None, Some(body.to_vec()));
+                }
+            }
+        }
+    }
+
+    fn invoking(&self) -> bool {
+        !self.invokes.is_empty()
+    }
+
+    /// Counts a suspending event of `thread`; returns whether it could (the thread is known).
+    fn count_event(&mut self, policy: u8, thread: Option<u64>) -> bool {
+        let Some(thread) = thread else {
+            self.unattributed = true;
+            return false;
+        };
+        // During an invoke the thread runs while the counts still hold its suspensions.
+        if !self.invoking() {
+            self.suspends.ran(thread);
+        }
+        if policy == SUSPEND_EVENT_THREAD {
+            self.suspends.suspend(thread);
+        } else {
+            self.suspends.suspend_all();
+        }
+        true
+    }
+
+    /// A class prepare during a stop, which goes on: unlike [`Self::count_event`], one from a
+    /// thread the VM hides still counts when it suspends every thread, since only a VM-wide
+    /// resume can end it.
+    fn count_class_prepare(&mut self, policy: u8, thread: Option<u64>) {
+        match thread {
+            Some(_) => {
+                self.count_event(policy, thread);
+            }
+            None if policy != SUSPEND_EVENT_THREAD => self.suspends.suspend_all(),
+            None => {}
+        }
+    }
+
+    /// The adapter's `VirtualMachine.Suspend` (1/8) or `ThreadReference.Suspend` (11/2) with
+    /// packet `id`. Counted before the write, like a resume, so a resume written right after it
+    /// sees it; a refusal takes it back ([`Self::adapter_reply`]).
+    pub(super) fn suspend(&mut self, id: u32, command: (u8, u8), body: &[u8]) {
+        if command == (1, 8) {
+            self.suspends.suspend_all();
+            self.suspending.insert(id, None);
+        } else if let Some(thread) = self.sizes.and_then(|sizes| Reader::new(body).id(sizes.object).ok()) {
+            self.suspends.suspend(thread);
+            self.suspending.insert(id, Some(thread));
+        }
+    }
+
+    /// The JVM answered the adapter's packet `id` with `error`. A stop that a refused suspend
+    /// alone kept going ends here; its ids go out with the next resume.
+    pub(super) fn adapter_reply(&mut self, id: u32, error: u16) {
+        match self.suspending.remove(&id) {
+            Some(None) if error != 0 => self.suspends.unsuspend_all(),
+            Some(Some(thread)) if error != 0 => self.suspends.resume(thread),
+            _ => return,
+        }
+        self.settle();
+    }
+
+    fn begin_stop(&mut self, thread: Option<u64>, unread: Option<Vec<u8>>) {
+        self.generation += 1;
+        self.stopped = true;
+        self.thread = thread;
+        self.unread_stop = unread;
+        match thread {
+            Some(thread) => {
+                self.event_threads.retain(|&t| t != thread);
+                self.event_threads.push(thread);
+            }
+            // Its resume cannot be told apart from the others' either: any resume ends it.
+            None => self.event_threads.clear(),
+        }
+    }
+
+    /// The adapter's `VirtualMachine.Resume` (1/9) or `ThreadReference.Resume` (11/3) with
+    /// `body`. Call before writing it, under the JVM writer lock: once the JVM has it, it may
+    /// stop again, and that stop must not be taken for the one the resume ends. Returns whether
+    /// the ids read so far may be released after it: not while the link's stop goes on.
+    pub(super) fn resume(&mut self, command: (u8, u8), body: &[u8]) -> bool {
+        let before = (self.stopped, self.generation);
+        self.unattributed = false;
+        self.unread_stop = None;
+        if command == (11, 3) {
+            match self.sizes.and_then(|sizes| Reader::new(body).id(sizes.object).ok()) {
+                Some(thread) => self.suspends.resume(thread),
+                // Which count went down is unknown: the link takes every thread for running.
+                None => self.suspends.clear(),
+            }
+        } else {
+            self.suspends.resume_all();
+        }
+        self.settle();
+        !self.stopped || (self.stopped, self.generation) != before
+    }
+
+    fn end_stop(&mut self) {
+        self.stopped = false;
+        self.thread = None;
+        self.event_threads.clear();
+        self.unread_stop = None;
+    }
+
+    /// After a count went down: ends the stop once no thread is suspended. A thread the link
+    /// runs on that runs again moves the stop to the latest event thread still suspended, as a
+    /// new stop; with none left the VM-wide suspension keeps the stop, without a thread.
+    fn settle(&mut self) {
+        if !self.stopped {
+            return;
+        }
+        if !self.unattributed && !self.suspends.any() {
+            return self.end_stop();
+        }
+        let suspends = &self.suspends;
+        self.event_threads.retain(|&t| suspends.count(t) > 0);
+        if self.thread.is_some_and(|t| suspends.count(t) == 0) {
+            self.thread = self.event_threads.last().copied();
+            if self.thread.is_some() {
+                self.generation += 1;
+            }
+        }
+    }
+}
+
+/// `SuspendPolicy.EVENT_THREAD`; `ALL` is 2.
+const SUSPEND_EVENT_THREAD: u8 = 1;

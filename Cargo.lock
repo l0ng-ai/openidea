@@ -4271,11 +4271,16 @@ version = "0.1.41"
 dependencies = [
  "futures",
  "ide-core",
+ "ide-heap",
+ "ide-jdwp",
  "ide-jsonrpc",
+ "ide-jvm-attach",
+ "ide-jvm-inspect",
  "ide-language",
  "libc",
  "memchr",
  "parking_lot",
+ "percent-encoding",
  "portable-pty",
  "serde",
  "serde_json",
@@ -4376,6 +4381,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-heap"
+version = "0.1.41"
+dependencies = [
+ "criterion",
+ "ide-core",
+ "libc",
+ "memmap2",
+ "proptest",
+ "serde",
+ "serde_json",
+ "specta",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ide-host"
 version = "0.1.41"
 dependencies = [
@@ -4397,9 +4420,11 @@ dependencies = [
  "ide-db",
  "ide-docker",
  "ide-extension",
+ "ide-heap",
  "ide-http",
  "ide-index",
  "ide-jsonrpc",
+ "ide-jvm-attach",
  "ide-language",
  "ide-lsp",
  "ide-mcp",
@@ -4407,6 +4432,7 @@ dependencies = [
  "ide-plugin",
  "ide-remote",
  "ide-run",
+ "ide-scaffold",
  "ide-sdk",
  "ide-search",
  "ide-spell",
@@ -4483,6 +4509,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-jdwp"
+version = "0.1.41"
+dependencies = [
+ "ide-jvm-inspect",
+ "proptest",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ide-jsonrpc"
 version = "0.1.41"
 dependencies = [
@@ -4497,6 +4535,26 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "ide-jvm-attach"
+version = "0.1.41"
+dependencies = [
+ "libc",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "ide-jvm-inspect"
+version = "0.1.41"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "specta",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -4564,6 +4622,7 @@ dependencies = [
  "globset",
  "ide-core",
  "ide-jsonrpc",
+ "ide-jvm-inspect",
  "ide-language",
  "ide-text",
  "ide-vfs",
@@ -4703,6 +4762,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-scaffold"
+version = "0.1.41"
+dependencies = [
+ "ide-core",
+ "ide-tools",
+ "ide-vcs",
+ "insta",
+ "serde",
+ "serde_json",
+ "specta",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
 name = "ide-sdk"
 version = "0.1.41"
 dependencies = [
@@ -4727,6 +4802,7 @@ name = "ide-search"
 version = "0.1.41"
 dependencies = [
  "criterion",
+ "encoding_rs",
  "globset",
  "grep-matcher",
  "grep-regex",
@@ -6513,6 +6589,7 @@ dependencies = [
  "ide-profiler",
  "ide-remote",
  "ide-run",
+ "ide-scaffold",
  "ide-sdk",
  "ide-search",
  "ide-spell",
