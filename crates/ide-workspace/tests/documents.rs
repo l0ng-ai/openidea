@@ -506,6 +506,48 @@ fn reload_and_convert_encoding() {
 }
 
 #[test]
+fn external_changes_keep_a_chosen_encoding() {
+    // Valid UTF-8 bytes, so detection alone would read them as UTF-8.
+    let (first, changed) = (b"caf\xC3\xA9".as_slice(), b"caf\xC3\xA9 \xC3\xA8".as_slice());
+    for (encoding, reload) in [("windows-1252", true), ("gbk", true), ("windows-1252", false)] {
+        let f = fixture();
+        let path = f.root.join("legacy.txt");
+        fs::write(&path, first).unwrap();
+        let info = f.docs.open(&path).unwrap();
+        assert_eq!(info.encoding, "utf-8");
+        if reload {
+            f.docs.set_encoding(info.id, encoding, true).unwrap();
+        } else {
+            // Convert, then save: the file is now in the chosen encoding.
+            f.docs.replace_all(info.id, "café").unwrap();
+            f.docs.set_encoding(info.id, encoding, false).unwrap();
+            f.docs.save(info.id).unwrap();
+        }
+        let expected =
+            |bytes: &[u8]| encoding_rs::Encoding::for_label(encoding.as_bytes()).unwrap().decode(bytes).0.into_owned();
+        let changed = if reload { changed.to_vec() } else { ide_vfs::encode("café è", encoding, false).unwrap() };
+        fs::write(&path, &changed).unwrap();
+        f.docs.on_disk_changed(std::slice::from_ref(&path));
+        let snapshot = f.docs.snapshot(info.id).unwrap();
+        assert_eq!(snapshot.text, expected(&changed), "{encoding} reload={reload}");
+        assert_eq!(snapshot.encoding, encoding, "{encoding} reload={reload}");
+        assert!(!snapshot.dirty);
+    }
+}
+
+#[test]
+fn external_changes_redetect_an_encoding_the_user_never_chose() {
+    let f = fixture();
+    let path = f.root.join("plain.txt");
+    fs::write(&path, "plain").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    fs::write(&path, ide_vfs::encode("wide", "utf-16le", true).unwrap()).unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    let snapshot = f.docs.snapshot(info.id).unwrap();
+    assert_eq!((snapshot.text.as_str(), snapshot.encoding.as_str()), ("wide", "utf-16le"));
+}
+
+#[test]
 fn utf8_bom_is_added_and_removed_on_save() {
     let f = fixture();
     let path = f.root.join("bom.txt");

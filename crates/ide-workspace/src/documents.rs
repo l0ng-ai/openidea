@@ -149,6 +149,8 @@ struct DocState {
     binary: bool,
     dirty: bool,
     can_reload_encoding: bool,
+    /// The user picked `encoding`; reloads keep it instead of detecting again.
+    encoding_chosen: bool,
     /// Disk state we last loaded or wrote; changes matching it are our own.
     disk_mtime: f64,
     disk_len: u64,
@@ -420,6 +422,7 @@ impl Documents {
             binary: loaded.binary,
             dirty: false,
             can_reload_encoding: true,
+            encoding_chosen: false,
             disk_mtime: loaded.mtime_ms,
             disk_len: disk_len(path),
             closed: false,
@@ -491,6 +494,7 @@ impl Documents {
             binary: false,
             dirty: false,
             can_reload_encoding,
+            encoding_chosen: false,
             disk_mtime: 0.0,
             disk_len: 0,
             closed: false,
@@ -866,6 +870,7 @@ impl Documents {
                 let loaded = Self::load_as(&st.path, encoding, enabled)?;
                 st.native_to_ascii = enabled;
                 st.encoding = loaded.encoding.clone();
+                st.encoding_chosen = true;
                 st.has_bom = loaded.has_bom;
                 st.disk_mtime = loaded.mtime_ms;
                 st.disk_len = disk_len(&st.path);
@@ -884,6 +889,7 @@ impl Documents {
                 ide_vfs::encode(&st.doc.text_for_save(), encoding, has_bom)?;
             }
             st.encoding = encoding.to_owned();
+            st.encoding_chosen = true;
             st.has_bom = has_bom;
             self.set_dirty(doc, st, true);
             Ok(DocumentEncoding { encoding: st.encoding.clone(), has_bom: st.has_bom })
@@ -1020,8 +1026,13 @@ impl Documents {
                     Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?
                 } else {
                     let defaults = self.file_defaults();
-                    let loaded = Self::load_with_defaults(&st.path, &defaults)?;
-                    st.native_to_ascii = defaults.native_to_ascii_for(&st.path);
+                    let native_to_ascii = defaults.native_to_ascii_for(&st.path);
+                    let loaded = if st.encoding_chosen {
+                        Self::load_as(&st.path, &st.encoding, native_to_ascii)?
+                    } else {
+                        Self::load_with_defaults(&st.path, &defaults)?
+                    };
+                    st.native_to_ascii = native_to_ascii;
                     loaded
                 };
                 st.disk_mtime = loaded.mtime_ms;

@@ -361,6 +361,19 @@ impl ClientHandler {
     }
 }
 
+/// Shown once per session when tsserver keeps aborting at its heap limit; the UI adds a
+/// button that opens the language server settings.
+const TSSERVER_OUT_OF_MEMORY: &str = "tsserver stopped because it reached its memory limit and is restarted, so code intelligence may pause or miss results. Raise typescript.tsserver.maxTsServerMemory (in MB) in the server's Workspace Configuration.";
+
+/// Whether a vtsls log line reports tsserver aborting, which is how Node exits at its heap
+/// limit: exit code 134 on Windows, `SIGABRT` elsewhere.
+fn tsserver_ran_out_of_memory(text: &str) -> bool {
+    text.split_once("TSServer exited. ").is_some_and(|(_, rest)| {
+        let rest = rest.trim_end();
+        rest.starts_with("Code: 134.") || rest.ends_with("Signal: SIGABRT")
+    })
+}
+
 impl Handler for ClientHandler {
     fn on_notification(&self, method: &str, params: Value) {
         let Some(mgr) = self.mgr.upgrade() else { return };
@@ -375,6 +388,16 @@ impl Handler for ClientHandler {
             "window/showMessage" => self.show_message(&mgr, &params),
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();
+                if self.server.config.tsserver_project && tsserver_ran_out_of_memory(text) {
+                    tracing::warn!("[{}] {text}", self.server.name);
+                    if mgr.first_message(&self.server.name, TSSERVER_OUT_OF_MEMORY) {
+                        mgr.sink().emit(IdeEvent::Notify {
+                            level: NotifyLevel::Error,
+                            title: "TypeScript server ran out of memory".into(),
+                            body: Some(TSSERVER_OUT_OF_MEMORY.into()),
+                        });
+                    }
+                }
                 if self.server.name == "jdtls"
                     && text.contains("Can't use Java ")
                     && text.contains(" to import Gradle project ")
@@ -516,5 +539,21 @@ fn merge(base: &mut Value, layer: Value) {
             }
         }
         (base, layer) => *base = layer,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tsserver_ran_out_of_memory;
+
+    #[test]
+    fn tsserver_aborts_are_out_of_memory() {
+        assert!(tsserver_ran_out_of_memory("TSServer exited. Code: 134. Signal: null"));
+        assert!(tsserver_ran_out_of_memory("TSServer exited. Code: null. Signal: SIGABRT"));
+        assert!(!tsserver_ran_out_of_memory("TSServer exited. Code: 0. Signal: null"));
+        assert!(!tsserver_ran_out_of_memory("TSServer exited. Code: null. Signal: SIGTERM"));
+        assert!(!tsserver_ran_out_of_memory("TSServer exited. Code: 1340. Signal: null"));
+        assert!(!tsserver_ran_out_of_memory("Code: 134."));
+        assert!(tsserver_ran_out_of_memory("[error] TSServer exited. Code: 134. Signal: null\n"));
     }
 }

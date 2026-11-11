@@ -1,5 +1,6 @@
 //! IPC commands of `ide_host::ops::vcs` (the shared implementation).
 
+use super::doc::blocking;
 use crate::state::AppState;
 use ide_core::{IdeResult, RequestId};
 #[allow(unused_imports)]
@@ -7,7 +8,7 @@ pub use ide_host::ops::vcs::*;
 use ide_vcs::*;
 use std::path::PathBuf;
 use tauri::ipc::Channel;
-use tauri::{State, Window};
+use tauri::{AppHandle, Manager, State, Window};
 
 /// Changes of every repository of the project.
 #[tauri::command]
@@ -473,8 +474,12 @@ pub async fn vcs_diff_text(
 /// Line hunks between two arbitrary texts (diff viewer, commit dialog).
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_diff_hunks(state: State<'_, AppState>, old_text: String, new_text: String) -> Vec<LineHunk> {
-    ide_host::ops::vcs::vcs_diff_hunks(&state.host, "", old_text, new_text)
+pub async fn vcs_diff_hunks(app: AppHandle, old_text: String, new_text: String) -> Vec<LineHunk> {
+    // Off the main thread: diffing two large texts would freeze the window.
+    let host = app.state::<AppState>().host.clone();
+    tauri::async_runtime::spawn_blocking(move || ide_host::ops::vcs::vcs_diff_hunks(&host, "", old_text, new_text))
+        .await
+        .expect("line diff panicked")
 }
 
 /// Stages only the selected hunks of a file's working-tree changes.
@@ -783,8 +788,9 @@ pub async fn vcs_shelve(
 
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_shelves(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ShelvedChangeList>> {
-    ide_host::ops::vcs::vcs_shelves(&state.host, window.label())
+pub async fn vcs_shelves(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ShelvedChangeList>> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::vcs::vcs_shelves(&host, &label)).await
 }
 
 /// Unshelve: applies the shelved patch (3-way merging; conflicts are left for the
@@ -803,33 +809,44 @@ pub async fn vcs_unshelve(
 
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_shelf_delete(window: Window, state: State<'_, AppState>, id: String, path: Option<String>) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_shelf_delete(&state.host, window.label(), id, path)
+pub async fn vcs_shelf_delete(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    path: Option<String>,
+) -> IdeResult<()> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::vcs::vcs_shelf_delete(&host, &label, id, path)).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_shelf_rename(window: Window, state: State<'_, AppState>, id: String, name: String) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_shelf_rename(&state.host, window.label(), id, name)
+pub async fn vcs_shelf_rename(window: Window, state: State<'_, AppState>, id: String, name: String) -> IdeResult<()> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::vcs::vcs_shelf_rename(&host, &label, id, name)).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_shelf_patch(
+pub async fn vcs_shelf_patch(
     window: Window,
     state: State<'_, AppState>,
     id: String,
     path: Option<String>,
 ) -> IdeResult<String> {
-    ide_host::ops::vcs::vcs_shelf_patch(&state.host, window.label(), id, path)
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::vcs::vcs_shelf_patch(&host, &label, id, path)).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_changelists_load(window: Window, state: State<'_, AppState>) -> IdeResult<ChangelistState> {
-    ide_host::ops::vcs::vcs_changelists_load(&state.host, window.label())
+pub async fn vcs_changelists_load(window: Window, state: State<'_, AppState>) -> IdeResult<ChangelistState> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::vcs::vcs_changelists_load(&host, &label)).await
 }
 
+// Synchronous on purpose: the UI saves without waiting (debounced), and on the main thread
+// the saves land in order, so an older state can't overwrite a newer one.
 #[tauri::command]
 #[specta::specta]
 pub fn vcs_changelists_save(window: Window, state: State<'_, AppState>, changelists: ChangelistState) -> IdeResult<()> {

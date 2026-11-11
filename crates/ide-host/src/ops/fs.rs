@@ -1,8 +1,8 @@
 use super::Channel;
 use crate::Host;
-use ide_core::{IdeResult, RequestId};
+use ide_core::{IdeError, IdeResult, RequestId};
 use ide_vfs::FileEntry;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub async fn entry_kind(host: &Host, path: PathBuf) -> IdeResult<ide_vfs::EntryKind> {
     host.blocking(move || {
@@ -164,4 +164,47 @@ pub async fn read_text(host: &Host, window: &str, path: PathBuf) -> IdeResult<St
         None => Ok(ide_vfs::load_text(&path)?.text),
     })
     .await
+}
+
+/// The file `window` may hand to the OS's default application: `path` itself, resolved, when it is a
+/// file inside the window's project (its folder or a content root). The window must be trusted and
+/// open locally; a remote window's files live on its own machine and are not launched here.
+pub fn system_open_target(host: &Host, window: &str, path: PathBuf) -> IdeResult<PathBuf> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let real =
+        dunce::canonicalize(&path).map_err(|_| IdeError::not_found(format!("{}: no such file", path.display())))?;
+    if !real.is_file() {
+        return Err(IdeError::invalid(format!("{}: not a file", path.display())));
+    }
+    let roots: Vec<PathBuf> = std::iter::once(project.root.clone())
+        .chain(project.content_roots())
+        .filter_map(|root| dunce::canonicalize(root).ok())
+        .collect();
+    if !inside_any_root(&real, &roots) {
+        return Err(IdeError::invalid(format!("{}: outside the project", path.display())));
+    }
+    Ok(real)
+}
+
+/// Whether `path` lies inside one of `roots`, comparing whole path components (`/a/bc` is not inside `/a/b`).
+pub(crate) fn inside_any_root(path: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| path.starts_with(root))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inside_any_root;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn system_open_is_limited_to_paths_inside_a_project_root() {
+        let roots = vec![PathBuf::from("/work/app"), PathBuf::from("/work/shared")];
+        assert!(inside_any_root(Path::new("/work/app/docs/spec.pdf"), &roots));
+        assert!(inside_any_root(Path::new("/work/shared/a.docx"), &roots));
+        assert!(inside_any_root(Path::new("/work/app"), &roots));
+        assert!(!inside_any_root(Path::new("/work/app2/spec.pdf"), &roots));
+        assert!(!inside_any_root(Path::new("/home/me/.ssh/id_rsa"), &roots));
+        assert!(!inside_any_root(Path::new("/work/spec.pdf"), &[]));
+    }
 }

@@ -7,12 +7,12 @@ Java 的代码智能由 Eclipse JDT Language Server（jdtls）提供，OpenIDEA 
 
 ## 语言服务器
 
-| 语言                | 服务器                                 | 备选                                                     | 调试器                                |
-| ------------------- | -------------------------------------- | -------------------------------------------------------- | ------------------------------------- |
-| Java                | Eclipse JDT Language Server（`jdtls`） | `kmp-lsp`                                                | Microsoft java-debug，加载在 jdtls 内 |
-| Kotlin              | Kotlin LSP（JetBrains，`kotlin-lsp`）  | Kotlin Language Server（fwcd，`kotlin-language-server`） | Kotlin Debug Adapter（fwcd）          |
-| Groovy、Gradle 脚本 | `groovy-language-server`（需自行提供） |                                                          |                                       |
-| JSP                 | 无（仅语法高亮）                       |                                                          |                                       |
+| 语言                | 服务器                                 | 备选                                                                | 调试器                                |
+| ------------------- | -------------------------------------- | ------------------------------------------------------------------- | ------------------------------------- |
+| Java                | Eclipse JDT Language Server（`jdtls`） | `kmp-lsp`                                                           | Microsoft java-debug，加载在 jdtls 内 |
+| Kotlin              | Kotlin LSP（JetBrains，`kotlin-lsp`）  | Kotlin Language Server（fwcd，`kotlin-language-server`）、`kmp-lsp` | Kotlin Debug Adapter（fwcd）          |
+| Groovy、Gradle 脚本 | `groovy-language-server`（需自行提供） |                                                                     |                                       |
+| JSP                 | 无（仅语法高亮）                       |                                                                     |                                       |
 
 备选服务器只在排在它前面的服务器未安装时才会启动。想手动指定，打开 **设置 › 语言和框架 › 语言服务器**，选中其中一个服务器，在 **Java 语言服务器**（或 Kotlin 语言服务器）里选择：**自动** 使用第一个可用的，**无** 关闭代码智能。这个选择可以全局生效，也可以只对当前项目生效。
 
