@@ -26,7 +26,7 @@
   display: flex;
   flex: none;
   flex-direction: column;
-  width: 320px;
+  width: 340px;
   min-height: 0;
   border-right: 1px solid var(--border);
 }
@@ -407,7 +407,10 @@
 
 .categorySelect {
   flex: none;
-  width: 116px;
+  width: 150px;
+}
+.ownIcon {
+  background: transparent;
 }
 
 .marketRow .rowMain {

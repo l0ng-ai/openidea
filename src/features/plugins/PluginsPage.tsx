@@ -169,9 +169,10 @@ function PluginIcon({
       </span>
     );
   }
+  // A plugin's own icon fills the tile, as the initials do; the generic one sits on a plate.
   return (
-    <span className={clsx(styles.icon, large && styles.iconLarge)} aria-hidden>
-      <Icon name={pluginIconName(id, icon)} size={large ? 32 : 20} />
+    <span className={clsx(styles.icon, large && styles.iconLarge, icon && styles.ownIcon)} aria-hidden>
+      <Icon name={pluginIconName(id, icon)} size={icon ? (large ? 56 : 32) : large ? 32 : 20} />
     </span>
   );
 }
