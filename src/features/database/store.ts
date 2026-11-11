@@ -321,6 +321,11 @@ export async function saveSource(
   if (sshSecret !== undefined) await call(commands.dbSetSshSecret(id, sshSecret, !!source.ssh?.saveSecret));
   forget(id);
   await loadSources();
+  // Properties save leaves the tree expanded; reload the top level so it is not stuck on Loading.
+  const src = sourceById(id);
+  if (!src) return;
+  if (listsDatabases(src)) await loadDatabases(id);
+  else await loadSchemas(id);
 }
 
 /** Copy/Paste › Duplicate: a copy of data source `id` named `<name> [2]` (its password is not copied). */
