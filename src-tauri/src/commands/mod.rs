@@ -525,6 +525,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         web::web_open,
         profiler::profiler_prepare,
         profiler::profiler_collect,
+        profiler::profiler_gc_before_stop,
         heap::debug_heap_capture,
         heap::debug_heap_open,
         heap::debug_heap_classes,
