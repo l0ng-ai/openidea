@@ -406,6 +406,14 @@ export const commands = {
 	/**  Build tool sync results (Maven / Gradle) and other per-project caches. */
 	buildCaches?: boolean,
 } | null) => typedError<null, IdeError>(__TAURI_INVOKE("caches_schedule_invalidation", { options })),
+	cachesLocalDataInfo: () => typedError<LocalDataInfo, IdeError>(__TAURI_INVOKE("caches_local_data_info")),
+	/**
+	 *  Stores (`Some`) or clears (`None`, an empty string counts) the custom
+	 *  local-data root; with `migrate`, the current tree moves at the next start.
+	 *  Returns the directory that takes effect after a restart. The caller
+	 *  restarts the IDE (see `app_restart`).
+	 */
+	cachesSetLocalDataDir: (path: string | null, migrate: boolean) => typedError<string, IdeError>(__TAURI_INVOKE("caches_set_local_data_dir", { path, migrate })),
 	/**  Quits through every window's unsaved-changes check, then starts again. */
 	appRestart: () => __TAURI_INVOKE<void>("app_restart"),
 	indexStatus: () => typedError<IndexStatus, IdeError>(__TAURI_INVOKE("index_status")),
@@ -6476,6 +6484,18 @@ export type LineMatch = {
 	ranges: ([number, number])[],
 	/**  Column offset of `text` in the real line (non-zero when truncated). */
 	textOffset: number,
+};
+
+/**  Settings › System Settings › Caches: where the local data lives. */
+export type LocalDataInfo = {
+	/**  The directory in use by this run. */
+	current: string,
+	/**  The OS default (what clearing the custom directory returns to). */
+	defaultDir: string,
+	/**  The custom root stored by Settings, if any (`current` is `<root>/<identifier>`). */
+	customRoot: string | null,
+	/**  `OPENIDEA_LOCAL_DATA_DIR` is set and wins over everything Settings stores. */
+	envOverride: boolean,
 };
 
 /**  What a local definition declares (nvim-treesitter `@local.definition.<kind>`). */
