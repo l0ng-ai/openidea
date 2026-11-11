@@ -819,13 +819,6 @@ async function loadOutgoing(id: string) {
   if (logState(id).generation === generation) setViewState(id, { outgoing, tracked });
 }
 
-/** The commit is on the upstream of the current branch (rewriting it needs a force push). */
-export function isPushed(id: string): boolean {
-  const { outgoing, tracked, commits } = useGitLog.getState();
-  const c = commits.find((c) => commitKey(c) === id);
-  return !!c && tracked.has(commitRepo(c) ?? "") && !!outgoing && !outgoing.has(id);
-}
-
 export function loadMore(id = useGitLog.getState().shownLog): Promise<void> {
   return loadPage(false, id);
 }
