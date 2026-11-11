@@ -3793,6 +3793,7 @@
   "Use ; to separate patterns. * matches every file.": "Użyj ; do rozdzielenia wzorców. * dopasowuje każdy plik.",
   "Function and method suggestions get (); the caret goes inside unless there are no parameters.": "Sugestie funkcji i metod otrzymują (); kursor umieszczany jest wewnątrz, chyba że brak parametrów.",
   "Insert paired brackets (), [], {}": "Wstawiaj parzyste nawiasy (), [], {}",
+  "Also pairs <> for generics where the syntax says a type starts.": "Paruje też <> dla generyków tam, gdzie składnia wskazuje początek typu.",
   "word": "słowo",
   "Confirm closing a tab with a running process": "Potwierdzaj zamknięcie karty z uruchomionym procesem",
   "value": "wartość",
