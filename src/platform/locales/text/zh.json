@@ -7318,5 +7318,6 @@
   "Imported 1 MCP server from the project.": "已从项目导入 1 个 MCP 服务器。",
   "Imported {count} MCP servers from the project.": "已从项目导入 {count} 个 MCP 服务器。",
   "Show branch and incoming/outgoing commits in the Project view": "在项目视图中显示分支及传入/传出提交",
-  "Up to date with {upstream}": "已与 {upstream} 同步"
+  "Up to date with {upstream}": "已与 {upstream} 同步",
+  "Highlight occurrences of selected text": "高亮所选文本的匹配项"
 }
