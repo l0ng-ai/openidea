@@ -975,5 +975,6 @@
   "Opens Settings › Agents › Model Context Protocol (MCP): configures User and Workspace MCP servers.": "Opens Settings › Agents › Model Context Protocol (MCP): configures User and Workspace MCP servers.",
   "No matching remote branches": "No matching remote branches",
   "Remote branches": "Remote branches",
-  "Maven project could not be configured": "Maven project could not be configured"
+  "Maven project could not be configured": "Maven project could not be configured",
+  "Change font size with Ctrl/Command+Mouse Wheel": "Change font size with Ctrl/Command+Mouse Wheel"
 }
