@@ -1,0 +1,15 @@
+{% load static %}<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>{% block title %}Shop{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'shop/site.css' %}">
+  </head>
+  <body>
+    {# The navigation is the same on every page. #}
+    <nav><a href="{% url 'shop:products' %}">Menu</a></nav>
+    <main>
+      {% block content %}{% endblock content %}
+    </main>
+  </body>
+</html>
