@@ -74,11 +74,12 @@ the [official plugins](plugins/official). The plugin API is still a preview.
 
 If OpenIDEA saves you time, you can support its development with Alipay or WeChat Pay.
 
-<p>
-  <img src=".github/assets/sponsor-alipay.png" alt="Alipay QR code" height="320">
-  &nbsp;&nbsp;
-  <img src=".github/assets/sponsor-wechat.png" alt="WeChat Pay QR code" height="320">
-</p>
+<table>
+  <tr>
+    <td align="center"><img src=".github/assets/sponsor-alipay.png" alt="Alipay QR code" width="200"><br>Alipay</td>
+    <td align="center"><img src=".github/assets/sponsor-wechat.png" alt="WeChat Pay QR code" width="200"><br>WeChat Pay</td>
+  </tr>
+</table>
 
 ## License
 
