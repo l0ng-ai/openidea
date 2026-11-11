@@ -595,6 +595,15 @@ pub struct Decoration {
     pub hover: Option<String>,
     pub after: Option<String>,
 }
+/// An editor annotation whose hover is rendered as Markdown (API 1.6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkdownDecoration {
+    pub range: Range,
+    pub style: String,
+    pub hover: Option<String>,
+    pub after: Option<String>,
+    pub markdown_hover: Option<String>,
+}
 /// A project-tree annotation. Badge is at most two Unicode characters.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileDecoration {

@@ -55,7 +55,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.5";
+pub const API_VERSION: &str = "1.6";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
@@ -1657,12 +1657,6 @@ impl Runtime {
             e.plugin.openidea_plugin_lifecycle().call_activate(store, &ctx)
         })
         .and_then(|r| r.map_err(|e| CallError::Guest(e.into())))
-    }
-
-    /// Authorize host-supplied command data against this actor's grants before
-    /// it enters WASM. Revocation stops the actor and replaces its grant set.
-    pub fn require_capability(&self, capability: Capability) -> Result<(), CallError> {
-        self.store.data().require(capability).map_err(|e| CallError::Guest(e.into()))
     }
 
     pub fn run_command(

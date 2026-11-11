@@ -245,7 +245,7 @@ fn range_to_wit(r: &ide_core::Range) -> wit::Range {
 }
 
 impl StoreData {
-    pub(crate) fn require(&self, cap: Capability) -> Result<(), wit::Error> {
+    fn require(&self, cap: Capability) -> Result<(), wit::Error> {
         if self.granted.iter().any(|g| g.covers(&cap)) { Ok(()) } else { Err(wit::Error::Denied(cap.to_string())) }
     }
 
@@ -2239,6 +2239,23 @@ fn diagnostic_to_wit(d: ide_core::Diagnostic) -> diagnostics::Diagnostic {
         related: Vec::new(),
     }
 }
+impl StoreData {
+    /// Shared by `set` and `set-markdown`: both replace the same set-id namespace.
+    fn replace_decorations(&mut self, path: String, set_id: String, items: Vec<crate::Decoration>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        if items.len() > 10_000 {
+            return Ok(Err(wit::Error::Invalid("at most 10000 decorations per file".into())));
+        }
+        let real = match self.decoration_path(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(self.host.decorations(Some(&real), &set_id, items).map_err(to_wit))
+    }
+}
+
 impl bindings::openidea::plugin::decorations::Host for StoreData {
     fn set(
         &mut self,
@@ -2246,21 +2263,35 @@ impl bindings::openidea::plugin::decorations::Host for StoreData {
         set_id: String,
         items: Vec<bindings::openidea::plugin::decorations::Decoration>,
     ) -> Fallible<()> {
-        if let Err(e) = self.require(Capability::ProjectRead) {
-            return Ok(Err(e));
-        }
-        if items.len() > 10_000 {
-            return Ok(Err(wit::Error::Invalid("at most 10000 decorations per file".into())));
-        }
         let items = items
             .into_iter()
-            .map(|d| crate::Decoration { range: core_range(d.range), style: d.style, hover: d.hover, after: d.after })
+            .map(|d| crate::Decoration {
+                range: core_range(d.range),
+                style: d.style,
+                hover: d.hover,
+                after: d.after,
+                markdown_hover: None,
+            })
             .collect();
-        let real = match self.decoration_path(&path) {
-            Ok(real) => real,
-            Err(e) => return Ok(Err(e)),
-        };
-        Ok(self.host.decorations(Some(&real), &set_id, items).map_err(to_wit))
+        self.replace_decorations(path, set_id, items)
+    }
+    fn set_markdown(
+        &mut self,
+        path: String,
+        set_id: String,
+        items: Vec<bindings::openidea::plugin::decorations::MarkdownDecoration>,
+    ) -> Fallible<()> {
+        let items = items
+            .into_iter()
+            .map(|d| crate::Decoration {
+                range: core_range(d.range),
+                style: d.style,
+                hover: d.hover,
+                after: d.after,
+                markdown_hover: d.markdown_hover,
+            })
+            .collect();
+        self.replace_decorations(path, set_id, items)
     }
     fn clear(&mut self, set_id: String) -> Fallible<()> {
         if let Err(e) = self.require(Capability::ProjectRead) {

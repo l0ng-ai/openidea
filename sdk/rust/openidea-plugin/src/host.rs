@@ -380,6 +380,19 @@ mod imp {
             .collect::<Vec<_>>();
         wit::decorations::set(path, set, &items).map_err(error)
     }
+    pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
+        let items = items
+            .iter()
+            .map(|d| wit::decorations::MarkdownDecoration {
+                range: range_out(d.range),
+                style: d.style.clone(),
+                hover: d.hover.clone(),
+                after: d.after.clone(),
+                markdown_hover: d.markdown_hover.clone(),
+            })
+            .collect::<Vec<_>>();
+        wit::decorations::set_markdown(path, set, &items).map_err(error)
+    }
     pub fn clear_decorations(set: &str) -> Result<(), Error> {
         wit::decorations::clear(set).map_err(error)
     }
@@ -1717,6 +1730,11 @@ pub fn problems(path: Option<&str>) -> Result<Vec<FileProblems>, Error> {
 /// Replace a file's editor decorations. Requires project.read; 10,000 items/file, 50 sets.
 pub fn set_decorations(path: &str, set: &str, items: &[Decoration]) -> Result<(), Error> {
     imp::set_decorations(path, set, items)
+}
+/// Replace a file's editor decorations with Markdown hover cards (API 1.6).
+/// Requires project.read; the same limits and set ids as [`set_decorations`].
+pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
+    imp::set_markdown_decorations(path, set, items)
 }
 /// Clear this plugin's editor decoration set in all projects. Requires project.read.
 pub fn clear_decorations(set: &str) -> Result<(), Error> {

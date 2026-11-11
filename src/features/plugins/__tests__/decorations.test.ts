@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { DecorationSet } from "@/bindings";
@@ -9,7 +9,13 @@ import { decorationExtension, setPluginDecorations } from "../decorations";
 import { capabilityDescription } from "../consent";
 import { handleRuntimeEvent } from "../runtimeUi";
 
-const ctx: EditorDocContext = { doc: 1, path: "/p/a.txt", language: "text", uiMode: null, readOnly: false };
+const ctx: EditorDocContext = {
+  doc: 1,
+  path: "/p/a.txt",
+  language: "text",
+  uiMode: null,
+  readOnly: false,
+};
 let editor: TextEditorHandle;
 const range = { start: { line: 0, col: 2 }, end: { line: 0, col: 4 } };
 const set = (root = "/p"): DecorationSet => ({
@@ -17,7 +23,15 @@ const set = (root = "/p"): DecorationSet => ({
   path: "/p/a.txt",
   setId: "test",
   tree: false,
-  items: [{ range, style: "highlight", hover: "hover", after: "<plain>" }],
+  items: [
+    {
+      range,
+      style: "highlight",
+      hover: "hover",
+      after: "<plain>",
+      markdownHover: null,
+    },
+  ],
   file: null,
 });
 beforeEach(() => {
@@ -52,6 +66,33 @@ it("renders plain annotations, maps them through edits, and withdraws them", () 
   expect(editor.view.dom.textContent).not.toContain("<plain>");
 });
 
+it("renders a Markdown hover card instead of the native tooltip", async () => {
+  setPluginDecorations("test", [
+    {
+      ...set(),
+      items: [
+        {
+          range,
+          style: "highlight",
+          hover: "plain tooltip",
+          after: " + model",
+          markdownHover: "**model** card",
+        },
+      ],
+    },
+  ]);
+  const label = [...editor.view.dom.querySelectorAll("span")].find((span) => span.textContent === " + model")!;
+  expect(label.getAttribute("title")).toBeNull();
+  expect(editor.view.dom.querySelector('[title="plain tooltip"]')).toBeNull();
+
+  vi.useFakeTimers();
+  label.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 1, clientY: 1 }));
+  await vi.advanceTimersByTimeAsync(400);
+  const card = document.querySelector(".cm-tooltip .cm-lsp-hover");
+  expect(card?.textContent).toContain("model");
+  vi.useRealTimers();
+});
+
 it("filters project roots and unknown styles and replaces tree badges", () => {
   setPluginDecorations("test", [set("/other")]);
   expect(editor.view.dom.textContent).not.toContain("<plain>");
@@ -59,7 +100,12 @@ it("filters project roots and unknown styles and replaces tree badges", () => {
   unknown.items[0]!.style = "unknown";
   setPluginDecorations("test", [unknown]);
   expect(editor.view.dom.textContent).not.toContain("<plain>");
-  const tree = { ...set(), tree: true, items: [], file: { style: "modified", badge: "M", tooltip: "changed" } };
+  const tree = {
+    ...set(),
+    tree: true,
+    items: [],
+    file: { style: "modified", badge: "M", tooltip: "changed" },
+  };
   setPluginDecorations("test", [tree]);
   expect(getFileDecoration("/p/a.txt")?.badge).toBe("M");
   setPluginDecorations("test", []);
@@ -67,10 +113,20 @@ it("filters project roots and unknown styles and replaces tree badges", () => {
 });
 
 it("selects UTF-16 ranges and reveals without changing text", () => {
-  handleRuntimeEvent({ type: "editorRanges", path: ctx.path, ranges: [range], reveal: false });
+  handleRuntimeEvent({
+    type: "editorRanges",
+    path: ctx.path,
+    ranges: [range],
+    reveal: false,
+  });
   expect(editor.view.state.selection.main.from).toBe(2);
   expect(editor.view.state.selection.main.to).toBe(4);
-  handleRuntimeEvent({ type: "editorRanges", path: ctx.path, ranges: [range], reveal: true });
+  handleRuntimeEvent({
+    type: "editorRanges",
+    path: ctx.path,
+    ranges: [range],
+    reveal: true,
+  });
   expect(editor.view.state.doc.toString()).toBe("😀text");
   handleRuntimeEvent({
     type: "editorRanges",

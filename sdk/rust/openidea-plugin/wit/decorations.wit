@@ -1,4 +1,4 @@
-package openidea:plugin@1.5.0;
+package openidea:plugin@1.6.0;
 
 /// Project-scoped decorations (API 1.4). Requires project.read; paths must be inside
 /// an open project. Sets belong to the plugin and disappear when it stops.
@@ -8,11 +8,26 @@ interface decorations {
     use types.{error, range};
     /// An editor annotation; after is plain text shown after the range.
     record decoration { range: range, style: string, hover: option<string>, after: option<string> }
+    /// An editor annotation whose hover is rendered as Markdown (API 1.6).
+    /// `hover` stays the plain-text fallback for hosts that do not render it.
+    record markdown-decoration {
+        range: range,
+        style: string,
+        hover: option<string>,
+        after: option<string>,
+        /// Markdown shown in the editor's hover card while the pointer rests on
+        /// the range or its after label.
+        markdown-hover: option<string>,
+    }
     /// A project-tree annotation; badge is at most two Unicode characters.
     record file-decoration { badge: option<string>, style: string, tooltip: option<string> }
     /// Replace this set for a file. At most 10,000 items/file and 50 editor sets/plugin.
     /// Metadata is bounded to 4 MiB per plugin. Unknown styles are ignored.
     set: func(path: string, set-id: string, items: list<decoration>) -> result<_, error>;
+    /// Like `set`, with each item's Markdown hover rendered as a hover card
+    /// (API 1.6). Same limits and set-id replacement rules as `set`; `clear`
+    /// removes a set regardless of which call created it.
+    set-markdown: func(path: string, set-id: string, items: list<markdown-decoration>) -> result<_, error>;
     /// Remove this editor set from every file/project.
     clear: func(set-id: string) -> result<_, error>;
     /// Replace this set's tree annotation for a file; at most 50 tree sets/plugin.

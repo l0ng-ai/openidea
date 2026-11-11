@@ -37,3 +37,10 @@
   margin-inline-start: calc(var(--space-2) / 2);
   color: var(--fg-muted);
 }
+
+/* A highlighted label carries emphasis; the range background stays on the text. */
+.after.highlight {
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+}

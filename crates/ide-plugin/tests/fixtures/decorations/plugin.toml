@@ -1,0 +1,20 @@
+id = "decorations"
+name = "Decoration example"
+version = "0.1.0"
+description = "Minimal plugin API 1.6 example: line-end labels with Markdown hover cards."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+engines.openidea = "^1.6"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["project.read"]
+
+[[contributes.commands]]
+id = "publish"
+title = "Decorations: Publish"
+
+[[contributes.commands]]
+id = "clear"
+title = "Decorations: Clear"

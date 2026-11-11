@@ -1,7 +1,16 @@
 import { StateEffect, StateField, type Text } from "@codemirror/state";
-import { Decoration, EditorView, WidgetType, type DecorationSet as CmDecorations } from "@codemirror/view";
+import {
+  Decoration,
+  EditorView,
+  WidgetType,
+  hoverTooltip,
+  type DecorationSet as CmDecorations,
+  type Tooltip,
+} from "@codemirror/view";
 import type { DecorationSet, Range } from "@/bindings";
 import { registerEditorContribution, useEditorRegistry, type EditorDocContext } from "@/editor/api";
+import { hoverCard } from "@/editor/lsp/hover";
+import { renderMarkup } from "@/editor/lsp/markdown";
 import { commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { setFileDecorations, type FileDecoration } from "@/workbench/contributions";
@@ -63,24 +72,55 @@ class AfterText extends WidgetType {
     readonly text: string,
     readonly style: string,
     readonly hover: string | null,
+    readonly markdown: string | null,
   ) {
     super();
   }
   override eq(other: AfterText) {
-    return this.text === other.text && this.style === other.style && this.hover === other.hover;
+    return (
+      this.text === other.text &&
+      this.style === other.style &&
+      this.hover === other.hover &&
+      this.markdown === other.markdown
+    );
   }
   override toDOM() {
     const span = document.createElement("span");
     span.className = `${styles.after} ${this.style}`;
     span.textContent = this.text;
-    if (this.hover) span.title = this.hover;
+    // The Markdown hover card replaces the native tooltip; two would stack.
+    if (this.hover && !this.markdown) span.title = this.hover;
     return span;
   }
 }
 
+/** A Markdown hover placed on a range (and its `after` label). */
+interface PlacedHover {
+  from: number;
+  to: number;
+  after: boolean;
+  markdown: string;
+}
+
+interface PlacedDecorations {
+  decorations: CmDecorations;
+  hovers: PlacedHover[];
+}
+
 export function decorationExtension(ctx: EditorDocContext) {
-  const build = (doc: Text): CmDecorations => {
+  const field = StateField.define<PlacedDecorations>({
+    create: (state) => build(state.doc),
+    update: (value, tr) =>
+      tr.effects.some((e) => e.is(refresh))
+        ? build(tr.state.doc)
+        : // Mapped decorations stay valid, but hover positions would not follow edits.
+          { decorations: value.decorations.map(tr.changes), hovers: [] },
+    provide: (field) => EditorView.decorations.from(field, (value) => value.decorations),
+  });
+
+  const build = (doc: Text): PlacedDecorations => {
     const ranges = [];
+    const hovers: PlacedHover[] = [];
     for (const sets of snapshots.values())
       for (const set of currentSets(sets))
         if (!set.tree && set.path === ctx.path) {
@@ -90,26 +130,49 @@ export function decorationExtension(ctx: EditorDocContext) {
             const from = offset(doc, item.range.start),
               to = offset(doc, item.range.end);
             if (from == null || to == null || from > to) continue;
+            const markdown = item.markdownHover || null;
+            if (markdown) hovers.push({ from, to, after: !!item.after, markdown });
             if (from < to)
               ranges.push(
-                Decoration.mark({ class: className, attributes: item.hover ? { title: item.hover } : {} }).range(
-                  from,
-                  to,
-                ),
+                Decoration.mark({
+                  class: className,
+                  attributes: item.hover && !markdown ? { title: item.hover } : {},
+                }).range(from, to),
               );
             if (item.after)
               ranges.push(
-                Decoration.widget({ widget: new AfterText(item.after, className, item.hover), side: 1 }).range(to),
+                Decoration.widget({
+                  widget: new AfterText(item.after, className, item.hover, markdown),
+                  side: 1,
+                }).range(to),
               );
           }
         }
-    return Decoration.set(ranges, true);
+    return { decorations: Decoration.set(ranges, true), hovers };
   };
-  return StateField.define<CmDecorations>({
-    create: (state) => build(state.doc),
-    update: (value, tr) => (tr.effects.some((e) => e.is(refresh)) ? build(tr.state.doc) : value.map(tr.changes)),
-    provide: (field) => EditorView.decorations.from(field),
-  });
+
+  return [field, hoverTooltip(markdownHover(field, ctx), { hideOnChange: true })];
+}
+
+/**
+ * The decoration under the pointer, preferring an `after` label when the
+ * pointer is on its widget rather than on the decorated text.
+ */
+function markdownHover(field: StateField<PlacedDecorations>, ctx: EditorDocContext) {
+  return (view: EditorView, pos: number, side: number): Tooltip | null => {
+    const hovers = view.state.field(field).hovers;
+    const candidates = hovers.filter((h) => h.from <= pos && pos <= h.to);
+    const placed = candidates.find((h) => h.after && h.to === pos && side >= 0) ?? candidates[candidates.length - 1];
+    if (!placed) return null;
+    return {
+      pos: placed.from,
+      end: placed.to,
+      above: true,
+      create: () => ({
+        dom: hoverCard([renderMarkup({ kind: "markdown", value: placed.markdown }, ctx.uiMode)]),
+      }),
+    };
+  };
 }
 
 /** Catch up editors and project trees opened after publication. */
@@ -136,7 +199,10 @@ export function startPluginDecorations(): () => void {
     for (const editor of useEditorRegistry.getState().editors) editor.view.dispatch({ effects: refresh.of(null) });
     load();
   });
-  const off = registerEditorContribution({ id: "plugins.decorations", extensions: decorationExtension });
+  const off = registerEditorContribution({
+    id: "plugins.decorations",
+    extensions: decorationExtension,
+  });
   load();
   return () => {
     disposed = true;

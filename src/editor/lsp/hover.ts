@@ -50,7 +50,10 @@ export async function requestHover(view: EditorView, pos: number): Promise<Hover
   if (own) {
     const h = own(view.state, pos);
     if (!h) return null;
-    const range = { start: offsetToPos(view.state.doc, h.from), end: offsetToPos(view.state.doc, h.to) };
+    const range = {
+      start: offsetToPos(view.state.doc, h.from),
+      end: offsetToPos(view.state.doc, h.to),
+    };
     return { contents: { kind: "markdown", value: h.markdown }, range };
   }
   const doc = docOf(view);
@@ -59,7 +62,10 @@ export async function requestHover(view: EditorView, pos: number): Promise<Hover
   if (construct)
     return {
       contents: { kind: "markdown", value: construct.markdown },
-      range: { start: offsetToPos(view.state.doc, construct.from), end: offsetToPos(view.state.doc, construct.to) },
+      range: {
+        start: offsetToPos(view.state.doc, construct.from),
+        end: offsetToPos(view.state.doc, construct.to),
+      },
     };
   if (hoverRequest !== null && isTauri()) void commands.cancelRequest(hoverRequest);
   const id = (hoverRequest = nextRequestId());
@@ -156,6 +162,14 @@ export function hoverYields(): boolean {
   return navigationModifierHeld() || !!pointerTarget()?.closest?.(".cm-lsp-inlay");
 }
 
+/** The editor's standard hover card: selectable content in a themed popup. */
+export function hoverCard(children: HTMLElement[]): HTMLElement {
+  const dom = document.createElement("div");
+  dom.className = `cm-lsp-hover ${selectableText}`;
+  for (const child of children) dom.appendChild(child);
+  return dom;
+}
+
 /** Problems always; quick documentation per Settings › Editor › Code Editing. */
 export async function hoverSource(view: EditorView, pos: number) {
   if (hoverYields()) return null;
@@ -184,11 +198,10 @@ export async function hoverSource(view: EditorView, pos: number) {
     end: to,
     above: true,
     create: () => {
-      const dom = document.createElement("div");
-      dom.className = `cm-lsp-hover ${selectableText}`;
-      if (diags.length) dom.appendChild(renderDiagnostics(view, diags));
-      if (hover) dom.appendChild(renderMarkup(hover.contents, lang));
-      return { dom };
+      const children: HTMLElement[] = [];
+      if (diags.length) children.push(renderDiagnostics(view, diags));
+      if (hover) children.push(renderMarkup(hover.contents, lang));
+      return { dom: hoverCard(children) };
     },
   };
 }
@@ -216,7 +229,9 @@ const hoverYieldsToNavigation = ViewPlugin.fromClass(
 
 export function hoverExtension(): Extension {
   return [
-    hoverTooltip(hoverSource, { hoverTime: Math.max(100, editorPrefs().codeEditing.quickDocDelay) }),
+    hoverTooltip(hoverSource, {
+      hoverTime: Math.max(100, editorPrefs().codeEditing.quickDocDelay),
+    }),
     hoverYieldsToNavigation,
   ];
 }
@@ -253,7 +268,14 @@ function showDoc(view: EditorView, entry: DocEntry, at: number) {
 export function showPhpConstructDocumentation(view: EditorView, pos: number): boolean {
   const construct = constructAt(view.state, pos, docOf(view)?.language);
   if (!construct) return false;
-  showDoc(view, { markup: { kind: "markdown", value: construct.markdown }, language: "PHP" }, construct.from);
+  showDoc(
+    view,
+    {
+      markup: { kind: "markdown", value: construct.markdown },
+      language: "PHP",
+    },
+    construct.from,
+  );
   return true;
 }
 
@@ -317,11 +339,17 @@ export function definitionSpan(
   const start = loc.range.start.line;
   if (declaration && declaration.start.line <= start && start <= declaration.end.line) {
     const first = Math.max(0, declaration.start.line);
-    return { first, last: Math.min(lineCount - 1, declaration.end.line, first + DECLARATION_MAX_LINES - 1) };
+    return {
+      first,
+      last: Math.min(lineCount - 1, declaration.end.line, first + DECLARATION_MAX_LINES - 1),
+    };
   }
   const first = Math.max(0, start - DEFINITION_CONTEXT_BEFORE);
   const spanEnd = Math.max(loc.range.end.line, start + 12);
-  return { first, last: Math.min(lineCount - 1, Math.min(spanEnd, first + DEFINITION_MAX_LINES - 1)) };
+  return {
+    first,
+    last: Math.min(lineCount - 1, Math.min(spanEnd, first + DEFINITION_MAX_LINES - 1)),
+  };
 }
 
 async function declarationRange(loc: Location): Promise<Range | null> {

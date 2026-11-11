@@ -136,6 +136,7 @@ struct State {
     patch: Option<String>,
     restricted: bool,
     decorations: BTreeMap<(String, String), Vec<Decoration>>,
+    markdown_decorations: BTreeMap<(String, String), Vec<MarkdownDecoration>>,
     file_decorations: BTreeMap<(String, String), FileDecoration>,
     revealed_ranges: Vec<Range>,
     loopback_queries: VecDeque<Option<String>>,
@@ -236,6 +237,10 @@ impl MockHost {
     /// Editor decoration snapshots keyed by (set id, absolute path).
     pub fn decorations(&self) -> BTreeMap<(String, String), Vec<Decoration>> {
         self.state.borrow().decorations.clone()
+    }
+    /// Markdown decoration snapshots keyed by (set id, absolute path).
+    pub fn markdown_decorations(&self) -> BTreeMap<(String, String), Vec<MarkdownDecoration>> {
+        self.state.borrow().markdown_decorations.clone()
     }
     /// Tree decoration snapshots keyed by (set id, absolute path).
     pub fn file_decorations(&self) -> BTreeMap<(String, String), FileDecoration> {
@@ -1519,12 +1524,47 @@ pub mod current {
             let path = decoration_path(s, path)?;
             let mut next = s.decorations.clone();
             next.insert((set.into(), path.clone()), items.iter().filter(|d| style(&d.style)).cloned().collect());
-            let names: BTreeSet<_> = next.keys().map(|(set, _)| set).collect();
-            let count: usize = next.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum();
-            if set.is_empty() || set.len() > 128 || names.len() > 50 || count > 10_000 {
+            // Plain and Markdown sets share the set-id namespace: the last call wins.
+            let mut markdown = s.markdown_decorations.clone();
+            markdown.remove(&(set.into(), path.clone()));
+            let names: BTreeSet<_> =
+                next.keys().chain(markdown.keys()).map(|(set, _)| set).collect();
+            let counts = |map: &BTreeMap<(String, String), Vec<Decoration>>| -> usize {
+                map.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum()
+            };
+            let markdown_counts = |map: &BTreeMap<(String, String), Vec<MarkdownDecoration>>| -> usize {
+                map.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum()
+            };
+            if set.is_empty() || set.len() > 128 || names.len() > 50 || counts(&next) + markdown_counts(&markdown) > 10_000 {
                 return Err(Error::Invalid("decoration limit".into()));
             }
             s.decorations = next;
+            s.markdown_decorations = markdown;
+            Ok(())
+        })
+    }
+    pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let path = decoration_path(s, path)?;
+            let mut next = s.markdown_decorations.clone();
+            next.insert((set.into(), path.clone()), items.iter().filter(|d| style(&d.style)).cloned().collect());
+            // Plain and Markdown sets share the set-id namespace: the last call wins.
+            let mut plain = s.decorations.clone();
+            plain.remove(&(set.into(), path.clone()));
+            let names: BTreeSet<_> =
+                next.keys().chain(plain.keys()).map(|(set, _)| set).collect();
+            let counts = |map: &BTreeMap<(String, String), Vec<MarkdownDecoration>>| -> usize {
+                map.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum()
+            };
+            let plain_counts = |map: &BTreeMap<(String, String), Vec<Decoration>>| -> usize {
+                map.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum()
+            };
+            if set.is_empty() || set.len() > 128 || names.len() > 50 || counts(&next) + plain_counts(&plain) > 10_000 {
+                return Err(Error::Invalid("decoration limit".into()));
+            }
+            s.decorations = plain;
+            s.markdown_decorations = next;
             Ok(())
         })
     }
@@ -1532,6 +1572,7 @@ pub mod current {
         with(|s| {
             require(s, "project.read")?;
             s.decorations.retain(|(id, _), _| id != set);
+            s.markdown_decorations.retain(|(id, _), _| id != set);
             Ok(())
         })
     }

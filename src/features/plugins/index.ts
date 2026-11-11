@@ -30,7 +30,6 @@ import {
 import { ConsentDialogHost, provideConsentDialog } from "./consent";
 import { trackIconTheme } from "./iconThemes";
 import { pluginLineMarkerGutter } from "./lineMarkerGutter";
-import { defineEditorAnnotationsPoint } from "./editorAnnotations";
 import { defineBuiltinUiPoints } from "./points";
 import { startViewUi } from "./uiPoints";
 import { showInstalledIntellijThemes, useIntellijThemesDialog } from "./intellijThemesDialogStore";
@@ -153,7 +152,6 @@ export function activate(): () => void {
         },
       },
     ]),
-    defineEditorAnnotationsPoint(),
     startPluginBridge(),
     startPluginNavigation(),
     startIndexedMarkers(),

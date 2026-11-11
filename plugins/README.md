@@ -33,10 +33,10 @@ plugins/
    ├─ regex-tester/           # html view talking to its code, settings, the editor's selection
    └─ license-header/         # file-opened events, quick fix, project scan in a task
 sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
-crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
+crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints, decorations
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.5.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.6.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -157,7 +157,6 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
-| `editorAnnotations` | `id`, `command` (a declared command), `refreshView` (a declared native view), `protocol` (`1`) — cached line labels and hover cards in the text editor; needs `editor.read`                                                            | yes           |
 
 A `viewItem.context` menu needs `view`, the id of one of the plugin's own
 views. It adds the commands to the right-click menu of the items in that
@@ -417,9 +416,21 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.6
+
+API 1.6.0 is planned for the next OpenIDEA release. Use
+`engines.openidea = "^1.6"` and the matching SDK. Released 1.5 plugins keep
+working. New in 1.6:
+
+- [Editor decorations](#editor-and-project-snapshots-api-14):
+  `host::set_markdown_decorations` (`decorations.set-markdown`) draws the same
+  line-end labels as `set_decorations`, and renders each item's `markdown_hover`
+  as a hover card. Set ids, limits and `clear_decorations` are shared with
+  `set_decorations`.
+
 ### API 1.5
 
-API 1.5.0 is planned for the next OpenIDEA release. Use
+API 1.5.0 shipped with OpenIDEA 0.1.41. Use
 `engines.openidea = "^1.5"` and the matching SDK. Released 1.4 plugins keep
 working. New in 1.5:
 
@@ -583,6 +594,7 @@ then run `openidea-plugin check`.
 | `host::open_editor(path, selection)`                                                                           | `editor.open`                              | API 1.4: open/select a project file (`project.read`) or plugin-dir file; same path rules as `views.open-location`. Commands/events of a window only.                                                                                                                                                                                                      |
 | `TextEditor::set_selections(ranges)`, `reveal(range)`                                                          | `editor.text-editor`                       | API 1.4: selections or scrolling in this window's already open editor; no capability. Commands/events only, UTF-16 coordinates.                                                                                                                                                                                                                           |
 | `host::set_decorations`, `clear_decorations`                                                                   | `decorations.{set,clear}`                  | API 1.4: project-scoped editor annotations cleared on plugin stop. Requires `project.read`.                                                                                                                                                                                                                                                               |
+| `host::set_markdown_decorations`                                                                               | `decorations.set-markdown`                 | API 1.6: the same sets with `markdown_hover` cards; shares set ids and limits with `set_decorations`. Requires `project.read`.                                                                                                                                                                                                                            |
 | `host::set_file_decoration`, `clear_file_decorations`                                                          | `decorations.{set-file,clear-file}`        | API 1.4: project-tree badges/styles. Requires `project.read`.                                                                                                                                                                                                                                                                                             |
 | `Project::search_text(query, limit)`                                                                           | `workspace.project.search-text`            | API 1.4: cancellable Find in Files with unsaved documents and project excludes, at most 10,000 matches. Requires `project.read`.                                                                                                                                                                                                                          |
 | `host::problems(path)`                                                                                         | `diagnostics.problems`                     | API 1.4: project Problems reports grouped by file/source, optional file filter. Requires `project.read` and an invoking window. Empty for remote projects.                                                                                                                                                                                                |
@@ -843,6 +855,14 @@ that project. Setting replaces a set's items for one file; clearing removes that
 set in all projects. Each plugin has at most 50 editor sets and 50 tree sets,
 10,000 editor items per file across its sets, and 4 MiB total metadata. Disabling,
 unloading or crashing the plugin withdraws them; idle reclamation preserves them.
+
+API 1.6 adds `set_markdown_decorations`: the same items, limits and set ids, with
+`markdown_hover` rendered as a hover card (the editor's Markdown hover, including
+code highlighting and safe links) while the pointer rests on the range or its
+`after` label. `hover` remains the plain-text fallback. A plugin that pushes
+labels when a file is opened or focused should subscribe to
+`file-opened`/`editor-focused` and call `clear_decorations` when its data no
+longer applies; the host already bounds what a set can carry.
 
 The new Git reads run on the project machine, require a trusted open project and
 `vcs.read`, and disable repository-configured helpers, textconv and external diff
@@ -1681,14 +1701,16 @@ This API is a web bridge extension; existing WIT signatures are unchanged.
 A web view can open a read-only editor tab backed by an authorized process:
 
 ```js
-openidea.postMessage(JSON.stringify({
-  op: "open-log-tab",
-  key: "server-output",
-  title: "Server logs",
-  program: "my-server",
-  args: ["logs"],
-  toggles: [{ id: "verbose", label: "Verbose", args: ["--verbose"] }],
-}));
+openidea.postMessage(
+  JSON.stringify({
+    op: "open-log-tab",
+    key: "server-output",
+    title: "Server logs",
+    program: "my-server",
+    args: ["logs"],
+    toggles: [{ id: "verbose", label: "Verbose", args: ["--verbose"] }],
+  }),
+);
 ```
 
 Declare `engines.openidea = "^1.3"` and `process:my-server` in the manifest.
@@ -1828,20 +1850,28 @@ plugin-defined toolbar actions that call back into the plugin. Declare
 `engines.openidea = "^1.3"` when using this protocol:
 
 ```js
-openidea.postMessage(JSON.stringify({
-  op: "open-content-tab",
-  key: "service-config",
-  title: "service.toml",
-  fileName: "service.toml",
-  language: "toml",
-  content: "name = \"demo\"\nreplicas = 2\n",
-  readOnly: false,
-  actions: [
-    { id: "reload", label: "Reload", icon: "rerun" },
-    { id: "diff", label: "Diff", icon: "diff" },
-    { id: "save", label: "Apply", icon: "green-checkmark", primary: true, save: true },
-  ],
-}));
+openidea.postMessage(
+  JSON.stringify({
+    op: "open-content-tab",
+    key: "service-config",
+    title: "service.toml",
+    fileName: "service.toml",
+    language: "toml",
+    content: 'name = "demo"\nreplicas = 2\n',
+    readOnly: false,
+    actions: [
+      { id: "reload", label: "Reload", icon: "rerun" },
+      { id: "diff", label: "Diff", icon: "diff" },
+      {
+        id: "save",
+        label: "Apply",
+        icon: "green-checkmark",
+        primary: true,
+        save: true,
+      },
+    ],
+  }),
+);
 ```
 
 `title` (1–256 characters) and `content` (at most 1 Mi UTF-16 code units, no NUL)
@@ -1953,12 +1983,19 @@ For a model-profile table, use:
 {
   "properties": {
     "profiles": {
-      "type": "array", "title": "Model profiles", "group": "Provider",
+      "type": "array",
+      "title": "Model profiles",
+      "group": "Provider",
       "items": {
         "type": "object",
         "properties": {
           "name": { "type": "string", "title": "Name" },
-          "provider": { "type": "string", "title": "Provider", "enum": ["local", "openai"], "default": "local" },
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "enum": ["local", "openai"],
+            "default": "local"
+          },
           "baseUrl": { "type": "string", "title": "Base URL" },
           "model": { "type": "string", "title": "Model" }
         }
@@ -2035,7 +2072,11 @@ and reclaims. The IDE itself is never affected.
   "id": "harbor-night",
   "name": "Harbor Night",
   "kind": "dark",
-  "tokens": { "--bg-app": "#14171c", "--accent": "#2b9e93", "--syn-keyword": "#e0a46e" }
+  "tokens": {
+    "--bg-app": "#14171c",
+    "--accent": "#2b9e93",
+    "--syn-keyword": "#e0a46e"
+  }
 }
 ```
 
@@ -2064,8 +2105,13 @@ path = "icons/theme.json"
 
 ```json
 {
-  "iconDefinitions": { "rust": "icons/rust.svg", "folder-src": "icons/folder-src.svg" },
-  "file": "file", "folder": "folder", "folderExpanded": "folder-open",
+  "iconDefinitions": {
+    "rust": "icons/rust.svg",
+    "folder-src": "icons/folder-src.svg"
+  },
+  "file": "file",
+  "folder": "folder",
+  "folderExpanded": "folder-open",
   "fileExtensions": { "rs": "rust", "d.ts": "typescript-def" },
   "fileNames": { "cargo.toml": "cargo" },
   "folderNames": { "src": "folder-src" }
@@ -2085,21 +2131,39 @@ Optional fields:
 
 ```json
 {
-  "iconDefinitions": { "rust": { "light": "icons/rust.svg", "dark": "icons/rust_dark.svg" } },
+  "iconDefinitions": {
+    "rust": { "light": "icons/rust.svg", "dark": "icons/rust_dark.svg" }
+  },
   "folderOpen": "folder-open",
   "patterns": [
     { "pattern": "^.*\\.spec\\.ts$", "icon": "test-ts", "ignoreCase": true },
-    { "pattern": "/fixtures/", "icon": "fixture", "path": true, "group": "tests" },
-    { "pattern": "^src$", "icon": "folder-src", "target": "folder", "openIcon": "folder-src-open" }
+    {
+      "pattern": "/fixtures/",
+      "icon": "fixture",
+      "path": true,
+      "group": "tests"
+    },
+    {
+      "pattern": "^src$",
+      "icon": "folder-src",
+      "target": "folder",
+      "openIcon": "folder-src-open"
+    }
   ],
   "overrides": { "chevron-right": "arrow-right", "symbol-class": "class" },
   "groups": [{ "id": "tests", "name": "Tests", "enabled": false }],
   "choices": [
     {
-      "id": "arrows", "name": "Arrows", "default": "plain",
+      "id": "arrows",
+      "name": "Arrows",
+      "default": "plain",
       "options": [
         { "id": "plain", "name": "Default" },
-        { "id": "plus", "name": "Plus-Minus", "overrides": { "chevron-right": "plus" } }
+        {
+          "id": "plus",
+          "name": "Plus-Minus",
+          "overrides": { "chevron-right": "plus" }
+        }
       ]
     }
   ],
@@ -2108,7 +2172,12 @@ Optional fields:
     {
       "title": "Icons",
       "items": [
-        { "option": "hideFiles", "invert": true, "label": "Show file icons", "hint": "In trees, lists and tabs" },
+        {
+          "option": "hideFiles",
+          "invert": true,
+          "label": "Show file icons",
+          "hint": "In trees, lists and tabs"
+        },
         { "option": "groups", "columns": 2 },
         { "option": "choice", "choice": "arrows" },
         { "option": "iconSize", "label": "Icon size", "default": 16 }
@@ -2386,8 +2455,8 @@ the API itself follows _Evolving the plugin API_ below.
 ## 10. Evolving the plugin API
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
-with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 is planned with the next release. wasmtime decides what stays compatible: it resolves interface names
+with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39, 1.4.0 with 0.1.40 and 1.5.0
+with 0.1.41. API 1.6.0 is planned with the next release. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a

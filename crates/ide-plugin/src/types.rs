@@ -838,11 +838,15 @@ pub struct FileProblems {
 }
 /// An editor decoration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct Decoration {
     pub range: ide_core::Range,
     pub style: String,
     pub hover: Option<String>,
     pub after: Option<String>,
+    /// Markdown rendered in the editor's hover card (API 1.6); `hover` is the
+    /// plain-text fallback shown when this is absent.
+    pub markdown_hover: Option<String>,
 }
 /// A tree decoration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
