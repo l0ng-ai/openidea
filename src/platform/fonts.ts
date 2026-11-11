@@ -126,6 +126,40 @@ export function monoFontFamily(family: string | undefined, fallback = "", base =
   return [...head, ...(fb ? familyFaces(fb) : []), base].join(", ");
 }
 
+/** Tools › Terminal › Font, shared by the terminal and the Run console. */
+export interface MonoFontChoice {
+  useEditorFont: boolean;
+  fontFamily: string;
+  fallbackFontFamily: string;
+  fontSize: number;
+}
+
+export interface EditorFontChoice {
+  fontFamily?: string | null;
+  fallbackFont?: string | null;
+  fontSize?: number | null;
+}
+
+/**
+ * The family and size Settings › Tools › Terminal resolves against Editor › Font.
+ * The console uses the terminal's choice too, so the font picker there controls
+ * both the terminal and Run output; `base` is `var(--font-mono)` for CSS consumers
+ * and the resolved stack for canvas consumers (xterm).
+ */
+export function resolveMonoFont(
+  choice: MonoFontChoice | undefined,
+  editor: EditorFontChoice | undefined,
+  base = "var(--font-mono)",
+): { family: string; size: number } {
+  const useEditor = choice?.useEditorFont !== false;
+  const family = (useEditor ? editor?.fontFamily : choice?.fontFamily) || BUNDLED_MONO_FAMILY;
+  const fallback = useEditor
+    ? choice?.fallbackFontFamily.trim() || editor?.fallbackFont || ""
+    : choice?.fallbackFontFamily.trim() || "";
+  const size = (useEditor ? editor?.fontSize : choice?.fontSize) || 13;
+  return { family: monoFontFamily(family, fallback, base), size };
+}
+
 /**
  * Resolves once the faces `family` uses at `size` are loaded, so code that measures
  * glyphs (xterm's cell size) measures the real font rather than the swap fallback.

@@ -1,0 +1,42 @@
+id = "dart"
+name = "Dart"
+group = "Dart"
+icon = "project-dart"
+description = "A Dart package from dart create."
+
+[[requires]]
+program = "dart"
+hint = "Install the Dart SDK: https://dart.dev/get-dart"
+
+[[fields]]
+id = "template"
+label = "Template:"
+type = "choice"
+segmented = true
+options = [
+    { value = "console", label = "Console" },
+    { value = "package", label = "Package" },
+    { value = "server-shelf", label = "Server (Shelf)" },
+    { value = "cli", label = "Command line" },
+]
+default = "console"
+
+[[fields]]
+id = "package"
+label = "Package name:"
+type = "text"
+pattern = '^[a-z][a-z0-9_]*$'
+default = "{{name|snake}}"
+
+[[steps]]
+label = "Running dart create"
+program = "dart"
+cwd = "parent"
+creates = "{{package}}"
+args = ["create", "--template", "{{template}}", "--no-pub", "{{package}}"]
+
+[[after]]
+label = "Running dart pub get"
+program = "dart"
+args = ["pub", "get"]
+optional = true

@@ -53,6 +53,10 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "jdk_download_releases",
         "jdk_download_location",
         "jdk_download",
+        "scaffold_catalog",
+        "scaffold_options",
+        "scaffold_requirements",
+        "scaffold_create",
         "run_system_env",
         "run_gradle_jvm_args_script",
         "proxy_check_connection",
@@ -481,4 +485,33 @@ fn attached_member_trust_is_required_after_restart_and_revocation() {
     assert!(!trust.window_trusted(&root).unwrap());
     trust.decide(&other, true, false).unwrap();
     assert!(trust.window_trusted(&root).unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_project_created_with_new_project_is_trusted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host = host(&tmp.path().join("app"), false);
+    let req: ide_scaffold::CreateRequest = serde_json::from_value(serde_json::json!({
+        "generator": "empty",
+        "location": tmp.path().join("projects").to_string_lossy(),
+        "name": "fresh",
+        "git": false,
+        "values": {},
+    }))
+    .unwrap();
+    let dir = ide_host::ops::scaffold::scaffold_create(
+        &host,
+        "welcome",
+        req,
+        ide_core::RequestId(902),
+        ide_host::ops::Channel::new(|_| {}),
+    )
+    .await
+    .unwrap();
+    let dir = std::path::PathBuf::from(dir);
+    assert!(host.trust.status(&dir).unwrap().trusted);
+    // Its siblings are not.
+    let sibling = tmp.path().join("projects/other");
+    std::fs::create_dir(&sibling).unwrap();
+    assert!(!host.trust.status(&sibling).unwrap().trusted);
 }

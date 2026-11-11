@@ -11,9 +11,28 @@ use ide_jsonrpc::{Handler, codes};
 use lsp_types as lsp;
 use serde_json::{Value, json};
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 /// Progress token standing for `angular/projectLoadingStart` … `Finish`.
 const ANGULAR_LOADING: &str = "angular/projectLoading";
+
+/// How often a running progress token's silence is checked.
+const PROGRESS_SWEEP: Duration = Duration::from_secs(15);
+/// A token that reports nothing this long is marked stuck: jdtls's `Importing Maven
+/// project(s)` waits minutes on one repository that never answers (`DefaultMetadataResolver`
+/// awaits its whole batch), and a task frozen at one percent is not progress. It stays
+/// visible, but stops holding the server busy while the work behind it keeps running.
+const PROGRESS_STALE: Duration = Duration::from_secs(180);
+
+/// Task message after [`PROGRESS_STALE`] of silence: keep the server's last message and
+/// say how long nothing happened.
+fn stalled_message(message: Option<&str>) -> String {
+    let secs = PROGRESS_STALE.as_secs();
+    match message.filter(|m| !m.is_empty()) {
+        Some(message) => format!("{message} — no progress for {secs} s"),
+        None => format!("No progress for {secs} s"),
+    }
+}
 
 pub struct ClientHandler {
     mgr: Weak<LspManager>,
@@ -48,13 +67,14 @@ impl ClientHandler {
             other => other.to_string(),
         };
         let value = &params["value"];
+        let kind = value.get("kind").and_then(Value::as_str);
         let message = value.get("message").and_then(Value::as_str).map(str::to_owned);
         let fraction = value.get("percentage").and_then(Value::as_f64).map(|p| (p / 100.0).clamp(0.0, 1.0) as f32);
         let cancellable = value.get("cancellable").and_then(Value::as_bool);
         let mut replaced = None;
         let event = {
             let mut progress = self.server.progress.lock();
-            match value.get("kind").and_then(Value::as_str) {
+            match kind {
                 Some("begin") => {
                     let title = value
                         .get("title")
@@ -69,7 +89,18 @@ impl ClientHandler {
                     // (PHPantom: begin, begin, end, end). The task it replaces ends now, or no
                     // `end` would ever reach it.
                     replaced = progress
-                        .insert(token, Progress { task, title: title.clone(), message: message.clone(), cancel })
+                        .insert(
+                            token.clone(),
+                            Progress {
+                                task,
+                                title: title.clone(),
+                                message: message.clone(),
+                                cancel,
+                                last: tokio::time::Instant::now(),
+                                stalled: false,
+                                fraction,
+                            },
+                        )
                         .map(|p| IdeEvent::Task {
                             id: p.task,
                             title: p.title,
@@ -82,8 +113,13 @@ impl ClientHandler {
                 }
                 Some("report") => {
                     let Some(p) = progress.get_mut(&token) else { return };
+                    p.last = tokio::time::Instant::now();
+                    p.stalled = false;
                     if message.is_some() {
                         p.message = message;
+                    }
+                    if fraction.is_some() {
+                        p.fraction = fraction;
                     }
                     match cancellable {
                         Some(true) if p.cancel.is_none() => {
@@ -123,7 +159,62 @@ impl ClientHandler {
         self.server.refresh_busy_status(mgr.sink());
         if ended {
             self.server.progress_ended();
+        } else if kind == Some("begin") {
+            self.watch_progress(mgr, token);
         }
+    }
+
+    /// A task that reports nothing for [`PROGRESS_STALE`] is stuck: the work behind it is
+    /// blocked on something that never answers, and a bar frozen at one percent is not
+    /// progress. Keep its task visible but mark it, and stop counting it as busy: a slow
+    /// import can resume and finish in the same task, while the IDE stays usable.
+    fn watch_progress(&self, mgr: &LspManager, token: String) {
+        let (weak, server, generation) = (self.mgr.clone(), self.server.clone(), self.generation);
+        // The notification runs on a reader thread, not inside a runtime.
+        mgr.runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(PROGRESS_SWEEP).await;
+                let Some(mgr) = weak.upgrade() else { return };
+                if server.running_gen(generation).is_none() || !server.has_progress(&token) {
+                    return; // the instance is gone, or the task ended normally
+                }
+                if server.progress_silent(&token, PROGRESS_STALE) {
+                    let handler = ClientHandler::new(Arc::downgrade(&mgr), server.clone(), generation);
+                    if handler.mark_progress_stalled(&mgr, &token) {
+                        tracing::warn!(
+                            "{}: progress '{token}' reported nothing for {} s; marking it stuck",
+                            server.name,
+                            PROGRESS_STALE.as_secs()
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    /// Marks a silent task as possibly stuck without ending it. Returns whether it was
+    /// newly marked; a later `report` clears the mark and makes the server busy again.
+    fn mark_progress_stalled(&self, mgr: &LspManager, token: &str) -> bool {
+        let event = {
+            let mut progress = self.server.progress.lock();
+            let Some(p) = progress.get_mut(token) else { return false };
+            if p.stalled || !p.silent(PROGRESS_STALE) {
+                return false;
+            }
+            p.stalled = true;
+            IdeEvent::Task {
+                id: p.task,
+                title: p.title.clone(),
+                message: Some(stalled_message(p.message.as_deref())),
+                fraction: p.fraction,
+                done: false,
+                cancellable: p.cancel.is_some(),
+            }
+        };
+        self.server.emit(mgr.sink(), event);
+        self.server.refresh_busy_status(mgr.sink());
+        self.server.progress_ended();
+        true
     }
 
     fn publish_diagnostics(&self, mgr: &LspManager, params: Value) {
@@ -140,14 +231,9 @@ impl ClientHandler {
         };
         let Some(path) = uri_to_path(params.uri.as_str()) else { return };
         if self.server.name == "jdtls"
-            && let Some(body) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics)
-            && mgr.first_message(&self.server.name, &body)
+            && let Some(failure) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics)
         {
-            mgr.sink().emit(ide_core::IdeEvent::Notify {
-                level: ide_core::event::NotifyLevel::Error,
-                title: "Maven project could not be configured".into(),
-                body: Some(body),
-            });
+            self.build_plan_failure(mgr, failure);
         }
         if !mgr.accepts_injected_diagnostics(&path, params.version) {
             return;
@@ -161,6 +247,17 @@ impl ClientHandler {
         }
         let shown = self.server.set_diagnostics(path.clone(), params.diagnostics);
         mgr.emit_diagnostics(&self.server, path, shown, self.encoding());
+    }
+
+    /// Once per unresolved plugin, whether m2e marked a `pom.xml` or only logged it.
+    fn build_plan_failure(&self, mgr: &LspManager, (plugin, body): (String, String)) {
+        if mgr.first_message(&self.server.name, &format!("build plan: {plugin}")) {
+            mgr.sink().emit(ide_core::IdeEvent::Notify {
+                level: ide_core::event::NotifyLevel::Error,
+                title: "Maven project could not be configured".into(),
+                body: Some(body),
+            });
+        }
     }
 
     fn show_message(&self, mgr: &LspManager, params: &Value) {
@@ -283,6 +380,12 @@ impl Handler for ClientHandler {
                     && text.contains(" to import Gradle project ")
                 {
                     self.show_message(&mgr, &json!({ "type": 1, "message": text.lines().next().unwrap_or(text) }));
+                }
+                if self.server.name == "jdtls"
+                    && params.get("type").and_then(Value::as_u64) == Some(1)
+                    && let Some(failure) = crate::jdtls::logged_build_plan_failure(text)
+                {
+                    self.build_plan_failure(&mgr, failure);
                 }
                 match params.get("type").and_then(Value::as_u64) {
                     Some(1) if self.server.name == "jdtls" && text.contains(crate::jdtls::reserved_names::IMPORT_FAILURE) => {

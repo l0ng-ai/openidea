@@ -16,6 +16,7 @@ import {
   type DebugCapabilities,
   type DebugEvent,
   type DebugSessionId,
+  type JvmBackendState,
   type LaunchConfig,
   type RunId,
   type RunConfig,
@@ -68,9 +69,13 @@ export interface DebugSession {
   selectedFrame: number | null;
   /** Breakpoint hits in this session. */
   hits: number;
+  /** `stopped` events of this session; unlike the global `stopSeq`, no other session or value edit moves it. */
+  stops: number;
   exitCode: number | null;
   /** What the adapter supports (fetched after start). */
   caps: DebugCapabilities | null;
+  /** State of the backend that reads a JVM's objects; absent until the backend reports one. */
+  jvmBackend?: JvmBackendState;
   /** A cancelled JDT build may have lost class-file deltas needed by this session. */
   hotSwapNeedsRestart?: boolean;
 }
@@ -197,6 +202,7 @@ function blank(id: DebugSessionId, p: Partial<DebugSession> = {}): DebugSession 
     frames: [],
     selectedFrame: null,
     hits: 0,
+    stops: 0,
     exitCode: null,
     caps: null,
     ...p,
@@ -291,7 +297,7 @@ function dropFinished() {
  * An attach to `process` this soon after a session on it ended may be to such a JVM.
  */
 const RELISTEN_MS = 3000;
-function justDetached(process: RunId | null | undefined): boolean {
+export function justDetached(process: RunId | null | undefined): boolean {
   if (process == null) return false;
   const now = Date.now();
   return Object.values(useDebug.getState().sessions).some(
@@ -360,6 +366,8 @@ export function publishContext() {
     "debugCanHotSwap",
     Object.values(useDebug.getState().sessions).some((x) => isLive(x) && !!x.caps?.hotCodeReplace),
   );
+  // Refresh Memory View acts on the selected session only.
+  setContext("debugHasJvmMemory", !!s && isLive(s) && sessionSupports("jvmMemory", s));
 }
 
 // --- console -----------------------------------------------------------------
@@ -626,7 +634,8 @@ export async function startSession(
             name: launch.name,
             runConfig: options.runConfig,
             startedAt: preparation?.startedAt ?? startedAt,
-            adapter: launch.adapter,
+            // The backend may start another adapter than the one asked for; `launch` keeps the request for Rerun.
+            adapter: cur.adapter || launch.adapter,
             launch: options.rerunnable === false ? null : launch,
             process: options.process ?? null,
             status: cur.status === "starting" ? "running" : cur.status,
@@ -668,7 +677,7 @@ export async function startSession(
         sticky: true,
         actions: [
           {
-            label: "Install and Debug",
+            label: missing.action ?? "Install and Debug",
             run: () => void executeAction("tools.install", missing.tool).then(() => startSession(launch, options)),
           },
         ],
@@ -1097,6 +1106,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
         frames: [],
         selectedFrame: null,
         hits: s.hits + (isBp ? 1 : 0),
+        stops: s.stops + 1,
       });
       useDebug.setState((st) => ({ active: id, stopSeq: st.stopSeq + 1 }));
       publishContext();
@@ -1147,6 +1157,12 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       break;
     case "terminated":
       markTerminated(id);
+      break;
+    case "capabilities":
+      void loadCapabilities(id);
+      break;
+    case "jvmBackend":
+      patch(id, { jvmBackend: event.state });
       break;
   }
 }

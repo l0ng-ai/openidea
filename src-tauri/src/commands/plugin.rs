@@ -348,6 +348,7 @@ pub async fn plugin_run_command(
     paths: Option<Vec<PathBuf>>,
     settings_scope: Option<SettingsScope>,
     command_chain: Option<Vec<String>>,
+    request: Option<ide_core::RequestId>,
 ) -> IdeResult<Option<String>> {
     let host = state.plugins.clone();
     let project = state.project(window.label()).ok();
@@ -359,7 +360,7 @@ pub async fn plugin_run_command(
         selected_paths: paths.unwrap_or_default(),
         global_settings: matches!(settings_scope, Some(SettingsScope::Global)),
     };
-    blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
+    ide_host::plugins::commands::run_command(&state.host, host, plugin_id, command_id, arg, invocation, request).await
 }
 
 /// Workbench events from this window (only the kinds of `plugin_event_kinds`).

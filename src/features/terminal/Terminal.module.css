@@ -113,6 +113,26 @@
 .pane :global(.xterm-viewport) {
   background-color: var(--bg-island, var(--bg-app)) !important;
 }
+.pane :global(.xterm-screen) {
+  isolation: isolate;
+}
+.pane :global(.openidea-terminal-selection-matches) {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+.pane :global(.openidea-terminal-selection-match) {
+  position: absolute;
+  box-sizing: border-box;
+  border-radius: 2px;
+  background-color: var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent));
+  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: -1px;
+}
+.pane :global(.xterm-decoration-container) {
+  pointer-events: none;
+}
 .pane :global(.xterm .xterm-scrollable-element > .scrollbar > .slider) {
   box-sizing: border-box;
   border: 2px solid transparent;

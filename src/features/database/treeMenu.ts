@@ -21,7 +21,7 @@ const act = (
 const sep: MenuItem = { kind: "separator" };
 
 async function sqliteFromFile() {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const file = await open({ multiple: false, directory: false, title: "SQLite Database File" });
   if (typeof file === "string") openSourceDialog(null, { driver: "sqlite", file, name: fileSourceName(file) });
 }

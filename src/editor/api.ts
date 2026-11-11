@@ -595,6 +595,8 @@ export interface CodeLens {
   run?: (view: EditorView, event: MouseEvent) => void;
   /** Lower first within a line. Default 100. */
   order?: number;
+  /** The Code Vision setting that places it ("usages", "author"); a lens without one goes above the line. */
+  kind?: string;
 }
 
 export const codeLenses = Facet.define<readonly CodeLens[], readonly CodeLens[]>({

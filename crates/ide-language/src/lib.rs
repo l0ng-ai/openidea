@@ -117,6 +117,10 @@ pub struct LanguageServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Environment variables the server can't start without (PowerShell Editor
+    /// Services' `PSES_BUNDLE_PATH`): while one is unset it counts as missing.
+    #[serde(default)]
+    pub requires_env: Vec<String>,
     /// Files whose presence marks a workspace root, e.g. `Cargo.toml`;
     /// `file#table` requires the TOML file to contain that dotted table, e.g.
     /// `pyproject.toml#tool.ruff`.

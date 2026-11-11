@@ -15,6 +15,8 @@ export const CLIENT_SETTINGS_KEYS = [
   "general.openProjectIn",
   "general.updateSource",
   "general.autoCheckUpdates",
+  "general.showWhatsNewAfterUpdate",
+  "general.lastRunVersion",
   "general.dateFormat",
   "editor.fontFamily",
   "editor.fontSize",

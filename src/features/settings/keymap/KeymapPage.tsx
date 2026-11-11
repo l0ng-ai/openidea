@@ -231,7 +231,7 @@ export function KeymapPage() {
   };
 
   const importIdeaKeymap = async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const path = await open({ multiple: false, filters: [{ name: tx("IntelliJ IDEA Keymap"), extensions: ["xml"] }] });
     if (!path) return;
     let parsed;

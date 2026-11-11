@@ -37,7 +37,7 @@ export interface AppearanceExtras {
   projectColorsInToolbar: boolean;
   dndWithAltOnly: boolean;
   menuIcons: boolean;
-  mainMenuStyle: "hamburger" | "merged";
+  mainMenuStyle: "hamburger" | "merged" | "toolbar";
   /** A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
   mainMenuAlt: boolean;
   ideAntialiasing: Antialiasing;
@@ -67,6 +67,10 @@ export interface GeneralExtras {
   openProjectIn: OpenProjectIn;
   updateSource: UpdateSourceSetting;
   autoCheckUpdates: boolean;
+  /** System Settings › Updates: show the What's New page after the app starts a new version. */
+  showWhatsNewAfterUpdate: boolean;
+  /** Version the app last started with; empty on the first run. */
+  lastRunVersion: string;
   defaultProjectDirectory: string;
   saveOnIdle: boolean;
   idleSeconds: number;
@@ -124,6 +128,8 @@ export const DEFAULT_GENERAL_EXTRAS: GeneralExtras = {
   openProjectIn: "ask",
   updateSource: "auto",
   autoCheckUpdates: true,
+  showWhatsNewAfterUpdate: true,
+  lastRunVersion: "",
   defaultProjectDirectory: "",
   saveOnIdle: false,
   idleSeconds: 15,
@@ -169,7 +175,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     projectColorsInToolbar: b("projectColorsInToolbar"),
     dndWithAltOnly: b("dndWithAltOnly"),
     menuIcons: b("menuIcons"),
-    mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged"], d.mainMenuStyle),
+    mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged", "toolbar"], d.mainMenuStyle),
     mainMenuAlt: b("mainMenuAlt"),
     ideAntialiasing: oneOf(a.ideAntialiasing, AA, d.ideAntialiasing),
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
@@ -197,6 +203,8 @@ export function validateGeneralExtras(raw: unknown): GeneralExtras {
     openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same"] as const, d.openProjectIn),
     updateSource: oneOf(g.updateSource, ["auto", "github", "cnb"] as const, d.updateSource),
     autoCheckUpdates: bool(g.autoCheckUpdates, d.autoCheckUpdates),
+    showWhatsNewAfterUpdate: bool(g.showWhatsNewAfterUpdate, d.showWhatsNewAfterUpdate),
+    lastRunVersion: typeof g.lastRunVersion === "string" ? g.lastRunVersion : d.lastRunVersion,
     defaultProjectDirectory: typeof g.defaultProjectDirectory === "string" ? g.defaultProjectDirectory : "",
     saveOnIdle: bool(g.saveOnIdle, d.saveOnIdle),
     idleSeconds: int(g.idleSeconds, d.idleSeconds, IDLE_LIMITS),

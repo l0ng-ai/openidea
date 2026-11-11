@@ -28,7 +28,7 @@ import styles from "./Editor.module.css";
 import { executeAction, registerActions } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { ask, confirm, showError } from "@/workbench/messages";
-import { parseIcls, importScheme, deleteScheme, exportIcls } from "@/platform/icls";
+import { parseIcls, SchemeParseError, importScheme, deleteScheme, exportIcls } from "@/platform/icls";
 import { tx, useTx } from "@/platform/i18n";
 import { selectPage } from "../../model/staging";
 
@@ -1153,15 +1153,22 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
   useEffect(() => {
     handlers.current = {
       import: async (file) => {
-        const { open } = await import("@tauri-apps/plugin-dialog");
+        const { open } = await import("@/platform/dialog");
         const path =
           file ??
           (await open({
             multiple: false,
-            filters: [{ name: tx("IntelliJ Color Scheme"), extensions: ["icls"] }],
+            // IDEA schemes ship as .icls, but the ones people download are frequently .xml.
+            filters: [{ name: tx("IntelliJ Color Scheme"), extensions: ["icls", "xml"] }],
           }));
         if (!path) return;
-        const parsed = parseIcls(await call(commands.fsReadText(path)));
+        // A scheme element without a name is named after its file, as IntelliJ does.
+        const fallbackName =
+          path
+            .split(/[\\/]/)
+            .at(-1)
+            ?.replace(/\.[^.]+$/, "") || "Imported scheme";
+        const parsed = parseIcls(await call(commands.fsReadText(path)), fallbackName);
         let overwrite = false;
         if (schemes.some((s) => s.name === parsed.scheme.name)) {
           const canOverwrite = Object.values(customs).some((s) => s.name === parsed.scheme.name);
@@ -1184,7 +1191,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
         setReport(tx`Applied ${parsed.applied} values; skipped ${parsed.skipped} unsupported or invalid values.`);
       },
       export: async (file) => {
-        const { save } = await import("@tauri-apps/plugin-dialog");
+        const { save } = await import("@/platform/dialog");
         const path =
           file ??
           (await save({
@@ -1232,9 +1239,9 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
               await handlers.current[name]!(typeof arg === "string" ? arg : undefined);
             } catch (error) {
               await showError(
-                tx("Color Scheme"),
-                error instanceof Error && error.message === "Invalid .icls color scheme"
-                  ? tx("Invalid .icls color scheme")
+                tx("Import Scheme"),
+                error instanceof SchemeParseError
+                  ? `${tx("Invalid .icls color scheme")}: ${error.message}`
                   : String(error),
               );
             } finally {

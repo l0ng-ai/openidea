@@ -65,8 +65,11 @@ impl Fixture {
         self.git(&["commit", "-q", "-m", msg]);
         self.git(&["rev-parse", "HEAD"])
     }
+    /// The repository of a trusted project.
     fn repo(&self) -> Repo {
-        Repo::discover(&self.dir).unwrap().expect("repository found")
+        let repo = Repo::discover(&self.dir).unwrap().expect("repository found");
+        repo.set_execution_allowed(true);
+        repo
     }
     fn path(&self, rel: &str) -> PathBuf {
         self.dir.join(rel)
@@ -724,6 +727,7 @@ fn file_at_in_a_blobless_clone() {
     let url = format!("file://{}", fx.dir.display());
     git_in(fx.dir.parent().unwrap(), &["clone", "-q", "--filter=blob:none", &url, "clone"]);
     let repo = Repo::discover(&clone).unwrap().unwrap();
+    repo.set_execution_allowed(true);
     // v1's blob was never fetched; reading it fetches it on demand.
     assert_eq!(repo.file_at(&clone.join("f.txt"), Some(&c1), encoding_rs::UTF_8).unwrap().as_deref(), Some("v1\n"));
 }

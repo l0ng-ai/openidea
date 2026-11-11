@@ -335,6 +335,19 @@ pub struct ReportedSourceSet {
     /// Absolute resource folders.
     #[serde(default)]
     pub res: Vec<String>,
+    /// Set when Gradle changes the resources while copying them (filters, `expand`, renames,
+    /// includes / excludes, extra sources), which the Java language server's copy does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processed: Option<ProcessedResources>,
+}
+
+/// The task that copies a source set's resources, and where it writes them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessedResources {
+    /// Task name in its project (`processResources`).
+    pub task: String,
+    /// Absolute output folder.
+    pub dir: String,
 }
 
 const MODEL_LINE: &str = "@openidea-model\t";

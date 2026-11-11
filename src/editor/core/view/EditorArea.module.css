@@ -65,9 +65,10 @@
   flex-direction: column;
   outline: none;
 }
-/* Tabs' trailing slot may shrink to 0; keep the action buttons whole. */
+/* Keep the actions at the pane edge without changing how wrapped tabs use space. */
 .tabs > :has(> .tabActions) {
   flex: none;
+  margin-left: auto;
 }
 .tabActions {
   flex: none;

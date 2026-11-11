@@ -1,13 +1,14 @@
 //! Deployment over SFTP or local folders, and SSH run targets.
 //! Shared by IPC commands and project save/delete hooks.
 
-use crate::deploy::{Deployment, SyncEntry, SyncStep, TransferReport};
-use crate::mapping::{Excludes, Mappings, ResolvedMapping};
-use crate::target::{RemoteRuns, RemoteStart, SyncFn};
+use crate::deploy::{Deployment, FileStamp, SyncEntry, SyncStatus, SyncStep, TransferReport, status};
+use crate::mapping::{Excludes, Mappings, ResolvedMapping, posix};
+use crate::target::{RemoteRuns, RemoteStart, SyncFn, rewrite_external_classpath};
 use ide_core::remote_settings::{AutoUpload, DeploymentServer, DeploymentType, RunTarget};
 use ide_core::settings::Settings;
 use ide_core::{CancellationToken, IdeError, IdeResult, SharedSink};
 use ide_run::{OutputChunk, RunConfig, RunInfo};
+use ide_ssh::sftp::{join, mtime_of};
 use ide_ssh::{FsConnection, RemoteEntry, RemoteFs, SshManager};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -359,10 +360,29 @@ impl RemoteService {
                 return Err(e);
             }
         };
+        // #2641: the resolved `-cp` may reference jars outside the project root
+        // (`~/.m2`), which deployment sync never uploads. Mirror them under the
+        // deployment and rewrite the command onto the remote copies. Entries inside
+        // the project root are untouched: `target_command` maps those already.
+        let (args, libraries) = rewrite_external_classpath(&config.args, root, &remote_root);
+        let mut config = config.clone();
+        config.args = args;
+        for (local, _) in &libraries {
+            if !local.exists() {
+                fs.close().await;
+                return Err(IdeError::invalid(format!(
+                    "cannot run on '{}': classpath entry {} does not exist on this machine; \
+                     package the application (for example `mvn package`) or fix the launch classpath",
+                    target.name,
+                    local.display()
+                )));
+            }
+        }
         let sync: Option<SyncFn> = if target.sync_before_run {
             let deployment = settings.deployment.clone();
             let root = root.to_path_buf();
             let remote_root = remote_root.clone();
+            let preserve_time = settings.deployment.preserve_timestamps;
             Some(Box::new(move |out| {
                 Box::pin(async move {
                     let server = DeploymentServer { root_path: remote_root.clone(), ..Default::default() };
@@ -377,6 +397,7 @@ impl RemoteService {
                     };
                     let mut progress = |_: &str, _: usize, _: usize| {};
                     let report = d.push_changes(&root, &mut progress).await;
+                    let synced = sync_external_libraries(&fs, &libraries, preserve_time).await;
                     fs.close().await;
                     let report = report?;
                     out(OutputChunk::System {
@@ -387,7 +408,17 @@ impl RemoteService {
                             ide_core::error::ErrorKind::Io,
                             format!("upload of {} failed: {}", e.path, e.message),
                         )),
-                        None => Ok(()),
+                        None => {
+                            let synced = synced?;
+                            if synced > 0 {
+                                out(OutputChunk::System {
+                                    text: format!(
+                                        "Synced {synced} external classpath file(s) to {remote_root}/.remote-libs\n"
+                                    ),
+                                });
+                            }
+                            Ok(())
+                        }
                     }
                 })
             }))
@@ -396,8 +427,56 @@ impl RemoteService {
             None
         };
         let start = RemoteStart { session, target, root: root.to_path_buf(), remote_root, sync };
-        Ok(self.runs.start(start, config, sink, on_output))
+        Ok(self.runs.start(start, &config, sink, on_output))
     }
+}
+
+/// Uploads outside-root classpath entries to their mirrored remote copies,
+/// skipping files the remote already has (same size and time). Returns the
+/// uploaded count. Missing locals are rejected in `run` before the sync starts.
+async fn sync_external_libraries(
+    fs: &RemoteFs,
+    libraries: &[(PathBuf, String)],
+    preserve_time: bool,
+) -> IdeResult<usize> {
+    fn fail(path: &str, e: IdeError) -> IdeError {
+        IdeError::new(ide_core::error::ErrorKind::Io, format!("sync of {path} failed: {}", e.message))
+    }
+    let mut synced = 0;
+    for (local, remote_base) in libraries {
+        let mut files = Vec::new();
+        if local.is_dir() {
+            let walk = ignore::WalkBuilder::new(local).standard_filters(false).follow_links(false).build();
+            for entry in walk.flatten() {
+                let path = entry.path();
+                // `is_file` (not the entry type): symlinked jars count.
+                if !path.is_file() {
+                    continue;
+                }
+                let Ok(rel) = path.strip_prefix(local) else { continue };
+                files.push((path.to_path_buf(), join(remote_base, &posix(rel))));
+            }
+        } else {
+            files.push((local.clone(), remote_base.clone()));
+        }
+        for (file, remote) in files {
+            let size = std::fs::metadata(&file).map_err(|e| fail(&remote, e.into()))?.len();
+            let local_stamp = FileStamp { size, mtime: mtime_of(&file) };
+            let remote_stamp = match fs.stat(&remote).await.map_err(|e| fail(&remote, e))? {
+                Some(e) if e.is_dir => {
+                    return Err(IdeError::invalid(format!("cannot sync onto the folder {remote}")));
+                }
+                Some(e) => Some(FileStamp { size: e.size, mtime: e.mtime }),
+                None => None,
+            };
+            if matches!(status(Some(local_stamp), remote_stamp), SyncStatus::Same) {
+                continue;
+            }
+            fs.upload(&file, &remote, preserve_time).await.map_err(|e| fail(&remote, e))?;
+            synced += 1;
+        }
+    }
+    Ok(synced)
 }
 
 fn sanitize(s: &str) -> String {

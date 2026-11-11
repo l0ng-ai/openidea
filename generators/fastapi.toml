@@ -1,0 +1,56 @@
+id = "fastapi"
+name = "FastAPI"
+group = "Python"
+icon = "project-fastapi"
+order = 2
+description = "A FastAPI service, with its environment managed by uv."
+
+[[requires]]
+program = "uv"
+hint = "Install uv: https://docs.astral.sh/uv/getting-started/installation/"
+
+[[fields]]
+id = "python"
+label = "Python version:"
+type = "text"
+placeholder = "Latest installed"
+hint = "A version such as 3.13; uv downloads it when missing."
+
+[[steps]]
+label = "Running uv init"
+program = "uv"
+args = [
+    "init", "--bare", "--name", "{{name|kebab}}", "--vcs", "none", "--no-workspace",
+    { if-set = "python", args = ["--python", "{{python}}"] },
+]
+
+[[steps]]
+label = "Adding FastAPI"
+program = "uv"
+args = ["add", "fastapi[standard]"]
+
+[[files]]
+path = "main.py"
+content = '''
+from fastapi import FastAPI
+
+app = FastAPI()
+
+
+@app.get("/")
+async def root():
+    return {"message": "Hello, World!"}
+
+
+@app.get("/hello/{name}")
+async def say_hello(name: str):
+    return {"message": f"Hello, {name}!"}
+'''
+
+[[files]]
+path = ".gitignore"
+content = '''
+.venv/
+__pycache__/
+*.pyc
+'''

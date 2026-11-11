@@ -4145,7 +4145,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "ide-agent"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4169,7 +4169,7 @@ dependencies = [
 
 [[package]]
 name = "ide-analysis"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "ast-grep-core",
  "ide-core",
@@ -4183,7 +4183,7 @@ dependencies = [
 
 [[package]]
 name = "ide-android"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "ide-core",
  "serde",
@@ -4194,7 +4194,7 @@ dependencies = [
 
 [[package]]
 name = "ide-build"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "blake3",
  "chardetng",
@@ -4212,7 +4212,7 @@ dependencies = [
 
 [[package]]
 name = "ide-cli"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -4226,7 +4226,7 @@ dependencies = [
 
 [[package]]
 name = "ide-clipboard"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "gtk",
  "objc2 0.6.5",
@@ -4236,7 +4236,7 @@ dependencies = [
 
 [[package]]
 name = "ide-core"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4253,7 +4253,7 @@ dependencies = [
 
 [[package]]
 name = "ide-coverage"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "ide-core",
  "ide-run",
@@ -4267,15 +4267,20 @@ dependencies = [
 
 [[package]]
 name = "ide-dap"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "futures",
  "ide-core",
+ "ide-heap",
+ "ide-jdwp",
  "ide-jsonrpc",
+ "ide-jvm-attach",
+ "ide-jvm-inspect",
  "ide-language",
  "libc",
  "memchr",
  "parking_lot",
+ "percent-encoding",
  "portable-pty",
  "serde",
  "serde_json",
@@ -4288,7 +4293,7 @@ dependencies = [
 
 [[package]]
 name = "ide-db"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "bb8",
  "blake3",
@@ -4318,7 +4323,7 @@ dependencies = [
 
 [[package]]
 name = "ide-docker"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "ide-core",
  "serde",
@@ -4331,7 +4336,7 @@ dependencies = [
 
 [[package]]
 name = "ide-extension"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4352,7 +4357,7 @@ dependencies = [
 
 [[package]]
 name = "ide-fonts"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "objc2-core-foundation",
  "objc2-core-text",
@@ -4364,7 +4369,7 @@ dependencies = [
 
 [[package]]
 name = "ide-github"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "ide-core",
  "ide-vcs",
@@ -4376,8 +4381,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-heap"
+version = "0.1.42"
+dependencies = [
+ "criterion",
+ "ide-core",
+ "libc",
+ "memmap2",
+ "proptest",
+ "serde",
+ "serde_json",
+ "specta",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ide-host"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4397,9 +4420,11 @@ dependencies = [
  "ide-db",
  "ide-docker",
  "ide-extension",
+ "ide-heap",
  "ide-http",
  "ide-index",
  "ide-jsonrpc",
+ "ide-jvm-attach",
  "ide-language",
  "ide-lsp",
  "ide-mcp",
@@ -4407,6 +4432,7 @@ dependencies = [
  "ide-plugin",
  "ide-remote",
  "ide-run",
+ "ide-scaffold",
  "ide-sdk",
  "ide-search",
  "ide-spell",
@@ -4443,7 +4469,7 @@ dependencies = [
 
 [[package]]
 name = "ide-http"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "ide-core",
  "ide-vfs",
@@ -4462,7 +4488,7 @@ dependencies = [
 
 [[package]]
 name = "ide-index"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "blake3",
  "criterion",
@@ -4483,8 +4509,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-jdwp"
+version = "0.1.42"
+dependencies = [
+ "ide-jvm-inspect",
+ "proptest",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ide-jsonrpc"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "encoding_rs",
  "futures",
@@ -4500,8 +4538,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-jvm-attach"
+version = "0.1.42"
+dependencies = [
+ "libc",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "ide-jvm-inspect"
+version = "0.1.42"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "specta",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "ide-language"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "blake3",
  "criterion",
@@ -4557,13 +4615,14 @@ dependencies = [
 
 [[package]]
 name = "ide-lsp"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "dunce",
  "futures",
  "globset",
  "ide-core",
  "ide-jsonrpc",
+ "ide-jvm-inspect",
  "ide-language",
  "ide-text",
  "ide-vfs",
@@ -4583,7 +4642,7 @@ dependencies = [
 
 [[package]]
 name = "ide-mcp"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "bytes",
  "dunce",
@@ -4602,7 +4661,7 @@ dependencies = [
 
 [[package]]
 name = "ide-notebook"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "futures",
  "ide-core",
@@ -4625,7 +4684,7 @@ dependencies = [
 
 [[package]]
 name = "ide-plugin"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "blake3",
  "dunce",
@@ -4648,9 +4707,10 @@ dependencies = [
 
 [[package]]
 name = "ide-profiler"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "ide-core",
+ "ide-jvm-attach",
  "ide-run",
  "serde",
  "serde_json",
@@ -4661,7 +4721,7 @@ dependencies = [
 
 [[package]]
 name = "ide-remote"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "dunce",
  "globset",
@@ -4680,7 +4740,7 @@ dependencies = [
 
 [[package]]
 name = "ide-run"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4703,8 +4763,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-scaffold"
+version = "0.1.42"
+dependencies = [
+ "ide-core",
+ "ide-tools",
+ "ide-vcs",
+ "insta",
+ "serde",
+ "serde_json",
+ "specta",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
 name = "ide-sdk"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "dunce",
  "ide-core",
@@ -4724,9 +4800,10 @@ dependencies = [
 
 [[package]]
 name = "ide-search"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "criterion",
+ "encoding_rs",
  "globset",
  "grep-matcher",
  "grep-regex",
@@ -4744,7 +4821,7 @@ dependencies = [
 
 [[package]]
 name = "ide-spell"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "ide-core",
  "parking_lot",
@@ -4757,7 +4834,7 @@ dependencies = [
 
 [[package]]
 name = "ide-ssh"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "dirs 6.0.0",
  "flate2",
@@ -4778,7 +4855,7 @@ dependencies = [
 
 [[package]]
 name = "ide-syntax"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "ide-core",
  "ide-language",
@@ -4793,7 +4870,7 @@ dependencies = [
 
 [[package]]
 name = "ide-terminal"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "ide-core",
  "libc",
@@ -4806,7 +4883,7 @@ dependencies = [
 
 [[package]]
 name = "ide-text"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "criterion",
  "ide-core",
@@ -4819,7 +4896,7 @@ dependencies = [
 
 [[package]]
 name = "ide-tools"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "flate2",
  "hex",
@@ -4840,7 +4917,7 @@ dependencies = [
 
 [[package]]
 name = "ide-vcs"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "blake3",
  "dunce",
@@ -4861,7 +4938,7 @@ dependencies = [
 
 [[package]]
 name = "ide-vfs"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "chardetng",
  "dunce",
@@ -4885,11 +4962,11 @@ dependencies = [
 
 [[package]]
 name = "ide-web"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
+ "dirs 6.0.0",
  "ide-core",
  "open",
- "parking_lot",
  "percent-encoding",
  "serde",
  "specta",
@@ -4901,7 +4978,7 @@ dependencies = [
 
 [[package]]
 name = "ide-workspace"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "blake3",
  "dunce",
@@ -6479,7 +6556,7 @@ dependencies = [
 
 [[package]]
 name = "openidea"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -6513,6 +6590,7 @@ dependencies = [
  "ide-profiler",
  "ide-remote",
  "ide-run",
+ "ide-scaffold",
  "ide-sdk",
  "ide-search",
  "ide-spell",
@@ -7719,9 +7797,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.5"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags 2.13.2",
  "errno",

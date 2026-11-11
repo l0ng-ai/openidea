@@ -322,6 +322,7 @@ pub struct TerminalSettings {
     pub override_ide_shortcuts: bool,
     pub shell_integration: bool,
     pub highlight_hyperlinks: bool,
+    pub highlight_selection: bool,
     pub option_as_meta: bool,
     /// Escape moves focus to the editor instead of reaching the shell.
     pub escape_to_editor: bool,
@@ -354,6 +355,7 @@ impl Default for TerminalSettings {
             override_ide_shortcuts: true,
             shell_integration: true,
             highlight_hyperlinks: true,
+            highlight_selection: true,
             option_as_meta: false,
             escape_to_editor: false,
             cursor_shape: "block".into(),

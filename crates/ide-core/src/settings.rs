@@ -263,6 +263,9 @@ pub enum WhileRunning {
 pub struct McpServerSettings {
     /// Serve the tools on 127.0.0.1 while the IDE runs.
     pub enabled: bool,
+    /// Run the tools that change the project or start processes without asking first
+    /// (IDEA's brave mode). Read from the IDE's own settings only, never a project's.
+    pub run_without_confirmation: bool,
 }
 
 /// Absent profiles retain automatic discovery for existing projects.
@@ -456,6 +459,10 @@ pub struct GeneralSettings {
     /// Where updates come from: `auto` (the CNB mirror for the Chinese UI, else GitHub) | `github` | `cnb`.
     pub update_source: String,
     pub auto_check_updates: bool,
+    /// System Settings › Updates: open the What's New page after the app starts a new version.
+    pub show_whats_new_after_update: bool,
+    /// The version the app last started with, so the first start after an update is recognisable.
+    pub last_run_version: String,
 }
 
 impl Default for GeneralSettings {
@@ -474,6 +481,8 @@ impl Default for GeneralSettings {
             project_name: String::new(),
             update_source: "auto".into(),
             auto_check_updates: true,
+            show_whats_new_after_update: true,
+            last_run_version: String::new(),
         }
     }
 }
@@ -577,7 +586,7 @@ pub struct AppearanceSettings {
     pub project_colors_in_toolbar: bool,
     pub dnd_with_alt_only: bool,
     pub menu_icons: bool,
-    /// `hamburger` | `merged`: main menu presentation in the frameless title bar.
+    /// `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar.
     pub main_menu_style: String,
     /// A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`).
     pub main_menu_alt: bool,

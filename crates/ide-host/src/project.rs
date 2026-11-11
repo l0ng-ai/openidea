@@ -210,6 +210,7 @@ impl Host {
                     let bundles: Vec<PathBuf> = ide_tools::managed_bundle(&data_dir, "java-debug")
                         .into_iter()
                         .chain(ide_sdk::java::usages_bundle(&data_dir))
+                        .chain(ide_sdk::java::jvm_inspect_bundle(&data_dir))
                         .chain(ide_sdk::java::kotlin_bridge_bundle(&data_dir))
                         .collect();
                     let min_java = ide_sdk::java::jdtls_min_java(cfg);
@@ -245,6 +246,7 @@ impl Host {
                         &bundles,
                         lombok.jar(),
                     );
+                    ide_sdk::apply::configure_gradle_runtime(cfg, root, server_root, &effective);
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
@@ -1190,6 +1192,19 @@ fn index_roots(root: &Path, folders: Vec<PathBuf>) -> ide_index::IndexRoots {
     let container =
         ide_workspace::workspace::Workspace::load(root).ok().flatten().is_some_and(|w| w.is_container(root));
     ide_index::IndexRoots { include_root: !container, folders: folders.into_iter().filter(|p| p != root).collect() }
+}
+
+/// The member roots of an explicit workspace container (empty for a plain
+/// project): how the editor and the language servers resolve a file's own
+/// project in a project window group. Also the roots the plugin surface may
+/// reach into — see `plugins::api`.
+pub(crate) fn workspace_member_roots(root: &Path) -> Vec<PathBuf> {
+    ide_workspace::workspace::Workspace::load(root)
+        .ok()
+        .flatten()
+        .filter(|w| w.is_container(root))
+        .map(|w| w.projects)
+        .unwrap_or_default()
 }
 
 /// Workspace members in manifest order, or extra Project Structure directories and the

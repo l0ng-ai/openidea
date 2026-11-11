@@ -83,11 +83,9 @@ for (const placement of ["editor", "toolWindow"] as const) {
       },
       { id: task.id, placement },
     );
-    // The working indicator sits in the tray below the conversation.
-    await expect(
-      page.getByRole("status").getByText("Working…", { exact: true }).filter({ visible: true }),
-    ).toBeVisible();
-    await expect(stream.locator(":scope > *")).toHaveCount(80 * 3);
+    // The working indicator ends the conversation, after its rows.
+    await expect(stream.getByRole("status").getByText("Working…", { exact: true })).toBeVisible();
+    await expect(stream.locator(":scope > *")).toHaveCount(80 * 3 + 1);
     await expect.poll(() => stream.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
     const timer = await page.evaluate(async (id) => {
       const path = "/src/features/agents/store.ts";
