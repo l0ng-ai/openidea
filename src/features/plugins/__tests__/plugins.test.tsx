@@ -1114,7 +1114,7 @@ describe("marketplace", () => {
     render(<PluginsPage />);
     await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
-    await waitFor(() => expect(within(list).getByText("Marketplace")).toBeInTheDocument());
+    await waitFor(() => expect(within(list).getByText("All Plugins")).toBeInTheDocument());
     expect(within(list).queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
     await user.click(within(list).getAllByText("Hello")[0]!);
     expect(screen.getByText("Signed by acme")).toBeInTheDocument();
@@ -1122,6 +1122,55 @@ describe("marketplace", () => {
     await waitFor(() => expect(usePlugins.getState().plugins.map((p) => p.id)).toEqual(["hello"]));
     expect(downloads).toEqual(["hello"]);
     expect(asked[0]).toMatchObject({ pluginId: "hello", kind: "install" });
+  });
+
+  it("lists community plugins before the examples, selects the first and installs from a row", async () => {
+    setConsentPrompt(async () => ({ optional: [] }));
+    const entry = (id: string, name: string, more: object = {}) => ({
+      id,
+      name,
+      version: "1.0.0",
+      description: `${name} does things`,
+      authors: [],
+      publisher: id.split(".")[0]!,
+      download: `${id}.oiplugin`,
+      digest: "x",
+      capabilities: [],
+      engine: "^1.0",
+      installed: null,
+      compatible: true,
+      ...more,
+    });
+    const downloads: string[] = [];
+    setPluginsBackend({
+      ...createMemoryPluginsBackend([], sampleCatalog()),
+      marketUrl: async () => "https://plugins.example/index.json",
+      market: async () => [
+        entry("openidea.sample", "Sample"),
+        entry("acme.rare", "Rare", { downloads: 2 }),
+        entry("acme.popular", "Popular", { downloads: 1500, featured: true, publisherName: "Acme Inc." }),
+      ],
+      marketDownload: async (id) => {
+        downloads.push(id);
+        return "plugins/hello";
+      },
+    });
+    const user = userEvent.setup();
+    render(<PluginsPage />);
+    await user.click(screen.getByRole("tab", { name: /Available/ }));
+    const list = await screen.findByRole("list", { name: "Available plugins" });
+    await waitFor(() => expect(within(list).getByText("Examples")).toBeInTheDocument());
+    const headers = within(list)
+      .getAllByText(/^(Featured|All Plugins|Examples|Local)$/)
+      .map((h) => h.textContent);
+    expect(headers).toEqual(["Featured", "All Plugins", "Examples", "Local"]);
+    // The first listed plugin is shown without a click.
+    expect(screen.getByRole("heading", { name: "Popular" })).toBeInTheDocument();
+    expect(screen.getByText("Signed by Acme Inc.")).toBeInTheDocument();
+    await user.click(within(list).getByText("Sample"));
+    expect(screen.getByRole("note")).toHaveTextContent("not maintained as a product");
+    await user.click(within(list).getByRole("button", { name: "Install Rare" }));
+    await waitFor(() => expect(downloads).toEqual(["acme.rare"]));
   });
 
   it("doesn't claim there is no repository while one is configured", async () => {
@@ -1201,7 +1250,7 @@ describe("marketplace", () => {
     await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Dusk")).toBeInTheDocument());
-    await user.click(within(list).getByRole("button", { name: "Category" }));
+    await user.click(screen.getByRole("button", { name: "Category" }));
     const options = within(screen.getByRole("listbox"))
       .getAllByRole("option")
       .map((o) => o.textContent);

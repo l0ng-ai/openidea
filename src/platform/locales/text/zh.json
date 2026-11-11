@@ -7579,5 +7579,14 @@
   "{program} {found} is installed, but this project needs {min} or later.": "已安装 {program} {found}，但该项目需要 {min} 或更高版本。",
   "{program} is not installed.": "未安装 {program}。",
   "Create a project, open a folder from disk or clone a repository from version control.": "新建项目、打开磁盘上的文件夹，或从版本控制克隆仓库。",
-  "{path} already exists and is not empty": "{path} 已存在且不为空"
+  "{path} already exists and is not empty": "{path} 已存在且不为空",
+  "Example": "示例",
+  "Shows how to use the plugin API; not maintained as a product.": "演示插件 API 的用法，不作长期维护。",
+  "{count} downloads": "{count} 次下载",
+  "This plugin shows how to use the plugin API and is not maintained as a product. Build on it in your own repository.": "这个插件用来演示插件 API 的用法，不作为产品长期维护。可以在你自己的仓库里基于它开发。",
+  "Suggested because this project has {path}.": "推荐原因：当前项目包含 {path}。",
+  "Suggested for This Project": "为当前项目推荐",
+  "Featured": "精选",
+  "All Plugins": "全部插件",
+  "Examples": "示例插件"
 }
