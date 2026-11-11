@@ -7572,11 +7572,12 @@
   "Application type:": "应用类型:",
   "Features:": "特性:",
   "Tailwind CSS": "Tailwind CSS",
-  "JDK:": "JDK:",
+  "JDK:": "JDK：",
   "Search generators": "搜索生成器",
   "Generators": "生成器",
   "Loading options…": "正在加载选项…",
   "{program} {found} is installed, but this project needs {min} or later.": "已安装 {program} {found}，但该项目需要 {min} 或更高版本。",
   "{program} is not installed.": "未安装 {program}。",
-  "Create a project, open a folder from disk or clone a repository from version control.": "新建项目、打开磁盘上的文件夹，或从版本控制克隆仓库。"
+  "Create a project, open a folder from disk or clone a repository from version control.": "新建项目、打开磁盘上的文件夹，或从版本控制克隆仓库。",
+  "{path} already exists and is not empty": "{path} 已存在且不为空"
 }

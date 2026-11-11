@@ -284,7 +284,6 @@ describe("catalogs", () => {
     "Cargo",
     "CMake",
     "Tailwind CSS",
-    "JDK:",
   ]);
   const translated = SUPPORTED_LOCALES.filter((locale) => locale !== "en").sort();
 
