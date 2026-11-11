@@ -383,6 +383,14 @@ test("keeps mermaid `<style>` rules scoped to the rendered svg after id rewritin
   expect(await css(reply, ".flowchart-link", "fill")).toBe("none");
 });
 
+test("renders KaTeX math in mermaid labels", async ({ page }) => {
+  const diagram = ["```mermaid", "flowchart LR", '  A["$$x^2 + \\frac{a}{b}$$"] --> B', "```"].join("\n");
+  const reply = await openReply(page, `Diagram:\n\n${diagram}`);
+  const svg = reply.locator("[data-mermaid-state='ok'] .mermaid-output svg");
+  await expect(svg).toBeVisible();
+  await expect(svg.locator("math mfrac")).toHaveCount(1);
+});
+
 test("keeps mermaid flowchart nodes and sequence control blocks off solid black", async ({ page }) => {
   const flow = [
     "```mermaid",
