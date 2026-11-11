@@ -9,7 +9,7 @@ it("opens every file picker through the platform wrapper", () => {
     (file) =>
       /\.[jt]sx?$/.test(file) &&
       !/\.test\.[jt]sx?$/.test(file) &&
-      file !== "platform/dialog.ts" &&
+      file.replace(/\\/g, "/") !== "platform/dialog.ts" &&
       readFileSync(resolve(src, file), "utf8").includes("@tauri-apps/plugin-" + "dialog"),
   );
   expect(offenders).toEqual([]);

@@ -1,5 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
+import { createElement } from "react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 const ipc = vi.hoisted(() => {
   const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
@@ -20,6 +22,20 @@ const ipc = vi.hoisted(() => {
     ),
     debugStackTrace: vi.fn(() => ok([])),
     debugThreads: vi.fn(() => ok([])),
+    debugJvmMemoryClasses: vi.fn(() => ok({ status: "unavailable", reason: { kind: "programExited" } })),
+    debugJvmMemoryInstances: vi.fn(() => ok({ status: "ready", generation: 1, instances: [], truncated: false })),
+    debugJvmMemoryFields: vi.fn(() => ok({ status: "ready", fields: [] })),
+    debugJvmMemoryReferrers: vi.fn(() => ok({ status: "ready", referrers: [], truncated: false })),
+    lspWorkspaceSymbols: vi.fn(() =>
+      ok([
+        {
+          name: "Order",
+          kind: "class",
+          container: "com.x",
+          location: { path: "/p/com/x/Order.java", range: { start: { line: 2, col: 13 }, end: { line: 2, col: 18 } } },
+        },
+      ]),
+    ),
     debugScopes: vi.fn(() => ok([])),
     debugStart: vi.fn((_launch: { extraJson: string | null }) => ok(42)),
     debugSetBreakpoints: vi.fn(() => ok([])),
@@ -61,7 +77,8 @@ vi.mock("@/workbench/contributions", async (importOriginal) => {
   };
 });
 
-import { executeAction, getAction, registerActions } from "@/platform/actions";
+import { executeAction, getAction, isActionEnabled, registerActions } from "@/platform/actions";
+import { clearContext, setContext } from "@/platform/context";
 import { intellijMacos } from "@/platform/keymaps/intellij-macos";
 import type { DebugCapabilities, RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -72,6 +89,9 @@ import { loadSpecialBreakpoints, removeAllSpecial, useSpecialBreakpoints } from 
 import { publishContext, updateExecutionPoint, useExecutionPoint, useDebug, type DebugSession } from "../state";
 import { focusDebugView, blurDebugView } from "../ui/focusedView";
 import { useOverlays } from "../ui/popoverStore";
+import { forgetMemory, selectMemoryClass } from "../memory/memoryState";
+import { forgetInstances, setInstancesLead, showInstances, useInstances } from "../memory/instancesState";
+import { InstancesPane } from "../memory/InstancesPane";
 
 const caps = (p: Partial<DebugCapabilities> = {}): DebugCapabilities => ({
   restartFrame: false,
@@ -83,6 +103,9 @@ const caps = (p: Partial<DebugCapabilities> = {}): DebugCapabilities => ({
   conditionalBreakpoints: true,
   hitConditionalBreakpoints: true,
   logPoints: true,
+  jvmMemory: false,
+  jvmInstances: false,
+  jvmHeap: false,
   ...p,
 });
 
@@ -106,6 +129,7 @@ function paused(p: Partial<DebugSession> = {}) {
     ],
     selectedFrame: 71,
     hits: 1,
+    stops: 0,
     exitCode: null,
     caps: caps(),
     ...p,
@@ -158,6 +182,11 @@ describe("debugger actions (IDEA parity)", () => {
       "debug.setValue": ["F2"],
       "debug.jumpToSource": ["F4", "Meta+Down"],
       "debug.resetFrame": undefined,
+      "debug.memory.refresh": undefined,
+      "debug.memory.showInstances": undefined,
+      "debug.memory.jumpToSource": undefined,
+      "debug.memory.showReferrers": undefined,
+      "debug.memory.closeInstances": undefined,
       "debug.toggleMethodBreakpoint": undefined,
       "debug.toggleFieldWatchpoint": undefined,
     };
@@ -241,6 +270,140 @@ describe("debugger actions (IDEA parity)", () => {
     paused({ caps: caps({ restartFrame: true }) });
     await executeAction("debug.resetFrame");
     expect(ipc.debugRestartFrame).toHaveBeenCalledWith(3, 71);
+  });
+
+  it("Refresh Memory View reads the class table of a session that supports it", async () => {
+    const result = { status: "unavailable", reason: { kind: "programExited" } };
+    ipc.debugJvmMemoryClasses.mockReturnValue(ipc.ok(result) as never);
+    paused({ caps: caps({ jvmMemory: false }) });
+    await executeAction("debug.memory.refresh");
+    expect(ipc.debugJvmMemoryClasses).not.toHaveBeenCalled();
+    paused({ caps: caps({ jvmMemory: true }) });
+    await executeAction("debug.memory.refresh");
+    await settle();
+    expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledWith(3);
+  });
+
+  it("Show Instances lists the selected Memory row of a paused session that can list instances", async () => {
+    expect(getAction("debug.memory.showInstances")!.when).toBe("debugSessionPaused");
+    selectMemoryClass(3, "com.x.Order");
+    paused({ caps: caps({ jvmMemory: true, jvmInstances: false }) });
+    await executeAction("debug.memory.showInstances");
+    expect(ipc.debugJvmMemoryInstances).not.toHaveBeenCalled();
+    paused({ caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    await executeAction("debug.memory.showInstances");
+    expect(ipc.debugJvmMemoryInstances).toHaveBeenCalledWith(3, "com.x.Order", 1000);
+    await executeAction("debug.memory.showInstances", "com.x.Line");
+    expect(ipc.debugJvmMemoryInstances).toHaveBeenLastCalledWith(3, "com.x.Line", 1000);
+    forgetInstances(3);
+    forgetMemory(3);
+  });
+
+  it("Show Referrers runs for the lead row of the open instances list", async () => {
+    paused({ caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    await executeAction("debug.memory.showReferrers");
+    expect(ipc.debugJvmMemoryReferrers).not.toHaveBeenCalled();
+    ipc.debugJvmMemoryInstances.mockReturnValueOnce(
+      ipc.ok({
+        status: "ready",
+        generation: 4,
+        instances: [{ kind: "object", id: 9, typeName: "com.x.Order" }],
+        truncated: false,
+      }) as never,
+    );
+    await showInstances(3, "com.x.Order");
+    // No lead row yet.
+    await executeAction("debug.memory.showReferrers");
+    expect(ipc.debugJvmMemoryReferrers).not.toHaveBeenCalled();
+    setInstancesLead(3, { key: "#0", ref: { generation: 4, id: 9 } });
+    await executeAction("debug.memory.showReferrers");
+    await settle();
+    expect(ipc.debugJvmMemoryReferrers).toHaveBeenCalledWith(3, { generation: 4, id: 9 }, 50);
+    expect(useInstances.getState().bySession[3]!.expanded).toEqual(["#0", "#0/referrers"]);
+    // Objects from before the last stop cannot be read.
+    ipc.debugJvmMemoryReferrers.mockClear();
+    paused({ stops: 1, caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    await executeAction("debug.memory.showReferrers");
+    expect(ipc.debugJvmMemoryReferrers).not.toHaveBeenCalled();
+    forgetInstances(3);
+  });
+
+  it("Close Instances closes the open instances list", async () => {
+    paused({ caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    await executeAction("debug.memory.closeInstances");
+    await showInstances(3, "com.x.Order");
+    expect(useInstances.getState().bySession[3]).toBeTruthy();
+    await executeAction("debug.memory.closeInstances");
+    expect(useInstances.getState().bySession[3]).toBeUndefined();
+  });
+
+  it("closes the instances pane of a session that has ended, from its button or the action", async () => {
+    const jvm = caps({ jvmMemory: true, jvmInstances: true });
+    ipc.debugJvmMemoryInstances.mockReturnValueOnce(
+      ipc.ok({
+        status: "ready",
+        generation: 1,
+        instances: [{ kind: "object", id: 9, typeName: "com.x.Order" }],
+        truncated: false,
+      }) as never,
+    );
+    paused({ caps: jvm });
+    await showInstances(3, "com.x.Order");
+    paused({ status: "terminated", caps: jvm });
+    const session = useDebug.getState().sessions[3]!;
+    render(createElement(InstancesPane, { session }));
+    // Reading objects needs a paused program: both instance actions are off, the row button too.
+    setInstancesLead(3, { key: "#0", ref: { generation: 1, id: 9 } });
+    expect(await executeAction("debug.memory.showReferrers")).toBe(false);
+    expect(await executeAction("debug.memory.showInstances", "com.x.Order")).toBe(false);
+    expect(ipc.debugJvmMemoryReferrers).not.toHaveBeenCalled();
+    expect(ipc.debugJvmMemoryInstances).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Show Referrers" }).hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Instances" }));
+    await settle();
+    expect(useInstances.getState().bySession[3]).toBeUndefined();
+    expect(screen.queryByRole("tree")).toBeNull();
+
+    await showInstances(3, "com.x.Order");
+    expect(await executeAction("debug.memory.closeInstances")).toBe(true);
+    expect(useInstances.getState().bySession[3]).toBeUndefined();
+    cleanup();
+  });
+
+  it("Jump to Source opens the class of the open instances list", async () => {
+    paused({ caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    setContext("projectOpen", true);
+    await showInstances(3, "com.x.Order$Line");
+    await executeAction("debug.memory.jumpToSource");
+    await settle();
+    expect(ipc.lspWorkspaceSymbols).toHaveBeenCalledWith(expect.anything(), "Order");
+    expect(opened.at(-1)?.path).toBe("/p/com/x/Order.java");
+    clearContext("projectOpen");
+    forgetInstances(3);
+  });
+
+  it("Jump to Source still opens the class once the session has ended", async () => {
+    paused({ caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    await showInstances(3, "com.x.Order$Line");
+    paused({ status: "terminated", caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    setContext("projectOpen", true);
+    expect(await executeAction("debug.memory.jumpToSource")).toBe(true);
+    await settle();
+    expect(opened.at(-1)?.path).toBe("/p/com/x/Order.java");
+    clearContext("projectOpen");
+    forgetInstances(3);
+  });
+
+  it("offers Refresh Memory View only for a live session of a JVM", () => {
+    const refresh = getAction("debug.memory.refresh")!;
+    expect(refresh.when).toBe("debugHasJvmMemory");
+    paused({ adapter: "debugpy", caps: caps({ jvmMemory: false }) });
+    expect(isActionEnabled(refresh)).toBe(false);
+    paused({ caps: caps({ jvmMemory: true }) });
+    expect(isActionEnabled(refresh)).toBe(true);
+    paused({ status: "terminated", caps: caps({ jvmMemory: true }) });
+    expect(isActionEnabled(refresh)).toBe(false);
   });
 
   it("Show Execution Point reveals the top frame with focus", async () => {

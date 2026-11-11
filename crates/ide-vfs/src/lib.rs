@@ -373,6 +373,34 @@ pub fn detect_encoding(bytes: &[u8], fallback: Option<&str>) -> &'static encodin
     }
 }
 
+/// Decodes file bytes with the same rules as files opened in the editor: BOM,
+/// UTF-8 and UTF-16 as detected, other text as `fallback` (else the detected
+/// encoding). `None` for binary content.
+pub fn decode_text(bytes: &[u8], fallback: Option<&str>) -> Option<String> {
+    let (text, detected, has_bom, binary) = encoding::decode(bytes);
+    if binary {
+        return None;
+    }
+    let fallback = fallback.and_then(|label| encoding_rs::Encoding::for_label(label.trim().as_bytes()));
+    match fallback {
+        Some(enc)
+            if !has_bom
+                && enc != detected
+                && detected != encoding_rs::UTF_8
+                && detected != encoding_rs::UTF_16LE
+                && detected != encoding_rs::UTF_16BE =>
+        {
+            Some(enc.decode_without_bom_handling(bytes).0.into_owned())
+        }
+        _ => Some(text),
+    }
+}
+
+/// Whether a file's first bytes mark it as binary (NUL bytes that are not UTF-16 text).
+pub fn looks_binary(head: &[u8]) -> bool {
+    encoding::looks_binary(head)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,6 +410,19 @@ mod tests {
         let mut names = vec!["file10", "File2", "file1", "b", "A", "file02", "a", "x9y", "x10y", "readme"];
         names.sort_by(|a, b| natural_cmp(a, b));
         assert_eq!(names, vec!["A", "a", "b", "file1", "File2", "file02", "file10", "readme", "x9y", "x10y"]);
+    }
+
+    #[test]
+    fn decodes_text_like_the_editor() {
+        let (gbk, _, _) = encoding_rs::GBK.encode("// 中文搜索验证 Chinese");
+        assert_eq!(decode_text(&gbk, Some("gbk")).as_deref(), Some("// 中文搜索验证 Chinese"));
+        assert_eq!(decode_text(&gbk, Some("GB18030")).as_deref(), Some("// 中文搜索验证 Chinese"));
+        assert_eq!(decode_text("中文".as_bytes(), Some("gbk")).as_deref(), Some("中文"));
+        let utf16: Vec<u8> = [0xFF, 0xFE].into_iter().chain("中文".encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        assert_eq!(decode_text(&utf16, Some("gbk")).as_deref(), Some("中文"));
+        assert_eq!(decode_text(&[0x7F, b'E', b'L', b'F', 0, 0, 1, 0], None), None);
+        assert!(looks_binary(&[0x7F, b'E', b'L', b'F', 0, 0, 1, 0]));
+        assert!(!looks_binary(&utf16));
     }
 
     #[test]

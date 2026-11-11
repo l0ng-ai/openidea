@@ -247,6 +247,8 @@ impl Server {
         st.restarting = false;
         *self.start_cancel.lock() = CancellationToken::new();
         *self.started.lock() = Some(Instant::now());
+        // A crash report quotes only this instance's output, not its predecessors'.
+        self.stderr.lock().clear();
         self.phase.send_replace(Phase::Starting);
         Some(st.generation)
     }
@@ -696,7 +698,7 @@ impl Server {
         if buf.len() == STDERR_LINES {
             buf.pop_front();
         }
-        buf.push_back(line);
+        buf.push_back(ide_core::output_encoding::strip_ansi(&line));
     }
 
     pub fn stderr_tail(&self, n: usize) -> String {
@@ -1155,6 +1157,19 @@ mod tests {
         assert_eq!(s.effective_config().command, "successor");
         assert_eq!(*s.resolved_binary.read(), Some(PathBuf::from("successor")));
         assert_eq!(s.stderr_tail(5), "successor output");
+    }
+
+    #[test]
+    fn crash_report_quotes_only_the_crashed_instance_without_colour_codes() {
+        let s = server();
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let first = s.begin_start().unwrap();
+        s.push_stderr(first, "\x1b[31;1mfirst failure\x1b[0m".into());
+        assert_eq!(s.stderr_tail(5), "first failure");
+        assert!(s.on_closed(first, &sink, Some(1)).is_some());
+        let second = s.begin_start().unwrap();
+        s.push_stderr(second, "\x1b[31;1m\x1b[31;1msecond failure\x1b[0m".into());
+        assert_eq!(s.stderr_tail(5), "second failure");
     }
 
     #[test]
