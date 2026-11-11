@@ -668,6 +668,7 @@ mod tests {
             ("python", vec!["basedpyright", "pyright", "ty", "pyrefly"]),
             ("typescript", vec!["vtsls", "typescript-language-server"]),
             ("java", vec!["jdtls", "kmp-lsp"]),
+            ("kotlin", vec!["kotlin-lsp", "kotlin-language-server", "kmp-lsp"]),
         ] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let got: Vec<(&str, bool)> = cfg
