@@ -48,7 +48,7 @@ async fn resolve_launch(
     let build = policy != BuildPolicy::NoBuild;
     let full = policy == BuildPolicy::Rebuild;
     let build_kind = if full { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
-    let (model, external, delegated) = {
+    let (model, external, delegated, prefer_maven) = {
         let project = project.clone();
         let settings = settings.clone();
         let module = module.clone();
@@ -68,7 +68,7 @@ async fn resolve_launch(
                     prefer_maven,
                 );
             let external = non_java || delegated;
-            (model, external, delegated)
+            (model, external, delegated, prefer_maven)
         })
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
@@ -81,6 +81,7 @@ async fn resolve_launch(
     tokio::task::spawn_blocking(move || {
         let _external_build = external_build;
         let built = if delegated {
+            let policy = delegated_policy(policy, prefer_maven, info.error_count);
             let outputs = project.java_launch_snapshots.lock().build(
                 &project.root,
                 &model,
@@ -169,6 +170,17 @@ async fn resolve_launch(
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// With Settings › Maven › Delegate IDE build/run actions to Maven, javac's verdict replaces
+/// JDT's. Classes JDT wrote for sources with errors look up to date to Maven's incremental
+/// compiler, so a launch JDT reports errors for recompiles everything.
+fn delegated_policy(policy: BuildPolicy, prefer_maven: bool, jdt_errors: u32) -> BuildPolicy {
+    if prefer_maven && jdt_errors > 0 && matches!(policy, BuildPolicy::Automatic | BuildPolicy::Make) {
+        BuildPolicy::Rebuild
+    } else {
+        policy
+    }
 }
 
 fn apply_external_build_result(info: &mut JavaLaunchInfo, failure: Option<String>, clean: bool) {
@@ -329,6 +341,18 @@ pub(crate) fn register(d: &mut Dispatcher) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delegated_launches_with_jdt_errors_recompile_with_maven() {
+        assert_eq!(delegated_policy(BuildPolicy::Make, true, 1), BuildPolicy::Rebuild);
+        assert_eq!(delegated_policy(BuildPolicy::Automatic, true, 2), BuildPolicy::Rebuild);
+        assert_eq!(delegated_policy(BuildPolicy::Make, true, 0), BuildPolicy::Make);
+        assert_eq!(delegated_policy(BuildPolicy::Make, false, 1), BuildPolicy::Make);
+        assert_eq!(
+            delegated_policy(BuildPolicy::MakeAndContinueOnErrors, true, 1),
+            BuildPolicy::MakeAndContinueOnErrors
+        );
+    }
 
     #[test]
     fn rebuild_delegates_maven_builds_to_the_build_system() {
