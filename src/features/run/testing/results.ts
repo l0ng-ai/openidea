@@ -10,8 +10,13 @@ export interface TestNode {
   own: TestStatus | null;
   durationMs?: number;
   location?: TestLocation;
-  /** Failure output captured for this node. */
+  /** Output captured for this node: its console output and failure details. */
   output: string[];
+}
+
+/** A node's output followed by its descendants' in tree order: a group shows the output of its tests. */
+export function nodeOutput(node: TestNode): string[] {
+  return [...node.output, ...node.children.flatMap(nodeOutput)];
 }
 
 export interface TestCounts {

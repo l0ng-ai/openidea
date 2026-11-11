@@ -33,6 +33,7 @@ import {
   isLive,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
+import { nodeOutput } from "./testing";
 import { TestTreeView, formatDuration } from "./TestTreeView";
 import { StackTracePanel, closeStackTrace, useStackTraces, type StackTraceTab } from "./stackTrace";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
@@ -104,12 +105,13 @@ export function SessionPanel({
       ? resolvedSelection?.request === failedSelection && resolvedSelection.supported
       : failedSelection.length > 0;
 
-  // Selecting a test with captured output shows just that output (like IDEA).
+  // Selecting a test or a group with captured output shows just that output (like IDEA).
   const testModel = useMemo(() => {
     const node = selectedTest ? rt?.tests?.get(selectedTest) : undefined;
-    if (!node || node.output.length === 0) return null;
+    const output = node ? nodeOutput(node) : [];
+    if (output.length === 0) return null;
     const m = new ConsoleModel();
-    m.append({ kind: "stdout", text: node.output.join("\n") + "\n" });
+    m.append({ kind: "stdout", text: output.join("\n") + "\n" });
     return m;
   }, [selectedTest, rt, version]); // eslint-disable-line react-hooks/exhaustive-deps
 
