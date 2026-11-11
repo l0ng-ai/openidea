@@ -58,7 +58,7 @@ async fn resolve_launch(
             let non_java = build && compile::launch_has_non_java_sources(&project.root, &model, &module, test);
             let is_maven =
                 model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| project.root.join(&p.dir) == module));
-            let prefer_maven = settings.languages.java.maven.run_using == ide_core::settings::MavenRunUsing::Maven;
+            let prefer_maven = settings.languages.java.maven.delegate_build;
             let delegated = build
                 && delegates_to_external_build(
                     is_maven,
@@ -243,7 +243,7 @@ fn apply_library_classpath(
 /// Whether a launch should be built by the project's build system instead of jdtls.
 /// A Rebuild has to clean the output; jdtls' full build only recompiles sources, so
 /// Maven modules always delegate for it, even when every source is Java.
-/// `prefer_maven` is Settings › Maven › Build and run using = Maven (javac for Automatic/Make too).
+/// `prefer_maven` is Settings › Maven › Delegate IDE build/run actions to Maven.
 fn delegates_to_external_build(
     is_maven: bool,
     policy: BuildPolicy,

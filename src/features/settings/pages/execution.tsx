@@ -145,8 +145,7 @@ export const EXECUTION_PAGES: PageSpec[] = [
     // IntelliJ IDEA: Build Tools › Maven, before Console / Debugger.
     order: 359,
     keywords: [
-      "Build and run using",
-      "delegate",
+      "Delegate IDE build/run actions to Maven",
       "javac",
       "ECJ",
       "JRE",

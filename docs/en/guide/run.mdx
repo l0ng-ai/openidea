@@ -144,7 +144,7 @@ Add tasks under **Modify options › Add before launch task**. They run in order
 
 For Java, Maven and Gradle configurations, the **Build** option picks how the project is built first: **Automatic (incremental)**, **Build (Make)**, **Rebuild**, **No build** or **Build, no error check**.
 
-For Maven Application launches, **Settings › Build, Execution, Deployment › Maven › Build and run using** chooses the compiler for that pre-launch build: **OpenIDEA** (jdtls / ECJ, the default) or **Maven** (project `javac`). **Rebuild** always uses Maven. **Build, no error check** skips the ECJ error gate and starts with the last good classes. Editor **Problems** still come from jdtls even when Maven builds the launch.
+Maven modules are built by jdtls (ECJ) for **Automatic** and **Build (Make)**, and by Maven for **Rebuild**. Turn on **Settings › Build, Execution, Deployment › Maven › Delegate IDE build/run actions to Maven** to build them with Maven (the project's `javac`) every time; editor **Problems** still come from jdtls.
 
 ### Compound configurations
 

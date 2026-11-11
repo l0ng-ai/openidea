@@ -59,7 +59,7 @@ describe("languages settings", () => {
       mvndHome: "/opt/mvnd",
       threads: "2C",
       activeProfiles: "",
-      runUsing: "ide",
+      delegateBuild: false,
     });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
     expect(validateLanguages({ java: { maven: { threads: 4 } } }).java.maven.threads).toBe("");
@@ -67,10 +67,10 @@ describe("languages settings", () => {
 
   it("defaults the Maven runner JRE to the project JDK and preserves a chosen JDK", () => {
     expect(validateSettings({}).languages.java.maven.runnerJre).toBe("");
-    expect(validateSettings({}).languages.java.maven.runUsing).toBe("ide");
+    expect(validateSettings({}).languages.java.maven.delegateBuild).toBe(false);
     expect(validateLanguages({ java: { maven: { runnerJre: 21 } } }).java.maven.runnerJre).toBe("");
-    expect(validateLanguages({ java: { maven: { runUsing: "maven" } } }).java.maven.runUsing).toBe("maven");
-    expect(validateLanguages({ java: { maven: { runUsing: "javac" } } }).java.maven.runUsing).toBe("ide");
+    expect(validateLanguages({ java: { maven: { delegateBuild: true } } }).java.maven.delegateBuild).toBe(true);
+    expect(validateLanguages({ java: { maven: { delegateBuild: "yes" } } }).java.maven.delegateBuild).toBe(false);
     const settings = validateSettings({ languages: { java: { maven: { runnerJre: " ./jdks/21 " } } } });
     expect(validateSettings(settings).languages.java.maven.runnerJre).toBe("./jdks/21");
   });

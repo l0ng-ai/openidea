@@ -1174,18 +1174,6 @@ pub enum GradleDistribution {
     Local,
 }
 
-/// Who builds a Maven Application / Spring Boot launch before OpenIDEA starts it.
-/// Mirrors Gradle's "Build and run using"; the process is still launched by OpenIDEA.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub enum MavenRunUsing {
-    /// Maven/`javac` (`compile` / `test-compile`) then OpenIDEA on that classpath.
-    Maven,
-    /// jdtls workspace build (ECJ); the default.
-    #[default]
-    Ide,
-}
-
 /// Build Tools › Maven.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -1215,8 +1203,8 @@ pub struct MavenSettings {
     pub threads: String,
     /// Active Maven profiles (`-P`), comma-separated; empty leaves profiles to the POM/settings.
     pub active_profiles: String,
-    /// "Build and run using": Maven/`javac` or the Java language server (ECJ) for Application launches.
-    pub run_using: MavenRunUsing,
+    /// Delegate IDE build/run actions to Maven: launches build with Maven (`javac`) instead of jdtls (ECJ).
+    pub delegate_build: bool,
 }
 
 impl MavenSettings {
@@ -1721,13 +1709,12 @@ mod maven_linkage_tests {
     fn maven_runner_jre_defaults_and_round_trips() {
         let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
         assert!(old.runner_jre.is_empty());
-        assert_eq!(old.run_using, MavenRunUsing::Ide);
+        assert!(!old.delegate_build);
         assert!(MavenSettings::default().runner_jre.is_empty());
-        assert_eq!(MavenSettings::default().run_using, MavenRunUsing::Ide);
-        let settings = MavenSettings { runner_jre: "/opt/jdk-21".into(), run_using: MavenRunUsing::Maven, ..old };
+        let settings = MavenSettings { runner_jre: "/opt/jdk-21".into(), delegate_build: true, ..old };
         let encoded = serde_json::to_string(&settings).unwrap();
         assert!(encoded.contains(r#""runnerJre":"/opt/jdk-21""#));
-        assert!(encoded.contains(r#""runUsing":"maven""#));
+        assert!(encoded.contains(r#""delegateBuild":true"#));
         assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
     }
 
