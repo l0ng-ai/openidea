@@ -246,6 +246,7 @@ impl Host {
                         &bundles,
                         lombok.jar(),
                     );
+                    ide_lsp::jdtls::configure_gradle_import(cfg, &effective.languages.java.gradle);
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);

@@ -8,6 +8,7 @@
 use crate::LspManager;
 use crate::server::{Running, Server};
 use ide_core::error::ErrorKind;
+use ide_core::settings::{GradleDistribution, GradleSettings};
 use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -59,6 +60,32 @@ pub fn configure_source_paths(cfg: &mut ide_language::LanguageServerConfig, path
         settings["java"]["project"]["sourcePaths"] = json!(paths);
         cfg.settings = Some(settings);
     }
+}
+
+/// Settings › Build Tools › Gradle → jdtls `java.import.gradle.*`: the Java import runs the
+/// same Gradle, user home and JDK as the IDE's own builds. Without it a project that ships no
+/// wrapper cannot be imported at all, and its sources get no classpath — not even the JDK's.
+pub fn configure_gradle_import(cfg: &mut ide_language::LanguageServerConfig, gradle: &GradleSettings) {
+    if cfg.name != SERVER {
+        return;
+    }
+    let mut imports = serde_json::Map::new();
+    if gradle.distribution == GradleDistribution::Local && !gradle.home.trim().is_empty() {
+        imports.insert("home".to_owned(), json!(gradle.home.trim()));
+        imports.insert("wrapper.enabled".to_owned(), json!(false));
+    }
+    if !gradle.user_home.trim().is_empty() {
+        imports.insert("user.home".to_owned(), json!(gradle.user_home.trim()));
+    }
+    if !gradle.jvm.trim().is_empty() {
+        imports.insert("java.home".to_owned(), json!(gradle.jvm.trim()));
+    }
+    if imports.is_empty() {
+        return;
+    }
+    let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
+    settings["java"]["import"]["gradle"] = Value::Object(imports);
+    cfg.settings = Some(settings);
 }
 
 /// Applies Project Structure compiler output path, project libraries (and source attachments),
@@ -1206,6 +1233,41 @@ mod tests {
             assert_eq!(settings["java"]["project"]["referencedLibraries"], json!(["vendor/*.jar"]));
             assert_eq!(settings["java"]["project"]["sourcePaths"], json!(["custom"]));
         }
+    }
+
+    #[test]
+    fn gradle_import_runs_the_gradle_the_ide_builds_with() {
+        let mut cfg = java_config();
+        let gradle = GradleSettings {
+            distribution: GradleDistribution::Local,
+            home: "D:/gradle/5.2.1".into(),
+            user_home: "D:/gradle-user".into(),
+            jvm: "D:/jdk/8".into(),
+            ..GradleSettings::default()
+        };
+        configure_gradle_import(&mut cfg, &gradle);
+        let settings = crate::handler::all_settings(&cfg);
+        assert_eq!(settings["java"]["import"]["gradle"]["home"], json!("D:/gradle/5.2.1"));
+        assert_eq!(settings["java"]["import"]["gradle"]["wrapper.enabled"], json!(false));
+        assert_eq!(settings["java"]["import"]["gradle"]["user.home"], json!("D:/gradle-user"));
+        assert_eq!(settings["java"]["import"]["gradle"]["java.home"], json!("D:/jdk/8"));
+    }
+
+    #[test]
+    fn gradle_import_keeps_the_wrapper_unless_a_local_distribution_is_set() {
+        let mut cfg = java_config();
+        let initial = cfg.clone();
+        configure_gradle_import(&mut cfg, &GradleSettings::default());
+        assert_eq!(cfg, initial, "the wrapper is jdtls's default and stays untouched");
+        let mut gradle = GradleSettings { distribution: GradleDistribution::Local, ..GradleSettings::default() };
+        configure_gradle_import(&mut cfg, &gradle);
+        assert_eq!(cfg, initial, "a local distribution without a home keeps the wrapper");
+        gradle.user_home = "D:/gradle-user".into();
+        configure_gradle_import(&mut cfg, &gradle);
+        let settings = crate::handler::all_settings(&cfg);
+        assert_eq!(settings["java"]["import"]["gradle"]["user.home"], json!("D:/gradle-user"));
+        assert!(settings["java"]["import"]["gradle"].get("home").is_none());
+        assert!(settings["java"]["import"]["gradle"].get("wrapper.enabled").is_none());
     }
 
     #[test]
