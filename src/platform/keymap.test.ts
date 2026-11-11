@@ -11,6 +11,7 @@ import {
   useKeymap,
 } from "./keymap";
 import { executeAction, registerAction } from "./actions";
+import { clearContext, setContext } from "./context";
 import { usePlatform } from "./platformInfo";
 
 describe("keymap", () => {
@@ -93,6 +94,25 @@ describe("keymap", () => {
       expect(run).not.toHaveBeenCalled();
       expect(await executeAction("t.keyGated")).toBe(true);
       expect(run).toHaveBeenCalledOnce();
+    });
+
+    it("prefers a matching keyWhen over a keyWhenless action sharing the stroke", async () => {
+      const specific = vi.fn();
+      const general = vi.fn();
+      // Insertion order (later wins) puts the keyWhenless action first.
+      registerAction({ id: "t.keyWhenMatch", title: "specific", keyWhen: "projectViewFocus", run: specific });
+      registerAction({ id: "t.keyWhenless", title: "general", run: general });
+      useKeymap.setState({ overrides: { "t.keyWhenMatch": ["Meta+J"], "t.keyWhenless": ["Meta+J"] } });
+      setContext("projectViewFocus", true);
+      uninstall = installKeyboardDispatcher(window);
+      try {
+        window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyJ", key: "j", metaKey: true }));
+        await Promise.resolve();
+        expect(specific).toHaveBeenCalledOnce();
+        expect(general).not.toHaveBeenCalled();
+      } finally {
+        clearContext("projectViewFocus");
+      }
     });
 
     it("waits 2s for a chord's second stroke and swallows a wrong one", async () => {
