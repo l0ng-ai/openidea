@@ -16,7 +16,6 @@ import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { spanStyle } from "@/ui/ansi";
-import ansi from "@/ui/ansi.module.css";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
 import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions, type FindResult } from "@/ui/consoleFind";
 import {
@@ -429,7 +428,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
         )}
         <div
           ref={scroller}
-          className={clsx(styles.consoleOutput, ansi.palette, !softWrap && styles.noWrap)}
+          className={clsx(styles.consoleOutput, !softWrap && styles.noWrap)}
           onScroll={(e) => {
             if (programmatic.current) return;
             const el = e.currentTarget;
