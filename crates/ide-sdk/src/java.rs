@@ -64,7 +64,10 @@ pub(crate) fn java_runs(java: &Path) -> bool {
             && probe.modified == modified
             && probe.len == metadata.len()
             && probe.permissions == metadata.permissions()
-            && probe.at.elapsed() < RESCAN_AFTER
+            // An executable that ran keeps running while it is unchanged; probing it again
+            // on a busy machine (jdtls indexing, an antivirus scan) can time out and turn
+            // a working JDK into "cannot run" until the next probe.
+            && (probe.runnable || probe.at.elapsed() < RESCAN_AFTER)
         {
             return probe.runnable;
         }
@@ -921,6 +924,33 @@ mod tests {
         cfg.launch_error = Some("invalid selected JDK /outside/scan".into());
         configure_jdtls(&mut cfg, tmp.path(), tmp.path(), &[], None, None, 25, &[], None);
         assert_eq!(cfg.launch_error.as_deref(), Some("invalid selected JDK /outside/scan"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_java_that_ran_is_not_probed_again_while_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jdk = test_jdk(tmp.path(), 25, "busy25");
+        let java = java_executable(&jdk.home);
+        let busy = tmp.path().join("busy");
+        let probes = tmp.path().join("probes");
+        // Times out once `busy` exists, as `java -version` can on a loaded machine.
+        std::fs::write(
+            &java,
+            format!(
+                "#!/bin/sh\necho >> '{}'\n[ -f '{}' ] && exec /bin/sleep 10\nexit 0\n",
+                probes.display(),
+                busy.display()
+            ),
+        )
+        .unwrap();
+        assert!(java_runs(&java));
+        std::fs::write(&busy, "").unwrap();
+        let long_ago = Instant::now().checked_sub(RESCAN_AFTER * 2).unwrap();
+        JAVA_PROBES.lock().unwrap().get_mut(&java).unwrap().at = long_ago;
+        assert!(java_runs(&java), "a JDK that ran stays usable");
+        assert!(java_execution_error(&java).is_none());
+        assert_eq!(std::fs::read_to_string(&probes).unwrap().lines().count(), 1, "probed once");
     }
 
     #[cfg(unix)]
