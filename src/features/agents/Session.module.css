@@ -685,8 +685,17 @@
   min-width: 0;
   display: none;
 }
+/* The counts keep their line; what runs now gives way and ellipsizes. */
+.processParts {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* What the run is doing now, after its counts. */
 .processCurrent {
+  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   color: var(--fg-subtle);
@@ -1558,4 +1567,29 @@
 }
 .planCurrent {
   color: var(--fg);
+}
+
+/* Work in progress: a light sweeps across its label. The conversation's one spinner is the
+   working row at its end. */
+.shimmer {
+  background: linear-gradient(90deg, var(--fg-muted) 40%, var(--fg) 50%, var(--fg-muted) 60%) 0 0 / 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2s linear infinite;
+}
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    animation: none;
+    background: none;
+    color: var(--fg-muted);
+  }
 }

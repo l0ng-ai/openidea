@@ -1194,13 +1194,11 @@ function ThoughtEntry({
         open={open}
         summary={
           <summary>
+            <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
             {working ? (
-              <Spinner size={12} />
-            ) : (
-              <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
-            )}
-            {working ? (
-              <T>Thinking</T>
+              <span className={styles.shimmer}>
+                <T>Thinking</T>
+              </span>
             ) : (
               <span className={styles.thoughtPreview}>{thoughtPreview(text) || <T>Reasoning</T>}</span>
             )}
@@ -1643,7 +1641,7 @@ function TurnFold({
       summary={
         <summary className={styles.processSummary}>
           <Icon name="chevron-right" size={12} className={styles.processChevron} />
-          <span>{parts.join(" · ")}</span>
+          <span className={styles.processParts}>{parts.join(" · ")}</span>
           {work.added > 0 && <span className={styles.added}>+{work.added}</span>}
           {work.removed > 0 && <span className={styles.removed}>−{work.removed}</span>}
           {took && <span className={styles.muted}>{took}</span>}
@@ -1698,11 +1696,10 @@ const ProcessRun = memo(function ProcessRun({
       summary={
         <summary className={styles.processSummary}>
           <Icon name="chevron-right" size={12} className={styles.processChevron} />
-          {(working || live) && <Spinner size={12} />}
-          <span>{parts.join(" · ")}</span>
+          <span className={clsx(styles.processParts, (working || live) && styles.shimmer)}>{parts.join(" · ")}</span>
           {added > 0 && <span className={styles.added}>+{added}</span>}
           {removed > 0 && <span className={styles.removed}>−{removed}</span>}
-          {current && <span className={styles.processCurrent}>{current}</span>}
+          {current && <span className={clsx(styles.processCurrent, styles.shimmer)}>{current}</span>}
         </summary>
       }
     >
@@ -1771,7 +1768,7 @@ const ToolEntry = memo(function ToolEntry({
   const head = (
     <>
       <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} />
-      <span className={styles.toolTitle} title={entry.title || entry.kind}>
+      <span className={clsx(styles.toolTitle, liveTool(entry) && styles.shimmer)} title={entry.title || entry.kind}>
         {shortTitle(task, entry.title || entry.kind)}
       </span>
       {entry.diffs.map((d) => (
@@ -1788,7 +1785,6 @@ const ToolEntry = memo(function ToolEntry({
           <span className={styles.added}>+{d.added}</span> <span className={styles.removed}>−{d.removed}</span>
         </button>
       ))}
-      {(entry.status === "running" || entry.status === "pending") && <Spinner size={12} />}
       {entry.status === "failed" && <Icon name="error" size={12} />}
     </>
   );
