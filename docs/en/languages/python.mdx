@@ -125,6 +125,12 @@ See [Debugging](/en/guide/debugging) for breakpoints, stepping and the debugger 
 
 Django is the only framework with dedicated support: the `manage.py runserver` and `manage.py test` configurations, the **Django tests** configuration type (target, settings module, options), running single `TestCase` tests from the gutter, and Django mode in the debugger. Other frameworks (Flask, FastAPI and so on) run as ordinary scripts or console scripts.
 
+### Django templates
+
+The HTML and text files in a `templates` folder of a Django project (one with a `manage.py` above it) open as **Django Template** files: the template tags, variables, filters and comments are highlighted on top of the HTML, and block tags (`{% block %}`, `{% if %}`, `{% for %}`, `{% with %}` and the others of Django and its contrib libraries) fold, indent their content and highlight their end tag. Typing `{%`, `{{` or `{#` closes the pair, finishing a block tag adds its end tag, and `{% end` completes the end tags of the open blocks. **Comment with Line Comment** puts each line in its own `{# … #}`, and **Comment with Block Comment** over several lines uses `{% comment %}`. The HTML language server and Emmet work in the markup between the tags.
+
+An HTML file elsewhere with Django tags shows a banner that switches it to Django Template or keeps it as HTML; either choice is the file's **Override File Type**.
+
 ## Limitations
 
 - Only one type checker runs at a time. Ruff runs only in projects with a Ruff configuration.

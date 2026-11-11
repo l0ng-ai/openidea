@@ -1,6 +1,19 @@
 import { StreamLanguage, type StreamParser } from "@codemirror/language";
 
-const KEYWORDS = new Set(["module", "go", "toolchain", "require", "replace", "exclude", "retract", "use"]);
+/** go.mod and go.work directives (`tool` since Go 1.24, `ignore` since Go 1.25). */
+const KEYWORDS = new Set([
+  "module",
+  "go",
+  "toolchain",
+  "godebug",
+  "require",
+  "replace",
+  "exclude",
+  "retract",
+  "tool",
+  "ignore",
+  "use",
+]);
 
 export interface GoModState {
   currentKeyword: string | null;

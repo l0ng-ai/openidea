@@ -186,6 +186,9 @@ describe("agent composer", () => {
     expect(toPrompt({ text: "explain @src/", files: [folder], images: [] }).files).toEqual(["/w/src"]);
     expect(toPrompt({ text: "explain @src/a.rs", files: [folder], images: [] }).files).toEqual([]);
     expect(canSend({ text: " ", files: [], images: [] })).toBe(false);
+    const video = { path: "/home/me/clip.mov", rel: "clip.mov", attached: true };
+    expect(toPrompt({ text: "what happens here?", files: [video], images: [] }).files).toEqual(["/home/me/clip.mov"]);
+    expect(canSend({ text: " ", files: [video], images: [] })).toBe(true);
   });
 
   it("recalls history from the edge lines only", () => {

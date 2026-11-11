@@ -25,8 +25,20 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     },
   };
 });
+type DragDrop = { payload: { type: string; paths?: string[]; position?: { x: number; y: number } } };
+const dragDrop = new Set<(event: DragDrop) => void>();
 vi.mock("@tauri-apps/api/webview", () => ({
-  getCurrentWebview: () => ({ onDragDropEvent: () => Promise.resolve(() => {}) }),
+  getCurrentWebview: () => ({
+    onDragDropEvent: (handler: (event: DragDrop) => void) => {
+      dragDrop.add(handler);
+      return Promise.resolve(() => dragDrop.delete(handler));
+    },
+  }),
+}));
+const invokeLocal = vi.fn();
+vi.mock("@/platform/tauriCore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/platform/tauriCore")>()),
+  invokeLocal: (cmd: string, args: unknown) => invokeLocal(cmd, args),
 }));
 
 import { isTauri } from "@/platform/ipc";
@@ -244,6 +256,38 @@ describe("New Task composer paste", () => {
     render(<HomeEditor />);
     fireEvent.paste(screen.getByRole("textbox"), { clipboardData: { types: ["text/plain"], files: [] } });
     expect(clipboardImage).not.toHaveBeenCalled();
+  });
+});
+
+describe("New Task composer OS file drop", () => {
+  const drop = (paths: string[]) =>
+    act(() => dragDrop.forEach((handler) => handler({ payload: { type: "drop", paths, position: { x: 0, y: 0 } } })));
+
+  it("attaches files from outside the project and images that cannot be inlined", async () => {
+    invokeLocal
+      .mockReset()
+      .mockImplementation((_cmd: string, args: { path: string }) =>
+        args.path.endsWith("shot.png")
+          ? Promise.resolve("data:image/png;base64,iVBORw0KGgo=")
+          : Promise.reject(new Error("too large")),
+      );
+    render(<HomeEditor />);
+    await waitFor(() => expect(dragDrop.size).toBeGreaterThan(0));
+    drop(["/Users/me/Desktop/recording one.mov", "/Users/me/Desktop/shot.png", "/Users/me/Desktop/huge.png"]);
+    await waitFor(() => expect(composerDraft(HOME).files).toHaveLength(2));
+    expect(composerDraft(HOME)).toEqual({
+      text: "",
+      files: [
+        { path: "/Users/me/Desktop/recording one.mov", rel: "recording one.mov", attached: true },
+        { path: "/Users/me/Desktop/huge.png", rel: "huge.png", attached: true },
+      ],
+      images: [{ mimeType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+    });
+    expect(screen.getByTitle("/Users/me/Desktop/recording one.mov")).toHaveTextContent("recording one.mov");
+    fireEvent.click(
+      within(screen.getByTitle("/Users/me/Desktop/huge.png")).getByRole("button", { name: "Remove File" }),
+    );
+    expect(composerDraft(HOME).files.map((f) => f.rel)).toEqual(["recording one.mov"]);
   });
 });
 

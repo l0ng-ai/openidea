@@ -16,7 +16,7 @@ import type {
   ExternalSession,
   Isolation,
 } from "@/bindings";
-import { useProject } from "@/platform/project";
+import { basename, useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { editorService, notifications, notifyTabTitlesChanged, toolWindowService } from "@/workbench/contributions";
@@ -27,6 +27,7 @@ import {
   canSend,
   cursorModelDefaults,
   emptyDraft,
+  isMentioned,
   toPrompt,
   type ComposerDraft,
   type FileRef,
@@ -883,10 +884,10 @@ export async function editQueued(task: string, queued: string): Promise<void> {
   const item = await call(commands.agentUnqueue(task, queued));
   const current = composerDraft(task);
   const cwd = useAgents.getState().tasks.get(task)?.cwd ?? "";
-  const files: FileRef[] = item.prompt.files.map((path) => ({
-    path,
-    rel: path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : path,
-  }));
+  const files: FileRef[] = item.prompt.files.map((path) => {
+    const rel = path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : path;
+    return isMentioned(item.prompt.text, rel) ? { path, rel } : { path, rel: basename(path), attached: true };
+  });
   updateComposer(task, {
     text: current.text ? `${item.prompt.text}\n${current.text}` : item.prompt.text,
     files: [...files, ...current.files],
