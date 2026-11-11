@@ -129,6 +129,16 @@ fn added(path: IpcPath, rel_path: String) -> AgentChange {
     AgentChange { path, rel_path, kind: ChangeKind::Added, added, removed: 0 }
 }
 
+fn crlf_to_lf(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for (i, &b) in bytes.iter().enumerate() {
+        if !(b == b'\r' && bytes.get(i + 1) == Some(&b'\n')) {
+            out.push(b);
+        }
+    }
+    out
+}
+
 /// Where a task works and what its changes are measured against.
 pub(crate) enum TaskBase {
     /// A worktree of its own: everything since the commit it was created from, the agent's
@@ -172,12 +182,33 @@ impl TaskBase {
         let listed = without_untouched(listed, before);
         let Some(start) = start.filter(|s| head.as_deref() != Some(*s)) else { return Ok(listed) };
         // HEAD moved (a reset, a checkout, a pull): a file that is as it was when the task
-        // started is the user's doing, not the task's.
+        // started is the user's doing, not the task's. Git compares tracked files, with its
+        // line-ending and other filters: the bytes on disk and in the commit differ under
+        // `core.autocrlf`.
+        let since_start: std::collections::HashSet<String> = repo
+            .diff_with_worktree(start)?
+            .into_iter()
+            .flat_map(|f| [Some(f.path), f.old_path].into_iter().flatten())
+            .collect();
+        let untracked: std::collections::HashSet<String> = repo
+            .status()?
+            .into_iter()
+            .filter(|s| s.unstaged == Some(ChangeKind::Untracked))
+            .map(|s| s.rel_path)
+            .collect();
         Ok(listed
             .into_iter()
             .filter(|c| {
-                before.contains_key(&c.rel_path)
-                    || !repo.file_bytes_at(&c.path.0, Some(start)).is_ok_and(|at| at == std::fs::read(&c.path.0).ok())
+                if before.contains_key(&c.rel_path) {
+                    return true;
+                }
+                let Ok(Some(at_start)) = repo.file_bytes_at(&c.path.0, Some(start)) else { return true };
+                if !untracked.contains(&c.rel_path) {
+                    return since_start.contains(&c.rel_path);
+                }
+                // Untracked since (a mixed reset): git doesn't diff it, so compare the bytes,
+                // CRLF on disk matching LF committed.
+                !std::fs::read(&c.path.0).is_ok_and(|now| now == at_start || crlf_to_lf(&now) == at_start)
             })
             .collect())
     }

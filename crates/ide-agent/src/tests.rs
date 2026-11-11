@@ -2873,15 +2873,30 @@ async fn rolling_back_restores_the_start_of_the_task_and_keeps_the_users_own_edi
 struct Checkout {
     _tmp: tempfile::TempDir,
     dir: PathBuf,
+    eol: Eol,
 }
 
+/// How the checkout keeps line endings: as committed, or CRLF on disk with `core.autocrlf`
+/// (Git for Windows' default), where the files' bytes never equal the committed blobs.
+#[derive(Debug, Clone, Copy)]
+enum Eol {
+    Lf,
+    Crlf,
+}
+
+const EOLS: [Eol; 2] = [Eol::Lf, Eol::Crlf];
+
 impl Checkout {
-    fn new() -> Self {
+    fn new(eol: Eol) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let dir = dunce::canonicalize(tmp.path()).unwrap();
-        let checkout = Self { _tmp: tmp, dir };
+        let checkout = Self { _tmp: tmp, dir, eol };
         checkout.git(&["init", "-q", "-b", "main"]);
-        checkout.git(&["config", "core.autocrlf", "false"]);
+        let autocrlf = match eol {
+            Eol::Lf => "false",
+            Eol::Crlf => "true",
+        };
+        checkout.git(&["config", "core.autocrlf", autocrlf]);
         checkout.write(".gitignore", "store/\nworktrees/\nagents/\nmodels.json\n");
         checkout
     }
@@ -2903,11 +2918,16 @@ impl Checkout {
     }
 
     fn write(&self, rel: &str, text: &str) {
+        let text = match self.eol {
+            Eol::Lf => text.to_owned(),
+            Eol::Crlf => text.replace('\n', "\r\n"),
+        };
         std::fs::write(self.dir.join(rel), text).unwrap();
     }
 
+    /// The file's text with LF line endings (a rollback writes the committed bytes back).
     fn read(&self, rel: &str) -> String {
-        std::fs::read_to_string(self.dir.join(rel)).unwrap()
+        std::fs::read_to_string(self.dir.join(rel)).unwrap().replace("\r\n", "\n")
     }
 
     /// A local task, stopped so it can be rolled back.
@@ -2937,88 +2957,119 @@ async fn changed(mgr: &AgentManager, id: &str) -> Vec<String> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn work_uncommitted_by_a_reset_during_a_local_task_is_not_rolled_back() {
-    let repo = Checkout::new();
-    repo.write("a.txt", "base\n");
-    repo.write("mine.txt", "base\n");
-    repo.commit("init");
-    repo.write("mine.txt", "my work\n");
-    repo.commit("my work");
-    let (mgr, task) = repo.task().await;
-    repo.write("a.txt", "agent\n");
-    // The user takes the last commit back into the working tree (`git reset --soft`, an
-    // undone commit): its changes are the user's, not the agent's.
-    repo.git(&["reset", "-q", "--soft", "HEAD~1"]);
-    assert_eq!(changed(&mgr, &task.id).await, ["a.txt"]);
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("a.txt", "base\n");
+        repo.write("mine.txt", "base\n");
+        repo.commit("init");
+        repo.write("mine.txt", "my work\n");
+        repo.commit("my work");
+        let (mgr, task) = repo.task().await;
+        repo.write("a.txt", "agent\n");
+        // The user takes the last commit back into the working tree (`git reset --soft`, an
+        // undone commit): its changes are the user's, not the agent's.
+        repo.git(&["reset", "-q", "--soft", "HEAD~1"]);
+        assert_eq!(changed(&mgr, &task.id).await, ["a.txt"], "{eol:?}");
 
-    let base = mgr.base_text(&task.id, repo.dir.join("a.txt")).await.unwrap();
-    assert_eq!(base.as_deref(), Some("base\n"));
-    mgr.rollback_changes(&task.id, None).await.unwrap();
-    assert_eq!(repo.read("a.txt"), "base\n");
-    assert_eq!(repo.read("mine.txt"), "my work\n", "the user's work survives the rollback");
-    assert!(changed(&mgr, &task.id).await.is_empty());
+        let base = mgr.base_text(&task.id, repo.dir.join("a.txt")).await.unwrap();
+        assert_eq!(base.map(|b| b.replace("\r\n", "\n")).as_deref(), Some("base\n"), "{eol:?}");
+        mgr.rollback_changes(&task.id, None).await.unwrap();
+        assert_eq!(repo.read("a.txt"), "base\n", "{eol:?}");
+        assert_eq!(repo.read("mine.txt"), "my work\n", "{eol:?}: the user's work survives the rollback");
+        assert!(changed(&mgr, &task.id).await.is_empty(), "{eol:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_a_mixed_reset_during_a_local_task_leaves_behind_are_not_rolled_back() {
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("a.txt", "base\n");
+        repo.write("mine.txt", "base\n");
+        repo.commit("init");
+        repo.write("mine.txt", "my work\n");
+        repo.write("mine-new.txt", "my new file\n");
+        repo.commit("my work");
+        let (mgr, task) = repo.task().await;
+        repo.write("a.txt", "agent\n");
+        // `git reset HEAD~1`: the commit's new file is untracked now, its edit unstaged.
+        repo.git(&["reset", "-q", "HEAD~1"]);
+        assert_eq!(changed(&mgr, &task.id).await, ["a.txt"], "{eol:?}");
+
+        mgr.rollback_changes(&task.id, None).await.unwrap();
+        assert_eq!(repo.read("a.txt"), "base\n", "{eol:?}");
+        assert_eq!(repo.read("mine.txt"), "my work\n", "{eol:?}");
+        assert_eq!(repo.read("mine-new.txt"), "my new file\n", "{eol:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_branch_switched_to_during_a_local_task_is_left_alone() {
-    let repo = Checkout::new();
-    repo.write("a.txt", "base\n");
-    repo.write("other.txt", "base\n");
-    repo.commit("init");
-    repo.git(&["checkout", "-q", "-b", "feature"]);
-    repo.write("other.txt", "feature\n");
-    repo.write("only-feature.txt", "feature\n");
-    repo.commit("feature");
-    repo.git(&["checkout", "-q", "main"]);
-    repo.write("only-main.txt", "main\n");
-    repo.commit("main");
-    let (mgr, task) = repo.task().await;
-    repo.write("a.txt", "agent\n");
-    // The agent's uncommitted edit comes along to a branch that doesn't contain the task's start.
-    repo.git(&["checkout", "-q", "feature"]);
-    assert_eq!(changed(&mgr, &task.id).await, ["a.txt"]);
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("a.txt", "base\n");
+        repo.write("other.txt", "base\n");
+        repo.commit("init");
+        repo.git(&["checkout", "-q", "-b", "feature"]);
+        repo.write("other.txt", "feature\n");
+        repo.write("only-feature.txt", "feature\n");
+        repo.commit("feature");
+        repo.git(&["checkout", "-q", "main"]);
+        repo.write("only-main.txt", "main\n");
+        repo.commit("main");
+        let (mgr, task) = repo.task().await;
+        repo.write("a.txt", "agent\n");
+        // The agent's uncommitted edit comes along to a branch that doesn't contain the task's start.
+        repo.git(&["checkout", "-q", "feature"]);
+        assert_eq!(changed(&mgr, &task.id).await, ["a.txt"], "{eol:?}");
 
-    mgr.rollback_changes(&task.id, None).await.unwrap();
-    assert_eq!(repo.read("a.txt"), "base\n");
-    assert_eq!(repo.read("other.txt"), "feature\n");
-    assert_eq!(repo.read("only-feature.txt"), "feature\n");
-    assert!(!repo.dir.join("only-main.txt").exists());
-    assert!(changed(&mgr, &task.id).await.is_empty());
+        mgr.rollback_changes(&task.id, None).await.unwrap();
+        assert_eq!(repo.read("a.txt"), "base\n", "{eol:?}");
+        assert_eq!(repo.read("other.txt"), "feature\n", "{eol:?}");
+        assert_eq!(repo.read("only-feature.txt"), "feature\n", "{eol:?}");
+        assert!(!repo.dir.join("only-main.txt").exists(), "{eol:?}");
+        assert!(changed(&mgr, &task.id).await.is_empty(), "{eol:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn commits_made_during_a_local_task_are_kept_by_its_rollback() {
-    let repo = Checkout::new();
-    repo.write("a.txt", "base\n");
-    repo.commit("init");
-    let (mgr, task) = repo.task().await;
-    repo.write("a.txt", "agent\n");
-    repo.write("b.txt", "agent\n");
-    // The user commits what the agent did to `a.txt` so far: it drops out of the task's changes.
-    repo.git(&["add", "a.txt"]);
-    repo.git(&["commit", "-q", "-m", "keep"]);
-    assert_eq!(changed(&mgr, &task.id).await, ["b.txt"]);
-    repo.write("a.txt", "agent\nagain\n");
-    assert_eq!(changed(&mgr, &task.id).await, ["a.txt", "b.txt"]);
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("a.txt", "base\n");
+        repo.commit("init");
+        let (mgr, task) = repo.task().await;
+        repo.write("a.txt", "agent\n");
+        repo.write("b.txt", "agent\n");
+        // The user commits what the agent did to `a.txt` so far: it drops out of the task's changes.
+        repo.git(&["add", "a.txt"]);
+        repo.git(&["commit", "-q", "-m", "keep"]);
+        assert_eq!(changed(&mgr, &task.id).await, ["b.txt"], "{eol:?}");
+        repo.write("a.txt", "agent\nagain\n");
+        assert_eq!(changed(&mgr, &task.id).await, ["a.txt", "b.txt"], "{eol:?}");
 
-    mgr.rollback_changes(&task.id, None).await.unwrap();
-    assert_eq!(repo.read("a.txt"), "agent\n", "back to the commit, not to before it");
-    assert!(!repo.dir.join("b.txt").exists());
-    assert!(changed(&mgr, &task.id).await.is_empty());
+        mgr.rollback_changes(&task.id, None).await.unwrap();
+        assert_eq!(repo.read("a.txt"), "agent\n", "{eol:?}: back to the commit, not to before it");
+        assert!(!repo.dir.join("b.txt").exists(), "{eol:?}");
+        assert!(changed(&mgr, &task.id).await.is_empty(), "{eol:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_local_task_in_a_repository_without_commits_lists_and_rolls_back_its_changes() {
-    let repo = Checkout::new();
-    repo.write("mine.txt", "mine\n");
-    let (mgr, task) = repo.task().await;
-    repo.write("new.txt", "agent\n");
-    assert_eq!(changed(&mgr, &task.id).await, ["new.txt"]);
-    assert_eq!(mgr.base_text(&task.id, repo.dir.join("new.txt")).await.unwrap(), None);
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("mine.txt", "mine\n");
+        let (mgr, task) = repo.task().await;
+        repo.write("new.txt", "agent\n");
+        assert_eq!(changed(&mgr, &task.id).await, ["new.txt"], "{eol:?}");
+        assert_eq!(mgr.base_text(&task.id, repo.dir.join("new.txt")).await.unwrap(), None, "{eol:?}");
 
-    mgr.rollback_changes(&task.id, None).await.unwrap();
-    assert!(!repo.dir.join("new.txt").exists());
-    assert_eq!(repo.read("mine.txt"), "mine\n");
-    assert!(changed(&mgr, &task.id).await.is_empty());
+        mgr.rollback_changes(&task.id, None).await.unwrap();
+        assert!(!repo.dir.join("new.txt").exists(), "{eol:?}");
+        assert_eq!(repo.read("mine.txt"), "mine\n", "{eol:?}");
+        assert!(changed(&mgr, &task.id).await.is_empty(), "{eol:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
