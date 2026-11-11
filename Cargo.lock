@@ -4689,6 +4689,7 @@ name = "ide-profiler"
 version = "0.1.41"
 dependencies = [
  "ide-core",
+ "ide-jvm-attach",
  "ide-run",
  "serde",
  "serde_json",
