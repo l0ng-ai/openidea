@@ -7694,5 +7694,9 @@
   "Could not change the local data directory": "无法更改本地数据目录",
   "Settings › Tools › SSH Configurations": "设置 › 工具 › SSH 配置",
   "Edit SSH Configurations": "编辑 SSH 配置",
-  "Docker over SSH uses the system ssh: choose a configuration with OpenSSH config authentication.": "通过 SSH 连接 Docker 使用系统 ssh：请选择认证方式为“OpenSSH 配置和身份验证代理”的 SSH 配置。"
+  "Docker over SSH uses the system ssh: choose a configuration with OpenSSH config authentication.": "通过 SSH 连接 Docker 使用系统 ssh：请选择认证方式为“OpenSSH 配置和身份验证代理”的 SSH 配置。",
+  "Download to…": "下载到…",
+  "Download to": "下载到",
+  "Download Remote Files Into Folder": "将远程文件下载到文件夹",
+  "Download Remote Host files into a local folder (arg: { server, paths, target })": "将远程主机中的文件下载到本地文件夹（参数：{ server, paths, target }）"
 }
