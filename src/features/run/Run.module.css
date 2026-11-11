@@ -34,6 +34,14 @@
   gap: 2px;
   padding: 4px 0;
   border-right: 1px solid var(--border);
+  min-height: 0;
+  /* A pane shorter than the buttons (the Services detail) scrolls them with the wheel
+     instead of growing the pane and adding a second scrollbar. */
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.toolbar::-webkit-scrollbar {
+  display: none;
 }
 .toolbarSep {
   width: 16px;
