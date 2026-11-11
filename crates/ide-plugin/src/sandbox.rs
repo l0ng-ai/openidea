@@ -65,6 +65,29 @@ pub fn resolve_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
     Ok(real)
 }
 
+/// [`resolve_in_root`] over several roots: the project root and, for a project
+/// window group, its member roots. `roots` is tried in order (the project root
+/// first), and the first root that contains `path` wins; a relative path may
+/// name a file of any member. When no root contains it, the project root's
+/// refusal is the error, as if there had been no members at all.
+pub fn resolve_in_roots(roots: &[PathBuf], path: &str) -> Result<PathBuf, String> {
+    let (project_root, members) = match roots.split_first() {
+        Some((project_root, members)) => (project_root, members),
+        None => return Err(format!("{path}: no such file")),
+    };
+    match resolve_in_root(project_root, path) {
+        Ok(real) => Ok(real),
+        Err(project_root_error) => {
+            for root in members {
+                if let Ok(real) = resolve_in_root(root, path) {
+                    return Ok(real);
+                }
+            }
+            Err(project_root_error)
+        }
+    }
+}
+
 /// Whether `path` (absolute, or relative to `root`) lands inside `root`,
 /// without requiring it to exist: `Ok(true)` also for a missing path, so
 /// callers distinguish "outside" from "absent". Existing symlinks are
@@ -72,6 +95,23 @@ pub fn resolve_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
 pub fn inside_root(root: &Path, path: &str) -> Result<bool, String> {
     let (root, joined) = joined_path(root, path)?;
     Ok(resolve_real(&joined).starts_with(&root))
+}
+
+/// [`inside_root`] over several roots, as [`resolve_in_roots`] does: a path is
+/// inside when any of them contains it.
+pub fn inside_roots(roots: &[PathBuf], path: &str) -> Result<bool, String> {
+    let Some((project_root, members)) = roots.split_first() else {
+        return Ok(false);
+    };
+    if inside_root(project_root, path)? {
+        return Ok(true);
+    }
+    for root in members {
+        if inside_root(root, path)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Like [`resolve_in_root`] for a path that may not exist yet (a file about to
@@ -126,6 +166,25 @@ pub fn resolve_writable_in_root(root: &Path, path: &str) -> Result<PathBuf, Stri
         return Err(format!("{path}: access outside the project root is not allowed"));
     }
     Ok(real)
+}
+
+/// [`resolve_writable_in_root`] over several roots, as [`resolve_in_roots`] does.
+pub fn resolve_writable_in_roots(roots: &[PathBuf], path: &str) -> Result<PathBuf, String> {
+    let (project_root, members) = match roots.split_first() {
+        Some((project_root, members)) => (project_root, members),
+        None => return Err(format!("{path}: access outside the project root is not allowed")),
+    };
+    match resolve_writable_in_root(project_root, path) {
+        Ok(real) => Ok(real),
+        Err(project_root_error) => {
+            for root in members {
+                if let Ok(real) = resolve_writable_in_root(root, path) {
+                    return Ok(real);
+                }
+            }
+            Err(project_root_error)
+        }
+    }
 }
 
 fn resolve_write_target(path: &Path, links_left: usize) -> Result<PathBuf, std::io::Error> {
@@ -409,6 +468,80 @@ mod tests {
         let abs_out = tmp.path().join("secret.txt");
         assert!(!inside_root(&root, abs_out.to_str().unwrap()).unwrap());
         assert!(inside_root(&root, "").is_err());
+    }
+
+    /// A project window group: the container root and its member roots.
+    fn group(tmp: &tempfile::TempDir) -> (PathBuf, PathBuf, Vec<PathBuf>) {
+        let container = tmp.path().join("workspace");
+        let alpha = tmp.path().join("alpha");
+        let beta = tmp.path().join("beta");
+        for dir in [&container, &alpha, &beta] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let container = dunce::canonicalize(container).unwrap();
+        let alpha = dunce::canonicalize(alpha).unwrap();
+        let beta = dunce::canonicalize(beta).unwrap();
+        (container, alpha.clone(), vec![alpha, beta])
+    }
+
+    #[test]
+    fn member_roots_accept_their_files_and_the_container_still_confines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (container, alpha, members) = group(&tmp);
+        std::fs::create_dir_all(container.join("src")).unwrap();
+        std::fs::write(container.join("src/notes.txt"), "hi").unwrap();
+        std::fs::create_dir_all(alpha.join("src")).unwrap();
+        let member_file = alpha.join("src/mapper.xml");
+        std::fs::write(&member_file, "hi").unwrap();
+        std::fs::write(tmp.path().join("secret.txt"), "s").unwrap();
+        let roots = [container.clone()].iter().cloned().chain(members.clone()).collect::<Vec<_>>();
+
+        // A member's absolute file resolves through its member root.
+        assert_eq!(resolve_in_roots(&roots, member_file.to_str().unwrap()).unwrap(), member_file);
+        // The container's own files still resolve as before.
+        let container_file = container.join("src/notes.txt");
+        assert_eq!(resolve_in_roots(&roots, "src/notes.txt").unwrap(), container_file);
+        // A missing path is `no such file`, wherever it would land.
+        let gone = container_file.with_file_name("gone.txt");
+        assert_eq!(
+            resolve_in_roots(&roots, gone.to_str().unwrap()).unwrap_err(),
+            format!("{}: no such file", gone.display())
+        );
+        // Outside every root is refused with the container's refusal.
+        let outside = tmp.path().join("secret.txt");
+        let err = resolve_in_roots(&roots, outside.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("outside the project root"), "{err}");
+        let err = resolve_in_roots(&roots, "../secret.txt").unwrap_err();
+        assert!(err.contains("outside the project root"), "{err}");
+        // `inside_roots` accepts member paths, including missing ones, and
+        // refuses what no root contains.
+        assert!(inside_roots(&roots, member_file.to_str().unwrap()).unwrap());
+        assert!(inside_roots(&roots, "missing/one.txt").unwrap());
+        assert!(inside_roots(&roots, alpha.join("src/new.xml").to_str().unwrap()).unwrap());
+        assert!(!inside_roots(&roots, outside.to_str().unwrap()).unwrap());
+        // No members: exactly the single-root behaviour.
+        let single = [container.clone()];
+        assert_eq!(resolve_in_roots(&single, "src/notes.txt").unwrap(), container_file);
+        assert!(!inside_roots(&single, member_file.to_str().unwrap()).unwrap());
+    }
+
+    #[test]
+    fn new_and_writable_paths_accept_members() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (container, alpha, members) = group(&tmp);
+        std::fs::create_dir_all(container.join("src")).unwrap();
+        std::fs::create_dir_all(alpha.join("src")).unwrap();
+        let roots = [container.clone()].iter().cloned().chain(members.iter().cloned()).collect::<Vec<_>>();
+
+        let member_new = alpha.join("src/new.xml");
+        assert_eq!(resolve_writable_in_roots(&roots, member_new.to_str().unwrap()).unwrap(), member_new);
+        let container_new = container.join("src/new.txt");
+        assert_eq!(resolve_writable_in_roots(&roots, "src/new.txt").unwrap(), container_new);
+        let outside = tmp.path().join("escape.txt");
+        let err = resolve_writable_in_roots(&roots, outside.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("outside the project root"), "{err}");
+        let err = resolve_writable_in_roots(&roots, "../../escape.txt").unwrap_err();
+        assert!(err.contains("outside the project root"), "{err}");
     }
 
     #[test]
