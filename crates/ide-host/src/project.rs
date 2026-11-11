@@ -1207,7 +1207,7 @@ fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cac
 
 /// The roots a file may navigate into: its own root (the workspace member containing it, or
 /// the project root) plus that root's configured dependencies. A workspace member depends
-/// only on the roots picked per member in Settings › Project Structure › Dependencies —
+/// only on the roots picked per member in Project Structure › Dependencies —
 /// being attached to the workspace never makes its code navigable by itself.
 /// Cached navigation roots per (project, file), with the instant they were computed.
 type NavigationRootsCache = HashMap<(PathBuf, PathBuf), (Instant, Vec<PathBuf>)>;
