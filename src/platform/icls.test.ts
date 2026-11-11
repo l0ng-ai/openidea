@@ -211,7 +211,8 @@ describe(".icls schemes", () => {
     expect(scheme.attributes.gutter?.background).toBe("#212121");
     expect(scheme.attributes.lineNumber?.foreground).toBe("#424242");
     expect(scheme.attributes.selection?.background).toBe("#353535");
-    expect([applied, skipped]).toEqual([12, 3]);
+    expect(scheme.attributes.consoleBackground?.background).toBe("#212121");
+    expect([applied, skipped]).toEqual([13, 2]);
   });
 
   it.each([

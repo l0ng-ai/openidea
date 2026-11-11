@@ -97,9 +97,14 @@ function treeIds(nodes: readonly Node[], out = new Set<string>()): Set<string> {
 
 /** Settings sub-page that owns an attribute, for preview clicks that cross pages. */
 function attrPageId(attr: AttributeDef): string {
-  return `editor.colorScheme.${
-    attr.path[0] === "Language Defaults" ? "language-defaults" : attr.path[0]!.toLowerCase()
-  }`;
+  const root = attr.path[0]!;
+  const slug =
+    root === "Language Defaults"
+      ? "language-defaults"
+      : root === "Console Colors"
+        ? "console-colors"
+        : root.toLowerCase();
+  return `editor.colorScheme.${slug}`;
 }
 
 /** Preview click on another sub-page: the target page selects and reveals the attribute. */
@@ -123,6 +128,7 @@ function previewVars(
       k.startsWith("--fg-") ||
       k.startsWith("--bg-") ||
       k.startsWith("--border-") ||
+      k.startsWith("--ansi-") ||
       k === "--caret"
     )
       vars[k] = v;
@@ -235,6 +241,30 @@ const SAMPLES: Record<string, CodeSample> = {
       ],
     ],
     caret: 2,
+  },
+  "Console Colors": {
+    code: [
+      [
+        ["black ", "ansiBlack"],
+        ["red ", "ansiRed"],
+        ["green ", "ansiGreen"],
+        ["yellow ", "ansiYellow"],
+        ["blue ", "ansiBlue"],
+        ["magenta ", "ansiMagenta"],
+        ["cyan ", "ansiCyan"],
+        ["white", "ansiWhite"],
+      ],
+      [
+        ["dark ", "ansiBrightBlack"],
+        ["bright-red ", "ansiBrightRed"],
+        ["bright-green ", "ansiBrightGreen"],
+        ["bright-yellow ", "ansiBrightYellow"],
+        ["bright-blue ", "ansiBrightBlue"],
+        ["bright-magenta ", "ansiBrightMagenta"],
+        ["bright-cyan ", "ansiBrightCyan"],
+        ["bright-white", "ansiBrightWhite"],
+      ],
+    ],
   },
   "Language Defaults": {
     code: [
@@ -1125,10 +1155,15 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
   const attr = ATTRIBUTES.find((a) => a.id === selected);
   const language = attr?.language;
   const inherited = useMemo(() => (attr ? resolvedAttribute(id, attr.id, customs) : {}), [id, attr, customs]);
-  const vars = useMemo(
-    () => ({ ...previewVars(id, mine, customs, language), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
-    [id, mine, customs, language, weight, boldFontWeight],
-  );
+  const vars = useMemo(() => {
+    const next = {
+      ...previewVars(id, mine, customs, language),
+      ...fontWeightVars(weight, boldFontWeight),
+    } as CSSProperties & Record<string, string>;
+    // Console preview sits on the console background, not the editor surface.
+    if (scopes[0] === "Console Colors" && next["--bg-console"]) next["--bg-editor"] = next["--bg-console"];
+    return next;
+  }, [id, mine, customs, language, weight, boldFontWeight, scopes]);
   const baseVars = useMemo(
     () => ({ ...previewVars(id, mine, customs), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
     [id, mine, customs, weight, boldFontWeight],
@@ -1377,7 +1412,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
 }
 
 const LANGUAGES = [...new Set(ATTRIBUTES.map((a) => a.path[0]!))].filter(
-  (s) => !["General", "Debugger", "Language Defaults"].includes(s),
+  (s) => !["General", "Debugger", "Language Defaults", "Console Colors"].includes(s),
 );
 
 /** Sub-pages linked from the Color Scheme landing page, in sidebar order. */
@@ -1385,6 +1420,7 @@ const SCHEME_SUBPAGES = [
   { id: "editor.colorScheme.general", title: "General" },
   { id: "editor.colorScheme.language-defaults", title: "Language Defaults" },
   { id: "editor.colorScheme.debugger", title: "Debugger" },
+  { id: "editor.colorScheme.console-colors", title: "Console Colors" },
   ...LANGUAGES.map((l) => ({ id: `editor.colorScheme.${l.toLowerCase()}`, title: l })),
 ];
 
@@ -1477,11 +1513,19 @@ export const COLOR_SCHEME_PAGES: PageSpec[] = [
     keywords: ["breakpoint", "inline values"],
     sections: [colorSchemeSection(["Debugger"])],
   }),
+  editorPage({
+    id: "editor.colorScheme.console-colors",
+    title: "Console Colors",
+    order: 4,
+    projectScope: false,
+    keywords: ["terminal", "ansi", "console", "background"],
+    sections: [colorSchemeSection(["Console Colors"])],
+  }),
   ...LANGUAGES.map((language, i) =>
     editorPage({
       id: `editor.colorScheme.${language.toLowerCase()}`,
       title: language,
-      order: 4 + i,
+      order: 5 + i,
       projectScope: false,
       keywords: ATTRIBUTES.filter((a) => a.path[0] === language).map((a) => a.name),
       sections: [colorSchemeSection([language])],

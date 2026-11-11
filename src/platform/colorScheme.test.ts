@@ -131,6 +131,25 @@ describe("color schemes", () => {
     expect(pythonItalic).toContain("--syn-python-static-italic: italic !important");
   });
 
+  it("mirrors Console Colors ANSI overrides to the terminal palette (#2698)", () => {
+    expect(ATTRIBUTES.filter((a) => a.path[0] === "Console Colors")).toHaveLength(17);
+    const root = document.documentElement;
+    root.dataset.theme = "light";
+    const css = schemeCss(
+      "theme-default",
+      {
+        light: {
+          ansiRed: { foreground: "#aa0000" },
+          consoleBackground: { background: "#101010" },
+        },
+      },
+      root,
+    );
+    expect(css).toContain("--ansi-red: #aa0000 !important");
+    expect(css).toContain("--terminal-ansi-red: #aa0000 !important");
+    expect(css).toContain("--bg-console: #101010 !important");
+  });
+
   it("leaves selected text in syntax colours until a selection foreground is set (#2446)", () => {
     expect(ATTRIBUTES.find((a) => a.id === "selectionForeground")).toMatchObject({
       name: "Selection foreground",
