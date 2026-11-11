@@ -2168,12 +2168,10 @@ export type AppearanceSettings = {
 	projectColorsInToolbar?: boolean,
 	dndWithAltOnly?: boolean,
 	menuIcons?: boolean,
-	/**  `hamburger` | `merged`: main menu presentation in the frameless title bar. */
+	/**  `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar. */
 	mainMenuStyle?: string,
 	/**  A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
 	mainMenuAlt?: boolean,
-	/**  Always show the main menu titles instead of the hamburger button (#1521). */
-	alwaysShowMainMenu?: boolean,
 	/**  `subpixel` | `greyscale` | `none` */
 	ideAntialiasing?: string,
 	editorAntialiasing?: string,

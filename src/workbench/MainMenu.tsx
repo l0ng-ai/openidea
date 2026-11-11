@@ -76,14 +76,18 @@ async function loadMenus(): Promise<Submenu[]> {
   return model.filter(isSubmenu);
 }
 
-type MainMenuProps = { onExpandedChange?: (expanded: boolean) => void };
+type MainMenuProps = {
+  onExpandedChange?: (expanded: boolean) => void;
+  /** The menu's own row below the title bar ("Separate toolbar"): the titles always show. */
+  row?: boolean;
+};
 
-export function MainMenu(props: MainMenuProps) {
+export function MainMenu({ row = false, ...props }: MainMenuProps) {
   const merged = useProject((s) => s.settings?.appearance?.mainMenuStyle === "merged");
-  return <MainMenuBar key={String(merged)} merged={merged} {...props} />;
+  return <MainMenuBar key={`${merged}:${row}`} merged={merged} row={row} {...props} />;
 }
 
-function MainMenuBar({ merged, onExpandedChange }: MainMenuProps & { merged: boolean }) {
+function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged: boolean; row: boolean }) {
   useI18n((s) => s.locale);
   const [menus, setMenus] = useState<Submenu[]>([]);
   const [expanded, setExpanded] = useState(false);
@@ -96,24 +100,21 @@ function MainMenuBar({ merged, onExpandedChange }: MainMenuProps & { merged: boo
   const previousFocus = useRef<HTMLElement | null>(null);
   const [fits, setFits] = useState(false);
   const pressedTitle = useRef(false);
-  // #1521: always show the menu titles instead of the hamburger button,
-  // even when the window is too narrow for the merged titles to fit.
-  const alwaysShow = useProject((s) => s.settings?.appearance?.alwaysShowMainMenu === true);
-  const persistent = (merged && fits) || alwaysShow;
+  const persistent = (merged && fits) || row;
   const showTitles = persistent || (!merged && expanded);
 
   useEffect(() => {
     let disposed = false;
-    if (merged || alwaysShow)
+    if (merged || row)
       void loadMenus().then((top) => {
         if (!disposed) setMenus(top);
       });
     return () => {
       disposed = true;
     };
-  }, [merged, alwaysShow]);
+  }, [merged, row]);
   useEffect(() => {
-    if (!merged || open === null) return;
+    if (!(merged || row) || open === null) return;
     let disposed = false;
     void loadMenus().then((top) => {
       if (!disposed && top.length) setMenus(top);
@@ -121,7 +122,7 @@ function MainMenuBar({ merged, onExpandedChange }: MainMenuProps & { merged: boo
     return () => {
       disposed = true;
     };
-  }, [merged, open]);
+  }, [merged, row, open]);
   useEffect(() => {
     onExpandedChange?.(!merged && expanded);
     return () => onExpandedChange?.(false);
@@ -135,16 +136,15 @@ function MainMenuBar({ merged, onExpandedChange }: MainMenuProps & { merged: boo
       const next = menus.length > 0 && slot.current!.clientWidth >= measure.current!.scrollWidth;
       setFits(next);
       // Each presentation's menu closes with it, and must not reopen when it returns.
-      // With "always show" the titles never collapse, so an open menu stays open.
       if (next) setExpanded(false);
-      else if (!alwaysShow) setOpen(null);
+      else setOpen(null);
     };
     const observer = new ResizeObserver(update);
     observer.observe(slot.current);
     observer.observe(measure.current);
     update();
     return () => observer.disconnect();
-  }, [merged, menus, alwaysShow]);
+  }, [merged, menus]);
 
   const close = () => {
     setOpen(null);
