@@ -5857,7 +5857,6 @@
   "File icon theme": "Tema de iconos de archivo",
   "Plugin not enabled": "Plugin no habilitado",
   "Problems the {plugin} plugin reports. Severity \"As reported\" keeps the level the plugin assigns; a code below can override it.": "Problemas que informa el plugin {plugin}. La gravedad \"Según lo informado\" conserva el nivel que asigna el plugin; un código a continuación puede reemplazarlo.",
-  "The plugin system is a preview: its API and the plugins may still change.": "El sistema de plugins es una versión preliminar: su API y los plugins aún pueden cambiar.",
   "'{expected}' expected": "Se esperaba '{expected}'",
   "Unexpected token": "Token inesperado",
   "Syntax": "Sintaxis",
