@@ -59,6 +59,7 @@ const BUILTIN: &[(&str, &str, Driver, &[&str], &str)] = &[
     ("cursor", "Cursor", Driver::Acp, &["cursor-agent", "acp"], "Run `cursor-agent login` in a terminal."),
     ("opencode", "OpenCode", Driver::Acp, &["opencode", "acp"], "Run `opencode auth login` in a terminal."),
     ("qwen", "Qwen Code", Driver::Acp, &["qwen", "--experimental-acp"], "Run `qwen` in a terminal and sign in."),
+    ("qodercn", "Qoder CN", Driver::Acp, &["qoderclicn", "--acp"], "Run `qoderclicn login` in a terminal."),
     ("kimi", "Kimi CLI", Driver::Acp, &["kimi", "acp"], "Run `kimi` in a terminal and sign in."),
     ("goose", "Goose", Driver::Acp, &["goose", "acp"], "Run `goose configure` in a terminal."),
     ("auggie", "Auggie", Driver::Acp, &["auggie", "--acp"], "Run `auggie login` in a terminal."),
@@ -408,6 +409,36 @@ fn is_executable(p: &Path) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn qodercn_is_available_without_a_file_and_preserves_existing_customizations() {
+        let dir = tempfile::tempdir().unwrap();
+        let qodercn = load(None).into_iter().find(|s| s.id == "qodercn").unwrap();
+        assert_eq!(qodercn.driver, Driver::Acp);
+        assert!(!is_unlisted(&qodercn));
+        let info = describe(&qodercn);
+        assert_eq!(info.name, "Qoder CN");
+        assert_eq!(info.command, "qoderclicn --acp");
+        assert_eq!(info.source, AgentSource::Builtin);
+        assert!(info.command_editable);
+        assert_eq!(info.login_hint.as_deref(), Some("Run `qoderclicn login` in a terminal."));
+
+        std::fs::write(
+            dir.path().join("qodercn.toml"),
+            "command = \"/custom/qoderclicn\"\nargs = [\"--acp\"]\n[env]\nK = \"v\"\n",
+        )
+        .unwrap();
+        let specs = load(Some(dir.path()));
+        assert_eq!(specs.iter().filter(|s| s.id == "qodercn").count(), 1);
+        let custom = specs.iter().find(|s| s.id == "qodercn").unwrap();
+        assert_eq!(custom.command, "/custom/qoderclicn");
+        assert_eq!(custom.env, [("K".into(), "v".into())]);
+        set_builtin_command(dir.path(), "qodercn", None).unwrap();
+        let reset = load(Some(dir.path())).into_iter().find(|s| s.id == "qodercn").unwrap();
+        assert_eq!(reset.command, "qoderclicn");
+        assert_eq!(reset.args, ["--acp"]);
+        assert_eq!(reset.env, custom.env);
+    }
 
     #[test]
     fn login_hints_cover_all_builtin_commands_and_preserve_separate_login_tools() {

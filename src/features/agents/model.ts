@@ -53,6 +53,7 @@ const PROVIDER_ICONS = new Set([
   "cursor",
   "opencode",
   "qwen",
+  "qodercn",
   "kimi",
   "goose",
   "auggie",
