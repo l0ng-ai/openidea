@@ -850,6 +850,12 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
       aria-label={titleOf(tw)}
       hidden={hidden}
       tabIndex={-1}
+      // WebKit doesn't focus a clicked button. A menu opened from this window would then hand
+      // focus back to the editor on close, hiding an unpinned or undocked window.
+      onClickCapture={(e) => {
+        const button = (e.target as Element).closest<HTMLElement>("button[aria-haspopup]");
+        if (button && e.currentTarget.contains(button)) button.focus({ preventScroll: true });
+      }}
     >
       {!ownHeader && (
         <HeaderRow tw={tw} title actions>

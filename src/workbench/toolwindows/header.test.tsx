@@ -106,3 +106,15 @@ it("View Mode › Undock lays the window over the editor and frees its track", (
   expect(area.style.getPropertyValue("--undock-size")).toBe(`${useToolWindowLayout.getState().sizes.bottom}px`);
   expect(screen.getByRole("separator", { name: "Resize undocked bottom tool window" })).toBeInTheDocument();
 });
+
+it("a menu opened from the header returns focus to the window, not the editor", () => {
+  showToolWindow("run");
+  render(<ToolWindowLayout editor={<input aria-label="Editor" />} />);
+  screen.getByRole("textbox", { name: "Editor" }).focus();
+  const options = screen.getByRole("button", { name: "Options" });
+  // Like WebKit, jsdom doesn't focus a clicked button.
+  fireEvent.click(options);
+  fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(document.activeElement).toBe(options);
+});
