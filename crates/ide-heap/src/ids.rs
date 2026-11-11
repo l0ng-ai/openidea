@@ -20,19 +20,23 @@ const WORD_BITS: u64 = 64;
 const WORDS_PER_CHUNK: usize = (1 << CHUNK_SLOT_BITS) / WORD_BITS as usize;
 
 enum Repr {
-    Bits {
-        /// Chunk number of the first table entry.
-        min_chunk: u64,
-        words: Column<u64>,
-        /// Set bits before each word.
-        wrank: Column<u32>,
-        /// Per chunk from `min_chunk` up: index of its first word, or `NONE` when it has no id.
-        table: Column<u32>,
-        /// Per chunk that has words, in word order: its offset from `min_chunk`.
-        chunk_offsets: Column<u32>,
-        len: u32,
-    },
+    /// Boxed: the bitmap layout's columns alone are ~330 bytes, and the second
+    /// variant is ~80, so an unboxed enum would bloat every `IdMap` match.
+    Bits(Box<BitsRepr>),
     Sorted(Column<u64>),
+}
+
+pub(crate) struct BitsRepr {
+    /// Chunk number of the first table entry.
+    min_chunk: u64,
+    words: Column<u64>,
+    /// Set bits before each word.
+    wrank: Column<u32>,
+    /// Per chunk from `min_chunk` up: index of its first word, or `NONE` when it has no id.
+    table: Column<u32>,
+    /// Per chunk that has words, in word order: its offset from `min_chunk`.
+    chunk_offsets: Column<u32>,
+    len: u32,
 }
 
 /// Ids ranked in ascending address order: the index of an object is its position in the order.
@@ -43,7 +47,7 @@ pub struct IdMap {
 impl IdMap {
     pub fn len(&self) -> u32 {
         match &self.repr {
-            Repr::Bits { len, .. } => *len,
+            Repr::Bits(b) => b.len,
             Repr::Sorted(ids) => ids.len() as u32,
         }
     }
@@ -56,7 +60,8 @@ impl IdMap {
     pub fn rank(&self, id: u64) -> Option<u32> {
         match &self.repr {
             Repr::Sorted(ids) => ids.binary_search(&id).ok().map(|r| r as u32),
-            Repr::Bits { min_chunk, words, wrank, table, .. } => {
+            Repr::Bits(b) => {
+                let BitsRepr { min_chunk, words, wrank, table, .. } = &**b;
                 if id & 7 != 0 {
                     return None;
                 }
@@ -81,7 +86,8 @@ impl IdMap {
     pub fn id_at(&self, rank: u32) -> u64 {
         match &self.repr {
             Repr::Sorted(ids) => ids[rank as usize],
-            Repr::Bits { words, wrank, len, .. } => {
+            Repr::Bits(b) => {
+                let BitsRepr { words, wrank, len, .. } = &**b;
                 assert!(rank < *len, "rank {rank} out of range for {len} ids");
                 let w = wrank.partition_point(|&before| before <= rank) - 1;
                 let mut word = words[w];
@@ -102,7 +108,8 @@ impl IdMap {
     pub fn column_bytes(&self) -> u64 {
         match &self.repr {
             Repr::Sorted(ids) => std::mem::size_of_val(&**ids) as u64,
-            Repr::Bits { words, wrank, table, chunk_offsets, .. } => {
+            Repr::Bits(b) => {
+                let BitsRepr { words, wrank, table, chunk_offsets, .. } = &**b;
                 (std::mem::size_of_val(&**words)
                     + std::mem::size_of_val(&**wrank)
                     + std::mem::size_of_val(&**table)
@@ -113,9 +120,8 @@ impl IdMap {
 
     /// Slot number of bit 0 of word `w` (bitmap layout only).
     fn word_first_slot(&self, w: usize) -> u64 {
-        let Repr::Bits { min_chunk, chunk_offsets, .. } = &self.repr else {
-            unreachable!("sorted layout has no words")
-        };
+        let Repr::Bits(b) = &self.repr else { unreachable!("sorted layout has no words") };
+        let BitsRepr { min_chunk, chunk_offsets, .. } = &**b;
         let chunk = min_chunk + u64::from(chunk_offsets[w / WORDS_PER_CHUNK]);
         (chunk << CHUNK_SLOT_BITS) + (w % WORDS_PER_CHUNK) as u64 * WORD_BITS
     }
@@ -140,16 +146,19 @@ impl Iterator for Ids<'_> {
                 self.next += 1;
                 Some(id)
             }
-            Repr::Bits { words, .. } => loop {
-                if self.rest != 0 {
-                    let bit = u64::from(self.rest.trailing_zeros());
-                    self.rest &= self.rest - 1;
-                    return Some((self.slot_base + bit) << SLOT_SHIFT);
+            Repr::Bits(b) => {
+                let words = &b.words;
+                loop {
+                    if self.rest != 0 {
+                        let bit = u64::from(self.rest.trailing_zeros());
+                        self.rest &= self.rest - 1;
+                        return Some((self.slot_base + bit) << SLOT_SHIFT);
+                    }
+                    self.rest = *words.get(self.next)?;
+                    self.slot_base = self.map.word_first_slot(self.next);
+                    self.next += 1;
                 }
-                self.rest = *words.get(self.next)?;
-                self.slot_base = self.map.word_first_slot(self.next);
-                self.next += 1;
-            },
+            }
         }
     }
 }

@@ -6,7 +6,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 
 use ide_core::CancellationToken;
 
-use super::{CHUNK_SLOT_BITS, IdMap, Repr, SLOT_SHIFT, WORD_BITS, WORDS_PER_CHUNK};
+use super::{BitsRepr, CHUNK_SLOT_BITS, IdMap, Repr, SLOT_SHIFT, WORD_BITS, WORDS_PER_CHUNK};
 use crate::column::{NONE, Store};
 use crate::error::HeapError;
 use crate::files::{IDS_BITS_FILE, IDS_CHUNKS_FILE, IDS_SORTED_FILE, IDS_TABLE_FILE, IDS_WRANK_FILE};
@@ -236,7 +236,9 @@ fn bit_map(bits: &BitChunks, store: &Store, max_ids: u64, cancel: &CancellationT
             before += word.count_ones();
         }
     }
-    Ok(IdMap { repr: Repr::Bits { min_chunk: bits.min, words, wrank, table, chunk_offsets, len: before } })
+    Ok(IdMap {
+        repr: Repr::Bits(Box::new(BitsRepr { min_chunk: bits.min, words, wrank, table, chunk_offsets, len: before })),
+    })
 }
 
 enum Source<'a> {
