@@ -74,10 +74,11 @@ fn vk_of(key: &str) -> Option<u32> {
             _ => None,
         };
     }
-    if let Some(n) = key.strip_prefix('F').and_then(|n| n.parse::<u32>().ok()) {
-        if (1..=24).contains(&n) {
-            return Some(0x6F + n);
-        }
+    // "F13" → 0x7C … "F24" → 0x87; anything else falls through to the names below.
+    let fkey =
+        key.strip_prefix('F').and_then(|n| n.parse::<u32>().ok()).filter(|n| (1..=24).contains(n)).map(|n| 0x6F + n);
+    if fkey.is_some() {
+        return fkey;
     }
     match key.to_ascii_uppercase().as_str() {
         "SPACE" => Some(0x20),
