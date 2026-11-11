@@ -8,7 +8,7 @@ These rules are for the sessions that work through `docs/php-engine/ROADMAP.md`.
   - `- [ ]` to do
   - `- [x]` done
   - `- [!]` blocked, with the reason after the title
-- Work on exactly one phase per session: the first `- [ ]` line in file order. Don't start the next one, and don't edit other phases. The exception is adding a new `- [ ]` follow-up phase directly after the current one, when the current phase turns out too large. In that case, finish a coherent part, describe the rest in the new phase, and tick the current one.
+- Work on exactly one phase per session: the first `- [ ]` line in file order. Don't start the next one, and don't edit other phases. The exception is adding a new `- [ ]` follow-up phase directly after the current one, when the current phase turns out too large. In that case, finish a coherent part, describe the rest in the new phase, and tick the current one. Split only when the turns are really running out (about 150 of 200 used) or the remaining work is clearly a phase of its own. Each split costs a full new build and test cycle, so with turns left, keep going: implement the next item, run its targeted tests, and run the full suites once at the end.
 - First read the phase's paragraph and the design section of the roadmap. Then read the code it names. Reuse what's already there before writing anything new.
 
 ## Definition of done
