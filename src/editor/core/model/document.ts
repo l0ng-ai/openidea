@@ -82,9 +82,12 @@ export interface DocMeta {
   language: string;
   uiMode: string | null;
   encoding: string;
+  hasBom: boolean;
   lineEnding: LineEnding;
   readOnly: boolean;
   dirty: boolean;
+  /** "Reload with Encoding" can re-decode this document's source bytes. */
+  canReloadEncoding: boolean;
   banner: Banner;
   indent: { tabSize: number; insertSpaces: boolean };
 }
@@ -248,10 +251,12 @@ export class DocModel {
       language: info.language,
       uiMode: uiMode ?? this.desc?.name ?? null,
       encoding: info.encoding,
+      hasBom: info.hasBom,
       lineEnding: info.lineEnding,
       // Library sources (External Libraries) open read-only, like IDEA's.
       readOnly: info.readOnly || (!this.virtual && isLibraryPath(info.path)),
       dirty: info.dirty,
+      canReloadEncoding: info.canReloadEncoding,
       banner: bannerFor(info),
       indent: { tabSize: 4, insertSpaces: true },
     };

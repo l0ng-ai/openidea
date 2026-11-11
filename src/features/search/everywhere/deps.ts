@@ -12,6 +12,7 @@ import { recentActions } from "./store";
 export function ipcDeps(ctx: ContextKeys): SeDeps {
   return {
     findFiles: (q, limit) => call(commands.findFiles(q, limit)),
+    findDirs: (q, limit) => call(commands.findDirs(q, limit)),
     findSymbols: (q, filter, limit) => call(commands.findSymbols(q, filter, limit)),
     workspaceSymbols: (request, q) => call(commands.lspWorkspaceSymbols(request, q)),
     searchText: async (request, query, onFile) => {

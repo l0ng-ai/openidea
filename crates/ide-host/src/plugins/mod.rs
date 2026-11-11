@@ -17,6 +17,7 @@
 
 mod api;
 mod auth;
+pub mod commands;
 pub mod commit;
 mod database;
 mod dependencies;
@@ -62,7 +63,7 @@ pub use icons::{
 pub(crate) use inlay_hints::merge as merge_inlay_hints;
 pub use market::{
     INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX, OFFICIAL_PUBLISHER,
-    read_url as read_market_url, resolve as resolve_market_href,
+    reachable_from as market_href_reachable_from, read_url as read_market_url, resolve as resolve_market_href,
 };
 pub use points::{COMMANDS, CommandDecl, register_builtin_points};
 pub use providers::{ProviderKind, set_editor_providers};
@@ -1368,8 +1369,33 @@ impl PluginHost {
         arg: Option<&str>,
         invocation: Invocation,
     ) -> IdeResult<Option<String>> {
+        self.run_command_with_cancel(id, command, arg, invocation, None)
+    }
+
+    /// Runs a command with request-scoped cancellation, without cancelling other queued calls.
+    pub fn run_command_with_cancel(
+        &self,
+        id: &str,
+        command: &str,
+        arg: Option<&str>,
+        invocation: Invocation,
+        cancel: Option<&ide_core::CancellationToken>,
+    ) -> IdeResult<Option<String>> {
+        // Queued behind a prompt open in another window, the command would sit there with no
+        // sign of life until that prompt is answered: point the user at it instead.
+        if let Some(client) = invocation.client.as_deref()
+            && let Some(waiting) = self.shared.waiting_elsewhere(id, client)
+        {
+            self.sink.emit(Some(&waiting), PluginEvent::PromptWaiting { plugin_id: id.to_owned() });
+            let name = self.get(id).map(|p| p.manifest().name.clone()).unwrap_or_else(|_| id.to_owned());
+            return Err(IdeError::invalid(format!(
+                "{name} is waiting for your answer in another window. Answer or close it there, then try again."
+            )));
+        }
         let (cmd, arg) = (command.to_owned(), arg.map(str::to_owned));
-        self.code_call(id, invocation, "running the command", move |rt, inv| rt.run_command(&cmd, arg.as_deref(), inv))
+        self.code_call_cancellable(id, invocation, "running the command", cancel, move |rt, inv| {
+            rt.run_command(&cmd, arg.as_deref(), inv)
+        })
     }
 
     /// Content of a declared view, or of a custom editor (`invocation.editor`
@@ -1513,6 +1539,9 @@ impl PluginHost {
         budget: Option<Duration>,
         f: impl Fn(&mut Runtime, Invocation) -> Result<R, CallError> + Clone + Send + 'static,
     ) -> IdeResult<R> {
+        if cancel.is_some_and(|token| token.is_cancelled()) {
+            return Err(IdeError::cancelled());
+        }
         let deadline = budget.map(|budget| Instant::now() + budget);
         let fallback = ide_core::CancellationToken::new();
         let plugin = self.get(id)?;
@@ -1549,6 +1578,9 @@ impl PluginHost {
         }
         // Twice at most: the instance may be reclaimed between picking it and queueing the call.
         for attempt in 0..2 {
+            if cancel.is_some_and(|token| token.is_cancelled()) {
+                return Err(IdeError::cancelled());
+            }
             let (actor, activated) = self.ensure_active(&plugin, client.as_deref())?;
             if activated {
                 self.changed();
@@ -1567,6 +1599,10 @@ impl PluginHost {
                 }
                 (None, None) => actor.call(None, move |rt| call(rt, inv)),
             };
+            if cancel.is_some_and(|token| token.is_cancelled()) {
+                self.reap(&plugin, &actor, client.as_deref());
+                return Err(IdeError::cancelled());
+            }
             if deadline.is_some() && matches!(result, Err(ActorError::SoftTimeout)) {
                 self.reap(&plugin, &actor, client.as_deref());
                 return Err(IdeError::new(

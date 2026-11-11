@@ -34,7 +34,7 @@ optional = ["net:api.example.com", "secrets"]
 | 能力                | 风险 | 解锁                                                                                                                           | API                        |
 | ------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
 | `project.read`      | 低   | `Project::root`、`read_file`、`find_files`、`symbols`、`search_text`、`host::projects`、发布诊断、`problems`、打开编辑器、装饰 | 1.0                        |
-| `project.write`     | 中   | `Project::write_file`：在打开的项目中创建和替换文本文件                                                                        | 1.3                        |
+| `project.write`     | 高   | `Project::write_file`：在打开的项目中创建和替换文本文件，但不能写 git 自己的文件（`.git`）                                     | 1.3                        |
 | `editor.read`       | 低   | `TextEditor::document`、`selections`、`host::open_editors`                                                                     | 1.0                        |
 | `editor.write`      | 中   | `TextEditor::apply_edits`                                                                                                      | 1.0                        |
 | `vcs.read`          | 低   | `vcs_status`、`vcs_remotes`、`vcs_log`、`vcs_blame`、`vcs_diff`、待提交的内容、提交前检查                                      | 1.0                        |

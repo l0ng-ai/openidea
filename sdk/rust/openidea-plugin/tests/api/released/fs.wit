@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 /// Files outside the open projects: the configuration of the program a
 /// plugin integrates with, a tool installed elsewhere, a licence file.

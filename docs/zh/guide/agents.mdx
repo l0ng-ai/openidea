@@ -11,24 +11,24 @@ OpenIDEA 本身不带模型或账号：它启动你已安装并登录的 agent�
 
 以下 agent 是内置的。先安装 agent 自己的命令行工具，并在终端里登录一次；OpenIDEA 会在 `PATH` 中找到它。
 
-| Agent             | OpenIDEA 启动的命令                                   | 登录命令              |
-| ----------------- | ----------------------------------------------------- | --------------------- |
-| Claude Code       | `claude`                                              | `claude`              |
-| Codex             | `codex app-server`                                    | `codex login`         |
-| Claude Code (ACP) | `npx -y @agentclientprotocol/claude-agent-acp@0.97.0` | `claude`              |
-| Codex (ACP)       | `npx -y @agentclientprotocol/codex-acp@2.3.0`         | `codex login`         |
-| Gemini CLI        | `gemini --experimental-acp`                           | `gemini`              |
-| GitHub Copilot    | `copilot --acp`                                       | `copilot`             |
-| Cursor            | `cursor-agent acp`                                    | `cursor-agent login`  |
-| OpenCode          | `opencode acp`                                        | `opencode auth login` |
-| Qwen Code         | `qwen --experimental-acp`                             | `qwen`                |
-| Kimi CLI          | `kimi acp`                                            | `kimi`                |
-| Goose             | `goose acp`                                           | `goose configure`     |
-| Auggie            | `auggie --acp`                                        | `auggie login`        |
-| Kiro              | `kiro-cli acp`                                        | `kiro-cli login`      |
-| Mistral Vibe      | `vibe-acp`                                            | `vibe`                |
+| Agent          | OpenIDEA 启动的命令         | 登录命令              |
+| -------------- | --------------------------- | --------------------- |
+| Claude Code    | `claude`                    | `claude`              |
+| Codex          | `codex app-server`          | `codex login`         |
+| Gemini CLI     | `gemini --experimental-acp` | `gemini`              |
+| GitHub Copilot | `copilot --acp`             | `copilot`             |
+| Cursor         | `cursor-agent acp`          | `cursor-agent login`  |
+| OpenCode       | `opencode acp`              | `opencode auth login` |
+| Qwen Code      | `qwen --experimental-acp`   | `qwen`                |
+| Qoder          | `qodercli --acp`            | `qodercli login`      |
+| Qoder CN       | `qoderclicn --acp`          | `qoderclicn login`    |
+| Kimi CLI       | `kimi acp`                  | `kimi`                |
+| Goose          | `goose acp`                 | `goose configure`     |
+| Auggie         | `auggie --acp`              | `auggie login`        |
+| Kiro           | `kiro-cli acp`              | `kiro-cli login`      |
+| Mistral Vibe   | `vibe-acp`                  | `vibe`                |
 
-**Claude Code** 和 **Codex** 通过它们自己的协议驱动（Claude Code 的 stream-json 模式和 `codex app-server`）；带“(ACP)”的版本则通过 `npx` 使用官方的 ACP 适配器。agent 需要登录时，任务中会提示该运行哪条命令。
+**Claude Code** 和 **Codex** 通过它们自己的协议驱动（Claude Code 的 stream-json 模式和 `codex app-server`）。它们的 ACP 适配器（`claude-acp`、`codex-acp`）不再列出；已经在用它们的任务照常运行，为这两个 id 写一个 [agent 文件](#添加自定义-agent)也会重新列出。agent 需要登录时，任务中会提示该运行哪条命令。
 
 未被标记为受信任的项目中无法使用 agent。
 

@@ -12,6 +12,7 @@ import { attachDocument, editorsFor } from "@/editor/api";
 import { maybeEditorService, notifications, type NotificationService } from "@/workbench/contributions";
 import { cancelTask, upsertTaskSoon, useTasks } from "@/workbench/tasks";
 import { progressFraction } from "./model";
+import { saveDiffWindows } from "./diffWindowSave";
 import { beginGitWork, conflictedFiles, currentRepo, refreshNow, repoName, useVcs } from "./store";
 
 // ---------------------------------------------------------------------------
@@ -108,6 +109,17 @@ export async function runOp<T>(title: string, fn: () => Promise<T>, opts: OpOpti
 
 /** Saves all documents so git sees the editor contents. */
 export async function saveAll() {
+  try {
+    await saveDiffWindows();
+  } catch (error) {
+    notifications().notify({
+      group: "vcs",
+      level: "error",
+      title: tx("Could not save diff"),
+      body: errorMessage(error),
+    });
+    throw error;
+  }
   try {
     await maybeEditorService()?.saveAll();
   } catch {

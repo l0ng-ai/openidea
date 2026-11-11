@@ -31,11 +31,11 @@ pub(super) fn transcript(config_dir: &Path, cwd: &Path, id: &str) -> PathBuf {
 }
 
 /// The project directory name Claude Code uses for `cwd`.
-pub(super) fn escape(cwd: &Path) -> String {
+pub(crate) fn escape(cwd: &Path) -> String {
     cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
-pub(super) fn read(path: &Path) -> std::io::Result<Vec<Value>> {
+pub(crate) fn read(path: &Path) -> std::io::Result<Vec<Value>> {
     let text = std::fs::read_to_string(path)?;
     Ok(text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
 }
@@ -111,7 +111,7 @@ fn block_ids<'a>(e: &'a Value, ty: &'a str, key: &'a str) -> impl Iterator<Item 
 
 /// Whether `e` is a message that started a turn: the user's own, not a tool result, a
 /// steer, or text Claude Code added.
-pub(super) fn is_turn_start(e: &Value) -> bool {
+pub(crate) fn is_turn_start(e: &Value) -> bool {
     if kind(e) != "user" || e.get("isMeta").and_then(Value::as_bool) == Some(true) {
         return false;
     }
@@ -149,7 +149,7 @@ pub(super) fn cut(chain: &[&Value], turns: usize) -> Result<Option<String>, Stri
 }
 
 /// The newest title Claude Code gave the session.
-pub(super) fn title(entries: &[Value]) -> Option<String> {
+pub(crate) fn title(entries: &[Value]) -> Option<String> {
     entries
         .iter()
         .rev()

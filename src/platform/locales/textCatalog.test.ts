@@ -25,7 +25,7 @@
  *
  * Not seen: text kept in a variable or built by a helper before it reaches `tx`,
  * and text sent by the backend. Their entries count as used (not stale) as long as
- * the text appears as a literal anywhere in `src/`, the Rust crates or `languages/`.
+ * the text appears as a literal anywhere in `src/`, the Rust crates, `languages/` or `generators/`.
  *
  * Message keys are checked too: a literal key given to `t`, or to a function bound
  * from `useT()` in the same file, must exist in `en.json`; otherwise the UI shows the
@@ -161,7 +161,6 @@ const UNTRANSLATED = new Set<string>([
   "Greenplum",
   "Java",
   "java-debug (Java)",
-  "kotlin-debug-adapter (Kotlin)",
   "js-debug (Node.js / TypeScript)",
   "JSON",
   "lldb-dap (C, C++, Swift)",
@@ -598,6 +597,7 @@ function scanBackend(literals: Set<string>) {
     ...walk(`${ROOT}crates`, (p) => p.endsWith(".rs")),
     ...walk(`${ROOT}src-tauri/src`, (p) => p.endsWith(".rs")),
     ...walk(`${ROOT}languages`, (p) => p.endsWith(".toml")),
+    ...walk(`${ROOT}generators`, (p) => p.endsWith(".toml")),
   ];
   for (const file of files)
     for (const literal of backendLiterals(readFileSync(file, "utf8"))) literals.add(shape(literal));

@@ -40,7 +40,7 @@ export function AnalysisDialogHost() {
 
 async function browseDirectory(initial: string): Promise<string | null> {
   if (!isTauri()) return null;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({ directory: true, multiple: false, defaultPath: initial || undefined });
   return typeof picked === "string" ? picked : null;
 }

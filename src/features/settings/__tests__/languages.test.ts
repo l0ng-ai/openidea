@@ -303,7 +303,7 @@ describe("languages settings", () => {
 describe("language pages", () => {
   it("keeps every language under Languages & Frameworks, as in IntelliJ IDEA", () => {
     const tree = buildPageTree(LANGUAGE_PAGES.map((p) => ({ ...p, component: p.component! })));
-    expect(tree.map((n) => n.title)).toEqual(["Project Structure", "Languages & Frameworks"]);
+    expect(tree.map((n) => n.title)).toEqual(["Languages & Frameworks"]);
     const langs = tree.find((n) => n.title === "Languages & Frameworks")!;
     expect(langs.children.map((n) => n.title)).toEqual([
       "Go",
@@ -318,7 +318,6 @@ describe("language pages", () => {
       "Ruby",
       "Rust",
       "TypeScript",
-      "Plugin Formatters",
     ]);
   });
 

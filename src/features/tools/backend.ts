@@ -16,7 +16,7 @@ export interface ToolsBackend {
   install(name: string, request: RequestId, onEvent: (e: InstallEvent) => void): Promise<ToolInfo>;
   uninstall(name: string): Promise<ToolInfo>;
   cancel(request: RequestId): void;
-  /** Restarts running language servers named `name` (after an install). */
+  /** Restarts the language servers named `name` in every open project (after an install). */
   restartServers(name: string): Promise<void>;
   /** File chooser for an executable; null when cancelled. */
   chooseExecutable(title: string, defaultPath?: string): Promise<string | null>;
@@ -33,19 +33,12 @@ export const tauriToolsBackend: ToolsBackend = {
   },
   uninstall: (name) => call(commands.toolsUninstall(name)),
   cancel: (request) => void commands.cancelRequest(request).catch(() => {}),
+  // Every open project: Settings belongs to one project window, but all of them run the tool.
   restartServers: async (name) => {
-    let servers;
-    try {
-      servers = await call(commands.lspServers());
-    } catch {
-      return; // no project open
-    }
-    await Promise.all(
-      servers.filter((s) => s.name === name).map((s) => call(commands.lspRestart(s.id)).catch(() => {})),
-    );
+    await call(commands.lspRestartNamed(name));
   },
   chooseExecutable: async (title, defaultPath) => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({ directory: false, multiple: false, title, defaultPath: defaultPath || undefined });
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },

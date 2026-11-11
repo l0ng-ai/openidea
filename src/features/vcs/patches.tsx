@@ -76,7 +76,7 @@ export function showCreatePatchForShelf(entry: ShelvedChangeList, path?: string)
 
 async function browseSave(current: string): Promise<string | null> {
   try {
-    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { save } = await import("@/platform/dialog");
     return (await save({ defaultPath: current, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] })) ?? null;
   } catch {
     return null;
@@ -228,7 +228,7 @@ export async function showApplyPatch(from: "file" | "clipboard", path?: string) 
     } else {
       let file = path ?? null;
       if (!file) {
-        const { open } = await import("@tauri-apps/plugin-dialog");
+        const { open } = await import("@/platform/dialog");
         const picked = await open({
           multiple: false,
           directory: false,

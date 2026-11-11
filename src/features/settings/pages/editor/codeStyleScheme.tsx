@@ -12,6 +12,7 @@ import { GlobListEditor, Row, Select } from "../../components/Form";
 import { usePageContext, useSetting } from "../../components/context";
 import { setPageScope, stage, stagedValue, useSettingsDialog, type Scope } from "../../model/staging";
 import { EditorSections, sectionLabels, type EditorSection } from "./kit";
+import { PluginFormattersSection } from "./pluginFormatters";
 import styles from "./CodeStyle.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -32,6 +33,7 @@ export const CODE_STYLE_KEYS = [
   "editor.codeStyle.formatterOffTag",
   "editor.codeStyle.formatterOnTag",
   "editor.codeStyle.formatterTagsRegexp",
+  "languages.pluginFormatters",
 ] as const;
 
 /** Stages the `from` scheme's values in the `to` scheme (`page` owns the staged edits). */
@@ -142,9 +144,10 @@ export function CodeStyleMain({ general }: { general: EditorSection[] }) {
       </div>
       <div role="tabpanel">
         <EditorSections sections={tab === "general" ? general : FORMATTER_SECTIONS} />
+        {tab === "formatter" && <PluginFormattersSection />}
       </div>
     </div>
   );
 }
 
-export const formatterLabels = () => ["Scheme", "Formatter", ...sectionLabels(FORMATTER_SECTIONS)];
+export const formatterLabels = () => ["Scheme", "Formatter", ...sectionLabels(FORMATTER_SECTIONS), "Plugin Formatters"];

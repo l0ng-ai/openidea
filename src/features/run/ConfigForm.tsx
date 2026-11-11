@@ -60,7 +60,7 @@ import styles from "./Run.module.css";
 const ADAPTERS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "netcoredbg", label: "netcoredbg (.NET)" },
   { id: "java-debug", label: "java-debug (Java)" },
-  { id: "kotlin-debug-adapter", label: "kotlin-debug-adapter (Kotlin)" },
+  { id: "kotlin-debug-adapter", label: "kotlin-lsp or kotlin-debug-adapter (Kotlin)" },
   { id: "debugpy", label: "debugpy (Python)" },
   { id: "js-debug", label: "js-debug (Node.js / TypeScript)" },
   { id: "delve", label: "Delve (Go)" },
@@ -203,7 +203,7 @@ export interface ConfigFormProps {
 
 /** Picks files or a directory in the local file dialog, opened at `from`; empty when cancelled. */
 async function choosePaths(opts: { directory?: boolean; multiple?: boolean; from: string | null }): Promise<string[]> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     directory: !!opts.directory,
     multiple: !!opts.multiple,

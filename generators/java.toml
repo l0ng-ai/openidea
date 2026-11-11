@@ -1,0 +1,169 @@
+id = "java"
+name = "Java"
+group = "Java"
+icon = "project-java"
+description = "A plain Java application built with Maven or Gradle."
+
+[[fields]]
+id = "build"
+label = "Build system:"
+type = "choice"
+segmented = true
+options = [{ value = "maven", label = "Maven" }, { value = "gradle", label = "Gradle" }]
+default = "maven"
+
+[[fields]]
+id = "jdk"
+label = "JDK:"
+type = "sdk"
+sdk = "jdk"
+
+[[fields]]
+id = "release"
+label = "Java version:"
+type = "choice"
+options = ["25", "21", "17", "11"]
+default = "21"
+
+[[fields]]
+id = "group"
+label = "Group:"
+type = "text"
+pattern = '^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*$'
+default = "com.example"
+
+[[fields]]
+id = "artifact"
+label = "Artifact:"
+type = "text"
+pattern = '^[A-Za-z0-9_.-]+$'
+default = "{{name|kebab}}"
+
+[[fields]]
+id = "package"
+label = "Package:"
+type = "text"
+pattern = '^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*$'
+default = "{{group}}.{{artifact|ident}}"
+
+[[fields]]
+id = "sample"
+label = "Add sample code"
+type = "checkbox"
+default = "true"
+
+[[files]]
+path = "pom.xml"
+when = { build = "maven" }
+content = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>{{group}}</groupId>
+    <artifactId>{{artifact}}</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <maven.compiler.release>{{release}}</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.13.4</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.4</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+'''
+
+[[files]]
+path = "settings.gradle.kts"
+when = { build = "gradle" }
+content = '''
+rootProject.name = "{{artifact}}"
+'''
+
+[[files]]
+path = "build.gradle.kts"
+when = { build = "gradle" }
+content = '''
+plugins {
+    application
+}
+
+group = "{{group}}"
+version = "1.0-SNAPSHOT"
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation(platform("org.junit:junit-bom:5.13.4"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+tasks.withType<JavaCompile> {
+    options.release = {{release}}
+    options.encoding = "UTF-8"
+}
+
+application {
+    mainClass = "{{package}}.Main"
+}
+
+tasks.test {
+    useJUnitPlatform()
+}
+'''
+
+[[files]]
+path = "src/main/java/{{package|path}}/Main.java"
+when = { sample = "true" }
+content = '''
+package {{package}};
+
+public class Main {
+    public static void main(String[] args) {
+        System.out.println("Hello, World!");
+    }
+}
+'''
+
+[[files]]
+path = ".gitignore"
+content = '''
+target/
+build/
+.gradle/
+*.class
+.idea/
+'''
+
+[[after]]
+label = "Generating the Gradle wrapper"
+program = "gradle"
+args = ["wrapper", "--no-daemon", "-q"]
+when = { build = "gradle" }
+env = { JAVA_HOME = "{{jdk}}" }
+optional = true
+
+[settings.java]
+jdk = "{{jdk}}"

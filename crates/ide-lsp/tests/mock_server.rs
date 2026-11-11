@@ -7,7 +7,7 @@ use ide_core::{
 use ide_jsonrpc::{Handler, NoopHandler, Peer};
 use ide_language::{LanguageConfig, LanguageRegistry, LanguageServerConfig};
 use ide_lsp::types::*;
-use ide_lsp::{LaunchError, Launcher, LspManager};
+use ide_lsp::{KotlinDebugServer, KotlinDebugUnavailable, LaunchError, Launcher, LspManager};
 use ide_text::AppliedChange;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -253,6 +253,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         command: name.into(),
         args: vec![],
         env: Default::default(),
+        requires_env: Vec::new(),
         root_markers: vec!["mock.toml".into()],
         require_root_marker: false,
         initialization_options: Some(toml::Value::Table(toml::toml! { flag = true nested = { deep = 1 } })),
@@ -1685,6 +1686,59 @@ async fn progress_tasks_and_busy_status() {
     assert!(tasks[2].3);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_progress_task_that_stops_reporting_is_marked_but_stays_open() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    peer.notify(
+        "$/progress",
+        json!({ "token": "mvn", "value": {
+            "kind": "begin",
+            "title": "Initialize Workspace",
+            "message": "Importing Maven project(s) - https://maven.example/",
+            "percentage": 44,
+        } }),
+    )
+    .unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    // The import is blocked on a repository that never answers: nothing reports again.
+    tokio::time::advance(Duration::from_secs(200)).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let marked = h.events.lock().iter().rev().find_map(|e| match e {
+        IdeEvent::Task { title, message, fraction, done, .. } if title == "Initialize Workspace" && !done => {
+            Some((message.clone(), *fraction))
+        }
+        _ => None,
+    });
+    let (message, fraction) = marked.expect("the task stays open");
+    let message = message.expect("the last message is kept");
+    assert!(message.contains("no progress for 180 s"), "{message}");
+    assert_eq!(fraction, Some(0.44), "the bar keeps its last value");
+    assert!(
+        !h.events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Task { title, done: true, .. } if title == "Initialize Workspace")),
+        "a stalled task must not be closed"
+    );
+
+    // A late report brings it back to Busy and finishes in the same task.
+    peer.notify(
+        "$/progress",
+        json!({ "token": "mvn", "value": { "kind": "report", "message": "halfway", "percentage": 60 } }),
+    )
+    .unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    peer.notify("$/progress", json!({ "token": "mvn", "value": { "kind": "end" } })).unwrap();
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert!(
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, message: Some(m), done: true, .. } if title == "Initialize Workspace" && m == "halfway")),
+        "the same task ends with the final message"
+    );
+}
+
 /// While a server says it is loading the project (rust-analyzer: `serverStatus`
 /// not quiescent) an empty or withdrawn answer is asked again once loading moves
 /// on. `$/progress` alone (background indexing, `cargo check`) doesn't wait.
@@ -2657,6 +2711,160 @@ async fn alternative_java_server_uses_lsp_without_jdt_commands() {
     assert!(h.launcher.state("kmp-lsp").requested("workspace/executeCommand").is_empty());
 }
 
+async fn jvm_inspect_harness() -> (Harness, Arc<MockState>, ide_lsp::JdtJvmInspector) {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, path) = h.open("Sample.java", "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let inspector = ide_lsp::JdtJvmInspector::new(h.mgr.clone(), path);
+    let state = h.launcher.state("jdtls");
+    (h, state, inspector)
+}
+
+fn attach_target(generation: u64) -> ide_jvm_inspect::VmTarget {
+    ide_jvm_inspect::VmTarget { pid: None, attach_host: Some("localhost".into()), attach_port: Some(5005), generation }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_instances_round_trip() {
+    use ide_jvm_inspect::{JvmInspector, JvmValue};
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    s.respond("workspace/executeCommand", json!({"ok": [{"kind": "object", "id": 7, "typeName": "Foo"}]}));
+    let found = inspector.instances(&attach_target(3), "com.acme.Foo", 25).await.unwrap();
+    assert_eq!(found, vec![JvmValue::Object { id: 7, type_name: "Foo".into() }]);
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0]["command"], "openidea.jvm.instances");
+    assert_eq!(
+        asked[0]["arguments"],
+        json!([{"pid": null, "host": "localhost", "port": 5005, "generation": 3}, "com.acme.Foo", 25])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_commands_carry_their_arguments_and_decode_their_replies() {
+    use ide_jvm_inspect::{ClassCount, JvmField, JvmInspector, JvmReferrer, JvmValue, VmTarget};
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    let launch = VmTarget { pid: Some(4242), attach_host: None, attach_port: None, generation: 9 };
+    let target = json!({"pid": 4242, "host": null, "port": null, "generation": 9});
+
+    s.respond("workspace/executeCommand", json!({"ok": [{"name": "int[]", "instances": 12}]}));
+    let counts = inspector.class_counts(&launch).await.unwrap();
+    assert_eq!(counts, vec![ClassCount { name: "int[]".into(), instances: 12 }]);
+
+    // gson leaves out null members: a long string has no `text`.
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": [{"name": "[0]", "value": {"kind": "string", "id": 9, "length": 50000000}}]}),
+    );
+    let fields = inspector.fields(&launch, 5).await.unwrap();
+    assert_eq!(
+        fields,
+        vec![JvmField { name: "[0]".into(), value: JvmValue::Str { id: 9, text: None, length: 50_000_000 } }]
+    );
+
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": [{"value": {"kind": "array", "id": 3, "typeName": "Object[]", "length": 2}, "via": ["[1]"]}]}),
+    );
+    let referrers = inspector.referrers(&launch, 5, 50).await.unwrap();
+    assert_eq!(
+        referrers,
+        vec![JvmReferrer {
+            value: JvmValue::Array { id: 3, type_name: "Object[]".into(), length: 2 },
+            via: vec!["[1]".into()]
+        }]
+    );
+
+    let asked = s.requested("workspace/executeCommand");
+    let seen: Vec<_> = asked.iter().map(|p| (p["command"].clone(), p["arguments"].clone())).collect();
+    assert_eq!(
+        seen,
+        vec![
+            (json!("openidea.jvm.classes"), json!([target])),
+            (json!("openidea.jvm.fields"), json!([target, 5])),
+            (json!("openidea.jvm.referrers"), json!([target, 5, 50])),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_error_maps_to_inspect_error() {
+    use ide_jvm_inspect::{InspectError, JvmInspector};
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    let target = attach_target(1);
+    let cases = [
+        (json!({"error": "stale"}), InspectError::Stale),
+        (json!({"error": "collected", "detail": "gone"}), InspectError::Collected),
+        (json!({"error": "classNotLoaded"}), InspectError::ClassNotLoaded),
+        (json!({"error": "notSuspended"}), InspectError::NotSuspended),
+        (json!({"error": "vmNotFound"}), InspectError::VmNotFound),
+        (json!({"error": "timedOut"}), InspectError::TimedOut),
+        (json!({"error": "unsupported", "detail": "x"}), InspectError::Unsupported("x".into())),
+    ];
+    for (reply, expected) in cases {
+        s.respond("workspace/executeCommand", reply.clone());
+        assert_eq!(inspector.fields(&target, 1).await.unwrap_err(), expected, "{reply}");
+    }
+    s.respond("workspace/executeCommand", json!({"error": "surprise", "detail": "d"}));
+    assert!(
+        matches!(inspector.fields(&target, 1).await.unwrap_err(), InspectError::Failed(m) if m.contains("surprise"))
+    );
+    s.respond("workspace/executeCommand", json!("neither"));
+    assert!(matches!(inspector.fields(&target, 1).await.unwrap_err(), InspectError::Failed(_)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_missing_bundle_is_unsupported() {
+    use ide_jvm_inspect::{InspectError, JvmInspector};
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    s.errors.lock().insert(
+        "workspace/executeCommand".into(),
+        (-32603, "No delegateCommandHandler for openidea.jvm.classes".into()),
+    );
+    assert_eq!(
+        inspector.class_counts(&attach_target(1)).await.unwrap_err(),
+        InspectError::Unsupported("the JVM inspector bundle is not loaded".into())
+    );
+}
+
+/// The bundle waits without bound on the JDT LS thread pool, so the client never has two commands
+/// in flight.
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_sends_one_command_at_a_time() {
+    use ide_jvm_inspect::JvmInspector;
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let most = Arc::new(AtomicUsize::new(0));
+    *s.responder.lock() = Some(Arc::new({
+        let (in_flight, most) = (in_flight.clone(), most.clone());
+        move |_, method, _| {
+            (method == "workspace/executeCommand").then(|| {
+                most.fetch_max(in_flight.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(80));
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                json!({"ok": []})
+            })
+        }
+    }));
+    let target = attach_target(1);
+    let (a, b, c) =
+        tokio::join!(inspector.fields(&target, 1), inspector.fields(&target, 2), inspector.fields(&target, 3));
+    assert!(a.is_ok() && b.is_ok() && c.is_ok());
+    assert_eq!(s.requested("workspace/executeCommand").len(), 3);
+    assert_eq!(most.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn debug_server_port_maps_to_module() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, path) = h.open("Sample.java", "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    h.launcher.state("jdtls").respond("workspace/executeCommand", json!(4711));
+    assert_eq!(h.mgr.java_debug_server_module(4711), None);
+    assert_eq!(h.mgr.java_debug_server(&path).await.unwrap(), 4711);
+    assert_eq!(h.mgr.java_debug_server_module(4711), Some(path));
+    assert_eq!(h.mgr.java_debug_server_module(4712), None);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
     // Preferred installed: the alternative is never started.
@@ -3001,6 +3209,33 @@ async fn rename_merges_the_servers_that_can_rename_there() {
     let edit = h.mgr.rename(doc, Pos::new(1, 2), "heading".into(), Default::default()).await.unwrap().edit;
     assert_eq!(edits_in(&edit, &path), [(rng(0, 14, 0, 19), "heading".into()), (rng(1, 0, 1, 5), "heading: x".into())]);
     assert_eq!(edits_in(&edit, &html), [(rng(0, 3, 0, 8), "heading".into())]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_the_server_withdraws_while_analysing_is_asked_again_then_explained() {
+    let h = harness(&[("dart", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "count = 1\n");
+    h.wait_status("dart", ServerStatus::Ready).await;
+    let dart = h.launcher.state("dart");
+    let r = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":5}});
+    dart.respond("textDocument/rename", json!({ "changes": { uri_of(&path): [{ "range": r, "newText": "total" }] } }));
+    // Withdrawn while the server analyses an edit, then answered.
+    dart.errors.lock().insert("textDocument/rename".into(), (-32801, "Document was modified".into()));
+    let renaming = {
+        let mgr = h.mgr.clone();
+        tokio::spawn(async move { mgr.rename(doc, Pos::new(0, 1), "total".into(), Default::default()).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    dart.errors.lock().clear();
+    let edit = renaming.await.unwrap().unwrap().edit;
+    assert_eq!(edits_in(&edit, &path), [(rng(0, 0, 0, 5), "total".into())]);
+    assert!(dart.requested("textDocument/rename").len() >= 2);
+
+    // Withdrawn every time: an error that says so, not a silent cancellation.
+    dart.errors.lock().insert("textDocument/rename".into(), (-32801, "Document was modified".into()));
+    let err = h.mgr.rename(doc, Pos::new(0, 1), "total".into(), Default::default()).await.unwrap_err();
+    assert_ne!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(err.message.contains("try again"), "{}", err.message);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3431,6 +3666,340 @@ async fn jdt_class_file_contents() {
     let source = h.mgr.virtual_document(&source_uri).await.unwrap();
     assert!(!source.decompiled);
     assert_eq!(source.title, "WithSources.java");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jdt_library_sources_reload_with_the_attachment_encoding() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "import example.encoding.EncodingSample;\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/encoding-sample-1.0.jar/example.encoding/EncodingSample.class?=demo/%5C/m2%5C/encoding-sample-1.0.jar%3Cexample.encoding%28EncodingSample.class";
+
+    // The mock jdtls decodes the GBK attachment with the configured charset:
+    // until the encoding is updated, the text arrives garbled (U+FFFD).
+    let source = "package example.encoding;\n\n/** 中文编码测试。 */\npublic final class EncodingSample {}";
+    let garbled =
+        "package example.encoding;\n\n/** \u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD} */\npublic final class EncodingSample {}";
+    let attachment_encoding: Arc<Mutex<Option<String>>> = Arc::default();
+    *s.responder.lock() = Some(Arc::new({
+        let encoding = attachment_encoding.clone();
+        move |_, method, params| match method {
+            "java/classFileContents" => {
+                let text = if encoding.lock().as_deref() == Some("gbk") { source } else { garbled };
+                Some(json!(text))
+            }
+            "workspace/executeCommand" => match params["command"].as_str()? {
+                "java.project.resolveSourceAttachment" => Some(json!({
+                    "errorMessage": null,
+                    "attributes": {
+                        "jarPath": "/m2/encoding-sample-1.0.jar",
+                        "sourceAttachmentPath": "/m2/encoding-sample-1.0-sources.jar",
+                        "sourceAttachmentEncoding": encoding.lock().clone(),
+                        "canEditEncoding": true,
+                    }
+                })),
+                "java.project.updateSourceAttachment" => {
+                    let attrs = &params["arguments"][0]["attributes"];
+                    *encoding.lock() = attrs["sourceAttachmentEncoding"].as_str().map(str::to_owned);
+                    Some(json!({ "errorMessage": null, "attributes": null }))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }));
+
+    let vd = h.mgr.virtual_document(jdt).await.unwrap();
+    assert_eq!(vd.text, garbled);
+    assert_eq!(vd.encoding, "utf-8", "no attachment encoding configured yet");
+    assert!(vd.can_reload_encoding);
+
+    let reloaded = h.mgr.reload_virtual(jdt, "gbk").await.unwrap();
+    assert_eq!(reloaded.text, source);
+    assert_eq!(reloaded.encoding, "gbk");
+    assert!(reloaded.can_reload_encoding);
+    // The update kept the attachment path (omitting it would drop the sources)
+    // and set the encoding; the contents were fetched again.
+    let updates: Vec<Value> = s
+        .requested("workspace/executeCommand")
+        .into_iter()
+        .filter(|p| p["command"] == "java.project.updateSourceAttachment")
+        .collect();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0]["arguments"][0]["classFileUri"], jdt);
+    assert_eq!(updates[0]["arguments"][0]["attributes"]["sourceAttachmentPath"], "/m2/encoding-sample-1.0-sources.jar");
+    assert_eq!(updates[0]["arguments"][0]["attributes"]["sourceAttachmentEncoding"], "gbk");
+    assert!(s.requested("java/classFileContents").len() >= 2);
+    // The cache serves the re-decoded text without another round trip.
+    assert_eq!(h.mgr.virtual_document(jdt).await.unwrap().text, source);
+    // Round trip back to UTF-8.
+    let back = h.mgr.reload_virtual(jdt, "utf-8").await.unwrap();
+    assert_eq!(back.text, garbled);
+    assert_eq!(back.encoding, "utf-8");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jdt_reload_waits_for_the_maven_container_refresh() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/lib.jar/p/Lib.class?=demo/%5C/m2%5C/lib.jar%3Cp%28Lib.class";
+    // m2e persists and refreshes the container in a background job: resolve
+    // keeps reporting the old encoding for a few calls after the update.
+    let state: Arc<Mutex<(Option<String>, usize)>> = Arc::default();
+    *s.responder.lock() = Some(Arc::new({
+        let state = state.clone();
+        move |_, method, params| match method {
+            "java/classFileContents" => {
+                let enc = state.lock().0.clone();
+                Some(json!(if enc.as_deref() == Some("gbk") {
+                    "package p; /** 中文 */ class Lib {}"
+                } else {
+                    "package p; /** \u{FFFD} */ class Lib {}"
+                }))
+            }
+            "workspace/executeCommand" => match params["command"].as_str()? {
+                "java.project.resolveSourceAttachment" => {
+                    let mut st = state.lock();
+                    st.1 += 1;
+                    let reported = if st.1 > 2 { st.0.clone() } else { None };
+                    Some(json!({
+                        "attributes": {
+                            "sourceAttachmentPath": "/m2/lib-sources.jar",
+                            "sourceAttachmentEncoding": reported,
+                            "canEditEncoding": true,
+                        }
+                    }))
+                }
+                "java.project.updateSourceAttachment" => {
+                    let mut st = state.lock();
+                    st.0 = params["arguments"][0]["attributes"]["sourceAttachmentEncoding"].as_str().map(str::to_owned);
+                    st.1 = 0;
+                    Some(json!({ "errorMessage": null }))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }));
+    let vd = h.mgr.virtual_document(jdt).await.unwrap();
+    assert!(vd.text.contains('\u{FFFD}'));
+    let reloaded = h.mgr.reload_virtual(jdt, "gbk").await.unwrap();
+    assert_eq!(reloaded.text, "package p; /** 中文 */ class Lib {}");
+    assert_eq!(reloaded.encoding, "gbk");
+    assert!(state.lock().1 >= 3, "polled until the container reported the new encoding");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jdt_reload_retries_when_a_restored_container_ignores_the_update() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/lib.jar/p/Lib.class?=demo/%5C/m2%5C/lib.jar%3Cp%28Lib.class";
+    // jdtls replaces the encoding attribute by reference equality: an entry
+    // restored from the saved container state keeps the old value on the first
+    // update (a duplicate attribute is appended); only a second update, after
+    // the container was refreshed, applies the new one.
+    let state: Arc<Mutex<(Option<String>, usize)>> = Arc::default();
+    *s.responder.lock() = Some(Arc::new({
+        let state = state.clone();
+        move |_, method, params| match method {
+            "java/classFileContents" => {
+                let enc = state.lock().0.clone();
+                Some(json!(if enc.as_deref() == Some("gbk") {
+                    "package p; /** 中文 */ class Lib {}"
+                } else {
+                    "package p; /** \u{FFFD} */ class Lib {}"
+                }))
+            }
+            "workspace/executeCommand" => match params["command"].as_str()? {
+                "java.project.resolveSourceAttachment" => Some(json!({
+                    "attributes": {
+                        "sourceAttachmentPath": "/m2/lib-sources.jar",
+                        "sourceAttachmentEncoding": state.lock().0.clone(),
+                        "canEditEncoding": true,
+                    }
+                })),
+                "java.project.updateSourceAttachment" => {
+                    let mut st = state.lock();
+                    st.1 += 1;
+                    if st.1 > 1 {
+                        st.0 = params["arguments"][0]["attributes"]["sourceAttachmentEncoding"]
+                            .as_str()
+                            .map(str::to_owned);
+                    }
+                    Some(json!({ "errorMessage": null }))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }));
+    let vd = h.mgr.virtual_document(jdt).await.unwrap();
+    assert!(vd.text.contains('\u{FFFD}'));
+    let reloaded = h.mgr.reload_virtual(jdt, "gbk").await.unwrap();
+    assert_eq!(reloaded.text, "package p; /** 中文 */ class Lib {}");
+    assert_eq!(reloaded.encoding, "gbk");
+    let updates: Vec<Value> = s
+        .requested("workspace/executeCommand")
+        .into_iter()
+        .filter(|p| p["command"] == "java.project.updateSourceAttachment")
+        .collect();
+    assert_eq!(updates.len(), 2, "the ignored first update was retried once");
+    assert!(updates.iter().all(|u| u["arguments"][0]["attributes"]["sourceAttachmentPath"] == "/m2/lib-sources.jar"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jdt_reload_reads_the_attachment_when_the_server_buffer_is_stale() {
+    use std::io::Write;
+    let tmp = tempfile::tempdir().unwrap();
+    let sources = tmp.path().join("lib-sources.jar");
+    let source = "package p; /** 中文 */ class Lib {}";
+    let gbk = encoding_rs::GBK.encode(source).0.into_owned();
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&sources).unwrap());
+    zip.start_file("p/Lib.java", zip::write::SimpleFileOptions::default()).unwrap();
+    zip.write_all(&gbk).unwrap();
+    zip.finish().unwrap();
+
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/lib.jar/p/Lib.class?=demo/%5C/m2%5C/lib.jar%3Cp%28Lib.class";
+    // JDT caches the decoded buffer of a class file: even after the attachment
+    // encoding is updated, classFileContents keeps returning the old decoding.
+    let encoding: Arc<Mutex<Option<String>>> = Arc::default();
+    *s.responder.lock() = Some(Arc::new({
+        let encoding = encoding.clone();
+        let sources = sources.clone();
+        move |_, method, params| match method {
+            "java/classFileContents" => Some(json!("package p; /** \u{FFFD} */ class Lib {}")),
+            "workspace/executeCommand" => match params["command"].as_str()? {
+                "java.project.resolveSourceAttachment" => Some(json!({
+                    "attributes": {
+                        "sourceAttachmentPath": sources.to_string_lossy(),
+                        "sourceAttachmentEncoding": encoding.lock().clone(),
+                        "canEditEncoding": true,
+                    }
+                })),
+                "java.project.updateSourceAttachment" => {
+                    *encoding.lock() =
+                        params["arguments"][0]["attributes"]["sourceAttachmentEncoding"].as_str().map(str::to_owned);
+                    Some(json!({ "errorMessage": null }))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }));
+    let vd = h.mgr.virtual_document(jdt).await.unwrap();
+    assert!(vd.text.contains('\u{FFFD}'));
+    let reloaded = h.mgr.reload_virtual(jdt, "gbk").await.unwrap();
+    assert_eq!(reloaded.text, source, "read from the attachment, not the stale server buffer");
+    assert_eq!(reloaded.encoding, "gbk");
+    assert!(reloaded.can_reload_encoding);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jdt_reload_is_refused_when_the_sources_cannot_be_re_decoded() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let class =
+        |name: &str| format!("jdt://contents/lib.jar/p/{name}.class?=demo/%5C/m2%5C/lib.jar%3Cp%28{name}.class");
+    s.respond("java/classFileContents", json!("package p;\npublic class Lib {}"));
+
+    // A container that does not allow editing the attachment encoding.
+    *s.responder.lock() = Some(Arc::new(|_, method, params| match method {
+        "workspace/executeCommand" if params["command"] == "java.project.resolveSourceAttachment" => Some(json!({
+            "attributes": { "sourceAttachmentPath": "/m2/lib-sources.jar", "canEditEncoding": false }
+        })),
+        _ => None,
+    }));
+    let vd = h.mgr.virtual_document(&class("ReadOnly")).await.unwrap();
+    assert!(!vd.can_reload_encoding);
+    let err = h.mgr.reload_virtual(&class("ReadOnly"), "gbk").await.unwrap_err();
+    assert!(err.message.contains("cannot be changed"), "{err}");
+
+    // Decompiled content has no attached sources to re-decode.
+    *s.responder.lock() = Some(Arc::new(|_, method, params| match method {
+        "workspace/executeCommand" if params["command"] == "java.project.resolveSourceAttachment" => Some(json!({
+            "attributes": { "sourceAttachmentPath": null, "canEditEncoding": true }
+        })),
+        _ => None,
+    }));
+    s.respond(
+        "java/classFileContents",
+        json!("// Source code is decompiled from a .class file using FernFlower decompiler (from Intellij IDEA).\npackage p;\npublic class Lib {}"),
+    );
+    let decompiled = h.mgr.virtual_document(&class("Decompiled")).await.unwrap();
+    assert!(decompiled.decompiled && !decompiled.can_reload_encoding);
+    let err = h.mgr.reload_virtual(&class("Decompiled"), "gbk").await.unwrap_err();
+    assert!(err.message.contains("no attached sources"), "{err}");
+
+    // The resolve command fails (unqueryable container): no reload offered.
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "unsupported".into()));
+    let unresolved = h.mgr.virtual_document(&class("Unresolved")).await.unwrap();
+    assert_eq!(unresolved.encoding, "utf-8");
+    assert!(!unresolved.can_reload_encoding);
+    let err = h.mgr.reload_virtual(&class("Unresolved"), "gbk").await.unwrap_err();
+    assert!(err.message.contains("cannot resolve"), "{err}");
+
+    // Server-generated content of other schemes cannot be re-decoded at all.
+    let err = h.mgr.reload_virtual("csharp:/p/App.csproj/decompiled/Lib.cs", "gbk").await.unwrap_err();
+    assert!(err.message.contains("generated by a language server"), "{err}");
+    // Unknown encodings are refused before any server round trip.
+    assert!(h.mgr.reload_virtual(&class("ReadOnly"), "not-an-encoding").await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jar_library_sources_reload_with_another_encoding() {
+    use std::io::Write;
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path().join("com/example/encoding-sample/1.0.0");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = "package example.encoding\n\n/** 中文编码测试。 */\nfun message() = \"中文编码测试：是否启用\"\n";
+    let gbk = encoding_rs::GBK.encode(source).0.into_owned();
+    let jar_bytes = |path: &Path, entries: &[(&str, &[u8])]| {
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, bytes) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    };
+    jar_bytes(&dir.join("encoding-sample-1.0.jar"), &[("example/encoding/EncodingSampleKt.class", b"\0")]);
+    jar_bytes(&dir.join("encoding-sample-1.0-sources.jar"), &[("example/encoding/EncodingSample.kt", &gbk)]);
+    let jar_uri = |jar: &Path, entry: &str| format!("jar://{}!/{entry}", uri_of(jar).trim_start_matches("file://"));
+
+    let h = harness_for("kotlin", "kt", &[("kotlin-lsp", incremental_caps())], &[]);
+    h.open("Main.kt", "fun main() {}\n");
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    let class = jar_uri(&dir.join("encoding-sample-1.0.jar"), "example/encoding/EncodingSampleKt.class");
+    let entry = jar_uri(&dir.join("encoding-sample-1.0-sources.jar"), "example/encoding/EncodingSample.kt");
+
+    let vd = h.mgr.virtual_document(&class).await.unwrap();
+    assert_eq!(vd.text, source);
+    assert_eq!(vd.encoding, "gbk");
+    assert!(vd.can_reload_encoding);
+    // An explicit encoding wins over detection, even when it garbles the text.
+    let forced = h.mgr.reload_virtual(&class, "utf-8").await.unwrap();
+    assert!(forced.text.contains('\u{FFFD}'));
+    assert_eq!(forced.encoding, "utf-8");
+    let back = h.mgr.reload_virtual(&class, "gbk").await.unwrap();
+    assert_eq!((back.text.as_str(), back.encoding.as_str()), (source, "gbk"));
+    // Non-class entries reload the same way.
+    let entry_vd = h.mgr.virtual_document(&entry).await.unwrap();
+    assert_eq!((entry_vd.text.as_str(), entry_vd.encoding.as_str()), (source, "gbk"));
+    let entry_reload = h.mgr.reload_virtual(&entry, "gbk").await.unwrap();
+    assert_eq!(entry_reload.text, source);
+    // Missing sources fail cleanly.
+    let missing = jar_uri(&dir.join("encoding-sample-1.0.jar"), "example/encoding/Missing.class");
+    assert!(h.mgr.reload_virtual(&missing, "gbk").await.is_err());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -5755,6 +6324,208 @@ async fn hierarchy_refactorings_name_the_servers_without_them() {
     assert_eq!(e.message, "plain doesn't support Pull Members Up");
 }
 
+// ------------------------------------------------------------------ kotlin-lsp debug server
+
+type KotlinDebug = Result<KotlinDebugServer, KotlinDebugUnavailable>;
+
+fn kotlin_lsp_harness() -> (Harness, Arc<MockState>) {
+    let h = harness_for("kotlin", "kt", &[("kotlin-lsp", incremental_caps())], &[]);
+    let s = h.launcher.state("kotlin-lsp");
+    s.respond("workspace/executeCommand", json!(4711));
+    (h, s)
+}
+
+fn spawn_kotlin_debug_server(
+    h: &Harness,
+    path: &Path,
+    import_wait: Duration,
+    cancel: &CancellationToken,
+) -> tokio::task::JoinHandle<KotlinDebug> {
+    let (mgr, path, cancel) = (h.mgr.clone(), path.to_owned(), cancel.clone());
+    tokio::spawn(async move { mgr.kotlin_debug_server(&path, import_wait, &cancel).await })
+}
+
+async fn joined(debug: tokio::task::JoinHandle<KotlinDebug>) -> KotlinDebug {
+    tokio::time::timeout(Duration::from_secs(10), debug).await.expect("kotlin_debug_server returned").unwrap()
+}
+
+fn import_progress(s: &MockState, value: Value) {
+    s.peer().notify("$/progress", json!({ "token": "import", "value": value })).unwrap();
+}
+
+fn import_finished(s: &MockState, folders: &[(&Path, &str)]) {
+    let folders: Vec<Value> = folders
+        .iter()
+        .map(|(dir, status)| json!({ "folderUri": format!("{}/", uri_of(dir)), "tool": "gradle", "status": status }))
+        .collect();
+    s.peer().notify("intellij/workspaceImportState", json!({ "phase": "FINISHED", "folders": folders })).unwrap();
+}
+
+fn debug_server_requests(s: &MockState) -> Vec<Value> {
+    s.requested("workspace/executeCommand")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn waits_for_the_import_before_starting_the_debug_server() {
+    // kotlin-lsp sends the progress end and FINISHED within the same millisecond, in either order.
+    for finished_first in [false, true] {
+        let (h, s) = kotlin_lsp_harness();
+        let main = h.root.join("Main.kt");
+        std::fs::write(&main, "fun main() {}").unwrap();
+        let debug = spawn_kotlin_debug_server(&h, &main, Duration::from_secs(10), &CancellationToken::new());
+        h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+        // Repeats every few seconds while the project stays usable: never waited for.
+        s.peer()
+            .notify("$/progress", json!({ "token": "index", "value": { "kind": "begin", "title": "Indexing" } }))
+            .unwrap();
+        import_progress(&s, json!({ "kind": "begin", "title": "Importing" }));
+        h.wait_status("kotlin-lsp", ServerStatus::Busy).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(debug_server_requests(&s).is_empty(), "started while importing");
+
+        if finished_first {
+            import_finished(&s, &[(&h.root, "SUCCESS")]);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(debug_server_requests(&s).is_empty(), "started while the Importing task runs");
+            import_progress(&s, json!({ "kind": "end" }));
+        } else {
+            import_progress(&s, json!({ "kind": "end" }));
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(debug_server_requests(&s).is_empty(), "started before FINISHED");
+            import_finished(&s, &[(&h.root, "SUCCESS")]);
+        }
+
+        assert_eq!(joined(debug).await, Ok(KotlinDebugServer { port: 4711, root: h.root.clone() }));
+        assert_eq!(
+            debug_server_requests(&s),
+            vec![json!({ "command": "start_debug_server", "arguments": [uri_of(&h.root)] })],
+            "finished_first: {finished_first}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn still_importing_after_the_wait_is_reported() {
+    let (h, s) = kotlin_lsp_harness();
+    let r = h.mgr.kotlin_debug_server(&h.root, Duration::from_millis(200), &CancellationToken::new()).await;
+    assert_eq!(r, Err(KotlinDebugUnavailable::StillImporting));
+    assert!(debug_server_requests(&s).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_the_import_wait_reports_still_importing() {
+    let (h, s) = kotlin_lsp_harness();
+    let cancel = CancellationToken::new();
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(60), &cancel);
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!debug.is_finished());
+    cancel.cancel();
+    assert_eq!(joined(debug).await, Err(KotlinDebugUnavailable::StillImporting));
+    assert!(debug_server_requests(&s).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_import_of_the_module_is_reported() {
+    // Another module that failed does not keep this one from debugging.
+    for other_module_failed in [false, true] {
+        let (h, s) = kotlin_lsp_harness();
+        let main = h.root.join("app/Main.kt");
+        let debug = spawn_kotlin_debug_server(&h, &main, Duration::from_secs(10), &CancellationToken::new());
+        h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+        let lib = h.root.join("lib");
+        let (folders, expected) = if other_module_failed {
+            (
+                vec![(h.root.as_path(), "SUCCESS"), (lib.as_path(), "FAILED")],
+                Ok(KotlinDebugServer { port: 4711, root: h.root.clone() }),
+            )
+        } else {
+            (vec![(h.root.as_path(), "FAILED")], Err(KotlinDebugUnavailable::ImportFailed))
+        };
+        import_finished(&s, &folders);
+        assert_eq!(joined(debug).await, expected, "other_module_failed: {other_module_failed}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_import_is_reported_through_a_symlinked_root() {
+    // The debugged path names the root through a symlink, the folder URI names its target,
+    // and the file does not exist yet.
+    let (h, s) = kotlin_lsp_harness();
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("project");
+    std::os::unix::fs::symlink(&h.root, &link).unwrap();
+    let debug =
+        spawn_kotlin_debug_server(&h, &link.join("app/Main.kt"), Duration::from_secs(10), &CancellationToken::new());
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    import_finished(&s, &[(&h.root, "FAILED")]);
+    assert_eq!(joined(debug).await, Err(KotlinDebugUnavailable::ImportFailed));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_finished_import_does_not_count_after_a_restart() {
+    let (h, s) = kotlin_lsp_harness();
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(10), &CancellationToken::new());
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    import_finished(&s, &[(&h.root, "SUCCESS")]);
+    assert!(joined(debug).await.is_ok());
+
+    let id = h.mgr.servers()[0].id;
+    h.mgr.restart(id).await.unwrap();
+    let r = h.mgr.kotlin_debug_server(&h.root, Duration::from_millis(300), &CancellationToken::new()).await;
+    assert_eq!(r, Err(KotlinDebugUnavailable::StillImporting));
+    assert_eq!(debug_server_requests(&s).len(), 1);
+
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(10), &CancellationToken::new());
+    import_finished(&s, &[(&h.root, "SUCCESS")]);
+    assert_eq!(joined(debug).await, Ok(KotlinDebugServer { port: 4711, root: h.root.clone() }));
+    assert_eq!(debug_server_requests(&s).len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_kotlin_lsp_the_reason_is_not_configured() {
+    let wait = Duration::from_secs(1);
+    let cancel = CancellationToken::new();
+    let h = harness_for("kotlin", "kt", &[("kotlin-language-server", incremental_caps())], &[]);
+    assert_eq!(h.mgr.kotlin_debug_server(&h.root, wait, &cancel).await, Err(KotlinDebugUnavailable::NotConfigured));
+
+    let (h, s) = kotlin_lsp_harness();
+    s.missing.store(true, Ordering::SeqCst);
+    assert_eq!(h.mgr.kotlin_debug_server(&h.root, wait, &cancel).await, Err(KotlinDebugUnavailable::NotInstalled));
+
+    let (h, _) = kotlin_lsp_harness();
+    h.mgr.set_config_hook(Box::new(|cfg, _| cfg.launch_error = Some("needs JDK 21".into())));
+    assert_eq!(
+        h.mgr.kotlin_debug_server(&h.root, wait, &cancel).await,
+        Err(KotlinDebugUnavailable::NotStarted("needs JDK 21".into()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_debug_server_error_is_reported() {
+    let (h, s) = kotlin_lsp_harness();
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "boom".into()));
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(10), &CancellationToken::new());
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    import_finished(&s, &[(&h.root, "SUCCESS")]);
+    match joined(debug).await {
+        Err(KotlinDebugUnavailable::Failed(m)) => assert!(m.contains("boom"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+
+    s.errors.lock().clear();
+    for port in [json!(0), json!(65536), json!("4711"), Value::Null] {
+        s.respond("workspace/executeCommand", port.clone());
+        match h.mgr.kotlin_debug_server(&h.root, Duration::from_secs(1), &CancellationToken::new()).await {
+            Err(KotlinDebugUnavailable::Failed(m)) => {
+                assert_eq!(m, format!("unexpected debug server port: {port}"))
+            }
+            other => panic!("{port}: {other:?}"),
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn injected_documents_route_and_resolve_without_exposing_virtual_files() {
     for encoding in ["utf-16", "utf-8"] {
@@ -5942,4 +6713,70 @@ async fn missing_injected_server_uses_the_normal_single_install_notification() {
     assert_eq!(h.statuses("embedded").iter().filter(|s| **s == ServerStatus::Missing).count(), 1);
     h.mgr.did_close(host);
     h.mgr.shutdown_all().await;
+}
+
+/// #2248: `go.mod` files are served by gopls with the language id it
+/// understands, and its pushed diagnostics reach the Problems view.
+#[tokio::test(flavor = "multi_thread")]
+async fn gomod_files_are_served_by_gopls() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let registry = Arc::new(LanguageRegistry::load(None).unwrap());
+    // The bundled configs route Go files of every kind to gopls.
+    for lang in ["go", "go.mod", "go.work"] {
+        let cfg = registry.get(&LanguageId::new(lang)).unwrap_or_else(|| panic!("{lang} has no language definition"));
+        assert!(cfg.language_servers.iter().any(|s| s.name == "gopls"), "{lang} is not served by gopls");
+    }
+    let launcher = Arc::new(MockLauncher::default());
+    *launcher.state("gopls").caps.lock() = incremental_caps();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = {
+        let events = events.clone();
+        Arc::new(move |e: IdeEvent| events.lock().push(e))
+    };
+    let mgr = LspManager::with_launcher(root.clone(), registry, sink, launcher.clone());
+    let text = "module example.com/app\n\ngo 1.22\n";
+    let path = root.join("go.mod");
+    std::fs::write(&path, text).unwrap();
+    assert!(mgr.serves_path(&path));
+    mgr.did_open(DocId::next(), &path, &LanguageId::new("go.mod"), 1, text);
+    let gopls = launcher.state("gopls");
+    eventually(|| !gopls.notified("textDocument/didOpen").is_empty()).await;
+    // gopls only treats the file as a module file for the `go.mod` id.
+    let opened = &gopls.notified("textDocument/didOpen")[0]["textDocument"];
+    assert_eq!(opened["languageId"], json!("go.mod"));
+    // The module root (the go.mod itself is the marker) scopes the server.
+    let init = &gopls.requested("initialize")[0];
+    assert_eq!(init["rootUri"], json!(uri_of(&root)));
+    // Same startup options as when a `.go` file launches the server first.
+    assert_eq!(init["initializationOptions"]["semanticTokens"], json!(true));
+    // Pushed go.mod diagnostics surface with gopls as their source.
+    gopls
+        .peer()
+        .notify(
+            "textDocument/publishDiagnostics",
+            json!({ "uri": uri_of(&path), "diagnostics": [{
+                "range": {"start": {"line": 2, "character": 3}, "end": {"line": 2, "character": 7}},
+                "severity": 1, "message": "missing requirement", "source": "gopls" }] }),
+        )
+        .unwrap();
+    eventually(|| {
+        events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Diagnostics { path: p, source, .. } if p.0 == path && source == "gopls"))
+    })
+    .await;
+    let items = events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Diagnostics { path: p, items, .. } if p.0 == path => Some(items.clone()),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].message, "missing requirement");
+    mgr.shutdown_all().await;
 }

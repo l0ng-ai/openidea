@@ -1,10 +1,10 @@
 /**
- * Run configurations in the Services tool window (IDEA's Run Dashboard): Spring
- * Boot by default, the configuration types added there ("Add Service › Run
- * Configuration Type"), the types of this window's run sessions and the
- * configurations that ran before (kept per project across restarts), one group
- * each, with run / debug / stop / rerun per configuration. A configuration that
- * ran shows its console in the detail pane, a running web application its HTTP port.
+ * Run configurations in the Services tool window (IDEA's Run Dashboard): the
+ * configuration types added there ("Add Service › Run Configuration Type"), one
+ * group each, with run / debug / stop / rerun per configuration. Nothing else is
+ * listed, and what is removed leaves at once; a run it started keeps its console
+ * in the Run tool window. A configuration that ran shows its console in the
+ * detail pane, a running web application its HTTP port.
  */
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
@@ -33,7 +33,6 @@ import { showApplicationUpdate } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
 import {
   configRemoved,
-  debugSession,
   loadConfigs,
   persistTemporary,
   rerunConfig,
@@ -68,9 +67,6 @@ export const RUN_PROVIDER = "runConfigurations";
 const TYPE_PREFIX = "run:type:";
 const CONFIG_PREFIX = "run:config:";
 const STORAGE_KEY = "openidea.services.runTypes:";
-const RAN_KEY = "openidea.services.ran:";
-/** Types shown in Services until the user changes the list. */
-export const DEFAULT_TYPES: readonly string[] = ["spring-boot"];
 /** Docker run kinds whose containers/deployments are already shown under the Docker provider in Services. */
 const DOCKER_PROVIDER_KINDS: ReadonlySet<string> = new Set(["docker-compose", "docker-dockerfile", "docker-image"]);
 
@@ -79,15 +75,15 @@ const DOCKER_PROVIDER_KINDS: ReadonlySet<string> = new Set(["docker-compose", "d
 
 const useAddedTypes = create<{ root: string | null; types: string[] }>(() => ({ root: null, types: [] }));
 
-/** The project's types; Spring Boot until the user changes the list. */
+/** The project's types; empty until the user adds one with "Add Service". */
 export function readTypes(root: string): string[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY + root);
-    if (raw === null) return [...DEFAULT_TYPES];
+    if (raw === null) return [];
     const v: unknown = JSON.parse(raw);
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   } catch {
-    return [...DEFAULT_TYPES];
+    return [];
   }
 }
 
@@ -119,41 +115,6 @@ export function removeType(kind: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Configurations that ran, per project (shown again after a restart)
-
-const useRanConfigs = create<{ root: string | null; ids: string[] }>(() => ({ root: null, ids: [] }));
-
-/** The project's previously run configuration ids, most recent last. */
-export function readRan(root: string): string[] {
-  try {
-    const raw = localStorage.getItem(RAN_KEY + root);
-    if (raw === null) return [];
-    const v: unknown = JSON.parse(raw);
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function ranIds(root: string | null): string[] {
-  const s = useRanConfigs.getState();
-  return s.root === root ? s.ids : root ? readRan(root) : [];
-}
-
-/** Records a run, so its configuration is back in Services after a restart. */
-export function recordRun(configId: string) {
-  const root = useProject.getState().project?.root ?? null;
-  const ids = [...ranIds(root).filter((id) => id !== configId), configId];
-  useRanConfigs.setState({ root, ids });
-  if (!root) return;
-  try {
-    localStorage.setItem(RAN_KEY + root, JSON.stringify(ids));
-  } catch {
-    /* storage unavailable */
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Project removal: a workspace member's data leaves with it
 
 /** Whether `path` is inside the directory `root` (a removed member, not a sibling with a shared prefix). */
@@ -165,7 +126,7 @@ function insideRoot(path: string, root: string): boolean {
  * Drops a removed workspace member's data from Services: stops and forgets its
  * sessions (a finished one still groups the tree), removes its temporary
  * configurations, reloads (the backend no longer lists the member) and clears
- * the added types and remembered runs that would otherwise render empty groups.
+ * the added types that would otherwise render empty groups.
  */
 export async function cleanupRemovedProject(removedRoot: string): Promise<void> {
   const { configs, sessions, temporary } = useRun.getState();
@@ -196,20 +157,6 @@ export async function cleanupRemovedProject(removedRoot: string): Promise<void> 
   const { configs: fresh, sessions: liveSessions } = useRun.getState();
   const liveKinds = new Set([...fresh.map((c) => c.kind), ...liveSessions.map((s) => s.config.kind)]);
   for (const kind of kinds) if (!liveKinds.has(kind)) removeType(kind);
-
-  const root = useProject.getState().project?.root ?? null;
-  if (root) {
-    const freshIds = new Set(fresh.map((c) => c.id));
-    const ids = ranIds(root).filter((id) => freshIds.has(id));
-    if (ids.length !== ranIds(root).length) {
-      useRanConfigs.setState({ root, ids });
-      try {
-        localStorage.setItem(RAN_KEY + root, JSON.stringify(ids));
-      } catch {
-        /* storage unavailable */
-      }
-    }
-  }
 }
 
 // Configurations hidden from Services, per project (removed one by one; "Add Service" restores)
@@ -253,7 +200,7 @@ function saveHidden(hidden: Record<string, string[]>) {
   }
 }
 
-/** Removes one configuration from Services; it reappears while it runs (its console stays reachable). */
+/** Removes one configuration from Services at once, even while it runs (its console is in the Run window). */
 function hideConfig(kind: string, id: string) {
   const hidden = currentHidden();
   if ((hidden[kind] ?? []).includes(id)) return;
@@ -311,15 +258,15 @@ function executionDetail(s: ServiceSession | undefined): string | undefined {
 }
 
 /**
- * Groups by configuration type: added types list all their configurations, other
- * types only those that ran. A default type (Spring Boot) without configurations is hidden.
- * A configuration deleted since it ran (`removed`) stays only while its run is live.
+ * Groups by configuration type: only the types added in this window list their
+ * configurations, and a configuration removed from the window stays out even
+ * while it runs (its console is in the Run tool window). A configuration deleted
+ * since it ran (`removed`) stays only while its run is live.
  */
 export function runServiceItems(
   configs: readonly RunConfig[],
   sessions: readonly RunSession[],
   added: readonly string[],
-  ran: readonly string[] = [],
   order: ServiceOrder = {},
   debug: readonly DebugServiceSession[] = [],
   removed: (id: string) => boolean = () => false,
@@ -329,28 +276,12 @@ export function runServiceItems(
   const latest = currentServiceSessions(executions);
   const kinds = added.filter((kind) => !DOCKER_PROVIDER_KINDS.has(kind));
   const shown = (s: ServiceSession) => liveServiceSession(s) || !removed(s.config.id);
-  for (const s of executions)
-    if (shown(s) && !DOCKER_PROVIDER_KINDS.has(s.config.kind) && !kinds.includes(s.config.kind))
-      kinds.push(s.config.kind);
-  for (const id of ran) {
-    const kind = configs.find((c) => c.id === id)?.kind;
-    if (kind && !DOCKER_PROVIDER_KINDS.has(kind) && !kinds.includes(kind)) kinds.push(kind);
-  }
   return kinds.flatMap((kind) => {
-    const entries: RunConfig[] = added.includes(kind)
-      ? configs.filter((c) => c.kind === kind)
-      : ran.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c && c.kind === kind);
+    const entries: RunConfig[] = configs.filter((c) => c.kind === kind);
     for (const s of latest.values())
       if (s.config.kind === kind && shown(s) && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
-    // Hidden configurations reappear only while they run (their console stays reachable).
     const hiddenIds = new Set(hidden[kind] ?? []);
-    const visible = entries.filter((c) => {
-      if (!hiddenIds.has(c.id)) return true;
-      const s = latest.get(c.id);
-      return !!s && liveServiceSession(s);
-    });
-    // Keep an empty group only when its existing configurations can be restored.
-    if (!visible.length && DEFAULT_TYPES.includes(kind) && !configs.some((c) => c.kind === kind)) return [];
+    const visible = entries.filter((c) => !hiddenIds.has(c.id));
     const children = orderServices(visible, order[kind]).map((c): ServiceTreeItem => {
       const s = latest.get(c.id);
       return {
@@ -388,28 +319,24 @@ function useRoots(): ServiceTreeItem[] {
   const debug = useDebugRunSessions((s) => s.serviceSessions);
   const types = useAddedTypes((s) => s.types);
   const typesRoot = useAddedTypes((s) => s.root);
-  const ran = useRanConfigs((s) => s.ids);
-  const ranRoot = useRanConfigs((s) => s.root);
   const hidden = useHiddenConfigs((s) => s.hidden);
   const hiddenLocation = useHiddenConfigs((s) => s.location);
   useEffect(() => {
     if (typesRoot !== root) useAddedTypes.setState({ root, types: root ? readTypes(root) : [] });
-    if (ranRoot !== root) useRanConfigs.setState({ root, ids: root ? readRan(root) : [] });
     if (hiddenLocation !== location) useHiddenConfigs.setState({ location, hidden: readHidden(location) });
-  }, [root, typesRoot, ranRoot, hiddenLocation, location]);
+  }, [root, typesRoot, hiddenLocation, location]);
   return useMemo(
     () =>
       runServiceItems(
         configs,
         sessions,
         typesRoot === root ? types : [],
-        ranRoot === root ? ran : [],
         order,
         debug,
         configRemoved,
         hiddenLocation === location ? hidden : {},
       ),
-    [configs, sessions, types, typesRoot, ran, ranRoot, root, order, debug, hidden, hiddenLocation, location],
+    [configs, sessions, types, typesRoot, root, order, debug, hidden, hiddenLocation, location],
   );
 }
 
@@ -477,7 +404,6 @@ function groupConfigs(kind: string): RunConfig[] {
     configs,
     sessions,
     currentTypes(),
-    ranIds(root),
     location ? currentServiceOrder(location) : {},
     debug,
     configRemoved,
@@ -744,20 +670,11 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
         </div>
       </EmptyState>
     );
-  // The configuration ran: its console, as in the Run tool window.
+  // The configuration ran: its console, as in the Run tool window. Run / Debug / Stop
+  // come from this window's toolbar (the selection), so the console strip leaves them out.
   if (r.session?.run) {
     const execution = r.session;
-    const d = serviceDebugger(execution);
-    const rerun = d ? (d.rerunInPlace ?? d.rerun) : undefined;
-    return (
-      <SessionPanel
-        key={execution.run!.id}
-        session={execution.run!}
-        onRerun={d ? rerun : () => run(r)}
-        onDebug={d ? rerun : () => debugSession(execution.run!.id, { show: false })}
-        onStop={d ? () => void stopServiceSessions([execution]) : undefined}
-      />
-    );
+    return <SessionPanel key={execution.run!.id} session={execution.run!} showLifecycle={false} />;
   }
   const d = r.session?.debug[0];
   if (d && Console)
@@ -908,7 +825,6 @@ export const runServiceProvider: ServiceProviderContribution = {
         configs,
         sessions,
         currentTypes(),
-        ranIds(useProject.getState().project?.root ?? null),
         order,
         useDebugRunSessions.getState().serviceSessions,
         configRemoved,

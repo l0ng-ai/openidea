@@ -139,7 +139,9 @@
   height: 532px;
 }
 .results {
-  flex: 1;
+  /* `auto`, not `1`: without the preview `.content` has no definite height, and a 0% basis there
+     collapses the list in the system WebKit of macOS 15 instead of using its inline height. */
+  flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;

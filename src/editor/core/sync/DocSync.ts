@@ -251,9 +251,11 @@ export class DocSync {
     try {
       snap = await this.transport.snapshot();
     } catch (e) {
+      if (gen !== this.generation || this.disposed) return;
       this.host.onError?.(e);
-      this.resyncing = false;
-      this.resolveIdle(true);
+      // Keep the edit going: the backend acks it once it caught up, or rejects it again,
+      // which retries the snapshot (a hard resync after MAX_REBASES).
+      this.resend();
       return;
     }
     if (gen !== this.generation || this.disposed) return;
@@ -313,8 +315,13 @@ export class DocSync {
     } catch (e) {
       if (gen !== this.generation) return;
       this.host.onError?.(e);
+      // Nothing to adopt: keep the local text as pending changes against `confirmed`, so the
+      // next flush sends them in the coordinates the backend knows.
+      const pending = minimalChanges(this.confirmed.toString(), this.localText.toString());
       this.inflight = null;
-      this.buffer = null;
+      this.buffer = pending.length ? ChangeSet.of(pending, this.confirmed.length) : null;
+      this.inflightStale = false;
+      this.rebases = 0;
       this.resyncing = false;
       this.resolveIdle(true);
       return;

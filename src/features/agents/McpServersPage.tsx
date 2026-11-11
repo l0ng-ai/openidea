@@ -1,12 +1,12 @@
 /**
- * Settings › Agents › Model Context Protocol (MCP): configure, search, toggle, add, edit, remove,
+ * Settings › Agents › External MCP Servers: configure, search, toggle, add, edit, remove,
  * and import MCP servers stored in OpenIDEA's User (`settings.toml`) and Workspace
  * (`.openidea/settings.toml`) settings, passed to coding agents over ACP.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import type { McpKeyValue, McpScope, McpServer, McpServerInput, McpTransport } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
-import { useTx } from "@/platform/i18n";
+import { formatMessage, useTx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import { Button, Checkbox, Dialog, Icon, IconButton, Input, Menu, SearchField, Select, T, type MenuItem } from "@/ui";
 import styles from "./McpServers.module.css";
@@ -112,6 +112,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Record<McpScope, boolean>>({
     user: false,
     workspace: false,
@@ -192,9 +193,19 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
   const importFromProject = async () => {
     setImporting(true);
     setError(null);
+    setNotice(null);
     try {
+      const before = servers.filter((s) => s.scope === "workspace").length;
       const next = await backend.importWorkspace();
       setServers(next);
+      const added = next.filter((s) => s.scope === "workspace").length - before;
+      setNotice(
+        added === 0
+          ? tx("No new MCP servers in the project's .mcp.json or .vscode/mcp.json.")
+          : added === 1
+            ? tx("Imported 1 MCP server from the project.")
+            : formatMessage(tx("Imported {count} MCP servers from the project."), { count: added }),
+      );
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -232,7 +243,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
     <div className={styles.page}>
       <div className={styles.header}>
         <h2 className={styles.title}>
-          <T>Model Context Protocol (MCP)</T>
+          <T>External MCP Servers</T>
         </h2>
         <div className={styles.headerActions}>
           <Button
@@ -241,7 +252,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
             title={tx("Import MCP servers from .mcp.json and .vscode/mcp.json")}
             onClick={() => void importFromProject()}
           >
-            <T>Import</T>
+            <T>Import from Project</T>
           </Button>
           <Button variant="secondary" onClick={() => void openExternalUrl(MCP_BROWSE_URL)}>
             <Icon name="globe" size={14} /> <T>Browse</T>
@@ -271,6 +282,12 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
         <div className={styles.error} role="alert">
           <Icon name="error" size={14} />
           <span>{error}</span>
+        </div>
+      )}
+      {notice && (
+        <div className={styles.notice} role="status">
+          <Icon name="info" size={14} />
+          <span>{notice}</span>
         </div>
       )}
 
@@ -390,6 +407,7 @@ function McpServerModal({
   onSaved: (servers: McpServer[]) => void;
 }) {
   const tx = useTx();
+  const id = useId();
   const [name, setName] = useState(server?.name ?? "");
   const [scope, setScope] = useState<McpScope>(initialScope);
   const [transport, setTransport] = useState<McpTransport>(server?.transport ?? "stdio");
@@ -437,7 +455,7 @@ function McpServerModal({
       open
       onClose={onClose}
       title={mode === "edit" ? tx("Configure MCP Server") : tx("Add MCP Server")}
-      width={480}
+      width={560}
       buttons={[
         { label: mode === "edit" ? "Save" : "Add", role: "default", disabled: !canSave, onClick: () => void save() },
         { label: "Cancel", role: "cancel", onClick: onClose },
@@ -445,38 +463,32 @@ function McpServerModal({
     >
       <div className={styles.form}>
         {error && (
-          <div className={styles.error} role="alert">
+          <div className={`${styles.error} ${styles.formWide}`} role="alert">
             <Icon name="error" size={14} />
             <span>{error}</span>
           </div>
         )}
-        <div className={styles.fieldRow}>
-          <label className={styles.field}>
-            <span className={styles.fieldLabel}>
-              <T>Server Name</T>
-            </span>
-            <Input data-autofocus value={name} placeholder="my-mcp-server" onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label className={styles.field}>
-            <span className={styles.fieldLabel}>
-              <T>Scope</T>
-            </span>
-            <Select
-              aria-label={tx("Scope")}
-              value={scope}
-              options={[
-                { value: "user", label: tx("User (Global settings)") },
-                { value: "workspace", label: tx("Workspace (.openidea/settings.toml)") },
-              ]}
-              onChange={(v) => setScope(v as McpScope)}
-            />
-          </label>
-        </div>
-
-        <label className={styles.field}>
-          <span className={styles.fieldLabel}>
-            <T>Type</T>
-          </span>
+        <Field id={`${id}-name`} label={<T>Name:</T>}>
+          <Input
+            id={`${id}-name`}
+            data-autofocus
+            value={name}
+            placeholder="my-mcp-server"
+            onChange={(e) => setName(e.target.value)}
+          />
+        </Field>
+        <Field label={<T>Scope:</T>}>
+          <Select
+            aria-label={tx("Scope")}
+            value={scope}
+            options={[
+              { value: "user", label: tx("User (Global settings)") },
+              { value: "workspace", label: tx("Workspace (.openidea/settings.toml)") },
+            ]}
+            onChange={(v) => setScope(v as McpScope)}
+          />
+        </Field>
+        <Field label={<T>Type:</T>}>
           <Select
             aria-label={tx("Type")}
             value={transport}
@@ -487,82 +499,106 @@ function McpServerModal({
             ]}
             onChange={(v) => setTransport(v as McpTransport)}
           />
-        </label>
+        </Field>
+
+        <hr className={styles.formDivider} />
 
         {transport === "stdio" ? (
           <>
-            <label className={styles.field}>
-              <span className={styles.fieldLabel}>
-                <T>Command</T>
-              </span>
-              <Input mono value={command} placeholder="npx" onChange={(e) => setCommand(e.target.value)} />
-            </label>
-            <label className={styles.field}>
-              <span className={styles.fieldLabel}>
-                <T>Arguments</T>
-              </span>
+            <Field id={`${id}-command`} label={<T>Command:</T>}>
               <Input
+                id={`${id}-command`}
+                mono
+                value={command}
+                placeholder="npx"
+                onChange={(e) => setCommand(e.target.value)}
+              />
+            </Field>
+            <Field id={`${id}-args`} label={<T>Arguments:</T>}>
+              <Input
+                id={`${id}-args`}
                 mono
                 value={argsText}
                 placeholder="-y @modelcontextprotocol/server-filesystem /path"
                 onChange={(e) => setArgsText(e.target.value)}
               />
-            </label>
-            <label className={styles.field}>
-              <span className={styles.fieldLabel}>
-                <T>Environment Variables</T>
-              </span>
+            </Field>
+            <Field id={`${id}-env`} label={<T>Environment variables:</T>} hint={<T>One KEY=VALUE entry per line.</T>}>
               <textarea
+                id={`${id}-env`}
                 className={styles.textarea}
+                rows={3}
+                spellCheck={false}
                 value={envText}
                 placeholder={"API_KEY=...\nANOTHER_VAR=value"}
                 onChange={(e) => setEnvText(e.target.value)}
               />
-              <span className={styles.hint}>
-                <T>One KEY=VALUE entry per line.</T>
-              </span>
-            </label>
+            </Field>
           </>
         ) : (
           <>
-            <label className={styles.field}>
-              <span className={styles.fieldLabel}>
-                <T>Server URL</T>
-              </span>
+            <Field id={`${id}-url`} label={<T>URL:</T>}>
               <Input
+                id={`${id}-url`}
                 mono
                 value={url}
                 placeholder="https://mcp.linear.app/mcp"
                 onChange={(e) => setUrl(e.target.value)}
               />
-            </label>
-            <label className={styles.field}>
-              <span className={styles.fieldLabel}>
-                <T>HTTP Headers</T>
-              </span>
+            </Field>
+            <Field id={`${id}-headers`} label={<T>HTTP headers:</T>} hint={<T>One Header=Value entry per line.</T>}>
               <textarea
+                id={`${id}-headers`}
                 className={styles.textarea}
+                rows={3}
+                spellCheck={false}
                 value={headersText}
                 placeholder={"Authorization=Bearer ...\nX-Custom-Header=value"}
                 onChange={(e) => setHeadersText(e.target.value)}
               />
-              <span className={styles.hint}>
-                <T>One Header=Value entry per line.</T>
-              </span>
-            </label>
+            </Field>
           </>
         )}
 
-        <label className={styles.field}>
-          <span className={styles.fieldLabel}>
-            <T>Agents</T>
-          </span>
-          <Input mono value={agentsText} placeholder="claude, codex" onChange={(e) => setAgentsText(e.target.value)} />
-          <span className={styles.hint}>
-            <T>Leave empty to enable for all agents, or list agent IDs separated by commas.</T>
-          </span>
-        </label>
+        <Field
+          id={`${id}-agents`}
+          label={<T>Agents:</T>}
+          hint={<T>Leave empty to enable for all agents, or list agent IDs separated by commas.</T>}
+        >
+          <Input
+            id={`${id}-agents`}
+            mono
+            value={agentsText}
+            placeholder="claude, codex"
+            onChange={(e) => setAgentsText(e.target.value)}
+          />
+        </Field>
       </div>
     </Dialog>
+  );
+}
+
+/** One row of the server form: the label in the left column, the control and its hint on the right. */
+function Field({
+  id,
+  label,
+  hint,
+  children,
+}: {
+  id?: string;
+  label: ReactNode;
+  hint?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      <label className={styles.formLabel} htmlFor={id}>
+        {label}
+      </label>
+      <div className={styles.formControl}>
+        {children}
+        {hint && <span className={styles.hint}>{hint}</span>}
+      </div>
+    </>
   );
 }

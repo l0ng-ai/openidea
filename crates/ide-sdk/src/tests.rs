@@ -26,6 +26,7 @@ fn server(name: &str) -> LanguageServerConfig {
         command: name.into(),
         args: vec![],
         env: BTreeMap::new(),
+        requires_env: Vec::new(),
         root_markers: vec![],
         require_root_marker: false,
         initialization_options: None,
@@ -409,6 +410,19 @@ fn project_jdk_and_maven_settings() {
     );
     assert_eq!(configs[0].env["JAVA_HOME"], home);
     assert_eq!(configs[1].env["JAVA_HOME"], home);
+    // JUnit runs the build's own command line: the build's JDK, its command and arguments unchanged.
+    let mut junit = vec![
+        run("junit", "./mvnw", &["test", "-Dtest=a.T"]),
+        run("junit", "./gradlew", &[":api:test", "--tests", "a.T"]),
+    ];
+    apply_to_run_configs(&mut junit, tmp.path(), &s);
+    assert_eq!(
+        (junit[0].command.as_str(), junit[0].args.as_slice()),
+        ("./mvnw", &["test".to_owned(), "-Dtest=a.T".to_owned()][..])
+    );
+    assert_eq!(junit[0].env["JAVA_HOME"], home);
+    assert_eq!(junit[1].command, "./gradlew");
+    assert_eq!(junit[1].env["JAVA_HOME"], home);
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     assert_eq!(configs[0].args.len(), 6, "applied once");
 

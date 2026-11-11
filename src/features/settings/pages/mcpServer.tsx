@@ -115,7 +115,7 @@ function McpServerEndpoint() {
 
 export const MCP_SERVER_PAGE: PageSpec = {
   id: "agents.mcpServer",
-  title: "MCP Server",
+  title: "IDE MCP Server",
   group: "Agents",
   order: 470,
   keywords: ["mcp", "model context protocol", "ai", "agent", "claude", "codex", "tools", "stdio"],
@@ -127,6 +127,12 @@ export const MCP_SERVER_PAGE: PageSpec = {
           key: "mcpServer.enabled",
           label: "Enable MCP server",
           hint: "Agents can read, edit, and run projects open in OpenIDEA through its built-in tools. Run tools ask for confirmation. The server listens on 127.0.0.1 only and requires a token.",
+        },
+        {
+          kind: "toggle",
+          key: "mcpServer.runWithoutConfirmation",
+          label: "Run tools without confirmation (brave mode)",
+          hint: "Run configurations, terminal commands and other tools that change a project start without asking, for unattended agents. Only the IDE's own settings can turn this on, not a project's.",
         },
         {
           kind: "custom",

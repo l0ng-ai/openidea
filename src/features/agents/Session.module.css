@@ -54,10 +54,6 @@
   align-items: center;
   gap: 2px;
 }
-.statusActions > .changesToggle {
-  height: var(--h-control-small);
-  padding: 0 4px;
-}
 .statusText {
   flex: 1 1 0;
   min-width: 0;
@@ -471,6 +467,31 @@
 .markdown :global(ol) {
   margin: 0 0 8px;
   padding-left: 20px;
+  list-style: none;
+}
+/* Markers are drawn as pseudo-elements: WebKit paints a selection box around a native marker,
+   leaving a broken stripe down the gutter when a list is selected. */
+.markdown :global(li) {
+  position: relative;
+}
+.markdown :global(li)::before {
+  position: absolute;
+  right: calc(100% + 6px);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.markdown :global(ul > li)::before {
+  content: "•";
+}
+.markdown :global(ul ul > li)::before {
+  content: "◦";
+}
+.markdown :global(ul ul ul > li)::before {
+  content: "▪";
+}
+.markdown :global(ol > li)::before {
+  content: counter(list-item) ".";
+  font-variant-numeric: tabular-nums;
 }
 .markdown :global(a) {
   color: var(--link);
@@ -519,9 +540,23 @@
 .markdown :global(img) {
   max-width: 100%;
 }
+.loadImage {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--fg-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.loadImage:hover {
+  background: var(--bg-hover);
+}
 .markdown :global(li:has(> input[type="checkbox"])) {
   margin-left: -20px;
-  list-style: none;
+}
+.markdown :global(li:has(> input[type="checkbox"]))::before {
+  content: none;
 }
 .markdown > :global(:first-child) {
   margin-top: 0;
@@ -555,6 +590,12 @@
 }
 .thoughtChevron {
   flex: none;
+}
+.thoughtPreview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .thought[open] .thoughtChevron {
   transform: rotate(90deg);
@@ -656,10 +697,30 @@
   min-width: 0;
   display: none;
 }
+/* The counts keep their line; what runs now gives way and ellipsizes. */
+.processParts {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* What the run is doing now, after its counts. */
+.processCurrent {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-subtle);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* An open run stays bounded and scrolls on its own, so a long one doesn't push the reply away. */
 .processBody {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  max-height: calc(var(--h-row) * 16);
+  overflow-y: auto;
   margin-top: 2px;
   padding-left: 10px;
   border-left: 1px solid var(--border);
@@ -1230,33 +1291,6 @@
   text-overflow: ellipsis;
 }
 
-.changesToggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: var(--h-control);
-  padding: 0 8px;
-  border: 0;
-  border-radius: var(--radius-small);
-  background: transparent;
-  color: var(--fg-subtle);
-  font: inherit;
-  font-size: var(--fs-small);
-  cursor: pointer;
-}
-.changesToggle:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--fg-strong);
-}
-.changesToggle[aria-pressed="true"] {
-  background: var(--bg-selected);
-  color: var(--fg-strong);
-}
-.changesToggle:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
 /* An open AskUserQuestion: every question with its options, answered at once above the composer. */
 .questionCard {
   flex: none;
@@ -1546,9 +1580,28 @@
 .planCurrent {
   color: var(--fg);
 }
-.trayActivity {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+
+/* Work in progress: a light sweeps across its label. The conversation's one spinner is the
+   working row at its end. */
+.shimmer {
+  background: linear-gradient(90deg, var(--fg-muted) 40%, var(--fg) 50%, var(--fg-muted) 60%) 0 0 / 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2s linear infinite;
+}
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    animation: none;
+    background: none;
+    color: var(--fg-muted);
+  }
 }

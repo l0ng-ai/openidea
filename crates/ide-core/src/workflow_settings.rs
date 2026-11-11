@@ -43,6 +43,7 @@ impl Default for VcsSettings {
 pub struct GitSettings {
     /// Show blame after the current editor line.
     pub inline_blame: bool,
+    pub show_branch_in_project_view: bool,
     /// Path to the git executable; empty = auto-detect.
     pub executable: String,
     /// Default of Update Project: `merge` | `rebase`.
@@ -74,6 +75,7 @@ impl Default for GitSettings {
     fn default() -> Self {
         Self {
             inline_blame: false,
+            show_branch_in_project_view: false,
             executable: String::new(),
             update_method: "merge".into(),
             auto_update_on_push_rejected: false,
@@ -320,6 +322,7 @@ pub struct TerminalSettings {
     pub override_ide_shortcuts: bool,
     pub shell_integration: bool,
     pub highlight_hyperlinks: bool,
+    pub highlight_selection: bool,
     pub option_as_meta: bool,
     /// Escape moves focus to the editor instead of reaching the shell.
     pub escape_to_editor: bool,
@@ -352,6 +355,7 @@ impl Default for TerminalSettings {
             override_ide_shortcuts: true,
             shell_integration: true,
             highlight_hyperlinks: true,
+            highlight_selection: true,
             option_as_meta: false,
             escape_to_editor: false,
             cursor_shape: "block".into(),
@@ -405,6 +409,33 @@ impl Default for ExternalTool {
             working_directory: "$ProjectFileDir$".into(),
             synchronize_after: true,
             open_console: true,
+        }
+    }
+}
+
+/// Tools › Agents: Command Execution Policy (whitelist and blacklist patterns).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentSecuritySettings {
+    /// Commands or patterns (`git status*`, `pwd`) automatically approved without prompting.
+    pub allowed_commands: Vec<String>,
+    /// Commands or patterns (`rm -rf *`, `mkfs*`) automatically rejected.
+    pub blocked_commands: Vec<String>,
+}
+
+impl Default for AgentSecuritySettings {
+    fn default() -> Self {
+        Self {
+            allowed_commands: Vec::new(),
+            blocked_commands: vec![
+                "rm -rf *".into(),
+                "rm -rf /".into(),
+                "mkfs*".into(),
+                "dd *".into(),
+                ":(){ :|:& };:".into(),
+                "shutdown*".into(),
+                "reboot*".into(),
+            ],
         }
     }
 }

@@ -7,8 +7,8 @@
 //! <id>.json`): loading that session, from this connection or a fresh one, starts it that
 //! way.
 
-mod cli;
-mod history;
+pub(crate) mod cli;
+pub(crate) mod history;
 mod settings;
 mod tools;
 mod translate;

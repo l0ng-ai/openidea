@@ -26,7 +26,8 @@ import { formatTime } from "./model";
 import { allRepos, lastRemoteFailure, runRemote, saveAll } from "./ops";
 import { PushChanges, pushChangesKey } from "./PushChanges";
 import { pushOperation, splitTracked, type PushChoice } from "./pushTarget";
-import { currentRepo, currentRepoRoot, refreshNow, repoName, useVcs } from "./store";
+import { currentRepo, currentRepoRoot, loadBranches, refreshNow, repoName, useVcs } from "./store";
+import { stripRemotePrefix, TargetBranchInput } from "./TargetBranchInput";
 import styles from "./common.module.css";
 
 /** Update Project… scope: one repository (`null`: the selected one), else every repository. */
@@ -562,6 +563,9 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   const [repo] = useState(currentRepo);
   const [branch] = useState(() => useVcs.getState().branch);
   const [branches] = useState(() => useVcs.getState().branches);
+  // Branches the chosen remote already has, for the target branch field's suggestions.
+  const liveBranches = useVcs((s) => s.branches);
+  const branchesLoaded = useVcs((s) => s.branchesLoaded);
   const [commits, setCommits] = useState<Commit[] | null>(null);
   // The commit whose changes are shown; -1: all outgoing commits.
   const [shownCommit, setShownCommit] = useState(-1);
@@ -596,6 +600,17 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   const hasHook = usePrePushHook(hookRoots);
   const [runHooks, setRunHooks] = useState(true);
   const upstream = trackedBranch ? (remote ? `${remote}/${trackedBranch}` : tracked) : tracked;
+
+  useEffect(() => {
+    if (!branchesLoaded) void loadBranches().catch(() => undefined);
+  }, [branchesLoaded]);
+
+  // Names the chosen remote already has (`origin/feat` → `feat`), suggested in the target field.
+  const remoteBranchNames = useMemo(() => {
+    if (!remote) return [];
+    const prefix = `${remote}/`;
+    return liveBranches.filter((b) => b.remote && b.name.startsWith(prefix)).map((b) => b.name.slice(prefix.length));
+  }, [liveBranches, remote]);
 
   useEffect(() => {
     let alive = true;
@@ -635,7 +650,8 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   const defaultTarget = trackedBranch ?? head;
   // IDEA's push target is editable: another name pushes to that branch of the same remote.
   const [targetName, setTargetName] = useState(defaultTarget ?? "");
-  const edited = targetName.trim();
+  // The branch the remote ends up with: a typed `origin/feat` names the branch `feat` there.
+  const edited = stripRemotePrefix(targetName.trim(), remote);
   const retarget = !!head && !!edited && edited !== defaultTarget;
   const target = retarget ? edited : defaultTarget;
   // A remote different from the tracked one always goes through `pushBranch`.
@@ -769,15 +785,9 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
           />
         )}
         {head && (
-          <Input
-            aria-label="Target branch"
-            mono
-            value={targetName}
-            onChange={(e) => setTargetName(e.target.value)}
-            className={styles.targetInput}
-          />
+          <TargetBranchInput value={targetName} onChange={setTargetName} branches={remoteBranchNames} remote={remote} />
         )}
-        {retarget && <span className={styles.hint}> {tx("New")}</span>}
+        {retarget && !remoteBranchNames.includes(edited) && <span className={styles.hint}> {tx("New")}</span>}
       </div>
       {commits?.length && !error ? (
         <SplitGroup

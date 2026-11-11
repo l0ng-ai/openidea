@@ -20,10 +20,13 @@ struct LogAccess {
 }
 
 /// Immutable Git objects exposed through the editor's ordinary read-only VFS.
+/// `encoding` re-decodes the blob with it ("Reload with Encoding") instead of
+/// the project's detection.
 pub async fn revision_virtual_document(
     host: &Host,
     window: &str,
     uri: &str,
+    encoding: Option<&str>,
 ) -> IdeResult<ide_lsp::types::VirtualDocument> {
     #[derive(Deserialize)]
     struct Target {
@@ -47,7 +50,7 @@ pub async fn revision_virtual_document(
         .collect::<IdeResult<Vec<_>>>()?;
     let target: Target = serde_json::from_slice(&bytes).map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
     let path = target.repo.join(&target.path);
-    let text = vcs_file_at(host, window, path, Some(target.revision.clone()))
+    let (text, charset, has_bom) = revision_text(host, window, &path, &target.revision, encoding)
         .await?
         .ok_or_else(|| ide_core::IdeError::not_found("file is absent at this revision"))?;
     Ok(ide_lsp::types::VirtualDocument {
@@ -57,7 +60,62 @@ pub async fn revision_virtual_document(
         title: target.path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
         description: Some(format!("{} · {}", target.repo.display(), target.revision)),
         decompiled: false,
+        encoding: charset.name().to_ascii_lowercase(),
+        has_bom,
+        can_reload_encoding: true,
     })
+}
+
+/// Revision text with the charset it was decoded with and whether a matching
+/// BOM was stripped; `None` when the file is absent at the revision.
+async fn revision_text(
+    host: &Host,
+    window: &str,
+    path: &Path,
+    rev: &str,
+    encoding: Option<&str>,
+) -> IdeResult<Option<(String, &'static encoding_rs::Encoding, bool)>> {
+    let project = host.project(window).ok();
+    let external = host.external_logs.read().get(host.owner_window(window)).and_then(|rs| {
+        rs.iter().filter(|r| path.starts_with(r.root())).max_by_key(|r| r.root().components().count()).cloned()
+    });
+    let (path, rev, encoding) = (path.to_path_buf(), rev.to_owned(), encoding.map(str::to_owned));
+    blocking(move || {
+        fn with_repo<T>(
+            project: &Option<std::sync::Arc<Project>>,
+            external: &Option<std::sync::Arc<ide_vcs::Repo>>,
+            path: &Path,
+            f: impl FnOnce(&ide_vcs::Repo) -> IdeResult<T>,
+        ) -> IdeResult<T> {
+            match project {
+                Some(project) => project.with_log_repo_of(path, f),
+                None => f(external
+                    .as_ref()
+                    .ok_or_else(|| ide_core::IdeError::unavailable("external Git log is not open"))?),
+            }
+        }
+        let (text_encoding, charset) = match &encoding {
+            Some(label) => {
+                let charset = encoding_rs::Encoding::for_label(label.trim().as_bytes())
+                    .ok_or_else(|| ide_core::IdeError::invalid(format!("unknown encoding {label:?}")))?;
+                (ide_vcs::TextEncoding::from(charset), charset)
+            }
+            None => match &project {
+                Some(project) => {
+                    let text_encoding = project.vcs_encoding(&path, Some(&rev))?;
+                    (text_encoding, text_encoding.charset)
+                }
+                None => (ide_vcs::TextEncoding::from(encoding_rs::UTF_8), encoding_rs::UTF_8),
+            },
+        };
+        let bytes = with_repo(&project, &external, &path, |r| r.file_bytes_at(&path, Some(&rev)))?;
+        let Some(bytes) = bytes else { return Ok(None) };
+        let has_bom = encoding_rs::Encoding::for_bom(&bytes).is_some_and(|(enc, _)| enc == charset);
+        let text =
+            with_repo(&project, &external, &path, |r| r.file_at(&path, Some(&rev), text_encoding))?.unwrap_or_default();
+        Ok(Some((text, charset, has_bom)))
+    })
+    .await
 }
 impl LogAccess {
     fn new(host: &Host, window: &str, at: Option<&Path>) -> Self {

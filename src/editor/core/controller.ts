@@ -1463,7 +1463,7 @@ export class EditorController implements SlotHost {
       }
       try {
         const encoding = await this.manager.backend.setEncoding(meta.doc, meta.encoding, true);
-        model.setMeta({ encoding });
+        model.setMeta({ encoding: encoding.encoding, hasBom: encoding.hasBom });
       } catch (e) {
         notifications().notify({
           level: "error",
