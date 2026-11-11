@@ -2770,3 +2770,71 @@ async fn rolling_back_restores_the_start_of_the_task_and_keeps_the_users_own_edi
     mgr.delete(&task.id, false).await.unwrap();
     assert!(!dir.join("store").join(format!("{}.before", task.id)).exists());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn security_policy_auto_approves_whitelist_and_rejects_blacklist() {
+    use ide_core::settings::AgentSecuritySettings;
+
+    // 1. Whitelist auto-approves "cargo test" without waiting for manual respond().
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent);
+    mgr.set_security_hook(Arc::new(|| AgentSecuritySettings {
+        allowed_commands: vec!["cargo test".into()],
+        blocked_commands: vec!["rm -rf *".into()],
+    }));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("run tests"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(
+        entries.iter().any(|e| matches!(e, AgentEntry::Agent { text } if text.contains("chose yes"))),
+        "{entries:?}"
+    );
+    assert!(
+        entries.iter().any(|e| matches!(
+            e,
+            AgentEntry::Permission { chosen: Some(c), .. } if c.contains("whitelisted")
+        )),
+        "{entries:?}"
+    );
+
+    // 2. Blacklist auto-rejects "cargo test" when matched by blocked_commands.
+    mgr.set_security_hook(Arc::new(|| AgentSecuritySettings {
+        allowed_commands: vec!["cargo test".into()],
+        blocked_commands: vec!["cargo test*".into()],
+    }));
+    let blocked_task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("run blocked"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &blocked_task.id, AgentStatus::Ready).await;
+    let blocked_entries = mgr.entries(&blocked_task.id, None).unwrap();
+    assert!(
+        blocked_entries.iter().any(|e| matches!(e, AgentEntry::Agent { text } if text.contains("chose no"))),
+        "{blocked_entries:?}"
+    );
+    assert!(
+        blocked_entries.iter().any(|e| matches!(
+            e,
+            AgentEntry::Permission { chosen: Some(c), .. } if c.contains("Blocked by policy")
+        )),
+        "{blocked_entries:?}"
+    );
+}
