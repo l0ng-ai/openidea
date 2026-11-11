@@ -1,4 +1,4 @@
-//! Deployment over SFTP or local folders, and SSH run targets.
+//! Deployment over SFTP, FTP or local folders, and SSH run targets.
 //! Shared by IPC commands and project save/delete hooks.
 
 use crate::deploy::{Deployment, FileStamp, SyncEntry, SyncStatus, SyncStep, TransferReport, status};
@@ -88,6 +88,10 @@ impl RemoteService {
                 }
                 let session = self.ssh.session(ssh).await?;
                 Ok(RemoteFs::new(session.sftp().await?))
+            }
+            FsConnection::Ftp { server, secure, ftp } => {
+                let password = self.ssh.password(&ide_ssh::ftp::secret_key(server));
+                Ok(RemoteFs::Ftp(ide_ssh::ftp::FtpFs::connect(ftp, *secure, password).await?))
             }
         }
     }
@@ -552,6 +556,11 @@ pub fn connection(server: &DeploymentServer) -> FsConnection {
     match server.kind {
         DeploymentType::Local => FsConnection::Local,
         DeploymentType::Sftp => FsConnection::Sftp { ssh: server.ssh_config.clone() },
+        DeploymentType::Ftp | DeploymentType::Ftps => FsConnection::Ftp {
+            server: server.id.clone(),
+            secure: server.kind == DeploymentType::Ftps,
+            ftp: server.ftp.clone(),
+        },
     }
 }
 
@@ -559,6 +568,7 @@ fn cache_key(connection: &FsConnection) -> String {
     match connection {
         FsConnection::Local => "local".to_owned(),
         FsConnection::Sftp { ssh } => format!("sftp-{ssh}"),
+        FsConnection::Ftp { server, .. } => format!("ftp-{server}"),
     }
 }
 
