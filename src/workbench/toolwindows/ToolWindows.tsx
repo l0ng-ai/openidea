@@ -87,20 +87,36 @@ export function useToolWindows(): ToolWindowContribution[] {
 }
 
 /** Visible window per area, ignoring ids that aren't registered (yet) or don't dock there. */
-export function useEffectiveVisible(windows: ToolWindowContribution[]): SlotRecord {
+export function useEffectiveMaximized(windows: ToolWindowContribution[]): ToolWindowAnchor | null {
   const visible = useToolWindowLayout((s) => s.visible);
   const maximized = useToolWindowLayout((s) => s.maximized);
+  return useMemo(() => {
+    if (!maximized) return null;
+    const hasVisible = ([maximized, `${maximized}-split`] as const).some((slot) => {
+      const id = visible[slot];
+      return !!id && windows.some((w) => w.id === id && slotOf(w) === slot);
+    });
+    return hasVisible ? maximized : null;
+  }, [visible, windows, maximized]);
+}
+
+export function useEffectiveVisible(windows: ToolWindowContribution[]): SlotRecord {
+  const visible = useToolWindowLayout((s) => s.visible);
+  const effectiveMaximized = useEffectiveMaximized(windows);
   return useMemo(() => {
     const out = {} as SlotRecord;
     for (const slot of SLOTS) {
       const id = visible[slot];
       out[slot] =
-        id && windows.some((w) => w.id === id && slotOf(w) === slot && (!maximized || w.anchor === maximized))
+        id &&
+        windows.some(
+          (w) => w.id === id && slotOf(w) === slot && (!effectiveMaximized || w.anchor === effectiveMaximized),
+        )
           ? id
           : null;
     }
     return out;
-  }, [visible, windows, maximized]);
+  }, [visible, windows, effectiveMaximized]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1060,7 +1076,7 @@ function SidePanel({
   const mounted = useToolWindowLayout((s) => s.mounted);
   const viewModes = useToolWindowLayout((s) => s.viewModes);
   const size = useToolWindowLayout((s) => s.sizes[anchor]);
-  const maximized = useToolWindowLayout((s) => s.maximized === anchor);
+  const maximized = useEffectiveMaximized(windows) === anchor;
   const undocked = (slot: ToolWindowSlot) => undockedIn(visible, slot, viewModes);
   const docked = (slot: ToolWindowSlot) => !!visible[slot] && !undocked(slot);
   const split = docked(anchor) && docked(`${anchor}-split`);
@@ -1135,6 +1151,7 @@ function syncTracks(grid: HTMLElement, visible: SlotRecord) {
 function GapHandle({
   anchor,
   visibleIds,
+  maximized,
   gridRef,
   editorRef,
   sync,
@@ -1142,12 +1159,12 @@ function GapHandle({
   anchor: ToolWindowAnchor;
   /** Windows shown on this side (primary and split area). */
   visibleIds: string[];
+  maximized: ToolWindowAnchor | null;
   gridRef: RefObject<HTMLDivElement | null>;
   editorRef: RefObject<HTMLDivElement | null>;
   sync: () => void;
 }) {
   const vertical = anchor !== "bottom";
-  const maximized = useToolWindowLayout((s) => s.maximized);
   const sign = anchor === "left" ? 1 : -1;
   const measure = () => {
     const island = gridRef.current?.querySelector<HTMLElement>(`[data-anchor="${anchor}"]`);
@@ -1242,6 +1259,7 @@ function useToolWindowAppearance() {
 export function ToolWindowLayout({ editor }: { editor: ReactNode }) {
   const windows = useToolWindows();
   const visible = useEffectiveVisible(windows);
+  const maximized = useEffectiveMaximized(windows);
   const appearance = useToolWindowAppearance();
   const { bars, widescreen } = appearance;
   const stripes = useStripes();
@@ -1275,7 +1293,6 @@ export function ToolWindowLayout({ editor }: { editor: ReactNode }) {
     />
   );
   const sizes = useToolWindowLayout((s) => s.sizes);
-  const maximized = useToolWindowLayout((s) => s.maximized);
   const stripeButtons = useToolWindowLayout((s) => s.stripeButtons);
   // The right stripe holds the right side's windows and Bottom Right.
   const hasRight = windows.some((w) => {
@@ -1310,6 +1327,7 @@ export function ToolWindowLayout({ editor }: { editor: ReactNode }) {
     <GapHandle
       anchor={anchor}
       visibleIds={visibleOn(docked, anchor)}
+      maximized={maximized}
       gridRef={gridRef}
       editorRef={editorRef}
       sync={sync}

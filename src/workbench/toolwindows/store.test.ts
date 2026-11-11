@@ -391,6 +391,34 @@ describe("split areas", () => {
     expect(getContext()["toolWindow.late.visible"]).toBe(true);
     sync();
   });
+
+  it("clears maximized and restores other tool windows when a maximized plugin window unregisters", () => {
+    const sync = installToolWindowLayoutSync();
+    const disposeK8s = registerToolWindow({
+      id: "plugin.k8s.view:kubernetes",
+      title: "Kubernetes",
+      icon: "cloud",
+      anchor: "right",
+      secondary: true,
+      component: Empty,
+    });
+    showToolWindow("plugin.k8s.view:kubernetes", true);
+    setFocusedToolWindow("plugin.k8s.view:kubernetes");
+    toggleMaximizeToolWindow("plugin.k8s.view:kubernetes");
+    expect(useToolWindowLayout.getState().maximized).toBe("right");
+    expect(isToolWindowVisible("project")).toBe(false);
+    expect(getContext()["toolWindow.project.visible"]).toBe(false);
+
+    disposeK8s();
+
+    expect(useToolWindowLayout.getState().maximized).toBeNull();
+    expect(useToolWindowLayout.getState().focused).toBeNull();
+    expect(useToolWindowLayout.getState().lastActive).toBeNull();
+    expect(isToolWindowVisible("project")).toBe(true);
+    expect(getContext()["toolWindow.project.visible"]).toBe(true);
+    expect(getContext().toolWindowFocus).toBe(false);
+    sync();
+  });
 });
 
 describe("stripe buttons", () => {

@@ -383,6 +383,20 @@ export function loadToolWindowLayout(scope: string) {
   publishVisibility();
 }
 
+function hasRegisteredVisibleOn(
+  anchor: ToolWindowAnchor,
+  visible: SlotRecord,
+  placements: Readonly<Record<string, ToolWindowPlacement>>,
+): boolean {
+  const windows = useContributions.getState().toolWindows;
+  for (const slot of [anchor, `${anchor}-split`] as const) {
+    const id = visible[slot];
+    const tw = id ? windows.get(id) : undefined;
+    if (tw && slotOf(placed(tw, placements)) === slot) return true;
+  }
+  return false;
+}
+
 /**
  * Keeps the layout in step with tool window registrations: windows that
  * register after the layout loaded get their visibility context, and a
@@ -392,22 +406,36 @@ export function installToolWindowLayoutSync(): () => void {
   return useContributions.subscribe((c, prev) => {
     if (c.toolWindows === prev.toolWindows) return;
     const s = useToolWindowLayout.getState();
-    const visible = reconcile(s.visible, s.placements);
-    if (visible) {
-      const mounted = new Set(s.mounted);
-      for (const id of Object.values(visible)) if (id) mounted.add(id);
-      update({ visible, mounted }, !!s.scope && !s.distractionFreeStash);
+    const reconciled = reconcile(s.visible, s.placements);
+    const nextVisible = reconciled ?? s.visible;
+    const clearMaximized = !!s.maximized && !hasRegisteredVisibleOn(s.maximized, nextVisible, s.placements);
+    const staleFocused = !!s.focused && !c.toolWindows.has(s.focused);
+    const staleLastActive = !!s.lastActive && !c.toolWindows.has(s.lastActive);
+    if (staleFocused) setFocusedToolWindow(null);
+    if (reconciled || clearMaximized || staleLastActive) {
+      const patch: Partial<ToolWindowLayoutState> = {};
+      if (reconciled) {
+        const mounted = new Set(s.mounted);
+        for (const id of Object.values(reconciled)) if (id) mounted.add(id);
+        patch.visible = reconciled;
+        patch.mounted = mounted;
+      }
+      if (clearMaximized) patch.maximized = null;
+      if (staleLastActive) patch.lastActive = null;
+      update(patch, !!reconciled && !!s.scope && !s.distractionFreeStash);
     } else publishVisibility();
+    if (staleFocused) focusEditor();
   });
 }
 
 function publishVisibility() {
   const { visible, placements, maximized } = useToolWindowLayout.getState();
+  const effectiveMax = maximized && hasRegisteredVisibleOn(maximized, visible, placements) ? maximized : null;
   for (const tw of useContributions.getState().toolWindows.values()) {
     const window = placed(tw, placements);
     setContext(
       `toolWindow.${tw.id}.visible`,
-      (!maximized || maximized === window.anchor) && visible[slotOf(window)] === tw.id,
+      (!effectiveMax || effectiveMax === window.anchor) && visible[slotOf(window)] === tw.id,
     );
   }
 }
@@ -420,8 +448,9 @@ function update(patch: Partial<ToolWindowLayoutState>, save = true) {
 
 export function isToolWindowVisible(id: string): boolean {
   const slot = slotOfId(id);
-  const { visible, maximized } = useToolWindowLayout.getState();
-  return !!slot && (!maximized || maximized === slotAnchor(slot)) && visible[slot] === id;
+  const { visible, placements, maximized } = useToolWindowLayout.getState();
+  const effectiveMax = maximized && hasRegisteredVisibleOn(maximized, visible, placements) ? maximized : null;
+  return !!slot && (!effectiveMax || effectiveMax === slotAnchor(slot)) && visible[slot] === id;
 }
 
 /** Last shown or focused tool window, kept after it is hidden (Jump to Last Tool Window). */
@@ -461,15 +490,17 @@ export function hideToolWindow(id: string) {
   const s = useToolWindowLayout.getState();
   if (!slot || s.visible[slot] !== id) return;
   const hadFocus = s.focused === id || isFocusWithinToolWindow(id);
-  // The side stays maximized while its other area still shows a window.
-  const sideEmpty = !s.visible[partnerSlot(slot)];
+  const nextVisible = { ...s.visible, [slot]: null };
+  // The side stays maximized while its other area still shows a registered window.
+  const sideEmpty = !hasRegisteredVisibleOn(slotAnchor(slot), nextVisible, s.placements);
   update({
-    visible: { ...s.visible, [slot]: null },
+    visible: nextVisible,
     maximized: s.maximized === slotAnchor(slot) && sideEmpty ? null : s.maximized,
     lastActive: s.lastActive === id ? null : s.lastActive,
   });
   if (hadFocus) {
-    if (s.maximized === slotAnchor(slot) && !sideEmpty) focusToolWindow(s.visible[partnerSlot(slot)]!);
+    const partner = s.visible[partnerSlot(slot)];
+    if (s.maximized === slotAnchor(slot) && !sideEmpty && partner) focusToolWindow(partner);
     else focusEditor();
   }
 }
@@ -549,6 +580,10 @@ export function exitDistractionFreeLayout() {
 
 export function hideActiveToolWindow() {
   const s = useToolWindowLayout.getState();
+  if (s.maximized && !hasRegisteredVisibleOn(s.maximized, s.visible, s.placements)) {
+    update({ maximized: null }, false);
+    return;
+  }
   const id = s.focused ?? s.lastActive;
   if (id) hideToolWindow(id);
 }
