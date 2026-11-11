@@ -34,6 +34,9 @@ const GROUP_ICONS: Record<string, string> = {
   gems: "file-ruby",
 };
 
+/** SDK groups: IDEA shows them as `< 17 >`; libraries (`Maven: g:a:v`, `node_modules`) are unbracketed. */
+const SDK_KINDS = new Set(["python", "jdk", "rust", "go", "ruby"]);
+
 /** An archive's root (`/jdk/lib/src.zip!`): its entries live below `<archive>!/`. */
 const isArchiveRoot = (path: string) => path.endsWith("!");
 
@@ -80,7 +83,7 @@ export function touchesManifest(paths: readonly string[]): boolean {
   );
 }
 
-/** The "External Libraries" node for `groups` (`< Python 3.12 (.venv) >` › `python3.12`, `site-packages`). */
+/** The "External Libraries" node for `groups` (`< Python 3.12 (.venv) >` › `python3.12`, `site-packages`; `Maven: g:a:v` › jar). */
 export function librariesRoot(groups: readonly LibraryGroup[]): ProjectViewRootContribution | null {
   if (!groups.length) return null;
   return {
@@ -91,7 +94,7 @@ export function librariesRoot(groups: readonly LibraryGroup[]): ProjectViewRootC
     order: 5,
     readOnly: true,
     children: groups.map((g) => ({
-      label: `< ${g.name} >`,
+      label: SDK_KINDS.has(g.kind) ? `< ${g.name} >` : g.name,
       icon: GROUP_ICONS[g.kind] ?? "library",
       children: g.roots.map((r) => ({
         label: r.name,

@@ -118,7 +118,7 @@ describe("project view with External Libraries", () => {
       readOnly: true,
       children: [
         {
-          label: "< Maven: spring-boot >",
+          label: "Maven: spring-boot",
           icon: "maven-project",
           children: [{ label: "spring-boot-4.1.1.jar", icon: "file-archive", path: `${JAR}!` }],
         },
