@@ -1185,8 +1185,13 @@ function ThoughtEntry({
   working: boolean;
   onDiagramDrawn: () => void;
 }) {
-  const { thinking } = useAgentSettings();
+  const { thinking, smoothText } = useAgentSettings();
   const open = thinking === "expanded" || (thinking === "auto" && working);
+  // Streaming reasoning in view is revealed at the reply's pace; folded, nothing is painted.
+  const shown = useRevealedText(text, working && smoothText && open);
+  useLayoutEffect(() => {
+    if (working && open) onDiagramDrawn();
+  }, [shown, working, open, onDiagramDrawn]);
   return (
     <div className={styles.process}>
       <Fold
@@ -1206,7 +1211,7 @@ function ThoughtEntry({
         }
       >
         <div className={styles.thoughtBody}>
-          <Markdown text={text} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
+          <Markdown text={shown} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
         </div>
       </Fold>
     </div>
