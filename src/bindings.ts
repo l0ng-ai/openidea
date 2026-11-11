@@ -4635,6 +4635,11 @@ export type FileSettings = {
 	fileTypes?: { [key in string]: FileTypeAssociation },
 	/**  Override File Type: file (project-relative and `/`-separated, or absolute) → language id. */
 	fileTypeOverrides?: { [key in string]: string },
+	/**
+	 *  File Types › Files opened in associated applications: file-name patterns
+	 *  (`*.xlsx`) opened with the system application instead of an editor.
+	 */
+	associatedApplications?: string[],
 	/**  Compose detection choices, keyed by project-relative file path. */
 	composeFileOverrides?: { [key in string]: ComposeFileOverride },
 };

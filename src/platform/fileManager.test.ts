@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
+  canOpenWithSystemApp,
   canRevealInFileManager,
   fileManagerName,
   fileManagerPath,
+  openWithSystemApp,
   revealInFileManager,
   revealInFileManagerLabel,
   showInFileManagerLabel,
@@ -13,7 +15,7 @@ import type { RemoteTarget } from "./ipc";
 import { usePlatform } from "./platformInfo";
 import { useRemote } from "./remote";
 
-vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(), revealItemInDir: vi.fn() }));
 vi.mock("./ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./ipc")>()),
   isTauri: () => true,
@@ -95,6 +97,51 @@ describe("revealInFileManager", () => {
     useRemote.setState({ session: { target: ssh, root: "/p", host: "h", os: "linux", commands: [] } });
     expect(await revealInFileManager("/Users/me/Library/Logs/openidea.log", null)).toBe(true);
     expect(revealItemInDir).toHaveBeenCalledExactlyOnceWith("/Users/me/Library/Logs/openidea.log");
+  });
+});
+
+describe("openWithSystemApp", () => {
+  const platform = usePlatform.getState();
+  afterEach(() => {
+    usePlatform.setState(platform);
+    useRemote.setState({ session: null });
+    vi.mocked(openPath).mockClear();
+  });
+
+  const ssh: RemoteTarget = { kind: "ssh", config: "box" };
+  const container: RemoteTarget = { kind: "devContainer", folder: "/Users/me/app", config: "" };
+  it.each<{ window: string; os: string; target: RemoteTarget | null; path: string; opened: string | null }>([
+    { window: "a local window", os: "macos", target: null, path: "/Users/me/a.xlsx", opened: "/Users/me/a.xlsx" },
+    {
+      window: "a WSL window on Windows",
+      os: "windows",
+      target: { kind: "wsl", distro: "Ubuntu" },
+      path: "/home/me/a.xlsx",
+      opened: raw`\\wsl.localhost\Ubuntu\home\me\a.xlsx`,
+    },
+    {
+      window: "a WSL target on macOS",
+      os: "macos",
+      target: { kind: "wsl", distro: "Ubuntu" },
+      path: "/home/me/a.xlsx",
+      opened: null,
+    },
+    { window: "an SSH window over macOS", os: "macos", target: ssh, path: "/srv/app/a.xlsx", opened: null },
+    { window: "an SSH window over Windows", os: "windows", target: ssh, path: "/srv/app/a.xlsx", opened: null },
+    { window: "a dev-container window", os: "macos", target: container, path: "/workspaces/app/a.xlsx", opened: null },
+  ])("in $window launches only paths this desktop has", async ({ os, target, path, opened }) => {
+    usePlatform.setState({ os });
+    useRemote.setState({ session: target && { target, root: "/p", host: "h", os: "linux", commands: [] } });
+    expect(await openWithSystemApp(path)).toBe(opened !== null);
+    if (opened) expect(openPath).toHaveBeenCalledExactlyOnceWith(opened);
+    else expect(openPath).not.toHaveBeenCalled();
+    expect(canOpenWithSystemApp()).toBe(opened !== null);
+  });
+
+  it("reports a failed launch so the caller can fall back", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(openPath).mockRejectedValueOnce(new Error("no association"));
+    expect(await openWithSystemApp("/Users/me/a.xyz")).toBe(false);
   });
 });
 

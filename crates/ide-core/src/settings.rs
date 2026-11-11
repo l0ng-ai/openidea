@@ -799,6 +799,9 @@ pub struct FileSettings {
     pub file_types: BTreeMap<String, FileTypeAssociation>,
     /// Override File Type: file (project-relative and `/`-separated, or absolute) → language id.
     pub file_type_overrides: BTreeMap<String, String>,
+    /// File Types › Files opened in associated applications: file-name patterns
+    /// (`*.xlsx`) opened with the system application instead of an editor.
+    pub associated_applications: Vec<String>,
     /// Compose detection choices, keyed by project-relative file path.
     pub compose_file_overrides: BTreeMap<String, ComposeFileOverride>,
 }
@@ -835,6 +838,15 @@ impl Default for FileSettings {
             local_history_max_mb: 512,
             file_types: BTreeMap::new(),
             file_type_overrides: BTreeMap::new(),
+            associated_applications: vec![
+                "*.xlsx".into(),
+                "*.xls".into(),
+                "*.docx".into(),
+                "*.doc".into(),
+                "*.pptx".into(),
+                "*.ppt".into(),
+                "*.pdf".into(),
+            ],
             compose_file_overrides: BTreeMap::new(),
         }
     }

@@ -67,3 +67,25 @@ export async function revealInFileManager(
   await revealItemInDir(list.length === 1 ? list[0]! : [...list]);
   return true;
 }
+
+/**
+ * Whether this desktop can launch paths of `target` (default: this window's).
+ * SSH and dev-container files exist only on the server; WSL ones are reachable
+ * on Windows through their `\\wsl.localhost` share.
+ */
+export function canOpenWithSystemApp(target = windowTarget(), os = usePlatform.getState().os): boolean {
+  return isTauri() && (target === null || (target.kind === "wsl" && os === "windows"));
+}
+
+/** Launches `path` with its associated application; false when this desktop cannot, or the launch failed. */
+export async function openWithSystemApp(path: string, target = windowTarget()): Promise<boolean> {
+  if (!canOpenWithSystemApp(target)) return false;
+  try {
+    const { openPath } = await import("@tauri-apps/plugin-opener");
+    await openPath(fileManagerPath(path, undefined, target));
+    return true;
+  } catch (e) {
+    console.warn(`cannot open ${path} with its application`, e);
+    return false;
+  }
+}
