@@ -173,3 +173,29 @@ pub async fn build_run(
     )
     .await
 }
+
+/// Build › Compile File: compiles one Java source of a linked Maven module with
+/// `javac`, streaming the console and messages on `on_event`; cancellable with
+/// `cancel_request(request)`. Diagnostics of `clear` (the files of the previous
+/// build) are cleared first; the new messages are published as `build`
+/// diagnostics.
+#[tauri::command]
+#[specta::specta]
+pub async fn build_compile_file(
+    window: Window,
+    state: State<'_, AppState>,
+    file: std::path::PathBuf,
+    request: RequestId,
+    clear: Vec<std::path::PathBuf>,
+    on_event: Channel<BuildEvent>,
+) -> IdeResult<BuildResult> {
+    ide_host::ops::build::build_compile_file(
+        &state.host,
+        window.label(),
+        file,
+        request,
+        clear,
+        crate::commands::sender(on_event),
+    )
+    .await
+}

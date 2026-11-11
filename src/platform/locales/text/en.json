@@ -610,6 +610,8 @@
   "Stop All": "Stop All",
   "Open in Browser": "Open in Browser",
   "Build Module": "Build Module",
+  "Compile File": "Compile File",
+  "Compiles the current Java file with javac, without building its module": "Compiles the current Java file with javac, without building its module",
   "Build Artifacts": "Build Artifacts",
   "Build Module '{target}'": "Build Module '{target}'",
   "Build cancelled": "Build cancelled",
