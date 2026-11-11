@@ -1805,6 +1805,7 @@
   "Running": "En cours d'exécution",
   "Running processes requires the desktop app.": "L'exécution de processus nécessite l'application de bureau.",
   "Runs Gradle with --offline": "Exécute Gradle avec --offline",
+  "Runs Gradle with -x test": "Exécute Gradle avec -x test",
   "Runs Maven with -DskipTests": "Exécute Maven avec -DskipTests",
   "Runs Maven with -o": "Exécute Maven avec -o",
   "Runs Optimize Imports when the file has no errors, unless it would change the caret line.": "Exécute Optimiser les imports lorsque le fichier ne contient pas d'erreur, sauf si cela modifie la ligne du curseur.",

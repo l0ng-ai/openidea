@@ -83,6 +83,8 @@ export interface MavenRunOptions {
 
 export interface GradleRunOptions {
   offline: boolean;
+  /** Skip Tests toolbar toggle: task runs get `-x test` (no Maven-style toggle exists in IDEA's Gradle window). */
+  skipTests: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -514,6 +516,21 @@ export function gradleTaskPath(project: GradleProject, task: string): string {
   return project.path === ":" ? task : `${project.path}:${task}`;
 }
 
+/** Whether the command line already excludes the `test` task (`-x test`, `-xtest`, `--exclude-task test`). */
+function excludesTest(args: readonly string[]): boolean {
+  return args.some((a, i) => {
+    const value =
+      a === "-x" || a === "--exclude-task"
+        ? args[i + 1]
+        : a.startsWith("--exclude-task=")
+          ? a.slice("--exclude-task=".length)
+          : a.startsWith("-x")
+            ? a.slice(2)
+            : undefined;
+    return value === "test";
+  });
+}
+
 export function gradleTaskConfig(
   model: GradleModel,
   project: GradleProject,
@@ -522,6 +539,8 @@ export function gradleTaskConfig(
 ): RunConfig {
   const args = tasks.map((t) => (t.startsWith("-") || t.startsWith(":") ? t : gradleTaskPath(project, t)));
   if (options.offline && !args.includes("--offline")) args.push("--offline");
+  // Typed task names are project-path prefixed above, so the typed line is the one to inspect.
+  if (options.skipTests && !excludesTest(tasks)) args.push("-x", "test");
   const names = tasks.filter((t) => !t.startsWith("-"));
   return {
     id: `gradle:task:${JSON.stringify([model.dir, project.path])}:${tasks.join(" ")}`,
@@ -533,15 +552,17 @@ export function gradleTaskConfig(
     // As for Maven: the Gradle JVM / `JAVA_HOME` is derived from Settings at launch, not frozen here.
     env: {},
     detected: false,
-    isTest: names.some((t) => /(^|:)(test|check|build|integrationTest)$/.test(t)),
+    isTest: !options.skipTests && names.some((t) => /(^|:)(test|check|build|integrationTest)$/.test(t)),
     debugAdapter: null,
   };
 }
 
 /** Applies the current toggles to a saved configuration started from the tree. */
 export function withGradleOptions(config: RunConfig, options: GradleRunOptions): RunConfig {
-  if (!options.offline || config.args.includes("--offline")) return config;
-  return { ...config, args: [...config.args, "--offline"] };
+  let args = config.args;
+  if (options.offline && !args.includes("--offline")) args = [...args, "--offline"];
+  if (options.skipTests && !excludesTest(args)) args = [...args, "-x", "test"];
+  return args === config.args ? config : { ...config, args };
 }
 
 // ---------------------------------------------------------------------------
