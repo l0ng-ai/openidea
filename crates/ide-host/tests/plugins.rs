@@ -4158,6 +4158,35 @@ fn code_action_resolution_prompts_in_the_editor_window_under_the_command_budget(
 }
 
 #[test]
+fn a_command_from_another_window_is_refused_while_the_plugin_waits_for_an_answer() {
+    let (f, doc) = interactive_actions_fixture();
+    let action = f
+        .host
+        .provide_code_actions(&doc, ide_core::Range::default())
+        .into_iter()
+        .find(|(_, action)| action.data.as_deref() == Some("pick"))
+        .unwrap()
+        .1;
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+        let (id, _) = action_prompt(&f);
+        // Queued behind the open prompt it would not run until the prompt is answered.
+        let other = Invocation { client: Some("other-window".into()), ..Default::default() };
+        let err = f.host.run_command("misbehave", "anything", None, other).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert!(err.message.contains("waiting for your answer in another window"), "{}", err.message);
+        let events = f.take_events();
+        assert!(
+            events.iter().any(|(client, e)| client.as_deref() == Some("editor-window")
+                && matches!(e, PluginEvent::PromptWaiting { plugin_id } if plugin_id == "misbehave")),
+            "the prompting window is brought forward: {events:?}"
+        );
+        assert!(f.host.answer_prompt(&id, Some(vec!["b".into()])));
+        running.join().unwrap().unwrap();
+    });
+}
+
+#[test]
 fn code_action_prompts_dismiss_cancel_and_close_without_edits_or_hanging() {
     for (how, kind) in [
         ("dismiss", "pick"),
@@ -6573,4 +6602,74 @@ fn document_indexer_covers_workspace_members() {
         ))
         .unwrap();
     assert!(f.plugins.navigation_at(&f.root, &outside, 1, ide_core::Pos::new(0, 4), Some("main"), |_| None).is_none());
+}
+
+/// Advisory #4: `project.write` (Medium) must not reach VCS metadata such as `.git/hooks` or
+/// `.git/config`, which git runs as code; the `.git` is inside the project root, so root
+/// confinement alone does not stop it.
+#[test]
+fn project_write_cannot_reach_git_metadata() {
+    let f = fixture(Limits::default());
+    let init = std::process::Command::new("git").current_dir(&f.project).args(["init", "-q"]).output().unwrap();
+    assert!(init.status.success(), "git init");
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-project-writer", "project.write"));
+    // The grant works for an ordinary path, so each refusal below is the `.git` rule and nothing else.
+    assert_eq!(f.run("misbehave", "projwrite", Some("src/fresh.txt")).unwrap(), None);
+    for rel in [".git/hooks/pre-commit", ".git/config", ".GIT/config", "src/../.git/config"] {
+        let before = std::fs::read(f.project.join(rel)).ok();
+        let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
+        assert!(err.contains("git's own files"), "{rel}: {err}");
+        assert_eq!(std::fs::read(f.project.join(rel)).ok(), before, "{rel}");
+    }
+}
+
+/// In a linked worktree or a submodule `.git` is a file naming the real git folder. Replacing it,
+/// under any name that opens it, would point git at a folder of the plugin's choosing or leave the
+/// checkout without a repository.
+#[test]
+fn project_write_cannot_replace_the_git_file_of_a_linked_worktree() {
+    let f = fixture(Limits::default());
+    let pointer = f.project.join(".git");
+    let gitdir = "gitdir: /elsewhere/.git/worktrees/project\n";
+    std::fs::write(&pointer, gitdir).unwrap();
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-project-writer", "project.write"));
+    assert_eq!(f.run("misbehave", "projwrite", Some("src/fresh.txt")).unwrap(), None);
+    let mut spellings = vec![".git", ".GIT", ".git.", ".git ", ".git::$DATA"];
+    // Windows opens a file by its short name too, on a volume that keeps them.
+    if cfg!(windows) && f.project.join("GIT~1").exists() {
+        spellings.extend(["GIT~1", "git~1", "GIT~1.", "GIT~1 ", "GIT~1::$DATA"]);
+    } else {
+        eprintln!("short name not tried: this volume keeps none");
+    }
+    for rel in spellings {
+        let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
+        assert!(err.contains("git's own files"), "{rel}: {err}");
+        assert_eq!(std::fs::read_to_string(&pointer).unwrap(), gitdir, "{rel}");
+    }
+}
+
+/// A link already in the project is written through, so it is judged by where it points.
+#[cfg(unix)]
+#[test]
+fn project_write_judges_a_link_by_its_target() {
+    let f = fixture(Limits::default());
+    let config = f.project.join(".git").join("config");
+    std::fs::create_dir(f.project.join(".git")).unwrap();
+    std::fs::write(&config, "[core]\n").unwrap();
+    let secret = f._tmp.path().join("secret.txt");
+    std::os::unix::fs::symlink(&config, f.project.join("alias")).unwrap();
+    std::os::unix::fs::symlink(&secret, f.project.join("escape")).unwrap();
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-project-writer", "project.write"));
+
+    // A folder that is not there, in front of the link, does not keep it from being followed.
+    for rel in ["alias", "missing/../alias"] {
+        let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
+        assert!(err.contains("git's own files"), "{rel}: {err}");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "[core]\n", "{rel}");
+    }
+    for rel in ["escape", "missing/../escape"] {
+        let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
+        assert!(err.contains("outside the project root"), "{rel}: {err}");
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "top secret", "{rel}");
+    }
 }

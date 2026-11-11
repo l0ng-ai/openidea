@@ -3,6 +3,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import type {
+  AgentAcceptOutcome,
   AgentChange,
   AgentCommand,
   AgentConfigOption,
@@ -21,7 +22,15 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { editorService, notifications, notifyTabTitlesChanged, toolWindowService } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
 import { confirm } from "@/workbench/messages";
-import { bypassDefaults, canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
+import {
+  bypassDefaults,
+  canSend,
+  cursorModelDefaults,
+  emptyDraft,
+  toPrompt,
+  type ComposerDraft,
+  type FileRef,
+} from "./composerModel";
 import { withQuote } from "./conversation";
 import {
   HOME_KEY,
@@ -532,6 +541,15 @@ export async function rollbackChanges(task: string, relPaths: string[] | null): 
   }
 }
 
+/** Copies a worktree task's changed files into the local checkout, uncommitted. */
+export async function acceptChanges(task: string, relPaths: string[] | null): Promise<AgentAcceptOutcome> {
+  try {
+    return await call(commands.agentAcceptChanges(task, relPaths));
+  } finally {
+    await refreshChanges(task);
+  }
+}
+
 const pendingChanges = new Map<string, ReturnType<typeof setTimeout>>();
 function scheduleChanges(task: string) {
   if (pendingChanges.has(task)) return;
@@ -693,7 +711,11 @@ export async function startTask(
     providers.find((p) => p.id === draft.provider),
     draft,
   );
-  const defaults = { ...bypassDefaults(options), ...providerDefaults(draft.provider) };
+  const defaults = {
+    ...cursorModelDefaults(draft.provider, options),
+    ...bypassDefaults(options),
+    ...providerDefaults(draft.provider),
+  };
   const config = options.flatMap((o) => {
     const value =
       o.category === "model" || o.category === "thought_level"

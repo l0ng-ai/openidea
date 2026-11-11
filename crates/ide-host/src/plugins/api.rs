@@ -896,6 +896,13 @@ impl Shared {
         self.prompts_blocked.lock().remove(plugin);
     }
 
+    /// A window other than `client` where `plugin` waits for the user's answer (a prompt or a
+    /// Commit request). The plugin runs one call at a time, so anything else asked of it waits
+    /// behind that answer.
+    pub fn waiting_elsewhere(&self, plugin: &str, client: &str) -> Option<String> {
+        self.prompts.lock().values().find(|p| p.plugin == plugin && p.client != client).map(|p| p.client.clone())
+    }
+
     /// The user answered (`Some`) or dismissed (`None`) a prompt.
     pub fn answer_prompt(&self, id: u64, answer: Option<Vec<String>>) -> bool {
         let mut prompts = self.prompts.lock();
@@ -1263,6 +1270,8 @@ pub(super) fn commit_draft(
         let Some(r) = ide_vcs::Repo::discover(&repo.root.0).map_err(failed)? else {
             return Err(HostError::NotFound(format!("{} is not in a git repository", repo.root.0.display())));
         };
+        // Both callers have checked that the window's project is trusted.
+        r.set_execution_allowed(true);
         let pending = r.pending_changes(&repo.options, budget, &|path| Ok(workspace.vcs_encoding(path))).map_err(
             |e| match e.kind {
                 ide_core::error::ErrorKind::InvalidInput => HostError::Invalid(e.message),
@@ -2093,7 +2102,7 @@ impl HostApi for PluginApi {
     }
 
     fn vcs_status(&self, root: &Path) -> Result<Option<RepositoryStatus>, HostError> {
-        let Some(repo) = ide_vcs::Repo::discover(root).map_err(failed)? else { return Ok(None) };
+        let Some(repo) = self.repo(root)? else { return Ok(None) };
         let info = repo.branch_info().map_err(failed)?;
         let changed = repo.status().map_err(failed)?.len();
         Ok(Some(RepositoryStatus {
@@ -2119,7 +2128,7 @@ impl HostApi for PluginApi {
         if !workspace.is_some_and(|w| w.trusted(root)) {
             return Err(HostError::Failed("the project is in Restricted Mode: git does not run there".into()));
         }
-        let Some(repo) = ide_vcs::Repo::discover(root).map_err(failed)? else {
+        let Some(repo) = self.repo(root)? else {
             return Err(HostError::NotFound("the project is not in a git repository".into()));
         };
         match repo.fetch(cancel, &|_| {}) {
@@ -3936,6 +3945,16 @@ fn valid_range(document: &ide_text::Document, range: ide_core::Range) -> bool {
 }
 
 impl PluginApi {
+    /// The repository of `root`, which may execute only when `root` is a trusted project.
+    /// Status needs it there: a restricted repository is read without its config, so it knows
+    /// no upstream. The other reads use [`Self::read_repo`] and never execute.
+    fn repo(&self, root: &Path) -> Result<Option<ide_vcs::Repo>, HostError> {
+        let repo = ide_vcs::Repo::discover(root).map_err(failed)?;
+        if let Some(repo) = &repo {
+            repo.set_execution_allowed(self.shared.workspace().is_some_and(|w| w.trusted(root)));
+        }
+        Ok(repo)
+    }
     fn read_repo(&self, root: &Path) -> Result<Option<ide_vcs::Repo>, HostError> {
         if !self.shared.workspace().is_some_and(|w| w.trusted(root)) {
             return Err(HostError::Failed("the project is in Restricted Mode: git does not run there".into()));
@@ -4200,6 +4219,36 @@ mod workbench_tests {
         std::fs::write(&path, "x".repeat(5 << 20)).unwrap();
         assert!(api.vcs_diff(&root, None, None, &cancel).is_err());
     }
+    /// Security audit lead 2: status has no trust check to stop it, so in Restricted Mode the
+    /// repository it opens must not run what its config names.
+    #[test]
+    fn vcs_status_runs_no_repository_program_in_restricted_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "user.name", "Test"]);
+        git(&root, &["config", "user.email", "test@example.com"]);
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "base"]);
+        let marker = dir.path().join("FILTER-RAN");
+        let clean = format!("echo x > '{}'; cat", marker.to_str().unwrap().replace('\\', "/"));
+        git(&root, &["config", "filter.marker.clean", &clean]);
+        std::fs::write(root.join(".gitattributes"), "*.txt filter=marker\n").unwrap();
+        // Same length as the committed text: only reading the file tells them apart.
+        std::fs::write(root.join("a.txt"), "BASE\n").unwrap();
+
+        let restricted = api(&root, false, None);
+        let status = restricted.vcs_status(&root);
+        assert!(!marker.exists(), "status ran the repository's clean filter in Restricted Mode");
+        assert_eq!(status.unwrap().unwrap().changed_files, 2);
+
+        // Control: the same call runs the fixture's filter in a trusted project.
+        api(&root, true, None).vcs_status(&root).unwrap();
+        assert!(marker.exists(), "control: a trusted status did not run the clean filter, fixture is not live");
+    }
+
     #[cfg(unix)]
     #[test]
     fn vcs_reads_never_run_repository_configured_helpers() {

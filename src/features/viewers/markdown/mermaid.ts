@@ -9,6 +9,7 @@ import { resolveTokenColor, toRgb } from "@/platform/cssColor";
 import { themeKey } from "@/platform/themeWatch";
 import { attachPanZoom } from "../panZoom";
 import { attachDiagramTools, TOOLS_ATTR } from "./mermaidTools";
+import { localSvg } from "./localSvg";
 import { reid } from "./svgIds";
 
 export const MERMAID_SELECTOR = "[data-mermaid]";
@@ -180,6 +181,8 @@ function configure(mermaid: Mermaid, key: string) {
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: "strict",
+    // These go into the diagram's stylesheet as written: a diagram setting them could fetch from any host.
+    secure: ["themeCSS", "fontFamily", "altFontFamily"],
     suppressErrorRendering: true,
     theme: "base",
     // Each diagram type defaults to "neo": the start state is hard-coded
@@ -229,7 +232,7 @@ function show(block: HTMLElement, result: Result | null, stale?: Node) {
   const out = document.createElement("div");
   out.className = OUTPUT_CLASS;
   if (result && "svg" in result) {
-    out.innerHTML = reid(result.svg);
+    out.append(localSvg(reid(result.svg)));
     block.setAttribute(RENDERED_ATTR, "ok");
   } else if (result) {
     out.setAttribute("role", "alert");
