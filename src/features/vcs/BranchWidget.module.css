@@ -6,6 +6,12 @@
   height: 30px;
   border-radius: 6px;
 }
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+}
 .icon {
   flex: none;
   color: var(--fg-muted);

@@ -42,8 +42,13 @@ import { BranchSync } from "./BranchSync";
 import styles from "./BranchWidget.module.css";
 import { tx } from "@/platform/i18n";
 
-export const useBranchesPopup = create<{ open: boolean }>(() => ({ open: false }));
-export const showBranchesPopup = () => useBranchesPopup.setState({ open: true });
+export const useBranchesPopup = create<{ open: boolean; anchorEl: Element | null }>(() => ({
+  open: false,
+  anchorEl: null,
+}));
+/** Opens the Branches popup; `anchor` is the status bar / title widget that opened it. */
+export const showBranchesPopup = (anchor?: Element | null) =>
+  useBranchesPopup.setState({ open: true, anchorEl: anchor ?? null });
 
 export function headLabel(branch: { head: string | null; headCommit: string | null } | null): string {
   if (!branch) return "";
@@ -104,7 +109,11 @@ export function BranchWidget() {
         tooltip={tooltip}
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => useBranchesPopup.setState({ open: !open })}
+        onClick={(e) =>
+          useBranchesPopup.setState((s) =>
+            s.open ? { open: false, anchorEl: null } : { open: true, anchorEl: e.currentTarget },
+          )
+        }
       >
         <Icon name={presented?.icon ?? (branch.head ? "branch" : "commit")} size={16} className={styles.icon} />
         {repo && <span className={styles.repo}>{repo}</span>}
@@ -126,9 +135,11 @@ export function BranchWidget() {
 
 export function BranchesPopupHost() {
   const open = useBranchesPopup((s) => s.open);
+  const anchorEl = useBranchesPopup((s) => s.anchorEl);
   if (!open) return null;
-  const anchor = document.querySelector("[data-branches-widget]") ?? { x: window.innerWidth / 2 - 160, y: 60 };
-  return <BranchesPopup anchor={anchor} onClose={() => useBranchesPopup.setState({ open: false })} />;
+  const anchor = anchorEl ??
+    document.querySelector("[data-branches-widget]") ?? { x: window.innerWidth / 2 - 160, y: 60 };
+  return <BranchesPopup anchor={anchor} onClose={() => useBranchesPopup.setState({ open: false, anchorEl: null })} />;
 }
 
 const POPUP_ACTIONS: PopupAction[] = [

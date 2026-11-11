@@ -7,7 +7,7 @@ vi.mock("@/platform/ipc", async (original) => {
   return { ...real, commands: { ...real.commands, vcsTags: async () => ({ status: "ok", data: [] }) } };
 });
 
-afterEach(() => useBranchesPopup.setState({ open: false }));
+afterEach(() => useBranchesPopup.setState({ open: false, anchorEl: null }));
 
 it("opens Git Branches without a mounted toolbar widget", () => {
   render(<BranchesPopupHost />);

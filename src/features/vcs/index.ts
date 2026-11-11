@@ -11,6 +11,7 @@ import {
   registerMenuGroup,
   registerOverlay,
   registerSettingsPage,
+  registerStatusItem,
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
@@ -25,6 +26,7 @@ import { controlLabel, controlOperation, inProgress } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
 import { inlineBlame } from "./inlineBlame";
 import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidget";
+import { BranchStatus, GIT_BRANCH_STATUS } from "./BranchStatus";
 import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
 import { DIFF_KIND, diffTitle, type DiffData } from "./diffInput";
@@ -92,7 +94,7 @@ function trackTitleItem(): () => void {
     } else if (!available && dispose) {
       dispose();
       dispose = null;
-      useBranchesPopup.setState({ open: false });
+      useBranchesPopup.setState({ open: false, anchorEl: null });
     }
   };
   sync(useVcs.getState().available);
@@ -237,6 +239,13 @@ export function activate(): () => void {
     registerCompareActions(),
     registerMergeActions(),
     trackTitleItem(),
+    registerStatusItem({
+      ...GIT_BRANCH_STATUS,
+      align: "right",
+      // Left of caret/line:column in the right cluster.
+      priority: 10,
+      component: BranchStatus,
+    }),
     trackMergeRebaseItem(),
     installHunkPopup(),
     registerOverlay({ id: "vcs.dialogs", component: VcsDialogHost }),
