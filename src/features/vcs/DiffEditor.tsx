@@ -29,6 +29,8 @@ import { attachDocument, embeddedEditorExtensions, type DocumentAttachment } fro
 import { setFindOpen } from "@/editor/core/cm/find";
 import { softWrapActive } from "@/editor/core/cm/prefs";
 import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
+import { executeAction, getAction } from "@/platform/actions";
+import { auxiliaryWindow } from "@/platform/auxWindow";
 import { getContext, setContext } from "@/platform/context";
 import { editorPrefs } from "@/platform/editorSettings";
 import { call, commands } from "@/platform/ipc";
@@ -1256,6 +1258,14 @@ export function DiffEditor({
         </span>
         {contribs.map((c, i) => c.Toolbar && <c.Toolbar key={i} host={viewer} />)}
         {toolbarActions}
+        {getAction("vcs.showDiffInNewWindow") && auxiliaryWindow()?.kind !== "diff" && (
+          <IconButton
+            icon="external-link"
+            title="Show Diff in New Window"
+            size="small"
+            onClick={() => void executeAction("vcs.showDiffInNewWindow", data)}
+          />
+        )}
         <IconButton
           icon="settings"
           title="Settings"
