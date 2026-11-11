@@ -69,6 +69,8 @@ pub struct Project {
     /// watchers for (a virtualenv elsewhere, a path dependency).
     lsp_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
     pub(crate) _scratch_watcher: Option<Watcher>,
+    /// Picks up data sources edited on disk outside the Database tool window.
+    _db_sources_watch: Option<ide_db::SourcesWatch>,
     /// A LightEdit window's loose files ([`Host::open_light`]): global settings only,
     /// nothing indexed, no language servers, repositories or project services.
     pub light: bool,
@@ -536,6 +538,7 @@ impl Host {
         tracing::info!("opened {} in window {window} in {} ms {laps:?}", root.display(), started.elapsed().as_millis());
 
         let (db, http_history, agents) = self.project_services(&root, &project_key, &settings);
+        let db_sources_watch = db_sources_watch(&db, &sink, &self.runtime);
         let notebooks = crate::notebook::NotebookService::new(
             self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
             sink.clone(),
@@ -576,6 +579,7 @@ impl Host {
             content_watchers: Mutex::new(content_watchers),
             lsp_watchers: Mutex::new(Vec::new()),
             _scratch_watcher: scratch_watcher,
+            _db_sources_watch: db_sources_watch,
             files_events_active,
             light: false,
         });
@@ -738,6 +742,7 @@ impl Host {
             content_watchers: Mutex::new(Vec::new()),
             lsp_watchers: Mutex::new(Vec::new()),
             _scratch_watcher: None,
+            _db_sources_watch: None,
             files_events_active: Arc::new(AtomicBool::new(false)),
             light: true,
             root: dir,
@@ -788,6 +793,28 @@ fn documents(sink: &SharedSink, languages: &Arc<LanguageRegistry>, root: Option<
                 modes.framework_ui_mode(lang, p, root.as_deref())
             })),
     )
+}
+
+/// Data sources edited on disk outside the Database tool window (by hand, by a coding
+/// agent): connections made with the old settings close and the tree re-reads them,
+/// without reopening the project.
+fn db_sources_watch(
+    db: &Arc<ide_db::DbManager>,
+    sink: &SharedSink,
+    runtime: &tokio::runtime::Handle,
+) -> Option<ide_db::SourcesWatch> {
+    let (weak, sink, runtime) = (Arc::downgrade(db), sink.clone(), runtime.clone());
+    db.watch_sources(Box::new(move || {
+        let Some(db) = weak.upgrade() else { return };
+        let sink = sink.clone();
+        runtime.spawn(async move {
+            if db.reconcile_sources().await {
+                sink.emit(IdeEvent::DbSourcesChanged);
+            }
+        });
+    }))
+    .inspect_err(|e| tracing::warn!("{}", e.message))
+    .ok()
 }
 
 fn light_watcher(

@@ -12,6 +12,8 @@ pub mod secrets;
 pub mod source;
 pub mod split;
 pub mod sql;
+mod watch;
+pub use watch::SourcesWatch;
 
 pub use conn::{Held, Pool, QueryResult, ResultColumn};
 pub use history::HistoryEntry;
@@ -235,6 +237,9 @@ pub struct DbManager {
     /// Manual-commit data sources, each with the connection of its open
     /// transaction (taken by the first statement after a commit / rollback).
     sessions: Mutex<HashMap<String, Session>>,
+    /// The data sources as last read from disk, for [`DbManager::reconcile_sources`]
+    /// (`None` until [`DbManager::watch_sources`]).
+    on_disk: Mutex<Option<Vec<DataSource>>>,
 }
 
 type Session = Arc<tokio::sync::Mutex<Option<Held>>>;
@@ -362,6 +367,7 @@ impl DbManager {
             tunnel_open: tokio::sync::Mutex::new(()),
             ssh,
             session_passwords: Mutex::default(),
+            on_disk: Mutex::default(),
             sessions: Mutex::default(),
         }
     }
@@ -474,7 +480,43 @@ impl DbManager {
                 }
             }
         }
+        // Our own write is not reported as an edit on disk.
+        if let Some(known) = self.on_disk.lock().as_mut() {
+            *known = self.sources().unwrap_or(sources);
+        }
         Ok(())
+    }
+
+    /// Watches the data source files (the project's and the global one) for edits made
+    /// outside the IDE; `on_change` runs on a background thread once they settle, and
+    /// should call [`DbManager::reconcile_sources`]. Stops when the result is dropped.
+    pub fn watch_sources(&self, on_change: Box<dyn Fn() + Send>) -> IdeResult<SourcesWatch> {
+        *self.on_disk.lock() = Some(self.sources().unwrap_or_default());
+        SourcesWatch::start(&self.root, self.global.as_ref().map(|(dir, _)| dir.as_path()), on_change)
+    }
+
+    /// Re-reads the data sources after their files changed on disk: connections of
+    /// removed or changed sources close, as on [`DbManager::save_sources`] (saved
+    /// passwords stay, the source may come back). Returns whether the list the tree
+    /// shows changed, or the files no longer parse (the tree reports the error).
+    pub async fn reconcile_sources(&self) -> bool {
+        let now = match self.sources() {
+            Ok(now) => now,
+            Err(e) => {
+                tracing::warn!("data sources: {}", e.message);
+                return true;
+            }
+        };
+        let before = self.on_disk.lock().replace(now.clone()).unwrap_or_default();
+        if before == now {
+            return false;
+        }
+        for o in &before {
+            if now.iter().find(|s| s.id == o.id) != Some(o) {
+                self.disconnect_source(&o.id).await;
+            }
+        }
+        true
     }
 
     /// Remembers `password` for the session, and in the saved passwords when

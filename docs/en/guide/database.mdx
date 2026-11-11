@@ -66,6 +66,7 @@ The data source dialog has a name, an optional **Color:** (tints the tree and co
 
 - Project data sources: `.openidea/data-sources.toml` in the project.
 - Global data sources: `data-sources.toml` in the IDE's data directory (see [Data directories](/en/reference/data-directories)).
+- You can edit these files by hand or have a coding agent edit them while the project is open: the Database tool window picks up the change, and connections of data sources whose settings changed or that were removed are closed.
 - Passwords are never written to these files. Saved passwords go to the OS credential store (Keychain, Windows Credential Manager or Secret Service). Unsaved ones are kept in memory for the session; OpenIDEA asks for them when it connects.
 
 ## Browse the database
