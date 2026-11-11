@@ -139,6 +139,16 @@ impl ClientHandler {
             }
         };
         let Some(path) = uri_to_path(params.uri.as_str()) else { return };
+        if self.server.name == "jdtls"
+            && let Some(body) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics)
+            && mgr.first_message(&self.server.name, &body)
+        {
+            mgr.sink().emit(ide_core::IdeEvent::Notify {
+                level: ide_core::event::NotifyLevel::Error,
+                title: "Maven project could not be configured".into(),
+                body: Some(body),
+            });
+        }
         if !mgr.accepts_injected_diagnostics(&path, params.version) {
             return;
         }

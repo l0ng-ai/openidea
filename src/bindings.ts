@@ -538,6 +538,8 @@ export const commands = {
 	/**  Re-emits the language servers' current diagnostics (the UI loaded after they arrived). */
 	lspResendDiagnostics: () => typedError<null, IdeError>(__TAURI_INVOKE("lsp_resend_diagnostics")),
 	lspRestart: (server: ServerId) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_restart", { server })),
+	/**  Restarts the language servers named `name` in every open project (after a tool update). */
+	lspRestartNamed: (name: string) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_restart_named", { name })),
 	/**  Applies a (previewed) workspace edit, e.g. after rename confirmation. */
 	applyWorkspaceEdit: (edit: WorkspaceEdit) => typedError<null, IdeError>(__TAURI_INVOKE("apply_workspace_edit", { edit })),
 	prepareWorkspaceEdit: (edit: WorkspaceEdit) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("prepare_workspace_edit", { edit })),

@@ -59,6 +59,7 @@ import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
 import { openDiff, withChain, type DiffData } from "@/features/vcs/diffInput";
 import { Composer } from "./Composer";
+import { SelectionQuote, selectionIn } from "./SelectionQuote";
 import { SubmitButton } from "./SubmitButton";
 import {
   canSend,
@@ -769,6 +770,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   return (
     <div className={styles.streamArea}>
       {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
+      <SelectionQuote task={task} streamRef={ref} />
       <div
         ref={ref}
         // The conversation is read and copied like a document; focusable so ⌘F reaches it.
@@ -966,13 +968,6 @@ function Retrying({ retry }: { retry: AgentRetry }) {
 function Elapsed({ since }: { since: number }) {
   const now = useNow(1000);
   return <span className={styles.muted}>{formatDuration(now - since)}</span>;
-}
-
-/** Text selected in `stream`, or "" when the selection is elsewhere. */
-function selectionIn(stream: HTMLElement): string {
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
-  return stream.contains(sel.getRangeAt(0).commonAncestorContainer) ? sel.toString() : "";
 }
 
 interface RangeSet {
