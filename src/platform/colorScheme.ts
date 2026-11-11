@@ -55,6 +55,14 @@ const syn = (
 
 const LD = "Language Defaults";
 
+/** A Python page attribute: language-scoped, so its overrides apply to Python editors only. */
+const py = (
+  id: string,
+  name: string,
+  token: string,
+  defaults: Pick<AttributeDef, "defaultBold" | "defaultItalic" | "defaultEffect"> = {},
+): AttributeDef => ({ ...syn(id, name, ["Python"], token, defaults), language: "Python" });
+
 /** IDEA-style attribute tree: General, Language Defaults, then languages. */
 const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "text", name: "Default text", path: ["General", "Text"], fg: "--fg-editor", bg: "--bg-editor" },
@@ -154,36 +162,51 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   ...[1, 2, 3, 4, 5].map((n) => syn(`semantic${n}`, `Semantic highlighting › Color ${n}`, [LD], `rainbow-${n}`)),
   ...[1, 2, 3].map((n) => syn(`bracket${n}`, `Rainbow brackets › Level ${n}`, [LD], `bracket-${n}`)),
 
-  // Python's tree mirrors PyCharm's groups and their order (PySyntaxBundle.properties in python-syntax).
-  syn("pyBytes", "String › Binary (bytes)", ["Python"], "python-bytes"),
-  syn("pyFString", "String › f-string › Expression braces", ["Python"], "python-fstring"),
-  syn("pyFormat", "String › f-string › Format spec number", ["Python"], "python-format"),
-  syn("pyDocstring", "Docstring › Text", ["Python"], "docstring", { defaultItalic: true }),
-  syn("pyDocstringTag", "Docstring › Tag", ["Python"], "python-docstring-tag"),
-  syn("pyDocstringKeyword", "Docstring › Keyword", ["Python"], "python-docstring-keyword"),
-  syn("pyParentheses", "Braces and Operators › Parentheses", ["Python"], "python-parentheses"),
-  syn("pyBrackets", "Braces and Operators › Brackets", ["Python"], "python-brackets"),
-  syn("pyBraces", "Braces and Operators › Braces", ["Python"], "python-braces"),
-  syn("pyNestedFunction", "Functions › Nested function definition", ["Python"], "python-nested-function"),
-  syn("pyMethodCall", "Functions › Method call", ["Python"], "python-method-call"),
-  syn("pySelf", "Parameters › 'self' parameter", ["Python"], "self"),
-  syn("pyKeywordArg", "Keyword argument", ["Python"], "keyword-arg"),
-  syn("pyPredefinedDefinition", "Special names › Definition", ["Python"], "python-predefined-definition"),
-  syn("pyPredefinedUsage", "Special names › Usage", ["Python"], "python-predefined-usage"),
-  syn("pyBuiltin", "Built-in name", ["Python"], "python-builtin"),
-  syn("pyDecorator", "Decorator", ["Python"], "annotation"),
-  syn("pyAnnotation", "Type annotation", ["Python"], "python-annotation"),
-  syn("pyLocalVariable", "Local variables", ["Python"], "python-local-variable"),
-  syn("pyTypeParameter", "Type parameters", ["Python"], "python-type-parameter"),
-  syn("pyGlobalVariable", "Global variable", ["Python"], "python-global-variable"),
-  syn("pyInstanceAttribute", "Instance attribute", ["Python"], "python-instance-attribute"),
-  syn("pyClassAttribute", "Class attribute", ["Python"], "python-class-attribute"),
-  syn("pyConstant", "Constant", ["Python"], "python-constant"),
-  syn("pyProperty", "Property", ["Python"], "python-property"),
+  // Python's tree mirrors PyCharm's colour page (PythonColorsPage.java): every key the editor can
+  // restyle, in the page's order. Language-scoped like java.*: shared-token attributes reuse the
+  // Language Defaults token, so an override shadows it inside Python editors only and unset values
+  // keep falling back to the scheme default, as JetBrains' fallback keys do.
+  py("pyNumber", "Number", "number"),
+  py("pyKeyword", "Keyword", "keyword"),
+  py("pyLineComment", "Line comment", "comment"),
+  py("pyBytes", "String › Binary (bytes)", "python-bytes"),
+  py("pyString", "String › Text (unicode)", "string"),
+  py("pyValidEscape", "String › Escape sequence › Valid", "escape"),
+  py("pyInvalidEscape", "String › Escape sequence › Invalid", "invalid"),
+  py("pyFString", "String › f-string › Expression braces", "python-fstring"),
+  py("pyFormat", "String › f-string › Format spec number", "python-format"),
+  py("pyDocstring", "Docstring › Text", "docstring", { defaultItalic: true }),
+  py("pyDocstringTag", "Docstring › Tag", "python-docstring-tag"),
+  py("pyDocstringKeyword", "Docstring › Keyword", "python-docstring-keyword"),
+  py("pyOperationSign", "Braces and Operators › Operation sign", "punct"),
+  py("pyParentheses", "Braces and Operators › Parentheses", "python-parentheses"),
+  py("pyBrackets", "Braces and Operators › Brackets", "python-brackets"),
+  py("pyBraces", "Braces and Operators › Braces", "python-braces"),
+  py("pyFunctionDeclaration", "Functions › Function definition", "function"),
+  py("pyNestedFunction", "Functions › Nested function definition", "python-nested-function"),
+  py("pyFunctionCall", "Functions › Function call", "function-call"),
+  py("pyMethodCall", "Functions › Method call", "python-method-call"),
+  py("pyParameter", "Parameters › Parameter", "param"),
+  py("pySelf", "Parameters › 'self' parameter", "self"),
+  py("pyKeywordArg", "Keyword argument", "keyword-arg"),
+  py("pyPredefinedDefinition", "Special names › Definition", "python-predefined-definition"),
+  py("pyPredefinedUsage", "Special names › Usage", "python-predefined-usage"),
+  py("pyBuiltin", "Special names › Built-in name", "python-builtin"),
+  py("pyDecorator", "Special names › Decorator", "annotation"),
+  py("pyClassDefinition", "Classes › Class definition", "type"),
+  py("pyAnnotation", "Type annotation", "python-annotation"),
+  py("pyLocalVariable", "Identifiers › Local variables", "python-local-variable"),
+  py("pyTypeParameter", "Identifiers › Type parameters", "python-type-parameter"),
+  py("pyGlobalVariable", "Identifiers › Global variable", "python-global-variable"),
+  py("pyInstanceAttribute", "Identifiers › Instance attribute", "python-instance-attribute"),
+  py("pyClassAttribute", "Identifiers › Class attribute", "python-class-attribute"),
+  py("pyConstant", "Identifiers › Constant", "python-constant"),
+  py("pyProperty", "Identifiers › Property", "python-property"),
   {
     id: "pyStaticSymbol",
-    name: "Static symbol",
+    name: "Identifiers › Static symbol",
     path: ["Python"],
+    language: "Python",
     token: "python-static",
     italicOnly: true,
     defaultItalic: false,
@@ -195,6 +218,8 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
 ];
 
 const SCHEME_LANGUAGES = { go: "Go", java: "Java", kotlin: "Kotlin", php: "PHP" } as const;
+/** Languages that scope their overrides into a per-language editor block; Python ships its own attributes. */
+const SCHEME_LANGUAGE_SCOPES = { ...SCHEME_LANGUAGES, python: "Python" } as const;
 
 export const ATTRIBUTES: readonly AttributeDef[] = [
   ...BASE_ATTRIBUTES,
@@ -541,7 +566,7 @@ export function schemeCss(
     .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
     .map(([k, v]) => `  ${k}: ${v} !important;`);
   let css = body.length ? `:root {\n${body.join("\n")}\n}\n` : "";
-  for (const language of Object.values(SCHEME_LANGUAGES)) {
+  for (const language of Object.values(SCHEME_LANGUAGE_SCOPES)) {
     const languageBody = [
       ...overrideDeclarations(valid[id]?.attributes, language),
       ...overrideDeclarations(overrides?.[id], language),

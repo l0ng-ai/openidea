@@ -155,8 +155,13 @@ Object.assign(ATTRIBUTE_NAMES, {
   "PY.PARENTHS": "pyParentheses",
   "PY.BRACKETS": "pyBrackets",
   "PY.BRACES": "pyBraces",
-  "PY.KEYWORD": "keyword",
-  "PY.FUNC_DEFINITION": "functionDeclaration",
+  // PyCharm keys restyle Python only; DEFAULT_* keys carry the shared colour.
+  "PY.KEYWORD": "pyKeyword",
+  "PY.NUMBER": "pyNumber",
+  "PY.LINE_COMMENT": "pyLineComment",
+  "PY.STRING": "pyString",
+  "PY.STRING.U": "pyString",
+  "PY.FUNC_DEFINITION": "pyFunctionDeclaration",
   "PY.NESTED_FUNC_DEFINITION": "pyNestedFunction",
   "PY.METHOD_CALL": "pyMethodCall",
   "PY.DOC_COMMENT": "pyDocstring",
@@ -168,8 +173,8 @@ Object.assign(ATTRIBUTE_NAMES, {
   "PY.PREDEFINED_USAGE": "pyPredefinedUsage",
   "PY.STRING.B": "pyBytes",
   "PY.STRING.F": "pyFString",
-  "PY.VALID_STRING_ESCAPE": "escape",
-  "PY.OPERATION_SIGN": "operator",
+  "PY.VALID_STRING_ESCAPE": "pyValidEscape",
+  "PY.OPERATION_SIGN": "pyOperationSign",
 });
 
 // WebStorm's JavaScript keys; TypeScript repeats them with a TS. prefix. Language Defaults serve both.
