@@ -1,6 +1,6 @@
 [package]
 name = "ide-ssh"
-description = "SSH connections: configurations, host keys, authentication, remote commands, SFTP, port forwarding and askpass"
+description = "SSH connections: configurations, host keys, authentication, remote commands, SFTP and FTP files, port forwarding and askpass"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -20,6 +20,10 @@ keyring-core.workspace = true
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
 russh-sftp = "2.4"
 flate2 = "1"
+suppaftp = { version = "12.2.1", default-features = false, features = ["tokio-rustls-ring"] }
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+tokio-rustls = { version = "0.26", default-features = false }
 
 [features]
 # `testing`: an in-process SSH / SFTP server for tests of crates built on this one,
