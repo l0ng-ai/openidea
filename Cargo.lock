@@ -4271,6 +4271,7 @@ version = "0.1.41"
 dependencies = [
  "futures",
  "ide-core",
+ "ide-heap",
  "ide-jdwp",
  "ide-jsonrpc",
  "ide-jvm-attach",
@@ -4380,6 +4381,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-heap"
+version = "0.1.41"
+dependencies = [
+ "criterion",
+ "ide-core",
+ "libc",
+ "memmap2",
+ "proptest",
+ "serde",
+ "serde_json",
+ "specta",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ide-host"
 version = "0.1.41"
 dependencies = [
@@ -4401,6 +4420,7 @@ dependencies = [
  "ide-db",
  "ide-docker",
  "ide-extension",
+ "ide-heap",
  "ide-http",
  "ide-index",
  "ide-jsonrpc",
