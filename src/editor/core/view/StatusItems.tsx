@@ -10,7 +10,7 @@ import { BarButton, Icon, Menu, badgeKind, fileIconName } from "@/ui";
 import { notifications, useProjectViewLead } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { ENCODING_CHOICES, useEditorPrefs } from "@/platform/editorSettings";
-import { isVirtualUri } from "@/platform/virtualDocs";
+import { isVirtualUri, invalidateVirtualDocument } from "@/platform/virtualDocs";
 import { editorController, isTextInput, useEditorStatus, useGotoLine, useTabs } from "../controller";
 import { useDocMeta, useOutline } from "../model/document";
 import { symbolChain } from "./outline";
@@ -361,7 +361,11 @@ export function EncodingStatus() {
     if (!model) return;
     void editorController()
       .manager.backend.setEncoding(meta.doc, encoding, reload)
-      .then((enc) => model.setMeta({ encoding: enc.encoding, hasBom: enc.hasBom, ...(reload ? {} : { dirty: true }) }))
+      .then((enc) => {
+        model.setMeta({ encoding: enc.encoding, hasBom: enc.hasBom, ...(reload ? {} : { dirty: true }) });
+        // Reopening the tab must fetch the re-decoded contents, not the old cache.
+        if (reload && isVirtualUri(meta.path)) invalidateVirtualDocument(meta.path);
+      })
       .catch((e: unknown) =>
         notifications().notify({
           level: "error",
@@ -416,7 +420,12 @@ export function EncodingStatus() {
         placement="top-end"
         aria-label="File encoding"
         items={[
-          { id: "reload", label: "Reload with Encoding", disabled: meta.dirty, submenu: group(true) },
+          {
+            id: "reload",
+            label: "Reload with Encoding",
+            disabled: meta.dirty || !meta.canReloadEncoding,
+            submenu: group(true),
+          },
           { id: "convert", label: "Convert to Encoding", disabled: meta.readOnly, submenu: group(false) },
           ...(canToggleBom
             ? [

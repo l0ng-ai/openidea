@@ -406,6 +406,14 @@ export const commands = {
 	/**  Build tool sync results (Maven / Gradle) and other per-project caches. */
 	buildCaches?: boolean,
 } | null) => typedError<null, IdeError>(__TAURI_INVOKE("caches_schedule_invalidation", { options })),
+	cachesLocalDataInfo: () => typedError<LocalDataInfo, IdeError>(__TAURI_INVOKE("caches_local_data_info")),
+	/**
+	 *  Stores (`Some`) or clears (`None`, an empty string counts) the custom
+	 *  local-data root; with `migrate`, the current tree moves at the next start.
+	 *  Returns the directory that takes effect after a restart. The caller
+	 *  restarts the IDE (see `app_restart`).
+	 */
+	cachesSetLocalDataDir: (path: string | null, migrate: boolean) => typedError<string, IdeError>(__TAURI_INVOKE("caches_set_local_data_dir", { path, migrate })),
 	/**  Quits through every window's unsaved-changes check, then starts again. */
 	appRestart: () => __TAURI_INVOKE<void>("app_restart"),
 	indexStatus: () => typedError<IndexStatus, IdeError>(__TAURI_INVOKE("index_status")),
@@ -1563,6 +1571,7 @@ export const commands = {
 	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[FsConnection, string] | null>("remote_of", { path }),
 	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { connection, path })),
 	remoteMkdir: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_mkdir", { connection, path })),
+	remoteDownloadInto: (connection: FsConnection, paths: string[], target: IpcPath, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_download_into", { connection, paths, target, request })),
 	remoteRename: (connection: FsConnection, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_rename", { connection, from, to })),
 	/**  Browse before connecting, using the desktop's SSH configuration even in a remote window. */
 	remoteBootstrapList: (ssh: string, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_bootstrap_list", { ssh, path })),
@@ -3689,7 +3698,12 @@ export type DebugEvent =
  */
 { kind: "hotCodeReplace"; changeType: string; message: string } | 
 /**  The session's capabilities changed after it started: fetch them again. */
-{ kind: "capabilities" } | { kind: "jvmBackend"; state: JvmBackendState };
+{ kind: "capabilities" } | 
+/**
+ *  The adapter's `invalidated` event: what it shows for `areas` (`all`, `stacks`, `threads`,
+ *  `variables`; empty means all) is stale and has to be fetched again.
+ */
+{ kind: "invalidated"; areas: string[] } | { kind: "jvmBackend"; state: JvmBackendState };
 
 /**  A debug adapter session. */
 export type DebugSessionId = number;
@@ -4164,6 +4178,13 @@ export type DocumentInfo = {
 	lineEnding: LineEnding,
 	readOnly: boolean,
 	dirty: boolean,
+	/**
+	 *  Whether "Reload with Encoding" can re-decode this document's source
+	 *  bytes: true for files and virtual documents the backend can re-read
+	 *  (archive entries, JDT sources with an editable attachment encoding,
+	 *  Git revisions); false for server-generated content (decompiled code).
+	 */
+	canReloadEncoding: boolean,
 	/**
 	 *  Larger than `ide_vfs::LARGE_FILE_THRESHOLD`: language servers, syntax
 	 *  structure and folding are disabled; the editor should drop heavy features.
@@ -6471,6 +6492,18 @@ export type LineMatch = {
 	ranges: ([number, number])[],
 	/**  Column offset of `text` in the real line (non-zero when truncated). */
 	textOffset: number,
+};
+
+/**  Settings › System Settings › Caches: where the local data lives. */
+export type LocalDataInfo = {
+	/**  The directory in use by this run. */
+	current: string,
+	/**  The OS default (what clearing the custom directory returns to). */
+	defaultDir: string,
+	/**  The custom root stored by Settings, if any (`current` is `<root>/<identifier>`). */
+	customRoot: string | null,
+	/**  `OPENIDEA_LOCAL_DATA_DIR` is set and wins over everything Settings stores. */
+	envOverride: boolean,
 };
 
 /**  What a local definition declares (nvim-treesitter `@local.definition.<kind>`). */
@@ -9945,6 +9978,18 @@ export type VirtualDocument = {
 	description: string | null,
 	/**  Generated Java from a decompiler, rather than real source or a disassembler stub. */
 	decompiled: boolean,
+	/**
+	 *  Charset the content was decoded with (a WHATWG label, e.g. `gbk`);
+	 *  `utf-8` for text the server decoded itself.
+	 */
+	encoding: string,
+	hasBom: boolean,
+	/**
+	 *  "Reload with Encoding" can re-decode the origin's bytes (archive
+	 *  entries, JDT sources with an editable attachment encoding); false for
+	 *  server-generated content such as decompiled code.
+	 */
+	canReloadEncoding: boolean,
 };
 
 /**  Declared (or conventional) visibility of an outline symbol. */

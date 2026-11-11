@@ -7,7 +7,7 @@ use ide_core::{
 use ide_jsonrpc::{Handler, NoopHandler, Peer};
 use ide_language::{LanguageConfig, LanguageRegistry, LanguageServerConfig};
 use ide_lsp::types::*;
-use ide_lsp::{LaunchError, Launcher, LspManager};
+use ide_lsp::{KotlinDebugServer, KotlinDebugUnavailable, LaunchError, Launcher, LspManager};
 use ide_text::AppliedChange;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -3669,6 +3669,340 @@ async fn jdt_class_file_contents() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn jdt_library_sources_reload_with_the_attachment_encoding() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "import example.encoding.EncodingSample;\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/encoding-sample-1.0.jar/example.encoding/EncodingSample.class?=demo/%5C/m2%5C/encoding-sample-1.0.jar%3Cexample.encoding%28EncodingSample.class";
+
+    // The mock jdtls decodes the GBK attachment with the configured charset:
+    // until the encoding is updated, the text arrives garbled (U+FFFD).
+    let source = "package example.encoding;\n\n/** 中文编码测试。 */\npublic final class EncodingSample {}";
+    let garbled =
+        "package example.encoding;\n\n/** \u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD} */\npublic final class EncodingSample {}";
+    let attachment_encoding: Arc<Mutex<Option<String>>> = Arc::default();
+    *s.responder.lock() = Some(Arc::new({
+        let encoding = attachment_encoding.clone();
+        move |_, method, params| match method {
+            "java/classFileContents" => {
+                let text = if encoding.lock().as_deref() == Some("gbk") { source } else { garbled };
+                Some(json!(text))
+            }
+            "workspace/executeCommand" => match params["command"].as_str()? {
+                "java.project.resolveSourceAttachment" => Some(json!({
+                    "errorMessage": null,
+                    "attributes": {
+                        "jarPath": "/m2/encoding-sample-1.0.jar",
+                        "sourceAttachmentPath": "/m2/encoding-sample-1.0-sources.jar",
+                        "sourceAttachmentEncoding": encoding.lock().clone(),
+                        "canEditEncoding": true,
+                    }
+                })),
+                "java.project.updateSourceAttachment" => {
+                    let attrs = &params["arguments"][0]["attributes"];
+                    *encoding.lock() = attrs["sourceAttachmentEncoding"].as_str().map(str::to_owned);
+                    Some(json!({ "errorMessage": null, "attributes": null }))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }));
+
+    let vd = h.mgr.virtual_document(jdt).await.unwrap();
+    assert_eq!(vd.text, garbled);
+    assert_eq!(vd.encoding, "utf-8", "no attachment encoding configured yet");
+    assert!(vd.can_reload_encoding);
+
+    let reloaded = h.mgr.reload_virtual(jdt, "gbk").await.unwrap();
+    assert_eq!(reloaded.text, source);
+    assert_eq!(reloaded.encoding, "gbk");
+    assert!(reloaded.can_reload_encoding);
+    // The update kept the attachment path (omitting it would drop the sources)
+    // and set the encoding; the contents were fetched again.
+    let updates: Vec<Value> = s
+        .requested("workspace/executeCommand")
+        .into_iter()
+        .filter(|p| p["command"] == "java.project.updateSourceAttachment")
+        .collect();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0]["arguments"][0]["classFileUri"], jdt);
+    assert_eq!(updates[0]["arguments"][0]["attributes"]["sourceAttachmentPath"], "/m2/encoding-sample-1.0-sources.jar");
+    assert_eq!(updates[0]["arguments"][0]["attributes"]["sourceAttachmentEncoding"], "gbk");
+    assert!(s.requested("java/classFileContents").len() >= 2);
+    // The cache serves the re-decoded text without another round trip.
+    assert_eq!(h.mgr.virtual_document(jdt).await.unwrap().text, source);
+    // Round trip back to UTF-8.
+    let back = h.mgr.reload_virtual(jdt, "utf-8").await.unwrap();
+    assert_eq!(back.text, garbled);
+    assert_eq!(back.encoding, "utf-8");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jdt_reload_waits_for_the_maven_container_refresh() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/lib.jar/p/Lib.class?=demo/%5C/m2%5C/lib.jar%3Cp%28Lib.class";
+    // m2e persists and refreshes the container in a background job: resolve
+    // keeps reporting the old encoding for a few calls after the update.
+    let state: Arc<Mutex<(Option<String>, usize)>> = Arc::default();
+    *s.responder.lock() = Some(Arc::new({
+        let state = state.clone();
+        move |_, method, params| match method {
+            "java/classFileContents" => {
+                let enc = state.lock().0.clone();
+                Some(json!(if enc.as_deref() == Some("gbk") {
+                    "package p; /** 中文 */ class Lib {}"
+                } else {
+                    "package p; /** \u{FFFD} */ class Lib {}"
+                }))
+            }
+            "workspace/executeCommand" => match params["command"].as_str()? {
+                "java.project.resolveSourceAttachment" => {
+                    let mut st = state.lock();
+                    st.1 += 1;
+                    let reported = if st.1 > 2 { st.0.clone() } else { None };
+                    Some(json!({
+                        "attributes": {
+                            "sourceAttachmentPath": "/m2/lib-sources.jar",
+                            "sourceAttachmentEncoding": reported,
+                            "canEditEncoding": true,
+                        }
+                    }))
+                }
+                "java.project.updateSourceAttachment" => {
+                    let mut st = state.lock();
+                    st.0 = params["arguments"][0]["attributes"]["sourceAttachmentEncoding"].as_str().map(str::to_owned);
+                    st.1 = 0;
+                    Some(json!({ "errorMessage": null }))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }));
+    let vd = h.mgr.virtual_document(jdt).await.unwrap();
+    assert!(vd.text.contains('\u{FFFD}'));
+    let reloaded = h.mgr.reload_virtual(jdt, "gbk").await.unwrap();
+    assert_eq!(reloaded.text, "package p; /** 中文 */ class Lib {}");
+    assert_eq!(reloaded.encoding, "gbk");
+    assert!(state.lock().1 >= 3, "polled until the container reported the new encoding");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jdt_reload_retries_when_a_restored_container_ignores_the_update() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/lib.jar/p/Lib.class?=demo/%5C/m2%5C/lib.jar%3Cp%28Lib.class";
+    // jdtls replaces the encoding attribute by reference equality: an entry
+    // restored from the saved container state keeps the old value on the first
+    // update (a duplicate attribute is appended); only a second update, after
+    // the container was refreshed, applies the new one.
+    let state: Arc<Mutex<(Option<String>, usize)>> = Arc::default();
+    *s.responder.lock() = Some(Arc::new({
+        let state = state.clone();
+        move |_, method, params| match method {
+            "java/classFileContents" => {
+                let enc = state.lock().0.clone();
+                Some(json!(if enc.as_deref() == Some("gbk") {
+                    "package p; /** 中文 */ class Lib {}"
+                } else {
+                    "package p; /** \u{FFFD} */ class Lib {}"
+                }))
+            }
+            "workspace/executeCommand" => match params["command"].as_str()? {
+                "java.project.resolveSourceAttachment" => Some(json!({
+                    "attributes": {
+                        "sourceAttachmentPath": "/m2/lib-sources.jar",
+                        "sourceAttachmentEncoding": state.lock().0.clone(),
+                        "canEditEncoding": true,
+                    }
+                })),
+                "java.project.updateSourceAttachment" => {
+                    let mut st = state.lock();
+                    st.1 += 1;
+                    if st.1 > 1 {
+                        st.0 = params["arguments"][0]["attributes"]["sourceAttachmentEncoding"]
+                            .as_str()
+                            .map(str::to_owned);
+                    }
+                    Some(json!({ "errorMessage": null }))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }));
+    let vd = h.mgr.virtual_document(jdt).await.unwrap();
+    assert!(vd.text.contains('\u{FFFD}'));
+    let reloaded = h.mgr.reload_virtual(jdt, "gbk").await.unwrap();
+    assert_eq!(reloaded.text, "package p; /** 中文 */ class Lib {}");
+    assert_eq!(reloaded.encoding, "gbk");
+    let updates: Vec<Value> = s
+        .requested("workspace/executeCommand")
+        .into_iter()
+        .filter(|p| p["command"] == "java.project.updateSourceAttachment")
+        .collect();
+    assert_eq!(updates.len(), 2, "the ignored first update was retried once");
+    assert!(updates.iter().all(|u| u["arguments"][0]["attributes"]["sourceAttachmentPath"] == "/m2/lib-sources.jar"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jdt_reload_reads_the_attachment_when_the_server_buffer_is_stale() {
+    use std::io::Write;
+    let tmp = tempfile::tempdir().unwrap();
+    let sources = tmp.path().join("lib-sources.jar");
+    let source = "package p; /** 中文 */ class Lib {}";
+    let gbk = encoding_rs::GBK.encode(source).0.into_owned();
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&sources).unwrap());
+    zip.start_file("p/Lib.java", zip::write::SimpleFileOptions::default()).unwrap();
+    zip.write_all(&gbk).unwrap();
+    zip.finish().unwrap();
+
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/lib.jar/p/Lib.class?=demo/%5C/m2%5C/lib.jar%3Cp%28Lib.class";
+    // JDT caches the decoded buffer of a class file: even after the attachment
+    // encoding is updated, classFileContents keeps returning the old decoding.
+    let encoding: Arc<Mutex<Option<String>>> = Arc::default();
+    *s.responder.lock() = Some(Arc::new({
+        let encoding = encoding.clone();
+        let sources = sources.clone();
+        move |_, method, params| match method {
+            "java/classFileContents" => Some(json!("package p; /** \u{FFFD} */ class Lib {}")),
+            "workspace/executeCommand" => match params["command"].as_str()? {
+                "java.project.resolveSourceAttachment" => Some(json!({
+                    "attributes": {
+                        "sourceAttachmentPath": sources.to_string_lossy(),
+                        "sourceAttachmentEncoding": encoding.lock().clone(),
+                        "canEditEncoding": true,
+                    }
+                })),
+                "java.project.updateSourceAttachment" => {
+                    *encoding.lock() =
+                        params["arguments"][0]["attributes"]["sourceAttachmentEncoding"].as_str().map(str::to_owned);
+                    Some(json!({ "errorMessage": null }))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }));
+    let vd = h.mgr.virtual_document(jdt).await.unwrap();
+    assert!(vd.text.contains('\u{FFFD}'));
+    let reloaded = h.mgr.reload_virtual(jdt, "gbk").await.unwrap();
+    assert_eq!(reloaded.text, source, "read from the attachment, not the stale server buffer");
+    assert_eq!(reloaded.encoding, "gbk");
+    assert!(reloaded.can_reload_encoding);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jdt_reload_is_refused_when_the_sources_cannot_be_re_decoded() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let class =
+        |name: &str| format!("jdt://contents/lib.jar/p/{name}.class?=demo/%5C/m2%5C/lib.jar%3Cp%28{name}.class");
+    s.respond("java/classFileContents", json!("package p;\npublic class Lib {}"));
+
+    // A container that does not allow editing the attachment encoding.
+    *s.responder.lock() = Some(Arc::new(|_, method, params| match method {
+        "workspace/executeCommand" if params["command"] == "java.project.resolveSourceAttachment" => Some(json!({
+            "attributes": { "sourceAttachmentPath": "/m2/lib-sources.jar", "canEditEncoding": false }
+        })),
+        _ => None,
+    }));
+    let vd = h.mgr.virtual_document(&class("ReadOnly")).await.unwrap();
+    assert!(!vd.can_reload_encoding);
+    let err = h.mgr.reload_virtual(&class("ReadOnly"), "gbk").await.unwrap_err();
+    assert!(err.message.contains("cannot be changed"), "{err}");
+
+    // Decompiled content has no attached sources to re-decode.
+    *s.responder.lock() = Some(Arc::new(|_, method, params| match method {
+        "workspace/executeCommand" if params["command"] == "java.project.resolveSourceAttachment" => Some(json!({
+            "attributes": { "sourceAttachmentPath": null, "canEditEncoding": true }
+        })),
+        _ => None,
+    }));
+    s.respond(
+        "java/classFileContents",
+        json!("// Source code is decompiled from a .class file using FernFlower decompiler (from Intellij IDEA).\npackage p;\npublic class Lib {}"),
+    );
+    let decompiled = h.mgr.virtual_document(&class("Decompiled")).await.unwrap();
+    assert!(decompiled.decompiled && !decompiled.can_reload_encoding);
+    let err = h.mgr.reload_virtual(&class("Decompiled"), "gbk").await.unwrap_err();
+    assert!(err.message.contains("no attached sources"), "{err}");
+
+    // The resolve command fails (unqueryable container): no reload offered.
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "unsupported".into()));
+    let unresolved = h.mgr.virtual_document(&class("Unresolved")).await.unwrap();
+    assert_eq!(unresolved.encoding, "utf-8");
+    assert!(!unresolved.can_reload_encoding);
+    let err = h.mgr.reload_virtual(&class("Unresolved"), "gbk").await.unwrap_err();
+    assert!(err.message.contains("cannot resolve"), "{err}");
+
+    // Server-generated content of other schemes cannot be re-decoded at all.
+    let err = h.mgr.reload_virtual("csharp:/p/App.csproj/decompiled/Lib.cs", "gbk").await.unwrap_err();
+    assert!(err.message.contains("generated by a language server"), "{err}");
+    // Unknown encodings are refused before any server round trip.
+    assert!(h.mgr.reload_virtual(&class("ReadOnly"), "not-an-encoding").await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jar_library_sources_reload_with_another_encoding() {
+    use std::io::Write;
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path().join("com/example/encoding-sample/1.0.0");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = "package example.encoding\n\n/** 中文编码测试。 */\nfun message() = \"中文编码测试：是否启用\"\n";
+    let gbk = encoding_rs::GBK.encode(source).0.into_owned();
+    let jar_bytes = |path: &Path, entries: &[(&str, &[u8])]| {
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, bytes) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    };
+    jar_bytes(&dir.join("encoding-sample-1.0.jar"), &[("example/encoding/EncodingSampleKt.class", b"\0")]);
+    jar_bytes(&dir.join("encoding-sample-1.0-sources.jar"), &[("example/encoding/EncodingSample.kt", &gbk)]);
+    let jar_uri = |jar: &Path, entry: &str| format!("jar://{}!/{entry}", uri_of(jar).trim_start_matches("file://"));
+
+    let h = harness_for("kotlin", "kt", &[("kotlin-lsp", incremental_caps())], &[]);
+    h.open("Main.kt", "fun main() {}\n");
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    let class = jar_uri(&dir.join("encoding-sample-1.0.jar"), "example/encoding/EncodingSampleKt.class");
+    let entry = jar_uri(&dir.join("encoding-sample-1.0-sources.jar"), "example/encoding/EncodingSample.kt");
+
+    let vd = h.mgr.virtual_document(&class).await.unwrap();
+    assert_eq!(vd.text, source);
+    assert_eq!(vd.encoding, "gbk");
+    assert!(vd.can_reload_encoding);
+    // An explicit encoding wins over detection, even when it garbles the text.
+    let forced = h.mgr.reload_virtual(&class, "utf-8").await.unwrap();
+    assert!(forced.text.contains('\u{FFFD}'));
+    assert_eq!(forced.encoding, "utf-8");
+    let back = h.mgr.reload_virtual(&class, "gbk").await.unwrap();
+    assert_eq!((back.text.as_str(), back.encoding.as_str()), (source, "gbk"));
+    // Non-class entries reload the same way.
+    let entry_vd = h.mgr.virtual_document(&entry).await.unwrap();
+    assert_eq!((entry_vd.text.as_str(), entry_vd.encoding.as_str()), (source, "gbk"));
+    let entry_reload = h.mgr.reload_virtual(&entry, "gbk").await.unwrap();
+    assert_eq!(entry_reload.text, source);
+    // Missing sources fail cleanly.
+    let missing = jar_uri(&dir.join("encoding-sample-1.0.jar"), "example/encoding/Missing.class");
+    assert!(h.mgr.reload_virtual(&missing, "gbk").await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn class_file_opening_routes_sources_and_binary_documents() {
     let mut caps = incremental_caps();
     caps["workspaceSymbolProvider"] = json!(true);
@@ -5988,6 +6322,208 @@ async fn hierarchy_refactorings_name_the_servers_without_them() {
         .unwrap_err();
     assert_eq!(e.kind, ide_core::error::ErrorKind::Unavailable);
     assert_eq!(e.message, "plain doesn't support Pull Members Up");
+}
+
+// ------------------------------------------------------------------ kotlin-lsp debug server
+
+type KotlinDebug = Result<KotlinDebugServer, KotlinDebugUnavailable>;
+
+fn kotlin_lsp_harness() -> (Harness, Arc<MockState>) {
+    let h = harness_for("kotlin", "kt", &[("kotlin-lsp", incremental_caps())], &[]);
+    let s = h.launcher.state("kotlin-lsp");
+    s.respond("workspace/executeCommand", json!(4711));
+    (h, s)
+}
+
+fn spawn_kotlin_debug_server(
+    h: &Harness,
+    path: &Path,
+    import_wait: Duration,
+    cancel: &CancellationToken,
+) -> tokio::task::JoinHandle<KotlinDebug> {
+    let (mgr, path, cancel) = (h.mgr.clone(), path.to_owned(), cancel.clone());
+    tokio::spawn(async move { mgr.kotlin_debug_server(&path, import_wait, &cancel).await })
+}
+
+async fn joined(debug: tokio::task::JoinHandle<KotlinDebug>) -> KotlinDebug {
+    tokio::time::timeout(Duration::from_secs(10), debug).await.expect("kotlin_debug_server returned").unwrap()
+}
+
+fn import_progress(s: &MockState, value: Value) {
+    s.peer().notify("$/progress", json!({ "token": "import", "value": value })).unwrap();
+}
+
+fn import_finished(s: &MockState, folders: &[(&Path, &str)]) {
+    let folders: Vec<Value> = folders
+        .iter()
+        .map(|(dir, status)| json!({ "folderUri": format!("{}/", uri_of(dir)), "tool": "gradle", "status": status }))
+        .collect();
+    s.peer().notify("intellij/workspaceImportState", json!({ "phase": "FINISHED", "folders": folders })).unwrap();
+}
+
+fn debug_server_requests(s: &MockState) -> Vec<Value> {
+    s.requested("workspace/executeCommand")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn waits_for_the_import_before_starting_the_debug_server() {
+    // kotlin-lsp sends the progress end and FINISHED within the same millisecond, in either order.
+    for finished_first in [false, true] {
+        let (h, s) = kotlin_lsp_harness();
+        let main = h.root.join("Main.kt");
+        std::fs::write(&main, "fun main() {}").unwrap();
+        let debug = spawn_kotlin_debug_server(&h, &main, Duration::from_secs(10), &CancellationToken::new());
+        h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+        // Repeats every few seconds while the project stays usable: never waited for.
+        s.peer()
+            .notify("$/progress", json!({ "token": "index", "value": { "kind": "begin", "title": "Indexing" } }))
+            .unwrap();
+        import_progress(&s, json!({ "kind": "begin", "title": "Importing" }));
+        h.wait_status("kotlin-lsp", ServerStatus::Busy).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(debug_server_requests(&s).is_empty(), "started while importing");
+
+        if finished_first {
+            import_finished(&s, &[(&h.root, "SUCCESS")]);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(debug_server_requests(&s).is_empty(), "started while the Importing task runs");
+            import_progress(&s, json!({ "kind": "end" }));
+        } else {
+            import_progress(&s, json!({ "kind": "end" }));
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(debug_server_requests(&s).is_empty(), "started before FINISHED");
+            import_finished(&s, &[(&h.root, "SUCCESS")]);
+        }
+
+        assert_eq!(joined(debug).await, Ok(KotlinDebugServer { port: 4711, root: h.root.clone() }));
+        assert_eq!(
+            debug_server_requests(&s),
+            vec![json!({ "command": "start_debug_server", "arguments": [uri_of(&h.root)] })],
+            "finished_first: {finished_first}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn still_importing_after_the_wait_is_reported() {
+    let (h, s) = kotlin_lsp_harness();
+    let r = h.mgr.kotlin_debug_server(&h.root, Duration::from_millis(200), &CancellationToken::new()).await;
+    assert_eq!(r, Err(KotlinDebugUnavailable::StillImporting));
+    assert!(debug_server_requests(&s).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_the_import_wait_reports_still_importing() {
+    let (h, s) = kotlin_lsp_harness();
+    let cancel = CancellationToken::new();
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(60), &cancel);
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!debug.is_finished());
+    cancel.cancel();
+    assert_eq!(joined(debug).await, Err(KotlinDebugUnavailable::StillImporting));
+    assert!(debug_server_requests(&s).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_import_of_the_module_is_reported() {
+    // Another module that failed does not keep this one from debugging.
+    for other_module_failed in [false, true] {
+        let (h, s) = kotlin_lsp_harness();
+        let main = h.root.join("app/Main.kt");
+        let debug = spawn_kotlin_debug_server(&h, &main, Duration::from_secs(10), &CancellationToken::new());
+        h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+        let lib = h.root.join("lib");
+        let (folders, expected) = if other_module_failed {
+            (
+                vec![(h.root.as_path(), "SUCCESS"), (lib.as_path(), "FAILED")],
+                Ok(KotlinDebugServer { port: 4711, root: h.root.clone() }),
+            )
+        } else {
+            (vec![(h.root.as_path(), "FAILED")], Err(KotlinDebugUnavailable::ImportFailed))
+        };
+        import_finished(&s, &folders);
+        assert_eq!(joined(debug).await, expected, "other_module_failed: {other_module_failed}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_import_is_reported_through_a_symlinked_root() {
+    // The debugged path names the root through a symlink, the folder URI names its target,
+    // and the file does not exist yet.
+    let (h, s) = kotlin_lsp_harness();
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("project");
+    std::os::unix::fs::symlink(&h.root, &link).unwrap();
+    let debug =
+        spawn_kotlin_debug_server(&h, &link.join("app/Main.kt"), Duration::from_secs(10), &CancellationToken::new());
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    import_finished(&s, &[(&h.root, "FAILED")]);
+    assert_eq!(joined(debug).await, Err(KotlinDebugUnavailable::ImportFailed));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_finished_import_does_not_count_after_a_restart() {
+    let (h, s) = kotlin_lsp_harness();
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(10), &CancellationToken::new());
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    import_finished(&s, &[(&h.root, "SUCCESS")]);
+    assert!(joined(debug).await.is_ok());
+
+    let id = h.mgr.servers()[0].id;
+    h.mgr.restart(id).await.unwrap();
+    let r = h.mgr.kotlin_debug_server(&h.root, Duration::from_millis(300), &CancellationToken::new()).await;
+    assert_eq!(r, Err(KotlinDebugUnavailable::StillImporting));
+    assert_eq!(debug_server_requests(&s).len(), 1);
+
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(10), &CancellationToken::new());
+    import_finished(&s, &[(&h.root, "SUCCESS")]);
+    assert_eq!(joined(debug).await, Ok(KotlinDebugServer { port: 4711, root: h.root.clone() }));
+    assert_eq!(debug_server_requests(&s).len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_kotlin_lsp_the_reason_is_not_configured() {
+    let wait = Duration::from_secs(1);
+    let cancel = CancellationToken::new();
+    let h = harness_for("kotlin", "kt", &[("kotlin-language-server", incremental_caps())], &[]);
+    assert_eq!(h.mgr.kotlin_debug_server(&h.root, wait, &cancel).await, Err(KotlinDebugUnavailable::NotConfigured));
+
+    let (h, s) = kotlin_lsp_harness();
+    s.missing.store(true, Ordering::SeqCst);
+    assert_eq!(h.mgr.kotlin_debug_server(&h.root, wait, &cancel).await, Err(KotlinDebugUnavailable::NotInstalled));
+
+    let (h, _) = kotlin_lsp_harness();
+    h.mgr.set_config_hook(Box::new(|cfg, _| cfg.launch_error = Some("needs JDK 21".into())));
+    assert_eq!(
+        h.mgr.kotlin_debug_server(&h.root, wait, &cancel).await,
+        Err(KotlinDebugUnavailable::NotStarted("needs JDK 21".into()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_debug_server_error_is_reported() {
+    let (h, s) = kotlin_lsp_harness();
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "boom".into()));
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(10), &CancellationToken::new());
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    import_finished(&s, &[(&h.root, "SUCCESS")]);
+    match joined(debug).await {
+        Err(KotlinDebugUnavailable::Failed(m)) => assert!(m.contains("boom"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+
+    s.errors.lock().clear();
+    for port in [json!(0), json!(65536), json!("4711"), Value::Null] {
+        s.respond("workspace/executeCommand", port.clone());
+        match h.mgr.kotlin_debug_server(&h.root, Duration::from_secs(1), &CancellationToken::new()).await {
+            Err(KotlinDebugUnavailable::Failed(m)) => {
+                assert_eq!(m, format!("unexpected debug server port: {port}"))
+            }
+            other => panic!("{port}: {other:?}"),
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

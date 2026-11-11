@@ -10,6 +10,7 @@ export * from "./Select";
 export * from "./Tabs";
 export {
   FILES_DRAG,
+  REMOTE_FILES_DRAG,
   dragRequiresAlt,
   dragSession,
   dropZoneAt,

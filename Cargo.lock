@@ -4618,6 +4618,7 @@ name = "ide-lsp"
 version = "0.1.42"
 dependencies = [
  "dunce",
+ "encoding_rs",
  "futures",
  "globset",
  "ide-core",
