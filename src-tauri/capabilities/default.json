@@ -16,10 +16,6 @@
     "core:webview:allow-set-webview-background-color",
     "opener:default",
     "opener:allow-reveal-item-in-dir",
-    {
-      "identifier": "opener:allow-open-path",
-      "allow": [{ "path": "**" }]
-    },
     "dialog:default",
     "core:window:allow-destroy",
     "core:window:allow-close",
