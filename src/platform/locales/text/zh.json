@@ -343,6 +343,8 @@
   "Editor and Preview": "编辑器和预览",
   "Preview Only": "仅预览",
   "Add Maven Projects": "添加 Maven 项目",
+  "Some Maven projects were not added": "部分 Maven 项目未能添加",
+  "These are outside the open project, and Maven only links POMs inside it: {join}{more}": "这些项目位于已打开项目之外，而 Maven 仅链接项目内的 POM：{join}{more}",
   "Unlink Maven Projects": "取消链接 Maven 项目",
   "Unlink Maven projects?": "取消链接 Maven 项目？",
   "Remove this project and its modules from Maven? Files will remain in the Project view.": "从 Maven 中移除此项目及其模块？文件将保留在项目视图中。",
