@@ -56,6 +56,8 @@ let dispose: () => void;
 let disposeActions: () => void;
 beforeEach(() => {
   localStorage.clear();
+  // The types are added by hand, as in the real window (nothing shows by default).
+  localStorage.setItem("openidea.services.runTypes:/services-debug", JSON.stringify(["spring-boot", "shell"]));
   useProject.setState({
     project: { root: "/services-debug", name: "app", isGit: false, settings: validateSettings({}) } as never,
   });
@@ -144,7 +146,7 @@ it("reruns a debug service in place from the Services panel", () => {
   expect(d.rerun).not.toHaveBeenCalled();
 });
 
-it("starts a debug session in place from a run service's detail toolbar", async () => {
+it("starts a debug session in place from the Services toolbar", async () => {
   const start = vi.fn();
   const disposeAction = registerActions([
     { id: "run.debugConfig", title: "Debug Configuration", run: ({ arg }) => start(arg) },
@@ -153,18 +155,18 @@ it("starts a debug session in place from a run service's detail toolbar", async 
   const s = await startRun(c);
   expect(s).not.toBeNull();
   useRun.setState({ configs: [c], sessions: [{ ...s!, config: c, status: "running" as const }] });
+  useServicesTree.setState({ expanded: new Set(["run:type:shell"]) });
   try {
     render(<ServicesTreeView />);
     select();
-    const actions = within(screen.getByRole("toolbar", { name: "Run actions" }));
-    fireEvent.click(actions.getByRole("button", { name: "Debug" }));
+    fireEvent.click(toolbar().getByRole("button", { name: "Debug" }));
     await vi.waitFor(() => expect(start).toHaveBeenCalledWith({ config: c, show: false }));
   } finally {
     disposeAction();
   }
 });
 
-it("reruns a plain run service in place from its detail toolbar", async () => {
+it("reruns a plain run service in place from the Services toolbar", async () => {
   const c = { ...config, kind: "shell", command: "echo", debugAdapter: null };
   const s = await startRun(c);
   expect(s).not.toBeNull();
@@ -175,12 +177,12 @@ it("reruns a plain run service in place from its detail toolbar", async () => {
   const previousRuntime = runtime(s!.id);
   render(<ServicesTreeView />);
   select();
-  fireEvent.click(within(screen.getByRole("toolbar", { name: "Run actions" })).getByRole("button", { name: "Rerun" }));
+  fireEvent.click(toolbar().getByRole("button", { name: /^(Run|Rerun)$/ }));
   await vi.waitFor(() => expect(runtime(s!.id)).not.toBe(previousRuntime));
   expect(show).not.toHaveBeenCalled();
 });
 
-it("reruns an attached debugger in place from a run service's detail toolbar", async () => {
+it("reruns an attached debugger in place from the Services toolbar", async () => {
   const c = { ...config, kind: "shell", command: "echo", debugAdapter: null };
   const s = await startRun(c);
   expect(s).not.toBeNull();
@@ -191,8 +193,7 @@ it("reruns an attached debugger in place from a run service's detail toolbar", a
   useDebugRunSessions.setState({ serviceSessions: [d] });
   render(<ServicesTreeView />);
   select();
-  const actions = within(screen.getByRole("toolbar", { name: "Run actions" }));
-  fireEvent.click(actions.getByRole("button", { name: "Debug" }));
+  fireEvent.click(toolbar().getByRole("button", { name: "Debug" }));
   expect(d.rerunInPlace).toHaveBeenCalledOnce();
   expect(d.rerun).not.toHaveBeenCalled();
 });
@@ -215,7 +216,7 @@ it("keeps the other parallel instance alive and then displays it", async () => {
   expect(screen.getByRole("log")).toHaveTextContent("first instance");
 });
 
-it("shows the owning Run output for attached debugging and overrides both sets of controls", async () => {
+it("shows the owning Run output for attached debugging and routes the controls through the Services toolbar", async () => {
   const stopRun = vi.spyOn(commands, "runStop").mockImplementation(async (id) => {
     queueMicrotask(() => onRunExited(id, 130));
     return { status: "ok", data: null };
@@ -231,8 +232,14 @@ it("shows the owning Run output for attached debugging and overrides both sets o
   render(<ServicesTreeView />);
   select();
   expect(screen.getByRole("log")).toHaveTextContent("Maven application log");
-  const actions = within(screen.getByRole("toolbar", { name: "Run actions" }));
-  fireEvent.click(actions.getByRole("button", { name: "Rerun" }));
+  // The console strip keeps only console controls: the window toolbar owns Run / Debug / Stop.
+  const strip = within(screen.getByRole("toolbar", { name: "Run actions" }));
+  expect(strip.queryByRole("button", { name: "Rerun" })).toBeNull();
+  expect(strip.queryByRole("button", { name: "Debug" })).toBeNull();
+  expect(strip.queryByRole("button", { name: "Stop" })).toBeNull();
+  expect(strip.getByRole("button", { name: "Clear All" })).toBeTruthy();
+  const actions = toolbar();
+  fireEvent.click(actions.getByRole("button", { name: /^(Run|Rerun)$/ }));
   expect(d.rerun).toHaveBeenCalledOnce();
   await act(async () => fireEvent.click(actions.getByRole("button", { name: "Stop" })));
   expect(stopRun).toHaveBeenCalledExactlyOnceWith(7);
