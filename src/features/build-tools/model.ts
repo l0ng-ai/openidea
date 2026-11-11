@@ -516,6 +516,14 @@ export function gradleTaskPath(project: GradleProject, task: string): string {
   return project.path === ":" ? task : `${project.path}:${task}`;
 }
 
+/**
+ * Whether one of the builds has a task named `test`: `-x test` fails the whole run with
+ * "Task 'test' not found" in a build without one (Kotlin Multiplatform, non-JVM builds).
+ */
+export function gradleHasTestTask(models: readonly GradleModel[]): boolean {
+  return models.some((m) => m.projects.some((p) => p.tasks.some((t) => t.name === "test")));
+}
+
 /** Whether the command line already excludes the `test` task (`-x test`, `-xtest`, `--exclude-task test`). */
 function excludesTest(args: readonly string[]): boolean {
   return args.some((a, i) => {
@@ -540,7 +548,7 @@ export function gradleTaskConfig(
   const args = tasks.map((t) => (t.startsWith("-") || t.startsWith(":") ? t : gradleTaskPath(project, t)));
   if (options.offline && !args.includes("--offline")) args.push("--offline");
   // Typed task names are project-path prefixed above, so the typed line is the one to inspect.
-  if (options.skipTests && !excludesTest(tasks)) args.push("-x", "test");
+  if (options.skipTests && gradleHasTestTask([model]) && !excludesTest(tasks)) args.push("-x", "test");
   const names = tasks.filter((t) => !t.startsWith("-"));
   return {
     id: `gradle:task:${JSON.stringify([model.dir, project.path])}:${tasks.join(" ")}`,
@@ -557,11 +565,11 @@ export function gradleTaskConfig(
   };
 }
 
-/** Applies the current toggles to a saved configuration started from the tree. */
-export function withGradleOptions(config: RunConfig, options: GradleRunOptions): RunConfig {
+/** Applies the current toggles to a saved configuration started from the tree (`hasTestTask`: see {@link gradleHasTestTask}). */
+export function withGradleOptions(config: RunConfig, options: GradleRunOptions, hasTestTask = true): RunConfig {
   let args = config.args;
   if (options.offline && !args.includes("--offline")) args = [...args, "--offline"];
-  if (options.skipTests && !excludesTest(args)) args = [...args, "-x", "test"];
+  if (options.skipTests && hasTestTask && !excludesTest(args)) args = [...args, "-x", "test"];
   return args === config.args ? config : { ...config, args };
 }
 

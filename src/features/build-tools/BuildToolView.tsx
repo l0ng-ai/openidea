@@ -32,6 +32,7 @@ import {
   nodeLabel,
   profileChecked,
   withGradleOptions,
+  gradleHasTestTask,
   type BuildNode,
 } from "./model";
 import {
@@ -64,7 +65,9 @@ export function nodeConfig(
   const first = nodes[0];
   if (!first) return null;
   if (first.kind === "runConfig")
-    return first.config.kind === "gradle" ? withGradleOptions(first.config, settings.gradle) : first.config;
+    return first.config.kind === "gradle"
+      ? withGradleOptions(first.config, settings.gradle, gradleHasTestTask(model.gradle ?? []))
+      : first.config;
   if ((first.kind === "phase" || first.kind === "goal") && model.maven) {
     const same = nodes.filter(
       (n): n is Extract<BuildNode, { kind: "phase" | "goal" }> =>

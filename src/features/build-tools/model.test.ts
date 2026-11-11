@@ -21,6 +21,7 @@ import {
   splitArgs,
   taskCompletions,
   withGradleOptions,
+  gradleHasTestTask,
   type BuildNode,
 } from "./model";
 
@@ -362,6 +363,15 @@ describe("Gradle tree and runs", () => {
       skipTests: true,
     });
     expect(verbose.args).toEqual([":app:build", "--exclude-task", ":app:test"]);
+    // A build without a `test` task would fail on `-x test`.
+    const noTests = {
+      ...gradle,
+      projects: gradle.projects.map((p) => ({ ...p, tasks: p.tasks.filter((t) => t.name !== "test") })),
+    };
+    expect(gradleHasTestTask([noTests])).toBe(false);
+    expect(
+      gradleTaskConfig(noTests, noTests.projects[1]!, ["build"], { offline: false, skipTests: true }).args,
+    ).toEqual([":app:build"]);
   });
 
   it("applies the toolbar toggles to saved configurations started from the tree", () => {
@@ -379,6 +389,7 @@ describe("Gradle tree and runs", () => {
       skipTests: true,
     });
     expect(excluding.args).toEqual(["build", "-x", "test"]);
+    expect(withGradleOptions(saved, { offline: false, skipTests: true }, false).args).toEqual(["build"]);
   });
 
   it("keeps identical project paths and tasks of independent builds distinct", () => {
