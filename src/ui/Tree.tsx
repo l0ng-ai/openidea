@@ -590,6 +590,17 @@ export function Tree<T>(props: TreeProps<T>) {
       return;
     }
     if (e.button !== 0) return;
+    // The second press of a double-click starts the browser's word selection,
+    // which in a virtualized tree spills onto the rows an expanding folder just
+    // inserted and highlights neighbouring labels. Prevent it: rows are
+    // controls, not text (the shared List does the same via `user-select`), the
+    // first press already selected, and the dblclick below still fires, so
+    // activation keeps working. Rows can host editors (inline rename), so this
+    // is scoped to repeated clicks instead of unselecting all row content.
+    if (e.detail >= 2) {
+      e.preventDefault();
+      return;
+    }
     setQuery("");
     if (e.shiftKey) selectIndex(i, "range");
     else if (e.metaKey || e.ctrlKey) selectIndex(i, "toggle");
