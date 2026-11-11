@@ -171,6 +171,22 @@ describe("Tabs interactions", () => {
     expect(handles).toHaveLength(0);
   });
 
+  it("lets a container pin the selected tab when the strip supports pinning", () => {
+    const handles: TabStripHandle[] = [];
+    const register = (h: TabStripHandle) => (handles.push(h), () => void handles.splice(handles.indexOf(h), 1));
+    const onTogglePin = vi.fn();
+    const ui = (pin?: (id: string) => void) => (
+      <TabStripRegistry.Provider value={register}>
+        <Tabs items={items} activeId="b" onSelect={() => {}} onTogglePin={pin} />
+      </TabStripRegistry.Provider>
+    );
+    const { rerender } = render(ui(onTogglePin));
+    expect(handles[0]!.togglePinSelected()).toBe(true);
+    expect(onTogglePin).toHaveBeenCalledWith("b");
+    rerender(ui());
+    expect(handles[0]!.togglePinSelected()).toBe(false);
+  });
+
   it("a vertical strip moves with ↑/↓, shows actions above the tabs and has no overflow dropdown", () => {
     const onSelect = vi.fn();
     render(
