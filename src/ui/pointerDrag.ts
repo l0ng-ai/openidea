@@ -15,6 +15,8 @@ export interface DragData {
 
 /** Project files dragged from the Project view: `payload` is the paths joined by `\n`, folders ending with `/`. */
 export const FILES_DRAG = "application/x-openidea-files";
+/** Files and folders dragged from Remote Host: `payload` is JSON `{ server, paths }` (remote paths). */
+export const REMOTE_FILES_DRAG = "application/x-openidea-remote-files";
 
 export interface DropTarget {
   accepts(type: string): boolean;
@@ -138,9 +140,14 @@ export function startPointerDrag(
   e: { button: number; clientX: number; clientY: number; altKey: boolean },
   source: HTMLElement,
   data: DragData,
-  opts: { onStart?: () => void; onEnd?: (dragged: boolean, drop?: PointerDrop) => void } = {},
+  opts: {
+    onStart?: () => void;
+    onEnd?: (dragged: boolean, drop?: PointerDrop) => void;
+    /** Not subject to "Drag-and-drop with Alt pressed only" (tabs and stripe buttons). */
+    always?: boolean;
+  } = {},
 ) {
-  if (e.button !== 0 || (requiresAlt() && !e.altKey)) return;
+  if (e.button !== 0 || (!opts.always && requiresAlt() && !e.altKey)) return;
   const start = { x: e.clientX, y: e.clientY };
   let ghost: HTMLElement | null = null;
   const session = dragSession(data);
