@@ -17,7 +17,7 @@ use std::{
 };
 use tokio::sync::{Notify, watch};
 use tokio_tungstenite::{
-    connect_async_with_config,
+    Connector, connect_async_tls_with_config,
     tungstenite::{Message, client::IntoClientRequest, protocol::WebSocketConfig},
 };
 
@@ -83,11 +83,14 @@ impl WebSocketHub {
             .max_write_buffer_size(2 << 20)
             .max_message_size(Some(MAX_FRAME))
             .max_frame_size(Some(MAX_FRAME));
-        let (socket, response) =
-            tokio::time::timeout(Duration::from_secs(10), connect_async_with_config(request, Some(config), false))
-                .await
-                .map_err(|_| "WebSocket connection timed out")?
-                .map_err(|_| "WebSocket connection failed")?;
+        let tls = ide_http::client::tls_config().map(Arc::new).map(Connector::Rustls).map_err(|error| error.message)?;
+        let (socket, response) = tokio::time::timeout(
+            Duration::from_secs(10),
+            connect_async_tls_with_config(request, Some(config), false, Some(tls)),
+        )
+        .await
+        .map_err(|_| "WebSocket connection timed out")?
+        .map_err(|_| "WebSocket connection failed")?;
         if response.headers().get("sec-websocket-protocol").and_then(|value| value.to_str().ok()) != Some(subprotocol) {
             return Err("WebSocket server did not accept the required subprotocol".into());
         }
