@@ -651,6 +651,13 @@ fn rename_with_files(project: &mut Project, rel: &str, source: &str, new_name: &
             return Err(e);
         }
     };
+    let renamed = described(project, &edit);
+    project.engine.document_closed(doc);
+    Ok(renamed)
+}
+
+/// `edit` as a [`Renamed`].
+fn described(project: &Project, edit: &WorkspaceEdit) -> Renamed {
     let relative = |path: &PathBuf| path.strip_prefix(&project.root).unwrap().to_string_lossy().replace('\\', "/");
     let (mut edits, mut moves) = (Vec::new(), Vec::new());
     for file in &edit.files {
@@ -668,9 +675,8 @@ fn rename_with_files(project: &mut Project, rel: &str, source: &str, new_name: &
             other => panic!("{other:?}"),
         }
     }
-    project.engine.document_closed(doc);
     edits.sort();
-    Ok((edits, moves))
+    (edits, moves)
 }
 
 fn edit(path: &str, line: u32, old: &str, new: &str) -> (String, u32, String, String) {
@@ -738,6 +744,78 @@ fn renaming_a_discovered_name_renames_its_class() {
         assert!(rename_with_files(&mut project, PROBE, &source, bad).is_err(), "{bad}");
     }
     assert_eq!(class_for_segment("edit-post2").as_deref(), Some("EditPost2"));
+}
+
+const LIVE_POSTS: &str = "<div>\n    <livewire:posts.create-post />\n    @livewire('posts.create-post', ['a' => 1])\n    <livewire:posts.create-posts />\n</div>\n";
+
+/// The range a rename at the caret of template `rel` changes, and its
+/// edit (or error) as a [`Renamed`].
+fn blade_rename(
+    project: &Project,
+    rel: &str,
+    source: &str,
+    new_name: &str,
+) -> (Option<Option<Range>>, Option<IdeResult<Renamed>>) {
+    let template = super::blade_tests::Template::new(project, rel, source);
+    let range = project.engine.blade_prepare_rename(&template.blade(), template.pos);
+    let edit = project.engine.blade_rename(&template.blade(), template.pos, new_name, &CancellationToken::new());
+    project.engine.document_closed(DocId(90));
+    (range, edit.map(|edit| edit.map(|edit| described(project, &edit))))
+}
+
+#[test]
+fn renames_livewire_components_from_templates() {
+    let project = with_create_post_usages();
+    assert_eq!(std::fs::read_to_string(project.root.join(LIVE_POSTS_VIEW)).unwrap(), LIVE_POSTS);
+    let class = "app/Livewire/Posts/CreatePost.php";
+    let expected = (
+        vec![
+            edit(class, 7, "CreatePost", "EditPost"),
+            edit(LIVE_POSTS_VIEW, 1, "create-post", "edit-post"),
+            edit(LIVE_POSTS_VIEW, 2, "create-post", "edit-post"),
+        ],
+        vec![(class.to_owned(), "app/Livewire/Posts/EditPost.php".to_owned())],
+    );
+
+    // From a tag's name: its last segment, through the class.
+    let tag = LIVE_POSTS.replacen("posts.create-post ", "posts.create-p/*|*/ost ", 1);
+    let (range, renamed) = blade_rename(&project, LIVE_POSTS_VIEW, &tag, "edit-post");
+    assert_eq!(range, Some(Some(Range::new(Pos::new(1, 20), Pos::new(1, 31)))));
+    assert_eq!(renamed.unwrap().unwrap(), expected);
+    // From `@livewire('…')`, in the template's PHP.
+    let directive = LIVE_POSTS.replacen("'posts.create-post'", "'posts.create-p/*|*/ost'", 1);
+    let (range, renamed) = blade_rename(&project, LIVE_POSTS_VIEW, &directive, "edit-post");
+    assert_eq!(range, Some(Some(Range::new(Pos::new(2, 21), Pos::new(2, 32)))));
+    assert_eq!(renamed.unwrap().unwrap(), expected);
+    // A name no class gives.
+    let (_, renamed) = blade_rename(&project, LIVE_POSTS_VIEW, &tag, "Edit Post");
+    assert!(renamed.unwrap().is_err());
+    // An unknown component: can't be renamed; markup: not handled.
+    let unknown = LIVE_POSTS.replacen("create-posts", "create-po/*|*/sts", 1);
+    let (range, renamed) = blade_rename(&project, LIVE_POSTS_VIEW, &unknown, "x");
+    assert_eq!(range, Some(None));
+    assert!(renamed.unwrap().is_err());
+    let markup = LIVE_POSTS.replacen("<div>", "<d/*|*/iv>", 1);
+    let (range, renamed) = blade_rename(&project, LIVE_POSTS_VIEW, &markup, "x");
+    assert!(range.is_none() && renamed.is_none());
+
+    // A registered alias, from its tag: the whole alias, its registration
+    // and usages.
+    let project = with_ticker();
+    let view = std::fs::read_to_string(project.root.join(TICKER_VIEW)).unwrap();
+    let tag = view.replacen("<livewire:ticker ", "<livewire:tic/*|*/ker ", 1);
+    let (range, renamed) = blade_rename(&project, TICKER_VIEW, &tag, "clicker");
+    assert_eq!(range, Some(Some(Range::new(Pos::new(1, 14), Pos::new(1, 20)))));
+    let (edits, moves) = renamed.unwrap().unwrap();
+    assert_eq!(
+        edits,
+        [
+            edit("app/Providers/LivewireServiceProvider.php", 13, "ticker", "clicker"),
+            edit(TICKER_VIEW, 1, "ticker", "clicker"),
+            edit(TICKER_VIEW, 2, "ticker", "clicker"),
+        ]
+    );
+    assert!(moves.is_empty());
 }
 
 const PAGE_CONTROLLER: &str = r#"<?php

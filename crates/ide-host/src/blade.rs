@@ -9,7 +9,8 @@
 //! view itself) in PHP files and templates, "Create translation key…"
 //! on a translation key, the quick-fixes of template problems (create a
 //! missing view or component, add a prop), and the Blade context actions (switch `{{ }}` and
-//! `{!! !!}`, `class` to `@class`). [`BladeObserver`] publishes the
+//! `{!! !!}`, `class` to `@class`), and rename of a `<livewire:…>` tag's
+//! name or a string reference in the PHP (`@livewire('…')`). [`BladeObserver`] publishes the
 //! template's own problems (unclosed sections) for open views. The engine
 //! holds the PHP compiled from the open view as an embedded document under
 //! the view's id; `PhpObserver` drops it when the view closes.
@@ -20,7 +21,7 @@ use std::sync::Arc;
 use ide_core::{CancellationToken, DocId, IdeEvent, Location, Pos, Range, SharedSink};
 use ide_lsp::types::{
     CodeAction, CodeActionQuery, CompletionItem, CompletionKind, CompletionList, GotoKind, Hover, Markup, References,
-    Signature, SignatureHelp,
+    Renamed, Signature, SignatureHelp,
 };
 use ide_php::blade::structure::DIAGNOSTIC_SOURCE;
 use ide_php::blade::views::{ViewPaths, ViewRef, goto_view, view_ref_at};
@@ -200,6 +201,22 @@ impl LanguageService for BladeService {
         }
         locations.extend(usages.into_iter().map(|usage| Location::file(usage.path, usage.range)));
         Some(Ok(References { locations, ..References::default() }))
+    }
+
+    /// In a Laravel project, the name of a `<livewire:…>` tag or a string
+    /// reference in the template's PHP (`@livewire('…')`, a view name, a
+    /// translation key); left to the other services elsewhere.
+    fn prepare_rename(&self, doc: DocId, pos: Pos) -> Answer<Option<Range>> {
+        let info = self.info(doc)?;
+        let engine = self.php.engine()?;
+        engine.blade_prepare_rename(&blade(&info), pos).map(Ok)
+    }
+
+    fn rename(&self, doc: DocId, pos: Pos, new_name: &str, cancel: &CancellationToken) -> Answer<Renamed> {
+        let info = self.info(doc)?;
+        let engine = self.php.engine()?;
+        let edit = engine.blade_rename(&blade(&info), pos, new_name, cancel)?;
+        Some(edit.map(|edit| Renamed { edit, ..Renamed::default() }))
     }
 
     /// Laravel's "Create translation key…" on a translation key in the
@@ -481,6 +498,60 @@ mod tests {
         // On a view name in a directive.
         let doc = documents.open(&list).unwrap().id;
         assert_eq!(found(doc, Pos::new(1, 12)), [(card, 0), (controller, 1), (list, 1)]);
+        php.shutdown();
+    }
+
+    #[test]
+    fn renames_from_templates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let write = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        write("composer.json", r#"{"require": {"laravel/framework": "^11.0"}}"#);
+        let controller = write("app/Home.php", "<?php\nfunction home() { return view('pages.card'); }\n");
+        let card = write("resources/views/pages/card.blade.php", "<p>card</p>\n");
+        let list = write("resources/views/pages/list.blade.php", "<ul>\n@include('pages.card')\n</ul>\n");
+        let documents = documents();
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let php = Arc::new(PhpEngineSlot::new(&root, &root.join(".cache"), sink, documents.clone()));
+        let service = BladeService::new(&root, documents.clone(), php.clone());
+        let doc = documents.open(&list).unwrap().id;
+        let cancel = CancellationToken::new();
+        // Without the engine: not handled.
+        assert!(service.prepare_rename(doc, Pos::new(1, 12)).is_none());
+
+        let mut settings = ide_core::settings::Settings::default();
+        settings.languages.php.engine = ide_core::settings::PhpEngineKind::Native;
+        php.apply(&settings);
+        let engine = php.engine().expect("the engine");
+        assert!(engine.wait_idle(std::time::Duration::from_secs(60)));
+
+        // A view name in a directive, as from PHP: the name, its usages and
+        // the view's file.
+        assert_eq!(
+            service.prepare_rename(doc, Pos::new(1, 12)).unwrap().unwrap(),
+            Some(Range::new(Pos::new(1, 10), Pos::new(1, 20)))
+        );
+        let renamed = service.rename(doc, Pos::new(1, 12), "pages.panel", &cancel).unwrap().unwrap();
+        let files: Vec<PathBuf> = renamed
+            .edit
+            .files
+            .iter()
+            .map(|file| match file {
+                ide_core::FileEdit::Edit { path, .. } => PathBuf::from(path.clone()),
+                ide_core::FileEdit::Rename { from, .. } => PathBuf::from(from.clone()),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        for path in [&controller, &list, &card] {
+            assert!(files.contains(path), "{path:?} in {files:?}");
+        }
+        // Markup: left to the other services.
+        assert!(service.prepare_rename(doc, Pos::new(0, 1)).is_none());
         php.shutdown();
     }
 }

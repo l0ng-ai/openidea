@@ -87,6 +87,7 @@ return view('posts.index', ['posts' => $posts]);  // completes as a path tree, o
 - **Directives:** completion of Blade directives, including custom ones from `Blade::directive()` and `ide.json`. Directives are case-insensitive, as in Laravel.
 - **Quick-fixes:** create a missing component or view, add a missing prop to `@props`.
 - **Intentions:** switch `{{ }}` and `{!! !!}`; turn a `class` attribute into `@class([...])` or wrap it in one.
+- **Rename** from a template: the name of a `<livewire:…>` tag (a discovered name renames its class, an alias its registration and usages) and the string references in its PHP (`@livewire('…')`, view names, translation keys), as from PHP. Usages in other templates are read from disk.
 
 ### Configuration, environment, translations and assets
 
@@ -300,7 +301,7 @@ Not read: `helperCode` and any other key not listed here.
 
 - **Routes:** URLs copied or opened from a route hint keep their `{param}` placeholders. Route lenses show only in documents open in the engine. A route file path computed by `Config::get('…')` or `config()->get('…')`, rather than `config('…')`, isn't followed. Concord's convention-based registrations (views and routes of `BaseModuleServiceProvider` without explicit calls) aren't read. `PhpUndefinedController` leaves a missing class written `[Foo::class, 'bar']` to `PhpUndefinedClass`, and skips action strings with escapes (`'Admin\FooController@bar'`). On the pinned Monica and Bagisto it reports 9 actions, all real dead routes (methods the controllers don't have).
 - **Views and Blade:** an included template gets a variable's type at its last assignment before the `@include`, not the type merged over branches. A missing constructor parameter of a class component has no quick-fix (only a missing `@props` entry does), and `@aware` entries don't complete from the parent component. `Blade::component()` calls made outside a provider's code (`callAfterResolving`, `$blade->component`) aren't read.
-- **Livewire:** rename doesn't start from a `<livewire:…>` tag or `@livewire('…')` in a template (only from PHP strings, the class and the alias). A discovered name's folder segments (`posts.` of `posts.create-post`) aren't renamed (they follow the namespace), and the view the component renders isn't moved.
+- **Livewire:** a discovered name's folder segments (`posts.` of `posts.create-post`) aren't renamed (they follow the namespace), and the view the component renders isn't moved.
 - **Validation:** `in:` values come from attributes named like the field, not from the Form Request's own model. `Rule::in()` with variadic strings isn't completed. `unique`/`exists` with more than two parameters aren't converted to `Rule::` objects. Only the common shapes of `Gate::guessPolicyNamesUsing` callbacks are followed.
 - **Eloquent:** `*_count` properties are offered once any `withCount()` of the project counts the relation, not along the query that loaded the model. Tables of a database schema other than the default one aren't used. A query builder's table is lost through a variable reassigned in a loop.
 - **Artisan:** option keys aren't checked (an unknown `--opt` isn't reported), and a key renamed in a signature isn't renamed in the calls.

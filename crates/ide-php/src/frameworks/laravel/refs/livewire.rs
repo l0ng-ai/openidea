@@ -24,7 +24,10 @@
 //! renaming the class renames the last segment of every usage of the name
 //! ([`PhpEngine::livewire_class_rename_edits`]), and renaming the last
 //! segment of a usage renames the class
-//! ([`PhpEngine::rename_discovered_livewire`]).
+//! ([`PhpEngine::rename_discovered_livewire`]). Both also start from a
+//! template: the name of a `<livewire:…>` tag
+//! ([`PhpEngine::livewire_name_rename`]) or of `@livewire('…')`
+//! ([`PhpEngine::blade_rename`]).
 
 use std::path::Path;
 
@@ -262,13 +265,53 @@ impl PhpEngine {
         if subject.kind.id() != LivewireComponentKind.id() || subject.declaration || subject.prefix > 0 {
             return None;
         }
+        self.discovered_named(cx, &subject.value)
+    }
+
+    /// The discovered (not aliased) project component named `name`, with the
+    /// byte range of the last segment of its name.
+    fn discovered_named(&self, cx: &RefContext<'_>, name: &str) -> Option<(LivewireComponent, (usize, usize))> {
         let components = LivewireComponentKind::components(cx);
-        let component = components.get(&subject.value).filter(|component| component.alias.is_none())?;
+        let component = components.get(name).filter(|component| component.alias.is_none())?;
         if self.is_library(&component.path) {
             return None;
         }
         let start = last_segment_start(&component.name);
         Some((component.clone(), (start, component.name.len())))
+    }
+
+    /// The byte range of `name` (a component's name written in a
+    /// `<livewire:…>` tag) a rename there changes: the last segment of a
+    /// discovered name, all of a registered alias. `None` when it can't be
+    /// renamed (unknown, or a package's).
+    pub(crate) fn livewire_name_prepare_rename(&self, name: &str) -> Option<(usize, usize)> {
+        let cx = self.ref_context()?;
+        if let Some((_, range)) = self.discovered_named(&cx, name) {
+            return Some(range);
+        }
+        LivewireComponentKind.rename_target(&cx, name, 0).map(|target| target.range)
+    }
+
+    /// Renames the component named `name` (written in a `<livewire:…>`
+    /// tag): a discovered name through its class
+    /// ([`Self::rename_discovered_livewire`], `new` being the new last
+    /// segment), a registered alias with its registration and usages.
+    /// `None` outside Laravel projects with Livewire.
+    pub(crate) fn livewire_name_rename(
+        &self,
+        name: &str,
+        new: &str,
+        cancel: &CancellationToken,
+    ) -> Option<IdeResult<WorkspaceEdit>> {
+        let cx = self.ref_context()?;
+        self.laravel_livewire()?;
+        if let Some((component, _)) = self.discovered_named(&cx, name) {
+            return Some(self.rename_discovered_livewire(&component, new, cancel));
+        }
+        Some(match LivewireComponentKind.rename_target(&cx, name, 0) {
+            Some(target) => self.kind_rename(&cx, &LivewireComponentKind, target, new, cancel),
+            None => Err(IdeError::invalid("this component can't be renamed")),
+        })
     }
 
     /// Renames a discovered component to `segment`, the new last segment of

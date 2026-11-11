@@ -21,6 +21,9 @@
 //!   then those of a form object after `form.`) and `wire:click` and the
 //!   other event directives (its actions and Livewire's magic ones), with
 //!   goto to the class, view, property or method.
+//! - **Rename** from a template ([`PhpEngine::blade_rename`]): the name of
+//!   a `<livewire:…>` tag, and the string references of the template's PHP
+//!   (`@livewire('…')`, view names, translation keys), as from PHP.
 //!
 //! Only Laravel's documentation and source (MIT) are design inputs.
 
@@ -660,6 +663,63 @@ impl PhpEngine {
                 Some(attribute.target.into_iter().collect())
             }
         }
+    }
+
+    /// The name of the `<livewire:…>` tag at `offset` (on the name), with
+    /// its byte range in the template.
+    fn livewire_tag_name<'t>(&self, blade: &BladeDocument<'t>, offset: u32) -> Option<(&'t str, u32)> {
+        match tag_place_with(blade.text, offset, LIVEWIRE_PREFIXES)? {
+            TagPlace::Name(span) => Some((&blade.text[span.start as usize..span.end as usize], span.start)),
+            TagPlace::Attribute { .. } => None,
+        }
+    }
+
+    /// The range a rename at `pos` of a template of a Laravel project
+    /// changes: the name of a `<livewire:…>` tag (the last segment of a
+    /// discovered name, all of an alias), or a string reference in the
+    /// template's PHP (`@livewire('counter')`, `@include('a.b')`,
+    /// `{{ __('…') }}`). The outer `None` where neither is (left to the
+    /// other services), the inner one when it can't be renamed.
+    pub fn blade_prepare_rename(&self, blade: &BladeDocument, pos: Pos) -> Option<Option<Range>> {
+        self.laravel()?;
+        let lines = LineIndex::new(blade.text);
+        let offset = lines.byte(pos);
+        if let Some((name, start)) = self.livewire_tag_name(blade, offset) {
+            self.laravel_livewire()?;
+            let range = self.livewire_name_prepare_rename(name);
+            return Some(range.map(|(from, to)| lines.range(start + from as u32, start + to as u32)));
+        }
+        let compiled = self.blade_sync(blade);
+        let at = compiled.to_php(pos)?;
+        let parsed = self.parsed_document(blade.doc)?;
+        let path = self.document_path(blade.doc)?;
+        let found = self.string_ref_prepare_rename(&parsed, &path, parsed.line_index().byte(at))?;
+        Some(found.and_then(|range| compiled.range_to_blade(range)))
+    }
+
+    /// Renames what [`Self::blade_prepare_rename`] finds at `pos` to
+    /// `new_name`, as a rename from PHP would: a discovered Livewire name
+    /// through its class, an alias, a view or any other string reference
+    /// with its declarations and usages. Usages in templates are read from
+    /// disk, as find usages reads them.
+    pub fn blade_rename(
+        &self,
+        blade: &BladeDocument,
+        pos: Pos,
+        new_name: &str,
+        cancel: &ide_core::CancellationToken,
+    ) -> Option<ide_core::IdeResult<ide_core::WorkspaceEdit>> {
+        self.laravel()?;
+        let lines = LineIndex::new(blade.text);
+        let offset = lines.byte(pos);
+        if let Some((name, _)) = self.livewire_tag_name(blade, offset) {
+            return self.livewire_name_rename(name, new_name, cancel);
+        }
+        let compiled = self.blade_sync(blade);
+        let at = compiled.to_php(pos)?;
+        let parsed = self.parsed_document(blade.doc)?;
+        let path = self.document_path(blade.doc)?;
+        self.string_ref_rename(&parsed, &path, parsed.line_index().byte(at), new_name, cancel)
     }
 }
 
