@@ -55,6 +55,7 @@ fn lang(id: &str, ext: &str, server: LanguageServerConfig) -> LanguageConfig {
         indent: None,
         ui_mode: None,
         framework_ui_modes: Vec::new(),
+        framework_files: Vec::new(),
         formatter: None,
         scratch_template: None,
         tree_sitter: None,
