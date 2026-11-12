@@ -256,3 +256,32 @@ test("single-line selection stays on its own row when font glyphs exceed line he
   expect(Math.abs(selBox!.y - lineBox!.y)).toBeLessThanOrEqual(1);
   expect(Math.abs(selBox!.height - lineBox!.height)).toBeLessThanOrEqual(1);
 });
+
+test("vertical tabs leave a narrow editor group most of its width", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 900, height: 600 });
+  await openFromTree(page, "settings.gradle.kts");
+  await page.evaluate(async () => {
+    const projectModule = "/src/platform/project.ts";
+    const schemaModule = "/src/features/settings/model/schema.ts";
+    const controllerModule = "/src/editor/core/controller.ts";
+    const [{ useProject }, { DEFAULT_SETTINGS }, { editorController, useTabs }] = await Promise.all([
+      import(/* @vite-ignore */ projectModule),
+      import(/* @vite-ignore */ schemaModule),
+      import(/* @vite-ignore */ controllerModule),
+    ]);
+    const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+    useProject.setState({
+      settings: { ...base, editor: { ...base.editor, tabs: { ...base.editor.tabs, placement: "left" } } },
+    });
+    editorController().split(useTabs.getState().activePane, "row");
+  });
+
+  const panes = page.locator("[data-pane-id]");
+  await expect(panes).toHaveCount(2);
+  for (const pane of await panes.all()) {
+    const strip = pane.getByRole("tablist", { name: "Editor tabs" });
+    await expect(strip).toHaveAttribute("aria-orientation", "vertical");
+    const [paneBox, contentBox] = await Promise.all([pane.boundingBox(), pane.getByRole("tabpanel").boundingBox()]);
+    expect(contentBox!.width).toBeGreaterThanOrEqual(paneBox!.width * 0.6 - 1);
+  }
+});

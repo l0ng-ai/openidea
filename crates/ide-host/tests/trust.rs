@@ -53,6 +53,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "jdk_download_releases",
         "jdk_download_location",
         "jdk_download",
+        "jdtls_required_java",
         "scaffold_catalog",
         "scaffold_options",
         "scaffold_requirements",

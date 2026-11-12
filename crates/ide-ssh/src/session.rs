@@ -230,7 +230,14 @@ impl Session {
         let mut on_output = on_output;
         tokio::spawn(async move {
             let mut code = None;
-            while let Some(msg) = read.wait().await {
+            loop {
+                // After the exit status, output still in flight is read until the channel goes
+                // quiet: a child that inherited stdout keeps the channel open past the exit.
+                let msg = match code {
+                    None => read.wait().await,
+                    Some(_) => tokio::time::timeout(EXIT_DRAIN, read.wait()).await.ok().flatten(),
+                };
+                let Some(msg) = msg else { break };
                 match msg {
                     ChannelMsg::Data { data } => on_output(Output::Stdout(&data)),
                     ChannelMsg::ExtendedData { data, ext: 1 } => on_output(Output::Stderr(&data)),
@@ -316,6 +323,9 @@ impl Session {
         io(format!("SSH {}: {e}", self.label))
     }
 }
+
+/// How long a process's channel may stay quiet after its exit status before it counts as finished.
+const EXIT_DRAIN: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// A chunk of a remote process's output.
 pub enum Output<'a> {

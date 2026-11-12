@@ -282,6 +282,11 @@ const APPEARANCE = editorPage({
         },
         { t: "check", key: `${P}.appearance.intentionBulb`, label: "Show intention bulb" },
         {
+          t: "check",
+          key: `${P}.appearance.renderDocComments`,
+          label: "Render documentation comments",
+        },
+        {
           t: "number",
           key: `${P}.appearance.distractionFreeWidth`,
           label: "Distraction free mode text width:",

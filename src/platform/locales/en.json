@@ -109,6 +109,7 @@
   "common.copy": "Copy",
   "menu.activeEditor": "Active Editor",
   "menu.editor.toggleSoftWrap": "Soft-Wrap",
+  "menu.editor.toggleRenderedDocs": "Render Documentation Comments",
   "menu.app": "OpenIDEA",
   "menu.app.about": "About OpenIDEA",
   "menu.app.checkForUpdates": "Check for Updates…",

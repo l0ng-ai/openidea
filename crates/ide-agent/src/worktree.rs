@@ -1,8 +1,8 @@
 //! Task worktrees and the changes made in them.
 
-use crate::model::AgentChange;
+use crate::model::{AgentChange, AgentChanges, AgentCommit};
 use ide_core::{IdeError, IdeResult, IpcPath};
-use ide_vcs::{ChangeKind, Repo};
+use ide_vcs::{ChangeKind, LogQuery, Repo};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
@@ -33,6 +33,14 @@ pub(crate) fn head_of(path: &Path) -> IdeResult<(String, String)> {
     let info = repo_at(path)?.branch_info()?;
     let commit = info.head_commit.ok_or_else(|| IdeError::unavailable("the repository has no commits yet"))?;
     Ok((info.head.unwrap_or_else(|| commit.clone()), commit))
+}
+
+/// `HEAD`'s commit in `cwd`, `None` outside a repository or before its first commit.
+pub(crate) fn head_commit(cwd: &Path) -> IdeResult<Option<String>> {
+    match discover(cwd)? {
+        Some(repo) => Ok(repo.head()?.1),
+        None => Ok(None),
+    }
 }
 
 /// `git worktree add -b agent/<slug> <dir>/<slug> <base>`.
@@ -111,7 +119,14 @@ pub(crate) fn changes(cwd: &Path, base: &str) -> IdeResult<Vec<AgentChange>> {
         .into_iter()
         .map(|f| {
             let (added, removed) = stat(&f.path);
-            AgentChange { path: IpcPath(root.join(&f.path)), rel_path: f.path, kind: f.kind, added, removed }
+            AgentChange {
+                path: IpcPath(root.join(&f.path)),
+                rel_path: f.path,
+                kind: f.kind,
+                added,
+                removed,
+                old_path: f.old_path,
+            }
         })
         .collect();
     let tracked: std::collections::HashSet<String> = out.iter().map(|c| c.rel_path.clone()).collect();
@@ -140,6 +155,7 @@ pub(crate) fn rename_sources(cwd: &Path, rev: &str) -> IdeResult<BTreeMap<String
                 kind: ChangeKind::Deleted,
                 added: 0,
                 removed: 0,
+                old_path: None,
             };
             Some((f.path, source))
         })
@@ -148,7 +164,57 @@ pub(crate) fn rename_sources(cwd: &Path, rev: &str) -> IdeResult<BTreeMap<String
 
 fn added(path: IpcPath, rel_path: String) -> AgentChange {
     let added = std::fs::read_to_string(&*path).map_or(0, |t| t.lines().count() as u32);
-    AgentChange { path, rel_path, kind: ChangeKind::Added, added, removed: 0 }
+    AgentChange { path, rel_path, kind: ChangeKind::Added, added, removed: 0, old_path: None }
+}
+
+/// The commits from `base` (exclusive) to `head` (inclusive) in `cwd`, newest first, each
+/// with the files it changed against its first parent and their line counts.
+pub(crate) fn commits(cwd: &Path, base: &str, head: &str) -> IdeResult<Vec<AgentCommit>> {
+    if base == head {
+        return Ok(Vec::new());
+    }
+    let Some(repo) = discover(cwd)? else { return Ok(Vec::new()) };
+    let root = repo.root().to_path_buf();
+    let query = LogQuery { range: Some(format!("{base}..{head}")), ..LogQuery::default() };
+    let mut out = Vec::new();
+    for commit in repo.log(&query)? {
+        let parent = commit.parents.first().cloned();
+        // A root commit has no parent to count lines against; its files still show.
+        let stats: std::collections::HashMap<String, (u32, u32)> = match &parent {
+            Some(parent) => repo
+                .diff_numstat(parent, &commit.id, &[])?
+                .into_iter()
+                .map(|s| (s.path, (s.added, s.removed)))
+                .collect(),
+            None => std::collections::HashMap::new(),
+        };
+        let mut files: Vec<AgentChange> = repo
+            .commit_files(&commit.id)?
+            .into_iter()
+            .map(|f| {
+                let (added, removed) = stats.get(&f.path).copied().unwrap_or((0, 0));
+                AgentChange {
+                    path: IpcPath(root.join(&f.path)),
+                    rel_path: f.path,
+                    kind: f.kind,
+                    added,
+                    removed,
+                    old_path: f.old_path,
+                }
+            })
+            .collect();
+        files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+        out.push(AgentCommit {
+            id: commit.id,
+            short_id: commit.short_id,
+            summary: commit.summary,
+            message: commit.message,
+            time_ms: commit.time_ms,
+            parent,
+            files,
+        });
+    }
+    Ok(out)
 }
 
 /// Whether two paths name one file (a case-insensitive disk resolving both spellings).
@@ -241,6 +307,34 @@ impl TaskBase {
                 !std::fs::read(&c.path.0).is_ok_and(|now| now == at_start || crlf_to_lf(&now) == at_start)
             })
             .collect())
+    }
+
+    /// The task's uncommitted changes and, for a worktree task, the commits made since it
+    /// started (newest first). Both read the same `HEAD`, so a commit landing between the two
+    /// reads cannot put a file in both lists.
+    pub(crate) fn grouped_changes(&self, before: &BTreeMap<String, Stamp>) -> IdeResult<AgentChanges> {
+        let cwd = self.cwd();
+        let Some(repo) = discover(cwd)? else { return Ok(AgentChanges::default()) };
+        let head = repo.head()?.1;
+        let uncommitted = match &head {
+            Some(head) => without_untouched(changes(cwd, head)?, before),
+            None => {
+                // No commits yet: every file is new, as in `changes` for a local task.
+                let mut all: Vec<AgentChange> = repo
+                    .status()?
+                    .into_iter()
+                    .filter(|s| s.path.is_file())
+                    .map(|s| added(s.path, s.rel_path))
+                    .collect();
+                all.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+                without_untouched(all, before)
+            }
+        };
+        let commits = match (self, &head) {
+            (Self::Worktree { cwd, base }, Some(head)) => commits(cwd, base, head)?,
+            _ => Vec::new(),
+        };
+        Ok(AgentChanges { uncommitted, commits })
     }
 
     /// The revision the task's changed files go back to on rollback, and are compared with:
@@ -596,6 +690,88 @@ mod tests {
         assert_eq!(create(&repo, &tmp.path().join("wt"), "Edit A", None).unwrap().branch, "agent/edit-a-2");
         remove(&repo, &tmp.path().join("wt"), &created.path).unwrap();
         assert!(!created.path.exists());
+    }
+
+    #[test]
+    fn commits_since_the_base_are_listed_with_their_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+
+        let created = create(&repo, &tmp.path().join("wt"), "Edit A", None).unwrap();
+        assert!(commits(&created.path, &created.base_commit, &created.base_commit).unwrap().is_empty());
+
+        std::fs::write(created.path.join("a.txt"), "one\ntwo\n").unwrap();
+        git(&created.path, &["add", "."]);
+        git(&created.path, &["commit", "-q", "-m", "change a"]);
+        std::fs::write(created.path.join("b.txt"), "b\n").unwrap();
+        git(&created.path, &["add", "."]);
+        git(&created.path, &["commit", "-q", "-m", "add b"]);
+
+        let head = head_of(&created.path).unwrap().1;
+        let log = commits(&created.path, &created.base_commit, &head).unwrap();
+        assert_eq!(log.iter().map(|c| c.summary.as_str()).collect::<Vec<_>>(), ["add b", "change a"]);
+        assert_eq!(log[0].files.iter().map(|f| f.rel_path.as_str()).collect::<Vec<_>>(), ["b.txt"]);
+        assert_eq!((log[0].files[0].added, log[0].files[0].removed), (1, 0));
+        assert_eq!(log[1].files.iter().map(|f| f.rel_path.as_str()).collect::<Vec<_>>(), ["a.txt"]);
+        assert_eq!((log[1].files[0].added, log[1].files[0].removed), (1, 0));
+        assert!(log.iter().all(|c| c.parent.is_some() && !c.message.is_empty()));
+
+        // Nothing is uncommitted after the commits; editing a committed file brings it back.
+        let at = TaskBase::Worktree { cwd: created.path.clone(), base: created.base_commit.clone() };
+        let grouped = at.grouped_changes(&BTreeMap::new()).unwrap();
+        assert!(grouped.uncommitted.is_empty());
+        assert_eq!(grouped.commits.len(), 2);
+        std::fs::write(created.path.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let grouped = at.grouped_changes(&BTreeMap::new()).unwrap();
+        assert_eq!(grouped.uncommitted.iter().map(|c| c.rel_path.as_str()).collect::<Vec<_>>(), ["a.txt"]);
+        assert_eq!(grouped.commits.len(), 2);
+    }
+
+    #[test]
+    fn a_rename_in_a_commit_keeps_its_old_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\ntwo\nthree\nfour\nfive\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+        let base = head_of(&repo).unwrap().1;
+
+        std::fs::rename(repo.join("a.txt"), repo.join("b.txt")).unwrap();
+        std::fs::write(repo.join("b.txt"), "one\ntwo\nthree\nfour\nFIVE\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "rename a"]);
+
+        let head = head_of(&repo).unwrap().1;
+        let log = commits(&repo, &base, &head).unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].files.len(), 1);
+        assert_eq!(log[0].files[0].rel_path, "b.txt");
+        assert_eq!(log[0].files[0].old_path.as_deref(), Some("a.txt"));
+        assert_eq!(log[0].files[0].kind, ChangeKind::Renamed);
+    }
+
+    #[test]
+    fn a_local_task_has_no_commits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+        std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+
+        let at = TaskBase::Local { cwd: repo.clone(), start: None };
+        let grouped = at.grouped_changes(&BTreeMap::new()).unwrap();
+        assert!(grouped.commits.is_empty());
+        assert_eq!(grouped.uncommitted.iter().map(|c| c.rel_path.as_str()).collect::<Vec<_>>(), ["a.txt"]);
     }
 
     #[test]

@@ -172,7 +172,7 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   WARNING_ATTRIBUTES: [["EFFECT_COLOR", "--wave-warning"]],
   NOT_USED_ELEMENT_ATTRIBUTES: [["FOREGROUND", "--fg-unused"]],
   MATCHED_BRACE_ATTRIBUTES: [["BACKGROUND", "--bg-matched-brace"]],
-  SEARCH_RESULT_ATTRIBUTES: [["BACKGROUND", "--bg-search-match"]],
+  SEARCH_RESULT_ATTRIBUTES: [["BACKGROUND", "--bg-search-result"]],
   TEXT_SEARCH_RESULT_ATTRIBUTES: [["BACKGROUND", "--bg-text-search-result"]],
   IDENTIFIER_UNDER_CARET_ATTRIBUTES: [["BACKGROUND", "--bg-identifier-under-caret"]],
   WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES: [["BACKGROUND", "--bg-identifier-under-caret-write"]],

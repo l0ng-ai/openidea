@@ -84,6 +84,9 @@ pub struct Host {
     pub remote: Arc<ide_remote::RemoteService>,
     /// What child processes get beyond this process's environment (Reload Environment, `remoteEnv`).
     pub environment: environment::Environment,
+    /// The built-in web server (Open In › Browser, the editor's browser bar). On a remote host the
+    /// client forwards its ports.
+    pub web: ide_web::WebServer,
     /// The HTTP proxy's saved password (see `proxy.rs`).
     proxy_password: ide_ssh::secrets::SecretFile,
     /// The proxy password when it could not be saved (no credential store).
@@ -140,6 +143,7 @@ impl Host {
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
             environment: environment::Environment::new(project_environment, local_data_dir.clone()),
+            web: ide_web::WebServer::new(),
             global_settings,
             dependency_versions: Arc::new(ide_workspace::dependencies::VersionCache::new(
                 data_dir.join("cache/dependency-versions"),

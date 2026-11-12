@@ -318,6 +318,44 @@ describe("applying completions", () => {
   });
 
   for (const mode of ["insert", "replace"] as const) {
+    for (const prefix of ["", "v"]) {
+      it(`${mode} leaves the caret after a field snippet accepted at root.${prefix}`, () => {
+        const { view, req, pos } = setup(`int a = root.${prefix}|Suffix`);
+        const start = "int a = root.".length;
+        const c = makeCompletion(
+          item({
+            label: "val",
+            kind: "field",
+            insertText: "val",
+            isSnippet: true,
+            replaceRange: { start: { line: 0, col: start }, end: { line: 0, col: pos } },
+          }),
+          req,
+        );
+        applyLspCompletion(view, c, start, pos, mode);
+        expect(view.state.doc.toString()).toBe(`int a = root.val${mode === "insert" ? "Suffix" : ""}`);
+        expect(view.state.selection.main.head).toBe(start + 3);
+      });
+    }
+
+    it(`${mode} places a fieldless snippet after imports and a cached UTF-16 prefix`, () => {
+      const { view, req, pos } = setup("\n/* 😀 */ root.|Suffix", "v");
+      const c = makeCompletion(
+        item({
+          label: "val",
+          kind: "field",
+          insertText: "val",
+          isSnippet: true,
+          replaceRange: { start: { line: 1, col: pos - 1 }, end: { line: 1, col: pos - 1 } },
+          additionalEdits: [{ range: { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }, new_text: "import X;" }],
+        }),
+        req,
+      );
+      applyLspCompletion(view, c, pos, pos + 1, mode);
+      expect(view.state.doc.toString()).toBe(`import X;\n/* 😀 */ root.val${mode === "insert" ? "Suffix" : ""}`);
+      expect(view.state.selection.main.head).toBe(pos + "import X;val".length);
+    });
+
     for (const shape of ["textEdit", "insertReplace", "noEdit"] as const) {
       for (const isSnippet of [false, true]) {
         it(`${mode} replaces a mixed-case prefix typed after a ${shape} request (snippet: ${isSnippet})`, () => {

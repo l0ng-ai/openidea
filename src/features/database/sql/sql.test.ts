@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { EditorState } from "@codemirror/state";
+import { snippet } from "@codemirror/autocomplete";
 import type { DbCompletion, DbDriver } from "@/platform/ipc";
 import { analyze, templateContexts, valuesSlot } from "./analyze";
 import { aliasFor, quoteIdent, sqlCandidates, type SqlCandidate } from "./complete";
@@ -326,6 +328,20 @@ describe("completion candidates", () => {
     expect(first("function")).toBeLessThan(first("keyword"));
     expect(c.find((x) => x.label === "count")).toMatchObject({ snippet: "count(${})" });
   });
+
+  it.each(["sqlite", "postgres", "mysql"] as const)(
+    "leaves the caret after a %s function without parameters",
+    (driver) => {
+      const candidates = complete("select |", driver).filter((c) => c.kind === "function" && c.tail === "()");
+      expect(candidates.length).toBeGreaterThan(0);
+      for (const candidate of candidates) {
+        let state = EditorState.create({ doc: "select ", selection: { anchor: 7 } });
+        snippet(candidate.snippet!)({ state, dispatch: (tr) => (state = tr.state) }, null, 7, 7);
+        expect(state.doc.toString()).toBe(`select ${candidate.label}()`);
+        expect(state.selection.main.head).toBe(state.doc.length);
+      }
+    },
+  );
 
   it("quotes identifiers that need it", () => {
     expect(quoteIdent("Users", "postgres")).toBe('"Users"');

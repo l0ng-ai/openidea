@@ -5,6 +5,8 @@ import { create } from "zustand";
 import type {
   AgentAcceptOutcome,
   AgentChange,
+  AgentChanges,
+  AgentChangesView,
   AgentCommand,
   AgentConfigOption,
   AgentEntry,
@@ -16,6 +18,7 @@ import type {
   ExternalSession,
   Isolation,
 } from "@/bindings";
+import { useChangesOptions } from "./changesOptions";
 import { basename, useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
@@ -77,6 +80,8 @@ interface AgentsState {
   entries: Map<string, AgentEntry[]>;
   entryLoads: Map<string, { error: string | null }>;
   changes: Map<string, AgentChange[]>;
+  /** The task's uncommitted changes and commits, when the Changes pane groups by commit. */
+  groupedChanges: Map<string, AgentChanges>;
   /** Scroll position and follow-output preference by conversation, shared by both hosts. */
   scrollPositions: Map<string, { top: number; stick: boolean }>;
   providers: AgentProvider[];
@@ -147,6 +152,7 @@ export const useAgents = create<AgentsState>(() => ({
   entries: new Map(),
   entryLoads: new Map(),
   changes: new Map(),
+  groupedChanges: new Map(),
   providers: [],
   limits: new Map(),
   draft: savedDraft(load<Partial<Draft>>(DRAFT_KEY, {})),
@@ -312,6 +318,7 @@ export async function connect(): Promise<void> {
     entries: new Map(),
     entryLoads: new Map(),
     changes: new Map(),
+    groupedChanges: new Map(),
     providers,
   });
   notifyTabTitlesChanged();
@@ -372,6 +379,7 @@ export function disconnect() {
     entries: new Map(),
     entryLoads: new Map(),
     changes: new Map(),
+    groupedChanges: new Map(),
     docked: null,
     lastTask: null,
     homeOpen: false,
@@ -522,6 +530,23 @@ export async function loadEntries(task: string, subagent: string | null = null):
 }
 
 export async function refreshChanges(task: string): Promise<void> {
+  // Local tasks have no commits of their own to group: the flat list is their only view.
+  const grouped =
+    useChangesOptions.getState().groupByCommit && useAgents.getState().tasks.get(task)?.isolation === "worktree";
+  if (grouped) {
+    try {
+      const review = await call(commands.agentGroupedChanges(task));
+      useAgents.setState((s) => ({
+        groupedChanges: new Map(s.groupedChanges).set(task, review),
+      }));
+    } catch {
+      // The worktree is gone or not a repository: nothing to list.
+      useAgents.setState((s) => ({
+        groupedChanges: new Map(s.groupedChanges).set(task, { uncommitted: [], commits: [] }),
+      }));
+    }
+    return;
+  }
   try {
     const changes = await call(commands.agentChanges(task));
     useAgents.setState((s) => ({
@@ -533,10 +558,14 @@ export async function refreshChanges(task: string): Promise<void> {
   }
 }
 
-/** Rollback: the task's changed files `relPaths` (all with `null`) back as they were when it started. */
-export async function rollbackChanges(task: string, relPaths: string[] | null): Promise<void> {
+/** Rollback: the task's changed files `relPaths` (all with `null`) back as `view` compares them. */
+export async function rollbackChanges(
+  task: string,
+  relPaths: string[] | null,
+  view: AgentChangesView = "sinceStart",
+): Promise<void> {
   try {
-    await call(commands.agentRollbackChanges(task, relPaths));
+    await call(commands.agentRollbackChanges(task, relPaths, view));
   } finally {
     await refreshChanges(task);
   }
@@ -552,7 +581,8 @@ export async function acceptChanges(task: string, relPaths: string[] | null): Pr
 }
 
 const pendingChanges = new Map<string, ReturnType<typeof setTimeout>>();
-function scheduleChanges(task: string) {
+/** Reloads the task's changes after a short pause (tool diffs, commits landing). */
+export function scheduleChanges(task: string) {
   if (pendingChanges.has(task)) return;
   pendingChanges.set(
     task,

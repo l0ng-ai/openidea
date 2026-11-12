@@ -46,6 +46,7 @@ globset.workspace = true
 ide-db.workspace = true
 ide-ssh.workspace = true
 ide-remote.workspace = true
+ide-web.workspace = true
 ide-jsonrpc.workspace = true
 ide-agent.workspace = true
 ide-notebook.workspace = true

@@ -783,6 +783,17 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         Ok(self.blob_of(path, rev.unwrap_or("HEAD"))?.map(|b| text_encoding::decode(&b, encoding).into_owned()))
     }
+    /// The file's git mode at `rev` as printed by git (`100644`, `100755`, `120000`…),
+    /// `None` when absent there. `rev` follows `file_at`'s rules, `WT` reads the worktree.
+    pub fn file_mode_at(&self, path: &Path, rev: Option<&str>) -> IdeResult<Option<String>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        if rev == Some("WT") {
+            return repo::worktree_mode(self.root(), &self.rel_path(path)?);
+        }
+        let rel = self.rel_path(path)?;
+        let repo = self.gix()?;
+        repo::mode_at(&repo, &rel, rev.unwrap_or("HEAD"))
+    }
     /// Raw revision bytes, for encoding detection when the working file is absent.
     pub fn file_bytes_at(&self, path: &Path, rev: Option<&str>) -> IdeResult<Option<Vec<u8>>> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));

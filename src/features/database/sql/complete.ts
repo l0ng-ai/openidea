@@ -343,7 +343,7 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
         kind: "function",
         tail: `(${f.params})`,
         type: f.returns?.toUpperCase(),
-        snippet: f.params ? `${name}(\${})` : `${name}()`,
+        snippet: f.params ? `${name}(\${})` : `${name}()\${0}`,
         boost: f.aggregate && clause !== "select" && clause !== "having" ? fnBoost - 4 : fnBoost,
       });
     }

@@ -494,7 +494,6 @@
   "Compare with Current": "Comparar com a versão atual",
   "Compare with Local": "Comparar com a versão local",
   "Compilation failed: fix the errors and reload again.": "A compilação falhou: corrija os erros e recarregue novamente.",
-  "Compiles and runs the project: the default jdtls runtime, Run/Debug, and JAVA_HOME for Maven and Gradle.": "Compila e executa o projeto: o runtime jdtls padrão, Executar/Depurar e JAVA_HOME para Maven e Gradle.",
   "Compiles the module of the current file": "Compila o módulo do arquivo atual",
   "Compiles the project's sources and tests with its build system": "Compila os fontes e testes do projeto com seu sistema de compilação",
   "Completions": "Preenchimentos de código",
