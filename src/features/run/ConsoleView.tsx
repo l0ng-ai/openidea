@@ -51,7 +51,8 @@ const Line = memo(
       if (link.kind === "url") void openUrl(link.url);
       else void openTarget(link.target, cwd);
     };
-    if (segments.length === 0) return <>{"​"}</>;
+    // A blank line is an empty row: its height comes from CSS, never from a character in the text.
+    if (segments.length === 0) return null;
     return (
       <>
         {segments.map((seg, i) => {
@@ -188,6 +189,12 @@ export function ConsoleView({
   const editorFont = useProject((s) => s.settings?.editor);
   const consoleFont = resolveMonoFont(terminalFont, editorFont);
   const rowHeight = Math.max(16, Math.round(consoleFont.size * 1.5));
+  /** A row's box: at its virtual offset, and never shorter than one line — a blank line has no text. */
+  const rowStyle = (start: number) => ({
+    transform: `translateY(${start}px)`,
+    height: softWrap ? undefined : rowHeight,
+    minHeight: rowHeight,
+  });
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
   const [internalFindOpen, setInternalFindOpen] = useState(false);
   const findOpen = controlledFindOpen ?? internalFindOpen;
@@ -567,7 +574,7 @@ export function ConsoleView({
                   data-index={item.index}
                   ref={softWrap ? virtualizer.measureElement : undefined}
                   className={styles.line}
-                  style={{ transform: `translateY(${item.start}px)`, height: softWrap ? undefined : rowHeight }}
+                  style={rowStyle(item.start)}
                 >
                   {pendingInput}
                 </div>
@@ -580,7 +587,7 @@ export function ConsoleView({
                   data-index={item.index}
                   ref={softWrap ? virtualizer.measureElement : undefined}
                   className={styles.line}
-                  style={{ transform: `translateY(${item.start}px)`, height: softWrap ? undefined : rowHeight }}
+                  style={rowStyle(item.start)}
                 >
                   {foldButton(row.fold, false)}
                 </div>
@@ -594,7 +601,7 @@ export function ConsoleView({
                 data-index={item.index}
                 ref={softWrap ? virtualizer.measureElement : undefined}
                 className={clsx(styles.line, styles[line.kind])}
-                style={{ transform: `translateY(${item.start}px)`, height: softWrap ? undefined : rowHeight }}
+                style={rowStyle(item.start)}
               >
                 <Line line={line} marks={marksByLine.get(row.index)} length={line.text.length} cwd={cwd} />
                 {row.fold && foldButton(row.fold, true)}
