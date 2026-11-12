@@ -59,7 +59,8 @@ impl server::Handler for Sshd {
         Ok(())
     }
 
-    /// `ran: <command>` on stdout, `oops` on stderr, exit status 3.
+    /// `ran: <command>` on stdout, `oops` on stderr, exit status 3. `linger` exits but keeps
+    /// the channel open, as when a child it started still holds stdout.
     async fn exec_request(
         &mut self,
         channel: ChannelId,
@@ -70,8 +71,10 @@ impl server::Handler for Sshd {
         session.data(channel, format!("ran: {}", String::from_utf8_lossy(data)).into_bytes())?;
         session.extended_data(channel, 1, b"oops".to_vec())?;
         session.exit_status_request(channel, 3)?;
-        session.eof(channel)?;
-        session.close(channel)?;
+        if data != b"linger" {
+            session.eof(channel)?;
+            session.close(channel)?;
+        }
         Ok(())
     }
 
@@ -292,6 +295,30 @@ async fn runs_commands_and_streams_processes() {
         .unwrap();
     assert_eq!(process.wait().await, Some(3));
     assert_eq!(*seen.lock(), ("ran: python3 main.py".to_owned(), "oops".to_owned()));
+}
+
+#[tokio::test]
+async fn a_process_that_exits_finishes_even_while_its_channel_stays_open() {
+    let env = env().await;
+    let session = env.connect_trusted(&env.target(SshAuth::Password), Some("secret")).await.ok().unwrap();
+    let seen: Arc<Mutex<String>> = Arc::default();
+    let s = seen.clone();
+    let process = session
+        .spawn(
+            "linger",
+            None,
+            Box::new(move |o| {
+                if let Output::Stdout(b) = o {
+                    s.lock().push_str(&String::from_utf8_lossy(b));
+                }
+            }),
+        )
+        .await
+        .unwrap();
+    let code = tokio::time::timeout(std::time::Duration::from_secs(10), process.wait())
+        .await
+        .expect("the exit status must end the process");
+    assert_eq!((code, seen.lock().as_str()), (Some(3), "ran: linger"));
 }
 
 #[tokio::test]
