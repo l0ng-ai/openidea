@@ -176,14 +176,13 @@ fn apply_custom_migration_in(path: &Path, local: &Path) {
 
 /// Entries of a local-data tree that move to a newly chosen directory.
 /// Non-relocatable tool installs (virtual environments with absolute interpreter
-/// paths) stay behind and are reinstalled on demand, as in `migrate_entries`.
+/// paths) stay behind and are reinstalled on demand, as in `migrate_entries`;
+/// so do registry agents, whose saved commands are absolute paths into `agents/tools`.
 fn custom_entries(root: &Path) -> Vec<PathBuf> {
     let mut entries = local_entries(root);
-    for extra in ["logs", "agents/tools"] {
-        let entry = PathBuf::from(extra);
-        if !entries.contains(&entry) {
-            entries.push(entry);
-        }
+    let logs = PathBuf::from("logs");
+    if !entries.contains(&logs) {
+        entries.push(logs);
     }
     entries
 }
@@ -884,11 +883,13 @@ mod tests {
     }
 
     #[test]
-    fn custom_entries_cover_logs_and_agent_tools() {
+    fn custom_entries_cover_logs_and_keep_agent_installs() {
         let tmp = tempfile::tempdir().unwrap();
         let entries = custom_entries(tmp.path());
-        for expected in ["logs", "agents/tools", "index", "cache", "lsp", "agents/registry.json"] {
+        for expected in ["logs", "index", "cache", "lsp", "agents/registry.json"] {
             assert!(entries.contains(&PathBuf::from(expected)), "{entries:?}");
         }
+        // Registry agent files name their executables by absolute path.
+        assert!(!entries.iter().any(|e| e.starts_with("agents/tools")), "{entries:?}");
     }
 }
