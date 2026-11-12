@@ -111,7 +111,7 @@ for (const palette of palettes) {
       );
     await editor.locator(".cm-content").click();
     await page.keyboard.press("Meta+a");
-    await expect(editor.locator(".cm-selectionBackground").first()).toBeVisible();
+    await expect(editor.locator(".cm-selectionBackground:visible").first()).toBeVisible();
     await page.keyboard.press("ArrowRight");
     await page.keyboard.press("Meta+f");
     await page.getByRole("textbox", { name: "Find", exact: true }).fill("Order");
@@ -185,4 +185,50 @@ test("quick theme menu offers all four palettes and applies their kind", async (
     await expect(page.locator("html")).toHaveAttribute("data-color-theme", palette.id);
     await expect(page.locator("html")).toHaveAttribute("data-theme", palette.kind);
   }
+});
+
+test("gear › Theme previews the theme under the pointer and keeps the one chosen", async ({ workbench: page }) => {
+  const html = page.locator("html");
+  const gear = page.getByRole("button", { name: "IDE and Project Settings", exact: true });
+  const theme = (label: string) => page.getByRole("menuitemcheckbox", { name: label, exact: true });
+  await gear.click();
+  await page.getByRole("menuitem", { name: "Theme", exact: true }).hover();
+  await theme("Solarized Dark").hover();
+  await expect(html).toHaveAttribute("data-color-theme", "solarized-dark");
+  // A plugin's theme previews too.
+  await theme("Harbor Night").hover();
+  await expect(html).toHaveAttribute("data-plugin-theme", /harbor-night$/);
+  await expect(html).not.toHaveAttribute("data-color-theme");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(html).not.toHaveAttribute("data-plugin-theme");
+  await expect(html).toHaveAttribute("data-theme", "light");
+
+  await gear.click();
+  await page.getByRole("menuitem", { name: "Theme", exact: true }).hover();
+  await theme("One Dark").hover();
+  await expect(html).toHaveAttribute("data-color-theme", "one-dark");
+  await theme("One Dark").click();
+  await expect(html).toHaveAttribute("data-color-theme", "one-dark");
+  // Chosen, not previewed: the next start-up opens with it.
+  await expect
+    .poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("openidea.theme") ?? "{}").colorTheme))
+    .toBe("one-dark");
+});
+
+test("Settings › Appearance › Theme previews the highlighted theme until Cancel", async ({ workbench: page }) => {
+  const html = page.locator("html");
+  const dialog = await settings(page);
+  await page.getByRole("button", { name: "Theme", exact: true }).click();
+  await page.getByRole("option", { name: "Solarized Dark", exact: true }).hover();
+  await expect(html).toHaveAttribute("data-color-theme", "solarized-dark");
+  await page.keyboard.press("Escape");
+  await expect(html).toHaveAttribute("data-theme", "light");
+  await expect(html).not.toHaveAttribute("data-color-theme");
+  // Picked: it shows until Apply or Cancel.
+  await choose(page, "Theme", "One Dark");
+  await expect(html).toHaveAttribute("data-color-theme", "one-dark");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(html).toHaveAttribute("data-theme", "light");
+  await expect(html).not.toHaveAttribute("data-color-theme");
 });

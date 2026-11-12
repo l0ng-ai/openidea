@@ -93,6 +93,57 @@ export function openKeys(s: TabsState): Set<string> {
   return keys;
 }
 
+/** Replays live tabs into the saved layout, retaining their slots and the launch target. */
+export function mergeSessionTabs(current: TabsState, restored: TabsState): TabsState {
+  const live = new Map<string, Tab>();
+  for (const pane of Object.values(current.panes)) for (const tab of pane.tabs) live.set(tab.input.key, tab);
+  if (!live.size) return restored;
+  const active = current.panes[current.activePane]?.tabs.find(
+    (t) => t.id === current.panes[current.activePane]?.active,
+  );
+  if (active) live.set(active.input.key, active);
+  let next = restored;
+  for (const tab of live.values()) {
+    let found = findTab(next, tab.input.key, restored.activePane);
+    let opening = tab;
+    // Put the launch target in the saved active pane without collapsing its saved source pane.
+    if (tab === active && found && found.paneId !== restored.activePane) {
+      const source = paneOf(next, found.paneId);
+      const savedId = found.tab.id;
+      const tabs = source.tabs.filter((t) => t.id !== savedId);
+      const mru = source.mru.filter((id) => id !== savedId);
+      next = withPane(next, {
+        ...source,
+        tabs,
+        mru,
+        active: source.active === savedId ? (mru[0] ?? tabs[0]?.id ?? null) : source.active,
+      });
+      opening = { ...found.tab, input: tab.input };
+      found = null;
+    }
+    if (!found) {
+      const pane = paneOf(next, restored.activePane);
+      const opened = openTab(next, pane.id, tab.input, {
+        pinned: opening.pinned,
+        preview: opening.preview && !pane.tabs.some((t) => t.preview),
+        preservePreview: true,
+        activate: false,
+      });
+      next = opened.state;
+      found = { paneId: pane.id, tab: paneOf(next, pane.id).tabs.find((t) => t.id === opened.tabId)! };
+    }
+    const pane = paneOf(next, found.paneId);
+    const savedId = found.tab.id;
+    next = withPane(next, {
+      ...pane,
+      tabs: pane.tabs.map((t) => (t.id === savedId ? { ...t, id: tab.id, input: tab.input } : t)),
+      active: pane.active === savedId ? tab.id : pane.active,
+      mru: pane.mru.map((id) => (id === savedId ? tab.id : id)),
+    });
+  }
+  return active ? activateTab(next, restored.activePane, active.id) : next;
+}
+
 function withPane(s: TabsState, pane: Pane): TabsState {
   return { ...s, panes: { ...s.panes, [pane.id]: pane } };
 }
@@ -363,15 +414,32 @@ export function cycleTab(s: TabsState, delta: number, paneId = s.activePane): Ta
 }
 
 /** Moves a tab (drag & drop) within or across panes. */
-export function moveTab(s: TabsState, fromPane: string, tabId: string, toPane: string, index: number): TabsState {
+/**
+ * Moves a tab to `index` of `toPane`. `pin` set (a drop on the pinned or the other row of a
+ * split tab bar): the tab takes that state and lands inside the matching group.
+ */
+export function moveTab(
+  s: TabsState,
+  fromPane: string,
+  tabId: string,
+  toPane: string,
+  index: number,
+  pin?: boolean,
+): TabsState {
   const src = paneOf(s, fromPane);
   const tab = src.tabs.find((t) => t.id === tabId);
   if (!tab) return s;
+  const place = (tabs: Tab[], at: number): Tab[] => {
+    const moved = pin === undefined ? tab : { ...tab, pinned: pin, preview: pin ? false : tab.preview };
+    const pins = tabs.filter((t) => t.pinned).length;
+    const clamped = Math.max(0, Math.min(at, tabs.length));
+    tabs.splice(pin === undefined ? clamped : pin ? Math.min(clamped, pins) : Math.max(clamped, pins), 0, moved);
+    return tabs;
+  };
   if (fromPane === toPane) {
     const tabs = src.tabs.filter((t) => t.id !== tabId);
-    const at = Math.max(0, Math.min(index > src.tabs.indexOf(tab) ? index - 1 : index, tabs.length));
-    tabs.splice(at, 0, tab);
-    return { ...withPane(s, touch({ ...src, tabs }, tabId)), activePane: toPane };
+    const next = place(tabs, index > src.tabs.indexOf(tab) ? index - 1 : index);
+    return { ...withPane(s, touch({ ...src, tabs: next }, tabId)), activePane: toPane };
   }
   const dst = paneOf(s, toPane);
   const dup = dst.tabs.find((t) => t.input.key === tab.input.key);
@@ -379,9 +447,7 @@ export function moveTab(s: TabsState, fromPane: string, tabId: string, toPane: s
   next = { ...next, closed: s.closed };
   if (dup) return { ...activateTab(next, toPane, dup.id), activePane: toPane };
   const dstNow = paneOf(next, toPane);
-  const tabs = [...dstNow.tabs];
-  tabs.splice(Math.max(0, Math.min(index, tabs.length)), 0, tab);
-  return { ...withPane(next, touch({ ...dstNow, tabs }, tab.id)), activePane: toPane };
+  return { ...withPane(next, touch({ ...dstNow, tabs: place([...dstNow.tabs], index) }, tab.id)), activePane: toPane };
 }
 
 // --- splits -----------------------------------------------------------------

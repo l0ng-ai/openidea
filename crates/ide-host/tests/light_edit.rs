@@ -116,7 +116,7 @@ async fn light_windows_stay_restricted_when_folder_trust_changes() {
         "main",
         doc.id,
         None,
-        ide_lsp::types::FormatOptions { tab_size: 2, insert_spaces: true, on_save: false },
+        ide_lsp::types::FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None },
     )
     .await
     .unwrap_err();
@@ -160,7 +160,7 @@ async fn light_notebooks_open_without_interpreter_detection_or_execution() {
     assert!(ops::notebook::save(&host, "main", notebook.id.clone()).await.is_ok());
     let error = ops::sdk::sdk_detect(&host, "main", ide_sdk::SdkKind::Python).await.unwrap_err();
     assert!(error.message.contains("Restricted Mode"));
-    assert!(ops::sdk::sdk_python_effective(&host, "main").is_err());
+    assert!(ops::sdk::sdk_python_effective(&host, "main", None).is_err());
     assert!(ops::sdk::sdk_locate_tools(&host, "main", vec!["prettier".into()], Some(root)).await.is_err());
     let error = ops::notebook::restart(&host, "main", notebook.id.clone()).await.unwrap_err();
     assert!(error.message.contains("Restricted Mode"));

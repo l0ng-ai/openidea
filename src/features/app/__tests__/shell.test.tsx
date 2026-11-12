@@ -14,6 +14,10 @@ describe("window title", () => {
     expect(windowTitle("openidea", null)).toBe("openidea");
     expect(windowTitle(null, null)).toBe("OpenIDEA");
   });
+  it("names the host of a remote project", () => {
+    expect(windowTitle("rproj", "/home/me/rproj/a.ts", false, "me@server")).toBe("rproj [me@server] – a.ts");
+    expect(windowTitle("rproj", null, false, "me@server")).toBe("rproj [me@server]");
+  });
 });
 
 describe("keymap reference", () => {

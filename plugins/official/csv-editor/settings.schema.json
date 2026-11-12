@@ -1,0 +1,17 @@
+{
+  "properties": {
+    "firstRowIsHeader": {
+      "type": "boolean",
+      "title": "First row is the header",
+      "description": "Show the first record as column names instead of a row.",
+      "default": true
+    },
+    "delimiter": {
+      "type": "string",
+      "title": "Delimiter",
+      "description": "auto: tab for .tsv files, else the most frequent of , ; | in the first line.",
+      "enum": ["auto", ",", ";", "|", "tab"],
+      "default": "auto"
+    }
+  }
+}

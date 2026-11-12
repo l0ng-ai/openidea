@@ -1,0 +1,53 @@
+package openidea:plugin@1.6.0;
+
+/// Launches this plugin's configurations in the invoking window's Run tool window.
+interface run {
+    use types.{error};
+    /// Starts an owned configuration, appending args. Debug requires a debugger.
+    /// Only from a window command/event. The returned id receives run-exited.
+    start: func(config: string, args: list<string>, debug: bool) -> result<string, error>;
+}
+
+/// Optional dynamic configurations, refreshed alongside run detectors.
+interface run-configurations {
+    /// A configuration running an approved process in the project sandbox.
+    record run-configuration {
+        id: string,
+        name: string,
+        program: string,
+        args: list<string>,
+        cwd: option<string>,
+        test: bool,
+        framework: option<string>,
+    }
+    /// Returns the complete set for this project root.
+    configurations: func(project-root: string) -> list<run-configuration>;
+}
+
+/// Optional parser for test configurations whose framework is plugin.
+interface test-results {
+    use types.{location, extension};
+    /// A suite or test; parents must precede children and ids remain stable for a run.
+    record test-start { id: string, parent: option<string>, name: string, location: option<location> }
+    /// A successful test and optional elapsed milliseconds.
+    record test-passed { id: string, duration-ms: option<u32> }
+    /// A failed test, comparison and optional declaration location.
+    record test-failed {
+        id: string, duration-ms: option<u32>, message: string,
+        expected: option<string>, actual: option<string>, location: option<location>,
+    }
+    /// A skipped test and its explanation.
+    record test-skipped { id: string, reason: option<string> }
+    /// Output attached to a test or suite.
+    record test-output { id: string, text: string }
+    /// Incremental updates to the IDE's test tree. Unknown extensions are ignored.
+    variant test-event {
+        suite-started(test-start), test-started(test-start), passed(test-passed),
+        failed(test-failed), skipped(test-skipped), output(test-output), other(extension),
+    }
+    /// Parses one bounded output batch; failures fall back to built-in parsers.
+    parse: func(config: string, chunk: string) -> list<test-event>;
+    /// Selects test-tree name paths (parents then test), using the same config id as parse.
+    /// Returns the full replacement argument list, or none when filtering is unsupported.
+    select-tests: func(config: string, tests: list<list<string>>) -> option<list<string>>;
+}

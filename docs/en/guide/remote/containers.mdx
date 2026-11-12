@@ -1,0 +1,99 @@
+---
+title: "Containers"
+description: "Reopen a local project in its dev container, and run configurations in Docker or Docker Compose containers."
+---
+
+OpenIDEA works with containers in two ways:
+
+- **Dev containers**: the whole project opens inside the container described by its `devcontainer.json`, with the IDE
+  backend running there. This is remote development, like [SSH](/en/guide/remote/ssh).
+- **Docker and Docker Compose run targets**: the project stays local and only a run configuration runs in a
+  container.
+
+To list, start, stop and inspect containers, images and Compose services, use the [Services](/en/guide/services)
+tool window.
+
+## Dev containers
+
+### Requirements
+
+- Docker installed on your machine, with the daemon of the current Docker context running locally. The project folder
+  is bind-mounted into the container, so a daemon on another machine doesn't work.
+- The Dev Containers CLI (`devcontainer`). Install **Dev Containers CLI** from
+  **Settings › Languages & Frameworks › Language Servers** (it needs Node.js), or put `devcontainer` on your `PATH`.
+- A `.devcontainer/devcontainer.json` or `.devcontainer.json` in the project folder.
+- The project must be trusted: building the container runs the project's commands (`initializeCommand`, the
+  Dockerfile build).
+- A Linux container on x86_64 or aarch64.
+
+### Reopen a project in its container
+
+<Steps>
+  <Step title="Open the project locally">Open the folder that contains the `devcontainer.json` and trust it.</Step>
+  <Step title="Reopen in the container">
+    Choose **File › Reopen in Container**, then **This Window** or **New Window** if asked.
+  </Step>
+  <Step title="Wait for the container">
+    OpenIDEA runs `devcontainer up` for the folder, which builds or starts the container. The first build can take a
+    while. Then it installs and starts [`openidea-server`](/en/guide/remote/server) in the container and opens the
+    project folder there.
+  </Step>
+</Steps>
+
+The project then opens at the container's `remoteWorkspaceFolder`, as its `remoteUser`. The status bar shows
+**Dev Container: `<folder name>`**, and the project appears in the recent projects list on the Welcome screen.
+
+If something fails (no `devcontainer.json`, Docker not installed, the build failed), a notification
+**Could not reopen the project in a container** shows the reason, including the end of the CLI's log.
+
+### What applies from `devcontainer.json`
+
+- Everything `devcontainer up` handles: image, Dockerfile, features, mounts and the lifecycle commands. They run once,
+  through the CLI; the server doesn't run `postStartCommand` again.
+- `remoteEnv`: applied to terminals, runs, language servers and tools in the container. Change it and choose
+  **File › Reload Environment** to apply it to new processes.
+- `forwardPorts`: forwarded to your machine automatically. Forward more in the **Ports** tool window, as in an
+  [SSH window](/en/guide/remote/ssh#forward-ports).
+
+Language servers and debuggers that OpenIDEA installs go into the container, under the container user's
+`~/.openidea/data`.
+
+### Limits
+
+- Only the default configuration is used (`.devcontainer/devcontainer.json`, then `.devcontainer.json`). There is no
+  picker for several configurations in subfolders of `.devcontainer/`.
+- **Reopen in Container** is available for local projects only, not from an SSH or WSL window.
+- There is no command to attach to an arbitrary running container; the container always comes from the project's
+  `devcontainer.json`.
+
+## Docker and Docker Compose run targets
+
+A run target runs a run configuration somewhere other than your machine. Container targets rewrite the configuration
+into a local `docker run --rm` (or `docker compose run --rm`) with the project bind-mounted, so the console, input,
+**Stop** and test results work as for a local run.
+
+<Steps>
+  <Step title="Add a target">
+    Open **Settings › Build, Execution, Deployment › Run Targets**, click **+**, and set **Type** to **Docker** or
+    **Docker Compose**.
+  </Step>
+  <Step title="Describe the container">
+    For **Docker**, enter the **Image** (for example `python:3.12`). For **Docker Compose**, list the **Compose files**
+    (empty uses the project's default file) and the **Service**.
+  </Step>
+  <Step title="Use it">
+    Pick the target under **Run on** in a run configuration, or make it the **Default run target**.
+  </Step>
+</Steps>
+
+Container target options:
+
+| Option                                                              | Meaning                                                                                                                                           |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Docker connection**                                               | Which Docker daemon to use; **Docker CLI default** uses the Docker CLI's own default. Only daemons on this machine can mount the project.         |
+| **Container folder**                                                | Where the project is mounted. Paths and the working directory are mapped into it. For Compose, empty means where the service mounts the project.  |
+| **Published ports**                                                 | Ports to publish, for example `8000:8000`.                                                                                                        |
+| **Run options**                                                     | Extra `docker run` options, for example `--network host`.                                                                                         |
+| **Run as the image's user, not the project folder's owner (Linux)** | On Linux the container runs as the owner of the project folder by default, so the files it writes stay yours. Tick this to keep the image's user. |
+
+See [Run configurations](/en/guide/run) for run targets in general, including SSH targets.

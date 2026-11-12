@@ -1,6 +1,6 @@
 use crate::Host;
 use ide_core::{CancellationToken, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
-use ide_remote::{DeployedPath, DeploymentCoverage, SyncEntry, SyncStep, TransferReport};
+use ide_remote::{DeployedPath, DeploymentCoverage, DeploymentRoot, SyncEntry, SyncStep, TransferReport};
 use ide_ssh::{FsConnection, RemoteEntry};
 use std::path::PathBuf;
 
@@ -134,13 +134,12 @@ pub async fn deploy_info(
     state.remote.deployed(&project.settings.effective(), &project.root, server.as_deref(), &path).await
 }
 
-/// Remote Host tool window: the server root of `server`, resolved on the host.
-pub async fn deploy_server_root(window: &str, state: &Host, server: String) -> IdeResult<String> {
-    let settings = match state.project(window) {
-        Ok(p) => p.settings.effective(),
-        Err(_) => state.global_settings.effective(),
-    };
-    state.remote.server_root(&settings, &server).await
+/// Remote Host tool window: the resolved server root and project mappings.
+pub async fn deploy_server_root(window: &str, state: &Host, server: String) -> IdeResult<DeploymentRoot> {
+    let project = state.project(window).ok();
+    let settings =
+        project.as_ref().map(|p| p.settings.effective()).unwrap_or_else(|| state.global_settings.effective());
+    state.remote.server_info(&settings, project.as_ref().map(|p| p.root.as_path()), &server).await
 }
 
 /// Entries of a folder on the selected filesystem (`~`: its home directory).
@@ -168,6 +167,25 @@ pub async fn remote_mkdir(state: &Host, connection: FsConnection, path: String) 
 
 pub async fn remote_rename(state: &Host, connection: FsConnection, from: String, to: String) -> IdeResult<()> {
     state.remote.remote_rename(&connection, &from, &to).await
+}
+
+/// Remote Host › Download to…: remote files and folders into a local folder, each under its
+/// own name.
+pub async fn remote_download_into(
+    window: &str,
+    state: &Host,
+    connection: FsConnection,
+    paths: Vec<String>,
+    target: IpcPath,
+    request: RequestId,
+) -> IdeResult<TransferReport> {
+    let project = state.project(window)?;
+    let token = state.begin_request(request);
+    let (mut report, done) = progress(project.sink.clone(), "Downloading", token.clone());
+    let r = state.remote.download_into(&connection, &paths, &target, &token, &mut report).await;
+    done();
+    state.end_request(request);
+    r
 }
 
 pub async fn deploy_test_connection(state: &Host, connection: FsConnection, path: String) -> IdeResult<()> {
@@ -198,6 +216,17 @@ pub(crate) fn register(d: &mut crate::rpc::Dispatcher) {
     d.add("remote_of", |c| async move { Ok(remote_of(&c.host, c.arg("path")?)) });
     d.add("remote_delete", |c| async move { remote_delete(&c.host, c.arg("connection")?, c.arg("path")?).await });
     d.add("remote_mkdir", |c| async move { remote_mkdir(&c.host, c.arg("connection")?, c.arg("path")?).await });
+    d.add("remote_download_into", |c| async move {
+        remote_download_into(
+            &c.window,
+            &c.host,
+            c.arg("connection")?,
+            c.arg("paths")?,
+            c.arg("target")?,
+            c.arg("request")?,
+        )
+        .await
+    });
     d.add("remote_rename", |c| async move {
         remote_rename(&c.host, c.arg("connection")?, c.arg("from")?, c.arg("to")?).await
     });

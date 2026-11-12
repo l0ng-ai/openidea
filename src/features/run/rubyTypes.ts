@@ -10,12 +10,27 @@ import { commandName } from "./commandName";
 
 const on = (v: string | undefined) => v === "true";
 
+const RUBY_TOOLS = new Set(["ruby", "bundle", "rake", "rspec"]);
+
+/**
+ * The launcher for `want` (`bundle` or the tool itself) from the Launcher field. A field holding
+ * the other Ruby tool of the same interpreter (`/v/bin/ruby` when Bundler is ticked) means its
+ * sibling in that directory; anything else (a binstub, `spring`) is the user's own and stays.
+ */
+function launcher(command: string | undefined, want: string): string {
+  const given = command?.trim();
+  if (!given) return want;
+  const current = commandName(given);
+  if (current === want || !RUBY_TOOLS.has(current)) return given;
+  const dir = /^.*[/\\]/.exec(given)?.[0] ?? "";
+  return dir + want + (/\.exe$/i.test(given) ? ".exe" : "");
+}
+
 /** `bundle exec <tool>` or `<tool>`, launched through `params.command` when one is set. */
 function tool(p: Readonly<Record<string, string>>, name: string): { command: string; args: string[] } {
-  const command = p.command?.trim();
   return on(p.bundler)
-    ? { command: command || "bundle", args: ["exec", name] }
-    : { command: command || name, args: [] };
+    ? { command: launcher(p.command, "bundle"), args: ["exec", name] }
+    : { command: launcher(p.command, name), args: [] };
 }
 
 /** Splits `bundle exec <tool> rest…` / `<tool> rest…` into the launcher, the Bundler flag and `rest`. */
@@ -92,7 +107,14 @@ export const rubyScriptType: RunConfigTypeContribution = {
   description: "Run a Ruby script",
   defaults: {},
   fields: [
-    { key: "script", label: "Ruby script", mono: true, required: true, placeholder: "e.g. bin/rails or lib/app.rb" },
+    {
+      key: "script",
+      label: "Ruby script",
+      mono: true,
+      required: true,
+      browse: "file",
+      placeholder: "e.g. bin/rails or lib/app.rb",
+    },
     { key: "scriptArgs", label: "Script arguments", mono: true, placeholder: "e.g. server -p 3000" },
     { key: "rubyArgs", label: "Ruby arguments", mono: true, placeholder: "e.g. -Ilib -w" },
     bundlerField,

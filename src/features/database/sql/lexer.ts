@@ -16,6 +16,7 @@ export interface Token {
   to: number;
   /** Upper-cased `text` of words, for keyword checks. */
   upper: string;
+  value?: string;
 }
 
 export interface Lexed {
@@ -30,13 +31,23 @@ const TWO_CHAR = new Set(["::", "<=", ">=", "<>", "!=", "||", "->", "=>", ":="])
 
 export function lex(text: string, driver: DbDriver = "sqlite"): Lexed {
   const mysql = driver === "mysql";
+  const clickhouse = driver === "clickhouse";
   const tokens: Token[] = [];
   const comments: Lexed["comments"] = [];
   const n = text.length;
   let i = 0;
   const push = (kind: TokenKind, from: number, to: number) => {
     const t = text.slice(from, to);
-    tokens.push({ kind, text: t, from, to, upper: kind === "word" ? t.toUpperCase() : t });
+    tokens.push({
+      kind,
+      text: t,
+      from,
+      to,
+      upper: kind === "word" ? t.toUpperCase() : t,
+      ...(kind === "quoted" && clickhouse
+        ? { value: t.slice(1, t.endsWith(t[0]!) ? -1 : undefined).replace(/\\([\\'"`])/g, "$1") }
+        : {}),
+    });
   };
   /** End of a quoted run starting at `i` (closing char doubled = escaped). */
   const quoted = (start: number, close: string, backslash: boolean): number => {
@@ -67,15 +78,15 @@ export function lex(text: string, driver: DbDriver = "sqlite"): Lexed {
       comments.push({ from: i, to, open: end < 0 });
       i = to;
     } else if (c === "'") {
-      const to = quoted(i, "'", mysql);
+      const to = quoted(i, "'", mysql || clickhouse);
       push("string", i, to);
       i = to;
     } else if (c === '"') {
-      const to = quoted(i, '"', false);
+      const to = quoted(i, '"', clickhouse);
       push(mysql ? "string" : "quoted", i, to);
       i = to;
-    } else if (c === "`" && mysql) {
-      const to = quoted(i, "`", false);
+    } else if (c === "`" && (mysql || clickhouse)) {
+      const to = quoted(i, "`", clickhouse);
       push("quoted", i, to);
       i = to;
     } else if (c === "$" && driver === "postgres") {
@@ -146,6 +157,7 @@ function closed(t: Token): boolean {
 /** The identifier a word / quoted token names (quotes removed, doubled quotes collapsed). */
 export function identName(t: Token): string {
   if (t.kind !== "quoted") return t.text;
+  if (t.value !== undefined) return t.value;
   const q = t.text[0]!;
   const body = t.text.endsWith(q) && t.text.length > 1 ? t.text.slice(1, -1) : t.text.slice(1);
   return body.split(q + q).join(q);

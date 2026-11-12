@@ -8,6 +8,12 @@
 //!
 //! Language servers find managed tools once [`extend_process_path`] has put
 //! [`tools_bin_dirs`] on the process `PATH` at startup.
+//!
+//! GitHub API downloads prefer `GITHUB_TOKEN`, then `GH_TOKEN`, then the active
+//! `github.com` account from `gh auth token --hostname github.com`. The CLI is
+//! optional; absent credentials retain anonymous downloads. Tokens are passed
+//! to curl over stdin, never stored in tool manifests or command arguments, and
+//! are not sent to other download origins. CLI lookup is cancellable and bounded.
 
 pub mod archive;
 mod bundled;
@@ -25,8 +31,8 @@ use ide_language::LanguageConfig;
 use parking_lot::Mutex;
 use platform::{Os, Platform};
 pub use process::progress_event;
-pub use process::{Emit, Http, run_streamed};
-use process::{run_collect, run_quiet};
+use process::run_collect;
+pub use process::{Emit, Http, run_quiet, run_streamed};
 pub use registry::{Method, ReleaseSource, TOOLS, ToolKind, ToolSpec};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -148,7 +154,11 @@ fn managed_bin_dir(root: &Path, spec: &ToolSpec, platform: Platform) -> Option<P
         Method::PipVenv { .. } => {
             Some(root.join(spec.name).join("venv").join(if platform.os == Os::Windows { "Scripts" } else { "bin" }))
         }
-        Method::Bundled { .. } | Method::Rustup { .. } | Method::PipUser { .. } | Method::PipTarget { .. } => None,
+        Method::Bundled { .. }
+        | Method::Rustup { .. }
+        | Method::PipUser { .. }
+        | Method::PipTarget { .. }
+        | Method::GemActive { .. } => None,
     }
 }
 
@@ -389,6 +399,11 @@ pub fn parse_version(text: &str) -> Option<String> {
     None
 }
 
+/// A Windows App Execution Alias (`%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe`).
+fn is_app_execution_alias(path: &Path) -> bool {
+    path.parent().and_then(Path::file_name).is_some_and(|d| d.eq_ignore_ascii_case("WindowsApps"))
+}
+
 /// A tool whose "command" is a plugin jar (e.g. a jdtls bundle) rather than an executable.
 fn is_bundle(command: &str) -> bool {
     command.ends_with(".jar")
@@ -406,6 +421,7 @@ pub fn managed_bundle(app_data: &Path, name: &str) -> Option<PathBuf> {
 }
 
 /// Installer and detector over one tools directory.
+#[derive(Clone)]
 pub struct Tools {
     root: PathBuf,
     /// Search path for system tools (excludes our own dirs).
@@ -417,7 +433,12 @@ pub struct Tools {
     custom: BTreeMap<String, PathBuf>,
     /// Executables found outside the search path (app bundles), by command.
     found: BTreeMap<String, PathBuf>,
+    runtime_commands: BTreeMap<String, PathBuf>,
+    runtime_env: BTreeMap<String, String>,
     version_timeout: Duration,
+    /// The project the tools are used for: tools that install into "the active runtime" (gems) run here,
+    /// so a version manager picks the project's Ruby.
+    work_dir: Option<PathBuf>,
 }
 
 impl Tools {
@@ -438,8 +459,39 @@ impl Tools {
             platform,
             custom: BTreeMap::new(),
             found: BTreeMap::new(),
+            runtime_commands: BTreeMap::new(),
+            runtime_env: BTreeMap::new(),
             version_timeout: Duration::from_secs(4),
+            work_dir: None,
         }
+    }
+
+    /// Applies the project's SDKs to prerequisite lookup, probes and installer children.
+    pub fn with_runtime(mut self, commands: BTreeMap<String, PathBuf>, env: BTreeMap<String, String>) -> Self {
+        self.runtime_commands = commands;
+        self.runtime_env = env;
+        self
+    }
+
+    fn for_method(&self, method: Method) -> Self {
+        let commands: &[&str] = match method {
+            Method::Go { .. } => &["go"],
+            Method::Npm { .. } => &["node"],
+            Method::Gem { .. } | Method::GemActive { .. } => &["ruby"],
+            Method::PipVenv { .. } | Method::PipUser { .. } | Method::PipTarget { .. } => &["python"],
+            _ => &[],
+        };
+        let mut runtime = self.clone();
+        runtime.runtime_commands.retain(|name, _| commands.contains(&name.as_str()));
+        runtime.runtime_env.retain(|name, _| name == "GOROOT" && commands.contains(&"go"));
+        let dirs: Vec<PathBuf> =
+            runtime.runtime_commands.values().filter_map(|p| p.parent().map(Path::to_path_buf)).collect();
+        runtime.system_path =
+            std::env::join_paths(dirs.iter().cloned().chain(std::env::split_paths(&self.system_path)))
+                .unwrap_or_else(|_| self.system_path.clone());
+        runtime.child_path = std::env::join_paths(dirs.iter().cloned().chain(std::env::split_paths(&self.child_path)))
+            .unwrap_or_else(|_| self.child_path.clone());
+        runtime
     }
 
     /// Reports the executables chosen in settings (command → path) as the tools' location.
@@ -454,11 +506,29 @@ impl Tools {
         self
     }
 
+    /// Runs per-project installs (see [`registry::Method::GemActive`]) in `dir`.
+    pub fn with_work_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.work_dir = dir.filter(|d| d.is_dir());
+        self
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// [`Tools::command`] in the project directory.
+    fn command_in_project(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut cmd = self.command(program);
+        if let Some(dir) = &self.work_dir {
+            cmd.current_dir(dir);
+        }
+        cmd
+    }
+
     fn which(&self, cmd: &str) -> Option<PathBuf> {
+        if let Some(path) = self.runtime_commands.get(cmd) {
+            return path.is_file().then(|| path.clone());
+        }
         ide_core::tool_path::find_command(cmd, &self.system_path, &self.root)
     }
 
@@ -468,12 +538,52 @@ impl Tools {
 
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut cmd = Command::new(program);
-        ide_core::process::prepare(&mut cmd).env("PATH", &self.child_path);
+        ide_core::process::prepare(&mut cmd).envs(&self.runtime_env).env("PATH", &self.child_path);
         cmd
     }
 
+    /// `python` started in an empty private directory: Python puts the working directory
+    /// first on `sys.path` for `-c` / `-m`, and the IDE's own (inherited from wherever it
+    /// was launched, e.g. a project) could hold modules that shadow the standard library,
+    /// pip or the tool being probed. Not `-I`: that also hides `pip install --user` packages.
+    fn python_command(&self, python: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut cmd = self.command(python);
+        let dir = self.root.join(".python-cwd");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            cmd.current_dir(dir);
+        }
+        cmd
+    }
+
+    /// The interpreter that installs and probes Python tools. Windows installs `python.exe`
+    /// and the `py` launcher, not `python3.exe`; its `WindowsApps` entries are App Execution
+    /// Aliases that only open the Store unless the Store's Python is installed, so they count
+    /// only when they run.
     fn python(&self) -> Option<PathBuf> {
-        self.which_any(&["python3", "python"])
+        if self.runtime_commands.contains_key("python") {
+            return self.which("python");
+        }
+        if self.platform.os != Os::Windows {
+            return self.which_any(&["python3", "python"]);
+        }
+        ["python", "py", "python3"]
+            .into_iter()
+            .flat_map(|command| {
+                std::env::split_paths(&self.system_path).filter_map(move |dir| {
+                    if dir.as_os_str().is_empty() {
+                        return None;
+                    }
+                    let search = std::env::join_paths([dir]).ok()?;
+                    ide_core::tool_path::find_command(command, &search, &self.root)
+                })
+            })
+            .find(|p| {
+                !is_app_execution_alias(p) || {
+                    let mut c = self.python_command(p);
+                    c.arg("--version");
+                    run_quiet(c, Duration::from_secs(5)).is_some_and(|(ok, _)| ok)
+                }
+            })
     }
 
     /// Executable `cmd` inside `dir`, honouring Windows suffixes.
@@ -566,7 +676,9 @@ impl Tools {
                 "npm or pnpm is required: install Node.js (https://nodejs.org)",
             ),
             Method::Go { .. } => need(self.which("go").is_some(), "Go is required (https://go.dev/dl)"),
-            Method::Gem { .. } => need(self.which("gem").is_some(), "Ruby is required (https://www.ruby-lang.org)"),
+            Method::Gem { .. } | Method::GemActive { .. } => {
+                need(self.which("gem").is_some(), "Ruby is required (https://www.ruby-lang.org)")
+            }
             Method::DotnetTool { .. } => {
                 need(self.which("dotnet").is_some(), ".NET SDK is required (https://dotnet.microsoft.com/download)")
             }
@@ -591,6 +703,13 @@ impl Tools {
     }
 
     fn info_for(&self, name: &str, usage: Option<&Usage>) -> Option<ToolInfo> {
+        match registry::find(name) {
+            Some(spec) => self.for_method(spec.method).info_for_runtime(name, usage),
+            None => self.info_for_runtime(name, usage),
+        }
+    }
+
+    fn info_for_runtime(&self, name: &str, usage: Option<&Usage>) -> Option<ToolInfo> {
         let spec = registry::find(name);
         let languages = usage.map(|u| u.languages.clone()).unwrap_or_default();
         let install_hint = usage.and_then(|u| u.install_hint.clone());
@@ -708,7 +827,7 @@ impl Tools {
                 }
                 // Importable by the default interpreter (pip install --user / a system package).
                 let Some(python) = self.python() else { return (ToolStatus::Missing, None, None) };
-                let mut c = self.command(&python);
+                let mut c = self.python_command(&python);
                 c.args(["-c", &format!("import {module}; print({module}.__version__)")]);
                 match run_quiet(c, Duration::from_secs(5)) {
                     Some((true, out)) => (ToolStatus::OnPath, Some(python), parse_version(&out)),
@@ -717,10 +836,26 @@ impl Tools {
             }
             Method::PipUser { module, .. } => {
                 let Some(python) = self.python() else { return (ToolStatus::Missing, None, None) };
-                let mut c = self.command(&python);
+                let mut c = self.python_command(&python);
                 c.args(["-c", &format!("import {module}; print({module}.__version__)")]);
                 match run_quiet(c, Duration::from_secs(5)) {
                     Some((true, out)) => (ToolStatus::Installed, Some(python), parse_version(&out)),
+                    _ => (ToolStatus::Missing, None, None),
+                }
+            }
+            Method::GemActive { gem } => {
+                // Installed for the Ruby active in the project, not merely a shim of some other version's.
+                let Some(gem_cmd) = self.which("gem") else { return (ToolStatus::Missing, None, None) };
+                let mut c = self.command_in_project(&gem_cmd);
+                c.args(["list", "--exact", gem]);
+                match run_quiet(c, Duration::from_secs(10)) {
+                    Some((true, out)) if out.contains(&format!("{gem} (")) => {
+                        // Homebrew's Ruby keeps its gem bindir off PATH: ask the Ruby where it is.
+                        match self.gem_executable(main) {
+                            Some(path) => (ToolStatus::OnPath, Some(path), parse_version(&out)),
+                            None => (ToolStatus::Missing, None, None),
+                        }
+                    }
                     _ => (ToolStatus::Missing, None, None),
                 }
             }
@@ -780,6 +915,19 @@ impl Tools {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<ToolInfo> {
+        match registry::find(name) {
+            Some(spec) => self.for_method(spec.method).install_for_runtime(name, langs, cancel, emit),
+            None => self.install_for_runtime(name, langs, cancel, emit),
+        }
+    }
+
+    fn install_for_runtime(
+        &self,
+        name: &str,
+        langs: &[LanguageConfig],
+        cancel: &CancellationToken,
+        emit: Emit,
+    ) -> IdeResult<ToolInfo> {
         let spec = registry::find(name).ok_or_else(|| {
             let hint = usages(langs).get(name).and_then(|u| u.install_hint.clone());
             IdeError::unavailable(match hint {
@@ -820,6 +968,7 @@ impl Tools {
                 Method::Npm { packages } => self.install_npm(packages, cancel, emit)?,
                 Method::Go { module } => self.install_go(spec, module, cancel, emit)?,
                 Method::Gem { gem } => self.install_gem(spec, gem, cancel, emit)?,
+                Method::GemActive { gem } => self.install_gem_active(gem, cancel, emit)?,
                 Method::DotnetTool { package } => self.install_dotnet_tool(spec, package, cancel, emit)?,
                 Method::PipVenv { package } => self.install_venv(spec, package, cancel, emit)?,
                 Method::PipUser { package, .. } => self.install_pip_user(package, cancel, emit)?,
@@ -903,6 +1052,41 @@ impl Tools {
             })
         });
         self.write_manifest(spec.name, &Manifest { version, source: Some(module.to_string()) })
+    }
+
+    /// Where the project's Ruby installs gem executables (`Gem.bindir`, `Gem.user_dir`'s `bin`).
+    fn gem_bin_dirs(&self) -> Vec<PathBuf> {
+        let Some(ruby) = self.which("ruby") else { return Vec::new() };
+        let mut c = self.command_in_project(ruby);
+        c.args(["-e", ide_core::tool_path::RUBY_GEM_BIN_SCRIPT]);
+        match run_quiet(c, Duration::from_secs(10)) {
+            Some((true, out)) => ide_core::tool_path::gem_bin_dirs(&out),
+            _ => Vec::new(),
+        }
+    }
+
+    /// An installed gem's executable: on the search path, else in one of the Ruby's gem bin directories.
+    fn gem_executable(&self, cmd: &str) -> Option<PathBuf> {
+        self.which(cmd).or_else(|| self.gem_bin_dirs().iter().find_map(|d| self.exe_in(d, cmd)))
+    }
+
+    /// `gem install` into the active Ruby, then makes version-manager shims see the new executable.
+    fn install_gem_active(&self, gem: &str, cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
+        let mut c = self.command_in_project(self.which("gem").expect("checked"));
+        c.args(["install", "--no-document", gem]);
+        run_streamed(c, cancel, emit)?;
+        // mise / asdf / rbenv list executables in shims written at install time; a gem installed
+        // afterwards has none until they are regenerated. Best effort: the tool may not be installed.
+        for (manager, args) in
+            [("mise", &["reshim"][..]), ("asdf", &["reshim", "ruby"][..]), ("rbenv", &["rehash"][..])]
+        {
+            if let Some(path) = self.which(manager) {
+                let mut c = self.command_in_project(path);
+                c.args(args);
+                let _ = run_quiet(c, Duration::from_secs(30));
+            }
+        }
+        Ok(())
     }
 
     fn install_gem(&self, spec: &ToolSpec, gem: &str, cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
@@ -1005,15 +1189,18 @@ impl Tools {
             if let Some(uv) = self.which("uv") {
                 let mut c = self.command(&uv);
                 c.arg("venv").arg(&venv);
+                if let Some(python) = self.runtime_commands.get("python") {
+                    c.arg("--python").arg(python);
+                }
                 run_streamed(c, cancel, emit)?;
                 let mut c = self.command(&uv);
                 c.args(["pip", "install", "--python"]).arg(&python).arg(package);
                 run_streamed(c, cancel, emit)?;
             } else {
-                let mut c = self.command(self.python().expect("checked"));
+                let mut c = self.python_command(self.python().expect("checked"));
                 c.args(["-m", "venv"]).arg(&venv);
                 run_streamed(c, cancel, emit)?;
-                let mut c = self.command(&python);
+                let mut c = self.python_command(&python);
                 c.args(["-m", "pip", "install", "--upgrade", "--disable-pip-version-check", package]);
                 run_streamed(c, cancel, emit)?;
             }
@@ -1032,7 +1219,7 @@ impl Tools {
     fn install_pip_user(&self, package: &str, cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
         let python = self.python().expect("checked");
         let pip = |extra: &[&str]| {
-            let mut c = self.command(&python);
+            let mut c = self.python_command(&python);
             c.args(["-m", "pip", "install", "--user", "--upgrade", "--disable-pip-version-check"])
                 .args(extra)
                 .arg(package);
@@ -1069,7 +1256,7 @@ impl Tools {
         let _ = std::fs::remove_dir_all(&dir);
         let lib = python_lib_dir(&self.root, spec.name);
         std::fs::create_dir_all(&lib)?;
-        let mut c = self.command(self.python().expect("checked"));
+        let mut c = self.python_command(self.python().expect("checked"));
         c.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-deps", "--upgrade", "--target"])
             .arg(&lib)
             .args(["--only-binary=:all:", "--platform", "any", "--implementation", "py"])
@@ -1096,10 +1283,26 @@ impl Tools {
         cancel: &CancellationToken,
     ) -> IdeResult<sources::Download> {
         match source {
-            ReleaseSource::GitHub { repo } => {
-                let json = http.get_text(&sources::github_latest_url(repo), cancel)?;
-                sources::github_pick(&json, assets, self.platform)
-            }
+            ReleaseSource::GitHub { repo } => match http.get_text(&sources::github_latest_url(repo), cancel) {
+                Ok(json) => sources::github_pick(&json, assets, self.platform),
+                Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
+                // Without a token the API allows 60 requests an hour per IP address, often used
+                // up behind a shared one (403/429); the release's web pages have no such limit.
+                Err(api) => self.resolve_github_web(http, repo, assets, cancel).map_err(|web| {
+                    if web.kind == ErrorKind::Cancelled {
+                        return web;
+                    }
+                    tracing::warn!("GitHub release lookup for {repo} failed: {api}; web pages: {web}");
+                    IdeError::new(
+                        api.kind,
+                        format!(
+                            "{}\nDownload it from {} and set its Path in Settings › Languages & Frameworks › Language Servers.",
+                            api.message,
+                            sources::github_latest_page(repo)
+                        ),
+                    )
+                }),
+            },
             ReleaseSource::HashiCorp { product } => {
                 let json = http.get_text(&sources::hashicorp_latest_url(product), cancel)?;
                 sources::hashicorp_pick(&json, assets, self.platform)
@@ -1123,6 +1326,27 @@ impl Tools {
                 let xml = http.get_text(&sources::maven_metadata_url(group, artifact), cancel)?;
                 sources::maven_pick(group, artifact, &xml)
             }
+        }
+    }
+
+    /// [`resolve_release`](Self::resolve_release) for a GitHub release, from its web pages.
+    fn resolve_github_web(
+        &self,
+        http: &Http,
+        repo: &str,
+        assets: &[platform::AssetRule],
+        cancel: &CancellationToken,
+    ) -> IdeResult<sources::Download> {
+        let page = http.effective_url(&sources::github_latest_page(repo), cancel)?;
+        let tag = sources::github_tag_from_url(&page)
+            .ok_or_else(|| IdeError::unavailable(format!("{repo} has no published release")))?;
+        let list = http.get_text(&sources::github_assets_page(repo, &tag), cancel)?;
+        match sources::github_pick_web(repo, &tag, &list, None, assets, self.platform) {
+            Err(e) if e.kind == ErrorKind::Unavailable => {
+                let notes = http.get_text(&sources::github_tag_page(repo, &tag), cancel)?;
+                sources::github_pick_web(repo, &tag, &list, Some(&notes), assets, self.platform)
+            }
+            result => result,
         }
     }
 
@@ -1209,6 +1433,13 @@ impl Tools {
 
     /// Removes a tool the IDE installed.
     pub fn uninstall(&self, name: &str, langs: &[LanguageConfig]) -> IdeResult<ToolInfo> {
+        match registry::find(name) {
+            Some(spec) => self.for_method(spec.method).uninstall_for_runtime(name, langs),
+            None => self.uninstall_for_runtime(name, langs),
+        }
+    }
+
+    fn uninstall_for_runtime(&self, name: &str, langs: &[LanguageConfig]) -> IdeResult<ToolInfo> {
         let spec = registry::find(name).ok_or_else(|| IdeError::not_found(format!("unknown tool `{name}`")))?;
         // Uninstalling mid-install would tear down the directory under the running installer.
         if INSTALLING.lock().as_ref().is_some_and(|m| m.contains_key(name)) {
@@ -1229,7 +1460,7 @@ impl Tools {
             Method::PipUser { package, .. } => {
                 let python = self.python().ok_or_else(|| IdeError::unavailable("python3 not found"))?;
                 let pip = |extra: &[&str]| {
-                    let mut c = self.command(&python);
+                    let mut c = self.python_command(&python);
                     c.args(["-m", "pip", "uninstall", "-y", "--disable-pip-version-check"]).args(extra).arg(package);
                     run_collect(c, &cancel, &quiet)
                 };
@@ -1260,6 +1491,18 @@ impl Tools {
                     }
                     c.current_dir(&self.root);
                     run_streamed(c, &cancel, &quiet)?;
+                }
+            }
+            Method::GemActive { gem } => {
+                if let Some(gem_cmd) = self.which("gem") {
+                    let mut c = self.command_in_project(&gem_cmd);
+                    c.args(["uninstall", "--all", "--executables", "--ignore-dependencies", gem]);
+                    run_streamed(c, &cancel, &quiet)?;
+                }
+                // A copy an older version installed under the tools directory.
+                let dir = self.root.join(spec.name);
+                if dir.exists() {
+                    std::fs::remove_dir_all(&dir)?;
                 }
             }
             Method::Go { .. }

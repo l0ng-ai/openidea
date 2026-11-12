@@ -1,0 +1,23 @@
+id = "openidea.todo-finder"
+name = "Todo Finder (API Example)"
+version = "0.1.0"
+description = "Small plugin API 1.4 example; see the package README."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+engines.openidea = "^1.4"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["project.read"]
+[[contributes.commands]]
+id = "find"
+title = "Example: Find TODOs"
+[[contributes.views]]
+id = "todos"
+title = "TODO Example"
+icon = "search"
+location = "right"
+[[contributes.menus]]
+menu = "searchResults.context"
+command = "find"

@@ -358,11 +358,10 @@ export function ToolSettings({ tool }: { tool: ToolInfo }) {
  * group instead of an on/off box per server. Automatic keeps them all on, so
  * the first one available runs.
  */
-function AlternativesRow({ tool }: { tool: ToolInfo }) {
+function AlternativesRow({ tool, names }: { tool: ToolInfo; names: string[] }) {
   const form = useSettingsForm();
   const tools = useTools((s) => s.tools);
   const servers = (form.useValue("languageServers") ?? {}) as Record<string, ServerEntry>;
-  const names = tool.alternatives;
   const members = names.map((name) => tools.find((t) => t.name === name));
   const common = members.reduce<string[]>(
     (acc, t) => (t ? acc.filter((l) => t.languages.includes(l)) : acc),
@@ -430,11 +429,20 @@ export function ServerSettings({ tool, pending }: { tool: ToolInfo; pending: boo
     }
   }, [tool.defaultInitializationOptions]);
   const overridden = !custom && Object.keys(entry).length > 0;
+  // A server can be an alternative for several languages (kmp-lsp: Java and Kotlin): one picker each.
+  const tools = useTools((s) => s.tools);
+  const groups = useMemo(() => {
+    const byKey = new Map<string, string[]>();
+    for (const t of [tool, ...tools])
+      if (t.alternatives.length > 1 && t.alternatives.includes(tool.name))
+        byKey.set(t.alternatives.join("\n"), t.alternatives);
+    return [...byKey.values()];
+  }, [tool, tools]);
 
   return (
     <div className={styles.form}>
-      {tool.alternatives.length > 1 ? (
-        <AlternativesRow tool={tool} />
+      {groups.length ? (
+        groups.map((names) => <AlternativesRow key={names.join("\n")} tool={tool} names={names} />)
       ) : (
         <Checkbox
           checked={entry.enabled !== false}

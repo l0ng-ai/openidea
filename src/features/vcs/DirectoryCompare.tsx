@@ -9,7 +9,7 @@ import { upsertTask } from "@/workbench/tasks";
 import { ComparisonTree } from "./ComparisonTree";
 import { buildFileTree } from "./fileTree";
 import { confirmDialog, openDialog } from "./dialogs";
-import { openDiff, type DiffData, type DiffSide } from "./diffInput";
+import { openVcsDiff, vcsDiffInFront, type DiffData, type DiffSide } from "./diffInput";
 import { compareFilesData } from "./compareData";
 import styles from "./common.module.css";
 
@@ -25,7 +25,7 @@ const directory = (e: DirectoryCompareEntry) => e.leftKind === "dir" || e.rightK
 export function directoryDiff(left: string, right: string, entry: DirectoryCompareEntry): DiffData | null {
   if (directory(entry)) return null;
   const data = compareFilesData(join(left, entry.path), join(right, entry.path));
-  const missing = (): DiffSide => ({ type: "text", text: "", label: tx("(does not exist)") });
+  const missing = (): DiffSide => ({ type: "text", text: "", label: tx("(does not exist)"), absent: true });
   return {
     ...data,
     title: entry.path,
@@ -200,8 +200,9 @@ export function DirectoryCompareDialog({ left, right, onClose }: { left: string;
           disabled: !diff || busy || operating,
           onClick: () => {
             if (diff) {
-              void openDiff(diff);
-              onClose();
+              void openVcsDiff(diff);
+              // A diff window opens on top of this list (#1863); an editor tab would sit behind it.
+              if (!vcsDiffInFront()) onClose();
             }
           },
         },
@@ -278,7 +279,7 @@ export function DirectoryCompareDialog({ left, right, onClose }: { left: string;
           onSelect={setCurrent}
           diffFor={(e) => directoryDiff(left, right, e)}
           openOnActivate={!busy && !operating}
-          onOpen={onClose}
+          onOpen={() => !vcsDiffInFront() && onClose()}
           ariaLabel="Compared files"
           renderDetails={(n) => {
             const entry = n.file ?? n.directory;

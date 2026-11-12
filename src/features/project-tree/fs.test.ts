@@ -13,7 +13,13 @@ vi.mock("@/platform/tauriCore", async (original) => ({
 beforeEach(() => {
   useTasks.setState({ tasks: [] });
   useRemote.setState({
-    session: { sshConfig: "s", root: "/remote", host: "host", commands: ["fs_copy", "cancel_request"] },
+    session: {
+      target: { kind: "ssh", config: "s" },
+      root: "/remote",
+      host: "host",
+      os: "linux",
+      commands: ["fs_copy", "cancel_request"],
+    },
   });
 });
 afterEach(() => {

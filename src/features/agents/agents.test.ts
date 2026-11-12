@@ -3,6 +3,9 @@ import type { AgentConfigOption, AgentEntry, AgentStatus, AgentTask } from "@/bi
 import {
   applyCompletion,
   atEdgeLine,
+  bypassDefaults,
+  cursorModelDefaults,
+  modelConfigOptions,
   canSend,
   completionAt,
   isPathQuery,
@@ -15,12 +18,16 @@ import {
   nextValue,
   recall,
   toPrompt,
+  mergeMatches,
   retryParts,
   usageLabel,
+  limitLabel,
+  costLabel,
   workTime,
 } from "./composerModel";
 import {
   age,
+  appendEntry,
   attentionChange,
   branchLabel,
   entriesKey,
@@ -65,14 +72,53 @@ const option = (category: string, values: string[], current: string | null): Age
   via: "option",
 });
 
+describe("mergeMatches", () => {
+  it("ranks folders among files by score, files first on a tie", () => {
+    const merged = mergeMatches(
+      [
+        { path: "/p/src/agents.ts", relPath: "src/agents.ts", score: 50 },
+        { path: "/p/x.ts", relPath: "x.ts", score: 10 },
+      ],
+      [
+        { path: "/p/src/agents", relPath: "src/agents/", score: 50 },
+        { path: "/p/docs", relPath: "docs/", score: 70 },
+      ],
+      3,
+    );
+    expect(merged).toEqual([
+      { path: "/p/docs", rel: "docs", dir: true, score: 70 },
+      { path: "/p/src/agents.ts", rel: "src/agents.ts", dir: false, score: 50 },
+      { path: "/p/src/agents", rel: "src/agents", dir: true, score: 50 },
+    ]);
+  });
+});
+
 describe("agent composer", () => {
-  it("completes @files anywhere and /commands as the first word", () => {
-    expect(completionAt("fix @src/le", 11)).toEqual({ kind: "file", query: "src/le", from: 4, to: 11 });
-    expect(completionAt("/rev", 4)).toEqual({ kind: "command", query: "rev", from: 0, to: 4 });
-    expect(completionAt("run /rev", 8)).toBeNull();
+  it("completes @files and /commands anywhere at a word boundary", () => {
+    expect(completionAt("fix @src/le", 11)).toEqual({
+      kind: "file",
+      query: "src/le",
+      from: 4,
+      to: 11,
+    });
+    expect(completionAt("/rev", 4)).toEqual({
+      kind: "command",
+      query: "rev",
+      from: 0,
+      to: 4,
+    });
+    expect(completionAt("run /rev", 8)).toEqual({
+      kind: "command",
+      query: "rev",
+      from: 4,
+      to: 8,
+    });
     expect(completionAt("a@b", 3)).toBeNull();
     const c = completionAt("see @le and", 7)!;
-    expect(applyCompletion("see @le and", c, "@src/lexer.rs")).toEqual({ text: "see @src/lexer.rs and", caret: 18 });
+    expect(applyCompletion("see @le and", c, "@src/lexer.rs")).toEqual({
+      text: "see @src/lexer.rs and",
+      caret: 18,
+    });
     const cmds = [
       { name: "init", description: "", hint: null },
       { name: "review", description: "", hint: null },
@@ -96,6 +142,27 @@ describe("agent composer", () => {
     expect(names("")).toHaveLength(cmds.length);
   });
 
+  it("keeps all commands and skills and ranks matches within each source", () => {
+    const cmds = Array.from({ length: 600 }, (_, i) => ({
+      name: `item-${i}`,
+      description: "",
+      hint: null,
+      source: i % 2 ? ("command" as const) : ("skill" as const),
+    }));
+    const all = matchCommands(cmds, "");
+    expect(all).toHaveLength(600);
+    expect(all.slice(0, 300)).toEqual(cmds.filter((c) => c.source === "command"));
+    expect(all.slice(300)).toEqual(cmds.filter((c) => c.source === "skill"));
+    const mixed = [
+      { ...cmds[0]!, name: "pre-review" },
+      { ...cmds[1]!, name: "pre-review" },
+      { ...cmds[0]!, name: "review" },
+      { ...cmds[1]!, name: "review" },
+    ];
+    expect(matchCommands(mixed, "rev")).toEqual([mixed[3], mixed[1], mixed[2], mixed[0]]);
+    expect(matchCommands(mixed, "missing")).toEqual([]);
+  });
+
   it("sends only the files still mentioned", () => {
     const prompt = toPrompt({
       text: " look at @src/a.rs:3-5 and @b.rs ",
@@ -107,9 +174,21 @@ describe("agent composer", () => {
       ],
       images: [],
     });
-    expect(prompt).toEqual({ text: "look at @src/a.rs:3-5 and @b.rs", files: ["/w/src/a.rs", "/w/b.rs"], images: [] });
+    expect(prompt).toEqual({
+      text: "look at @src/a.rs:3-5 and @b.rs",
+      files: ["/w/src/a.rs", "/w/b.rs"],
+      images: [],
+    });
     expect(mentionOf("a.rs", { from: 3, to: 3 })).toBe("@a.rs:3");
+    // A folder counts while `@src/` is left as typed, not once a file inside it was picked.
+    const folder = { path: "/w/src", rel: "src/" };
+    expect(toPrompt({ text: "explain @src/ please", files: [folder], images: [] }).files).toEqual(["/w/src"]);
+    expect(toPrompt({ text: "explain @src/", files: [folder], images: [] }).files).toEqual(["/w/src"]);
+    expect(toPrompt({ text: "explain @src/a.rs", files: [folder], images: [] }).files).toEqual([]);
     expect(canSend({ text: " ", files: [], images: [] })).toBe(false);
+    const video = { path: "/home/me/clip.mov", rel: "clip.mov", attached: true };
+    expect(toPrompt({ text: "what happens here?", files: [video], images: [] }).files).toEqual(["/home/me/clip.mov"]);
+    expect(canSend({ text: " ", files: [video], images: [] })).toBe(true);
   });
 
   it("recalls history from the edge lines only", () => {
@@ -124,15 +203,57 @@ describe("agent composer", () => {
     expect(atEdgeLine("a\nb", 1, 1)).toBe(false);
   });
 
+  it("defaults Cursor fast mode off when available", () => {
+    const fast = option("model_config", ["false", "true"], "true");
+    fast.id = "fast";
+    fast.name = "Fast";
+    expect(cursorModelDefaults("cursor", [fast])).toEqual({ fast: "false" });
+    expect(cursorModelDefaults("claude", [fast])).toEqual({});
+    expect(modelConfigOptions([fast]).map((o) => o.id)).toEqual(["fast"]);
+  });
+
   it("picks the main settings and cycles the mode", () => {
     const config = [option("fast", ["on"], null), option("mode", ["ask", "code"], "code"), option("model", ["m"], "m")];
-    expect(mainOptions(config).map((o) => o.id)).toEqual(["model", "mode"]);
+    expect(mainOptions(config).map((o) => o.id)).toEqual(["model", "mode", "fast"]);
     expect(nextValue(config[1]!)).toBe("ask");
-    const approvals = { ...option("openidea.cursor.approval", ["ask", "bypass"], "ask"), category: "approval" };
-    expect(mainOptions([...config, approvals]).map((o) => o.id)).toEqual(["model", "mode", approvals.id]);
+    const permissions = option("allow_all", ["off", "on"], "off");
+    permissions.category = "permissions";
+    expect(mainOptions([...config, permissions]).map((o) => o.id)).toEqual(["model", "mode", permissions.id, "fast"]);
+    const collaboration = option("collaboration_mode", ["default", "plan"], "default");
+    expect(mainOptions([...config, collaboration]).map((o) => o.id)).toEqual([
+      "model",
+      "mode",
+      collaboration.id,
+      "fast",
+    ]);
+    const approvals = {
+      ...option("openidea.cursor.approval", ["ask", "bypass"], "ask"),
+      category: "approval",
+    };
+    expect(mainOptions([...config, permissions, approvals]).map((o) => o.id)).toEqual([
+      "model",
+      "mode",
+      permissions.id,
+      approvals.id,
+      "fast",
+    ]);
     expect(
-      ["default", "acceptEdits", "plan", "auto", "bypassPermissions", "auto_edit", "read-only", "x"].map(modeIcon),
-    ).toEqual(["lock", "edit", "todo", "run", "unlock", "edit", "eye", "lock"]);
+      [
+        "default",
+        "acceptEdits",
+        "plan",
+        "auto",
+        "bypassPermissions",
+        "auto_edit",
+        "read-only",
+        "x",
+        "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+      ].map(modeIcon),
+    ).toEqual(["lock", "edit", "todo", "run", "unlock", "edit", "eye", "lock", "run", "run"]);
+    expect(bypassDefaults([...config, permissions])).toEqual({
+      allow_all: "on",
+    });
     expect(usageLabel({ used: 24_000, size: 200_000 })).toEqual({
       short: "12%",
       detail: "24k / 200k tokens",
@@ -149,6 +270,44 @@ describe("agent composer", () => {
 describe("usage meters", () => {
   it("formats token counts", () => {
     expect(usageLabel({ used: 83_100, size: 1_000_000 }).detail).toBe("83.1k / 1M tokens");
+  });
+
+  it("names usage-limit windows and says when they reset", () => {
+    const hour = 3_600_000;
+    expect(
+      limitLabel(
+        {
+          window: "five_hour",
+          usedPercent: 19.4,
+          resetsMs: 2 * hour + 51 * 60_000,
+        },
+        0,
+      ),
+    ).toEqual({
+      short: "5h 19%",
+      percent: 19,
+      detail: "5-hour limit: 19% used, resets in 2h 51m",
+    });
+    expect(
+      limitLabel(
+        {
+          window: "seven_day",
+          usedPercent: 120,
+          resetsMs: 5 * 24 * hour + 3 * hour,
+        },
+        0,
+      ).detail,
+    ).toBe("Weekly limit: 100% used, resets in 5d 3h");
+    expect(limitLabel({ window: "spend_limit", usedPercent: 7, resetsMs: null }, 0)).toEqual({
+      short: "spend_limit 7%",
+      percent: 7,
+      detail: "spend_limit: 7% used",
+    });
+  });
+
+  it("formats the session cost", () => {
+    expect(costLabel({ amount: 0.4231, currency: "USD" })).toBe("$0.42");
+    expect(costLabel({ amount: 1.5, currency: "credits" })).toBe("1.50 credits");
   });
 
   it("adds up the time spent on turns", () => {
@@ -187,6 +346,22 @@ describe("agents model", () => {
     expect(upsertEntry([a], 0, b)).toEqual([b]);
     expect(upsertEntry([a], 1, b)).toEqual([a, b]);
     expect(upsertEntry([a], 3, b)).toBeNull();
+  });
+
+  it("appends streamed text from where the copy here stands", () => {
+    const u: AgentEntry = { type: "user", text: "q", attachments: [] };
+    const a: AgentEntry = { type: "agent", text: "He" };
+    expect(appendEntry([u, a], 1, 2, "llo")).toEqual([u, { type: "agent", text: "Hello" }]);
+    // Loaded while it streamed: part of the text is already here.
+    expect(appendEntry([u, { type: "agent", text: "Hel" }], 1, 2, "llo")?.[1]).toEqual({
+      type: "agent",
+      text: "Hello",
+    });
+    const whole = [u, { type: "agent", text: "Hello" } as AgentEntry];
+    expect(appendEntry(whole, 1, 2, "llo")).toBe(whole);
+    expect(appendEntry([u, { type: "agent", text: "H" }], 1, 2, "llo")).toBeNull();
+    expect(appendEntry([u, a], 0, 0, "x")).toBeNull();
+    expect(appendEntry([u, a], 2, 0, "x")).toBeNull();
   });
 
   it("notifies on finish, failure and questions only", () => {
@@ -272,9 +447,17 @@ describe("turns", () => {
 
 describe("retryParts", () => {
   it("counts down to the next attempt and shows the limit when known", () => {
-    const retry = { attempt: 3, maxRetries: 10, retryAtMs: 5_400, error: "Connection error." };
+    const retry = {
+      attempt: 3,
+      maxRetries: 10,
+      retryAtMs: 5_400,
+      error: "Connection error.",
+    };
     expect(retryParts(retry, 1_000)).toEqual({ attempt: "3/10", wait: 5 });
-    expect(retryParts({ ...retry, maxRetries: null }, 9_000)).toEqual({ attempt: "3", wait: 0 });
+    expect(retryParts({ ...retry, maxRetries: null }, 9_000)).toEqual({
+      attempt: "3",
+      wait: 0,
+    });
   });
 });
 
@@ -290,5 +473,32 @@ describe("typed path references", () => {
     expect(resolveTyped("/r/idea", "/etc/hosts")).toBe("/etc/hosts");
     expect(resolveTyped("C:\\r\\idea", "../kalo/a.ts")).toBe("C:/r/kalo/a.ts");
     expect(resolveTyped("C:\\r", "../../x")).toBe("C:/x");
+  });
+});
+
+describe("new task defaults", () => {
+  it("start a draft with the agent's defaults until the draft picks", async () => {
+    const { draftConfig } = await import("./store");
+    const option = (id: string, current: string, values: string[]) =>
+      ({
+        id,
+        name: id,
+        description: null,
+        category: id,
+        current,
+        values: values.map((value) => ({ value, name: value, description: null })),
+        via: "option",
+      }) as AgentConfigOption;
+    const provider = {
+      id: "claude",
+      config: [option("model", "sonnet", ["sonnet", "opus"]), option("mode", "default", ["default", "plan"])],
+    } as unknown as Parameters<typeof draftConfig>[0];
+    const draft = { provider: "claude", config: {}, isolation: "local", base: null } as unknown as Parameters<
+      typeof draftConfig
+    >[1];
+    const current = (d: typeof draft, defaults: Record<string, string>) =>
+      draftConfig(provider, d, defaults).map((o) => o.current);
+    expect(current(draft, { model: "opus", mode: "nope" })).toEqual(["opus", "default"]);
+    expect(current({ ...draft, config: { model: "sonnet" } }, { model: "opus" })).toEqual(["sonnet", "default"]);
   });
 });

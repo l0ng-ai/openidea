@@ -6,6 +6,14 @@ block-comment = ["/*", "*/"]
 indent = { tab-size = 4, insert-spaces = true }
 ui-mode = "C"
 tree-sitter = "c"
+scratch-template = '''
+#include <stdio.h>
+
+int main(void) {
+    $END$
+    return 0;
+}
+'''
 
 [[language-servers]]
 name = "clangd"
@@ -17,4 +25,4 @@ install-hint = "Install clangd (LLVM): brew install llvm, apt install clangd, or
 [debugger]
 adapter = "lldb-dap"
 command = "lldb-dap"
-install-hint = "Install LLVM's lldb-dap (brew install llvm; on macOS also `xcrun -f lldb-dap`)"
+install-hint = "Install LLVM's lldb-dap (brew install llvm), or on macOS use the one found by xcrun -f lldb-dap"

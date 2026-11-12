@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { enclosingTag, expandAt, syntaxAt, updateTagEdits, type TextEdit } from "../emmet/model";
+import { beforeAll, describe, expect, it } from "vitest";
+import { enclosingTag, expandAt, loadEmmet, syntaxAt, updateTagEdits, type TextEdit } from "../emmet/model";
+
+beforeAll(() => loadEmmet());
 
 const apply = (text: string, edits: TextEdit[]) =>
   [...edits].sort((a, b) => b.from - a.from).reduce((t, e) => t.slice(0, e.from) + e.insert + t.slice(e.to), text);
@@ -12,6 +14,17 @@ describe("emmet context", () => {
     expect(syntaxAt("html", "<script>\n  foo")).toBeNull();
     expect(syntaxAt("html", "<script></script>\ndiv")).toEqual({ type: "markup", syntax: "html" });
     expect(syntaxAt("typescript", "div")).toBeNull();
+  });
+
+  it("expands markup in Django templates, not inside template tags, variables or comments", () => {
+    expect(syntaxAt("django-html", "{% block content %}\n  ul>li")).toEqual({ type: "markup", syntax: "html" });
+    expect(syntaxAt("django-html", "{% if user")).toBeNull();
+    expect(syntaxAt("django-html", "{{ value|date")).toBeNull();
+    expect(syntaxAt("django-html", "{# note")).toBeNull();
+    expect(syntaxAt("django-html", '<a href="{% url "home" %}">x</a>\nnav')).toEqual({
+      type: "markup",
+      syntax: "html",
+    });
   });
 
   it("uses stylesheet syntax inside rules and <style>", () => {

@@ -1,0 +1,93 @@
+.dialog [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  font-size: var(--fs-ui);
+  color: var(--fg);
+}
+
+.field {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.targets {
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.head,
+.row {
+  display: grid;
+  grid-template-columns: 1fr 110px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  min-height: var(--h-list-row);
+}
+
+.head {
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.row:hover {
+  background: var(--bg-hover);
+}
+
+.member {
+  min-width: 0;
+}
+
+.label {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hint {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+
+.error {
+  flex: none;
+  color: var(--danger);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+
+.busy {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+}

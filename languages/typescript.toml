@@ -8,6 +8,10 @@ indent = { tab-size = 2, insert-spaces = true }
 ui-mode = "TypeScript"
 tree-sitter = "typescript"
 
+[[framework-ui-modes]]
+ui-mode = "Angular TypeScript"
+root-markers = ["angular.json", "node_modules/@angular/core"]
+
 [[language-servers]]
 name = "vtsls"
 tsserver-project = true
@@ -15,6 +19,21 @@ command = "vtsls"
 args = ["--stdio"]
 root-markers = ["tsconfig.json", "jsconfig.json", "package.json"]
 install-hint = "npm i -g @vtsls/language-server"
+
+# Rename renames the symbol everywhere: no `import { a as b }` alias in the file renamed from.
+[language-servers.initialization-options.typescript.preferences]
+useAliasesForRenames = false
+
+[language-servers.initialization-options.javascript.preferences]
+useAliasesForRenames = false
+
+# Moving a file: the IDE asks for the import updates up front (preview, undo); the server
+# doesn't prompt after the move.
+[language-servers.initialization-options.typescript.updateImportsOnFileMove]
+enabled = "never"
+
+[language-servers.initialization-options.javascript.updateImportsOnFileMove]
+enabled = "never"
 
 [[language-servers]]
 name = "typescript-language-server"
@@ -25,6 +44,10 @@ command = "typescript-language-server"
 args = ["--stdio"]
 root-markers = ["tsconfig.json", "jsconfig.json", "package.json"]
 install-hint = "npm i -g typescript@6 typescript-language-server"
+
+# Rename renames the symbol everywhere: no `import { a as b }` alias in the file renamed from.
+[language-servers.initialization-options.preferences]
+providePrefixAndSuffixTextForRename = false
 
 # Angular projects only: templates inline in components (`template: ...`),
 # and their usages and renames in templates. Last: TypeScript's own hover,
@@ -45,9 +68,33 @@ root-markers = [".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "oxlint
 require-root-marker = true
 install-hint = "npm i -D oxlint"
 
+# ESLint: only below a project's ESLint configuration; the server runs the project's own eslint.
+[[language-servers]]
+name = "eslint"
+command = "vscode-eslint-language-server"
+args = ["--stdio"]
+root-markers = ["eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.ts", "eslint.config.mts", "eslint.config.cts", ".eslintrc", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json", ".eslintrc.yml", ".eslintrc.yaml", "package.json#eslintConfig"]
+require-root-marker = true
+install-hint = "npm i -g vscode-langservers-extracted"
+
+[language-servers.settings]
+# Read by every request (`experimental.useFlatConfig`); ESLint picks flat or legacy config itself.
+experimental = {}
+validate = "on"
+run = "onType"
+quiet = false
+onIgnoredFiles = "off"
+rulesCustomizations = []
+nodePath = ""
+problems = { shortenToSingleLine = false }
+workingDirectory = { mode = "auto" }
+codeAction = { disableRuleComment = { enable = true, location = "separateLine" }, showDocumentation = { enable = true } }
+# vscode-eslint reads it for every source.fixAll request (Actions on Save, Code Cleanup).
+codeActionOnSave = { mode = "all", rules = [] }
+
 [debugger]
 adapter = "js-debug"
 command = "js-debug-adapter"
 args = ["${port}", "127.0.0.1"]
 transport = "tcp"
-install-hint = "Install vscode-js-debug's DAP server (js-debug-dap-*.tar.gz from https://github.com/microsoft/vscode-js-debug/releases) as `js-debug-adapter`"
+install-hint = "Install JavaScript Debugger (vscode-js-debug) in Settings › Languages & Frameworks › Language Servers"

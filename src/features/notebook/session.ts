@@ -1,6 +1,6 @@
 import { Channel } from "@tauri-apps/api/core";
 import type { EditorState } from "@codemirror/state";
-import type { NotebookSnapshot, NotebookEdit, NotebookOutputEvent, Sdk, RequestId } from "@/bindings";
+import type { NotebookCellDoc, NotebookSnapshot, NotebookEdit, NotebookOutputEvent, Sdk, RequestId } from "@/bindings";
 import { call, commands, IpcError, isTauri, nextRequestId, onIdeEvent } from "@/platform/ipc";
 import { notifyEditorDocumentChanged } from "@/workbench/contributions";
 import { OutputReducer } from "./outputs";
@@ -8,6 +8,7 @@ import { OutputReducer } from "./outputs";
 export const notebookBackend = {
   open: (path: string) => call(commands.notebookOpen(path)),
   get: (id: string) => call(commands.notebookGet(id)),
+  cellDocs: (id: string) => call(commands.notebookCellDocs(id)),
   edit: (id: string, version: number, edit: NotebookEdit) => call(commands.notebookEdit(id, version, edit)),
   save: (id: string) => call(commands.notebookSave(id)),
   reload: (id: string) => call(commands.notebookReload(id)),
@@ -23,7 +24,7 @@ export const notebookBackend = {
     request: RequestId,
     output: Channel<NotebookOutputEvent>,
   ) => call(commands.notebookExecute(id, cells, python, request, output)),
-  environments: () => Promise.all([call(commands.sdkDetect("python")), call(commands.sdkPythonEffective())]),
+  environments: () => Promise.all([call(commands.sdkDetect("python")), call(commands.sdkPythonEffective(null))]),
   cancel: (request: RequestId) => commands.cancelRequest(request),
 };
 
@@ -48,6 +49,17 @@ export interface NotebookViewState {
   python: string | null;
   environments: Sdk[];
   pending: number;
+  /** Language-server documents of the code cells, by cell id (none without a server). */
+  cellDocs: ReadonlyMap<string, NotebookCellDoc>;
+  /** A location to show (navigation into a cell); `seq` tells repeated requests apart. */
+  reveal: CellReveal | null;
+}
+
+export interface CellReveal {
+  cell: string;
+  /** 0-based line, UTF-16 column within the cell. */
+  selection?: { line: number; col: number };
+  seq: number;
 }
 
 /** One session/queue per file; tabs and mounted React views do not own its lifetime. */
@@ -62,6 +74,8 @@ export class NotebookSession {
     python: null,
     environments: [],
     pending: 0,
+    cellDocs: new Map(),
+    reveal: null,
   };
   private listeners = new Set<() => void>();
   private loading: Promise<void> | null = null;
@@ -79,11 +93,16 @@ export class NotebookSession {
   private output = new OutputReducer();
   private stopEvents: (() => void) | null = null;
   private errors = new Map<ErrorOwner, { cause: unknown; message: string }>();
+  /** The code cells `cellDocs` was fetched for. */
+  private cellDocsKey: string | null = null;
+  private revealSeq = 0;
   // EditorState contains selection and syntax state, but deliberately no local history.
   readonly editors = new Map<string, EditorState>();
   readonly markdownEditing = new Set<string>();
   selectedCell: string | null = null;
   scrollTop = 0;
+  /** The last `reveal` request a cell editor carried out. */
+  revealed = 0;
 
   constructor(
     readonly path: string,
@@ -145,6 +164,38 @@ export class NotebookSession {
     this.publish({ snapshot });
     const live = new Set(snapshot.cells.map((cell) => cell.id));
     for (const id of this.editors.keys()) if (!live.has(id)) this.editors.delete(id);
+    this.syncCellDocs(snapshot);
+  }
+  /** The backend gives cells their documents as it applies edits; fetch them when the code cells change. */
+  private syncCellDocs(snapshot: NotebookSnapshot) {
+    const code = snapshot.cells.filter((cell) => cell.cellType === "code").map((cell) => cell.id);
+    const key = [snapshot.id, ...code].join("\n");
+    if (key === this.cellDocsKey) return;
+    this.cellDocsKey = key;
+    Promise.resolve()
+      .then(() => this.backend.cellDocs(snapshot.id))
+      .then(
+        (docs) => {
+          if (!this.disposed && this.cellDocsKey === key)
+            this.publish({ cellDocs: new Map(docs.map((doc) => [doc.cell, doc])) });
+        },
+        // Without language servers cells keep plain editing.
+        () => {},
+      );
+  }
+  /** The cell whose language-server document has `uri`. */
+  cellOfUri(uri: string): string | null {
+    for (const doc of this.state.cellDocs.values()) if (doc.uri === uri) return doc.cell;
+    return null;
+  }
+  /** Shows `cell` (and a location in it) in the notebook's editor. */
+  reveal(cell: string, selection?: { line: number; col: number }) {
+    this.selectedCell = cell;
+    this.publish({ reveal: { cell, selection, seq: ++this.revealSeq } });
+  }
+  /** Resolves once queued edits reached the backend (or failed); never rejects. */
+  async settled() {
+    if (this.pumping) await this.pumping.catch(() => {});
   }
   load(opened?: NotebookSnapshot): Promise<void> {
     if (this.loading) return this.loading;
@@ -497,6 +548,9 @@ export function notebookSession(path: string): NotebookSession {
 }
 export function existingNotebookSession(path: string) {
   return sessions.get(path);
+}
+export function notebookSessions(): Iterable<NotebookSession> {
+  return sessions.values();
 }
 export async function closeNotebook(path: string) {
   const session = sessions.get(path);

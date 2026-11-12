@@ -126,6 +126,12 @@ async fn serves_projects_files_documents_search_and_runs() {
     let current = invoke(&peer, "project_current", json!({})).await.unwrap();
     assert_eq!(current["name"], "demo");
 
+    // The built-in web server runs where the project is; the client forwards its port.
+    let root = std::path::PathBuf::from(opened["root"].as_str().unwrap());
+    let url = invoke(&peer, "web_url", json!({ "path": root.join("src/main.py") })).await.unwrap();
+    let url = url.as_str().unwrap();
+    assert!(url.starts_with("http://127.0.0.1:") && url.ends_with("/demo/src/main.py"), "{url}");
+
     let entries = invoke(&peer, "fs_read_dir", json!({ "path": project })).await.unwrap();
     assert!(entries.as_array().unwrap().iter().any(|e| e["name"] == "src"), "{entries}");
 
@@ -218,10 +224,19 @@ async fn serves_projects_files_documents_search_and_runs() {
     invoke(&peer, "vcs_init", json!({ "dir": project })).await.unwrap();
     until("git repository", || project.join(".git").is_dir()).await;
 
+    // A Docker run configuration's environment comes from the host its command runs on.
+    let env =
+        invoke(&peer, "docker_run_env", json!({ "endpoint": { "kind": "socket", "path": "/run/user/1/docker.sock" } }))
+            .await
+            .unwrap();
+    assert_eq!(env["DOCKER_HOST"], "unix:///run/user/1/docker.sock");
+
     // Real project-host ignore writes travel through the remote command dispatcher.
     assert!(Dispatcher::standard().commands().contains(&"vcs_add_to_ignore"));
     let ignore_root = dunce::canonicalize(&project).unwrap();
-    for (name, destination) in [("shared.tmp", "gitignore"), ("private.tmp", "localExclude")] {
+    // Not `.tmp`: a machine's global excludes file (often `*.tmp`) already
+    // ignores those, so the backend never writes the entry anywhere.
+    for (name, destination) in [("shared.ignore-me", "gitignore"), ("private.ignore-me", "localExclude")] {
         let path = ignore_root.join(name);
         std::fs::write(&path, "temporary").unwrap();
         invoke(&peer, "vcs_add_to_ignore", json!({ "paths": [path], "destination": destination })).await.unwrap();
@@ -230,9 +245,9 @@ async fn serves_projects_files_documents_search_and_runs() {
         assert_eq!(entry["ignored"], true);
         assert_eq!(entry["excluded"], false);
     }
-    assert!(std::fs::read_to_string(project.join(".gitignore")).unwrap().contains("/shared.tmp"));
-    assert!(std::fs::read_to_string(project.join(".git/info/exclude")).unwrap().contains("/private.tmp"));
-    let outside = tmp.path().join("outside.tmp");
+    assert!(std::fs::read_to_string(project.join(".gitignore")).unwrap().contains("/shared.ignore-me"));
+    assert!(std::fs::read_to_string(project.join(".git/info/exclude")).unwrap().contains("/private.ignore-me"));
+    let outside = tmp.path().join("outside.ignore-me");
     std::fs::write(&outside, "keep").unwrap();
     assert!(
         invoke(&peer, "vcs_add_to_ignore", json!({ "paths": [outside], "destination": "gitignore" })).await.is_err()
@@ -321,6 +336,34 @@ async fn local_deployment_runs_on_the_project_host() {
         "remote_delete",
         "remote_mkdir",
         "remote_rename",
+        "remote_download_into",
+        "db_sources",
+        "db_save_sources",
+        "db_set_password",
+        "db_test",
+        "db_set_ssh_secret",
+        "db_trust_ssh_host",
+        "db_connected",
+        "db_connect",
+        "db_set_manual_commit",
+        "db_finish_transaction",
+        "db_disconnect",
+        "db_databases",
+        "db_schemas",
+        "db_tables",
+        "db_table_details",
+        "db_ddl",
+        "db_schema_objects",
+        "db_object_ddl",
+        "db_explain",
+        "db_history",
+        "db_remove_history",
+        "db_completion",
+        "db_statements",
+        "db_execute",
+        "db_table_page",
+        "db_apply_edits",
+        "db_console_path",
     ] {
         assert!(dispatcher.commands().contains(&cmd), "missing host command {cmd}");
     }

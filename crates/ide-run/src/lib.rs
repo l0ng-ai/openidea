@@ -4,17 +4,23 @@ mod config;
 mod detect;
 pub mod dotnet;
 pub mod envfile;
+mod external;
 pub mod go;
 pub mod gradle_jvm;
+pub mod import;
 pub mod java_cmdline;
 pub mod junit;
 mod process;
 pub mod python_path;
+pub mod ruby_preload;
+pub mod ruby_reporter;
+pub mod scope;
 pub mod tomcat;
 mod utf8;
 pub mod which;
 pub mod wrap;
 
+pub use detect::cmake::{build_configs as cmake_build_configs, prepare as prepare_cmake};
 pub use process::{ProcessManager, StartOptions};
 
 use ide_core::{IdeResult, RunId};
@@ -50,11 +56,43 @@ pub struct RunConfig {
     pub extras: RunExtras,
 }
 
+/// How a Java launch builds the project before starting (IDEA's Before launch › Build).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum BuildPolicy {
+    /// Build the way this project's backend does it: incremental when possible.
+    #[default]
+    Automatic,
+    /// Incremental build (IDEA's "Build"/Make).
+    Make,
+    /// Clean the output, then build (IDEA's Rebuild).
+    Rebuild,
+    /// Do not build; still resolve the module, JDK and classpath.
+    NoBuild,
+    /// Incremental build; a project with compile errors may still start with its last
+    /// successfully compiled classes (IDEA's "Build, no error check").
+    MakeAndContinueOnErrors,
+}
+
+impl BuildPolicy {
+    /// The spelling used in `run.toml` and the run configuration dialog.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Make => "make",
+            Self::Rebuild => "rebuild",
+            Self::NoBuild => "noBuild",
+            Self::MakeAndContinueOnErrors => "makeAndContinueOnErrors",
+        }
+    }
+}
+
 /// A step run before a configuration launches; a failing step aborts the launch.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BeforeLaunchTask {
-    /// `run` (another configuration, `target` = its id) | `build` | `tool` (external tool id) |
+    /// `run` (another configuration id) | `build` (project, or `target` = CMake build id) |
+    /// `tool` (external tool id) |
     /// `command` (a shell command line) | `toolWindow` (tool window id).
     pub kind: String,
     #[serde(default)]
@@ -72,7 +110,8 @@ fn is_true(b: &bool) -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RunExtras {
-    /// Module supplying a JVM application's classpath; empty means the project root.
+    /// Owning module, independent of the working directory; also supplies a JVM application's classpath.
+    /// Empty means the project root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub module: Option<String>,
@@ -107,6 +146,10 @@ pub struct RunExtras {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[specta(optional)]
     pub before_launch: Vec<BeforeLaunchTask>,
+    /// Before launch build for JVM launches; unset keeps the project's default (incremental).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub build_policy: Option<BuildPolicy>,
     /// Compound configurations: ids of the configurations started together.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[specta(optional)]
@@ -152,6 +195,7 @@ impl Default for RunExtras {
             stdin_file: None,
             output_file: None,
             before_launch: Vec::new(),
+            build_policy: None,
             compound: Vec::new(),
             show_on_stdout: false,
             show_on_stderr: false,
@@ -190,6 +234,8 @@ pub struct RunInfo {
     /// Runs on a pseudo-terminal: output is raw terminal data, input goes in keystroke by keystroke.
     pub pty: bool,
 }
+
+pub use external::{EXTERNAL_PREFIX, ExternalDetection, set_external_detection};
 
 /// Detects configs from package.json scripts, Cargo.toml targets, build.gradle(.kts),
 /// pom.xml, go.mod, pyproject/pytest, Makefile.
@@ -254,6 +300,17 @@ pub fn system_env() -> BTreeMap<String, String> {
 /// Complete environment for a preparatory tool belonging to this run configuration.
 pub fn resolved_env(root: &Path, config: &RunConfig) -> IdeResult<BTreeMap<String, String>> {
     process::resolved_env(root, config)
+}
+
+/// Run configurations from another IDE's project file (`.vscode/launch.json`), not yet saved:
+/// names already in `existing` are skipped, so importing again adds nothing twice.
+pub fn import_configs(
+    root: &Path,
+    source: import::RunImportSource,
+    existing: &[RunConfig],
+) -> IdeResult<import::RunImport> {
+    // `${env:NAME}` reads what a run inherits, the login shell's variables included.
+    import::import(root, source, existing, &process::inherited_env())
 }
 
 /// Path of the user run configuration file for `root`.

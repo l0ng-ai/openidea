@@ -115,7 +115,7 @@ const GENERAL = editorPage({
     {
       title: "Mouse Control",
       items: [
-        { t: "check", key: `${P}.general.wheelZoom`, label: "Change font size with Command+Mouse Wheel" },
+        { t: "check", key: `${P}.general.wheelZoom`, label: "Change font size with Ctrl/Command+Mouse Wheel" },
         { t: "check", key: `${P}.general.dragAndDrop`, label: "Enable drag-and-drop functionality in editor" },
       ],
     },
@@ -197,10 +197,20 @@ const AUTO_IMPORT = editorPage({
   id: "editor.general.autoImport",
   title: "Auto Import",
   order: 0,
-  keywords: ["import", "organize imports", "unambiguous"],
+  keywords: ["import", "organize imports", "unambiguous", "paste"],
   sections: [
     {
       items: [
+        {
+          t: "select",
+          key: `${P}.autoImport.importsOnPaste`,
+          label: "Insert imports on paste",
+          options: [
+            { value: "always", label: "Always" },
+            { value: "ask", label: "Ask" },
+            { value: "never", label: "Never" },
+          ],
+        },
         {
           t: "check",
           key: `${P}.autoImport.addUnambiguous`,
@@ -264,8 +274,18 @@ const APPEARANCE = editorPage({
             { t: "check", key: `${P}.appearance.whitespaceTrailing`, label: "Trailing" },
           ],
         },
-        { t: "check", key: `${P}.appearance.indentGuides`, label: "Show indent guides" },
+        {
+          t: "check",
+          key: `${P}.appearance.indentGuides`,
+          label: "Show indent guides",
+          children: [{ t: "check", key: `${P}.appearance.rainbowIndentGuides`, label: "Rainbow indent guides" }],
+        },
         { t: "check", key: `${P}.appearance.intentionBulb`, label: "Show intention bulb" },
+        {
+          t: "check",
+          key: `${P}.appearance.renderDocComments`,
+          label: "Render documentation comments",
+        },
         {
           t: "number",
           key: `${P}.appearance.distractionFreeWidth`,
@@ -597,6 +617,12 @@ const GUTTER = editorPage({
               keywords: ["super method", "overrides", "implements"],
               component: () => <GutterGroup id="supers" label="Implementing and overriding methods" />,
             },
+            {
+              t: "custom",
+              label: "Color preview",
+              keywords: ["color", "swatch", "colour"],
+              component: () => <GutterGroup id="colors" label="Color preview" />,
+            },
           ],
         },
       ],
@@ -653,7 +679,12 @@ const SMART_KEYS = editorPage({
           label: 'Use "CamelHumps" words',
           hint: "⌥← / ⌥→ and ⌥⌫ stop at humps of camelCase names.",
         },
-        { t: "check", key: `${P}.smartKeys.pairBrackets`, label: "Insert paired brackets (), [], {}" },
+        {
+          t: "check",
+          key: `${P}.smartKeys.pairBrackets`,
+          label: "Insert paired brackets (), [], {}",
+          hint: "Also pairs <> for generics where the syntax says a type starts.",
+        },
         { t: "check", key: `${P}.smartKeys.pairQuotes`, label: "Insert pair quote" },
         { t: "check", key: `${P}.smartKeys.surroundSelection`, label: "Surround selection on typing quote or brace" },
         { t: "check", key: `${P}.smartKeys.tabOutOfPair`, label: "Jump outside closing bracket/quote with Tab" },
@@ -667,11 +698,19 @@ const SMART_KEYS = editorPage({
             { value: "indentEachLine", label: "Indent Each Line" },
           ],
         },
+        {
+          t: "check",
+          key: `${P}.smartKeys.escapeOnPaste`,
+          label: "Escape text on paste in string literals",
+        },
       ],
     },
     {
       title: "Enter",
-      items: [{ t: "check", key: `${P}.smartKeys.smartIndent`, label: "Smart indent" }],
+      items: [
+        { t: "check", key: `${P}.smartKeys.smartIndent`, label: "Smart indent" },
+        { t: "check", key: `${P}.smartKeys.insertDocStub`, label: "Insert documentation comment stub" },
+      ],
     },
     {
       title: "Backspace",
@@ -806,6 +845,11 @@ const INLAY: Item[] = [
   },
 ];
 
+const CODE_VISION_POSITIONS = [
+  { value: "top", label: "Top" },
+  { value: "right", label: "Right" },
+];
+
 const INLAY_HINTS = editorPage({
   id: "editor.inlayHints",
   title: "Inlay Hints",
@@ -816,8 +860,33 @@ const INLAY_HINTS = editorPage({
     {
       title: "Code Vision",
       items: [
-        { t: "check", key: `${P}.inlay.codeVisionUsages`, label: "Usages" },
-        { t: "check", key: `${P}.inlay.codeVisionAuthor`, label: "Code author" },
+        {
+          t: "check",
+          key: `${P}.inlay.codeVisionUsages`,
+          label: "Usages",
+          children: [
+            {
+              t: "select",
+              key: `${P}.inlay.codeVisionUsagesPosition`,
+              label: "Position",
+              options: CODE_VISION_POSITIONS,
+            },
+            { t: "check", key: `${P}.inlay.codeVisionNoUsages`, label: "Show “no usages”" },
+          ],
+        },
+        {
+          t: "check",
+          key: `${P}.inlay.codeVisionAuthor`,
+          label: "Code author",
+          children: [
+            {
+              t: "select",
+              key: `${P}.inlay.codeVisionAuthorPosition`,
+              label: "Position",
+              options: CODE_VISION_POSITIONS,
+            },
+          ],
+        },
       ],
     },
     { title: "Languages", items: [{ t: "custom", label: "Show inlay hints for:", component: InlayLanguages }] },

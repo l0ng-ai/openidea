@@ -11,8 +11,8 @@
  * optionally with modifiers (`Alt+Button4`); they are single strokes.
  */
 import { create } from "zustand";
-import { getAction, isActionKeyEnabled, executeAction } from "./actions";
-import { getContext } from "./context";
+import { executeAction, executeActionFrom, getAction, isActionKeyEnabled } from "./actions";
+import { evaluateWhen, getContext } from "./context";
 import { intellijMacos } from "./keymaps/intellij-macos";
 import { intellijWindows } from "./keymaps/intellij-windows";
 import { eclipseMacos } from "./keymaps/eclipse-macos";
@@ -21,6 +21,7 @@ import { vscodeMacos } from "./keymaps/vscode-macos";
 import { vscodeWindows } from "./keymaps/vscode-windows";
 import { usePlatform } from "./platformInfo";
 import { isImeKey } from "./ime";
+import { isPageSwipe, PAGE_SWIPE_EVENT } from "./pageSwipe";
 
 export type Keymap = Record<string, string[]>;
 
@@ -70,9 +71,11 @@ interface KeymapState {
   preset: string;
   /** User overrides: action id → bindings (empty array removes defaults). */
   overrides: Keymap;
+  /** Extensions' default bindings (plugins), below the preset. */
+  extensions: Keymap;
 }
 
-export const useKeymap = create<KeymapState>(() => ({ preset: defaultPreset(), overrides: {} }));
+export const useKeymap = create<KeymapState>(() => ({ preset: defaultPreset(), overrides: {}, extensions: {} }));
 
 const MOUSE_KEY_RE = /^Button(\d+)$/i;
 
@@ -116,6 +119,9 @@ export function isValidBinding(binding: unknown): binding is string {
   const b = binding.trim();
   if (parseDoubleModifier(b)) return true;
   const strokes = b.split(/\s+/);
+  if (strokes.some((s) => /swipe(left|right)$/i.test(s))) {
+    return strokes.length === 1 && /^swipe(left|right)$/i.test(b);
+  }
   return strokes.length >= 1 && strokes.length <= 2 && strokes.every((s) => STROKE_RE.test(s));
 }
 
@@ -189,15 +195,59 @@ export function suspendKeyboardDispatch(): () => void {
 }
 
 export function bindingsFor(actionId: string): string[] {
-  const { preset, overrides } = useKeymap.getState();
-  return overrides[actionId] ?? PRESETS[preset]?.[actionId] ?? [];
+  const { preset, overrides, extensions } = useKeymap.getState();
+  return overrides[actionId] ?? PRESETS[preset]?.[actionId] ?? usableExtensionBindings(extensions)[actionId] ?? [];
 }
 
 /** Every (binding, actionId) pair of the effective keymap. */
 export function effectiveBindings(): Array<[string, string]> {
-  const { preset, overrides } = useKeymap.getState();
-  const merged: Keymap = { ...PRESETS[preset], ...overrides };
+  const { preset, overrides, extensions } = useKeymap.getState();
+  const merged: Keymap = { ...usableExtensionBindings(extensions), ...PRESETS[preset], ...overrides };
   return Object.entries(merged).flatMap(([id, keys]) => keys.map((k) => [normalizeBinding(k), id] as [string, string]));
+}
+
+let extensionCache: { source: Keymap; preset: string; overrides: Keymap; usable: Keymap } | null = null;
+
+/**
+ * Plugin default bindings that stay: those of actions the preset and the
+ * user leave unbound, on keystrokes nothing else uses (the IDE's own
+ * shortcuts always win).
+ */
+function usableExtensionBindings(extensions: Keymap | undefined = {}): Keymap {
+  const { preset, overrides } = useKeymap.getState();
+  if (
+    extensionCache?.source === extensions &&
+    extensionCache.preset === preset &&
+    extensionCache.overrides === overrides
+  )
+    return extensionCache.usable;
+  const builtIn: Keymap = { ...PRESETS[preset], ...overrides };
+  const taken = new Set(Object.values(builtIn).flatMap((keys) => keys.map(normalizeBinding)));
+  const usable: Keymap = {};
+  for (const [id, keys] of Object.entries(extensions)) {
+    if (id in builtIn) continue;
+    const free = keys.filter((k) => !taken.has(normalizeBinding(k)));
+    for (const k of free) taken.add(normalizeBinding(k));
+    if (free.length) usable[id] = free;
+  }
+  extensionCache = { source: extensions, preset, overrides, usable };
+  return usable;
+}
+
+/**
+ * Default bindings contributed by an extension (a plugin's `keymaps`), below
+ * the preset and the user's: dropped when the keystroke is already taken.
+ * Returns a disposer.
+ */
+export function registerExtensionBindings(actionId: string, bindings: string[]): () => void {
+  const valid = bindings.filter(isValidBinding);
+  useKeymap.setState((s) => ({ extensions: { ...(s.extensions ?? {}), [actionId]: valid } }));
+  return () =>
+    useKeymap.setState((s) => {
+      if (s.extensions?.[actionId] !== valid) return s;
+      const { [actionId]: _, ...rest } = s.extensions ?? {};
+      return { extensions: rest };
+    });
 }
 
 const MOD_ORDER = MODIFIERS;
@@ -214,6 +264,8 @@ export function normalizeBinding(binding: string): string {
       const key = parts.pop()!;
       const mods = MOD_ORDER.filter((m) => parts.some((p) => p.toLowerCase() === m.toLowerCase()));
       const mouse = MOUSE_KEY_RE.exec(key);
+      const swipe = /^swipe(left|right)$/i.exec(key);
+      if (swipe) return `Swipe${swipe[1]!.toLowerCase() === "left" ? "Left" : "Right"}`;
       return [...mods, mouse ? `Button${mouse[1]}` : key.length === 1 ? key.toUpperCase() : key].join("+");
     })
     .join(" ");
@@ -341,7 +393,7 @@ export function formatBinding(binding: string, mac = isMacHost()): string {
 
 /** The first keyboard binding of an action: what menus and tooltips show. */
 export function primaryKeyBinding(actionId: string): string | undefined {
-  return bindingsFor(actionId).find((b) => !isMouseBinding(b));
+  return bindingsFor(actionId).find((b) => !isMouseBinding(b) && !isPageSwipe(b));
 }
 
 export function shortcutLabel(actionId: string): string | undefined {
@@ -402,7 +454,7 @@ export function isAltGrTyping(
 function runIfEnabled(id: string): boolean {
   const action = getAction(id);
   if (!action || !isActionKeyEnabled(action)) return false;
-  void executeAction(id);
+  void executeActionFrom("keyboard", id);
   return true;
 }
 
@@ -477,7 +529,7 @@ export function installKeyboardDispatcher(
       e.preventDefault();
       e.stopPropagation();
       tap.keyUsed = true;
-      void executeAction(id);
+      void executeActionFrom("keyboard", id);
       return true;
     }
     return false;
@@ -519,14 +571,31 @@ export function installKeyboardDispatcher(
       : physicalSeq.replace(/Numpad(Add|Subtract|Multiply|Divide)/g, (key) => keypadAliases[key]!);
     const ctx = getContext();
     const exact = bindings.filter(([b]) => b === seq).map(([, id]) => id);
-    // Later presets/overrides win; the first enabled match runs.
-    for (const id of exact.reverse()) {
+    // Later presets/overrides win; the first enabled match runs. When several
+    // actions share the sequence, a binding whose `keyWhen` matches the current
+    // context runs before one without it: the context-specific claim beats the
+    // context-free one at equal specificity, so Eclipse's Alt+Shift+R renames
+    // in the project view instead of reaching the Git log's Edit Commit
+    // Message. An unmatching `keyWhen` fails the enablement check below, and
+    // when no `keyWhen` matches, the preset/override order decides as before.
+    const keyWhenMatches = (id: string) => {
+      const action = getAction(id);
+      return !!action?.keyWhen && evaluateWhen(action.keyWhen, ctx);
+    };
+    const ordered = exact.reverse();
+    const preferred: string[] = [];
+    const fallback: string[] = [];
+    for (const id of ordered) {
+      if (keyWhenMatches(id)) preferred.push(id);
+      else fallback.push(id);
+    }
+    for (const id of [...preferred, ...fallback]) {
       const action = getAction(id);
       if (action && isActionKeyEnabled(action, ctx)) {
         e.preventDefault();
         e.stopPropagation();
         reset();
-        void executeAction(id);
+        void executeActionFrom("keyboard", id);
         return;
       }
     }
@@ -596,23 +665,40 @@ export function installKeyboardDispatcher(
     e.stopPropagation();
   };
 
+  /** macOS force click: no system Look Up popover over IDE text; the editor navigates instead. */
+  const onForceWillBegin = (e: Event) => e.preventDefault();
+
   const onBlur = () => {
     reset();
     resetTap();
   };
 
+  const onSwipe = (event: Event) => {
+    const stroke = (event as CustomEvent).detail;
+    if (suspended > 0 || !isPageSwipe(stroke)) return;
+    reset();
+    resetTap();
+    const ids = effectiveBindings()
+      .filter(([binding]) => binding === stroke)
+      .map(([, id]) => id);
+    for (const id of ids.reverse()) if (runIfEnabled(id)) return;
+  };
+  target.addEventListener(PAGE_SWIPE_EVENT, onSwipe);
   target.addEventListener("keydown", onKeyDown, true);
   target.addEventListener("keyup", onKeyUp, true);
   target.addEventListener("mousedown", onMouseDown, true);
   target.addEventListener("mouseup", onMouseRelease, true);
   target.addEventListener("auxclick", onMouseRelease, true);
+  target.addEventListener("webkitmouseforcewillbegin", onForceWillBegin, true);
   target.addEventListener("blur", onBlur);
   return () => {
+    target.removeEventListener(PAGE_SWIPE_EVENT, onSwipe);
     target.removeEventListener("keydown", onKeyDown, true);
     target.removeEventListener("keyup", onKeyUp, true);
     target.removeEventListener("mousedown", onMouseDown, true);
     target.removeEventListener("mouseup", onMouseRelease, true);
     target.removeEventListener("auxclick", onMouseRelease, true);
+    target.removeEventListener("webkitmouseforcewillbegin", onForceWillBegin, true);
     target.removeEventListener("blur", onBlur);
   };
 }

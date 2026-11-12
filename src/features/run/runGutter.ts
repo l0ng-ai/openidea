@@ -6,14 +6,24 @@
  */
 import { RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import type { EditorDocContext } from "@/editor/api";
+import { emptyGutterSpacer, gutterSpacer, type EditorDocContext } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { shortcutLabel } from "@/platform/keymap";
 import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
 import { notifications, runExecutors } from "@/workbench/contributions";
-import { choiceItems, executeContext, launchProduced, modifyContext, produceResolved } from "./contextRun";
-import { goModulePath, loadGoModules } from "./goModules";
+import {
+  canDebugProduced,
+  choiceItems,
+  executeContext,
+  launchProduced,
+  modifyContext,
+  produceResolved,
+  projectContext,
+} from "./contextRun";
+import { loadGoModules } from "./goModules";
+import { onServerSettled } from "@/editor/lsp/availability";
+import { resolveCandidates, retryNegativeInheritedMain, unresolvedCandidates } from "./inheritedMain";
 import { fileTargets, OPTIMISTIC, produceContextChoices, type ContextInput } from "./producers";
 import { loadConfigs, useRun } from "./store";
 import { targetLanguage, type RunTarget } from "./targets";
@@ -52,14 +62,7 @@ const targetsField = StateField.define<PlacedTarget[]>({
 });
 
 function targetInput(path: string, content: string, line: number): ContextInput {
-  return {
-    path,
-    root: useProject.getState().project?.root ?? null,
-    configs: useRun.getState().configs,
-    content,
-    line,
-    goModule: goModulePath,
-  };
+  return { ...projectContext(), path, content, line };
 }
 
 async function launch(target: RunTarget, path: string, debug: boolean, content: string) {
@@ -103,8 +106,7 @@ export function targetMenuItems(target: RunTarget, path: string, content: string
     choices.length > 1
       ? { submenu: choiceItems(choices, debug).filter((i) => i.kind !== "header") }
       : { run: () => void launch(target, path, debug, content) };
-  // Like IDEA, Debug only where a debugger can run it.
-  const debuggable = !p || !!(p.debug || p.config?.debugAdapter || p.missing);
+  const debuggable = !p || canDebugProduced(p);
   return [
     { label: tx`Run '${name}'`, icon: "run", shortcut: shortcutLabel("run.runContext"), ...pick(false) } as MenuItem,
     ...(debuggable
@@ -172,6 +174,8 @@ class RunMarker extends GutterMarker {
   }
 }
 
+const runSpacer = gutterSpacer(styles.runMarker ?? "");
+
 /** The gutter asks for markers on every update: rebuild only when targets or test results changed. */
 const markerCache = new WeakMap<readonly PlacedTarget[], { version: number; set: RangeSet<GutterMarker> }>();
 
@@ -197,15 +201,21 @@ export function runGutter(ctx: EditorDocContext): Extension {
   if (!useProject.getState().project?.root || isVirtualUri(path) || !hasGutterTargets(path)) return [];
   if (/\.go$/.test(path))
     void loadGoModules(useProject.getState().project?.root ?? null, useRun.getState().configs).catch(() => {});
-  const detect = (text: string) =>
-    fileTargets({ path, root: useProject.getState().project?.root ?? null, configs: useRun.getState().configs }, text);
+  const detect = (text: string) => fileTargets({ ...projectContext(), path }, text);
 
   const detector = ViewPlugin.fromClass(
     class {
       timer: ReturnType<typeof setTimeout> | undefined;
       readonly unsubscribe: () => void;
+      readonly offServers: () => void;
+      resolving = false;
+      destroyed = false;
       constructor(readonly view: EditorView) {
         this.schedule(0);
+        this.offServers = onServerSettled(() => {
+          retryNegativeInheritedMain();
+          this.schedule(0);
+        });
         // Redraw the markers with the new results (the gutter recomputes them on any update).
         this.unsubscribe = onTestStatesChanged(() => {
           if (view.state.field(targetsField).length) view.dispatch({ effects: testStatesChanged.of(null) });
@@ -224,10 +234,26 @@ export function runGutter(ctx: EditorDocContext): Extension {
             cur.length === found.length &&
             cur.every((t, i) => t.pos === found[i]!.pos && t.name === found[i]!.name && t.kind === found[i]!.kind);
           if (!same) view.dispatch({ effects: setTargets.of(found) });
+          this.resolveInherited(view.state.doc.toString());
         }, delay);
+      }
+      /** Classes that may inherit a `main`: ask the language server, then redraw if one does. */
+      resolveInherited(text: string) {
+        if (this.resolving || !path.endsWith(".java")) return;
+        const pending = unresolvedCandidates(path, text);
+        if (!pending.length) return;
+        this.resolving = true;
+        resolveCandidates(path, pending)
+          .then((found) => {
+            if (found && !this.destroyed) this.schedule(0);
+          })
+          .catch(() => {})
+          .finally(() => (this.resolving = false));
       }
       destroy() {
         clearTimeout(this.timer);
+        this.destroyed = true;
+        this.offServers();
         this.unsubscribe();
       }
     },
@@ -239,7 +265,9 @@ export function runGutter(ctx: EditorDocContext): Extension {
     gutter({
       class: `${styles.runGutter} cm-openidea-gutter-run`,
       markers: (view) => markers(view.state, path),
-      initialSpacer: () => new RunMarker({ line: 0, pos: 0, kind: "test", name: "", path: [] }, path),
+      // One icon of width only while the file has run targets; other files keep a narrow gutter.
+      initialSpacer: () => emptyGutterSpacer,
+      updateSpacer: (_spacer, update) => (update.state.field(targetsField).length ? runSpacer : emptyGutterSpacer),
       domEventHandlers: {
         mousedown: (view, block, event) => {
           const target = view.state.field(targetsField).find((t) => t.pos === block.from);

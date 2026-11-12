@@ -181,36 +181,23 @@
   color: var(--fg-weak-warning);
 }
 
-/* File › New Project… */
-.newProject {
+/* Import Settings… › JetBrains settings.zip confirmation */
+.importSummary {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 16px;
-}
-.newProjectRow {
-  display: flex;
-  align-items: center;
   gap: 8px;
 }
-.newProjectRow > :nth-child(2) {
-  flex: 1;
-  min-width: 0;
+.importList {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 16px;
 }
-.newProjectLabel {
-  flex: none;
-  width: 72px;
-  color: var(--fg);
+.importList dt {
+  color: var(--fg-muted);
 }
-.newProjectHint {
-  min-height: 1.5em;
-  padding-left: 80px;
-  color: var(--fg-subtle);
-  font-size: var(--fs-small);
-  overflow-wrap: anywhere;
-}
-.newProjectError {
-  color: var(--danger);
-  font-size: var(--fs-small);
+.importList dd {
+  margin: 0;
+  color: var(--fg-strong);
   overflow-wrap: anywhere;
 }

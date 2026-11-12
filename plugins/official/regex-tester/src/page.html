@@ -1,0 +1,377 @@
+<style>
+  body {
+    margin: 0;
+  }
+  .rt {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: 8px;
+    padding: 8px;
+    height: calc(100vh - 16px);
+    box-sizing: border-box;
+  }
+  .col {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+  }
+  .row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  label.caption {
+    color: var(--openidea-fg-muted);
+    font-size: 11px;
+  }
+  input[type="text"],
+  textarea {
+    font-family: var(--openidea-font-mono, ui-monospace, monospace);
+    font-size: 12px;
+    color: var(--openidea-fg);
+    background: var(--openidea-bg-input, transparent);
+    border: 1px solid var(--openidea-border);
+    border-radius: 4px;
+    padding: 4px 6px;
+    outline: none;
+    box-sizing: border-box;
+  }
+  input[type="text"]:focus,
+  textarea:focus {
+    border-color: var(--openidea-focus-ring, var(--openidea-accent));
+  }
+  input.pattern {
+    flex: 1;
+  }
+  input.invalid {
+    border-color: var(--openidea-danger);
+  }
+  .flags {
+    display: flex;
+    gap: 2px;
+  }
+  .flags button {
+    font-family: var(--openidea-font-mono, monospace);
+    font-size: 12px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    color: var(--openidea-fg-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .flags button:hover {
+    background: var(--openidea-bg-hover);
+  }
+  .flags button[aria-pressed="true"] {
+    color: var(--openidea-fg-on-accent);
+    background: var(--openidea-accent);
+  }
+  .status {
+    font-size: 11px;
+    color: var(--openidea-fg-muted);
+    min-height: 14px;
+  }
+  .status.error {
+    color: var(--openidea-danger);
+  }
+  /* The text: a transparent textarea over a backdrop that draws the matches. */
+  .editor {
+    position: relative;
+    flex: 1;
+    min-height: 60px;
+  }
+  .editor textarea,
+  .editor .backdrop {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-family: var(--openidea-font-mono, ui-monospace, monospace);
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 4px 6px;
+    box-sizing: border-box;
+    border: 1px solid transparent;
+    overflow: auto;
+  }
+  .editor textarea {
+    background: transparent;
+    resize: none;
+    border-color: var(--openidea-border);
+    caret-color: var(--openidea-fg);
+  }
+  .editor .backdrop {
+    color: transparent;
+    pointer-events: none;
+  }
+  mark {
+    color: transparent;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--openidea-accent) 35%, transparent);
+  }
+  mark.alt {
+    background: color-mix(in srgb, var(--openidea-info, var(--openidea-accent)) 30%, transparent);
+  }
+  mark.current {
+    outline: 1px solid var(--openidea-accent);
+  }
+  .replaced {
+    flex: 1;
+    min-height: 40px;
+    margin: 0;
+    white-space: pre-wrap;
+    overflow: auto;
+    font-family: var(--openidea-font-mono, monospace);
+    font-size: 12px;
+    border: 1px solid var(--openidea-border);
+    border-radius: 4px;
+    padding: 4px 6px;
+    color: var(--openidea-fg-strong);
+  }
+  .list {
+    flex: 2;
+    overflow: auto;
+    border: 1px solid var(--openidea-border);
+    border-radius: 4px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  th,
+  td {
+    text-align: left;
+    padding: 2px 6px;
+    vertical-align: top;
+  }
+  th {
+    position: sticky;
+    top: 0;
+    background: var(--openidea-bg-elevated, var(--openidea-bg));
+    color: var(--openidea-fg-muted);
+    font-weight: normal;
+  }
+  td.mono {
+    font-family: var(--openidea-font-mono, monospace);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  td.none {
+    color: var(--openidea-fg-muted);
+  }
+  tr.match {
+    cursor: pointer;
+  }
+  tr.match:hover {
+    background: var(--openidea-bg-hover);
+  }
+  tr.match.current {
+    background: var(--openidea-bg-selected);
+  }
+  .empty {
+    padding: 8px;
+    color: var(--openidea-fg-muted);
+    font-size: 12px;
+  }
+</style>
+<div class="rt">
+  <div class="col">
+    <label class="caption" for="pattern">Regular expression (Rust syntax)</label>
+    <div class="row">
+      <input
+        id="pattern"
+        class="pattern"
+        type="text"
+        spellcheck="false"
+        autocomplete="off"
+        placeholder="e.g. (?P&lt;key&gt;\w+)=(\d+)"
+      />
+      <div class="flags" role="group" aria-label="Flags">
+        <button data-flag="i" title="Ignore case (i)">i</button>
+        <button data-flag="m" title="^ and $ match at line breaks (m)">m</button>
+        <button data-flag="s" title=". matches line breaks (s)">s</button>
+        <button data-flag="x" title="Ignore whitespace and # comments in the pattern (x)">x</button>
+      </div>
+    </div>
+    <div id="status" class="status"></div>
+    <label class="caption" for="text">Text</label>
+    <div class="editor">
+      <div id="backdrop" class="backdrop" aria-hidden="true"></div>
+      <textarea
+        id="text"
+        spellcheck="false"
+        placeholder="Text to match. Use Selection takes the editor's selection."
+      ></textarea>
+    </div>
+    <label class="caption" for="replace">Replace with ($1, ${name}, $$ for $)</label>
+    <input
+      id="replace"
+      type="text"
+      spellcheck="false"
+      autocomplete="off"
+      placeholder="Leave empty for no replacement"
+    />
+    <pre id="replaced" class="replaced" hidden></pre>
+  </div>
+  <div class="col">
+    <label class="caption">Matches</label>
+    <div id="list" class="list"><div class="empty">No matches yet.</div></div>
+  </div>
+</div>
+<script>
+  (() => {
+    // Replaced by the plugin with its start state (a JSON object); a string the formatter leaves alone.
+    const START = "__START__";
+    const $ = (id) => document.getElementById(id);
+    const pattern = $("pattern"),
+      text = $("text"),
+      replace = $("replace");
+    const backdrop = $("backdrop"),
+      status = $("status"),
+      list = $("list"),
+      replaced = $("replaced");
+    const flags = new Set((typeof START === "object" && START.flags) || "m");
+    let seq = 0,
+      timer = 0,
+      current = -1,
+      last = null;
+
+    for (const b of document.querySelectorAll(".flags button")) {
+      b.setAttribute("aria-pressed", String(flags.has(b.dataset.flag)));
+      b.addEventListener("click", () => {
+        const f = b.dataset.flag;
+        flags.has(f) ? flags.delete(f) : flags.add(f);
+        b.setAttribute("aria-pressed", String(flags.has(f)));
+        schedule(0);
+      });
+    }
+
+    const escape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    function schedule(delay = 120) {
+      clearTimeout(timer);
+      timer = setTimeout(run, delay);
+    }
+
+    function run() {
+      seq += 1;
+      openidea.postMessage(
+        JSON.stringify({
+          op: "run",
+          seq,
+          pattern: pattern.value,
+          flags: [...flags].sort().join(""),
+          text: text.value,
+          replace: replace.value === "" ? null : replace.value,
+        }),
+      );
+    }
+
+    function drawBackdrop() {
+      const src = text.value;
+      if (!last || last.error || !last.matches.length) {
+        backdrop.innerHTML = escape(src) + "\n";
+        return;
+      }
+      let out = "",
+        at = 0;
+      last.matches.forEach((m, i) => {
+        out += escape(src.slice(at, m.s));
+        const cls = (i % 2 ? "alt" : "") + (i === current ? " current" : "");
+        // An empty match still shows where it is.
+        out += `<mark class="${cls}">${m.e > m.s ? escape(src.slice(m.s, m.e)) : "​"}</mark>`;
+        at = m.e;
+      });
+      backdrop.innerHTML = out + escape(src.slice(at)) + "\n";
+      backdrop.scrollTop = text.scrollTop;
+    }
+
+    function drawList() {
+      if (!last || last.error || !last.matches.length) {
+        list.innerHTML = `<div class="empty">${last && !last.error && pattern.value ? "No matches." : "No matches yet."}</div>`;
+        return;
+      }
+      const src = text.value;
+      const names = last.groups || [];
+      const head = names.map((n, i) => `<th>${n === null ? "$" + (i + 1) : escape(n)}</th>`).join("");
+      const rows = last.matches
+        .map((m, i) => {
+          const groups = m.groups
+            .map((g) =>
+              g === null ? `<td class="none">–</td>` : `<td class="mono">${escape(src.slice(g[0], g[1]))}</td>`,
+            )
+            .join("");
+          return `<tr class="match${i === current ? " current" : ""}" data-i="${i}"><td>${i + 1}</td><td class="mono">${escape(src.slice(m.s, m.e))}</td>${groups}</tr>`;
+        })
+        .join("");
+      list.innerHTML = `<table><thead><tr><th>#</th><th>Match</th>${head}</tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    function select(i) {
+      current = i;
+      const m = last.matches[i];
+      text.focus();
+      text.setSelectionRange(m.s, m.e);
+      drawBackdrop();
+      drawList();
+    }
+
+    list.addEventListener("click", (e) => {
+      const row = e.target.closest("tr.match");
+      if (row) select(Number(row.dataset.i));
+    });
+
+    openidea.onMessage((raw) => {
+      let m;
+      try {
+        m = JSON.parse(raw);
+      } catch {
+        return;
+      }
+      if (m.op === "text") {
+        text.value = m.text;
+        schedule(0);
+      } else if (m.op === "result" && m.seq === seq) {
+        last = m;
+        current = -1;
+        pattern.classList.toggle("invalid", !!m.error);
+        status.classList.toggle("error", !!m.error);
+        status.textContent = m.error
+          ? m.error
+              .split("\n")
+              .filter((l) => l.trim())
+              .pop()
+          : pattern.value
+            ? (m.count === 1 ? "1 match" : `${m.count} matches`) +
+              (m.count > m.matches.length ? ` (first ${m.matches.length} shown)` : "")
+            : "";
+        replaced.hidden = m.replaced == null;
+        if (m.replaced != null) replaced.textContent = m.replaced;
+        drawBackdrop();
+        drawList();
+      }
+    });
+
+    pattern.addEventListener("input", () => schedule());
+    replace.addEventListener("input", () => schedule());
+    // Offsets of the last result no longer fit the text: plain until the next one.
+    text.addEventListener("input", () => {
+      last = null;
+      drawBackdrop();
+      schedule();
+    });
+    text.addEventListener("scroll", () => {
+      backdrop.scrollTop = text.scrollTop;
+    });
+    pattern.focus();
+    drawBackdrop();
+  })();
+</script>

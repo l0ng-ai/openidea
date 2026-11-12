@@ -1,0 +1,120 @@
+---
+title: "生命周期与事件"
+description: "插件代码何时加载和卸载、事件如何送达，以及如何在重新加载和更新之间保存数据、设置和状态。"
+---
+
+## 状态
+
+**设置 › 插件** 显示每个插件的状态：
+
+| 状态         | 含义                                                                   |
+| ------------ | ---------------------------------------------------------------------- |
+| **已启用**   | 贡献已生效，代码（如果有）当前未加载。                                 |
+| **正在运行** | 有一个代码实例处于活跃状态。                                           |
+| **已禁用**   | 被用户关闭。                                                           |
+| **需要授权** | 尚未允许的链接插件或项目插件，或要求新能力的更新。点击 **查看权限…**。 |
+| **失败**     | 连续崩溃三次，或无法启动。详情中会显示原因，点击 **重启** 再试。       |
+
+插件一启用，声明的贡献（命令、菜单、主题、设置页等）就生效，不需要先加载代码。
+
+## 激活
+
+代码按需实例化：执行插件的某个命令，或发生 `activation` 中列出的事件时（见 [Manifest](/zh/plugins/manifest) 中的“激活”一节）。每创建一个新实例，IDE 都会调用 `Plugin::activate`，在这里订阅事件、恢复状态。`activate` 返回错误则本次激活失败。
+
+实例 **5 分钟**没有调用就会被回收：执行 `deactivate`，插件回到未运行状态，直到下一个事件到来。`on-schedule` 到点会激活插件，但不会让它一直存活。不要在内存里保存 `activate` 中无法重建的东西。
+
+```rust
+use openidea_plugin::{Context, Error, EventKind, Plugin, host};
+
+impl Plugin for MyPlugin {
+    fn activate(&mut self, _ctx: &Context) -> Result<(), Error> {
+        host::subscribe(EventKind::FileSaved)?;
+        self.count = host::storage::get("count")?.and_then(|v| v.parse().ok()).unwrap_or(0);
+        Ok(())
+    }
+}
+```
+
+## 事件
+
+| 类型                                                  | 能力           | 触发时机                                                            |
+| ----------------------------------------------------- | -------------- | ------------------------------------------------------------------- |
+| `file-opened`                                         | `events`       | 文件在编辑器中打开                                                  |
+| `file-saved`                                          | `events`       | 文件写入磁盘                                                        |
+| `file-closed`                                         | `events`       | 文件的编辑器关闭（API 1.4）                                         |
+| `files-changed`                                       | `events`       | 打开的项目中有文件创建、修改或删除，已去抖（API 1.3）               |
+| `editor-focused`                                      | `events`       | 焦点编辑器变化                                                      |
+| `vcs-changed`                                         | `events`       | 仓库状态变化（提交、检出、fetch 等）                                |
+| `settings-changed`                                    | `events`       | 本插件的某些设置变化（API 1.4）                                     |
+| `action-performed`                                    | `events.input` | 执行了某个 IDE 操作：id、标题、来源（键盘、菜单、工具栏等）、快捷键 |
+| `input-mode-changed`                                  | `events.input` | 焦点编辑器的 Vim 模式变化（API 1.4）                                |
+| `scheduled`                                           | 无             | `on-schedule` 的周期到了                                            |
+| `run-exited`、`terminal-exited`、`content-tab-action` | 无             | 本插件启动的运行、终端或内容标签页结束或发来操作（API 1.4）         |
+
+在代码中用 `host::subscribe(EventKind::…)` 订阅（在整个会话内有效，空闲回收后仍然保留），或者声明 `activation = ["on-event:<kind>"]`，在首次使用前就能收到事件。`host::subscribe_paths(kind, globs)`（API 1.3）可以把 `file-opened`、`file-saved` 和 `files-changed` 限定到项目相对路径的 glob；宿主会在唤醒插件之前完成过滤。
+
+事件按窗口分批送到 `Plugin::handle_events`，最早的在前。正在运行的插件在不到一秒内就能收到；空闲的插件会先攒 2 秒再被唤醒，这样频繁的事件不会让它一直存活。
+
+事件类型是字符串，所以以后的 IDE 可以增加类型而不改 API。IDE 不认识的类型会以 `invalid` 拒绝订阅；比插件 SDK 更新的类型以 `Event::Other { kind, data }` 送达，`data` 是 JSON。匹配 SDK 的事件枚举时请保留 `_` 分支。
+
+## 后台工作
+
+命令、事件和激活只有 5 秒。更长的工作请开启任务：
+
+```rust
+let task = host::begin_task("Scanning files", true);
+for (i, file) in files.iter().enumerate() {
+    if task.is_cancelled() { break; }
+    task.report(i as u32, Some(files.len() as u32), None);
+    // …
+}
+// `task` 被 drop 时任务结束
+```
+
+任务打开期间，这次调用最长可以运行 60 秒，并且每次 `report` 或 `is_cancelled` 都会重新计时。任务显示在 IDE 的后台任务中。
+
+## 存储
+
+|                                                  | 空闲回收后保留 | 重启和更新后保留 | 卸载时删除 |
+| ------------------------------------------------ | -------------- | ---------------- | ---------- |
+| 实例内存（`self`）                               | 否             | 否               | —          |
+| `host::storage`（键值存储，需要 `storage`）      | 是             | 是               | 是         |
+| `host::fs::plugin_dir()`（私有文件，不需要能力） | 是             | 是               | 是         |
+
+`host::storage` 每个插件最多 64 MiB，按键和值的 UTF-8 字节数计算。更大的缓存或生成的文件放到 `plugin_dir()`。存储按插件而不是按版本保存，所以更新后数据仍在。
+
+## 设置
+
+插件用 JSON schema 声明设置，IDE 会在 **设置 › 插件** 下生成对应页面（可搜索，支持项目级覆盖）：
+
+```toml
+[contributes.settings]
+schema = "settings.schema.json"
+```
+
+```json
+{
+  "properties": {
+    "context": { "type": "string", "title": "Context", "default": "" },
+    "tailLines": { "type": "integer", "title": "Log lines", "default": 200 },
+    "shell": { "type": "string", "enum": ["sh", "bash"], "default": "sh" }
+  }
+}
+```
+
+类型有 `boolean`、`string`（可带 `enum` 或 `multiline`）、`number` 和 `integer`，每个都要有 `default`。用 `host::setting`、`setting_bool`、`setting_string` 或 `setting_number` 读取：得到的是用户设置的值（项目优先于全局）或 schema 中的默认值；存储的值类型不对时回退到默认值。订阅 `settings-changed`（API 1.4）可以响应设置变化。
+
+API 1.3 增加了多页设置（`[[contributes.settings.pages]]`）、分组、字符串列表、表格，以及运行插件命令的操作按钮。见 [`plugins/README.md`](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#multiple-pages-groups-lists-and-tables-api-13) 和 [`settings-pages` fixture](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-plugin/tests/fixtures/settings-pages)。
+
+密钥不属于设置，用 `[[contributes.secrets]]` 声明（见 [权限与能力](/zh/plugins/capabilities)）。
+
+## 重新加载、更新与回滚
+
+- **开发时重新加载：** 在 **设置 › 插件** 中选中插件并点击 **从磁盘重新加载**，或运行 **重新加载插件** 操作。链接的插件从其文件夹读取，所以重新构建后再加载就能用上新的代码和清单。
+- **更新：** IDE 每天检查一次插件市场。发现已安装插件有新版本时会提示一次，并提供 **全部更新**；齿轮菜单里也有 **更新全部插件**。不要求新能力的更新沿用已有授权。
+- **磁盘上的版本：** 已安装的插件位于 `<app-data>/plugins/<id>/<version>/`，有一个 `active` 指针，只有新版本完全就位后才会切换。更新后的代码第一次启动就失败时，IDE 会自动回滚到之前的版本并告诉你原因。插件详情中的 **回滚到 `<version>`** 可以手动回滚。
+- **禁用与卸载：** 禁用会停止代码并撤回其贡献，存储保留。卸载会删除插件、它的存储和私有目录。
+
+## 崩溃
+
+panic、trap、权限违规或超出限制都会丢弃实例。下次需要时插件会重新启动，连续崩溃时等待时间逐次翻倍。连续崩溃三次后，插件在本次会话中处于 **失败** 状态。只要有调用正常返回，计数就会清零。见 [架构与沙箱](/zh/plugins/architecture)。

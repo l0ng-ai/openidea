@@ -16,3 +16,6 @@ parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 encoding_rs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

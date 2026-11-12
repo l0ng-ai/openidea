@@ -24,7 +24,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     ...real,
     commands: {
       ...real.commands,
-      ghApi: (req: unknown) => ghApi(req),
+      ghApi: (_repo: unknown, req: unknown) => ghApi(req),
       vcsFileAt: () => ok(HEAD),
       vcsDiffHunks: (a: string, b: string) => Promise.resolve(diffHunks(a, b)),
       vcsConfigGet: (_repo: string | null, key: string) => ok(config[key] ?? null),
@@ -158,6 +158,12 @@ describe("model", () => {
     expect(trackedBranch(".", "refs/heads/main", remotes)).toBeNull();
     const alias = [{ name: "origin", url: "git@work-github:o/r.git" }];
     expect(trackedBranch("origin", "refs/heads/x", alias)).toBeNull();
+    const resolved = [{ ...alias[0]!, resolvedUrl: "ssh://git@github.com:443/o/r.git" }];
+    expect(trackedBranch("origin", "refs/heads/x", resolved)).toEqual({
+      repository: { owner: "o", name: "r" },
+      branch: "x",
+      pullRequest: null,
+    });
     expect(trackedBranch("origin", "refs/heads/x", alias, { owner: "o", name: "r" })?.repository).toEqual({
       owner: "o",
       name: "r",
@@ -295,6 +301,8 @@ beforeEach(() => {
       coordinates: { owner: "o", name: "r" },
       repository: { id: "R1", viewerPermission: "READ" } as GHRepository,
       currentUser: me,
+      root: null,
+      remotes: [],
     },
   });
   useReviewModeSettings.setState({ enabled: true, threads: "unresolved" });

@@ -6,6 +6,15 @@
   flex-direction: column;
 }
 
+.unityNotice {
+  flex: none;
+  padding: 8px 12px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  border-bottom: 1px solid var(--border);
+}
+
 .content {
   flex: 1;
   min-width: 0;
@@ -51,9 +60,27 @@
   background: color-mix(in srgb, var(--vcs-ignored) 14%, transparent);
 }
 .error {
-  text-decoration: underline wavy var(--danger);
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--danger);
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
+}
+.suffix {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-left: 6px;
+  overflow: hidden;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.suffixSegment {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
 }
 .detail {
   min-width: 0;

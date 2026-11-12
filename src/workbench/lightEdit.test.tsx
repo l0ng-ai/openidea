@@ -4,7 +4,7 @@ import { useEditorRegistry } from "@/editor/api";
 import { evaluateWhen } from "@/platform/context";
 import { useProject } from "@/platform/project";
 import { activateWorkbench } from "./activate";
-import { registerStatusItem, registerTitleItem, registerToolWindow } from "./contributions";
+import { registerStatusItem, registerTitleItem, registerToolWindow, useStandaloneEditor } from "./contributions";
 import { EmptyEditor } from "./EditorArea";
 import { chooseProjectWindow } from "./projectWindow";
 import { Workbench } from "./Workbench";
@@ -36,6 +36,7 @@ describe("LightEdit window", () => {
     );
   });
   afterEach(() => {
+    useStandaloneEditor.setState({ title: null });
     disposers.splice(0).forEach((d) => d());
     useProject.setState({ project: null, lightEdit: false });
     useEditorRegistry.setState({ active: null });
@@ -50,6 +51,16 @@ describe("LightEdit window", () => {
     const items = [...document.querySelectorAll("[data-status-item]")].map((el) => el.getAttribute("data-status-item"));
     expect(items).toEqual(["editor.caret"]);
     expect(screen.queryByText("Welcome to OpenIDEA")).toBeNull();
+  });
+
+  it("keeps a standalone log visible without a project or LightEdit session", () => {
+    useProject.setState({ lightEdit: false });
+    useStandaloneEditor.setState({ title: "External Git Log" });
+    render(<Workbench />);
+    expect(screen.getByText("External Git Log")).toBeInTheDocument();
+    expect(document.querySelector("[data-editor-area]")).not.toBeNull();
+    expect(screen.queryByText("Welcome to OpenIDEA")).toBeNull();
+    expect(document.querySelector("[data-stripe-side]")).toBeNull();
   });
 
   it("hints only at opening files in an empty editor", () => {
@@ -73,6 +84,26 @@ describe("LightEdit window", () => {
     expect(evaluateWhen("projectOpen")).toBe(false);
     useProject.setState({ lightEdit: false });
     expect(evaluateWhen("lightEdit")).toBe(false);
+    dispose();
+  });
+
+  it("updates workspace and policy context without replacing the project root", () => {
+    const dispose = activateWorkbench();
+    const project = { root: "/a", name: "A", trusted: true, isGit: false, settings: {} };
+    useProject.setState({ project, lightEdit: false, settings: { general: { openProjectIn: "new" } } } as never);
+    expect(evaluateWhen("projectLocal && !projectOpenAsk")).toBe(true);
+    expect(evaluateWhen("workspaceOpen")).toBe(false);
+    useProject.setState({ project: { ...project, workspace: { version: 1, name: "A", projects: ["/a", "/b"] } } });
+    expect(evaluateWhen("workspaceOpen")).toBe(true);
+    expect(evaluateWhen("workspaceContainer")).toBe(false);
+    expect(evaluateWhen("projectAttached")).toBe(true);
+    useProject.setState({ settings: { general: { openProjectIn: "attach" } } } as never);
+    expect(evaluateWhen("projectOpenAsk")).toBe(true);
+    useProject.setState({ project: { ...project, workspace: { version: 1, name: "A", projects: ["/b"] } } });
+    expect(evaluateWhen("workspaceContainer")).toBe(true);
+    expect(evaluateWhen("projectAttached")).toBe(false);
+    useProject.setState({ project });
+    expect(evaluateWhen("workspaceOpen")).toBe(false);
     dispose();
   });
 

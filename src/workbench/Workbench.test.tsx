@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { emitLocalIdeEvent } from "@/platform/ipc";
+import { setLocale } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import { registerStatusItem, registerToolWindow, type StatusItemContribution } from "./contributions";
 import { orderStatusItems, StatusBar, TaskStatus } from "./StatusBar";
 import { orderTitleItems } from "./TitleBar";
@@ -16,7 +18,13 @@ import {
 } from "./notificationStore";
 import { installTaskEvents, useTasks } from "./tasks";
 import { ToolWindowLayout, ToolWindowStripe } from "./toolwindows/ToolWindows";
-import { isToolWindowVisible, loadToolWindowLayout, showToolWindow, type SlotRecord } from "./toolwindows/store";
+import {
+  isToolWindowVisible,
+  loadToolWindowLayout,
+  showToolWindow,
+  toggleMaximizeToolWindow,
+  type SlotRecord,
+} from "./toolwindows/store";
 
 const NO_SLOTS: SlotRecord = {
   left: null,
@@ -200,7 +208,30 @@ describe("notifications", () => {
     uninstall();
   });
 
+  it.each(["en", "zh"])("adds Gradle JVM recovery before translating backend messages (%s)", async (locale) => {
+    await setLocale(locale);
+    const uninstall = installNotifyEvents();
+    try {
+      act(() =>
+        emitLocalIdeEvent({
+          type: "notify",
+          level: "error",
+          title: "jdtls",
+          body: "Can't use Java 27.0.1.0.3 and Gradle 9.7.1 to import Gradle project kotlin-gradle.",
+        }),
+      );
+      const item = useNotifications.getState().items[0]!;
+      expect(item.actions?.map((a) => a.label)).toEqual([locale === "zh" ? "选择 Gradle JVM" : "Choose Gradle JVM"]);
+      expect(item.body).toContain(locale === "zh" ? "下载 JDK" : "Download JDK");
+    } finally {
+      uninstall();
+      await setLocale("en");
+    }
+  });
+
   it("the Notifications tool window lists history, marks it read and hides balloons", () => {
+    const previousProject = useProject.getState().project;
+    useProject.setState({ project: { root: "/notifications", name: "notifications" } as never });
     const dispose = registerToolWindow({
       id: NOTIFICATIONS_TOOL_WINDOW,
       title: "Notifications",
@@ -222,6 +253,26 @@ describe("notifications", () => {
     expect(screen.getAllByText("Hello")).toHaveLength(1);
     expect(useNotifications.getState().items.every((n) => n.read && !n.balloon)).toBe(true);
     dispose();
+    useProject.setState({ project: previousProject });
+  });
+
+  it("pops up the answer to a command the user ran even when balloons are off for its group", async () => {
+    const { useProject } = await import("@/platform/project");
+    useProject.setState({
+      settings: { notifications: { balloons: false, groups: { updates: { display: "none", log: true } } } } as never,
+    });
+    try {
+      act(() => {
+        notify({ level: "info", title: "Checking for updates…", key: "app.update", userInitiated: true });
+        notify({ level: "info", title: "Update available", key: "app.update.background" });
+      });
+      const balloon = (title: string) => useNotifications.getState().items.find((n) => n.title === title)?.balloon;
+      expect(balloon("Checking for updates…")).toBe(true);
+      // What the IDE raises on its own still follows the settings.
+      expect(balloon("Update available")).toBe(false);
+    } finally {
+      useProject.setState({ settings: null });
+    }
   });
 });
 
@@ -322,9 +373,83 @@ describe("tool window split areas", () => {
     unmount();
     disposers.forEach((d) => d());
   });
+
+  it("unhides the editor and other tool windows if a maximized window unregisters", () => {
+    useProject.setState({ project: { root: "/max", name: "max", trusted: true, isGit: false, settings: {} } });
+    const disposeProject = registerToolWindow({
+      id: "project",
+      title: "Project",
+      icon: "folder",
+      anchor: "left",
+      component: () => <div>project-tree</div>,
+    });
+    const disposeK8s = registerToolWindow({
+      id: "plugin.k8s.view:kubernetes",
+      title: "Kubernetes",
+      icon: "cloud",
+      anchor: "right",
+      secondary: true,
+      component: () => <div>k8s-explorer</div>,
+    });
+    loadToolWindowLayout("/max");
+    const { container, unmount } = render(<ToolWindowLayout editor={<div>editor-surface</div>} />);
+    try {
+      act(() => {
+        showToolWindow("plugin.k8s.view:kubernetes", true);
+        toggleMaximizeToolWindow("plugin.k8s.view:kubernetes");
+      });
+      expect(screen.getByText("editor-surface").parentElement).toHaveAttribute("hidden");
+      expect(container.querySelector('[data-anchor="left"]')).toHaveAttribute("hidden");
+
+      act(() => disposeK8s());
+
+      expect(screen.getByText("editor-surface").parentElement).not.toHaveAttribute("hidden");
+      expect(container.querySelector('[data-anchor="left"]')).not.toHaveAttribute("hidden");
+      expect(container.querySelector("[data-maximized]")).toBeNull();
+    } finally {
+      unmount();
+      disposeProject();
+      useProject.setState({ project: null });
+    }
+  });
 });
 
 describe("workbench shell", () => {
+  it("covers the old project with the opening target and keeps its views mounted and inert", async () => {
+    const { useProject } = await import("@/platform/project");
+    const { Workbench } = await import("./Workbench");
+    const dispose = registerToolWindow({
+      id: "project",
+      title: "Project",
+      icon: "folder",
+      anchor: "left",
+      component: () => <input aria-label="old project input" />,
+    });
+    useProject.setState({
+      project: { root: "/old", name: "old", trusted: true, isGit: false, settings: {} },
+      opening: false,
+      openingPath: null,
+    });
+    loadToolWindowLayout("/old");
+    const { unmount } = render(<Workbench />);
+    const input = screen.getByRole("textbox", { name: "old project input" });
+    try {
+      act(() => useProject.setState({ opening: true, openingPath: "/work/new-project" }));
+      expect(screen.getByRole("status", { name: "Opening new-project…" })).toBeVisible();
+      expect(screen.getByText("/work/new-project")).toBeVisible();
+      expect(input.closest("[inert]")).not.toBeNull();
+      expect(input).toBeInTheDocument();
+      act(() => useProject.setState({ opening: false, openingPath: null }));
+      expect(screen.queryByText("Opening new-project…")).toBeNull();
+      expect(input.closest("[inert]")).toBeNull();
+      expect(screen.getByRole("textbox", { name: "old project input" })).toBe(input);
+    } finally {
+      unmount();
+      dispose();
+      useProject.setState({ project: null, opening: false, openingPath: null });
+    }
+  });
+
   it("renders the welcome view without a project and the frame with one", async () => {
     const { useProject } = await import("@/platform/project");
     const { Workbench } = await import("./Workbench");

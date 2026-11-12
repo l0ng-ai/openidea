@@ -6,17 +6,19 @@
  */
 
 import { FontPicker } from "../components/FontPicker";
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { shortcutLabel } from "@/platform/keymap";
 import { usePlatform } from "@/platform/platformInfo";
-import { isTauri } from "@/platform/ipc";
+import { call, commands, isTauri } from "@/platform/ipc";
+import type { LocalDataInfo } from "@/bindings";
+import { notifications } from "@/workbench/contributions";
 import { ZOOM_LIMITS } from "@/platform/zoom";
 import { SCHEMES as EDITOR_SCHEMES, listSchemes, customSchemes } from "@/platform/colorScheme";
 import { formatTimestamp } from "@/platform/dateFormat";
-import { Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
+import { Button, Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
 import { NOTIFICATION_GROUPS } from "@/workbench/notificationStore";
-import { ColorSwatches, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
+import { ColorSwatches, FormGroup, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
 import {
   IDLE_LIMITS,
@@ -25,19 +27,21 @@ import {
   type DateFormatValid,
   type NotificationDisplay,
   type NotificationGroupValid,
+  type NavigationBarPosition,
   type OpenProjectIn,
 } from "../model/behaviorSchema";
 import { ACCENT_PRESETS, LIMITS, type ThemeId } from "../model/schema";
 import type { PageSpec } from "./spec";
 import { HTTP_PROXY_PAGE } from "./httpProxy";
 import styles from "./Behavior.module.css";
-import { tx, useT } from "@/platform/i18n";
+import { LOCALES, SUPPORTED_LOCALES, tx, useT } from "@/platform/i18n";
+import { BUILTIN_THEMES, useContributedIconThemes } from "@/platform/themes";
+import { currentThemeChoice, originDetail, previewTheme, themeSelectOptions, useThemeChoices } from "@/workbench/theme";
+import { themePreview } from "@/workbench/quickSwitch";
 
-import { BUILTIN_THEMES } from "@/platform/themes";
+const BUILTIN_THEME_LABELS = BUILTIN_THEMES.map((t) => t.label);
 
 export const APPEARANCE_GROUP = "Appearance & Behavior";
-
-const THEMES: SelectOption<ConcreteTheme>[] = BUILTIN_THEMES.map((t) => ({ value: t.id, label: t.label }));
 
 /** Checkbox bound to a key, optionally disabled. */
 function BoundToggle({ k, label, hint, disabled }: { k: string; label: string; hint?: ReactNode; disabled?: boolean }) {
@@ -46,11 +50,14 @@ function BoundToggle({ k, label, hint, disabled }: { k: string; label: string; h
 }
 
 function Indented({ children }: { children: ReactNode }) {
-  return <div className={styles.indented}>{children}</div>;
+  return <FormGroup indented>{children}</FormGroup>;
 }
 
 // ---------------------------------------------------------------------------
 // Appearance
+
+/** Shows the theme picked in Settings in this window until Apply, or the selected one again. */
+const showPicked = (id: ConcreteTheme) => previewTheme(id !== currentThemeChoice() ? id : null);
 
 function ThemeRow() {
   const [theme, setTheme] = useSetting<ThemeId>("appearance.theme");
@@ -60,10 +67,39 @@ function ThemeRow() {
   const [open, setOpen] = useState(false);
   const gear = useRef<HTMLButtonElement>(null);
   const matched = useLabelMatch("Sync with OS");
+  const choices = useThemeChoices();
   const shown: ConcreteTheme = theme === "system" ? "light" : theme;
+  // The theme under the pointer shows as in Quick Switch; the one picked here shows until Apply or Cancel.
+  const picker = useMemo(() => themePreview(), []);
+  const previewed = useRef(false);
+  useEffect(
+    () => () => {
+      if (previewed.current) previewTheme(null);
+    },
+    [],
+  );
+  // The staged theme can also change without the list, e.g. by Reset.
+  useEffect(() => {
+    if (previewed.current) showPicked(shown);
+  }, [shown]);
+  const preview = (id: ConcreteTheme | null) => {
+    previewed.current = true;
+    if (id !== null) return picker.preview(id);
+    // The picker takes back only its own hover preview, not a theme picked here earlier.
+    picker.restore();
+    showPicked(shown);
+  };
   return (
     <Row label="Theme">
-      <Select<ConcreteTheme> value={shown} options={THEMES} onChange={setTheme} aria-label="Theme" disabled={sync} />
+      <Select<ConcreteTheme>
+        value={shown}
+        options={themeSelectOptions(choices, shown)}
+        onChange={setTheme}
+        onPreview={preview}
+        aria-label="Theme"
+        className={styles.themeSelect}
+        disabled={sync}
+      />
       <span className={clsx(styles.inline, matched && styles.matched)}>
         <Checkbox
           checked={sync}
@@ -74,17 +110,17 @@ function ThemeRow() {
           }}
           label={<SearchLabel text="Sync with OS" />}
         />
+        <IconButton
+          ref={gear}
+          icon="settings"
+          size="small"
+          title="Preferred themes for light and dark OS mode"
+          aria-label="Preferred themes"
+          disabled={!sync}
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        />
       </span>
-      <IconButton
-        ref={gear}
-        icon="settings"
-        size="small"
-        title="Preferred themes for light and dark OS mode"
-        aria-label="Preferred themes"
-        disabled={!sync}
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      />
       <Popup
         open={open}
         onClose={() => setOpen(false)}
@@ -97,13 +133,18 @@ function ThemeRow() {
           <Row label="Preferred theme for light OS mode">
             <Select<ConcreteTheme>
               value={light}
-              options={THEMES}
+              options={themeSelectOptions(choices, light)}
               onChange={setLight}
               aria-label="Preferred light theme"
             />
           </Row>
           <Row label="Preferred theme for dark OS mode">
-            <Select<ConcreteTheme> value={dark} options={THEMES} onChange={setDark} aria-label="Preferred dark theme" />
+            <Select<ConcreteTheme>
+              value={dark}
+              options={themeSelectOptions(choices, dark)}
+              onChange={setDark}
+              aria-label="Preferred dark theme"
+            />
           </Row>
         </div>
       </Popup>
@@ -129,12 +170,34 @@ function ColorSchemeRow() {
   );
 }
 
+/** Plugins' file icon themes; the row shows once one is installed (or still selected). */
+function FileIconThemeRow() {
+  const [value, setValue] = useSetting<string>("appearance.fileIconTheme");
+  const themes = useContributedIconThemes((s) => s.themes);
+  if (!themes.length && !value) return null;
+  const options: SelectOption[] = [
+    { value: "", label: "Default" },
+    ...[...themes]
+      .sort((a, b) => a.label.localeCompare(b.label))
+      .map((t) => ({ value: t.id, label: t.label, detail: originDetail(t) })),
+  ];
+  if (value && !themes.some((t) => t.id === value))
+    options.push({ value, label: value.slice(value.indexOf("/") + 1), detail: "Plugin not enabled" });
+  return (
+    <Indented>
+      <Row label="File icon theme">
+        <Select value={value ?? ""} options={options} onChange={setValue} aria-label="File icon theme" />
+      </Row>
+    </Indented>
+  );
+}
+
 function AccentRow() {
   const [accent, setAccent] = useSetting<string>("appearance.accent");
   return (
     <Indented>
-      <Row label="Accent colour">
-        <ColorSwatches value={accent} presets={ACCENT_PRESETS} onChange={setAccent} aria-label="Accent colour" />
+      <Row label="Accent color">
+        <ColorSwatches value={accent} presets={ACCENT_PRESETS} onChange={setAccent} aria-label="Accent color" />
       </Row>
     </Indented>
   );
@@ -185,16 +248,20 @@ function CustomFontRow() {
   const [size, setSize] = useSetting<number>("appearance.uiFontSize");
   const id = useId();
   const matched = useLabelMatch("Use custom font");
+  // Labels share one column (IDEA Appearance): the UI font, fallback and Size
+  // controls all start at the same x instead of drifting with flex wrapping.
   return (
-    <div className={clsx(styles.fontRow, styles.customFontRow, matched && styles.matched)}>
-      <span className={styles.fontOption}>
+    <div className={clsx(styles.customFontRow, matched && styles.matched)}>
+      <span className={styles.fontCheck}>
         <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Use custom font:" />} />
+      </span>
+      <span className={styles.fontControl}>
         <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
       </span>
-      <span className={styles.fontOption}>
-        <label className={clsx(!on && styles.disabled)} htmlFor={`${id}-fallback`}>
-          <SearchLabel text="Fallback font:" />
-        </label>
+      <label className={clsx(styles.fontLabel, !on && styles.disabled)} htmlFor={`${id}-fallback`}>
+        <SearchLabel text="Fallback font:" />
+      </label>
+      <span className={styles.fontControl}>
         <FontPicker
           id={`${id}-fallback`}
           label="UI fallback font"
@@ -204,10 +271,10 @@ function CustomFontRow() {
           allowEmpty
         />
       </span>
-      <span className={styles.fontOption}>
-        <label className={clsx(!on && styles.disabled)} htmlFor={`${id}-size`}>
-          <SearchLabel text="Size:" />
-        </label>
+      <label className={clsx(styles.fontLabel, !on && styles.disabled)} htmlFor={`${id}-size`}>
+        <SearchLabel text="Size:" />
+      </label>
+      <span className={styles.fontControl}>
         {on ? (
           <NumberInput
             id={`${id}-size`}
@@ -244,7 +311,7 @@ function Grid({ left, right }: { left: ReactNode; right: ReactNode }) {
 
 function MainMenuStyleRow() {
   const frameless = usePlatform((s) => s.framelessTitleBar);
-  const [mainMenuStyle, setMainMenuStyle] = useSetting<"hamburger" | "merged">("appearance.mainMenuStyle");
+  const [mainMenuStyle, setMainMenuStyle] = useSetting<"hamburger" | "merged" | "toolbar">("appearance.mainMenuStyle");
   if (!frameless) return null;
   return (
     <Row label="Main menu">
@@ -253,6 +320,7 @@ function MainMenuStyleRow() {
         options={[
           { value: "hamburger", label: "Hamburger button" },
           { value: "merged", label: "Merged with main toolbar" },
+          { value: "toolbar", label: "Separate toolbar" },
         ]}
         onChange={setMainMenuStyle}
         aria-label="Main menu"
@@ -282,7 +350,17 @@ function UiOptionsGrid() {
             label="Drag-and-drop with Alt pressed only"
             hint="Applies to editor tabs and tool window buttons"
           />
+          <BoundToggle
+            k="appearance.smallTreeIndents"
+            label="Use smaller indents in trees"
+            hint="Project, Structure, Commit and other tool window trees indent less per level"
+          />
           <BoundToggle k="appearance.menuIcons" label="Display icons in menu items" />
+          <BoundToggle
+            k="appearance.mainMenuAlt"
+            label="Open main menu with a lone Alt press"
+            hint="When off, Alt key combinations still work but pressing Alt alone does not focus the main menu"
+          />
         </>
       }
     />
@@ -293,6 +371,12 @@ const AA_OPTIONS: SelectOption<Antialiasing>[] = [
   { value: "subpixel", label: "Subpixel" },
   { value: "greyscale", label: "Greyscale" },
   { value: "none", label: "No antialiasing" },
+];
+
+const NAV_BAR_OPTIONS: SelectOption<NavigationBarPosition>[] = [
+  { value: "top", label: "Top" },
+  { value: "statusBar", label: "Status Bar" },
+  { value: "hidden", label: "Don't show" },
 ];
 
 function ToolWindowsGrid() {
@@ -325,7 +409,6 @@ function ToolWindowsGrid() {
 
 const OPEN_IN: Array<{ value: OpenProjectIn; label: string }> = [
   { value: "new", label: "New window" },
-  { value: "attach", label: "Attach" },
   { value: "same", label: "Current window" },
   { value: "ask", label: "Ask" },
 ];
@@ -351,7 +434,7 @@ function DefaultDirectoryRow() {
   const [dir, setDir] = useSetting<string>("general.defaultProjectDirectory");
   const id = useId();
   const browse = async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({
       directory: true,
       multiple: false,
@@ -383,6 +466,124 @@ function DefaultDirectoryRow() {
         onClick={() => void browse()}
       />
     </Row>
+  );
+}
+
+/**
+ * Settings › System Settings › Caches: where tools, language servers, indexes
+ * and caches live (the C: problem of #1722). A custom directory takes effect
+ * after a restart; the previous tree moves along when asked.
+ */
+function LocalDataDirRow() {
+  const [info, setInfo] = useState<LocalDataInfo | null>(null);
+  const [root, setRoot] = useState("");
+  const [move, setMove] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const id = useId();
+  useEffect(() => {
+    if (!isTauri()) return;
+    let live = true;
+    void call(commands.cachesLocalDataInfo()).then(
+      (v) => {
+        if (!live) return;
+        setInfo(v);
+        setRoot(v.customRoot ?? "");
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  const browse = async () => {
+    const { open } = await import("@/platform/dialog");
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: "Local data directory",
+      defaultPath: root || undefined,
+    });
+    const path = Array.isArray(picked) ? picked[0] : picked;
+    if (path) setRoot(path);
+  };
+  const apply = async (next: string | null) => {
+    setBusy(true);
+    try {
+      await call(commands.cachesSetLocalDataDir(next, move));
+      await commands.appRestart();
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: "Could not change the local data directory",
+        body: e instanceof Error ? e.message : String(e),
+        key: "app.localDataDir",
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!isTauri()) {
+    return (
+      <p className={styles.note}>
+        <T>Restart is only available in the desktop app</T>
+      </p>
+    );
+  }
+  const locked = busy || info?.envOverride === true;
+  return (
+    <>
+      <Row label="Current location">
+        <Input className={styles.pathInput} value={info?.current ?? ""} readOnly />
+      </Row>
+      <Row
+        label="Custom directory"
+        htmlFor={id}
+        hint="Tools, language servers, indexes and caches live here. Empty means the OS default. Changing it restarts the IDE."
+      >
+        <Input
+          id={id}
+          className={styles.pathInput}
+          value={root}
+          placeholder="System default"
+          disabled={locked}
+          onChange={(e) => setRoot(e.target.value)}
+        />
+        <IconButton
+          icon="folder-open"
+          size="small"
+          title="Browse…"
+          aria-label="Browse"
+          disabled={locked}
+          onClick={() => void browse()}
+        />
+      </Row>
+      {info?.envOverride === true && (
+        <p role="note" className={styles.note}>
+          <T>The OPENIDEA_LOCAL_DATA_DIR environment variable is set and takes precedence.</T>
+        </p>
+      )}
+      <div className={styles.fontRow}>
+        <Button
+          variant="primary"
+          size="small"
+          disabled={locked}
+          onClick={() => void apply(root.trim() ? root.trim() : null)}
+        >
+          Apply and Restart
+        </Button>
+        <Button
+          size="small"
+          disabled={locked || (!root && !info?.customRoot)}
+          onClick={() => {
+            setRoot("");
+            void apply(null);
+          }}
+        >
+          Reset to default
+        </Button>
+        <Checkbox label="Move existing data to the new location" checked={move} onChange={setMove} disabled={locked} />
+      </div>
+    </>
   );
 }
 
@@ -529,7 +730,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Theme",
-            keywords: ["Sync with OS", ...BUILTIN_THEMES.map((t) => t.label), "preferred theme"],
+            keywords: ["Sync with OS", ...BUILTIN_THEME_LABELS, "preferred theme"],
             component: ThemeRow,
           },
           {
@@ -538,7 +739,13 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             keywords: ["Theme default", "scheme"],
             component: ColorSchemeRow,
           },
-          { kind: "custom", label: "Accent colour", keywords: ["accent color", "highlight"], component: AccentRow },
+          {
+            kind: "custom",
+            label: "File icon theme",
+            keywords: ["icons", "file icons", "icon theme"],
+            component: FileIconThemeRow,
+          },
+          { kind: "custom", label: "Accent color", keywords: ["accent colour", "highlight"], component: AccentRow },
           { kind: "custom", label: "Different tool window background", component: ToolWindowBackgroundRow },
         ],
       },
@@ -564,6 +771,9 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
       {
         title: "UI Options",
         options: [
+          { kind: "toggle", key: "appearance.showMainToolbar", label: "Show main toolbar" },
+          { kind: "toggle", key: "appearance.showStatusBar", label: "Show status bar" },
+          { kind: "select", key: "appearance.navigationBar", label: "Navigation bar", options: NAV_BAR_OPTIONS },
           {
             kind: "custom",
             label: "Main menu",
@@ -578,6 +788,8 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
               "Use project colors in main toolbar",
               "Drag-and-drop with Alt pressed only",
               "Display icons in menu items",
+              "Use smaller indents in trees",
+              "tree indent",
             ],
             component: UiOptionsGrid,
           },
@@ -608,7 +820,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
     title: "System Settings",
     group: APPEARANCE_GROUP,
     order: 1,
-    keywords: ["general", "startup", "exit", "quit", "autosave", "save", "local history"],
+    keywords: ["general", "startup", "exit", "quit", "autosave", "save", "local history", "welcome", "editor tabs"],
     sections: [
       {
         title: "Project",
@@ -617,10 +829,21 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Open project in",
-            keywords: ["New window", "Current window", "Attach", "Ask"],
+            keywords: ["New window", "Current window", "Ask"],
             component: OpenProjectInRow,
           },
           { kind: "custom", label: "Default directory", component: DefaultDirectoryRow },
+        ],
+      },
+      {
+        title: "Caches",
+        options: [
+          {
+            kind: "custom",
+            label: "Local data directory",
+            keywords: ["cache", "local data", "data directory", "C盘", "缓存", "目录"],
+            component: LocalDataDirRow,
+          },
         ],
       },
       {
@@ -669,7 +892,21 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
       },
       {
         title: "Exit",
-        options: [{ kind: "toggle", key: "general.confirmExit", label: "Confirm before exiting the IDE" }],
+        options: [
+          { kind: "toggle", key: "general.confirmExit", label: "Confirm before exiting the IDE" },
+          {
+            kind: "toggle",
+            key: "general.closeWithoutWelcome",
+            label: "Close the window instead of showing the Welcome screen",
+            hint: "When this is the only window, closing a project or a file closes the window. On macOS, the app stays in the Dock.",
+          },
+          {
+            kind: "toggle",
+            key: "general.closeTabsWithWindow",
+            label: "Close all editor tabs when the window closes",
+            hint: "Files left open are not restored the next time that project or a standalone file is opened.",
+          },
+        ],
       },
     ],
   },
@@ -677,7 +914,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
     id: "general.language",
     title: "Language and Region",
     order: 0,
-    keywords: ["locale", "chinese", "中文", "translation"],
+    keywords: ["locale", "translation", ...SUPPORTED_LOCALES.map((locale) => LOCALES[locale].name)],
     sections: [
       {
         options: [
@@ -686,10 +923,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             key: "appearance.locale",
             label: "Language",
             hint: "Language of menus and dialogs; untranslated text stays in English.",
-            options: [
-              { value: "en", label: "English" },
-              { value: "zh", label: "简体中文 (Chinese, Simplified)" },
-            ],
+            options: SUPPORTED_LOCALES.map((locale) => ({ value: locale, label: LOCALES[locale].name })),
           },
         ],
       },

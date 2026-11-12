@@ -3,15 +3,19 @@ import type { JavaLaunchInfo, RunConfig } from "@/platform/ipc";
 import {
   formatCompileErrors,
   joinJavaArgs,
+  JDWP_AGENT,
   jdwpListeningPort,
+  optsOutOfAttach,
   parseJavaArgs,
   resolveJavaCommand,
 } from "@/platform/javaLaunch";
+import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { applicationConfig, jvmModuleDir, jvmTestConfig } from "./application";
 import { buildRows } from "./ConfigChooser";
 import { jdwpLaunch } from "./javaDebug";
-import { scanJvmTargets } from "./jvmTargets";
+import { DELEGATED_DEBUG } from "./gradleRun";
+import { firstTopLevelType, jvmMainCandidates, scanJvmTargets } from "./jvmTargets";
 import { adoptTemporary, MAX_TEMPORARY, saveTemporary, testReportEvents, useRun } from "./store";
 import { detectRunTargets, targetConfig } from "./targets";
 
@@ -94,6 +98,47 @@ describe("scanJvmTargets (Java)", () => {
       [16, "test", "a.b.OrderTest$Fixture", "inner", false],
     ]);
   });
+
+  it("treats the public void methods of a TestNG class-level @Test as tests", () => {
+    const src = [
+      "package a.b;", // 0
+      "import org.testng.annotations.*;",
+      '@Test(groups = "unit")',
+      "public class PriceTest {", // 3
+      "  @BeforeMethod public void setUp() {}",
+      "  public void rounds() {}", // 5
+      '  @Test(dataProvider = "rows")',
+      "  public void parses(String row) {}", // 7
+      "  @DataProvider public Object[][] rows() { return null; }",
+      '  @DataProvider(name = "more") public void notATest() {}',
+      "  void packagePrivate() {}",
+      "  private void util() {}",
+      "  public static void shared() {}",
+      "  public int value() { return 1; }",
+      "}",
+    ].join("\n");
+    expect(pick(src, "src/test/java/a/b/PriceTest.java")).toEqual([
+      [3, "suite", "a.b.PriceTest", null, false],
+      [5, "test", "a.b.PriceTest", "rounds", false],
+      [7, "test", "a.b.PriceTest", "parses", false],
+    ]);
+  });
+});
+
+describe("firstTopLevelType", () => {
+  it("is the first top-level class, interface, enum, record or annotation, with the package", () => {
+    const src = [
+      "package demo;",
+      "import java.util.List; // class Commented {}",
+      '/* enum Old {} */ @Tag(type = List.class, name = "class Str")',
+      "interface Shape { class Nested {} }",
+      "public class Test { public static void main(String[] args) {} }",
+    ].join("\n");
+    expect(firstTopLevelType(src)).toBe("demo.Shape");
+    expect(firstTopLevelType("record Point(int x) {}\nclass Test {}")).toBe("Point");
+    expect(firstTopLevelType("@interface Marker {}\nclass Test {}")).toBe("Marker");
+    expect(firstTopLevelType("void main() {\n  IO.println(1);\n}\n")).toBeNull();
+  });
 });
 
 describe("scanJvmTargets (Kotlin)", () => {
@@ -140,6 +185,17 @@ describe("application configurations", () => {
     expect(jvmModuleDir("odd/App.java", [cfg({ id: "m", kind: "maven", cwd: "odd" })])).toBe("odd");
   });
 
+  it("takes the innermost module the build model knows, like IDEA's file index", () => {
+    const modules = ["", "/w/billing", "/w/billing/modules/core", "legacy"];
+    // `sourceSets.main.java.srcDirs = ['src']`: no `src/main/java` to guess from.
+    expect(jvmModuleDir("legacy/src/a/App.java", [], modules)).toBe("legacy");
+    expect(jvmModuleDir("/w/billing/modules/core/src/main/java/a/App.java", [], modules)).toBe(
+      "/w/billing/modules/core",
+    );
+    // A module the model does not know yet (before the first sync): the source layout.
+    expect(jvmModuleDir("services/api/src/main/java/a/App.java", [], modules)).toBe("services/api");
+  });
+
   it("adds JDWP to a script explicitly assigned the Kotlin debugger", () => {
     const rc = cfg({ id: "kotlin-script", kind: "shell", command: "./run.sh", debugAdapter: "kotlin-debug-adapter" });
     expect(jdwpLaunch(rc)?.env.JAVA_TOOL_OPTIONS).toContain("-agentlib:jdwp=");
@@ -172,7 +228,8 @@ describe("application configurations", () => {
     });
     expect(applicationConfig({ className: "a.Tool" }, "m/src/test/java/a/Tool.java")).toMatchObject({
       kind: "application",
-      cwd: "m",
+      module: "m",
+      cwd: null,
       args: ["-cp", "${testClasspath}", "a.Tool"],
     });
   });
@@ -271,6 +328,8 @@ describe("java command lines", () => {
     expect(joinJavaArgs(["a", "b c", 'q"'])).toBe('a "b c" "q\\""');
     expect(jdwpListeningPort("Listening for transport dt_socket at address: 50123")).toBe(50123);
     expect(jdwpListeningPort("Listening for transport dt_socket at address: 127.0.0.1:5005")).toBe(5005);
+    expect(jdwpListeningPort("[Test worker] Listening for transport dt_socket at address: 50124")).toBe(50124);
+    expect(jdwpListeningPort("    Listening for transport dt_socket at address: 50125\r")).toBe(50125);
     expect(jdwpListeningPort("[INFO] Listening")).toBeNull();
   });
 });
@@ -279,15 +338,33 @@ describe("debugging build tool configurations", () => {
   it("adds a waiting JDWP agent to spring-boot:run, Surefire and Gradle", () => {
     const boot = jdwpLaunch(cfg({ id: "b", kind: "maven", args: ["spring-boot:run"] }))!;
     expect(boot.args[1]).toMatch(
-      /^-Dspring-boot\.run\.jvmArguments=-agentlib:jdwp=.*suspend=y.*address=127\.0\.0\.1:0$/,
+      /^-Dspring-boot\.run\.jvmArguments=-XX:\+StartAttachListener -agentlib:jdwp=.*suspend=y.*address=127\.0\.0\.1:0$/,
     );
     const merged = jdwpLaunch(
       cfg({ id: "b", kind: "maven", args: ["spring-boot:run", "-Dspring-boot.run.jvmArguments=-Xmx1g"] }),
     )!;
-    expect(merged.args[1]).toMatch(/^-Dspring-boot\.run\.jvmArguments=-Xmx1g -agentlib:jdwp=/);
+    expect(merged.args[1]).toMatch(
+      /^-Dspring-boot\.run\.jvmArguments=-Xmx1g -XX:\+StartAttachListener -agentlib:jdwp=/,
+    );
     const test = jdwpLaunch(cfg({ id: "t", kind: "maven", args: ["test", "-Dtest=A#b"], isTest: true }))!;
-    expect(test.args.some((a) => a.startsWith("-Dmaven.surefire.debug=-agentlib:jdwp="))).toBe(true);
-    expect(jdwpLaunch(cfg({ id: "g", kind: "gradle", args: ["bootRun"] }))!.args).toEqual(["bootRun", "--debug-jvm"]);
+    expect(test.args.some((a) => a.startsWith("-Dmaven.surefire.debug=-XX:+StartAttachListener -agentlib:jdwp="))).toBe(
+      true,
+    );
+    const failsafe = jdwpLaunch(cfg({ id: "v", kind: "maven", args: ["verify"] }))!;
+    for (const key of ["maven.surefire.debug", "maven.failsafe.debug"])
+      expect(failsafe.args.some((a) => a.startsWith(`-D${key}=-XX:+StartAttachListener -agentlib:jdwp=`))).toBe(true);
+    // A fork's "Listening for transport" line stays buffered until tests run — which suspend=y
+    // prevents — so a Maven test's port is pinned and attached without the line.
+    const pinned = jdwpLaunch(cfg({ id: "t2", kind: "maven", args: ["test"], isTest: true }), 50123)!;
+    expect(pinned.args.some((a) => a.includes("address=127.0.0.1:50123"))).toBe(true);
+    const pinnedFailsafe = jdwpLaunch(cfg({ id: "t3", kind: "maven", args: ["verify"], isTest: true }), 50124)!;
+    expect(
+      pinnedFailsafe.args.some((a) => a.startsWith("-Dmaven.failsafe.debug=") && a.includes("address=127.0.0.1:50124")),
+    ).toBe(true);
+    expect(jdwpLaunch(cfg({ id: "g", kind: "gradle", args: ["bootRun"] }))!.args).toContain(DELEGATED_DEBUG);
+    const gradleTest = jdwpLaunch(cfg({ id: "gt", kind: "gradle", args: ["test"], isTest: true }))!;
+    expect(gradleTest.args).toContain(DELEGATED_DEBUG);
+    expect(gradleTest.args).not.toContain("--debug-jvm");
     expect(jdwpLaunch(cfg({ id: "p", kind: "maven", args: ["package"] }))).toBeNull();
     expect(jdwpLaunch(cfg({ id: "n", kind: "npm", args: ["test"] }))).toBeNull();
   });
@@ -303,8 +380,14 @@ describe("debugging build tool configurations", () => {
   ])("debugs Maven's own JVM for the in-process goal %s", (goal) => {
     const out = jdwpLaunch(cfg({ id: "m", kind: "maven", args: ["clean", goal], env: { MAVEN_OPTS: "-Xmx1g" } }))!;
     expect(out.args).toEqual(["clean", goal]);
-    expect(out.env.MAVEN_OPTS).toMatch(/^-Xmx1g -agentlib:jdwp=/);
+    expect(out.env.MAVEN_OPTS).toMatch(/^-Xmx1g -XX:\+StartAttachListener -agentlib:jdwp=/);
     expect(out.env.MAVEN_OPTS).toMatch(AGENT);
+  });
+
+  it("honours Rebuild on a Maven debug command", () => {
+    const out = jdwpLaunch(cfg({ id: "r", kind: "maven", args: ["spring-boot:run"], buildPolicy: "rebuild" }))!;
+    expect(out.args[0]).toBe("clean");
+    expect(out.args.at(-1)).toMatch(/^-Dspring-boot\.run\.jvmArguments=-XX:\+StartAttachListener -agentlib:jdwp=/);
   });
 
   it("keeps plain Maven builds out of the debugger unless set to the Java debugger", () => {
@@ -322,9 +405,72 @@ describe("debugging build tool configurations", () => {
     const out = jdwpLaunch(rc)!;
     expect(out.command).toBe(command);
     expect(out.args).toEqual(args);
+    expect(out.env.JAVA_TOOL_OPTIONS).toMatch(/^-XX:\+StartAttachListener -agentlib:jdwp=/);
     expect(out.env.JAVA_TOOL_OPTIONS).toMatch(AGENT);
     const merged = jdwpLaunch({ ...rc, env: { JAVA_TOOL_OPTIONS: "-Dfile.encoding=UTF-8" } })!;
-    expect(merged.env.JAVA_TOOL_OPTIONS).toMatch(/^-Dfile\.encoding=UTF-8 -agentlib:jdwp=/);
+    expect(merged.env.JAVA_TOOL_OPTIONS).toMatch(/^-Dfile\.encoding=UTF-8 -XX:\+StartAttachListener -agentlib:jdwp=/);
+  });
+
+  it("debugs a single Java file: the agent before the file, or for java only on a javac line", () => {
+    const source = jdwpLaunch(cfg({ id: "f", kind: "java-file", command: "/bin/java", args: ["Hi.java"] }))!;
+    expect(source.args).toEqual(["-XX:+StartAttachListener", expect.stringMatching(AGENT), "Hi.java"]);
+    const line = "mkdir -p /tmp/c && /bin/javac -g -d /tmp/c Test.java && /bin/java -cp /tmp/c Test";
+    const compiled = jdwpLaunch(
+      cfg({ id: "f", kind: "java-file", command: line, env: { JDK_JAVA_OPTIONS: "-Xmx1g" } }),
+    )!;
+    expect(compiled).toMatchObject({ command: line, args: [] });
+    expect(compiled.env.JDK_JAVA_OPTIONS).toMatch(/^-Xmx1g -XX:\+StartAttachListener -agentlib:jdwp=/);
+    expect(compiled.env.JAVA_TOOL_OPTIONS).toBeUndefined();
+  });
+
+  it("adds the agent without the attach listener when the JVM runs on Windows", () => {
+    const os = usePlatform.getState().os;
+    usePlatform.setState({ os: "windows" });
+    try {
+      const script = cfg({ id: "s", kind: "shell", command: "run.cmd", debugAdapter: "java-debug" });
+      expect(jdwpLaunch(script)!.env.JAVA_TOOL_OPTIONS).toBe(JDWP_AGENT);
+      const boot = jdwpLaunch(cfg({ id: "b", kind: "maven", args: ["spring-boot:run"] }))!;
+      expect(boot.args[1]).toBe(`-Dspring-boot.run.jvmArguments=${JDWP_AGENT}`);
+      const test = jdwpLaunch(cfg({ id: "t", kind: "maven", args: ["verify"] }))!;
+      expect(test.args).toEqual([
+        "verify",
+        `-Dmaven.surefire.debug=${JDWP_AGENT}`,
+        `-Dmaven.failsafe.debug=${JDWP_AGENT}`,
+      ]);
+      const maven = jdwpLaunch(cfg({ id: "m", kind: "maven", args: ["jetty:run"] }))!;
+      expect(maven.env.MAVEN_OPTS).toBe(JDWP_AGENT);
+      const file = jdwpLaunch(cfg({ id: "f", kind: "java-file", command: "java", args: ["Hi.java"] }))!;
+      expect(file.args).toEqual([JDWP_AGENT, "Hi.java"]);
+    } finally {
+      usePlatform.setState({ os });
+    }
+  });
+
+  it("keeps the user's attach opt-out: the agent is still added, the listener is not", () => {
+    const off = "-XX:+DisableAttachMechanism";
+    const script = cfg({ id: "s", kind: "shell", command: "./run.sh", debugAdapter: "java-debug" });
+    expect(jdwpLaunch({ ...script, env: { JAVA_TOOL_OPTIONS: off } })!.env.JAVA_TOOL_OPTIONS).toBe(
+      `${off} ${JDWP_AGENT}`,
+    );
+    const maven = cfg({ id: "m", kind: "maven", args: ["jetty:run"], env: { MAVEN_OPTS: "-XX:-StartAttachListener" } });
+    expect(jdwpLaunch(maven)!.env.MAVEN_OPTS).toBe(`-XX:-StartAttachListener ${JDWP_AGENT}`);
+    const javaFile = cfg({ id: "j", kind: "java-file", command: "java", env: { JDK_JAVA_OPTIONS: off } });
+    expect(jdwpLaunch(javaFile)!.env.JDK_JAVA_OPTIONS).toBe(`${off} ${JDWP_AGENT}`);
+    const file = cfg({ id: "f", kind: "java-file", command: "java", args: [off, "Hi.java"] });
+    expect(jdwpLaunch(file)!.args).toEqual([JDWP_AGENT, off, "Hi.java"]);
+    const boot = cfg({ id: "b", kind: "maven", args: ["spring-boot:run", `-Dspring-boot.run.jvmArguments=${off}`] });
+    expect(jdwpLaunch(boot)!.args[1]).toBe(`-Dspring-boot.run.jvmArguments=${off} ${JDWP_AGENT}`);
+    const surefire = jdwpLaunch(cfg({ id: "t", kind: "maven", args: ["test", `-DargLine=${off}`] }))!;
+    expect(surefire.args).toEqual(["test", `-DargLine=${off}`, `-Dmaven.surefire.debug=${JDWP_AGENT}`]);
+    // VM options of the configuration count as well as the channel's own value.
+    const withVm = jdwpLaunch({ ...script, params: { vmOptions: off } })!;
+    expect(withVm.env.JAVA_TOOL_OPTIONS).toBe(JDWP_AGENT);
+  });
+
+  it("detects VM options that decide about the attach mechanism", () => {
+    for (const text of ["-XX:+StartAttachListener", "-XX:-StartAttachListener", "-Xmx1g -XX:+DisableAttachMechanism"])
+      expect(optsOutOfAttach(text)).toBe(true);
+    for (const text of ["", "-Xmx1g -agentlib:jdwp=transport=dt_socket"]) expect(optsOutOfAttach(text)).toBe(false);
   });
 
   it("leaves Application configurations and other debuggers alone", () => {
@@ -356,6 +502,24 @@ describe("JUnit XML reports", () => {
       location: { path: "a/B.java", line: 42, resolve: "name", className: "a.B$Inner" },
     });
   });
+
+  it("locate Kotlin tests with spaces in their names, behind a class loader prefix", () => {
+    const events = testReportEvents([
+      {
+        className: "a.LibraryTest",
+        name: "cannot lend twice",
+        status: "failed",
+        durationMs: null,
+        message: null,
+        output: "AssertionFailedError\n\tat app//a.LibraryTest.cannot lend twice(LibraryTest.kt:43)",
+      },
+    ]);
+    expect(events).toContainEqual({
+      type: "location",
+      path: ["a.LibraryTest", "cannot lend twice"],
+      location: { path: "a/LibraryTest.kt", line: 43, resolve: "name", className: "a.LibraryTest" },
+    });
+  });
 });
 
 describe("temporary configurations", () => {
@@ -380,7 +544,7 @@ describe("temporary configurations", () => {
     expect(s.temporary).not.toContain(apps[0]!.id);
     expect(s.selectedId).toBe(apps[apps.length - 1]!.id);
     expect(s.configs.filter((c) => c.kind === "application")).toHaveLength(MAX_TEMPORARY);
-    expect(JSON.parse(localStorage.getItem("openidea.run.temporary:/p")!)).toHaveLength(MAX_TEMPORARY);
+    expect(JSON.parse(localStorage.getItem("openidea.run.temporary.v2:/p")!)).toHaveLength(MAX_TEMPORARY);
     // Reusing an existing temporary moves it last instead of duplicating it.
     adoptTemporary(apps[3]!);
     expect(useRun.getState().temporary.at(-1)).toBe(apps[3]!.id);
@@ -423,5 +587,37 @@ describe("temporary configurations", () => {
     // Not a desktop app in tests: saving fails at the IPC layer but the config stops being temporary.
     await saveTemporary(app.id).catch(() => undefined);
     expect(useRun.getState().temporary).toEqual([]);
+  });
+});
+
+describe("jvmMainCandidates", () => {
+  const names = (src: string) => jvmMainCandidates(src, "a/B.java").map((c) => c.className);
+
+  it("finds the class from the report, at its name", () => {
+    const src = "package demo;\n\n@SpringBootApplication\npublic class AiChatApplication extends AtomStarter {}\n";
+    expect(jvmMainCandidates(src, "a/B.java")).toEqual([
+      { line: 3, col: 13, className: "demo.AiChatApplication", base: "AtomStarter", spring: true },
+    ]);
+  });
+
+  it.each([
+    ["static nested class", "class A { static class B extends Base {} }", ["A$B"]],
+    ["inner (non-static) class", "class A { class B extends Base {} }", []],
+    ["abstract class", "abstract class A extends Base {}", ["A"]],
+    ["own main", "class A extends Base { public static void main(String[] a) {} }", []],
+    ["implements only", "class A implements Runnable {}", []],
+    ["interface extends", "interface A extends Base {}", []],
+    ["enum and record", "enum E implements I {}\nrecord R() implements I {}", []],
+    ["multi-line generic header", "class A<T extends Number>\n  extends Base<T>\n{}", ["A"]],
+    ["type bound only", "class A<T extends Number> {}", []],
+    ["extends in comment and string", '// class A extends B\nclass C { String s = "class D extends E {"; }', []],
+  ])("%s", (_, src, expected) => expect(names(src)).toEqual(expected));
+
+  it("accepts java.lang.String[] and flags instance main", () => {
+    const [fq] = scanJvmTargets("class A { public static void main(java.lang.String[] a) {} }", "A.java", false);
+    expect(fq).toMatchObject({ kind: "main", className: "A" });
+    const [inst] = scanJvmTargets("class A { void main() {} }", "A.java", false);
+    expect(inst).toMatchObject({ kind: "main", instance: true });
+    expect(fq?.instance).toBeUndefined();
   });
 });

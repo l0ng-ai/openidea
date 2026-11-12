@@ -1,0 +1,21 @@
+package openidea:plugin@1.6.0;
+
+/// What other plugins contributed to the extension points this plugin declares
+/// (`[[extension-points]]` in `plugin.toml`; the contributors list this plugin
+/// in `[[depends]]`). A change is announced by the `extensions-changed` event.
+interface extensions {
+    use types.{error};
+
+    record contribution {
+        /// The contributing plugin's id.
+        plugin: string,
+        /// Its `[[contributes."<point>"]]` table as JSON, checked by the host
+        /// against the fields the point declares.
+        data: string,
+    }
+
+    /// The contributions to `point`, in the order the plugins started. Only the
+    /// plugin that declares `point` may read it (`denied` otherwise); `not-found`
+    /// when no running plugin declares it.
+    contributions: func(point: string) -> result<list<contribution>, error>;
+}

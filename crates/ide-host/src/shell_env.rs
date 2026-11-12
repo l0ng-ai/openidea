@@ -177,6 +177,10 @@ pub(crate) fn read_login_env(shell: &str, timeout: std::time::Duration) -> Optio
             }
         }
     }
+    // Nor what the last read found that this process lacks: children get it, the shell must not.
+    for (k, _) in ide_core::process::shell_env() {
+        cmd.env_remove(k);
+    }
     ide_core::process::prepare(&mut cmd);
     let mut child = cmd
         .args(["-ilc", &format!("printf '{MARK}'; /usr/bin/env -0; printf '{MARK}'")])
@@ -257,6 +261,14 @@ mod tests {
         std::fs::write(&rc, "export OPENIDEA_TEST_RC='two words'\n").unwrap();
         let second = read_login_env(&shell, Duration::from_secs(10)).unwrap();
         assert_eq!(get(&second, "OPENIDEA_TEST_RC").as_deref(), Some("two words"));
+
+        // What a read found goes to children, not into the next read: an rc file that no
+        // longer exports a variable drops it.
+        ide_core::process::set_shell_env(second);
+        std::fs::write(&rc, "export OPENIDEA_TEST_SEEN=\"${OPENIDEA_TEST_RC:-unset}\"\n").unwrap();
+        let third = read_login_env(&shell, Duration::from_secs(10)).unwrap();
+        assert_eq!(get(&third, "OPENIDEA_TEST_RC"), None);
+        assert_eq!(get(&third, "OPENIDEA_TEST_SEEN").as_deref(), Some("unset"));
     }
 
     #[test]

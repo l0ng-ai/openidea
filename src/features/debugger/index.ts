@@ -3,13 +3,14 @@
  * backend), DAP sessions driven by `IdeEvent::Debug`, the Debug tool window,
  * execution point + inline values, Evaluate / View Breakpoints dialogs.
  */
-import { lazyComponent } from "@/ui";
+import { lazyComponent, lazyWhen } from "@/ui";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { selectionValueTooltip, valueTooltip } from "./editor/valueTooltip";
 import { quickEvaluateMouse } from "./editor/quickEvaluate";
 import { registerEditorContribution } from "@/editor/api";
 import {
+  registerEditorKind,
   registerMenuGroup,
   registerOverlay,
   registerRunConfigType,
@@ -24,7 +25,7 @@ import { breakpointGutter } from "./editor/breakpointGutter";
 import { executionPoint } from "./editor/execution";
 import { runToCursorInlay } from "./editor/runToCursor";
 import { installSmartStepPicking, smartStepTargets } from "./editor/smartStep";
-import { onHotCodeReplace } from "./hotswap";
+import { hotSwapMenuItems, onHotCodeReplace } from "./hotswap";
 import {
   activeSession,
   handleDebugEvent,
@@ -35,8 +36,17 @@ import {
   stopSession,
   useDebug,
 } from "./state";
-import { DebuggerOverlays } from "./ui/Overlays";
+import { useOverlays } from "./ui/popoverStore";
 import { REMOTE_TYPES } from "./remote";
+import { forgetInstances } from "./memory/instancesState";
+import { forgetHeapCapture, forgetHeapOnProjectChange } from "./heap/heapState";
+import { heapEditorKind } from "./heap/heapEditorKind";
+import { installHeapContext } from "./heap/heapDumpFiles";
+import { forgetMemory } from "./memory/memoryState";
+
+/** Whether a breakpoint popover, debugger dialog or chooser is open. */
+const useAnyOverlay = () =>
+  useOverlays((s) => !!(s.popover || s.evaluate || s.breakpoints || s.chooser || s.attach || s.smartStep));
 
 export function activate(): () => void {
   useDebugRunSessions.setState({
@@ -62,11 +72,22 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugToolWindow)),
       headerContent: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugTabs)),
     }),
-    registerOverlay({ id: "debugger", component: DebuggerOverlays }),
+    registerEditorKind(heapEditorKind),
+    installHeapContext(),
+    forgetHeapOnProjectChange(),
+    registerOverlay({
+      id: "debugger",
+      component: lazyWhen(useAnyOverlay, () => import("./ui/Overlays").then((m) => m.DebuggerOverlays)),
+    }),
     registerMenuGroup({
       id: "debugger.evaluate",
       menus: ["editor"],
       items: () => (activeSession()?.status === "paused" ? [{ kind: "action", action: "debug.evaluate" }] : []),
+    }),
+    registerMenuGroup({
+      id: "debugger.hotswap",
+      menus: ["editor"],
+      items: (_menu, { paths }) => hotSwapMenuItems(paths),
     }),
     // Stop (⌘F2) offers the running debug sessions beside run processes.
     registerMenuGroup({
@@ -94,6 +115,15 @@ export function activate(): () => void {
     onIdeEvent("debug", (e) => {
       if (e.event.kind === "hotCodeReplace") onHotCodeReplace(e.session, e.event);
       else handleDebugEvent(e.session, e.event);
+    }),
+    useDebug.subscribe((s, prev) => {
+      if (s.sessions === prev.sessions) return;
+      for (const id of Object.keys(prev.sessions)) {
+        if (id in s.sessions) continue;
+        forgetMemory(Number(id));
+        forgetInstances(Number(id));
+        forgetHeapCapture(Number(id));
+      }
     }),
     useProject.subscribe((s, prev) => {
       const root = s.project?.root ?? null;

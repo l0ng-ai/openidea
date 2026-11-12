@@ -90,7 +90,7 @@ describe("client", () => {
       .mockResolvedValue({ status: "ok", data: '{"data":{"repository":null}}' } as never);
     const { graphql } = await import("./client");
     await graphql(Q.findRepository, { repoOwner: "o", repoName: "r", cursor: undefined });
-    const req = ghApi.mock.calls[0]![0];
+    const req = ghApi.mock.calls[0]![1];
     expect(req).toMatchObject({ method: "POST", endpoint: "graphql", paginate: false });
     const body = JSON.parse(req.body!) as { query: string; variables: Record<string, unknown> };
     expect(body.variables).toEqual({ repoOwner: "o", repoName: "r" });

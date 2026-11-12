@@ -26,7 +26,7 @@
  */
 import { ChangeSet, Text } from "@codemirror/state";
 import type { TextChange } from "@/platform/ipc";
-import { minimalChange } from "./diff";
+import { minimalChanges } from "./diff";
 
 export interface SyncTransport {
   edit(baseVersion: number, changes: TextChange[]): Promise<number>;
@@ -36,6 +36,8 @@ export interface SyncTransport {
 export interface SyncHost {
   /** Apply a change set (in local-text coordinates) to every view, annotated as remote. */
   applyRemote(changes: ChangeSet, workspaceEdit?: boolean): void;
+  /** A locally produced batch accepted by the versioned backend. */
+  onLocalCommitted?(baseVersion: number, version: number, changes: ChangeSet): void;
   /** Called after a hard resync discarded local changes the backend never saw. */
   onDiscarded?(reason: unknown): void;
   /** Non-recoverable transport errors (logged by default). */
@@ -190,12 +192,15 @@ export class DocSync {
   }
 
   private onAck(version: number) {
+    const baseVersion = this.serverVersion;
+    const committed = this.inflight!;
     this.confirmed = this.inflight!.apply(this.confirmed);
     this.serverVersion = version;
     this.inflight = null;
     this.inflightStale = false;
     this.rebases = 0;
     this.acked++;
+    this.host.onLocalCommitted?.(baseVersion, version, committed);
     this.drainRemote();
     this.flush();
     this.resolveIdle();
@@ -251,16 +256,18 @@ export class DocSync {
     try {
       snap = await this.transport.snapshot();
     } catch (e) {
+      if (gen !== this.generation || this.disposed) return;
       this.host.onError?.(e);
-      this.resyncing = false;
-      this.resolveIdle(true);
+      // Keep the edit going: the backend acks it once it caught up, or rejects it again,
+      // which retries the snapshot (a hard resync after MAX_REBASES).
+      this.resend();
       return;
     }
     if (gen !== this.generation || this.disposed) return;
     if (snap.version > this.serverVersion) {
-      const change = minimalChange(this.confirmed.toString(), snap.text);
+      const changes = minimalChanges(this.confirmed.toString(), snap.text);
       this.pendingRemote = this.pendingRemote.filter((p) => p.version > snap.version);
-      this.applyRemoteNow({ baseVersion: this.serverVersion, version: snap.version, changes: change ? [change] : [] });
+      this.applyRemoteNow({ baseVersion: this.serverVersion, version: snap.version, changes });
       this.drainRemote();
     }
     this.resend();
@@ -313,8 +320,13 @@ export class DocSync {
     } catch (e) {
       if (gen !== this.generation) return;
       this.host.onError?.(e);
+      // Nothing to adopt: keep the local text as pending changes against `confirmed`, so the
+      // next flush sends them in the coordinates the backend knows.
+      const pending = minimalChanges(this.confirmed.toString(), this.localText.toString());
       this.inflight = null;
-      this.buffer = null;
+      this.buffer = pending.length ? ChangeSet.of(pending, this.confirmed.length) : null;
+      this.inflightStale = false;
+      this.rebases = 0;
       this.resyncing = false;
       this.resolveIdle(true);
       return;
@@ -329,9 +341,9 @@ export class DocSync {
     this.pendingRemote = this.pendingRemote.filter((p) => p.version > snap.version);
     this.confirmed = Text.of(snap.text.split("\n"));
     this.serverVersion = snap.version;
-    const change = minimalChange(local, snap.text);
-    if (change) {
-      const cs = ChangeSet.of([change], local.length);
+    const changes = minimalChanges(local, snap.text);
+    if (changes.length) {
+      const cs = ChangeSet.of(changes, local.length);
       this.localText = this.confirmed;
       this.host.applyRemote(cs);
     }

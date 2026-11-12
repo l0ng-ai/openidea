@@ -1,19 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { monoFontFamily, quoteFontFamily, uiFontFamily } from "./fonts";
+import { monoFontFamily, quoteFontFamily, resolveMonoFont, uiFontFamily } from "./fonts";
 
 const BASE = "var(--font-mono)";
 
 describe("monoFontFamily", () => {
   it.each([
     // #26: the default family names the bundled face, so it renders without a system install.
-    ["JetBrains Mono", "", `"JetBrains Mono Variable", "JetBrains Mono", ${BASE}`],
-    ["", "", `"JetBrains Mono Variable", "JetBrains Mono", ${BASE}`],
-    [undefined, "", `"JetBrains Mono Variable", "JetBrains Mono", ${BASE}`],
-    ["JetBrains Mono", "PingFang SC", `"JetBrains Mono Variable", "JetBrains Mono", "PingFang SC", ${BASE}`],
-    ["Inter", "", `"Inter Variable", "Inter", ${BASE}`],
-    ["Fira Code", "Inter", `"Fira Code", "Inter Variable", "Inter", ${BASE}`],
-    ["Inter", "JetBrains Mono", `"Inter Variable", "Inter", "JetBrains Mono Variable", "JetBrains Mono", ${BASE}`],
-    ["inter", "jetbrains mono", `"Inter Variable", "Inter", "JetBrains Mono Variable", "JetBrains Mono", ${BASE}`],
+    // #2305: the installed family comes first, so its hinted outlines render like IDEA's.
+    ["JetBrains Mono", "", `"JetBrains Mono", "JetBrains Mono Variable", ${BASE}`],
+    ["", "", `"JetBrains Mono", "JetBrains Mono Variable", ${BASE}`],
+    [undefined, "", `"JetBrains Mono", "JetBrains Mono Variable", ${BASE}`],
+    ["JetBrains Mono", "PingFang SC", `"JetBrains Mono", "JetBrains Mono Variable", "PingFang SC", ${BASE}`],
+    ["Inter", "", `"Inter", "Inter Variable", ${BASE}`],
+    ["Fira Code", "Inter", `"Fira Code", "Inter", "Inter Variable", ${BASE}`],
+    ["Inter", "JetBrains Mono", `"Inter", "Inter Variable", "JetBrains Mono", "JetBrains Mono Variable", ${BASE}`],
+    ["inter", "jetbrains mono", `"Inter", "Inter Variable", "JetBrains Mono", "JetBrains Mono Variable", ${BASE}`],
     ["Fira Code", "", `"Fira Code", ${BASE}`],
     ['"Cascadia Code"', " Microsoft YaHei ", `"Cascadia Code", "Microsoft YaHei", ${BASE}`],
   ])("%j + fallback %j", (family, fallback, expected) => {
@@ -36,13 +37,53 @@ it("escapes CSS special characters without turning a family into a list", () => 
 
 describe("uiFontFamily", () => {
   it.each([
-    ["Inter", "", '"Inter Variable", "Inter", system-ui, sans-serif'],
-    ["JetBrains Mono", "", '"JetBrains Mono Variable", "JetBrains Mono", system-ui, sans-serif'],
+    ["Inter", "", '"Inter", "Inter Variable", system-ui, sans-serif'],
+    ["JetBrains Mono", "", '"JetBrains Mono", "JetBrains Mono Variable", system-ui, sans-serif'],
     [' "PingFang SC" ', "", '"PingFang SC", system-ui, sans-serif'],
-    ["Inter", "思源黑体", '"Inter Variable", "Inter", "思源黑体", system-ui, sans-serif'],
-    ["Inter", " ", '"Inter Variable", "Inter", system-ui, sans-serif'],
+    ["Inter", "思源黑体", '"Inter", "Inter Variable", "思源黑体", system-ui, sans-serif'],
+    ["Inter", " ", '"Inter", "Inter Variable", system-ui, sans-serif'],
   ])("%j + %j", (family, fallback, expected) => {
     expect(uiFontFamily(family, fallback)).toBe(expected);
+  });
+});
+
+describe("resolveMonoFont", () => {
+  const terminal = {
+    useEditorFont: true,
+    fontFamily: "JetBrains Mono",
+    fallbackFontFamily: "",
+    fontSize: 13,
+  };
+  const editor = { fontFamily: "Fira Code", fallbackFont: "PingFang SC", fontSize: 16 };
+
+  it("follows Editor › Font while Use editor font is on", () => {
+    expect(resolveMonoFont(terminal, editor, BASE)).toEqual({
+      family: `"Fira Code", "PingFang SC", ${BASE}`,
+      size: 16,
+    });
+  });
+
+  it("uses the terminal's own family, fallback and size when it is off", () => {
+    expect(
+      resolveMonoFont(
+        { ...terminal, useEditorFont: false, fontFamily: "Hack", fallbackFontFamily: "Maple Mono NF CN", fontSize: 14 },
+        editor,
+        BASE,
+      ),
+    ).toEqual({ family: `"Hack", "Maple Mono NF CN", ${BASE}`, size: 14 });
+  });
+
+  it("prefers the terminal's fallback over the editor's while following the editor font", () => {
+    expect(resolveMonoFont({ ...terminal, fallbackFontFamily: "Maple Mono NF CN" }, editor, BASE).family).toBe(
+      `"Fira Code", "Maple Mono NF CN", ${BASE}`,
+    );
+  });
+
+  it("falls back to the bundled family and 13px without settings", () => {
+    expect(resolveMonoFont(undefined, undefined, BASE)).toEqual({
+      family: `"JetBrains Mono", "JetBrains Mono Variable", ${BASE}`,
+      size: 13,
+    });
   });
 });
 
@@ -131,7 +172,7 @@ describe("macOS user font resolver", () => {
   it("loads a UI fallback through the shared macOS user font resolver", async () => {
     const { fonts, invoke, registered } = await resolver(false);
     const family = fonts.uiFontFamily("Inter", "Maple Mono NF CN");
-    expect(family).toBe('"Inter Variable", "Inter", "OpenIDEA User Font 0", "Maple Mono NF CN", system-ui, sans-serif');
+    expect(family).toBe('"Inter", "Inter Variable", "OpenIDEA User Font 0", "Maple Mono NF CN", system-ui, sans-serif');
     expect(fonts.monoFontFamily("Inter", "Maple Mono NF CN")).toContain('"OpenIDEA User Font 0"');
     await fonts.fontsLoaded(family, 13);
     expect(invoke).toHaveBeenCalledExactlyOnceWith("user_font_data", { family: "Maple Mono NF CN" });

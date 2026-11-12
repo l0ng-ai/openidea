@@ -1,12 +1,22 @@
 /** Debugger actions (ids match `keymaps/intellij-macos.ts`). */
 import { executeAction, getAction, registerActions, type Action } from "@/platform/actions";
-import { call, commands, isCancelled, isTauri, nextRequestId, type RunConfig, type RunId } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  isCancelled,
+  isTauri,
+  nextRequestId,
+  type LaunchConfig,
+  type RunConfig,
+  type RunId,
+} from "@/platform/ipc";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { activeEditor } from "@/editor/api";
 import type { EditorView } from "@codemirror/view";
 import { maybeEditorService, notifications, showStatusInfo, toolWindowService } from "@/workbench/contributions";
 import { classFileBreakpointReason } from "@/platform/classFiles";
+import { lineHasCode } from "./breakpoints/codeLines";
 import { canPlaceBreakpoint } from "./breakpoints/languages";
 import {
   removeAllBreakpoints,
@@ -19,14 +29,27 @@ import { removeAllSpecial, specialAt, toggleFieldAt, toggleMethodAt } from "./br
 import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
-import { reloadChangedClasses } from "./hotswap";
-import { debugUnsupportedReason, launchConfigFor } from "./launch";
-import { isRemoteConfig, REMOTE_JVM, remoteAttachConfig, remoteJvmTarget } from "./remote";
+import { cancelHotSwapBuild, reloadChangedClasses } from "./hotswap";
+import { refreshMemory, useMemory } from "./memory/memoryState";
+import { closeInstances, instancesOutdated, showInstances, showReferrers, useInstances } from "./memory/instancesState";
+import { jumpToClass } from "./memory/jumpToClass";
+import { captureHeap } from "./heap/heapState";
+import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
+import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
+import {
+  isPythonAttachTarget,
+  isRemoteConfig,
+  pythonAttachConfig,
+  REMOTE_JVM,
+  remoteAttachConfig,
+  remoteJvmTarget,
+} from "./remote";
 import {
   activeSession,
   resumeExecution,
   evaluate,
   isLive,
+  justDetached,
   rerunSession,
   revealFrame,
   rootOf,
@@ -35,6 +58,7 @@ import {
   startSession,
   startPreparedSession,
   stopSession,
+  stopAssociatedProcess,
   useDebug,
   type DebugSession,
 } from "./state";
@@ -91,7 +115,7 @@ export function runToLine(path: string, line: number) {
   const t = pausedTarget();
   if (t && breakpointPathAllowed(path))
     void report(
-      "Run to Cursor failed",
+      tx("Run to Cursor failed"),
       resumeExecution(t.s.id, () => call(commands.debugRunTo(t.s.id, t.thread, path, line, false))),
     );
 }
@@ -218,7 +242,7 @@ async function listenForJvm(name: string, host: string, port: number): Promise<n
 }
 
 /** Remote JVM Debug, Go Remote, Python / Node.js remote: attach over host:port. */
-async function startRemote(config: RunConfig, root: string) {
+async function startRemote(config: RunConfig, root: string, show?: boolean) {
   if (config.kind === REMOTE_JVM) {
     const t = remoteJvmTarget(config);
     let hostName = t.host;
@@ -230,37 +254,45 @@ async function startRemote(config: RunConfig, root: string) {
     }
     const launch = await javaAttachConfig({ name: config.name, module: t.module, hostName, port }, root);
     // A listen relay accepts one debugger: rerunning listens again through the configuration.
-    await startSession(launch, { runConfig: config, rerunnable: t.mode === "attach" });
+    await startSession(launch, { runConfig: config, rerunnable: t.mode === "attach", show });
     return;
   }
   const launch = remoteAttachConfig(config, root);
-  if (launch) await startSession(launch, { runConfig: config });
+  if (launch) await startSession(launch, { runConfig: config, show });
 }
 
 /** Preparation belongs to a session from the moment the action begins. */
-async function startJavaConfig(config: RunConfig, root: string, origin: RunConfig) {
-  await startPreparedSession(origin, async (signal, report) => {
-    const request = nextRequestId();
-    const cancel = () => {
-      void commands.cancelRequest(request).catch(() => undefined);
-    };
-    signal.addEventListener("abort", cancel, { once: true });
-    try {
-      await maybeEditorService()
-        ?.saveAll()
-        .catch(() => undefined);
-      signal.throwIfAborted();
-      return await javaLaunchConfig(config, root, { request, signal, report });
-    } finally {
-      signal.removeEventListener("abort", cancel);
-    }
-  });
+async function startJavaConfig(config: RunConfig, root: string, origin: RunConfig, show?: boolean) {
+  await startPreparedSession(
+    origin,
+    async (signal, report) => {
+      const request = nextRequestId();
+      const cancel = () => {
+        void commands.cancelRequest(request).catch(() => undefined);
+      };
+      signal.addEventListener("abort", cancel, { once: true });
+      try {
+        return await javaLaunchConfig(config, root, {
+          request,
+          signal,
+          report,
+          saveAll: async () => {
+            await maybeEditorService()?.saveAll();
+          },
+        });
+      } finally {
+        signal.removeEventListener("abort", cancel);
+      }
+    },
+    { show },
+  );
 }
 
 async function startConfig(arg: unknown) {
   const root = useProject.getState().project?.root;
   if (!root) return;
   const origin = arg && typeof arg === "object" && "origin" in arg && isRunConfig(arg.origin) ? arg.origin : null;
+  const show = arg && typeof arg === "object" && "show" in arg ? (arg as { show?: boolean }).show : undefined;
   const input = arg && typeof arg === "object" && "config" in arg ? arg.config : arg;
   let config: RunConfig | null = isRunConfig(input) ? input : null;
   if (!config) {
@@ -285,21 +317,25 @@ async function startConfig(arg: unknown) {
     config = configs[0]!;
     // Through Run's debug flow: Maven / Gradle / scripts start the JVM with a JDWP agent there.
     if (getAction("run.debugConfig")) {
-      await executeAction("run.debugConfig", config);
+      await executeAction("run.debugConfig", show === false ? { config, show: false } : config);
       return;
     }
   }
   if (isRemoteConfig(config)) {
-    await startRemote(config, root);
+    await startRemote(config, root, show);
     return;
   }
   if (isJavaDebuggable(config)) {
-    await startJavaConfig(config, root, origin ?? config);
+    await startJavaConfig(config, root, origin ?? config, show);
     return;
   }
+  if (config.kind === "plugin") config = await call(commands.pluginPrepareDebugRun(config));
   const dotnet = config.kind === "dotnet" && config.debugAdapter === "netcoredbg";
   const prepared = dotnet ? await call(commands.runDotnetResolve(config, true)) : config;
-  const launch = launchConfigFor(prepared, root);
+  // php-debug starts the PHP chosen in Settings unless the command names one.
+  const php =
+    config.debugAdapter === "php-debug" && isTauri() ? await call(commands.sdkPhpEffective()).catch(() => null) : null;
+  const launch = launchConfigFor(await withEnvFiles(prepared, root), root, php);
   if (!launch) {
     notifications().notify({
       group: "run",
@@ -309,10 +345,34 @@ async function startConfig(arg: unknown) {
     });
     return;
   }
+  const xdebugCheck = config.debugAdapter === "php-debug" && isTauri() ? warnWithoutXdebug(launch) : null;
   await maybeEditorService()
     ?.saveAll()
     .catch(() => undefined);
-  await startSession(launch, { runConfig: origin ?? config });
+  await startSession(launch, { runConfig: origin ?? config, show });
+  await xdebugCheck;
+}
+
+/**
+ * A PHP without the Xdebug extension ignores the `-dxdebug.*` options php-debug starts it with: the
+ * script runs past every breakpoint. Warns, without holding the session back (a command may load
+ * Xdebug itself with `-dzend_extension=`).
+ */
+async function warnWithoutXdebug(launch: LaunchConfig) {
+  const runtime = (JSON.parse(launch.extraJson ?? "{}") as { runtimeExecutable?: string }).runtimeExecutable;
+  // Without one, php-debug runs the `php` on the search path.
+  const php = runtime ?? (await call(commands.sdkLocateTools(["php"], null)).catch(() => null))?.tools[0]?.path;
+  // In the session's folder: a version manager's `php` shim picks the PHP from it.
+  const probe = php ? await call(commands.sdkPhpXdebug(php, launch.cwd)).catch(() => null) : null;
+  if (!probe || probe.xdebug) return;
+  notifications().notify({
+    group: "run",
+    level: "warning",
+    key: "debug.phpXdebug",
+    title: `Xdebug is not loaded in PHP ${probe.phpVersion}`,
+    body: tx`${probe.php} runs without Xdebug, so breakpoints are skipped. Install Xdebug 3 for this PHP or choose another PHP interpreter.`,
+    actions: [{ label: "Open PHP Settings", run: () => void executeAction("file.settings", "languages.php") }],
+  });
 }
 
 export function registerDebugActions(): () => void {
@@ -335,32 +395,86 @@ export function registerDebugActions(): () => void {
 
   return registerActions([
     {
+      id: "debug.pluginStart",
+      title: "Debug Plugin Configuration",
+      category: "Debug",
+      hidden: true,
+      when: "projectOpen",
+      run: async ({ arg }) => {
+        const a = arg as { config: RunConfig; onExit: (code: number | null, stopped: boolean) => void };
+        const config = await call(commands.pluginPrepareDebugRun(a.config));
+        const root = useProject.getState().project?.root;
+        if (!root) throw new Error("No project");
+        const launch = launchConfigFor(await withEnvFiles(config, root), root);
+        if (!launch) throw new Error("This configuration has no debugger");
+        let id: number | null = null;
+        let stopped = false;
+        const observe = () => {
+          if (id === null) return;
+          const session = useDebug.getState().sessions[id];
+          if (session?.status === "stopping") stopped = true;
+          if (!session || session.status === "terminated") {
+            off();
+            a.onExit(session?.exitCode ?? null, stopped);
+          }
+        };
+        const off = useDebug.subscribe(observe);
+        try {
+          await maybeEditorService()?.saveAll();
+          id = await startSession(launch, { runConfig: config });
+          if (id === null) {
+            off();
+            throw new Error("Debug session did not start");
+          }
+          observe();
+        } catch (error) {
+          off();
+          throw error;
+        }
+      },
+    },
+    {
       id: "debug.startConfig",
       title: "Debug…",
       category: "Debug",
       icon: "debug",
       description: "Start debugging a run configuration",
-      run: ({ arg }) => report("Cannot start debugging", startConfig(arg)),
+      run: ({ arg }) => report(tx("Cannot start debugging"), startConfig(arg)),
     },
     {
       id: "debug.attach",
       title: "Attach Debugger",
       category: "Debug",
       hidden: true,
+      // Also debugpy to a Python program in a run target's container
+      // (arg: { name, adapter: "debugpy", hostName, port, remoteRoot, process }).
       description:
         "Attach the Java debugger to a JVM listening for JDWP (arg: { name, module, hostName, port, process })",
       run: ({ arg }) =>
         report(
-          "Cannot attach the debugger",
+          tx("Cannot attach the debugger"),
           (async () => {
             const root = useProject.getState().project?.root;
-            if (!root || !isJavaAttachTarget(arg)) return;
-            const launch = await javaAttachConfig(arg, root);
-            await startSession(launch, {
-              process: (arg.process ?? null) as RunId | null,
+            if (!root) return;
+            let launch: LaunchConfig;
+            if (isPythonAttachTarget(arg)) launch = pythonAttachConfig(arg, root);
+            else if (isJavaAttachTarget(arg)) launch = await javaAttachConfig(arg, root);
+            else return;
+            const process = (arg.process ?? null) as RunId | null;
+            // Another JVM of the same run (a Gradle test worker, the one just detached) keeps it.
+            const shared =
+              process != null &&
+              (justDetached(process) ||
+                Object.values(useDebug.getState().sessions).some((s) => s.process === process && isLive(s)));
+            const session = await startSession(launch, {
+              process,
               runConfig: arg.runConfig,
               rerunnable: false,
+              show: (arg as { show?: boolean }).show,
             });
+            // The process was started for this debugger and waits for it (`suspend=y`): without
+            // the attach it would never go on, and Stop on the finished session can't reach it.
+            if (session == null && process != null && !shared) await stopAssociatedProcess(process);
           })(),
         ),
     },
@@ -392,6 +506,123 @@ export function registerDebugActions(): () => void {
         ),
     },
     {
+      id: "debug.memory.refresh",
+      title: "Refresh Memory View",
+      category: "Debug",
+      icon: "refresh",
+      keywords: ["memory", "heap", "instances", "classes"],
+      when: "debugHasJvmMemory",
+      run: () => {
+        const s = activeSession();
+        if (s && sessionSupports("jvmMemory", s)) void refreshMemory(s.id);
+      },
+    },
+    {
+      id: "debug.heap.capture",
+      title: "Capture Heap Snapshot",
+      category: "Debug",
+      icon: "heap-snapshot",
+      keywords: ["memory", "heap", "dump", "snapshot"],
+      when: "debugHasJvmMemory",
+      run: () => {
+        const s = activeSession();
+        if (s && sessionSupports("jvmHeap", s)) void captureHeap(s.id);
+      },
+    },
+    {
+      // The host opens dumps for a trusted project only (F21).
+      id: "debug.heap.open",
+      title: "Open Heap Dump…",
+      category: "Debug",
+      icon: "heap-snapshot",
+      keywords: ["memory", "heap", "dump", "hprof", "snapshot"],
+      when: "projectOpen",
+      run: () => openHeapDump(),
+    },
+    {
+      id: "debug.heap.saveDump",
+      title: "Save Heap Dump As…",
+      category: "Debug",
+      icon: "export",
+      keywords: ["memory", "heap", "dump", "hprof", "snapshot"],
+      when: "debugHeapSnapshotCaptured",
+      run: () => {
+        const id = activeCapturedSnapshot();
+        if (id !== null) return saveHeapDump(id);
+      },
+    },
+    {
+      // Runs for the class given as `arg`, else the selected row of the Memory view.
+      id: "debug.memory.showInstances",
+      title: "Show Instances",
+      category: "Debug",
+      icon: "list",
+      keywords: ["memory", "heap", "objects", "instances"],
+      when: "debugSessionPaused",
+      run: ({ arg }) => {
+        const s = activeSession();
+        if (!s || !sessionSupports("jvmInstances", s)) return;
+        const name = typeof arg === "string" ? arg : useMemory.getState().bySession[s.id]?.selected;
+        if (name) void showInstances(s.id, name);
+      },
+    },
+    {
+      // Runs for the class given as `arg`, else the open instances list, else the selected Memory row.
+      // Needs only the project's language server, so it also works once the session has ended.
+      id: "debug.memory.jumpToSource",
+      title: "Jump to Source",
+      category: "Debug",
+      icon: "edit-source",
+      keywords: ["memory", "class", "instances"],
+      when: "projectOpen",
+      run: ({ arg }) => {
+        const s = activeSession();
+        const name =
+          typeof arg === "string"
+            ? arg
+            : s &&
+              (useInstances.getState().bySession[s.id]?.className ?? useMemory.getState().bySession[s.id]?.selected);
+        if (name) void jumpToClass(name);
+      },
+    },
+    {
+      // Runs for the lead object row of the open instances list.
+      id: "debug.memory.showReferrers",
+      title: "Show Referrers",
+      category: "Debug",
+      icon: "hierarchy",
+      keywords: ["memory", "instances", "references", "referring objects"],
+      when: "debugSessionPaused",
+      run: () => {
+        const s = activeSession();
+        const entry = s && useInstances.getState().bySession[s.id];
+        if (!s || !entry?.lead || !sessionSupports("jvmInstances", s) || instancesOutdated(entry, s.stops)) return;
+        showReferrers(s.id, entry.lead.key, entry.lead.ref);
+      },
+    },
+    {
+      // Closes the pane of the session given as `arg`, else of the active one. No `when`: the pane stays
+      // after its session ends and must still close.
+      id: "debug.memory.closeInstances",
+      title: "Close Instances",
+      category: "Debug",
+      icon: "close",
+      keywords: ["memory", "instances"],
+      run: ({ arg }) => {
+        const id = typeof arg === "number" ? arg : activeSession()?.id;
+        if (id != null && useInstances.getState().bySession[id]) closeInstances(id);
+      },
+    },
+    {
+      id: "debug.cancelHotSwap",
+      title: "Cancel Hot Swap Build",
+      description: "Stop the compile a Reload Changed Classes action is waiting on",
+      category: "Debug",
+      icon: "stop",
+      when: "debugHotSwapBuilding",
+      run: () => cancelHotSwapBuild(),
+    },
+    {
       id: "debug.rerun",
       title: "Rerun",
       category: "Debug",
@@ -414,7 +645,7 @@ export function registerDebugActions(): () => void {
         const t = pausedTarget();
         if (t)
           void report(
-            "Resume failed",
+            tx("Resume failed"),
             resumeExecution(t.s.id, () => call(commands.debugResume(t.s.id, t.thread))),
           );
       },
@@ -433,7 +664,31 @@ export function registerDebugActions(): () => void {
           const threads = await call(commands.debugThreads(s.id)).catch(() => []);
           thread = threads[0]?.id ?? 0;
         }
-        await report("Pause failed", call(commands.debugPause(s.id, thread)));
+        await report(tx("Pause failed"), call(commands.debugPause(s.id, thread)));
+      },
+    },
+    {
+      id: "debug.hotReload",
+      title: "Hot Reload",
+      category: "Debug",
+      icon: "hot-reload",
+      description: "Flutter: inject the changed sources into the running app",
+      when: "debugSessionRunning && debugSessionDart",
+      run: () => {
+        const s = activeSession();
+        if (s) void report("Hot Reload failed", call(commands.debugHotReload(s.id)));
+      },
+    },
+    {
+      id: "debug.hotRestart",
+      title: "Hot Restart",
+      category: "Debug",
+      icon: "refresh",
+      description: "Flutter: restart the app, discarding its state",
+      when: "debugSessionRunning && debugSessionDart",
+      run: () => {
+        const s = activeSession();
+        if (s) void report("Hot Restart failed", call(commands.debugHotRestart(s.id)));
       },
     },
     step("debug.stepOver", "Step Over", "over", "step-over"),
@@ -450,7 +705,7 @@ export function registerDebugActions(): () => void {
         const t = pausedTarget();
         if (t)
           void report(
-            "Force Step Over failed",
+            tx("Force Step Over failed"),
             resumeExecution(t.s.id, () => call(commands.debugForceStepOver(t.s.id, t.thread))),
           );
       },
@@ -467,7 +722,7 @@ export function registerDebugActions(): () => void {
         const t = pausedTarget();
         if (t)
           void report(
-            "Force Step Into failed",
+            tx("Force Step Into failed"),
             resumeExecution(t.s.id, () => call(commands.debugStep(t.s.id, t.thread, "into"))),
           );
       },
@@ -479,7 +734,7 @@ export function registerDebugActions(): () => void {
       icon: "smart-step-into",
       description: "Choose which call on the current line to step into",
       when: paused,
-      run: () => void report("Smart Step Into failed", smartStepInto()),
+      run: () => void report(tx("Smart Step Into failed"), smartStepInto()),
     },
     {
       id: "debug.showExecutionPoint",
@@ -509,7 +764,7 @@ export function registerDebugActions(): () => void {
           return;
         }
         void report(
-          "Reset Frame failed",
+          tx("Reset Frame failed"),
           resumeExecution(t.s.id, () => call(commands.debugRestartFrame(t.s.id, frame.id))),
         );
       },
@@ -559,7 +814,7 @@ export function registerDebugActions(): () => void {
         const c = cursor();
         if (t && c && breakpointPathAllowed(c.path))
           void report(
-            "Run to Cursor failed",
+            tx("Run to Cursor failed"),
             resumeExecution(t.s.id, () => call(commands.debugRunTo(t.s.id, t.thread, c.path, c.line, false))),
           );
       },
@@ -576,7 +831,7 @@ export function registerDebugActions(): () => void {
         const c = cursor();
         if (t && c && breakpointPathAllowed(c.path))
           void report(
-            "Force Run to Cursor failed",
+            tx("Force Run to Cursor failed"),
             resumeExecution(t.s.id, () => call(commands.debugRunTo(t.s.id, t.thread, c.path, c.line, true))),
           );
       },
@@ -601,6 +856,9 @@ export function registerDebugActions(): () => void {
           return;
         }
         const ed = activeEditor();
+        // Like IDEA, no new breakpoint on a blank or comment-only line; an existing one still goes.
+        const taken = exists || specialAt(c.path).some((b) => b.line === c.line);
+        if (!taken && ed && !lineHasCode(ed.view.state, c.line)) return;
         if (ed) toggleBreakpointSmart(c.path, c.line, language, ed.view.state.doc.toString());
         else toggleBreakpoint(c.path, c.line);
       },
@@ -613,8 +871,11 @@ export function registerDebugActions(): () => void {
       description: "A line breakpoint that is removed after it is hit",
       run: () => {
         const c = cursor();
-        if (c && breakpointPathAllowed(c.path) && canPlaceBreakpoint(activeEditor()?.ctx.language ?? "", c.path))
-          toggleTemporaryBreakpoint(c.path, c.line);
+        const ed = activeEditor();
+        if (!c || !breakpointPathAllowed(c.path) || !canPlaceBreakpoint(ed?.ctx.language ?? "", c.path)) return;
+        const exists = useBreakpoints.getState().byFile[c.path]?.some((b) => b.line === c.line);
+        if (!exists && ed && !lineHasCode(ed.view.state, c.line)) return;
+        toggleTemporaryBreakpoint(c.path, c.line);
       },
     },
     {

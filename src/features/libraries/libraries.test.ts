@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { isLibraryPath, setLibraryRoots } from "@/editor/api";
 import { librariesRoot, touchesManifest } from "./index";
+import { mergeLibraryGroups } from "@/platform/libraries";
 
 describe("External Libraries", () => {
   let dispose = () => {};
@@ -63,7 +64,9 @@ describe("External Libraries", () => {
       { name: "Maven: g:a:1", kind: "maven", roots: [{ name: "a-1-sources.jar", path: "/m2/g/a/1/a-1-sources.jar!" }] },
     ])!;
     expect(root.children?.[0]?.children?.map((c) => c.icon)).toEqual(["folder-library", "file-archive"]);
-    expect(root.children?.[1]).toMatchObject({ label: "< Maven: g:a:1 >", icon: "maven-project" });
+    // As in IDEA: SDKs in angle brackets, dependencies without.
+    expect(root.children?.[0]).toMatchObject({ label: "< temurin-21 >" });
+    expect(root.children?.[1]).toMatchObject({ label: "Maven: g:a:1", icon: "maven-project" });
     dispose = setLibraryRoots("test", ["/jdk/lib/src.zip!"]);
     expect(isLibraryPath("/jdk/lib/src.zip!/java.base/java/lang/String.java")).toBe(true);
   });
@@ -72,8 +75,16 @@ describe("External Libraries", () => {
     expect(touchesManifest(["/p/src/main.rs", "/p/Cargo.toml"])).toBe(true);
     expect(touchesManifest(["C:\\p\\go.mod"])).toBe(true);
     expect(touchesManifest(["/p/.venv/pyvenv.cfg"])).toBe(true);
+    expect(touchesManifest(["/p/pnpm-workspace.yaml", "/p/Gemfile.lock"])).toBe(true);
     expect(touchesManifest(["/p/node_modules/react/package.json"])).toBe(false);
     expect(touchesManifest(["/p/src/package.json.bak", "/p/README.md"])).toBe(false);
+  });
+
+  it("refreshes when an applied Gradle script or properties file changes", () => {
+    expect(touchesManifest(["/p/gradle/dependencies.gradle"])).toBe(true);
+    expect(touchesManifest(["C:\\p\\gradle\\dependencies.gradle.kts"])).toBe(true);
+    expect(touchesManifest(["/p/gradle.properties"])).toBe(true);
+    expect(touchesManifest(["/p/node_modules/tool/dependencies.gradle"])).toBe(false);
   });
 
   it("marks files below library roots for read-only editors", () => {
@@ -82,5 +93,29 @@ describe("External Libraries", () => {
     expect(isLibraryPath("/py/lib/python3.120/x.py")).toBe(false);
     dispose();
     expect(isLibraryPath("/py/lib/python3.12/os.py")).toBe(false);
+  });
+
+  it("merges streamed module groups without dropping ecosystems or distinct roots", () => {
+    const group = (kind: string, path: string) => ({ name: kind, kind, roots: [{ name: "dep", path }] });
+    expect(
+      mergeLibraryGroups([
+        group("cargo", "/cargo/serde"),
+        group("nodeModules", "/web/node_modules/dep"),
+        group("maven", "/m2/dep.jar!"),
+        group("nodeModules", "/api/node_modules/dep"),
+        group("cargo", "/cargo/serde"),
+      ]),
+    ).toEqual([
+      group("cargo", "/cargo/serde"),
+      {
+        name: "nodeModules",
+        kind: "nodeModules",
+        roots: [
+          { name: "dep", path: "/web/node_modules/dep" },
+          { name: "dep", path: "/api/node_modules/dep" },
+        ],
+      },
+      group("maven", "/m2/dep.jar!"),
+    ]);
   });
 });

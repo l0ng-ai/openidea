@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import {
   memo,
@@ -13,9 +14,10 @@ import {
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { useConsoleFont } from "@/platform/consoleFont";
 import { Icon, showContextMenu } from "@/ui";
 import { spanStyle } from "@/ui/ansi";
-import ansi from "@/ui/ansi.module.css";
+import { logLineColor } from "@/ui/logColors";
 import type { ConsoleLine, ConsoleModel } from "./console";
 import { findOutputLinks, type OutputLink } from "./links";
 import { openTarget, openUrl } from "./navigate";
@@ -24,10 +26,8 @@ import styles from "./Run.module.css";
 import { useConsoleSelection } from "./useConsoleSelection";
 import { hostBinding, formatBinding, hasPrimaryModifier, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
-import { ConsoleFindBar } from "./FindBar";
-import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "./find";
-
-const ROW = 20;
+import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
+import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "@/ui/consoleFind";
 
 const MARK_COLOR = "var(--bg-search-match)";
 const CURRENT_MARK_COLOR = "var(--bg-search-match-current)";
@@ -51,7 +51,8 @@ const Line = memo(
       if (link.kind === "url") void openUrl(link.url);
       else void openTarget(link.target, cwd);
     };
-    if (segments.length === 0) return <>{"​"}</>;
+    // A blank line is an empty row: its height comes from CSS, never from a character in the text.
+    if (segments.length === 0) return null;
     return (
       <>
         {segments.map((seg, i) => {
@@ -182,6 +183,17 @@ export function ConsoleView({
   const innerRef = useRef<HTMLDivElement>(null);
   const lines = model.lines;
   const patterns = useWorkflowSettings((s) => s.console.foldPatterns);
+  const logColors = useWorkflowSettings((s) => s.console.logColors);
+  // The Run console uses Tools › Terminal › Font (which can follow Editor › Font),
+  // so the font and fallback configured there apply to process output too.
+  const consoleFont = useConsoleFont();
+  const { rowHeight } = consoleFont;
+  /** A row's box: at its virtual offset, and never shorter than one line — a blank line has no text. */
+  const rowStyle = (start: number) => ({
+    transform: `translateY(${start}px)`,
+    height: softWrap ? undefined : rowHeight,
+    minHeight: rowHeight,
+  });
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
   const [internalFindOpen, setInternalFindOpen] = useState(false);
   const findOpen = controlledFindOpen ?? internalFindOpen;
@@ -218,7 +230,7 @@ export function ConsoleView({
     rangeExtractor,
     count,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => ROW,
+    estimateSize: () => rowHeight,
     overscan: 30,
     getItemKey: (i) => {
       const r = rows[i];
@@ -230,7 +242,7 @@ export function ConsoleView({
   // Soft wrap changes row heights; re-measure everything.
   useEffect(() => {
     virtualizer.measure();
-  }, [softWrap, virtualizer]);
+  }, [softWrap, rowHeight, virtualizer]);
 
   useLayoutEffect(() => {
     if (!follow || count === 0) return;
@@ -244,7 +256,7 @@ export function ConsoleView({
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el || programmatic.current) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < ROW;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < rowHeight;
     if (atBottom && selecting) return;
     if (atBottom !== follow) onFollowChange(atBottom);
   };
@@ -343,7 +355,7 @@ export function ConsoleView({
   // The bar owns Escape / Enter / F3 / ⌘G while it is focused; keep the IDE keymap out.
   useEffect(() => {
     if (!findOpen) return;
-    return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-run-find]"));
+    return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-console-find]"));
   }, [findOpen]);
 
   // A new query (or option) starts from the viewport, not from the top of the output.
@@ -408,10 +420,10 @@ export function ConsoleView({
         icon: "copy",
         shortcut: formatBinding(hostBinding("Meta+C")),
         disabled: !selection,
-        run: () => void navigator.clipboard?.writeText(selection).catch(() => undefined),
+        run: () => void writeClipboardText(selection).catch(() => undefined),
       },
       { label: "Select All", shortcut: formatBinding(hostBinding("Meta+A")), run: selectAll },
-      { label: "Copy All", run: () => void navigator.clipboard?.writeText(model.text()).catch(() => undefined) },
+      { label: "Copy All", run: () => void writeClipboardText(model.text()).catch(() => undefined) },
       {
         label: "Find…",
         icon: "search",
@@ -498,6 +510,19 @@ export function ConsoleView({
   const items = virtualizer.getVirtualItems();
   return (
     <div className={styles.consoleWrap}>
+      {/* A console whose find bar is not driven by a toolbar (a stack-trace tab, say) still
+          needs a visible way in: the same Find the Run toolbar offers, over the output. */}
+      {controlledFindOpen === undefined && !findOpen && (
+        <button
+          type="button"
+          className={styles.consoleFindOpen}
+          title="Find…"
+          aria-label="Find in console"
+          onClick={() => setFindOpen(true)}
+        >
+          <Icon name="search" size={14} />
+        </button>
+      )}
       {findOpen && (
         <ConsoleFindBar
           query={query}
@@ -516,7 +541,12 @@ export function ConsoleView({
       )}
       <div
         ref={scrollRef}
-        className={clsx(styles.console, ansi.palette, softWrap && styles.wrap)}
+        className={clsx(styles.console, softWrap && styles.wrap)}
+        style={{
+          fontFamily: consoleFont.family,
+          fontSize: `${consoleFont.size}px`,
+          lineHeight: `${rowHeight}px`,
+        }}
         role="log"
         aria-live="off"
         aria-label={aria["aria-label"] ?? "Console"}
@@ -543,7 +573,7 @@ export function ConsoleView({
                   data-index={item.index}
                   ref={softWrap ? virtualizer.measureElement : undefined}
                   className={styles.line}
-                  style={{ transform: `translateY(${item.start}px)`, height: softWrap ? undefined : ROW }}
+                  style={rowStyle(item.start)}
                 >
                   {pendingInput}
                 </div>
@@ -556,7 +586,7 @@ export function ConsoleView({
                   data-index={item.index}
                   ref={softWrap ? virtualizer.measureElement : undefined}
                   className={styles.line}
-                  style={{ transform: `translateY(${item.start}px)`, height: softWrap ? undefined : ROW }}
+                  style={rowStyle(item.start)}
                 >
                   {foldButton(row.fold, false)}
                 </div>
@@ -564,13 +594,15 @@ export function ConsoleView({
             }
             const line = lines[row.index];
             if (!line) return null;
+            // The level colour is the inherited fallback; spans with their own ANSI colour win.
+            const color = logLineColor(line.text, line.kind, logColors);
             return (
               <div
                 key={item.key}
                 data-index={item.index}
                 ref={softWrap ? virtualizer.measureElement : undefined}
                 className={clsx(styles.line, styles[line.kind])}
-                style={{ transform: `translateY(${item.start}px)`, height: softWrap ? undefined : ROW }}
+                style={{ ...rowStyle(item.start), color }}
               >
                 <Line line={line} marks={marksByLine.get(row.index)} length={line.text.length} cwd={cwd} />
                 {row.fold && foldButton(row.fold, true)}

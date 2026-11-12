@@ -1,0 +1,27 @@
+/* Same look as the global ::-webkit-scrollbar (global.css). */
+.track {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 10px;
+  z-index: 1;
+}
+.thumb {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background-clip: content-box;
+  background-color: var(--scrollbar-thumb);
+  will-change: transform;
+}
+.thumb:hover,
+.thumb[data-dragging] {
+  background-color: var(--scrollbar-thumb-hover);
+}
+/* For the scroller whose vertical scrollbar `Scrollbar` draws. */
+.hideNative::-webkit-scrollbar:vertical {
+  width: 0;
+}

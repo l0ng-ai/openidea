@@ -1,11 +1,20 @@
 /**
- * Dependency Analyzer editor tab: a Maven module's resolved artifacts (flat list or
- * the transitive tree) with conflicts marked, and for the selected artifact every
- * path that brings it in, with Exclude / Jump to Source / Copy Coordinates.
+ * Dependency Analyzer editor tab: a Maven module's or a Gradle project's resolved
+ * artifacts (flat list or the transitive tree) with conflicts marked, and for the
+ * selected artifact every path that brings it in, with Exclude / Jump to Source (Maven)
+ * and Copy Coordinates. Gradle trees are read per configuration, on demand.
  */
-import { useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
-import { call, commands, type MavenDependency, type MavenProject } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  isCancelled,
+  nextRequestId,
+  type GradleModel,
+  type MavenDependency,
+  type MavenProject,
+} from "@/platform/ipc";
 import { useTx, useTxTemplate, tx } from "@/platform/i18n";
 import { editorService, notifications, type EditorInput } from "@/workbench/contributions";
 import {
@@ -34,6 +43,8 @@ import {
   exclusionFor,
   filterArtifacts,
   filterTree,
+  fromGradle,
+  isBuildProject,
   scopesOf,
   sortedUsages,
   statusText,
@@ -42,6 +53,7 @@ import {
   type DependencyTreeNode,
   type DependencyUsage,
 } from "./analyzer";
+import { gradleProjectKey } from "./model";
 import { syncTool, useAnalyzer, useBuild } from "./store";
 import styles from "./DependencyAnalyzer.module.css";
 
@@ -51,6 +63,66 @@ type Node =
   | { kind: "node"; key: string; node: DependencyTreeNode; children: Node[] };
 
 const ALL_SCOPES = "*";
+const GRADLE = "gradle:";
+/** The resolvable configurations of the Java plugins. */
+const CONFIGURATIONS = ["compileClasspath", "runtimeClasspath", "testCompileClasspath", "testRuntimeClasspath"];
+
+type GradleTree = { deps: MavenDependency[] | null; error: string | null; loading: boolean };
+/** Reports already read in this session, by workspace, build, project and configuration: reopening the tab doesn't run Gradle again. */
+const gradleTrees = new Map<string, MavenDependency[]>();
+
+/** The `dependencies` report of `path` for `configuration`, cached; a new `generation` runs Gradle again. */
+function useGradleTree(path: string | null, buildDir: string | null, configuration: string, generation: number) {
+  const root = useBuild((s) => s.root);
+  const key = path && root ? JSON.stringify([root, buildDir, path, configuration]) : null;
+  const [state, setState] = useState<GradleTree & { key: string | null }>({
+    key: null,
+    deps: null,
+    error: null,
+    loading: false,
+  });
+  const served = useRef(generation);
+  const running = useRef<number | null>(null);
+  useEffect(() => {
+    if (!key || !path) return;
+    const forced = served.current !== generation;
+    served.current = generation;
+    const cached = gradleTrees.get(key);
+    if (cached && !forced) {
+      setState({ key, deps: cached, error: null, loading: false });
+      return;
+    }
+    const request = nextRequestId();
+    running.current = request;
+    // Answers of a run this effect no longer owns (a cancelled one included) are dropped.
+    let live = true;
+    let done = false;
+    setState({ key, deps: cached ?? null, error: null, loading: true });
+    const offline = useBuild.getState().settings.gradle.offline;
+    call(commands.gradleDependencies(path, configuration, offline, request, buildDir))
+      .then((deps) => {
+        const tree = fromGradle(deps);
+        gradleTrees.set(key, tree);
+        if (live) setState({ key, deps: tree, error: null, loading: false });
+      })
+      .catch((e) => {
+        if (live) setState({ key, deps: cached ?? null, error: isCancelled(e) ? null : errorText(e), loading: false });
+      })
+      .finally(() => {
+        done = true;
+        if (running.current === request) running.current = null;
+      });
+    return () => {
+      live = false;
+      if (!done) void commands.cancelRequest(request).catch(() => {});
+    };
+  }, [key, path, buildDir, configuration, generation]);
+  const current: GradleTree = state.key === key ? state : { deps: null, error: null, loading: !!key };
+  const cancel = () => {
+    if (running.current != null) void commands.cancelRequest(running.current).catch(() => {});
+  };
+  return { ...current, cancel };
+}
 
 function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
@@ -91,17 +163,34 @@ function versionLabel(d: MavenDependency) {
   return d.version ?? "";
 }
 
-function moduleOptions(projects: readonly MavenProject[]): SelectOption[] {
-  return projects
-    .filter((p) => p.packaging !== "pom" || p.dependencies.length > 0)
-    .map((p) => ({ value: p.pom, label: p.displayName, detail: p.pom, icon: "maven-project" }));
+function moduleOptions(maven: readonly MavenProject[], gradle: readonly GradleModel[]): SelectOption[] {
+  return [
+    ...maven
+      .filter((p) => p.packaging !== "pom" || p.dependencies.length > 0)
+      .map((p) => ({ value: p.pom, label: p.displayName, detail: p.pom, icon: "maven-project" })),
+    // buildSrc's tasks can't be run from the build.
+    ...gradle.flatMap((build) =>
+      build.projects
+        .filter((p) => !p.build?.endsWith(":buildSrc"))
+        .map((p) => ({
+          value: gradleProjectKey(build, p),
+          label: p.name,
+          detail: `${build.dir || "."} ${p.path}`,
+          icon: p.path === ":" ? "gradle-project" : "gradle-module",
+        })),
+    ),
+  ];
 }
 
 function ArtifactRow({ artifact, selected }: { artifact: AnalyzedArtifact; selected: boolean }) {
   const tx = useTx();
   return (
     <span className={styles.row}>
-      <Icon name={artifact.conflict ? "warning" : "library"} size={16} className={styles.icon} />
+      <Icon
+        name={artifact.conflict ? "warning" : isBuildProject(artifact) ? "gradle-module" : "library"}
+        size={16}
+        className={styles.icon}
+      />
       <span className={clsx(styles.label, artifact.conflict && styles.conflict, selected && styles.selectedLabel)}>
         {artifact.key}
       </span>
@@ -120,7 +209,11 @@ function TreeRow({ node, conflict, selected }: { node: DependencyTreeNode; confl
   const status = statusText(usageStatus(d));
   return (
     <span className={clsx(styles.row, d.omitted != null && styles.omitted)}>
-      <Icon name={conflict ? "warning" : "library"} size={16} className={styles.icon} />
+      <Icon
+        name={conflict ? "warning" : isBuildProject(d) ? "gradle-module" : "library"}
+        size={16}
+        className={styles.icon}
+      />
       <span className={clsx(styles.label, conflict && styles.conflict, selected && styles.selectedLabel)}>
         {artifactKey(d)}
       </span>
@@ -131,17 +224,36 @@ function TreeRow({ node, conflict, selected }: { node: DependencyTreeNode; confl
   );
 }
 
-function UsageBlock({ usage, module, pom }: { usage: DependencyUsage; module: MavenProject; pom: string }) {
+function UsageBlock({
+  usage,
+  moduleName,
+  moduleIcon,
+  pom,
+}: {
+  usage: DependencyUsage;
+  moduleName: string;
+  moduleIcon: string;
+  /** The Maven module's pom; `null` for Gradle (no Exclude / Jump to Source). */
+  pom: string | null;
+}) {
   const tx = useTxTemplate();
   const status = usageStatus(usage.dependency);
   const text = statusText(status);
   const direct = usage.path[0]!;
-  const canExclude = !!exclusionFor(usage);
+  const canExclude = pom != null && !!exclusionFor(usage);
   return (
     <section className={styles.usage} aria-label={coordinates(usage.dependency)}>
       <div className={styles.usageHeader}>
         <Icon
-          name={status.kind === "conflict" ? "warning" : status.kind === "resolved" ? "success" : "info"}
+          name={
+            status.kind === "conflict" ||
+            status.kind === "unresolved" ||
+            (status.kind === "resolved" && status.requested)
+              ? "warning"
+              : status.kind === "resolved"
+                ? "success"
+                : "info"
+          }
           size={16}
           className={styles.icon}
         />
@@ -155,17 +267,19 @@ function UsageBlock({ usage, module, pom }: { usage: DependencyUsage; module: Ma
             Exclude
           </Button>
         )}
-        <IconButton
-          icon="autoscroll-to-source"
-          size="small"
-          title="Jump to Source"
-          onClick={() => void jumpToDeclaration(pom, direct)}
-        />
+        {pom != null && (
+          <IconButton
+            icon="autoscroll-to-source"
+            size="small"
+            title="Jump to Source"
+            onClick={() => void jumpToDeclaration(pom, direct)}
+          />
+        )}
       </div>
       <ol className={styles.path}>
         <li className={styles.step} style={{ paddingLeft: 0 }}>
-          <Icon name="maven-project" size={16} className={styles.icon} />
-          <span className={styles.stepLabel}>{module.displayName}</span>
+          <Icon name={moduleIcon} size={16} className={styles.icon} />
+          <span className={styles.stepLabel}>{moduleName}</span>
         </li>
         {usage.path.map((d, i) => (
           <li key={i} className={styles.step} style={{ paddingLeft: (i + 1) * 16 }}>
@@ -183,12 +297,14 @@ function UsageBlock({ usage, module, pom }: { usage: DependencyUsage; module: Ma
 
 function UsagesPane({
   artifact,
-  module,
+  moduleName,
+  moduleIcon,
   pom,
 }: {
   artifact: AnalyzedArtifact | null;
-  module: MavenProject;
-  pom: string;
+  moduleName: string;
+  moduleIcon: string;
+  pom: string | null;
 }) {
   if (!artifact) return <EmptyState title="Select a dependency to see its usages" />;
   const usages = sortedUsages(artifact.usages);
@@ -209,7 +325,7 @@ function UsagesPane({
       )}
       <div className={styles.usageList} aria-label={tx("Usages")}>
         {usages.map((u, i) => (
-          <UsageBlock key={i} usage={u} module={module} pom={pom} />
+          <UsageBlock key={i} usage={u} moduleName={moduleName} moduleIcon={moduleIcon} pom={pom} />
         ))}
       </div>
     </div>
@@ -219,25 +335,41 @@ function UsagesPane({
 export function DependencyAnalyzer(_props: { input: EditorInput }) {
   const tx = useTx();
   const maven = useBuild((s) => s.model?.maven ?? null);
+  const gradle = useBuild((s) => s.model?.gradle);
   const syncing = useBuild((s) => s.syncing.maven);
-  const chosen = useAnalyzer((s) => s.pom);
+  const chosen = useAnalyzer((s) => s.module);
   const [query, setQuery] = useState("");
   const [conflictsOnly, setConflictsOnly] = useState(false);
   const [scope, setScope] = useState<string>(ALL_SCOPES);
+  const [configuration, setConfiguration] = useState("runtimeClasspath");
+  const [generation, setGeneration] = useState(0);
   const [mode, setMode] = useState<Mode>("list");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
-  const options = useMemo(() => moduleOptions(maven?.projects ?? []), [maven]);
-  const pom = options.some((o) => o.value === chosen) ? chosen! : (options[0]?.value ?? null);
-  const module = maven?.projects.find((p) => p.pom === pom) ?? null;
-  const artifacts = useMemo(() => analyze(module?.dependencies ?? []), [module]);
+  const options = useMemo(() => moduleOptions(maven?.projects ?? [], gradle ?? []), [maven, gradle]);
+  const value = options.some((o) => o.value === chosen) ? chosen! : (options[0]?.value ?? null);
+  const selectedGradle = value?.startsWith(GRADLE)
+    ? (gradle ?? [])
+        .flatMap((build) => build.projects.map((project) => ({ build, project })))
+        .find(({ build, project }) => gradleProjectKey(build, project) === value)
+    : null;
+  const gradlePath = selectedGradle?.project.path ?? null;
+  const pom = value != null && gradlePath == null ? value : null;
+  const module = pom ? (maven?.projects.find((p) => p.pom === pom) ?? null) : null;
+  const gradleProject = selectedGradle?.project ?? null;
+  const report = useGradleTree(gradlePath, selectedGradle?.build.dir ?? null, configuration, generation);
+  const deps = useMemo(
+    () => (gradlePath != null ? (report.deps ?? []) : (module?.dependencies ?? [])),
+    [gradlePath, report.deps, module],
+  );
+  const artifacts = useMemo(() => analyze(deps), [deps]);
   const conflicted = useMemo(() => new Set(artifacts.filter((a) => a.conflict).map((a) => a.key)), [artifacts]);
   const filter = useMemo(
-    () => ({ query, conflictsOnly, scope: scope === ALL_SCOPES ? null : scope }),
-    [query, conflictsOnly, scope],
+    () => ({ query, conflictsOnly, scope: scope === ALL_SCOPES || gradlePath != null ? null : scope }),
+    [query, conflictsOnly, scope, gradlePath],
   );
   const listed = useMemo(() => filterArtifacts(artifacts, filter), [artifacts, filter]);
-  const tree = useMemo(() => filterTree(module?.dependencies ?? [], filter, conflicted), [module, filter, conflicted]);
+  const tree = useMemo(() => filterTree(deps, filter, conflicted), [deps, filter, conflicted]);
   const roots: Node[] = useMemo(() => {
     const toNode = (node: DependencyTreeNode): Node => ({
       kind: "node",
@@ -251,7 +383,7 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
   }, [mode, listed, tree]);
 
   // A narrowing filter opens the tree down to its matches until the user expands or collapses.
-  const filterId = `${mode}|${filter.query}|${filter.conflictsOnly}|${filter.scope}|${pom}`;
+  const filterId = `${mode}|${filter.query}|${filter.conflictsOnly}|${filter.scope}|${value}|${configuration}`;
   const [manual, setManual] = useState<{ id: string; keys: Set<string> } | null>(null);
   const expanded = useMemo(() => {
     if (manual?.id === filterId) return manual.keys;
@@ -274,6 +406,7 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
     { value: ALL_SCOPES, label: tx("All scopes") },
     ...scopesOf(artifacts).map((s) => ({ value: s, label: s })),
   ];
+  const configurationOptions: SelectOption[] = CONFIGURATIONS.map((c) => ({ value: c, label: c }));
 
   const nodeArtifactKey = (n: Node) => (n.kind === "artifact" ? n.artifact.key : artifactKey(n.node.dependency));
   /** The usage a row stands for: a tree node's own, else the artifact's direct (or first) one. */
@@ -286,19 +419,71 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
   };
 
   const contextMenu = (n: Node | null, _sel: Set<string>, e: MouseEvent) => {
-    if (!n || !pom) return;
+    if (!n || !value) return;
     e.preventDefault();
     const usage = usageOf(n);
     if (!usage) return;
-    const items: MenuItem[] = [
-      { label: "Jump to Source", icon: "autoscroll-to-source", run: () => void jumpToDeclaration(pom, usage.path[0]!) },
-    ];
-    if (exclusionFor(usage)) items.push({ label: "Exclude", run: () => void exclude(pom, usage) });
+    const items: MenuItem[] = [];
+    if (pom) {
+      items.push({
+        label: "Jump to Source",
+        icon: "autoscroll-to-source",
+        run: () => void jumpToDeclaration(pom, usage.path[0]!),
+      });
+      if (exclusionFor(usage)) items.push({ label: "Exclude", run: () => void exclude(pom, usage) });
+    }
     items.push({ label: "Copy Coordinates", icon: "copy", run: () => void copyText(coordinates(usage.dependency)) });
     showContextMenu({ x: e.clientX, y: e.clientY }, items);
   };
 
-  if (!maven) return <EmptyState title="No Maven projects" />;
+  if (!maven && !gradle?.length) return <EmptyState title="No Maven or Gradle projects" />;
+
+  const treeView = (
+    <div className={styles.body}>
+      <SplitGroup orientation="horizontal" id="maven-dependency-analyzer-split">
+        <SplitPanel id="dependencies" minSize={200} className={styles.panel}>
+          <Tree<Node>
+            aria-label="Dependencies"
+            roots={roots}
+            getKey={(n) => n.key}
+            getLabel={(n) => (n.kind === "artifact" ? n.artifact.key : artifactKey(n.node.dependency))}
+            getChildren={(n) => (n.kind === "node" ? n.children : undefined)}
+            isExpandable={(n) => n.kind === "node" && n.node.children.length > 0}
+            expanded={expanded}
+            onExpandedChange={(next) => setManual({ id: filterId, keys: next })}
+            onSelectionChange={(_keys, lead) => setSelectedKey(lead ? nodeArtifactKey(lead) : null)}
+            renderNode={(n, state) =>
+              n.kind === "artifact" ? (
+                <ArtifactRow artifact={n.artifact} selected={state.selected} />
+              ) : (
+                <TreeRow
+                  node={n.node}
+                  conflict={conflicted.has(artifactKey(n.node.dependency))}
+                  selected={state.selected}
+                />
+              )
+            }
+            onActivate={(n) => {
+              const usage = usageOf(n);
+              if (usage && pom) void jumpToDeclaration(pom, usage.path[0]!);
+            }}
+            onContextMenu={contextMenu}
+            multiSelect={false}
+            empty={<EmptyState title={artifacts.length ? "No dependencies match the filter" : "No dependencies"} />}
+          />
+        </SplitPanel>
+        <SplitHandle />
+        <SplitPanel id="usages" minSize={240} className={styles.panel}>
+          <UsagesPane
+            artifact={selected}
+            moduleName={module?.displayName ?? gradleProject?.name ?? ""}
+            moduleIcon={pom ? "maven-project" : gradlePath === ":" ? "gradle-project" : "gradle-module"}
+            pom={pom}
+          />
+        </SplitPanel>
+      </SplitGroup>
+    </div>
+  );
 
   return (
     <div className={styles.view}>
@@ -306,10 +491,10 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
         <Select
           aria-label="Module"
           className={styles.module}
-          value={pom}
+          value={value}
           options={options}
           onChange={(v) => {
-            useAnalyzer.setState({ pom: v });
+            useAnalyzer.setState({ module: v });
             setSelectedKey(null);
           }}
         />
@@ -322,7 +507,26 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
           clearable
         />
         <Checkbox checked={conflictsOnly} onChange={setConflictsOnly} label="Show conflicts only" />
-        <Select aria-label="Scope" className={styles.scope} value={scope} options={scopeOptions} onChange={setScope} />
+        {gradlePath != null ? (
+          <Select
+            aria-label="Configuration"
+            className={styles.scope}
+            value={configuration}
+            options={configurationOptions}
+            onChange={(c) => {
+              setConfiguration(c);
+              setSelectedKey(null);
+            }}
+          />
+        ) : (
+          <Select
+            aria-label="Scope"
+            className={styles.scope}
+            value={scope}
+            options={scopeOptions}
+            onChange={setScope}
+          />
+        )}
         <span className={styles.sep} />
         <IconButton
           icon="list"
@@ -341,79 +545,100 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
           onClick={() => setMode("tree")}
         />
         <span className={styles.sep} />
-        {syncing ? (
+        {gradlePath != null ? (
+          report.loading ? (
+            <IconButton icon="stop" size="small" iconSize={16} title="Stop" onClick={report.cancel} />
+          ) : (
+            <IconButton
+              icon="refresh"
+              size="small"
+              iconSize={16}
+              title="Refresh"
+              onClick={() => setGeneration((g) => g + 1)}
+            />
+          )
+        ) : syncing ? (
           <IconButton icon="stop" size="small" iconSize={16} action="maven.cancelReload" />
         ) : (
           <IconButton icon="refresh" size="small" iconSize={16} action="maven.reload" />
         )}
       </div>
-      {syncing ? (
-        <div className={styles.banner} role="status">
-          <Spinner size={12} />
-          <span className={styles.bannerText}>{syncing.message}</span>
-        </div>
-      ) : maven.stale && maven.syncedAt != null ? (
-        <div className={styles.banner}>
-          <Icon name="maven-load-changes" size={16} />
-          <span className={styles.bannerText}>
-            <T>Dependency trees may be out of date</T>
-          </span>
-          <Button size="small" variant="ghost" onClick={() => void syncTool("maven")}>
-            Load Maven Changes
-          </Button>
-        </div>
-      ) : null}
-      {maven.syncedAt == null ? (
-        <EmptyState
-          title="Dependency trees are read when Maven projects are reloaded"
-          actions={
-            <Button size="small" onClick={() => void syncTool("maven")} disabled={!!syncing}>
-              Reload All Maven Projects
-            </Button>
-          }
-        />
-      ) : !module || !pom ? (
+      {gradlePath != null ? (
+        <>
+          {report.loading ? (
+            <div className={styles.banner} role="status">
+              <Spinner size={12} />
+              <span className={styles.bannerText}>
+                <T>Resolving dependencies…</T>
+              </span>
+            </div>
+          ) : report.error && report.deps ? (
+            <div className={styles.banner} role="alert" title={report.error}>
+              <Icon name="warning" size={16} />
+              <span className={styles.bannerText}>
+                <T>Cannot resolve dependencies</T>: {report.error}
+              </span>
+            </div>
+          ) : null}
+          {report.error && !report.deps ? (
+            <EmptyState
+              title="Cannot resolve dependencies"
+              actions={
+                <Button size="small" onClick={() => setGeneration((g) => g + 1)}>
+                  Retry
+                </Button>
+              }
+            >
+              <span className={styles.errorText}>{report.error}</span>
+            </EmptyState>
+          ) : report.deps ? (
+            treeView
+          ) : report.loading ? null : (
+            <EmptyState
+              title="Stopped"
+              actions={
+                <Button size="small" onClick={() => setGeneration((g) => g + 1)}>
+                  Retry
+                </Button>
+              }
+            />
+          )}
+        </>
+      ) : !maven ? (
         <EmptyState title="No Maven modules" />
       ) : (
-        <div className={styles.body}>
-          <SplitGroup orientation="horizontal" id="maven-dependency-analyzer-split">
-            <SplitPanel id="dependencies" minSize={200} className={styles.panel}>
-              <Tree<Node>
-                aria-label="Dependencies"
-                roots={roots}
-                getKey={(n) => n.key}
-                getLabel={(n) => (n.kind === "artifact" ? n.artifact.key : artifactKey(n.node.dependency))}
-                getChildren={(n) => (n.kind === "node" ? n.children : undefined)}
-                isExpandable={(n) => n.kind === "node" && n.node.children.length > 0}
-                expanded={expanded}
-                onExpandedChange={(next) => setManual({ id: filterId, keys: next })}
-                onSelectionChange={(_keys, lead) => setSelectedKey(lead ? nodeArtifactKey(lead) : null)}
-                renderNode={(n, state) =>
-                  n.kind === "artifact" ? (
-                    <ArtifactRow artifact={n.artifact} selected={state.selected} />
-                  ) : (
-                    <TreeRow
-                      node={n.node}
-                      conflict={conflicted.has(artifactKey(n.node.dependency))}
-                      selected={state.selected}
-                    />
-                  )
-                }
-                onActivate={(n) => {
-                  const usage = usageOf(n);
-                  if (usage) void jumpToDeclaration(pom, usage.path[0]!);
-                }}
-                onContextMenu={contextMenu}
-                multiSelect={false}
-                empty={<EmptyState title={artifacts.length ? "No dependencies match the filter" : "No dependencies"} />}
-              />
-            </SplitPanel>
-            <SplitHandle />
-            <SplitPanel id="usages" minSize={240} className={styles.panel}>
-              <UsagesPane artifact={selected} module={module} pom={pom} />
-            </SplitPanel>
-          </SplitGroup>
-        </div>
+        <>
+          {syncing ? (
+            <div className={styles.banner} role="status">
+              <Spinner size={12} />
+              <span className={styles.bannerText}>{syncing.message}</span>
+            </div>
+          ) : maven.stale && maven.syncedAt != null ? (
+            <div className={styles.banner}>
+              <Icon name="maven-load-changes" size={16} />
+              <span className={styles.bannerText}>
+                <T>Dependency trees may be out of date</T>
+              </span>
+              <Button size="small" variant="ghost" onClick={() => void syncTool("maven")}>
+                Load Maven Changes
+              </Button>
+            </div>
+          ) : null}
+          {maven.syncedAt == null ? (
+            <EmptyState
+              title="Dependency trees are read when Maven projects are reloaded"
+              actions={
+                <Button size="small" onClick={() => void syncTool("maven")} disabled={!!syncing}>
+                  Reload All Maven Projects
+                </Button>
+              }
+            />
+          ) : !module || !pom ? (
+            <EmptyState title="No Maven modules" />
+          ) : (
+            treeView
+          )}
+        </>
       )}
     </div>
   );

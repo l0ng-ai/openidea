@@ -1,0 +1,79 @@
+---
+title: "Vim 模式"
+description: "开启 Vim 模拟，用 ~/.ideavimrc 配置，把按键映射到 IDE 命令，并处理快捷键冲突。"
+---
+
+OpenIDEA 内置了 Vim 模拟，参照的是 IntelliJ IDEA 的 IdeaVim 插件。编辑引擎是 [`@replit/codemirror-vim`](https://github.com/replit/codemirror-vim)，OpenIDEA 在它之上加了与 IDE 的集成：保存和关闭标签页的 Ex 命令、运行 IDE 命令的 `:action`、IdeaVim 风格的 rc 文件，以及快捷键冲突表。
+
+## 开启
+
+以下任一方式均可：
+
+- **工具 › Vim**，用来开启或关闭。
+- 状态栏的 **Vim** 微件：单击后勾选 **已启用**。
+- **设置 › 编辑器 › Vim** › **启用 Vim 模拟**。
+
+设置会立即应用到所有窗口的所有编辑器，重启后保持不变。Vim 模式开启时，状态栏微件显示当前模式：`NORMAL`、`INSERT`、`VISUAL`、`V-LINE`、`V-BLOCK` 或 `REPLACE`。
+
+## 支持哪些功能
+
+通过 codemirror-vim 可以使用常规的 Vim 编辑方式：Normal、Insert、Visual（字符、行、块）和 Replace 模式，带计数的移动、操作符和文本对象，寄存器、标记、`.` 重复，用 `/`、`?`、`*`、`#` 搜索，以及它自带的 `:s`、`:g`、`:sort` 等 Ex 命令。
+
+OpenIDEA 额外提供这些 Ex 命令：
+
+| 命令           | 作用                 |
+| -------------- | -------------------- |
+| `:w`、`:wa`    | **全部保存**         |
+| `:q`           | 关闭当前编辑器标签页 |
+| `:qa`          | 关闭所有编辑器标签页 |
+| `:wq`、`:x`    | 保存后关闭标签页     |
+| `:action <id>` | 运行一个 IDE 命令    |
+
+## rc 文件
+
+Vim 模式开启时（如果上次是开启状态，启动时也会），OpenIDEA 读取 `~/.openideavimrc`；这个文件不存在时读取 `~/.ideavimrc`。只想对 OpenIDEA 生效、不影响 IntelliJ IDEA 的配置，就写在 `~/.openideavimrc` 里。
+
+修改文件后，运行 **重新加载 .ideavimrc**（在状态栏微件或查找操作中），或者在 **设置 › 编辑器 › Vim** 中单击 **重新加载**。设置页会显示读取的是哪个文件、包含多少个映射，以及每一行被忽略的内容和原因。
+
+支持的写法：
+
+| 写法                                                                            | 说明                                                                                                                                         |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `map`、`noremap` 以及它们的 `n`、`v`、`x`、`i`、`o` 变体（`nnoremap`、`vmap`…） | `<silent>`、`<unique>`、`<nowait>`、`<buffer>`、`<expr>`、`<script>` 标志可以写，但会被忽略。`<esc>`、`<CR>` 等键名不区分大小写。            |
+| `let mapleader = "…"`                                                           | 也可以写 `g:mapleader`。`"\<Space>"` 和 `" "` 都表示空格。默认 leader 是 `\`。                                                               |
+| `set …`                                                                         | 只支持 codemirror-vim 实现的选项：`textwidth`（`tw`）、`pcre`、`insertModeEscKeysTimeout` 和 `langmap`（`lmap`）。其他选项会被标记为已忽略。 |
+| `source <file>`                                                                 | 按同样的规则读取另一个文件，`~` 表示主目录。                                                                                                 |
+| `" 注释`                                                                        | 忽略。                                                                                                                                       |
+
+其他内容（函数、`if`、`autocmd`、插件命令等）都会被标记为已忽略，不会执行。
+
+### 把按键映射到 IDE 命令
+
+映射的右侧可以按 IdeaVim 的写法运行 IDE 命令：
+
+```vim
+let mapleader = " "
+nnoremap <leader>r :action RenameElement<CR>
+nnoremap <leader>f <Action>(ReformatCode)
+nnoremap <leader>e :action SearchEverywhere<CR>
+nnoremap gi <Action>(GotoImplementation)
+```
+
+`GotoDeclaration`、`GotoImplementation`、`FindUsages`、`ReformatCode`、`RenameElement`、`ShowIntentionActions`、`SearchEverywhere`、`RecentFiles`、`Run`、`Debug`、`ToggleLineBreakpoint`、`SplitVertically` 等 IdeaVim 命令 ID 会被转换成对应的 OpenIDEA 命令。也可以直接写 OpenIDEA 自己的命令 ID，例如 `:action code.reformat`。命令 ID 可以在 [快捷键参考](/zh/reference/shortcuts) 或 **设置 › 按键映射** 中查到。
+
+当 leader 映射以 `Space`、`,`、`;`、`Backspace` 或 `Delete` 开头时，这个键上原本的 Vim 命令会被停用，以便映射能完整输入。
+
+## 快捷键冲突
+
+有些键既是 Vim 命令又是 IDE 快捷键，例如 `Ctrl+R`（Vim 中是重做）或 `Ctrl+E`。**设置 › 编辑器 › Vim** 的 **快捷键冲突** 表列出 Vim 用到的每个键以及绑定在它上面的 IDE 操作，可以为每个键选择 **处理程序**：
+
+- **Vim**：Vim 模式开启且焦点在编辑器中时，按键交给编辑器。
+- **IDE**：先执行 IDE 操作；没有可用的 IDE 操作时，按键仍交给 Vim。
+
+默认值与 IdeaVim 一致：`Esc`、`Ctrl+C`、`Ctrl+N`、`Ctrl+P`、`Ctrl+Q` 和 `Ctrl+T` 交给 IDE，其余交给 Vim。
+
+## 限制
+
+- rc 文件只支持上面列出的写法。IdeaVim 自己的选项（例如 `ideajoin`）以及 `surround`、`commentary`、`easymotion` 等 IdeaVim 扩展都不可用。
+- Vim 模式是整个 IDE 的设置，不能只对某个项目或某种文件类型开启。
+- `:q` 和 `:wq` 关闭的是编辑器标签页，而不是窗口。

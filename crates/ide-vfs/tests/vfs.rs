@@ -259,6 +259,47 @@ fn walk_honours_ignores() {
     assert_eq!(found, expected);
 }
 
+#[test]
+fn walk_scopes_gitignore_to_each_repository() {
+    let (_t, r) = root();
+    // An outer repository ignores everything under `projects/`, nested repository included (#1254).
+    write(&r.join("outer/.git/HEAD"), "ref: refs/heads/main\n");
+    write(&r.join("outer/top.txt"), "");
+    write(&r.join("outer/projects/.gitignore"), "*\n!.gitignore\n");
+    write(&r.join("outer/projects/nested/.git/HEAD"), "ref: refs/heads/main\n");
+    write(&r.join("outer/projects/nested/.git/info/exclude"), "local.txt\n");
+    write(&r.join("outer/projects/nested/.gitignore"), "*.log\n");
+    write(&r.join("outer/projects/nested/search-test.txt"), "");
+    write(&r.join("outer/projects/nested/src/a.rs"), "");
+    write(&r.join("outer/projects/nested/debug.log"), "");
+    write(&r.join("outer/projects/nested/local.txt"), "");
+    write(&r.join("outer/projects/plain/file.txt"), "");
+    write(&r.join("loose/.gitignore"), "*.log\n");
+    write(&r.join("loose/a.txt"), "");
+    write(&r.join("loose/b.log"), "");
+
+    let walk = |dir: &str| {
+        let base = r.join(dir);
+        let found = Mutex::new(BTreeSet::new());
+        walk_files(&base, &[], |p| {
+            found.lock().insert(p.strip_prefix(&base).unwrap().to_string_lossy().replace('\\', "/"));
+        });
+        found.into_inner().into_iter().collect::<Vec<_>>()
+    };
+    let cases: [(&str, &[&str]); 4] = [
+        // The nested repository's own rules apply; the outer repository's do not.
+        ("outer/projects/nested", &[".gitignore", "search-test.txt", "src/a.rs"]),
+        // A plain folder inside the outer repository is still governed by it, as in Git.
+        ("outer/projects/plain", &[]),
+        ("outer", &["projects/.gitignore", "top.txt"]),
+        // Outside any repository `.gitignore` still applies.
+        ("loose", &[".gitignore", "a.txt"]),
+    ];
+    for (dir, expected) in cases {
+        assert_eq!(walk(dir), expected, "{dir}");
+    }
+}
+
 fn wait_for(events: &Mutex<Vec<FsBatch>>, pred: impl Fn(&[FsBatch]) -> bool) -> bool {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
@@ -397,4 +438,35 @@ fn create_file_bytes_does_not_follow_existing_symlink() {
     let error = ide_vfs::create_file_bytes(&link, b"data").unwrap_err();
     assert_eq!(error.kind, ide_core::error::ErrorKind::AlreadyExists);
     assert!(!target.exists());
+}
+
+#[test]
+fn rule_changes_notify_the_affected_subtree() {
+    for (rule, subtree) in [(".git/info/exclude", ""), ("sub/.gitignore", "sub"), ("sub/.ignore", "sub")] {
+        let (_t, r) = root();
+        write(&r.join(".git/HEAD"), "ref: refs/heads/main\n");
+        write(&r.join(rule), "");
+        write(&r.join("sub/generated/file.txt"), "x");
+        let batches: Arc<Mutex<Vec<FsBatch>>> = Arc::default();
+        let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+        let sink: SharedSink = {
+            let events = events.clone();
+            Arc::new(move |event: IdeEvent| events.lock().push(event))
+        };
+        let watcher = {
+            let batches = batches.clone();
+            Watcher::start(&r, vec![], sink, Box::new(move |batch| batches.lock().push(batch.clone()))).unwrap()
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        write(&r.join(rule), "generated/\n");
+        let expected = r.join(subtree);
+        assert!(wait_for(&batches, |batches| batches
+            .iter()
+            .any(|b| b.ignore_rules.as_slice() == std::slice::from_ref(&expected))));
+        assert!(events.lock().iter().any(|event| matches!(
+            event,
+            IdeEvent::FsChanged { ignore_rules, .. } if ignore_rules.as_slice() == [ide_core::IpcPath::from(expected.clone())]
+        )), "{rule}: {:?}", events.lock());
+        drop(watcher);
+    }
 }

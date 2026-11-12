@@ -18,6 +18,7 @@ interface Opts {
   alignChanges?: boolean;
   syncScroll?: boolean;
   collapse?: boolean;
+  softWrap?: boolean;
   ignore?: "none" | "trim" | "whitespace" | "whitespaceAndLines";
 }
 
@@ -31,7 +32,7 @@ const toolbar = (page: Page) => page.getByRole("toolbar", { name: "Diff" });
 const counter = (page: Page) =>
   toolbar(page)
     .locator("span")
-    .filter({ hasText: /differen|identical/ });
+    .filter({ hasText: /differen|identical|Whitespace-only/ });
 
 /** Opens HEAD ↔ working tree of `path` and waits until the difference count shows; returns the time it took. */
 async function openCase(page: Page, path: string, opts: Opts = {}): Promise<number> {
@@ -98,7 +99,9 @@ async function rendered(page: Page): Promise<{ a: Side; b: Side; deletedChunks: 
 const differences = (n: number) => (n === 1 ? "1 difference" : `${n} differences`);
 
 async function expectCount(page: Page, path: string, n = gitHunks(repo, path)) {
-  await expect(counter(page)).toHaveText(new RegExp(`^(${differences(n)}|\\d+ of ${n} differences)$`));
+  await expect(counter(page)).toHaveText(
+    new RegExp(`^(${differences(n)}|\\d+ of ${n} differences)(?: · (?:Whitespace-only changes|\\d+ moved blocks?))?$`),
+  );
 }
 
 const all = (n: number, k: Kind) => Array<Kind>(n).fill(k);
@@ -164,7 +167,20 @@ test.describe("small cases (side-by-side, Highlight words)", () => {
       expect(b.lines, "right lines").toEqual(c.b);
       if (c.wordsA) expect(a.words, "left words").toEqual(c.wordsA);
       if (c.wordsB) expect(b.words, "right words").toEqual(c.wordsB);
+      if (c.path === "src/moved.ts") await expect(page.locator(".cm-diffMoveLink")).toHaveCount(2);
     });
+
+  test("edited moves link the counterpart and highlight their actual word changes", async ({ workbench: page }) => {
+    await openCase(page, "src/moved-edited.ts");
+    await expectCount(page, "src/moved-edited.ts");
+    await expect(page.locator(".cm-diffMoveLink")).toHaveCount(2);
+    await expect(page.locator(".cm-diffMoveEdit-deleted")).toHaveText("parseImpl");
+    await expect(page.locator(".cm-diffMoveEdit-inserted")).toHaveText("parseUpdated");
+    const link = page.getByRole("button", { name: /Go to moved code at line/ });
+    await expect(link).toContainText("(edited)");
+    await link.click();
+    await expect(page.locator(".cm-merge-b .cm-activeLine")).toContainText("function parse");
+  });
 
   test("a renamed field with a comment added reads as one modified block", async ({ workbench: page }) => {
     await openCase(page, "src/options.ts");
@@ -211,7 +227,7 @@ test.describe("small cases (side-by-side, Highlight words)", () => {
 
   test("ignoring whitespace hides an indentation-only change", async ({ workbench: page }) => {
     await openCase(page, "src/indent.py", { ignore: "whitespace" });
-    await expect(counter(page)).toHaveText("No differences");
+    await expect(counter(page)).toHaveText("Whitespace-only changes");
     expect((await rendered(page)).b.lines).toEqual([]);
   });
 
@@ -276,21 +292,24 @@ test.describe("10,000-line files", () => {
       await expectCount(page, path, 42);
       // The first change is a single edited identifier.
       await page.locator(".cm-editor.cm-merge-b .cm-content").first().click();
-      await page.keyboard.press("Meta+ArrowUp");
+      // ⌘↑ opens the Navigation Bar; ⌘Home keeps document navigation in the diff.
+      await page.keyboard.press("Meta+Home");
+      await expect(page.locator(".cm-editor.cm-merge-b .cm-content").first()).toBeFocused();
       await page.keyboard.press("F7");
       await expect(counter(page)).toHaveText("1 of 42 differences");
-      const first = await rendered(page);
       if (opts.mode !== "unified") {
-        expect(first.a.words).toContainEqual(["compute", "modified"]);
-        expect(first.b.words).toContainEqual(["computeFast", "modified"]);
+        await expect.poll(async () => (await rendered(page)).a.words).toContainEqual(["compute", "modified"]);
+        await expect.poll(async () => (await rendered(page)).b.words).toContainEqual(["computeFast", "modified"]);
       }
       // The last difference is reachable and still highlighted.
-      await page.keyboard.press("Meta+ArrowDown");
+      await page.keyboard.press("Meta+End");
       await page.keyboard.press("Shift+F7");
       await expect(counter(page)).toHaveText("42 of 42 differences");
-      const last = await rendered(page);
-      if (opts.mode === "unified") expect(last.b.lines).toContain("inserted");
-      else expect(last.b.words).toContainEqual(["computeFast", "modified"]);
+      if (opts.mode === "unified") {
+        await expect.poll(async () => (await rendered(page)).b.lines).toContain("inserted");
+      } else {
+        await expect.poll(async () => (await rendered(page)).b.words).toContainEqual(["computeFast", "modified"]);
+      }
       await scrollToEnd(page);
       if (opts.mode !== "unified") {
         const [a, b] = await topLines(page);
@@ -333,4 +352,127 @@ test.describe("10,000-line files", () => {
       }
       await shot(page, `rewrite-${mode.replace(" ", "-")}`);
     });
+});
+
+test.describe("soft wrapping", () => {
+  for (const [mode, opts] of [
+    ["split", { alignChanges: false }],
+    ["aligned", { alignChanges: true }],
+    ["unified", { mode: "unified" }],
+  ] as [string, Opts][]) {
+    test(`toggles in place, retains the visible line and routes the editor action (${mode})`, async ({
+      workbench: page,
+    }) => {
+      await openCase(page, "src/soft-wrap.ts", { ...opts, softWrap: false });
+      const editors = page.locator(".cm-editor.cm-merge-a, .cm-editor.cm-merge-b");
+      const count = mode === "unified" ? 1 : 2;
+      await expect(editors).toHaveCount(count);
+      await editors.evaluateAll((eds) => {
+        for (const ed of eds) (ed as HTMLElement).dataset.wrapIdentity = "original";
+      });
+      const right = page.locator(".cm-editor.cm-merge-b");
+      await right.evaluate(async (ed) => {
+        const path = "/node_modules/.vite/deps/@codemirror_view.js";
+        const { EditorView } = await import(/* @vite-ignore */ path);
+        const view = EditorView.findFromDOM(ed)!;
+        const pos = view.state.doc.line(125).from;
+        view.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: "center" }) });
+        view.focus();
+      });
+      const topLine = () =>
+        right.evaluate(async (ed) => {
+          const path = "/node_modules/.vite/deps/@codemirror_view.js";
+          const { EditorView } = await import(/* @vite-ignore */ path);
+          const v = EditorView.findFromDOM(ed)!;
+          const outer = ed.closest<HTMLElement>(".cm-mergeView");
+          const top = Math.max(v.scrollDOM.getBoundingClientRect().top, outer?.getBoundingClientRect().top ?? 0);
+          return v.state.doc.lineAt(v.lineBlockAtHeight(Math.max(0, top - v.documentTop)).from).number;
+        });
+      await expect.poll(topLine).toBeGreaterThan(80);
+      const before = await topLine();
+      await toolbar(page).getByRole("button", { name: "Settings", exact: true }).click();
+      const checkbox = page.getByRole("menuitemcheckbox", { name: "Use Soft Wraps", exact: true });
+      await expect(checkbox).toHaveAttribute("aria-checked", "false");
+      await checkbox.click();
+      await expect(page.locator(".cm-lineWrapping")).toHaveCount(count);
+      await expect.poll(async () => Math.abs((await topLine()) - before)).toBeLessThanOrEqual(3);
+      await expect(page.locator('[data-wrap-identity="original"]')).toHaveCount(count);
+      await right.evaluate(async (ed) => {
+        const path = "/node_modules/.vite/deps/@codemirror_view.js";
+        const { EditorView } = await import(/* @vite-ignore */ path);
+        const v = EditorView.findFromDOM(ed)!;
+        if (v.state.doc.lineAt(v.state.selection.main.head).number !== 125) throw new Error("Selection lost");
+        v.dispatch({ effects: EditorView.scrollIntoView(0, { y: "start" }) });
+      });
+      const first = right.locator(".cm-content > .cm-line").first();
+      await expect.poll(() => first.evaluate((line) => line.getBoundingClientRect().height)).toBeGreaterThan(100);
+      // Line-number backgrounds cover the entire wrapped logical line.
+      if (mode !== "unified") {
+        await expect
+          .poll(() =>
+            right.evaluate((ed) =>
+              Math.abs(
+                ed.querySelector(".cm-content > .cm-line")!.getBoundingClientRect().height -
+                  ed.querySelector(".cm-lineNumbers .cm-diffGutter-modified")!.getBoundingClientRect().height,
+              ),
+            ),
+          )
+          .toBeLessThan(2);
+        if (mode === "aligned") {
+          await expect
+            .poll(async () => {
+              const tops = await editors.evaluateAll(async (eds) => {
+                const path = "/node_modules/.vite/deps/@codemirror_view.js";
+                const { EditorView } = await import(/* @vite-ignore */ path);
+                return eds.map((ed) => {
+                  const view = EditorView.findFromDOM(ed)!;
+                  return view.documentTop + view.lineBlockAt(view.state.doc.line(2).from).bottom;
+                });
+              });
+              return Math.abs(tops[0]! - tops[1]!);
+            })
+            .toBeLessThan(2);
+        } else {
+          const path = await page.locator(".cm-diffDivider svg path").first().getAttribute("d");
+          expect(path).toBeTruthy();
+          expect(path).not.toMatch(/NaN|Infinity/);
+        }
+      } else {
+        await expect
+          .poll(() =>
+            right
+              .locator(".cm-deletedLine")
+              .first()
+              .evaluate((line) => line.getBoundingClientRect().height),
+          )
+          .toBeGreaterThan(100);
+      }
+      // The standard action toggles both panes, whether the read-only left or right is focused.
+      for (let i = 0; i < count; i++) {
+        await editors.nth(i).locator(".cm-content").focus();
+        await page.evaluate(async () => {
+          const path = "/src/platform/actions.ts";
+          const { executeAction, isActionEnabled, useActions } = await import(/* @vite-ignore */ path);
+          if (!isActionEnabled(useActions.getState().actions.get("editor.toggleSoftWrap")!))
+            throw new Error("Soft-Wrap action disabled");
+          if (document.activeElement?.closest(".cm-merge-a")) {
+            const path = "/src/ui/index.ts";
+            const { showContextMenu } = await import(/* @vite-ignore */ path);
+            showContextMenu({ x: 100, y: 100 }, [{ kind: "action", action: "editor.toggleSoftWrap" }]);
+          } else await executeAction("editor.toggleSoftWrap");
+        });
+        if (count === 2 && i === 0) {
+          const action = page.getByRole("menuitemcheckbox", { name: "Soft-Wrap", exact: true });
+          await expect(action).toBeEnabled();
+          await expect(action).toHaveAttribute("aria-checked", "true");
+          await action.click();
+        }
+        await expect(page.locator(".cm-lineWrapping")).toHaveCount(i % 2 === 0 ? 0 : count);
+      }
+      const persisted = await page.evaluate(
+        () => JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).softWrap,
+      );
+      expect(persisted).toBe(count === 2);
+    });
+  }
 });

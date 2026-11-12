@@ -1,0 +1,199 @@
+---
+title: "Run configurations"
+description: "Create, edit and launch run configurations, run code from the gutter, and read the output in the Run tool window."
+---
+
+A run configuration describes how to start something: a command line, a main class, a test suite, an npm script, a Docker container. OpenIDEA keeps three kinds:
+
+- **Detected** configurations, read from the project's build files every time they change.
+- **User** configurations you create or save in **Run/Debug Configurations**.
+- **Temporary** configurations, created when you run the code at the caret or a file. The five most recent are kept.
+
+The selected configuration is shown in the run widget in the title bar, with Run, Debug and Stop buttons next to it.
+
+## Detected configurations
+
+When a project opens, OpenIDEA scans its build files (also in nested projects of a folder that holds several) and lists what it can run:
+
+| Build file                                                                                        | Configurations                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `package.json`                                                                                    | One per `scripts` entry, run with the package manager of the lock file (npm, pnpm, yarn or bun). `test`, `test:*`, `jest` and `vitest` scripts are marked as tests. |
+| `deno.json` / `deno.jsonc`                                                                        | Deno tasks                                                                                                                                                          |
+| `Cargo.toml`                                                                                      | `cargo run` for each binary, `cargo test`, `cargo build`; workspace members are included                                                                            |
+| `build.gradle(.kts)` / `pom.xml`                                                                  | Gradle and Maven run configurations                                                                                                                                 |
+| `go.mod` / `go.work`                                                                              | Go programs and tests                                                                                                                                               |
+| `pyproject.toml`, `setup.py`, `requirements.txt`, `pytest.ini`, `tox.ini`, `manage.py`, a `.venv` | Python programs, pytest, Django                                                                                                                                     |
+| `composer.json`, `phpunit.xml`                                                                    | PHPUnit                                                                                                                                                             |
+| Ruby projects (`Gemfile`, `Rakefile`, …)                                                          | Rake tasks, RSpec, Minitest                                                                                                                                         |
+| `CMakeLists.txt`                                                                                  | CMake build and run targets                                                                                                                                         |
+| `.csproj` / `.sln`                                                                                | .NET projects and tests                                                                                                                                             |
+| `Makefile`, `justfile`                                                                            | Make and just targets                                                                                                                                               |
+| `project.godot`                                                                                   | Godot                                                                                                                                                               |
+
+Plugins can contribute more detectors. Detected configurations reload when a build file changes; run **Reload Run Configurations** from Find Action to force it.
+
+If you edit a detected configuration, the change is saved as a user configuration that overrides it. Removing a detected configuration hides it for this workspace.
+
+## Run code from the editor
+
+<Steps>
+  <Step title="Click the gutter icon">
+    A ▶ icon appears next to `main` functions, tests and test classes in Rust, Go, Java, Kotlin, Scala, Groovy,
+    JavaScript / TypeScript, Python, PHP, Ruby, C# and C / C++. It also appears on `scripts` entries in `package.json`.
+    Click it to choose **Run '…'**, **Debug '…'**, other executors (such as coverage or profiling) or **Modify Run
+    Configuration…**.
+  </Step>
+  <Step title="Or run the context">
+    **Run › Run Context Configuration** runs the test or program at the caret, or the current file. The same items
+    appear in the editor, editor tab and Project view context menus as **Run '…'**, **Debug '…'** and **More
+    Run/Debug**. On a directory in the Project view, it runs the tests in that directory.
+  </Step>
+  <Step title="Keep it">
+    A context run creates a temporary configuration. Open the configuration chooser and pick **Save '…' Configuration**
+    to keep it as a user configuration.
+  </Step>
+</Steps>
+
+After a test run, the gutter icon turns green or red to show the last result of that test.
+
+## Launch a configuration
+
+| Action                                           | macOS     | Windows / Linux  |
+| ------------------------------------------------ | --------- | ---------------- |
+| **Run** (selected configuration)                 | `⌃R`      | `Shift+F10`      |
+| **Debug** (selected configuration)               | `⌃D`      | `Shift+F9`       |
+| **Run Context Configuration**                    | `⌃⇧R`     | `Ctrl+Shift+F10` |
+| **Debug Context Configuration**                  | `⌃⇧D`     | —                |
+| **Run…** (choose a configuration and run it)     | `⌃⌥R`     | `Alt+Shift+F10`  |
+| **Debug…** (choose a configuration and debug it) | `⌃⌥D`     | `Alt+Shift+F9`   |
+| **Edit Configurations…**                         | `⌃⌥⇧R`    | —                |
+| **Stop**                                         | `⌘F2`     | `Ctrl+F2`        |
+| **Rerun** (in the Run tool window)               | `⌘R`      | `Ctrl+F5`        |
+| **Run Anything…**                                | `⌃` twice | `Ctrl` twice     |
+
+In the configuration chooser, hold `Shift` to debug the configuration instead of running it. The first entry, **Current File**, runs whatever the active editor holds.
+
+**Stop** stops the process of the focused Run tab. Elsewhere it stops the only running process, or lists them with **Stop All** when several run. Press Stop again to kill a process that does not exit.
+
+**Run Anything…** runs a shell command in the project directory, a run configuration or a build tool goal. Lines that start with `mvn` or `gradle` get goal and task completion.
+
+## Edit configurations
+
+Open **Run › Edit Configurations…** (also in the run widget menu). The **Run/Debug Configurations** dialog lists configurations on the left, grouped by folder.
+
+- **Add New Configuration** (`⌘N` / `Ctrl+N`, or `Alt+Insert`) opens the list of configuration types.
+- **Copy Configuration**, **Create New Folder**, **Move Up** / **Move Down** organize the list. `Delete` removes the selection.
+- **Edit configuration templates…** sets the starting values for new configurations of each type.
+- **Store as project file** decides where the configuration is saved (see [Where configurations are stored](#where-configurations-are-stored)).
+- **Modify options** (`⌥M` / `Alt+M`) adds optional fields to the form.
+
+### Configuration types
+
+| Type                                                    | Runs                                                                           |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| **Shell Script**                                        | A script file, script text or a command line                                   |
+| **Program**                                             | An executable with arguments                                                   |
+| **npm**                                                 | A `package.json` script with npm, pnpm, yarn or bun                            |
+| **Gradle** / **Maven**                                  | Gradle tasks or Maven goals, optionally through the wrapper                    |
+| **Application** / **JAR Application** / **Spring Boot** | A Java main class, an executable JAR, a Spring Boot application                |
+| **Tomcat Server**                                       | A WAR application in a local Tomcat                                            |
+| **pytest** / **Django tests**                           | pytest tests, `manage.py test`                                                 |
+| **Ruby** / **Rake** / **RSpec**                         | A Ruby script, a Rake task, RSpec examples                                     |
+| **PHPUnit**                                             | PHPUnit tests                                                                  |
+| **Go Build** / **Go Test**                              | A Go application, Go tests                                                     |
+| **.NET Project** / **dotnet test**                      | A .NET project with a launch profile, .NET tests                               |
+| **Godot**                                               | A Godot project's main scene or a chosen scene                                 |
+| **Dockerfile** / **Docker Image** / **Docker Compose**  | A container built from a Dockerfile or started from an image, Compose services |
+| **Compound**                                            | Several configurations together                                                |
+
+The debugger adds attach-only types such as **Remote JVM Debug**, **Go Remote**, **Python Remote Debug (debugpy)**, **Attach to Node.js** and **PHP Remote Debug (Xdebug)**; see [Debugging](/en/guide/debugging). Plugins can add their own types.
+
+### Common fields
+
+- **Run on**: the local machine, or an SSH host defined in **Settings › Build, Execution, Deployment › Run Targets**. Debugging is not available on run targets. See [SSH](/en/guide/remote/ssh).
+- **Working directory**: relative to the project root; empty means the project root.
+- **Environment variables**: `VAR=value` pairs separated by `;`. The list button opens the **Environment Variables** dialog, where **Include system environment variables** can be turned off.
+- **Debug adapter**: which debugger **Debug** uses for this configuration (for example `debugpy`, `js-debug`, `codelldb`, `delve`).
+
+### Environment variables and `.env` files
+
+Turn on **Modify options › Paths to ".env" files** to load one or more `.env` files (relative to the project root, separated by `;`). They support `KEY=value`, `export` prefixes, `#` comments, quoted values and `${VAR}` references. Variables set in the configuration override the ones from `.env` files.
+
+With **Include system environment variables** on, the process also gets the IDE's environment and the variables of your login shell.
+
+### Modify options
+
+| Group            | Option                                                                                                                                                    |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Operating System | **Allow multiple instances**, **Redirect input**, **Paths to ".env" files**, **Emulate terminal in output console**                                       |
+| Logs             | **Save console output to file**, **Show console when a message is printed to stdout**, **Show console when a message is printed to stderr**               |
+| Test             | **Show results in the test runner**                                                                                                                       |
+| Before Launch    | **Build** (Java, Maven and Gradle), **Add before launch task**, **Open run/debug tool window when started**, **Focus run/debug tool window when started** |
+
+**Emulate terminal in output console** runs the process in a terminal, for programs that need a TTY. It cannot be combined with **Redirect input**.
+
+### Before launch tasks
+
+Add tasks under **Modify options › Add before launch task**. They run in order before the process starts:
+
+- **Run Another Configuration**
+- **Build Project**, **Build Module**, **Build Artifacts**, **Build .NET project** (for .NET configurations)
+- **Run External Tool**
+- **Run Shell Command**
+- **Activate Tool Window**
+
+For Java, Maven and Gradle configurations, the **Build** option picks how the project is built first: **Automatic (incremental)**, **Build (Make)**, **Rebuild**, **No build** or **Build, no error check**.
+
+Maven modules are built by jdtls (ECJ) for **Automatic** and **Build (Make)**, and by Maven for **Rebuild**. Turn on **Settings › Build, Execution, Deployment › Maven › Delegate IDE build/run actions to Maven** to build them with Maven (the project's `javac`) every time; editor **Problems** still come from jdtls.
+
+### Compound configurations
+
+A **Compound** configuration starts several configurations at once. Run it to start all of them, or Debug it to debug each of them. Stop from the run widget stops them all.
+
+## The Run tool window
+
+Each launch opens a tab in the **Run** tool window (bottom). The toolbar has **Rerun**, **Debug**, **Rerun Failed Tests** (for test runs), **Update Application**, **Find…**, **Scroll to End**, **Soft-Wrap**, **Clear All** and **Edit Configurations…**.
+
+- File paths and stack trace frames in the output are links.
+- Repeated lines can be folded; configure the patterns in **Settings › Build, Execution, Deployment › Console**, along with the buffer size and the console encoding.
+- Log lines can take the colour of their level (`ERROR`, `WARN`, `INFO`, `DEBUG`, `TRACE`); colours the program prints itself are kept. Turn it on and pick the colours in **Settings › Build, Execution, Deployment › Console**.
+- For test runs the tab shows a test tree next to the output. See [Testing](/en/guide/testing).
+
+**Settings › Build, Execution, Deployment › Run/Debug** controls whether the tool window opens when a process starts, whether rerun and closing a running tab ask first, and the time limit for a process to exit after Stop.
+
+## Import configurations
+
+Two actions in Find Action (also linked from the dialog) import existing configurations:
+
+- **Import Run Configurations from .vscode/launch.json**: Python and Node.js launches and attaches, plus compounds. Fixed variables such as `${workspaceFolder}` and `${env:NAME}` are replaced; entries that use `${file}`, `${input:…}` or `${command:…}` are skipped.
+- **Import Run Configurations from JetBrains (.run, .idea)**: reads `.run/*.run.xml`, `.idea/runConfigurations/*.xml` and `.idea/workspace.xml`. Python, Django, pytest, npm, Jest, Vitest, Node.js, Shell Script, Application, JAR Application, Spring Boot, Go and compound configurations are converted; other types are skipped.
+
+A notification says how many were imported and why others were left out.
+
+## Where configurations are stored
+
+| File                       | Contains                                                                                                    |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `.openidea/run.toml`       | Configurations with **Store as project file** on, and templates. Commit it to share them.                   |
+| `.openidea/run.local.toml` | Your other configurations and the detected ones you removed. Added to `.openidea/.gitignore` automatically. |
+
+Both files are plain TOML and can be edited by hand:
+
+```toml
+[[configurations]]
+id = "user:server"
+name = "Server"
+kind = "shell"
+command = "cargo"
+args = ["run", "--release"]
+cwd = "server"
+env = { RUST_LOG = "debug" }
+env-files = [".env"]
+before-launch = [{ kind = "build" }, { kind = "run", target = "user:migrate" }]
+
+[[templates]]
+kind = "npm"
+env = { NODE_ENV = "development" }
+```
+
+The file is reloaded when it changes on disk.

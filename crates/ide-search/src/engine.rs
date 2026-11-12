@@ -6,8 +6,8 @@ use crate::mask::FileMask;
 use crate::pattern::ScopePattern;
 use crate::query::{Compiled, line_terminator};
 use crate::{
-    FileMatches, LineMatch, LiteralKind, LiteralRange, Literals, Overlay, PathFilter, SearchContext, SearchScope,
-    SearchSummary,
+    FileMatches, LineMatch, LiteralKind, LiteralRange, Literals, PathFilter, SearchContext, SearchScope, SearchSummary,
+    TextSource,
 };
 use grep_regex::RegexMatcher;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch};
@@ -33,7 +33,7 @@ pub(crate) struct Request<'a> {
     pub context: SearchContext,
     pub literals: Option<Literals<'a>>,
     pub max_matches: u32,
-    pub overlay: Overlay<'a>,
+    pub text: TextSource<'a>,
     pub cancel: &'a CancellationToken,
     pub on_file: &'a (dyn Fn(FileMatches) + Sync),
 }
@@ -96,7 +96,7 @@ struct Ctx<'a> {
     filter: Option<PathFilter<'a>>,
     context: SearchContext,
     literals: Option<Literals<'a>>,
-    overlay: Overlay<'a>,
+    text: TextSource<'a>,
     on_file: &'a (dyn Fn(FileMatches) + Sync),
     ctl: Control<'a>,
 }
@@ -111,7 +111,7 @@ pub(crate) fn run(req: Request<'_>) -> IdeResult<SearchSummary> {
         filter: req.filter,
         context: req.context,
         literals: if req.context == SearchContext::Any { None } else { req.literals },
-        overlay: req.overlay,
+        text: req.text,
         on_file: req.on_file,
         ctl: Control {
             cancel: req.cancel,
@@ -142,42 +142,16 @@ pub(crate) fn run(req: Request<'_>) -> IdeResult<SearchSummary> {
         }
     }
 
-    if let Some((first, rest)) = on_disk.split_first()
-        && !ctx.ctl.should_stop()
-    {
-        let mut walk = WalkBuilder::new(first);
-        for path in rest {
-            walk.add(path);
-        }
-        walk.hidden(true)
-            .ignore(true)
-            .git_ignore(true)
-            .git_global(true)
-            .git_exclude(true)
-            .parents(true)
-            .require_git(false)
-            .follow_links(false)
-            .threads(std::thread::available_parallelism().map_or(4, |n| n.get()).min(12))
-            .filter_entry(|e| e.file_name() != ".git");
-        walk.build_parallel().run(|| {
+    if !ctx.ctl.should_stop() {
+        walk_files(&on_disk, || {
             let mut searcher = searcher_builder.build();
             let matcher = matcher.clone();
             let ctx = &ctx;
-            Box::new(move |entry| {
+            Box::new(move |path| {
                 if ctx.ctl.should_stop() {
                     return WalkState::Quit;
                 }
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(err) => {
-                        tracing::debug!("search walk: {err}");
-                        return WalkState::Continue;
-                    }
-                };
-                // Archives (jar, zip) are browsed, not searched (IDEA skips them too).
-                if entry.file_type().is_some_and(|t| t.is_file()) && !ide_vfs::is_archive_file(entry.path()) {
-                    ctx.search_file(entry.path(), &matcher, &mut searcher);
-                }
+                ctx.search_file(path, &matcher, &mut searcher);
                 if ctx.ctl.stopped() { WalkState::Quit } else { WalkState::Continue }
             })
         });
@@ -191,6 +165,67 @@ pub(crate) fn run(req: Request<'_>) -> IdeResult<SearchSummary> {
         cancelled,
         elapsed_ms: u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX),
     })
+}
+
+/// A per-thread file visitor of [`walk_files`].
+pub(crate) type VisitFile<'s> = Box<dyn FnMut(&Path) -> WalkState + Send + 's>;
+
+/// Visits the files below `roots` (and the roots that are files) in parallel,
+/// the way IDEA's project scope sees them: directories ignored by
+/// `.gitignore` / `.ignore` / `info/exclude` are skipped with everything in
+/// them, while ignored files elsewhere (`.env`) and hidden files and folders
+/// (`.github`, `.eslintrc`) are visited. `.git`, symlinks and archives (jar,
+/// zip: browsed, not searched) are never visited.
+pub(crate) fn walk_files<'s>(roots: &[PathBuf], mut visitor: impl FnMut() -> VisitFile<'s> + Send) {
+    let Some((first, rest)) = roots.split_first() else { return };
+    let mut walk = WalkBuilder::new(first);
+    for path in rest {
+        walk.add(path);
+    }
+    walk.hidden(false)
+        .ignore(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .parents(true)
+        .require_git(ide_core::ignored::inside_git_repo(first))
+        .follow_links(false)
+        .threads(std::thread::available_parallelism().map_or(4, |n| n.get()).min(12))
+        .filter_entry(|e| e.file_name() != ".git");
+    walk.build_parallel().run(|| {
+        let mut visit = visitor();
+        Box::new(move |entry| {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    tracing::debug!("search walk: {err}");
+                    return WalkState::Continue;
+                }
+            };
+            let Some(file_type) = entry.file_type() else { return WalkState::Continue };
+            if file_type.is_dir() {
+                // The walker drops ignored files unseen, so the files of every walked
+                // directory come from listing it; the walker only picks the directories.
+                let Ok(children) = std::fs::read_dir(entry.path()) else { return WalkState::Continue };
+                for child in children.flatten() {
+                    let path = child.path();
+                    if child.file_name() != ".git"
+                        && child.file_type().is_ok_and(|t| t.is_file())
+                        && !ide_vfs::is_archive_file(&path)
+                        && matches!(visit(&path), WalkState::Quit)
+                    {
+                        return WalkState::Quit;
+                    }
+                }
+                WalkState::Continue
+            } else if file_type.is_file() && entry.depth() == 0 && !ide_vfs::is_archive_file(entry.path()) {
+                // A root that is a file (an explicit file list); files below roots come from listings.
+                visit(entry.path())
+            } else {
+                WalkState::Continue
+            }
+        })
+    });
 }
 
 /// Walk roots for a scope; relative paths are resolved against `root`.
@@ -245,11 +280,17 @@ impl Ctx<'_> {
         // The search context needs the whole text to find comments and string literals.
         let in_context = match self.literals {
             Some(literals) => {
-                let text = match (self.overlay)(path) {
+                let text = match (self.text.overlay)(path) {
                     Some(text) => text,
-                    // Unreadable or not UTF-8 (binary): nothing to classify.
-                    None => match std::fs::read_to_string(path) {
-                        Ok(text) => text,
+                    None => match std::fs::read(path) {
+                        Ok(bytes) => match String::from_utf8(bytes) {
+                            Ok(text) => text,
+                            // Binary content has nothing to classify.
+                            Err(e) => match (self.text.decode)(path, e.as_bytes()) {
+                                Some(text) => text,
+                                None => return,
+                            },
+                        },
                         Err(_) => return,
                     },
                 };
@@ -261,25 +302,13 @@ impl Ctx<'_> {
             }
             None => None,
         };
-        let mut sink = FileSink {
-            matcher,
-            ctl: &self.ctl,
-            lines: Vec::new(),
-            count: 0,
-            binary: false,
-            ticks: 0,
-            found: Vec::new(),
-            ranges: Vec::new(),
-            context: in_context.as_ref().map(|(_, ranges)| (self.context, ranges.as_slice())),
-        };
+        let context = in_context.as_ref().map(|(_, ranges)| (self.context, ranges.as_slice()));
+        let mut sink = FileSink::new(matcher, &self.ctl, context);
         let result = match &in_context {
             Some((text, _)) => searcher.search_slice(matcher, text.as_bytes(), &mut sink),
-            None => match (self.overlay)(path) {
+            None => match (self.text.overlay)(path) {
                 Some(text) => searcher.search_slice(matcher, text.as_bytes(), &mut sink),
-                None => match std::fs::File::open(path) {
-                    Ok(file) => searcher.search_reader(matcher, StopReader { inner: file, ctl: &self.ctl }, &mut sink),
-                    Err(err) => Err(err),
-                },
+                None => self.search_disk(path, matcher, searcher, &mut sink),
             },
         };
         if let Err(err) = result {
@@ -306,6 +335,34 @@ impl Ctx<'_> {
         self.ctl.files.fetch_add(1, Relaxed);
         (self.on_file)(FileMatches { path: path.into(), rel_path: rel, matches: sink.lines });
     }
+
+    /// Streams the file's bytes; a file that turns out not to be UTF-8 (GBK,
+    /// UTF-16 …) is searched again in the text `decode` gives it.
+    fn search_disk<'s>(
+        &'s self,
+        path: &Path,
+        matcher: &'s RegexMatcher,
+        searcher: &mut Searcher,
+        sink: &mut FileSink<'s>,
+    ) -> io::Result<()> {
+        let mut reader = Utf8Probe::new(StopReader { inner: std::fs::File::open(path)?, ctl: &self.ctl });
+        let result = searcher.search_reader(matcher, &mut reader, &mut *sink);
+        // NUL bytes in the head of UTF-16 text stop the byte search; later ones mark binary.
+        let decode = if sink.binary {
+            reader.head.contains(&0) && !ide_vfs::looks_binary(&reader.head)
+        } else {
+            !reader.is_utf8()
+        };
+        if !decode || self.ctl.stopped() {
+            return result;
+        }
+        let Some(text) = (self.text.decode)(path, &std::fs::read(path)?) else {
+            sink.binary = true;
+            return Ok(());
+        };
+        *sink = FileSink::new(matcher, &self.ctl, None);
+        searcher.search_slice(matcher, text.as_bytes(), sink)
+    }
 }
 
 /// Keeps the first `budget` match ranges.
@@ -330,6 +387,26 @@ struct FileSink<'a> {
     ranges: Vec<(usize, usize)>,
     /// Search context filter and the file's comments / string literals.
     context: Option<(SearchContext, &'a [LiteralRange])>,
+}
+
+impl<'a> FileSink<'a> {
+    fn new(
+        matcher: &'a RegexMatcher,
+        ctl: &'a Control<'a>,
+        context: Option<(SearchContext, &'a [LiteralRange])>,
+    ) -> Self {
+        Self {
+            matcher,
+            ctl,
+            lines: Vec::new(),
+            count: 0,
+            binary: false,
+            ticks: 0,
+            found: Vec::new(),
+            ranges: Vec::new(),
+            context,
+        }
+    }
 }
 
 /// Kind of the comment or string literal containing byte `pos` (`literals` sorted).
@@ -418,5 +495,103 @@ impl<R: Read> Read for StopReader<'_, R> {
             return Err(io::Error::other("search stopped"));
         }
         self.inner.read(buf)
+    }
+}
+
+/// How many leading bytes [`Utf8Probe`] keeps for the binary check.
+const HEAD_LEN: usize = 8 * 1024;
+
+/// Passes bytes through while checking that they are UTF-8, keeping the head
+/// of the file.
+struct Utf8Probe<R> {
+    inner: R,
+    head: Vec<u8>,
+    /// Bytes of a character split across reads.
+    partial: Vec<u8>,
+    invalid: bool,
+}
+
+impl<R> Utf8Probe<R> {
+    fn new(inner: R) -> Self {
+        Self { inner, head: Vec::new(), partial: Vec::new(), invalid: false }
+    }
+
+    /// Whether everything read so far was UTF-8 (a truncated final character
+    /// is not).
+    fn is_utf8(&self) -> bool {
+        !self.invalid && self.partial.is_empty()
+    }
+
+    fn check(&mut self, mut bytes: &[u8]) {
+        if self.invalid {
+            return;
+        }
+        if let Some(&lead) = self.partial.first() {
+            let width = utf8_width(lead);
+            let take = (width - self.partial.len()).min(bytes.len());
+            self.partial.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
+            if self.partial.len() < width {
+                return;
+            }
+            if std::str::from_utf8(&self.partial).is_err() {
+                self.invalid = true;
+                return;
+            }
+            self.partial.clear();
+        }
+        match std::str::from_utf8(bytes) {
+            Ok(_) => {}
+            Err(e) if e.error_len().is_none() => self.partial.extend_from_slice(&bytes[e.valid_up_to()..]),
+            Err(_) => self.invalid = true,
+        }
+    }
+}
+
+/// Encoded length of a UTF-8 sequence starting with `lead` (a valid lead byte
+/// of an incomplete sequence).
+fn utf8_width(lead: u8) -> usize {
+    match lead {
+        0xF0.. => 4,
+        0xE0.. => 3,
+        _ => 2,
+    }
+}
+
+impl<R: Read> Read for Utf8Probe<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        let read = &buf[..n];
+        if self.head.len() < HEAD_LEN {
+            let take = (HEAD_LEN - self.head.len()).min(n);
+            self.head.extend_from_slice(&read[..take]);
+        }
+        self.check(read);
+        Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Utf8Probe;
+    use std::io::Read;
+
+    /// Reads `bytes` through a probe in chunks of `chunk` bytes.
+    fn probe(bytes: &[u8], chunk: usize) -> bool {
+        let mut probe = Utf8Probe::new(bytes);
+        let mut buf = vec![0; chunk];
+        while probe.read(&mut buf).unwrap() > 0 {}
+        probe.is_utf8()
+    }
+
+    #[test]
+    fn checks_utf8_across_read_boundaries() {
+        let utf8 = "a中文😀b".as_bytes();
+        let (gbk, _, _) = encoding_rs::GBK.encode("a中文b");
+        for chunk in 1..=utf8.len() {
+            assert!(probe(utf8, chunk), "chunk {chunk}");
+            assert!(!probe(&gbk, chunk), "chunk {chunk}");
+            assert!(!probe(&utf8[..utf8.len() - 2], chunk), "truncated, chunk {chunk}");
+        }
     }
 }

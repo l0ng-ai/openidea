@@ -24,3 +24,42 @@ pub async fn status(host: &Host, window: &str) -> IdeResult<Vec<FileStatus>> {
 
 mod commands;
 pub use commands::*;
+
+/// Refuses (with `refusal`) to remove or move the worktree that holds the open project.
+fn check_worktree_away_from_project(
+    project_root: &std::path::Path,
+    path: &std::path::Path,
+    refusal: &str,
+) -> IdeResult<()> {
+    fn canonical_path(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+        let mut existing = path.to_path_buf();
+        let mut tail = Vec::new();
+        let mut real = loop {
+            match dunce::canonicalize(&existing) {
+                Ok(real) => break real,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    let Some(part) = existing.components().next_back() else { return Err(e) };
+                    tail.push(part.as_os_str().to_owned());
+                    if !existing.pop() {
+                        return Err(e);
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        // The project or worktree may already be gone; resolve its missing tail too.
+        for part in tail.into_iter().rev() {
+            if part == ".." {
+                real.pop();
+            } else if part != "." {
+                real.push(part);
+            }
+        }
+        Ok(real)
+    }
+
+    if canonical_path(project_root)?.starts_with(canonical_path(path)?) {
+        return Err(ide_core::IdeError::invalid(refusal));
+    }
+    Ok(())
+}

@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+blake3.workspace = true
+chardetng.workspace = true
 dunce.workspace = true
+encoding_rs.workspace = true
 ide-core.workspace = true
 zip.workspace = true
 serde.workspace = true

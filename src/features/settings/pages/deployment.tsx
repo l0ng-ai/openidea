@@ -1,5 +1,5 @@
 /**
- * Build, Execution, Deployment › Deployment: SFTP servers (connection, path
+ * Build, Execution, Deployment › Deployment: SFTP, FTP and local servers (connection, path
  * mappings, excluded remote paths) and the transfer options. Consumed by the
  * deployment feature and `ide-remote` (automatic upload, remote delete).
  */
@@ -7,7 +7,15 @@ import { useEffect, useId, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { call, commands, IpcError, type FsConnection, type RemoteEntry } from "@/platform/ipc";
 import { useTx, tx, txTemplate } from "@/platform/i18n";
-import { deploymentConnection, type DeploymentServerValid } from "@/platform/remoteSettings";
+import { useProject } from "@/platform/project";
+import {
+  connectionSecretKey,
+  deploymentConnectable,
+  deploymentConnection,
+  deploymentSecretKey,
+  type DeploymentServerValid,
+  type FtpConnectionValid,
+} from "@/platform/remoteSettings";
 import { Badge, Button, Checkbox, Dialog, Icon, IconButton, Input, Select, Spinner, T, Tabs } from "@/ui";
 import { GlobListEditor, Row } from "../components/Form";
 import { SshConfigSelect, useSshConfigs } from "../components/SshConfigSelect";
@@ -15,6 +23,7 @@ import { useSetting } from "../components/context";
 import {
   addMapping,
   fixDefaultServer,
+  folderWithin,
   formatExcludes,
   newServer,
   parseExcludes,
@@ -22,9 +31,10 @@ import {
   removeMapping,
   updateMapping,
 } from "./deploymentModel";
+import { choosePath } from "../languages/api";
 import { BUILD_GROUP } from "./execution";
 import type { PageSpec } from "./spec";
-import { sshTestRemedy } from "./sshConnection";
+import { parseSshPort, sshTestRemedy } from "./sshConnection";
 import { PageLink } from "./workflowControls";
 import workflow from "./Workflow.module.css";
 import styles from "./Deployment.module.css";
@@ -194,7 +204,7 @@ function RemoteFolderDialog({
           <IconButton icon="refresh" size="small" title="Refresh" onClick={reload} />
         </form>
         {error ? (
-          <ConnectionProblem ssh={connection.kind === "sftp" ? connection.ssh : ""} error={error} onRetry={reload} />
+          <ConnectionProblem ssh={connectionSecretKey(connection)} error={error} onRetry={reload} />
         ) : (
           <ul
             className={styles.folderList}
@@ -264,6 +274,57 @@ function TextField({
   );
 }
 
+function FtpRows({ ftp, update }: { ftp: FtpConnectionValid; update: (patch: Partial<FtpConnectionValid>) => void }) {
+  const hostId = useId();
+  const portId = useId();
+  const userId = useId();
+  const tx = useTx();
+  // What is typed (e.g. an invalid port); the editor is keyed by server.
+  const [portText, setPortText] = useState(ftp.port?.toString() ?? "");
+  return (
+    <>
+      <Row label="Host" htmlFor={hostId}>
+        <span className={styles.field}>
+          <Input
+            id={hostId}
+            className={styles.wide}
+            value={ftp.host}
+            placeholder="example.com"
+            onChange={(e) => update({ host: e.target.value })}
+          />
+          <label htmlFor={portId}>
+            <T>Port:</T>
+          </label>
+          <Input
+            id={portId}
+            className={styles.port}
+            inputMode="numeric"
+            value={portText}
+            placeholder="21"
+            invalid={!!portText.trim() && parseSshPort(portText) === null}
+            onChange={(e) => {
+              setPortText(e.target.value);
+              update({ port: parseSshPort(e.target.value) });
+            }}
+          />
+        </span>
+      </Row>
+      <Row label="User name" htmlFor={userId}>
+        <Input
+          id={userId}
+          className={styles.wide}
+          value={ftp.user}
+          placeholder={tx("Anonymous")}
+          onChange={(e) => update({ user: e.target.value })}
+        />
+      </Row>
+      <div className={styles.option}>
+        <Checkbox checked={ftp.passive} onChange={(passive) => update({ passive })} label="Passive mode" />
+      </div>
+    </>
+  );
+}
+
 type TestState =
   | { ssh: string; kind: "busy" }
   | { ssh: string; kind: "ok"; count: number }
@@ -279,7 +340,7 @@ function ConnectionTab({
   const [browsing, setBrowsing] = useState(false);
   const [result, setTest] = useState<TestState | null>(null);
   const connection = deploymentConnection(server);
-  const testKey = `${server.kind}:${server.sshConfig}:${server.rootPath}`;
+  const testKey = JSON.stringify([server.kind, server.sshConfig, server.ftp, server.rootPath]);
   const test = result?.ssh === testKey ? result : null;
   const rootId = useId();
 
@@ -303,6 +364,8 @@ function ConnectionTab({
           value={server.kind}
           options={[
             { value: "sftp", label: "SFTP" },
+            { value: "ftp", label: "FTP" },
+            { value: "ftps", label: "FTPS" },
             { value: "local", label: "Local or mounted folder" },
           ]}
           onChange={(kind) => update({ kind })}
@@ -316,6 +379,9 @@ function ConnectionTab({
           </PageLink>
         </Row>
       )}
+      {(server.kind === "ftp" || server.kind === "ftps") && (
+        <FtpRows ftp={server.ftp} update={(patch) => update({ ftp: { ...server.ftp, ...patch } })} />
+      )}
       <Row label="Root path" htmlFor={rootId} hint="Mappings' deployment paths are relative to this folder.">
         <span className={styles.field}>
           <Input
@@ -326,7 +392,7 @@ function ConnectionTab({
             placeholder={server.kind === "local" ? tx("Folder path") : tx("Login folder")}
             onChange={(e) => update({ rootPath: e.target.value })}
           />
-          <Button size="small" disabled={server.kind === "sftp" && !server.sshConfig} onClick={() => setBrowsing(true)}>
+          <Button size="small" disabled={!deploymentConnectable(server)} onClick={() => setBrowsing(true)}>
             <T>Browse…</T>
           </Button>
         </span>
@@ -340,7 +406,10 @@ function ConnectionTab({
       <div className={styles.testRow}>
         <Button
           size="small"
-          disabled={(server.kind === "sftp" ? !server.sshConfig : !server.rootPath.trim()) || test?.kind === "busy"}
+          disabled={
+            (server.kind === "local" ? !server.rootPath.trim() : !deploymentConnectable(server)) ||
+            test?.kind === "busy"
+          }
           onClick={() => void runTest()}
         >
           <T>Test Connection</T>
@@ -353,8 +422,8 @@ function ConnectionTab({
         )}
       </div>
       {test?.kind === "error" &&
-        (server.kind === "sftp" ? (
-          <ConnectionProblem ssh={server.sshConfig} error={test.error} onRetry={() => void runTest()} />
+        (server.kind !== "local" ? (
+          <ConnectionProblem ssh={deploymentSecretKey(server)} error={test.error} onRetry={() => void runTest()} />
         ) : (
           <span className={styles.error}>{errorText(test.error)}</span>
         ))}
@@ -373,6 +442,8 @@ function ConnectionTab({
   );
 }
 
+const isAbsolute = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
+
 const MAPPING_COLUMNS = [
   { key: "local", title: "Local path", placeholder: "Project root" },
   { key: "deployment", title: "Deployment path", placeholder: "Root path" },
@@ -388,7 +459,22 @@ function MappingsTab({
 }) {
   const tx = useTx();
   const [selected, setSelected] = useState<number | null>(null);
+  const [browsing, setBrowsing] = useState<number | null>(null);
+  const projectRoot = useProject((s) => s.project?.root ?? null);
   const mappings = server.mappings;
+  const remoteRoot = server.rootPath.trim().replace(/\/+$/, "");
+  // Deployment paths are relative to the root path, so the remote chooser needs an absolute one.
+  const canBrowseRemote = isAbsolute(remoteRoot) && deploymentConnectable(server);
+  const set = (i: number, patch: Partial<(typeof mappings)[number]>) =>
+    update({ mappings: updateMapping(mappings, i, patch) });
+  const chooseLocal = async (i: number) => {
+    if (!projectRoot) return;
+    const current = mappings[i]?.local.trim() ?? "";
+    const start = isAbsolute(current) ? current : current ? `${projectRoot}/${current}` : projectRoot;
+    const picked = await choosePath({ directory: true, title: "Choose Folder", defaultPath: start });
+    const rel = picked === null ? null : folderWithin(projectRoot, picked);
+    if (rel !== null) set(i, { local: rel });
+  };
   return (
     <div className={styles.panel}>
       <div className={workflow.tableBox}>
@@ -440,15 +526,35 @@ function MappingsTab({
               >
                 {MAPPING_COLUMNS.map((c) => (
                   <td key={c.key}>
-                    <Input
-                      mono
-                      variant="bare"
-                      className={styles.cellInput}
-                      value={m[c.key]}
-                      placeholder={tx(c.placeholder)}
-                      aria-label={`${tx(c.title)} ${i + 1}`}
-                      onChange={(e) => update({ mappings: updateMapping(mappings, i, { [c.key]: e.target.value }) })}
-                    />
+                    <span className={styles.cellField}>
+                      <Input
+                        mono
+                        variant="bare"
+                        className={styles.cellInput}
+                        value={m[c.key]}
+                        placeholder={tx(c.placeholder)}
+                        aria-label={`${tx(c.title)} ${i + 1}`}
+                        onChange={(e) => set(i, { [c.key]: e.target.value })}
+                      />
+                      {c.key === "local" && (
+                        <IconButton
+                          icon="folder-open"
+                          size="small"
+                          title="Browse…"
+                          disabled={!projectRoot}
+                          onClick={() => void chooseLocal(i)}
+                        />
+                      )}
+                      {c.key === "deployment" && (
+                        <IconButton
+                          icon="folder-open"
+                          size="small"
+                          title={canBrowseRemote ? "Browse…" : "Set an absolute root path on the Connection tab first"}
+                          disabled={!canBrowseRemote}
+                          onClick={() => setBrowsing(i)}
+                        />
+                      )}
+                    </span>
                   </td>
                 ))}
               </tr>
@@ -459,10 +565,22 @@ function MappingsTab({
       <div className={styles.note}>
         <T>
           {
-            "Local paths are relative to the project root (empty: the whole project); deployment paths are relative to the server's root path."
+            "Local paths are relative to the project root or absolute inside it (empty: the whole project); deployment paths are relative to the server's root path."
           }
         </T>
       </div>
+      {browsing !== null && (
+        <RemoteFolderDialog
+          connection={deploymentConnection(server)}
+          initial={[remoteRoot, mappings[browsing]?.deployment.trim().replace(/^\/+/, "")].filter(Boolean).join("/")}
+          onClose={() => setBrowsing(null)}
+          onChoose={(path) => {
+            const rel = folderWithin(remoteRoot, path);
+            if (rel !== null) set(browsing, { deployment: rel });
+            setBrowsing(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -635,6 +753,8 @@ export const DEPLOYMENT_PAGES: PageSpec[] = [
       "local",
       "mounted",
       "sftp",
+      "ftp",
+      "ftps",
       "ssh",
       "server",
       "upload",
@@ -656,6 +776,8 @@ export const DEPLOYMENT_PAGES: PageSpec[] = [
               "Root path",
               "Web server URL",
               "SSH configuration",
+              "FTP",
+              "Passive mode",
               "Test Connection",
               "Use as Default",
               "Local path",

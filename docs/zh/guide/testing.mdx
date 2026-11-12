@@ -1,0 +1,73 @@
+---
+title: "测试"
+description: "从装订区运行测试，在测试树中查看结果，重新运行失败的测试，并在代码和测试之间跳转。"
+---
+
+OpenIDEA 直接使用项目自己的测试工具（Cargo、Jest、pytest、Maven、Gradle、`go test`、`dotnet test` 等）运行测试，再把输出解析成测试树。除了项目本来就用的工具，不需要额外安装任何东西。
+
+## 运行测试
+
+<Steps>
+  <Step title="从装订区运行">
+    点击测试、测试类或测试模块旁的 ▶ 图标，选择 **运行 '…'** 或 **调试
+    '…'**。运行之后，图标会变成绿色或红色，表示该测试上一次的结果。
+  </Step>
+  <Step title="从光标处运行">
+    **运行 › 运行上下文配置**（`⌃⇧R` / `Ctrl+Shift+F10`）会运行光标处的测试，或当前文件中的全部测试。
+  </Step>
+  <Step title="运行整个目录">在项目视图中右键测试目录，选择 **运行 '…'**，即可运行其中的测试。</Step>
+  <Step title="运行全部">
+    在运行微件中运行检测到的测试配置，比如 `cargo test`、`go test ./...`、`pytest` 或 `package.json` 里的 `test` 脚本。
+  </Step>
+</Steps>
+
+运行单个测试时，IDE 会基于检测到的测试配置生成一个临时运行配置（例如 Jest 用 `test` 脚本，JUnit 用 Maven / Gradle 构建）。想保存它或修改选项，参见[运行配置](/zh/guide/run)。
+
+## 支持的测试框架
+
+| 语言                        | 装订区图标位置                                                                                | 运行方式                                              |
+| --------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Rust                        | `#[test]` 函数、`mod tests`                                                                   | `cargo test`、`cargo nextest`                         |
+| JavaScript / TypeScript     | `test`、`it`、`describe`、`suite`、`context`（含 `.each`、`.only`、`.skip`）                  | 通过项目的测试脚本运行 Jest 或 Vitest；Deno、Bun      |
+| Python                      | pytest 的 `def test_*`、`class Test*`，unittest 的 `TestCase` 子类                            | pytest、Django `manage.py test`                       |
+| Go                          | `func TestX(t *testing.T)`、基准测试                                                          | `go test`                                             |
+| Java、Kotlin、Scala、Groovy | JUnit `@Test`、`@ParameterizedTest`、`@RepeatedTest`、`@TestFactory`、`@TestTemplate`；TestNG | Maven Surefire（`-Dtest=`）或 Gradle（`--tests`）     |
+| PHP                         | PHPUnit 测试类和方法，Pest 的 `test` / `it` / `describe`                                      | PHPUnit、Pest                                         |
+| Ruby                        | Minitest 和 Test::Unit 测试类、包含它们的模块、`def test_*`                                   | 通过 `ruby` 或 `rake test` 运行 Minitest              |
+| C#                          | xUnit `[Fact]` / `[Theory]`、NUnit `[Test]` / `[TestCase]`、MSTest `[TestMethod]`             | `dotnet test`（VSTest 或 Microsoft.Testing.Platform） |
+
+RSpec 有自己的配置类型（**RSpec 测试**）和检测到的 `rspec` 配置，但没有装订区图标。插件可以接入新的测试框架，结果显示在同一个测试树中。
+
+<Note>
+  使用 Microsoft.Testing.Platform 的 .NET 项目，需要在 .NET 工具窗口中运行 **安装 TRX
+  报告支持**，测试结果才会显示在测试树里。参见[构建工具](/zh/guide/build-tools)。
+</Note>
+
+## 测试结果视图
+
+测试运行会在 **运行** 工具窗口中打开一个标签页，控制台旁边是测试树。失败的测试套件会自动展开。
+
+- 单击某个测试，控制台只显示它自己的输出。
+- 双击、按 `Enter` 或 `F4` 跳到测试源码（**跳转到源代码**）。
+- **显示已通过** 和 **显示已忽略** 用于筛选测试树。默认隐藏已通过的测试，筛选状态会被记住。
+- 右键单个测试或多选后，可以 **运行 '…'**、**调试 '…'** 或 **跳转到源代码**。
+- 对于带有期望值和实际值的断言失败，**显示差异** 会把两者并排对比。
+
+检测到的测试配置会自动把结果显示在测试树中。自己创建的配置需要打开 **修改选项 › 在测试运行器中显示结果**。
+
+## 重新运行
+
+| 操作                               | macOS | Windows / Linux |
+| ---------------------------------- | ----- | --------------- |
+| **重新运行**（在“运行”工具窗口中） | `⌘R`  | `Ctrl+F5`       |
+| **重新运行失败的测试**             | —     | —               |
+
+**重新运行失败的测试**（在“运行”工具窗口工具栏和“查找操作”中）只运行上一次失败的测试，会按各个工具自己的过滤语法生成命令。支持 Cargo、Jest / Vitest、pytest、Django、PHPUnit、Go、Maven / Gradle 和 .NET，以及插件接入的测试框架。
+
+## 在代码和测试之间跳转
+
+**导航 › 测试**（`⌘⇧T` / `Ctrl+Shift+T`）会根据常见命名约定（`FooTest`、`test_foo.py`、`foo.test.ts` 等）和项目的源码 / 测试根目录，在类和它的测试之间来回跳转。匹配到多个时弹出选择列表；一个都没有时，可以用 **创建新测试…** 从文件模板新建。
+
+## 覆盖率
+
+想知道测试执行了哪些代码行，可以带覆盖率运行测试，参见[覆盖率](/zh/guide/coverage)。

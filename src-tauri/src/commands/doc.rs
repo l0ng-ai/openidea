@@ -6,9 +6,9 @@ use ide_core::{ChangeSet, DocId, IdeResult, OutlineItem, Range};
 pub use ide_host::ops::doc::*;
 use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
-use ide_workspace::{DocumentInfo, HistoryEntry};
+use ide_workspace::{DocumentEncoding, DocumentInfo, HistoryEntry};
 use std::path::PathBuf;
-use tauri::{State, Window};
+use tauri::{Manager, State, Window};
 
 /// Opens a document. Async: reading and decoding a large file must not block
 /// the main thread (synchronous commands run on it).
@@ -38,8 +38,14 @@ pub async fn doc_edit(
     changes: ChangeSet,
 ) -> IdeResult<u32> {
     let host = state.host.clone();
-    let window = window.label().to_owned();
-    blocking(move || ide_host::ops::doc::edit(&host, &window, doc, base_version, changes)).await
+    let label = window.label().to_owned();
+    let peers = crate::events::document_edit_peers(window.app_handle(), &label);
+    let mirrored = (!peers.is_empty()).then(|| changes.changes.clone());
+    let version = blocking(move || ide_host::ops::doc::edit(&host, &label, doc, base_version, changes)).await?;
+    if let Some(changes) = mirrored {
+        crate::events::emit_document_edit(window.app_handle(), peers, doc, base_version, version, changes);
+    }
+    Ok(version)
 }
 
 #[tauri::command]
@@ -81,7 +87,7 @@ pub async fn doc_ui_mode(window: Window, state: State<'_, AppState>, path: PathB
     ide_host::ops::doc::doc_ui_mode(&state.host, window.label(), path).await
 }
 
-/// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label.
+/// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state.
 #[tauri::command]
 #[specta::specta]
 pub async fn doc_set_encoding(
@@ -90,8 +96,19 @@ pub async fn doc_set_encoding(
     doc: DocId,
     encoding: String,
     reload: bool,
-) -> IdeResult<String> {
+) -> IdeResult<DocumentEncoding> {
     ide_host::ops::doc::doc_set_encoding(&state.host, window.label(), doc, encoding, reload).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn doc_set_bom(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+    has_bom: bool,
+) -> IdeResult<DocumentEncoding> {
+    ide_host::ops::doc::doc_set_bom(&state.host, window.label(), doc, has_bom).await
 }
 
 #[tauri::command]
@@ -146,12 +163,14 @@ pub async fn doc_selection_ranges(
 
 #[tauri::command]
 #[specta::specta]
-pub fn history_list(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<HistoryEntry>> {
-    ide_host::ops::doc::history_list(&state.host, window.label(), path)
+pub async fn history_list(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<HistoryEntry>> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::doc::history_list(&host, &label, path)).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn history_content(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<String> {
-    ide_host::ops::doc::history_content(&state.host, window.label(), id)
+pub async fn history_content(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<String> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::doc::history_content(&host, &label, id)).await
 }

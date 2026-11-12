@@ -4,98 +4,665 @@ use crate::repo::{gx, resolve, to_string};
 use crate::{ChangeKind, ChangedFile, Commit, LogOrder, LogQuery, Repo, RevisionChange};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
-use ide_core::{IdeError, IdeResult};
+use ide_core::{CancellationToken, IdeError, IdeResult};
+use redb::ReadableDatabase;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 /// Log "Text or hash" filter: the message (substring or regex), or a hash prefix.
 enum TextFilter {
-    Plain { needle: String, match_case: bool },
+    /// Commits `git log --grep` selected, or whose id starts with `hash`.
+    Selected {
+        ids: HashSet<ObjectId>,
+        hash: Option<String>,
+    },
+    /// Case-insensitive non-ASCII text: git folds case only for ASCII under the C locale.
+    Folded(String),
     Regex(regex_lite::Regex),
 }
 
 impl TextFilter {
-    fn new(text: &str, regex: bool, match_case: bool) -> IdeResult<Option<Self>> {
+    fn new(
+        r: &Repo,
+        scopes: &[String],
+        q: &LogQuery,
+        text: &str,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Option<Self>> {
         let text = text.trim();
         if text.is_empty() {
             return Ok(None);
         }
-        if regex {
+        if q.text_regex {
             let re = regex_lite::RegexBuilder::new(text)
-                .case_insensitive(!match_case)
+                .case_insensitive(!q.text_match_case)
                 .multi_line(true)
                 .build()
                 .map_err(|e| IdeError::invalid(format!("invalid regular expression: {e}")))?;
             return Ok(Some(Self::Regex(re)));
         }
-        let needle = if match_case { text.to_string() } else { text.to_lowercase() };
-        Ok(Some(Self::Plain { needle, match_case }))
+        if !q.text_match_case && !text.is_ascii() {
+            return Ok(Some(Self::Folded(text.to_lowercase())));
+        }
+        let mut filter = vec!["--fixed-strings".to_string(), format!("--grep={text}")];
+        if !q.text_match_case {
+            filter.push("--regexp-ignore-case".into());
+        }
+        let ids = git_select(r, scopes, &filter, &[], q.first_parent, cancel)?;
+        let hash = (text.len() >= 4 && text.bytes().all(|b| b.is_ascii_hexdigit())).then(|| text.to_ascii_lowercase());
+        Ok(Some(Self::Selected { ids, hash }))
     }
 
-    fn matches(&self, message: &str, id: &ObjectId) -> bool {
-        match self {
-            Self::Regex(re) => re.is_match(message),
-            Self::Plain { needle, match_case } => {
-                let hash = needle.len() >= 4 && needle.bytes().all(|b| b.is_ascii_hexdigit());
-                if hash && id.to_string().starts_with(&needle.to_ascii_lowercase()) {
-                    return true;
-                }
-                if *match_case {
-                    message.contains(needle.as_str())
-                } else {
-                    message.to_lowercase().contains(needle.as_str())
+    fn matches(&self, repo: &gix::Repository, index: &mut crate::log_index::LogIndex, id: ObjectId) -> IdeResult<bool> {
+        Ok(match self {
+            Self::Regex(re) => re.is_match(&index.message(repo, id)?),
+            Self::Folded(needle) => index.message(repo, id)?.to_lowercase().contains(needle.as_str()),
+            Self::Selected { ids, hash } => {
+                ids.contains(&id) || hash.as_ref().is_some_and(|h| id.to_string().starts_with(h.as_str()))
+            }
+        })
+    }
+}
+
+/// Commits git selects from each scope with `filter`. Path limiting uses git's history
+/// simplification and, when the repository has them, changed-path Bloom filters.
+fn git_select(
+    r: &Repo,
+    scopes: &[String],
+    filter: &[String],
+    paths: &[String],
+    first_parent: bool,
+    cancel: &CancellationToken,
+) -> IdeResult<HashSet<ObjectId>> {
+    let mut ids = HashSet::new();
+    for scope in scopes {
+        let mut args =
+            vec!["log".to_string(), "--format=%H".into(), "--no-show-signature".into(), "--no-follow".into()];
+        if first_parent {
+            args.push("--first-parent".into());
+        }
+        args.extend(filter.iter().cloned());
+        let revs: Vec<String> = scope.split_whitespace().map(str::to_string).collect();
+        let stdin = revision_args(&mut args, &revs, &[], Some(paths));
+        let output = run_log(r, args, stdin.as_deref(), cancel)?;
+        for line in output.stdout_str().lines() {
+            ids.insert(ObjectId::from_hex(line.as_bytes()).map_err(gx)?);
+        }
+    }
+    Ok(ids)
+}
+
+/// Keep revision walks below a conservative argv budget on every platform. Exclusions
+/// always use stdin; large walks move revisions and literal pathspecs there together.
+fn revision_args(
+    args: &mut Vec<String>,
+    revs: &[String],
+    excluded: &[String],
+    paths: Option<&[String]>,
+) -> Option<String> {
+    let long = revs.iter().chain(excluded).map(|rev| rev.len() + 12).sum::<usize>()
+        + paths.into_iter().flatten().map(|path| path.len() + 12).sum::<usize>()
+        > 8 * 1024;
+    let stdin = if long {
+        let mut text = revs.iter().chain(excluded).map(|rev| format!("{rev}\n")).collect::<String>();
+        if let Some(paths) = paths {
+            text.push_str("--\n");
+            for path in paths {
+                text.push_str(&format!(":(literal){path}\n"));
+            }
+        }
+        Some(text)
+    } else {
+        (!excluded.is_empty()).then(|| excluded.join("\n") + "\n")
+    };
+    if stdin.is_some() {
+        args.push("--stdin".into());
+    }
+    args.push("--end-of-options".into());
+    if !long {
+        args.extend(revs.iter().cloned());
+        if let Some(paths) = paths {
+            args.push("--".into());
+            args.extend(paths.iter().map(|path| format!(":(literal){path}")));
+        }
+    }
+    stdin
+}
+
+fn run_log(
+    r: &Repo,
+    args: Vec<String>,
+    stdin: Option<&str>,
+    cancel: &CancellationToken,
+) -> IdeResult<crate::cli::Output> {
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    match stdin {
+        Some(text) => crate::cli::run_cancellable_stdin(r.root(), &argv, text.as_bytes(), cancel),
+        None => crate::cli::run_cancellable(r.root(), &argv, cancel),
+    }
+}
+
+/// The commits of a file's history and the path it had in each. The commits that changed
+/// the path, merges included (`--full-history --simplify-merges`); where it appears, a
+/// rename from any parent continues the history under the old path from that parent.
+/// Unlike `--follow`, this sees renames done in merges and history merged in from other
+/// branches.
+fn file_history(
+    r: &Repo,
+    scopes: &[String],
+    rel: &str,
+    first_parent: bool,
+    cancel: &CancellationToken,
+) -> IdeResult<(HashSet<ObjectId>, HashMap<ObjectId, String>)> {
+    let mut ids = HashSet::new();
+    let mut paths = HashMap::new();
+    let mut starts: std::collections::VecDeque<(Vec<String>, String)> =
+        scopes.iter().map(|s| (s.split_whitespace().map(str::to_string).collect(), rel.to_string())).collect();
+    let mut started = HashSet::new();
+    while let Some((revs, path)) = starts.pop_front() {
+        if !started.insert((revs.clone(), path.clone())) {
+            continue;
+        }
+        let mut opts: Vec<String> =
+            ["log", "--format=%x00%H", "--name-status", "-z", "--full-history", "--simplify-merges", "--no-follow"]
+                .map(String::from)
+                .into();
+        if first_parent {
+            opts.push("--first-parent".into());
+        }
+        let run = |excluded: &[String]| -> IdeResult<Vec<(ObjectId, Option<char>)>> {
+            let mut args = opts.clone();
+            let stdin = revision_args(&mut args, &revs, excluded, Some(std::slice::from_ref(&path)));
+            Ok(parse_name_status_log(&run_log(r, args, stdin.as_deref(), cancel)?.stdout_str()))
+        };
+        let records = run(&[])?;
+        // Where the file appears its history ends: what is behind that is another file of
+        // the same name (a rename continues the history below). The commits of the history
+        // are those not behind a creation; the statuses come from the full listing (with
+        // its parents excluded a merge shows no changes).
+        let created: Vec<ObjectId> = records.iter().filter(|(_, s)| *s == Some('A')).map(|(id, _)| *id).collect();
+        let kept: Option<HashSet<ObjectId>> = if created.is_empty() {
+            None
+        } else {
+            let excluded: Vec<String> = created.iter().map(|id| format!("^{id}^@")).collect();
+            Some(run(&excluded)?.into_iter().map(|(id, _)| id).collect())
+        };
+        let mut created = Vec::new();
+        for (id, first_status) in records {
+            if kept.as_ref().is_some_and(|k| !k.contains(&id)) || !ids.insert(id) {
+                continue;
+            }
+            paths.insert(id, path.clone());
+            if first_status == Some('A') {
+                created.push(id);
+            }
+        }
+        for commit in created {
+            let line = crate::cli::run_cancellable(
+                r.root(),
+                &["rev-list", "--parents", "-n", "1", "--end-of-options", &commit.to_string()],
+                cancel,
+            )?
+            .stdout_str();
+            let parents: Vec<&str> =
+                line.split_whitespace().skip(1).take(if first_parent { 1 } else { usize::MAX }).collect();
+            for parent in parents {
+                if let Some(old) = renamed_from(r, parent, &commit.to_string(), &path, cancel)? {
+                    starts.push_back((vec![parent.to_string()], old));
                 }
             }
         }
     }
+    Ok((ids, paths))
 }
 
-pub(crate) fn log(r: &Repo, q: &LogQuery) -> IdeResult<Vec<Commit>> {
+/// `git log --format=%x00%H --name-status -z`: each commit with the status letter of its
+/// first change (none for a merge listed without changes).
+fn parse_name_status_log(text: &str) -> Vec<(ObjectId, Option<char>)> {
+    let mut out: Vec<(ObjectId, Option<char>)> = Vec::new();
+    let mut tokens = text.split('\0');
+    while let Some(token) = tokens.next() {
+        let token = token.trim_start_matches('\n');
+        if let Ok(id) = ObjectId::from_hex(token.as_bytes()) {
+            out.push((id, None));
+            continue;
+        }
+        let Some(status) = token.chars().next().filter(|c| c.is_ascii_uppercase()) else { continue };
+        if !token[1..].bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let paths = if matches!(status, 'R' | 'C') { 2 } else { 1 };
+        for _ in 0..paths {
+            tokens.next();
+        }
+        if let Some(last) = out.last_mut() {
+            last.1.get_or_insert(status);
+        }
+    }
+    out
+}
+
+/// The path `path` had in `parent` when `commit` renamed it.
+fn renamed_from(
+    r: &Repo,
+    parent: &str,
+    commit: &str,
+    path: &str,
+    cancel: &CancellationToken,
+) -> IdeResult<Option<String>> {
+    let args = ["diff", "-M", "--name-status", "-z", "--diff-filter=R", "--no-ext-diff", parent, commit, "--"];
+    let text = crate::cli::run_cancellable(r.root(), &args, cancel)?.stdout_str();
+    let mut tokens = text.split('\0');
+    while let Some(status) = tokens.next() {
+        if !status.starts_with('R') {
+            continue;
+        }
+        let (Some(old), Some(new)) = (tokens.next(), tokens.next()) else { break };
+        if new == path {
+            return Ok(Some(old.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResult<Vec<Commit>> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let mut index = r.log_index.lock().unwrap_or_else(|p| p.into_inner());
+    let result = if q.summary_only {
+        let mut all = q.clone();
+        all.skip = 0;
+        all.limit = 0;
+        all.seek = None;
+        all.retain_until = None;
+        all.request = None;
+        all.stop_at = None;
+        let repo = r.gix()?;
+        let decorations = decorations(&repo)?;
+        let shallow_vec =
+            repo.shallow_commits().map_err(gx)?.map(|ids| ids.iter().copied().collect::<Vec<_>>()).unwrap_or_default();
+        let shallow: HashSet<ObjectId> = shallow_vec.iter().copied().collect();
+        let refs = r.log_refs()?;
+        let key = format!("{}:{refs:?}:{shallow_vec:?}", serde_json::to_string(&all).map_err(gx)?);
+        let cached = index.views.get(&key).cloned();
+        let view = if let Some(cached) = cached {
+            cached
+        } else {
+            // Immutable metadata is reused across roots, filters, merges and ref changes.
+            all.request = q.request;
+            let rows =
+                std::sync::Arc::new(crate::log_index::IndexedView::new(log_indexed_rows(r, &all, cancel, &mut index)?));
+            if index.views.len() >= 4 {
+                index.views.clear();
+            }
+            index.views.insert(key, rows.clone());
+            rows
+        };
+        let find_pos = |id: &str| {
+            ObjectId::from_hex(id.as_bytes())
+                .ok()
+                .and_then(|oid| view.positions.get(&oid).copied())
+                .or_else(|| view.rows.iter().position(|row| row.id.to_string().starts_with(id)))
+        };
+        let start = q
+            .seek
+            .as_ref()
+            .and_then(|id| find_pos(id))
+            .map(|i| i.saturating_sub(if q.limit == 0 { 50 } else { 50.min(q.limit as usize / 2) }))
+            .unwrap_or(q.skip as usize);
+        let retain = q.retain_until.as_ref().and_then(|id| find_pos(id)).map(|i| i + 1).unwrap_or(0);
+        let limit = if q.limit == 0 { usize::MAX } else { (q.limit as usize).max(retain.saturating_sub(start)) };
+        let total = view.rows.len() as u32;
+        let db = index.db().cloned();
+        let txn = db.as_ref().and_then(|db| db.begin_read().ok());
+        let table = txn.as_ref().and_then(|t| t.open_table(crate::log_index::COMMITS).ok());
+        let mut result = Vec::new();
+        for (i, row) in view.rows.iter().enumerate().skip(start).take(limit) {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            let c = materialize_row(
+                &repo,
+                &mut index,
+                table.as_ref(),
+                row,
+                &shallow,
+                &decorations,
+                true,
+                Some((i as u32, total)),
+            )?;
+            let stop = q.stop_at.as_ref() == Some(&c.id);
+            result.push(c);
+            if stop {
+                break;
+            }
+        }
+        Ok(result)
+    } else {
+        log_indexed(r, q, cancel, &mut index)
+    };
+    index.flush();
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn materialize_row(
+    repo: &gix::Repository,
+    index: &mut crate::log_index::LogIndex,
+    table: Option<&redb::ReadOnlyTable<&str, &[u8]>>,
+    row: &crate::log_index::IndexedRow,
+    shallow: &HashSet<ObjectId>,
+    decorations: &HashMap<ObjectId, Vec<String>>,
+    summary_only: bool,
+    position: Option<(u32, u32)>,
+) -> IdeResult<Commit> {
+    let record = index.get_with_table(repo, row.id, table)?;
+    let mut commit = (*record).clone();
+    let parents =
+        commit.parents.iter().map(|p| ObjectId::from_hex(p.as_bytes()).map_err(gx)).collect::<IdeResult<Vec<_>>>()?;
+    commit.graph_dashed = row.graph_parents.iter().map(|p| !parents.contains(p)).collect();
+    commit.dashed = if commit.graph_dashed.iter().any(|d| *d) { commit.graph_dashed.clone() } else { Vec::new() };
+    commit.graph_parents = Some(row.graph_parents.iter().map(ToString::to_string).collect());
+    if shallow.contains(&row.id) {
+        commit.graph_boundary_parents = commit.parents.clone();
+    }
+    commit.on_current_branch = Some(row.on_current_branch);
+    commit.refs = decorations.get(&row.id).cloned().unwrap_or_default();
+    commit.history_path = row.history_path.clone();
+    if let Some((pos, total)) = position {
+        commit.log_position = Some(pos);
+        commit.log_total = Some(total);
+    }
+    if !summary_only {
+        commit.message = index.message(repo, row.id)?;
+        commit.message_truncated = false;
+    }
+    Ok(commit)
+}
+
+fn update_head_reachable(
+    repo: &gix::Repository,
+    index: &mut crate::log_index::LogIndex,
+    cancel: &CancellationToken,
+) -> IdeResult<()> {
+    let head = repo.head_id().ok().map(|id| id.detach());
+    let shallow_stamp =
+        repo.shallow_file().ok().and_then(|path| std::fs::metadata(path).ok()).and_then(|m| m.modified().ok());
+    let stamp = head.map(|id| (id, shallow_stamp));
+    if index.head == stamp {
+        return Ok(());
+    }
+    let mut additions = Vec::new();
+    let mut cursor = head;
+    let old_head = index.head;
+    if let (Some((old, old_shallow)), Some(_)) = (old_head, head)
+        && old_shallow == shallow_stamp
+    {
+        while let Some(id) = cursor {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            if id == old {
+                break;
+            }
+            let record = index.get(repo, id)?;
+            if record.parents.len() != 1 {
+                cursor = None;
+                break;
+            }
+            additions.push(id);
+            cursor = Some(ObjectId::from_hex(record.parents[0].as_bytes()).map_err(gx)?);
+        }
+    } else {
+        cursor = None;
+    }
+    if cursor.is_some() && cursor == old_head.map(|(id, _)| id) {
+        index.reachable.extend(additions);
+        index.head = stamp;
+    } else {
+        let mut reachable = HashSet::new();
+        if let Some(head) = head {
+            for item in repo.rev_walk([head]).all().map_err(gx)? {
+                if cancel.is_cancelled() {
+                    return Err(IdeError::cancelled());
+                }
+                reachable.insert(item.map_err(gx)?.id);
+            }
+        }
+        index.reachable = reachable;
+        index.head = stamp;
+    }
+    Ok(())
+}
+
+fn log_indexed(
+    r: &Repo,
+    q: &LogQuery,
+    cancel: &CancellationToken,
+    index: &mut crate::log_index::LogIndex,
+) -> IdeResult<Vec<Commit>> {
     let repo = r.gix()?;
+    let shallow: HashSet<ObjectId> =
+        repo.shallow_commits().map_err(gx)?.map(|ids| ids.iter().copied().collect()).unwrap_or_default();
+    let decorations = decorations(&repo)?;
     let range = q.range.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let revs: Vec<&str> = q.branch.iter().chain(&q.branches).map(|b| b.trim()).filter(|b| !b.is_empty()).collect();
-    let tips = if range.is_some() { Vec::new() } else { tips(&repo, &revs)? };
-    if tips.is_empty() && range.is_none() {
+    let ranges: Vec<_> = q.ranges.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    let tips =
+        if range.is_some() || (!ranges.is_empty() && revs.is_empty()) { Vec::new() } else { tips(&repo, &revs)? };
+    let paths: Vec<String> = q
+        .path
+        .iter()
+        .chain(&q.paths)
+        .map(|p| r.rel_path(p))
+        .collect::<IdeResult<Vec<_>>>()?
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect();
+    let authors: Vec<_> =
+        q.author.iter().chain(&q.authors).map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty()).collect();
+    if !q.summary_only
+        && q.skip == 0
+        && q.limit == 1
+        && range.is_none()
+        && ranges.is_empty()
+        && tips.len() == 1
+        && paths.is_empty()
+        && authors.is_empty()
+        && q.text.as_deref().is_none_or(|t| t.trim().is_empty())
+        && q.speed_search.as_deref().is_none_or(|t| t.trim().is_empty())
+        && !q.no_merges
+        && q.since_ms.is_none()
+        && q.until_ms.is_none()
+    {
+        update_head_reachable(&repo, index, cancel)?;
+        let id = tips[0];
+        let record = index.get(&repo, id)?;
+        let mut commit = (*record).clone();
+        let shown_parents: Vec<String> = if shallow.contains(&id) {
+            Vec::new()
+        } else {
+            commit
+                .parents
+                .iter()
+                .take(if q.first_parent { 1 } else { usize::MAX })
+                .filter(|p| {
+                    ObjectId::from_hex(p.as_bytes())
+                        .ok()
+                        .is_some_and(|oid| index.has_cached(&oid) || repo.has_object(oid))
+                })
+                .cloned()
+                .collect()
+        };
+        commit.graph_dashed = vec![false; shown_parents.len()];
+        commit.graph_parents = Some(shown_parents);
+        if shallow.contains(&id) {
+            commit.graph_boundary_parents = commit.parents.clone();
+        }
+        commit.on_current_branch = Some(index.reachable.contains(&id));
+        commit.refs = decorations.get(&id).cloned().unwrap_or_default();
+        commit.message = index.message(&repo, id)?;
+        commit.message_truncated = false;
+        return Ok(vec![commit]);
+    }
+    let rows = log_indexed_rows(r, q, cancel, index)?;
+    let db = index.db().cloned();
+    let txn = db.as_ref().and_then(|db| db.begin_read().ok());
+    let table = txn.as_ref().and_then(|t| t.open_table(crate::log_index::COMMITS).ok());
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        out.push(materialize_row(&repo, index, table.as_ref(), row, &shallow, &decorations, q.summary_only, None)?);
+    }
+    Ok(out)
+}
+
+fn log_indexed_rows(
+    r: &Repo,
+    q: &LogQuery,
+    cancel: &CancellationToken,
+    index: &mut crate::log_index::LogIndex,
+) -> IdeResult<Vec<crate::log_index::IndexedRow>> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let repo = r.gix()?;
+    let shallow: HashSet<ObjectId> =
+        repo.shallow_commits().map_err(gx)?.map(|ids| ids.iter().copied().collect()).unwrap_or_default();
+    let range = q.range.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let revs: Vec<&str> = q.branch.iter().chain(&q.branches).map(|b| b.trim()).filter(|b| !b.is_empty()).collect();
+    let ranges: Vec<_> = q.ranges.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    let tips =
+        if range.is_some() || (!ranges.is_empty() && revs.is_empty()) { Vec::new() } else { tips(&repo, &revs)? };
+    if tips.is_empty() && range.is_none() && ranges.is_empty() {
         return Ok(Vec::new());
     }
     let decorations = decorations(&repo)?;
-    let path_filter = match q.path.as_deref() {
-        Some(p) => {
-            let rel = r.rel_path(p)?;
-            if rel.is_empty() { None } else { Some(rel) }
+    let paths: Vec<String> = q
+        .path
+        .iter()
+        .chain(&q.paths)
+        .map(|p| r.rel_path(p))
+        .collect::<IdeResult<Vec<_>>>()?
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect();
+    let range_ids = if let Some(range) = range {
+        Some(range_ids(r, range, q.order, q.first_parent, cancel)?)
+    } else if !ranges.is_empty() {
+        let mut ids = Vec::new();
+        let mut seen = HashSet::new();
+        for range in &ranges {
+            for id in range_ids(r, range, q.order, q.first_parent, cancel)? {
+                if seen.insert(id) {
+                    ids.push(id);
+                }
+            }
         }
-        None => None,
+        if !tips.is_empty() {
+            for id in range_ids(
+                r,
+                &tips.iter().map(ToString::to_string).collect::<Vec<_>>().join(" "),
+                q.order,
+                q.first_parent,
+                cancel,
+            )? {
+                if seen.insert(id) {
+                    ids.push(id);
+                }
+            }
+        }
+        Some(sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &index.nodes)?)
+    } else {
+        None
     };
-    let authors: Vec<String> =
-        q.author.iter().chain(&q.authors).map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty()).collect();
-    let text = q.text.as_deref().map(|t| TextFilter::new(t, q.text_regex, q.text_match_case)).transpose()?.flatten();
-    let limit = if q.limit == 0 { usize::MAX } else { q.limit as usize };
-    let mut to_skip = q.skip as usize;
-
-    let path_walk = path_filter.is_some();
-    type Walk<'a> = Box<dyn Iterator<Item = IdeResult<(ObjectId, Vec<ObjectId>)>> + 'a>;
-    let walk: Walk<'_> = if let Some(range) = range {
-        let ids = range_ids(r, range, path_filter.as_deref())?;
-        let repo = &repo;
-        Box::new(ids.into_iter().map(move |id| {
-            let commit = repo.find_commit(id).map_err(gx)?;
-            Ok((id, commit.parent_ids().map(|p| p.detach()).collect()))
-        }))
-    } else if let Some(rel) = path_filter {
-        Box::new(PathWalk::new(&repo, tips, rel, q.first_parent)?)
-    } else if repo.is_shallow().unwrap_or(false) {
-        // Topological order needs complete history; shallow clones fall back to date order.
-        let mut walk = repo.rev_walk(tips).sorting(gix::revision::walk::Sorting::ByCommitTime(Default::default()));
-        if q.first_parent {
-            walk = walk.first_parent_only();
+    let scopes = if let Some(range) = range {
+        vec![range.to_string()]
+    } else {
+        let mut scopes = ranges.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        if !tips.is_empty() {
+            scopes.push(tips.iter().map(ToString::to_string).collect::<Vec<_>>().join(" "));
         }
-        let walk = walk.all().map_err(gx)?;
-        Box::new(walk.map(|info| info.map(|i| (i.id, i.parent_ids.to_vec())).map_err(gx)))
+        scopes
+    };
+    let mut history_paths = HashMap::new();
+    let path_ids = if paths.is_empty() {
+        None
+    } else if q.follow && paths.len() == 1 && !r.root().join(&paths[0]).is_dir() {
+        // Following renames is for a file: a directory gains files all the time, and each
+        // creation would cut its history short.
+        let (ids, at) = file_history(r, &scopes, &paths[0], q.first_parent, cancel)?;
+        history_paths = at;
+        Some(ids)
+    } else {
+        Some(git_select(r, &scopes, &[], &paths, q.first_parent, cancel)?)
+    };
+    let authors: Vec<_> =
+        q.author.iter().chain(&q.authors).map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty()).collect();
+    update_head_reachable(&repo, index, cancel)?;
+    let mut range_ids_set = range_ids.as_ref().map(|ids| ids.iter().copied().collect::<HashSet<_>>());
+    type Walk<'a> = Box<dyn Iterator<Item = IdeResult<ObjectId>> + 'a>;
+    let walk: Walk<'_> = if let Some(ids) = range_ids {
+        Box::new(ids.into_iter().map(Ok))
+    } else if q.summary_only {
+        let ids = index.graph(&repo, &tips, &shallow, q.first_parent, cancel)?;
+        Box::new(sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &index.nodes)?.into_iter().map(Ok))
+    } else if repo.is_shallow().unwrap_or(false) || q.request.is_some() {
+        // The process can be interrupted even during indegree preparation. Git also
+        // respects shallow boundaries while retaining a topological order.
+        let mut args = vec![
+            "rev-list".to_string(),
+            match q.order {
+                LogOrder::Topo | LogOrder::Standard => "--topo-order",
+                LogOrder::Date => "--date-order",
+            }
+            .into(),
+        ];
+        if q.first_parent {
+            args.push("--first-parent".into());
+        }
+        if q.limit > 0
+            && q.order != LogOrder::Standard
+            && paths.is_empty()
+            && q.authors.is_empty()
+            && q.author.is_none()
+            && q.text.as_deref().is_none_or(|text| text.trim().is_empty())
+            && !q.no_merges
+            && q.since_ms.is_none()
+            && q.until_ms.is_none()
+        {
+            args.push(format!("--max-count={}", u64::from(q.skip) + u64::from(q.limit)));
+        }
+        let revs: Vec<_> = tips.iter().map(ToString::to_string).collect();
+        let stdin = revision_args(&mut args, &revs, &[], None);
+        let result = run_log(r, args, stdin.as_deref(), cancel)?;
+        let ids = result
+            .stdout_str()
+            .lines()
+            .map(|line| ObjectId::from_hex(line.as_bytes()).map_err(gx))
+            .collect::<IdeResult<Vec<_>>>()?;
+        if repo.is_shallow().unwrap_or(false) {
+            // A separately bounded walk provides the domain; pagination must never
+            // turn a shallow boundary into a connection through a locally present object.
+            let mut boundary_args = vec!["rev-list".to_string()];
+            let stdin = revision_args(&mut boundary_args, &revs, &[], None);
+            let boundaries = run_log(r, boundary_args, stdin.as_deref(), cancel)?;
+            range_ids_set = Some(
+                boundaries
+                    .stdout_str()
+                    .lines()
+                    .map(|id| ObjectId::from_hex(id.as_bytes()).map_err(gx))
+                    .collect::<IdeResult<HashSet<_>>>()?,
+            );
+        }
+        Box::new(ids.into_iter().map(Ok))
     } else {
         use gix::traverse::commit::{Parents, topo};
         let graph = repo.commit_graph_if_enabled().ok().flatten();
         let sorting = match q.order {
-            LogOrder::Topo => topo::Sorting::TopoOrder,
+            LogOrder::Topo | LogOrder::Standard => topo::Sorting::TopoOrder,
             LogOrder::Date => topo::Sorting::DateOrder,
         };
         let topo = topo::Builder::from_iters(&repo.objects, tips, None::<Vec<ObjectId>>)
@@ -104,138 +671,413 @@ pub(crate) fn log(r: &Repo, q: &LogQuery) -> IdeResult<Vec<Commit>> {
             .with_commit_graph(graph)
             .build()
             .map_err(gx)?;
-        Box::new(topo.map(|info| info.map(|i| (i.id, i.parent_ids.to_vec())).map_err(gx)))
+        Box::new(topo.map(|info| info.map(|i| i.id).map_err(gx)))
     };
-
-    let shape = Shape {
-        no_merges: q.no_merges,
-        first_parent: q.first_parent,
-        since: q.since_ms.map(|ms| (ms / 1000.0).floor() as i64),
-        until: q.until_ms.map(|ms| (ms / 1000.0).ceil() as i64),
+    let walk: Walk<'_> = if q.order == LogOrder::Standard {
+        let ids = walk.collect::<IdeResult<Vec<_>>>()?;
+        Box::new(sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &index.nodes)?.into_iter().map(Ok))
+    } else {
+        walk
     };
-    // Walks in (roughly) commit time order can stop once they are well past `since`.
-    let time_ordered = range.is_none() && (q.order == LogOrder::Date || path_walk);
-    let mut older_run = 0usize;
-
+    let text = q.text.as_deref().map(|t| TextFilter::new(r, &scopes, q, t, cancel)).transpose()?.flatten();
+    let db = index.db().cloned();
+    let txn = db.as_ref().and_then(|db| db.begin_read().ok());
+    let table = txn.as_ref().and_then(|t| t.open_table(crate::log_index::COMMITS).ok());
+    let mut visibility = Visibility {
+        speed_refs: &decorations,
+        query: q,
+        path_ids,
+        range_ids: range_ids_set,
+        authors,
+        text,
+        matches: HashMap::new(),
+        projected: HashMap::new(),
+        cancel,
+        index,
+        table: table.as_ref(),
+        shallow: shallow.clone(),
+    };
+    let stop_id = q.stop_at.as_deref().and_then(|s| ObjectId::from_hex(s.as_bytes()).ok());
+    let unfiltered = visibility.is_unfiltered();
     let mut out = Vec::new();
+    let mut skip = q.skip as usize;
+    let limit = if q.limit == 0 { usize::MAX } else { q.limit as usize };
     for item in walk {
-        let (id, mut parents) = item?;
-        if q.first_parent {
-            parents.truncate(1);
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
         }
-        let commit = repo.find_commit(id).map_err(gx)?;
-        let commit_time = commit.time().map(|t| t.seconds).unwrap_or(0);
-        if shape.is_active() {
-            let merge = commit.parent_ids().nth(1).is_some();
-            if shape.since.is_some_and(|s| commit_time < s) {
-                older_run += 1;
-                if time_ordered && older_run >= OLDER_RUN_LIMIT {
-                    break;
-                }
-                continue;
-            }
-            older_run = 0;
-            if !shape.shows(merge, commit_time) {
-                continue;
-            }
-            parents = shape.rewrite_parents(&repo, &parents)?;
-        }
-        let sig = commit.author().map_err(gx)?;
-        let name = to_string(sig.name.trim().as_bstr());
-        let email = to_string(sig.email.trim().as_bstr());
-        if !authors.is_empty() {
-            let (name, email) = (name.to_lowercase(), email.to_lowercase());
-            if !authors.iter().any(|a| name.contains(a.as_str()) || email.contains(a.as_str())) {
-                continue;
-            }
-        }
-        let message = to_string(commit.message_raw_sloppy());
-        if let Some(filter) = text.as_ref()
-            && !filter.matches(&message, &id)
-        {
+        let id = item?;
+        if !unfiltered && !visibility.shows(&repo, id)? {
             continue;
         }
-        if to_skip > 0 {
-            to_skip -= 1;
+        if skip > 0 {
+            skip -= 1;
             continue;
         }
-        let time_ms = sig.time().map(|t| t.seconds as f64 * 1000.0).unwrap_or(0.0);
-        let summary = message.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
-        let hex = id.to_string();
-        out.push(Commit {
-            short_id: hex[..hex.len().min(8)].to_string(),
-            id: hex,
-            parents: parents.iter().map(ToString::to_string).collect(),
-            author: name,
-            email,
-            time_ms,
-            summary,
-            message: message.trim_end().to_string(),
-            refs: decorations.get(&id).cloned().unwrap_or_default(),
-            commit_time_ms: commit_time as f64 * 1000.0,
+        let parents: Vec<ObjectId> = if shallow.contains(&id) {
+            Vec::new()
+        } else if let Some((ps, _)) = visibility.index.nodes.get(&id) {
+            ps.clone()
+        } else {
+            let record = visibility.index.get_with_table(&repo, id, visibility.table)?;
+            record
+                .parents
+                .iter()
+                .map(|p| ObjectId::from_hex(p.as_bytes()).map_err(gx))
+                .collect::<IdeResult<Vec<_>>>()?
+        };
+        let shown_parents = if shallow.contains(&id) {
+            Vec::new()
+        } else if unfiltered {
+            parents
+                .into_iter()
+                .take(if q.first_parent { 1 } else { usize::MAX })
+                .filter(|oid| visibility.index.has_cached(oid) || repo.has_object(*oid))
+                .collect()
+        } else {
+            visibility.parents(&repo, &parents)?
+        };
+        let on_current_branch = visibility.index.reachable.contains(&id);
+        out.push(crate::log_index::IndexedRow {
+            id,
+            graph_parents: shown_parents,
+            on_current_branch,
+            history_path: history_paths.get(&id).cloned(),
         });
-        if out.len() >= limit {
+        if out.len() >= limit || stop_id == Some(id) {
             break;
         }
     }
     Ok(out)
 }
 
-/// Consecutive commits older than `since` after which a time-ordered walk stops.
-const OLDER_RUN_LIMIT: usize = 64;
-
-/// Which commits the Log graph shows independently of the detail filters (author, text):
-/// `--no-merges` and the date range. Hidden commits are skipped and the parents of shown
-/// ones rewritten past them, like git's parent rewriting.
-struct Shape {
-    no_merges: bool,
+/// A ready-node stack gives incoming merge parents priority, while child counts
+/// prevent an ancestor shared with another branch from moving ahead of its children.
+fn sort_subset(
+    repo: &gix::Repository,
+    ids: Vec<ObjectId>,
+    order: LogOrder,
     first_parent: bool,
-    /// Commit time bounds in seconds; `since` inclusive, `until` exclusive.
-    since: Option<i64>,
-    until: Option<i64>,
+    shallow: &HashSet<ObjectId>,
+    cancel: &CancellationToken,
+    nodes: &HashMap<ObjectId, (Vec<ObjectId>, i64)>,
+) -> IdeResult<Vec<ObjectId>> {
+    let positions: HashMap<_, _> = ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+    let mut parents = Vec::with_capacity(ids.len());
+    let mut children = vec![0usize; ids.len()];
+    let mut times = Vec::with_capacity(ids.len());
+    let mut projected: HashMap<ObjectId, Vec<usize>> = HashMap::new();
+    for id in &ids {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let (all_parents, time) = if let Some(record) = nodes.get(id) {
+            record.clone()
+        } else {
+            let commit = repo.find_commit(*id).map_err(gx)?;
+            (commit.parent_ids().map(|p| p.detach()).collect(), commit.time().map(|t| t.seconds).unwrap_or(0))
+        };
+        times.push(time);
+        let direct: Vec<_> = all_parents
+            .into_iter()
+            .take(if shallow.contains(id) {
+                0
+            } else if first_parent {
+                1
+            } else {
+                usize::MAX
+            })
+            .collect();
+        let mut ordered = Vec::with_capacity(direct.len());
+        if direct.iter().all(|p| positions.contains_key(p)) {
+            for p in direct {
+                let pos = positions[&p];
+                if !ordered.contains(&pos) {
+                    ordered.push(pos);
+                }
+            }
+        } else {
+            for parent in direct {
+                if let Some(&pos) = positions.get(&parent) {
+                    if !ordered.contains(&pos) {
+                        ordered.push(pos);
+                    }
+                    continue;
+                }
+                let mut stack = vec![(parent, false)];
+                while let Some((curr, expanded)) = stack.pop() {
+                    if cancel.is_cancelled() {
+                        return Err(IdeError::cancelled());
+                    }
+                    if projected.contains_key(&curr) {
+                        continue;
+                    }
+                    if let Some(&pos) = positions.get(&curr) {
+                        projected.insert(curr, vec![pos]);
+                    } else if shallow.contains(&curr) || (!nodes.contains_key(&curr) && !repo.has_object(curr)) {
+                        projected.insert(curr, Vec::new());
+                    } else {
+                        let ancestors: Vec<_> = if let Some((ps, _)) = nodes.get(&curr) {
+                            ps.iter().take(if first_parent { 1 } else { usize::MAX }).copied().collect()
+                        } else {
+                            repo.find_commit(curr)
+                                .map_err(gx)?
+                                .parent_ids()
+                                .take(if first_parent { 1 } else { usize::MAX })
+                                .map(|p| p.detach())
+                                .collect()
+                        };
+                        if !expanded {
+                            stack.push((curr, true));
+                            stack.extend(ancestors.iter().rev().map(|&p| (p, false)));
+                        } else {
+                            let mut combined = Vec::new();
+                            for a in ancestors {
+                                for &p in projected.get(&a).into_iter().flatten() {
+                                    if !combined.contains(&p) {
+                                        combined.push(p);
+                                    }
+                                }
+                            }
+                            projected.insert(curr, combined);
+                        }
+                    }
+                }
+                for &pos in projected.get(&parent).into_iter().flatten() {
+                    if !ordered.contains(&pos) {
+                        ordered.push(pos);
+                    }
+                }
+            }
+        }
+        for &p in &ordered {
+            children[p] += 1;
+        }
+        parents.push(ordered);
+    }
+    if order == LogOrder::Standard {
+        let refs = decorations(repo)?;
+        let mut remote_names = HashSet::new();
+        for reference in repo.references().map_err(gx)?.remote_branches().map_err(gx)?.flatten() {
+            if let Some(name) = reference.name().as_bstr().strip_prefix(b"refs/remotes/") {
+                remote_names.insert(to_string(name.as_bstr()));
+            }
+        }
+        let priority = |i: usize| {
+            let labels = refs.get(&ids[i]);
+            let best = labels
+                .into_iter()
+                .flatten()
+                .map(|name| {
+                    (
+                        if name == "HEAD" {
+                            0
+                        } else if name == "main" || name == "master" {
+                            1
+                        } else if name.starts_with("tag: ") {
+                            4
+                        } else if remote_names.contains(name) {
+                            3
+                        } else {
+                            2
+                        },
+                        name.clone(),
+                    )
+                })
+                .min()
+                .unwrap_or((5, ids[i].to_string()));
+            (best, i)
+        };
+        let mut heads: Vec<_> = (0..ids.len()).filter(|i| children[*i] == 0 || refs.contains_key(&ids[*i])).collect();
+        heads.sort_by_key(|i| priority(*i));
+        let sorted = crate::bek::sort(&parents, &times, &heads);
+        return Ok(sorted.into_iter().map(|i| ids[i]).collect());
+    }
+    let mut ready: std::collections::BTreeSet<_> =
+        children.iter().enumerate().filter_map(|(i, count)| (*count == 0).then_some(i)).collect();
+    let mut stack = Vec::new();
+    let mut dates = std::collections::BinaryHeap::new();
+    if order == LogOrder::Date {
+        for &i in &ready {
+            dates.push((times[i], std::cmp::Reverse(i)));
+        }
+    }
+    let mut emitted = HashSet::new();
+    let mut out = Vec::with_capacity(ids.len());
+    while let Some(next) =
+        if order == LogOrder::Date { dates.pop().map(|(_, i)| i.0) } else { stack.pop().or_else(|| ready.pop_first()) }
+    {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        if !emitted.insert(next) {
+            continue;
+        }
+        ready.remove(&next);
+        out.push(ids[next]);
+        let ordered: Vec<_> =
+            if order == LogOrder::Topo { parents[next].iter().rev().copied().collect() } else { parents[next].clone() };
+        for parent in ordered {
+            children[parent] -= 1;
+            if children[parent] == 0 {
+                ready.insert(parent);
+                stack.push(parent);
+                if order == LogOrder::Date {
+                    dates.push((times[parent], std::cmp::Reverse(parent)));
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
-/// Upper bound of commits visited while rewriting one commit's parents.
-const REWRITE_LIMIT: usize = 4096;
+/// Visibility and graph projection share exactly the same predicates. Revision parents
+/// remain immutable; only graph parents skip hidden commits. Memoisation avoids walking
+/// the same hidden ancestry for each visible child, without a truncation limit.
+struct Visibility<'a> {
+    speed_refs: &'a HashMap<ObjectId, Vec<String>>,
+    query: &'a LogQuery,
+    path_ids: Option<HashSet<ObjectId>>,
+    range_ids: Option<HashSet<ObjectId>>,
+    authors: Vec<String>,
+    text: Option<TextFilter>,
+    matches: HashMap<ObjectId, bool>,
+    projected: HashMap<ObjectId, Vec<ObjectId>>,
+    cancel: &'a CancellationToken,
+    index: &'a mut crate::log_index::LogIndex,
+    table: Option<&'a redb::ReadOnlyTable<&'static str, &'static [u8]>>,
+    shallow: HashSet<ObjectId>,
+}
 
-impl Shape {
-    fn is_active(&self) -> bool {
-        self.no_merges || self.since.is_some() || self.until.is_some()
+impl Visibility<'_> {
+    fn is_unfiltered(&self) -> bool {
+        self.path_ids.is_none()
+            && self.range_ids.is_none()
+            && !self.query.no_merges
+            && self.query.since_ms.is_none()
+            && self.query.until_ms.is_none()
+            && self.query.speed_search.is_none()
+            && self.authors.is_empty()
+            && self.text.is_none()
     }
 
-    fn shows(&self, merge: bool, time: i64) -> bool {
-        !(self.no_merges && merge) && self.since.is_none_or(|s| time >= s) && self.until.is_none_or(|u| time < u)
-    }
-
-    /// `parents` with each hidden one replaced by its nearest shown ancestors; parents
-    /// older than `since` are dropped (their history is not shown).
-    fn rewrite_parents(&self, repo: &gix::Repository, parents: &[ObjectId]) -> IdeResult<Vec<ObjectId>> {
-        let mut out: Vec<ObjectId> = Vec::new();
-        let mut seen: HashSet<ObjectId> = HashSet::new();
-        let mut stack: Vec<ObjectId> = parents.iter().rev().copied().collect();
-        let mut visited = 0usize;
-        while let Some(p) = stack.pop() {
-            if !seen.insert(p) || !repo.has_object(p) {
-                continue;
-            }
-            visited += 1;
-            if visited > REWRITE_LIMIT {
-                break;
-            }
-            let commit = repo.find_commit(p).map_err(gx)?;
-            let time = commit.time().map(|t| t.seconds).unwrap_or(0);
-            if self.since.is_some_and(|s| time < s) {
-                continue;
-            }
-            let ids: Vec<ObjectId> = commit.parent_ids().map(|i| i.detach()).collect();
-            if self.shows(ids.len() > 1, time) {
-                if !out.contains(&p) {
-                    out.push(p);
+    fn shows(&mut self, repo: &gix::Repository, id: ObjectId) -> IdeResult<bool> {
+        if self.cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        if let Some(shown) = self.matches.get(&id) {
+            return Ok(*shown);
+        }
+        let shown = if (!self.index.has_cached(&id) && !repo.has_object(id))
+            || self.path_ids.as_ref().is_some_and(|ids| !ids.contains(&id))
+            || self.range_ids.as_ref().is_some_and(|ids| !ids.contains(&id))
+        {
+            false
+        } else if self.authors.is_empty()
+            && self.query.speed_search.is_none()
+            && self.text.is_none()
+            && let Some((parents, time_s)) = self.index.nodes.get(&id)
+        {
+            let time = (*time_s as f64) * 1000.0;
+            !(self.query.no_merges && parents.len() > 1)
+                && self.query.since_ms.is_none_or(|s| time >= s)
+                && self.query.until_ms.is_none_or(|u| time < u)
+        } else {
+            let commit = self.index.get_with_table(repo, id, self.table)?;
+            let time = commit.commit_time_ms;
+            !(self.query.no_merges && commit.parents.len() > 1)
+                && self.query.since_ms.is_none_or(|s| time >= s)
+                && self.query.until_ms.is_none_or(|u| time < u)
+                && self.query.speed_search.as_ref().is_none_or(|query| {
+                    let mut columns =
+                        vec![commit.summary.clone(), self.speed_refs.get(&id).cloned().unwrap_or_default().join(" ")];
+                    if self.query.search_fields.iter().any(|f| f == "author") {
+                        columns.push(commit.author.clone());
+                    }
+                    if self.query.search_fields.iter().any(|f| f == "hash") {
+                        columns.push(commit.short_id.clone());
+                    }
+                    query.to_lowercase().split_whitespace().all(|word| {
+                        columns.iter().any(|column| {
+                            let mut chars = word.chars().peekable();
+                            for c in column.to_lowercase().chars() {
+                                if chars.peek() == Some(&c) {
+                                    chars.next();
+                                }
+                            }
+                            chars.peek().is_none()
+                        })
+                    })
+                })
+                && (self.authors.is_empty() || {
+                    let name = commit.author.to_lowercase();
+                    let email = commit.email.to_lowercase();
+                    self.authors.iter().any(|a| {
+                        if self.query.authors_exact {
+                            crate::log_index::matches_user(a, &name, &email)
+                        } else {
+                            name.contains(a.as_str()) || email.contains(a.as_str())
+                        }
+                    })
+                })
+                && match &self.text {
+                    Some(text) => text.matches(repo, self.index, id)?,
+                    None => true,
                 }
-                continue;
+        };
+        self.matches.insert(id, shown);
+        Ok(shown)
+    }
+
+    fn parents(&mut self, repo: &gix::Repository, parents: &[ObjectId]) -> IdeResult<Vec<ObjectId>> {
+        let parents = if self.query.first_parent { &parents[..parents.len().min(1)] } else { parents };
+        let mut out = Vec::new();
+        for parent in parents {
+            // Iterative postorder: a long hidden chain must not consume the call stack.
+            let mut stack = vec![(*parent, false)];
+            while let Some((id, expanded)) = stack.pop() {
+                if self.projected.contains_key(&id) {
+                    continue;
+                }
+                if self.shows(repo, id)? {
+                    self.projected.insert(id, vec![id]);
+                } else if !self.index.has_cached(&id) && !repo.has_object(id) {
+                    self.projected.insert(id, Vec::new());
+                } else {
+                    let ancestors = if self.shallow.contains(&id) {
+                        Vec::new()
+                    } else if let Some((ps, _)) = self.index.nodes.get(&id) {
+                        ps.iter().take(if self.query.first_parent { 1 } else { usize::MAX }).copied().collect()
+                    } else {
+                        let commit = self.index.get_with_table(repo, id, self.table)?;
+                        commit
+                            .parents
+                            .iter()
+                            .take(if self.query.first_parent { 1 } else { usize::MAX })
+                            .map(|p| ObjectId::from_hex(p.as_bytes()).map_err(gx))
+                            .collect::<IdeResult<Vec<_>>>()?
+                    };
+                    if !expanded {
+                        stack.push((id, true));
+                        stack.extend(ancestors.iter().rev().map(|p| (*p, false)));
+                    } else {
+                        let mut nearest = Vec::new();
+                        for p in ancestors {
+                            for ancestor in self.projected.get(&p).into_iter().flatten() {
+                                if !nearest.contains(ancestor) {
+                                    nearest.push(*ancestor);
+                                }
+                            }
+                        }
+                        self.projected.insert(id, nearest);
+                    }
+                }
             }
-            let next = if self.first_parent { &ids[..ids.len().min(1)] } else { &ids[..] };
-            stack.extend(next.iter().rev());
+            for ancestor in &self.projected[parent] {
+                if !out.contains(ancestor) {
+                    out.push(*ancestor);
+                }
+            }
         }
         Ok(out)
     }
@@ -243,18 +1085,27 @@ impl Shape {
 
 /// Commit ids of a revision range (`A..B`, `A...B`, `^A B`…), topologically ordered, via
 /// `git rev-list` so every rev syntax git understands (`@{u}`, `HEAD~3`) works.
-fn range_ids(r: &Repo, range: &str, path: Option<&str>) -> IdeResult<Vec<ObjectId>> {
-    let mut args: Vec<&str> = vec!["rev-list", "--topo-order", "--end-of-options"];
+fn range_ids(
+    r: &Repo,
+    range: &str,
+    order: LogOrder,
+    first_parent: bool,
+    cancel: &CancellationToken,
+) -> IdeResult<Vec<ObjectId>> {
+    let mut args: Vec<String> =
+        ["rev-list", if order == LogOrder::Date { "--date-order" } else { "--topo-order" }].map(String::from).into();
+    if first_parent {
+        args.push("--first-parent".into());
+    }
+    let mut revs = Vec::new();
     for part in range.split_whitespace() {
         if part.starts_with('-') {
             return Err(ide_core::IdeError::invalid(format!("invalid revision range '{range}'")));
         }
-        args.push(part);
+        revs.push(part.to_string());
     }
-    if let Some(rel) = path {
-        args.extend(["--", rel]);
-    }
-    let out = crate::cli::run(r.root(), &args, None)?;
+    let stdin = revision_args(&mut args, &revs, &[], None);
+    let out = run_log(r, args, stdin.as_deref(), cancel)?;
     out.stdout_str()
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -266,11 +1117,69 @@ fn range_ids(r: &Repo, range: &str, path: Option<&str>) -> IdeResult<Vec<ObjectI
 fn tips(repo: &gix::Repository, revs: &[&str]) -> IdeResult<Vec<ObjectId>> {
     let mut tips = Vec::new();
     if !revs.is_empty() {
-        for rev in revs {
-            let id = resolve(repo, rev)?;
-            let commit = repo.find_object(id).map_err(gx)?.peel_to_commit().map_err(gx)?;
-            if !tips.contains(&commit.id) {
-                tips.push(commit.id);
+        let refs = decorations(repo)?;
+        let branches: Vec<_> = refs
+            .iter()
+            .flat_map(|(id, names)| {
+                names
+                    .iter()
+                    .filter(|name| *name != "HEAD" && !name.starts_with("tag: "))
+                    .map(move |name| (name.as_str(), *id))
+            })
+            .collect();
+        let mut excludes = Vec::new();
+        let includes: Vec<_> = revs.iter().filter(|rev| !rev.starts_with('-')).collect();
+        for rev in revs.iter().filter_map(|rev| rev.strip_prefix('-')) {
+            let re = if branches.iter().any(|(name, _)| *name == rev) {
+                None
+            } else {
+                Some(
+                    regex_lite::Regex::new(&format!("^(?:{rev})$"))
+                        .map_err(|e| IdeError::invalid(format!("invalid branch pattern: {e}")))?,
+                )
+            };
+            excludes.push((rev, re));
+        }
+        if includes.is_empty() {
+            for (name, id) in &branches {
+                if !excludes.iter().any(|(exact, re)| name == exact || re.as_ref().is_some_and(|re| re.is_match(name)))
+                    && !tips.contains(id)
+                {
+                    tips.push(*id);
+                }
+            }
+        }
+        for rev in includes {
+            if excludes.iter().any(|(exact, re)| *rev == *exact || re.as_ref().is_some_and(|re| re.is_match(rev))) {
+                continue;
+            }
+            match resolve(repo, rev) {
+                Ok(id) => {
+                    let commit = repo.find_object(id).map_err(gx)?.peel_to_commit().map_err(gx)?;
+                    if !tips.contains(&commit.id) {
+                        tips.push(commit.id);
+                    }
+                }
+                Err(error) => {
+                    let re = regex_lite::Regex::new(&format!("^(?:{rev})$")).map_err(|_| error.clone())?;
+                    let matches: Vec<_> = branches
+                        .iter()
+                        .filter(|(name, _)| {
+                            re.is_match(name)
+                                && !excludes
+                                    .iter()
+                                    .any(|(exact, re)| name == exact || re.as_ref().is_some_and(|re| re.is_match(name)))
+                        })
+                        .collect();
+                    if matches.is_empty() && !rev.chars().any(|c| ".*+?[]()|^$".contains(c)) {
+                        return Err(error);
+                    }
+                    for (_, id) in matches {
+                        if !tips.contains(id) {
+                            tips.push(*id);
+                        }
+                    }
+                }
             }
         }
         return Ok(tips);
@@ -279,7 +1188,9 @@ fn tips(repo: &gix::Repository, revs: &[&str]) -> IdeResult<Vec<ObjectId>> {
         tips.push(id.detach());
     }
     let platform = repo.references().map_err(gx)?;
-    for iter in [platform.local_branches().map_err(gx)?, platform.remote_branches().map_err(gx)?] {
+    for iter in
+        [platform.local_branches().map_err(gx)?, platform.remote_branches().map_err(gx)?, platform.tags().map_err(gx)?]
+    {
         for reference in iter {
             let Ok(mut reference) = reference else { continue };
             if let Ok(id) = reference.peel_to_id() {
@@ -294,7 +1205,7 @@ fn tips(repo: &gix::Repository, revs: &[&str]) -> IdeResult<Vec<ObjectId>> {
 }
 
 /// Commit id → decoration labels.
-fn decorations(repo: &gix::Repository) -> IdeResult<HashMap<ObjectId, Vec<String>>> {
+pub(crate) fn decorations(repo: &gix::Repository) -> IdeResult<HashMap<ObjectId, Vec<String>>> {
     let mut map: HashMap<ObjectId, Vec<String>> = HashMap::new();
     if let Ok(id) = repo.head_id() {
         map.entry(id.detach()).or_default().push("HEAD".to_string());
@@ -302,13 +1213,11 @@ fn decorations(repo: &gix::Repository) -> IdeResult<HashMap<ObjectId, Vec<String
     let platform = repo.references().map_err(gx)?;
     for reference in platform.all().map_err(gx)? {
         let Ok(mut reference) = reference else { continue };
+        if reference.target().try_name().is_some() {
+            continue;
+        }
         let full = reference.name().as_bstr().to_owned();
-        let label = if let Some(n) = full.strip_prefix(b"refs/heads/") {
-            to_string(n.as_bstr())
-        } else if let Some(n) = full.strip_prefix(b"refs/remotes/") {
-            if n.ends_with(b"/HEAD") {
-                continue;
-            }
+        let label = if let Some(n) = full.strip_prefix(b"refs/heads/").or_else(|| full.strip_prefix(b"refs/remotes/")) {
             to_string(n.as_bstr())
         } else if let Some(n) = full.strip_prefix(b"refs/tags/") {
             format!("tag: {}", to_string(n.as_bstr()))
@@ -319,106 +1228,6 @@ fn decorations(repo: &gix::Repository) -> IdeResult<HashMap<ObjectId, Vec<String
         map.entry(id.detach()).or_default().push(label);
     }
     Ok(map)
-}
-
-/// Commits touching a path, newest first, with git's default history simplification:
-/// a commit is shown when its entry for the path differs from every parent, and at a
-/// merge that kept one parent's version only that parent's line of history is followed.
-struct PathWalk<'r> {
-    repo: &'r gix::Repository,
-    rel: String,
-    queue: std::collections::BinaryHeap<(i64, u64, ObjectId)>,
-    seen: HashSet<ObjectId>,
-    memo: HashMap<ObjectId, Option<ObjectId>>,
-    seq: u64,
-    first_parent: bool,
-}
-
-impl<'r> PathWalk<'r> {
-    fn new(repo: &'r gix::Repository, tips: Vec<ObjectId>, rel: String, first_parent: bool) -> IdeResult<Self> {
-        let mut walk = PathWalk {
-            repo,
-            rel,
-            queue: Default::default(),
-            seen: Default::default(),
-            memo: Default::default(),
-            seq: 0,
-            first_parent,
-        };
-        for tip in tips {
-            walk.push(tip)?;
-        }
-        Ok(walk)
-    }
-
-    fn push(&mut self, id: ObjectId) -> IdeResult<()> {
-        if !self.seen.insert(id) || !self.repo.has_object(id) {
-            return Ok(());
-        }
-        let time = self.repo.find_commit(id).map_err(gx)?.time().map(|t| t.seconds).unwrap_or(0);
-        // Max-heap on time; among equal times, earlier insertion first.
-        self.seq += 1;
-        self.queue.push((time, u64::MAX - self.seq, id));
-        Ok(())
-    }
-
-    fn step(&mut self) -> IdeResult<Option<(ObjectId, Vec<ObjectId>)>> {
-        while let Some((_, _, id)) = self.queue.pop() {
-            let commit = self.repo.find_commit(id).map_err(gx)?;
-            let parents: Vec<ObjectId> = commit.parent_ids().map(|p| p.detach()).collect();
-            // Parents cut off by a shallow boundary are treated as absent.
-            let present: Vec<ObjectId> = parents
-                .iter()
-                .copied()
-                .filter(|p| self.repo.has_object(p))
-                .take(if self.first_parent { 1 } else { usize::MAX })
-                .collect();
-            let mine = path_entry(self.repo, id, &self.rel, &mut self.memo)?;
-            let mut same_parent = None;
-            for p in &present {
-                if path_entry(self.repo, *p, &self.rel, &mut self.memo)? == mine {
-                    same_parent = Some(*p);
-                    break;
-                }
-            }
-            match same_parent {
-                Some(p) => self.push(p)?,
-                None => {
-                    for p in &present {
-                        self.push(*p)?;
-                    }
-                    if !present.is_empty() || mine.is_some() {
-                        return Ok(Some((id, parents)));
-                    }
-                }
-            }
-        }
-        Ok(None)
-    }
-}
-
-impl Iterator for PathWalk<'_> {
-    type Item = IdeResult<(ObjectId, Vec<ObjectId>)>;
-    fn next(&mut self) -> Option<Self::Item> {
-        self.step().transpose()
-    }
-}
-
-/// Id of the tree entry at `rel` in `commit` (memoised).
-fn path_entry(
-    repo: &gix::Repository,
-    commit: ObjectId,
-    rel: &str,
-    memo: &mut HashMap<ObjectId, Option<ObjectId>>,
-) -> IdeResult<Option<ObjectId>> {
-    if let Some(v) = memo.get(&commit) {
-        return Ok(*v);
-    }
-    let commit_obj = repo.find_commit(commit).map_err(gx)?;
-    let tree = commit_obj.tree().map_err(gx)?;
-    let id = tree.lookup_entry_by_path(Path::new(rel)).map_err(gx)?.map(|e| e.object_id());
-    memo.insert(commit, id);
-    Ok(id)
 }
 
 pub(crate) fn commit_files(r: &Repo, rev: &str) -> IdeResult<Vec<ChangedFile>> {
@@ -532,4 +1341,60 @@ pub(crate) fn commits_changes(r: &Repo, commits: &[String]) -> IdeResult<Vec<Rev
         .collect();
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::revision_args;
+
+    #[test]
+    fn small_revision_walks_keep_their_arguments() {
+        let revs = vec!["HEAD".into(), "^HEAD~2".into()];
+        let paths = vec!["src/[literal] file.rs".into()];
+        for paths in [None, Some(paths.as_slice())] {
+            for excluded in [vec![], vec!["^HEAD~1^@".into()]] {
+                let mut args = vec!["log".into()];
+                let stdin = revision_args(&mut args, &revs, &excluded, paths);
+                let mut expected = vec!["log"];
+                if !excluded.is_empty() {
+                    expected.push("--stdin");
+                }
+                expected.extend(["--end-of-options", "HEAD", "^HEAD~2"]);
+                if paths.is_some() {
+                    expected.extend(["--", ":(literal)src/[literal] file.rs"]);
+                }
+                assert_eq!(args, expected);
+                assert_eq!(stdin, (!excluded.is_empty()).then(|| "^HEAD~1^@\n".to_string()));
+            }
+        }
+    }
+
+    #[test]
+    fn revisions_and_paths_share_one_budget() {
+        let revs = vec!["a".repeat(4084)];
+        let mut paths = vec!["b".repeat(4084)];
+        let mut args = vec!["log".into()];
+        assert_eq!(revision_args(&mut args, &revs, &[], Some(&paths)), None);
+        paths[0].push('b');
+        let mut args = vec!["log".into()];
+        assert_eq!(
+            revision_args(&mut args, &revs, &[], Some(&paths)),
+            Some(format!("{}\n--\n:(literal){}\n", revs[0], paths[0]))
+        );
+        let excluded = vec!["^HEAD".into()];
+        let mut args = vec!["log".into()];
+        let stdin = revision_args(&mut args, &revs, &excluded, Some(&paths));
+        assert_eq!(args, ["log", "--stdin", "--end-of-options"]);
+        assert_eq!(stdin, Some(format!("{}\n^HEAD\n--\n:(literal){}\n", revs[0], paths[0])));
+    }
+
+    #[test]
+    fn large_revision_walks_preserve_input_order_and_exclusions() {
+        let revs = vec!["HEAD".into(); 600];
+        let excluded = vec!["^HEAD~2".into()];
+        let mut args = vec!["rev-list".into(), "--date-order".into()];
+        let stdin = revision_args(&mut args, &revs, &excluded, None);
+        assert_eq!(args, ["rev-list", "--date-order", "--stdin", "--end-of-options"]);
+        assert_eq!(stdin, Some("HEAD\n".repeat(600) + "^HEAD~2\n"));
+    }
 }

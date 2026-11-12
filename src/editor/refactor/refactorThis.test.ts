@@ -64,6 +64,8 @@ vi.mock("./introduce", () => ({
 }));
 const safeDelete = vi.fn();
 vi.mock("./safeDelete", () => ({ safeDelete }));
+const startHierarchyRefactoring = vi.fn();
+vi.mock("./hierarchy", () => ({ startHierarchyRefactoring }));
 
 const { classifyAction, kindAdvertised, cannotPerform } = await import("./catalog");
 const { refactorThis, runRefactoring } = await import("./refactorThis");
@@ -88,13 +90,19 @@ const answer =
     ok({ actions, advertisedKinds } satisfies CodeActionQuery);
 
 let view: EditorView | null = null;
-function editor(text = "fn main() { let total = price * 2; }") {
+function editor(text = "fn main() { let total = price * 2; }", language = "rust") {
   view = new EditorView({
     state: EditorState.create({
       doc: text,
       selection: { anchor: text.indexOf("price") + 1 },
       extensions: [
-        lspDoc.of({ doc: 1, path: "/p/a.rs", language: "rust", uiMode: null, readOnly: false }),
+        lspDoc.of({
+          doc: 1,
+          path: `/p/a.${language === "java" ? "java" : "rs"}`,
+          language,
+          uiMode: null,
+          readOnly: false,
+        }),
         inplaceRenameExtension(),
       ],
     }),
@@ -177,6 +185,24 @@ describe("Refactor This", () => {
     expect((useLspPopup.getState().popup as { numbered?: boolean }).numbered).toBe(true);
     expect(lspCodeActionQuery).toHaveBeenCalledOnce();
     expect(lspCodeActionQuery.mock.calls[0]![3]).toEqual(["refactor"]);
+  });
+
+  it("offers Pull Members Up / Push Members Down in Java files, after IDEA's other refactorings", async () => {
+    query = answer([action("Convert to switch expression", "refactor.rewrite")]);
+    const v = editor("class Dog extends Animal { int price; }", "java");
+    await refactorThis(v, vi.fn());
+    expect(labels()).toEqual(["Pull Members Up…", "Push Members Down…", "Convert to switch expression"]);
+    const items = (useLspPopup.getState().popup as { items: { label: string; run: () => void }[] }).items;
+    items.find((i) => i.label === "Push Members Down…")!.run();
+    expect(startHierarchyRefactoring).toHaveBeenCalledWith(v, "pushDown");
+    closePopup();
+    v.destroy();
+    // Other languages have no server for them; nor does Java while its server is down.
+    await refactorThis(editor(), vi.fn());
+    expect(labels()).not.toContain("Pull Members Up…");
+    query = async () => unavailable;
+    await refactorThis(editor("class Dog {}", "java"), vi.fn());
+    expect(labels()).toEqual(["Nothing here"]);
   });
 
   it("runs the mapped server action, Rename and Safe Delete", async () => {

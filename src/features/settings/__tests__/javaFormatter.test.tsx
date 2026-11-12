@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useProject } from "@/platform/project";
 import { PageContext } from "../components/context";
@@ -50,7 +50,9 @@ describe("Java formatting profile", () => {
     expect(value()).toEqual({ java: { formatter: "custom", formatterPath: "config/style.xml" } });
     mocks.open.mockResolvedValue("/project/custom.xml");
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Browse…" })));
-    expect(value()).toEqual({ java: { formatter: "custom", formatterPath: "/project/custom.xml" } });
+    await waitFor(() =>
+      expect(value()).toEqual({ java: { formatter: "custom", formatterPath: "/project/custom.xml" } }),
+    );
     expect(mocks.open).toHaveBeenCalledWith(
       expect.objectContaining({ filters: [{ name: "XML", extensions: ["xml"] }] }),
     );

@@ -1,20 +1,25 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { RemoteEntry, Settings } from "@/platform/ipc";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { emitLocalIdeEvent, type IdeEvent, type RemoteEntry, type Settings } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useRemoteProgress } from "@/platform/remote";
 import { ConnectHost } from "./ConnectDialog";
 import { closeConnectDialog, openConnectDialog, useConnectDialog } from "./model";
 
-const { list, openRemote, executeAction } = vi.hoisted(() => ({
+const { list, distros, globalSettings, openRemote, executeAction } = vi.hoisted(() => ({
   list: vi.fn(),
+  distros: vi.fn(),
+  globalSettings: vi.fn(),
   openRemote: vi.fn(),
   executeAction: vi.fn(),
 }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
-  return { ...real, commands: { ...real.commands, remoteBootstrapList: list } };
+  return {
+    ...real,
+    commands: { ...real.commands, remoteBootstrapList: list, wslDistros: distros, settingsGetGlobal: globalSettings },
+  };
 });
 vi.mock("@/workbench/projectWindow", () => ({ openRemoteProject: openRemote }));
 vi.mock("@/platform/actions", async (importOriginal) => ({
@@ -34,18 +39,17 @@ const entry = (path: string, isDir = true): RemoteEntry => ({
 
 beforeEach(() => {
   vi.resetAllMocks();
-  useProject.setState({
-    project: null,
-    opening: false,
-    settings: {
-      ssh: {
-        configs: [
-          { id: "first", name: "First host", host: "first.example", user: "dev" },
-          { id: "selected", name: "Selected host", host: "selected.example", user: "dev" },
-        ],
-      },
-    } as Settings,
-  });
+  distros.mockResolvedValue({ status: "ok", data: [] });
+  // A remote project's window: its settings are the remote host's, without this machine's SSH configurations.
+  useProject.setState({ project: null, opening: false, settings: { ssh: { configs: [] } } as unknown as Settings });
+  globalSettings.mockResolvedValue({
+    ssh: {
+      configs: [
+        { id: "first", name: "First host", host: "first.example", user: "dev" },
+        { id: "selected", name: "Selected host", host: "selected.example", user: "dev" },
+      ],
+    },
+  } as Settings);
   useRemoteProgress.setState({ progress: null, location: null });
   openConnectDialog();
 });
@@ -57,6 +61,7 @@ it("browses the selected SSH host, navigates folders and opens one without a cur
   list.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
   openRemote.mockResolvedValue(true);
   render(<ConnectHost />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Browse" })).toBeEnabled());
   fireEvent.click(screen.getByRole("button", { name: "SSH configuration" }));
   fireEvent.click(screen.getByRole("option", { name: /Selected host/ }));
   fireEvent.click(screen.getByRole("button", { name: "Browse" }));
@@ -87,7 +92,9 @@ it("browses the selected SSH host, navigates folders and opens one without a cur
   await waitFor(() => expect(screen.getByLabelText("Project directory:")).toHaveValue("/home/dev/projects"));
   expect(within(folders).getAllByRole("button")).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "Open" }));
-  await waitFor(() => expect(openRemote).toHaveBeenCalledWith("selected", "/home/dev/projects"));
+  await waitFor(() =>
+    expect(openRemote).toHaveBeenCalledWith({ kind: "ssh", config: "selected" }, "/home/dev/projects"),
+  );
   expect(useConnectDialog.getState().open).toBe(false);
   expect(useProject.getState().project).toBeNull();
 });
@@ -95,6 +102,7 @@ it("browses the selected SSH host, navigates folders and opens one without a cur
 it("shows a connection error and lets the welcome window retry Browse", async () => {
   list.mockRejectedValueOnce(new Error("Connection refused"));
   render(<ConnectHost />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Browse" })).toBeEnabled());
   fireEvent.change(screen.getByLabelText("Project directory:"), { target: { value: "  /srv/projects  " } });
   fireEvent.click(screen.getByRole("button", { name: "Browse" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Connection refused");
@@ -107,12 +115,41 @@ it("shows a connection error and lets the welcome window retry Browse", async ()
   expect(openRemote).not.toHaveBeenCalled();
 });
 
-it("offers SSH configuration from the welcome window and disables Browse until one exists", () => {
-  useProject.setState({ settings: { ssh: { configs: [] } } as unknown as Settings });
+it("offers SSH configuration and disables Browse until one exists, then lists the new one", async () => {
+  globalSettings.mockResolvedValue({ ssh: { configs: [] } } as unknown as Settings);
   render(<ConnectHost />);
+  await waitFor(() => expect(globalSettings).toHaveBeenCalled());
   expect(screen.getByRole("button", { name: "Browse" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Open" })).toBeDisabled();
   fireEvent.click(screen.getByRole("button", { name: "Configure…" }));
   expect(executeAction).toHaveBeenCalledWith("file.settings", "tools.sshConfigurations");
+  expect(list).not.toHaveBeenCalled();
+
+  globalSettings.mockResolvedValue({
+    ssh: { configs: [{ id: "dev", name: "dev", host: "192.168.1.2", user: "robin" }] },
+  } as Settings);
+  act(() => emitLocalIdeEvent({ type: "settingsChanged", key: "ssh.configs" } as IdeEvent));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Browse" })).toBeEnabled());
+  expect(screen.getByRole("button", { name: "SSH configuration" })).toHaveTextContent("dev");
+});
+
+it("hides the WSL choice when no distribution is installed", async () => {
+  render(<ConnectHost />);
+  await waitFor(() => expect(distros).toHaveBeenCalled());
+  expect(screen.queryByRole("button", { name: "Connect through" })).toBeNull();
+});
+
+it("opens a folder of the chosen WSL distribution, without browsing over SFTP", async () => {
+  const installed = ["Ubuntu-24.04", "Debian"];
+  distros.mockResolvedValue({ status: "ok", data: installed });
+  openRemote.mockResolvedValue(true);
+  render(<ConnectHost />);
+  fireEvent.click(await screen.findByRole("button", { name: "Connect through" }));
+  fireEvent.click(screen.getByRole("option", { name: "WSL" }));
+  expect(screen.queryByRole("button", { name: "Browse" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "WSL distribution" }));
+  fireEvent.click(screen.getByRole("option", { name: installed[1] }));
+  fireEvent.click(screen.getByRole("button", { name: "Open" }));
+  await waitFor(() => expect(openRemote).toHaveBeenCalledWith({ kind: "wsl", distro: installed[1] }, "~"));
   expect(list).not.toHaveBeenCalled();
 });

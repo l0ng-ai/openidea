@@ -1,0 +1,39 @@
+package openidea:plugin@1.6.0;
+
+/// Optional export (world `plugin-inlay-hints`): inline hints in documents of
+/// the languages declared with the `inlay-hints` provider kind, including
+/// languages the plugin doesn't contribute. They are shown next to the
+/// language server's hints.
+interface inlay-hints-provider {
+    use types.{position, range};
+
+    /// The document the hints are for (the editor's text while it is open).
+    record document {
+        path: string,
+        language: string,
+        version: u64,
+        text: string,
+    }
+
+    /// A hint shown at `position`, before the character there.
+    record inlay-hint {
+        /// UTF-16 position (0-based line and column).
+        position: position,
+        /// The text shown, e.g. `GET /orders` or `: string`.
+        label: string,
+        /// `type` or `parameter` follow the Inlay Hints settings of that kind;
+        /// anything else counts as `other`.
+        kind: string,
+        /// Shown when the pointer rests on the hint.
+        tooltip: option<string>,
+        /// A space before the label.
+        padding-left: bool,
+        /// A space after the label.
+        padding-right: bool,
+    }
+
+    /// The hints within `range` (the visible part of the document), under the
+    /// edit-path budget. Hints outside `range` are dropped; at most 10,000 per
+    /// call.
+    inlay-hints: func(doc: document, range: range) -> list<inlay-hint>;
+}

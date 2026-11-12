@@ -1,12 +1,20 @@
 # Third-party licenses
 
+## Project type icons
+
+`src/ui/brands/*.svg` use the unmodified logo paths from
+[Simple Icons](https://github.com/simple-icons/simple-icons), retrieved through
+Iconify (`simple-icons:angular`, `simple-icons:astro`, `simple-icons:cplusplus`, `simple-icons:dart`, `simple-icons:django`, `simple-icons:dotnet`, `simple-icons:elixir`, `simple-icons:express`, `simple-icons:fastapi`, `simple-icons:flask`, `simple-icons:flutter`, `simple-icons:go`, `simple-icons:haskell`, `simple-icons:html5`, `simple-icons:kotlin`, `simple-icons:ktor`, `simple-icons:laravel`, `simple-icons:nestjs`, `simple-icons:nextdotjs`, `simple-icons:nodedotjs`, `simple-icons:nuxt`, `simple-icons:openjdk`, `simple-icons:phoenixframework`, `simple-icons:php`, `simple-icons:python`, `simple-icons:quarkus`, `simple-icons:ruby`, `simple-icons:rubyonrails`, `simple-icons:rust`, `simple-icons:scala`, `simple-icons:springboot`, `simple-icons:svelte`, `simple-icons:swift`, `simple-icons:symfony`, `simple-icons:vite`, `simple-icons:zig`) and filled with the brand colors (the standard icon grey for black logos). Licensed under [CC0 1.0 Universal](https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md).
+
 ## Project Lombok
 
-`plugins/lombok/lombok-1.18.48-openidea.1.jar` contains Project Lombok v1.18.48 with the Equinox
-classloader fix from [projectlombok/lombok#4059](https://github.com/projectlombok/lombok/pull/4059).
+`java/lombok/lombok-1.18.48-openidea.3.jar` contains Project Lombok v1.18.48 with the Equinox
+classloader fix from [projectlombok/lombok#4059](https://github.com/projectlombok/lombok/pull/4059),
+the [compact record constructor builder fix](java/lombok/patches/builder-compact-constructor.patch)
+and the ECJ constructor-call fix from [projectlombok/lombok#4089](https://github.com/projectlombok/lombok/pull/4089).
 Copyright (C) 2009-2021 The Project Lombok Authors. MIT license and bundled component
-notices are retained in [plugins/lombok/LICENSE](plugins/lombok/LICENSE) and inside the jar.
-Source tag, patch commits and build instructions: [plugins/lombok/README.md](plugins/lombok/README.md).
+notices are retained in [java/lombok/LICENSE](java/lombok/LICENSE) and inside the jar.
+Source tag, patch commits and build instructions: [java/lombok/README.md](java/lombok/README.md).
 
 ## JetBrains IntelliJ Platform icons
 
@@ -32,7 +40,8 @@ icon set, copied unmodified (some renamed) from JetBrains' open-source repositor
 - [intellij-plugins](https://github.com/JetBrains/intellij-plugins) (each plugin
   carries its own licence): `protobuf/protoeditor-core` (`newui/protoFile` →
   `fileTypes/protoFile`, Apache-2.0); `terraform` (`newui/hashiCorp` →
-  `fileTypes/hashiCorp`, Apache-2.0); `makefile` (`expui/makefile` →
+  `fileTypes/hashiCorp`, Apache-2.0); `Astro` (`icons/astro` → `fileTypes/astro`,
+  Apache-2.0); `makefile` (`expui/makefile` →
   `fileTypes/makefile`, MIT, Copyright (c) 2016 Victor Kropp — full text below).
 
 The read/write usage filter assets (`actions/showReadAccess{,_dark}.svg` and
@@ -51,6 +60,15 @@ Their original copyright headers and Apache-2.0 licensing are retained.
 
 At render time `src/ui/icons.tsx` may recolour monochrome icons to `currentColor`.
 
+## JetBrains IntelliJ Platform VCS log graph algorithms
+
+`crates/ide-vcs/src/bek.rs` and `src/features/vcs/graph.ts` adapt the Bek ordering,
+graph layout and LinearBek merge linearization algorithms from
+[intellij-community](https://github.com/JetBrains/intellij-community/tree/1d70d5c54302d655758edbd2f808fb8dea8b1764/platform/vcs-log/graph/src/com/intellij/vcs/log/graph)
+(`impl/facade/sort/bek`, `impl/permanent/GraphLayoutBuilder.kt` and
+`linearBek/LinearBekGraphBuilder.java`). Modified from the originals.
+Copyright 2000-2026 JetBrains s.r.o. and contributors. Apache License 2.0 (below).
+
 ## JetBrains IntelliJ Platform diff algorithm
 
 `src/features/vcs/comparison/**` is a TypeScript port of the text comparison of
@@ -63,6 +81,11 @@ ComparisonUtil, iterables) and `platform/diff-impl` (ComparisonManagerImpl's
 from its tests (`LineComparisonUtilTest`, `WordComparisonUtilTest`,
 `SplitComparisonUtilTest`). Modified from the originals. Copyright 2000-2026
 JetBrains s.r.o. and contributors. Apache License 2.0 (below).
+
+`src/features/vcs/mergeDiff3.ts`, `chunkOptimizer.ts` and `mergeModel.ts` also adapt
+the IntelliJ Platform merge implementation (`MergeRangeUtil`, `MergeResolveUtil`,
+`ChunkOptimizer.LineChunkOptimizer` and `MergeConflictModel`). Modified from the
+originals. Copyright 2000-2026 JetBrains s.r.o. and contributors. Apache License 2.0 (below).
 
 `src/ui/openidea/**` holds OpenIDEA's own file-type icons drawn in the expui style for
 languages whose JetBrains icons are not open source (Go, Ruby, Dart, Lua, Zig,
@@ -245,7 +268,7 @@ END OF TERMS AND CONDITIONS
 
 The Solarized palettes in `src/styles/tokens.css` are adapted from
 [Ethan Schoonover’s Solarized](https://github.com/altercation/solarized/tree/62f656a02f93c5190a8753159e34b385588d5ff3).
-See [theme sources and mapping](docs/themes.md). MIT license:
+MIT license:
 
 ```text
 Copyright (c) 2011 Ethan Schoonover
@@ -273,7 +296,11 @@ THE SOFTWARE.
 
 The One palettes and semantic syntax mapping in `src/styles/tokens.css` are
 adapted from GitHub’s Atom One syntax and UI themes.
-Source revisions are listed in [theme sources and mapping](docs/themes.md).
+Source revisions:
+[one-light-syntax d845790](https://github.com/atom/one-light-syntax/tree/d84579027410c576086dfca14d934c4bd74b0438),
+[one-dark-syntax 9c96f44](https://github.com/atom/one-dark-syntax/tree/9c96f4454362267ac45322063e193ccf9d2debb1),
+[one-light-ui a27bce3](https://github.com/atom/one-light-ui/tree/a27bce35088ecd323e44f5c2510bcf2d4e9efcf8),
+[one-dark-ui 18c2143](https://github.com/atom/one-dark-ui/tree/18c2143d41e17b337fff6dc7024562c4d999be17).
 Both syntax themes use the following MIT notice:
 
 ```text

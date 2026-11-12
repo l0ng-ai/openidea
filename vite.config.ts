@@ -25,8 +25,19 @@ export default defineConfig(() => ({
     strictPort: true,
     host: host || false,
     hmr: host ? { protocol: "ws", host } : undefined,
-    watch: { ignored: ["**/src-tauri/**", "**/crates/**", "**/target/**"] },
+    watch: {
+      ignored: [
+        "**/src-tauri/**",
+        "**/crates/**",
+        "**/target/**",
+        // The packages' sources and builds (not `src/features/plugins`).
+        `${fileURLToPath(new URL("./plugins", import.meta.url))}/**`,
+      ],
+    },
   },
+  // The app's own entry only: plugins' web pages (`plugins/**/web-src`) are
+  // separate projects with their own dependencies, never part of this bundle.
+  optimizeDeps: { entries: ["index.html"] },
   build: {
     target: "safari16",
     sourcemap: true,
@@ -35,6 +46,6 @@ export default defineConfig(() => ({
     environment: "jsdom",
     globals: false,
     setupFiles: ["./src/test/setup.ts"],
-    include: ["src/**/*.test.{ts,tsx}", "perf/**/*.test.ts", "scripts/**/*.test.ts"],
+    include: ["src/**/*.test.{ts,tsx}", "perf/**/*.test.ts", "evals/**/*.test.ts", "scripts/**/*.test.ts"],
   },
 }));

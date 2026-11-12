@@ -1,0 +1,21 @@
+id = "solidity"
+name = "Solidity"
+extensions = ["sol"]
+line-comment = "//"
+block-comment = ["/*", "*/"]
+indent = { tab-size = 4, insert-spaces = true }
+
+[[language-servers]]
+name = "solidity-language-server"
+command = "nomicfoundation-solidity-language-server"
+args = ["--stdio"]
+root-markers = ["hardhat.config.ts", "hardhat.config.js", "foundry.toml", "truffle-config.js", "remappings.txt", "package.json"]
+install-hint = "npm install -g @nomicfoundation/solidity-language-server"
+
+[[language-servers]]
+name = "solc"
+command = "solc"
+args = ["--lsp"]
+root-markers = ["foundry.toml", "remappings.txt"]
+fallback = true
+install-hint = "Install solc (https://docs.soliditylang.org/en/latest/installing-solidity.html)"

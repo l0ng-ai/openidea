@@ -11,12 +11,14 @@ const OPTIONS: { key: Flag; label: string }[] = [
   { key: "tagNames", label: "Show tag names" },
   { key: "commitTimestamp", label: "Show commit time rather than author time" },
   { key: "refsOnLeft", label: "Show references on the left" },
+  { key: "showLineStats", label: "Show lines added and deleted" },
 ];
 
 const COLUMNS: { key: Flag; label: string }[] = [
   { key: "showAuthor", label: "Author" },
   { key: "showHash", label: "Hash" },
   { key: "showDate", label: "Date" },
+  { key: "showGitHubChecks", label: "GitHub Commit Checks" },
 ];
 
 export function LogSettingsPage() {

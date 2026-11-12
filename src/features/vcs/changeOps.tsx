@@ -1,17 +1,17 @@
 /** Local change operations: commit, rollback, add, stash. */
 import { useEffect, useState } from "react";
-import type { FileStatus, PartialCommitFile, Stash } from "@/bindings";
+import type { FileStatus, Stash } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { Checkbox, Dialog, Icon, Input, T, fileIconName } from "@/ui";
 import { notifications } from "@/workbench/contributions";
-import { commitRepos, groupOf, planCommit, renamedFromPath } from "./changes";
-import { useChangelists, withListDefaults } from "./changelists";
+import { groupOf, remainingOverrides, renamedFromPath } from "./changes";
 import { runCommitChecks } from "./commitChecks";
+import { contributedCheckProblems, currentPlan, selectionOf } from "./commitSelection";
 import { forgetAmendDraft, keepMessageAfterCommit, rememberMessage, useCommit } from "./commitStore";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { notifyFileOperation } from "@/platform/fileOps";
 import { confirmDialog, openDialog } from "./dialogs";
-import { hunkKeys } from "./hunks";
-import { KIND_COLOR, baseName, dirName, effectiveKind, relTo, rootOf, stripSlash } from "./model";
+import { KIND_COLOR, baseName, dirName, effectiveKind, relTo, stripSlash } from "./model";
 import { logConsole, runOp, saveAll } from "./ops";
 import { currentRepo, loadStashes, refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
@@ -28,21 +28,14 @@ export function firstLine(message: string): string {
 
 /** Stages the included changes and commits them. Returns the new commit id. */
 export async function commitChanges(): Promise<string | undefined> {
-  const { message, amend, signOff, author, runHooks } = useCommit.getState();
+  const { message, amend } = useCommit.getState();
   if (!message.trim() && !amend) {
     notifications().notify({ group: "vcs", level: "warning", title: "Commit message is empty" });
     return undefined;
   }
   await saveAll();
   await refreshNow();
-  const status = useVcs.getState().status;
-  const checks = withListDefaults(
-    status,
-    useVcs.getState().root ?? "",
-    useChangelists.getState().state,
-    useCommit.getState().checks,
-  );
-  const plan = planCommit(status, checks);
+  const plan = currentPlan();
   // Concluding a merge needs no further changes (e.g. every conflict resolved as "yours").
   const merging = useVcs.getState().branch?.operation === "merge";
   if (!plan.included.length && !amend && !merging) {
@@ -61,28 +54,29 @@ export async function commitChanges(): Promise<string | undefined> {
   }
   const candidates = plan.included.map((f) => ({ path: stripSlash(f.path), exists: effectiveKind(f) !== "deleted" }));
   // IDEA: failed checks show in the commit panel; the next Commit ("Commit Anyway") skips them.
-  if (!useCommit.getState().checkProblems.length) {
+  const checked = !useCommit.getState().checkProblems.length;
+  if (checked) {
     const problems = await runCommitChecks(candidates, amend);
     if (problems.length) {
       useCommit.setState({ checkProblems: problems });
       return undefined;
     }
   }
-  const partial = await partialCommitFiles(plan.partial);
-  // Like IDEA, every repository with included changes gets a commit with the same message.
-  const roots = useVcs.getState().roots;
-  const repos = commitRepos(plan.included, roots, currentRepo());
+  // After the checks: their modifications (reformat…) are part of the commit.
+  const selection = await selectionOf(plan);
+  if (checked) {
+    const problems = await contributedCheckProblems(selection);
+    if (problems.length) {
+      useCommit.setState({ checkProblems: problems });
+      return undefined;
+    }
+  }
   const id = await runOp(
     amend ? "Amend commit" : "Commit",
     async () => {
-      if (plan.unstage.length) await call(commands.vcsUnstage(plan.unstage));
-      const stage = [...plan.stage, ...partial.whole];
-      if (stage.length) await call(commands.vcsStage(stage));
       let id = "";
-      for (const repo of repos) {
-        const files = partial.files.filter((f) => (rootOf(f.path, roots) ?? null) === repo || repos.length === 1);
-        const options = { amend, signOff, author: author.trim() || null, runHooks, partial: files };
-        id = await call(commands.vcsCommit(repo, message.trim(), options));
+      for (const repo of selection.repositories) {
+        id = await call(commands.vcsCommit(repo.root || null, message.trim(), repo.options));
       }
       return id;
     },
@@ -90,43 +84,66 @@ export async function commitChanges(): Promise<string | undefined> {
       success: () => {
         const n = plan.included.length;
         const summary = firstLine(message);
-        const where = repos.length > 1 ? ` in ${repos.length} repositories` : "";
-        return `${n} file${n === 1 ? "" : "s"} ${amend ? "amended" : "committed"}${where}${summary ? `: ${summary}` : ""}`;
+        const several = selection.repositories.length;
+        const done = amend
+          ? several > 1
+            ? n === 1
+              ? tx`1 file amended in ${several} repositories`
+              : tx`${n} files amended in ${several} repositories`
+            : n === 1
+              ? tx("1 file amended")
+              : tx`${n} files amended`
+          : several > 1
+            ? n === 1
+              ? tx`1 file committed in ${several} repositories`
+              : tx`${n} files committed in ${several} repositories`
+            : n === 1
+              ? tx("1 file committed")
+              : tx`${n} files committed`;
+        return summary ? `${done}: ${summary}` : done;
       },
     },
   );
   if (id !== undefined) {
     rememberMessage(message);
     forgetAmendDraft();
-    useCommit.setState({ amend: false, checks: new Map(), excludedHunks: new Map(), checkProblems: [] });
+    // What the user left out of this commit stays left out; only the committed changes start over.
+    const { checks: userChecks, excludedHunks } = useCommit.getState();
+    useCommit.setState({
+      amend: false,
+      checks: remainingOverrides(userChecks, plan.included),
+      excludedHunks: remainingOverrides(excludedHunks, plan.included),
+      checkProblems: [],
+    });
     keepMessageAfterCommit(message, workflowSettings().vcs.commit.clearInitialMessage);
   }
   return id;
 }
 
-/**
- * The included blocks of files committed partially, as hunk ranges against HEAD of the
- * text on disk (saved just before). A file whose blocks are all included again (e.g. it
- * was edited since) is committed whole.
- */
-async function partialCommitFiles(paths: readonly string[]): Promise<{ files: PartialCommitFile[]; whole: string[] }> {
-  const files: PartialCommitFile[] = [];
-  const whole: string[] = [];
-  const excludedHunks = useCommit.getState().excludedHunks;
-  for (const path of paths) {
-    const [head, disk] = await Promise.all([call(commands.vcsFileAt(path, "HEAD")), call(commands.fsReadText(path))]);
-    const hunks = await commands.vcsDiffHunks(head ?? "", disk);
-    const keys = hunkKeys(disk, hunks);
-    const excluded = excludedHunks.get(path) ?? excludedHunks.get(`${path}/`);
-    const chosen = hunks.filter((_, i) => !excluded?.has(keys[i]!));
-    if (chosen.length === hunks.length) whole.push(path);
-    else
-      files.push({
-        path,
-        hunks: chosen.map(({ start, lines, oldStart, oldLines }) => ({ start, lines, oldStart, oldLines })),
-      });
-  }
-  return { files, whole };
+/** Delete… on unversioned files in the Changes view, as in IDEA: they move to the Trash. */
+/** Delete… in the Changes view: moves the files to the Trash (a tracked file then shows as deleted). */
+export async function deleteFiles(paths: readonly string[]) {
+  if (!paths.length) return;
+  const question = paths.length === 1 ? tx`Delete '${baseName(paths[0]!)}'?` : tx`Delete ${paths.length} items?`;
+  const ok = await confirmDialog({
+    title: "Delete",
+    okLabel: "Delete",
+    danger: true,
+    message: (
+      <>
+        {question}
+        <br />
+        <T>Items are moved to the Trash.</T>
+      </>
+    ),
+  });
+  if (!ok) return;
+  await runOp("Delete", async () => {
+    for (const path of paths) {
+      await call(commands.fsDelete(path));
+      notifyFileOperation({ kind: "deleted", paths: [path] });
+    }
+  });
 }
 
 /** Files the Rollback action applies to by default. */
@@ -199,12 +216,12 @@ function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () =
     await saveAll();
     const { unstage, discard } = rollbackPlan(chosen, deleteAdded);
     await runOp(
-      "Rollback",
+      tx("Rollback"),
       async () => {
         if (unstage.length) await call(commands.vcsUnstage(unstage));
         if (discard.length) await call(commands.vcsDiscard(discard));
       },
-      { success: `Rolled back ${chosen.length} file${chosen.length === 1 ? "" : "s"}` },
+      { success: chosen.length === 1 ? tx("Rolled back 1 file") : tx`Rolled back ${chosen.length} files` },
     );
   };
   return (
@@ -245,7 +262,7 @@ function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () =
                   })
                 }
               />
-              <Icon name={fileIconName(baseName(f.path))} size={14} />
+              <Icon name={fileIconName(baseName(f.path), f.path)} size={14} />
               <span className={styles.fileName} style={{ color: KIND_COLOR[kind] }}>
                 {baseName(f.path)}
               </span>
@@ -284,7 +301,7 @@ export async function addToVcs(paths: readonly string[]) {
     });
     return;
   }
-  await runOp(`Add ${targets.length} file${targets.length === 1 ? "" : "s"} to Git`, () =>
+  await runOp(targets.length === 1 ? tx("Add 1 file to Git") : tx`Add ${targets.length} files to Git`, () =>
     call(commands.vcsStage(targets.map(stripSlash))),
   );
 }
@@ -299,9 +316,9 @@ export function stashChanges(repo = currentRepo()): Promise<void> {
           if (r) {
             await saveAll();
             await runOp(
-              "Stash changes",
+              tx("Stash changes"),
               () => call(commands.vcsStashPush(repo, r.message || null, r.includeUntracked, r.keepIndex)),
-              { success: "Changes stashed" },
+              { success: tx("Changes stashed") },
             );
             void loadStashes().catch(() => undefined);
           }
@@ -372,10 +389,10 @@ export interface UnstashOptions {
 export function unstashTitles(o: UnstashOptions): { title: string; success: string } {
   const ref = `stash@{${o.index}}`;
   if (o.branch)
-    return { title: tx`Unstash ${ref} as branch ${o.branch}`, success: `Unstashed ${ref} on branch ${o.branch}` };
+    return { title: tx`Unstash ${ref} as branch ${o.branch}`, success: tx`Unstashed ${ref} on branch ${o.branch}` };
   return o.pop
-    ? { title: tx`Pop ${ref}`, success: `Unstashed ${ref}` }
-    : { title: tx`Apply ${ref}`, success: `Applied ${ref}` };
+    ? { title: tx`Pop ${ref}`, success: tx`Unstashed ${ref}` }
+    : { title: tx`Apply ${ref}`, success: tx`Applied ${ref}` };
 }
 
 export async function unstash(o: UnstashOptions, repo = currentRepo()) {
@@ -482,8 +499,8 @@ export async function dropStash(index: number, message: string, repo = currentRe
     danger: true,
   });
   if (!ok) return;
-  await runOp(`Drop stash@{${index}}`, () => call(commands.vcsStashDrop(repo, index)), {
-    success: `Dropped stash@{${index}}`,
+  await runOp(tx`Drop ${`stash@{${index}}`}`, () => call(commands.vcsStashDrop(repo, index)), {
+    success: tx`Dropped ${`stash@{${index}}`}`,
   });
   void loadStashes().catch((e) => logConsole("err", String(e)));
 }

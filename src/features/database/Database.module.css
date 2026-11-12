@@ -67,7 +67,7 @@
   right: -3px;
   width: 6px;
   height: 100%;
-  cursor: col-resize;
+  cursor: ew-resize;
 }
 .rowNumber {
   display: flex;
@@ -107,6 +107,9 @@
   color: var(--fg-muted);
   font-style: italic;
 }
+.lineBreak {
+  color: var(--fg-muted);
+}
 .cellEditor {
   min-width: 0;
   height: 24px;
@@ -116,6 +119,11 @@
   color: var(--fg);
   font: inherit;
   outline: none;
+}
+
+.cellCheckbox {
+  flex-shrink: 0;
+  margin: 0 6px 0 0;
 }
 
 /* ---- Tool windows ------------------------------------------------------------ */
@@ -235,6 +243,12 @@
   margin: 0 4px;
   background: var(--border);
 }
+.treeFilter {
+  flex: 1;
+  min-width: 80px;
+  max-width: 280px;
+  margin-left: 4px;
+}
 .treeHost {
   flex: 1;
   min-height: 0;
@@ -292,7 +306,9 @@
 
 /* Inline statement errors in consoles. */
 :global(.cm-openidea-db-error) {
-  text-decoration: underline wavy var(--danger);
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--danger);
   text-underline-offset: 3px;
 }
 
@@ -339,11 +355,15 @@
 /* Dialogs. */
 .form {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
   align-items: center;
   gap: 8px 12px;
-  min-width: 440px;
+  min-width: 0;
   padding: 14px;
+  overflow-wrap: anywhere;
+}
+.form > * {
+  min-width: 0;
 }
 .formLabel {
   color: var(--fg-secondary);
@@ -532,11 +552,12 @@
   background: var(--bg-editor);
   -webkit-user-select: text;
   user-select: text;
-  cursor: text;
+  cursor: default;
 }
 .outputLine {
   white-space: pre-wrap;
   word-break: break-word;
+  cursor: text;
 }
 .outputTime {
   color: var(--link);
@@ -553,21 +574,6 @@
 }
 .gridHost {
   position: relative;
-}
-/* IDEA's floating row count at the bottom of a result. */
-.rowPill {
-  position: absolute;
-  left: 50%;
-  bottom: 12px;
-  transform: translateX(-50%);
-  padding: 3px 10px;
-  border: 1px solid var(--border-popup, var(--border));
-  border-radius: var(--radius-small);
-  background: var(--bg-popup, var(--bg-elev));
-  color: var(--fg-secondary);
-  font-size: var(--fs-small);
-  box-shadow: var(--shadow-popup, none);
-  pointer-events: none;
 }
 .resultSource {
   color: var(--fg-muted);
@@ -625,9 +631,6 @@
   color: var(--fg-secondary);
   cursor: pointer;
 }
-:global(.cm-openidea-db-banner-close:hover) {
-  background: var(--bg-hover);
-}
 
 /* Parameter info in `VALUES (…)`. */
 :global(.cm-openidea-db-params) {
@@ -669,6 +672,11 @@
   font-size: var(--fs-small);
   color: var(--fg-secondary);
 }
+/* SQL types (INT, VARCHAR) read as keywords, as in the SQL editor. */
+.sqlPreview :global(.tok-typeName),
+.codeText :global(.tok-typeName) {
+  color: var(--syn-keyword);
+}
 .sqlPreview {
   margin: 0;
   padding: 8px 10px;
@@ -686,41 +694,6 @@
   border-radius: var(--radius-small);
   -webkit-user-select: text;
   user-select: text;
-}
-.sqlPreview :global(.tok-keyword),
-.codeText :global(.tok-keyword),
-.sqlPreview :global(.tok-operatorKeyword),
-.codeText :global(.tok-operatorKeyword) {
-  color: var(--syn-keyword);
-}
-.sqlPreview :global(.tok-string),
-.codeText :global(.tok-string),
-.sqlPreview :global(.tok-string2),
-.codeText :global(.tok-string2) {
-  color: var(--syn-string);
-}
-.sqlPreview :global(.tok-number),
-.codeText :global(.tok-number),
-.sqlPreview :global(.tok-bool),
-.codeText :global(.tok-bool),
-.sqlPreview :global(.tok-atom),
-.codeText :global(.tok-atom) {
-  color: var(--syn-number);
-}
-.sqlPreview :global(.tok-typeName),
-.codeText :global(.tok-typeName) {
-  color: var(--syn-keyword);
-}
-.sqlPreview :global(.tok-comment),
-.codeText :global(.tok-comment) {
-  color: var(--syn-comment);
-  font-style: italic;
-}
-.sqlPreview :global(.tok-punctuation),
-.codeText :global(.tok-punctuation),
-.sqlPreview :global(.tok-operator),
-.codeText :global(.tok-operator) {
-  color: var(--syn-punct);
 }
 .modifyBody {
   display: flex;
@@ -865,6 +838,25 @@
   font: inherit;
   cursor: pointer;
 }
+/* Go to Column (ColumnsPopup.tsx). */
+.columnsPopup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 320px;
+  padding: 8px;
+}
+.columnsList {
+  height: min(320px, 50vh);
+}
+.columnsRow {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+}
 .filterPopup {
   display: flex;
   flex-direction: column;
@@ -959,9 +951,53 @@
   font-family: var(--openidea-editor-font, var(--font-mono));
   font-size: var(--fs-code);
 }
-.valueText:focus {
+.valueText:focus,
+.recordText:focus {
   outline: none;
   border-color: var(--focus-ring);
+}
+/* The JSON value editor's host (#2333): the CodeMirror view fills it. */
+.valueEditor {
+  flex: 1;
+  min-height: 120px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-input);
+  color: var(--fg-strong);
+  overflow: hidden;
+}
+.valueEditor > :global(.cm-editor) {
+  height: 100%;
+  font-size: var(--fs-code);
+}
+.valueError {
+  color: var(--danger);
+  font-size: var(--fs-code);
+  overflow-wrap: anywhere;
+}
+.valueWindowBody {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 6px;
+  overflow: hidden;
+}
+.valueWindowBody .valueEditor {
+  min-height: 160px;
+}
+.recordText {
+  resize: vertical;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-input);
+  color: var(--fg-strong);
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-size: var(--fs-code);
+  -webkit-user-select: text;
+  user-select: text;
 }
 .aggregates {
   width: 100%;
@@ -1241,6 +1277,12 @@
   color: transparent !important;
   caret-color: var(--fg-strong);
 }
+/* The input's own glyphs are transparent so the highlight layer below paints them; without
+   this the selection would be an empty highlight. */
+.sqlInputText::selection {
+  background: var(--bg-editor-selection);
+  color: var(--fg-strong);
+}
 .sqlHighlight {
   position: absolute;
   inset: 0;
@@ -1258,4 +1300,93 @@
   content: "";
   flex: none;
   width: 2px;
+}
+
+/* Wrap large values instead of laying megabytes out as one line. */
+.largeCellEditor {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: min(60vh, 480px);
+  padding: 8px;
+  font: inherit;
+  color: inherit;
+  background: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  resize: vertical;
+}
+
+/* The grid beside the Record / Value / Aggregates panel, under its search bar. */
+.dataMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* IDEA's search bar above a result grid. */
+.gridSearch {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-ui);
+}
+.gridSearchField {
+  flex: 0 1 360px;
+  min-width: 160px;
+}
+.gridSearchCount {
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+  padding: 0 6px;
+  white-space: nowrap;
+  min-width: 56px;
+}
+.gridSearchNone {
+  color: var(--danger);
+}
+.cellMatch {
+  background: var(--bg-text-search-result);
+}
+.cellMatchCurrent {
+  background: var(--bg-text-search-result-current);
+}
+
+/* IDEA's floating pager at the bottom of a result: |< < 1-500 of 501+ > >| and the page size. */
+.resultPager {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border: 1px solid var(--border-popup, var(--border));
+  border-radius: var(--radius-small);
+  background: var(--bg-popup, var(--bg-elev));
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+  box-shadow: var(--shadow-popup, none);
+  white-space: nowrap;
+}
+.resultPagerRange {
+  padding: 0 6px;
+}
+.resultPagerCount {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+}
+.resultPagerCount:disabled {
+  color: inherit;
+  cursor: default;
 }

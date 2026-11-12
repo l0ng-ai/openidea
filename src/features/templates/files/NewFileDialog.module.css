@@ -28,6 +28,21 @@
   flex-direction: column;
   gap: 6px;
 }
+.variableDialog {
+  --form-inset: calc((var(--space-3) + var(--space-4)) / 2);
+}
+.variableDialog .form {
+  padding-inline: var(--form-inset);
+  gap: var(--space-3);
+}
+.variableDialog [data-dialog-footer] {
+  padding-inline: var(--form-inset);
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
 .kinds {
   display: flex;
   flex-direction: column;

@@ -1,13 +1,33 @@
-import React from "react";
+import React, { useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import "./styles/global.css";
 import { Workbench } from "./workbench/Workbench";
 import { activateSecondaryWindow, activateWorkbench } from "./workbench/activate";
-import { activateFeatures, activateSettingsWindowFeatures, SettingsWindow, settingsWindowParent } from "./features";
+import {
+  activateComparisonWindowFeatures,
+  activateDeploymentWindowFeatures,
+  activateDiffWindowFeatures,
+  activateFeatures,
+  activateSettingsWindowFeatures,
+  ComparisonWindow,
+  DeploymentWindow,
+  DiffWindow,
+  SettingsWindow,
+} from "./features";
+import { auxiliaryWindow } from "./platform/auxWindow";
+import { installRepeatedDoubleClick } from "./platform/doubleClick";
+import { installErrorLogging, logError } from "./platform/errorLog";
+import { guessOs } from "./platform/platformInfo";
+import { installReorderedTapClick } from "./platform/reordered-tap-click";
+import { installWebKitClipboardGuard } from "./platform/webkitClipboard";
+import { installPageSwipeTracking } from "./platform/pageSwipe";
+import { installImeKeyGuard } from "./platform/ime";
 import { installKeyboardDispatcher } from "./platform/keymap";
-import { isTauri } from "./platform/ipc";
+import { installPointerFocus } from "./platform/pointerFocus";
+import { call, commands, isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
 import { prefetchLazyComponents } from "./ui";
+import { installWindowDrag } from "./workbench/window-drag";
 
 if (import.meta.env.DEV && isTauri()) {
   // The Tauri MCP bridge returns eval results via `window.__TAURI__` on Windows/Linux
@@ -16,12 +36,40 @@ if (import.meta.env.DEV && isTauri()) {
   (window as unknown as { __TAURI__?: unknown }).__TAURI__ ??= { core: { invoke }, event: { emit } };
 }
 
-// The native Settings window (`settings-<parent>`) loads this page too.
-const settingsParent = settingsWindowParent();
+installRepeatedDoubleClick();
+// WebKit only (bug 219670). In Chromium (the e2e browser) a scripted double-click stamps its
+// second press like the release before it, which the shim would take for a reordered tap and
+// click twice.
+if (guessOs() === "macos" && !/Chrome|Firefox/.test(navigator.userAgent)) installReorderedTapClick();
+if (guessOs() === "linux" && isTauri()) installWebKitClipboardGuard();
+// A double click on the title bar fills the work area; the backend steps the frame once per
+// presented webview frame, because AppKit's own zoom hides the page until the resize ends.
+installWindowDrag({
+  toggleMaximize: () => call(commands.windowToggleZoom()).catch((e) => console.warn("cannot zoom the window", e)),
+});
+installPointerFocus();
+installImeKeyGuard();
+installErrorLogging();
+installPageSwipeTracking(window);
 
-if (settingsParent !== null) {
+// Auxiliary windows (Settings `settings-<parent>`, comparisons `comparison-<parent>-<n>`, Sync with
+// Deployed `deployment-<parent>`) load this page too.
+const aux = auxiliaryWindow();
+
+if (aux?.kind === "settings") {
   activateSecondaryWindow();
-  activateSettingsWindowFeatures(settingsParent);
+  activateSettingsWindowFeatures(aux.parent);
+} else if (aux?.kind === "comparison") {
+  activateSecondaryWindow();
+  activateComparisonWindowFeatures(aux.parent);
+  installKeyboardDispatcher();
+} else if (aux?.kind === "diff") {
+  activateSecondaryWindow();
+  activateDiffWindowFeatures(aux.parent);
+  installKeyboardDispatcher();
+} else if (aux?.kind === "deployment") {
+  activateSecondaryWindow();
+  activateDeploymentWindowFeatures(aux.parent);
 } else {
   activateWorkbench();
   // `vite build --mode perf` is a production bundle for the performance harness (`perf/`).
@@ -40,9 +88,32 @@ if (settingsParent !== null) {
   installKeyboardDispatcher();
 }
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>{settingsParent !== null ? <SettingsWindow /> : <Workbench />}</React.StrictMode>,
+function App() {
+  useEffect(() => {
+    hideSplash();
+    // Views split out of the start-up bundle load in the background once the UI is up.
+    if (!aux) return prefetchLazyComponents();
+  }, []);
+  return aux?.kind === "settings" ? (
+    <SettingsWindow />
+  ) : aux?.kind === "comparison" ? (
+    <ComparisonWindow />
+  ) : aux?.kind === "diff" ? (
+    <DiffWindow />
+  ) : aux?.kind === "deployment" ? (
+    <DeploymentWindow />
+  ) : (
+    <Workbench />
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root") as HTMLElement, {
+  onUncaughtError: (error) => {
+    logError("Uncaught render error", error);
+    window.dispatchEvent(new CustomEvent("openidea:boot-error", { detail: error }));
+  },
+}).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
 );
-hideSplash();
-// Views split out of the start-up bundle load in the background once the UI is up.
-if (settingsParent === null) prefetchLazyComponents();

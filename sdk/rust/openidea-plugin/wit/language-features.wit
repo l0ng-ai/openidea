@@ -1,0 +1,114 @@
+package openidea:plugin@1.6.0;
+
+/// Additional language features, called only for declared API 1.4 provider kinds.
+/// Editor calls have a 50 ms soft / 500 ms hard budget; formatting has 5 seconds.
+interface language-features {
+    use types.{error, position, range, text-edit, location};
+    /// A versioned document snapshot. Coordinates are zero-based UTF-16.
+    record document {
+        path: string,
+        language: string,
+        version: u64,
+        text: string,
+    }
+    /// A parameter label, either literal text or UTF-16 offsets within the signature label.
+    variant parameter-label { text(string), offsets(tuple<u32, u32>) }
+    /// Indentation options selected by the editor.
+    record format-options {
+        tab-size: u32,
+        insert-spaces: bool,
+    }
+    /// One parameter, with optional Markdown documentation.
+    record parameter {
+        label: parameter-label,
+        documentation: option<string>,
+    }
+    /// One callable signature; documentation is Markdown.
+    record signature {
+        label: string,
+        documentation: option<string>,
+        parameters: list<parameter>,
+    }
+    /// Callable signatures and zero-based active signature/parameter indices.
+    record signature-help-result {
+        signatures: list<signature>,
+        active-signature: u32,
+        active-parameter: u32,
+    }
+    /// An occurrence of the symbol. Kind: text, read or write; unknown is text.
+    record highlight {
+        range: range,
+        kind: string,
+    }
+    /// An absolute path, project-relative path or HTTP(S) URL to follow on click.
+    record document-link {
+        range: range,
+        target: string,
+    }
+    /// An inline action. Command must be this plugin's declared command id.
+    record code-lens {
+        range: range,
+        title: string,
+        command: string,
+        argument: option<string>,
+    }
+    /// A multi-line fold. Kinds: region, comment or imports; unknown is region.
+    record fold-range {
+        start-line: u32,
+        end-line: u32,
+        kind: string,
+    }
+    /// A color literal. All channels are finite floats in the inclusive range 0–1.
+    record color-info {
+        range: range,
+        red: f32,
+        green: f32,
+        blue: f32,
+        alpha: f32,
+    }
+    /// An outline node. Parent indexes this list, precedes the child and contains it.
+    /// Kinds are LSP-style names (e.g. class, method, enum-member); unknown is neutral.
+    record document-symbol {
+        name: string,
+        detail: string,
+        kind: string,
+        range: range,
+        selection-range: range,
+        parent: option<u32>,
+    }
+    /// A line action for this plugin's own declared command. Icons follow line-marker
+    /// aliases, registered icon names or declared manifest marker SVG paths.
+    record gutter-action {
+        line: u32,
+        icon: option<string>,
+        tooltip: string,
+        command: string,
+        argument: option<string>,
+    }
+    /// Format the whole document or the selected range.
+    format: func(doc: document, range: option<range>, options: format-options) -> result<list<text-edit>, error>;
+    /// Signature help when the language server has no signatures.
+    signature-help: func(doc: document, at: position) -> option<signature-help-result>;
+    /// Occurrences at the caret, appended to language-server highlights.
+    document-highlights: func(doc: document, at: position) -> list<highlight>;
+    /// Navigable ranges, appended to language-server document links.
+    document-links: func(doc: document) -> list<document-link>;
+    /// Clicks run only this plugin's declared commands.
+    code-lenses: func(doc: document) -> list<code-lens>;
+    /// Nested ranges, innermost to outermost.
+    selection-ranges: func(doc: document, at: position) -> list<range>;
+    /// Folds to merge with tree-sitter, for any declared language.
+    folding: func(doc: document) -> list<fold-range>;
+    /// Color literals to show in the existing color-preview gutter and picker.
+    colors: func(doc: document) -> list<color-info>;
+    /// Replacement strings for the selected color range.
+    color-presentations: func(doc: document, color: color-info) -> list<string>;
+    /// Used only when no LSP document symbols are available.
+    document-symbols: func(doc: document) -> list<document-symbol>;
+    /// Implementation locations, merged with language-server results.
+    implementation: func(doc: document, at: position) -> list<location>;
+    /// Type-declaration locations, merged with language-server results.
+    type-definition: func(doc: document, at: position) -> list<location>;
+    /// Clicks run only this plugin's declared commands.
+    gutter-actions: func(doc: document) -> list<gutter-action>;
+}

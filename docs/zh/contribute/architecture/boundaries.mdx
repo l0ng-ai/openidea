@@ -1,0 +1,56 @@
+---
+title: "Rust 还是 UI？"
+description: "哪些工作属于 Rust 后端、哪些属于前端，新功能该如何划分，以及代码库中的实例。"
+---
+
+一句话：**前端负责呈现和交互；数据、I/O 以及任何在远程机器上也必须能用的东西归 Rust。** 前端自己从不读写磁盘、启动进程或建立网络连接，而是通过类型化的命令请求后端。
+
+## 属于 Rust 的工作
+
+| 类型               | 原因                                                   | 例子                                                                                                                                         |
+| ------------------ | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| 文件系统访问       | 编码、文件监听、忽略规则和远程项目都在一个地方处理。   | `ide-vfs`（“The UI never touches the disk directly”）：目录列举、带编码检测的读写、文件监听。                                                |
+| 文档的权威副本     | 语言服务器、重构、搜索和插件要看到与编辑器一致的文本。 | `ide-text` 为每个打开的文档保存一份 rope。UI 发送带基线版本号的 CodeMirror 变更集；过期的会以 `ErrorKind::OutOfSync` 拒绝，UI 随后重新同步。 |
+| 进程与协议         | 子进程、管道和 JSON-RPC 分帧需要真实的操作系统。       | `ide-lsp`、`ide-dap`、`ide-jsonrpc`、`ide-run`、`ide-terminal`（PTY）、`ide-agent`（ACP）。                                                  |
+| 项目级工作         | 遍历成千上万个文件不能阻塞 UI 线程。                   | `ide-index`（文件与符号，持久化在 redb）、`ide-search`（基于 ripgrep 引擎 crate）、`ide-analysis`（重复代码、结构化搜索）、`ide-spell`。     |
+| VCS 与外部工具     | 行为必须与命令行一致。                                 | `ide-vcs`：读用 gitoxide，写用 `git` CLI，钩子、凭据和签名都照常生效。`ide-docker`、`ide-android`、`ide-github` 调用各自的 CLI。             |
+| 安全决策           | UI 可以被绕过，后端不能。                              | 每个命令在 invoke handler 里检查项目信任；插件 capability 和授权在 `ide-extension`；插件的 UI 贡献在交给客户端前先在 Rust 里校验。           |
+| 远程窗口需要的一切 | 远程服务端没有 webview。                               | 实现放在 `ide-host::ops`，`openidea-server` 运行的是同一份代码。                                                                             |
+
+Rust 里的工作还要遵守线程规则：长任务绝不阻塞 UI 线程或 Tauri 命令线程。用 `spawn_blocking` 或 rayon，并响应请求的 `CancellationToken`。
+
+## 属于前端的工作
+
+| 类型                 | 例子                                                                                                                                                            |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 渲染、布局、焦点     | 工作台、工具窗口、弹出框、树（`src/workbench/`、`src/ui/`）。                                                                                                   |
+| 输入与命令           | action 注册表、keymap 与键盘分发、基于上下文键的 `when` 子句（`src/platform/`）。                                                                               |
+| 编辑器状态与编辑行为 | CodeMirror 6 视图与状态、用于高亮的 CodeMirror 语言模式、Vim 模式（`src/features/vim`）、Emmet 展开（`src/features/templates/emmet`）、合并视图。               |
+| 后端结果的呈现       | 为展示而做的合并与排序：Search Everywhere 把 IDE 自己的符号索引与语言服务器的 workspace symbols 合并（`src/features/search/everywhere/` 中的 `mergeSymbols`）。 |
+| 渲染格式             | 查看器和 agent 对话里的 Markdown、Mermaid 渲染。                                                                                                                |
+| 客户端偏好           | keymap、外观、编辑器字体和配色方案在远程窗口中也保留在客户端（`src/platform/clientSettings.ts`）。                                                              |
+
+## 一个功能拆在两侧
+
+很多功能都有一半是“便宜但重 I/O”的工作放在 Rust，另一半是“轻量的数据加工”放在 UI。HTTP Client 里的 Spring 请求映射就是个好例子：
+
+- Rust（`crates/ide-host/src/ops/routes.rs`）：`spring_route_sources` 按常规忽略规则遍历项目，返回可能声明路由的 Java、Kotlin 文件的文本，并限制文件数和总字节数。注释原话：“The UI owns the annotation parser and the index it feeds, so this side stays a cheap scan.”
+- UI（`src/features/http-client/spring/routeIndex.ts`）：解析注解、建立请求路径索引、注册为 endpoint provider，并在 `.java` / `.kt` 文件的 `fsChanged` 事件到来时清掉缓存。
+
+另一个例子：tree-sitter 结构查询（`ide-syntax`）在 Rust 里针对缓存的语法树运行，而在语言服务器不可用时是否退回到它，由编辑器决定。
+
+## 新功能怎么划分
+
+满足下面任意一条，就放到 Rust：
+
+- 读写文件、启动进程或访问网络；
+- 必须在远程窗口中可用（项目和工具都在另一台机器上）；
+- 扫描范围超出打开的文档，或者耗时可能超过一帧；
+- 承担安全职责（信任、权限、校验不可信输入）；
+- 插件、MCP 服务或其他后端 crate 需要它的结果。
+
+如果只关乎外观或对输入的响应，并且只用后端已经提供的数据，就留在前端。
+
+放在 Rust 时按领域归位：逻辑放在负责该领域的 crate（或新建 `crates/ide-<domain>`），共享的命令实现放在 `ide-host::ops`，`src-tauri/src/commands/<domain>.rs` 里只写薄薄的适配层。`src-tauri` 中不放领域逻辑。
+
+放在前端时，它就是 `src/features/<name>/` 下的一个功能目录，注册 action 和 contribution，且不能 import 其他功能；见[前端](/zh/contribute/architecture/frontend)。

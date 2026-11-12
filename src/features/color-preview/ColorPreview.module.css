@@ -1,0 +1,27 @@
+/* Editor gutter color swatches. */
+.gutter :global(.cm-gutterElement) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.swatch {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  margin: 0 4px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  overflow: hidden;
+}
+.swatch > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.editable {
+  cursor: pointer;
+}
+.editable:hover {
+  border-color: var(--fg-muted);
+}

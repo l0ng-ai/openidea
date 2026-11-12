@@ -132,6 +132,21 @@ export function localTargets(path: string, symbol: LocalSymbol): { targets: Decl
 const SYMBOL_LIMIT = 500;
 
 /**
+ * Index definitions named `name` — what the project index knows beyond the language
+ * server's scope: only the roots `path` may navigate into (its own root plus its
+ * configured dependencies; see Project Structure › Dependencies). No local-variable
+ * heuristics: an empty server answer stays authoritative about the code it analyses.
+ */
+export async function indexDefinitions(path: string, name: string): Promise<DeclarationTarget[]> {
+  const matches = await call(commands.navIndexDefinitions(name, path));
+  const symbols = filterSymbols(matches, name, "other").filter((s) => compatibleFiles(path, s.path));
+  return rankTargets(
+    symbols.map((s) => ({ path: s.path, range: s.range, name: s.name, kind: s.kind, container: s.container })),
+    path,
+  );
+}
+
+/**
  * Go to Declaration without a language server: a certain local definition,
  * otherwise project index symbols with exactly that name (filtered by the
  * syntactic role when the tree tells). Call after `whenSynced`.
@@ -199,8 +214,19 @@ export function localHighlights(locals: Locals): LocalHighlight[] | null {
 // ---------------------------------------------------------------------------
 // Rename
 
-/** Languages whose shorthand fields (`{ x }`, `S { x }`) name both a key and a variable. */
-const SHORTHAND_LANGUAGES = new Set(["javascript", "javascriptreact", "typescript", "typescriptreact", "rust"]);
+/** Languages whose shorthand fields (`{ x }`, `S { x }`) name both a key and a variable;
+ * the web containers host the same TS/JS inside their `<script>` blocks. */
+const SHORTHAND_LANGUAGES = new Set([
+  "javascript",
+  "javascriptreact",
+  "typescript",
+  "typescriptreact",
+  "rust",
+  "vue",
+  "svelte",
+  "html",
+  "jsp",
+]);
 const SHORTHAND_NODES = new Set([
   "shorthand_property_identifier",
   "shorthand_property_identifier_pattern",

@@ -83,13 +83,37 @@ function TrustDialog() {
   );
 }
 
+async function untrustedAttachment() {
+  const project = useProject.getState().project;
+  if (!project?.workspace || project.workspace.projects[0] !== project.root) return null;
+  for (const path of project.workspace.projects) {
+    const status = await call(commands.projectTrustStatus(path)).catch(() => null);
+    if (status && !status.trusted) return status;
+  }
+  return null;
+}
+
 function RestrictedBanner() {
-  const restricted = useProject((s) => s.project?.trusted === false);
+  const project = useProject((s) => s.project);
+  const restricted = project?.trusted === false;
+  const [blocker, setBlocker] = useState<{ project: typeof project; path: string | null } | null>(null);
+  const path = blocker?.project === project ? blocker.path : null;
+  useEffect(() => {
+    let active = true;
+    if (restricted)
+      void untrustedAttachment().then((status) => {
+        if (active) setBlocker({ project, path: status?.root ?? null });
+      });
+    return () => {
+      active = false;
+    };
+  }, [project, restricted]);
   return restricted ? (
     <div className={styles.banner} role="status">
       <span>
         <T>Restricted Mode: project commands and tools are disabled.</T>
       </span>
+      {path && <PathLine path={path} />}
       <Button onClick={() => void executeAction("project.trust")}>
         <T>Trust Project</T>
       </Button>
@@ -115,6 +139,18 @@ function TrustSettings() {
       setError(String(e));
     }
   };
+  const addLocation = async () => {
+    try {
+      const { open } = await import("@/platform/dialog");
+      const picked = await open({ directory: true, multiple: false, title: "Add Trusted Location" });
+      const path = Array.isArray(picked) ? picked[0] : picked;
+      if (!path) return;
+      await call(commands.projectTrustAddLocation(path));
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
   return (
     <div className={styles.content}>
       <p>
@@ -132,9 +168,17 @@ function TrustSettings() {
           </Button>
         </div>
       ))}
-      <h3>
-        <T>Trusted locations</T>
-      </h3>
+      <div className={styles.sectionHead}>
+        <h3>
+          <T>Trusted locations</T>
+        </h3>
+        <Button onClick={() => void addLocation()}>
+          <T>Add folder…</T>
+        </Button>
+      </div>
+      <p className={styles.hint}>
+        <T>Every project inside a trusted location is trusted without asking.</T>
+      </p>
       {decisions?.locations.map((path) => (
         <div className={styles.row} key={path}>
           <span className={styles.path}>{path}</span>
@@ -162,6 +206,32 @@ async function decide(trusted: boolean) {
   pending.finish?.(true);
 }
 
+function promptForTrust(status: TrustStatus, scope: ProjectTrustScope): Promise<boolean> {
+  usePrompt.getState().finish?.(false);
+  return new Promise<boolean>((resolve) =>
+    usePrompt.setState({
+      path: status.root,
+      scope,
+      folder: false,
+      finish: (open) => {
+        usePrompt.setState({ path: null, scope: "current", finish: null, folder: false });
+        resolve(open);
+      },
+    }),
+  );
+}
+
+async function trustProject() {
+  if (!usePrompt.getState().path) {
+    const status = await untrustedAttachment();
+    if (status) {
+      await promptForTrust(status, "current");
+      return;
+    }
+  }
+  await decide(true);
+}
+
 export function activate(): () => void {
   initializeRemoteTrustMigration();
   const disposers = [
@@ -170,24 +240,13 @@ export function activate(): () => void {
         ? invokeLocal<TrustStatus>("project_trust_status", { path })
         : call(commands.projectTrustStatus(path)));
       if (status.decided) return true;
-      usePrompt.getState().finish?.(false);
-      return new Promise<boolean>((resolve) =>
-        usePrompt.setState({
-          path: status.root,
-          scope,
-          folder: false,
-          finish: (open) => {
-            usePrompt.setState({ path: null, scope: "current", finish: null, folder: false });
-            resolve(open);
-          },
-        }),
-      );
+      return promptForTrust(status, scope);
     }),
     registerOverlay({ id: "project.trustDialog", component: TrustDialog }),
     registerWorkbenchBanner({ id: "project.restrictedMode", component: RestrictedBanner }),
     registerSettingsPage({ id: "projectTrust", title: "Project Trust", group: "Security", component: TrustSettings }),
     registerActions([
-      { id: "project.trust", title: "Trust Project", category: "Project", run: () => decide(true) },
+      { id: "project.trust", title: "Trust Project", category: "Project", run: trustProject },
       {
         id: "project.previewRestricted",
         title: "Preview in Restricted Mode",

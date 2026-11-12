@@ -16,7 +16,7 @@ const runsJvmTests = (args: readonly string[]) =>
 /**
  * Whether a coverage runner is known for `config` (cheap; the backend decides for real):
  * cargo test / run / nextest, go test, Maven / Gradle tests, package.json test scripts,
- * Node.js programs and Python.
+ * Node.js programs, Python and Ruby (scripts, rspec, test rake tasks).
  */
 export function coverageSupports(config: Pick<RunConfig, "command" | "args" | "kind" | "isTest">): boolean {
   const program = programName(config.command);
@@ -43,6 +43,13 @@ export function coverageSupports(config: Pick<RunConfig, "command" | "args" | "k
     case "tsx":
     case "ts-node":
       return true;
+    case "ruby":
+    case "rspec":
+      return true;
+    case "bundle":
+    case "rake":
+    case "rails":
+      return config.isTest;
   }
   return (
     config.kind === "python" ||

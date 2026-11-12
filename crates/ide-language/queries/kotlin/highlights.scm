@@ -1,0 +1,21 @@
+(class_declaration name: (identifier) @type)
+(object_declaration name: (identifier) @type)
+(companion_object name: (identifier) @type)
+(type_alias type: (identifier) @type)
+(user_type (identifier) @type)
+(type_parameter (identifier) @type)
+(function_declaration name: (identifier) @function.definition)
+(parameter (identifier) @parameter.kotlin)
+(class_parameter (identifier) @parameter.kotlin ":")
+(property_declaration (variable_declaration (identifier) @variable))
+(class_body (property_declaration (variable_declaration (identifier) @property)))
+(class_parameter ["val" "var"] (identifier) @property ":")
+(enum_entry (identifier) @constant)
+(annotation (user_type (identifier) @attribute))
+(annotation (constructor_invocation (user_type (identifier) @attribute)))
+(call_expression . (identifier) @function)
+(call_expression . (navigation_expression (identifier) @function .))
+(class_modifier) @keyword
+(block_comment) @comment
+((block_comment) @comment.documentation (#match? @comment.documentation "^/\\*\\*"))
+(escape_sequence) @string.escape

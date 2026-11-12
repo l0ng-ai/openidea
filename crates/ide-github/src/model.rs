@@ -627,8 +627,8 @@ mod tests {
     #[test]
     fn finds_remote_by_repo() {
         let remotes = vec![
-            ide_vcs::Remote { name: "origin".into(), url: "git@github.com:me/App.git".into() },
-            ide_vcs::Remote { name: "upstream".into(), url: "https://github.com/org/app/".into() },
+            ide_vcs::Remote { name: "origin".into(), url: "git@github.com:me/App.git".into(), resolved_url: None },
+            ide_vcs::Remote { name: "upstream".into(), url: "https://github.com/org/app/".into(), resolved_url: None },
         ];
         assert_eq!(remote_for(&remotes, "me/app").map(|r| r.name.as_str()), Some("origin"));
         assert_eq!(remote_for(&remotes, "org/app").map(|r| r.name.as_str()), Some("upstream"));

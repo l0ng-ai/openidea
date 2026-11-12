@@ -11,6 +11,7 @@ import { indentUnit } from "@codemirror/language";
 import { isolateHistory } from "@codemirror/commands";
 import type { EditorState, Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
+import type { ExternalFormatter } from "@/bindings";
 import { commands, IpcError } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import { shortcutLabel } from "@/platform/keymap";
@@ -89,19 +90,24 @@ export function formatOptionsOf(state: EditorState): { tabSize: number; insertSp
     : { tabSize: unit.length || state.tabSize, insertSpaces: true };
 }
 
+interface FormatDocumentOptions {
+  explicit: boolean;
+  selectionOnly?: boolean;
+  onSave?: boolean;
+  /** Runs this external formatter whatever the settings select (Reformat with Prettier/oxfmt). */
+  tool?: ExternalFormatter;
+}
+
 export async function formatDocument(
   view: EditorView,
-  opts: { explicit: boolean; selectionOnly?: boolean; onSave?: boolean } = { explicit: true },
+  opts: FormatDocumentOptions = { explicit: true },
 ): Promise<FormatResult> {
   const result = await format(view, opts);
   if (opts.explicit && result.applied) formattedHint(view, result.lines);
   return result;
 }
 
-async function format(
-  view: EditorView,
-  opts: { explicit: boolean; selectionOnly?: boolean; onSave?: boolean },
-): Promise<FormatResult> {
+async function format(view: EditorView, opts: FormatDocumentOptions): Promise<FormatResult> {
   const { project, settings } = useProject.getState();
   const guard = formatGuardOptions(settings);
   const path = docOf(view)?.path;
@@ -111,7 +117,7 @@ async function format(
     return NOTHING;
   }
   const own = contributedAt<ContributedFormatter>(view.state, CONTRIBUTED_FORMAT, 0);
-  if (own) {
+  if (own && !opts.tool) {
     if (opts.onSave && !settings?.editor?.formatOnSave) return NOTHING;
     return applyContributedFormat(view, own, opts, guard);
   }
@@ -126,22 +132,30 @@ async function format(
   const options = formatOptionsOf(state);
   let edits;
   try {
-    edits = await lspRequest(() => commands.lspFormat(doc.doc, range, { ...options, onSave: opts.onSave }));
+    edits = await lspRequest(() =>
+      commands.lspFormat(doc.doc, range, { ...options, onSave: opts.onSave, tool: opts.tool }),
+    );
   } catch (e) {
-    if (e instanceof IpcError && e.data?.type === "tool" && (e.data.tool === "prettier" || e.data.tool === "oxfmt")) {
+    const formatter =
+      e instanceof IpcError && e.data?.type === "tool"
+        ? {
+            prettier: { failed: "Prettier formatting failed", timedOut: "Prettier formatting timed out" },
+            oxfmt: { failed: "oxfmt formatting failed", timedOut: "oxfmt formatting timed out" },
+            ruff: { failed: "Ruff formatting failed", timedOut: "Ruff formatting timed out" },
+          }[e.data.tool]
+        : undefined;
+    if (e instanceof IpcError && e.data?.type === "tool" && formatter) {
       const tool = e.data.tool;
       if (e.kind === "notFound" && e.data.missing) {
-        await executeAction("tools.promptInstall", { name: tool, sticky: !opts.onSave });
+        await executeAction("tools.promptInstall", { name: tool, sticky: !opts.onSave, formatter: true });
       } else if (e.kind !== "cancelled") {
         notifications().notify({
           group: "tools",
           level: "error",
-          title: tool === "oxfmt" ? tx("oxfmt formatting failed") : tx("Prettier formatting failed"),
+          title: tx(formatter.failed),
           body:
             e.kind === "timedOut"
-              ? tool === "oxfmt"
-                ? tx("oxfmt formatting timed out")
-                : tx("Prettier formatting timed out")
+              ? tx(formatter.timedOut)
               : createElement("span", { className: styles.diagnostics }, e.message),
           key: `${tool}-format-error:${doc.path}`,
           sticky: false,
@@ -161,7 +175,7 @@ async function format(
   }
   view.dispatch({
     changes,
-    userEvent: "format",
+    userEvent: "format.reformat",
     annotations: isolateHistory.of("full"),
     scrollIntoView: false,
   });
@@ -217,7 +231,7 @@ export async function formatLines(view: EditorView, from: number, to: number): P
 function applyContributedFormat(
   view: EditorView,
   format: ContributedFormatter,
-  opts: { explicit: boolean; selectionOnly?: boolean; onSave?: boolean },
+  opts: FormatDocumentOptions,
   guard: FormatGuardOptions,
 ): FormatResult {
   const state = view.state;
@@ -235,7 +249,12 @@ function applyContributedFormat(
     if (opts.explicit) showHint(view, "No lines changed: content is already properly formatted");
     return NOTHING;
   }
-  view.dispatch({ changes, userEvent: "format", annotations: isolateHistory.of("full"), scrollIntoView: false });
+  view.dispatch({
+    changes,
+    userEvent: "format.reformat",
+    annotations: isolateHistory.of("full"),
+    scrollIntoView: false,
+  });
   return { applied: true, changes: changes.length, lines: formattedLines(state.doc, changes) };
 }
 

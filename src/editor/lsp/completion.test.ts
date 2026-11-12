@@ -15,6 +15,7 @@ import {
 import {
   applyLspCompletion,
   callParens,
+  offersPaths,
   commitsLookup,
   completionExtension,
   explicitCompletion,
@@ -36,6 +37,7 @@ function item(over: Partial<CompletionItem> = {}): CompletionItem {
   return {
     label: "create",
     labelDetail: null,
+    labelDescription: null,
     detail: null,
     kind: "method",
     documentation: null,
@@ -127,6 +129,96 @@ describe("toCmCompletion", () => {
     expect(completionSymbolKind("typeParameter")).toBe("type");
     expect(completionSymbolKind(null)).toBe("text");
   });
+});
+
+describe("completion label presentation", () => {
+  // gopls v0.24.0: labelDetails.detail includes a leading space for field types; description is absent.
+  it.each([
+    ["Cap", "field", " int", "int", null, null, "int"],
+    ["Array", "field", " []any", "[]any", null, null, "[]any"],
+    ["Add", "method", "() error", "func() error", null, "()", "error"],
+    [
+      "MakeArray",
+      "function",
+      "(capacity int) *LRUArray",
+      "func(capacity int) *LRUArray",
+      null,
+      "(capacity int)",
+      "*LRUArray",
+    ],
+    ["Format", "method", "(layout string) string", "func(layout string) string", null, "(layout string)", "string"],
+    [
+      "Lookup",
+      "function",
+      "(x int) (string, error)",
+      "func(x int) (string, error)",
+      null,
+      "(x int)",
+      "(string, error)",
+    ],
+    ["Identity", "function", "[T any](x T) T", "func[T any](x T) T", null, "[T any](x T)", "T"],
+    [
+      "Apply",
+      "function",
+      "[T interface{ ~[]byte | ~[2]byte }](f func(T) (T, error), xs []T) (T, error)",
+      "func[T interface{ ~[]byte | ~[2]byte }](f func(T) (T, error), xs []T) (T, error)",
+      null,
+      "[T interface{ ~[]byte | ~[2]byte }](f func(T) (T, error), xs []T)",
+      "(T, error)",
+    ],
+    ["Run", "function", "()", "func()", null, "()", "func()"],
+    ["broken", "function", "(f func() error", "func(f func() error", null, "(f func() error", "func(f func() error"],
+    ["callback", "field", " func() error", "func() error", null, null, "func() error"],
+    ["pair", "field", " (int, error)", "(int, error)", null, null, "(int, error)"],
+    ["repeat", "function", "(x: number)", null, "number", "(x: number)", "number"],
+    ["len", "method", "(…)", "fn len(&self) -> usize", "fn(…) -> usize", "(…)", "fn(…) -> usize"],
+    ["print", "function", null, "(value: object, /) -> None", null, null, "(value: object, /) -> None"],
+    ["size", "method", "() const", "size_t", null, "()", "size_t"],
+    ["Other", "function", "() error", "func(x int) error", null, "()", "func(x int) error"],
+    ["Named", "function", "() error", "func() error", "description", "()", "description"],
+    ["fmt", "module", ' "fmt"', '"fmt"', null, null, '"fmt"'],
+    ["count", "field", "int", null, null, null, "int"],
+    ["count", "field", null, "int", null, null, "int"],
+    ["pair", "field", "(i32, i32)", null, null, null, "(i32, i32)"],
+    ["callback", "property", "(value: string) => void", null, null, null, "(value: string) => void"],
+    ["print", "method", "(Object obj)", "PrintStream.print(Object obj) : void", "void", "(Object obj)", "void"],
+    ["map", "method", "<T>(value: T)", null, "T[]", "<T>(value: T)", "T[]"],
+    [
+      "map",
+      "method",
+      "<T extends (x: number) => number>(value: T)",
+      null,
+      "T[]",
+      "<T extends (x: number) => number>(value: T)",
+      "T[]",
+    ],
+    ["literal", "function", '(value: ")" | "(")', null, "void", '(value: ")" | "(")', "void"],
+    ["literal", "function", '<T extends ">">(value: T)', null, "T", '<T extends ">">(value: T)', "T"],
+    ["literal", "function", "(value: ')' | '(')", null, "void", "(value: ')' | '(')", "void"],
+    [
+      "borrow",
+      "function",
+      "<'a>(value: &'a str)",
+      "fn borrow<'a>(value: &'a str)",
+      "&'a str",
+      "<'a>(value: &'a str)",
+      "&'a str",
+    ],
+    ["str", "function", "(value: object)", null, "str", "(value: object)", "str"],
+    ["println!", "function", "(…)", null, "std", "(…)", "std"],
+    ["size", "property", "number", "(property) size: number", "number", null, "number"],
+    ["value", "variable", "  ", "Order", " ", null, "Order"],
+  ] as const)(
+    "renders %s (%s) as name, signature suffix and type",
+    (label, kind, labelDetail, detail, labelDescription, suffix, type) => {
+      const source = item({ label, kind, labelDetail, detail, labelDescription });
+      const completion = toCmCompletion(source);
+      expect(completion.label).toBe(label);
+      expect(completion.detail ?? null).toBe(suffix);
+      expect(typeColumnText(source)).toBe(type);
+      expect(source.labelDetail).toBe(labelDetail);
+    },
+  );
 });
 
 describe("completion helpers", () => {
@@ -226,6 +318,44 @@ describe("applying completions", () => {
   });
 
   for (const mode of ["insert", "replace"] as const) {
+    for (const prefix of ["", "v"]) {
+      it(`${mode} leaves the caret after a field snippet accepted at root.${prefix}`, () => {
+        const { view, req, pos } = setup(`int a = root.${prefix}|Suffix`);
+        const start = "int a = root.".length;
+        const c = makeCompletion(
+          item({
+            label: "val",
+            kind: "field",
+            insertText: "val",
+            isSnippet: true,
+            replaceRange: { start: { line: 0, col: start }, end: { line: 0, col: pos } },
+          }),
+          req,
+        );
+        applyLspCompletion(view, c, start, pos, mode);
+        expect(view.state.doc.toString()).toBe(`int a = root.val${mode === "insert" ? "Suffix" : ""}`);
+        expect(view.state.selection.main.head).toBe(start + 3);
+      });
+    }
+
+    it(`${mode} places a fieldless snippet after imports and a cached UTF-16 prefix`, () => {
+      const { view, req, pos } = setup("\n/* 😀 */ root.|Suffix", "v");
+      const c = makeCompletion(
+        item({
+          label: "val",
+          kind: "field",
+          insertText: "val",
+          isSnippet: true,
+          replaceRange: { start: { line: 1, col: pos - 1 }, end: { line: 1, col: pos - 1 } },
+          additionalEdits: [{ range: { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }, new_text: "import X;" }],
+        }),
+        req,
+      );
+      applyLspCompletion(view, c, pos, pos + 1, mode);
+      expect(view.state.doc.toString()).toBe(`import X;\n/* 😀 */ root.val${mode === "insert" ? "Suffix" : ""}`);
+      expect(view.state.selection.main.head).toBe(pos + "import X;val".length);
+    });
+
     for (const shape of ["textEdit", "insertReplace", "noEdit"] as const) {
       for (const isSnippet of [false, true]) {
         it(`${mode} replaces a mixed-case prefix typed after a ${shape} request (snippet: ${isSnippet})`, () => {
@@ -373,8 +503,24 @@ describe("insert parentheses", () => {
 
   it("skips calls that already have parentheses and imports", () => {
     expect(callParens(item(), line("a.cr(x)"), 2, 4)).toBeNull();
+    expect(callParens(item(), line("cr'"), 0, 2)).toBeNull();
+    expect(callParens(item(), line('cr"'), 0, 2)).toBeNull();
     expect(callParens(item(), line("import { cr"), 9, 11)).toBeNull();
     expect(callParens(item(), line("use crate::cr"), 11, 13)).toBeNull();
+  });
+});
+
+describe("file paths in strings", () => {
+  it("are offered in PHP and Blade only once the string reads like a path", () => {
+    expect(offersPaths("php", "config('app.")).toBe(false);
+    expect(offersPaths("php", "User::create(['na")).toBe(false);
+    expect(offersPaths("php", "require './")).toBe(true);
+    expect(offersPaths("blade", "@include('partials/")).toBe(true);
+  });
+
+  it("are offered as before in other languages", () => {
+    expect(offersPaths("typescript", "import x from 'mod")).toBe(true);
+    expect(offersPaths("rust", 'include_str!("da')).toBe(true);
   });
 });
 
@@ -467,6 +613,43 @@ describe("typeColumnText", () => {
       "std::collections",
     );
     expect(typeColumnText({ detail: null, additionalEdits: edit('import { a } from "./money";\n') })).toBe("./money");
+  });
+
+  it("shows the type, not the repeated signature, when the server sends both (JDT.LS `print`)", () => {
+    expect(
+      typeColumnText({
+        labelDescription: "void",
+        detail: "PrintStream.print(Object obj) : void",
+        additionalEdits: [],
+      }),
+    ).toBe("void");
+    expect(typeColumnText({ labelDescription: "String", detail: "Person.name : String", additionalEdits: [] })).toBe(
+      "String",
+    );
+  });
+
+  it("falls back to the detail when the server sends no description, and names the import source", () => {
+    expect(typeColumnText({ labelDescription: null, detail: "Order", additionalEdits: [] })).toBe("Order");
+    expect(
+      typeColumnText({
+        labelDescription: "Auto-import",
+        detail: "Auto import from './money'",
+        additionalEdits: edit('import { a } from "./money";\n'),
+      }),
+    ).toBe("./money");
+  });
+
+  it.each([
+    ["TypeScript", "(method) String.toUpperCase(): string"],
+    ["Python", "(value: object) -> str"],
+    ["Rust", "fn len(&self) -> usize"],
+    ["Go", "func() error"],
+  ])("keeps %s details unchanged without label details", (_language, detail) => {
+    expect(typeColumnText(item({ detail }))).toBe(detail);
+  });
+
+  it.each(["", " \n\t "])("falls back to the signature for a blank description (%j)", (labelDescription) => {
+    expect(typeColumnText(item({ labelDescription, detail: "Order" }))).toBe("Order");
   });
 
   it("keeps a detail that already says where", () => {

@@ -1,0 +1,92 @@
+---
+title: "数据库"
+description: "在数据库工具窗口中创建和管理插件自有的数据源，安全保存密码并建立连接。"
+---
+
+如果插件会启动或知道某个数据库（本地开发环境、云工具、容器运行器等），可以把数据源直接加到项目的 **数据库**
+工具窗口中，省得用户手动填写连接设置。插件只能管理它自己创建的数据源：看不到用户创建的数据源、其他插件的数据源，
+也看不到任何已保存的密码。数据源创建后，用户就通过常规的 [数据库工具](/zh/guide/database) 使用它。
+
+这就是 `database` 宿主接口（`database.wit`，API 1.4）。
+
+## 清单
+
+```toml
+engines.openidea = "^1.4"
+wasm = "dist/plugin.wasm"
+
+[capabilities]
+optional = ["database.sources"]   # 中等风险
+```
+
+每个调用都需要 `database.sources`，也都需要一个受信任且已打开的项目。
+
+## 创建数据源并连接
+
+```rust
+use openidea_plugin::{Error, Invocation, PluginDataSource};
+
+fn run_command(&mut self, _id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+    let project = ctx.project().ok_or("Open a project first")?;
+    project.upsert_data_source(&PluginDataSource {
+        id: "local".into(),
+        name: "Local service".into(),
+        driver: "postgres".into(),
+        host: Some("127.0.0.1".into()),
+        port: Some(5432),
+        database: Some("app".into()),
+        user: Some("app".into()),
+        ..Default::default()
+    })?;
+    // 如果插件知道密码：project.set_data_source_credential("local", &password)?;
+    project.connect_data_source("local")?;
+    Ok(None)
+}
+```
+
+| Rust SDK（`Project`）                      | WIT                                              | 结果                                |
+| ------------------------------------------ | ------------------------------------------------ | ----------------------------------- |
+| `upsert_data_source(&PluginDataSource)`    | `database.upsert-source(project, source)`        | 创建或替换插件自己的数据源          |
+| `remove_data_source(id)`                   | `database.remove-source(project, id)`            | 删除数据源及其凭据                  |
+| `data_sources()`                           | `database.sources(project)`                      | 只返回插件自己的 id，不含设置和凭据 |
+| `set_data_source_credential(id, password)` | `database.set-credential(project, id, password)` | 把密码写入数据库的安全存储          |
+| `connect_data_source(id)`                  | `database.connect(project, id)`                  | 请该项目的窗口连接并读取数据库结构  |
+
+## 数据源记录
+
+`PluginDataSource`（WIT `database.data-source`）只包含非机密的设置：
+
+| 字段                               | 说明                                                                                   |
+| ---------------------------------- | -------------------------------------------------------------------------------------- |
+| `id`                               | 插件私有，1–128 字节。实际的连接 id 由宿主分配。                                       |
+| `name`                             | 数据库树中显示的名称，最多 256 字节。                                                  |
+| `driver`                           | `sqlite`、`postgres`、`mysql`（也用于 MariaDB）、`sqlServer`、`clickhouse`、`oracle`。 |
+| `host`、`port`、`database`、`user` | 可选。SQLite 的 `database` 是文件路径（绝对路径或相对项目）。                          |
+| `url`                              | 可选。使用仅 URL 的连接设置，其驱动必须一致。SQLite 也可以用 `sqlite:` URL。           |
+| `options`                          | 最多 128 对 `(name, value)`：数据库“高级”页中的非机密驱动属性。                        |
+
+不要把凭据放进任何设置字段。包含密码或凭据查询参数的 URL，以及名为 password、token、secret 的选项都会被拒绝，
+请改用 `set_data_source_credential`。没有任何读取凭据的函数，刚写入的也读不回来。
+
+## 存储位置
+
+- 插件自有的数据源写在项目的 `.openidea/data-sources.toml` 中，带 `pluginOwner` 和 `pluginSourceId`。
+  更新时会保留无关的条目、注释和格式。文件必须使用常规的 `[[data-source]]` 表格式，内联表数组会被拒绝。
+  这里不会写入任何密码。
+- 数据源变化时数据库树会刷新，并用插件 id 标注插件自有的数据源。复制它会得到一份归用户所有的副本。
+- 禁用插件时数据源保留。卸载时连同凭据一起删除，宿主记得的已关闭项目中的也会删除。
+
+## 连接
+
+`connect_data_source` 只能在该项目窗口的命令或事件中调用。它走常规的数据库连接流程、密码提示和结构读取。
+等待窗口期间不计入插件的调用预算；窗口必须在 180 秒内响应，调用可以被取消。
+
+## 限制与错误
+
+- 每个插件每个项目最多 64 个数据源；每个值或可选字段最多 16 KiB；凭据最多 64 KiB。
+- 未知 id 或属于他人的 id 都返回 `not-found`，不会透露其他所有者的数据源是否存在。
+- 在远程项目中，数据源和凭据保存在数据库子系统运行的地方，也就是项目服务器上。没有该子系统的宿主返回
+  `invalid("Database subsystem is unavailable on this host")`。
+
+[`data-tools` 测试插件](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-plugin/tests/fixtures/data-tools)
+在命令中调用了全部函数。

@@ -39,6 +39,13 @@ describe("inspection controls", () => {
     expect(diagnosticInspection("ruff", { code: "F401" })).toEqual({ id: "lsp:ruff:F401", name: "ruff F401" });
     expect(diagnosticInspection("pyright", { code: null })).toEqual({ id: "lsp:pyright", name: "pyright" });
     expect(diagnosticInspection("", { code: null })).toBeNull();
+    // A built-in check reported per code: PHPStan's identifiers.
+    expect(diagnosticInspection("phpstan", { code: "constant.notFound" })).toEqual({
+      id: "builtin:phpstan:constant.notFound",
+      name: "PHPStan constant.notFound",
+    });
+    expect(diagnosticInspection("phpstan", { code: null })).toEqual({ id: "builtin:phpstan", name: "PHPStan" });
+    expect(diagnosticInspection("build", { code: "E0308" })).toEqual({ id: "builtin:build", name: "Build problems" });
   });
 
   it("writes to the profile in effect, at its level", async () => {

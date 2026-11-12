@@ -4,6 +4,8 @@
  * focus trap and focus restore.
  */
 import {
+  createContext,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -27,6 +29,9 @@ import {
 } from "@floating-ui/react-dom";
 import { FOCUSABLE, onWindowDeactivate, openLayer, trapTab } from "./popupState";
 import styles from "./Popup.module.css";
+
+/** Layer ids of the popups a component is rendered inside: a dialog opened there leaves them open. */
+export const PopupAncestry = createContext<readonly RefObject<number | null>[]>([]);
 
 export type PopupAnchor = Element | VirtualElement | RefObject<Element | null> | { x: number; y: number } | null;
 
@@ -96,9 +101,11 @@ function PopupInner({
       shift({ padding: 6 }),
       sizeMw({
         padding: 6,
-        apply({ rects, elements, availableHeight }) {
+        apply({ rects, elements, availableHeight, availableWidth }) {
           elements.floating.style.maxHeight = `${Math.max(120, availableHeight)}px`;
-          if (matchWidth) elements.floating.style.minWidth = `${rects.reference.width}px`;
+          const width = Math.max(0, availableWidth);
+          elements.floating.style.maxWidth = `${width}px`;
+          if (matchWidth) elements.floating.style.minWidth = `${Math.min(rects.reference.width, width)}px`;
         },
       }),
     ],
@@ -119,9 +126,13 @@ function PopupInner({
   });
   // Read while rendering: content such as a menu focuses itself before any effect here runs.
   const [previous] = useState(() => document.activeElement as HTMLElement | null);
+  const layerId = useRef<number | null>(null);
+  const outer = useContext(PopupAncestry);
+  const ancestry = useMemo(() => [...outer, layerId], [outer]);
 
   useEffect(() => {
-    const layer = openLayer(() => elRef.current);
+    const layer = openLayer(() => elRef.current, closeOnDeactivate ? () => onCloseRef.current("outside") : undefined);
+    layerId.current = layer.id;
 
     const onKey = (e: KeyboardEvent) => {
       if (!layer.isTop()) return;
@@ -185,7 +196,7 @@ function PopupInner({
       data-positioned={isPositioned || undefined}
       style={{ ...floatingStyles, ...style }}
     >
-      {children}
+      <PopupAncestry.Provider value={ancestry}>{children}</PopupAncestry.Provider>
     </div>,
     document.body,
   );

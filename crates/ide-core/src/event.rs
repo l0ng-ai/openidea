@@ -12,9 +12,27 @@ use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum McpUiRequest {
+    Confirm { client: String, tool: String, subject: String, project: String, detail: Option<String> },
+    OpenFile { path: crate::IpcPath, line: Option<u32>, column: Option<u32> },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum IdeEvent {
+    /// Project data source settings changed; reload the Database tree.
+    DbSourcesChanged,
+    McpRequest {
+        id: u32,
+        request: McpUiRequest,
+    },
+    McpRequestClosed {
+        id: u32,
+    },
     /// Project window membership or selection changed.
     WindowGroupsChanged,
+    /// A window entered or left full screen, itself or as a member of a full-screen window group.
+    WindowFullscreenChanged,
     ProjectTrustChanged {
         root: crate::IpcPath,
         trusted: bool,
@@ -24,6 +42,10 @@ pub enum IdeEvent {
         created: Vec<crate::IpcPath>,
         modified: Vec<crate::IpcPath>,
         removed: Vec<crate::IpcPath>,
+        /// Subtrees whose ignore rules changed, after the matchers were rebuilt.
+        #[serde(default)]
+        #[specta(optional)]
+        ignore_rules: Vec<crate::IpcPath>,
     },
     /// Excluded or ignored folders whose contents changed; they stay out of `FsChanged`.
     ExcludedDirsChanged {
@@ -130,6 +152,12 @@ pub enum IdeEvent {
     SettingsChanged {
         key: String,
     },
+    UpdateStatusChanged {
+        status: crate::updates::UpdateStatus,
+    },
+    UpdateAvailable {
+        update: crate::updates::UpdateInfo,
+    },
     /// The project's source / test / resource / excluded roots changed (build files
     /// changed or folders were marked); the UI re-reads them with `project_roots`.
     ProjectRootsChanged {
@@ -229,6 +257,9 @@ pub enum DebugEvent {
         thread_id: i64,
         started: bool,
     },
+    /// The program runs in a terminal the IDE gave it (`runInTerminal`): what is typed for it
+    /// in the debug console reaches its input.
+    ProgramInput,
     BreakpointsChanged {
         path: crate::IpcPath,
     },
@@ -242,6 +273,32 @@ pub enum DebugEvent {
         change_type: String,
         message: String,
     },
+    /// The session's capabilities changed after it started: fetch them again.
+    Capabilities,
+    /// The adapter's `invalidated` event: what it shows for `areas` (`all`, `stacks`, `threads`,
+    /// `variables`; empty means all) is stale and has to be fetched again.
+    Invalidated {
+        areas: Vec<String>,
+    },
+    JvmBackend {
+        state: JvmBackendState,
+    },
+}
+
+/// The backend that reads a debugged JVM's objects (instances, fields, referrers).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum JvmBackendState {
+    Ready,
+    /// Turned off for the rest of the session: the debug adapter lacks what it needs.
+    Unsupported {
+        detail: String,
+    },
+    /// The Kotlin JDWP link only forwards now; inspecting stops.
+    Degraded {
+        detail: String,
+    },
+    Closed,
 }
 
 /// Where backend crates publish [`IdeEvent`]s. Cheap to clone via `Arc`.
@@ -262,4 +319,28 @@ pub struct NullSink;
 
 impl EventSink for NullSink {
     fn emit(&self, _: IdeEvent) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn jvm_backend_events_json_shape() {
+        let degraded = DebugEvent::JvmBackend { state: JvmBackendState::Degraded { detail: "x".into() } };
+        assert_eq!(
+            serde_json::to_value(&degraded).unwrap(),
+            json!({"kind": "jvmBackend", "state": {"kind": "degraded", "detail": "x"}})
+        );
+        assert_eq!(serde_json::to_value(DebugEvent::Capabilities).unwrap(), json!({"kind": "capabilities"}));
+    }
+
+    #[test]
+    fn invalidated_event_json_shape() {
+        assert_eq!(
+            serde_json::to_value(DebugEvent::Invalidated { areas: vec!["variables".into()] }).unwrap(),
+            json!({"kind": "invalidated", "areas": ["variables"]})
+        );
+    }
 }

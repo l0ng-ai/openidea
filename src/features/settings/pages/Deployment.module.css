@@ -1,6 +1,6 @@
 .layout {
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
+  grid-template-columns: 200px minmax(220px, 1fr);
   gap: 14px;
   align-items: start;
 }
@@ -70,6 +70,16 @@
 .field > button {
   flex-shrink: 0;
 }
+.field > .port {
+  flex: 0 0 64px;
+}
+/* A checkbox in the controls column of the rows above (label column + gap). */
+.option {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 2px 0 2px 148px;
+}
 .note {
   color: var(--fg-subtle);
   font-size: var(--fs-small);
@@ -123,8 +133,15 @@
 .mappingTable tbody tr.selectedRow {
   background: var(--bg-tree-selected);
 }
+.cellField {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
 .cellInput {
   width: 100%;
+  min-width: 0;
+  flex: 1;
 }
 
 /* Remote folder chooser. */

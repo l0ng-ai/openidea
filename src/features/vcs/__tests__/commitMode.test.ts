@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const vcsLog = vi.fn();
 const fsReadText = vi.fn();
+const showCommitDialog = vi.hoisted(() => vi.fn());
+vi.mock("../CommitDialog", () => ({ showCommitDialog }));
+const vcsConfigGet = vi.fn(async (_repo: unknown, _key: string) => ({ status: "ok", data: null as string | null }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -10,15 +13,25 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       vcsLog: (repo: unknown, query: unknown) => vcsLog(repo, query),
-      vcsConfigGet: async () => ({ status: "ok", data: null }),
+      vcsConfigGet: (repo: unknown, key: string) => vcsConfigGet(repo, key),
       fsReadText: (path: string) => fsReadText(path),
     },
   };
 });
 
+import type { FileStatus, Settings } from "@/bindings";
+import { useProject } from "@/platform/project";
+import { commitChangelist, commitFiles } from "../changelistsUi";
+import { initialChangelists, useChangelists } from "../changelists";
 import { gitTabs, shownTab, stashTabOf, stashTabs } from "../gitTabs";
-import { pushDialogNeeded } from "../commitUi";
-import { installPreparedMessage, keepMessageAfterCommit, messageAfterCommit, useCommit } from "../commitStore";
+import { commitFromContext, pushDialogNeeded } from "../commitUi";
+import {
+  installPreparedMessage,
+  keepMessageAfterCommit,
+  messageAfterCommit,
+  templatePath,
+  useCommit,
+} from "../commitStore";
 import { closeLogTab, emptyFilters, openLogTab, selectGitTab, setLogFilters, useGitLog } from "../logStore";
 import { useVcs } from "../store";
 
@@ -92,6 +105,126 @@ describe("commit message after a commit", () => {
     await Promise.resolve();
     expect(useCommit.getState().message).toBe("typed");
     dispose();
+  });
+});
+
+describe("commit template", () => {
+  beforeEach(() => {
+    fsReadText.mockReset();
+    vcsConfigGet.mockImplementation(async (_repo, key) => ({
+      status: "ok",
+      data: key === "commit.template" ? ".gitmessage" : null,
+    }));
+    useCommit.setState({ message: "" });
+  });
+
+  it("resolves the configured path as git does", () => {
+    expect(templatePath("~/.gitmessage", "/p", "/home/me/")).toBe("/home/me/.gitmessage");
+    expect(templatePath("/etc/msg", "/p", "")).toBe("/etc/msg");
+    expect(templatePath("C:\\msg.txt", "/p", "")).toBe("C:\\msg.txt");
+    expect(templatePath(".gitmessage", "/p", "")).toBe("/p/.gitmessage");
+  });
+
+  it("fills the empty message field, and again after a commit clears it", async () => {
+    fsReadText.mockResolvedValue({ status: "ok", data: "feat: \n\n# Why:\nRefs: \n" });
+    useVcs.setState({ root: "/p", branch: null });
+    const dispose = installPreparedMessage();
+    await vi.waitFor(() => expect(useCommit.getState().message).toBe("feat: \n\nRefs:"));
+    expect(fsReadText).toHaveBeenCalledWith("/p/.gitmessage");
+
+    keepMessageAfterCommit("feat: x", true);
+    await vi.waitFor(() => expect(useCommit.getState().message).toBe("feat: \n\nRefs:"));
+    // A kept message stays; a typed one is never replaced.
+    keepMessageAfterCommit("feat: x", false);
+    useCommit.setState({ message: "typed" });
+    useVcs.setState({ root: "/q" });
+    useCommit.setState({ message: "typed" });
+    await Promise.resolve();
+    expect(useCommit.getState().message).toBe("typed");
+    dispose();
+  });
+});
+
+describe("Commit File… and the modal commit interface", () => {
+  const status: FileStatus[] = [
+    { path: "/p/src/a.ts", relPath: "src/a.ts", staged: null, unstaged: "modified", renamedFrom: null },
+    { path: "/p/src/b.ts", relPath: "src/b.ts", staged: null, unstaged: "modified", renamedFrom: null },
+  ];
+
+  beforeEach(() => {
+    showCommitDialog.mockClear();
+    useProject.setState({ settings: null });
+    useVcs.setState({ available: true, root: "/p", repo: "/p", roots: ["/p"], status });
+    useCommit.setState({ checks: new Map(), message: "" });
+  });
+
+  it("opens the Commit dialog with just the file included", async () => {
+    useProject.setState({ settings: { vcs: { commit: { nonModal: false } } } as Settings });
+    commitFiles(["/p/src/a.ts"]);
+    await vi.waitFor(() => expect(showCommitDialog).toHaveBeenCalled());
+    expect(useCommit.getState().checks.get("/p/src/a.ts")).toBe("all");
+    expect(useCommit.getState().checks.get("/p/src/b.ts")).toBe("none");
+  });
+
+  it("keeps the message in the Commit tool window without the modal interface", () => {
+    const tick = useCommit.getState().focusTick;
+    commitFiles(["/p/src/a.ts"]);
+    expect(showCommitDialog).not.toHaveBeenCalled();
+    expect(useCommit.getState().focusTick).toBe(tick + 1);
+    expect(useCommit.getState().checks.get("/p/src/a.ts")).toBe("all");
+    expect(useCommit.getState().checks.get("/p/src/b.ts")).toBe("none");
+  });
+
+  it("opens the Commit dialog for Commit… on a change list too", async () => {
+    useProject.setState({ settings: { vcs: { commit: { nonModal: false } } } as Settings });
+    const lists = initialChangelists();
+    lists.lists.push({ id: "other", name: "Other", comment: "" });
+    lists.files = { "src/a.ts": "other" };
+    useChangelists.setState({ state: lists });
+    commitChangelist("other");
+    await vi.waitFor(() => expect(showCommitDialog).toHaveBeenCalled());
+    expect(useCommit.getState().checks.get("/p/src/a.ts")).toBe("all");
+    expect(useCommit.getState().checks.get("/p/src/b.ts")).toBe("none");
+  });
+});
+
+describe("Commit… from Local Changes with the modal interface", () => {
+  const status: FileStatus[] = [
+    { path: "/p/src/a.ts", relPath: "src/a.ts", staged: null, unstaged: "modified", renamedFrom: null },
+    { path: "/p/src/b.ts", relPath: "src/b.ts", staged: null, unstaged: "modified", renamedFrom: null },
+    { path: "/p/new.txt", relPath: "new.txt", staged: null, unstaged: "untracked", renamedFrom: null },
+  ];
+  const tree = document.createElement("div");
+  tree.dataset.changesTree = "local";
+  const row = document.createElement("button");
+  tree.append(row);
+
+  beforeEach(() => {
+    showCommitDialog.mockClear();
+    document.body.append(tree);
+    useProject.setState({ settings: { vcs: { commit: { nonModal: false } } } as Settings });
+    useVcs.setState({ available: true, root: "/p", repo: "/p", roots: ["/p"], status });
+    useCommit.setState({ checks: new Map(), selection: ["/p/src/b.ts", "/p/new.txt"] });
+  });
+
+  it("includes just the files selected there", async () => {
+    row.focus();
+    commitFromContext();
+    await vi.waitFor(() => expect(showCommitDialog).toHaveBeenCalled());
+    const checks = useCommit.getState().checks;
+    expect([checks.get("/p/src/a.ts"), checks.get("/p/src/b.ts"), checks.get("/p/new.txt")]).toEqual([
+      "none",
+      "all",
+      "all",
+    ]);
+  });
+
+  it("falls back to the default inclusion when invoked elsewhere", async () => {
+    useCommit.setState({ checks: new Map([["/p/src/a.ts", "none"]]) });
+    row.blur();
+    commitFromContext();
+    await vi.waitFor(() => expect(showCommitDialog).toHaveBeenCalled());
+    expect(useCommit.getState().checks.size).toBe(0);
   });
 });
 

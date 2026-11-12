@@ -4,17 +4,23 @@
  * and size go to the owner instead of a terminal PTY (a Run console emulating
  * a terminal feeds its process).
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { installTerminalDrop } from "./drop";
+import { installDomRowCache } from "./domRowCache";
 import { installTerminalPaste } from "./paste";
+import { ownTerminalInput } from "./imeInput";
 import { Terminal, type IDisposable } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import "./xtermInput.css";
 import type { EmbeddedTerminal, EmbeddedTerminalOptions } from "@/workbench/contributions";
 import { isImeKey } from "@/platform/ime";
 import { terminalKeyAction } from "./keys";
 import { useProject } from "@/platform/project";
+import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { fitScheduler, settledResize } from "./fit";
+import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { findTerminalLinks } from "./links";
 import { LINK_HANDLER, fontFor, openExternal, openFileLink } from "./session";
 import { MIN_CONTRAST_RATIO, readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
@@ -31,6 +37,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   const settings = workflowSettings().terminal;
   const font = fontFor(settings);
   const term = new Terminal({
+    windowsPty: windowsPty(),
     linkHandler: LINK_HANDLER,
     fontFamily: font.family,
     fontSize: font.size,
@@ -52,19 +59,31 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     theme: readTerminalTheme(),
   });
   term.attachCustomKeyEventHandler((e) => {
-    if (isImeKey(e) || terminalKeyAction(e, term.hasSelection()).kind !== "copy") return true;
-    if (e.type === "keydown") void navigator.clipboard?.writeText(term.getSelection()).catch(() => undefined);
+    if (isImeKey(e)) return true;
+    const action = terminalKeyAction(e, term.hasSelection());
+    if (action.kind === "send" && e.key === "Enter") {
+      if (e.type === "keydown") term.input(action.data);
+    } else if (action.kind === "copy") {
+      if (e.type === "keydown") void writeClipboardText(term.getSelection()).catch(() => undefined);
+    } else {
+      return true;
+    }
     e.preventDefault();
     return false;
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
   live.add(term);
-  const processResize = settledResize((cols, rows) => opts.onResize(cols, rows));
+  let lastSize = { cols: term.cols, rows: term.rows };
+  const processResize = settledResize((cols, rows) => {
+    if (cols === lastSize.cols && rows === lastSize.rows) return;
+    lastSize = { cols, rows };
+    opts.onResize(cols, rows);
+  });
   const disposables: IDisposable[] = [
+    watchWindowsPty(term),
     term.onData((d) => opts.onData(d)),
     term.onBinary((d) => opts.onData(d)),
-    term.onResize(({ cols, rows }) => processResize.resized(cols, rows)),
     term.registerLinkProvider({
       provideLinks(y, callback) {
         const line = term.buffer.active.getLine(y - 1);
@@ -88,15 +107,24 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   const removePaste = installTerminalPaste(host, (text) => term.paste(text));
   const removeDrop = installTerminalDrop(host, (text) => term.paste(text));
   term.open(host);
+  installDomRowCache(term);
   if (opts["aria-label"]) term.textarea?.setAttribute("aria-label", opts["aria-label"]);
+  // The same WKWebView input-method fixes as the terminal sessions.
+  if (term.textarea && usePlatform.getState().os === "macos") {
+    disposables.push({ dispose: ownTerminalInput({ host, textarea: term.textarea, send: opts.onData }) });
+  }
 
   const fitter = fitScheduler(() => {
     if (!host.isConnected || host.offsetWidth === 0 || host.offsetHeight === 0) return;
     const dims = fit.proposeDimensions();
     if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
     if (dims.cols !== term.cols || dims.rows !== term.rows) term.resize(dims.cols, dims.rows);
+    processResize.resized(dims.cols, dims.rows);
   });
-  const scheduleFit = () => fitter.schedule();
+  const scheduleFit = () => {
+    processResize.cancel();
+    fitter.schedule();
+  };
   const observer = new ResizeObserver(scheduleFit);
   observer.observe(host);
   scheduleFit();

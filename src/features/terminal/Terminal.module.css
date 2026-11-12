@@ -25,10 +25,42 @@
   padding: 0 2px;
 }
 
+/* A tab group: its header (while split) over its tabs' terminals. */
+.group {
+  container: terminal-group / inline-size;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
 .panels {
   flex: 1;
   position: relative;
   min-height: 0;
+}
+
+/* tab drag & drop target on a group: an edge splits, the middle joins (the editor's look) */
+.dropZone {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+}
+.drop-left {
+  right: 50%;
+}
+.drop-right {
+  left: 50%;
+}
+.drop-top {
+  bottom: 50%;
+}
+.drop-bottom {
+  top: 50%;
 }
 
 .panel {
@@ -60,25 +92,6 @@
   position: relative;
 }
 
-.paneActions {
-  position: absolute;
-  right: 14px;
-  bottom: 8px;
-  z-index: 10;
-  display: flex;
-  gap: 2px;
-  opacity: 0;
-  transition: opacity 0.15s;
-  background: var(--bg-elev, var(--bg-app));
-  border-radius: 4px;
-}
-
-.pane:hover .paneActions,
-.pane:focus-within .paneActions,
-.paneActions:focus-within {
-  opacity: 1;
-}
-
 .exited :global(.xterm-cursor-layer),
 .exited :global(.xterm-cursor) {
   visibility: hidden;
@@ -99,6 +112,26 @@
 }
 .pane :global(.xterm-viewport) {
   background-color: var(--bg-island, var(--bg-app)) !important;
+}
+.pane :global(.xterm-screen) {
+  isolation: isolate;
+}
+.pane :global(.openidea-terminal-selection-matches) {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+.pane :global(.openidea-terminal-selection-match) {
+  position: absolute;
+  box-sizing: border-box;
+  border-radius: 2px;
+  background-color: var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent));
+  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: -1px;
+}
+.pane :global(.xterm-decoration-container) {
+  pointer-events: none;
 }
 .pane :global(.xterm .xterm-scrollable-element > .scrollbar > .slider) {
   box-sizing: border-box;
@@ -143,4 +176,18 @@
 }
 .findSpacer {
   flex: 1;
+}
+
+@container terminal-group (max-width: 360px) {
+  .find {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) repeat(3, var(--h-control-small));
+  }
+  .findField {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+  .findSpacer {
+    display: none;
+  }
 }

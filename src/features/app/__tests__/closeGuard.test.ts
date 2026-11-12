@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { confirmExitEnabled, decideClose, type CloseDeps, type CloseInput } from "../closeGuard";
+import {
+  closeTabsWithWindowEnabled,
+  closeWithoutWelcomeEnabled,
+  confirmExitEnabled,
+  decideClose,
+  returnsToWelcome,
+  type CloseDeps,
+  type CloseInput,
+} from "../closeGuard";
 import type { MessageRequest as PromptRequest, MessageResult as PromptResult } from "@/workbench/messages";
 import type { EditorCloseSession } from "@/workbench/contributions";
 
@@ -12,12 +20,22 @@ function deps(answers: PromptResult[]) {
     }),
     saveAll: vi.fn(async () => {}),
     disableConfirmExit: vi.fn(async () => {}),
+    disableConfirmTerminate: vi.fn(async () => {}),
+    runningProcesses: vi.fn(async () => []),
     onSaveFailed: vi.fn(),
   };
   return { d, asked };
 }
 
-const base: CloseInput = { quitting: false, windows: 1, confirmExit: false, dirty: 0, project: "openidea" };
+const base: CloseInput = {
+  quitting: false,
+  windows: 1,
+  confirmExit: false,
+  confirmTerminate: false,
+  processes: [],
+  dirty: 0,
+  project: "openidea",
+};
 
 describe("decideClose", () => {
   it("closes silently when nothing needs asking", async () => {
@@ -50,6 +68,62 @@ describe("decideClose", () => {
     expect(asked).toHaveLength(0);
   });
 
+  it("stops the processes gracefully and waits for them before closing", async () => {
+    const { d } = deps([{ button: "terminate", checked: false }]);
+    d.terminate = vi.fn(async () => {});
+    d.waitForProcesses = vi.fn(async () => {});
+    await expect(decideClose({ ...base, confirmTerminate: true, processes: ["app"] }, d)).resolves.toBe(true);
+    expect(d.terminate).toHaveBeenCalledWith(false);
+    expect(d.waitForProcesses).toHaveBeenCalledOnce();
+  });
+
+  it("does not stop anything when the terminate prompt is cancelled", async () => {
+    const { d } = deps([{ button: "cancel", checked: false }]);
+    d.terminate = vi.fn(async () => {});
+    await expect(decideClose({ ...base, confirmTerminate: true, processes: ["app"] }, d)).resolves.toBe(false);
+    expect(d.terminate).not.toHaveBeenCalled();
+  });
+
+  it("asks before terminating a running process", async () => {
+    const { d, asked } = deps([{ button: "terminate", checked: false }]);
+    await expect(decideClose({ ...base, confirmTerminate: true, processes: ["app"] }, d)).resolves.toBe(true);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.title).toContain("app");
+    expect(asked[0]?.body).toContain("app");
+  });
+
+  it("names every running process in the prompt", async () => {
+    const { d, asked } = deps([{ button: "terminate", checked: false }]);
+    await expect(decideClose({ ...base, confirmTerminate: true, processes: ["app", "worker"] }, d)).resolves.toBe(true);
+    expect(asked[0]?.body).toContain("app, worker");
+  });
+
+  it("cancelling the terminate prompt keeps the window", async () => {
+    const { d } = deps([{ button: "cancel", checked: false }]);
+    await expect(decideClose({ ...base, confirmTerminate: true, processes: ["app"] }, d)).resolves.toBe(false);
+  });
+
+  it("asks about processes before discarding unsaved changes", async () => {
+    const { d, asked } = deps([{ button: "cancel", checked: false }]);
+    await expect(decideClose({ ...base, confirmTerminate: true, processes: ["app"], dirty: 1 }, d)).resolves.toBe(
+      false,
+    );
+    expect(asked).toHaveLength(1);
+    expect(d.saveAll).not.toHaveBeenCalled();
+  });
+
+  it("'don't ask again' turns process confirmation off", async () => {
+    const { d } = deps([{ button: "terminate", checked: true }]);
+    await decideClose({ ...base, confirmTerminate: true, processes: ["app"] }, d);
+    expect(d.disableConfirmTerminate).toHaveBeenCalled();
+  });
+
+  it("does not ask about processes when the setting is off", async () => {
+    const { d, asked } = deps([]);
+    await decideClose({ ...base, confirmTerminate: false, processes: ["app"] }, d);
+    expect(asked).toHaveLength(0);
+  });
+
   it("saves all on Save", async () => {
     const { d } = deps([{ button: "save", checked: false }]);
     await expect(decideClose({ ...base, dirty: 2 }, d)).resolves.toBe(true);
@@ -77,6 +151,25 @@ describe("decideClose", () => {
     expect(confirmExitEnabled({ general: { confirmExit: true } })).toBe(true);
     expect(confirmExitEnabled({ general: {} })).toBe(false);
     expect(confirmExitEnabled(null)).toBe(false);
+  });
+
+  it("returns to Welcome unless the user chooses to close the last window", () => {
+    const on = { general: { closeWithoutWelcome: true } };
+    expect(closeWithoutWelcomeEnabled(null)).toBe(false);
+    expect(closeWithoutWelcomeEnabled({ general: {} })).toBe(false);
+    expect(closeWithoutWelcomeEnabled(on)).toBe(true);
+    expect(returnsToWelcome(false, 1, true, null)).toBe(true);
+    expect(returnsToWelcome(false, 1, true, { general: {} })).toBe(true);
+    expect(returnsToWelcome(false, 1, true, on)).toBe(false);
+    expect(returnsToWelcome(true, 1, true, null)).toBe(false);
+    expect(returnsToWelcome(false, 2, true, null)).toBe(false);
+    expect(returnsToWelcome(false, 1, false, null)).toBe(false);
+  });
+
+  it("keeps editor tabs across a close unless the user chooses to drop them", () => {
+    expect(closeTabsWithWindowEnabled(null)).toBe(false);
+    expect(closeTabsWithWindowEnabled({ general: {} })).toBe(false);
+    expect(closeTabsWithWindowEnabled({ general: { closeTabsWithWindow: true } })).toBe(true);
   });
 
   it("includes dirty changes produced while preparing a custom document", async () => {
@@ -178,4 +271,13 @@ it("includes pending local edits and restored dirty buffers before backend dirty
     uninstall();
     spy.mockRestore();
   }
+});
+
+it("confirmLeave asks about running processes before closing", async () => {
+  const { confirmLeave } = await import("../closeGuard");
+  const { d, asked } = deps([{ button: "cancel", checked: false }]);
+  d.runningProcesses = vi.fn(async () => ["app"]);
+  await expect(confirmLeave(d, "openidea")).resolves.toBe(false);
+  expect(asked[0]?.title).toContain("app");
+  expect(asked[0]?.body).toContain("app");
 });

@@ -41,17 +41,22 @@ pub fn default_dir() -> PathBuf {
 /// Writes the script for `jvm_args` under `dir` (named by its content, so launches share
 /// it and nothing needs deleting) and returns its path.
 pub fn write_init_script(dir: &Path, jvm_args: &[String]) -> std::io::Result<PathBuf> {
+    write_script(dir, "jvm-args", &init_script(jvm_args))
+}
+
+/// Writes the init script `text` under `dir` as `<prefix>-<hash>.init.gradle` (written
+/// once per content, so launches share it) and returns its path.
+pub fn write_script(dir: &Path, prefix: &str, text: &str) -> std::io::Result<PathBuf> {
     use std::hash::{Hash, Hasher};
-    let text = init_script(jvm_args);
     let mut h = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut h);
-    let file = dir.join(format!("jvm-args-{:016x}.init.gradle", h.finish()));
+    let file = dir.join(format!("{prefix}-{:016x}.init.gradle", h.finish()));
     if std::fs::read_to_string(&file).is_ok_and(|t| t == text) {
         return Ok(file);
     }
     std::fs::create_dir_all(dir)?;
     let tmp = file.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&tmp, &text)?;
+    std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, &file).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })?;

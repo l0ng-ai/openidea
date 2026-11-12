@@ -977,6 +977,19 @@ fn api_retries_are_announced() {
 }
 
 #[test]
+fn background_tasks_are_announced_wholesale() {
+    let mut t = Translator::new("s", PathBuf::from("/w"), true);
+    let tasks = json!([{"task_id": "bsh1", "task_type": "local_bash", "description": "sleep 900"}]);
+    let out = t.on_message(&json!({"type": "system", "subtype": "background_tasks_changed", "tasks": tasks}));
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].session, "s");
+    assert_eq!(out[0].update, json!({"sessionUpdate": crate::BACKGROUND_TASKS_UPDATE, "tasks": tasks}));
+    // The list is replaced with every report: an empty one says every task is done.
+    let out = t.on_message(&json!({"type": "system", "subtype": "background_tasks_changed", "tasks": []}));
+    assert_eq!(out[0].update, json!({"sessionUpdate": crate::BACKGROUND_TASKS_UPDATE, "tasks": []}));
+}
+
+#[test]
 fn streamed_text_is_not_sent_twice() {
     let mut t = Translator::new("s", PathBuf::from("/w"), true);
     let se = |event: Value| json!({"type": "stream_event", "parent_tool_use_id": null, "event": event});
@@ -1011,6 +1024,39 @@ fn streamed_text_is_not_sent_twice() {
     // Usage needs the window, which a result reports.
     let usage = t.on_result(&json!({"modelUsage": {"x": {"contextWindow": 1000}}}));
     assert_eq!(usage[0].update, json!({"sessionUpdate": "usage_update", "used": 15, "size": 1000}));
+}
+
+#[test]
+fn rate_limits_and_cost() {
+    let mut t = Translator::new("s", PathBuf::from("/w"), false);
+    let info = json!({"status": "allowed", "rateLimitType": "five_hour", "unifiedWindows": {
+        "five_hour": {"utilization": 0.19, "resetsAt": 100, "status": "allowed"},
+        "seven_day": {"utilization": 0.09, "resetsAt": 200, "status": "allowed"},
+    }});
+    let limits = t.on_rate_limit(&info).unwrap();
+    assert_eq!(limits.session, "s");
+    assert_eq!(limits.update["sessionUpdate"], crate::LIMITS_UPDATE);
+    let windows: Vec<(&str, i64, f64)> = limits.update["limits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            (
+                l["window"].as_str().unwrap(),
+                l["usedPercent"].as_f64().unwrap().round() as i64,
+                l["resetsMs"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(windows, [("five_hour", 19, 100_000.0), ("seven_day", 9, 200_000.0)]);
+    // Older versions report the window that applies, alone.
+    let single = t.on_rate_limit(&json!({"rateLimitType": "seven_day", "utilization": 0.5})).unwrap();
+    assert_eq!(single.update["limits"], json!([{"window": "seven_day", "usedPercent": 50.0, "resetsMs": null}]));
+    assert_eq!(t.on_rate_limit(&json!({"status": "allowed", "resetsAt": 100})), None, "no utilization, no update");
+
+    t.used = Some(10);
+    let usage = t.on_result(&json!({"total_cost_usd": 0.5, "modelUsage": {"x": {"contextWindow": 1000}}}));
+    assert_eq!(usage[0].update["cost"], json!({"amount": 0.5, "currency": "USD"}));
 }
 
 #[test]
@@ -1059,4 +1105,94 @@ fn tool_calls_plans_and_subagents() {
     assert_eq!(finished[0].update["state"], json!({"state": "idle", "stopReason": "end_turn"}));
     assert_eq!(finished[1].update["content"][0]["text"], "It is x");
     assert_eq!(finished[1].update["senderSessionId"], "ag");
+}
+
+#[tokio::test]
+async fn questions_go_out_as_one_request() {
+    let questions = json!([
+        {"header": "Files", "question": "Where should they live?", "multiSelect": false,
+         "options": [{"label": "Local", "description": "Kept out of git"}, {"label": "Committed", "description": "In the repo"}]},
+        {"header": "Checks", "question": "Which checks?", "multiSelect": true,
+         "options": [{"label": "Lint", "description": ""}, {"label": "Tests", "description": ""}]},
+    ]);
+    let input = json!({ "questions": questions });
+    let asked = std::sync::Mutex::new(Vec::new());
+    let reply = json!({"Where should they live?": ["Local"], "Which checks?": ["Lint", "Tests"]}).to_string();
+    let answers = json!({"Where should they live?": "Local", "Which checks?": "Lint, Tests"});
+    let result = ask_questions(&input, &json!({"toolCallId": "t"}), |call, options| {
+        asked.lock().unwrap().push((call, options));
+        let reply = reply.clone();
+        async move { Some(reply) }
+    })
+    .await;
+    assert_eq!(result, Some(answers));
+    let asked = asked.into_inner().unwrap();
+    assert_eq!(asked.len(), 1);
+    let (call, options) = &asked[0];
+    assert_eq!(call["title"], "Where should they live?");
+    assert_eq!(call["_meta"]["questions"], questions);
+    assert_eq!(options[0]["optionId"], "reject");
+}
+
+#[tokio::test]
+async fn answers_keep_claude_codes_format_with_other_text() {
+    let input = json!({"questions": [
+        {"question": "Which cache?", "multiSelect": false, "options": [{"label": "Redis"}, {"label": "None"}]},
+        {"question": "Which checks?", "multiSelect": true, "options": [{"label": "Lint"}, {"label": "Tests"}]},
+        {"question": "Which stores?", "multiSelect": true, "options": [{"label": "Disk"}, {"label": "S3"}]},
+    ]});
+    let reply = json!({
+        "Which cache?": ["Memcached, for now"],
+        "Which checks?": ["Lint", "Tests"],
+        "Which stores?": ["Disk", "Redis, not Memcached", "a \"cold\" tier"],
+    })
+    .to_string();
+    let result = ask_questions(&input, &json!({}), |_, _| {
+        let reply = reply.clone();
+        async move { Some(reply) }
+    })
+    .await;
+    assert_eq!(
+        result,
+        Some(json!({
+            "Which cache?": "Memcached, for now",
+            "Which checks?": "Lint, Tests",
+            "Which stores?": "Disk, \"Redis, not Memcached\", \"a \\\"cold\\\" tier\"",
+        }))
+    );
+}
+
+#[tokio::test]
+async fn skipped_questions_have_no_answers() {
+    let input = json!({"questions": [{"question": "Which?", "options": [{"label": "A"}]}]});
+    let skipped = ask_questions(&input, &json!({}), |_, _| async { Some("reject".to_owned()) }).await;
+    assert_eq!(skipped, None);
+    let cancelled = ask_questions(&input, &json!({}), |_, _| async { None }).await;
+    assert_eq!(cancelled, None);
+}
+
+#[test]
+fn mcp_servers_become_an_mcp_config() {
+    assert_eq!(mcp_config(&json!({ "mcpServers": [] })), None);
+    assert_eq!(mcp_config(&json!({})), None);
+    let config = mcp_config(&json!({ "mcpServers": [
+        { "type": "http", "name": "openidea", "url": "http://127.0.0.1:1/mcp",
+          "headers": [{ "name": "Authorization", "value": "Bearer t" }] },
+        { "name": "local", "command": "srv", "args": ["-x"], "env": [{ "name": "K", "value": "V" }] },
+    ] }))
+    .unwrap();
+    let v: Value = serde_json::from_str(&config).unwrap();
+    assert_eq!(
+        v["mcpServers"]["openidea"],
+        json!({ "type": "http", "url": "http://127.0.0.1:1/mcp", "headers": { "Authorization": "Bearer t" } })
+    );
+    assert_eq!(v["mcpServers"]["local"], json!({ "command": "srv", "args": ["-x"], "env": { "K": "V" } }));
+
+    let path = write_mcp_config(&config).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
+    #[cfg(unix)]
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions()) & 0o077, 0);
+    let kept = path.to_path_buf();
+    drop(path);
+    assert!(!kept.exists());
 }

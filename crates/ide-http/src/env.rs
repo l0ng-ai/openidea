@@ -52,6 +52,8 @@ fn search_dirs(file: Option<&Path>, root: Option<&Path>) -> Vec<PathBuf> {
 }
 
 fn parse_env(text: &str) -> IdeResult<EnvMap> {
+    // Editors on Windows (Notepad) save UTF-8 with a byte order mark, which serde_json rejects.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| IdeError::invalid(format!("invalid environment file: {e}")))?;
     let mut out = EnvMap::new();
@@ -74,14 +76,116 @@ fn parse_env(text: &str) -> IdeResult<EnvMap> {
     Ok(out)
 }
 
+/// The nearest `name` in `dirs`, decoded like the editor opens it (a BOM, UTF-16, or a
+/// legacy encoding such as GBK from Notepad's ANSI), so a file that shows fine in the editor
+/// is never skipped as unreadable.
 fn read_first(dirs: &[PathBuf], name: &str) -> IdeResult<EnvMap> {
     for d in dirs {
         let p = d.join(name);
-        if let Ok(text) = std::fs::read_to_string(&p) {
-            return parse_env(&text).map_err(|e| IdeError::invalid(format!("{}: {}", p.display(), e.message)));
+        if !p.is_file() {
+            continue;
         }
+        let text = ide_vfs::load_text(&p).map_err(|e| IdeError::invalid(format!("{}: {}", p.display(), e.message)))?;
+        return parse_env(&text.text).map_err(|e| IdeError::invalid(format!("{}: {}", p.display(), e.message)));
     }
     Ok(EnvMap::new())
+}
+
+/// The public (or private) environment file that applies to `file`: the nearest existing one,
+/// else a new one next to `file` holding a sample environment to fill in.
+pub fn environment_file(file: &Path, root: Option<&Path>, private: bool) -> IdeResult<PathBuf> {
+    let name = if private { PRIVATE_FILE } else { PUBLIC_FILE };
+    if let Some(found) = search_dirs(Some(file), root).into_iter().map(|d| d.join(name)).find(|p| p.is_file()) {
+        return Ok(found);
+    }
+    let dir = file.parent().ok_or_else(|| IdeError::invalid("the request file has no folder"))?;
+    let path = dir.join(name);
+    std::fs::write(&path, "{\n  \"dev\": {\n    \"name\": \"value\"\n  }\n}\n")
+        .map_err(|e| IdeError::internal(format!("cannot create {}: {e}", path.display())))?;
+    Ok(path)
+}
+
+/// Where `{{name}}` is defined in the environment files that apply to `file`: the key `name`
+/// in each environment (and `$shared`) of the nearest private file, then of the nearest public
+/// file — the lookup order. Positions are 0-based lines and UTF-16 columns of the key, quotes
+/// included.
+pub fn variable_definitions(file: &Path, root: Option<&Path>, name: &str) -> Vec<ide_core::Location> {
+    let dirs = search_dirs(Some(file), root);
+    let mut out = Vec::new();
+    for file_name in [PRIVATE_FILE, PUBLIC_FILE] {
+        let Some(path) = dirs.iter().map(|d| d.join(file_name)).find(|p| p.is_file()) else { continue };
+        let Ok(text) = ide_vfs::load_text(&path) else { continue };
+        for range in environment_keys(&text.text, name) {
+            out.push(ide_core::Location { path: path.clone().into(), range, uri: None });
+        }
+    }
+    out
+}
+
+/// The ranges of keys equal to `name` one level inside the top-level object (an
+/// environment's variables), found by scanning the JSON text without building a value.
+fn environment_keys(text: &str, name: &str) -> Vec<ide_core::Range> {
+    use ide_core::{Pos, Range};
+    let mut found = Vec::new();
+    let (mut line, mut col) = (0u32, 0u32);
+    let mut depth = 0usize;
+    let mut chars = text.char_indices().peekable();
+    // Whether the last string closed at depth 2 may be a key: set after `{` or `,`.
+    let mut expect_key = false;
+    while let Some((_, c)) = chars.next() {
+        match c {
+            '"' => {
+                let start = Pos::new(line, col);
+                col += 1;
+                let mut value = String::new();
+                let mut escaped = false;
+                for (_, c) in chars.by_ref() {
+                    col += c.len_utf16() as u32;
+                    if escaped {
+                        value.push(match c {
+                            'n' => '\n',
+                            't' => '\t',
+                            other => other,
+                        });
+                        escaped = false;
+                    } else if c == '\\' {
+                        escaped = true;
+                    } else if c == '"' {
+                        break;
+                    } else {
+                        value.push(c);
+                    }
+                }
+                let end = Pos::new(line, col);
+                if depth == 2 && expect_key && value == name {
+                    let mut rest = chars.clone();
+                    while rest.peek().is_some_and(|(_, c)| c.is_whitespace()) {
+                        rest.next();
+                    }
+                    if rest.peek().is_some_and(|(_, c)| *c == ':') {
+                        found.push(Range { start, end });
+                    }
+                }
+                expect_key = false;
+                continue;
+            }
+            '{' | '[' => {
+                depth += 1;
+                expect_key = c == '{';
+            }
+            '}' | ']' => depth = depth.saturating_sub(1),
+            ',' => expect_key = true,
+            ':' => expect_key = false,
+            '\n' => {
+                line += 1;
+                col = 0;
+                continue;
+            }
+            _ => {}
+        }
+        col += c.len_utf16() as u32;
+    }
+    found
 }
 
 impl Environments {
@@ -201,6 +305,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn finds_variable_keys_in_every_environment_private_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("api")).unwrap();
+        std::fs::write(
+            root.join(PUBLIC_FILE),
+            "{\n  \"$shared\": { \"host\": \"shared\" },\n  \"dev\": {\n    \"name\": \"host\",\n    \"host\": \"localhost\",\n    \"ssl\": { \"host\": \"nested\" }\n  },\n  \"prod\": { \"hostname\": \"x\", \"host\": \"example.com\" }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("api").join(PRIVATE_FILE), "{ \"dev\": { \"😀\": 1, \"host\": \"secret\" } }")
+            .unwrap();
+        let file = root.join("api").join("requests.http");
+        let found = variable_definitions(&file, Some(root), "host");
+        let at: Vec<_> = found
+            .iter()
+            .map(|l| {
+                (
+                    l.path.0.file_name().unwrap().to_string_lossy().into_owned(),
+                    l.range.start.line,
+                    l.range.start.col,
+                    l.range.end.col,
+                )
+            })
+            .collect();
+        assert_eq!(
+            at,
+            vec![
+                (PRIVATE_FILE.to_owned(), 0, 20, 26),
+                (PUBLIC_FILE.to_owned(), 1, 15, 21),
+                (PUBLIC_FILE.to_owned(), 4, 4, 10),
+                (PUBLIC_FILE.to_owned(), 7, 29, 35),
+            ],
+            "values and nested objects are not definitions"
+        );
+        assert!(variable_definitions(&file, Some(root), "missing").is_empty());
+    }
+
+    #[test]
     fn merges_private_public_and_shared() {
         let envs = Environments::from_json(
             r#"{"$shared":{"v":"1","host":"shared"},"dev":{"host":"localhost","port":8080,"ssl":{"x":1}},"prod":{}}"#,
@@ -261,5 +403,37 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         let envs = Environments::load(Some(&other.path().join("s.http")), Some(root)).unwrap();
         assert_eq!(envs.names(), vec!["dev"]);
+    }
+
+    #[test]
+    fn reads_env_files_in_the_encodings_windows_editors_save() {
+        let utf16: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain("{\"dev\":{\"name\":\"测试环境\"}}".encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        // Notepad's "ANSI" on a Chinese system: GBK.
+        let gbk: Vec<u8> =
+            [&b"{\"dev\":{\"name\":\""[..], &[0xB2, 0xE2, 0xCA, 0xD4, 0xBB, 0xB7, 0xBE, 0xB3], b"\"}}"].concat();
+        for bytes in ["\u{feff}{\"dev\":{\"name\":\"测试环境\"}}".as_bytes().to_vec(), utf16, gbk] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join(PUBLIC_FILE), &bytes).unwrap();
+            let envs = Environments::load(Some(&tmp.path().join("a.http")), Some(tmp.path())).unwrap();
+            assert_eq!(envs.names(), vec!["dev"]);
+            assert_eq!(envs.variables(Some("dev"))["name"], "测试环境");
+        }
+    }
+
+    #[test]
+    fn an_environment_file_is_found_up_the_tree_or_created_next_to_the_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = tmp.path().join("api");
+        std::fs::create_dir_all(&api).unwrap();
+        let request = api.join("a.http");
+        std::fs::write(tmp.path().join(PUBLIC_FILE), "{}").unwrap();
+        assert_eq!(environment_file(&request, Some(tmp.path()), false).unwrap(), tmp.path().join(PUBLIC_FILE));
+        let private = environment_file(&request, Some(tmp.path()), true).unwrap();
+        assert_eq!(private, api.join(PRIVATE_FILE));
+        let envs = Environments::load(Some(&request), Some(tmp.path())).unwrap();
+        assert_eq!(envs.names(), vec!["dev"], "the new file is a valid environment file");
     }
 }

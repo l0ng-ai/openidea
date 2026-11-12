@@ -28,6 +28,16 @@ body:
     validations:
       required: true
   - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How we'll know it's done. One observable behavior per line.
+      placeholder: |
+        - [ ] Right-clicking a test class shows "Run with Coverage"
+        - [ ] Coverage results open in the Coverage tool window
+    validations:
+      required: true
+  - type: textarea
     id: alternatives
     attributes:
       label: Alternatives and workarounds

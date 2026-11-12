@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from "react";
-import { Icon, Tree, fileIconName } from "@/ui";
-import { DiffEditor } from "./DiffEditor";
-import { diffInput, openDiff, type DiffData } from "./diffInput";
+import { Icon, Tree, fileIconName, lazyComponent } from "@/ui";
+import { diffInput, openVcsDiff, type DiffData } from "./diffInput";
 import { dirKeys, type FileTreeNode } from "./fileTree";
 import styles from "./common.module.css";
+
+const DiffEditor = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
 
 /** Shared changes tree and on-demand diff surface for revisions and disk folders. */
 export function ComparisonTree<F>({
@@ -16,6 +17,7 @@ export function ComparisonTree<F>({
   openOnActivate = false,
   getColor,
   onOpen,
+  inlineDiff = true,
 }: {
   tree: FileTreeNode<F>[];
   current: F | null;
@@ -26,10 +28,12 @@ export function ComparisonTree<F>({
   openOnActivate?: boolean;
   getColor?: (entry: F) => string | undefined;
   onOpen?: () => void;
+  /** Show the selected file's diff beside the tree; off where there is no room (a sidebar). */
+  inlineDiff?: boolean;
 }) {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [expanded, setExpanded] = useState<ReadonlySet<string> | null>(null);
-  const data = current && diffFor(current);
+  const data = inlineDiff && current && diffFor(current);
   const input = data ? diffInput(data) : null;
   return (
     <div className={`${styles.comparison} ${input ? styles.comparisonWithDiff : ""}`}>
@@ -52,7 +56,7 @@ export function ComparisonTree<F>({
           onSelect(entry);
           const diff = diffFor(entry);
           if (openOnActivate && diff) {
-            void openDiff(diff);
+            void openVcsDiff(diff);
             onOpen?.();
           }
         }}

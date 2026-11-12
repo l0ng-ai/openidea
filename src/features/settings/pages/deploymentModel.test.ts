@@ -3,6 +3,7 @@ import { DEFAULT_DEPLOYMENT_SERVER } from "@/platform/remoteSettings";
 import {
   addMapping,
   fixDefaultServer,
+  folderWithin,
   formatExcludes,
   newServer,
   nextServerName,
@@ -81,5 +82,16 @@ describe("server list", () => {
   it("walks up remote folders", () => {
     expect(remoteParent("/var/www/")).toBe("/var");
     expect(remoteParent("/var")).toBe("/");
+  });
+});
+
+describe("chosen mapping folders", () => {
+  it("are relative to the project or the server's root path", () => {
+    expect(folderWithin("/work/shop", "/work/shop/web/public")).toBe("web/public");
+    expect(folderWithin("/var/www/", "/var/www/site")).toBe("site");
+    expect(folderWithin("/var/www", "/var/www/")).toBe("");
+    expect(folderWithin("/var/www", "/var/wwwroot")).toBeNull();
+    expect(folderWithin("/var/www", "/srv")).toBeNull();
+    expect(folderWithin("", "/srv")).toBeNull();
   });
 });

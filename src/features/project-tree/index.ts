@@ -1,7 +1,8 @@
 /** Project view: the "project" tool window, its file operations and actions. */
 import { onEditorEvent, openEditorPaths } from "@/editor/api";
-import { onIdeEvent } from "@/platform/ipc";
-import { validateProjectStructure, type RootFolder } from "@/platform/languageSettings";
+import { commands, isTauri, onIdeEvent } from "@/platform/ipc";
+import { useBuildModel } from "@/platform/buildModel";
+import { effectiveContentRoots, validateProjectStructure, type RootFolder } from "@/platform/languageSettings";
 import { useProject } from "@/platform/project";
 import { initProjectRoots, useProjectRoots } from "@/platform/projectRoots";
 import { folderIconName } from "@/ui";
@@ -11,40 +12,84 @@ import {
   registerOverlay,
   registerProjectViewRoot,
   registerToolWindow,
+  registerUndoHandler,
+  setProjectViewLead,
   useLocalChanges,
   useProjectViewRoots,
 } from "@/workbench/contributions";
 import { registerProjectActions } from "./actions";
+import { mavenExternalRoots } from "./mavenRoots";
+import { gradleModuleGroups } from "./moduleGroups";
 import { FileRefactorDialogHost } from "./FileRefactorDialogs";
 import { NewPopupHost } from "./NewPopup";
 import { RefactoringPreviewHost } from "./RefactoringPreview";
 import { ProjectHeaderActions, useProjectHeaderMenu, useProjectTitleMenu } from "./HeaderActions";
 import { loadHomeDir } from "./home";
-import { selectedNodes } from "./operations";
+import { selectedNodes, undoLastFileOperation } from "./operations";
 import { ProjectView } from "./ProjectView";
+import { initProjectTypes } from "./projectTypes";
 import {
   applyFsChange,
   dropOutlines,
   initProjectTree,
+  leadSelection,
   reloadAll,
   reloadLoadedDirs,
   setChangedFiles,
   setOpenFiles,
+  setViewMode,
   useProjectTree,
 } from "./store";
 
 export function activate(): () => void {
   loadHomeDir();
+  let unityTimer: ReturnType<typeof setTimeout> | undefined;
+  let unityGeneration = 0;
   const sync = () => {
     const p = useProject.getState().project;
     const s = useProjectTree.getState();
     if ((p?.root ?? null) !== s.root || p?.workspace?.projects !== (s.members ?? undefined))
-      initProjectTree(p?.root ?? null, p?.name ?? "", p?.workspace?.projects ?? null);
-    else if (p && p.name !== s.name) useProjectTree.setState({ name: p.name });
+      initProjectTree(p?.root ?? null, p?.name ?? "", p?.workspace?.projects ?? null, p?.unity ?? null);
+    else if (p) {
+      useProjectTree.setState({ name: p.name, unity: p.unity ?? null });
+      if (p.unity && !s.unity && s.mode === "project") setViewMode("unity");
+      if (!p.unity && s.mode === "unity") setViewMode("project");
+    }
   };
   sync();
   const unsubProject = useProject.subscribe((s, prev) => {
+    if (s.project?.root !== prev.project?.root) {
+      unityGeneration++;
+      clearTimeout(unityTimer);
+    }
     if (s.project !== prev.project) sync();
+  });
+  // Unity regenerates these files while the IDE stays open. Refresh only metadata,
+  // retaining the current settings and ignoring replies from a previous project.
+  const unsubUnity = onIdeEvent("fsChanged", (e) => {
+    const project = useProject.getState().project;
+    if (!project || !isTauri()) return;
+    const relevant = [...e.created, ...e.modified, ...e.removed].some((p) => {
+      if (!p.startsWith(project.root + "/")) return false;
+      const rel = p.slice(project.root.length + 1);
+      return (
+        /^(Assets|Packages|ProjectSettings)(\/ProjectVersion\.txt)?$/.test(rel) ||
+        /^[^/]+\.(csproj|sln|slnx)$/i.test(rel)
+      );
+    });
+    if (!relevant) return;
+    const generation = ++unityGeneration;
+    clearTimeout(unityTimer);
+    unityTimer = setTimeout(async () => {
+      try {
+        const fresh = await commands.projectCurrent();
+        const current = useProject.getState().project;
+        if (generation !== unityGeneration || current?.root !== project.root || fresh?.root !== project.root) return;
+        useProject.setState({ project: { ...current, unity: fresh.unity } });
+      } catch {
+        // A project may have closed while the metadata request was in flight.
+      }
+    }, 150);
   });
   // Excluded folders / exclude globs change which entries are `ignored`.
   const unsubExcludes = useProject.subscribe((s, prev) => {
@@ -65,14 +110,28 @@ export function activate(): () => void {
     if (s.root && s.root === prev.root && detectedExcluded(s) !== detectedExcluded(prev)) void reloadAll();
   });
 
-  // Project Structure content roots besides the project folder, listed after it.
+  // Project Structure content roots after the project folder, and IDEA's module groups of
+  // a Gradle build with modules outside it (as of the last sync) before it.
   let contentRoots: Array<() => void> = [];
   let shownRoots = "";
   const syncContentRoots = () => {
     const { project, settings } = useProject.getState();
-    const paths =
-      project && !project.workspace ? validateProjectStructure(settings?.projectStructure).contentRoots : [];
-    const key = JSON.stringify(paths);
+    const own = project && (!project.workspace || project.workspace.projects[0] === project.root);
+    const paths = own ? effectiveContentRoots(validateProjectStructure(settings?.projectStructure)) : [];
+    // The Build tool window's model (one load per build change), not a load of our own.
+    const build = useBuildModel.getState();
+    const gradleBuilds = build.root === project?.root ? (build.model?.gradle ?? []) : [];
+    const groups =
+      own && project
+        ? gradleBuilds.flatMap((g) =>
+            gradleModuleGroups(g.projects, g.projects.find((p) => p.path === ":")?.name ?? "", project.root, g.dir),
+          )
+        : [];
+    const mavenRoots =
+      own && project && build.root === project.root
+        ? mavenExternalRoots(build.model?.maven?.projects ?? [], project.root)
+        : [];
+    const key = JSON.stringify([paths, groups, mavenRoots]);
     if (key === shownRoots) return;
     shownRoots = key;
     contentRoots.forEach((d) => d());
@@ -86,8 +145,26 @@ export function activate(): () => void {
         order: -100 + i,
       }),
     );
+    mavenRoots.forEach((root, i) =>
+      contentRoots.push(
+        registerProjectViewRoot({
+          id: root.id,
+          label: root.label,
+          detail: root.detail,
+          icon: "maven-project",
+          path: root.path,
+          order: -50 + i,
+        }),
+      ),
+    );
+    groups.forEach((g, i) =>
+      contentRoots.push(registerProjectViewRoot({ ...g, id: g.id!, order: -200 + i, beforeProject: true })),
+    );
   };
   syncContentRoots();
+  const unsubGradleRoots = useBuildModel.subscribe((s, prev) => {
+    if (s.model !== prev.model || s.root !== prev.root) syncContentRoots();
+  });
   const unsubContentRoots = useProject.subscribe((s, prev) => {
     if (s.settings !== prev.settings || s.project !== prev.project) syncContentRoots();
   });
@@ -116,14 +193,32 @@ export function activate(): () => void {
     if (s.lists !== prev.lists) syncChanged();
   });
 
+  // IDEA's navigation bar shows the tree's current node while the tree is the
+  // user's context; the editor hands it back on focus or on a tab switch.
+  const publishLead = () => setProjectViewLead(leadSelection());
+  publishLead();
+  const unsubLead = useProjectTree.subscribe((s, prev) => {
+    if (s.selected !== prev.selected || s.lead !== prev.lead) publishLead();
+  });
+
   const disposers = [
+    () => {
+      clearTimeout(unityTimer);
+      unityGeneration++;
+      unsubUnity();
+    },
     () => clearTimeout(openTimer),
     unsubEditor,
     unsubDecorations,
+    () => {
+      unsubLead();
+      setProjectViewLead(null);
+    },
     unsubProject,
     unsubExtraRoots,
     unsubExcludes,
     unsubContentRoots,
+    unsubGradleRoots,
     () => contentRoots.forEach((d) => d()),
     disposeRoots,
     unsubRoots,
@@ -142,11 +237,20 @@ export function activate(): () => void {
     registerOverlay({ id: "project.refactoringPreview", component: RefactoringPreviewHost }),
     registerOverlay({ id: "project.newPopup", component: NewPopupHost }),
     registerProjectActions(),
+    // Edit › Undo while the Project view has focus.
+    registerUndoHandler(
+      (command, focused) =>
+        command === "undo" &&
+        focused.getAttribute("role") === "tree" &&
+        !!focused.closest("[data-project-view]") &&
+        undoLastFileOperation(),
+    ),
     provideProjectViewSelection(() =>
       selectedNodes()
         .filter((n) => !n.group)
         .map((n) => n.path),
     ),
+    initProjectTypes(),
     onIdeEvent("fsChanged", (e) => void applyFsChange(e)),
     onIdeEvent("excludedDirsChanged", (e) => void reloadLoadedDirs(e.dirs)),
   ];

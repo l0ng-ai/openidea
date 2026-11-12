@@ -1,5 +1,5 @@
-//! Settings of remote work: SSH configurations, SFTP deployment and SSH run
-//! targets. The fields hang off `Settings` in `settings.rs`.
+//! Settings of remote work: SSH configurations, SFTP deployment and run
+//! targets (SSH, Docker, Compose). The fields hang off `Settings` in `settings.rs`.
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -108,7 +108,30 @@ impl Default for DeploymentSettings {
 pub enum DeploymentType {
     #[default]
     Sftp,
+    Ftp,
+    /// FTP secured with `AUTH TLS` (explicit FTPS).
+    Ftps,
     Local,
+}
+
+/// Host and login of an FTP / FTPS deployment server. The password is kept with
+/// the saved passwords, under the server's id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FtpConnection {
+    pub host: String,
+    /// `None`: 21.
+    pub port: Option<u16>,
+    /// Empty: anonymous login.
+    pub user: String,
+    /// Passive mode (the client opens data connections); off: active mode.
+    pub passive: bool,
+}
+
+impl Default for FtpConnection {
+    fn default() -> Self {
+        Self { host: String::new(), port: None, user: String::new(), passive: true }
+    }
 }
 
 /// A deployment filesystem and how project folders map onto it.
@@ -120,6 +143,8 @@ pub struct DeploymentServer {
     pub name: String,
     /// [`SshConfiguration::id`].
     pub ssh_config: String,
+    /// FTP / FTPS servers.
+    pub ftp: FtpConnection,
     /// Absolute remote folder the mappings are relative to; empty = the login directory.
     pub root_path: String,
     /// Web server URL of the root (Open in Browser on the deployed file).
@@ -132,7 +157,7 @@ pub struct DeploymentServer {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DeploymentMapping {
-    /// Project-relative folder; empty = the project root.
+    /// Project-relative folder, or absolute inside the project; empty = the project root.
     pub local: String,
     /// Remote folder, relative to the server root (a leading `/` is the root too).
     pub deployment: String,
@@ -140,22 +165,79 @@ pub struct DeploymentMapping {
     pub web: String,
 }
 
-/// Build, Execution, Deployment › Run Targets: run configurations on another machine.
+/// Where a run target runs configurations.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum RunTargetKind {
+    /// Another machine over SSH, the project synchronised to its folder.
+    #[default]
+    Ssh,
+    /// A new container of an image (`docker run --rm`), the project bind-mounted.
+    Docker,
+    /// A new container of a Compose service (`docker compose run --rm`).
+    Compose,
+}
+
+/// Build, Execution, Deployment › Run Targets: run configurations on another machine
+/// or in a container.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RunTarget {
+    pub kind: RunTargetKind,
     pub id: String,
     pub name: String,
-    /// [`SshConfiguration::id`].
+    /// [`SshConfiguration::id`] (SSH).
     pub ssh_config: String,
-    /// Remote folder the project is synchronised to and run from.
+    /// Remote folder the project is synchronised to and run from (SSH).
     pub project_root: String,
-    /// Upload changed project files before each run.
+    /// Upload changed project files before each run (SSH).
     pub sync_before_run: bool,
     /// Interpreters on the target; empty = the one on the remote `PATH`.
     pub python: String,
     pub node: String,
     pub java: String,
+    /// Id of a Docker connection of the Services tool window (Docker, Compose);
+    /// empty = the CLI's own daemon.
+    pub docker_connection: String,
+    /// Image to run (Docker).
+    pub image: String,
+    /// Compose files, relative to the project; empty = the project's default one (Compose).
+    pub compose_files: Vec<String>,
+    /// Service to run (Compose).
+    pub service: String,
+    /// Where the project is in the container; empty = `/workspaces/<folder>` (Docker),
+    /// the service's bind mount of the project (Compose).
+    pub container_root: String,
+    /// Published ports, as `docker run --publish` takes them (`8000:8000`).
+    pub ports: Vec<String>,
+    /// More options for `docker run` / `docker compose run`, shell-like quoted.
+    pub run_options: String,
+    /// Run as the image's user instead of the project folder's owner (Linux).
+    pub image_user: bool,
+}
+
+/// A plugin-owned argv wrapper for project runs (API 1.4).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRunTarget {
+    pub id: String,
+    pub name: String,
+    pub program: String,
+    pub args: Vec<String>,
+    pub workdir_args: Vec<String>,
+    pub container_root: Option<String>,
+    pub commands: Vec<PluginCommandOverride>,
+}
+
+/// Per-command argv prefix and optional replacement working-directory arguments.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCommandOverride {
+    pub name: String,
+    pub args: Vec<String>,
+    /// None inherits the target's list; Some([]) suppresses it.
+    #[serde(default)]
+    pub workdir_args: Option<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -168,12 +250,35 @@ mod deployment_tests {
             serde_json::from_str(r#"{"id":"existing","sshConfig":"ssh","rootPath":"/srv"}"#).unwrap();
         assert_eq!(legacy.kind, DeploymentType::Sftp);
         assert_eq!(legacy.ssh_config, "ssh");
-        for kind in [DeploymentType::Sftp, DeploymentType::Local] {
-            let server = DeploymentServer { kind, ..legacy.clone() };
+        assert!(legacy.ftp.passive);
+        let ftp =
+            FtpConnection { host: "ftp.example.com".into(), port: Some(2121), user: "web".into(), passive: false };
+        for kind in [DeploymentType::Sftp, DeploymentType::Ftp, DeploymentType::Ftps, DeploymentType::Local] {
+            let server = DeploymentServer { kind, ftp: ftp.clone(), ..legacy.clone() };
             assert_eq!(
                 serde_json::from_str::<DeploymentServer>(&serde_json::to_string(&server).unwrap()).unwrap(),
                 server
             );
         }
+    }
+
+    #[test]
+    fn run_target_kind_defaults_to_ssh_and_round_trips() {
+        let legacy: RunTarget =
+            serde_json::from_str(r#"{"id":"t","name":"Build box","sshConfig":"ssh","projectRoot":"/srv"}"#).unwrap();
+        assert_eq!((legacy.kind, legacy.ssh_config.as_str()), (RunTargetKind::Ssh, "ssh"));
+        let docker = RunTarget {
+            kind: RunTargetKind::Compose,
+            docker_connection: "local".into(),
+            compose_files: vec!["compose.dev.yaml".into()],
+            service: "web".into(),
+            ports: vec!["8000:8000".into()],
+            image_user: true,
+            ..legacy
+        };
+        let json = serde_json::to_value(&docker).unwrap();
+        assert_eq!(json["kind"], "compose");
+        assert_eq!(json["composeFiles"], serde_json::json!(["compose.dev.yaml"]));
+        assert_eq!(serde_json::from_value::<RunTarget>(json).unwrap(), docker);
     }
 }

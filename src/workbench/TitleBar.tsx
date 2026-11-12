@@ -1,3 +1,4 @@
+import { ContributedToolbar } from "./ContributedToolbar";
 import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useActions } from "@/platform/actions";
@@ -21,12 +22,16 @@ import {
   widgetTitle,
 } from "./mainToolbar";
 import { WindowControls } from "./WindowControls";
+import { useFullscreen } from "./useFullscreen";
 import { usePlatform } from "@/platform/platformInfo";
 import { projectInitials } from "./projectColor";
-import { keymapItems, themeItems, VIEW_MODE_ITEMS } from "./quickSwitch";
-import { currentThemeId, useThemeOverride } from "./theme";
+import { keymapItems, themeItems, themePreview, type ThemePreview, VIEW_MODE_ITEMS } from "./quickSwitch";
+import { useContributedThemes } from "@/platform/themes";
+import { currentThemeChoice, useThemeOverride } from "./theme";
 import styles from "./TitleBar.module.css";
 import { useNativeTitlebar } from "./nativeTitlebar";
+import { useDocumentTitle } from "./documentTitle";
+import { windowDragRegion } from "./window-drag";
 
 export function orderTitleItems(items: Iterable<TitleItemContribution>) {
   const all = [...items];
@@ -48,14 +53,16 @@ function TitleItem({ item }: { item: TitleItemContribution }) {
 }
 
 function ProjectButton() {
-  const name = useProject((s) => s.project?.name);
+  const name = useProject((s) => s.project?.displayName || s.project?.name);
   const root = useProject((s) => s.project?.root);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   const actions = useActions((s) => s.actions);
   const Popup = useWorkbenchSlots((s) => s.projectPopup);
   const items = useMemo<MenuItem[]>(() => {
-    const list: MenuItem[] = [{ kind: "action", action: "file.openProject", label: "Open…" }];
+    const list: MenuItem[] = [];
+    if (actions.has("file.newProject")) list.push({ kind: "action", action: "file.newProject", label: "New Project…" });
+    list.push({ kind: "action", action: "file.openProject", label: "Open…" });
     if (actions.has("welcome.recentProjects")) list.push({ kind: "action", action: "welcome.recentProjects" });
     list.push({ kind: "separator" }, { kind: "action", action: "file.closeProject" });
     return list;
@@ -145,13 +152,18 @@ export function customizeToolbarItems(
   ];
 }
 
-/** IDEA's main toolbar gear: Run Anything, Settings, Plugins, quick switches, toolbar customization, updates. */
+/**
+ * IDEA's main toolbar gear: Run Anything, Settings, Plugins, quick switches, toolbar customization, updates.
+ * With `preview`, a theme under the pointer shows as in Quick Switch.
+ */
 export function gearMenuItems(
   themeId: string,
   keymapId: string,
   customKeymaps: string[],
   customize: MenuItem[] = [{ kind: "action", action: "toolbar.customize", label: "Customize Toolbar…" }],
+  preview?: ThemePreview,
 ): MenuItem[] {
+  const restore = preview && (() => preview.restore());
   return [
     { kind: "action", action: "runAnything.show" },
     { kind: "separator" },
@@ -161,20 +173,25 @@ export function gearMenuItems(
     {
       id: "gear.theme",
       label: "Theme",
-      submenu: [...themeItems(themeId), { kind: "separator" }, { kind: "action", action: "settings.appearance" }],
+      submenu: [
+        ...themeItems(themeId, preview),
+        { kind: "separator" },
+        { kind: "action", action: "settings.appearance" },
+      ],
     },
     {
       id: "gear.keymap",
       label: "Keymap",
+      onActive: restore,
       submenu: [
         ...keymapItems(keymapId, customKeymaps),
         { kind: "separator" },
         { kind: "action", action: "settings.keymap", label: "Configure Keymap…" },
       ],
     },
-    { id: "gear.viewMode", label: "View Mode", submenu: VIEW_MODE_ITEMS },
+    { id: "gear.viewMode", label: "View Mode", onActive: restore, submenu: VIEW_MODE_ITEMS },
     { kind: "separator" },
-    { id: "gear.customizeToolbar", label: "Customize Main Toolbar", submenu: customize },
+    { id: "gear.customizeToolbar", label: "Customize Main Toolbar", onActive: restore, submenu: customize },
     { kind: "separator" },
     { kind: "action", action: "app.checkForUpdates" },
   ];
@@ -202,31 +219,34 @@ function GearButton({ customize }: { customize: MenuItem[] }) {
   useActions((s) => s.actions);
   const preset = useKeymap((s) => s.preset);
   const customs = settings?.customKeymaps;
+  useContributedThemes((s) => s.themes);
+  // One preview per opening: a theme shown from it goes away with the menu unless chosen.
+  const preview = useMemo(() => (open ? themePreview() : undefined), [open]);
   const items = gearMenuItems(
-    currentThemeId(),
+    currentThemeChoice(),
     typeof settings?.keymap === "string" ? settings.keymap : preset,
     customs && typeof customs === "object" ? Object.keys(customs) : [],
     customize,
+    preview,
   );
+  const close = () => {
+    setOpen(false);
+    // A chosen theme runs right after the menu closes: let it choose first.
+    queueMicrotask(() => preview?.end());
+  };
   return (
     <>
       <IconButton
         ref={ref}
         icon="settings"
         title="IDE and Project Settings"
-        iconSize={18}
+        iconSize={20}
         className={styles.tool}
         aria-haspopup="menu"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => (open ? close() : setOpen(true))}
       />
-      <Menu
-        open={open}
-        onClose={() => setOpen(false)}
-        anchor={ref}
-        items={items}
-        aria-label="IDE and Project Settings"
-      />
+      <Menu open={open} onClose={close} anchor={ref} items={items} aria-label="IDE and Project Settings" />
     </>
   );
 }
@@ -248,10 +268,20 @@ function ToolbarEntry({ id, items }: { id: string; items: ReadonlyMap<string, Ti
         action={action.id}
         title={action.title}
         shortcut={shortcutLabel(action.id) ?? (action.id === "navigate.searchEverywhere" ? "⇧⇧" : undefined)}
-        iconSize={18}
+        iconSize={20}
         className={styles.tool}
       />
     </div>
+  );
+}
+
+/** IDEA's compact header: the window title in the middle of a 30px bar. */
+function CompactTitle({ title }: { title?: string }) {
+  const documentTitle = useDocumentTitle();
+  return (
+    <span className={styles.compactTitle} {...windowDragRegion}>
+      {title ?? documentTitle}
+    </span>
   );
 }
 
@@ -260,71 +290,96 @@ function ToolbarEntry({ id, items }: { id: string; items: ReadonlyMap<string, Ti
  * Windows and Linux: the window is frameless, so the bar carries IDEA's main menu (☰) and
  * the caption buttons. `dialog`: a dialog window's bar (Settings), close button only.
  * `lightEdit`: a LightEdit window's bar, its title and the menu but no toolbar widgets.
+ * `compact`: IDEA's compact header (Distraction Free, View › Appearance › Toolbar off).
+ * `bare`: the window frame only, while a project opens.
  */
 export function TitleBar({
   minimal = false,
   bare = false,
+  compact = false,
   dialog = false,
   lightEdit = false,
   title,
 }: {
   minimal?: boolean;
   bare?: boolean;
+  compact?: boolean;
   dialog?: boolean;
   lightEdit?: boolean;
   title?: string;
 }) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
+  const fullscreen = useFullscreen();
   const frameless = usePlatform((s) => s.framelessTitleBar);
   const { map, shown, menu } = useToolbar();
   const [menuExpanded, setMenuExpanded] = useState(false);
+  const separateMenu = useProject((s) => s.settings?.appearance?.mainMenuStyle === "toolbar");
   const [bar, setBar] = useState<HTMLElement | null>(null);
   useNativeTitlebar(bar);
-  const className = clsx(styles.bar, overlay && styles.overlay, frameless && styles.frameless);
-  // Distraction Free Mode: the window frame only. Where the title bar carries the
-  // main menu (Windows, Linux) it stays, or nothing would lead back out of the mode.
-  if (bare)
+  const className = clsx(
+    styles.bar,
+    overlay && styles.overlay,
+    overlay && fullscreen && styles.overlayFullscreen,
+    frameless && styles.frameless,
+  );
+  // Where the title bar carries the main menu (Windows, Linux) it stays, or nothing
+  // would lead back out of Distraction Free Mode or bring the toolbar back.
+  if (bare || compact)
     return (
-      <header ref={setBar} className={className} data-tauri-drag-region data-titlebar="bare">
-        {frameless && (
-          <>
-            <MainMenu />
-            <div className={styles.drag} data-tauri-drag-region />
-            <WindowControls />
-          </>
-        )}
+      <header
+        ref={setBar}
+        className={clsx(className, compact && styles.compactHeader)}
+        {...windowDragRegion}
+        data-titlebar={compact ? "compact" : "bare"}
+      >
+        {frameless && <MainMenu />}
+        {compact ? <CompactTitle title={title} /> : frameless && <div className={styles.drag} {...windowDragRegion} />}
+        {frameless && <WindowControls />}
       </header>
     );
   const entry = (id: string) => <ToolbarEntry key={id} id={id} items={map} />;
   const toolbar = !minimal && !lightEdit;
-  return (
+  const menuRow = frameless && !minimal && separateMenu;
+  const header = (
     <header
       ref={setBar}
       className={clsx(className, minimal && styles.minimal, dialog && styles.dialogBar)}
-      data-tauri-drag-region
+      {...windowDragRegion}
       onContextMenu={(e) => {
         if (!toolbar || e.defaultPrevented) return;
         e.preventDefault();
         showContextMenu(e, menu);
       }}
     >
-      {frameless && !minimal && <MainMenu onExpandedChange={setMenuExpanded} />}
+      {frameless && !minimal && !separateMenu && <MainMenu onExpandedChange={setMenuExpanded} />}
       {title && (
-        <span className={styles.windowTitle} data-tauri-drag-region>
+        <span className={styles.windowTitle} {...windowDragRegion}>
           {typeof title === "string" ? <T>{title}</T> : title}
         </span>
       )}
       {toolbar && !menuExpanded && shown.left.map(entry)}
-      <div className={styles.drag} data-tauri-drag-region />
+      <div className={styles.drag} {...windowDragRegion} />
       {!minimal && (
         <>
-          {toolbar && shown.right.map(entry)}
-          <div className={styles.tools}>
-            <GearButton customize={menu} />
-          </div>
+          {toolbar && !menuExpanded && shown.right.map(entry)}
+          {toolbar && !menuExpanded && <ContributedToolbar slot="mainToolbar" />}
+          {!menuExpanded && (
+            <div className={styles.tools}>
+              <GearButton customize={menu} />
+            </div>
+          )}
         </>
       )}
       {frameless && <WindowControls dialog={dialog} />}
     </header>
+  );
+  if (!menuRow) return header;
+  return (
+    <>
+      {header}
+      <div className={styles.menuRow}>
+        <MainMenu row />
+      </div>
+    </>
   );
 }

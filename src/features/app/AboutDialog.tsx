@@ -1,8 +1,11 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
+import { revealInFileManager } from "@/platform/fileManager";
 import { t as translate, useT } from "@/platform/i18n";
 import { commands, isTauri, type AppInfo, type BuildInfo } from "@/platform/ipc";
+import { openExternalUrl } from "@/platform/openUrl";
 import clsx from "clsx";
 import { Dialog, IconButton, selectableText } from "@/ui";
 import logo from "../../../src-tauri/icons/128x128.png";
@@ -59,7 +62,7 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
   const rows = aboutRows(build, app?.configDir ?? null);
   const copy = () => {
     const text = [t("app.about.title"), ...rows.map(([k, v]) => `${k}: ${v}`)].join("\n");
-    void navigator.clipboard?.writeText(text).then(() => setCopied(true));
+    void writeClipboardText(text).then(() => setCopied(true));
   };
   const run = (id: string) => {
     onClose();
@@ -111,11 +114,20 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
               <button
                 type="button"
                 className={styles.link}
-                onClick={() => void import("@tauri-apps/plugin-opener").then((o) => o.revealItemInDir(app.configDir))}
+                onClick={() => void revealInFileManager(app.configDir, null)}
               >
                 {t("app.about.showConfig")}
               </button>
             )}
+            <button
+              type="button"
+              className={styles.link}
+              onClick={() =>
+                void openExternalUrl("https://github.com/l0ng-ai/openidea/issues/new/choose").catch(() => {})
+              }
+            >
+              {t("app.about.reportIssue")}
+            </button>
           </div>
           <div className={clsx(styles.license, selectableText)}>
             {t("app.about.copyright")}

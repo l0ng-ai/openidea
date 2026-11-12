@@ -39,21 +39,28 @@ afterEach(disposeFindWindow);
 
 describe("Find tool window tabs", () => {
   it("reuses the selected tab unless it is pinned", () => {
-    const a = openInFindWindow(q("a"), "a", null, deps);
-    const b = openInFindWindow(q("b"), "b", null, deps);
+    const a = openInFindWindow(q("a"), "a", { deps });
+    const b = openInFindWindow(q("b"), "b", { deps });
     expect(useFindWindow.getState().tabs.map((t) => t.title)).toEqual(["b"]);
     expect(useFindWindow.getState().active).toBe(b);
     expect(b).not.toBe(a);
 
     pinFindTab(b, true);
-    const c = openInFindWindow(q("c"), "c", null, deps);
+    const c = openInFindWindow(q("c"), "c", { deps });
     expect(useFindWindow.getState().tabs.map((t) => t.title)).toEqual(["b", "c"]);
     expect(useFindWindow.getState().active).toBe(c);
 
     // Selecting the pinned tab again opens the next search beside it.
     useFindWindow.setState({ active: b });
-    openInFindWindow(q("d"), "d", null, deps);
+    openInFindWindow(q("d"), "d", { deps });
     expect(useFindWindow.getState().tabs.map((t) => t.title)).toEqual(["b", "c", "d"]);
+  });
+
+  it("keeps the selected tab with IDEA's Open results in new tab", () => {
+    openInFindWindow(q("a"), "a", { deps });
+    const b = openInFindWindow(q("b"), "b", { deps, newTab: true });
+    expect(useFindWindow.getState().tabs.map((t) => t.title)).toEqual(["a", "b"]);
+    expect(useFindWindow.getState().active).toBe(b);
   });
 });
 

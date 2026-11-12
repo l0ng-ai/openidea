@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getContext } from "@/platform/context";
-import { executeAction, getAction } from "@/platform/actions";
+import { actionToggled, executeAction, getAction } from "@/platform/actions";
 import { registerToolWindow } from "../contributions";
 import { installToolWindowActions } from "./actions";
 import {
@@ -23,12 +23,15 @@ import {
   toggleMaximizeToolWindow,
   sanitizePlacements,
   resetToolWindowLayout,
+  restoreMaximizedToolWindow,
   setFocusedToolWindow,
   setToolWindowSize,
+  setToolWindowViewMode,
   showToolWindow,
   toggleToolWindow,
   toolWindowServiceImpl,
   useToolWindowLayout,
+  viewModeOf,
 } from "./store";
 
 const Empty = () => null;
@@ -98,6 +101,16 @@ describe("tool window semantics", () => {
     expect(isToolWindowVisible("project")).toBe(true);
   });
 
+  it("restores the maximized side through the shared Hide All toggle", () => {
+    showToolWindow("terminal");
+    toggleMaximizeToolWindow("terminal");
+    const before = useToolWindowLayout.getState();
+    hideAllToolWindows();
+    expect(useToolWindowLayout.getState().maximized).toBeNull();
+    hideAllToolWindows();
+    expect(useToolWindowLayout.getState()).toMatchObject({ visible: before.visible, maximized: "bottom" });
+  });
+
   it("resizes the active window by moving its inner edge", () => {
     showToolWindow("terminal");
     setFocusedToolWindow("terminal");
@@ -130,6 +143,55 @@ describe("tool window semantics", () => {
 });
 
 describe("tool window persistence", () => {
+  it.each(["left", "right", "bottom"] as const)("preserves the %s layout through maximize and reload", (anchor) => {
+    moveToolWindow("terminal", anchor);
+    moveToolWindow("problems", `${anchor}-split`);
+    showToolWindow("terminal");
+    showToolWindow("problems");
+    setToolWindowSize(anchor, 987);
+    setToolWindowSplit(anchor, 0.63);
+    const before = useToolWindowLayout.getState();
+    toggleMaximizeToolWindow("terminal");
+    setToolWindowSize(anchor, 111);
+    expect(isToolWindowVisible("terminal")).toBe(true);
+    expect(isToolWindowVisible("problems")).toBe(true);
+    if (anchor !== "left") {
+      expect(isToolWindowVisible("project")).toBe(false);
+      expect(getContext()["toolWindow.project.visible"]).toBe(false);
+    }
+    toggleMaximizeToolWindow("terminal");
+    expect(useToolWindowLayout.getState()).toMatchObject({
+      visible: before.visible,
+      sizes: before.sizes,
+      splits: before.splits,
+    });
+    toggleMaximizeToolWindow("terminal");
+    // Saving another layout choice while maximized must retain all the original anchors.
+    setToolWindowSplit(anchor, 0.63);
+    showToolWindow("terminal");
+    loadToolWindowLayout("/work/a");
+    expect(useToolWindowLayout.getState()).toMatchObject({
+      visible: before.visible,
+      sizes: before.sizes,
+      splits: before.splits,
+      maximized: null,
+    });
+  });
+
+  it("restores other anchors on navigation, opening another side, or closing the maximized window", () => {
+    showToolWindow("terminal");
+    toggleMaximizeToolWindow("terminal");
+    restoreMaximizedToolWindow();
+    expect(isToolWindowVisible("project")).toBe(true);
+    toggleMaximizeToolWindow("terminal");
+    showToolWindow("project", true);
+    expect(useToolWindowLayout.getState().maximized).toBeNull();
+    toggleMaximizeToolWindow("terminal");
+    hideToolWindow("terminal");
+    expect(useToolWindowLayout.getState().maximized).toBeNull();
+    expect(isToolWindowVisible("project")).toBe(true);
+  });
+
   it("persists visible windows and sizes per project root", () => {
     showToolWindow("structure");
     showToolWindow("terminal");
@@ -263,8 +325,10 @@ describe("split areas", () => {
   it("keeps the side maximized while its other area shows a window", () => {
     showToolWindow("bookmarks");
     toggleMaximizeToolWindow("project");
+    setFocusedToolWindow("bookmarks");
     hideToolWindow("bookmarks");
     expect(useToolWindowLayout.getState().maximized).toBe("left");
+    expect(useToolWindowLayout.getState().focusRequest?.id).toBe("project");
     hideToolWindow("project");
     expect(useToolWindowLayout.getState().maximized).toBeNull();
   });
@@ -327,6 +391,34 @@ describe("split areas", () => {
     expect(getContext()["toolWindow.late.visible"]).toBe(true);
     sync();
   });
+
+  it("clears maximized and restores other tool windows when a maximized plugin window unregisters", () => {
+    const sync = installToolWindowLayoutSync();
+    const disposeK8s = registerToolWindow({
+      id: "plugin.k8s.view:kubernetes",
+      title: "Kubernetes",
+      icon: "cloud",
+      anchor: "right",
+      secondary: true,
+      component: Empty,
+    });
+    showToolWindow("plugin.k8s.view:kubernetes", true);
+    setFocusedToolWindow("plugin.k8s.view:kubernetes");
+    toggleMaximizeToolWindow("plugin.k8s.view:kubernetes");
+    expect(useToolWindowLayout.getState().maximized).toBe("right");
+    expect(isToolWindowVisible("project")).toBe(false);
+    expect(getContext()["toolWindow.project.visible"]).toBe(false);
+
+    disposeK8s();
+
+    expect(useToolWindowLayout.getState().maximized).toBeNull();
+    expect(useToolWindowLayout.getState().focused).toBeNull();
+    expect(useToolWindowLayout.getState().lastActive).toBeNull();
+    expect(isToolWindowVisible("project")).toBe(true);
+    expect(getContext()["toolWindow.project.visible"]).toBe(true);
+    expect(getContext().toolWindowFocus).toBe(false);
+    sync();
+  });
 });
 
 describe("stripe buttons", () => {
@@ -354,5 +446,74 @@ describe("stripe buttons", () => {
     expect(buttons()).toEqual({ find: false, terminal: false });
     resetToolWindowPlacements();
     expect(buttons()).toEqual({});
+  });
+});
+
+describe("view modes", () => {
+  it("are remembered per window and project; Restore Default Layout docks and pins every window", () => {
+    expect(viewModeOf("project")).toBe("dockPinned");
+    setToolWindowViewMode("project", "undock");
+    setToolWindowViewMode("terminal", "dockUnpinned");
+    loadToolWindowLayout("/work/b");
+    expect(viewModeOf("project")).toBe("dockPinned");
+    loadToolWindowLayout("/work/a");
+    expect(viewModeOf("project")).toBe("undock");
+    expect(viewModeOf("terminal")).toBe("dockUnpinned");
+    resetToolWindowPlacements();
+    expect(useToolWindowLayout.getState().viewModes).toEqual({});
+  });
+
+  it("ignores unknown stored modes", () => {
+    localStorage.setItem(
+      "openidea.layout.v1:/work/c",
+      JSON.stringify({ v: 2, viewModes: { project: "float", terminal: "undock", problems: 3 } }),
+    );
+    loadToolWindowLayout("/work/c");
+    expect(useToolWindowLayout.getState().viewModes).toEqual({ terminal: "undock" });
+  });
+
+  it("unpinned and undocked windows hide when focus moves to the editor or another tool window", () => {
+    setToolWindowViewMode("project", "dockUnpinned");
+    setToolWindowViewMode("terminal", "undock");
+    showToolWindow("terminal");
+    setFocusedToolWindow("project");
+    expect(isToolWindowVisible("project")).toBe(true);
+    expect(isToolWindowVisible("terminal")).toBe(false);
+
+    showToolWindow("terminal");
+    setFocusedToolWindow("terminal");
+    expect(isToolWindowVisible("project")).toBe(false);
+    expect(isToolWindowVisible("terminal")).toBe(true);
+
+    setFocusedToolWindow(null, true);
+    expect(isToolWindowVisible("terminal")).toBe(false);
+  });
+
+  it("stay when focus goes to a popup or dialog; pinned windows never hide on focus", () => {
+    setToolWindowViewMode("project", "dockUnpinned");
+    showToolWindow("terminal");
+    setFocusedToolWindow("project");
+    setFocusedToolWindow(null);
+    expect(isToolWindowVisible("project")).toBe(true);
+    setFocusedToolWindow(null, true);
+    expect(isToolWindowVisible("project")).toBe(false);
+    expect(isToolWindowVisible("terminal")).toBe(true);
+  });
+
+  it("toolwindow.viewMode.* set the mode of the window an Options menu names, else of the active one", async () => {
+    const dispose = installToolWindowActions();
+    await executeAction("toolwindow.viewMode.undock", "terminal");
+    expect(viewModeOf("terminal")).toBe("undock");
+
+    setFocusedToolWindow("project");
+    expect(actionToggled(getAction("toolwindow.viewMode.dockPinned"))).toBe(true);
+    await executeAction("toolwindow.viewMode.dockUnpinned");
+    expect(viewModeOf("project")).toBe("dockUnpinned");
+    expect(actionToggled(getAction("toolwindow.viewMode.dockUnpinned"))).toBe(true);
+    expect(actionToggled(getAction("toolwindow.viewMode.dockPinned"))).toBe(false);
+
+    await executeAction("toolwindow.viewMode.dockPinned", "terminal");
+    expect(useToolWindowLayout.getState().viewModes).toEqual({ project: "dockUnpinned" });
+    dispose();
   });
 });

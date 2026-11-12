@@ -5,7 +5,11 @@
  * or, editing loose files (LightEdit), a frame with the editor only.
  */
 import { useEditorRegistry } from "@/editor/api";
+import { Breadcrumbs } from "@/editor/core";
 import { basename, useProject } from "@/platform/project";
+import { useT } from "@/platform/i18n";
+import { ProgressBar } from "@/ui";
+import projectMark from "../../src-tauri/icons/source/openidea-mark.svg";
 import { useDistractionFree } from "./distractionFree";
 import { EditorArea } from "./EditorArea";
 import { OverlayHost } from "./OverlayHost";
@@ -17,23 +21,58 @@ import { useApplyTheme } from "./theme";
 import { ToolWindowLayout } from "./toolwindows/ToolWindows";
 import { Welcome } from "./Welcome";
 import { WindowResizeHandles } from "./WindowResizeHandles";
-import { useContributions } from "./contributions";
+import { useContributions, useStandaloneEditor } from "./contributions";
 import styles from "./Workbench.module.css";
 
+/** View › Appearance switches (`appearance.showMainToolbar`, `appearance.showStatusBar`), shown by default. */
+function useAppearanceFlag(key: "showMainToolbar" | "showStatusBar"): boolean {
+  return useProject((s) => s.settings?.appearance?.[key] !== false);
+}
+
+/** Where View › Appearance › Navigation Bar puts the file path breadcrumbs. */
+type NavigationBarPosition = "top" | "statusBar" | "hidden";
+function useNavigationBarPosition(): NavigationBarPosition {
+  const position = useProject((s) => s.settings?.appearance?.navigationBar);
+  // Nothing loaded yet, or a malformed value: match the backend default (`statusBar`).
+  return position === "top" || position === "statusBar" || position === "hidden" ? position : "statusBar";
+}
+
 /** LightEdit: editor tabs only; no tool windows, toolbar widgets or project status items. */
-function LightEditFrame() {
+function LightEditFrame({ title }: { title?: string }) {
   const path = useEditorRegistry((s) => s.active?.ctx.path);
   const distractionFree = useDistractionFree((s) => s.active);
+  const statusBar = useAppearanceFlag("showStatusBar");
   return (
     <>
-      <TitleBar lightEdit bare={distractionFree} title={path ? basename(path) : "LightEdit"} />
+      <TitleBar lightEdit compact={distractionFree} title={title ?? (path ? basename(path) : "LightEdit")} />
       <main className={styles.lightEdit} data-light-edit>
         <div className={styles.lightEditIsland}>
           <EditorArea />
         </div>
       </main>
-      {!distractionFree && <StatusBar lightEdit />}
+      {!distractionFree && statusBar && <StatusBar lightEdit />}
     </>
+  );
+}
+
+function ProjectOpening({ path }: { path: string }) {
+  const t = useT();
+  const label = t("app.project.opening", { name: basename(path) });
+  return (
+    <div className={styles.opening} data-project-opening>
+      <TitleBar bare />
+      <div className={styles.openingBody} role="status" aria-label={label}>
+        <div className={styles.openingBrand} aria-hidden="true">
+          <img className={styles.openingLogo} src={projectMark} alt="" draggable={false} />
+          <span>OpenIDEA</span>
+        </div>
+        <ProgressBar className={styles.openingProgress} aria-label={label} />
+        <div className={styles.openingTitle}>{label}</div>
+        <div className={styles.openingPath} title={path}>
+          {path}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -42,31 +81,39 @@ export function Workbench() {
   const banners = useContributions((s) => s.workbenchBanners);
   const project = useProject((s) => s.project);
   const lightEdit = useProject((s) => s.lightEdit);
+  const standaloneTitle = useStandaloneEditor((s) => s.title);
+  const openingPath = useProject((s) => s.openingPath);
   const root = project?.root ?? null;
   const distractionFree = useDistractionFree((s) => s.active);
-  const frame = project ? styles.framed : lightEdit ? styles.lightEditFrame : undefined;
+  const mainToolbar = useAppearanceFlag("showMainToolbar");
+  const statusBar = useAppearanceFlag("showStatusBar");
+  const navBarPosition = useNavigationBarPosition();
+  const frame = project ? styles.framed : lightEdit || standaloneTitle ? styles.lightEditFrame : undefined;
 
   return (
     <div
       className={frame ? `${styles.workbench} ${frame}` : styles.workbench}
       style={project ? projectColorVars(project.name) : undefined}
     >
-      {project ? (
-        <>
-          {/* Distraction Free Mode keeps the bar for the traffic lights and window dragging only. */}
-          <TitleBar bare={distractionFree} />
-          {!distractionFree && <WindowGroupTabs />}
-          {[...banners.values()].map(({ id, component: Banner }) => (
-            <Banner key={id} />
-          ))}
-          <ToolWindowLayout key={root} editor={<EditorArea />} />
-          {!distractionFree && <StatusBar />}
-        </>
-      ) : lightEdit ? (
-        <LightEditFrame />
-      ) : (
-        <Welcome />
-      )}
+      <div className={styles.content} inert={openingPath !== null} aria-hidden={openingPath ? true : undefined}>
+        {project ? (
+          <>
+            <TitleBar compact={distractionFree || !mainToolbar} />
+            {!distractionFree && navBarPosition === "top" && <Breadcrumbs className={styles.navigationBar} />}
+            {!distractionFree && <WindowGroupTabs />}
+            {[...banners.values()].map(({ id, component: Banner }) => (
+              <Banner key={id} />
+            ))}
+            <ToolWindowLayout key={root} editor={<EditorArea />} />
+            {!distractionFree && statusBar && <StatusBar />}
+          </>
+        ) : lightEdit || standaloneTitle ? (
+          <LightEditFrame title={standaloneTitle ?? undefined} />
+        ) : (
+          <Welcome />
+        )}
+      </div>
+      {openingPath && <ProjectOpening path={openingPath} />}
       <OverlayHost />
       <WindowResizeHandles />
     </div>

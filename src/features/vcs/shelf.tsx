@@ -3,12 +3,13 @@
  * the Shelf tab of the Commit tool window, Unshelve (3-way, conflicts go to the
  * merge UI), rename and delete.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { create } from "zustand";
 import type { ApplyOutcome, FileStatus, ShelvedChangeList, ShelfDiffFile } from "@/bindings";
 import { setContext } from "@/platform/context";
 import { shortcutLabel } from "@/platform/keymap";
-import { openDiff, withChain, type DiffData } from "./diffInput";
+import { openDiff, openVcsDiff, withChain, type DiffData } from "./diffInput";
 import { showCreatePatchForShelf } from "./patches";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
@@ -116,7 +117,7 @@ export function FileChecklist({
                 onChange(n);
               }}
             />
-            <Icon name={fileIconName(baseName(f.path))} size={14} />
+            <Icon name={fileIconName(baseName(f.path), f.path)} size={14} />
             <span className={styles.fileName} style={{ color: KIND_COLOR[kind] }}>
               {baseName(stripSlash(f.path))}
             </span>
@@ -144,7 +145,7 @@ function ShelveDialog({
     if (!chosen.length || !name.trim()) return;
     onClose();
     await saveAll();
-    const entry = await runOp(`Shelve changes “${name.trim()}”`, () => call(commands.vcsShelve(name.trim(), chosen)));
+    const entry = await runOp(tx`Shelve changes “${name.trim()}”`, () => call(commands.vcsShelve(name.trim(), chosen)));
     if (!entry) return;
     void loadShelves().catch(() => undefined);
     notifications().notify({
@@ -218,7 +219,7 @@ function UnshelveDialog({ entry, path, onClose }: { entry: ShelvedChangeList; pa
     onClose();
     await saveAll();
     const outcome = await runOp(
-      `Unshelve “${entry.name}”`,
+      tx`Unshelve “${entry.name}”`,
       () => call(commands.vcsUnshelve(entry.id, remove, path ?? null)),
       {
         refresh: false,
@@ -272,7 +273,7 @@ export async function deleteShelf(entry: ShelvedChangeList, path?: string) {
     danger: true,
   });
   if (!ok) return;
-  await runOp(`Delete shelved changes “${entry.name}”`, () => call(commands.vcsShelfDelete(entry.id, path ?? null)), {
+  await runOp(tx`Delete shelved changes “${entry.name}”`, () => call(commands.vcsShelfDelete(entry.id, path ?? null)), {
     refresh: false,
   });
   void loadShelves().catch(() => undefined);
@@ -286,13 +287,13 @@ export async function renameShelf(entry: ShelvedChangeList) {
     okLabel: "Rename",
   });
   if (!r || r.value === entry.name) return;
-  await runOp("Rename shelved changes", () => call(commands.vcsShelfRename(entry.id, r.value)), { refresh: false });
+  await runOp(tx("Rename shelved changes"), () => call(commands.vcsShelfRename(entry.id, r.value)), { refresh: false });
   void loadShelves().catch(() => undefined);
 }
 
 export async function copyShelfPatch(entry: ShelvedChangeList, path?: string) {
   try {
-    await navigator.clipboard.writeText(await call(commands.vcsShelfPatch(entry.id, path ?? null)));
+    await writeClipboardText(await call(commands.vcsShelfPatch(entry.id, path ?? null)));
     notifications().notify({ group: "vcs", level: "info", title: "Patch copied to the clipboard" });
   } catch (e) {
     logConsole("err", errorMessage(e));
@@ -375,20 +376,23 @@ export async function showShelfDiff(arg?: unknown, local = false, newTab = false
     );
     items = items.filter((_, i) => supported[i]);
   }
-  if (items.length) await openDiff(withChain(items, 0), { preview: !newTab });
+  if (!items.length) return;
+  // "Show Diff in a New Tab" asks for an editor tab whatever the commit interface.
+  if (newTab) await openDiff(withChain(items, 0), { preview: false });
+  else await openVcsDiff(withChain(items, 0), { preview: true });
 }
 
 export async function importShelfPatches(paths?: string[]) {
   const repo = currentRepo();
   const picked =
     paths ??
-    (await import("@tauri-apps/plugin-dialog").then(({ open }) =>
+    (await import("@/platform/dialog").then(({ open }) =>
       open({ multiple: true, directory: false, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] }),
     ));
   if (!picked) return;
   for (const path of typeof picked === "string" ? [picked] : picked) {
     await runOp(
-      "Import patches",
+      tx("Import patches"),
       async () => call(commands.vcsShelfImport(repo, baseName(path), await call(commands.fsReadText(path)))),
       { refresh: false },
     );
@@ -517,7 +521,7 @@ export function ShelfPanel() {
           renderNode={(n) =>
             n.file ? (
               <>
-                <Icon name={fileIconName(baseName(n.file.path))} size={16} className={viewStyles.icon} />
+                <Icon name={fileIconName(baseName(n.file.path), n.file.path)} size={16} className={viewStyles.icon} />
                 <span
                   className={viewStyles.label}
                   style={{ color: KIND_COLOR[n.file.kind === "untracked" ? "added" : n.file.kind] }}

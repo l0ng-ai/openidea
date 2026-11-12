@@ -1,0 +1,166 @@
+---
+title: "添加新语言"
+description: "语言定义文件的格式：文件识别、注释、高亮、语言服务器、调试器和格式化工具。"
+---
+
+OpenIDEA 认识的每种语言都是一个 TOML 文件，格式如本页所述。有三种用法：
+
+- **为自己修改内置语言**：在配置目录的 `languages` 文件夹里放一个 `id` 相同的文件。它会整体替换内置定义（字段不会合并），所以最好从内置文件复制一份再改。
+- **为自己添加语言**：在同一个文件夹里放一个使用新 `id` 的文件。
+- **把语言提供给别人**：放进插件（见 [通过插件提供语言](#通过插件提供语言)），或者加到仓库的 `languages/` 目录。
+
+配置目录位置：
+
+| 系统    | 文件夹                                                      |
+| ------- | ----------------------------------------------------------- |
+| macOS   | `~/Library/Application Support/ai.l0ng.openidea/languages/` |
+| Windows | `%APPDATA%\ai.l0ng.openidea\languages\`                     |
+| Linux   | `~/.config/ai.l0ng.openidea/languages/`                     |
+
+这个文件夹只在启动时读取一次，修改后需要重启 IDE。无法解析的文件会被跳过，原因写在日志里。
+
+## 示例
+
+一个完整的定义，包含 tree-sitter 语法、语言服务器和调试器：
+
+```toml languages/zig.toml
+id = "zig"
+name = "Zig"
+extensions = ["zig", "zon"]
+line-comment = "//"
+indent = { tab-size = 4, insert-spaces = true }
+tree-sitter = "zig"
+
+[[language-servers]]
+name = "zls"
+command = "zls"
+root-markers = ["build.zig", "build.zig.zon"]
+install-hint = "Install ZLS matching your Zig version (https://github.com/zigtools/zls/releases)"
+
+[debugger]
+adapter = "codelldb"
+command = "codelldb"
+args = ["--port", "${port}"]
+transport = "tcp"
+install-hint = "Install CodeLLDB in Settings › Languages & Frameworks › Language Servers"
+```
+
+所有键都使用 kebab-case。只有 `id` 和 `name` 是必填的；只写这两项时，这类文件至少会在界面上显示正确的语言名。
+
+## 语言字段
+
+| 字段                 | 类型           | 说明                                                                                                                                                                                                                   |
+| -------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                 | 字符串         | 稳定的语言 id，例如 `python`。可用字母、数字、`-`、`_`、`.`、`+`（最多 64 个字符）。                                                                                                                                   |
+| `name`               | 字符串         | 界面上显示的名称。                                                                                                                                                                                                     |
+| `extensions`         | 字符串数组     | 不带点的扩展名，不区分大小写。支持复合扩展名：`html.erb`、`tftest.hcl`。                                                                                                                                               |
+| `filenames`          | 字符串数组     | 精确文件名（`Dockerfile`、`go.mod`），或带 `*`、`?` 的模式（`Dockerfile.*`）。                                                                                                                                         |
+| `first-line`         | 字符串         | 文件名和扩展名都没匹配上时，用来匹配第一行的正则表达式，例如 `^#!.*\\bpython[0-9.]*\\b`。                                                                                                                              |
+| `line-comment`       | 字符串         | 行注释符号，例如 `//`。**使用行注释** 会用到它。                                                                                                                                                                       |
+| `block-comment`      | `[开始, 结束]` | 块注释符号，例如 `["/*", "*/"]`。                                                                                                                                                                                      |
+| `indent`             | 表             | `{ tab-size = 4, insert-spaces = true }`。写了这个表时两个键都必须给出。                                                                                                                                               |
+| `ui-mode`            | 字符串         | 用于即时高亮的 CodeMirror 模式。可以是 `@codemirror/language-data` 中的模式名（`Rust`、`Python`、`C++`、`Properties files` 等），也可以是 IDE 自带的模式（如 `CMake`、`Vue`、`Astro`、`ERB`、`JSP`、`Log`、`GoMod`）。 |
+| `framework-ui-modes` | 表数组         | 在某个框架的项目中替换 `ui-mode` 的模式，见下文。                                                                                                                                                                      |
+| `tree-sitter`        | 字符串         | 内置的 tree-sitter 语法，用于大纲、折叠和项目符号。没有 `ui-mode` 时也用它高亮。可用语法见下方列表。                                                                                                                   |
+| `language-servers`   | 表数组         | 语言服务器，按顺序排列，见下文。                                                                                                                                                                                       |
+| `debugger`           | 表             | 调试适配器，见下文。                                                                                                                                                                                                   |
+| `formatter`          | 表             | 外部格式化工具，见下文。                                                                                                                                                                                               |
+| `scratch-template`   | 字符串         | 新建该语言草稿文件时的内容，`$END$` 表示光标位置。                                                                                                                                                                     |
+
+内置的 tree-sitter 语法：`bash`、`c`、`cmake`、`cpp`、`csharp`、`css`、`dart`、`elixir`、`gdscript`、`go`、`graphql`、`haskell`、`hcl`、`html`、`java`、`javascript`、`json`、`kotlin`、`lua`、`make`、`markdown`、`nix`、`ocaml`、`ocaml_interface`、`php`、`prisma`、`proto`、`python`、`ruby`、`rust`、`scala`、`swift`、`toml`、`tsx`、`typescript`、`xml`、`yaml`、`zig`。新的语法需要编译进 IDE；没有语法的语言可以改由插件提供高亮和结构（见 [语言功能](/zh/plugins/guides/language-features)）。
+
+### `[[framework-ui-modes]]`
+
+| 字段           | 类型       | 说明                                                                                                                   |
+| -------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `ui-mode`      | 字符串     | 用来替换 `ui-mode` 的模式。                                                                                            |
+| `root-markers` | 字符串数组 | 文件上方（直到项目根目录为止）的某个目录中存在其中任一标记时，该模式生效。匹配规则与语言服务器的 `root-markers` 相同。 |
+
+按顺序第一个找到标记的条目生效。HTML 用它来支持 Angular 模板：
+
+```toml
+[[framework-ui-modes]]
+ui-mode = "Angular Template"
+root-markers = ["angular.json", "node_modules/@angular/core"]
+```
+
+## `[[language-servers]]`
+
+每一项启动一个 LSP 服务器。服务器按顺序列出：普通服务器同时运行；`fallback` 服务器只有在排在它前面的服务器都缺失时才运行。
+
+| 字段                      | 类型       | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`                    | 字符串     | 稳定名称，例如 `rust-analyzer`。用户设置用它引用服务器（`languageServers.<name>`）；IDE 有对应安装程序时也靠它选择。                                                                                                                                                                                                                                                                                                                                   |
+| `command`                 | 字符串     | 要启动的可执行文件。先在 IDE 的工具文件夹中查找，再查 `PATH`。                                                                                                                                                                                                                                                                                                                                                                                         |
+| `args`                    | 字符串数组 | 参数，例如 `["--stdio"]`。                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `env`                     | 表         | 额外的环境变量。                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `requires-env`            | 字符串数组 | 服务器必需的环境变量，例如下载包所在的文件夹。只要其中一个未设置或为空（`env` 和 IDE 的环境里都没有），服务器就视为未安装，显示 `install-hint`，不会启动。                                                                                                                                                                                                                                                                                             |
+| `root-markers`            | 字符串数组 | 标记工作区根目录的文件。文件上方（项目内）最外层包含标记的目录就是服务器的根目录。标记可以是相对路径、带一个 `*` 的模式（`*.csproj`），或用 `file#table` 要求 TOML 文件中有某个表（`pyproject.toml#tool.ruff`）。                                                                                                                                                                                                                                      |
+| `require-root-marker`     | 布尔       | 只服务根标记下面的文件，而不是整个项目。适合与语言自身服务器并存的框架服务器。                                                                                                                                                                                                                                                                                                                                                                         |
+| `initialization-options`  | 表         | 服务器启动时作为 `initializationOptions` 发送。                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `settings`                | 表         | 用于响应服务器的 `workspace/configuration` 请求。不写时，从 `initialization-options` 中查找请求的配置节。                                                                                                                                                                                                                                                                                                                                              |
+| `install-hint`            | 字符串     | 服务器缺失且 IDE 无法安装时显示的提示。                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `fallback`                | 布尔       | 作为前面服务器的备选，只在它们都未安装时使用。                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `features`                | 字符串数组 | 只把服务器用于这些功能；为空表示全部。可选值：`completion`、`inline-completion`、`hover`、`signature-help`、`definition`、`declaration`、`type-definition`、`implementation`、`references`、`document-highlight`、`document-symbol`、`workspace-symbol`、`code-action`、`code-lens`、`rename`、`formatting`、`inlay-hint`、`semantic-tokens`、`document-link`、`call-hierarchy`、`type-hierarchy`、`folding-range`、`selection-range`、`diagnostics`。 |
+| `code-action-kinds`       | 字符串数组 | 只保留这些种类的代码操作，按前缀匹配（`refactor` 包含 `refactor.extract`）；为空则全部保留。                                                                                                                                                                                                                                                                                                                                                           |
+| `connect`                 | 字符串     | 通过 TCP 提供 LSP 的服务器地址 `host:port`，见 [TCP 服务器](#tcp-服务器)。                                                                                                                                                                                                                                                                                                                                                                             |
+| `max-java`                | 整数       | 服务器能运行的最高 Java 版本。`JAVA_HOME` 更新时，改用已安装的、符合要求的最新 JDK。                                                                                                                                                                                                                                                                                                                                                                   |
+| `tsserver-project`        | 布尔       | 用于 TypeScript 服务器：目录中没有 `tsconfig.json` / `jsconfig.json` 时，把源文件注册给 tsserver。                                                                                                                                                                                                                                                                                                                                                     |
+| `resync-on-configuration` | 布尔       | `workspace/configuration` 应答后重新发送已打开的文档，适用于只在解析文档时才应用某些设置的服务器。                                                                                                                                                                                                                                                                                                                                                     |
+
+大部分配置用户都能在 **设置 › 语言和框架 › 语言服务器** 里按服务器覆盖（可执行文件、实参、环境变量、初始化选项、工作区配置），无需修改定义文件。
+
+### TCP 服务器
+
+有些服务器只监听 TCP 端口，比如 Godot 编辑器内置的服务器。配置 `connect` 后，如果该地址有程序在监听，IDE 直接连接；否则启动 `command`（已安装时），等它可以接受连接后再连接：参数里有 `${port}` 时连接 `127.0.0.1:${port}`（端口由 IDE 选一个空闲的），否则连接 `connect` 地址。参数中的 `${root}` 是工作区根目录。不是由 IDE 启动的服务器，IDE 也不会关闭它。
+
+```toml
+[[language-servers]]
+name = "godot"
+command = "godot"
+args = ["--headless", "--editor", "--path", "${root}", "--lsp-port", "${port}"]
+connect = "127.0.0.1:6005"
+root-markers = ["project.godot"]
+```
+
+## `[debugger]`
+
+| 字段           | 类型       | 说明                                                                                                            |
+| -------------- | ---------- | --------------------------------------------------------------------------------------------------------------- |
+| `adapter`      | 字符串     | 调试适配器名称，例如 `codelldb`、`debugpy`、`js-debug`、`delve`。IDE 有对应安装程序时也靠它选择。               |
+| `command`      | 字符串     | 启动适配器的可执行文件。                                                                                        |
+| `args`         | 字符串数组 | 参数。使用 `tcp` 时，`${port}` 会替换为一个空闲端口。                                                           |
+| `transport`    | 字符串     | `stdio`（默认）或 `tcp`。                                                                                       |
+| `connect`      | 字符串     | 仅 `tcp`：运行在其他程序（如 Godot 编辑器）内部的适配器地址 `host:port`。能连上时直接使用，否则启动 `command`。 |
+| `install-hint` | 字符串     | 适配器缺失时显示的提示。                                                                                        |
+
+配置了 `[debugger]` 的语言，可以在其文件中设置断点。
+
+## `formatter`
+
+外部格式化工具，在没有语言服务器能格式化该文件、或在设置中选择了它时使用：
+
+```toml
+formatter = { tool = "prettier", parser = "typescript", range = true }
+```
+
+| 字段     | 类型   | 说明                                                                                   |
+| -------- | ------ | -------------------------------------------------------------------------------------- |
+| `tool`   | 字符串 | `prettier`、`oxfmt` 或 `ruff`。                                                        |
+| `parser` | 字符串 | 该工具针对这种语言的解析器（Prettier 的 `--parser`，例如 `css`、`markdown`、`yaml`）。 |
+| `range`  | 布尔   | 该工具能格式化选区。仅 Prettier 和 Ruff 支持；oxfmt 总是格式化整个文件。               |
+
+## 通过插件提供语言
+
+插件附带同样格式的文件，并在清单中声明：
+
+```toml plugin.toml
+[[contributes.languages]]
+path = "languages/solidity.toml"
+```
+
+定义里启动的每个程序（`language-servers.command`、`debugger.command`）都需要 `process:<program>` 权限；未获授权的服务器会被忽略，但语言本身仍然可用。内置定义和用户定义优先：插件不能占用它们的 id、扩展名或文件名。插件侧的写法见 [语言功能](/zh/plugins/guides/language-features)，完整示例见 [`plugins/official/solidity`](https://github.com/l0ng-ai/openidea/blob/main/plugins/official/solidity)。
+
+## 添加内置语言
+
+要把语言加入 OpenIDEA 本身，新增 `languages/<id>.toml`，并在 [`crates/ide-language/src/registry.rs`](https://github.com/l0ng-ai/openidea/blob/main/crates/ide-language/src/registry.rs) 的 `BUILTIN` 表中注册（这些文件在构建时嵌入）。要让它的服务器支持一键安装，还需要在 [`crates/ide-tools/src/registry.rs`](https://github.com/l0ng-ai/openidea/blob/main/crates/ide-tools/src/registry.rs) 中添加同名条目。

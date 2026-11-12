@@ -7,7 +7,7 @@ import { create } from "zustand";
 import type { Branch } from "@/bindings";
 import { registerActions, type Action } from "@/platform/actions";
 import { notifications, toolWindowService } from "@/workbench/contributions";
-import { deleteBranch, deleteRemoteBranch, newBranch, toggleFavoriteBranch, updateBranch } from "./branchOps";
+import { deleteBranches, newBranch, toggleFavoriteBranch, updateBranch } from "./branchOps";
 import {
   changesArg,
   compareChangeWithLocal,
@@ -21,6 +21,7 @@ import { logOptions } from "./logOptions";
 import { goToRef, updateLogOptions } from "./logStore";
 
 const VCS = "vcsAvailable";
+const LOG = "vcsAvailable || projectOpen || vcsLogFocus";
 
 /** A ref selected in the Branches pane. */
 export interface BranchTarget {
@@ -37,6 +38,13 @@ function branchArg(arg: unknown): BranchTarget | null {
   return useBranchesPane.getState().selected[0] ?? null;
 }
 
+/** The action's branches: an array argument as a whole, otherwise the single one or the pane's selection. */
+function branchTargets(arg: unknown): BranchTarget[] {
+  if (Array.isArray(arg)) return arg.filter((t): t is BranchTarget => !!t && typeof t === "object" && "ref" in t);
+  if (arg && typeof arg === "object" && "ref" in arg) return [arg as BranchTarget];
+  return useBranchesPane.getState().selected;
+}
+
 const withBranch =
   (fn: (b: Branch) => unknown): Action["run"] =>
   async ({ arg }) => {
@@ -45,11 +53,6 @@ const withBranch =
     const b = target?.branch;
     if (b) void fn(b);
   };
-
-/** Delete is offered for branches other than the current one. */
-export function canDeleteBranch(t: BranchTarget | null): boolean {
-  return !!t?.branch && !t.branch.current;
-}
 
 /** Update fast-forwards a local branch with an upstream (or updates the project for the current one). */
 export function canUpdateBranch(t: BranchTarget | null): boolean {
@@ -62,7 +65,7 @@ export function registerLogPaneActions(): () => void {
       id: "vcs.log.showBranches",
       title: "Show Branches",
       category: "Git Log",
-      when: VCS,
+      when: LOG,
       toggled: () => logOptions().showBranches,
       run: () => {
         updateLogOptions({ showBranches: !logOptions().showBranches });
@@ -74,7 +77,7 @@ export function registerLogPaneActions(): () => void {
       title: "Collapse Linear Branches",
       category: "Git Log",
       icon: "collapse-all",
-      when: VCS,
+      when: LOG,
       run: () => updateLogOptions({ collapseLinear: true }),
     },
     {
@@ -82,7 +85,7 @@ export function registerLogPaneActions(): () => void {
       title: "Expand Linear Branches",
       category: "Git Log",
       icon: "expand-all",
-      when: VCS,
+      when: LOG,
       run: () => updateLogOptions({ collapseLinear: false }),
     },
 
@@ -116,10 +119,7 @@ export function registerLogPaneActions(): () => void {
       icon: "trash",
       when: VCS,
       hidden: true,
-      run: withBranch((b) => {
-        if (b.current) return;
-        return b.remote ? deleteRemoteBranch(b.name) : deleteBranch(b.name);
-      }),
+      run: ({ arg }) => deleteBranches(branchTargets(arg)),
     },
     {
       id: "vcs.log.branches.toggleFavorite",
@@ -135,12 +135,11 @@ export function registerLogPaneActions(): () => void {
       title: "Navigate Log to Selected Branch",
       category: "Git Log",
       icon: "locate",
-      when: VCS,
+      when: LOG,
       hidden: true,
       run: async ({ arg }) => {
         const t = branchArg(arg);
-        if (t?.repo) await focusRepo(t.repo);
-        if (t && !(await goToRef(t.ref)))
+        if (t && !(await goToRef(t.ref, t.repo)))
           notifications().notify({ group: "vcs", level: "warning", title: `'${t.ref}' was not found in the log` });
       },
     },
@@ -151,7 +150,7 @@ export function registerLogPaneActions(): () => void {
       title: "Show Diff",
       category: "Git Log",
       icon: "diff",
-      when: VCS,
+      when: LOG,
       hidden: true,
       run: ({ arg }) => void showChangesDiff(changesArg(arg)),
     },
@@ -159,7 +158,7 @@ export function registerLogPaneActions(): () => void {
       id: "vcs.log.changes.compareWithLocal",
       title: "Compare with Local",
       category: "Git Log",
-      when: VCS,
+      when: LOG,
       hidden: true,
       run: ({ arg }) => {
         const c = changesArg(arg)[0];
@@ -170,7 +169,7 @@ export function registerLogPaneActions(): () => void {
       id: "vcs.log.changes.compareBeforeWithLocal",
       title: "Compare Before with Local",
       category: "Git Log",
-      when: VCS,
+      when: LOG,
       hidden: true,
       run: ({ arg }) => {
         const c = changesArg(arg)[0];
@@ -182,7 +181,7 @@ export function registerLogPaneActions(): () => void {
       title: "Jump to Source",
       category: "Git Log",
       icon: "edit",
-      when: VCS,
+      when: LOG,
       hidden: true,
       run: ({ arg }) => {
         for (const c of changesArg(arg)) if (c.after) void openChangeSource(c);
@@ -209,7 +208,7 @@ export function registerLogPaneActions(): () => void {
       id: "vcs.log.changes.groupByDirectory",
       title: "Group by Directory",
       category: "Git Log",
-      when: VCS,
+      when: LOG,
       toggled: () => logOptions().groupByDirectory,
       run: () => updateLogOptions({ groupByDirectory: !logOptions().groupByDirectory }),
     },
@@ -218,7 +217,7 @@ export function registerLogPaneActions(): () => void {
       title: "Show Diff Preview",
       category: "Git Log",
       description: "Selecting a changed file shows its diff in the editor's preview tab",
-      when: VCS,
+      when: LOG,
       toggled: () => logOptions().diffPreview,
       run: () => updateLogOptions({ diffPreview: !logOptions().diffPreview }),
     },

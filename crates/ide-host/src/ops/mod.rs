@@ -7,12 +7,15 @@ pub mod analysis;
 pub mod build;
 pub mod bytes;
 pub mod coverage;
+pub mod db;
 pub mod debug;
 pub mod dependencies;
 pub mod deploy;
 pub mod doc;
+pub mod docker;
 pub mod env;
 pub mod fs;
+pub mod heap;
 pub mod history;
 pub mod java;
 pub mod jvm_icons;
@@ -24,6 +27,7 @@ mod python;
 pub mod refactor;
 pub mod routes;
 pub mod run;
+pub mod scaffold;
 pub mod sdk;
 pub mod search;
 pub mod spell;
@@ -31,6 +35,7 @@ pub mod syntax;
 pub mod term;
 pub mod tools;
 pub mod vcs;
+pub mod web;
 
 use crate::Host;
 use ide_core::{IdeError, IdeResult};
@@ -76,9 +81,11 @@ pub fn register_all(d: &mut crate::rpc::Dispatcher) {
     coverage::register(d);
     build::register(d);
     tools::register(d);
+    scaffold::register(d);
     sdk::register(d);
     java::register(d);
     debug::register(d);
+    heap::register(d);
     bytes::register(d);
     vcs::register(d);
     doc::register(d);
@@ -86,6 +93,8 @@ pub fn register_all(d: &mut crate::rpc::Dispatcher) {
     run::register(d);
     env::register(d);
     deploy::register(d);
+    docker::register(d);
+    db::register(d);
 }
 
 impl Host {

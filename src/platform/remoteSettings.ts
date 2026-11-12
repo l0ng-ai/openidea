@@ -22,11 +22,21 @@ export interface DeploymentMappingValid {
   web: string;
 }
 
+/** Host and login of an FTP / FTPS server; its password is saved under the server's id. */
+export interface FtpConnectionValid {
+  host: string;
+  port: number | null;
+  /** Empty: anonymous login. */
+  user: string;
+  passive: boolean;
+}
+
 export interface DeploymentServerValid {
-  kind: "sftp" | "local";
+  kind: "sftp" | "ftp" | "ftps" | "local";
   id: string;
   name: string;
   sshConfig: string;
+  ftp: FtpConnectionValid;
   rootPath: string;
   webUrl: string;
   mappings: DeploymentMappingValid[];
@@ -42,7 +52,10 @@ export interface DeploymentSettingsValid {
   exclude: string[];
 }
 
+export type RunTargetKindValid = "ssh" | "docker" | "compose";
+
 export interface RunTargetValid {
+  kind: RunTargetKindValid;
   id: string;
   name: string;
   sshConfig: string;
@@ -51,6 +64,15 @@ export interface RunTargetValid {
   python: string;
   node: string;
   java: string;
+  /** Services tool window Docker connection id; empty = the CLI's daemon. */
+  dockerConnection: string;
+  image: string;
+  composeFiles: string[];
+  service: string;
+  containerRoot: string;
+  ports: string[];
+  runOptions: string;
+  imageUser: boolean;
 }
 
 export interface RemoteSettings {
@@ -75,6 +97,7 @@ export const DEFAULT_DEPLOYMENT_SERVER: DeploymentServerValid = {
   id: "",
   name: "",
   sshConfig: "",
+  ftp: { host: "", port: null, user: "", passive: true },
   rootPath: "",
   webUrl: "",
   mappings: [{ local: "", deployment: "", web: "" }],
@@ -91,6 +114,7 @@ export const DEFAULT_DEPLOYMENT: DeploymentSettingsValid = {
 };
 
 export const DEFAULT_RUN_TARGET: RunTargetValid = {
+  kind: "ssh",
   id: "",
   name: "",
   sshConfig: "",
@@ -99,6 +123,14 @@ export const DEFAULT_RUN_TARGET: RunTargetValid = {
   python: "",
   node: "",
   java: "",
+  dockerConnection: "",
+  image: "",
+  composeFiles: [],
+  service: "",
+  containerRoot: "",
+  ports: [],
+  runOptions: "",
+  imageUser: false,
 };
 
 export const DEFAULT_REMOTE: RemoteSettings = {
@@ -155,14 +187,20 @@ function validateMappings(raw: unknown): DeploymentMappingValid[] {
   });
 }
 
+function validateFtp(raw: unknown): FtpConnectionValid {
+  const o = obj(raw);
+  return { host: text(o.host, ""), port: port(o.port), user: text(o.user, ""), passive: bool(o.passive, true) };
+}
+
 export function validateDeployment(raw: unknown): DeploymentSettingsValid {
   const o = obj(raw);
   const d = DEFAULT_DEPLOYMENT;
   const servers = withIds(o.servers, "server", (s) => ({
-    kind: oneOf(s.kind, ["sftp", "local"] as const, "sftp"),
+    kind: oneOf(s.kind, ["sftp", "ftp", "ftps", "local"] as const, "sftp"),
     id: text(s.id, ""),
     name: text(s.name, ""),
     sshConfig: text(s.sshConfig, ""),
+    ftp: validateFtp(s.ftp),
     rootPath: text(s.rootPath, ""),
     webUrl: text(s.webUrl, ""),
     mappings: validateMappings(s.mappings),
@@ -181,6 +219,7 @@ export function validateDeployment(raw: unknown): DeploymentSettingsValid {
 export function validateRunTargets(raw: unknown): RunTargetValid[] {
   const d = DEFAULT_RUN_TARGET;
   return withIds(raw, "target", (o) => ({
+    kind: oneOf(o.kind, ["ssh", "docker", "compose"] as const, d.kind),
     id: text(o.id, ""),
     name: text(o.name, ""),
     sshConfig: text(o.sshConfig, ""),
@@ -189,6 +228,14 @@ export function validateRunTargets(raw: unknown): RunTargetValid[] {
     python: text(o.python, ""),
     node: text(o.node, ""),
     java: text(o.java, ""),
+    dockerConnection: text(o.dockerConnection, ""),
+    image: text(o.image, ""),
+    composeFiles: strings(o.composeFiles, []),
+    service: text(o.service, ""),
+    containerRoot: text(o.containerRoot, ""),
+    ports: strings(o.ports, []),
+    runOptions: text(o.runOptions, ""),
+    imageUser: bool(o.imageUser, d.imageUser),
   }));
 }
 
@@ -212,7 +259,42 @@ let seq = 0;
 /** A fresh id for a new SSH configuration, server or target. */
 export const newRemoteId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${++seq}`;
 
+/** Whether `target` runs configurations in a container (Docker, Compose) rather than over SSH. */
+export const inContainer = (target: { kind: string }) => target.kind === "docker" || target.kind === "compose";
+
+export type DeploymentConnection =
+  | { kind: "local" }
+  | { kind: "sftp"; ssh: string }
+  | { kind: "ftp"; server: string; secure: boolean; ftp: FtpConnectionValid };
+
 /** Backend connection descriptor for deployment and folder browsing. */
-export function deploymentConnection(server: DeploymentServerValid): { kind: "local" } | { kind: "sftp"; ssh: string } {
-  return server.kind === "local" ? { kind: "local" } : { kind: "sftp", ssh: server.sshConfig };
+export function deploymentConnection(server: DeploymentServerValid): DeploymentConnection {
+  switch (server.kind) {
+    case "local":
+      return { kind: "local" };
+    case "sftp":
+      return { kind: "sftp", ssh: server.sshConfig };
+    case "ftp":
+    case "ftps":
+      return { kind: "ftp", server: server.id, secure: server.kind === "ftps", ftp: server.ftp };
+  }
+}
+
+/**
+ * Key of the password a connection may ask for (`sshSetSecret`): the SSH
+ * configuration's id, `ftp:<server id>` for FTP, or empty when there is none.
+ */
+export function connectionSecretKey(connection: { kind: string; ssh?: string; server?: string }): string {
+  if (connection.kind === "sftp") return connection.ssh ?? "";
+  if (connection.kind === "ftp") return `ftp:${connection.server ?? ""}`;
+  return "";
+}
+
+export const deploymentSecretKey = (server: DeploymentServerValid) => connectionSecretKey(deploymentConnection(server));
+
+/** Whether `server` has what it needs to connect (an SSH configuration, an FTP host). */
+export function deploymentConnectable(server: DeploymentServerValid): boolean {
+  if (server.kind === "sftp") return !!server.sshConfig;
+  if (server.kind === "ftp" || server.kind === "ftps") return !!server.ftp.host.trim();
+  return true;
 }

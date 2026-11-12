@@ -13,16 +13,38 @@ pub(crate) fn gx(e: impl std::fmt::Display) -> IdeError {
 
 pub(crate) struct Cache {
     repo: gix::ThreadSafeRepository,
-    config_files: [PathBuf; 3],
-    config_stamp: Vec<Option<SystemTime>>,
+    files: [PathBuf; 4],
+    stamp: Vec<Option<(SystemTime, u64)>>,
+    /// `objects/pack` directory and its modification time. An external
+    /// `git fetch`/`pull`/`repack` adds packs without touching the `files`
+    /// above — watching the directory catches them (issue #1919).
+    pack_dir: PathBuf,
+    pack_stamp: Option<SystemTime>,
 }
 
-fn config_files(git_dir: &Path, common_dir: &Path) -> [PathBuf; 3] {
-    [common_dir.join("config"), git_dir.join("config.worktree"), common_dir.join("config.worktree")]
+fn cache_files(git_dir: &Path, common_dir: &Path) -> [PathBuf; 4] {
+    [
+        common_dir.join("config"),
+        git_dir.join("config.worktree"),
+        common_dir.join("config.worktree"),
+        common_dir.join("packed-refs"),
+    ]
 }
 
-fn stamp(files: &[PathBuf]) -> Vec<Option<SystemTime>> {
-    files.iter().map(|f| std::fs::metadata(f).and_then(|m| m.modified()).ok()).collect()
+fn stamp(files: &[PathBuf]) -> Vec<Option<(SystemTime, u64)>> {
+    files
+        .iter()
+        .map(|f| {
+            let metadata = std::fs::metadata(f).ok()?;
+            Some((metadata.modified().ok()?, metadata.len()))
+        })
+        .collect()
+}
+
+/// The pack directory's modification time: adding or removing a pack file
+/// updates it. `None` when the directory can't be read.
+fn pack_stamp(pack_dir: &Path) -> Option<SystemTime> {
+    std::fs::metadata(pack_dir).ok()?.modified().ok()
 }
 
 pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
@@ -45,14 +67,17 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
     let root = absolute(workdir)?;
     let git_dir = absolute(repo.git_dir())?;
     let common_dir = absolute(repo.common_dir())?;
-    let files = config_files(&git_dir, &common_dir);
-    let cache = Cache { config_stamp: stamp(&files), config_files: files, repo: ts };
+    let files = cache_files(&git_dir, &common_dir);
+    let pack_dir = common_dir.join("objects").join("pack");
+    let cache = Cache { stamp: stamp(&files), files, repo: ts, pack_stamp: pack_stamp(&pack_dir), pack_dir };
     Ok(Some(Repo {
-        execution_allowed: std::sync::atomic::AtomicBool::new(true),
+        execution_allowed: std::sync::atomic::AtomicBool::new(false),
         root,
         git_dir,
         inner: std::sync::Mutex::new(cache),
         ignored: Default::default(),
+        log_index: Default::default(),
+        log_signatures: Default::default(),
     }))
 }
 
@@ -73,8 +98,8 @@ pub(crate) fn absolute(p: &Path) -> IdeResult<PathBuf> {
 }
 
 impl Repo {
-    /// A thread-local gitoxide handle; reopened when the git configuration changed
-    /// on disk (e.g. after `push --set-upstream` or `git config` in a terminal).
+    /// A thread-local gitoxide handle; reopened when configuration or packed refs change.
+    /// gitoxide's packed-ref snapshot only reloads for a newer mtime, which a replacement may preserve.
     pub(crate) fn gix(&self) -> IdeResult<gix::Repository> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
@@ -82,12 +107,14 @@ impl Repo {
                 .map_err(gx);
         }
         let mut cache = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        let now = stamp(&cache.config_files);
-        if now != cache.config_stamp {
+        let now = stamp(&cache.files);
+        let pack_now = pack_stamp(&cache.pack_dir);
+        if now != cache.stamp || pack_now != cache.pack_stamp {
             match gix::ThreadSafeRepository::open(&self.git_dir) {
                 Ok(fresh) => {
                     cache.repo = fresh;
-                    cache.config_stamp = now;
+                    cache.stamp = now;
+                    cache.pack_stamp = pack_now;
                 }
                 Err(e) => tracing::warn!("reopening repository failed: {e}"),
             }
@@ -101,6 +128,27 @@ impl Repo {
     /// worktree or paths already relative to it.
     pub(crate) fn rel_path(&self, path: &Path) -> IdeResult<String> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        Ok(self.index_spelling(self.given_rel_path(path)?))
+    }
+
+    /// The blob of `path` at `rev`. A revision may spell a file differently from the index (a
+    /// case-only rename staged or made since it): the spelling given wins when the revision has
+    /// it, the index's spelling is the fallback.
+    pub(crate) fn blob_of(&self, path: &Path, rev: &str) -> IdeResult<Option<Vec<u8>>> {
+        let repo = self.gix()?;
+        let given = self.given_rel_path(path)?;
+        let indexed = self.index_spelling(given.clone());
+        if !rev.starts_with(':')
+            && indexed != given
+            && let Some(bytes) = blob_at(&repo, &given, rev)?
+        {
+            return Ok(Some(bytes));
+        }
+        blob_at(&repo, &indexed, rev)
+    }
+
+    /// `path` relative to the worktree, spelled as given.
+    fn given_rel_path(&self, path: &Path) -> IdeResult<String> {
         let rel = if path.is_absolute() {
             self.strip_root(path)
                 .ok_or_else(|| IdeError::invalid(format!("{} is outside the repository", path.display())))?
@@ -121,6 +169,22 @@ impl Repo {
             }
         }
         Ok(parts.join("/"))
+    }
+
+    /// `rel` as the index spells it. On a case-insensitive worktree (`core.ignoreCase`) the
+    /// IDE names a file the way the disk does, which differs from its index entry after a
+    /// case-only rename of it or a parent directory; git's pathspecs and tree lookups are
+    /// case-sensitive and only find the index's spelling.
+    fn index_spelling(&self, rel: String) -> String {
+        if rel.is_empty() {
+            return rel;
+        }
+        let Ok(repo) = self.gix() else { return rel };
+        if !ignores_case(&repo) {
+            return rel;
+        }
+        let Ok(index) = repo.index_or_empty() else { return rel };
+        index_spelling(&index, &rel).unwrap_or(rel)
     }
 
     fn strip_root(&self, path: &Path) -> Option<PathBuf> {
@@ -159,6 +223,86 @@ impl Repo {
         }
         p
     }
+}
+
+/// Whether the worktree's file system ignores case, as `git init`/`clone` recorded it.
+pub(crate) fn ignores_case(repo: &gix::Repository) -> bool {
+    repo.config_snapshot().boolean("core.ignoreCase").unwrap_or(false)
+}
+
+/// The index's spelling of the file or directory `rel` when it differs only in ASCII case
+/// (git's own case folding), `None` when the index has `rel` as spelled or not at all.
+fn index_spelling(index: &gix::index::State, rel: &str) -> Option<String> {
+    let rel = rel.as_bytes();
+    if index.entry_by_path(rel.as_bstr()).is_some() {
+        return None;
+    }
+    let mut found = None;
+    for entry in index.entries() {
+        let path: &[u8] = entry.path(index);
+        let spelled = match path.len().cmp(&rel.len()) {
+            std::cmp::Ordering::Equal => path,
+            std::cmp::Ordering::Greater if path[rel.len()] == b'/' => &path[..rel.len()],
+            _ => continue,
+        };
+        if spelled == rel {
+            return None;
+        }
+        if found.is_none() && spelled.eq_ignore_ascii_case(rel) {
+            found = Some(spelled.to_str_lossy().into_owned());
+        }
+    }
+    found
+}
+
+/// The mode a worktree file would be committed with (`100755` when executable,
+/// `100644` otherwise, `120000` for a symlink), `None` when `abs` is not a file.
+/// On filesystems without an executable bit git can't record one, so it is `100644`.
+pub(crate) fn worktree_mode(root: &Path, rel: &str) -> IdeResult<Option<String>> {
+    let meta = match std::fs::symlink_metadata(root.join(rel)) {
+        Ok(m) => m,
+        Err(_) => return Ok(None),
+    };
+    if meta.file_type().is_symlink() {
+        return Ok(Some("120000".to_owned()));
+    }
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Ok(Some(if meta.permissions().mode() & 0o111 != 0 { "100755" } else { "100644" }.to_owned()))
+    }
+    #[cfg(not(unix))]
+    Ok(Some("100644".to_owned()))
+}
+
+/// The entry's mode of `rel` at `rev` as git prints it (`100644`, `100755`, `120000`,
+/// `160000`…), `None` when the path is absent there. Same `rev` rules as [`blob_at`].
+pub(crate) fn mode_at(repo: &gix::Repository, rel: &str, rev: &str) -> IdeResult<Option<String>> {
+    if let Some(stage) = rev.strip_prefix(':') {
+        let stage = match stage {
+            "" | "0" => gix::index::entry::Stage::Unconflicted,
+            "1" => gix::index::entry::Stage::Base,
+            "2" => gix::index::entry::Stage::Ours,
+            "3" => gix::index::entry::Stage::Theirs,
+            other => return Err(IdeError::invalid(format!("invalid index stage :{other}"))),
+        };
+        let index = repo.index_or_empty().map_err(gx)?;
+        let Some(entry) = index.entry_by_path_and_stage(BStr::new(rel.as_bytes()), stage) else {
+            return Ok(None);
+        };
+        return Ok(entry.mode.to_tree_entry_mode().map(|m| format!("{:o}", m.value())));
+    }
+    let Some(tree) = tree_of(repo, rev)? else { return Ok(None) };
+    let Some(entry) = tree.lookup_entry_by_path(Path::new(rel)).map_err(gx)? else {
+        return Ok(None);
+    };
+    if !entry.mode().is_blob_or_symlink() {
+        return Ok(None);
+    }
+    Ok(Some(format!("{:o}", entry.mode().value())))
 }
 
 /// Blob content of `rel` at `rev`. `rev` is a revision (`HEAD`, a branch, an id) or

@@ -1,12 +1,22 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { NotebookCell } from "@/bindings";
+import type { NotebookCell, NotebookCellDoc } from "@/bindings";
 import { tx } from "@/platform/i18n";
+import { useMarkdownPreviewFontSize } from "@/platform/languageSettings";
+import { useProject } from "@/platform/project";
 import { Button, Dialog, EmptyState, IconButton, Select, Spinner } from "@/ui";
 import type { EditorInput } from "@/workbench/contributions";
 import { CellEditor } from "./CellEditor";
 import { CellOutputs, MarkdownCell } from "./OutputView";
-import { notebookSession, type NotebookSession } from "./session";
+import { notebookSession, type CellReveal, type NotebookSession } from "./session";
 import styles from "./Notebook.module.css";
 
 export function NotebookEditor({ input }: { input: EditorInput }) {
@@ -43,6 +53,16 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
   useEffect(() => {
     invoke(session.load());
   }, [session, invoke]);
+  const reveal = state.reveal;
+  useEffect(() => {
+    if (!reveal) return;
+    const index = session.cells().findIndex((cell) => cell.id === reveal.cell);
+    if (index < 0) return;
+    session.selectedCell = reveal.cell;
+    select(reveal.cell);
+    virtualizer.scrollToIndex(index, { align: "start" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per request; the virtualizer is a new object each render
+  }, [reveal, session]);
   useLayoutEffect(() => {
     const element = root.current;
     if (!element) return;
@@ -56,6 +76,14 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
     return () => element.removeEventListener("beforeinput", history, true);
   }, [session, invoke]);
 
+  // Markdown cells follow the Markdown preview size, code cells and outputs the editor font, not the UI font.
+  const markdownFontSize = useMarkdownPreviewFontSize();
+  const editor = useProject((s) => s.settings?.editor as { fontSize?: number; lineHeight?: number } | undefined);
+  const fontVars = {
+    "--markdown-preview-font-size": `${markdownFontSize}px`,
+    ...(editor?.fontSize ? { "--openidea-editor-font-size": `${editor.fontSize}px` } : {}),
+    ...(editor?.lineHeight ? { "--openidea-editor-line-height": `${editor.lineHeight}px` } : {}),
+  } as CSSProperties;
   const disabled = state.frozen || !state.snapshot;
   const historyDisabled = disabled || state.running;
   const options = state.environments.map((sdk) => ({ value: sdk.path, label: sdk.name, detail: sdk.path }));
@@ -69,6 +97,7 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
     <div
       ref={root}
       className={styles.root}
+      style={fontVars}
       tabIndex={-1}
       onKeyDownCapture={(event) => {
         if (event.nativeEvent.isComposing || event.defaultPrevented) return;
@@ -244,6 +273,8 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
                       selected={active?.id === cell.id}
                       frozen={disabled}
                       running={state.running}
+                      doc={state.cellDocs.get(cell.id)}
+                      reveal={reveal?.cell === cell.id ? reveal : null}
                       onSelect={() => choose(cell.id)}
                     />
                   </div>
@@ -304,6 +335,8 @@ function NotebookCellView({
   selected,
   frozen,
   running,
+  doc,
+  reveal,
   onSelect,
 }: {
   session: NotebookSession;
@@ -313,6 +346,8 @@ function NotebookCellView({
   selected: boolean;
   frozen: boolean;
   running: boolean;
+  doc?: NotebookCellDoc;
+  reveal: CellReveal | null;
   onSelect: () => void;
 }) {
   const [editing, setEditing] = useState(session.markdownEditing.has(cell.id));
@@ -428,7 +463,15 @@ function NotebookCellView({
           )}
         </div>
       ) : (
-        <CellEditor session={session} id={cell.id} source={cell.source} type={cell.cellType} frozen={frozen} />
+        <CellEditor
+          session={session}
+          id={cell.id}
+          source={cell.source}
+          type={cell.cellType}
+          frozen={frozen}
+          doc={doc}
+          reveal={reveal}
+        />
       )}
       {cell.cellType === "code" && <CellOutputs outputs={cell.outputs} />}
     </section>

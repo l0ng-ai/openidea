@@ -1,6 +1,17 @@
 /** Agents of the ACP Registry: listing, install / update / remove (`agent_registry_*`). */
+import { open } from "@/platform/dialog";
 import { Channel } from "@tauri-apps/api/core";
-import type { AgentRegistry, InstallEvent, RegistryAgent, RegistryDistribution, RequestId } from "@/bindings";
+import type {
+  AcpImportOutcome,
+  AgentProvider,
+  AgentRegistry,
+  CustomAgentInput,
+  InstallEvent,
+  RegistryAgent,
+  RegistryDistribution,
+  RequestId,
+} from "@/bindings";
+import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 
 export interface RegistryBackend {
@@ -8,6 +19,18 @@ export interface RegistryBackend {
   install(id: string, request: RequestId, onEvent: (e: InstallEvent) => void): Promise<void>;
   remove(id: string): Promise<void>;
   cancel(request: RequestId): void;
+}
+
+/** The built-in agents' launch commands: read, and override through an agent file. */
+export interface CommandsBackend {
+  providers(): Promise<AgentProvider[]>;
+  set(id: string, command: string | null): Promise<void>;
+  setEnv(id: string, env: Record<string, string>): Promise<void>;
+  chooseExecutable(title: string, current?: string): Promise<string | null>;
+  saveCustom(input: CustomAgentInput): Promise<void>;
+  removeCustom(id: string): Promise<void>;
+  importAcp(text: string): Promise<AcpImportOutcome[]>;
+  pickAcpJson(): Promise<string | null>;
 }
 
 export const tauriRegistry: RegistryBackend = {
@@ -21,6 +44,37 @@ export const tauriRegistry: RegistryBackend = {
     await call(commands.agentRegistryRemove(id));
   },
   cancel: (request) => void commands.cancelRequest(request).catch(() => {}),
+};
+
+export const tauriCommands: CommandsBackend = {
+  providers: () => call(commands.agentProviders()),
+  chooseExecutable: async (title, current) => {
+    const picked = await open({ title, defaultPath: current || undefined, directory: false, multiple: false });
+    return typeof picked === "string" ? picked : null;
+  },
+  set: async (id, command) => {
+    await call(commands.agentSetCommand(id, command));
+  },
+  setEnv: async (id, env) => {
+    await call(commands.agentSetEnv(id, env));
+  },
+  saveCustom: async (input) => {
+    await call(commands.agentCustomSave(input));
+  },
+  removeCustom: async (id) => {
+    await call(commands.agentCustomRemove(id));
+  },
+  importAcp: (text) => call(commands.agentCustomImport(text)),
+  pickAcpJson: async () => {
+    const picked = await open({
+      title: tx("Select acp.json"),
+      directory: false,
+      multiple: false,
+      filters: [{ name: tx("ACP config"), extensions: ["json"] }],
+    });
+    if (typeof picked !== "string") return null;
+    return call(commands.fsReadText(picked));
+  },
 };
 
 export const DISTRIBUTION_LABEL: Record<RegistryDistribution, string> = {

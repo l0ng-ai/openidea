@@ -2,13 +2,18 @@
 //! execution ([`conn`]), introspection, table data paging / editing ([`sql`])
 //! and statement splitting ([`split`]), for SQLite, PostgreSQL and MySQL/MariaDB.
 
+mod clickhouse;
 pub mod conn;
 pub mod history;
+mod oracle;
 pub mod plan;
+pub mod plugin;
 pub mod secrets;
 pub mod source;
 pub mod split;
 pub mod sql;
+mod watch;
+pub use watch::SourcesWatch;
 
 pub use conn::{Held, Pool, QueryResult, ResultColumn};
 pub use history::HistoryEntry;
@@ -54,6 +59,7 @@ impl DbTableKind {
 pub enum DbObjectKind {
     Function,
     Procedure,
+    Package,
     Trigger,
     Sequence,
 }
@@ -89,12 +95,21 @@ pub struct SequenceInfo {
     pub data_type: String,
 }
 
-/// A schema's routines and sequences (the tree's `routines` / `sequences` folders).
+/// An Oracle package (its procedures and functions are not listed separately).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+#[serde(rename = "DbPackageInfo")]
+pub struct PackageInfo {
+    pub name: String,
+}
+
+/// A schema's routines (procedures and functions), packages and sequences.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 #[serde(rename = "DbSchemaObjects")]
 pub struct SchemaObjects {
     pub routines: Vec<RoutineInfo>,
+    pub packages: Vec<PackageInfo>,
     pub sequences: Vec<SequenceInfo>,
 }
 
@@ -212,6 +227,8 @@ pub struct DbManager {
     /// App-wide SSH connections and host-key trust.
     ssh: Arc<SshManager>,
     saved_passwords: SecretStore,
+    /// Directory of the global data sources and their saved passwords ([`DbManager::with_global_sources`]).
+    global: Option<(PathBuf, SecretStore)>,
     history: Arc<HistoryStore>,
     /// Records executed statements in the history off the async threads, in order.
     recorder: std::sync::mpsc::Sender<(String, String, f64)>,
@@ -220,6 +237,9 @@ pub struct DbManager {
     /// Manual-commit data sources, each with the connection of its open
     /// transaction (taken by the first statement after a commit / rollback).
     sessions: Mutex<HashMap<String, Session>>,
+    /// The data sources as last read from disk, for [`DbManager::reconcile_sources`]
+    /// (`None` until [`DbManager::watch_sources`]).
+    on_disk: Mutex<Option<Vec<DataSource>>>,
 }
 
 type Session = Arc<tokio::sync::Mutex<Option<Held>>>;
@@ -291,7 +311,7 @@ fn through_tunnel(e: IdeError, source: &DataSource, via: Option<&str>) -> IdeErr
 
 /// Options › Run keep-alive query: pings the pool until it is closed or dropped
 /// (a dropped SSH tunnel or an idle-killing proxy stays alive meanwhile).
-fn keep_alive(pool: &Arc<Pool>, every: Duration) {
+pub(crate) fn keep_alive(pool: &Arc<Pool>, every: Duration) {
     let pool = Arc::downgrade(pool);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(every);
@@ -300,7 +320,7 @@ fn keep_alive(pool: &Arc<Pool>, every: Duration) {
         loop {
             tick.tick().await;
             let Some(p) = pool.upgrade().filter(|p| !p.is_closed()) else { break };
-            if let Err(e) = p.rows("SELECT 1", 1).await {
+            if let Err(e) = p.rows(p.ping_sql(), 1).await {
                 tracing::debug!("keep-alive: {}", e.message);
             }
         }
@@ -311,7 +331,7 @@ fn keep_alive(pool: &Arc<Pool>, every: Duration) {
 async fn end_session(session: &Session) {
     let held = session.lock().await.take();
     if let Some(mut conn) = held
-        && conn.command("ROLLBACK").await.is_err()
+        && (conn.command("ROLLBACK").await.is_err() || conn.restore_default().await.is_err())
     {
         conn.discard().await;
     }
@@ -338,6 +358,7 @@ impl DbManager {
         }
         Self {
             saved_passwords: SecretStore::new(passwords, &root),
+            global: None,
             history,
             recorder,
             root,
@@ -346,12 +367,49 @@ impl DbManager {
             tunnel_open: tokio::sync::Mutex::new(()),
             ssh,
             session_passwords: Mutex::default(),
+            on_disk: Mutex::default(),
             sessions: Mutex::default(),
         }
     }
 
+    /// Also lists the global data sources stored in `dir` (the app data directory).
+    pub fn with_global_sources(mut self, dir: PathBuf) -> Self {
+        let passwords = self.saved_passwords.scoped(&dir);
+        self.global = Some((dir, passwords));
+        self
+    }
+
+    /// The project's data sources, then the global ones (a project one wins on the same id).
     pub fn sources(&self) -> IdeResult<Vec<DataSource>> {
-        source::load(&self.root)
+        let mut all = source::load(&self.root)?;
+        let global: Vec<_> = self.global_sources().into_iter().filter(|g| all.iter().all(|s| s.id != g.id)).collect();
+        all.extend(global);
+        Ok(all)
+    }
+
+    fn global_sources(&self) -> Vec<DataSource> {
+        let Some((dir, _)) = &self.global else { return Vec::new() };
+        source::load_global(dir).unwrap_or_else(|e| {
+            tracing::warn!("global data sources: {}", e.message);
+            Vec::new()
+        })
+    }
+
+    /// Where the saved passwords of data source `id` live: app-wide for a global one.
+    fn saved_for(&self, id: &str) -> &SecretStore {
+        match &self.global {
+            Some((_, store)) if self.sources().is_ok_and(|sources| sources.iter().any(|s| s.id == id && s.global)) => {
+                store
+            }
+            _ => &self.saved_passwords,
+        }
+    }
+
+    fn store_of(&self, source: &DataSource) -> &SecretStore {
+        match &self.global {
+            Some((_, store)) if source.global => store,
+            _ => &self.saved_passwords,
+        }
     }
 
     /// The connection settings of target `target` ([`DataSource::resolved`]), with
@@ -371,30 +429,100 @@ impl DbManager {
     }
 
     /// Saves the data source list; connections of removed or changed sources are closed.
+    /// Global ones (`global`) go to the app-wide list, the others to the project's.
     pub async fn save_sources(&self, sources: Vec<DataSource>) -> IdeResult<()> {
-        let old = self.sources().unwrap_or_default();
-        source::save(&self.root, &sources)?;
+        if sources.iter().any(|s| s.global && s.plugin_owner.is_some()) {
+            return Err(IdeError::invalid("plugin-owned data sources must stay project-scoped"));
+        }
+        let old = {
+            let _guard = plugin::EDIT.lock();
+            let old = self.sources().unwrap_or_default();
+            let (global, project): (Vec<_>, Vec<_>) = sources.iter().cloned().partition(|s| s.global);
+            match &self.global {
+                // Rewritten only when it changes: other projects' windows edit the same file.
+                Some((dir, _)) => {
+                    if global != old.iter().filter(|s| s.global).cloned().collect::<Vec<_>>() {
+                        source::save_global(dir, &global)?;
+                    }
+                }
+                None if !global.is_empty() => {
+                    return Err(IdeError::invalid("global data sources are not available here"));
+                }
+                None => {}
+            }
+            source::save(&self.root, &project)?;
+            old
+        };
         for o in old {
             match sources.iter().find(|s| s.id == o.id) {
                 Some(n) if *n == o => {}
                 gone_or_changed => {
-                    if gone_or_changed.is_none() {
-                        for k in [o.id.clone(), secrets::ssh_key(&o.id)] {
-                            self.session_passwords.lock().remove(&k);
-                            self.saved_passwords.delete(&k);
+                    let keys = [o.id.clone(), secrets::ssh_key(&o.id)];
+                    match gone_or_changed {
+                        None => {
+                            for k in &keys {
+                                self.session_passwords.lock().remove(k);
+                                self.store_of(&o).delete(k);
+                            }
                         }
+                        // Made global or project-level: its saved passwords move along.
+                        Some(n) if n.global != o.global => {
+                            for k in &keys {
+                                if let Some(p) = self.store_of(&o).get(k) {
+                                    self.store_of(n).set(k, &p)?;
+                                    self.store_of(&o).delete(k);
+                                }
+                            }
+                        }
+                        Some(_) => {}
                     }
                     self.disconnect_source(&o.id).await;
                 }
             }
         }
+        // Our own write is not reported as an edit on disk.
+        if let Some(known) = self.on_disk.lock().as_mut() {
+            *known = self.sources().unwrap_or(sources);
+        }
         Ok(())
+    }
+
+    /// Watches the data source files (the project's and the global one) for edits made
+    /// outside the IDE; `on_change` runs on a background thread once they settle, and
+    /// should call [`DbManager::reconcile_sources`]. Stops when the result is dropped.
+    pub fn watch_sources(&self, on_change: Box<dyn Fn() + Send>) -> IdeResult<SourcesWatch> {
+        *self.on_disk.lock() = Some(self.sources().unwrap_or_default());
+        SourcesWatch::start(&self.root, self.global.as_ref().map(|(dir, _)| dir.as_path()), on_change)
+    }
+
+    /// Re-reads the data sources after their files changed on disk: connections of
+    /// removed or changed sources close, as on [`DbManager::save_sources`] (saved
+    /// passwords stay, the source may come back). Returns whether the list the tree
+    /// shows changed, or the files no longer parse (the tree reports the error).
+    pub async fn reconcile_sources(&self) -> bool {
+        let now = match self.sources() {
+            Ok(now) => now,
+            Err(e) => {
+                tracing::warn!("data sources: {}", e.message);
+                return true;
+            }
+        };
+        let before = self.on_disk.lock().replace(now.clone()).unwrap_or_default();
+        if before == now {
+            return false;
+        }
+        for o in &before {
+            if now.iter().find(|s| s.id == o.id) != Some(o) {
+                self.disconnect_source(&o.id).await;
+            }
+        }
+        true
     }
 
     /// Remembers `password` for the session, and in the saved passwords when
     /// the data source saves passwords (`None` forgets it).
     pub async fn set_password(&self, id: &str, password: Option<String>, save: bool) -> IdeResult<()> {
-        self.remember(id.to_owned(), password, save).await
+        self.remember(id, id.to_owned(), password, save).await
     }
 
     /// [`DbManager::set_password`] for the SSH password / key passphrase.
@@ -406,10 +534,10 @@ impl DbManager {
             self.ssh.set_secret(&c, secret, save);
             return Ok(());
         }
-        self.remember(secrets::ssh_key(id), secret, save).await
+        self.remember(id, secrets::ssh_key(id), secret, save).await
     }
 
-    async fn remember(&self, key: String, secret: Option<String>, save: bool) -> IdeResult<()> {
+    async fn remember(&self, id: &str, key: String, secret: Option<String>, save: bool) -> IdeResult<()> {
         match &secret {
             Some(p) => {
                 self.session_passwords.lock().insert(key.clone(), p.clone());
@@ -418,10 +546,11 @@ impl DbManager {
                 self.session_passwords.lock().remove(&key);
             }
         }
+        let store = self.saved_for(id);
         let result = match (secret, save) {
-            (Some(p), true) => self.saved_passwords.set(&key, &p),
+            (Some(p), true) => store.set(&key, &p),
             _ => {
-                self.saved_passwords.delete(&key);
+                store.delete(&key);
                 Ok(())
             }
         };
@@ -432,18 +561,18 @@ impl DbManager {
         Ok(())
     }
 
-    async fn secret(&self, key: String, saved: bool) -> Option<String> {
+    async fn secret(&self, source: &DataSource, key: String, saved: bool) -> Option<String> {
         if let Some(p) = self.session_passwords.lock().get(&key) {
             return Some(p.clone());
         }
         if !saved {
             return None;
         }
-        self.saved_passwords.get(&key)
+        self.store_of(source).get(&key)
     }
 
     async fn password(&self, source: &DataSource) -> Option<String> {
-        match self.secret(source.id.clone(), source.driver != DbDriver::Sqlite && source.save_password).await {
+        match self.secret(source, source.id.clone(), source.driver != DbDriver::Sqlite && source.save_password).await {
             Some(p) => Some(p),
             None => source.url_password(),
         }
@@ -499,7 +628,7 @@ impl DbManager {
         let session = if config.is_empty() {
             let secret = match ssh_secret {
                 Some(s) => Some(s),
-                None => self.secret(secrets::ssh_key(&source.id), ssh.save_secret).await,
+                None => self.secret(source, secrets::ssh_key(&source.id), ssh.save_secret).await,
             };
             let target = SshTarget {
                 host: ssh.host.clone(),
@@ -547,12 +676,15 @@ impl DbManager {
         })?;
         let version = match source.driver {
             DbDriver::Sqlite => "SELECT 'SQLite ' || sqlite_version()",
-            DbDriver::Postgres => "SELECT version()",
+            DbDriver::Postgres | DbDriver::Clickhouse => "SELECT version()",
             DbDriver::Mysql => "SELECT CONCAT(@@version_comment, ' ', VERSION())",
             DbDriver::SqlServer => "SELECT @@VERSION",
+            DbDriver::Oracle => "SELECT banner FROM v$version WHERE banner LIKE 'Oracle%' AND ROWNUM = 1",
         };
-        let v = pool.rows(version, 1).await.ok().and_then(|r| r.into_iter().next()?.into_iter().next()?);
+        let result = pool.rows(version, 1).await;
         pool.close().await;
+        let rows = if source.driver == DbDriver::Clickhouse { result? } else { result.unwrap_or_default() };
+        let v = rows.into_iter().next().and_then(|r| r.into_iter().next().flatten());
         Ok(v.unwrap_or_else(|| "Connected".into()))
     }
 
@@ -636,8 +768,15 @@ impl DbManager {
         let introspection = self.source(id)?.introspection;
         let system = introspection.show_system;
         let pool = self.pool(id).await?;
+        if pool.driver() == DbDriver::SqlServer {
+            let first =
+                |rows: Vec<Vec<Option<String>>>| rows.into_iter().filter_map(|r| r.into_iter().next().flatten());
+            let current = first(pool.rows("SELECT DB_NAME()", 1).await?).next().unwrap_or_default();
+            let names = first(pool.rows(sql::sqlserver_databases(), MAX_META_ROWS).await?).collect();
+            return Ok(Databases { current, names });
+        }
         if pool.driver() != DbDriver::Postgres {
-            return Err(IdeError::invalid("only PostgreSQL data sources list databases"));
+            return Err(IdeError::invalid("this data source does not list databases"));
         }
         let first = |rows: Vec<Vec<Option<String>>>| rows.into_iter().filter_map(|r| r.into_iter().next().flatten());
         let current = first(pool.rows("SELECT current_database()", 1).await?).next().unwrap_or_default();
@@ -701,8 +840,11 @@ impl DbManager {
                 _ => indexes.push(IndexInfo { name, unique: flag(&unique), columns: vec![col] }),
             }
         }
-        let fk_rows =
-            pool.rows(&sql::table_foreign_keys(driver, schema, table), MAX_META_ROWS).await.unwrap_or_default();
+        let fk_rows = if driver == DbDriver::Clickhouse {
+            Vec::new()
+        } else {
+            pool.rows(&sql::table_foreign_keys(driver, schema, table), MAX_META_ROWS).await.unwrap_or_default()
+        };
         let mut foreign_keys = group_foreign_keys(fk_rows, &[]);
         // SQLite keys that reference the primary key implicitly: look it up.
         for k in foreign_keys.iter_mut().filter(|k| k.ref_columns.is_empty()) {
@@ -715,13 +857,15 @@ impl DbManager {
                 .collect();
         }
         foreign_keys.retain(|k| k.columns.len() == k.ref_columns.len());
-        let triggers = pool
-            .rows(&sql::triggers(driver, schema, table), MAX_META_ROWS)
-            .await
-            .unwrap_or_else(|e| {
+        let trigger_rows = if driver == DbDriver::Clickhouse {
+            Vec::new()
+        } else {
+            pool.rows(&sql::triggers(driver, schema, table), MAX_META_ROWS).await.unwrap_or_else(|e| {
                 tracing::warn!("triggers: {}", e.message);
                 Vec::new()
             })
+        };
+        let triggers = trigger_rows
             .into_iter()
             .filter_map(|r| {
                 let mut it = r.into_iter();
@@ -761,6 +905,14 @@ impl DbManager {
                 })
                 .collect();
         }
+        if let Some(q) = sql::packages(driver, schema) {
+            out.packages = pool
+                .rows(&q, MAX_META_ROWS)
+                .await?
+                .into_iter()
+                .filter_map(|r| Some(PackageInfo { name: r.into_iter().next().flatten()? }))
+                .collect();
+        }
         if let Some(q) = sql::sequences(driver, schema) {
             out.sequences = pool
                 .rows(&q, MAX_META_ROWS)
@@ -778,9 +930,29 @@ impl DbManager {
         Ok(out)
     }
 
-    /// The definition of a routine (every overload), trigger or sequence.
+    /// The definition of a routine (every overload), package (spec and body), trigger or sequence.
     pub async fn object_ddl(&self, id: &str, schema: &str, kind: DbObjectKind, name: &str) -> IdeResult<String> {
         let pool = self.pool(id).await?;
+        if kind == DbObjectKind::Package {
+            let mut defs: Vec<String> = Vec::new();
+            for body in [false, true] {
+                let Some(q) = sql::package_ddl(pool.driver(), schema, name, body) else { continue };
+                match pool.rows(&q, MAX_META_ROWS).await {
+                    Ok(rows) => defs.extend(rows.into_iter().filter_map(|r| r.into_iter().next().flatten())),
+                    // A spec-only package has no body: the spec alone still opens.
+                    Err(e) if body => tracing::warn!("package body {schema}.{name}: {}", e.message),
+                    Err(e) => return Err(e),
+                }
+            }
+            if defs.is_empty() {
+                return Err(IdeError::not_found(format!("{schema}.{name}")));
+            }
+            return Ok(defs
+                .iter()
+                .map(|d| format!("{};\n", d.trim_end().trim_end_matches(';')))
+                .collect::<Vec<_>>()
+                .join("\n"));
+        }
         let (q, column) = sql::object_ddl(pool.driver(), schema, kind, name)
             .ok_or_else(|| IdeError::invalid(format!("no {kind:?} objects in this database")))?;
         let defs: Vec<String> = pool
@@ -822,12 +994,44 @@ impl DbManager {
                 let ddl = cells(pool.rows(&q, 1).await?, 1).into_iter().next();
                 ddl.map(|d| format!("{d};\n")).ok_or_else(missing)
             }
+            DbDriver::Clickhouse => {
+                let q = format!("SHOW CREATE TABLE {}", sql::qualified(driver, schema, name));
+                let ddl = cells(pool.rows(&q, 1).await?, 0).into_iter().next();
+                ddl.map(|d| format!("{};\n", d.trim_end().trim_end_matches(';'))).ok_or_else(missing)
+            }
             DbDriver::SqlServer => {
                 let obj = format!("{}.{}", schema, name).replace('\'', "''");
                 let ddl = cells(pool.rows(&format!("SELECT OBJECT_DEFINITION(OBJECT_ID('{}'))", obj), 1).await?, 0)
                     .into_iter()
                     .next();
                 ddl.map(|d| format!("{d};\n")).ok_or_else(missing)
+            }
+            DbDriver::Oracle => {
+                let (s, n) = (sql::quote_literal(driver, schema), sql::quote_literal(driver, name));
+                let kind = pool
+                    .rows(
+                        &format!(
+                            "SELECT object_type FROM all_objects WHERE owner = {s} AND object_name = {n} \
+                             AND object_type IN ('TABLE', 'VIEW') AND ROWNUM = 1"
+                        ),
+                        1,
+                    )
+                    .await?
+                    .into_iter()
+                    .next()
+                    .and_then(|r| r.into_iter().next().flatten())
+                    .ok_or_else(missing)?;
+                let ddl = cells(
+                    pool.rows(
+                        &format!("SELECT DBMS_METADATA.GET_DDL('{}', {n}, {s}) FROM DUAL", kind.replace('\'', "''")),
+                        1,
+                    )
+                    .await?,
+                    0,
+                )
+                .into_iter()
+                .next();
+                ddl.map(|d| format!("{};\n", d.trim_end().trim_end_matches(';'))).ok_or_else(missing)
             }
             DbDriver::Postgres => {
                 let rel = pool.rows(&sql::postgres_relation(schema, name), 1).await?.into_iter().next();
@@ -902,10 +1106,14 @@ impl DbManager {
             }
         }
         // Foreign keys are a nicety (JOIN completion): a server that refuses the catalog query still completes.
-        let fk_rows = pool.rows(sql::foreign_keys(driver), MAX_META_ROWS).await.unwrap_or_else(|e| {
-            tracing::warn!("foreign keys: {}", e.message);
+        let fk_rows = if driver == DbDriver::Clickhouse {
             Vec::new()
-        });
+        } else {
+            pool.rows(sql::foreign_keys(driver), MAX_META_ROWS).await.unwrap_or_else(|e| {
+                tracing::warn!("foreign keys: {}", e.message);
+                Vec::new()
+            })
+        };
         let foreign_keys = group_foreign_keys(fk_rows, &tables);
         let default_schema = match sql::current_schema(driver) {
             None => "main".to_owned(),
@@ -929,7 +1137,23 @@ impl DbManager {
         max_rows: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
-        let r = self.run(id, statement, max_rows, cancel).await;
+        self.execute_from(id, statement, 0, max_rows, cancel, None).await
+    }
+
+    /// [`execute`](Self::execute), reading past the first `skip` rows without keeping
+    /// them: a later page of a result, where only that page is decoded and returned.
+    /// `schema` is a query console's active context: the connection that runs the
+    /// statement is put in it first, so unqualified names resolve there.
+    pub async fn execute_from(
+        &self,
+        id: &str,
+        statement: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+    ) -> IdeResult<QueryResult> {
+        let r = self.run(id, statement, skip, max_rows, cancel, schema).await;
         let ran = match &r {
             Ok(_) => true,
             Err(e) => !matches!(e.kind, ErrorKind::Cancelled | ErrorKind::PermissionDenied),
@@ -961,10 +1185,42 @@ impl DbManager {
             .map_err(|e| IdeError::internal(e.to_string()))?
     }
 
-    /// The execution plan of `statement` (explained, not run).
-    pub async fn explain(&self, id: &str, statement: &str, cancel: &CancellationToken) -> IdeResult<Vec<PlanNode>> {
+    /// The execution plan of `statement` (explained, not run), in the console's
+    /// active `schema` when it has one.
+    pub async fn explain(
+        &self,
+        id: &str,
+        statement: &str,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+    ) -> IdeResult<Vec<PlanNode>> {
         let driver = self.pool(id).await?.driver();
-        let result = self.run(id, &plan::explain_statement(driver, statement), MAX_META_ROWS, cancel).await?;
+        if driver == DbDriver::Oracle {
+            // EXPLAIN PLAN writes PLAN_TABLE; the plan is read (and cleaned up) separately.
+            let plan_id = format!(
+                "OPENIDEA{}",
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos())
+            );
+            self.run(
+                id,
+                &format!(
+                    "EXPLAIN PLAN SET STATEMENT_ID = '{}' FOR {}",
+                    plan_id,
+                    statement.trim().trim_end_matches(';')
+                ),
+                0,
+                MAX_META_ROWS,
+                cancel,
+                schema,
+            )
+            .await?;
+            let result = self.run(id, &plan::oracle_plan_query(&plan_id), 0, MAX_META_ROWS, cancel, None).await?;
+            let nodes = plan::parse(driver, &result);
+            let _ = self.run(id, &plan::oracle_plan_cleanup(&plan_id), 0, 0, cancel, None).await;
+            return nodes;
+        }
+        let result =
+            self.run(id, &plan::explain_statement(driver, statement), 0, MAX_META_ROWS, cancel, schema).await?;
         plan::parse(driver, &result)
     }
 
@@ -972,22 +1228,42 @@ impl DbManager {
         &self,
         id: &str,
         statement: &str,
+        skip: usize,
         max_rows: usize,
         cancel: &CancellationToken,
+        schema: Option<&str>,
     ) -> IdeResult<QueryResult> {
         let pool = self.pool(id).await?;
         let session = self.sessions.lock().get(id).cloned();
         let Some(session) = session else {
-            return pool.execute(statement, max_rows, cancel).await;
+            if schema.is_none() {
+                return pool.execute_from(statement, skip, max_rows, cancel).await;
+            }
+            // Like `Pool::execute_from`, with the schema applied to the connection first.
+            let mut conn = Held::acquire(&pool).await?;
+            let r = match conn.apply_context(schema).await {
+                Ok(()) => conn.execute_from(&pool, statement, skip, max_rows, cancel).await,
+                Err(e) => Err(e),
+            };
+            if cancel.is_cancelled() {
+                conn.discard().await;
+                return Err(IdeError::cancelled());
+            }
+            return r;
         };
+        if pool.driver() == DbDriver::Clickhouse {
+            return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
+        }
         let mut held = session.lock().await;
         if held.is_none() {
             let mut conn = Held::acquire(&pool).await?;
+            conn.apply_context(schema).await?;
             conn.command(conn::begin_statement(pool.driver())).await?;
             *held = Some(conn);
         }
         let conn = held.as_mut().expect("opened above");
-        let r = conn.execute(&pool, statement, max_rows, cancel).await;
+        conn.apply_context(schema).await?;
+        let r = conn.execute_from(&pool, statement, skip, max_rows, cancel).await;
         if cancel.is_cancelled() {
             // The server rolls the transaction back with the connection.
             held.take().expect("opened above").discard().await;
@@ -998,8 +1274,11 @@ impl DbManager {
 
     /// Switches `id` between auto-commit and manual commit. Leaving manual
     /// mode rolls back what was not committed.
-    pub async fn set_manual_commit(&self, id: &str, manual: bool) {
+    pub async fn set_manual_commit(&self, id: &str, manual: bool) -> IdeResult<()> {
         if manual {
+            if self.source(id)?.driver == DbDriver::Clickhouse {
+                return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
+            }
             self.sessions.lock().entry(id.to_owned()).or_default();
         } else {
             let session = self.sessions.lock().remove(id);
@@ -1007,15 +1286,24 @@ impl DbManager {
                 end_session(&s).await;
             }
         }
+        Ok(())
     }
 
     /// Commits (or rolls back) the open transaction of a manual-commit data source.
     pub async fn finish_transaction(&self, id: &str, commit: bool) -> IdeResult<()> {
+        if self.source(id).is_ok_and(|s| s.driver == DbDriver::Clickhouse) {
+            return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
+        }
         let session = self.sessions.lock().get(id).cloned();
         let Some(session) = session else { return Ok(()) };
         let mut held = session.lock().await;
         let Some(mut conn) = held.take() else { return Ok(()) };
-        match conn.command(if commit { "COMMIT" } else { "ROLLBACK" }).await {
+        let result = async {
+            conn.command(if commit { "COMMIT" } else { "ROLLBACK" }).await?;
+            conn.restore_default().await
+        }
+        .await;
+        match result {
             Ok(()) => Ok(()),
             Err(e) => {
                 conn.discard().await;
@@ -1052,6 +1340,9 @@ impl DbManager {
 
     /// Applies the table editor's pending changes in one transaction.
     pub async fn apply_edits(&self, id: &str, schema: &str, table: &str, edits: &[DbRowEdit]) -> IdeResult<u64> {
+        if self.source(id)?.driver == DbDriver::Clickhouse {
+            return Err(IdeError::invalid("ClickHouse table editing is unsupported"));
+        }
         let pool = self.pool(id).await?;
         let driver = pool.driver();
         let statements = edits
@@ -1062,5 +1353,114 @@ impl DbManager {
             })
             .collect::<IdeResult<Vec<_>>>()?;
         pool.transaction(&statements).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ide_ssh::secrets::testing::files_containing;
+    use std::path::Path;
+
+    fn manager(dir: &Path) -> DbManager {
+        ide_ssh::secrets::testing::use_memory_store();
+        let data = dir.join("data");
+        let ssh = Arc::new(SshManager::new(data.join("ssh-passwords.json")));
+        DbManager::new(dir.join("project"), data.join("db-passwords.json"), data.join("db-history.json"), ssh)
+    }
+
+    #[tokio::test]
+    async fn saved_passwords_stay_off_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        manager(tmp.path()).set_password("s1", Some("hunter2-db".into()), true).await.unwrap();
+        manager(tmp.path()).set_ssh_secret("s1", Some("hunter2-tunnel".into()), true).await.unwrap();
+        assert_eq!(files_containing(tmp.path(), "hunter2-db"), Vec::<PathBuf>::new());
+        assert_eq!(files_containing(tmp.path(), "hunter2-tunnel"), Vec::<PathBuf>::new());
+        let reopened = manager(tmp.path());
+        assert_eq!(reopened.secret(&DataSource::default(), "s1".into(), true).await.as_deref(), Some("hunter2-db"));
+        assert_eq!(
+            reopened.secret(&DataSource::default(), secrets::ssh_key("s1"), true).await.as_deref(),
+            Some("hunter2-tunnel")
+        );
+    }
+
+    #[tokio::test]
+    async fn moves_plaintext_passwords_of_older_versions_off_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project").to_string_lossy().into_owned();
+        let legacy = serde_json::json!({ project: { "s1": "old-db-pw" }, "/other": { "s2": "other-pw" } });
+        std::fs::create_dir_all(tmp.path().join("data")).unwrap();
+        std::fs::write(tmp.path().join("data/db-passwords.json"), legacy.to_string()).unwrap();
+        let m = manager(tmp.path());
+        assert_eq!(m.secret(&DataSource::default(), "s1".into(), true).await.as_deref(), Some("old-db-pw"));
+        assert_eq!(files_containing(tmp.path(), "old-db-pw"), Vec::<PathBuf>::new());
+        assert_eq!(files_containing(tmp.path(), "other-pw"), Vec::<PathBuf>::new());
+        let other = SecretStore::new(tmp.path().join("data/db-passwords.json"), Path::new("/other"));
+        assert_eq!(other.get("s2").as_deref(), Some("other-pw"));
+    }
+
+    #[tokio::test]
+    async fn global_data_sources_are_shared_by_projects_with_their_passwords() {
+        ide_ssh::secrets::testing::use_memory_store();
+        let tmp = tempfile::tempdir().unwrap();
+        let (app, one, two) = (tmp.path().join("app"), tmp.path().join("one"), tmp.path().join("two"));
+        let manager = |root: &std::path::Path| {
+            let ssh = Arc::new(SshManager::new(app.join("ssh-passwords.json")));
+            DbManager::new(root.to_path_buf(), app.join("passwords.json"), app.join("history.json"), ssh)
+                .with_global_sources(app.clone())
+        };
+        let (a, b) = (manager(&one), manager(&two));
+        let source = |id: &str, global: bool| DataSource {
+            id: id.into(),
+            name: id.into(),
+            driver: DbDriver::Postgres,
+            save_password: true,
+            global,
+            ..Default::default()
+        };
+        a.save_sources(vec![source("local", false), source("shared", false)]).await.unwrap();
+        a.set_password("shared", Some("pw".into()), true).await.unwrap();
+        // Made global: listed in the other project too, with its saved password.
+        a.save_sources(vec![source("local", false), source("shared", true)]).await.unwrap();
+        let ids = |m: &DbManager| m.sources().unwrap().into_iter().map(|s| (s.id, s.global)).collect::<Vec<_>>();
+        assert_eq!(ids(&a), [("local".into(), false), ("shared".into(), true)]);
+        assert_eq!(ids(&b), [("shared".into(), true)]);
+        assert_eq!(b.password(&b.source("shared").unwrap()).await.as_deref(), Some("pw"));
+        let project_file = std::fs::read_to_string(one.join(".openidea/data-sources.toml")).unwrap();
+        assert!(!project_file.contains("shared") && !project_file.contains("global"), "{project_file}");
+        assert!(!std::fs::read_to_string(app.join("data-sources.toml")).unwrap().contains("global"));
+        // Made project-level again: gone from the other project, the password stays with it.
+        a.save_sources(vec![source("local", false), source("shared", false)]).await.unwrap();
+        assert!(b.sources().unwrap().is_empty());
+        assert_eq!(a.password(&a.source("shared").unwrap()).await.as_deref(), Some("pw"));
+    }
+
+    #[tokio::test]
+    async fn clickhouse_rejects_manual_transactions_and_table_edits_without_connecting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let ssh = Arc::new(SshManager::new(root.join("ssh-passwords.json")));
+        let db = DbManager::new(root.clone(), root.join("passwords.json"), root.join("history.json"), ssh);
+        db.save_sources(vec![DataSource {
+            id: "clickhouse".into(),
+            name: "clickhouse".into(),
+            driver: DbDriver::Clickhouse,
+            host: "127.0.0.1".into(),
+            port: Some(1),
+            ..Default::default()
+        }])
+        .await
+        .unwrap();
+        let error = db.set_manual_commit("clickhouse", true).await.unwrap_err();
+        assert!(error.message.contains("manual transactions are unsupported"));
+        assert!(db.sessions.lock().is_empty());
+        for commit in [false, true] {
+            let error = db.finish_transaction("clickhouse", commit).await.unwrap_err();
+            assert!(error.message.contains("manual transactions are unsupported"));
+        }
+        let error = db.apply_edits("clickhouse", "default", "events", &[]).await.unwrap_err();
+        assert!(error.message.contains("table editing is unsupported"));
+        assert!(!db.is_connected("clickhouse"));
+        db.set_manual_commit("clickhouse", false).await.unwrap();
     }
 }

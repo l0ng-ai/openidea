@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Text } from "@codemirror/state";
-import { fragmentOffset, linkReference, looksLikePath, textReference } from "./links";
+import { fragmentOffset, linkReference, looksLikePath, resolvePath, textReference } from "./links";
 
 const at = (src: string, marker = "|") => {
   const offset = src.indexOf(marker);
@@ -28,6 +28,20 @@ describe("text references", () => {
     expect(textReference(text, offset)).toMatchObject({ kind: "path", value: "img/logo.svg" });
   });
 
+  it("finds fragment-only link targets", () => {
+    for (const source of ["[artist::order](#Artist-or|der)", '<a href="#Artist-or|der">order</a>']) {
+      const { text, offset } = at(source);
+      expect(textReference(text, offset)).toMatchObject({ kind: "path", value: "#Artist-order" });
+    }
+  });
+
+  it("does not treat arbitrary fragment strings as links", () => {
+    for (const source of ['const color = "#ff|f"', '<a id="Artist-or|der">', "url(#ic|on)"]) {
+      const { text, offset } = at(source);
+      expect(textReference(text, offset)).toBeNull();
+    }
+  });
+
   it("ignores prose and identifiers", () => {
     expect(looksLikePath("hello world.txt")).toBe(false);
     expect(looksLikePath("utf-8")).toBe(false);
@@ -41,12 +55,41 @@ describe("text references", () => {
 });
 
 describe("links and fragments", () => {
+  it("resolves local fragments without probing the filesystem", async () => {
+    const ref = { kind: "path" as const, from: 5, to: 20, value: "#Artist%2Dorder" };
+    expect(await resolvePath(ref, "/p/notes.md")).toEqual({
+      kind: "file",
+      from: 5,
+      to: 20,
+      path: "/p/notes.md",
+      fragment: "Artist-order",
+    });
+    expect(await resolvePath({ ...ref, value: "#bad%" }, "/p/notes.md")).toBeNull();
+  });
+
   it("picks the server link around the offset", () => {
     const text = Text.of(['<a href="b.html#top">']);
     const range = { start: { line: 0, col: 9 }, end: { line: 0, col: 19 } };
     const link = { range, path: "/p/b.html", fragment: "top", url: null, tooltip: null };
-    expect(linkReference(text, [link], 12)).toMatchObject({ kind: "file", path: "/p/b.html", fragment: "top" });
-    expect(linkReference(text, [link], 2)).toBeNull();
+    expect(linkReference(text, [link], 12, "/p/a.html")).toMatchObject({
+      kind: "file",
+      path: "/p/b.html",
+      fragment: "top",
+    });
+    expect(linkReference(text, [link], 2, "/p/a.html")).toBeNull();
+  });
+
+  // On Windows, opening `//server/share` signs in to that server with the user's credentials.
+  it("follows no server link to a share the file is not on", () => {
+    const text = Text.of(['<a href="file:////evil/share/b.html">']);
+    const range = { start: { line: 0, col: 9 }, end: { line: 0, col: 35 } };
+    const link = { range, path: "//evil/share/b.html", fragment: null, url: null, tooltip: null };
+    expect(linkReference(text, [link], 12, "C:/p/a.html")).toBeNull();
+    expect(linkReference(text, [link], 12, "//nas/work/a.html")).toBeNull();
+    expect(linkReference(text, [{ ...link, path: "//nas/work/b.html" }], 12, "//NAS/Work/a.html")).toMatchObject({
+      kind: "file",
+      path: "//nas/work/b.html",
+    });
   });
 
   it("locates line, element id and Markdown heading fragments", () => {
@@ -55,6 +98,12 @@ describe("links and fragments", () => {
     const html = '<p>\n<div class="x" id="main">';
     expect(fragmentOffset(html, "/i.html", "main")).toBe(html.indexOf("id="));
     expect(fragmentOffset("# Intro\n\n## Getting Started!\n", "/r.md", "getting-started")).toBe(9);
+    for (const path of ["/r.md", "/r.markdown", "/r.mdx"]) {
+      for (const attr of ["id", "name"]) {
+        const source = `[artist::order](#Artist-order)\n\n<a ${attr}="Artist-order"></a>`;
+        expect(fragmentOffset(source, path, "Artist-order")).toBe(source.indexOf(`${attr}=`));
+      }
+    }
     expect(fragmentOffset("x", "/i.html", "nope")).toBeNull();
   });
 });

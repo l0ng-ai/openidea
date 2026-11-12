@@ -103,7 +103,7 @@ function KeyFileRow({ value, onChange }: { value: string; onChange: (v: string) 
   const id = useId();
   const tx = useTx();
   const browse = async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({ multiple: false, title: tx("Private Key File") });
     const path = Array.isArray(picked) ? picked[0] : picked;
     if (path) onChange(path);
@@ -339,8 +339,12 @@ function SshConfigsEditor() {
               className={clsx(styles.toolRow, c.id === selected && styles.toolRowSelected)}
               onMouseDown={() => setSelected(c.id)}
             >
-              <span>{c.name.trim() || sshLabel(c) || c.id}</span>
-              <span className={styles.toolGroup}>{sshLabel(c)}</span>
+              <span className={styles.toolName} title={c.name.trim() || sshLabel(c) || c.id}>
+                {c.name.trim() || sshLabel(c) || c.id}
+              </span>
+              <span className={styles.toolGroup} title={sshLabel(c)}>
+                {sshLabel(c)}
+              </span>
             </div>
           ))}
         </div>

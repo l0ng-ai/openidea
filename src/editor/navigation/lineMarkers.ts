@@ -6,7 +6,7 @@
  */
 import type { Location, OutlineItem, SymbolKind } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { identifierAt } from "@/editor/lsp/files";
+import { targetLabel } from "@/editor/lsp/files";
 import { baseName, type SuperMethod } from "./structureNav";
 
 export type MarkerKind = "implemented" | "overridden" | "implementing" | "overriding";
@@ -138,12 +138,43 @@ export function withoutSelf(path: string, c: MarkerCandidate, targets: readonly 
 
 const TYPE_DECLARATION = /\b(?:class|interface|trait|object|struct|enum|record|impl)\s+([\p{L}_$][\p{L}\p{N}_$]*)/u;
 
+const FENCES = [`"""`, `'''`];
+
+/**
+ * Name of the type a target sits in (the nearest type declaration above it); null without one.
+ * Text heuristic: docstrings (`"""` / `'''` fences) and line comments (`#`, `//`, `*`…) cannot
+ * declare a type, so "the base class does all that is needed" in a comment is not one.
+ */
+export function enclosingType(lines: readonly string[] | null | undefined, target: Location): string | null {
+  if (!lines) return null;
+  let container: string | null = null;
+  let fence: string | null = null;
+  for (let l = Math.max(0, target.range.start.line - 2000); l < target.range.start.line; l++) {
+    const line = lines[l] ?? "";
+    if (fence) {
+      if ((line.split(fence).length - 1) % 2 === 1) fence = null;
+      continue;
+    }
+    // Comments first: a `#`/`//` line cannot open a docstring fence either.
+    const code = line.replace(/(^|\s)(#|\/\/).*$/, "$1");
+    if (!code.trim()) continue;
+    const opened = FENCES.find((f) => (code.split(f).length - 1) % 2 === 1);
+    if (opened) {
+      fence = opened;
+      continue;
+    }
+    // A single-line docstring (fences open and close on the line) is text too.
+    if (FENCES.some((f) => code.includes(f))) continue;
+    const m = TYPE_DECLARATION.exec(code);
+    if (m && !/^\s*(\*|\/\*)/.test(line)) container = m[1]!;
+  }
+  return container;
+}
+
 /** Name of the type a target sits in: the nearest type declaration above it, else the file name. */
 export function enclosingTypeName(lines: readonly string[] | null | undefined, target: Location): string {
-  for (let l = target.range.start.line - 1; lines && l >= 0 && l >= target.range.start.line - 2000; l--) {
-    const m = TYPE_DECLARATION.exec(lines[l] ?? "");
-    if (m && !/^\s*(\/\/|\*|\/\*)/.test(lines[l] ?? "")) return m[1]!;
-  }
+  const found = enclosingType(lines, target);
+  if (found) return found;
   const file = target.path.split(/[\\/]/).pop() ?? target.path;
   return file.replace(/\.[^.]+$/, "");
 }
@@ -151,7 +182,7 @@ export function enclosingTypeName(lines: readonly string[] | null | undefined, t
 /** Display name of a target: the type itself for type markers, the type around it for methods. */
 export function targetName(lines: readonly string[] | null | undefined, target: Location, method: boolean): string {
   if (!method) {
-    const name = identifierAt(lines?.[target.range.start.line] ?? "", target.range.start.col);
+    const name = targetLabel(lines?.[target.range.start.line] ?? "", target.range.start.col);
     if (name) return name;
   }
   return enclosingTypeName(lines, target);

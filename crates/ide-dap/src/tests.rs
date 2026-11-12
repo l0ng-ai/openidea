@@ -1,15 +1,109 @@
 //! Protocol flow against an in-memory fake adapter.
 
+mod jvm_inspect;
+
 use super::*;
 use crate::adapter::{AdapterIo, LaunchFuture};
 use ide_core::IdeEvent;
 use ide_core::event::DebugEvent;
 use ide_jsonrpc::framing;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 type Log = Arc<Mutex<Vec<Value>>>;
 
-#[derive(Clone, Default)]
+#[cfg(windows)]
+#[test]
+#[ignore = "child process for Windows stop tests"]
+fn windows_debuggee_process() {
+    if std::env::var_os("OPENIDEA_TEST_DEBUGGEE").is_none() {
+        return;
+    }
+    if std::env::var("OPENIDEA_TEST_DEBUGGEE").unwrap() == "wrapper" {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        let mut child = ide_core::process::prepare(&mut command)
+            .args(["--exact", "tests::windows_debuggee_process", "--ignored", "--nocapture"])
+            .env("OPENIDEA_TEST_DEBUGGEE", "leaf")
+            .spawn()
+            .unwrap();
+        let _ = child.wait();
+        return;
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    println!("LISTENING {}", listener.local_addr().unwrap().port());
+    std::thread::sleep(Duration::from_secs(60));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_stop_releases_the_debuggees_port_before_returning() {
+    use std::io::BufRead;
+    use std::sync::atomic::Ordering;
+
+    struct Child(std::process::Child, Option<ide_core::process::ProcessTree>);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            if let Some(tree) = &self.1 {
+                tree.terminate();
+            }
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    for (second_stop, wrapper, supports_terminate) in
+        [(false, false, false), (true, false, false), (true, true, false), (true, true, true)]
+    {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        ide_core::process::prepare(&mut command)
+            .args(["--exact", "tests::windows_debuggee_process", "--ignored", "--nocapture"])
+            .env("OPENIDEA_TEST_DEBUGGEE", if wrapper { "wrapper" } else { "leaf" })
+            .stdout(std::process::Stdio::piped());
+        let mut child = Child(command.spawn().unwrap(), None);
+        let port: u16 = std::io::BufReader::new(child.0.stdout.take().unwrap())
+            .lines()
+            .map(Result::unwrap)
+            .find_map(|line| line.split("LISTENING ").nth(1).and_then(|p| p.parse().ok()))
+            .unwrap();
+        let pid = child.0.id();
+        child.1 = Some(ide_core::process::ProcessTree::capture(pid));
+        let h = harness(Script { debuggee_pid: Some(pid), supports_terminate, ..Default::default() });
+        let id = h.start(config()).await.unwrap();
+        let session = h.manager.session(id).unwrap();
+        while session.debuggee_pid.load(Ordering::Acquire) != i64::from(pid) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let stop = tokio::spawn({
+            let manager = h.manager.clone();
+            async move { manager.stop(id).await }
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while session.stop_tree.lock().is_none() && !stop.is_finished() {
+            assert!(std::time::Instant::now() < deadline, "Stop did not capture the program tree");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!stop.is_finished(), "Stop must wait for the live program");
+        if wrapper {
+            assert!(session.stop_tree.lock().is_some());
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
+            assert!(std::net::TcpListener::bind(("127.0.0.1", port)).is_err(), "the child still owns its port");
+        }
+        if second_stop {
+            h.manager.stop(id).await.unwrap();
+        }
+        let limit = if second_stop { 10 } else { 25 };
+        tokio::time::timeout(Duration::from_secs(limit), stop).await.unwrap().unwrap().unwrap();
+        assert!(child.0.try_wait().unwrap().is_some(), "Stop returned with the program alive");
+        let _listener = std::net::TcpListener::bind(("127.0.0.1", port)).expect("Stop returned with its port occupied");
+    }
+}
+
+#[derive(Clone)]
 struct Script {
     /// Send a `runInTerminal` reverse request when `launch` arrives.
     run_in_terminal: Option<Vec<String>>,
@@ -17,6 +111,83 @@ struct Script {
     start_debugging: bool,
     ignore_configuration_done: bool,
     source_path: Option<String>,
+    /// Report this process id in the adapter's `process` event (the program being debugged).
+    debuggee_pid: Option<u32>,
+    /// java-debug's spelling of the same event.
+    java_process_id: bool,
+    /// Send one more output event right after the `terminated` event (a program still logging
+    /// while it shuts down).
+    output_after_terminate: bool,
+    /// Advertise `supportsTerminateRequest` (java-debug does not, so Stop signals the program).
+    supports_terminate: bool,
+    /// Answer `setBreakpoints` only once this many are waiting (a client that waits for each never gets one).
+    hold_set_breakpoints: usize,
+    /// Send a `continued` event right after the first `stopped` one.
+    continued_after_stop: bool,
+    /// Close the connection when a `pause` request arrives (the adapter dies).
+    hang_up_on_pause: bool,
+    /// Close the connection at the first request after the first `stopped` event.
+    hang_up_after_stop: bool,
+    /// Answer `continue` with this body and keep the program running, instead of letting it exit.
+    continue_reply: Option<Value>,
+    /// Answer `continue` and stop at a breakpoint again, instead of letting the program exit.
+    stop_after_continue: bool,
+    /// The `reason` of the stop a `next` ends with (`step` when unset; kotlin-lsp says `breakpoint`).
+    step_reason: Option<&'static str>,
+    /// Refuse `next`, then stop at a breakpoint (one the program hit meanwhile).
+    refuse_next: bool,
+    /// Send `invalidated { areas: ["variables"] }` right after the first `stopped` event.
+    invalidated_after_stop: bool,
+    /// On `threads`: stop again on thread 2 first, then answer with thread 1 of the earlier stop.
+    stop_during_threads: bool,
+    /// Name of the first stack frame (`main` when unset).
+    frame_name: Option<&'static str>,
+    /// Answer `initialize` only after this long (a slow adapter keeps the session connecting).
+    delay_initialize: Option<Duration>,
+    initialized_delay: Duration,
+    launch_delay: Duration,
+    /// Leave startup pending before `initialized` (false) or after configuration (true).
+    pending_startup: Option<bool>,
+    startup_error: Option<&'static str>,
+    close_during_startup: bool,
+    /// GDB 15 semantics: `initialized` right after `initialize`, the program starts at
+    /// `launch`, and a `configurationDone` sent while it runs is refused with `notStopped`.
+    gdb15_starts_at_launch: bool,
+    launch_after_configuration: bool,
+}
+
+impl Default for Script {
+    fn default() -> Self {
+        Self {
+            run_in_terminal: None,
+            start_debugging: false,
+            ignore_configuration_done: false,
+            source_path: None,
+            debuggee_pid: None,
+            java_process_id: false,
+            output_after_terminate: false,
+            supports_terminate: true,
+            hold_set_breakpoints: 0,
+            continued_after_stop: false,
+            hang_up_on_pause: false,
+            hang_up_after_stop: false,
+            continue_reply: None,
+            stop_after_continue: false,
+            step_reason: None,
+            refuse_next: false,
+            invalidated_after_stop: false,
+            stop_during_threads: false,
+            frame_name: None,
+            delay_initialize: None,
+            initialized_delay: Duration::ZERO,
+            launch_delay: Duration::ZERO,
+            pending_startup: None,
+            startup_error: None,
+            close_during_startup: false,
+            gdb15_starts_at_launch: false,
+            launch_after_configuration: false,
+        }
+    }
 }
 
 struct FakeLauncher {
@@ -29,10 +200,12 @@ impl AdapterLauncher for FakeLauncher {
         let (client, server) = tokio::io::duplex(1 << 16);
         let log = self.log.clone();
         let script = self.script.clone();
+        let launch_after_configuration = script.launch_after_configuration;
         tokio::spawn(fake_adapter(server, log, script));
         let (r, w) = tokio::io::split(client);
         Box::pin(async move {
             Ok(AdapterIo {
+                launch_after_configuration,
                 reader: Box::new(r),
                 writer: Box::new(w),
                 child: None,
@@ -49,6 +222,9 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
     let mut r = BufReader::new(r);
     let mut seq = 1000;
     let mut pending_launch: Option<i64> = None;
+    let mut held: Vec<Value> = Vec::new();
+    let mut stopped = false;
+    let mut running = false;
     macro_rules! send {
         ($v:expr) => {{
             let mut v: Value = $v;
@@ -68,24 +244,53 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
         if msg["type"] == "response" {
             continue;
         }
+        if script.hang_up_after_stop && stopped {
+            break;
+        }
         match msg["command"].as_str().unwrap_or_default() {
-            "initialize" => ok!(
-                msg,
-                json!({
-                    "supportsConfigurationDoneRequest": true,
-                    "supportsTerminateRequest": true,
-                    "supportsSetVariable": true,
-                    "supportsFunctionBreakpoints": true,
-                    "supportsDataBreakpoints": true,
-                    "supportsStepInTargetsRequest": true,
-                    "supportsRestartFrame": true,
-                    "exceptionBreakpointFilters": [
-                        {"filter": "raised", "label": "Raised"},
-                        {"filter": "uncaught", "label": "Uncaught", "default": true, "description": "Uncaught exceptions"},
-                    ],
-                })
-            ),
+            "initialize" => {
+                if let Some(delay) = script.delay_initialize {
+                    tokio::time::sleep(delay).await;
+                }
+                ok!(
+                    msg,
+                    json!({
+                        "supportsConfigurationDoneRequest": true,
+                        "supportsCompletionsRequest": true,
+                        "supportsTerminateRequest": script.supports_terminate,
+                        "supportsSetVariable": true,
+                        "supportsFunctionBreakpoints": true,
+                        "supportsDataBreakpoints": true,
+                        "supportsStepInTargetsRequest": true,
+                        "supportsRestartFrame": true,
+                        "exceptionBreakpointFilters": [
+                            {"filter": "raised", "label": "Raised"},
+                            {"filter": "uncaught", "label": "Uncaught", "default": true, "description": "Uncaught exceptions"},
+                        ],
+                    })
+                );
+                if script.gdb15_starts_at_launch {
+                    // GDB 15 announces itself before it sees `launch` (which a client that
+                    // defers it sends late).
+                    send!(json!({"type": "event", "event": "initialized"}));
+                }
+            }
             "launch" | "attach" => {
+                if script.gdb15_starts_at_launch {
+                    // GDB 15 starts the program here and answers `launch` right away.
+                    running = true;
+                    ok!(msg, Value::Null);
+                    continue;
+                }
+                if script.close_during_startup {
+                    return;
+                }
+                if let Some(message) = script.startup_error {
+                    send!(
+                        json!({"type": "response", "request_seq": msg["seq"], "command": msg["command"], "success": false, "message": message})
+                    );
+                    continue;
+                }
                 pending_launch = msg["seq"].as_i64();
                 if let Some(args) = &script.run_in_terminal {
                     send!(
@@ -97,17 +302,26 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                         json!({"type": "request", "command": "startDebugging", "arguments": {"request": "launch", "configuration": {"name": "child", "isChild": true}}})
                     );
                 }
-                send!(json!({"type": "event", "event": "initialized"}));
+                if script.pending_startup != Some(false) {
+                    tokio::time::sleep(script.initialized_delay).await;
+                    send!(json!({"type": "event", "event": "initialized"}));
+                }
             }
             "setBreakpoints" => {
-                let bps: Vec<Value> = msg["arguments"]["breakpoints"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, b)| json!({"id": i + 1, "verified": true, "line": b["line"]}))
-                    .collect();
-                ok!(msg, json!({"breakpoints": bps}));
+                held.push(msg);
+                if held.len() < script.hold_set_breakpoints {
+                    continue;
+                }
+                for msg in std::mem::take(&mut held) {
+                    let bps: Vec<Value> = msg["arguments"]["breakpoints"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, b)| json!({"id": i + 1, "verified": true, "line": b["line"]}))
+                        .collect();
+                    ok!(msg, json!({"breakpoints": bps}));
+                }
             }
             "setExceptionBreakpoints" => ok!(msg, json!({})),
             "setFunctionBreakpoints" | "setDataBreakpoints" => {
@@ -131,33 +345,79 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 ok!(msg, Value::Null);
                 send!(json!({"type": "event", "event": "stopped", "body": {"reason": "restart", "threadId": 1}}));
             }
+            "next" if script.refuse_next => {
+                send!(
+                    json!({"type": "response", "request_seq": msg["seq"], "command": "next", "success": false, "message": "refused"})
+                );
+                // Lets the client handle the refusal before the stop.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                send!(json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1}}));
+            }
             "next" => {
                 ok!(msg, Value::Null);
-                send!(json!({"type": "event", "event": "stopped", "body": {"reason": "step", "threadId": 1}}));
+                let reason = script.step_reason.unwrap_or("step");
+                send!(json!({"type": "event", "event": "stopped", "body": {"reason": reason, "threadId": 1}}));
             }
             "setVariable" => {
                 ok!(msg, json!({"value": format!("{}!", msg["arguments"]["value"].as_str().unwrap()), "type": "int"}))
             }
             "configurationDone" => {
+                if script.gdb15_starts_at_launch && running {
+                    // GDB 15 answers `configurationDone` with `notStopped` while the program
+                    // it started at `launch` is still running.
+                    send!(
+                        json!({"type": "response", "request_seq": msg["seq"], "command": "configurationDone", "success": false, "message": "notStopped"})
+                    );
+                    continue;
+                }
                 if !script.ignore_configuration_done {
                     ok!(msg, Value::Null);
                 }
+                if script.pending_startup == Some(true) {
+                    continue;
+                }
+                tokio::time::sleep(script.launch_delay).await;
                 if let Some(l) = pending_launch.take() {
                     send!(json!({"type": "response", "request_seq": l, "command": "launch", "success": true}));
+                }
+                if let Some(pid) = script.debuggee_pid {
+                    let event = if script.java_process_id {
+                        json!({"type": "event", "event": "processid", "body": {"processId": pid, "shellProcessId": pid}})
+                    } else {
+                        json!({"type": "event", "event": "process", "body": {"name": "prog", "systemProcessId": pid}})
+                    };
+                    send!(event);
                 }
                 send!(json!({"type": "event", "event": "output", "body": {"category": "stdout", "output": "hello\n"}}));
                 send!(
                     json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1, "allThreadsStopped": true}})
                 );
+                stopped = true;
+                if script.invalidated_after_stop {
+                    send!(
+                        json!({"type": "event", "event": "invalidated", "body": {"areas": ["variables"], "threadId": 1}})
+                    );
+                }
+                if script.continued_after_stop {
+                    send!(json!({"type": "event", "event": "continued", "body": {"threadId": 1}}));
+                }
                 send!(
                     json!({"type": "event", "event": "breakpoint", "body": {"reason": "changed", "breakpoint": {"id": 1, "verified": false, "message": "moved", "line": 9, "source": {"path": script.source_path}}}})
                 );
+            }
+            "threads" if script.stop_during_threads => {
+                send!(
+                    json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 2, "allThreadsStopped": true}})
+                );
+                // Lets the client handle the stop before it reads the reply.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, json!({"threads": [{"id": 1, "name": "\"main\"@1"}]}));
             }
             "threads" => ok!(msg, json!({"threads": [{"id": 1, "name": "MainThread"}]})),
             "stackTrace" => ok!(
                 msg,
                 json!({"stackFrames": [
-                    {"id": 10, "name": "main", "line": 5, "column": 3, "source": {"path": script.source_path.as_deref().unwrap_or("/p/a.py")}},
+                    {"id": 10, "name": script.frame_name.unwrap_or("main"), "line": 5, "column": 3, "source": {"path": script.source_path.as_deref().unwrap_or("/p/a.py")}},
                     {"id": 11, "name": "lib", "line": 1, "column": 1, "source": {"path": "/usr/lib/x.py", "presentationHint": "deemphasize"}},
                 ]})
             ),
@@ -172,11 +432,27 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 ]})
             ),
             "evaluate" => ok!(msg, json!({"result": "42", "type": "int", "variablesReference": 0})),
+            "completions" => ok!(
+                msg,
+                json!({"targets": [
+                    {"label": "getName()", "text": "getName", "type": "method", "detail": "String"},
+                    {"label": "name", "type": "field"},
+                    {"label": ""},
+                ]})
+            ),
+            "continue" if script.continue_reply.is_some() => ok!(msg, script.continue_reply.clone().unwrap()),
+            "continue" if script.stop_after_continue => {
+                ok!(msg, json!({"allThreadsContinued": true}));
+                send!(
+                    json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1, "allThreadsStopped": true}})
+                );
+            }
             "continue" => {
                 ok!(msg, json!({"allThreadsContinued": true}));
                 send!(json!({"type": "event", "event": "exited", "body": {"exitCode": 3}}));
                 send!(json!({"type": "event", "event": "terminated"}));
             }
+            "pause" if script.hang_up_on_pause => break,
             "stepIn" | "stepOut" | "pause" => ok!(msg, Value::Null),
             "redefineClasses" => {
                 send!(
@@ -190,6 +466,11 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
             "terminate" => {
                 ok!(msg, Value::Null);
                 send!(json!({"type": "event", "event": "terminated"}));
+                if script.output_after_terminate {
+                    send!(
+                        json!({"type": "event", "event": "output", "body": {"category": "stdout", "output": "late\n"}})
+                    );
+                }
             }
             "disconnect" => {
                 ok!(msg, Value::Null);
@@ -225,6 +506,8 @@ fn harness(script: Script) -> Harness {
         Arc::new(LanguageRegistry::from_configs(Vec::new())),
         Arc::new(FakeLauncher { log: log.clone(), script }),
     );
+    // A local attach must not send requests to the developer's own JVMs.
+    manager.set_jvm_finder(Arc::new(|_, _| None));
     Harness { manager, log, events, owner }
 }
 
@@ -288,6 +571,119 @@ fn config() -> LaunchConfig {
 
 fn bp(line: u32) -> Breakpoint {
     Breakpoint { line, condition: None, hit_condition: None, log_message: None, enabled: true }
+}
+
+#[tokio::test(start_paused = true)]
+async fn slow_launch_and_attach_follow_adapter_startup() {
+    for request in ["launch", "attach"] {
+        for before_initialized in [true, false] {
+            let delay = Duration::from_secs(125);
+            let h = harness(Script {
+                initialized_delay: if before_initialized { delay } else { Duration::ZERO },
+                launch_delay: if before_initialized { Duration::ZERO } else { delay },
+                ..Script::default()
+            });
+            let config = LaunchConfig { request: request.into(), ..config() };
+            let id = h.start(config).await.expect("a slow adapter can finish starting");
+            h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+            assert!(!h.commands().iter().any(|c| c == "terminate" || c == "disconnect"));
+            h.manager.stop(id).await.unwrap();
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn stop_cancels_pending_launch_and_attach() {
+    for request in ["launch", "attach"] {
+        for configured in [false, true] {
+            let h = harness(Script { pending_startup: Some(configured), ..Script::default() });
+            let config = LaunchConfig { request: request.into(), ..config() };
+            let start = h.start(config);
+            tokio::pin!(start);
+            let stop = async {
+                loop {
+                    let command = if configured { "configurationDone" } else { request };
+                    if h.commands().iter().any(|c| c == command) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                let id = h.manager.sessions(None)[0].id;
+                h.manager.stop(id).await.unwrap();
+            };
+            let (result, ()) = tokio::join!(&mut start, stop);
+            assert_eq!(result.unwrap_err().kind, ide_core::error::ErrorKind::Cancelled);
+            assert!(h.manager.sessions(None).is_empty());
+        }
+    }
+}
+
+/// GDB 15 must receive breakpoints and configurationDone before launch.
+#[tokio::test(start_paused = true)]
+async fn gdb_15_launch_waits_for_the_configuration() {
+    for deferred in [false, true] {
+        let h =
+            harness(Script { gdb15_starts_at_launch: true, launch_after_configuration: deferred, ..Script::default() });
+        let result = h.start(LaunchConfig { adapter: "gdb".into(), ..config() }).await;
+        if deferred {
+            let id = result.expect("GDB 15 defers its launch past the configuration");
+            let commands = h.commands();
+            let pos = |c: &str| commands.iter().position(|x| x == c).unwrap();
+            assert!(pos("launch") > pos("configurationDone"), "{commands:?}");
+            h.manager.stop(id).await.unwrap();
+        } else {
+            let error = result.unwrap_err();
+            assert!(error.message.contains("configurationDone failed: notStopped"), "{}", error.message);
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn gdb_attach_keeps_the_normal_configuration_order() {
+    let h = harness(Script { launch_after_configuration: true, ..Script::default() });
+    let id = h.start(LaunchConfig { adapter: "gdb".into(), request: "attach".into(), ..config() }).await.unwrap();
+    let commands = h.commands();
+    let pos = |c: &str| commands.iter().position(|x| x == c).unwrap();
+    assert!(pos("attach") < pos("configurationDone"), "{commands:?}");
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn gdb_run_environment_overrides_preserve_inheritance() {
+    for explicit in [None, Some(r#"{"env":{"ONLY":"explicit"}}"#)] {
+        let h = harness(Script::default());
+        let id = h
+            .start(LaunchConfig { adapter: "gdb".into(), extra_json: explicit.map(str::to_owned), ..config() })
+            .await
+            .unwrap();
+        let session = h.manager.session(id).unwrap();
+        {
+            let log = h.log.lock();
+            let args = &log.iter().find(|m| m["command"] == "launch").unwrap()["arguments"];
+            if explicit.is_some() {
+                assert_eq!(args["env"], json!({"ONLY": "explicit"}));
+                assert!(session.spec.env.is_empty());
+            } else {
+                assert!(args.get("env").is_none(), "GDB must inherit its process environment");
+                assert!(session.spec.env.contains(&("A".into(), "1".into())));
+            }
+        }
+        h.manager.stop(id).await.unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn startup_still_reports_adapter_failure_and_connection_closure() {
+    for request in ["launch", "attach"] {
+        let h = harness(Script { startup_error: Some("interpreter could not start"), ..Script::default() });
+        let error = h.start(LaunchConfig { request: request.into(), ..config() }).await.unwrap_err();
+        assert_eq!(error.message, format!("{request} failed: interpreter could not start"));
+        assert!(h.manager.sessions(None).is_empty());
+        let h = harness(Script { close_during_startup: true, ..Script::default() });
+        let error = h.start(LaunchConfig { request: request.into(), ..config() }).await.unwrap_err();
+        assert!(error.message.contains("debug adapter `debugpy` exited during startup"), "{error}");
+        assert!(h.manager.sessions(None).is_empty());
+    }
 }
 
 #[tokio::test]
@@ -368,6 +764,14 @@ async fn full_protocol_flow() {
     let eval = h.request("evaluate");
     assert_eq!(eval["arguments"]["context"], "watch");
     assert_eq!(eval["arguments"]["frameId"], 10);
+    let items = h.manager.completions(id, Some(10), "req.na".into(), 0, 6).await.unwrap();
+    assert_eq!(
+        items.iter().map(|c| (c.label.as_str(), c.text.as_deref(), c.kind.as_deref())).collect::<Vec<_>>(),
+        [("getName()", Some("getName"), Some("method")), ("name", None, Some("field"))]
+    );
+    let asked = h.request("completions");
+    assert_eq!((asked["arguments"]["line"].clone(), asked["arguments"]["column"].clone()), (json!(1), json!(7)));
+    assert_eq!(asked["arguments"]["frameId"], 10);
 
     // Live breakpoint updates reach the session.
     let states = h.manager.set_breakpoints(path.clone(), vec![bp(0)]).await.unwrap();
@@ -449,6 +853,56 @@ async fn run_in_terminal_spawns_debuggee() {
         h.log.lock().iter().find(|m| m["type"] == "response" && m["command"] == "runInTerminal").cloned().unwrap();
     assert_eq!(response["success"], true);
     assert!(response["body"]["processId"].as_u64().unwrap() > 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn run_in_terminal_program_reads_typed_input() {
+    let h = harness(Script {
+        // CodeLLDB's launcher asks to clear the terminal; the console keeps its output.
+        run_in_terminal: Some(vec![
+            "sh".into(),
+            "-c".into(),
+            "[ -t 0 ] && echo 'name?' && read name && echo \"hello $name\"".into(),
+            "--clear-screen".into(),
+        ]),
+        ..Script::default()
+    });
+    let session = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::ProgramInput)).await;
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output.contains("name?"))).await;
+    h.manager.send_input(session, "Bob\n").unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output.contains("hello Bob"))).await;
+    let output: String = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Debug { event: DebugEvent::Output { category, output }, .. } if category == "stdout" => {
+                Some(output.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(!output.contains('\r'), "{output:?}");
+    h.manager.stop(session).await.unwrap();
+    assert!(h.manager.send_input(session, "x\n").is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn blocked_program_input_does_not_hold_up_shutdown() {
+    let h = harness(Script {
+        run_in_terminal: Some(vec!["sh".into(), "-c".into(), "stty raw -echo; printf READY; exec sleep 60".into()]),
+        ..Script::default()
+    });
+    let session = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output.contains("READY"))).await;
+    let started = std::time::Instant::now();
+    h.manager.send_input(session, &"x".repeat(512 * 1024)).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_millis(250));
+    h.manager.stop(session).await.unwrap();
+    assert!(h.manager.send_input(session, "later").is_err());
 }
 
 #[test]
@@ -681,6 +1135,37 @@ async fn js_debug_launch_gets_port_and_workspace_folder() {
     assert_eq!(launch["type"], "pwa-node");
 }
 
+/// CodeLLDB treats console input as LLDB commands unless told otherwise: Evaluate Expression
+/// and the Debug Console send expressions, so its console evaluates them. A launch
+/// configuration that picks a console mode keeps it.
+#[tokio::test]
+async fn codelldb_console_evaluates_expressions() {
+    let launch_with = |extra: Value| async move {
+        let h = harness(Script::default());
+        let config = LaunchConfig {
+            name: "demo".into(),
+            adapter: "codelldb".into(),
+            request: "launch".into(),
+            program: Some("/p/target/debug/demo".into()),
+            args: vec![],
+            cwd: Some("/p".into()),
+            env: BTreeMap::new(),
+            extra_json: Some(extra.to_string()),
+        };
+        h.start(config).await.unwrap();
+        h.request("launch")["arguments"].clone()
+    };
+    let launch = launch_with(json!({})).await;
+    assert_eq!(launch["_adapterSettings"]["consoleMode"], "evaluate");
+    assert_eq!(launch["sourceLanguages"], json!(["rust"]));
+
+    let launch =
+        launch_with(json!({"_adapterSettings": {"consoleMode": "commands", "showDisassembly": "never"}})).await;
+    assert_eq!(launch["_adapterSettings"], json!({"consoleMode": "commands", "showDisassembly": "never"}));
+    let launch = launch_with(json!({"_adapterSettings": {"showDisassembly": "never"}})).await;
+    assert_eq!(launch["_adapterSettings"], json!({"consoleMode": "evaluate", "showDisassembly": "never"}));
+}
+
 /// An adapter that is already listening (java-debug inside jdtls): the client
 /// connects over TCP to the `debugServer` port instead of spawning anything.
 #[tokio::test]
@@ -714,6 +1199,39 @@ async fn connects_to_running_debug_server_over_tcp() {
     manager.stop(id).await.unwrap();
     assert!(manager.sessions(None).is_empty());
     assert!(events.lock().iter().any(|e| matches!(e, IdeEvent::Debug { event: DebugEvent::Started { .. }, .. })));
+}
+
+#[tokio::test]
+async fn delve_adapter_inherits_the_selected_go_environment() {
+    struct CaptureLauncher {
+        inner: FakeLauncher,
+        env: Arc<Mutex<Vec<(String, String)>>>,
+    }
+    impl AdapterLauncher for CaptureLauncher {
+        fn launch(&self, spec: AdapterSpec, reuse: Option<u16>) -> LaunchFuture {
+            *self.env.lock() = spec.env.clone();
+            self.inner.launch(spec, reuse)
+        }
+    }
+    let env = Arc::new(Mutex::new(Vec::new()));
+    let launcher =
+        CaptureLauncher { inner: FakeLauncher { log: Arc::default(), script: Script::default() }, env: env.clone() };
+    let manager = DebugManager::with_launcher(Arc::new(LanguageRegistry::from_configs(Vec::new())), Arc::new(launcher));
+    let (owner, _) = recording_owner("main");
+    let config = LaunchConfig {
+        name: "Go".into(),
+        adapter: "delve".into(),
+        request: "launch".into(),
+        program: Some("/project".into()),
+        args: vec![],
+        cwd: None,
+        env: BTreeMap::from([("PATH".into(), "/chosen/go/bin".into()), ("GOROOT".into(), "/chosen/go".into())]),
+        extra_json: Some(json!({"mode":"debug"}).to_string()),
+    };
+    let id = manager.start(config, owner).await.unwrap();
+    assert!(env.lock().contains(&("PATH".into(), "/chosen/go/bin".into())));
+    assert!(env.lock().contains(&("GOROOT".into(), "/chosen/go".into())));
+    manager.stop(id).await.unwrap();
 }
 
 /// Go Remote / Python remote: the adapter runs on another machine (`dlv --headless`,
@@ -839,6 +1357,7 @@ async fn force_stepping_suspends_breakpoints_until_the_next_stop() {
     let b = PathBuf::from("/p/b.py");
     h.manager.set_breakpoints(a.clone(), vec![bp(1)]).await.unwrap();
     h.manager.set_breakpoints(b.clone(), vec![bp(3)]).await.unwrap();
+    h.manager.set_breakpoints(PathBuf::from("/p/off.py"), vec![Breakpoint { enabled: false, ..bp(5) }]).await.unwrap();
     h.manager.set_function_breakpoints(vec![function_bp("run", true)]).await.unwrap();
     let id = h.start(config()).await.unwrap();
     h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
@@ -867,6 +1386,24 @@ async fn force_stepping_suspends_breakpoints_until_the_next_stop() {
     h.manager.run_to(id, 1, a.clone(), 9, true).await.unwrap();
     assert_eq!(sent_for("/p/a.py").last().unwrap(), &json!([{"line": 10}]));
     assert_eq!(sent_for("/p/b.py").last().unwrap(), &json!([]));
+    assert!(sent_for("/p/off.py").is_empty(), "nothing enabled there, nothing to suspend or restore");
+}
+
+#[tokio::test]
+async fn startup_sends_every_file_at_once_and_skips_files_with_nothing_enabled() {
+    let h = harness(Script { hold_set_breakpoints: 2, ..Script::default() });
+    h.manager.set_breakpoints(PathBuf::from("/p/a.py"), vec![bp(1)]).await.unwrap();
+    h.manager.set_breakpoints(PathBuf::from("/p/b.py"), vec![bp(3)]).await.unwrap();
+    let off = PathBuf::from("/p/off.py");
+    h.manager.set_breakpoints(off.clone(), vec![Breakpoint { enabled: false, ..bp(5) }]).await.unwrap();
+    // Waiting for each answer before the next request would stall until the request timeout.
+    tokio::time::timeout(Duration::from_secs(5), h.start(config())).await.expect("requests pipelined").unwrap();
+    let paths: Vec<Value> = requests(&h, "setBreakpoints").into_iter().map(|r| r["source"]["path"].clone()).collect();
+    assert_eq!(paths, [json!("/p/a.py"), json!("/p/b.py")]);
+    assert_eq!(
+        h.manager.breakpoint_states(&off),
+        [BreakpointState { line: 5, verified: false, message: Some("Disabled".into()) }]
+    );
 }
 
 #[tokio::test]
@@ -893,6 +1430,36 @@ async fn hot_swap_only_for_java_debug() {
     assert_eq!(failed.error_message.as_deref(), Some("boom"));
 }
 
+/// A loopback port nothing listens on until `listen` is called on the socket, and that no parallel
+/// test can bind meanwhile. A port picked by binding to 0 and closing the listener can be taken
+/// by another test before the code under test connects to it.
+fn reserved_port() -> (tokio::net::TcpSocket, u16) {
+    // Without SO_REUSEADDR, which every `TcpListener::bind` sets: no other socket may bind it.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.bind(([127, 0, 0, 1], 0).into()).unwrap();
+    let port = socket.local_addr().unwrap().port();
+    (socket, port)
+}
+
+/// An editor that starts listening on the reserved port after `delay` and serves one session.
+#[cfg(unix)]
+fn fake_editor(socket: tokio::net::TcpSocket, delay: Duration, log: Log) {
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        let listener = socket.listen(1).unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        // Closed once its session is accepted, so a later start finds no editor open.
+        drop(listener);
+        fake_adapter(stream, log, Script::default()).await;
+    });
+}
+
+#[tokio::test]
+async fn a_reserved_port_cannot_be_taken_by_a_parallel_test() {
+    let (_socket, port) = reserved_port();
+    assert!(tokio::net::TcpListener::bind(("127.0.0.1", port)).await.is_err(), "port {port} is still free to bind");
+}
+
 fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegistry> {
     let lang = ide_language::LanguageConfig {
         id: ide_core::LanguageId::new("gdscript"),
@@ -905,7 +1472,9 @@ fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegist
         indent: None,
         ui_mode: None,
         framework_ui_modes: Vec::new(),
+        framework_files: Vec::new(),
         formatter: None,
+        scratch_template: None,
         tree_sitter: None,
         language_servers: vec![],
         debugger: Some(ide_language::DebuggerConfig {
@@ -915,6 +1484,7 @@ fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegist
             transport: "tcp".into(),
             connect: Some(format!("127.0.0.1:{port}")),
             install_hint: Some("Open the project in the Godot editor".into()),
+            pinned: None,
         }),
     };
     Arc::new(LanguageRegistry::from_configs(vec![lang]))
@@ -958,7 +1528,7 @@ async fn godot_connects_to_the_editor_adapter() {
 
 #[tokio::test]
 async fn godot_without_editor_or_executable_says_what_to_do() {
-    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let (_no_editor, port) = reserved_port();
     let (owner, _events) = recording_owner("main");
     let manager = DebugManager::new(godot_registry(port, "openidea-no-such-godot", &[]));
     let err = manager.start(godot_launch(&std::env::temp_dir()), owner).await.unwrap_err();
@@ -971,15 +1541,9 @@ async fn godot_without_editor_or_executable_says_what_to_do() {
 #[cfg(unix)]
 #[tokio::test]
 async fn godot_starts_a_headless_editor_when_none_is_open() {
-    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let (editor, port) = reserved_port();
     let log: Log = Arc::default();
-    let server_log = log.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
-        let (stream, _) = listener.accept().await.unwrap();
-        fake_adapter(stream, server_log, Script::default()).await;
-    });
+    fake_editor(editor, Duration::from_millis(300), log.clone());
     let (owner, _events) = recording_owner("main");
     // `sleep` stands in for `godot --headless --editor --path ${root} …`.
     let manager = DebugManager::new(godot_registry(port, "sleep", &["30"]));
@@ -1091,6 +1655,23 @@ async fn kotlin_official_release_ten_no_delay_runs() {
     }
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn netcoredbg_windows_source_paths_round_trip() {
+    let client = "D:/work/LoginController.cs";
+    let native = r"D:\work\LoginController.cs";
+    let h = harness(Script { source_path: Some(native.into()), ..Script::default() });
+    let path = PathBuf::from(client);
+    h.manager.set_breakpoints(path.clone(), vec![bp(25)]).await.unwrap();
+    let mut cfg = config();
+    cfg.adapter = "netcoredbg".into();
+    let id = h.start(cfg).await.unwrap();
+    assert_eq!(h.request("setBreakpoints")["arguments"]["source"]["path"], native);
+    let frames = h.manager.stack_trace(id, 1).await.unwrap();
+    assert_eq!(frames[0].path.as_deref(), Some(path.as_path()));
+    h.manager.stop(id).await.unwrap();
+}
+
 #[tokio::test]
 async fn java_windows_source_paths_for_launch_and_attach() {
     for request in ["launch", "attach"] {
@@ -1146,4 +1727,1146 @@ async fn java_stack_frames_without_breakpoints_normalize_windows_paths() {
         assert_eq!(frames[0].path.as_deref(), Some(PathBuf::from(expected).as_path()));
         h.manager.stop(id).await.unwrap();
     }
+}
+
+/// A built-in language definition (GDScript) shipped by a plugin
+/// instead: its debugger starts the program approved for the plugin's
+/// `process:godot` grant, and refuses once that file changed.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_plugin_language_runs_its_debug_adapter_from_the_approved_program() {
+    use ide_language::ProgramPin;
+    use ide_language::plugin_point::{PluginLanguages, parse_definition};
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!("openidea-plugin-dap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // Stands in for `godot --headless --editor …`.
+    let program = dir.join("godot");
+    std::fs::write(&program, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let (editor, port) = reserved_port();
+    let mut gdscript = parse_definition(include_str!("../../../languages/gdscript.toml")).unwrap();
+    let debugger = gdscript.debugger.as_mut().unwrap();
+    debugger.args.clear();
+    debugger.connect = Some(format!("127.0.0.1:{port}"));
+
+    // No built-in GDScript: it comes from the plugin.
+    let registry = Arc::new(LanguageRegistry::from_configs(Vec::new()));
+    let store = PluginLanguages::new();
+    registry.attach_plugins(store.clone());
+    let pin = ProgramPin::approve(&program).unwrap();
+    store.set_process_policy(Arc::new(move |plugin, cap| {
+        (plugin == "acme.godot" && cap.to_string() == "process:godot").then(|| pin.clone())
+    }));
+    let _language = store.add("acme.godot".into(), gdscript);
+
+    let log: Log = Arc::default();
+    fake_editor(editor, Duration::from_millis(300), log.clone());
+    let (owner, _events) = recording_owner("main");
+    let manager = DebugManager::new(registry.clone());
+    let id = manager.start(godot_launch(&dir), owner).await.unwrap();
+    assert!(log.lock().iter().any(|m| m["command"] == "launch"));
+    manager.stop(id).await.unwrap();
+
+    // Replaced after approval: refused before anything starts.
+    std::fs::write(&program, "#!/bin/sh\nexec sleep 31\n").unwrap();
+    let (owner, _events) = recording_owner("main");
+    let err = manager.start(godot_launch(&dir), owner).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::PermissionDenied, "{}", err.message);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn flutter_projects_are_found_from_the_program_or_the_working_directory() {
+    let root = std::env::temp_dir().join(format!("openidea-flutter-{}", std::process::id()));
+    let app = root.join("app");
+    let tool = root.join("tool");
+    std::fs::create_dir_all(app.join("lib")).unwrap();
+    std::fs::create_dir_all(tool.join("bin")).unwrap();
+    std::fs::write(app.join("pubspec.yaml"), "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n").unwrap();
+    std::fs::write(tool.join("pubspec.yaml"), "name: tool\ndependencies:\n  args: ^2.0.0\n").unwrap();
+    assert!(is_flutter_project(&app, None));
+    assert!(is_flutter_project(&root, Some(&app.join("lib/main.dart"))));
+    assert!(!is_flutter_project(&tool, Some(&tool.join("bin/main.dart"))));
+    assert!(!is_flutter_project(&root, None));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn rdbg_runs_the_debuggee_after_its_options_with_the_configuration_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let rdbg = adapter::find_config(&LanguageRegistry::from_configs(Vec::new()), "rdbg").unwrap();
+    let config = LaunchConfig {
+        adapter: "rdbg".into(),
+        program: Some("ruby".into()),
+        args: ["-Ilib", "app with spaces.rb", "$(touch sentinel); literal"].map(String::from).to_vec(),
+        env: BTreeMap::from([("RAILS_ENV".into(), "test".into())]),
+        extra_json: None,
+        ..config()
+    };
+    let mut spec = adapter::resolve(&rdbg, dir.path().into());
+    rdbg_command_line(&mut spec, &config, dir.path()).unwrap();
+    assert_eq!(spec.command, "rdbg");
+    assert_eq!(
+        spec.args,
+        ["-O", "--port", "${port}", "-c", "--", "ruby", "-Ilib", "app with spaces.rb", "$(touch sentinel); literal"]
+    );
+    assert!(spec.env.contains(&("RAILS_ENV".into(), "test".into())));
+}
+
+#[test]
+fn rdbg_runs_from_a_bundle_that_has_debug_and_refuses_one_without() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("app");
+    std::fs::create_dir_all(app.join("lib")).unwrap();
+    std::fs::write(app.join("Gemfile"), "source \"https://rubygems.org\"\n").unwrap();
+    // A dependency of another gem is not a gem of the bundle.
+    std::fs::write(app.join("Gemfile.lock"), "GEM\n  specs:\n    irb (1.14.0)\n      debug (>= 1)\n").unwrap();
+    let rdbg = adapter::find_config(&LanguageRegistry::from_configs(Vec::new()), "rdbg").unwrap();
+    let config = LaunchConfig {
+        adapter: "rdbg".into(),
+        program: Some("bundle".into()),
+        args: ["exec", "rspec"].map(String::from).to_vec(),
+        extra_json: None,
+        ..config()
+    };
+    let mut spec = adapter::resolve(&rdbg, app.clone());
+    let err = rdbg_command_line(&mut spec, &config, &app).unwrap_err();
+    assert!(err.message.contains("gem \"debug\""), "{}", err.message);
+
+    std::fs::write(app.join("Gemfile.lock"), "GEM\n  specs:\n    debug (1.9.2)\n      irb (~> 1.10)\n").unwrap();
+    // From a subdirectory too: Bundler finds the Gemfile above it.
+    for cwd in [app.clone(), app.join("lib")] {
+        let mut spec = adapter::resolve(&rdbg, cwd.clone());
+        rdbg_command_line(&mut spec, &config, &cwd).unwrap();
+        assert_eq!(spec.command, "bundle");
+        assert_eq!(spec.args, ["exec", "rdbg", "-O", "--port", "${port}", "-c", "--", "bundle", "exec", "rspec"]);
+    }
+}
+
+#[test]
+fn rdbg_commands_without_arguments_are_ruby_entry_points_not_shell_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let rdbg = adapter::find_config(&LanguageRegistry::from_configs(Vec::new()), "rdbg").unwrap();
+    for program in ["rspec", "/app with spaces/bin/rake", "$(touch sentinel); literal"] {
+        let config =
+            LaunchConfig { adapter: "rdbg".into(), program: Some(program.into()), args: Vec::new(), ..config() };
+        let mut spec = adapter::resolve(&rdbg, dir.path().into());
+        rdbg_command_line(&mut spec, &config, dir.path()).unwrap();
+        assert_eq!(&spec.args[4..], ["--", "ruby", "-S", "--", program]);
+    }
+}
+
+#[test]
+fn rdbg_remote_attach_does_not_check_the_local_bundle_or_append_a_program() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Gemfile"), "").unwrap();
+    let rdbg = adapter::find_config(&LanguageRegistry::from_configs(Vec::new()), "rdbg").unwrap();
+    let config = LaunchConfig { adapter: "rdbg".into(), request: "attach".into(), ..config() };
+    let mut spec = adapter::resolve(&rdbg, dir.path().into());
+    let args = spec.args.clone();
+    rdbg_command_line(&mut spec, &config, dir.path()).unwrap();
+    assert_eq!(spec.command, "rdbg");
+    assert_eq!(spec.args, args);
+}
+
+#[test]
+fn bundler_prefers_gems_rb_when_both_gemfiles_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["Gemfile", "gems.rb"] {
+        std::fs::write(dir.path().join(name), "").unwrap();
+    }
+    assert_eq!(bundler_gemfile(dir.path(), &BTreeMap::new()), Some(dir.path().join("gems.rb")));
+}
+
+#[test]
+fn bundler_gemfile_and_lockfile_follow_bundle_gemfile_and_gems_rb() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("gems")).unwrap();
+    let none = BTreeMap::new();
+    assert_eq!(bundler_gemfile(root, &none), None);
+    std::fs::write(root.join("gems/gems.rb"), "").unwrap();
+    std::fs::write(root.join("gems/gems.locked"), "GEM\n  specs:\n    debug (1.9.2)\n").unwrap();
+    let gems_rb = bundler_gemfile(&root.join("gems"), &none).unwrap();
+    assert_eq!(gems_rb, root.join("gems/gems.rb"));
+    assert!(bundles_debug(&gems_rb));
+    let env = BTreeMap::from([("BUNDLE_GEMFILE".into(), "gems/gems.rb".into())]);
+    assert_eq!(bundler_gemfile(root, &env), Some(gems_rb));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_waits_for_the_launched_program_to_exit() {
+    // The adapter answers `disconnect` at once; the program it started is still alive and
+    // holds its port for a while. Stop must not report the session as over before it exits.
+    // Reaped by a waiting thread: a zombie still "exists" for `kill(pid, 0)`, unlike the
+    // program an adapter starts and reaps.
+    // Ignores SIGTERM: Stop must wait for the program, not assume the signal ended it.
+    let mut child = std::process::Command::new("python3")
+        .args(["-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(1)"])
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    let h = harness(Script { debuggee_pid: Some(pid), ..Default::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Initialized)).await;
+    for _ in 0..100 {
+        if h.manager.session(id).map(|s| s.debuggee_pid.load(Ordering::Acquire)).ok() == Some(i64::from(pid)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await; // let the program install its trap
+    let started = Instant::now();
+    h.manager.stop(id).await.unwrap();
+    let elapsed = started.elapsed();
+    assert!(elapsed >= Duration::from_millis(800), "stop returned after {elapsed:?}, before the program exited");
+    assert!(elapsed < Duration::from_secs(5), "stop waited {elapsed:?} for a program that ended after a second");
+    h.wait_event(|e| matches!(e, DebugEvent::Terminated)).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_second_stop_kills_the_program_instead_of_waiting() {
+    let mut child = std::process::Command::new("python3")
+        .args(["-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"])
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let exited = Arc::new(AtomicBool::new(false));
+    {
+        let exited = exited.clone();
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            exited.store(true, Ordering::Release);
+        });
+    }
+    let h = harness(Script { debuggee_pid: Some(pid), ..Default::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Initialized)).await;
+    for _ in 0..100 {
+        if h.manager.session(id).map(|s| s.debuggee_pid.load(Ordering::Acquire)).ok() == Some(i64::from(pid)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let first = tokio::spawn({
+        let manager = h.manager.clone();
+        async move { manager.stop(id).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!exited.load(Ordering::Acquire), "the program is still alive while the first Stop waits");
+    let started = Instant::now();
+    h.manager.stop(id).await.unwrap();
+    let first_result = tokio::time::timeout(Duration::from_secs(5), first).await.expect("the first Stop returns");
+    first_result.unwrap().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2), "a second Stop does not wait out the program");
+    for _ in 0..100 {
+        if exited.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(exited.load(Ordering::Acquire), "the second Stop killed the program");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_waits_for_the_program_when_the_adapter_uses_javas_processid_event() {
+    // Ignores SIGTERM: Stop must wait for the program, not assume the signal ended it.
+    let mut child = std::process::Command::new("python3")
+        .args(["-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(1)"])
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    let h = harness(Script { debuggee_pid: Some(pid), java_process_id: true, ..Default::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Initialized)).await;
+    for _ in 0..100 {
+        if h.manager.session(id).map(|s| s.debuggee_pid.load(Ordering::Acquire)).ok() == Some(i64::from(pid)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let started = Instant::now();
+    h.manager.stop(id).await.unwrap();
+    assert!(
+        started.elapsed() >= Duration::from_millis(800),
+        "stop returned after {:?}, before the program exited",
+        started.elapsed()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn output_keeps_arriving_while_a_stopped_program_is_exiting() {
+    // Ignores SIGTERM: Stop must wait for the program, not assume the signal ended it.
+    let mut child = std::process::Command::new("python3")
+        .args(["-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(1)"])
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    let h = harness(Script { debuggee_pid: Some(pid), output_after_terminate: true, ..Default::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Initialized)).await;
+    for _ in 0..100 {
+        if h.manager.session(id).map(|s| s.debuggee_pid.load(Ordering::Acquire)).ok() == Some(i64::from(pid)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let started = Instant::now();
+    let stop = tokio::spawn({
+        let manager = h.manager.clone();
+        async move { manager.stop(id).await }
+    });
+    // The last line must reach the console while Stop still waits for the program.
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output == "late\n")).await;
+    assert!(started.elapsed() < Duration::from_millis(800), "output arrived only after the program was gone");
+    stop.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn closing_a_project_stops_the_debug_sessions_it_started() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Initialized)).await;
+    // The session's cwd is /p, whatever key it was started under.
+    h.manager.stop_under(Path::new("/p")).await;
+    h.wait_event(|e| matches!(e, DebugEvent::Terminated)).await;
+    assert!(h.manager.sessions(None).is_empty(), "session {id:?} is gone");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_kills_the_program_started_by_the_reported_launcher() {
+    use std::io::BufRead;
+    // java-debug reports the launcher shell; the JVM is its child. Stopping only the reported
+    // pid orphans the program, which keeps running (and keeps its ports).
+    let mut launcher = std::process::Command::new("sh")
+        .args(["-c", "python3 -c 'import time; time.sleep(30)' & echo $!; wait"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let launcher_pid = launcher.id();
+    let mut line = String::new();
+    std::io::BufReader::new(launcher.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    let program: i32 = line.trim().parse().expect("child pid");
+    // Reap the launcher: a zombie still "exists" for `kill(pid, 0)`, unlike the shell jdtls reaps.
+    std::thread::spawn(move || {
+        let _ = launcher.wait();
+    });
+
+    let h = harness(Script {
+        debuggee_pid: Some(launcher_pid),
+        supports_terminate: false, // java-debug does not advertise it
+        ..Default::default()
+    });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Initialized)).await;
+    for _ in 0..100 {
+        if h.manager.session(id).map(|s| s.debuggee_pid.load(Ordering::Acquire)).ok() == Some(i64::from(launcher_pid)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    h.manager.stop(id).await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while unsafe { libc::kill(program, 0) } == 0 {
+        assert!(Instant::now() < deadline, "the program the launcher started survived stop");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[test]
+fn delve_leftovers_are_removed_without_touching_other_files() {
+    let dir = std::env::temp_dir().join(format!("openidea-delve-bin-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in ["__debug_bin", "__debug_bin833767175", "__debug_bin.exe", "__debug_bin.exe3323301925"] {
+        std::fs::write(dir.join(name), b"bin").unwrap();
+    }
+    // Lookalikes that are not Delve's own binaries stay: sources, a future
+    // in-progress build, and a directory that happens to share the name.
+    for name in ["__debug_bin.go", "__debug_bin.go.exe", "__debug_bin12.go", "main.go"] {
+        std::fs::write(dir.join(name), b"keep").unwrap();
+    }
+    std::fs::create_dir(dir.join("__debug_bin.dir")).unwrap();
+    remove_delve_binaries(&dir);
+    for name in ["__debug_bin", "__debug_bin833767175", "__debug_bin.exe", "__debug_bin.exe3323301925"] {
+        assert!(!dir.join(name).exists(), "{name} should be gone");
+    }
+    for name in ["__debug_bin.go", "__debug_bin.go.exe", "__debug_bin12.go", "main.go", "__debug_bin.dir"] {
+        assert!(dir.join(name).exists(), "{name} should stay");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+fn is_suspended(h: &Harness, id: DebugSessionId) -> bool {
+    h.manager.session(id).unwrap().suspended.get()
+}
+
+#[tokio::test]
+async fn stopped_event_marks_session_suspended() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    assert!(is_suspended(&h, id));
+}
+
+#[tokio::test]
+async fn resume_clears_suspended_without_continued_event() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    // The fake adapter ends the session after `continue`, so keep the session alive here.
+    let session = h.manager.session(id).unwrap();
+    assert!(session.suspended.get());
+    h.manager.resume(id, 1).await.unwrap();
+    assert!(!session.suspended.get());
+}
+
+/// After the fake adapter's stop of every thread ends, threads 7 then 8 stop alone, as a
+/// breakpoint does on fwcd and java-debug (`SUSPEND_EVENT_THREAD`).
+async fn threads_stopped(script: Script) -> (Harness, Arc<Session>, DebugSessionId) {
+    let h = harness(script);
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let session = h.manager.session(id).unwrap();
+    session.suspended.continued(Some(1), true);
+    session.suspended.stopped(Some(7), false);
+    session.suspended.stopped(Some(8), false);
+    (h, session, id)
+}
+
+#[tokio::test]
+async fn resume_of_one_thread_keeps_the_others_suspended() {
+    let only_it = Script { continue_reply: Some(json!({"allThreadsContinued": false})), ..Script::default() };
+    let (h, session, id) = threads_stopped(only_it).await;
+    h.manager.resume(id, 7).await.unwrap();
+    assert!(session.suspended.get());
+    h.manager.resume(id, 8).await.unwrap();
+    assert!(!session.suspended.get());
+}
+
+#[tokio::test]
+async fn resume_reply_without_the_flag_continues_every_thread() {
+    let (h, session, id) = threads_stopped(Script { continue_reply: Some(json!({})), ..Script::default() }).await;
+    h.manager.resume(id, 7).await.unwrap();
+    assert!(!session.suspended.get());
+}
+
+#[tokio::test]
+async fn step_of_one_thread_keeps_the_others_suspended() {
+    let (h, session, id) = threads_stopped(Script::default()).await;
+    let ticket = session.suspended.ticket();
+    h.manager.step(id, 8, StepKind::Into).await.unwrap();
+    assert!(session.suspended.get());
+    // Thread 8 was the latest stop: what was read on it is stale.
+    assert_eq!(session.suspended.ticket(), ticket + 1);
+    h.manager.step_in_target(id, 7, 1).await.unwrap();
+    assert!(!session.suspended.get());
+}
+
+#[tokio::test]
+async fn continued_event_clears_suspended() {
+    let h = harness(Script { continued_after_stop: true, ..Script::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Continued { .. })).await;
+    assert!(!is_suspended(&h, id));
+}
+
+fn java_config(request: &str) -> LaunchConfig {
+    LaunchConfig { adapter: "java-debug".into(), request: request.into(), extra_json: None, ..config() }
+}
+
+fn remote_attach(adapter: &str, project: &std::path::Path) -> LaunchConfig {
+    LaunchConfig {
+        adapter: adapter.into(),
+        cwd: Some(project.to_owned().into()),
+        extra_json: Some(json!({"projectRoot": project, "hostName": "10.0.0.5", "port": 5005}).to_string()),
+        ..java_config("attach")
+    }
+}
+
+#[tokio::test]
+async fn attach_session_reports_capability() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    for adapter in ["java-debug", kotlin::ADAPTER] {
+        let id = h.start(remote_attach(adapter, project.path())).await.unwrap();
+        let caps = h.manager.capabilities(id).unwrap();
+        assert!(caps.jvm_memory, "{adapter}");
+        assert_eq!(caps.jvm_heap, caps.jvm_memory, "{adapter}");
+    }
+
+    let id = h.start(config()).await.unwrap();
+    let caps = h.manager.capabilities(id).unwrap();
+    assert!(!caps.jvm_memory);
+    assert_eq!(caps.jvm_heap, caps.jvm_memory);
+    assert_eq!(
+        h.manager.jvm_memory_classes(id).await.unwrap(),
+        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::NoJvmProcess, can_count_when_paused: false }
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ended_attach_session_without_pid_reports_program_exited() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(remote_attach("java-debug", project.path())).await.unwrap();
+    h.manager.session(id).unwrap().terminated.store(true, Ordering::Release);
+    assert_eq!(
+        h.manager.jvm_memory_classes(id).await.unwrap(),
+        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::ProgramExited, can_count_when_paused: false }
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn listen_mode_attach_is_not_scanned() {
+    let h = harness(Script::default());
+    let scans = Arc::new(Mutex::new(Vec::new()));
+    let counted = scans.clone();
+    h.manager.set_jvm_finder(Arc::new(move |port, _| {
+        counted.lock().push(port);
+        None
+    }));
+    let (_jvm, relay) = jdwp::tests::connected_jvm().await;
+    let mut cfg = java_config("attach");
+    cfg.extra_json = Some(json!({"hostName": "127.0.0.1", "port": relay}).to_string());
+    let id = h.start(cfg).await.unwrap();
+    assert_eq!(
+        h.manager.jvm_memory_classes(id).await.unwrap(),
+        JvmMemoryResult::Unavailable {
+            reason: JvmMemoryUnavailable::ListenModeNotSupported,
+            can_count_when_paused: false
+        }
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(scans.lock().is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn remote_host_is_not_scanned() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(remote_attach("java-debug", project.path())).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    assert_eq!(session.jdwp_port.get(), None);
+    assert_eq!(
+        h.manager.jvm_memory_classes(id).await.unwrap(),
+        JvmMemoryResult::Unavailable {
+            reason: JvmMemoryUnavailable::AttachedJvmNotFound,
+            can_count_when_paused: false
+        }
+    );
+    assert_eq!(session.jvm_pid.load(Ordering::Acquire), 0);
+}
+
+/// The Memory view asks as soon as the session appears, while its JVM is still being looked up:
+/// answering then would claim there is no JVM to ask.
+#[cfg(unix)]
+#[tokio::test]
+async fn memory_asked_while_an_attach_connects_waits_for_its_jvm() {
+    let h = harness(Script { delay_initialize: Some(Duration::from_millis(300)), ..Script::default() });
+    let project = tempfile::tempdir().unwrap();
+    let (manager, owner) = (h.manager.clone(), h.owner.clone());
+    let config = remote_attach("java-debug", project.path());
+    let start = tokio::spawn(async move { manager.start(config, owner).await });
+    h.wait_event(|e| matches!(e, DebugEvent::Started { .. })).await;
+    let id = DebugSessionId(*event_sessions(&h.events).first().unwrap());
+    let session = h.manager.session(id).unwrap();
+    assert!(session.attach_target.get().is_none(), "asked too late to cover the connecting session");
+
+    h.manager.jvm_memory_classes(id).await.unwrap();
+    assert!(session.attach_target.get().is_some(), "answered before the attach was looked at");
+    start.await.unwrap().unwrap();
+}
+
+/// A JVM clears its JDWP listener address once a debugger connects, so only a scan made before
+/// the `attach` request can tell it by its port.
+#[cfg(unix)]
+#[tokio::test]
+async fn local_attach_finds_its_jvm_before_the_debugger_connects() {
+    let h = harness(Script::default());
+    let log = h.log.clone();
+    h.manager.set_jvm_finder(Arc::new(move |port, _| {
+        std::thread::sleep(Duration::from_millis(50));
+        let attached = log.lock().iter().any(|m| m["command"] == "attach");
+        (port == 5005 && !attached).then_some(4242)
+    }));
+    let mut cfg = java_config("attach");
+    cfg.extra_json = Some(json!({"hostName": "127.0.0.1", "port": 5005}).to_string());
+    let id = h.start(cfg).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    assert_eq!(session.jvm_pid.load(Ordering::Acquire), 4242);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_attach_remembers_its_jdwp_port() {
+    let h = harness(Script::default());
+    let ports = Arc::new(Mutex::new(Vec::new()));
+    let asked = ports.clone();
+    h.manager.set_jvm_finder(Arc::new(move |port, _| {
+        asked.lock().push(port);
+        Some(4242)
+    }));
+    let mut cfg = java_config("attach");
+    cfg.extra_json = Some(json!({"hostName": "localhost", "port": "5005"}).to_string());
+    let id = h.start(cfg).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    assert_eq!(session.jdwp_port.get(), Some(&5005));
+    assert_eq!(h.request("attach")["arguments"]["port"], "5005");
+    for _ in 0..200 {
+        if session.jvm_pid.load(Ordering::Acquire) != 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(session.jvm_pid.load(Ordering::Acquire), 4242);
+    assert_eq!(ports.lock().first(), Some(&5005));
+}
+
+/// A fake `find_jvm_by_jdwp_port` for the JVM 4242, recording whether each scan ran while
+/// suspended. A JVM not `safe_while_suspended` (JDK below 17) is skipped by a suspended scan.
+#[cfg(unix)]
+fn counting_find(
+    safe_while_suspended: bool,
+) -> (Arc<Mutex<Vec<bool>>>, impl Fn(bool) -> Option<u32> + Clone + Send + 'static) {
+    let scans = Arc::new(Mutex::new(Vec::new()));
+    let counted = scans.clone();
+    (scans, move |suspended| {
+        counted.lock().push(suspended);
+        (!suspended || safe_while_suspended).then_some(4242)
+    })
+}
+
+#[cfg(unix)]
+async fn suspended_remote_attach(h: &Harness) -> Arc<Session> {
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(remote_attach("java-debug", project.path())).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let session = h.manager.session(id).unwrap();
+    assert!(session.suspended.get());
+    session
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn background_scan_skips_an_old_jdk_while_suspended() {
+    let h = harness(Script::default());
+    let session = suspended_remote_attach(&h).await;
+    let (scans, find) = counting_find(false);
+    let task =
+        jvm_memory::watch_for_attached_jvm(&session, 5005, find, Duration::from_millis(5), Duration::from_secs(5));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!scans.lock().is_empty() && scans.lock().iter().all(|&suspended| suspended));
+    assert_eq!(session.jvm_pid.load(Ordering::Acquire), 0);
+
+    session.suspended.continued(None, true);
+    tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+    assert_eq!(scans.lock().last(), Some(&false));
+    assert_eq!(session.jvm_pid.load(Ordering::Acquire), 4242);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn background_scan_finds_a_jdk_17_or_later_while_suspended() {
+    let h = harness(Script::default());
+    let session = suspended_remote_attach(&h).await;
+    let (scans, find) = counting_find(true);
+    let task =
+        jvm_memory::watch_for_attached_jvm(&session, 5005, find, Duration::from_millis(5), Duration::from_secs(5));
+    tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+    assert_eq!(*scans.lock(), [true]);
+    assert_eq!(session.jvm_pid.load(Ordering::Acquire), 4242);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn background_scan_keeps_a_known_pid_and_stops_with_the_session() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(remote_attach("java-debug", project.path())).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let session = h.manager.session(id).unwrap();
+    session.suspended.continued(None, true);
+    session.jvm_pid.store(7, Ordering::Release);
+    let watch = |find| {
+        jvm_memory::watch_for_attached_jvm(&session, 5005, find, Duration::from_millis(5), Duration::from_secs(5))
+    };
+    let (scans, find) = counting_find(true);
+    tokio::time::timeout(Duration::from_secs(2), watch(find)).await.unwrap().unwrap();
+    assert!(scans.lock().is_empty(), "a known pid needs no scan");
+    assert_eq!(session.jvm_pid.load(Ordering::Acquire), 7);
+
+    // A refresh stores the pid while this scan is still running.
+    session.jvm_pid.store(0, Ordering::Release);
+    let racing = session.clone();
+    let find = move |_| {
+        racing.jvm_pid.store(7, Ordering::Release);
+        Some(4242)
+    };
+    let task =
+        jvm_memory::watch_for_attached_jvm(&session, 5005, find, Duration::from_millis(5), Duration::from_secs(5));
+    tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+    assert_eq!(session.jvm_pid.load(Ordering::Acquire), 7, "a pid stored first is kept");
+
+    h.manager.stop(id).await.unwrap();
+    let (scans, find) = counting_find(true);
+    tokio::time::timeout(Duration::from_secs(2), watch(find)).await.unwrap().unwrap();
+    assert!(scans.lock().is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unknown_pid_reports_no_jvm_process() {
+    let h = harness(Script::default());
+    let id = h.start(java_config("launch")).await.unwrap();
+    assert!(h.manager.capabilities(id).unwrap().jvm_memory);
+    assert_eq!(
+        h.manager.jvm_memory_classes(id).await.unwrap(),
+        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::NoJvmProcess, can_count_when_paused: false }
+    );
+}
+
+fn kotlin_attach(project: &std::path::Path, host: &str, port: u16) -> LaunchConfig {
+    LaunchConfig {
+        adapter: kotlin::ADAPTER.into(),
+        cwd: Some(project.to_owned().into()),
+        extra_json: Some(json!({"projectRoot": project, "hostName": host, "port": port}).to_string()),
+        ..java_config("attach")
+    }
+}
+
+#[test]
+fn link_options_hold_only_for_fwcd() {
+    assert!(kotlin::link_options(kotlin::ADAPTER).hold_resumes);
+    assert!(!kotlin::link_options(kotlin_lsp::ADAPTER).hold_resumes);
+    assert!(!kotlin::link_options("x").hold_resumes);
+}
+
+#[tokio::test]
+async fn kotlin_session_installs_link_inspector() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_attach(project.path(), "127.0.0.1", 5005)).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    assert!(session.jdwp_link.lock().is_some());
+    assert!(session.jvm_inspector.lock().is_some());
+}
+
+#[tokio::test]
+async fn attach_target_recorded_before_kotlin_rewrite() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_attach(project.path(), "10.0.0.5", 5005)).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    assert_eq!(session.attach_target.get(), Some(&("10.0.0.5".to_owned(), 5005)));
+    let sent = &h.request("attach")["arguments"];
+    assert_eq!(sent["hostName"], "127.0.0.1");
+    let link_port = sent["port"].as_u64().unwrap();
+    assert!(link_port != 0 && link_port != 5005);
+}
+
+#[tokio::test]
+async fn java_attach_records_target() {
+    let h = harness(Script::default());
+    let mut cfg = java_config("attach");
+    cfg.extra_json = Some(json!({"hostName": "localhost", "port": 5005}).to_string());
+    let id = h.start(cfg).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    assert_eq!(session.attach_target.get(), Some(&("localhost".to_owned(), 5005)));
+    assert!(session.jdwp_link.lock().is_none());
+    assert!(session.jvm_inspector.lock().is_none());
+}
+
+#[tokio::test]
+async fn attach_target_recorded_for_any_adapter() {
+    let h = harness(Script::default());
+    let mut cfg = java_config("attach");
+    // "x" is not a registered adapter; debugpy has no JVM link or memory support.
+    cfg.adapter = "debugpy".into();
+    cfg.extra_json = Some(json!({"hostName": "h", "port": 7}).to_string());
+    let id = h.start(cfg).await.unwrap();
+    assert_eq!(h.manager.session(id).unwrap().attach_target.get(), Some(&("h".to_owned(), 7)));
+}
+
+#[tokio::test]
+async fn launch_sessions_have_no_attach_target() {
+    let h = harness(Script::default());
+    let id = h.start(java_config("launch")).await.unwrap();
+    assert_eq!(h.manager.session(id).unwrap().attach_target.get(), None);
+}
+
+#[tokio::test]
+async fn closing_the_session_drops_the_link() {
+    let h = harness(Script { hang_up_on_pause: true, ..Script::default() });
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_attach(project.path(), "127.0.0.1", 5005)).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    assert!(session.jdwp_link.lock().is_some() && session.jvm_inspector.lock().is_some());
+    let _ = session.conn.request_timeout("pause", json!({"threadId": 1}), Duration::from_secs(2)).await;
+    for _ in 0..200 {
+        if h.manager.session(id).is_err() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(session.jdwp_link.lock().is_none());
+    assert!(session.jvm_inspector.lock().is_none());
+}
+
+/// kotlin-lsp's debugger, reached through the language server's `debugServer` port (the fake ignores it).
+fn kotlin_lsp_attach(project: &std::path::Path) -> LaunchConfig {
+    LaunchConfig {
+        adapter: kotlin_lsp::ADAPTER.into(),
+        request: "attach".into(),
+        cwd: Some(project.to_owned().into()),
+        extra_json: Some(
+            json!({"debugServer": 4711, "hostName": "127.0.0.1", "port": 5005, "projectRoot": project}).to_string(),
+        ),
+        ..config()
+    }
+}
+
+#[tokio::test]
+async fn kotlin_lsp_initializes_as_intellij_jvm() {
+    let project = tempfile::tempdir().unwrap();
+    for (config, adapter_id, invalidated) in [
+        (kotlin_lsp_attach(project.path()), "intellij_jvm", true),
+        (kotlin_attach(project.path(), "127.0.0.1", 5005), "kotlin-debug-adapter", false),
+    ] {
+        let h = harness(Script::default());
+        let id = h.start(config).await.unwrap();
+        let init = &h.request("initialize")["arguments"];
+        assert_eq!(init["adapterID"], adapter_id);
+        assert_eq!(init["supportsInvalidatedEvent"], invalidated, "{adapter_id}");
+        h.manager.stop(id).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn kotlin_lsp_gets_real_paths_and_its_link_holds_nothing() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().join("Main.kt");
+    std::fs::write(&path, "package org.example\nfun main() {}\n").unwrap();
+    h.manager.set_breakpoints(path.clone(), vec![bp(1)]).await.unwrap();
+    let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
+    assert_eq!(h.request("setBreakpoints")["arguments"]["source"]["path"], json!(path));
+    let sent = &h.request("attach")["arguments"];
+    assert_eq!(sent["projectRoot"], json!(project.path()));
+    assert!(sent.get("debugServer").is_none());
+    assert_eq!(sent["hostName"], "127.0.0.1");
+    let link_port = sent["port"].as_u64().unwrap();
+    assert!(link_port != 0 && link_port != 5005);
+    let session = h.manager.session(id).unwrap();
+    assert!(session.kotlin_mirror.lock().is_none());
+    assert!(session.jdwp_link.lock().is_some() && session.jvm_inspector.lock().is_some());
+    assert_eq!(session.attach_target.get(), Some(&("127.0.0.1".to_owned(), 5005)));
+    assert!(!kotlin::link_options(&session.adapter).hold_resumes);
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn kotlin_lsp_waits_for_the_configuration_done_reply() {
+    let project = tempfile::tempdir().unwrap();
+    // fwcd never answers it (`kotlin_configures_without_configuration_done_response`).
+    let h = harness(Script { ignore_configuration_done: true, ..Default::default() });
+    let fwcd = h.start(kotlin_attach(project.path(), "127.0.0.1", 5005));
+    let id = tokio::time::timeout(Duration::from_secs(2), fwcd).await.unwrap().unwrap();
+    h.manager.stop(id).await.unwrap();
+
+    tokio::time::pause();
+    let h = harness(Script { ignore_configuration_done: true, ..Default::default() });
+    let started = tokio::time::Instant::now();
+    let err = h.start(kotlin_lsp_attach(project.path())).await.unwrap_err();
+    assert!(started.elapsed() >= REQUEST_TIMEOUT, "{:?}", started.elapsed());
+    assert!(err.message.contains("configurationDone"), "{err:?}");
+    assert!(h.manager.sessions(None).is_empty());
+}
+
+#[tokio::test]
+async fn kotlin_lsp_sessions_have_the_memory_tab() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
+    assert!(h.manager.capabilities(id).unwrap().jvm_memory);
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn losing_the_kotlin_lsp_connection_ends_the_session() {
+    let h = harness(Script { hang_up_after_stop: true, ..Script::default() });
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let session = h.manager.session(id).unwrap();
+    assert!(session.jdwp_link.lock().is_some());
+    let _ = session.conn.request_timeout("threads", Value::Null, Duration::from_secs(2)).await;
+    h.wait_event(|e| matches!(e, DebugEvent::Terminated)).await;
+    assert!(h.manager.sessions(None).is_empty());
+    assert!(session.jdwp_link.lock().is_none());
+    assert!(session.jvm_inspector.lock().is_none());
+}
+
+/// The reasons of the first `count` stops, once that many arrived.
+async fn stop_reasons(h: &Harness, count: usize) -> Vec<String> {
+    for _ in 0..200 {
+        let reasons: Vec<String> = h
+            .events
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                IdeEvent::Debug { event: DebugEvent::Stopped { reason, .. }, .. } => Some(reason.clone()),
+                _ => None,
+            })
+            .collect();
+        if reasons.len() >= count {
+            return reasons;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{count} stops not received; got {:?}", h.events.lock());
+}
+
+#[tokio::test]
+async fn a_step_stop_is_reported_as_a_step() {
+    let project = tempfile::tempdir().unwrap();
+    for (config, reason) in [(kotlin_lsp_attach(project.path()), "step"), (config(), "breakpoint")] {
+        let h = harness(Script { step_reason: Some("breakpoint"), ..Script::default() });
+        let id = h.start(config).await.unwrap();
+        h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+        h.manager.step(id, 1, StepKind::Over).await.unwrap();
+        assert_eq!(stop_reasons(&h, 2).await, ["breakpoint", reason]);
+        h.manager.stop(id).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_breakpoint_after_continue_stays_a_breakpoint() {
+    let h = harness(Script { step_reason: Some("breakpoint"), stop_after_continue: true, ..Script::default() });
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    h.manager.step(id, 1, StepKind::Over).await.unwrap();
+    stop_reasons(&h, 2).await;
+    // The fake ends `stepIn` with no stop: the `continue` after it decides the next one.
+    h.manager.step(id, 1, StepKind::Into).await.unwrap();
+    h.manager.resume(id, 1).await.unwrap();
+    assert_eq!(stop_reasons(&h, 3).await, ["breakpoint", "step", "breakpoint"]);
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_breakpoint_after_a_refused_step_stays_a_breakpoint() {
+    let h = harness(Script { refuse_next: true, ..Script::default() });
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    assert!(h.manager.step(id, 1, StepKind::Over).await.is_err());
+    assert_eq!(stop_reasons(&h, 2).await, ["breakpoint", "breakpoint"]);
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_thread_from_an_earlier_stop_is_refused() {
+    let project = tempfile::tempdir().unwrap();
+    for (config, kotlin_lsp) in [(kotlin_lsp_attach(project.path()), true), (config(), false)] {
+        let h = harness(Script::default());
+        let id = h.start(config).await.unwrap();
+        h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+        assert_eq!(h.manager.threads(id).await.unwrap().len(), 1);
+        let started = tokio::time::Instant::now();
+        let stale = h.manager.stack_trace(id, 99).await;
+        let asked =
+            |command: &str| h.log.lock().iter().any(|m| m["command"] == command && m["arguments"]["threadId"] == 99);
+        if kotlin_lsp {
+            assert!(stale.is_err() && started.elapsed() < Duration::from_millis(100), "{stale:?}");
+            assert!(h.manager.step(id, 99, StepKind::Over).await.is_err());
+            assert!(h.manager.resume(id, 99).await.is_err());
+            assert!(!asked("stackTrace") && !asked("next") && !asked("continue"));
+        } else {
+            assert!(stale.is_ok() && asked("stackTrace"), "{stale:?}");
+        }
+        assert!(h.manager.stack_trace(id, 1).await.is_ok());
+        h.manager.stop(id).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_threads_reply_from_before_a_stop_does_not_vouch_for_its_ids() {
+    let h = harness(Script { stop_during_threads: true, ..Script::default() });
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let threads = h.manager.threads(id).await.unwrap();
+    // M3 maps kotlin-lsp's threads by these names.
+    assert_eq!((threads[0].id, threads[0].name.as_str()), (1, "\"main\"@1"));
+    stop_reasons(&h, 2).await;
+    assert!(h.manager.stack_trace(id, 1).await.is_err());
+    assert!(h.manager.stack_trace(id, 2).await.is_ok());
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn kotlin_lsp_frames_get_real_paths() {
+    let project = tempfile::tempdir().unwrap();
+    let at = "at com.x.AppKt.main(App.kt:13)";
+    for (config, path, name) in [
+        (kotlin_lsp_attach(project.path()), "/p/App.kt", "com.x.AppKt.main(App.kt:13)"),
+        (java_config("launch"), "file:///p/App.kt", at),
+    ] {
+        let script = Script { source_path: Some("file:///p/App.kt".into()), frame_name: Some(at), ..Script::default() };
+        let h = harness(script);
+        let id = h.start(config).await.unwrap();
+        h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+        let frames = h.manager.stack_trace(id, 1).await.unwrap();
+        assert_eq!(frames[0].path.as_ref().map(|p| p.0.clone()), Some(PathBuf::from(path)));
+        assert_eq!(frames[0].name, name);
+        h.manager.stop(id).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn invalidated_events_reach_the_client() {
+    let h = harness(Script { invalidated_after_stop: true, ..Script::default() });
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
+    match h.wait_event(|e| matches!(e, DebugEvent::Invalidated { .. })).await {
+        DebugEvent::Invalidated { areas } => assert_eq!(areas, ["variables"]),
+        other => panic!("{other:?}"),
+    }
+    h.manager.stop(id).await.unwrap();
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn rdbg_drains_test_output_after_dap_closes_before_killing_the_process() {
+    struct Launcher;
+    impl AdapterLauncher for Launcher {
+        fn launch(&self, _spec: AdapterSpec, _reuse: Option<u16>) -> LaunchFuture {
+            Box::pin(async {
+                let (client, server) = tokio::io::duplex(1 << 16);
+                tokio::spawn(fake_adapter(server, Arc::default(), Script::default()));
+                let mut command = tokio::process::Command::new("/bin/sh");
+                ide_core::process::own_group(command.as_std_mut());
+                let mut child = command
+                    .args(["-c", "sleep 1; printf 'test summary\\n'"])
+                    .stdout(std::process::Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .unwrap();
+                let mut stdout = child.stdout.take().unwrap();
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                tokio::spawn(async move {
+                    let mut text = String::new();
+                    tokio::io::AsyncReadExt::read_to_string(&mut stdout, &mut text).await.unwrap();
+                    let _ = tx.send(("stdout", text));
+                });
+                let (reader, writer) = tokio::io::split(client);
+                Ok(AdapterIo {
+                    launch_after_configuration: false,
+                    reader: Box::new(reader),
+                    writer: Box::new(writer),
+                    child: Some(child),
+                    port: None,
+                    stderr: Arc::default(),
+                    program_output: Some(rx),
+                })
+            })
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let manager = DebugManager::with_launcher(Arc::new(LanguageRegistry::from_configs(Vec::new())), Arc::new(Launcher));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let collected = events.clone();
+    let owner = SessionOwner::new("rdbg-test", Arc::new(move |e| collected.lock().push(e)));
+    let id = manager
+        .start(
+            LaunchConfig { adapter: "rdbg".into(), cwd: Some(dir.path().into()), extra_json: None, ..config() },
+            owner,
+        )
+        .await
+        .unwrap();
+    manager.session(id).unwrap().conn.close();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !manager.sessions(None).is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(events.lock().iter().any(|e| matches!(e,
+        IdeEvent::Debug { event: DebugEvent::Output { output, .. }, .. } if output == "test summary\n"
+    )));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cleanup_ends_the_adapter_tree_without_a_process_event() {
+    use tokio::io::AsyncBufReadExt;
+
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    let mut command = tokio::process::Command::new("python3");
+    ide_core::process::own_group(command.as_std_mut());
+    command
+        .args([
+            "-u",
+            "-c",
+            "import subprocess,sys,time; subprocess.Popen([sys.executable, '-u', '-c', \
+             \"import socket,time; s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); \
+             print(s.getsockname()[1],flush=True); time.sleep(60)\"]); time.sleep(60)",
+        ])
+        .stdout(std::process::Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let port: u16 = lines.next_line().await.unwrap().unwrap().parse().unwrap();
+    assert!(std::net::TcpListener::bind(("127.0.0.1", port)).is_err(), "the descendant holds the port");
+    let pid = child.id().unwrap();
+    *session.adapter_process.lock() = Some(child);
+    session.kill_processes();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while std::net::TcpListener::bind(("127.0.0.1", port)).is_err() {
+        if Instant::now() >= deadline {
+            ide_core::process::kill_tree_of(pid);
+            panic!("adapter cleanup left its descendant holding the port");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    h.manager.stop(id).await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_detaches_from_an_attached_program() {
+    let mut child = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+    let h = harness(Script { debuggee_pid: Some(child.id()), ..Default::default() });
+    let id = h.start(LaunchConfig { request: "attach".into(), ..config() }).await.unwrap();
+    h.manager.stop(id).await.unwrap();
+    let alive = child.try_wait().unwrap().is_none();
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(alive, "Stop killed the attached program");
+    assert!(!h.commands().contains(&"terminate".to_owned()));
+    assert_eq!(h.request("disconnect")["arguments"]["terminateDebuggee"], false);
 }

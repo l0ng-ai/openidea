@@ -5,13 +5,15 @@
 import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import type { GitOperation, RemoteOp } from "@/bindings";
+import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
-import { editorsFor } from "@/editor/api";
-import { maybeEditorService, notifications } from "@/workbench/contributions";
+import { attachDocument, editorsFor } from "@/editor/api";
+import { maybeEditorService, notifications, type NotificationService } from "@/workbench/contributions";
 import { cancelTask, upsertTaskSoon, useTasks } from "@/workbench/tasks";
 import { progressFraction } from "./model";
-import { currentRepo, refreshNow, repoName, useVcs } from "./store";
+import { saveDiffWindows } from "./diffWindowSave";
+import { beginGitWork, conflictedFiles, currentRepo, refreshNow, repoName, useVcs } from "./store";
 
 // ---------------------------------------------------------------------------
 // Console (Git tool window → Console tab)
@@ -54,6 +56,11 @@ export function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** Feedback for an explicit Git command stays visible when background VCS notifications are muted. */
+function notify(n: Omit<Parameters<NotificationService["notify"]>[0], "group" | "userInitiated">) {
+  notifications().notify({ ...n, group: "vcs", userInitiated: true });
+}
+
 // ---------------------------------------------------------------------------
 // Local operations
 
@@ -73,12 +80,13 @@ export interface OpOptions<T> {
 /** Runs `fn`, logging to the console and reporting failures. `undefined` on error. */
 export async function runOp<T>(title: string, fn: () => Promise<T>, opts: OpOptions<T> = {}): Promise<T | undefined> {
   logConsole("cmd", title);
+  const endWork = beginGitWork();
   try {
     const value = await fn();
     const msg = typeof opts.success === "function" ? opts.success(value) : opts.success;
     if (msg) {
       logConsole("info", msg);
-      notifications().notify({ group: "vcs", level: "info", title: msg });
+      notify({ level: "info", title: msg });
     }
     return value;
   } catch (e) {
@@ -86,21 +94,32 @@ export async function runOp<T>(title: string, fn: () => Promise<T>, opts: OpOpti
     logConsole("err", message);
     const handled = opts.onError ? await opts.onError(message) : false;
     if (!opts.quiet && !handled)
-      notifications().notify({
-        group: "vcs",
+      notify({
         level: "error",
-        title: `${title} failed`,
+        title: tx`${title} failed`,
         body: message,
         actions: opts.errorActions?.(message),
       });
     return undefined;
   } finally {
+    endWork();
     if (opts.refresh !== false) void refreshNow();
   }
 }
 
 /** Saves all documents so git sees the editor contents. */
 export async function saveAll() {
+  try {
+    await saveDiffWindows();
+  } catch (error) {
+    notifications().notify({
+      group: "vcs",
+      level: "error",
+      title: tx("Could not save diff"),
+      body: errorMessage(error),
+    });
+    throw error;
+  }
   try {
     await maybeEditorService()?.saveAll();
   } catch {
@@ -114,11 +133,14 @@ export async function saveAll() {
 const REMOTE_TITLE: Record<RemoteOp["op"], [string, string]> = {
   fetch: ["Fetching", "Fetch"],
   pull: ["Updating project", "Update"],
+  resetToUpstream: ["Updating project", "Update"],
   pullFrom: ["Pulling", "Pull"],
   push: ["Pushing", "Push"],
   deleteBranch: ["Deleting remote branch", "Delete remote branch"],
   pushBranch: ["Pushing", "Push"],
   updateBranch: ["Updating branch", "Update"],
+  pushTag: ["Pushing", "Push"],
+  deleteRemoteTag: ["Deleting remote tag", "Delete remote tag"],
 };
 
 let activeRemote: number | null = null;
@@ -150,9 +172,11 @@ export async function runRemote(
   op: RemoteOp,
   detail?: string,
   repos: ReadonlyArray<string | null> = [currentRepo()],
+  /** Failures the caller reports itself (e.g. a rejected push it goes on to update). */
+  handled?: (message: string) => boolean,
 ): Promise<boolean> {
   if (useVcs.getState().remoteBusy) {
-    notifications().notify({ group: "vcs", level: "warning", title: "Another remote operation is in progress" });
+    notify({ level: "warning", title: "Another remote operation is in progress" });
     return false;
   }
   const [progressText, doneTitle] = REMOTE_TITLE[op.op];
@@ -165,8 +189,7 @@ export async function runRemote(
   const task = (message: string | null, fraction: number | null, done: boolean) =>
     upsertTaskSoon({ id: taskId, title: progressTitle, message, fraction, done, cancel });
   task(detail ?? null, null, false);
-  notifications().notify({
-    group: "vcs",
+  notify({
     level: "info",
     key: "vcs.remote",
     title: `${progressTitle}…`,
@@ -200,15 +223,16 @@ export async function runRemote(
         }
       }
       try {
-        const before = op.op === "pull" || op.op === "pullFrom" ? await headCommit(repo) : null;
+        const before = isUpdate(op) ? await publishedTip(repo, op) : null;
         // The push summary counts what the push carries: the commits the branch is
         // ahead of its upstream before the push (pushing does not move the local head).
-        if (op.op === "push" || (op.op === "pushBranch" && !op.target)) {
+        // Another remote or target receives other commits than "ahead of the upstream".
+        if (op.op === "push" || (op.op === "pushBranch" && !op.target && !op.remote)) {
           const info = await call(commands.vcsBranchInfo(repo)).catch(() => null);
           if (info?.upstream && info.ahead > 0) pushed.push({ to: info.upstream, commits: info.ahead });
         }
         await call(commands.vcsRemote(repo, request, op, channel));
-        const after = before ? await headCommit(repo) : null;
+        const after = before ? await publishedTip(repo, op) : null;
         if (before && after && before !== after) updated.push({ repo, from: before, to: after });
       } catch (e) {
         if (isCancelled(e) || !name) throw e;
@@ -218,15 +242,19 @@ export async function runRemote(
     }
     if (failures.length) throw new Error(failures.join("\n"));
     lastRemoteError = null;
-    if (op.op === "pull" || op.op === "pullFrom") await notifyUpdated(updated);
+    if (isUpdate(op)) await notifyUpdated(updated);
     else {
       // One repository's push names what went out; a partial multi-repo push stays generic.
       const one = pushed.length === 1 ? pushed[0] : null;
-      notifications().notify({
-        group: "vcs",
+      notify({
         level: "info",
         key: "vcs.remote",
-        title: one ? pushedTitle(one.commits, one.to) : `${doneTitle} successful`,
+        title:
+          op.op === "pushTag"
+            ? tx`Pushed tag ${op.tag} to ${op.remote}`
+            : one
+              ? pushedTitle(one.commits, one.to)
+              : `${doneTitle} successful`,
         body: lastLine && !/%/.test(lastLine) ? lastLine : undefined,
       });
     }
@@ -236,10 +264,13 @@ export async function runRemote(
     lastRemoteError = cancelled ? null : errorMessage(e);
     logConsole(cancelled ? "info" : "err", cancelled ? `${doneTitle} cancelled` : errorMessage(e));
     // The user asked for it: the progress balloon just goes away.
-    if (cancelled) notifications().expire?.("vcs.remote");
-    else
-      notifications().notify({
-        group: "vcs",
+    if (cancelled || handled?.(errorMessage(e))) notifications().expire?.("vcs.remote");
+    else if (isUpdate(op) && (await stoppedOnConflicts())) {
+      // An update that stopped on conflicts opens them for resolving, not an error.
+      notifications().expire?.("vcs.remote");
+      void executeAction("vcs.resolveConflicts");
+    } else
+      notify({
         level: "error",
         key: "vcs.remote",
         title: `${doneTitle} failed`,
@@ -260,13 +291,39 @@ interface UpdatedRange {
   to: string;
 }
 
+/** Update Project and the operations that bring the branch up to date like it. */
+const isUpdate = (op: RemoteOp) => op.op === "pull" || op.op === "pullFrom" || op.op === "resetToUpstream";
+
+async function stoppedOnConflicts(): Promise<boolean> {
+  await refreshNow();
+  return conflictedFiles().length > 0;
+}
+
 const headCommit = (repo: string | null) =>
   call(commands.vcsBranchInfo(repo)).then(
     (i) => i.headCommit,
     () => null,
   );
 
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+/**
+ * Where the branch meets the branch it updates from (their merge base), the start and
+ * end of what an update brought in: the incoming commits only, not the local ones a
+ * rebase rewrites or the merge commit. HEAD when that branch can't be resolved.
+ */
+async function publishedTip(repo: string | null, op: RemoteOp): Promise<string | null> {
+  const tracked =
+    op.op === "pull" || op.op === "resetToUpstream" || (op.op === "pullFrom" && !op.branches.length)
+      ? "@{u}"
+      : op.op === "pullFrom" && op.branches.length === 1
+        ? `${op.remote}/${op.branches[0]}`
+        : null;
+  const base = tracked ? await call(commands.vcsMergeBase(repo, "HEAD", tracked)).catch(() => null) : null;
+  return base ?? headCommit(repo);
+}
+
+/** Counts for a translated sentence: each variant is its own source text, as "{count} files". */
+const filesText = (n: number) => (n === 1 ? tx`${n} file` : tx`${n} files`);
+const commitsText = (n: number) => (n === 1 ? tx`${n} commit` : tx`${n} commits`);
 
 /** "Pushed 3 commits to origin/main", translated per count. */
 const pushedTitle = (n: number, to: string) =>
@@ -275,7 +332,7 @@ const pushedTitle = (n: number, to: string) =>
 /** IDEA's Update Project result: "N files updated in M commits" with View Commits. */
 async function notifyUpdated(updated: readonly UpdatedRange[]) {
   if (!updated.length) {
-    notifications().notify({ group: "vcs", level: "info", key: "vcs.remote", title: "All files are up-to-date" });
+    notify({ level: "info", key: "vcs.remote", title: "All files are up-to-date" });
     return;
   }
   let files = 0;
@@ -300,11 +357,10 @@ async function notifyUpdated(updated: readonly UpdatedRange[]) {
       commits += log.length;
     }),
   );
-  notifications().notify({
-    group: "vcs",
+  notify({
     level: "info",
     key: "vcs.remote",
-    title: `${plural(files, "file")} updated in ${plural(commits, "commit")}`,
+    title: `${filesText(files)} updated in ${commitsText(commits)}`,
     actions: [
       {
         label: "View Commits",
@@ -329,6 +385,10 @@ export interface GitOperationOptions {
   failure: string;
   /** Called with the failure message; returning true suppresses the error balloon. */
   onError?: (message: string) => boolean | Promise<boolean>;
+  /** Links of the success balloon (e.g. Undo), worked out after the status refreshed. */
+  successActions?: () => Promise<{ label: string; run: () => void }[]>;
+  /** Links of the error balloon, worked out after the status refreshed. */
+  errorActions?: (message: string) => Array<{ label: string; run: () => void }>;
 }
 
 /**
@@ -341,7 +401,7 @@ export async function runGitOperation(
   repo = currentRepo(),
 ): Promise<boolean> {
   if (useVcs.getState().remoteBusy) {
-    notifications().notify({ group: "vcs", level: "warning", title: "Another Git operation is in progress" });
+    notify({ level: "warning", title: "Another Git operation is in progress" });
     return false;
   }
   await saveAll();
@@ -354,8 +414,7 @@ export async function runGitOperation(
   const task = (message: string | null, done: boolean) =>
     upsertTaskSoon({ id: taskId, title: progress, message, fraction: done ? 1 : null, done, cancel });
   task(null, false);
-  notifications().notify({
-    group: "vcs",
+  notify({
     level: "info",
     key: "vcs.operation",
     title: `${progress}…`,
@@ -376,7 +435,8 @@ export async function runGitOperation(
       success = success();
     }
     logConsole("info", success);
-    notifications().notify({ group: "vcs", level: "info", key: "vcs.operation", title: success });
+    const actions = opts.successActions ? await opts.successActions() : undefined;
+    notify({ level: "info", key: "vcs.operation", title: success, actions });
     return true;
   } catch (e) {
     const cancelled = isCancelled(e);
@@ -386,12 +446,12 @@ export async function runGitOperation(
     await refreshNow();
     const handled = cancelled || (opts.onError ? await opts.onError(message) : false);
     if (!handled)
-      notifications().notify({
-        group: "vcs",
+      notify({
         level: "error",
         key: "vcs.operation",
         title: opts.failure,
         body: message,
+        actions: opts.errorActions?.(message),
       });
     return false;
   } finally {
@@ -408,6 +468,8 @@ export function describeOperation(op: GitOperation): string {
     case "abort":
     case "skip":
       return `${useVcs.getState().branch?.operation ?? ""} --${op.op}`.trim();
+    case "stageAndContinue":
+      return `add -u && ${useVcs.getState().branch?.operation ?? ""} --continue`.trim();
     case "cherryPick":
       return `cherry-pick ${op.commits.map((c) => c.slice(0, 8)).join(" ")}`;
     case "revert":
@@ -446,14 +508,17 @@ const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * file: through the open editor (one undoable transaction) or, when the file
  * isn't open, through a transient backend document that is saved.
  */
-export async function applyFileEdits(path: string, edits: TextEdit[], opts: { save?: boolean } = {}) {
+export async function applyFileEdits(path: string, edits: TextEdit[], opts: { save?: boolean; exact?: boolean } = {}) {
   const editor = editorsFor(path)[0];
   if (editor) {
     editor.view.dispatch({ changes: edits, userEvent: "input.vcs", scrollIntoView: true });
     if (opts.save) {
-      // Let editor/core sync the change to the backend before saving.
-      await tick(60);
-      await maybeEditorService()?.saveAll();
+      if (opts.exact) await saveExactText(path);
+      else {
+        // Let editor/core sync the change to the backend before saving.
+        await tick(60);
+        await maybeEditorService()?.saveAll();
+      }
     }
     return;
   }
@@ -467,11 +532,24 @@ export async function applyFileEdits(path: string, edits: TextEdit[], opts: { sa
 }
 
 /** Replaces the whole content of a working file. */
-export async function writeFileText(path: string, text: string, opts: { save?: boolean } = {}) {
+export async function writeFileText(path: string, text: string, opts: { save?: boolean; exact?: boolean } = {}) {
   const current = (await readWorkingText(path)) ?? "";
   if (current === text) {
-    if (opts.save) await saveAll();
+    if (opts.save) {
+      if (opts.exact) await saveExactText(path);
+      else await saveAll();
+    }
     return;
   }
   await applyFileEdits(path, [{ from: 0, to: current.length, insert: text }], opts);
+}
+
+/** Merge results keep their text even when the file is also shown in an editor tab. */
+async function saveExactText(path: string) {
+  const document = await attachDocument(path);
+  try {
+    await document.save({ exact: true });
+  } finally {
+    document.release();
+  }
 }

@@ -50,7 +50,6 @@ impl DocText {
         &self.text
     }
 
-    #[cfg(test)]
     pub fn line_count(&self) -> usize {
         self.lines.len()
     }

@@ -25,8 +25,8 @@ pub struct WordFiles {
 }
 
 /// Files under `query.dir` containing `query.word` as a whole word, in walk
-/// order (unsaved buffers through `overlay`, `.gitignore`d and hidden files
-/// skipped like Find in Files). Stops at `query.limit` files or when cancelled.
+/// order (unsaved buffers through `overlay`; ignored folders skipped, ignored
+/// and hidden files searched, like Find in Files). Stops at `query.limit` files or when cancelled.
 pub fn files_with_word(
     root: &std::path::Path,
     query: &WordQuery,
@@ -74,7 +74,9 @@ mod tests {
         let root = dir.path();
         fs::create_dir_all(root.join("pkg/ignored")).unwrap();
         fs::create_dir_all(root.join("build")).unwrap();
-        fs::write(root.join(".gitignore"), "ignored/\n").unwrap();
+        fs::write(root.join(".gitignore"), "ignored/\nlocal.py\n").unwrap();
+        // An ignored file outside ignored folders is still a candidate, as in IDEA.
+        fs::write(root.join("pkg/local.py"), "get_value\n").unwrap();
         fs::write(root.join("pkg/use.py"), "x.get_value(1)\n").unwrap();
         fs::write(root.join("pkg/longer.py"), "get_values()\n").unwrap();
         fs::write(root.join("pkg/case.py"), "Get_Value()\n").unwrap();
@@ -90,7 +92,10 @@ mod tests {
         found.files.sort();
         assert_eq!(
             found,
-            WordFiles { files: vec![root.join("pkg/open.py"), root.join("pkg/use.py")], limit_hit: false }
+            WordFiles {
+                files: vec![root.join("pkg/local.py"), root.join("pkg/open.py"), root.join("pkg/use.py")],
+                limit_hit: false
+            }
         );
     }
 

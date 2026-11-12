@@ -225,6 +225,17 @@ export function sampleFs(root: string): MemoryFs {
       f("build.gradle.kts"),
       f("settings.gradle.kts"),
       f("README.md"),
+      f(
+        "App.tsx",
+        `export function App() {
+  return (
+    <div>
+      <b>x</b>
+    </div>
+  );
+}
+`,
+      ),
       ...Array.from({ length: 10_000 }, (_, i) => f(`generated/item${i + 1}.json`)),
     ]),
     root,

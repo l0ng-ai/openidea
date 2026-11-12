@@ -21,6 +21,8 @@ export function parseComparison(output: readonly string[]): Comparison | null {
   // JUnit / opentest4j / AssertJ / Hamcrest-style: `expected: <x> but was: <y>`.
   if ((m = /expected:\s*(<[\s\S]*?>|\S[^\n]*?)\s*but was:\s*(<[\s\S]*?>|[^\n]*)/.exec(text)))
     return { expected: unwrap(m[1]!), actual: unwrap(m[2]!) };
+  // TestNG `Assert.assertEquals`: `expected [x] but found [y]`.
+  if ((m = /expected \[([\s\S]*?)\] but found \[([\s\S]*?)\]/.exec(text))) return { expected: m[1]!, actual: m[2]! };
   // kotlin.test: `Expected <x>, actual <y>.`
   if ((m = /Expected <([\s\S]*?)>, actual <([\s\S]*?)>/.exec(text))) return { expected: m[1]!, actual: m[2]! };
   // Rust `assert_eq!`: `  left: x` / ` right: y` (the macro doesn't say which one is expected).

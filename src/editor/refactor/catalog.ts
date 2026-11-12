@@ -2,6 +2,7 @@
  * IDEA's refactorings and how language-server code actions map onto them:
  * `refactor.extract.*` → Extract Method / Introduce Variable…, `refactor.inline*`
  * → Inline, `refactor.move*` → Move, signature rewrites → Change Signature.
+ * Pull Members Up / Push Members Down come from the Java extension, not code actions.
  * Pure; used by Refactor This (⌃T) and the Refactor menu actions.
  */
 import type { CodeAction } from "@/bindings";
@@ -16,7 +17,9 @@ export type RefactoringId =
   | "extractConstant"
   | "extractField"
   | "extractParameter"
-  | "inline";
+  | "inline"
+  | "pullMembersUp"
+  | "pushMembersDown";
 
 export interface Refactoring {
   id: RefactoringId;
@@ -94,7 +97,24 @@ export const REFACTORINGS: readonly Refactoring[] = [
       sel ? "Selected block should represent an expression" : "Caret should be inside an expression in a function",
   },
   { id: "inline", action: "refactor.inline", label: "Inline…", kind: "refactor.inline", reason: () => AT_NAME },
+  {
+    id: "pullMembersUp",
+    action: "refactor.pullMembersUp",
+    label: "Pull Members Up…",
+    kind: null,
+    reason: () => "Caret should be inside a class that has members to pull up",
+  },
+  {
+    id: "pushMembersDown",
+    action: "refactor.pushMembersDown",
+    label: "Push Members Down…",
+    kind: null,
+    reason: () => "Caret should be inside a class that has members to push down",
+  },
 ];
+
+/** Refactorings of the class hierarchy, run by the app-owned Java extension (`hierarchy.ts`). */
+export const HIERARCHY_REFACTORINGS: ReadonlySet<RefactoringId> = new Set(["pullMembersUp", "pushMembersDown"]);
 
 export function refactoring(id: RefactoringId): Refactoring {
   return REFACTORINGS.find((r) => r.id === id)!;

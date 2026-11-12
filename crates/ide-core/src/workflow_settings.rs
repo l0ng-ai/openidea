@@ -43,6 +43,7 @@ impl Default for VcsSettings {
 pub struct GitSettings {
     /// Show blame after the current editor line.
     pub inline_blame: bool,
+    pub show_branch_in_project_view: bool,
     /// Path to the git executable; empty = auto-detect.
     pub executable: String,
     /// Default of Update Project: `merge` | `rebase`.
@@ -74,6 +75,7 @@ impl Default for GitSettings {
     fn default() -> Self {
         Self {
             inline_blame: false,
+            show_branch_in_project_view: false,
             executable: String::new(),
             update_method: "merge".into(),
             auto_update_on_push_rejected: false,
@@ -113,6 +115,15 @@ pub struct CommitSettings {
     pub body_limit: u32,
     pub show_right_margin: bool,
     pub wrap_at_margin: bool,
+    /// Plugin before-commit checks turned off (`<plugin id>/<check id>`); the rest run.
+    pub disabled_plugin_checks: Vec<String>,
+    /// Double-click / Enter in the changes view: `None` follows the interface (the
+    /// Commit tool window opens the diff, Local Changes the source file).
+    ///
+    /// No `skip_serializing_if`: an unset value must still appear in
+    /// `Settings::default()`, or `SettingsStore::set` rejects the key as unknown.
+    #[specta(optional)]
+    pub double_click_opens_diff: Option<bool>,
 }
 
 impl Default for CommitSettings {
@@ -132,6 +143,8 @@ impl Default for CommitSettings {
             body_limit: 72,
             show_right_margin: true,
             wrap_at_margin: false,
+            disabled_plugin_checks: Vec::new(),
+            double_click_opens_diff: None,
         }
     }
 }
@@ -179,6 +192,33 @@ pub struct IssueLink {
     pub link: String,
 }
 
+/// Per-level colours for console log lines: a line whose level is detected
+/// (`ERROR`, `WARN`, …) takes the level's colour; ANSI colours the program
+/// prints itself win over it. Values are CSS colours, usually scheme tokens.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LogLevelColors {
+    pub enabled: bool,
+    pub error: String,
+    pub warn: String,
+    pub info: String,
+    pub debug: String,
+    pub trace: String,
+}
+
+impl Default for LogLevelColors {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            error: "var(--ansi-red)".into(),
+            warn: "var(--ansi-yellow)".into(),
+            info: "var(--ansi-green)".into(),
+            debug: "var(--ansi-cyan)".into(),
+            trace: "var(--ansi-magenta)".into(),
+        }
+    }
+}
+
 /// Build, Execution, Deployment › Console.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -190,6 +230,8 @@ pub struct ConsoleSettings {
     pub encoding: String,
     /// Consecutive lines containing any of these are folded.
     pub fold_patterns: Vec<String>,
+    /// Log lines take the colour of their level (Run/Debug consoles).
+    pub log_colors: LogLevelColors,
 }
 
 impl Default for ConsoleSettings {
@@ -206,6 +248,7 @@ impl Default for ConsoleSettings {
                 "at node:internal/".into(),
                 "<frozen importlib._bootstrap".into(),
             ],
+            log_colors: LogLevelColors::default(),
         }
     }
 }
@@ -269,6 +312,8 @@ impl Default for PythonDebuggerSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RunSettings {
+    /// Target for configurations without an explicit target. Empty = local.
+    pub default_target: String,
     pub confirm_rerun: bool,
     /// Ask before closing a Run tab whose process is still running.
     pub confirm_terminate: bool,
@@ -279,7 +324,13 @@ pub struct RunSettings {
 
 impl Default for RunSettings {
     fn default() -> Self {
-        Self { confirm_rerun: true, confirm_terminate: true, show_on_start: true, termination_timeout_ms: 3000 }
+        Self {
+            default_target: String::new(),
+            confirm_rerun: true,
+            confirm_terminate: true,
+            show_on_start: true,
+            termination_timeout_ms: 3000,
+        }
     }
 }
 
@@ -301,6 +352,7 @@ pub struct TerminalSettings {
     pub override_ide_shortcuts: bool,
     pub shell_integration: bool,
     pub highlight_hyperlinks: bool,
+    pub highlight_selection: bool,
     pub option_as_meta: bool,
     /// Escape moves focus to the editor instead of reaching the shell.
     pub escape_to_editor: bool,
@@ -333,6 +385,7 @@ impl Default for TerminalSettings {
             override_ide_shortcuts: true,
             shell_integration: true,
             highlight_hyperlinks: true,
+            highlight_selection: true,
             option_as_meta: false,
             escape_to_editor: false,
             cursor_shape: "block".into(),
@@ -386,6 +439,33 @@ impl Default for ExternalTool {
             working_directory: "$ProjectFileDir$".into(),
             synchronize_after: true,
             open_console: true,
+        }
+    }
+}
+
+/// Tools › Agents: Command Execution Policy (whitelist and blacklist patterns).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentSecuritySettings {
+    /// Commands or patterns (`git status*`, `pwd`) automatically approved without prompting.
+    pub allowed_commands: Vec<String>,
+    /// Commands or patterns (`rm -rf *`, `mkfs*`) automatically rejected.
+    pub blocked_commands: Vec<String>,
+}
+
+impl Default for AgentSecuritySettings {
+    fn default() -> Self {
+        Self {
+            allowed_commands: Vec::new(),
+            blocked_commands: vec![
+                "rm -rf *".into(),
+                "rm -rf /".into(),
+                "mkfs*".into(),
+                "dd *".into(),
+                ":(){ :|:& };:".into(),
+                "shutdown*".into(),
+                "reboot*".into(),
+            ],
         }
     }
 }

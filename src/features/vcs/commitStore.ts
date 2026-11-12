@@ -1,6 +1,7 @@
 /** Commit tool window state shared with actions (selection, message draft). */
 import { create } from "zustand";
 import { call, commands } from "@/platform/ipc";
+import type { Commit } from "@/bindings";
 import type { CheckState } from "./changes";
 import type { CommitProblem } from "./commitChecks";
 import { currentRepo, useVcs } from "./store";
@@ -14,14 +15,20 @@ interface CommitState {
   /** Commit Options › Run Git hooks. */
   runHooks: boolean;
   groupByDir: boolean;
+  /** Group the changes into Staged / Unstaged instead of one "Changes" group. */
+  groupByStaging: boolean;
   /** Whether the Git window's Local Changes tab previews the selection's diff. */
   diffPreview: boolean;
+  /** Whether the Commit tool window previews the selection's diff beside the changes (#1599). */
+  commitDiffPreview: boolean;
   /** User overrides of the inclusion checkboxes (absolute path → state). */
   checks: Map<string, CheckState>;
   /** Changed blocks left out of the commit (absolute path → `hunkKeys`) of `hunks` files. */
   excludedHunks: Map<string, Set<string>>;
   /** Absolute paths selected in the changes tree. */
   selection: string[];
+  /** Keys of the selected tree nodes: which staging side of a partially staged file. */
+  selectionKeys: string[];
   /** Bumped to focus the message field. */
   focusTick: number;
   /** Bumped to open the commit message history popup. */
@@ -33,6 +40,8 @@ interface CommitState {
   selectedList: string | null;
   /** Selected shelf tree key: shelf id, optionally followed by NUL and a file path. */
   selectedShelf: string | null;
+  /** Commit a Fixup… / Squash Into… message was prepared for: offers Commit and Rebase. */
+  fixupTarget: Commit | null;
 }
 
 export type CommitTab = "changes" | "shelf" | "stashes";
@@ -44,17 +53,29 @@ export const useCommit = create<CommitState>(() => ({
   author: "",
   runHooks: true,
   groupByDir: readBool("openidea.vcs.groupByDir", false),
+  groupByStaging: readBool("openidea.vcs.groupByStaging", false),
   diffPreview: readBool("openidea.vcs.diffPreview", true),
+  commitDiffPreview: readBool("openidea.vcs.commitDiffPreview", false),
   checks: new Map(),
   excludedHunks: new Map(),
   selection: [],
+  selectionKeys: [],
   focusTick: 0,
   historyTick: 0,
   checkProblems: [],
   tab: "changes",
   selectedList: null,
   selectedShelf: null,
+  fixupTarget: null,
 }));
+
+/** The Fixup… / Squash Into… target while the message still is the one prepared for it. */
+export function pendingFixup(message: string, target: Commit | null): Commit | null {
+  if (!target) return null;
+  return message.startsWith(`fixup! ${target.summary}`) || message.startsWith(`squash! ${target.summary}`)
+    ? target
+    : null;
+}
 
 function readBool(key: string, fallback: boolean): boolean {
   try {
@@ -74,10 +95,28 @@ export function setGroupByDir(v: boolean) {
   }
 }
 
+export function setGroupByStaging(v: boolean) {
+  useCommit.setState({ groupByStaging: v });
+  try {
+    localStorage.setItem("openidea.vcs.groupByStaging", String(v));
+  } catch {
+    // ignore
+  }
+}
+
 export function setDiffPreview(v: boolean) {
   useCommit.setState({ diffPreview: v });
   try {
     localStorage.setItem("openidea.vcs.diffPreview", String(v));
+  } catch {
+    // ignore
+  }
+}
+
+export function setCommitDiffPreview(v: boolean) {
+  useCommit.setState({ commitDiffPreview: v });
+  try {
+    localStorage.setItem("openidea.vcs.commitDiffPreview", String(v));
   } catch {
     // ignore
   }
@@ -168,6 +207,7 @@ export function keepMessageAfterCommit(committed: string, clear: boolean) {
   const message = messageAfterCommit(committed, clear);
   keptMessage = message || null;
   useCommit.setState({ message });
+  if (!message) void loadTemplate();
 }
 
 /** The field holds nothing the user typed: empty, or what the last commit left there. */
@@ -188,9 +228,35 @@ export function preparedMessageText(raw: string): string {
     .trim();
 }
 
+/** `commit.template` resolved as git does: `~/` in the home directory, a relative path in the repository. */
+export function templatePath(value: string, root: string, home: string): string {
+  if (value === "~" || value.startsWith("~/")) return home.replace(/[/\\]$/, "") + value.slice(1);
+  if (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value)) return value;
+  return `${root}/${value}`;
+}
+
+/** Fills an empty message field with the repository's commit template (`commit.template`), without its `#` lines. */
+async function loadTemplate() {
+  const root = useVcs.getState().root;
+  if (!root || useCommit.getState().message.trim()) return;
+  try {
+    const value = await call(commands.vcsConfigGet(root, "commit.template"));
+    if (!value) return;
+    const home = value.startsWith("~") ? await (await import("@tauri-apps/api/path")).homeDir() : "";
+    const text = preparedMessageText(await call(commands.fsReadText(templatePath(value, root, home))));
+    if (!text || useVcs.getState().root !== root || useCommit.getState().message.trim()) return;
+    // Not typed: a prepared merge message may replace it.
+    keptMessage = text;
+    useCommit.setState({ message: text });
+  } catch {
+    // No readable template: the field stays empty.
+  }
+}
+
 /**
  * Like IDEA, pre-fills the commit message (unless something was typed) with the
- * message git prepared for a merge / cherry-pick / revert that stopped (e.g. on conflicts).
+ * message git prepared for a merge / cherry-pick / revert that stopped (e.g. on conflicts),
+ * otherwise with the commit template.
  */
 export function installPreparedMessage(): () => void {
   const load = async () => {
@@ -205,6 +271,7 @@ export function installPreparedMessage(): () => void {
   };
   const op = (s = useVcs.getState()) => s.branch?.operation ?? null;
   if (PREPARED_MESSAGE_OPS.has(op() ?? "")) void load();
+  else void loadTemplate();
   return useVcs.subscribe((s, prev) => {
     if (s.root !== prev.root) {
       // Another repository: nothing typed or ticked for the previous one carries over (Amend least of all).
@@ -216,11 +283,13 @@ export function installPreparedMessage(): () => void {
         checks: new Map(),
         excludedHunks: new Map(),
         selection: [],
+        selectionKeys: [],
         tab: "changes",
         selectedList: null,
         selectedShelf: null,
       });
       if (PREPARED_MESSAGE_OPS.has(op(s) ?? "")) void load();
+      else void loadTemplate();
       return;
     }
     const now = op(s);
