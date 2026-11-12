@@ -15,6 +15,7 @@ import { EmptyState, IconButton, showContextMenu, T, type MenuItem } from "@/ui"
 import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { useConsoleFont } from "@/platform/consoleFont";
 import { spanStyle } from "@/ui/ansi";
 import { logLineColor } from "@/ui/logColors";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
@@ -118,6 +119,10 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const [follow, setFollow] = useState(true);
   const stick = useRef(true);
   stick.current = follow;
+  // The debug console uses the same font as the Run console.
+  const consoleFont = useConsoleFont();
+  const { rowHeight } = consoleFont;
+  const fontStyle = { fontFamily: consoleFont.family, fontSize: `${consoleFont.size}px` };
   // Settings › Console › Use soft wraps is the default; the toggle overrides it for this console.
   const defaultWrap = useWorkflowSettings((s) => s.console.softWrap);
   const logColors = useWorkflowSettings((s) => s.console.logColors);
@@ -142,13 +147,13 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const virtualizer = useVirtualizer({
     count: lines?.length ?? 0,
     getScrollElement: () => scroller.current,
-    estimateSize: () => 18,
+    estimateSize: () => rowHeight,
     overscan: 30,
     getItemKey: (i) => lines?.[i]?.id ?? i,
   });
 
   // Wrapping changes every row's height; the end is pinned again below.
-  useLayoutEffect(() => virtualizer.measure?.(), [softWrap, virtualizer]);
+  useLayoutEffect(() => virtualizer.measure?.(), [softWrap, rowHeight, virtualizer]);
 
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -431,6 +436,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
         <div
           ref={scroller}
           className={clsx(styles.consoleOutput, !softWrap && styles.noWrap)}
+          style={{ ...fontStyle, lineHeight: `${rowHeight}px` }}
           onScroll={(e) => {
             if (programmatic.current) return;
             const el = e.currentTarget;
@@ -469,12 +475,13 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
         <div className={styles.repl}>
           {interactive && (
             <>
-              <span className={styles.prompt} aria-hidden>
+              <span className={styles.prompt} style={fontStyle} aria-hidden>
                 ›
               </span>
               <input
                 ref={inputRef}
                 className={styles.evalInput}
+                style={fontStyle}
                 onFocus={() => setConsoleHistoryBrowser(browseHistory)}
                 onBlur={() => {
                   setConsoleHistoryBrowser(null);
