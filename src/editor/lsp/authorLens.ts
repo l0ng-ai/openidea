@@ -6,6 +6,7 @@
  */
 import type { Text } from "@codemirror/state";
 import { call, commands, isTauri, onIdeEvent, type BlameLine } from "@/platform/ipc";
+import { formatDay } from "@/platform/dateFormat";
 
 export interface AuthorSummary {
   author: string;
@@ -13,6 +14,8 @@ export interface AuthorSummary {
   others: number;
   /** Every distinct author, latest change first. */
   authors: string[];
+  /** When the leading author last changed the range (epoch ms; 0 when unknown). */
+  timeMs: number;
 }
 
 const isUncommitted = (l: BlameLine) => /^0+$/.test(l.commit);
@@ -28,11 +31,12 @@ export function authorSummary(blame: readonly BlameLine[], from: number, to: num
   }
   if (!latest.size) return null;
   const authors = [...latest.entries()].sort((a, b) => b[1] - a[1]).map(([a]) => a);
-  return { author: authors[0]!, others: authors.length - 1, authors };
+  return { author: authors[0]!, others: authors.length - 1, authors, timeMs: latest.get(authors[0]!) ?? 0 };
 }
 
 export function authorLabel(s: AuthorSummary): string {
-  return s.others ? `${s.author} +${s.others}` : s.author;
+  const label = s.others ? `${s.author} +${s.others}` : s.author;
+  return s.timeMs > 0 ? `${label} ${formatDay(new Date(s.timeMs))}` : label;
 }
 
 export function authorTooltip(s: AuthorSummary): string {
