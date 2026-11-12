@@ -17,6 +17,7 @@
 //! spaces and balanced parentheses; `@@name` and `@{{ }}` escape.
 
 mod engine;
+pub mod format;
 pub mod intentions;
 pub mod structure;
 pub mod tags;

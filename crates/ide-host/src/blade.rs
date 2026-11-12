@@ -143,6 +143,25 @@ impl LanguageService for BladeService {
         Some(Ok(item))
     }
 
+    /// Reformat Code: indentation from the nesting of elements and Blade
+    /// blocks, and spacing inside echoes ([`ide_php::blade::format`]).
+    fn format(
+        &self,
+        doc: DocId,
+        range: Option<Range>,
+        options: &ide_lsp::types::FormatOptions,
+        _line_width: u32,
+    ) -> Answer<Vec<ide_core::TextEdit>> {
+        use ide_php::blade::format::{BladeFormatOptions, edits, format};
+        let info = self.info(doc)?;
+        let options = BladeFormatOptions { indent: options.tab_size, use_tabs: !options.insert_spaces };
+        let found = match self.php.engine() {
+            Some(engine) => engine.blade_format(&info.text, range, &options),
+            None => edits(&info.text, &format(&info.text, &options, &[]), range.map(|r| (r.start.line, r.end.line))),
+        };
+        Some(Ok(found))
+    }
+
     fn document_symbols(&self, doc: DocId) -> Answer<Option<Vec<ide_core::OutlineItem>>> {
         let info = self.info(doc)?;
         let outline = match self.php.engine() {

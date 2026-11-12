@@ -379,6 +379,19 @@ impl PhpEngine {
         self.laravel_blade().map(|catalog| catalog.directive_names()).unwrap_or_default()
     }
 
+    /// Reformat Code for a template ([`crate::blade::format`]), with the
+    /// project's custom directives: the edits, only on the lines of `range`
+    /// when given.
+    pub fn blade_format(
+        &self,
+        text: &str,
+        range: Option<ide_core::Range>,
+        options: &crate::blade::format::BladeFormatOptions,
+    ) -> Vec<ide_core::TextEdit> {
+        let formatted = crate::blade::format::format(text, options, &self.custom_directives());
+        crate::blade::format::edits(text, &formatted, range.map(|range| (range.start.line, range.end.line)))
+    }
+
     /// The Structure view of a template ([`crate::blade::structure::outline`]),
     /// with the project's custom directives.
     pub fn blade_outline(&self, text: &str) -> Vec<ide_core::OutlineItem> {

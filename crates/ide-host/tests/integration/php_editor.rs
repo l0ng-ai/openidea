@@ -451,3 +451,27 @@ async fn a_file_an_action_creates_is_reported_for_the_editor_to_open() {
     assert!(resource.is_file());
     assert!(applied.created.iter().any(|path| **path == *resource), "{:?}", applied.created);
 }
+
+/// Reformat Code on a Blade template, as Ctrl+Alt+L asks (no external
+/// formatter takes Blade).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reformat_code_formats_a_blade_template() {
+    let s = Session::start("laravel-app", Some("laravel-stubs")).await;
+    let file = "resources/views/posts/show.blade.php";
+    let view = s.open(file).await;
+    let original = s.text(view).await;
+    // Scrambled indentation and echoes.
+    let scrambled: String = original
+        .lines()
+        .map(|line| line.trim_start().replace("{{ $title }}", "{{$title}}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    s.splice(view, 0, original.len(), &scrambled).await;
+    let options = ide_lsp::types::FormatOptions { tab_size: 4, insert_spaces: true, on_save: false, tool: None };
+    let edits = ops::lsp::lsp_format(&s.host, WINDOW, view, None, options).await.unwrap();
+    assert!(!edits.is_empty());
+    let mut document = ide_text::Document::new(&scrambled);
+    document.apply_edits(&edits).unwrap();
+    assert_eq!(document.text().to_string().replace("\r\n", "\n"), original.replace("\r\n", "\n"));
+}

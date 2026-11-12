@@ -1130,7 +1130,7 @@ async fn laravel_create_controller_quick_fix() {
     // The created file is listed; the editor goes to `open` (its method) first.
     assert_eq!(
         applied.created.iter().map(|path| PathBuf::from(path.clone())).collect::<Vec<_>>(),
-        [controller.clone()]
+        std::slice::from_ref(&controller)
     );
     let open = applied.open.expect("the location to open");
     assert_eq!(PathBuf::from(open.path), controller);

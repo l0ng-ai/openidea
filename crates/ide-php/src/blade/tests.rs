@@ -728,3 +728,89 @@ fn outline_nests_blocks_and_lists_sections_includes_and_components() {
     assert_eq!(items[2].range.end.line, 15);
     assert_eq!(items[3].range.end.line, 19);
 }
+
+fn blade_format(text: &str) -> String {
+    use crate::blade::format::{BladeFormatOptions, format};
+    format(text, &BladeFormatOptions { indent: 4, use_tabs: false }, &["admin".to_owned()])
+}
+
+#[test]
+fn format_indents_html_and_blade_blocks_and_spaces_echoes() {
+    let messy = "@extends('layouts.app')\n\n@section('title', $title)\n\n@section('content')\n<h1>{{$title}}</h1>\n      <div class=\"card\">\n<p>{!!$body!!}</p>\n  @can('edit', $post)\n<a href=\"#\">Edit</a>\n    @else\n<span>Read only</span>\n        @endcan\n@foreach ($items as $item)\n<x-alert :message=\"$item\" />\n<input type=\"text\">\n@endforeach\n</div>   \n@admin\n<p>secret</p>\n@endadmin\n@endsection\n\n\n";
+    let formatted = "@extends('layouts.app')\n\n@section('title', $title)\n\n@section('content')\n    <h1>{{ $title }}</h1>\n    <div class=\"card\">\n        <p>{!! $body !!}</p>\n        @can('edit', $post)\n            <a href=\"#\">Edit</a>\n        @else\n            <span>Read only</span>\n        @endcan\n        @foreach ($items as $item)\n            <x-alert :message=\"$item\" />\n            <input type=\"text\">\n        @endforeach\n    </div>\n    @admin\n        <p>secret</p>\n    @endadmin\n@endsection\n";
+    assert_eq!(blade_format(messy), formatted);
+    // Already formatted: unchanged.
+    assert_eq!(blade_format(formatted), formatted);
+}
+
+#[test]
+fn format_keeps_raw_text_and_shifts_scripts_and_php() {
+    let messy = "<div>\n<pre>\n  keep   this\n</pre>\n<script>\n        if (a) {\n            b();\n        }\n</script>\n@php\n  $a = 1;\n    $b = 2;\n@endphp\n{{-- a\n   comment --}}\n<a\nhref=\"x\"\n  class=\"y\"\n>link</a>\n@verbatim\n   {{ raw }}\n@endverbatim\n</div>\n";
+    let formatted = "<div>\n    <pre>\n  keep   this\n</pre>\n    <script>\n        if (a) {\n            b();\n        }\n    </script>\n    @php\n        $a = 1;\n          $b = 2;\n    @endphp\n    {{-- a\n   comment --}}\n    <a\n        href=\"x\"\n        class=\"y\"\n    >link</a>\n    @verbatim\n   {{ raw }}\n@endverbatim\n</div>\n";
+    assert_eq!(blade_format(messy), formatted);
+}
+
+#[test]
+fn format_closes_elements_left_open_and_keeps_line_endings() {
+    let messy = "<ul>\n<li>one\n<li>two\n</ul>\n<p>after</p>";
+    assert_eq!(blade_format(messy), "<ul>\n    <li>one\n    <li>two\n</ul>\n<p>after</p>\n");
+    let crlf = "<div>\r\n<p>x</p>\r\n</div>\r\n";
+    assert_eq!(blade_format(crlf), "<div>\r\n    <p>x</p>\r\n</div>\r\n");
+}
+
+/// Reformat Code over the templates of a real app (`LARAVEL_APP_DIR`):
+/// only whitespace changes (and the spaces inside echoes), and formatting
+/// again changes nothing. Prints how many lines it changes.
+#[test]
+#[ignore = "needs LARAVEL_APP_DIR"]
+fn format_is_safe_and_stable_on_a_real_app() {
+    let Some(dir) = std::env::var_os("LARAVEL_APP_DIR").map(std::path::PathBuf::from) else { return };
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n != "node_modules" && n != "vendor") {
+                    walk(&path, out);
+                }
+            } else if path.to_string_lossy().ends_with(".blade.php") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&dir, &mut files);
+    let options = crate::blade::format::BladeFormatOptions { indent: 4, use_tabs: false };
+    let strip = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let (mut lines, mut changed) = (0, 0);
+    let mut failures = Vec::new();
+    for file in &files {
+        let Ok(text) = std::fs::read_to_string(file) else { continue };
+        let out = crate::blade::format::format(&text, &options, &[]);
+        if strip(&text) != strip(&out) {
+            failures.push(format!("changes more than whitespace: {}", file.display()));
+        }
+        if crate::blade::format::format(&out, &options, &[]) != out {
+            failures.push(format!("not stable: {}", file.display()));
+        }
+        lines += text.lines().count();
+        changed += text.lines().zip(out.lines()).filter(|(a, b)| a.trim_end() != *b).count();
+    }
+    eprintln!("{} templates, {changed} of {lines} lines changed", files.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+#[test]
+fn format_edits_change_lines_in_place_and_only_the_range() {
+    use crate::blade::format::edits;
+    let text = "<div>\n<p>a</p>\n<p>b</p>\n</div>\n\n\n";
+    let formatted = blade_format(text);
+    assert_eq!(formatted, "<div>\n    <p>a</p>\n    <p>b</p>\n</div>\n");
+    let all = edits(text, &formatted, None);
+    let mut document = ide_text::Document::new(text);
+    document.apply_edits(&all).unwrap();
+    assert_eq!(document.text().to_string(), formatted);
+    // A range: its lines only, the end of the text left alone.
+    let some = edits(text, &formatted, Some((2, 2)));
+    assert_eq!(some.len(), 1);
+    assert_eq!((some[0].range.start.line, some[0].new_text.as_str()), (2, "    <p>b</p>"));
+}
