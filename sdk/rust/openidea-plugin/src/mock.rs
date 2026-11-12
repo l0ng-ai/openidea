@@ -48,7 +48,6 @@ struct WebSocketState {
     project: String,
     request: crate::host::WebSocketRequest,
     sent: Vec<Vec<u8>>,
-    subscriptions: BTreeSet<String>,
     incoming: VecDeque<Vec<u8>>,
     closed: bool,
 }
@@ -60,7 +59,6 @@ pub struct MockWebSocket {
     pub project: String,
     pub request: crate::host::WebSocketRequest,
     pub sent: Vec<Vec<u8>>,
-    pub subscriptions: Vec<String>,
     pub closed: bool,
 }
 
@@ -245,7 +243,6 @@ impl MockHost {
                 project: socket.project.clone(),
                 request: socket.request.clone(),
                 sent: socket.sent.clone(),
-                subscriptions: socket.subscriptions.iter().cloned().collect(),
                 closed: socket.closed,
             })
             .collect()
@@ -1947,7 +1944,6 @@ pub mod current {
                     project: project.root.clone(),
                     request,
                     sent: Vec::new(),
-                    subscriptions: BTreeSet::new(),
                     incoming: VecDeque::new(),
                     closed: false,
                 },
@@ -1980,26 +1976,6 @@ pub mod current {
             let count = usize::min(limit as usize, socket.incoming.len());
             let messages = socket.incoming.drain(..count).collect();
             Ok(WebSocketBatch { messages, closed: socket.closed && socket.incoming.is_empty() })
-        })
-    }
-    pub fn websocket_subscribe_document(connection: &WebSocketRes, path: &str) -> Result<bool, Error> {
-        with(|s| {
-            let socket = s
-                .websockets
-                .get_mut(connection)
-                .filter(|socket| !socket.closed)
-                .ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
-            Ok(socket.subscriptions.insert(path.to_owned()))
-        })
-    }
-    pub fn websocket_unsubscribe_document(connection: &WebSocketRes, path: &str) -> Result<bool, Error> {
-        with(|s| {
-            let socket = s
-                .websockets
-                .get_mut(connection)
-                .filter(|socket| !socket.closed)
-                .ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
-            Ok(socket.subscriptions.remove(path))
         })
     }
     pub fn websocket_close(connection: &WebSocketRes) -> Result<(), Error> {
@@ -2540,16 +2516,12 @@ mod tests {
         )
         .unwrap();
         socket.send(b"outbound").unwrap();
-        assert!(socket.subscribe_document("src/main.rs").unwrap());
-        assert!(!socket.subscribe_document("src/main.rs").unwrap());
-        assert!(socket.unsubscribe_document("src/main.rs").unwrap());
         mock.push_websocket_message(socket.id(), b"inbound").unwrap();
         assert_eq!(socket.drain(8).unwrap().messages, [b"inbound"]);
 
         let recorded = &mock.websockets()[0];
         assert_eq!(recorded.request.headers[0].1, "Bearer member-secret");
         assert_eq!(recorded.sent, [b"outbound"]);
-        assert!(recorded.subscriptions.is_empty());
 
         mock.close_websocket(socket.id()).unwrap();
         assert!(socket.drain(8).unwrap().closed);

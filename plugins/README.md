@@ -578,7 +578,7 @@ then run `openidea-plugin check`.
 | `Plugin::activate` / `deactivate`                                                                              | export `lifecycle`                         | Per instance: after a crash or idle reclaim a new one is activated.                                                                                                                                                                                                                                                                                       |
 | `TextEditor::document()` → `{version, text}`                                                                   | `editor.text-editor.document`              | `selections()` are those when the command ran (0-based lines, UTF-16 columns).                                                                                                                                                                                                                                                                            |
 | `Project::document`, `apply_document_edits`, `apply_document_change`                                           | `editor.{document,apply-edits}-at`         | API 1.5: versioned access to an explicitly named open project document from background events. Requires project/editor capabilities; stale edits change nothing.                                                                                                                                                                                          |
-| `WebSocket::{connect,send,drain,subscribe_document,unsubscribe_document,close}`                                | `net.websocket-*`                          | API 1.6: project-bound, bounded host-owned WSS transport with secret-filled headers, safe explicit document subscriptions, close state and event-driven wakeups.                                                                                                                                                                                          |
+| `WebSocket::{connect,send,drain,close}`                                                                        | `net.websocket-*`                          | API 1.6: project-bound, bounded host-owned WSS transport with secret-filled headers, close state and event-driven wakeups.                                                                                                                                                                                                                                |
 | `Project::{upsert_data_source,remove_data_source,data_sources,set_data_source_credential,connect_data_source}` | `database`                                 | API 1.4: owned project sources; requires `database.sources` and trust. See _Database sources_.                                                                                                                                                                                                                                                            |
 | `host::mcp_stdio_command()`                                                                                    | `mcp.stdio-command`                        | API 1.4: invoking project bridge argv, `None` while off. No URL/token.                                                                                                                                                                                                                                                                                    |
 | `McpProvider::call(tool, arguments, ctx)`                                                                      | export `mcp-provider.call`                 | API 1.4: declared tools under plugin grants and command budget. See _Plugin MCP tools_.                                                                                                                                                                                                                                                                   |
@@ -919,22 +919,18 @@ and requires the endpoint's `net:<host>` grant and WSS outside loopback. Request
 headers go with the handshake (secret placeholders are expanded by the host);
 `Host`, `Connection`, `Upgrade` and `Sec-WebSocket-*` belong to the handshake and
 are rejected. An empty subprotocol requests none; otherwise the server must
-accept it. `subscribe_document` requires `project.read`, `editor.read` and
-`events`, and accepts only an explicitly named open regular file. It rejects
-symlinks, IDE/VCS control directories and common secret files. A plugin may hold
-eight connections; dropping the handle closes it.
+accept it. A plugin may hold eight connections; dropping the handle closes it.
 
 Incoming frames use a separate bounded FIFO. Activate on
 `on-event:websocket-ready`, then call `drain`; the returned batch includes the
 final `closed` state. Queue overflow rejects the new frame and closes the
-connection instead of reporting delivery or growing memory. Subscriptions are
-removed on unsubscribe, disconnect, plugin stop or transport failure.
+connection instead of reporting delivery or growing memory.
 
 Native plugin tests use the same `WebSocket` wrapper with `MockHost`. Inspect
 opened connections and outbound frames with `websockets`, queue an inbound
 binary frame with `push_websocket_message`, and finish the peer side with
 `close_websocket`. The mock expands declared secret placeholders, enforces the
-network grant and project binding, records document subscriptions, and reports
+network grant and project binding, records outbound frames, and reports
 the final close only after queued frames have drained.
 
 Provider calls can use `host::project_of(&doc.path)` (`workspace.project-of`)

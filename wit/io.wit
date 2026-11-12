@@ -98,10 +98,6 @@ interface net {
         id: func() -> u64;
         send: func(bytes: list<u8>) -> result<_, error>;
         drain: func(limit: u32) -> result<websocket-batch, error>;
-        /// Requires project.read, editor.read and events. Only an open,
-        /// regular, non-secret file without symlink components can be shared.
-        subscribe-document: func(path: string) -> result<bool, error>;
-        unsubscribe-document: func(path: string) -> result<bool, error>;
         close: func() -> result<_, error>;
     }
 

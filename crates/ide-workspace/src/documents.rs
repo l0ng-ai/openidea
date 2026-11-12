@@ -607,7 +607,7 @@ impl Documents {
             }
             let base_version = st.doc.version();
             let (set, applied, bytes) = st.doc.apply_edits_detailed(edits)?;
-            self.patched(doc, st, base_version, set, &applied, &bytes);
+            self.patched(doc, st, base_version, set, &applied, &bytes, false);
             self.set_dirty(doc, st, true);
             Ok(st.doc.version())
         })
@@ -628,7 +628,10 @@ impl Documents {
                 return Ok(Some(version));
             }
             let (set, applied, bytes) = st.doc.apply_edits_detailed(edits)?;
-            self.patched(doc, st, version, set, &applied, &bytes);
+            // Background callers (including plugins) never create a local Undo
+            // entry. The frontend also treats this patch as external, so it
+            // cannot be reported back as a local document-changed event.
+            self.patched(doc, st, version, set, &applied, &bytes, true);
             self.set_dirty(doc, st, true);
             Ok(Some(st.doc.version()))
         })
@@ -642,6 +645,7 @@ impl Documents {
         set: ChangeSet,
         applied: &[AppliedChange],
         edits: &[ByteEdit],
+        external: bool,
     ) {
         self.notify_changed(doc, st, applied, edits);
         self.sink.emit(IdeEvent::DocPatched {
@@ -649,7 +653,7 @@ impl Documents {
             base_version,
             version: st.doc.version(),
             changes: set.changes,
-            workspace_edit: self.workspace_edit_active.load(std::sync::atomic::Ordering::Relaxed),
+            workspace_edit: external || self.workspace_edit_active.load(std::sync::atomic::Ordering::Relaxed),
         });
     }
 
@@ -661,7 +665,7 @@ impl Documents {
         }
         let base_version = st.doc.version();
         let (applied, edits) = st.doc.apply_detailed(base_version, &set)?;
-        self.patched(doc, st, base_version, set, &applied, &edits);
+        self.patched(doc, st, base_version, set, &applied, &edits, false);
         Ok(true)
     }
 

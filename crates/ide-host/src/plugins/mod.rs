@@ -1852,9 +1852,6 @@ impl PluginHost {
     pub fn event_kinds(&self) -> BTreeSet<EventKind> {
         let subs = self.shared.subscriptions.lock().clone();
         let mut out = BTreeSet::new();
-        if self.shared.websockets.has_subscriptions() {
-            out.insert(EventKind::DocumentChanged);
-        }
         for p in self.plugins.read().values() {
             for kind in EventKind::ALL {
                 if Self::wants(p, kind, subs.kinds.get(p.id())) {
@@ -1888,11 +1885,6 @@ impl PluginHost {
             editors.remove(client);
         }
         drop(editors);
-        for event in &events {
-            if let WorkbenchEvent::DocumentChanged(change) = event {
-                self.shared.websockets.publish(change);
-            }
-        }
         self.post_events(
             Some(client),
             events

@@ -685,14 +685,6 @@ mod imp {
             .map_err(error)
     }
 
-    pub fn websocket_subscribe_document(connection: &WebSocketRes, path: &str) -> Result<bool, Error> {
-        connection.subscribe_document(path).map_err(error)
-    }
-
-    pub fn websocket_unsubscribe_document(connection: &WebSocketRes, path: &str) -> Result<bool, Error> {
-        connection.unsubscribe_document(path).map_err(error)
-    }
-
     pub fn websocket_close(connection: &WebSocketRes) -> Result<(), Error> {
         connection.close().map_err(error)
     }
@@ -1227,12 +1219,6 @@ impl WebSocket {
     }
     pub fn drain(&self, limit: u32) -> Result<WebSocketBatch, Error> {
         imp::websocket_drain(&self.inner, limit)
-    }
-    pub fn subscribe_document(&self, path: &str) -> Result<bool, Error> {
-        imp::websocket_subscribe_document(&self.inner, path)
-    }
-    pub fn unsubscribe_document(&self, path: &str) -> Result<bool, Error> {
-        imp::websocket_unsubscribe_document(&self.inner, path)
     }
     pub fn close(&self) -> Result<(), Error> {
         imp::websocket_close(&self.inner)

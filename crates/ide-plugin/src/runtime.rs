@@ -450,14 +450,6 @@ pub trait HostApi: Send + Sync {
         let _ = (connection, limit);
         Err(HostError::Invalid("background WebSockets are unavailable on this host".into()))
     }
-    fn websocket_subscribe_document(&self, root: &Path, connection: u64, path: &Path) -> Result<bool, HostError> {
-        let _ = (root, connection, path);
-        Err(HostError::Invalid("document WebSocket subscriptions are unavailable on this host".into()))
-    }
-    fn websocket_unsubscribe_document(&self, root: &Path, connection: u64, path: &Path) -> Result<bool, HostError> {
-        let _ = (root, connection, path);
-        Err(HostError::Invalid("document WebSocket subscriptions are unavailable on this host".into()))
-    }
     fn websocket_close(&self, connection: u64) {
         let _ = connection;
     }

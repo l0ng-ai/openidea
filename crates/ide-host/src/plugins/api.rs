@@ -2317,14 +2317,6 @@ impl HostApi for PluginApi {
         self.shared.websockets.drain(self.id(), connection, limit).map_err(HostError::Invalid)
     }
 
-    fn websocket_subscribe_document(&self, _root: &Path, connection: u64, path: &Path) -> Result<bool, HostError> {
-        self.shared.websockets.subscribe(self.id(), connection, &to_ipc(path)).map_err(HostError::Invalid)
-    }
-
-    fn websocket_unsubscribe_document(&self, _root: &Path, connection: u64, path: &Path) -> Result<bool, HostError> {
-        self.shared.websockets.unsubscribe(self.id(), connection, &to_ipc(path)).map_err(HostError::Invalid)
-    }
-
     fn websocket_close(&self, connection: u64) {
         let _ = self.shared.websockets.disconnect(self.id(), connection);
     }

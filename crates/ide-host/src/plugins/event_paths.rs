@@ -95,13 +95,15 @@ impl PluginHost {
         events: &[WorkbenchEvent],
         subs: &Subscriptions,
     ) -> Vec<WorkbenchEvent> {
-        let Some(filters) = subs.paths.get(plugin.id()) else { return events.to_vec() };
+        let filters = subs.paths.get(plugin.id());
         let workspace = shared.workspace();
         events
             .iter()
             .filter_map(|event| {
                 if let WorkbenchEvent::FilesChanged(batch) = event {
-                    let Some(filter) = filters.get(event.kind().name()) else { return Some(event.clone()) };
+                    let Some(filter) = filters.and_then(|filters| filters.get(event.kind().name())) else {
+                        return Some(event.clone());
+                    };
                     let root = workspace.as_ref()?.project_of(client?)?;
                     if plugin.dev_root.as_deref().is_some_and(|r| r != root) {
                         return None;
@@ -129,7 +131,6 @@ impl PluginHost {
                     WorkbenchEvent::DocumentChanged(change) => Path::new(&change.path),
                     _ => return Some(event.clone()),
                 };
-                let Some(filter) = filters.get(event.kind().name()) else { return Some(event.clone()) };
                 if !path.is_absolute() {
                     return None;
                 }
@@ -148,7 +149,19 @@ impl PluginHost {
                 if plugin.dev_root.as_deref().is_some_and(|r| r != root) {
                     return None;
                 }
-                filter.matches(&root, path).then(|| event.clone())
+                let relative = path.strip_prefix(&root).ok()?.to_string_lossy().replace('\\', "/");
+                if let WorkbenchEvent::DocumentChanged(change) = event {
+                    let filter = filters.and_then(|filters| filters.get(event.kind().name()));
+                    return filter.is_none_or(|filter| filter.matches(&root, path)).then(|| {
+                        let mut change = change.clone();
+                        change.path = relative;
+                        WorkbenchEvent::DocumentChanged(change)
+                    });
+                }
+                filters
+                    .and_then(|filters| filters.get(event.kind().name()))
+                    .is_none_or(|filter| filter.matches(&root, path))
+                    .then(|| event.clone())
             })
             .collect()
     }

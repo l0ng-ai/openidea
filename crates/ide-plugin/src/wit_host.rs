@@ -1534,37 +1534,6 @@ impl net::HostWebsocket for StoreData {
             .map_err(to_wit))
     }
 
-    fn subscribe_document(&mut self, this: Resource<WebSocketRes>, path: String) -> Fallible<bool> {
-        if let Err(error) = self
-            .require(Capability::ProjectRead)
-            .and_then(|_| self.require(Capability::EditorRead))
-            .and_then(|_| self.require(Capability::Events))
-        {
-            return Ok(Err(error));
-        }
-        let socket = self.table.get(&this)?;
-        let path = match sandbox::resolve_shared_document(&socket.root, &path) {
-            Ok(path) => path,
-            Err(error) => return Ok(Err(wit::Error::Invalid(error))),
-        };
-        if self.host.document(&path).is_none() {
-            return Ok(Err(wit::Error::NotFound(format!("{} is not open", path.display()))));
-        }
-        Ok(self.host.websocket_subscribe_document(&socket.root, socket.id, &path).map_err(to_wit))
-    }
-
-    fn unsubscribe_document(&mut self, this: Resource<WebSocketRes>, path: String) -> Fallible<bool> {
-        if let Err(error) = self.require(Capability::ProjectRead) {
-            return Ok(Err(error));
-        }
-        let socket = self.table.get(&this)?;
-        let path = match sandbox::resolve_shared_document_identity(&socket.root, &path) {
-            Ok(path) => path,
-            Err(error) => return Ok(Err(wit::Error::Invalid(error))),
-        };
-        Ok(self.host.websocket_unsubscribe_document(&socket.root, socket.id, &path).map_err(to_wit))
-    }
-
     fn close(&mut self, this: Resource<WebSocketRes>) -> Fallible<()> {
         let id = self.table.get(&this)?.id;
         self.host.websocket_close(id);
