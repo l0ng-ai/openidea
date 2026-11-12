@@ -359,6 +359,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "db.openValueWindow": [],
   "db.findInValue": ["Meta+F"],
   "db.execute": ["Meta+Enter"],
+  "db.nextResultTab": ["Meta+Alt+Right", "Meta+Shift+]"],
+  "db.previousResultTab": ["Meta+Alt+Left", "Meta+Shift+["],
   "db.showToolWindow": [],
   // Database tool window (when the tree has focus).
   "db.openConsole": [],
