@@ -7144,7 +7144,7 @@
   "true": "真",
   "false": "假",
   "bun-dap (Bun)": "Bun DAP",
-  "Bun": "Bun 运行时",
+  "Bun": "Bun ",
   "Run a typescript or javascript file with Bun": "使用 Bun 运行 TypeScript 或 JavaScript 文件",
   "Working Dir": "工作目录",
   "Script (.ts .js)": "脚本 (.ts .js)",
