@@ -70,6 +70,14 @@ pub type DetectLanguage = dyn Fn(&Path, Option<&str>) -> LanguageId + Send + Syn
 /// CodeMirror mode of a file replacing its language's own one; `None` keeps it.
 pub type DetectUiMode = dyn Fn(&Path, &LanguageId) -> Option<String> + Send + Sync;
 
+struct DocumentPatch<'a> {
+    base_version: u32,
+    changes: ChangeSet,
+    applied: &'a [AppliedChange],
+    edits: &'a [ByteEdit],
+    workspace_edit: bool,
+}
+
 /// Registry of open documents keyed by path, with ref-counting so split
 /// editors on the same file share one buffer.
 ///
@@ -607,7 +615,11 @@ impl Documents {
             }
             let base_version = st.doc.version();
             let (set, applied, bytes) = st.doc.apply_edits_detailed(edits)?;
-            self.patched(doc, st, base_version, set, &applied, &bytes, false);
+            self.patched(
+                doc,
+                st,
+                DocumentPatch { base_version, changes: set, applied: &applied, edits: &bytes, workspace_edit: false },
+            );
             self.set_dirty(doc, st, true);
             Ok(st.doc.version())
         })
@@ -631,29 +643,31 @@ impl Documents {
             // Background callers (including plugins) never create a local Undo
             // entry. The frontend also treats this patch as external, so it
             // cannot be reported back as a local document-changed event.
-            self.patched(doc, st, version, set, &applied, &bytes, true);
+            self.patched(
+                doc,
+                st,
+                DocumentPatch {
+                    base_version: version,
+                    changes: set,
+                    applied: &applied,
+                    edits: &bytes,
+                    workspace_edit: true,
+                },
+            );
             self.set_dirty(doc, st, true);
             Ok(Some(st.doc.version()))
         })
     }
 
-    fn patched(
-        &self,
-        doc: DocId,
-        st: &DocState,
-        base_version: u32,
-        set: ChangeSet,
-        applied: &[AppliedChange],
-        edits: &[ByteEdit],
-        external: bool,
-    ) {
-        self.notify_changed(doc, st, applied, edits);
+    fn patched(&self, doc: DocId, st: &DocState, patch: DocumentPatch<'_>) {
+        self.notify_changed(doc, st, patch.applied, patch.edits);
         self.sink.emit(IdeEvent::DocPatched {
             doc,
-            base_version,
+            base_version: patch.base_version,
             version: st.doc.version(),
-            changes: set.changes,
-            workspace_edit: external || self.workspace_edit_active.load(std::sync::atomic::Ordering::Relaxed),
+            changes: patch.changes.changes,
+            workspace_edit: patch.workspace_edit
+                || self.workspace_edit_active.load(std::sync::atomic::Ordering::Relaxed),
         });
     }
 
@@ -665,7 +679,11 @@ impl Documents {
         }
         let base_version = st.doc.version();
         let (applied, edits) = st.doc.apply_detailed(base_version, &set)?;
-        self.patched(doc, st, base_version, set, &applied, &edits, false);
+        self.patched(
+            doc,
+            st,
+            DocumentPatch { base_version, changes: set, applied: &applied, edits: &edits, workspace_edit: false },
+        );
         Ok(true)
     }
 

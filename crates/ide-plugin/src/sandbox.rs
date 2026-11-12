@@ -88,58 +88,6 @@ pub fn resolve_in_roots(roots: &[PathBuf], path: &str) -> Result<PathBuf, String
     }
 }
 
-/// Resolves an existing regular file that may be shared with a remote
-/// collaborator. Control directories, common secret files and every symlink
-/// component are refused, even when the link would stay inside the project.
-pub fn resolve_shared_document(root: &Path, path: &str) -> Result<PathBuf, String> {
-    resolve_shared_path(root, path, false)
-}
-
-/// The stable path used to remove a document subscription. The final file may
-/// have been deleted since it was subscribed; all parent safety checks remain.
-pub fn resolve_shared_document_identity(root: &Path, path: &str) -> Result<PathBuf, String> {
-    resolve_shared_path(root, path, true)
-}
-
-fn resolve_shared_path(root: &Path, path: &str, missing_final: bool) -> Result<PathBuf, String> {
-    let (root, joined) = joined_path(root, path)?;
-    let relative =
-        joined.strip_prefix(&root).map_err(|_| format!("{path}: access outside the project root is not allowed"))?;
-    let mut current = root.clone();
-    let components = relative.components().collect::<Vec<_>>();
-    for (index, component) in components.iter().enumerate() {
-        let std::path::Component::Normal(name) = component else {
-            return Err(format!("{path}: non-canonical document path is not allowed"));
-        };
-        let folded = name.to_string_lossy().to_ascii_lowercase();
-        if matches!(folded.as_str(), ".git" | ".hg" | ".svn" | ".openidea" | ".idea" | ".vscode") {
-            return Err(format!("{path}: IDE and version-control directories cannot be shared"));
-        }
-        current.push(name);
-        match std::fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(format!("{path}: symbolic links cannot be shared"));
-            }
-            Ok(_) => {}
-            Err(error)
-                if missing_final && index + 1 == components.len() && error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(format!("{path}: no such file")),
-        }
-    }
-    let name = current.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_ascii_lowercase();
-    if name == ".env"
-        || name.starts_with(".env.")
-        || matches!(name.as_str(), ".npmrc" | ".pypirc" | ".netrc" | "id_rsa" | "id_ed25519")
-        || [".pem", ".key", ".p12", ".pfx"].iter().any(|suffix| name.ends_with(suffix))
-    {
-        return Err(format!("{path}: common secret files cannot be shared"));
-    }
-    if !missing_final && !std::fs::symlink_metadata(&current).is_ok_and(|metadata| metadata.is_file()) {
-        return Err(format!("{path}: shared documents must be regular files"));
-    }
-    Ok(current)
-}
-
 /// Whether `path` (absolute, or relative to `root`) lands inside `root`,
 /// without requiring it to exist: `Ok(true)` also for a missing path, so
 /// callers distinguish "outside" from "absent". Existing symlinks are

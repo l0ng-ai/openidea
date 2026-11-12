@@ -167,7 +167,6 @@ pub struct ChildRes {
 /// Releasing the component resource closes the underlying transport.
 pub struct WebSocketRes {
     id: u64,
-    root: PathBuf,
     host: std::sync::Arc<dyn crate::HostApi>,
 }
 
@@ -1506,7 +1505,7 @@ impl net::Host for StoreData {
         let root = self.table.get(&project)?.root.clone();
         let timeout = WEBSOCKET_HANDSHAKE_TIMEOUT.min(self.io_timeout());
         match self.host.websocket_connect(&root, request, timeout) {
-            Ok(id) => self.push(WebSocketRes { id, root, host: self.host.clone() }).map(Ok),
+            Ok(id) => self.push(WebSocketRes { id, host: self.host.clone() }).map(Ok),
             Err(error) => {
                 self.grant_io_error_grace();
                 Ok(Err(to_wit(error)))
