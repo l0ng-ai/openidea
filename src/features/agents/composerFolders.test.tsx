@@ -150,6 +150,38 @@ describe("Composer @ folders", () => {
 });
 
 describe("Composer tag editing", () => {
+  it.each(["@src/ag", "/rev"])("deletes %s character by character while it is typed", async (tag) => {
+    const box = renderComposer();
+    const user = userEvent.setup();
+    await user.type(box, `see ${tag}`);
+    await user.keyboard("{Backspace}");
+    expect(box.value).toBe(`see ${tag.slice(0, -1)}`);
+    await user.keyboard("{Backspace}");
+    expect(box.value).toBe(`see ${tag.slice(0, -2)}`);
+  });
+
+  it("deletes inside a folder entered with Tab character by character", async () => {
+    const box = renderComposer();
+    const user = userEvent.setup();
+    await user.type(box, "@agen");
+    await screen.findAllByRole("option");
+    await user.keyboard("{Tab}");
+    expect(box.value).toBe("@src/agents/");
+    await user.keyboard("{Backspace}");
+    expect(box.value).toBe("@src/agents");
+  });
+
+  it("deletes a completed reference as a unit after its space", async () => {
+    const box = renderComposer();
+    const user = userEvent.setup();
+    await user.type(box, "see @agen");
+    await screen.findAllByRole("option");
+    await user.keyboard("{Enter}");
+    expect(box.value).toBe("see @src/agents/ ");
+    await user.keyboard("{Backspace}{Backspace}");
+    expect(box.value).toBe("see ");
+  });
+
   it.each(["@src/a.ts", "/review"])("deletes %s as a unit", async (tag) => {
     const box = renderComposer();
     const user = userEvent.setup();
