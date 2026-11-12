@@ -1498,7 +1498,7 @@ impl net::Host for StoreData {
         project: Resource<ProjectRes>,
         req: net::WebsocketRequest,
     ) -> Fallible<Resource<WebSocketRes>> {
-        let capability = match net_capability(&req.url) {
+        let capability = match crate::types::websocket_capability(&req.url) {
             Ok(capability) => capability,
             Err(error) => return Ok(Err(wit::Error::Invalid(error))),
         };

@@ -154,9 +154,20 @@ impl PluginWorkspace for TestWorkspace {
         let snap = self.documents.snapshot(self.documents.by_path(path)?).ok()?;
         Some((u64::from(snap.version), snap.text))
     }
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[ide_core::TextEdit]) -> Result<u64, HostError> {
+    fn apply_edits(
+        &self,
+        path: &Path,
+        version: u64,
+        edits: &[ide_core::TextEdit],
+        background: bool,
+    ) -> Result<u64, HostError> {
         let doc = self.documents.by_path(path).ok_or_else(|| HostError::NotFound("not open".into()))?;
-        match self.documents.apply_edits_at(doc, version as u32, edits) {
+        let applied = if background {
+            self.documents.apply_background_edits_at(doc, version as u32, edits)
+        } else {
+            self.documents.apply_edits_at(doc, version as u32, edits)
+        };
+        match applied {
             Ok(Some(v)) => Ok(u64::from(v)),
             Ok(None) => Err(HostError::Stale),
             Err(e) => Err(HostError::Failed(e.message)),
@@ -455,10 +466,10 @@ fn edits_are_refused_when_the_document_changed() {
         range: ide_core::Range::new(ide_core::Pos::new(0, 0), ide_core::Pos::new(0, 3)),
         new_text: "ONE".into(),
     };
-    assert_eq!(f.workspace.apply_edits(&editor.path, doc.0, std::slice::from_ref(&edit)), Err(HostError::Stale));
+    assert_eq!(f.workspace.apply_edits(&editor.path, doc.0, std::slice::from_ref(&edit), false), Err(HostError::Stale));
     assert_eq!(f.workspace.text("src/notes.txt"), "typed one two three\nfour five\n");
     let now = f.workspace.document(&editor.path).unwrap().0;
-    assert_eq!(f.workspace.apply_edits(&editor.path, now, &[edit]), Ok(now + 1));
+    assert_eq!(f.workspace.apply_edits(&editor.path, now, &[edit], false), Ok(now + 1));
     assert_eq!(f.workspace.text("src/notes.txt"), "ONEed one two three\nfour five\n");
     let _ = (
         std::any::type_name::<Runtime>(),
@@ -4829,8 +4840,14 @@ impl PluginWorkspace for EndpointWorkspace {
     fn project_of(&self, _: &str) -> Option<PathBuf> {
         self.roots.lock().first().cloned()
     }
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[ide_core::TextEdit]) -> Result<u64, HostError> {
-        self.inner.apply_edits(path, version, edits)
+    fn apply_edits(
+        &self,
+        path: &Path,
+        version: u64,
+        edits: &[ide_core::TextEdit],
+        background: bool,
+    ) -> Result<u64, HostError> {
+        self.inner.apply_edits(path, version, edits, background)
     }
     fn publish_diagnostics(
         &self,
