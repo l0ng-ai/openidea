@@ -185,15 +185,15 @@ impl Dispatcher {
         .add("fs_entry_kind", |c| async move { ops::fs::entry_kind(&c.host, c.arg("path")?).await })
         .add("fs_create_file", |c| async move { ops::fs::create_file(&c.host, &c.window, c.arg("path")?) })
         .add("fs_create_file_bytes", |c| async move {
-            ops::fs::create_file_bytes(&c.host, c.arg("path")?, c.arg("data")?).await
+            ops::fs::create_file_bytes(&c.host, &c.window, c.arg("path")?, c.arg("data")?).await
         })
         .add("fs_create_dir", |c| async move { ide_vfs::create_dir(&c.arg::<PathBuf>("path")?) })
-        .add("fs_rename", |c| async move { ops::fs::rename(&c.host, c.arg("from")?, c.arg("to")?).await })
+        .add("fs_rename", |c| async move { ops::fs::rename(&c.host, &c.window, c.arg("from")?, c.arg("to")?).await })
         .add("fs_set_writable", |c| async move {
             ops::fs::set_writable(&c.host, &c.window, c.arg("path")?, c.arg("writable")?)
         })
         .add("fs_delete", |c| async move { ops::fs::delete(&c.host, &c.window, c.arg("path")?).await })
-        .add("fs_copy", |c| async move { ops::fs::copy(&c.host, c.arg("from")?, c.arg("to")?).await })
+        .add("fs_copy", |c| async move { ops::fs::copy(&c.host, &c.window, c.arg("from")?, c.arg("to")?).await })
         .add("fs_copy_merge", |c| async move {
             ops::fs::copy_merge(
                 &c.host,
