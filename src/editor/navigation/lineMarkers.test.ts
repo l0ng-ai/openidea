@@ -27,6 +27,7 @@ import {
   emptyCache,
   enabledGroups,
   fillMarkers,
+  markerBatches,
   markersOf,
   noteOtherChanges,
   openMarkerTargets,
@@ -353,6 +354,23 @@ describe("marker cache across views", () => {
     expect(affectsMarkers(["/p/build/tmp/x.txt", "/p/.git/index", "C:\\p\\out\\Main.class"])).toBe(false);
     expect(affectsMarkers(["/p/target/classes/a/Shape.class", "/p/src/main/java/a/Circle.java"])).toBe(true);
     expect(affectsMarkers(["/p/src/builder/Shape.java"])).toBe(true);
+  });
+});
+
+describe("marker batches", () => {
+  const at = (line: number) => ({ line }) as MarkerCandidate;
+
+  it("asks the viewport first, then the rest of the file nearest first", () => {
+    const candidates = [0, 100, 300, 400, 650, 900].map(at);
+    const batches = markerBatches(candidates, 380, 420);
+    expect(batches.flat().map((c) => c.line)).toEqual([400, 300, 650, 100, 0, 900]);
+  });
+
+  it("covers every declaration in batches", () => {
+    const candidates = Array.from({ length: 150 }, (_, i) => at(i * 4));
+    const batches = markerBatches(candidates, 0, 40);
+    expect(batches.map((b) => b.length)).toEqual([60, 60, 30]);
+    expect(new Set(batches.flat()).size).toBe(150);
   });
 });
 
