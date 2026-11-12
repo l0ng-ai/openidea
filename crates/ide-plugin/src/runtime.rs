@@ -433,8 +433,13 @@ pub trait HostApi: Send + Sync {
     /// Performs `request` (its host is granted), filling in secret placeholders.
     fn fetch(&self, request: HttpRequest, cancel: &CancellationToken) -> Result<HttpResponse, HostError>;
 
-    fn websocket_connect(&self, root: &Path, request: crate::WebSocketRequest) -> Result<u64, HostError> {
-        let _ = (root, request);
+    fn websocket_connect(
+        &self,
+        root: &Path,
+        request: crate::WebSocketRequest,
+        timeout: Duration,
+    ) -> Result<u64, HostError> {
+        let _ = (root, request, timeout);
         Err(HostError::Invalid("background WebSockets are unavailable on this host".into()))
     }
     fn websocket_send(&self, connection: u64, bytes: Vec<u8>) -> Result<(), HostError> {

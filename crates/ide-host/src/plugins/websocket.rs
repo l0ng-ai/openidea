@@ -81,25 +81,38 @@ impl WebSocketHub {
         plugin: &str,
         project: &str,
         url: &str,
-        authorization: &str,
+        headers: &[(String, String)],
         subprotocol: &str,
+        timeout: Duration,
     ) -> Result<ConnectionId, ConnectError> {
         validate_url(url).map_err(ConnectError::Invalid)?;
-        if authorization.is_empty() || authorization.len() > 4096 || subprotocol.is_empty() || subprotocol.len() > 256 {
-            return Err(ConnectError::Invalid("invalid WebSocket credentials or subprotocol".into()));
+        if subprotocol.len() > 256 {
+            return Err(ConnectError::Invalid("WebSocket subprotocol is too long".into()));
+        }
+        if timeout.is_zero() {
+            return Err(ConnectError::Failed("WebSocket connection timed out".into()));
         }
         self.reserve(plugin)?;
         let result = async {
             let mut request =
                 url.into_client_request().map_err(|_| ConnectError::Invalid("invalid WebSocket URL".into()))?;
-            request.headers_mut().insert(
-                "authorization",
-                authorization.parse().map_err(|_| ConnectError::Invalid("invalid authorization header".into()))?,
-            );
-            request.headers_mut().insert(
-                "sec-websocket-protocol",
-                subprotocol.parse().map_err(|_| ConnectError::Invalid("invalid WebSocket subprotocol".into()))?,
-            );
+            for (name, value) in headers {
+                if protected_header(name) {
+                    return Err(ConnectError::Invalid(format!(
+                        "WebSocket header {name:?} is managed by the handshake"
+                    )));
+                }
+                let name = name.parse().map_err(|_| ConnectError::Invalid("invalid WebSocket header name".into()))?;
+                let value =
+                    value.parse().map_err(|_| ConnectError::Invalid("invalid WebSocket header value".into()))?;
+                request.headers_mut().append(name, value);
+            }
+            if !subprotocol.is_empty() {
+                request.headers_mut().insert(
+                    "sec-websocket-protocol",
+                    subprotocol.parse().map_err(|_| ConnectError::Invalid("invalid WebSocket subprotocol".into()))?,
+                );
+            }
             let config = WebSocketConfig::default()
                 .read_buffer_size(16 << 10)
                 .write_buffer_size(16 << 10)
@@ -110,15 +123,14 @@ impl WebSocketHub {
                 .map(Arc::new)
                 .map(Connector::Rustls)
                 .map_err(|error| ConnectError::Failed(error.message))?;
-            let (socket, response) = tokio::time::timeout(
-                Duration::from_secs(10),
-                connect_async_tls_with_config(request, Some(config), false, Some(tls)),
-            )
-            .await
-            .map_err(|_| ConnectError::Failed("WebSocket connection timed out".into()))?
-            .map_err(|_| ConnectError::Failed("WebSocket connection failed".into()))?;
-            if response.headers().get("sec-websocket-protocol").and_then(|value| value.to_str().ok())
-                != Some(subprotocol)
+            let (socket, response) =
+                tokio::time::timeout(timeout, connect_async_tls_with_config(request, Some(config), false, Some(tls)))
+                    .await
+                    .map_err(|_| ConnectError::Failed("WebSocket connection timed out".into()))?
+                    .map_err(|_| ConnectError::Failed("WebSocket connection failed".into()))?;
+            if !subprotocol.is_empty()
+                && response.headers().get("sec-websocket-protocol").and_then(|value| value.to_str().ok())
+                    != Some(subprotocol)
             {
                 return Err(ConnectError::Failed("WebSocket server did not accept the required subprotocol".into()));
             }
@@ -253,14 +265,17 @@ fn validate_url(url: &str) -> Result<(), String> {
     if parsed.scheme() != "wss" && !(parsed.scheme() == "ws" && loopback) {
         return Err("WebSocket requires WSS outside loopback".into());
     }
-    if !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-    {
+    if !parsed.username().is_empty() || parsed.password().is_some() || parsed.fragment().is_some() {
         return Err("WebSocket credentials and query strings are forbidden".into());
     }
     Ok(())
+}
+
+fn protected_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("host")
+        || name.eq_ignore_ascii_case("connection")
+        || name.eq_ignore_ascii_case("upgrade")
+        || name.get(.."sec-websocket-".len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case("sec-websocket-"))
 }
 
 async fn run_socket<S>(
@@ -379,7 +394,17 @@ mod tests {
     async fn outbound_message_reaches_the_websocket_server() {
         let (url, server) = server().await;
         let hub = WebSocketHub::default();
-        let connection = hub.connect("plugin", "/project", &url, "Bearer test", "openidea.test.v1").await.unwrap();
+        let connection = hub
+            .connect(
+                "plugin",
+                "/project",
+                &url,
+                &[("authorization".into(), "Bearer test".into())],
+                "openidea.test.v1",
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
         hub.send("plugin", connection, b"message".to_vec()).unwrap();
         hub.disconnect("plugin", connection).unwrap();
         assert_eq!(server.await.unwrap(), [b"message"]);
@@ -396,7 +421,17 @@ mod tests {
             socket.close(None).await.unwrap();
         });
         let hub = WebSocketHub::default();
-        let connection = hub.connect("plugin", "/project", &url, "Bearer test", "openidea.test.v1").await.unwrap();
+        let connection = hub
+            .connect(
+                "plugin",
+                "/project",
+                &url,
+                &[("authorization".into(), "Bearer test".into())],
+                "openidea.test.v1",
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
         server.await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(
@@ -430,10 +465,17 @@ mod tests {
     #[test]
     fn websocket_urls_require_tls_and_keep_credentials_out_of_the_url() {
         assert!(validate_url("wss://relay.example/socket").is_ok());
+        assert!(validate_url("wss://relay.example/socket?channel=main&token=opaque").is_ok());
         assert!(validate_url("ws://127.0.0.1:9000/socket").is_ok());
         assert!(validate_url("ws://relay.example/socket").unwrap_err().contains("WSS"));
         assert!(validate_url("wss://token@relay.example/socket").is_err());
-        assert!(validate_url("wss://relay.example/socket?token=x").is_err());
+        assert!(validate_url("wss://relay.example/socket#fragment").is_err());
+        assert!(protected_header("Host"));
+        assert!(protected_header("Connection"));
+        assert!(protected_header("Upgrade"));
+        assert!(protected_header("Sec-WebSocket-Key"));
+        assert!(!protected_header("Cookie"));
+        assert!(!protected_header("X-API-Key"));
     }
 
     #[test]

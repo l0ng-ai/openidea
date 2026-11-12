@@ -1805,6 +1805,13 @@ pub mod current {
         Some(host.to_ascii_lowercase())
     }
 
+    fn websocket_handshake_header(name: &str) -> bool {
+        name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("connection")
+            || name.eq_ignore_ascii_case("upgrade")
+            || name.get(.."sec-websocket-".len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case("sec-websocket-"))
+    }
+
     pub fn fetch(req: &HttpRequest) -> Result<HttpResponse, Error> {
         with(|s| {
             let host = net_host(&req.url).ok_or_else(|| Error::Invalid(format!("{:?} is not a URL", req.url)))?;
@@ -1856,8 +1863,11 @@ pub mod current {
             }) {
                 return Err(Error::Denied(capability));
             }
-            if req.subprotocol.trim().is_empty() {
-                return Err(Error::Invalid("WebSocket subprotocol is required".into()));
+            if req.subprotocol.len() > 256 {
+                return Err(Error::Invalid("WebSocket subprotocol is too long".into()));
+            }
+            if req.headers.iter().any(|(name, _)| websocket_handshake_header(name)) {
+                return Err(Error::Invalid("WebSocket handshake headers are managed by the host".into()));
             }
             if s.websockets.values().filter(|socket| !socket.closed).count() >= 8 {
                 return Err(Error::Invalid("at most 8 WebSocket connections per plugin".into()));

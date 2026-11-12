@@ -2278,29 +2278,30 @@ impl HostApi for PluginApi {
         })
     }
 
-    fn websocket_connect(&self, root: &Path, request: ide_plugin::WebSocketRequest) -> Result<u64, HostError> {
+    fn websocket_connect(
+        &self,
+        root: &Path,
+        request: ide_plugin::WebSocketRequest,
+        timeout: Duration,
+    ) -> Result<u64, HostError> {
         let secrets = self.shared.secrets.read().clone();
         let plugin = self.id().to_owned();
-        let mut authorization = None;
-        for (name, value) in request.headers {
-            if name.eq_ignore_ascii_case("authorization") {
-                if authorization.is_some() {
-                    return Err(HostError::Invalid("duplicate WebSocket authorization header".into()));
-                }
-                authorization = Some(fill_secrets(&value, |name| secrets.get(&plugin, name))?);
-            } else {
-                return Err(HostError::Invalid(format!("WebSocket header {name:?} is not allowed")));
-            }
-        }
-        let authorization =
-            authorization.ok_or_else(|| HostError::Invalid("WebSocket authorization is required".into()))?;
+        let headers = request
+            .headers
+            .into_iter()
+            .map(|(name, value)| {
+                let value = fill_secrets(&value, |name| secrets.get(&plugin, name))?;
+                Ok((name, value))
+            })
+            .collect::<Result<Vec<_>, HostError>>()?;
         net_runtime()
             .block_on(self.shared.websockets.connect(
                 &plugin,
                 &to_ipc(root),
                 &request.url,
-                &authorization,
+                &headers,
                 &request.subprotocol,
+                timeout,
             ))
             .map_err(|error| match error {
                 super::websocket::ConnectError::Invalid(message) => HostError::Invalid(message),

@@ -1453,7 +1453,7 @@ impl net::Host for StoreData {
             subprotocol: req.subprotocol,
         };
         let root = self.table.get(&project)?.root.clone();
-        match self.host.websocket_connect(&root, request) {
+        match self.host.websocket_connect(&root, request, self.remaining()) {
             Ok(id) => self.push(WebSocketRes { id, host: self.host.clone() }).map(Ok),
             Err(error) => Ok(Err(to_wit(error))),
         }
