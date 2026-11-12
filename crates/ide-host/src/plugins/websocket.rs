@@ -478,6 +478,38 @@ mod tests {
         assert!(!protected_header("X-API-Key"));
     }
 
+    #[tokio::test]
+    async fn optional_subprotocol_and_custom_headers_reach_the_handshake() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/socket?channel=main", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_hdr_async(stream, |request: &Request, response: Response| {
+                assert_eq!(request.headers()["cookie"], "session=test");
+                assert_eq!(request.headers()["x-api-key"], "key");
+                assert!(request.headers().get("sec-websocket-protocol").is_none());
+                Ok(response)
+            })
+            .await
+            .unwrap();
+            socket.close(None).await.unwrap();
+        });
+        let hub = WebSocketHub::default();
+        let connection = hub
+            .connect(
+                "plugin",
+                "/project",
+                &url,
+                &[("cookie".into(), "session=test".into()), ("x-api-key".into(), "key".into())],
+                "",
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+        hub.disconnect("plugin", connection).unwrap();
+        server.await.unwrap();
+    }
+
     #[test]
     fn connection_limit_is_enforced_before_connecting() {
         let hub = WebSocketHub::default();
