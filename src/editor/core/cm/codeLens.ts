@@ -220,11 +220,13 @@ const lensTheme = EditorView.theme({
   // "right": after the line's text, on its baseline, with IDEA's spacing. The
   // zero-width anchor always fits on the line, so it can never wrap to the
   // next one: the hint just overflows past the line's end (clipped by the
-  // editor), like IDEA's line-end inlays.
+  // editor), like IDEA's line-end inlays. line-height keeps the anchor's box
+  // within the text line's ascent so it never stretches the line.
   ".cm-openidea-lensInline": {
     display: "inline-block",
     width: "0",
     whiteSpace: "nowrap",
+    lineHeight: "1",
     color: "var(--fg-inlay, var(--fg-muted))",
     WebkitUserSelect: "none",
     userSelect: "none",
