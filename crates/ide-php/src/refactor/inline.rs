@@ -1037,6 +1037,37 @@ fn with_doc_comment(text: &str, start: u32) -> u32 {
     }
 }
 
+/// The edits inlining the calls at `ranges` of the template `file`, made
+/// in its compiled PHP and moved to the template; `None` when one can't be.
+fn template_inlined(engine: &PhpEngine, file: &Path, ranges: &[ide_core::Range]) -> Option<Vec<TextEdit>> {
+    let text = file_text(engine, file)?;
+    let compiled = engine.blade_compile(file, &text);
+    let parsed = ParsedFile::parse(&file.to_string_lossy(), compiled.php.as_str());
+    let summary = FileSummary::extract(&parsed);
+    let php_index = parsed.line_index();
+    let index = crate::syntax::LineIndex::new(&text);
+    let mut edits: Vec<TextEdit> = Vec::new();
+    for range in ranges {
+        let at = compiled.php_offset(index.byte(range.start))?;
+        let action = inline_call(engine, &parsed, file, &summary, at)?;
+        let [FileEdit::Edit { edits: inlined, .. }] = action.edit.files.as_slice() else { return None };
+        for edit in inlined {
+            let (start, end) = (php_index.byte(edit.range.start), php_index.byte(edit.range.end));
+            let (from, to) = (compiled.blade_offset(start)?, compiled.blade_offset(end)?);
+            // Both ends in the same piece of the template's code.
+            if to < from || to - from != end - start {
+                return None;
+            }
+            edits.push(TextEdit { range: index.range(from, to), new_text: edit.new_text.clone() });
+        }
+    }
+    edits.sort_by_key(|e| (e.range.start, e.range.end));
+    if edits.windows(2).any(|w| w[1].range.start < w[0].range.end) {
+        return None;
+    }
+    Some(edits)
+}
+
 /// "Inline all calls and remove the function / method": with the caret on
 /// the declaration's name or a call, every call in the project is inlined
 /// (as [`inline_call`] does it; refused when one of them can't be) and the
@@ -1105,6 +1136,18 @@ fn inline_all(
     by_file.entry(path_key(&target.path)).or_insert_with(|| (target.path.clone(), Vec::new()));
     let mut files = Vec::new();
     for (key, (file, ranges)) in by_file {
+        // A template's calls: inlined in the PHP it compiles to, when every
+        // edit falls inside code the template wrote (`{{ $post->label() }}`
+        // as `{{ $post->title }}`; a body needing statements before the call
+        // can't be).
+        if crate::frameworks::laravel::views::is_blade(&file) {
+            files.push(FileEdit::Edit {
+                path: file.clone().into(),
+                edits: template_inlined(engine, &file, &ranges)?,
+                version: None,
+            });
+            continue;
+        }
         let own;
         let own_summary;
         let (file_parsed, file_summary) = if key == path_key(path) {

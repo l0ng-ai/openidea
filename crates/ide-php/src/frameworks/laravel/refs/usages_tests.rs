@@ -261,3 +261,42 @@ fn change_signature_rewrites_calls_in_templates() {
     assert!(document.text().to_string().contains("{{ $post->status->label('en') }}"), "{}", document.text());
     project.engine.document_closed(doc);
 }
+
+/// Inline All of a method templates call inlines the calls in the
+/// templates too (the code in `{{ }}` and directives) and removes the
+/// method; refused when a template's call can't be inlined there.
+#[test]
+fn inline_all_inlines_calls_in_templates() {
+    let money = "<?php\n\nnamespace App\\Support;\n\nfinal class Money\n{\n    public static function cents(int $n): string\n    {\n        return number_format($n / 100, 2);\n    }\n\n    public static function twice(int $n): int\n    {\n        $m = $n * 2;\n        return $m;\n    }\n}\n";
+    let view = "<p>{{ \\App\\Support\\Money::cents($price) }}</p>\n@if (\\App\\Support\\Money::cents(1) !== '')\n    <b>{{ \\App\\Support\\Money::twice(2) }}</b>\n@endif\n";
+    let mut project = Project::app_with(&[("app/Support/Money.php", money), ("resources/views/money.blade.php", view)]);
+    let mut inline_all = |marked: &str| {
+        let (doc, pos) =
+            project.open("app/Support/Money.php", &money.replace(marked, &marked.replacen('(', "/*|*/(", 1)));
+        let actions = project
+            .engine
+            .code_actions(doc, Range::new(pos, pos), &[crate::refactor::INLINE_METHOD_ALL.to_owned()])
+            .unwrap();
+        project.engine.document_closed(doc);
+        actions
+    };
+    let actions = inline_all("cents(int $n)");
+    let [action] = actions.as_slice() else { panic!("{actions:?}") };
+    let edited = action
+        .edit
+        .files
+        .iter()
+        .find_map(|file| match file {
+            FileEdit::Edit { path, edits, .. } if path.to_string_lossy().ends_with("money.blade.php") => Some(edits),
+            _ => None,
+        })
+        .expect("the template is edited");
+    let mut document = ide_text::Document::new(view);
+    document.apply_edits(edited).unwrap();
+    assert_eq!(
+        document.text().to_string(),
+        "<p>{{ \\number_format($price / 100, 2) }}</p>\n@if (\\number_format(1 / 100, 2) !== '')\n    <b>{{ \\App\\Support\\Money::twice(2) }}</b>\n@endif\n"
+    );
+    // `twice` needs a statement before the value: not in `{{ }}`.
+    assert!(inline_all("twice(int $n)").is_empty());
+}
