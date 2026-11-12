@@ -347,6 +347,24 @@ async fn download_into_copies_only_the_selected_items() {
     assert_eq!(std::fs::read_to_string(project.join("index.php")).unwrap(), "php");
     assert!(!project.join("srv").exists() && !project.join("www").exists());
 
+    // A link already in the folder doesn't take the download elsewhere.
+    #[cfg(unix)]
+    {
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::remove_dir_all(project.join("drush/sub")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, project.join("drush/sub")).unwrap();
+        std::fs::remove_file(project.join("drush/a.txt")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("a.txt"), project.join("drush/a.txt")).unwrap();
+        let report = service
+            .download_into(&FsConnection::Local, &remotes[..1], &project, &CancellationToken::new(), &mut |_, _, _| {})
+            .await
+            .unwrap();
+        // The linked folder, the file below it, and the linked file.
+        assert_eq!((report.files, report.errors.len()), (0, 3), "{report:?}");
+        assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing written through the links");
+    }
+
     let missing = [server.join("gone").to_str().unwrap().to_owned()];
     let report = service
         .download_into(&FsConnection::Local, &missing, &project, &CancellationToken::new(), &mut |_, _, _| {})
