@@ -152,6 +152,23 @@ function ModelPanel({ cls }: { cls: string }) {
   const [loaded, setLoaded] = useState<Loaded>(null);
   const [generation, setGeneration] = useState(0);
   const [adding, setAdding] = useState(false);
+  // Columns just added: the engine sees their migration once the file
+  // watcher reports it, so the view is read again until it has them.
+  const [awaited, setAwaited] = useState<{ names: string[]; tries: number } | null>(null);
+  const shown = loaded && "view" in loaded ? loaded.view : null;
+  const waiting =
+    !!awaited &&
+    !!shown &&
+    awaited.tries < REFRESH_TRIES &&
+    !awaited.names.every((name) => shown.columns.some((c) => c.name === name));
+  useEffect(() => {
+    if (!waiting) return;
+    const timer = setTimeout(() => {
+      setAwaited((a) => a && { ...a, tries: a.tries + 1 });
+      setGeneration((g) => g + 1);
+    }, REFRESH_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [waiting, awaited]);
   useEffect(() => {
     let live = true;
     call(commands.phpLaravelModelView(cls)).then(
@@ -193,7 +210,10 @@ function ModelPanel({ cls }: { cls: string }) {
             view={view}
             onDone={(added) => {
               setAdding(false);
-              if (added) setGeneration((g) => g + 1);
+              if (added.length) {
+                setAwaited({ names: added, tries: 0 });
+                setGeneration((g) => g + 1);
+              }
             }}
           />
         )}
@@ -391,7 +411,11 @@ async function addColumns(cls: string, columns: LaravelNewColumn[], fillable: bo
   await call(commands.applyWorkspaceEdit(edit));
 }
 
-function AddColumns({ view, onDone }: { view: LaravelModelView; onDone: (added: boolean) => void }) {
+/** How often, and how far apart, the view is read again after adding columns. */
+const REFRESH_TRIES = 8;
+const REFRESH_DELAY_MS = 400;
+
+function AddColumns({ view, onDone }: { view: LaravelModelView; onDone: (added: string[]) => void }) {
   const [rows, setRows] = useState<ColumnRow[]>(() => [emptyRow()]);
   const [fillable, setFillable] = useState(true);
   const [pending, setPending] = useState(false);
@@ -415,7 +439,7 @@ function AddColumns({ view, onDone }: { view: LaravelModelView; onDone: (added: 
         title: tx`Added ${columns.length} columns to ${view.table}`,
         key: "laravel-add-columns",
       });
-      onDone(true);
+      onDone(columns.map((c) => c.name));
     } catch (e) {
       setFailure(e instanceof Error ? e.message : String(e));
       setPending(false);
@@ -475,7 +499,7 @@ function AddColumns({ view, onDone }: { view: LaravelModelView; onDone: (added: 
         <Button type="submit" variant="primary" disabled={!!invalid || pending}>
           <T>Create Migration</T>
         </Button>
-        <Button disabled={pending} onClick={() => onDone(false)}>
+        <Button disabled={pending} onClick={() => onDone([])}>
           <T>Back</T>
         </Button>
       </div>

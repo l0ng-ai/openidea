@@ -225,6 +225,27 @@ describe("model view dialog", () => {
     expect(screen.queryByRole("form", { name: "Add Columns" })).toBeNull();
   });
 
+  it("reads the view again until the engine has the new columns", async () => {
+    await mount();
+    ipc.phpLaravelAddColumns.mockResolvedValue({ status: "ok", data: edit });
+    const withColumn = {
+      ...view,
+      columns: [...view.columns, { ...view.columns[0]!, name: "subtitle", ty: "?string" }],
+    };
+    // The first reading after the edit doesn't know the migration yet.
+    ipc.phpLaravelModelView
+      .mockResolvedValueOnce({ status: "ok", data: view })
+      .mockResolvedValue({ status: "ok", data: withColumn });
+    fireEvent.click(screen.getByRole("button", { name: "Add Columns…" }));
+    const form = screen.getByRole("form", { name: "Add Columns" });
+    fireEvent.change(within(form).getByLabelText("Column name 1"), { target: { value: "subtitle" } });
+    fireEvent.click(within(form).getByRole<HTMLButtonElement>("button", { name: "Create Migration" }));
+    expect(await screen.findByText("subtitle", {}, { timeout: 3000 })).toBeTruthy();
+    expect(ipc.phpLaravelModelView).toHaveBeenCalledTimes(3);
+    await new Promise((r) => setTimeout(r, 600));
+    expect(ipc.phpLaravelModelView).toHaveBeenCalledTimes(3);
+  });
+
   it("shows the engine's failure", async () => {
     await mount();
     ipc.phpLaravelAddColumns.mockResolvedValue({
