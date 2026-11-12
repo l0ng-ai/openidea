@@ -10,7 +10,7 @@ import { GradleView, MavenView } from "./BuildToolView";
 import { activate } from "./index";
 import { expandableKeys, gradleChildren, gradleRoots, gradleProjectKey } from "./model";
 import { executeBuildLine } from "./runAnything";
-import { classifyPickedPoms, useBuild } from "./store";
+import { classifyPickedPoms, mavenPomForImport, useBuild } from "./store";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   model: vi.fn(),
   configs: vi.fn(),
   open: vi.fn(),
+  readDir: vi.fn(),
   confirm: vi.fn(),
   menu: vi.fn(),
   link: vi.fn(),
@@ -41,6 +42,7 @@ vi.mock("@/platform/ipc", async (original) => {
       gradleLinkProjects: mocks.link,
       gradleUnlinkProjects: mocks.unlink,
       buildSync: mocks.sync,
+      fsReadDir: (path: string) => mocks.readDir(path),
       cancelRequest: () => Promise.resolve(),
     },
   };
@@ -249,6 +251,59 @@ it.each([null, "/p/a/build.xml", "/p/a/pom.xml", "not-a-file"])(
     expect(mocks.set).not.toHaveBeenCalled();
   },
 );
+
+it("imports a module directory from Project Structure when that directory contains pom.xml", async () => {
+  mocks.get.mockResolvedValue({
+    languages: { java: { maven: { unlinkedProjects: [], linkedProjects: [] } } },
+  });
+  mocks.open.mockResolvedValue("/B");
+  mocks.readDir.mockResolvedValue([
+    {
+      name: "pom.xml",
+      path: "/B/pom.xml",
+      kind: "file",
+      size: 1,
+      mtimeMs: 1,
+      ignored: false,
+      excluded: false,
+      hidden: false,
+    },
+  ]);
+  await act(async () => {
+    await executeAction("maven.importExternal");
+  });
+  expect(mocks.show).toHaveBeenCalledWith("maven");
+  expect(mocks.open).toHaveBeenCalledWith(
+    expect.objectContaining({
+      title: "Import Module from Existing Sources",
+      directory: true,
+      defaultPath: "/p",
+    }),
+  );
+  expect(mocks.readDir).toHaveBeenCalledWith("/B");
+  expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.linkedProjects", '["/B/pom.xml"]');
+});
+
+it("does not link a module directory that has no pom.xml", async () => {
+  mocks.open.mockResolvedValue("/B");
+  mocks.readDir.mockResolvedValue([]);
+  await act(async () => {
+    await executeAction("maven.importExternal");
+  });
+  expect(mocks.set).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith(
+    expect.objectContaining({
+      level: "warning",
+      title: "Maven project was not imported",
+      body: expect.stringContaining("pom.xml"),
+    }),
+  );
+});
+
+it("maps a module directory or a pom.xml onto the same link", () => {
+  expect(mavenPomForImport("/code/B")).toBe("/code/B/pom.xml");
+  expect(mavenPomForImport("/code/B/pom.xml")).toBe("/code/B/pom.xml");
+});
 
 it("links a sibling pom.xml outside the opened project and collapses duplicate spellings", async () => {
   mocks.get.mockResolvedValue({

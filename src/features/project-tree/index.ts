@@ -151,7 +151,7 @@ export function activate(): () => void {
           id: root.id,
           label: root.label,
           detail: root.detail,
-          icon: folderIconName("module"),
+          icon: "maven-project",
           path: root.path,
           order: -50 + i,
         }),

@@ -365,12 +365,13 @@ export function classifyPickedPoms(root: string, picked: readonly string[]): { l
   return { link, rejected };
 }
 
-export async function addProjects() {
+/** Choose `pom.xml` files and link them. `dialogTitle` is already translated. */
+export async function addProjects(dialogTitle?: string) {
   const root = useProject.getState().project?.root;
   if (!root || useProject.getState().project?.workspace || !isTauri()) return;
   const { open } = await import("@/platform/dialog");
   const picked = await open({
-    title: tx`Add Maven Projects`,
+    title: dialogTitle ?? tx`Add Maven Projects`,
     directory: false,
     multiple: true,
     defaultPath: root,
@@ -389,6 +390,77 @@ export async function addProjects() {
       body: tx`These files are not named pom.xml, so they were not added: ${rejected.slice(0, 3).join(", ")}${rejected.length > 3 ? ` (+${rejected.length - 3} more)` : ""}`,
       key: "maven-add-outside-root",
     });
+}
+
+/** `pom.xml` for a module directory, or the path itself when it already names that file. */
+export function mavenPomForImport(picked: string): string {
+  const path = lexicalPath(comparablePath(picked)).replace(/\/$/, "");
+  return isPomFileName(path) ? path : `${path}/pom.xml`;
+}
+
+/**
+ * Project Structure › Modules › Import Module from Existing Sources.
+ * A directory is the module folder; a `pom.xml` is that file. Either way the
+ * opened folder stays the project root and the existing link pipeline stores the POM.
+ */
+export async function importModuleFromExistingSources() {
+  const root = useProject.getState().project?.root;
+  if (!root || useProject.getState().project?.workspace || !isTauri()) return;
+  try {
+    const { toolWindowService } = await import("@/workbench/contributions");
+    toolWindowService().show("maven");
+  } catch {
+    /* Tests and hosts without the tool-window service still link the POM. */
+  }
+  const { open } = await import("@/platform/dialog");
+  const picked = await open({
+    title: tx`Import Module from Existing Sources`,
+    directory: true,
+    multiple: false,
+    defaultPath: root,
+  });
+  const path = typeof picked === "string" ? picked : picked?.[0];
+  if (!path) return;
+  const pom = mavenPomForImport(path);
+  if (!(await directoryListsPom(pom))) {
+    notifications().notify({
+      group: "tools",
+      level: "warning",
+      title: tx`Maven project was not imported`,
+      body: tx`This directory has no pom.xml, so it was not imported.`,
+      key: "maven-import-no-pom",
+    });
+    return;
+  }
+  const { link, rejected } = classifyPickedPoms(root, [pom]);
+  if (link.length) await setLinked(root, link, true);
+  if (rejected.length)
+    notifications().notify({
+      group: "tools",
+      level: "warning",
+      title: tx`Some Maven projects were not added`,
+      body: tx`These files are not named pom.xml, so they were not added: ${rejected.slice(0, 3).join(", ")}${rejected.length > 3 ? ` (+${rejected.length - 3} more)` : ""}`,
+      key: "maven-add-outside-root",
+    });
+}
+
+/** One directory listing: the selection's own `pom.xml`, not a scan of its children. */
+async function directoryListsPom(pom: string): Promise<boolean> {
+  const slash = pom.lastIndexOf("/");
+  const dir = slash > 0 ? pom.slice(0, slash) : slash === 0 ? "/" : "";
+  const name = pom.slice(slash + 1);
+  if (!dir) return false;
+  try {
+    const { call, commands } = await import("@/platform/ipc");
+    const entries = await call(commands.fsReadDir(dir));
+    return entries.some(
+      (entry) =>
+        (hostOs() === "windows" ? entry.name.toLowerCase() === name.toLowerCase() : entry.name === name) &&
+        (entry.kind === "file" || (entry.kind === "symlink" && entry.targetKind === "file")),
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Links independent Gradle builds without changing their files or build scripts. */

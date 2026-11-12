@@ -170,7 +170,11 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     );
   }
 
-  push({ id: "new", label: "New", submenu: newMenuItems(folder) }, { kind: "separator" });
+  push(
+    { id: "new", label: "New", submenu: newMenuItems(folder) },
+    single?.root && act("maven.importExternal", undefined, "Import Module from Existing Sources"),
+    { kind: "separator" },
+  );
 
   // Cut / Copy / Copy Path/Reference… / Paste
   push(
