@@ -2954,7 +2954,8 @@ function ChangesPane({
                 </span>
                 <span className={styles.changeDir}>{relativeDir(task.cwd, c.path)}</span>
                 <span className={styles.changeStat}>
-                  <span className={styles.added}>+{c.added}</span> <span className={styles.removed}>−{c.removed}</span>
+                  {c.added > 0 && <span className={styles.added}>+{c.added}</span>}{" "}
+                  {c.removed > 0 && <span className={styles.removed}>−{c.removed}</span>}
                 </span>
               </span>
             )}
