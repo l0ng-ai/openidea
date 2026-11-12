@@ -124,6 +124,28 @@ pub(crate) fn changes(cwd: &Path, base: &str) -> IdeResult<Vec<AgentChange>> {
     Ok(out)
 }
 
+/// Files renamed since `rev`, by their new repository-relative path: the old path, as a deletion
+/// to roll back along with the rename.
+pub(crate) fn rename_sources(cwd: &Path, rev: &str) -> IdeResult<BTreeMap<String, AgentChange>> {
+    let Some(repo) = discover(cwd)? else { return Ok(BTreeMap::new()) };
+    let root = repo.root().to_path_buf();
+    Ok(repo
+        .diff_with_worktree(rev)?
+        .into_iter()
+        .filter_map(|f| {
+            let old = f.old_path.filter(|old| *old != f.path)?;
+            let source = AgentChange {
+                path: IpcPath(root.join(&old)),
+                rel_path: old,
+                kind: ChangeKind::Deleted,
+                added: 0,
+                removed: 0,
+            };
+            Some((f.path, source))
+        })
+        .collect())
+}
+
 fn added(path: IpcPath, rel_path: String) -> AgentChange {
     let added = std::fs::read_to_string(&*path).map_or(0, |t| t.lines().count() as u32);
     AgentChange { path, rel_path, kind: ChangeKind::Added, added, removed: 0 }

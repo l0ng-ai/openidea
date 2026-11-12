@@ -3056,6 +3056,33 @@ async fn commits_made_during_a_local_task_are_kept_by_its_rollback() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn rolling_back_a_rename_brings_the_old_file_back() {
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("Old.java", "class Old {}\n");
+        repo.write("Case.java", "class Case {}\n");
+        repo.commit("init");
+        let (mgr, task) = repo.task().await;
+        repo.git(&["mv", "Old.java", "New.java"]);
+        repo.git(&["mv", "Case.java", "CASE.java"]);
+        // Renames list their new path only.
+        let listed = changed(&mgr, &task.id).await;
+        assert_eq!(listed, ["CASE.java", "New.java"], "{eol:?}");
+
+        mgr.rollback_changes(&task.id, Some(listed)).await.unwrap();
+        assert_eq!(repo.read("Old.java"), "class Old {}\n", "{eol:?}");
+        assert!(!repo.dir.join("New.java").exists(), "{eol:?}");
+        assert_eq!(repo.read("Case.java"), "class Case {}\n", "{eol:?}");
+        let names: Vec<String> = std::fs::read_dir(&repo.dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".java"))
+            .collect();
+        assert!(!names.contains(&"CASE.java".to_owned()), "{eol:?}: {names:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_local_task_in_a_repository_without_commits_lists_and_rolls_back_its_changes() {
     for eol in EOLS {
         let repo = Checkout::new(eol);
