@@ -337,3 +337,28 @@ fn reports_unknown_option_keys() {
     ]);
     assert!(bare.problems_in("app/Http/Probe.php", &probe("Artisan::call('x', ['--y' => 1]);"), OPTION).is_empty());
 }
+
+/// Renaming an option, from a call's key or from the signature, renames
+/// its declaration, the keys of every call and the command's reads of it.
+#[test]
+fn renames_option_keys() {
+    let mut project = Project::app();
+    let expected = [
+        (PRUNE.to_owned(), 16, "dry-run".to_owned()),
+        (PUBLISH.to_owned(), 15, "dry-run".to_owned()),
+        (PUBLISH.to_owned(), 29, "dry-run".to_owned()),
+    ];
+    let prune = std::fs::read_to_string(project.root.join(PRUNE)).unwrap().replace("\r\n", "\n");
+    let from_call = prune.replacen("'--dry-run' =>", "'--dry/*|*/-run' =>", 1);
+    assert_eq!(project.rename(PRUNE, &from_call, "preview"), expected);
+    let publish = std::fs::read_to_string(project.root.join(PUBLISH)).unwrap().replace("\r\n", "\n");
+    let from_signature = publish.replacen("{--dry-run :", "{--dry-/*|*/run :", 1);
+    assert_eq!(project.rename(PUBLISH, &from_signature, "preview"), expected);
+    // A shortcut (`-q`) isn't the option's name; nor is an unknown key renamed.
+    for key in ["-/*|*/q", "--no/*|*/where"] {
+        let (doc, pos) =
+            project.open("app/Http/Probe.php", &probe(&format!("Artisan::call('posts:publish', ['{key}' => 1]);")));
+        assert_eq!(project.engine.prepare_rename(doc, pos).flatten(), None, "{key}");
+        project.engine.document_closed(doc);
+    }
+}

@@ -27,7 +27,9 @@ use std::sync::Arc;
 
 use ide_core::Severity;
 
-use super::{CalleePattern, Declared, PlacePattern, Position, RefContext, RefItem, ReferenceKind, Undefined};
+use super::{
+    CalleePattern, Declared, PlacePattern, Position, RefContext, RefItem, ReferenceKind, RenameTarget, Undefined,
+};
 use crate::frameworks::laravel::artisan::{
     ArtisanArgument, ArtisanCommand, ArtisanCommands, ArtisanOption, CommandSource,
 };
@@ -268,6 +270,40 @@ impl ArtisanOptionKind {
         command.arguments.iter().find(|found| found.name == key).map(Parameter::Argument)
     }
 
+    /// The command and key of a value: a key of a call (the command from
+    /// the call), or a declaration's canonical `command --key`.
+    fn command_and_key<'c, 'v>(
+        cx: &RefContext<'_>,
+        commands: &'c ArtisanCommands,
+        value: &'v str,
+    ) -> Option<(&'c ArtisanCommand, &'v str)> {
+        if cx.site.is_some() {
+            return Some((Self::command(cx, commands)?, value.trim()));
+        }
+        let (name, key) = value.split_once(' ')?;
+        Some((commands.get(name)?, key.trim()))
+    }
+
+    /// Where the command class reads `parameter` (`$this->option('dry-run')`,
+    /// `$this->hasArgument('post')`): byte ranges of the name.
+    fn reads(text: &str, parameter: &Parameter<'_>) -> Vec<(u32, u32)> {
+        let (name, methods): (&str, [&str; 2]) = match parameter {
+            Parameter::Option(option) => (&option.name, ["option", "hasOption"]),
+            Parameter::Argument(argument) => (&argument.name, ["argument", "hasArgument"]),
+        };
+        let mut out = Vec::new();
+        for method in methods {
+            for quote in ['\'', '"'] {
+                let needle = format!("->{method}({quote}{name}{quote}");
+                for (found, _) in text.match_indices(&needle) {
+                    let at = (found + needle.len() - name.len() - 1) as u32;
+                    out.push((at, at + name.len() as u32));
+                }
+            }
+        }
+        out
+    }
+
     /// Where `parameter`'s name is written in `command`'s signature, looked
     /// for between the command's name and the end of its string.
     fn declaration(cx: &RefContext<'_>, command: &ArtisanCommand, parameter: &Parameter<'_>) -> Option<Target> {
@@ -370,6 +406,72 @@ impl ReferenceKind for ArtisanOptionKind {
             out.push_str(&format!("\n\n{description}"));
         }
         Some(out)
+    }
+
+    /// An option or argument named in a command's signature, after the
+    /// command's name: its value is the canonical `command --key`.
+    fn declared_at(&self, cx: &RefContext<'_>, path: &Path, parsed: &ParsedFile, offset: u32) -> Option<Declared> {
+        let commands = commands(cx);
+        let text = parsed.text();
+        commands.in_file(path).find_map(|command| {
+            let (start, end) = command.bytes?;
+            if offset <= end || command.class_range.is_some_and(|range| Some(range) == command.range) {
+                return None;
+            }
+            let rest = text.get(start as usize..)?;
+            let signature = &rest[..rest.find(['\'', '"']).unwrap_or(rest.len())];
+            let found = |at: Option<usize>, name: &str, key: String| {
+                let at = start + at? as u32;
+                (at <= offset && offset <= at + name.len() as u32).then(|| {
+                    let value = format!("{} {key}", command.name);
+                    let caret = value.len() - name.len() + (offset - at) as usize;
+                    Declared { value, start: at, end: at + name.len() as u32, at: caret }
+                })
+            };
+            command
+                .options
+                .iter()
+                .find_map(|option| {
+                    let name = option.name.as_str();
+                    found(name_after(signature, "--", name), name, format!("--{name}"))
+                })
+                .or_else(|| {
+                    command.arguments.iter().find_map(|argument| {
+                        let name = argument.name.as_str();
+                        found(name_after(signature, "{", name), name, name.to_owned())
+                    })
+                })
+        })
+    }
+
+    /// The name of a known option or argument (not a shortcut): with its
+    /// signature declaration and the command class's reads of it.
+    fn rename_target(&self, cx: &RefContext<'_>, value: &str, _at: usize) -> Option<RenameTarget> {
+        let commands = commands(cx);
+        let (command, key) = Self::command_and_key(cx, &commands, value)?;
+        if key.starts_with('-') && !key.starts_with("--") {
+            return None;
+        }
+        let parameter = Self::parameter(command, key)?;
+        let declaration = Self::declaration(cx, command, &parameter)?;
+        let mut declarations = vec![(declaration.path.clone(), declaration.range)];
+        if let Some(text) = cx.engine.text_of(&declaration.path) {
+            let lines = crate::syntax::LineIndex::new(&text);
+            declarations.extend(
+                Self::reads(&text, &parameter)
+                    .into_iter()
+                    .map(|(from, to)| (declaration.path.clone(), lines.range(from, to))),
+            );
+        }
+        // In a call the key is the site's value; the range is of the name in it.
+        let dashes = key.len() - key.trim_start_matches('-').len();
+        Some(RenameTarget { key: format!("{} {key}", command.name), range: (dashes, key.len()), declarations })
+    }
+
+    fn valid_name(&self, name: &str) -> bool {
+        !name.is_empty()
+            && !name.starts_with('-')
+            && name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == ':')
     }
 
     /// A key that is no option or argument of the command (only when
