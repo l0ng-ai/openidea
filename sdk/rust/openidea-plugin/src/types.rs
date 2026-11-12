@@ -228,6 +228,7 @@ impl Contribution {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum EventKind {
+    WebsocketReady,
     FileClosed,
     SettingsChanged,
     InputModeChanged,
@@ -250,6 +251,7 @@ impl EventKind {
     /// The name the IDE knows it by.
     pub fn name(self) -> &'static str {
         match self {
+            Self::WebsocketReady => "websocket-ready",
             Self::FileClosed => "file-closed",
             Self::SettingsChanged => "settings-changed",
             Self::InputModeChanged => "input-mode-changed",
@@ -266,6 +268,13 @@ impl EventKind {
             Self::Scheduled => "scheduled",
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSocketReady {
+    pub plugin_id: String,
+    pub connection: u64,
 }
 
 /// How the user started an action; later IDEs may report more.
@@ -316,6 +325,7 @@ pub struct FilesChanged {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
+    WebSocketReady(WebSocketReady),
     FileOpened(String),
     FileSaved(String),
     FilesChanged(FilesChanged),
@@ -517,6 +527,12 @@ mod tests {
         let d = Diagnostic::new(Range::default(), Severity::Hint, "m").code("c");
         assert_eq!((d.code.as_deref(), d.unnecessary, d.related.len()), (Some("c"), false, 0));
     }
+
+    #[test]
+    fn decodes_websocket_events() {
+        let ready = Event::from_other("websocket-ready".into(), r#"{"pluginId":"collab","connection":42}"#.into());
+        assert_eq!(ready, Event::WebSocketReady(WebSocketReady { plugin_id: "collab".into(), connection: 42 }));
+    }
 }
 
 /// A notification button invoking a command declared by this plugin.
@@ -541,6 +557,11 @@ impl NotificationAction {
 impl Event {
     /// Decodes additive events while preserving unknown or malformed payloads.
     pub fn from_other(kind: String, data: String) -> Self {
+        if kind == "websocket-ready"
+            && let Ok(ready) = serde_json::from_str(&data)
+        {
+            return Self::WebSocketReady(ready);
+        }
         if kind == "files-changed"
             && let Ok(batch) = serde_json::from_str(&data)
         {

@@ -104,6 +104,7 @@ pub enum Prompt {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventKind {
+    WebsocketReady,
     FileClosed,
     SettingsChanged,
     InputModeChanged,
@@ -121,7 +122,8 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
+        Self::WebsocketReady,
         Self::FileClosed,
         Self::SettingsChanged,
         Self::InputModeChanged,
@@ -140,6 +142,7 @@ impl EventKind {
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::WebsocketReady => "websocket-ready",
             Self::FileClosed => "file-closed",
             Self::SettingsChanged => "settings-changed",
             Self::InputModeChanged => "input-mode-changed",
@@ -227,10 +230,34 @@ pub struct InputMode {
     pub sub: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WebsocketReady {
+    pub plugin_id: String,
+    pub connection: u64,
+}
+
+/// A host-owned background WebSocket request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebSocketRequest {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub subprotocol: String,
+}
+
+/// Frames received from a host-owned WebSocket and its transport state.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSocketBatch {
+    pub messages: Vec<Vec<u8>>,
+    pub closed: bool,
+}
+
 /// A workbench event delivered to plugins.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum WorkbenchEvent {
+    WebsocketReady(WebsocketReady),
     RunExited(crate::RunExited),
     TerminalExited(crate::TerminalExited),
     ContentTabAction(crate::ContentTabAction),
@@ -251,6 +278,7 @@ pub enum WorkbenchEvent {
 impl WorkbenchEvent {
     pub fn kind(&self) -> EventKind {
         match self {
+            Self::WebsocketReady(_) => EventKind::WebsocketReady,
             Self::RunExited(_) => EventKind::RunExited,
             Self::TerminalExited(_) => EventKind::TerminalExited,
             Self::ContentTabAction(_) => EventKind::ContentTabAction,

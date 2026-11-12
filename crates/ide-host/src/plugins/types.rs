@@ -275,6 +275,9 @@ pub enum PluginEvent {
     /// The kinds of workbench events plugins want changed: re-fetch
     /// `plugin_event_kinds` (the UI reports only those).
     SubscriptionsChanged,
+    /// A background WebSocket has messages ready for its owning plugin.
+    #[serde(rename_all = "camelCase")]
+    WebsocketReady { plugin_id: String, connection: u64 },
     #[serde(rename_all = "camelCase")]
     ThemeChanged { theme: Option<ActiveTheme> },
     /// A plugin needs capabilities the user has not granted yet (first use
