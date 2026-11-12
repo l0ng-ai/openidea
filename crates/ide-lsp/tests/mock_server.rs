@@ -760,6 +760,40 @@ async fn java_classpath_does_not_retry_permanently_unavailable_servers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn external_maven_import_joins_the_opened_root_without_replacing_discovery() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let external = tempfile::tempdir().unwrap();
+    let external = dunce::canonicalize(external.path()).unwrap();
+    std::fs::write(external.join("pom.xml"), "<project><artifactId>b</artifactId></project>").unwrap();
+    let outside = external.join("src/Main.java");
+    std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+    std::fs::write(&outside, "class External {}").unwrap();
+    let inside = h.root.join("src/App.java");
+    std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
+    std::fs::write(&inside, "class App {}").unwrap();
+    // An in-root build with its own marker keeps a separate server.
+    let nested = h.root.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("mock.toml"), "").unwrap();
+    let nested_file = nested.join("Nested.java");
+    std::fs::write(&nested_file, "class Nested {}").unwrap();
+
+    h.mgr.set_jdtls_import_roots(vec![external.clone()]);
+    h.mgr.did_open(DocId::next(), &inside, &h.lang, 1, "class App {}");
+    h.mgr.did_open(DocId::next(), &outside, &h.lang, 1, "class External {}");
+    h.mgr.did_open(DocId::next(), &nested_file, &h.lang, 1, "class Nested {}");
+    let state = h.launcher.state("jdtls");
+    eventually(|| state.requested("initialize").len() == 2).await;
+    let inits = state.requested("initialize");
+    let project = inits.iter().find(|init| init["rootUri"] == uri_of(&h.root)).unwrap();
+    assert_eq!(project["initializationOptions"]["workspaceFolders"], json!([uri_of(&h.root), uri_of(&external)]));
+    assert!(project["initializationOptions"].get("projectConfigurations").is_none());
+    assert!(state.requested("initialize").iter().any(|init| init["rootUri"] == uri_of(&nested)));
+    assert_eq!(h.mgr.servers().len(), 2);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn shared_java_external_roots_reach_initialization_queries_and_watches() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     h.mgr.set_jdtls_shared_hook(Box::new(|| true));
@@ -4923,6 +4957,39 @@ async fn scoped_java_usages_search_the_sources_unless_libraries_are_asked_for() 
         assert_eq!(arguments.len(), if libraries { 4 } else { 5 });
     }
     assert!(seen.lock().is_empty());
+}
+
+/// jdtls' searches wait for its index themselves, and it reports background work (builds,
+/// validation) for long stretches: a method nothing calls is answered at once meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_usages_of_an_unused_method_do_not_wait_for_background_work() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    s.respond("workspace/executeCommand", json!([]));
+    let (doc, _) = h.open("a.java", "void unused() {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    s.peer()
+        .notify("$/progress", json!({ "token": "build", "value": { "kind": "begin", "title": "Building" } }))
+        .unwrap();
+    h.wait_status("jdtls", ServerStatus::Busy).await;
+    // Until the project is imported, finding nothing may only mean it is not indexed yet.
+    let refs = h.mgr.references(doc, Pos::new(0, 6), true, false, Default::default()).await.unwrap();
+    assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
+    s.peer().notify("language/status", json!({"type": "ServiceReady", "message": "ServiceReady"})).unwrap();
+    for _ in 0..200 {
+        let refs = h.mgr.references(doc, Pos::new(0, 6), true, false, Default::default()).await.unwrap();
+        if refs.incomplete.is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let started = std::time::Instant::now();
+    let refs = h.mgr.references(doc, Pos::new(0, 6), true, true, Default::default()).await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2), "waited {:?}", started.elapsed());
+    assert!(refs.locations.is_empty());
+    assert_eq!(refs.incomplete, None);
 }
 
 /// A library method's usages in the sources are shown before the dependencies and the JDK

@@ -4,7 +4,13 @@ import { EditorSelection, EditorState, type Extension } from "@codemirror/state"
 import { EditorView, runScopeHandlers } from "@codemirror/view";
 import { completedSyntaxState } from "@/test/syntax";
 import { languages } from "@codemirror/language-data";
-import { CompletionContext, autocompletion, completionStatus, hasNextSnippetField } from "@codemirror/autocomplete";
+import {
+  CompletionContext,
+  autocompletion,
+  completionStatus,
+  hasNextSnippetField,
+  snippet,
+} from "@codemirror/autocomplete";
 import {
   EXCLUSIVE_COMPLETION_KEY,
   expandLiveTemplateAtCaret,
@@ -201,6 +207,17 @@ describe("template fields", () => {
     expect(press(v, "Enter")).toBe(true);
     expect(v.state.doc.toString()).toBe("for (let i = 0; i < .length; i++) {\n\t\n}".replace("\t", "  "));
     expect(v.state.selection.main.head).toBe("for (let i = 0; i < ".length);
+  });
+
+  it("leaves Enter to the editor in a completion's snippet", async () => {
+    const v = await editor("typescript", "<dep");
+    // An LSP tag completion: `<dependency>$1</dependency>$0`.
+    snippet("<dependency>${1}</dependency>${0}")(v, { label: "dependency" }, 0, 4);
+    expect(v.state.selection.main.head).toBe("<dependency>".length);
+    expect(hasNextSnippetField(v.state)).toBe(true);
+    expect(press(v, "Enter")).toBe(false);
+    expect(tab(v)).toBe(true);
+    expect(v.state.selection.main.head).toBe(v.state.doc.length);
   });
 
   it("Esc first drops the field's selection, then leaves the template", async () => {

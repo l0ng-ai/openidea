@@ -19,8 +19,6 @@ pub struct AppState {
     pub recent: RecentProjects,
     /// Plugins (`ide_host::plugins`), shared by all windows.
     pub plugins: Arc<ide_host::plugins::PluginHost>,
-    /// The built-in web server (Open In › Browser, the editor's browser bar).
-    pub web: ide_web::WebServer,
     /// Agents › MCP Server: built-in IDE tools for agents.
     pub mcp: crate::commands::mcp::McpService,
     /// Credential prompts of `ssh` / `git` child processes (`None` if it failed to start).
@@ -108,7 +106,6 @@ impl AppState {
             askpass: start_askpass(&app),
             sink: global_sink,
             plugins: crate::commands::plugin::create_host(&app, &data_dir, &host)?,
-            web: ide_web::WebServer::new(),
             mcp: Default::default(),
             remote_dev: crate::remote_dev::Connections::default(),
             host,

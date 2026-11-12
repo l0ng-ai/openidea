@@ -63,6 +63,7 @@ import {
   isIndex,
   isWorktree,
   loadSide,
+  loadSideMode,
   oneSided,
   openDiff,
   sideFile,
@@ -244,6 +245,8 @@ export function DiffEditor({
   const [binary, setBinary] = useState<boolean | null>(null);
   /** Text of the sides that are not live documents. */
   const [statics, setStatics] = useState<{ a: string | null; b: string | null } | null>(null);
+  /** Git modes of the two sides (`100644`…), for the mode-only-change notice. */
+  const [modes, setModes] = useState<{ a: string | null; b: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [opts, setOptsState] = useState<DiffViewOptions>(() => {
     const saved = loadDiffOptions();
@@ -315,9 +318,11 @@ export function DiffEditor({
     if (!attached) return;
     try {
       const paths = [sideFile(left, path), sideFile(right, path)].filter((p): p is string => !!p);
-      const [a, b, probes] = await Promise.all([
+      const [a, b, modeA, modeB, probes] = await Promise.all([
         attached.a ? null : loadSide(path, left),
         attached.b ? null : loadSide(path, right),
+        loadSideMode(path, left),
+        loadSideMode(path, right),
         Promise.all(paths.map((p) => call(commands.fsProbe(p)).catch(() => null))),
       ]);
       const prev = staticsRef.current;
@@ -325,6 +330,7 @@ export function DiffEditor({
         staticsRef.current = { a, b };
         setStatics({ a, b });
       }
+      setModes({ a: modeA, b: modeB });
       setBinary(probes.some((p) => p?.binary));
       setError(null);
     } catch (e) {
@@ -1132,6 +1138,11 @@ export function DiffEditor({
   const eolOnly = ready && !binary && rawA !== rawB && sameText;
   const eolDiffers = ready && !binary && (badgeA !== badgeB || eolOnly);
   const identical = ready && chunkInfo.count === 0 && rawA === rawB;
+  // Equal texts with different git modes: the change git records (chmod).
+  const modeChange =
+    identical && modes !== null && modes.a !== null && modes.b !== null && modes.a !== modes.b
+      ? { from: modes.a, to: modes.b }
+      : null;
   // Staging applies to local changes against HEAD / the index only.
   const canStage = editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
   const hasSource = !!source;
@@ -1287,7 +1298,9 @@ export function DiffEditor({
             ? ""
             : chunkInfo.count === 0
               ? identical
-                ? tx("Contents are identical")
+                ? modeChange
+                  ? tx`File mode changed: ${modeChange.from} → ${modeChange.to}`
+                  : tx("Contents are identical")
                 : eolOnly
                   ? tx("Contents differ only in line separators")
                   : chunkInfo.whitespaceOnly

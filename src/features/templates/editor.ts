@@ -8,6 +8,7 @@ import {
   closeCompletion,
   completionStatus,
   nextSnippetField,
+  pickedCompletion,
   prevSnippetField,
   snippet,
   snippetKeymap,
@@ -190,10 +191,22 @@ const unlessLookup =
   (view) =>
     completionStatus(view.state) === "active" ? false : cmd(view);
 
-/** Tab and Enter both move to the next field (Enter is the lookup's while it is open). */
+/**
+ * Whether the active snippet came from a live template or Emmet, where Enter moves to the
+ * next field. A completion's snippet (an LSP `<tag>$1</tag>$0`) keeps Enter for new lines.
+ */
+const templateSnippet = StateField.define<boolean>({
+  create: () => false,
+  update: (value, tr) => (movedToField(tr) === 0 && tr.docChanged ? !tr.annotation(pickedCompletion) : value),
+});
+
+/** Tab moves to the next field; Enter too in templates (the lookup's while it is open). */
 const templateFieldKeys = snippetKeymap.of([
   { key: "Tab", run: unlessLookup(nextSnippetField), shift: prevSnippetField },
-  { key: "Enter", run: unlessLookup(nextSnippetField) },
+  {
+    key: "Enter",
+    run: unlessLookup((view) => view.state.field(templateSnippet, false) === true && nextSnippetField(view)),
+  },
   { key: "Escape", run: escapeTemplate },
 ]);
 
@@ -590,6 +603,7 @@ export function templateEditorExtension(ctx: EditorDocContext): Extension {
   return [
     templateDoc.of({ path: ctx.path, language: ctx.language }),
     fieldCompletion,
+    templateSnippet,
     completeOnFieldMove,
     templateFieldKeys,
     templateLookup,

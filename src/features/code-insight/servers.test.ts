@@ -20,7 +20,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 
 const { emitLocalIdeEvent } = await import("@/platform/ipc");
 const { useProject } = await import("@/platform/project");
-const { installServerEvents, serversSummary, useServers } = await import("./servers");
+const { BUSY_SHOW_DELAY_MS, installServerEvents, serversSummary, useServers } = await import("./servers");
 
 describe("server status", () => {
   let dispose = () => {};
@@ -74,6 +74,43 @@ describe("server status", () => {
 
     emitLocalIdeEvent({ type: "languageServerRemoved", server: 13 as ServerId });
     expect(serversSummary([...useServers.getState().servers.values()])?.text).toBe("basedpyright");
+  });
+
+  it("shows a running server busy only once it stays busy", async () => {
+    vi.useFakeTimers();
+    try {
+      useProject.setState({ project: { name: "p", root: "/p", trusted: true, isGit: false, settings: {} } as never });
+      dispose = installServerEvents();
+      const id = 21 as ServerId;
+      const status = (status: ServerInfo["status"]) =>
+        emitLocalIdeEvent({ type: "languageServer", server: id, name: "jdtls", status, message: null });
+      const shown = () => useServers.getState().servers.get(id)?.status;
+      status("starting");
+      expect(shown()).toBe("starting");
+      status("ready");
+      // A task of a few milliseconds, as jdtls reports on every edit: nothing changes.
+      status("busy");
+      vi.advanceTimersByTime(BUSY_SHOW_DELAY_MS - 1);
+      status("ready");
+      vi.advanceTimersByTime(BUSY_SHOW_DELAY_MS);
+      expect(shown()).toBe("ready");
+      // Work that goes on shows.
+      status("busy");
+      vi.advanceTimersByTime(BUSY_SHOW_DELAY_MS - 1);
+      expect(shown()).toBe("ready");
+      vi.advanceTimersByTime(1);
+      expect(shown()).toBe("busy");
+      status("ready");
+      expect(shown()).toBe("ready");
+      // Anything else shows at once, and replaces a pending busy.
+      status("busy");
+      status("crashed");
+      expect(shown()).toBe("crashed");
+      vi.advanceTimersByTime(BUSY_SHOW_DELAY_MS);
+      expect(shown()).toBe("crashed");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

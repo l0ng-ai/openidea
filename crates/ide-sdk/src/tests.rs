@@ -1,6 +1,7 @@
 use crate::apply::{
-    apply_to_run_configs, configure_server, jdtls_jdk, maven_command, maven_options, project_jdk, python_interpreter,
-    ruff_configuration, terminal_activation, tool_install_environment, tsdk, without_derived,
+    apply_to_run_configs, apply_to_run_configs_in, configure_server, jdtls_jdk, maven_command, maven_options,
+    project_jdk, python_interpreter, ruff_configuration, terminal_activation, tool_install_environment, tsdk,
+    without_derived, without_derived_in,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -62,6 +63,14 @@ fn run(kind: &str, command: &str, args: &[&str]) -> RunConfig {
     }
 }
 
+/// An interpreter executable at `rel` under `root` (resolution skips paths that don't exist).
+fn fake_interpreter(root: &Path, rel: &str) -> std::path::PathBuf {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "").unwrap();
+    path
+}
+
 #[test]
 fn project_venv_is_the_default_interpreter() {
     if cfg!(windows) {
@@ -74,8 +83,10 @@ fn project_venv_is_the_default_interpreter() {
     assert_eq!(python_interpreter(tmp.path(), &s), Some(py.clone()));
     assert_eq!(venv_of(&py), Some(tmp.path().join(".venv")));
     let mut s = Settings::default();
-    s.languages.python.interpreter = "/opt/py/bin/python3".into();
-    assert_eq!(python_interpreter(tmp.path(), &s).unwrap(), Path::new("/opt/py/bin/python3"));
+    // A configured interpreter wins over the virtualenv while its executable exists.
+    let configured = fake_interpreter(tmp.path(), "opt/py/bin/python3");
+    s.languages.python.interpreter = configured.to_string_lossy().into_owned();
+    assert_eq!(python_interpreter(tmp.path(), &s).unwrap(), configured);
 }
 
 #[test]
@@ -304,7 +315,9 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     }
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();
-    s.languages.python.interpreter = "/opt/py/bin/python3".into();
+    let python = fake_interpreter(tmp.path(), "opt/py/bin/python3");
+    let python = python.to_string_lossy().into_owned();
+    s.languages.python.interpreter = python.clone();
     s.languages.node.package_manager = "pnpm".into();
     let mut configs = vec![
         run("python", "uv", &["run", "python", "-m", "app"]),
@@ -316,17 +329,17 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
         run("django-test", ".venv/bin/python", &["manage.py", "test", "polls"]),
     ];
     apply_to_run_configs(&mut configs, tmp.path(), &s);
-    assert_eq!(configs[0].command, "/opt/py/bin/python3");
+    assert_eq!(configs[0].command, python);
     assert_eq!(configs[0].args, ["-m", "app"]);
-    assert_eq!(configs[1].command, "/opt/py/bin/python3");
+    assert_eq!(configs[1].command, python);
     assert_eq!(configs[1].args, ["-m", "pytest"]);
     assert_eq!(configs[2].args, ["-m", "pytest", "-x"]);
     assert_eq!(configs[3].command, "pnpm");
     assert_eq!(configs[4].command, "python3", "shell configs are left alone");
     // Django tests run on the selected interpreter, like `manage.py runserver`.
-    assert_eq!(configs[5].command, "/opt/py/bin/python3");
+    assert_eq!(configs[5].command, python);
     assert_eq!(configs[5].args, ["manage.py", "test"]);
-    assert_eq!(configs[6].command, "/opt/py/bin/python3");
+    assert_eq!(configs[6].command, python);
     assert_eq!(configs[6].args, ["manage.py", "test", "polls"]);
 }
 
@@ -2231,11 +2244,13 @@ fn nested_python_configs_get_their_own_virtualenv_but_explicit_settings_stay_pro
     apply_to_run_configs(std::slice::from_mut(&mut member), root, &Settings::default());
     assert_eq!(member.env["VIRTUAL_ENV"], outer.parent().unwrap().parent().unwrap().to_string_lossy());
     let mut settings = Settings::default();
-    settings.languages.python.interpreter = "custom/bin/python".into();
+    settings.languages.python.interpreter = root.join("custom/bin").join(exe("python")).to_string_lossy().into_owned();
+    std::fs::create_dir_all(root.join("custom/bin")).unwrap();
+    std::fs::write(root.join("custom/bin").join(exe("python")), "").unwrap();
     let mut config = run("python", "python3", &["main.py"]);
     config.extras.module = Some("apps/python".into());
     apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
-    assert_eq!(config.command, root.join("custom/bin/python").to_string_lossy());
+    assert_eq!(config.command, root.join("custom/bin").join(exe("python")).to_string_lossy());
 }
 
 #[test]
@@ -2248,8 +2263,94 @@ fn file_runtime_uses_nearest_virtualenv_and_explicit_project_settings_win() {
     let mut settings = Settings::default();
     assert_eq!(crate::apply::python_interpreter_near(root, Some(&near), &settings), Some(inner));
     assert_eq!(crate::apply::python_interpreter_near(root, Some(&root.join("apps/other")), &settings), Some(outer));
-    settings.languages.python.interpreter = "selected/python".into();
-    assert_eq!(crate::apply::python_interpreter_near(root, Some(&near), &settings), Some(root.join("selected/python")));
+    let mut settings = Settings::default();
+    let selected = root.join("selected").join(exe("python"));
+    std::fs::create_dir_all(root.join("selected")).unwrap();
+    std::fs::write(&selected, "").unwrap();
+    settings.languages.python.interpreter = selected.to_string_lossy().into_owned();
+    assert_eq!(crate::apply::python_interpreter_near(root, Some(&near), &settings), Some(selected));
+}
+
+#[test]
+fn an_interpreter_that_no_longer_exists_falls_back_to_the_project_virtualenv() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let venv = fake_venv(root, ".venv");
+    let mut settings = Settings::default();
+    settings.languages.python.interpreter = root.join("gone/python").to_string_lossy().into_owned();
+    // Resolution skips the missing executable like PyCharm's "Invalid" SDKs.
+    assert_eq!(crate::apply::python_interpreter(root, &settings), Some(venv.clone()));
+    assert_eq!(crate::apply::python_interpreter_near(root, None, &settings), Some(venv.clone()));
+    // Run configurations use the fallback instead of the dead path.
+    let mut config = run("python", "python3", &["main.py"]);
+    apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
+    assert_eq!(config.command, venv.to_string_lossy());
+    assert_eq!(config.env["VIRTUAL_ENV"], venv.parent().unwrap().parent().unwrap().to_string_lossy());
+    // A configured interpreter that still exists keeps winning over the venv.
+    let real = root.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    let real_python = real.join(exe("python"));
+    std::fs::write(&real_python, "").unwrap();
+    settings.languages.python.interpreter = real_python.to_string_lossy().into_owned();
+    assert_eq!(crate::apply::python_interpreter(root, &settings), Some(real_python));
+}
+
+#[test]
+fn a_member_without_python_falls_back_to_the_primary_project_interpreter() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let primary = root.join("primary");
+    let bare = root.join("bare");
+    let outer = fake_venv(&primary, ".venv");
+    // An attached member with a venv of its own uses it.
+    let own = fake_venv(&root.join("own"), ".venv");
+    let settings = Settings::default();
+    assert_eq!(crate::apply::python_interpreter_near(&root.join("own"), Some(&own), &settings), Some(own));
+
+    // A run configuration of the bare member runs on the primary project's venv.
+    let mut config = run("python", "python3", &["main.py"]);
+    config.extras.module = Some("src".into());
+    apply_to_run_configs_in(std::slice::from_mut(&mut config), &bare, Some(&primary), &settings);
+    assert_eq!(config.command, outer.to_string_lossy());
+    assert_eq!(config.env["VIRTUAL_ENV"], outer.parent().unwrap().parent().unwrap().to_string_lossy());
+    // Saving strips what settings derived, so the fallback keeps following settings.
+    let stored = without_derived_in(&config, &bare, Some(&primary), &settings);
+    assert_eq!(stored.command, exe("python"));
+    assert!(!stored.env.contains_key("VIRTUAL_ENV"));
+
+    // The member's explicit interpreter wins over the primary project's venv —
+    // when it exists (bare names stay bare; a missing path falls back).
+    let mut chosen = Settings::default();
+    chosen.languages.python.interpreter = root.join("bare/python").to_string_lossy().into_owned();
+    std::fs::create_dir_all(&bare).unwrap();
+    let bare_python = bare.join(exe("python"));
+    std::fs::write(&bare_python, "").unwrap();
+    chosen.languages.python.interpreter = bare_python.to_string_lossy().into_owned();
+    let mut config = run("python", "python3", &["main.py"]);
+    config.extras.module = Some("src".into());
+    apply_to_run_configs_in(std::slice::from_mut(&mut config), &bare, Some(&primary), &chosen);
+    assert_eq!(config.command, bare_python.to_string_lossy());
+    assert!(!config.env.contains_key("VIRTUAL_ENV"));
+
+    // An interpreter inherited from the primary follows a later change of its setting
+    // (the paths are created here: resolution skips missing executables).
+    let mut inherited = Settings::default();
+    for dir in ["primary", "moved"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+        std::fs::write(root.join(dir).join(exe("python")), "").unwrap();
+    }
+    let primary_python = root.join("primary").join(exe("python"));
+    let moved_python = root.join("moved").join(exe("python"));
+    inherited.languages.python.interpreter = primary_python.to_string_lossy().into_owned();
+    let mut config = run("python", "python3", &["main.py"]);
+    config.extras.module = Some("src".into());
+    apply_to_run_configs_in(std::slice::from_mut(&mut config), &bare, Some(&primary), &inherited);
+    assert_eq!(config.command, primary_python.to_string_lossy());
+    let stored = without_derived_in(&config, &bare, Some(&primary), &inherited);
+    inherited.languages.python.interpreter = moved_python.to_string_lossy().into_owned();
+    let mut reloaded = stored;
+    apply_to_run_configs_in(std::slice::from_mut(&mut reloaded), &bare, Some(&primary), &inherited);
+    assert_eq!(reloaded.command, moved_python.to_string_lossy());
 }
 
 #[test]
@@ -2350,12 +2451,17 @@ fn tool_installs_resolve_project_relative_sdks_and_leave_path_fallback_unconfigu
     assert!(!defaults.env.contains_key("GOROOT"));
     s.languages.go.goroot = "go-sdk".into();
     s.languages.node.interpreter = "node-sdk/bin/node".into();
-    s.languages.python.interpreter = "python-sdk/bin/python3.14".into();
     s.languages.ruby.interpreter = "ruby-sdk/bin/ruby".into();
     let runtime = tool_install_environment(root, &s);
     assert_eq!(runtime.commands["go"], root.join("go-sdk/bin").join(if cfg!(windows) { "go.exe" } else { "go" }));
     assert_eq!(runtime.env["GOROOT"], root.join("go-sdk").to_string_lossy());
     assert_eq!(runtime.commands["node"], root.join("node-sdk/bin/node"));
-    assert_eq!(runtime.commands["python"], root.join("python-sdk/bin/python3.14"));
     assert_eq!(runtime.commands["ruby"], root.join("ruby-sdk/bin/ruby"));
+    // A configured interpreter whose executable is missing is skipped here too:
+    // the tool install environment only names Pythons that can actually run.
+    std::fs::create_dir_all(root.join("python-sdk/bin")).unwrap();
+    let real = root.join("python-sdk/bin").join(exe("python3.14"));
+    std::fs::write(&real, "").unwrap();
+    s.languages.python.interpreter = real.to_string_lossy().into_owned();
+    assert_eq!(tool_install_environment(root, &s).commands["python"], real);
 }

@@ -20,6 +20,7 @@ import {
   notifications,
   useRunConfigTypes,
   useDebugRunSessions,
+  useServicesRunningCount,
   type DebugServiceSession,
   type ServiceItemAction,
   type ServiceProviderContribution,
@@ -239,6 +240,49 @@ async function pickForKind(kind: string) {
   addType(kind);
   const remaining = configs.filter((c) => !picked.has(c.id)).map((c) => c.id);
   saveHidden({ ...currentHidden(), [kind]: remaining });
+}
+
+// ---------------------------------------------------------------------------
+// Running count (the Services tool window's badge)
+
+/**
+ * How many services the window lists are running: one per configuration (a run
+ * and its attached debugger are one service), hidden configurations excluded.
+ * Docker kinds are left out: their containers show under the Docker provider.
+ */
+export function runningServiceCount(): number | null {
+  const root = useProject.getState().project?.root ?? null;
+  const kinds = addedTypes(root).filter((kind) => !DOCKER_PROVIDER_KINDS.has(kind));
+  if (!kinds.length) return null;
+  const hidden = currentHidden();
+  const executions = serviceSessions(useRun.getState().sessions, useDebugRunSessions.getState().serviceSessions);
+  const running = new Set<string>();
+  for (const s of executions) {
+    if (!liveServiceSession(s) || !kinds.includes(s.config.kind)) continue;
+    if ((hidden[s.config.kind] ?? []).includes(s.config.id)) continue;
+    running.add(s.config.id);
+  }
+  return running.size || null;
+}
+
+/** Keeps the Services window's badge current (`useServicesRunningCount`); returns the unsubscribe. */
+export function watchServiceRunningCount(): () => void {
+  const update = () => useServicesRunningCount.setState({ count: runningServiceCount() });
+  update();
+  const disposers = [
+    useRun.subscribe((s, prev) => {
+      if (s.sessions !== prev.sessions) update();
+    }),
+    useDebugRunSessions.subscribe((s, prev) => {
+      if (s.serviceSessions !== prev.serviceSessions) update();
+    }),
+    useAddedTypes.subscribe(update),
+    useHiddenConfigs.subscribe(update),
+    useProject.subscribe((s, prev) => {
+      if (s.project?.root !== prev.project?.root) update();
+    }),
+  ];
+  return () => disposers.forEach((dispose) => dispose());
 }
 
 // ---------------------------------------------------------------------------

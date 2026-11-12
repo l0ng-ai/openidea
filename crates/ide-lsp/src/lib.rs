@@ -201,6 +201,10 @@ pub struct LspManager {
     me: Weak<LspManager>,
     project_root: PathBuf,
     content_roots: RwLock<Vec<PathBuf>>,
+    /// Maven projects linked from outside `project_root`. jdtls scans them as extra
+    /// workspace folders; `projectConfigurations` stays unset so the opened root is
+    /// still discovered automatically.
+    jdtls_import_roots: RwLock<Vec<PathBuf>>,
     languages: Arc<LanguageRegistry>,
     sink: SharedSink,
     launcher: Arc<dyn Launcher>,
@@ -444,6 +448,7 @@ impl LspManager {
             me: me.clone(),
             project_root,
             content_roots: RwLock::new(Vec::new()),
+            jdtls_import_roots: RwLock::new(Vec::new()),
             languages,
             sink: {
                 let me = me.clone();
@@ -503,6 +508,28 @@ impl LspManager {
         }
     }
 
+    /// Directories of Maven projects linked from outside the opened root. The jdtls
+    /// rooted at the opened project scans them together with that root. An empty list
+    /// leaves discovery as the single `rootUri` scan.
+    pub fn set_jdtls_import_roots(&self, mut roots: Vec<PathBuf>) {
+        roots.retain(|root| root.is_absolute() && root.is_dir() && !root.starts_with(&self.project_root));
+        roots.sort();
+        roots.dedup();
+        let changed = {
+            let mut current = self.jdtls_import_roots.write();
+            let changed = *current != roots;
+            *current = roots;
+            changed
+        };
+        if changed && let Some(me) = self.me.upgrade() {
+            me.reconfigure_soon();
+        }
+    }
+
+    pub fn jdtls_import_roots(&self) -> Vec<PathBuf> {
+        self.jdtls_import_roots.read().clone()
+    }
+
     /// Shares JDT LS within this manager; callers reconfigure after the hook's value changes.
     pub fn set_jdtls_shared_hook(&self, hook: Box<JdtlsSharedFn>) {
         *self.jdtls_shared_hook.write() = Some(Arc::from(hook));
@@ -537,8 +564,27 @@ impl LspManager {
             if state.shared {
                 return state.roots.clone();
             }
+            // The opened project's server also scans linked external Maven projects.
+            // Other in-root builds keep their own server and their own root.
+            if server.root == self.project_root {
+                return self.project_and_import_roots();
+            }
         }
         vec![server.root.clone()]
+    }
+
+    fn project_and_import_roots(&self) -> Vec<PathBuf> {
+        let mut roots = vec![self.project_root.clone()];
+        for root in self.jdtls_import_roots.read().iter() {
+            if root.is_absolute() && root.is_dir() && !roots.contains(root) {
+                roots.push(root.clone());
+            }
+        }
+        roots
+    }
+
+    fn imports_external_java(&self, config: &LanguageServerConfig, path: &Path) -> bool {
+        is_local_jdtls(config) && self.jdtls_import_roots.read().iter().any(|root| path.starts_with(root))
     }
 
     fn project_root_for(&self, path: &Path) -> PathBuf {
@@ -557,7 +603,9 @@ impl LspManager {
         let mut servers = self.servers.lock();
         let project = self.project_root_for(path);
         let sketch = (cfg.name == arduino::SERVER).then(|| arduino::sketch_root(&project, path)).flatten();
-        let root = if shared.as_ref().is_some_and(|state| state.shared) {
+        let root = if shared.as_ref().is_some_and(|state| state.shared) || self.imports_external_java(cfg, path) {
+            // One server for the opened root and a linked external Maven project, so
+            // Java completion and navigation see the import jdtls made of both.
             self.project_root.clone()
         } else {
             sketch.or_else(|| launch::find_root(&project, path, &cfg.root_markers)).unwrap_or_else(|| {
@@ -773,7 +821,7 @@ impl LspManager {
             Err(LaunchError::Missing) => {
                 let cfg = server.effective_config();
                 let message =
-                    cfg.install_hint.clone().unwrap_or_else(|| format!("`{}` was not found on PATH", cfg.command));
+                    cfg.install_hint.clone().unwrap_or_else(|| format!("{} was not found on PATH", cfg.command));
                 if server.fail_start(
                     generation,
                     Conn::Missing,
@@ -953,13 +1001,15 @@ impl LspManager {
             }
             init_options["settings"] = handler::all_settings(&cfg);
             let shared = is_local_jdtls(&server.config) && self.jdtls_workspace_state().shared;
-            if shared {
-                init_options["workspaceFolders"] = json!(
-                    self.server_workspace_roots(server)
-                        .iter()
-                        .map(|root| uri::path_to_uri_string(root))
-                        .collect::<Vec<_>>()
-                );
+            // jdtls imports `initializationOptions.workspaceFolders` by scanning each
+            // directory. It ignores the LSP workspace folder list for that first import,
+            // and a `projectConfigurations` list replaces the scan. Extra Maven projects
+            // are therefore folders here, not an explicit build-file list, so projects
+            // under the opened root are still discovered.
+            let folders: Vec<String> =
+                self.server_workspace_roots(server).iter().map(|root| uri::path_to_uri_string(root)).collect();
+            if shared || folders.len() > 1 {
+                init_options["workspaceFolders"] = json!(folders);
             }
             let triggers: Vec<_> = self
                 .docs

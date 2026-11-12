@@ -14,10 +14,10 @@ import {
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
-import { useProject } from "@/platform/project";
-import { resolveMonoFont } from "@/platform/fonts";
+import { useConsoleFont } from "@/platform/consoleFont";
 import { Icon, showContextMenu } from "@/ui";
 import { spanStyle } from "@/ui/ansi";
+import { logLineColor } from "@/ui/logColors";
 import type { ConsoleLine, ConsoleModel } from "./console";
 import { findOutputLinks, type OutputLink } from "./links";
 import { openTarget, openUrl } from "./navigate";
@@ -51,7 +51,8 @@ const Line = memo(
       if (link.kind === "url") void openUrl(link.url);
       else void openTarget(link.target, cwd);
     };
-    if (segments.length === 0) return <>{"​"}</>;
+    // A blank line is an empty row: its height comes from CSS, never from a character in the text.
+    if (segments.length === 0) return null;
     return (
       <>
         {segments.map((seg, i) => {
@@ -182,12 +183,17 @@ export function ConsoleView({
   const innerRef = useRef<HTMLDivElement>(null);
   const lines = model.lines;
   const patterns = useWorkflowSettings((s) => s.console.foldPatterns);
+  const logColors = useWorkflowSettings((s) => s.console.logColors);
   // The Run console uses Tools › Terminal › Font (which can follow Editor › Font),
   // so the font and fallback configured there apply to process output too.
-  const terminalFont = useWorkflowSettings((s) => s.terminal);
-  const editorFont = useProject((s) => s.settings?.editor);
-  const consoleFont = resolveMonoFont(terminalFont, editorFont);
-  const rowHeight = Math.max(16, Math.round(consoleFont.size * 1.5));
+  const consoleFont = useConsoleFont();
+  const { rowHeight } = consoleFont;
+  /** A row's box: at its virtual offset, and never shorter than one line — a blank line has no text. */
+  const rowStyle = (start: number) => ({
+    transform: `translateY(${start}px)`,
+    height: softWrap ? undefined : rowHeight,
+    minHeight: rowHeight,
+  });
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
   const [internalFindOpen, setInternalFindOpen] = useState(false);
   const findOpen = controlledFindOpen ?? internalFindOpen;
@@ -567,7 +573,7 @@ export function ConsoleView({
                   data-index={item.index}
                   ref={softWrap ? virtualizer.measureElement : undefined}
                   className={styles.line}
-                  style={{ transform: `translateY(${item.start}px)`, height: softWrap ? undefined : rowHeight }}
+                  style={rowStyle(item.start)}
                 >
                   {pendingInput}
                 </div>
@@ -580,7 +586,7 @@ export function ConsoleView({
                   data-index={item.index}
                   ref={softWrap ? virtualizer.measureElement : undefined}
                   className={styles.line}
-                  style={{ transform: `translateY(${item.start}px)`, height: softWrap ? undefined : rowHeight }}
+                  style={rowStyle(item.start)}
                 >
                   {foldButton(row.fold, false)}
                 </div>
@@ -588,13 +594,15 @@ export function ConsoleView({
             }
             const line = lines[row.index];
             if (!line) return null;
+            // The level colour is the inherited fallback; spans with their own ANSI colour win.
+            const color = logLineColor(line.text, line.kind, logColors);
             return (
               <div
                 key={item.key}
                 data-index={item.index}
                 ref={softWrap ? virtualizer.measureElement : undefined}
                 className={clsx(styles.line, styles[line.kind])}
-                style={{ transform: `translateY(${item.start}px)`, height: softWrap ? undefined : rowHeight }}
+                style={{ ...rowStyle(item.start), color }}
               >
                 <Line line={line} marks={marksByLine.get(row.index)} length={line.text.length} cwd={cwd} />
                 {row.fold && foldButton(row.fold, true)}

@@ -99,7 +99,7 @@ The selected theme is injected as one stylesheet on `:root` that outranks the bu
 theme blocks, and `data-theme` is switched to the theme's `kind`. Three things still layer on
 top of it:
 
-- an **Accent colour** picked in **Settings › Appearance & Behavior › Appearance** (other
+- an **Accent color** picked in **Settings › Appearance & Behavior › Appearance** (other
   than the default),
 - an explicit scheme or attribute overrides in **Settings › Editor › Color Scheme**,
 - the appearance options that change only metrics (compact mode).
@@ -238,7 +238,7 @@ The full table is `UI_KEYS` in
 | `--syn-rainbow-1` … `--syn-rainbow-5` (Semantic highlighting)                        | `RAINBOW_COLOR1` … `RAINBOW_COLOR5`                                                                                              |
 | `--wave-error`, `--wave-warning`                                                     | `ERRORS_ATTRIBUTES`, `WARNING_ATTRIBUTES` (effect colour)                                                                        |
 | `--bg-matched-brace`, `--bg-identifier-under-caret`                                  | `MATCHED_BRACE_ATTRIBUTES`, `IDENTIFIER_UNDER_CARET_ATTRIBUTES`                                                                  |
-| `--bg-text-search-result`, `--bg-search-match`                                       | `TEXT_SEARCH_RESULT_ATTRIBUTES`, `SEARCH_RESULT_ATTRIBUTES`                                                                      |
+| `--bg-text-search-result`, `--bg-search-result`                                      | `TEXT_SEARCH_RESULT_ATTRIBUTES`, `SEARCH_RESULT_ATTRIBUTES`                                                                      |
 | `--syn-self`, `--syn-keyword-arg`, `--syn-docstring`, `--syn-predefined`             | `PY.SELF_PARAMETER`, `PY.KEYWORD_ARGUMENT`, `PY.DOC_COMMENT`, `PY.BUILTIN_NAME`                                                  |
 | `--ansi-*`                                                                           | `CONSOLE_*_OUTPUT` (`CONSOLE_DARKGRAY_OUTPUT` is bright black, `CONSOLE_GRAY_OUTPUT` white)                                      |
 
@@ -504,6 +504,7 @@ conventionally go in the theme file, groups marked _editor scheme_ in the scheme
 | `--fg-editor-selection`             | `inherit`                | `inherit`                |
 | `--bg-text-search-result`           | `#114957`                | `#fcd47e`                |
 | `--bg-text-search-result-current`   | `#165e70`                | `#f2bf57`                |
+| `--bg-search-result`                | `#2d543f`                | `#ccccff`                |
 | `--bg-matched-brace`                | `#43454a`                | `#93d9d9`                |
 | `--matched-brace-weight`            | `var(--fw-code-bold)`    | `inherit`                |
 | `--bg-matched-tag`                  | `#3f4045`                | `#c9ecec`                |
