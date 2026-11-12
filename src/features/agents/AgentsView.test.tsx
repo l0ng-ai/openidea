@@ -313,21 +313,7 @@ describe("Agents task menu", () => {
     expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.undockTask" }));
     // A click opens the task: the menu doesn't repeat it.
     expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.openTask" }));
-    expect(menu[0]).toMatchObject({ id: "rename", label: "Rename…" });
-  });
-});
-
-describe("Agents sessions popup vs confirm", () => {
-  it("closes the sessions popup before the delete confirmation so the dialog is not covered", async () => {
-    useAgents.setState({ docked: "one" });
-    setup();
-    fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
-    expect(screen.getByRole("dialog", { name: "Agent sessions" })).toBeTruthy();
-    context("two");
-    fireEvent.click(screen.getByRole("menuitem", { name: "Delete…" }));
-    await waitFor(() => expect(confirmChecked).toHaveBeenCalled());
-    expect(screen.queryByRole("dialog", { name: "Agent sessions" })).toBeNull();
-    await waitFor(() => expect(deleteTask).toHaveBeenCalledExactlyOnceWith("two", false));
+    expect(menu[0]).toMatchObject({ action: "agents.renameTask" });
   });
 });
 

@@ -1,5 +1,5 @@
 import type { AgentTask } from "@/bindings";
-import { executeAction, type Action } from "@/platform/actions";
+import type { Action } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import type { MenuItem } from "@/ui";
 import { showError, confirmChecked } from "@/workbench/messages";
@@ -53,10 +53,8 @@ async function runTasks(tasks: AgentTask[], run: (task: AgentTask) => Promise<un
   if (errors.length) await showError(title, errors.join("\n"));
 }
 
-/** `before` runs just before the confirmation: hosts above the dialog (Agent sessions popup) pass their closer (#2832, same class as #1883). */
-async function confirmDelete(tasks: AgentTask[], before?: () => void) {
+async function confirmDelete(tasks: AgentTask[]) {
   if (!tasks.length) return;
-  before?.();
   const task = tasks[0]!;
   const multiple = tasks.length > 1;
   const worktree = tasks.some((t) => t.isolation === "worktree");
@@ -202,7 +200,7 @@ export const taskActions: Action[] = [
   },
 ];
 
-export function taskMenu(tasks: AgentTask[], beforeConfirm?: () => void): MenuItem[] {
+export function taskMenu(tasks: AgentTask[]): MenuItem[] {
   if (!tasks.length) return [];
   const ids = tasks.map((task) => task.id);
   const task = tasks[0]!;
@@ -212,15 +210,7 @@ export function taskMenu(tasks: AgentTask[], beforeConfirm?: () => void): MenuIt
   return [
     ...(!multiple
       ? ([
-          {
-            id: "rename",
-            label: "Rename…",
-            icon: "edit",
-            run: () => {
-              beforeConfirm?.();
-              void executeAction("agents.renameTask", task.id);
-            },
-          },
+          { kind: "action", action: "agents.renameTask", label: "Rename…", icon: "edit", arg: task.id },
           { kind: "action", action: "terminal.openAt", label: "Terminal", icon: "terminal", arg: task.cwd },
           ...(task.capabilities?.fork && task.status !== "archived"
             ? ([
@@ -255,9 +245,10 @@ export function taskMenu(tasks: AgentTask[], beforeConfirm?: () => void): MenuIt
       disabled: !archivable,
     },
     {
-      id: "delete",
+      kind: "action",
+      action: "agents.deleteTasks",
       label: multiple ? tx`Delete (${tasks.length})…` : "Delete…",
-      run: () => void confirmDelete(tasks, beforeConfirm),
+      arg: ids,
     },
   ];
 }
