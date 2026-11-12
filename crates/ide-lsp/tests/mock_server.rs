@@ -1916,16 +1916,17 @@ async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_t
     for _ in 0..2 {
         peer.notify("$/progress", json!({ "token": 7, "value": { "kind": "end" } })).unwrap();
     }
-    // A later task is a barrier for both end notifications.
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let refs = tokio::time::timeout(Duration::from_secs(5), search).await.unwrap().unwrap().unwrap();
+    assert_eq!(refs.incomplete, None);
+    // A later task is a barrier for both end notifications. It starts only after the search
+    // finished: one that is still running would see the barrier as indexing.
     peer.notify("$/progress", json!({ "token": "barrier", "value": { "kind": "begin", "title": "Barrier" } })).unwrap();
     peer.notify("$/progress", json!({ "token": "barrier", "value": { "kind": "end" } })).unwrap();
     eventually(|| {
         h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, done: true, .. } if title == "Barrier"))
     })
     .await;
-    h.wait_status("mock", ServerStatus::Ready).await;
-    let refs = tokio::time::timeout(Duration::from_secs(5), search).await.unwrap().unwrap().unwrap();
-    assert_eq!(refs.incomplete, None);
     assert!(!ide_core::task::cancel(new));
     let events = h.events.lock();
     for id in [old, new] {

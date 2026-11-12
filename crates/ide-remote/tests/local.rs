@@ -333,7 +333,8 @@ async fn download_into_copies_only_the_selected_items() {
     std::fs::write(server.join("index.php"), "php").unwrap();
     std::fs::write(project.join("index.php"), "old").unwrap();
     let service = service(tmp.path());
-    let remotes = [server.join("drush"), server.join("index.php")].map(|p| p.to_str().unwrap().to_owned());
+    // Remote paths use `/`, as the local file system lists them on Windows too.
+    let remotes = [server.join("drush"), server.join("index.php")].map(|p| p.to_str().unwrap().replace('\\', "/"));
     let report = service
         .download_into(&FsConnection::Local, &remotes, &project, &CancellationToken::new(), &mut |_, _, _| {})
         .await
