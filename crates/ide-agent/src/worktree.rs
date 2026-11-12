@@ -129,6 +129,14 @@ fn added(path: IpcPath, rel_path: String) -> AgentChange {
     AgentChange { path, rel_path, kind: ChangeKind::Added, added, removed: 0 }
 }
 
+/// Whether two paths name one file (a case-insensitive disk resolving both spellings).
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 fn crlf_to_lf(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     for (i, &b) in bytes.iter().enumerate() {
@@ -259,7 +267,12 @@ pub(crate) fn accept(
         if local_bytes == current {
             return Ok(true);
         }
-        if local_bytes != base_bytes {
+        // The checkout may hold the committed LF text with CRLF line ends (`core.autocrlf`).
+        let unchanged = match (&local_bytes, &base_bytes) {
+            (Some(now), Some(at_base)) => now == at_base || crlf_to_lf(now) == *at_base,
+            (now, at_base) => now == at_base,
+        };
+        if !unchanged {
             return Ok(false);
         }
         match current {
@@ -283,13 +296,24 @@ pub(crate) fn accept(
         reason: "the checkout has changes of its own to it; accept it by hand".to_owned(),
     };
     for change in changes {
+        // A case-only rename on a case-insensitive disk: both names reach the same file, so
+        // rename it in place before bringing it to the task's version.
+        if let Some(old) = renamed_from.get(&change.rel_path)
+            && old != &change.rel_path
+            && old.to_lowercase() == change.rel_path.to_lowercase()
+            && local_root.join(old).exists()
+            && same_file(&local_root.join(old), &local_root.join(&change.rel_path))
+        {
+            std::fs::rename(local_root.join(old), local_root.join(&change.rel_path))?;
+        }
         if !apply(&change.rel_path)? {
             skipped.push(skip(&change.rel_path));
             continue;
         }
         accepted.push(change.rel_path.clone());
-        // A rename also takes the file away from its old path.
+        // A rename also takes the file away from its old path (unless only its case changed).
         if let Some(old) = renamed_from.get(&change.rel_path)
+            && old.to_lowercase() != change.rel_path.to_lowercase()
             && !apply(old)?
         {
             skipped.push(skip(old));
@@ -619,6 +643,36 @@ mod tests {
         assert_eq!(std::fs::read_to_string(repo.join("app/new.txt")).unwrap(), "n\n");
         assert!(!repo.join("a.txt").exists(), "the rename's old path is gone");
         assert!(!repo.join("app/app").exists());
+    }
+
+    #[test]
+    fn accept_treats_a_crlf_checkout_of_the_base_as_unchanged() {
+        let (_tmp, repo, created) = accept_repo();
+        // The checkout holds the committed text with CRLF line ends, as core.autocrlf leaves it.
+        std::fs::write(repo.join("a.txt"), "one\r\ntwo\r\n").unwrap();
+        std::fs::write(created.path.join("a.txt"), "one\nTWO\n").unwrap();
+        git(&created.path, &["mv", "gone.txt", "kept.txt"]);
+        std::fs::write(repo.join("gone.txt"), "bye\r\n").unwrap();
+        let changes = listed(&created.path, &created.base_commit);
+        let outcome = accept(&repo, &created.path, &created.base_commit, &changes).unwrap();
+        assert!(outcome.skipped.is_empty(), "{:?}", outcome.skipped);
+        assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "one\nTWO\n");
+        assert!(repo.join("kept.txt").exists() && !repo.join("gone.txt").exists());
+    }
+
+    #[test]
+    fn accept_applies_a_case_only_rename() {
+        let (_tmp, repo, created) = accept_repo();
+        git(&created.path, &["mv", "a.txt", "A.txt"]);
+        let changes = listed(&created.path, &created.base_commit);
+        let outcome = accept(&repo, &created.path, &created.base_commit, &changes).unwrap();
+        assert!(outcome.skipped.is_empty(), "{:?}", outcome.skipped);
+        let names: Vec<_> = std::fs::read_dir(&repo)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.eq_ignore_ascii_case("a.txt"))
+            .collect();
+        assert_eq!(names, ["A.txt"]);
     }
 
     #[test]
