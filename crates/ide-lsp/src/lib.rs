@@ -37,6 +37,7 @@ pub mod types;
 mod uri;
 mod virtual_doc;
 mod vue_navigation;
+mod vue_refs;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
 pub use inspect::{FileInspection, InspectHost, InspectOptions};
@@ -1601,6 +1602,9 @@ impl LspManager {
                 && !result.locations.is_empty()
             {
                 return Ok(result.locations);
+            }
+            if let Some(found) = self.vue_ref_navigation(doc, &snap, pos).await {
+                return Ok(found);
             }
         }
         let (method, cap, feature) = goto_method(kind);
