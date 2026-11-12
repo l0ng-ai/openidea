@@ -43,6 +43,7 @@ pub enum ConnectError {
 
 struct Connection {
     plugin: String,
+    #[allow(dead_code, reason = "read by document subscriptions (#2610)")]
     project: String,
     outgoing: Arc<Inbox>,
     incoming: Arc<Inbox>,
@@ -224,6 +225,7 @@ impl WebSocketHub {
 
     /// Returns the project captured when this plugin opened the resource.
     /// Consumers use this instead of accepting a project selected by plugin code.
+    #[allow(dead_code, reason = "read by document subscriptions (#2610)")]
     pub fn project(&self, plugin: &str, id: ConnectionId) -> Result<String, String> {
         Ok(self.connection(plugin, id)?.project.clone())
     }
@@ -485,6 +487,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::result_large_err)] // Required by tungstenite's callback signature.
     async fn optional_subprotocol_and_custom_headers_reach_the_handshake() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}/socket?channel=main", listener.local_addr().unwrap());
