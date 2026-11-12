@@ -308,30 +308,31 @@ impl FtpFs {
         self.ftp.lock().await.mkdir(path).await.map_err(|e| err(path, e))
     }
 
-    /// Downloads into a sibling temporary file and replaces `local` only once the
-    /// server confirmed the transfer, so a failed one leaves an existing file as it was.
+    /// Downloads into a new temporary file beside `local` and replaces `local` (keeping its
+    /// permissions) only once the server confirmed the transfer, so a failed one leaves an
+    /// existing file as it was.
     pub async fn download(&self, remote: &str, local: &Path) -> IdeResult<()> {
-        if let Some(dir) = local.parent() {
-            tokio::fs::create_dir_all(dir).await?;
-        }
-        let name = local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let partial = local.with_file_name(format!(".{name}.download"));
-        let result = async {
+        let dir = match local.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => Path::new("."),
+        };
+        tokio::fs::create_dir_all(dir).await?;
+        // A fresh, unpredictable name created exclusively: never an existing file or link.
+        let partial = tempfile::Builder::new().prefix(".download-").tempfile_in(dir)?;
+        let mut output = tokio::fs::File::from_std(partial.reopen()?);
+        {
             let mut ftp = self.ftp.lock().await;
             let mut stream = ftp.retr_as_stream(remote).await.map_err(|e| err(remote, e))?;
-            let mut output = tokio::fs::File::create(&partial).await?;
             tokio::io::copy(&mut stream, &mut output).await?;
             output.flush().await?;
             drop(output);
             stream.finish().await.map_err(|e| err(remote, e))?;
-            tokio::fs::rename(&partial, local).await?;
-            Ok(())
         }
-        .await;
-        if result.is_err() {
-            let _ = tokio::fs::remove_file(&partial).await;
+        if let Ok(existing) = tokio::fs::metadata(local).await {
+            tokio::fs::set_permissions(partial.path(), existing.permissions()).await?;
         }
-        result
+        partial.persist(local).map_err(|e| e.error)?;
+        Ok(())
     }
 
     /// `mkdir -p`.

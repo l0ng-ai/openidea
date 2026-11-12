@@ -259,7 +259,11 @@ impl WebSocketHub {
 
 fn validate_url(url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|_| "invalid WebSocket URL")?;
-    let loopback = parsed.host_str().is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"));
+    // `host_str` keeps an IPv6 address in brackets.
+    let loopback = parsed.host_str().is_some_and(|host| {
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    });
     if parsed.scheme() != "wss" && !(parsed.scheme() == "ws" && loopback) {
         return Err("WebSocket requires WSS outside loopback".into());
     }
@@ -464,6 +468,8 @@ mod tests {
         assert!(validate_url("wss://relay.example/socket").is_ok());
         assert!(validate_url("wss://relay.example/socket?channel=main&token=opaque").is_ok());
         assert!(validate_url("ws://127.0.0.1:9000/socket").is_ok());
+        assert!(validate_url("ws://[::1]:9000/socket").is_ok());
+        assert!(validate_url("ws://localhost:9000/socket").is_ok());
         assert!(validate_url("ws://relay.example/socket").unwrap_err().contains("WSS"));
         assert!(validate_url("wss://token@relay.example/socket").is_err());
         assert!(validate_url("wss://relay.example/socket#fragment").is_err());
