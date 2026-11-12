@@ -799,7 +799,7 @@ impl CallCancel {
         self.token.lock().clone()
     }
 
-    fn is_set(&self) -> bool {
+    pub(crate) fn is_set(&self) -> bool {
         self.flag.load(Ordering::Acquire)
     }
 
@@ -835,6 +835,8 @@ pub struct StoreData {
     /// Tasks begun by the running call and not ended yet.
     pub(crate) open_tasks: Vec<u64>,
     pub(crate) last_report: Option<Instant>,
+    /// One-shot unwind window after a blocking host I/O call times out.
+    pub(crate) host_io_grace_used: bool,
 }
 
 impl WasiView for StoreData {
@@ -1067,6 +1069,7 @@ impl Runtime {
             action_prompt_client: None,
             open_tasks: Vec::new(),
             last_report: None,
+            host_io_grace_used: false,
         };
         let mut store = Store::new(&engine.engine, data);
         store.limiter(|d| &mut d.store_limits);
@@ -1923,6 +1926,7 @@ fn arm(store: &mut Store<StoreData>, limits: &Limits, timeout: Duration) -> wasm
     data.deadline = now + timeout;
     data.timeout = timeout;
     data.last_report = None;
+    data.host_io_grace_used = false;
     data.cancel.reset();
     // The callback above runs every tick and decides.
     store.set_epoch_deadline(1);
