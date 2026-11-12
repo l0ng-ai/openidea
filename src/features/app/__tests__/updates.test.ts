@@ -235,6 +235,17 @@ describe("Check for Updates", () => {
             anchor: "right",
             component: NotificationsToolWindow,
           });
+          // A maximized side needs a registered window, or the layout treats it as stale.
+          const disposeLeft =
+            mode === "maximized"
+              ? registerToolWindow({
+                  id: "project",
+                  title: "Project",
+                  icon: "folder",
+                  anchor: "left",
+                  component: () => null,
+                })
+              : () => {};
           useProject.setState({
             project: windowKind === "project" ? ({ root: "/p", name: "p" } as never) : null,
             lightEdit: windowKind === "lightEdit",
@@ -243,7 +254,11 @@ describe("Check for Updates", () => {
             } as unknown as Settings,
           });
           useToolWindowLayout.setState({
-            visible: { ...previousLayout.visible, right: "notifications" },
+            visible: {
+              ...previousLayout.visible,
+              right: "notifications",
+              ...(mode === "maximized" ? { left: "project" } : {}),
+            },
             maximized: mode === "maximized" ? "left" : null,
           });
           useNotifications.setState({ items: [] });
@@ -287,6 +302,7 @@ describe("Check for Updates", () => {
             view.unmount();
             list?.unmount();
             dispose();
+            disposeLeft();
             useNotifications.setState({ items: [] });
             useToolWindowLayout.setState(previousLayout);
           }
