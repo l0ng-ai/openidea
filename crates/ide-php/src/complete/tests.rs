@@ -256,6 +256,15 @@ fn class_names_with_auto_import() {
     let found = project.complete("src/run.php", &run("    $s = new S/*|*/"));
     assert!(!has(&found, "Shelf"), "{:?}", labels(&found));
     assert!(has(&found, "SplStack"), "{:?}", labels(&found));
+    // With the parentheses, the caret between them when the constructor
+    // takes parameters; none added when they're already there.
+    let found = project.complete("src/run.php", &run("    $s = new Boo/*|*/"));
+    let book = item(&found, "Book");
+    assert_eq!((book.insert_text.as_str(), book.is_snippet), ("Book($0)", true));
+    let found = project.complete("src/run.php", &run("    $s = new Contai/*|*/"));
+    assert_eq!(item(&found, "Container").insert_text, "Container()");
+    let found = project.complete("src/run.php", &run("    $s = new Boo/*|*/('x');"));
+    assert_eq!(item(&found, "Book").insert_text, "Book");
     let found = project.complete("src/run.php", &run("    $s = $book instanceof Shel/*|*/;"));
     assert_eq!(item(&found, "Shelf").kind, CompletionKind::Interface);
     // Functions and constants.

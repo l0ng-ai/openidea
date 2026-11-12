@@ -1327,6 +1327,17 @@ impl<'e, 'r> Collector<'e, 'r> {
                     };
                     let mut item = Self::item(&short, kind);
                     item.insert_text = text;
+                    // `new Foo()`, the caret between the parentheses when the
+                    // constructor takes parameters (as PhpStorm).
+                    if filter == ClassFilter::Instantiable && insert == Insert::Code && !call_follows {
+                        let receiver = Type::named(&global.fqn);
+                        let context = crate::types::Context::in_class(&global.fqn);
+                        let params =
+                            self.resolver.method_params_on(&receiver, "__construct", &context).unwrap_or_default();
+                        let body = if params.is_empty() { "()" } else { "($0)" };
+                        item.insert_text = format!("{}{body}", snippet_escape(&item.insert_text));
+                        item.is_snippet = true;
+                    }
                     item.data = Some(CompletionData::ClassLike { fqn: global.fqn.clone() });
                     item
                 }
