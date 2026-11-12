@@ -1,5 +1,6 @@
 .session {
-  --session-content-width: var(--agent-conversation-width);
+  /* The conversation uses the whole panel: a fixed width left a wide editor half empty. */
+  --session-content-width: 100%;
   --session-card-width: 80%;
   flex: 1;
   min-height: 0;
