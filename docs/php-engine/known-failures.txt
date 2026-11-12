@@ -12,3 +12,7 @@ vcs_shelf_roots::shelf_at_repo_root
 vcs_shelf_roots::shelf_in_non_git_project
 vcs_shelf_roots::shelf_in_project_below_repository
 vcs_shelf_roots::shelves_in_two_repositories
+# Frontend tests (pnpm test) comparing files checked out with "\r\n" against generated "\n" output:
+theme token reference > is current in docs/plugins/themes.md (run pnpm gen:theme-docs)
+Angular templates > is generated from angular.grammar
+JSP pages > is generated from jsp.grammar
