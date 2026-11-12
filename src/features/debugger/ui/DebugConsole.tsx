@@ -125,6 +125,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const editorFont = useProject((s) => s.settings?.editor);
   const consoleFont = resolveMonoFont(terminalFont, editorFont);
   const rowHeight = Math.max(16, Math.round(consoleFont.size * 1.5));
+  const fontStyle = { fontFamily: consoleFont.family, fontSize: `${consoleFont.size}px` };
   // Settings › Console › Use soft wraps is the default; the toggle overrides it for this console.
   const defaultWrap = useWorkflowSettings((s) => s.console.softWrap);
   const [wrapOverride, setWrapOverride] = useState<boolean | null>(null);
@@ -437,7 +438,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
         <div
           ref={scroller}
           className={clsx(styles.consoleOutput, !softWrap && styles.noWrap)}
-          style={{ fontFamily: consoleFont.family, fontSize: `${consoleFont.size}px`, lineHeight: `${rowHeight}px` }}
+          style={{ ...fontStyle, lineHeight: `${rowHeight}px` }}
           onScroll={(e) => {
             if (programmatic.current) return;
             const el = e.currentTarget;
@@ -474,12 +475,13 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
         <div className={styles.repl}>
           {interactive && (
             <>
-              <span className={styles.prompt} aria-hidden>
+              <span className={styles.prompt} style={fontStyle} aria-hidden>
                 ›
               </span>
               <input
                 ref={inputRef}
                 className={styles.evalInput}
+                style={fontStyle}
                 onFocus={() => setConsoleHistoryBrowser(browseHistory)}
                 onBlur={() => {
                   setConsoleHistoryBrowser(null);
