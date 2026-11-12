@@ -40,9 +40,13 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
 
 #[tauri::command]
 #[specta::specta]
-pub fn recent_projects(state: State<'_, AppState>) -> Vec<RecentProject> {
+pub async fn recent_projects(state: State<'_, AppState>) -> Vec<RecentProject> {
     state.note_ipc();
-    state.recent.list()
+    let items = state.recent.list();
+    match tauri::async_runtime::spawn_blocking(move || ide_workspace::recent::with_live_branches(items)).await {
+        Ok(items) => items,
+        Err(_) => state.recent.list(),
+    }
 }
 
 #[tauri::command]
