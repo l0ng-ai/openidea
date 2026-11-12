@@ -465,3 +465,22 @@ fn aware_completes_the_props_of_enclosing_components() {
     let parents = project.engine.laravel_parent_components(catalog.component("menu.item").unwrap());
     assert_eq!(parents.iter().map(|parent| parent.tag.as_str()).collect::<Vec<_>>(), ["menu", "alert"]);
 }
+
+/// Hovering a component tag's name shows the component's class, view and
+/// props; anonymous components have a view only.
+#[test]
+fn hovers_a_component_tag() {
+    let project = Project::app();
+    let template = Template::new(&project, PAGE, "<x-al/*|*/ert type=\"error\" />");
+    let hover = project.engine.blade_hover(&template.blade(), template.pos).expect("a hover");
+    project.engine.document_closed(DocId(90));
+    let text = &hover.markdown;
+    assert!(text.starts_with("**component** `<x-alert>`"), "{text}");
+    assert!(text.contains(r"Class `App\View\Components\Alert` · app/View/Components/Alert.php"), "{text}");
+    assert!(text.contains("View · resources/views/components/alert.blade.php"), "{text}");
+    assert!(text.contains("Props: `type`") && text.contains("`message`"), "{text}");
+    let template = Template::new(&project, PAGE, "<x-bad/*|*/ge :status=\"$s\" />");
+    let hover = project.engine.blade_hover(&template.blade(), template.pos).expect("a hover").markdown;
+    project.engine.document_closed(DocId(90));
+    assert!(!hover.contains("Class") && hover.contains("components/badge.blade.php"), "{hover}");
+}

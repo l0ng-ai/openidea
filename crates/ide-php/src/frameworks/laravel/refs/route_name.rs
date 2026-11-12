@@ -124,4 +124,30 @@ impl ReferenceKind for RouteName {
     fn is_known(&self, cx: &RefContext<'_>, value: &str) -> bool {
         Self::routes(cx).named(value).next().is_some()
     }
+
+    /// The routes of that name: method and URI, action, middleware, URL
+    /// (with `APP_URL`) and the file registering them.
+    fn hover(&self, cx: &RefContext<'_>, value: &str) -> Option<String> {
+        let routes = Self::routes(cx);
+        let app_url = cx.engine.laravel_app_url().unwrap_or_default();
+        let sections: Vec<String> = routes
+            .named(value)
+            .map(|route| {
+                let info = crate::frameworks::laravel::route_hints::route_info(route, &app_url);
+                let file = route.path.strip_prefix(&cx.project.root).unwrap_or(&route.path);
+                let file = file.to_string_lossy().replace('\\', "/");
+                let mut out = format!("`{} {}` · `{}`", info.methods.join("|"), info.uri, info.action);
+                if !info.middleware.is_empty() {
+                    let middleware: Vec<String> = info.middleware.iter().map(|m| format!("`{m}`")).collect();
+                    out.push_str(&format!("\n\nMiddleware: {}", middleware.join(", ")));
+                }
+                out.push_str(&format!("\n\n{} · {file}", info.url));
+                out
+            })
+            .collect();
+        if sections.is_empty() {
+            return None;
+        }
+        Some(format!("**route** `{value}`\n\n{}", sections.join("\n\n---\n\n")))
+    }
 }

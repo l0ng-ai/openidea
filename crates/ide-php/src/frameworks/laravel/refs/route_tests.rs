@@ -755,3 +755,17 @@ fn route_requests_carry_the_form_request_fields() {
     let show = project.engine.laravel_route_list("posts.show").unwrap();
     assert!(!show[0].request.contains("\n\n"), "{}", show[0].request);
 }
+
+/// Hovering a route name shows its routes: method and URI, action,
+/// middleware, URL and file.
+#[test]
+fn hovers_a_route_name() {
+    let mut project = Project::app();
+    let (doc, pos) = project.open("app/Http/Probe.php", "<?php\nreturn route('posts.sh/*|*/ow');\n");
+    let hover = project.engine.hover(doc, pos).expect("a hover").markdown;
+    project.engine.document_closed(doc);
+    assert!(hover.starts_with("**route** `posts.show`"), "{hover}");
+    assert!(hover.contains("`GET /posts/{post}` · `"), "{hover}");
+    assert!(hover.contains("PostController@show`"), "{hover}");
+    assert!(hover.contains("/posts/{post} · routes/web.php"), "{hover}");
+}

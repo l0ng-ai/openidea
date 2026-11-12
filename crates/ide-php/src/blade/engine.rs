@@ -67,10 +67,46 @@ impl PhpEngine {
 
     /// Hover on the PHP at `pos` of a template.
     pub fn blade_hover(&self, blade: &BladeDocument, pos: Pos) -> Option<HoverInfo> {
+        if let Some(hover) = self.component_tag_hover(blade, pos) {
+            return Some(hover);
+        }
         let compiled = self.blade_sync(blade);
         let mut hover = self.hover(blade.doc, compiled.to_php(pos)?)?;
         hover.range = compiled.range_to_blade(hover.range).unwrap_or(ide_core::Range::new(pos, pos));
         Some(hover)
+    }
+
+    /// On the name of a component tag (`<x-alert`): the component's class
+    /// and view files and its props (with their types or defaults).
+    fn component_tag_hover(&self, blade: &BladeDocument, pos: Pos) -> Option<HoverInfo> {
+        let lines = crate::syntax::LineIndex::new(blade.text);
+        let Some(super::tags::TagPlace::Name(name)) = super::tags::tag_place(blade.text, lines.byte(pos)) else {
+            return None;
+        };
+        let tag = &blade.text[name.start as usize..name.end as usize];
+        let catalog = self.laravel_blade()?;
+        let component = catalog.component(tag)?;
+        let root = self.root();
+        let relative = |path: &Path| path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
+        let mut out = format!("**component** `<x-{tag}>`");
+        if let Some((class, path)) = &component.class {
+            out.push_str(&format!("\n\nClass `{class}` · {}", relative(path)));
+        }
+        if let Some(view) = &component.view {
+            out.push_str(&format!("\n\nView · {}", relative(view)));
+        }
+        let props: Vec<String> = self
+            .laravel_component_attributes(component)
+            .into_iter()
+            .map(|prop| match prop.detail {
+                Some(detail) => format!("`{}` {detail}", prop.name),
+                None => format!("`{}`", prop.name),
+            })
+            .collect();
+        if !props.is_empty() {
+            out.push_str(&format!("\n\nProps: {}", props.join(", ")));
+        }
+        Some(HoverInfo { markdown: out, range: lines.range(name.start, name.end) })
     }
 
     /// Signature help in the PHP at `pos` of a template.
