@@ -402,3 +402,19 @@ fn completion_on_the_fixture_is_fast() {
     let budget = if cfg!(debug_assertions) { Duration::from_millis(500) } else { Duration::from_millis(50) };
     assert!(p95 < budget, "p95 {p95:?} over {budget:?}: {times:?}");
 }
+
+/// Of two classes matching the prefix alike, the project's comes before a
+/// Composer package's (`Comment` before the vendor's `Command`).
+#[test]
+fn project_classes_rank_before_library_classes() {
+    let mut project = Project::new(&[
+        ("composer.json", r#"{"autoload": {"psr-4": {"App\\": "app/"}}}"#),
+        ("app/Models/Comment.php", "<?php\n\nnamespace App\\Models;\n\nclass Comment\n{\n}\n"),
+        ("vendor/acme/console/src/Command.php", "<?php\n\nnamespace Acme\\Console;\n\nclass Command\n{\n}\n"),
+    ]);
+    let found = project.complete("app/Probe.php", "<?php\n\nnamespace App;\n\nnew Com/*|*/");
+    let names = labels(&found);
+    let comment = names.iter().position(|l| *l == "Comment").expect("Comment");
+    let command = names.iter().position(|l| *l == "Command").expect("Command");
+    assert!(comment < command, "{names:?}");
+}

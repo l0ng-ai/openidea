@@ -409,6 +409,8 @@ struct Global {
     kind: DeclKind,
     /// From the stubs (ranked after the project's).
     builtin: bool,
+    /// From `vendor/` (ranked after the project's of the same match).
+    library: bool,
 }
 
 struct Collector<'e, 'r> {
@@ -605,13 +607,19 @@ impl<'e, 'r> Collector<'e, 'r> {
         ParsedFile::parse("completion.php", format!("{}{replacement}{terminator}{rest}", &text[..start]))
     }
 
-    fn push(&mut self, mut item: Completion, group: u8) {
+    fn push(&mut self, item: Completion, group: u8) {
+        self.push_ranked(item, group, 0);
+    }
+
+    /// [`Self::push`], with `tier` ranking items of the same group and
+    /// match (1 for a library's class after the project's).
+    fn push_ranked(&mut self, mut item: Completion, group: u8, tier: u8) {
         let name = item.filter_text.as_deref().unwrap_or(&item.label);
         let Some(quality) = quality(name, &self.prefix) else { return };
         if !self.seen.insert((item.label.clone(), item.kind)) {
             return;
         }
-        item.sort_text = format!("{group}{quality}{}", item.label.to_lowercase());
+        item.sort_text = format!("{group}{quality}{tier}{}", item.label.to_lowercase());
         item.replace = self.replace;
         item.replace_tab = self.replace_tab;
         self.items.push(item);
@@ -1256,7 +1264,7 @@ impl<'e, 'r> Collector<'e, 'r> {
         };
         let mut found: Vec<Global> = Vec::new();
         let mut seen: HashSet<(String, NameKind)> = HashSet::new();
-        let mut add = |found: &mut Vec<Global>, fqn: &str, kind: DeclKind, builtin: bool| {
+        let mut add = |found: &mut Vec<Global>, fqn: &str, kind: DeclKind, builtin: bool, library: bool| {
             if !wanted(kind) || quality(short_name(fqn), short).is_none() {
                 return;
             }
@@ -1265,17 +1273,17 @@ impl<'e, 'r> Collector<'e, 'r> {
                 _ => fqn.to_ascii_lowercase(),
             };
             if seen.insert((key, kind.name_kind())) {
-                found.push(Global { fqn: fqn.to_owned(), kind, builtin });
+                found.push(Global { fqn: fqn.to_owned(), kind, builtin, library });
             }
         };
         for class in &self.here.class_likes {
-            add(&mut found, &class.fqn, DeclKind::ClassLike(class.kind), false);
+            add(&mut found, &class.fqn, DeclKind::ClassLike(class.kind), false, false);
         }
         for function in &self.here.functions {
-            add(&mut found, &function.fqn, DeclKind::Function, false);
+            add(&mut found, &function.fqn, DeclKind::Function, false, false);
         }
         for constant in &self.here.constants {
-            add(&mut found, &constant.fqn, DeclKind::Constant, false);
+            add(&mut found, &constant.fqn, DeclKind::Constant, false, false);
         }
         if let Some(index) = self.engine.index()
             && let Ok(keys) = index.short_names(self.cancel)
@@ -1286,26 +1294,28 @@ impl<'e, 'r> Collector<'e, 'r> {
                     return;
                 }
                 for decl in index.by_short_name(&keys[key]).unwrap_or_default() {
-                    add(&mut found, &decl.fqn, decl.kind, false);
+                    let library = self.engine.is_library(&decl.path());
+                    add(&mut found, &decl.fqn, decl.kind, false, library);
                 }
             }
         }
         let stubs = self.engine.stubs();
         for file in &stubs.files {
             for class in &file.summary.class_likes {
-                add(&mut found, &class.fqn, DeclKind::ClassLike(class.kind), true);
+                add(&mut found, &class.fqn, DeclKind::ClassLike(class.kind), true, false);
             }
             for function in &file.summary.functions {
-                add(&mut found, &function.fqn, DeclKind::Function, true);
+                add(&mut found, &function.fqn, DeclKind::Function, true, false);
             }
             for constant in &file.summary.constants {
-                add(&mut found, &constant.fqn, DeclKind::Constant, true);
+                add(&mut found, &constant.fqn, DeclKind::Constant, true, false);
             }
         }
         // Rank before resolving types: only the best are shown.
         found.sort_by_cached_key(|global| {
             let name = short_name(&global.fqn);
-            (quality(name, short).unwrap_or(3), global.builtin, name.len(), global.fqn.to_ascii_lowercase())
+            let quality = quality(name, short).unwrap_or(3);
+            (quality, global.builtin, global.library, name.len(), global.fqn.to_ascii_lowercase())
         });
         if found.len() > MAX_GLOBALS {
             found.truncate(MAX_GLOBALS);
@@ -1384,7 +1394,7 @@ impl<'e, 'r> Collector<'e, 'r> {
             }
             item.filter_text = Some(short.clone());
             item.additional_edits = edit.into_iter().collect();
-            self.push(item, group);
+            self.push_ranked(item, group, u8::from(global.library));
         }
     }
 
