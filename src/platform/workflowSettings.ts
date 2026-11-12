@@ -74,12 +74,23 @@ export interface VcsSettingsValid {
   issueNavigation: IssueLinkValid[];
 }
 
+/** Mirrors `ide-core::workflow_settings::LogLevelColors` defaults. */
+export interface LogLevelColorsValid {
+  enabled: boolean;
+  error: string;
+  warn: string;
+  info: string;
+  debug: string;
+  trace: string;
+}
+
 export interface ConsoleSettingsValid {
   softWrap: boolean;
   overrideBuffer: boolean;
   bufferKb: number;
   encoding: string;
   foldPatterns: string[];
+  logColors: LogLevelColorsValid;
 }
 
 export interface DebuggerSettingsValid {
@@ -254,6 +265,14 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       "at node:internal/",
       "<frozen importlib._bootstrap",
     ],
+    logColors: {
+      enabled: true,
+      error: "var(--ansi-red)",
+      warn: "var(--ansi-yellow)",
+      info: "var(--ansi-green)",
+      debug: "var(--ansi-cyan)",
+      trace: "var(--ansi-magenta)",
+    },
   },
   debugger: {
     showOnBreakpoint: true,
@@ -389,12 +408,22 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
 export function validateConsole(raw: unknown): ConsoleSettingsValid {
   const d = DEFAULT_WORKFLOW.console;
   const v = obj(raw);
+  const lc = obj(v.logColors);
+  const dl = d.logColors;
   return {
     softWrap: bool(v.softWrap, d.softWrap),
     overrideBuffer: bool(v.overrideBuffer, d.overrideBuffer),
     bufferKb: num(v.bufferKb, d.bufferKb, WORKFLOW_LIMITS.bufferKb, true),
     encoding: nonEmpty(v.encoding, d.encoding),
     foldPatterns: strings(v.foldPatterns, d.foldPatterns),
+    logColors: {
+      enabled: bool(lc.enabled, dl.enabled),
+      error: nonEmpty(lc.error, dl.error),
+      warn: nonEmpty(lc.warn, dl.warn),
+      info: nonEmpty(lc.info, dl.info),
+      debug: nonEmpty(lc.debug, dl.debug),
+      trace: nonEmpty(lc.trace, dl.trace),
+    },
   };
 }
 

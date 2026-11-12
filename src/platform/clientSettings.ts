@@ -71,6 +71,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "terminal.columnWidth",
   "console.softWrap",
   "console.foldPatterns",
+  "console.logColors",
   "debugger.showOnBreakpoint",
   "debugger.focusAppOnBreakpoint",
   "debugger.hideOnTermination",
