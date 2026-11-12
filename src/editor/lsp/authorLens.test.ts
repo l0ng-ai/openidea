@@ -3,6 +3,8 @@ import type { BlameLine } from "@/platform/ipc";
 import { useI18n } from "@/platform/i18n";
 import { authorLabel, authorSummary, authorTooltip } from "./authorLens";
 
+const { useProject } = await import("@/platform/project");
+
 const line = (author: string, timeMs: number | null, commit = "a".repeat(40)): BlameLine => ({
   commit,
   author,
@@ -11,9 +13,9 @@ const line = (author: string, timeMs: number | null, commit = "a".repeat(40)): B
 });
 const UNCOMMITTED = "0".repeat(40);
 
-/** What the label's date suffix looks like in `tag` for an epoch-ms time (the same formatting `formatDay` uses). */
+/** The label's numeric date suffix in `tag` for an epoch-ms time (the same formatting the hint uses). */
 const dateOf = (ms: number, tag?: string) =>
-  new Intl.DateTimeFormat(tag, { year: "numeric", month: "short", day: "numeric" }).format(new Date(ms));
+  new Intl.DateTimeFormat(tag, { year: "numeric", month: "numeric", day: "numeric" }).format(new Date(ms));
 
 describe("code vision author", () => {
   const blame = [
@@ -46,6 +48,17 @@ describe("code vision author", () => {
       expect(authorLabel(authorSummary(blame, 3, 3)!)).toBe(`Ann ${dateOf(50, "zh-CN")}`);
     } finally {
       useI18n.setState({ locale: "en" });
+    }
+  });
+
+  it("uses the Date Formats override pattern when enabled", () => {
+    useProject.setState({
+      settings: { general: { dateFormat: { overrideSystem: true, pattern: "dd.MM.yyyy" } } } as never,
+    });
+    try {
+      expect(authorLabel(authorSummary(blame, 3, 3)!)).toBe("Ann 01.01.1970");
+    } finally {
+      useProject.setState({ settings: null });
     }
   });
 
