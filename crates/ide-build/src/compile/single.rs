@@ -64,6 +64,28 @@ pub fn single_file_target(root: &Path, model: &BuildModel, file: &Path) -> IdeRe
     Ok(SingleFileTarget { module, test, out_dir, top: top.clone(), pl, java_version: project.java_version })
 }
 
+/// The Maven reactor target for a launch module whose source file is not known yet.
+fn module_target(root: &Path, model: &BuildModel, module: &Path, test: bool) -> IdeResult<SingleFileTarget> {
+    let Some(m) = &model.maven else {
+        return Err(IdeError::not_found("no linked Maven project found for module"));
+    };
+    let module = if module.is_absolute() { module.to_path_buf() } else { root.join(module) };
+    let project = m
+        .projects
+        .iter()
+        .find(|p| root.join(&p.dir) == module)
+        .ok_or_else(|| IdeError::not_found("no linked Maven project found for module"))?;
+    if project.packaging == "pom" {
+        return Err(IdeError::not_found("the launch module is a Maven aggregator without sources"));
+    }
+    let top = maven_reactor(m, &project.dir)
+        .ok_or_else(|| IdeError::not_found("no linked Maven reactor found for module"))?;
+    let top_dir = subdir(root, &top.dir);
+    let pl = module.strip_prefix(&top_dir).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+    let out_dir = module.join("target").join(if test { "test-classes" } else { "classes" });
+    Ok(SingleFileTarget { module, test, out_dir, top: top.clone(), pl, java_version: project.java_version })
+}
+
 /// `javac` for the module: its `JAVA_HOME`, else `PATH`.
 pub fn find_javac(env: &BTreeMap<String, String>) -> String {
     let home = env.get("JAVA_HOME").map(Path::new);
@@ -78,6 +100,20 @@ pub fn find_javac(env: &BTreeMap<String, String>) -> String {
 /// `mvn dependency:build-classpath` (which resolves without compiling anything,
 /// so `-am` stays cheap). Entries are platform-separated (`;` on Windows).
 pub fn single_file_classpath(root: &Path, model: &BuildModel, target: &SingleFileTarget) -> IdeResult<String> {
+    classpath(root, model, target, "test")
+}
+
+/// Runtime (or test) dependency classpath for a launch module.
+///
+/// The Java language server runs on its own JDK, so its Maven model can select a
+/// different JDK profile and dependency classifier than the project launch. Use the
+/// same Maven process that builds the module instead.
+pub fn module_classpath(root: &Path, model: &BuildModel, module: &Path, test: bool) -> IdeResult<String> {
+    let target = module_target(root, model, module, test)?;
+    classpath(root, model, &target, if test { "test" } else { "runtime" })
+}
+
+fn classpath(root: &Path, model: &BuildModel, target: &SingleFileTarget, scope: &str) -> IdeResult<String> {
     let mut entries: Vec<String> = Vec::new();
     // The module's own classes first: the file almost always uses classes next to it.
     let own: &[&str] = if target.test { &["target/test-classes", "target/classes"] } else { &["target/classes"] };
@@ -110,7 +146,18 @@ pub fn single_file_classpath(root: &Path, model: &BuildModel, target: &SingleFil
         args.extend(["-pl", target.pl.as_str(), "-am"]);
     }
     let output_arg = format!("-Dmdep.outputFile={probe}");
-    args.extend(["dependency:build-classpath", output_arg.as_str(), "-Dmdep.includeScope=test", "-q"]);
+    let scope_arg = format!("-Dmdep.includeScope={scope}");
+    // Reactor dependencies are not in the local repository when the launch build
+    // only reached `compile`; package those modules in this invocation so the
+    // dependency plugin can resolve their artifacts.
+    args.extend([
+        "-DskipTests",
+        "package",
+        "dependency:build-classpath",
+        output_arg.as_str(),
+        scope_arg.as_str(),
+        "-q",
+    ]);
     let top_dir = subdir(root, &target.top.dir);
     let status = ProcCommand::new(&target.top.command)
         .args(&args)
@@ -119,8 +166,10 @@ pub fn single_file_classpath(root: &Path, model: &BuildModel, target: &SingleFil
         .output()
         .map_err(|e| IdeError::internal(format!("cannot resolve the compile classpath: {e}")))?;
     if !status.status.success() {
+        let stdout = String::from_utf8_lossy(&status.stdout);
         let stderr = String::from_utf8_lossy(&status.stderr);
-        let tail: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
+        // Maven reports reactor/dependency failures on stdout, not only stderr.
+        let tail: Vec<&str> = stdout.lines().chain(stderr.lines()).filter(|l| !l.trim().is_empty()).collect();
         let tail = tail.iter().rev().take(5).rev().cloned().collect::<Vec<_>>().join("\n");
         return Err(IdeError::internal(format!("cannot resolve the compile classpath:\n{tail}")));
     }
@@ -327,5 +376,36 @@ mod tests {
         assert!(cp.contains("/repo/a.jar"), "{cp}");
         assert!(cp.contains("/repo/b.jar"), "{cp}");
         assert!(cp.split(separator).count() >= 3, "{cp}");
+    }
+
+    /// A launch uses runtime dependencies, while tests additionally see test-scope ones.
+    #[cfg(unix)]
+    #[test]
+    fn launch_module_classpath_uses_the_matching_dependency_scope() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixture(root);
+        let script = root.join("mvnw");
+        fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > args.txt\npl='.'\nwhile [ $# -gt 0 ]; do\nif [ \"$1\" = \"-pl\" ]; then pl=\"$2\"; shift 2; else shift; fi\ndone\nmkdir -p \"$pl/target\"\nprintf '/repo/runtime.jar:/repo/test.jar' > \"$pl/target/ide-compile-cp.txt\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let model = crate::load(root, &root.join("cache"), None);
+
+        let runtime = module_classpath(root, &model, &root.join("app"), false).unwrap();
+        assert!(runtime.contains("/repo/runtime.jar"), "{runtime}");
+        let args = fs::read_to_string(root.join("args.txt")).unwrap();
+        assert!(args.lines().any(|a| a == "package"), "{args}");
+        assert!(args.lines().any(|a| a == "-DskipTests"), "{args}");
+        assert!(args.lines().any(|a| a == "-Dmdep.includeScope=runtime"), "{args}");
+
+        let test = module_classpath(root, &model, &root.join("app"), true).unwrap();
+        assert!(test.contains("/repo/test.jar"), "{test}");
+        let args = fs::read_to_string(root.join("args.txt")).unwrap();
+        assert!(args.lines().any(|a| a == "-Dmdep.includeScope=test"), "{args}");
     }
 }

@@ -107,9 +107,22 @@ async fn resolve_launch(
             Vec::new()
         };
         let mut class_paths: Vec<String> = built.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-        for p in std::mem::take(&mut info.class_paths) {
-            if !class_paths.iter().any(|c| same_entry(c, &p, cfg!(windows))) {
-                class_paths.push(p);
+        if delegated {
+            // m2e runs inside jdtls on the server JDK and can resolve a different
+            // Maven profile/classifier than the module build. Ask the same Maven
+            // process that built the module for its runtime/test dependencies.
+            let maven_cp = compile::module_classpath(&project.root, &model, &module, test)?;
+            for p in std::env::split_paths(&maven_cp) {
+                let p = p.to_string_lossy().into_owned();
+                if !class_paths.iter().any(|c| same_entry(c, &p, cfg!(windows))) {
+                    class_paths.push(p);
+                }
+            }
+        } else {
+            for p in std::mem::take(&mut info.class_paths) {
+                if !class_paths.iter().any(|c| same_entry(c, &p, cfg!(windows))) {
+                    class_paths.push(p);
+                }
             }
         }
         info.class_paths = class_paths;
