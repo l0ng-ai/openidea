@@ -265,21 +265,21 @@ const npm: RunConfigTypeContribution = {
   },
 };
 
-const BUN_COMMANDS = ["bun", "run", "test", "install", "add", "remove", "publish"];
+const BUN_COMMANDS = ["run", "test"];
 
 const bun: RunConfigTypeContribution = {
   id: "bun",
   label: "Bun",
   icon: "file-bun",
-  description: "Run a typescript or javascript file with Bun",
+  description: "Run a TypeScript or JavaScript file with Bun",
   defaults: { packageManager: "bun", command: "run" },
   ownsWorkingDirectory: true,
   fields: [
-    { key: "packageDir", label: "Working Dir", mono: true, placeholder: "Project root" },
+    { key: "packageDir", label: "Working directory", mono: true, browse: "directory", placeholder: "Project root" },
     { key: "command", label: "Command", control: "select", options: BUN_COMMANDS.map((v) => ({ value: v, label: v })) },
     {
       key: "script",
-      label: "Script (.ts .js)",
+      label: "Script",
       mono: true,
       required: true,
       visible: (p) => p.command === "run",
@@ -296,7 +296,7 @@ const bun: RunConfigTypeContribution = {
   },
   paramsFrom(c) {
     const [command, ...rest] = c.args;
-    if (!PACKAGE_MANAGERS.includes(commandName(c.command)) || !command || !BUN_COMMANDS.includes(command)) return null;
+    if (commandName(c.command) !== "bun" || !command || !BUN_COMMANDS.includes(command)) return null;
     const script = command === "run" ? (rest.shift() ?? "") : "";
     return {
       packageManager: commandName(c.command),

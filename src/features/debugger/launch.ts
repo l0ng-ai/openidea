@@ -205,11 +205,12 @@ function jsDebugLaunch(rc: RunConfig, cwd: string): LaunchConfig {
 
 function bunDapLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   const out = base(rc, "bun-dap", cwd);
-  const scriptArgs = rc.params?.arguments ? parseArgs(rc.params.arguments) : [];
+  // `bun run <file> [args…]`: the file and its arguments come from the command line itself.
+  const [, file = "", ...args] = rc.args[0] === "run" ? rc.args : ["run", ...rc.args];
   const extra: Record<string, unknown> = {
-    program: join(cwd, rc.params?.script ?? ""),
+    program: join(cwd, file),
     runtime: rc.command,
-    runtimeArgs: scriptArgs,
+    runtimeArgs: args,
   };
   out.extraJson = JSON.stringify(extra);
   return out;
