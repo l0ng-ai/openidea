@@ -79,6 +79,10 @@
   text-overflow: ellipsis;
   color: var(--fg-subtle);
 }
+.detailIcon {
+  flex: none;
+  --icon-color: var(--fg-subtle);
+}
 .partial {
   flex: none;
   padding: 0 4px;
