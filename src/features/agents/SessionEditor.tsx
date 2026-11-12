@@ -550,10 +550,11 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   const dragging = useRef(false);
   // When the user last scrolled the conversation (wheel, touch, keys, the scrollbar, Find):
   // that leaves the end. WebKit also moves the offset back on its own while rows lay out,
-  // which comes with a change of the content height; a scroll without one is meant too (the
+  // which comes with a change of the content height, and pulls it back to the end when the view
+  // grows taller (the composer shrinks after a send); a scroll without either is meant too (the
   // scrollbar thumb, a jump), whatever moved it.
   const userScrolled = useRef(-Infinity);
-  const seenHeight = useRef(0);
+  const seenHeight = useRef({ content: 0, view: 0 });
   const markUserScroll = useCallback(() => {
     userScrolled.current = performance.now();
   }, []);
@@ -680,6 +681,40 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
       if (restored.current) positions.set(key, { ...position.current, top: el.scrollTop });
     };
   }, [key, positions]);
+  // How far the end was below the view when a section was toggled, before its content renders.
+  const gapAtToggle = useRef(Infinity);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const toggled = () => {
+      gapAtToggle.current = el.scrollHeight - el.scrollTop - el.clientHeight;
+    };
+    el.addEventListener("toggle", toggled, true);
+    return () => el.removeEventListener("toggle", toggled, true);
+  }, []);
+  /**
+   * An opened section grew the conversation below its header: with the end in view, stay at
+   * it; otherwise bring what it shows into view. Either way its header stays on screen, and
+   * following stops when that leaves the end out of view.
+   */
+  const revealFold = useCallback(
+    (fold: HTMLElement) => {
+      const el = ref.current;
+      if (!el || dragging.current) return;
+      const view = el.getBoundingClientRect();
+      const box = fold.getBoundingClientRect();
+      const atEnd = position.current.stick || gapAtToggle.current < 40;
+      gapAtToggle.current = Infinity;
+      const below = atEnd ? el.scrollHeight - el.scrollTop - el.clientHeight : box.bottom - view.bottom;
+      if (below > 0) el.scrollTop += Math.max(0, Math.min(below, box.top - view.top));
+      if (atEnd && el.scrollHeight - el.scrollTop - el.clientHeight >= 40) {
+        position.current = { top: el.scrollTop, stick: false };
+        positions.set(key, position.current);
+        setAway(true);
+      }
+    },
+    [key, positions],
+  );
   /** Back to the end of the stream; following resumes from there. */
   const jumpToLatest = useCallback(() => {
     const el = ref.current;
@@ -750,126 +785,134 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
     );
   return (
     <OpenFolds.Provider value={openFolds}>
-      <div className={styles.streamArea}>
-        {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
-        <div
-          ref={ref}
-          // The conversation is read and copied like a document; focusable so ⌘F reaches it.
-          className={clsx(styles.stream, selectableText)}
-          tabIndex={-1}
-          onWheel={(e) => {
-            markUserScroll();
-            if (e.deltaY < 0 && !e.ctrlKey && !e.defaultPrevented) stopFollowing(e.target);
-            else if (e.deltaY > 0 && !e.ctrlKey && !e.defaultPrevented) scrollingUp.current = false;
-          }}
-          onTouchStart={(e) => {
-            touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
-          }}
-          onTouchMove={(e) => {
-            markUserScroll();
-            const y = e.touches.length === 1 ? e.touches[0]!.clientY : null;
-            if (y !== null && touchY.current !== null && y > touchY.current) stopFollowing(e.target);
-            else if (y !== null && touchY.current !== null && y < touchY.current) scrollingUp.current = false;
-            touchY.current = y;
-          }}
-          onKeyDown={(e) => {
-            markUserScroll();
-            if (e.defaultPrevented || (e.target as Element).closest("input, textarea, [contenteditable]")) return;
-            if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home" || (e.key === " " && e.shiftKey))
-              stopFollowing(e.target);
-            else if (e.key === "ArrowDown" || e.key === "PageDown" || e.key === "End" || (e.key === " " && !e.shiftKey))
+      <RevealFold.Provider value={revealFold}>
+        <div className={styles.streamArea}>
+          {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
+          <div
+            ref={ref}
+            // The conversation is read and copied like a document; focusable so ⌘F reaches it.
+            className={clsx(styles.stream, selectableText)}
+            tabIndex={-1}
+            onWheel={(e) => {
+              markUserScroll();
+              if (e.deltaY < 0 && !e.ctrlKey && !e.defaultPrevented) stopFollowing(e.target);
+              else if (e.deltaY > 0 && !e.ctrlKey && !e.defaultPrevented) scrollingUp.current = false;
+            }}
+            onTouchStart={(e) => {
+              touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
+            }}
+            onTouchMove={(e) => {
+              markUserScroll();
+              const y = e.touches.length === 1 ? e.touches[0]!.clientY : null;
+              if (y !== null && touchY.current !== null && y > touchY.current) stopFollowing(e.target);
+              else if (y !== null && touchY.current !== null && y < touchY.current) scrollingUp.current = false;
+              touchY.current = y;
+            }}
+            onKeyDown={(e) => {
+              markUserScroll();
+              if (e.defaultPrevented || (e.target as Element).closest("input, textarea, [contenteditable]")) return;
+              if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home" || (e.key === " " && e.shiftKey))
+                stopFollowing(e.target);
+              else if (
+                e.key === "ArrowDown" ||
+                e.key === "PageDown" ||
+                e.key === "End" ||
+                (e.key === " " && !e.shiftKey)
+              )
+                scrollingUp.current = false;
+            }}
+            onPointerDown={() => {
+              markUserScroll();
               scrollingUp.current = false;
-          }}
-          onPointerDown={() => {
-            markUserScroll();
-            scrollingUp.current = false;
-          }}
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-            const laidOut = el.scrollHeight !== seenHeight.current;
-            seenHeight.current = el.scrollHeight;
-            const byUser = dragging.current || performance.now() - userScrolled.current < 500 || !laidOut;
-            const movedDown = el.scrollTop > position.current.top;
-            const stayedAtEnd = position.current.stick && el.scrollTop === position.current.top;
-            const stick =
-              (atEnd && !scrollingUp.current && (movedDown || stayedAtEnd)) || (position.current.stick && !byUser);
-            // Still following: back to the end the offset was moved away from.
-            if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
-            position.current = { top: el.scrollTop, stick };
-            positions.set(key, position.current);
-            setAway(!position.current.stick);
-            // Reached the top of what is painted: fetch the earlier entries, but only
-            // once the drag has settled.
-            if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
-            if (!position.current.stick && el.scrollTop < 120 && !dragging.current) loadWhenStill();
-          }}
-          // Copy, plus Quote for a selection: replies to it in the composer.
-          onContextMenu={(e) => {
-            const text = selectionIn(e.currentTarget);
-            const items = copyMenuFor(e.target) ?? [];
-            if (text.trim() && task.status !== "archived") {
-              items.push({
-                kind: "action",
-                action: "agents.quoteReply",
-                label: "Quote",
-                arg: { task: task.id, text },
-              });
-            }
-            if (!items.length) return;
-            e.preventDefault();
-            showContextMenu(e, items);
-          }}
-        >
-          {loadError && (
-            <div role="alert">
-              <EmptyState
-                title={tx`Couldn't load the conversation: ${loadError}`}
-                actions={
-                  <Button
-                    onClick={() =>
-                      void executeAction("agents.retryConversation", {
-                        task: task.id,
-                        subagent: subagent?.id ?? null,
-                      })
-                    }
-                  >
-                    Retry
-                  </Button>
-                }
-              />
-            </div>
-          )}
-          {entries === null ? (
-            !loadError && <Spinner />
-          ) : entries.length === 0 && !busy && !loadError ? (
-            <EmptyState title="No conversation history" />
-          ) : (
-            rows.map((row) => (
-              <div
-                key={row.index}
-                className={styles.conversationRow}
-                data-message={
-                  (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
-                }
-                data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
-              >
-                {authorHeaders.has(row.index) && (
-                  <div className={styles.agentAuthor}>
-                    <div className={styles.role}>
-                      <Icon name={providerIcon(task.provider)} size={13} />
-                      <span>{providerName(task.provider)}</span>
-                    </div>
-                  </div>
-                )}
-                {renderConversationRow(row)}
+            }}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+              const laidOut =
+                el.scrollHeight !== seenHeight.current.content || el.clientHeight !== seenHeight.current.view;
+              seenHeight.current = { content: el.scrollHeight, view: el.clientHeight };
+              const byUser = dragging.current || performance.now() - userScrolled.current < 500 || !laidOut;
+              const movedDown = el.scrollTop > position.current.top;
+              const stayedAtEnd = position.current.stick && el.scrollTop === position.current.top;
+              const stick =
+                (atEnd && !scrollingUp.current && (movedDown || stayedAtEnd)) || (position.current.stick && !byUser);
+              // Still following: back to the end the offset was moved away from.
+              if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
+              position.current = { top: el.scrollTop, stick };
+              positions.set(key, position.current);
+              setAway(!position.current.stick);
+              // Reached the top of what is painted: fetch the earlier entries, but only
+              // once the drag has settled.
+              if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
+              if (!position.current.stick && el.scrollTop < 120 && !dragging.current) loadWhenStill();
+            }}
+            // Copy, plus Quote for a selection: replies to it in the composer.
+            onContextMenu={(e) => {
+              const text = selectionIn(e.currentTarget);
+              const items = copyMenuFor(e.target) ?? [];
+              if (text.trim() && task.status !== "archived") {
+                items.push({
+                  kind: "action",
+                  action: "agents.quoteReply",
+                  label: "Quote",
+                  arg: { task: task.id, text },
+                });
+              }
+              if (!items.length) return;
+              e.preventDefault();
+              showContextMenu(e, items);
+            }}
+          >
+            {loadError && (
+              <div role="alert">
+                <EmptyState
+                  title={tx`Couldn't load the conversation: ${loadError}`}
+                  actions={
+                    <Button
+                      onClick={() =>
+                        void executeAction("agents.retryConversation", {
+                          task: task.id,
+                          subagent: subagent?.id ?? null,
+                        })
+                      }
+                    >
+                      Retry
+                    </Button>
+                  }
+                />
               </div>
-            ))
-          )}
-          <WorkingRow task={task} entries={entries} subagent={subagent} />
+            )}
+            {entries === null ? (
+              !loadError && <Spinner />
+            ) : entries.length === 0 && !busy && !loadError ? (
+              <EmptyState title="No conversation history" />
+            ) : (
+              rows.map((row) => (
+                <div
+                  key={row.index}
+                  className={styles.conversationRow}
+                  data-message={
+                    (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
+                  }
+                  data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
+                >
+                  {authorHeaders.has(row.index) && (
+                    <div className={styles.agentAuthor}>
+                      <div className={styles.role}>
+                        <Icon name={providerIcon(task.provider)} size={13} />
+                        <span>{providerName(task.provider)}</span>
+                      </div>
+                    </div>
+                  )}
+                  {renderConversationRow(row)}
+                </div>
+              ))
+            )}
+            <WorkingRow task={task} entries={entries} subagent={subagent} />
+          </div>
+          {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
         </div>
-        {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
-      </div>
+      </RevealFold.Provider>
     </OpenFolds.Provider>
   );
 }
@@ -1749,6 +1792,9 @@ const FoldedContent = createContext(false);
  */
 const OpenFolds = createContext<Map<string, boolean> | null>(null);
 
+/** Scrolls a section the reader just opened into view (`Stream`). */
+const RevealFold = createContext<((el: HTMLElement) => void) | null>(null);
+
 /**
  * A collapsed section that renders its content only once opened: most of a long conversation
  * stays folded, and keeping it out of the DOM keeps showing and restyling the tab cheap.
@@ -1769,13 +1815,24 @@ function Fold({
 }) {
   const always = useContext(FoldedContent);
   const remembered = useContext(OpenFolds);
+  const reveal = useContext(RevealFold);
   const [expanded, setExpanded] = useState(() => !!open || (!!id && !!remembered?.get(id)));
+  const ref = useRef<HTMLDetailsElement>(null);
+  const opened = useRef(false);
+  // Once its content is laid out, so its height is known.
+  useLayoutEffect(() => {
+    if (!expanded || !opened.current) return;
+    opened.current = false;
+    if (ref.current) reveal?.(ref.current);
+  }, [expanded, reveal]);
   return (
     <details
+      ref={ref}
       className={className}
       open={open || (!!id && expanded) || undefined}
       onToggle={(e) => {
         const now = e.currentTarget.open;
+        opened.current = now;
         setExpanded(now);
         if (id && remembered) {
           if (now) remembered.set(id, true);
