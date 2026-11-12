@@ -283,6 +283,16 @@ fn mssql_pool_err(e: bb8::RunError<tiberius::error::Error>) -> IdeError {
     }
 }
 
+/// Tiberius requires TLS when a TLS backend is enabled. `trust_cert` only skips
+/// certificate checks, so Disable has to turn encryption off.
+fn apply_sqlserver_ssl(config: &mut tiberius::Config, ssl: DbSslMode) {
+    match ssl {
+        DbSslMode::Disable => config.encryption(tiberius::EncryptionLevel::NotSupported),
+        DbSslMode::Prefer => config.trust_cert(),
+        DbSslMode::Require | DbSslMode::VerifyCa | DbSslMode::VerifyFull => {}
+    }
+}
+
 const DAYS_1900_01_01: i64 = 693_595;
 
 /// Formats a proleptic Gregorian date given days since `0001-01-01`.
@@ -876,9 +886,7 @@ impl Pool {
                 if !source.database.is_empty() {
                     config.database(&source.database);
                 }
-                if matches!(source.ssl, DbSslMode::Disable | DbSslMode::Prefer) {
-                    config.trust_cert();
-                }
+                apply_sqlserver_ssl(&mut config, source.ssl);
                 let manager = MssqlConnectionManager(config);
                 let pool = bb8::Pool::builder()
                     .max_size(MAX)
@@ -1330,6 +1338,33 @@ fn statement_columns<S: sqlx::Statement>(s: &S) -> Vec<ResultColumn> {
 mod tests {
     use super::*;
     use crate::source::{DbOptions, DbProperty};
+
+    fn sqlserver_debug(ssl: DbSslMode) -> String {
+        let mut config = tiberius::Config::new();
+        apply_sqlserver_ssl(&mut config, ssl);
+        format!("{config:?}")
+    }
+
+    #[test]
+    fn sqlserver_disable_does_not_require_tls() {
+        let debug = sqlserver_debug(DbSslMode::Disable);
+        assert!(debug.contains("encryption: NotSupported"), "{debug}");
+        assert!(debug.contains("bypass: false"), "{debug}");
+    }
+
+    #[test]
+    fn sqlserver_prefer_trusts_the_server_certificate() {
+        let debug = sqlserver_debug(DbSslMode::Prefer);
+        assert!(debug.contains("encryption: Required"), "{debug}");
+        assert!(debug.contains("bypass: true"), "{debug}");
+    }
+
+    #[test]
+    fn sqlserver_require_keeps_validated_tls() {
+        let debug = sqlserver_debug(DbSslMode::Require);
+        assert!(debug.contains("encryption: Required"), "{debug}");
+        assert!(debug.contains("bypass: false"), "{debug}");
+    }
 
     #[test]
     fn discarded_sqlserver_connections_are_broken() {
