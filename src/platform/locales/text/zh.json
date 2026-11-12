@@ -2888,6 +2888,7 @@
   "Uninstall": "卸载",
   "Uninstall…": "卸载…",
   "Unknown SSH Host": "未知的 SSH 主机",
+  "SSH configuration not found": "找不到 SSH 配置",
   "Unmute Breakpoints": "取消静音断点",
   "Unpause": "取消暂停",
   "Unpin Tab": "取消固定标签页",

@@ -227,6 +227,8 @@ impl Session {
         }
         let (mut read, write) = channel.split();
         let (tx, rx) = oneshot::channel();
+        let hangup = Arc::new(tokio::sync::Notify::new());
+        let hung_up = hangup.clone();
         let mut on_output = on_output;
         tokio::spawn(async move {
             let mut code = None;
@@ -234,7 +236,11 @@ impl Session {
                 // After the exit status, output still in flight is read until the channel goes
                 // quiet: a child that inherited stdout keeps the channel open past the exit.
                 let msg = match code {
-                    None => read.wait().await,
+                    // russh forwards no close to a channel this side closed.
+                    None => tokio::select! {
+                        msg = read.wait() => msg,
+                        () = hung_up.notified() => None,
+                    },
                     Some(_) => tokio::time::timeout(EXIT_DRAIN, read.wait()).await.ok().flatten(),
                 };
                 let Some(msg) = msg else { break };
@@ -242,12 +248,14 @@ impl Session {
                     ChannelMsg::Data { data } => on_output(Output::Stdout(&data)),
                     ChannelMsg::ExtendedData { data, ext: 1 } => on_output(Output::Stderr(&data)),
                     ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status),
+                    // Closed without a status (hung up): nothing more arrives.
+                    ChannelMsg::Close => break,
                     _ => {}
                 }
             }
             let _ = tx.send(code);
         });
-        Ok(RemoteProcess { write: Arc::new(write), exit: Mutex::new(Some(rx)) })
+        Ok(RemoteProcess { write: Arc::new(write), exit: Mutex::new(Some(rx)), hangup })
     }
 
     /// Writes `data` to `remote` (absolute; its folder is created) through an
@@ -337,6 +345,7 @@ pub enum Output<'a> {
 pub struct RemoteProcess {
     write: Arc<ChannelWriteHalf<Msg>>,
     exit: Mutex<Option<oneshot::Receiver<Option<u32>>>>,
+    hangup: Arc<tokio::sync::Notify>,
 }
 
 impl RemoteProcess {
@@ -363,10 +372,22 @@ impl RemoteProcess {
         Ok(())
     }
 
+    /// Closes the channel (an interactive shell hangs up); the process ends without a status.
+    pub async fn close(&self) {
+        let _ = self.write.close().await;
+        self.hangup.notify_one();
+    }
+
     /// Waits for the exit status (`None`: killed, or no status reported). Once.
     pub async fn wait(&self) -> Option<u32> {
-        let rx = self.exit.lock().take()?;
-        rx.await.ok().flatten()
+        self.exit_status().await
+    }
+
+    /// [`Self::wait`] without borrowing the process, so dropping it meanwhile still
+    /// releases the channel. Once.
+    pub fn exit_status(&self) -> impl Future<Output = Option<u32>> + Send + 'static {
+        let rx = self.exit.lock().take();
+        async move { rx?.await.ok().flatten() }
     }
 }
 
