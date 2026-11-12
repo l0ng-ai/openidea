@@ -484,3 +484,14 @@ fn hovers_a_component_tag() {
     project.engine.document_closed(DocId(90));
     assert!(!hover.contains("Class") && hover.contains("components/badge.blade.php"), "{hover}");
 }
+
+/// Find usages of a class component's class lists its tags in templates.
+#[test]
+fn finds_a_component_class_tags_in_templates() {
+    let mut project = Project::app();
+    let text = std::fs::read_to_string(project.root.join("app/View/Components/Alert.php")).unwrap();
+    let found = project.references("app/View/Components/Alert.php", &text.replace("class Alert", "class Al/*|*/ert"));
+    let tags: Vec<String> = found.iter().filter(|usage| usage.2 == "alert").map(|usage| usage.0.clone()).collect();
+    assert!(tags.contains(&"resources/views/posts/show.blade.php".to_owned()), "{found:?}");
+    assert!(tags.contains(&"resources/views/layouts/app.blade.php".to_owned()), "{found:?}");
+}

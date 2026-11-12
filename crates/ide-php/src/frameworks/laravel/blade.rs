@@ -771,36 +771,14 @@ impl PhpEngine {
                 _ => return None,
             },
         };
-        let views = self.laravel_views()?;
-        let own = crate::project::normalize(blade.path);
-        let mut out = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for view in views.views().iter().filter(|view| is_blade(&view.path) && !self.is_library(&view.path)) {
-            let path = crate::project::normalize(&view.path);
-            if !seen.insert(path.clone()) {
-                continue;
-            }
-            let text = if path == own { Some(blade.text.to_owned()) } else { self.current_text(&path) };
-            let Some(text) = text else { continue };
-            let lines = LineIndex::new(&text);
-            let spans: Vec<std::ops::Range<u32>> = match &sought {
-                Sought::Name(kind, name) => names(&text, &custom)
-                    .into_iter()
-                    .filter(|found| found.kind == *kind && found.name == *name)
-                    .map(|found| found.span)
-                    .collect(),
-                Sought::Component(tag) => crate::blade::tags::component_tags(&text)
-                    .into_iter()
-                    .filter(|found| found.name(&text) == tag)
-                    .map(|found| found.name)
-                    .collect(),
-            };
-            out.extend(spans.into_iter().map(|span| Usage {
-                path: view.path.clone(),
-                range: lines.range(span.start, span.end),
-                kind: UsageKind::Code,
-            }));
-        }
+        let mut out = self.template_usages(Some((blade.path, blade.text)), |text| match &sought {
+            Sought::Name(kind, name) => names(text, &custom)
+                .into_iter()
+                .filter(|found| found.kind == *kind && found.name == *name)
+                .map(|found| found.span)
+                .collect(),
+            Sought::Component(tag) => component_tag_spans(text, tag),
+        })?;
         if include_declaration
             && let Sought::Component(tag) = &sought
             && let Some(component) = self.laravel_blade().and_then(|catalog| catalog.component(tag).cloned())
@@ -809,6 +787,61 @@ impl PhpEngine {
             out.extend(files.map(|path| Usage { path, range: Range::default(), kind: UsageKind::Declaration }));
         }
         Some(out)
+    }
+
+    /// The usages `find` finds (byte spans) in the project's templates
+    /// (`own`'s current text for that one, else open buffers or disk).
+    /// `None` outside Laravel projects.
+    fn template_usages(
+        &self,
+        own: Option<(&Path, &str)>,
+        find: impl Fn(&str) -> Vec<std::ops::Range<u32>>,
+    ) -> Option<Vec<crate::navigate::Usage>> {
+        use crate::navigate::{Usage, UsageKind};
+        let views = self.laravel_views()?;
+        let own = own.map(|(path, text)| (crate::project::normalize(path), text));
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for view in views.views().iter().filter(|view| is_blade(&view.path) && !self.is_library(&view.path)) {
+            let path = crate::project::normalize(&view.path);
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            let text = match &own {
+                Some((own, text)) if *own == path => Some((*text).to_owned()),
+                _ => self.current_text(&path),
+            };
+            let Some(text) = text else { continue };
+            let lines = LineIndex::new(&text);
+            out.extend(find(&text).into_iter().map(|span| Usage {
+                path: view.path.clone(),
+                range: lines.range(span.start, span.end),
+                kind: UsageKind::Code,
+            }));
+        }
+        Some(out)
+    }
+
+    /// The tags (`<x-alert`) in the project's templates of the class
+    /// component `fqn`: usages of the class (find usages from PHP).
+    pub(crate) fn component_class_usages(&self, fqn: &str) -> Vec<crate::navigate::Usage> {
+        let Some(catalog) = self.laravel_blade() else { return Vec::new() };
+        let tags: Vec<String> = catalog
+            .components
+            .iter()
+            .filter(|component| {
+                component
+                    .class
+                    .as_ref()
+                    .is_some_and(|(class, _)| crate::names::fqn_eq(crate::names::NameKind::ClassLike, class, fqn))
+            })
+            .map(|component| component.tag.clone())
+            .collect();
+        if tags.is_empty() {
+            return Vec::new();
+        }
+        self.template_usages(None, |text| tags.iter().flat_map(|tag| component_tag_spans(text, tag)).collect())
+            .unwrap_or_default()
     }
 
     /// Find usages of what the PHP at `pos` of a template names (a
@@ -960,4 +993,13 @@ fn view_label(views: &ViewTable, path: &Path) -> String {
     views
         .name_of(path)
         .unwrap_or_else(|| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default())
+}
+
+/// The names (after `x-`) of the tags of component `tag` in `text`.
+fn component_tag_spans(text: &str, tag: &str) -> Vec<std::ops::Range<u32>> {
+    crate::blade::tags::component_tags(text)
+        .into_iter()
+        .filter(|found| found.name(text) == tag)
+        .map(|found| found.name)
+        .collect()
 }

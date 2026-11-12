@@ -163,7 +163,8 @@ impl PhpEngine {
         let found = self.find_usages(&sought, &path, &here, include_declaration, cancel);
         Some(found.and_then(|mut usages| {
             // A controller method's routes count as its usages, and a
-            // Livewire component's names as the class's.
+            // Livewire component's names and a Blade component's tags as
+            // the class's.
             let before = usages.len();
             for sought in &sought {
                 match sought {
@@ -172,6 +173,7 @@ impl PhpEngine {
                     }
                     Sought::Name { kind: NameKind::ClassLike, fqn } => {
                         usages.extend(self.livewire_class_usages(fqn, cancel)?);
+                        usages.extend(self.component_class_usages(fqn));
                     }
                     _ => {}
                 }
