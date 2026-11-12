@@ -52,6 +52,7 @@ import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./c
 import { enterInDocComment } from "./docComment";
 import { renderDocComments } from "./renderedDocs";
 import { skipClosingQuote, smartAngleBrackets, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
+import { linkedTags } from "./linkedTags";
 import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
 import { LINE_INSET } from "./lineInset";
@@ -605,6 +606,9 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));
   if (k.pairQuotes) out.push(Prec.highest(skipClosingQuote));
   if (k.tabOutOfPair) out.push(tabOut);
+  // Simultaneous `<tag></tag>` editing (from the syntax tree, no option): plain HTML here;
+  // the other HTML-based modes follow once verified there too.
+  if (!o.readOnly && o.language === "html") out.push(linkedTags);
   if (o.commentStyle) out.push(lineCommentStyle.of(o.commentStyle));
 
   const keys = [];
