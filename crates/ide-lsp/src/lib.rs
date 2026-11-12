@@ -3519,11 +3519,17 @@ impl LspManager {
             join_all(servers.iter().map(|s| self.stop_instance(s, true))).await;
             return;
         }
+        let existing: Vec<ide_core::ServerId> = self.servers.lock().iter().map(|s| s.id).collect();
         self.reconfigure_jdtls_workspace().await;
         self.stop_unlisted().await;
         let Some(me) = self.me.upgrade() else { return };
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         for s in servers {
+            // Created in this pass (the jdtls of a new workspace layout): it starts with the
+            // current configuration, though it may not have recorded it yet.
+            if !existing.contains(&s.id) {
+                continue;
+            }
             // The settings hook may run tools (`npm root -g`), as when the server starts.
             let next = match tokio::task::spawn_blocking({
                 let (me, s) = (me.clone(), s.clone());
