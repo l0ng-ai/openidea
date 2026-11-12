@@ -7,6 +7,7 @@
 import type { Text } from "@codemirror/state";
 import { call, commands, isTauri, onIdeEvent, type BlameLine } from "@/platform/ipc";
 import { formatDay } from "@/platform/dateFormat";
+import { LOCALES, resolveLocale, useI18n } from "@/platform/i18n";
 
 export interface AuthorSummary {
   author: string;
@@ -36,7 +37,8 @@ export function authorSummary(blame: readonly BlameLine[], from: number, to: num
 
 export function authorLabel(s: AuthorSummary): string {
   const label = s.others ? `${s.author} +${s.others}` : s.author;
-  return s.timeMs > 0 ? `${label} ${formatDay(new Date(s.timeMs))}` : label;
+  if (s.timeMs <= 0) return label;
+  return `${label} ${formatDay(new Date(s.timeMs), undefined, false, LOCALES[resolveLocale(useI18n.getState().locale)].tag)}`;
 }
 
 export function authorTooltip(s: AuthorSummary): string {

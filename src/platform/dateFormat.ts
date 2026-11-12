@@ -66,12 +66,12 @@ export function formatClock(d: Date, o: DateFormatOptions = dateFormatOptions())
   return `${h}:${pad(d.getMinutes())} ${d.getHours() < 12 ? "AM" : "PM"}`;
 }
 
-/** Date only (blame gutter, compact columns). */
-export function formatDay(d: Date, o: DateFormatOptions = dateFormatOptions(), short = false): string {
+/** Date only (blame gutter, compact columns). Defaults to the OS locale; `locale` pins one (BCP 47, e.g. the UI's). */
+export function formatDay(d: Date, o: DateFormatOptions = dateFormatOptions(), short = false, locale?: string): string {
   if (o.overrideSystem) return formatPattern(d, o.pattern);
   return short
-    ? formatter(undefined, { year: "2-digit", month: "2-digit", day: "2-digit" }).format(d)
-    : formatter(undefined, { year: "numeric", month: "short", day: "numeric" }).format(d);
+    ? formatter(locale, { year: "2-digit", month: "2-digit", day: "2-digit" }).format(d)
+    : formatter(locale, { year: "numeric", month: "short", day: "numeric" }).format(d);
 }
 
 /** Timestamp for lists: pretty ("Today 10:42", "5 min ago") when enabled, else date + time. */
