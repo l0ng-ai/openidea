@@ -491,7 +491,6 @@ fn run_tool_window(h: &Harness) -> Arc<std::sync::Mutex<Vec<ide_run::RunConfig>>
                 extras: Default::default(),
             };
             config.extras.params.insert(ide_host::mcp::AGENT_PARAM.into(), name);
-            config.extras.emulate_terminal = true;
             config.extras.target = Some(String::new());
             out.lock().unwrap().push(config.clone());
             let result = ide_host::ops::run::start(&host, "main", config, Arc::new(|_| {})).await;
@@ -539,9 +538,9 @@ async fn agent_commands_run_in_named_tabs_and_report_what_the_user_did() {
     assert!(refused.contains("still running `echo ready; sleep 30`"), "{refused}");
     assert!(refused.contains("Last output:\nready"), "the refusal quotes the last output: {refused}");
 
-    // What the user types ends a wait at once, with advice for the agent.
+    // What the user types (a line from the Run console's input) ends a wait at once, with advice for the agent.
     let process = agent_process(&h, "_agent_check");
-    ide_host::ops::run::stdin(&h.host, process, "y\x7fyes\r").unwrap();
+    ide_host::ops::run::stdin(&h.host, process, "yes\n").unwrap();
     let typed = h.json("wait_for_run", json!({"name": "check", "timeout": 10000})).await;
     assert_eq!(typed["waitEnded"], "userIntervened", "{typed}");
     assert_eq!(typed["interventions"][0]["message"], "User input: yes");
@@ -572,12 +571,29 @@ async fn agent_commands_run_in_named_tabs_and_report_what_the_user_did() {
     assert!(closed["tabClosedAt"].is_string(), "{closed}");
     assert!(closed["interventions"][0]["message"].as_str().unwrap().starts_with("The user closed this tab at"));
 
-    let log = h.json("read_run_output", json!({"name": "check", "lines": 20})).await;
-    assert!(log["output"].as_str().unwrap().contains("abc"), "{log}");
+    let log = h.json("read_run_output", json!({"name": "check", "maxLinesCount": 20})).await;
+    assert!(log["output"].as_str().unwrap().contains("ready"), "{log}");
     let from_start = h.json("read_run_output", json!({"name": "check", "offset": 0})).await;
     assert!(from_start["output"].as_str().unwrap().contains("hello"), "one log across the tab's commands");
     let runs = h.json("list_runs", json!({})).await;
     assert_eq!(runs["runs"].as_array().unwrap().len(), 2, "{runs}");
     let missing = h.error("get_run_status", json!({"name": "nothing"})).await;
     assert!(missing.contains("no agent tab named `_agent_nothing`"), "{missing}");
+
+    // Pipes: plain lines, cleaned of escapes and cut to maxLinesCount (the end stays by default).
+    let printf = "printf '\\033[31mone\\033[0m\\ntwo\\nthree\\n'";
+    let lines =
+        h.json("run_command", json!({"name": "lines", "command": printf, "maxLinesCount": 2, "timeout": 10000})).await;
+    assert_eq!(lines["output"], "<<<...content truncated...>>>\ntwo\nthree\n", "{lines}");
+    assert_eq!(lines["truncatedLines"], 1);
+    let head = h.json("read_run_output", json!({"name": "lines", "maxLinesCount": 1, "truncateMode": "END"})).await;
+    assert_eq!(head["output"], "one\n<<<...content truncated...>>>\n", "{head}");
+
+    // Ctrl+C stops the command as stop_run does; terminal keys have no meaning on pipes.
+    h.json("run_command", json!({"name": "interrupt", "command": "sleep 30", "timeout": 0})).await;
+    let key = h.error("send_run_input", json!({"name": "interrupt", "keys": ["Up"]})).await;
+    assert!(key.contains("runs on pipes"), "{key}");
+    h.json("send_run_input", json!({"name": "interrupt", "keys": ["Ctrl+C"]})).await;
+    let interrupted = h.json("wait_for_run", json!({"name": "interrupt", "timeout": 10000})).await;
+    assert_eq!(interrupted["state"], "stoppedByAgent", "{interrupted}");
 }

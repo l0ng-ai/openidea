@@ -22,7 +22,7 @@ function session(id: string, config: RunConfig, status: RunSession["status"], en
 }
 
 describe("agent tabs", () => {
-  it("run the command line on a pseudo-terminal of this machine", () => {
+  it("run the command line on pipes, on this machine", () => {
     const config = agentConfig("_agent_build", "cargo build", "/project", { A: "1" });
     expect(agentName(config)).toBe("_agent_build");
     expect(agentName(plain)).toBeNull();
@@ -32,10 +32,10 @@ describe("agent tabs", () => {
       command: "cargo build",
       args: [],
       cwd: "/project",
-      emulateTerminal: true,
       target: "",
       allowParallel: true,
     });
+    expect(config.emulateTerminal).toBeFalsy();
     expect(config.env).toMatchObject({ A: "1" });
     expect(config.params).toHaveProperty("mcp.agentShell");
   });

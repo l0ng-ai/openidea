@@ -1,10 +1,13 @@
 //! Commands agents run in the Run tool window (`run_command` and the tools that follow it
-//! up): one pseudo-terminal tab per name, `_agent_<name>`, that the user watches and can
-//! type into, rerun, stop or close. The Run tool window starts every process of the tab,
+//! up): one tab per name, `_agent_<name>`, that the user watches and can type into, rerun,
+//! stop or close. As JetBrains' `execute_terminal_command` does, the process runs on pipes,
+//! not a pseudo-terminal, so programs print plain lines (no progress bars or redraws), and
+//! what the agent reads is cleaned ([`clean_output`]) and cut to a number of lines
+//! ([`truncate_lines`]). The Run tool window starts every process of the tab,
 //! as for any run, so the tab behaves like the others; [`AGENT_PARAM`] brings each start
 //! back here, where the output is logged for the agent and what the user did is recorded.
 
-use super::output::temp_output_file;
+use super::output::{TRUNCATED_MARKER, temp_output_file};
 use crate::ops::Emit;
 use ide_core::{IdeEvent, IdeResult, RunId, SharedSink};
 use ide_run::{OutputChunk, RunConfig, RunInfo};
@@ -127,7 +130,8 @@ impl AgentRuns {
         config.command = program;
         config.args = args;
         config.extras.target = Some(String::new());
-        config.extras.emulate_terminal = true;
+        // Pipes: the Run tool window's console shows the output and sends the user's input lines.
+        config.extras.emulate_terminal = false;
         let generation = run.begin(&line);
         Some(Launch { run, generation })
     }
@@ -426,8 +430,8 @@ impl AgentRun {
         self.changed.notify_waiters();
     }
 
-    /// Keystrokes the user typed: a line once Enter is pressed, control keys at once. Cursor
-    /// and other escape sequences are left out.
+    /// What the user typed: the Run console sends whole lines (a line break ends one); control
+    /// keys are told at once, escape sequences left out.
     fn user_input(&self, data: &str) {
         let mut s = self.state.lock();
         let now = SystemTime::now();
@@ -746,6 +750,100 @@ fn shell_invocation(shell: Option<&str>, line: &str) -> (String, Vec<String>) {
     }
 }
 
+/// Output as an agent reads it: escape sequences (colour, cursor, window title) removed, and of a
+/// line rewritten with `\r` (a progress bar), only what was written last. Other control
+/// characters but tabs go too.
+pub fn clean_output(raw: &str) -> String {
+    let mut text = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            text.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: parameters, then a final byte.
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC (and the like): up to BEL or ESC \.
+            Some(']' | 'P' | '_' | '^') => {
+                while let Some(c) = chars.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let lines: Vec<String> = text
+        .split('\n')
+        .map(|line| {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let last = line.rsplit('\r').find(|part| !part.is_empty()).unwrap_or("");
+            last.chars().filter(|c| *c == '\t' || !c.is_control()).collect()
+        })
+        .collect();
+    lines.join("\n")
+}
+
+/// Which lines [`truncate_lines`] drops, as in JetBrains' MCP tools.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TruncateMode {
+    /// The first lines: the end of the output stays.
+    Start,
+    /// Lines in the middle: its start and end stay.
+    Middle,
+    /// The last lines: the start stays.
+    End,
+    /// None: all of it.
+    None,
+}
+
+impl TruncateMode {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name.trim().to_ascii_uppercase().as_str() {
+            "START" => Self::Start,
+            "MIDDLE" => Self::Middle,
+            "END" => Self::End,
+            "NONE" => Self::None,
+            _ => return None,
+        })
+    }
+}
+
+/// At most `max_lines` lines of `text`, with a marker line where lines were left out; also
+/// returns how many were. A line break at the end starts no line.
+pub fn truncate_lines(text: &str, max_lines: usize, mode: TruncateMode) -> (String, usize) {
+    let (body, newline) = match text.strip_suffix('\n') {
+        Some(body) => (body, "\n"),
+        None => (text, ""),
+    };
+    let lines: Vec<&str> = body.split('\n').collect();
+    if mode == TruncateMode::None || lines.len() <= max_lines {
+        return (text.to_owned(), 0);
+    }
+    let dropped = lines.len() - max_lines;
+    let kept = match mode {
+        TruncateMode::Start => [&[TRUNCATED_MARKER][..], &lines[dropped..]].concat(),
+        TruncateMode::End => [&lines[..max_lines], &[TRUNCATED_MARKER][..]].concat(),
+        _ => {
+            let head = max_lines / 2;
+            [&lines[..head], &[TRUNCATED_MARKER][..], &lines[lines.len() - (max_lines - head)..]].concat()
+        }
+    };
+    (kept.join("\n") + newline, dropped)
+}
+
 /// `2026-11-12T08:30:05.123Z`.
 pub fn timestamp(at: SystemTime) -> String {
     let ms = at.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
@@ -879,5 +977,26 @@ mod tests {
     fn timestamps_are_utc() {
         let at = SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(1_794_478_205_123);
         assert_eq!(timestamp(at), "2026-11-12T10:10:05.123Z");
+    }
+
+    #[test]
+    fn output_is_cleaned_of_escapes_and_overwritten_lines() {
+        let raw = "\x1b[32mok\x1b[0m\r\n\x1b]0;title\x07 10%\r 50%\r100%\r\ndone\x1b]0;t\x1b\\\x08\n\tx";
+        assert_eq!(clean_output(raw), "ok\n100%\ndone\n\tx");
+        assert_eq!(clean_output("plain\nlines"), "plain\nlines");
+        assert_eq!(clean_output("half\r"), "half", "a trailing carriage return keeps the line");
+    }
+
+    #[test]
+    fn lines_are_truncated_as_jetbrains_does() {
+        let text = "1\n2\n3\n4\n5";
+        assert_eq!(truncate_lines(text, 2, TruncateMode::Start), (format!("{TRUNCATED_MARKER}\n4\n5"), 3));
+        assert_eq!(truncate_lines(text, 2, TruncateMode::End), (format!("1\n2\n{TRUNCATED_MARKER}"), 3));
+        assert_eq!(truncate_lines(text, 3, TruncateMode::Middle), (format!("1\n{TRUNCATED_MARKER}\n4\n5"), 2));
+        assert_eq!(truncate_lines(text, 2, TruncateMode::None), (text.to_owned(), 0));
+        assert_eq!(truncate_lines(text, 5, TruncateMode::Start), (text.to_owned(), 0));
+        assert_eq!(truncate_lines("1\n2\n3\n", 2, TruncateMode::Start), (format!("{TRUNCATED_MARKER}\n2\n3\n"), 1));
+        assert_eq!(TruncateMode::parse("middle"), Some(TruncateMode::Middle));
+        assert_eq!(TruncateMode::parse("x"), None);
     }
 }

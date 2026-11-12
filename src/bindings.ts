@@ -7212,8 +7212,8 @@ export type McpTransport = "stdio" | "http" | "sse";
 
 /**
  *  What a built-in MCP tool asks the project window for. `AgentRun` runs `command` (a shell
- *  line) in the Run tool window's agent tab `name` on a pseudo-terminal, answered once the
- *  process started or failed to.
+ *  line) in the Run tool window's agent tab `name`, on pipes, answered once the process
+ *  started or failed to.
  */
 export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null } | { type: "agentRun"; name: string; command: string; cwd: IpcPath; env: { [key in string]: string } };
 

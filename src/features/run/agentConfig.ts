@@ -12,7 +12,11 @@ export function agentName(config: Pick<RunConfig, "params">): string | null {
   return config.params?.[AGENT_PARAM] ?? null;
 }
 
-/** The command line of agent tab `name`, on a pseudo-terminal like the IDE's terminal. */
+/**
+ * The command line of agent tab `name`, with the shell of the IDE's terminal but on pipes (as
+ * JetBrains' `execute_terminal_command`): programs print plain lines, the console shows them and
+ * sends the user's input lines.
+ */
 export function agentConfig(name: string, command: string, cwd: IpcPath, env: Record<string, string>): RunConfig {
   const terminal = workflowSettings().terminal;
   return {
@@ -28,7 +32,6 @@ export function agentConfig(name: string, command: string, cwd: IpcPath, env: Re
     debugAdapter: null,
     allowParallel: true,
     params: { [AGENT_PARAM]: name, [SHELL_PARAM]: terminal.shellPath },
-    emulateTerminal: true,
     // This machine: an agent's command never goes to a default run target.
     target: "",
   };

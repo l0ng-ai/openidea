@@ -1,8 +1,8 @@
 //! `run_command` and the tools that follow its tab up: `wait_for_run`, `read_run_output`,
 //! `get_run_status`, `send_run_input`, `stop_run` and `list_runs` (see [`super::agent`]).
 
-use super::agent::{AgentRun, INTERVENTION_ADVICE, tab_name};
-use super::output::{MAX_TEXT_LENGTH, RUN_PREVIEW_MAX_LENGTH};
+use super::agent::{AgentRun, INTERVENTION_ADVICE, TruncateMode, clean_output, tab_name, truncate_lines};
+use super::output::RUN_PREVIEW_MAX_LENGTH;
 use crate::mcp::run::timeout;
 use crate::mcp::tool::{Call, Output, Param, ParamType, Tool};
 use ide_core::{IdeError, IdeResult};
@@ -13,7 +13,10 @@ const RUN_TIMEOUT_MS: usize = 10_000;
 const WAIT_TIMEOUT_MS: usize = 30_000;
 const STOP_TIMEOUT_MS: usize = 10_000;
 const MAX_TIMEOUT_MS: usize = 1_800_000;
-const DEFAULT_TAIL_LINES: usize = 100;
+/// Lines of output returned at most, by default (as JetBrains' `execute_terminal_command`).
+const DEFAULT_MAX_LINES: usize = 2000;
+/// Bytes of the log read for one result at most.
+const READ_CAP: usize = 1 << 20;
 /// Lines of output quoted when a name is still running.
 const BUSY_TAIL_LINES: usize = 20;
 
@@ -25,6 +28,14 @@ const INTERVENTIONS: &str = "\n\nThe user sees every tab and can type into it, r
 it. Results then carry `interventions` (for example `User input: …` or `The user reran this command at …`) and \
 `advice`: unless the user asked otherwise, stop what you are doing, tell the user you received the intervention and \
 wait for their confirmation before you continue.";
+const OUTPUT: &str = "\n\nThe command runs on pipes, not a terminal, so programs print plain lines (no progress \
+bars). `output` is that text cleaned of escape sequences, at most `maxLinesCount` lines (default 2000): beyond it, \
+`truncateMode` START (default) keeps the end, END the start, MIDDLE both ends, NONE everything, with a \
+`<<<...content truncated...>>>` line where lines were left out and `truncatedLines` saying how many. `outputStart` \
+and `nextOffset` are positions in the tab's raw output log; pass `nextOffset` as `offset` to read on.";
+const MAX_LINES: &str = "Lines of output to return at most (default 2000)";
+const TRUNCATE_MODE: &str = "Which lines to leave out beyond maxLinesCount: START (default, keeps the end), END \
+(keeps the start), MIDDLE (keeps both ends) or NONE";
 
 fn find(call: &Call) -> IdeResult<Arc<AgentRun>> {
     let name = tab_name(&call.str("name")?)?;
@@ -46,16 +57,30 @@ fn result(run: &AgentRun, extra: Map<String, Value>) -> IdeResult<Output> {
     Output::json(Value::Object(out))
 }
 
-/// The process's output from `from`: all of it when short, else its end.
-fn output_since(run: &AgentRun, from: u64) -> IdeResult<Map<String, Value>> {
-    let len = run.log_len();
-    let (text, start, end) = if len.saturating_sub(from) as usize > RUN_PREVIEW_MAX_LENGTH {
-        run.read(len - RUN_PREVIEW_MAX_LENGTH as u64, RUN_PREVIEW_MAX_LENGTH)?
-    } else {
-        run.read(from, RUN_PREVIEW_MAX_LENGTH)?
+/// The output from `from` as the agent reads it: cleaned, then cut to `maxLinesCount` lines
+/// as `truncateMode` says.
+fn output_view(call: &Call, run: &AgentRun, from: u64) -> IdeResult<Map<String, Value>> {
+    let max_lines = match call.opt_i64("maxLinesCount")? {
+        Some(n) if n < 1 => return Err(IdeError::invalid("maxLinesCount must be > 0")),
+        Some(n) => n as usize,
+        None => DEFAULT_MAX_LINES,
     };
+    let mode = match call.opt_str("truncateMode")? {
+        Some(name) => TruncateMode::parse(&name)
+            .ok_or_else(|| IdeError::invalid("truncateMode must be START, MIDDLE, END or NONE"))?,
+        None => TruncateMode::Start,
+    };
+    let len = run.log_len();
+    let from = from.min(len);
+    // A long output is read from the end that stays.
+    let start = if mode == TruncateMode::Start && len - from > READ_CAP as u64 { len - READ_CAP as u64 } else { from };
+    let (raw, start, end) = run.read(start, READ_CAP)?;
+    let (text, truncated) = truncate_lines(&clean_output(&raw), max_lines, mode);
     let mut out = Map::new();
     out.insert("output".into(), text.into());
+    if truncated > 0 {
+        out.insert("truncatedLines".into(), truncated.into());
+    }
     out.insert("outputStart".into(), start.into());
     out.insert("nextOffset".into(), end.into());
     Ok(out)
@@ -85,7 +110,7 @@ fn busy(run: &AgentRun) -> IdeError {
         "`{}` is still running `{}`. Stop it with stop_run first, or use another name.\nLast output:\n{}",
         run.name,
         run.command(),
-        tail.trim_end()
+        clean_output(&tail).trim_end()
     ))
 }
 
@@ -93,15 +118,13 @@ pub fn run_command() -> Tool {
     Tool::new(
         "run_command",
         &format!(
-            "Runs a shell command line in a new or reused tab of OpenIDEA's Run tool window, on a pseudo-terminal, \
-with the shell of Settings › Tools › Terminal. The user is asked first (unless the IDE runs tools without \
+            "Runs a shell command line in a new or reused tab of OpenIDEA's Run tool window, with the shell of \
+Settings › Tools › Terminal. The user is asked first (unless the IDE runs tools without \
 confirmation). Waits up to `timeout` milliseconds (default {RUN_TIMEOUT_MS}) for the command to finish; a command \
 still running then keeps running, and `wait_for_run`, `read_run_output`, `get_run_status`, `send_run_input` and \
 `stop_run` follow it up by name. Returns the tab's status (`state`: starting, running, stopping, succeeded, failed, \
 crashed, stoppedByAgent, stoppedByUser or startFailed; `exitCode`; `crash` with the signal or exception of a crashed \
-process) and its output so far: `output` from `outputStart`, up to {RUN_PREVIEW_MAX_LENGTH} characters (the end of \
-it when longer), and `nextOffset` to read on from. The output is raw terminal output, escape sequences included.\
-{SEQUENCE}{INTERVENTIONS}"
+process) and its output so far.{OUTPUT}{SEQUENCE}{INTERVENTIONS}"
         ),
         |call| async move {
             let name = tab_name(&call.str("name")?)?;
@@ -155,7 +178,7 @@ it when longer), and `nextOffset` to read on from. The output is raw terminal ou
             }
             let from = run.process_offset();
             let end = run.wait(deadline, None, from, &call.cancel).await?;
-            let mut extra = output_since(&run, from)?;
+            let mut extra = output_view(&call, &run, from)?;
             extra.insert("waitEnded".into(), end.as_str().into());
             result(&run, extra)
         },
@@ -179,6 +202,8 @@ it when longer), and `nextOffset` to read on from. The output is raw terminal ou
         "Milliseconds to wait for the command to finish before returning (0 returns once it started); the command \
 keeps running after it",
     ))
+    .param(Param::optional("maxLinesCount", ParamType::Integer, MAX_LINES))
+    .param(Param::optional("truncateMode", ParamType::String, TRUNCATE_MODE))
 }
 
 pub fn wait_for_run() -> Tool {
@@ -187,9 +212,8 @@ pub fn wait_for_run() -> Tool {
         &format!(
             "Waits until the command of an agent tab finishes, its output matches `pattern`, the user intervenes, or \
 `timeout` milliseconds pass (default {WAIT_TIMEOUT_MS}). Cancelling the wait leaves the command running. Returns \
-`waitEnded` (exited, matched, userIntervened or timedOut), the tab's status and the output since `offset`: `output` \
-from `outputStart` (the end of it when longer than {RUN_PREVIEW_MAX_LENGTH} characters) and `nextOffset` for the \
-next call. Use `pattern` to wait for a server to be ready, e.g. `Listening on|Started .* in`.{INTERVENTIONS}"
+`waitEnded` (exited, matched, userIntervened or timedOut), the tab's status and the output since `offset`. Use \
+`pattern` to wait for a server to be ready, e.g. `Listening on|Started .* in`.{OUTPUT}{INTERVENTIONS}"
         ),
         |call| async move {
             let run = find(&call)?;
@@ -197,7 +221,7 @@ next call. Use `pattern` to wait for a server to be ready, e.g. `Listening on|St
             let pattern = pattern(&call)?;
             let from = offset(&call, "offset")?.unwrap_or_else(|| run.process_offset());
             let end = run.wait(deadline, pattern.as_ref(), from, &call.cancel).await?;
-            let mut extra = output_since(&run, from)?;
+            let mut extra = output_view(&call, &run, from)?;
             extra.insert("waitEnded".into(), end.as_str().into());
             result(&run, extra)
         },
@@ -207,7 +231,7 @@ next call. Use `pattern` to wait for a server to be ready, e.g. `Listening on|St
     .param(Param::optional(
         "pattern",
         ParamType::String,
-        "Regular expression to wait for in the output after `offset` (raw terminal output)",
+        "Regular expression to wait for in the output after `offset` (as the command wrote it)",
     ))
     .param(Param::optional(
         "offset",
@@ -215,36 +239,29 @@ next call. Use `pattern` to wait for a server to be ready, e.g. `Listening on|St
         "Where in the tab's output log to start: a `nextOffset` from an earlier result. Default: where the current \
 command's output starts",
     ))
+    .param(Param::optional("maxLinesCount", ParamType::Integer, MAX_LINES))
+    .param(Param::optional("truncateMode", ParamType::String, TRUNCATE_MODE))
 }
 
 pub fn read_run_output() -> Tool {
     Tool::new(
         "read_run_output",
         &format!(
-            "Reads the output log of an agent tab (raw terminal output, escape sequences included). The log goes on \
-across the commands and reruns of the tab. With `offset` (a `nextOffset` from an earlier result), returns the output \
-from there on, up to {MAX_TEXT_LENGTH} bytes; read on from the returned `nextOffset`. Without it, returns the last \
-`lines` lines (default {DEFAULT_TAIL_LINES}). Also returns the tab's status.{INTERVENTIONS}"
+            "Reads the output log of an agent tab, which goes on across the commands and reruns of the tab: from \
+`offset` (a `nextOffset` from an earlier result), or from its start. Also returns the tab's status.\
+{OUTPUT}{INTERVENTIONS}"
         ),
         |call| async move {
             let run = find(&call)?;
-            let (text, start, end) = match offset(&call, "offset")? {
-                Some(from) => run.read(from, MAX_TEXT_LENGTH)?,
-                None => {
-                    let lines = call.opt_i64("lines")?.map_or(DEFAULT_TAIL_LINES, |n| n.clamp(1, 10_000) as usize);
-                    run.tail(0, lines, MAX_TEXT_LENGTH)?
-                }
-            };
-            let mut extra = Map::new();
-            extra.insert("output".into(), text.into());
-            extra.insert("outputStart".into(), start.into());
-            extra.insert("nextOffset".into(), end.into());
+            let from = offset(&call, "offset")?.unwrap_or(0);
+            let extra = output_view(&call, &run, from)?;
             result(&run, extra)
         },
     )
     .param(Param::required("name", ParamType::String, NAME))
     .param(Param::optional("offset", ParamType::Integer, "Where in the log to read from"))
-    .param(Param::optional("lines", ParamType::Integer, "Without `offset`: how many last lines to return"))
+    .param(Param::optional("maxLinesCount", ParamType::Integer, MAX_LINES))
+    .param(Param::optional("truncateMode", ParamType::String, TRUNCATE_MODE))
 }
 
 pub fn get_run_status() -> Tool {
@@ -276,22 +293,29 @@ pub fn list_runs() -> Tool {
     )
 }
 
-/// Bytes a key name sends to a terminal.
-fn key(name: &str) -> IdeResult<&'static str> {
+/// What a key does to a command on pipes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Key {
+    /// Writes this text to its input.
+    Text(&'static str),
+    /// Ctrl+C: stops it, as `stop_run` does.
+    Interrupt,
+    /// Ctrl+D: ends its input.
+    EndOfInput,
+}
+
+fn key(name: &str) -> IdeResult<Key> {
     Ok(match name.trim().to_ascii_lowercase().replace(' ', "").as_str() {
-        "enter" | "return" => "\r",
-        "tab" => "\t",
-        "escape" | "esc" => "\x1b",
-        "backspace" => "\x7f",
-        "ctrl+c" => "\x03",
-        "ctrl+d" => "\x04",
-        "ctrl+z" => "\x1a",
-        "ctrl+\\" => "\x1c",
-        "ctrl+l" => "\x0c",
-        "up" => "\x1b[A",
-        "down" => "\x1b[B",
-        "right" => "\x1b[C",
-        "left" => "\x1b[D",
+        "enter" | "return" => Key::Text("\n"),
+        "tab" => Key::Text("\t"),
+        "ctrl+c" => Key::Interrupt,
+        "ctrl+d" => Key::EndOfInput,
+        "escape" | "esc" | "backspace" | "ctrl+z" | "ctrl+\\" | "ctrl+l" | "up" | "down" | "left" | "right" => {
+            return Err(IdeError::invalid(format!(
+                "`{name}` is a terminal key, and the command runs on pipes, not a terminal: send text and Enter, \
+Ctrl+C to stop it or Ctrl+D to end its input"
+            )));
+        }
         _ => return Err(IdeError::invalid(format!("unknown key `{name}`"))),
     })
 }
@@ -299,21 +323,41 @@ fn key(name: &str) -> IdeResult<&'static str> {
 pub fn send_run_input() -> Tool {
     Tool::new(
         "send_run_input",
-        "Types into the running command of an agent tab: `text` as it is, then `keys` in order (Enter, Tab, \
-Escape, Backspace, Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+\\, Ctrl+L, Up, Down, Left, Right). To answer a prompt, pass the \
-answer as `text` and `keys: [\"Enter\"]`. The user sees what you type in the tab. Returns the tab's status.",
+        "Writes to the input of the running command of an agent tab, which runs on pipes: `text` as it is, then \
+`keys` in order: Enter (a line break), Tab, Ctrl+C (stops the command, as `stop_run` does) and Ctrl+D (ends its \
+input). Terminal keys (arrows, Escape, Backspace, Ctrl+Z…) are refused. To answer a prompt, pass the answer as \
+`text` and `keys: [\"Enter\"]`. The user sees the command's output in the tab. Returns the tab's status.",
         |call| async move {
             let run = find(&call)?;
-            let mut data = call.opt_str("text")?.unwrap_or_default();
-            for name in call.str_list("keys")? {
-                data.push_str(key(&name)?);
-            }
-            if data.is_empty() {
+            let text = call.opt_str("text")?.unwrap_or_default();
+            let keys = call.str_list("keys")?.iter().map(|k| key(k)).collect::<IdeResult<Vec<_>>>()?;
+            if text.is_empty() && keys.is_empty() {
                 return Err(IdeError::invalid("pass `text`, `keys` or both"));
             }
             let id = run.live_process().ok_or_else(|| IdeError::invalid(format!("`{}` is not running", run.name)))?;
             call.project().require_trust()?;
-            call.host().processes.write_stdin(id, &data)?;
+            let host = call.host();
+            let mut data = text;
+            for key in keys {
+                match key {
+                    Key::Text(text) => data.push_str(text),
+                    Key::EndOfInput | Key::Interrupt => {
+                        if !data.is_empty() {
+                            host.processes.write_stdin(id, &std::mem::take(&mut data))?;
+                        }
+                        if key == Key::EndOfInput {
+                            crate::ops::run::close_stdin(&host, id)?;
+                        } else {
+                            run.agent_stopping();
+                            crate::ops::run::stop(&host, &run.window(), id)?;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !data.is_empty() {
+                host.processes.write_stdin(id, &data)?;
+            }
             result(&run, Map::new())
         },
     )
@@ -365,10 +409,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keys_map_to_terminal_input() {
-        assert_eq!(key("Ctrl+C").unwrap(), "\x03");
-        assert_eq!(key(" enter ").unwrap(), "\r");
-        assert_eq!(key("Up").unwrap(), "\x1b[A");
-        assert!(key("F13").is_err());
+    fn keys_are_what_pipes_can_take() {
+        assert_eq!(key(" enter ").unwrap(), Key::Text("\n"));
+        assert_eq!(key("Ctrl+C").unwrap(), Key::Interrupt);
+        assert_eq!(key("ctrl+d").unwrap(), Key::EndOfInput);
+        assert!(key("Up").unwrap_err().message.contains("runs on pipes"));
+        assert!(key("F13").unwrap_err().message.contains("unknown key"));
     }
 }
