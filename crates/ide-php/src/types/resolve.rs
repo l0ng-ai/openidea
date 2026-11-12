@@ -877,6 +877,33 @@ impl<'a> Resolver<'a> {
                 _ => None,
             });
         }
+        // A class whose `__call` forwards to the object its mixin stands
+        // for and returns itself instead of that object (Laravel's
+        // relations and Eloquent builder): what the lent method returns as
+        // that object is the receiver (`$relation->whereNull('x')` is the
+        // relation).
+        // Only the objects down to the declaring class count (its `$this`
+        // is the nearer one once lent): `toBase()`, declared by the
+        // Eloquent builder, returns another object, a query builder, as is.
+        if let Some(model) = self.class_model(receiver.class)
+            && let Some(method) = model.method(name).filter(|method| method.mixin.is_some())
+            && let Some(forwarded) = DECORATING.iter().find_map(|(class, forwarded)| {
+                (operators::same_class(model.fqn(), class) || model.is_subclass_of(class)).then_some(*forwarded)
+            })
+            && let Some(depth) = forwarded.iter().position(|class| operators::same_class(&method.declaring.fqn, class))
+        {
+            let objects = &forwarded[..=depth];
+            ty = ty.map(&mut |ty| match ty {
+                Type::Named { fqn, .. } if objects.iter().any(|class| operators::same_class(fqn, class)) => {
+                    Some(receiver.this.clone())
+                }
+                Type::Relative(Relative::Static | Relative::This)
+                | Type::GenericRelative { relative: Relative::Static | Relative::This, .. } => {
+                    Some(receiver.this.clone())
+                }
+                _ => None,
+            });
+        }
         Some(bind_static(&ty, receiver.this))
     }
 
@@ -1187,3 +1214,15 @@ fn templates<'t>(class: &'t ClassLike, member: impl IntoIterator<Item = &'t str>
 
 #[cfg(test)]
 mod tests;
+
+/// Classes whose `__call` forwards a call to the object their `@mixin`
+/// stands for and returns themselves when it returns that object, with the
+/// classes that object is (through its own mixins): Laravel's
+/// `Relation::forwardDecoratedCallTo()` and Eloquent's `Builder::__call()`.
+const DECORATING: &[(&str, &[&str])] = &[
+    (
+        "Illuminate\\Database\\Eloquent\\Relations\\Relation",
+        &["Illuminate\\Database\\Eloquent\\Builder", "Illuminate\\Database\\Query\\Builder"],
+    ),
+    ("Illuminate\\Database\\Eloquent\\Builder", &["Illuminate\\Database\\Query\\Builder"]),
+];

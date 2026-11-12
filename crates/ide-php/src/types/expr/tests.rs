@@ -563,3 +563,86 @@ $row/*|*/;",
         ),
     ]);
 }
+
+/// Laravel's relations and Eloquent builder forward calls to their query
+/// and return themselves: `whereNull()` and `with()` on a relation are the
+/// relation, through both mixins; `toBase()` returns another object, and
+/// `first()` the model.
+#[test]
+fn laravel_relations_return_themselves_from_forwarded_calls() {
+    const LARAVEL: &str = r#"<?php
+namespace Illuminate\Database\Query {
+    class Builder
+    {
+        /** @return $this */
+        public function whereNull($column) {}
+    }
+}
+namespace Illuminate\Database\Eloquent {
+    /**
+     * @template TModel
+     * @mixin \Illuminate\Database\Query\Builder
+     */
+    class Builder
+    {
+        /** @return $this */
+        public function with($relations) {}
+        /** @return \Illuminate\Database\Query\Builder */
+        public function toBase() {}
+        /** @return TModel|null */
+        public function first() {}
+    }
+}
+namespace Illuminate\Database\Eloquent\Relations {
+    /**
+     * @template TRelated
+     * @mixin \Illuminate\Database\Eloquent\Builder<TRelated>
+     */
+    abstract class Relation {}
+    /**
+     * @template TRelated
+     * @extends Relation<TRelated>
+     */
+    class HasMany extends Relation {}
+}
+namespace App {
+    class Comment {}
+    /** @return \Illuminate\Database\Eloquent\Relations\HasMany<Comment> */
+    function comments() {}
+}
+"#;
+    let type_of = |body: &str| -> Option<String> {
+        let source = format!("<?php\nnamespace App;\n{body}");
+        let offset = source.find(CARET).unwrap();
+        let source = source.replacen(CARET, "", 1);
+        let file = ParsedFile::parse("main.php", source.as_str());
+        let lib = ParsedFile::parse("laravel.php", LARAVEL);
+        assert!(!lib.has_errors(), "{:?}", lib.errors());
+        let decls = SummarySet::new(vec![FileSummary::extract(&file), FileSummary::extract(&lib)]);
+        let cache = TypeCache::new();
+        let resolver = Resolver::new(&decls, &cache, 1);
+        type_at(&file, &resolver, offset as u32).map(|ty| ty.to_string())
+    };
+    let relation = r"Illuminate\Database\Eloquent\Relations\HasMany<App\Comment>";
+    let table = [
+        ("comments()->whereNull('x')/*|*/;", relation),
+        ("comments()->with('post')/*|*/;", relation),
+        ("comments()->whereNull('x')->with('post')/*|*/;", relation),
+        ("comments()->toBase()/*|*/;", r"Illuminate\Database\Query\Builder"),
+        ("comments()->whereNull('x')->first()/*|*/;", r"?App\Comment"),
+        // The Eloquent builder: itself from the query builder's methods.
+        (
+            "(new \\Illuminate\\Database\\Eloquent\\Builder)->whereNull('x')/*|*/;",
+            r"Illuminate\Database\Eloquent\Builder",
+        ),
+    ];
+    let failures: Vec<String> = table
+        .iter()
+        .filter_map(|(body, expected)| {
+            let actual = type_of(body);
+            (actual.as_deref() != Some(*expected))
+                .then(|| format!("{body}\n    expected {expected}\n    got      {actual:?}"))
+        })
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
