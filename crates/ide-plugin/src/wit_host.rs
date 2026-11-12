@@ -1282,6 +1282,8 @@ impl StoreData {
             self.deadline = extended;
             self.timeout = self.limits.background;
         }
+        let scale = (self.limits.background.as_millis() / self.limits.timeout.as_millis().max(1)).max(1) as u64;
+        self.active_fuel = self.limits.fuel.saturating_mul(scale);
     }
 
     /// What is left of the running call's wall-clock budget (host operations
