@@ -6,7 +6,7 @@
 //! entry as is, a class as its source from the artifact's `-sources.jar` next to
 //! it in the Maven or Gradle cache.
 
-use ide_core::{Pos, Range};
+use ide_core::{Location, Pos, Range};
 use ide_vfs::LoadedText;
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use std::path::{Path, PathBuf};
@@ -151,6 +151,222 @@ fn source_entry(sources: &Path, class: &str, encoding: Option<&str>) -> Option<(
         }
     }
     None
+}
+
+/// Whether `loc` is a compiled class a language server answered with: a
+/// `jar:` entry, a `jdt://contents/` class-file handle (recent jdtls writes a
+/// `.java` / `.kt` name and keeps the `.class` in the query) or a `.class`
+/// file on disk.
+pub(crate) fn is_binary_class(loc: &Location) -> bool {
+    if let Some(uri) = loc.uri.as_deref() {
+        if let Some(entry) = parse(uri) {
+            return entry.entry.ends_with(".class");
+        }
+        return binary_class(uri, None).is_some();
+    }
+    loc.path.extension().is_some_and(|e| e == "class")
+}
+
+/// The binary class `loc` names, as `package/name` (`test001/Db`,
+/// `pkg/Outer$Inner`, `org/foo/FileKt`): a `jdt://contents/…` handle or a
+/// `.class` file under a module's output directory.
+fn binary_class(uri: &str, path: Option<&Path>) -> Option<(String, String)> {
+    if let Some(rest) = uri.strip_prefix("jdt://contents/") {
+        // jdt://contents/<container>/<package>/<Name.class>?=…<package(Name.class
+        let (base, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let segments: Vec<String> = base
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(|s| percent_decode_str(s).decode_utf8_lossy().into_owned())
+            .collect();
+        let [.., package, name] = segments.as_slice() else { return None };
+        // The handle itself is binary when the name is the class or the query
+        // carries the real `.class` reference (`<test001(Db.class`).
+        let query = percent_decode_str(query).decode_utf8_lossy().into_owned();
+        if !name.ends_with(".class") && !query.contains(".class") {
+            return None;
+        }
+        // A class served from a jar (a dependency, the JDK) has no source in this
+        // project; only folder containers (module output, the Kotlin bridge's
+        // published libraries) can be looked up.
+        let container = segments.first().map(String::as_str).unwrap_or_default();
+        if container.ends_with(".jar")
+            || container.ends_with(".jmod")
+            || query.contains(".jar")
+            || query.contains(".jmod")
+        {
+            return None;
+        }
+        let name =
+            name.strip_suffix(".class").or_else(|| name.strip_suffix(".java")).or_else(|| name.strip_suffix(".kt"))?;
+        // The package is one dotted segment after the container; a class of the
+        // default package has none (`jdt://contents/dir/C.class`).
+        let package = if segments.len() >= 3 { package.replace('.', "/") } else { String::new() };
+        return Some((package, name.to_owned()));
+    }
+    if uri.is_empty() {
+        let path = path?;
+        if path.extension().is_some_and(|e| e != "class") {
+            return None;
+        }
+        let name = path.file_stem()?.to_str()?.to_owned();
+        // The package is the directories between the file and the last build-output
+        // directory (or the module root, when the output has a custom location).
+        let mut package = Vec::new();
+        let mut bounded = false;
+        for ancestor in path.parent()?.ancestors().take(8) {
+            let dir = ancestor.file_name()?.to_str()?.to_owned();
+            if OUTPUT_DIRS.contains(&dir.as_str()) || MODULE_MARKERS.iter().any(|m| ancestor.join(m).is_file()) {
+                bounded = true;
+                break;
+            }
+            package.push(dir);
+        }
+        if !bounded {
+            return None;
+        }
+        package.reverse();
+        return Some((package.join("/"), name));
+    }
+    None
+}
+
+const MODULE_MARKERS: [&str; 5] =
+    ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"];
+
+/// Build-output directory names that end the package path of a disk `.class`
+/// (`target/classes/pkg/Name.class`, `build/classes/kotlin/main/pkg/Name.class`).
+const OUTPUT_DIRS: [&str; 5] = ["target", "build", "out", "bin", "classes"];
+
+/// Directories the search for a project's Kotlin source never enters.
+const SKIP_DIRS: [&str; 11] =
+    ["target", "build", "out", "bin", "node_modules", ".git", ".openidea", ".gradle", ".idea", ".settings", ".vscode"];
+
+/// The source location of a binary class target: for a `jar:` entry its
+/// `.kt` / `.java` file in the artifact's sources jar, for a compiled class of
+/// this project its Kotlin source (`#2969` — a Java file's Go to Definition on
+/// a Kotlin class must open the `.kt`, not the decompiled `.class`).
+/// `None` keeps the original location.
+pub(crate) fn class_location(loc: &Location, root: &Path, name: Option<&str>) -> Option<Location> {
+    let uri = loc.uri.as_deref().unwrap_or("");
+    if let Some(entry) = parse(uri) {
+        let class = entry.entry.strip_suffix(".class")?;
+        for sources in sources_jars(&entry.jar) {
+            if let Some((source, loaded)) = source_entry(&sources, class, None) {
+                let range = name
+                    .or_else(|| class.rsplit(['/', '$']).next())
+                    .map(|n| declaration_range(&loaded.text, n))
+                    .unwrap_or_default();
+                return Some(Location {
+                    path: entry.uri_of(&sources, &source).into(),
+                    range,
+                    uri: Some(entry.uri_of(&sources, &source)),
+                });
+            }
+        }
+        return None;
+    }
+    let (package, class) = binary_class(uri, Some(&loc.path))?;
+    let file = project_kotlin_source(root, &package, &class)?;
+    let text = std::fs::read_to_string(&file).ok()?;
+    if !declares_package(&text, &package.replace('/', ".")) {
+        return None;
+    }
+    let range = name.or_else(|| class.rsplit('$').next()).map(|n| declaration_range(&text, n)).unwrap_or_default();
+    Some(Location { path: file.into(), range, uri: None })
+}
+
+/// The project's Kotlin source declaring `class`: `<…>/<package path>/<Outer>.kt`
+/// under `root`, build directories skipped, `main` sources preferred over `test`.
+/// The file must declare `package`; a same-named file elsewhere is not taken.
+fn project_kotlin_source(root: &Path, package: &str, class: &str) -> Option<PathBuf> {
+    let outer = class.split('$').next().unwrap_or(class);
+    let mut files = vec![format!("{outer}.kt")];
+    // Top-level Kotlin declarations compile to a `<File>Kt` facade class.
+    if let Some(file) = outer.strip_suffix("Kt").filter(|f| !f.is_empty()) {
+        files.push(format!("{file}.kt"));
+    }
+    let package_dir = if package.is_empty() {
+        PathBuf::new()
+    } else {
+        PathBuf::from(package.replace('/', std::path::MAIN_SEPARATOR_STR))
+    };
+    // The declaration in the file is dotted (`package org.app`).
+    find_kotlin_source(root, &package_dir, &files, &package.replace('/', "."), outer, 0)
+}
+
+fn find_kotlin_source(
+    dir: &Path,
+    package_dir: &Path,
+    files: &[String],
+    dotted: &str,
+    outer: &str,
+    depth: usize,
+) -> Option<PathBuf> {
+    if depth > 12 {
+        return None;
+    }
+    let pkg = dir.join(package_dir);
+    for file in files {
+        let candidate = pkg.join(file);
+        let declares = candidate.is_file()
+            && std::fs::read_to_string(&candidate).is_ok_and(|text| declares_package(&text, dotted));
+        if declares {
+            return Some(candidate);
+        }
+    }
+    // A nested class lives in the outer class's file, which may be named
+    // differently (`Utils.kt` declares `class Outer` for `Outer$Inner`).
+    if !package_dir.as_os_str().is_empty()
+        && let Ok(entries) = std::fs::read_dir(&pkg)
+    {
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            if candidate.extension().is_some_and(|e| e != "kt") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&candidate) else { continue };
+            if declares_package(&text, dotted) && declaration_range(&text, outer) != Range::default() {
+                return Some(candidate);
+            }
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return None };
+    // `main` sources first: the declaration the language server attached is likelier there.
+    let mut dirs: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.path())
+        .filter(|d| !d.file_name().is_some_and(|n| SKIP_DIRS.contains(&n.to_str().unwrap_or_default())))
+        .collect();
+    dirs.sort_by_key(|d| d.file_name().and_then(|n| n.to_str()).map(|n| n.contains("test")).unwrap_or(false));
+    for subdir in dirs {
+        if let Some(found) = find_kotlin_source(&subdir, package_dir, files, dotted, outer, depth + 1) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Whether a Kotlin source declares `package` (the default package: none does).
+fn declares_package(text: &str, package: &str) -> bool {
+    for line in text.lines() {
+        let line = line.trim_start();
+        if line.is_empty()
+            || line.starts_with("//")
+            || line.starts_with("/*")
+            || line.starts_with('*')
+            || line.starts_with('@')
+        {
+            continue;
+        }
+        let declared = line.strip_prefix("package ").map(|rest| rest.trim_end_matches(';').trim());
+        return match package.is_empty() {
+            true => declared.is_none(),
+            false => declared == Some(package),
+        };
+    }
+    false
 }
 
 /// Where `name` is declared in a Kotlin or Java source `text` (the start of the
@@ -438,5 +654,238 @@ mod tests {
         assert_eq!(identifier_at(line, 18), Some("runApplication"), "right after it");
         assert_eq!(identifier_at(line, 20), Some("Application"));
         assert_eq!(identifier_at("a + b", 2), None);
+    }
+
+    fn location(uri: &str) -> Location {
+        Location {
+            path: uri.into(),
+            range: Range { start: Pos::default(), end: Pos::default() },
+            uri: Some(uri.to_owned()),
+        }
+    }
+
+    fn disk_location(path: &Path) -> Location {
+        Location { path: path.into(), range: Range { start: Pos::default(), end: Pos::default() }, uri: None }
+    }
+
+    #[test]
+    fn binary_class_names_from_jdt_and_disk_targets() {
+        // #2969, as jdtls 1.63 answers from the Kotlin bridge's published library:
+        // the handle names the source file, the query keeps the compiled class.
+        let bridged = "jdt://contents/published-0/test001/Db.kt?=mixed/C:%5C/Users%5C/me%5C/published-0=/ai.openidea.kotlin=/true=/%3Ctest001%28Db.class";
+        assert_eq!(binary_class(bridged, None), Some(("test001".to_owned(), "Db".to_owned())));
+        assert_eq!(
+            binary_class("jdt://contents/published-0/org.springframework.boot/SpringApplication.class?=x", None),
+            Some(("org/springframework/boot".to_owned(), "SpringApplication".to_owned()))
+        );
+        assert_eq!(
+            binary_class("jdt://contents/published-0/p/Outer$Inner.class?=x", None),
+            Some(("p".to_owned(), "Outer$Inner".to_owned()))
+        );
+        assert_eq!(binary_class("jdt://contents/published-0/C.class?=x", None), Some(("".to_owned(), "C".to_owned())));
+        assert_eq!(
+            binary_class("jdt://contents/published-0/test001/MainKt.kt?=x/%3Ctest001%28MainKt.class", None),
+            Some(("test001".to_owned(), "MainKt".to_owned()))
+        );
+        // A `jdt://` URI without a compiled class reference is not a binary handle.
+        assert_eq!(binary_class("jdt://contents/published-0/p/Lib.java?=x", None), None);
+        // A class served from a jar — a dependency or the JDK — has no project
+        // source, whether the jar is the container or only named in the query.
+        assert_eq!(binary_class("jdt://contents/a.jar/p/C.class?=x/%5C/m2%5C/a.jar", None), None);
+        assert_eq!(
+            binary_class(
+                "jdt://contents/java.base/java.lang/String.class?=p/%5C/jdk%5C/lib%5C/jrt-fs.jar%60java.base=x",
+                None
+            ),
+            None
+        );
+        // A class file under a module's output directory: the package is what is
+        // between the file and the build-output directory (or the module root).
+        let tmp = tempfile::tempdir().unwrap();
+        let class = tmp.path().join("module/target/classes/test001/Db.class");
+        std::fs::create_dir_all(class.parent().unwrap()).unwrap();
+        std::fs::write(tmp.path().join("module/pom.xml"), "").unwrap();
+        assert_eq!(binary_class("", Some(&class)), Some(("test001".to_owned(), "Db".to_owned())));
+        // Without a module root the package cannot be told, so nothing is mapped.
+        let orphan = tmp.path().join("no-marker/Db.class");
+        std::fs::create_dir_all(orphan.parent().unwrap()).unwrap();
+        std::fs::write(&orphan, "").unwrap();
+        assert_eq!(binary_class("", Some(&orphan)), None);
+    }
+
+    #[test]
+    fn is_binary_class_covers_jar_jdt_and_disk_targets() {
+        assert!(is_binary_class(&location(
+            "jar:///m2/lib.jar!/org/springframework/boot/SpringApplicationExtensionsKt.class"
+        )));
+        assert!(is_binary_class(&location(
+            "jdt://contents/published-0/test001/Db.kt?=mixed/x=/ai.openidea.kotlin=/true=/%3Ctest001%28Db.class"
+        )));
+        let tmp = tempfile::tempdir().unwrap();
+        let class = tmp.path().join("target/classes/Db.class");
+        std::fs::create_dir_all(class.parent().unwrap()).unwrap();
+        std::fs::write(&class, "").unwrap();
+        assert!(is_binary_class(&disk_location(&class)));
+        assert!(!is_binary_class(&location("jar:///m2/lib.jar!/org/example/Lib.java")));
+        // Classes of jars and the JDK are not looked up in the project.
+        assert!(!is_binary_class(&location("jdt://contents/a.jar/p/C.class?=x/%5C/m2%5C/a.jar")));
+        assert!(!is_binary_class(&location(
+            "jdt://contents/java.base/java.lang/String.class?=p/%5C/jdk%5C/lib%5C/jrt-fs.jar%60java.base=x"
+        )));
+        assert!(!is_binary_class(&disk_location(tmp.path().join("Lib.java").as_path())));
+    }
+
+    /// #2969: the mixed Maven project, `new Db()` navigating from Java.
+    const DB: &str = "package test001\n\nclass Db {\n    fun query(): String = \"ok\"\n}\n";
+
+    fn mixed_project() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("pom.xml"), "").unwrap();
+        let source = tmp.path().join("src/main/kotlin/test001/Db.kt");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, DB).unwrap();
+        let path = source;
+        (tmp, path)
+    }
+
+    #[test]
+    fn a_bridged_kotlin_class_navigates_to_its_source() {
+        let (tmp, source) = mixed_project();
+        let bridged = "jdt://contents/published-0/test001/Db.kt?=mixed/C:%5C/Users%5C/me%5C/published-0=/ai.openidea.kotlin=/true=/%3Ctest001%28Db.class";
+        let found = class_location(&location(bridged), tmp.path(), Some("Db")).unwrap();
+        assert_eq!(found.path, source.as_path());
+        assert_eq!(found.uri, None, "the source opens as a real file");
+        assert_eq!((found.range.start.line, found.range.start.col), (2, 6), "at `class Db`");
+    }
+
+    #[test]
+    fn a_bridged_class_member_navigates_to_its_declaration() {
+        let (tmp, _) = mixed_project();
+        let bridged = "jdt://contents/published-0/test001/Db.kt?=mixed/x=/%3Ctest001%28Db.class";
+        let found = class_location(&location(bridged), tmp.path(), Some("query")).unwrap();
+        assert_eq!((found.range.start.line, found.range.start.col), (3, 8), "at `fun query(`");
+    }
+
+    #[test]
+    fn a_disk_class_navigates_to_its_source() {
+        let (tmp, source) = mixed_project();
+        let class = tmp.path().join("target/classes/test001/Db.class");
+        std::fs::create_dir_all(class.parent().unwrap()).unwrap();
+        std::fs::write(&class, "binary").unwrap();
+        let found = class_location(&disk_location(&class), tmp.path(), Some("Db")).unwrap();
+        assert_eq!(found.path, source.as_path());
+    }
+
+    #[test]
+    fn facades_and_nested_classes_find_their_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let util = tmp.path().join("src/main/kotlin/org/app/Utils.kt");
+        std::fs::create_dir_all(util.parent().unwrap()).unwrap();
+        std::fs::write(
+            &util,
+            "@file:JvmName(\"UtilsKt\")\npackage org.app\n\nfun util() {}\n\nclass Outer {\n    class Inner\n}\n",
+        )
+        .unwrap();
+        // Top-level functions compile to a `UtilsKt` facade class.
+        let facade = class_location(
+            &location("jdt://contents/out/org.app/UtilsKt.kt?=x/%3Corg.app%28UtilsKt.class"),
+            tmp.path(),
+            Some("util"),
+        )
+        .unwrap();
+        assert_eq!(facade.path, util.as_path());
+        // A nested class lives in the outer class's file, at `class Inner`.
+        let nested = class_location(
+            &location("jdt://contents/out/org.app/Outer$Inner.class?=x/%3Corg.app%28Outer$Inner.class"),
+            tmp.path(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(nested.path, util.as_path());
+        assert_eq!(nested.range.start.line, 6);
+    }
+
+    #[test]
+    fn only_sources_of_the_class_package_are_taken() {
+        let tmp = tempfile::tempdir().unwrap();
+        let other = tmp.path().join("src/main/kotlin/test001/Db.kt");
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::write(&other, "package other\n\nclass Db\n").unwrap();
+        let bridged = "jdt://contents/out/test001/Db.kt?=x/%3Ctest001%28Db.class";
+        // No candidate declares `package test001`, so the .class stays.
+        assert_eq!(class_location(&location(bridged), tmp.path(), Some("Db")), None);
+        let right = tmp.path().join("module/src/main/kotlin/test001/Db.kt");
+        std::fs::create_dir_all(right.parent().unwrap()).unwrap();
+        std::fs::write(&right, DB).unwrap();
+        let found = class_location(&location(bridged), tmp.path(), Some("Db")).unwrap();
+        assert_eq!(found.path, right.as_path());
+    }
+
+    #[test]
+    fn main_sources_are_preferred_over_test_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (root, text) in [
+            (tmp.path().join("src/test/kotlin/test001"), "package test001\n\nclass Db\n"),
+            (tmp.path().join("src/main/kotlin/test001"), DB),
+        ] {
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("Db.kt"), text).unwrap();
+        }
+        let found = class_location(
+            &location("jdt://contents/out/test001/Db.kt?=x/%3Ctest001%28Db.class"),
+            tmp.path(),
+            Some("Db"),
+        )
+        .unwrap();
+        assert!(found.path.starts_with(tmp.path().join("src/main/kotlin")));
+    }
+
+    #[test]
+    fn build_directories_are_not_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        for path in [
+            tmp.path().join("target/classes/test001/Db.kt"),
+            tmp.path().join("build/test001/Db.kt"),
+            tmp.path().join("node_modules/x/test001/Db.kt"),
+        ] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, DB).unwrap();
+        }
+        assert_eq!(
+            class_location(
+                &location("jdt://contents/out/test001/Db.kt?=x/%3Ctest001%28Db.class"),
+                tmp.path(),
+                Some("Db")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn missing_sources_keep_the_compiled_class() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bridged = "jdt://contents/published-0/test001/Gone.kt?=mixed/x=/%3Ctest001%28Gone.class";
+        assert_eq!(class_location(&location(bridged), tmp.path(), Some("Gone")), None);
+    }
+
+    #[test]
+    fn jar_classes_still_open_their_sources_jar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m2 = tmp.path().join("m2/g/lib/1");
+        jar(&m2.join("lib-1.jar"), &[]);
+        jar(&m2.join("lib-1-sources.jar"), &[("p/Lib.java", "package p\npublic class Lib {}\n")]);
+        let uri = format!("jar://{}/lib-1.jar!/p/Lib.class", m2.to_string_lossy().replace('\\', "/"));
+        let found = class_location(&location(&uri), tmp.path(), Some("Lib")).unwrap();
+        assert!(found.uri.unwrap().ends_with("-sources.jar!/p/Lib.java"));
+    }
+
+    #[test]
+    fn kotlin_sources_declare_their_package() {
+        assert!(declares_package(DB, "test001"));
+        assert!(declares_package("package a.b.c;\nclass X", "a.b.c"));
+        assert!(declares_package("// note\n/** doc */\n@file:JvmName(\"X\")\npackage a.b\n", "a.b"));
+        assert!(declares_package("class Default", ""));
+        assert!(!declares_package("package other\n", "test001"));
+        assert!(!declares_package("", "test001"));
     }
 }

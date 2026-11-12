@@ -375,25 +375,20 @@ fn read_jar_source(uri: &str, encoding: Option<&str>) -> Option<(String, ide_vfs
     }
 }
 
-/// Library classes in `jar:` targets (the official Kotlin LSP) go to their source
-/// in the artifact's sources jar when it is cached, at the declaration of the
-/// name navigated from; [`LspManager::virtual_document`] serves it.
-async fn library_sources(snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
-    if !locs.iter().any(|l| l.uri.as_deref().is_some_and(|u| u.starts_with("jar:") && u.ends_with(".class"))) {
+/// Compiled class targets go to their sources: a dependency class to its file in
+/// the artifact's sources jar when it is cached, and a class of this project to
+/// its Kotlin source — a Java file's Go to Definition on a Kotlin class resolves
+/// to the compiled `.class` and must open the `.kt` instead (#2969). Both at the
+/// declaration of the name navigated from; [`LspManager::virtual_document`]
+/// serves what stays a `jar:` / `jdt://` target. `root` is the project root.
+async fn library_sources(snap: &DocSnap, root: PathBuf, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
+    if !locs.iter().any(library_source::is_binary_class) {
         return locs;
     }
     let name = library_source::identifier_at(snap.text.line(pos.line as usize), pos.col).map(str::to_owned);
     tokio::task::spawn_blocking(move || {
         locs.into_iter()
-            .map(|loc| {
-                let Some(uri) = loc.uri.as_deref().filter(|u| u.starts_with("jar:") && u.ends_with(".class")) else {
-                    return loc;
-                };
-                let Some((source, loaded)) = library_source::class_source(uri, None) else { return loc };
-                let range =
-                    name.as_deref().map(|n| library_source::declaration_range(&loaded.text, n)).unwrap_or_default();
-                Location { path: source.clone().into(), range, uri: Some(source) }
-            })
+            .map(|loc| library_source::class_location(&loc, &root, name.as_deref()).unwrap_or(loc))
             .collect()
     })
     .await
@@ -1683,7 +1678,7 @@ impl LspManager {
             Ok(found) => {
                 let locs =
                     convert::goto_response(&self.conv(t.enc()), lsp::GotoDefinitionResponse::Array(found.locations));
-                let locs = library_sources(snap, pos, locs).await;
+                let locs = library_sources(snap, self.project_root_for(&snap.path), pos, locs).await;
                 self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                 (locs, found.complete)
             }
@@ -1732,7 +1727,7 @@ impl LspManager {
             match r {
                 Ok(Some(r)) => {
                     let locs = convert::goto_response(&self.conv(t.enc()), r);
-                    let locs = library_sources(snap, pos, locs).await;
+                    let locs = library_sources(snap, self.project_root_for(&snap.path), pos, locs).await;
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                     self.note_arduino_sources(&t.server, &locs);
                     let locs = merge_locations(first, locs);

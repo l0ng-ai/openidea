@@ -2737,6 +2737,48 @@ async fn library_classes_in_jars_open_as_their_source_or_decompiled() {
     assert_eq!(asked[0], json!({ "command": "decompile", "arguments": [thing] }));
 }
 
+/// #2969: in a mixed Maven project, Go to Definition on a Kotlin class from a
+/// Java file resolves through the Kotlin bridge's compiled library to a
+/// `jdt://` class-file handle — and must open the `.kt` source instead of the
+/// decompiled `.class`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_kotlin_class_navigates_to_its_source_from_java() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let kotlin = h.root.join("src/main/kotlin/test001/Db.kt");
+    std::fs::create_dir_all(kotlin.parent().unwrap()).unwrap();
+    let source = "package test001\n\nclass Db {\n    fun query(): String = \"ok\"\n}\n";
+    std::fs::write(&kotlin, source).unwrap();
+    let (doc, _) = h.open(
+        "Main.java",
+        "package args;\n\nimport test001.Db;\n\npublic class Main {\n    public static void main(String[] args) {\n        Db db = new Db();\n        System.out.println(db.query());\n    }\n}\n",
+    );
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let r = |l0: u32, c0: u32, l1: u32, c1: u32| json!({"start":{"line":l0,"character":c0},"end":{"line":l1,"character":c1}});
+
+    // The answer jdtls 1.63 gives for a class of the Kotlin bridge's published
+    // library: the handle names the source file, the query keeps `.class`.
+    let bridged = "jdt://contents/published-0/test001/Db.kt?=mixed/C:%5C/Users%5C/me%5C/published-0=/ai.openidea.kotlin=/true=/%3Ctest001%28Db.class";
+    s.respond("textDocument/definition", json!({ "uri": bridged, "range": r(13, 19, 13, 21) }));
+    let defs = h.mgr.goto(doc, Pos::new(6, 20), GotoKind::Definition).await.unwrap();
+    assert_eq!(
+        defs,
+        vec![ide_core::Location { path: kotlin.clone().into(), range: rng(2, 6, 2, 8), uri: None }],
+        "the Kotlin source, at `class Db`, as a real file"
+    );
+
+    // A member navigates to its declaration in the same file.
+    s.respond("textDocument/definition", json!({ "uri": bridged, "range": r(14, 3, 15, 4) }));
+    let defs = h.mgr.goto(doc, Pos::new(7, 30), GotoKind::Definition).await.unwrap();
+    assert_eq!(defs, vec![ide_core::Location { path: kotlin.into(), range: rng(3, 8, 3, 13), uri: None }]);
+
+    // Without the source in the project, the compiled class stays.
+    let gone = "jdt://contents/published-0/test001/Gone.kt?=mixed/x=/%3Ctest001%28Gone.class";
+    s.respond("textDocument/definition", json!({ "uri": gone, "range": r(0, 0, 0, 4) }));
+    let defs = h.mgr.goto(doc, Pos::new(6, 20), GotoKind::Definition).await.unwrap();
+    assert_eq!(defs[0].uri.as_deref(), Some(gone), "kept as the server returned it");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn alternative_java_server_uses_lsp_without_jdt_commands() {
     let h = harness_for("java", "java", &[("kmp-lsp", incremental_caps())], &[]);
