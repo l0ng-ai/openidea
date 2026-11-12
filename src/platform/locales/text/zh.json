@@ -881,7 +881,6 @@
   "Compare with Current": "与当前比较",
   "Compare with Local": "与本地比较",
   "Compilation failed: fix the errors and reload again.": "编译失败：请修复错误后重新加载。",
-  "Compiles and runs the project: the default jdtls runtime, Run/Debug, and JAVA_HOME for Maven and Gradle.": "用于编译和运行项目：jdtls 的默认运行时、运行/调试，以及 Maven 和 Gradle 的 JAVA_HOME。",
   "Compiles the module of the current file": "编译当前文件所在的模块",
   "Compiles the project's sources and tests with its build system": "使用项目的构建系统编译其源代码和测试",
   "Completions": "补全",
@@ -2022,7 +2021,6 @@
   "Compiler output": "编译器输出",
   "Default directory where compiled classes are placed when not managed by Maven or Gradle.": "不由 Maven 或 Gradle 管理时，存放编译后类文件的默认目录。",
   "Select Compiler Output Directory": "选择编译器输出目录",
-  "JDK used to run the Eclipse JDT Language Server (jdtls 21+), independent of the target Project SDK.": "用于运行 Eclipse JDT 语言服务器（jdtls 21+）的 JDK，独立于目标项目 SDK。",
   "Select Module Directory": "选择模块目录",
   "Module settings": "模块设置",
   "Module SDK & Compiler Output": "模块 SDK 与编译器输出",
@@ -7736,6 +7734,11 @@
   "Download Remote Host files into a local folder (arg: { server, paths, target })": "将远程主机中的文件下载到本地文件夹（参数：{ server, paths, target }）",
   "Delegate IDE build/run actions to Maven": "将 IDE 构建/运行操作委托给 Maven",
   "Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server.": "运行和调试时用 Maven（项目的 javac）构建 Maven 模块，而不是用 Java 语言服务器。编辑器中的问题仍来自语言服务器。",
+  "JDK used to run the Eclipse JDT Language Server, independent of the target Project SDK.": "用于运行 Eclipse JDT 语言服务器的 JDK，独立于目标项目 SDK。",
+  "Compiles and runs the project: Run/Debug and JAVA_HOME for Maven and Gradle; it also runs jdtls when new enough for it.": "用于编译和运行项目：运行/调试，以及 Maven 和 Gradle 的 JAVA_HOME；版本足够新时也用来运行 jdtls。",
+  "The installed jdtls needs JDK {version} or newer.": "当前安装的 jdtls 需要 JDK {version} 或更高版本。",
+  "The installed jdtls needs JDK {version} or newer; the selected JDK {selected} is too old for it.": "当前安装的 jdtls 需要 JDK {version} 或更高版本，所选的 JDK {selected} 版本过旧。",
+  "too old, needs JDK {version}+ · {path}": "版本过旧，需要 JDK {version}+ · {path}",
   "May be incomplete: plugin indexes are still updating": "可能不完整：插件索引仍在更新",
   "Plugin indexes could not be updated; see the plugin notification": "插件索引更新失败，详见插件通知"
 }
