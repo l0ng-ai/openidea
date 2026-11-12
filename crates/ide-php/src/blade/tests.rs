@@ -857,3 +857,22 @@ fn format_formats_directive_arguments() {
 "
     );
 }
+
+/// An element every branch of an `@if … @else` opens alike, closed after
+/// the block, nests what follows it; one only some branches open doesn't.
+#[test]
+fn format_nests_an_element_every_branch_opens() {
+    use crate::blade::format::{BladeFormatOptions, format};
+    let options = BladeFormatOptions { indent: 4, use_tabs: false, line_width: 120, php: None };
+    let messy = "<section>\n@if($a)\n<div class=\"x\">\n@elseif($b)\n<div class=\"y\">\n@else\n<div>\n@endif\n<p>hi</p>\n</div>\n</section>\n";
+    let formatted = "<section>\n    @if($a)\n        <div class=\"x\">\n    @elseif($b)\n        <div class=\"y\">\n    @else\n        <div>\n    @endif\n        <p>hi</p>\n    </div>\n</section>\n";
+    assert_eq!(format(messy, &options, &[]), formatted);
+    assert_eq!(format(formatted, &options, &[]), formatted, "stable");
+    // Without `@else` (or with another element in one branch): as before.
+    for text in [
+        "<section>\n    @if($a)\n        <a href=\"x\">\n    @endif\n    <p>hi</p>\n    </a>\n</section>\n",
+        "<section>\n    @if($a)\n        <div>\n    @else\n        <span>\n    @endif\n    <p>hi</p>\n    </div>\n</section>\n",
+    ] {
+        assert_eq!(format(text, &options, &[]), text);
+    }
+}

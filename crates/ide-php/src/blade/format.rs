@@ -109,6 +109,19 @@ struct Event {
     id: u32,
 }
 
+/// Open HTML elements: name, whether their children indent, id.
+type OpenElements = Vec<(String, bool, u32)>;
+
+/// Where a Blade block starts, branches and ends, for the HTML scan.
+#[derive(Clone, Copy, Debug)]
+enum Mark {
+    Start,
+    /// `@elseif`, `@else` and the like; whether it is a plain `@else`.
+    Branch(bool),
+    /// The offset after the closing directive.
+    End(u32),
+}
+
 /// How a run of lines is laid out.
 #[derive(Clone, Debug)]
 enum Region {
@@ -429,6 +442,7 @@ fn analyse(text: &str, custom: &[String]) -> (Vec<Event>, Vec<Region>) {
     // The span of every block, for elements opened and closed in different
     // ones.
     let mut spans: Vec<(u32, u32)> = Vec::new();
+    let mut marks: Vec<(u32, Mark)> = Vec::new();
     for node in &nodes {
         let multiline = text[node.span.start as usize..node.span.end as usize].contains('\n');
         match &node.kind {
@@ -455,28 +469,34 @@ fn analyse(text: &str, custom: &[String]) -> (Vec<Event>, Vec<Region>) {
                         let (_, start) = blocks.pop().expect("a case");
                         spans.push((start, node.span.start));
                         events.push(zero(Kind::Close));
+                        marks.push((node.span.start, Mark::End(node.span.start)));
                     }
                     blocks.push((Vec::new(), node.span.start));
                     events.push(event(Kind::Open));
+                    marks.push((node.span.start, Mark::Start));
                 } else if let Some(at) = blocks.iter().rposition(|(closers, _)| closers.contains(&name)) {
                     // Blocks left open inside it (a case) close here too.
                     for _ in at + 1..blocks.len() {
                         events.push(zero(Kind::Close));
+                        marks.push((node.span.start, Mark::End(node.span.start)));
                     }
                     for (_, start) in blocks.drain(at..) {
                         spans.push((start, node.span.start));
                     }
                     events.push(event(Kind::Close));
+                    marks.push((node.span.start, Mark::End(node.span.end)));
                 } else if MIDDLES.contains(&name.as_str())
                     || (name == "empty" && node.code.is_none())
                     || (name.starts_with("else") && custom.iter().any(|c| c.eq_ignore_ascii_case(&name)))
                 {
                     if !blocks.is_empty() {
                         events.push(event(Kind::Middle));
+                        marks.push((node.span.start, Mark::Branch(name == "else")));
                     }
                 } else if let Some(closers) = block_closers(&name, args, node, &lower) {
                     blocks.push((closers, node.span.start));
                     events.push(event(Kind::Open));
+                    marks.push((node.span.start, Mark::Start));
                 }
             }
             _ => {}
@@ -490,11 +510,44 @@ fn analyse(text: &str, custom: &[String]) -> (Vec<Event>, Vec<Region>) {
     spans.extend(blocks.iter().map(|(_, start)| (*start, text.len() as u32)));
     // Open elements: their name, whether their children are indented, and
     // their id.
-    let mut open: Vec<(String, bool, u32)> = Vec::new();
+    let mut open: OpenElements = Vec::new();
     let mut next_id = 1u32;
     let mut i = 0usize;
     let mut skip = 0usize;
+    // The open elements at each start and branch of the blocks open here,
+    // and whether the last branch is a plain `@else`.
+    let mut groups: Vec<(Vec<OpenElements>, bool)> = Vec::new();
+    let mut mark = 0usize;
     while i < n {
+        while let Some(&(_, kind)) = marks.get(mark).filter(|(at, _)| *at as usize <= i) {
+            mark += 1;
+            match kind {
+                Mark::Start => groups.push((vec![open.clone()], false)),
+                Mark::Branch(plain_else) => {
+                    if let Some((stacks, last_else)) = groups.last_mut() {
+                        stacks.push(open.clone());
+                        *last_else = plain_else;
+                    }
+                }
+                Mark::End(after) => {
+                    let Some((mut stacks, last_else)) = groups.pop() else { continue };
+                    stacks.push(open.clone());
+                    if let Some(extras) = same_elements_in_every_branch(&stacks, last_else) {
+                        // One element, opened after the block: what follows
+                        // it nests until its closing tag.
+                        open.truncate(stacks[0].len());
+                        for (name, counted) in extras {
+                            let id = next_id;
+                            next_id += 1;
+                            if counted {
+                                events.push(Event { at: after, end: after, kind: Kind::Open, id });
+                            }
+                            open.push((name, counted, id));
+                        }
+                    }
+                }
+            }
+        }
         while skip < opaque.len() && (opaque[skip].end as usize) <= i {
             skip += 1;
         }
@@ -589,6 +642,40 @@ fn analyse(text: &str, custom: &[String]) -> (Vec<Event>, Vec<Region>) {
     drop_crossing_elements(&mut events, &spans);
     events.sort_by_key(|event| (event.at, event.kind == Kind::Open));
     (events, regions)
+}
+
+/// When every branch of a block ending in a plain `@else` (`stacks`: the
+/// open elements at its start, after each branch) opened the same elements
+/// and closed none of those before, those elements' names and whether
+/// they indent their children.
+fn same_elements_in_every_branch(stacks: &[OpenElements], last_else: bool) -> Option<Vec<(String, bool)>> {
+    if !last_else || stacks.len() < 3 {
+        return None;
+    }
+    let names = |stack: &[(String, bool, u32)]| stack.iter().map(|(name, ..)| name.clone()).collect::<Vec<_>>();
+    let base = &stacks[0];
+    let first = stacks[1].get(base.len()..)?;
+    if first.is_empty() {
+        return None;
+    }
+    let wanted = names(first);
+    let mut counted = vec![true; first.len()];
+    for pair in stacks.windows(2) {
+        let (before, after) = (&pair[0], &pair[1]);
+        let ids = |stack: &[(String, bool, u32)]| stack.iter().map(|(.., id)| *id).collect::<Vec<_>>();
+        // Each branch keeps what was open before it and adds the same.
+        if after.len() != before.len() + wanted.len() || ids(&after[..before.len()]) != ids(before) {
+            return None;
+        }
+        let added = &after[before.len()..];
+        if names(added) != wanted {
+            return None;
+        }
+        for (flag, (_, indents, _)) in counted.iter_mut().zip(added) {
+            *flag &= *indents;
+        }
+    }
+    Some(wanted.into_iter().zip(counted).collect())
 }
 
 /// Elements whose opening and closing tags aren't in the same Blade block
