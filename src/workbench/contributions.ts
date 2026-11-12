@@ -1726,6 +1726,12 @@ export const useDebugRunSessions = create<{
   Console: ComponentType<{ sessionId: number }> | null;
 }>(() => ({ sessions: [], serviceSessions: [], Console: null }));
 
+/**
+ * The Services tool window's badge: how many of its listed services are running.
+ * The run provider (another feature) keeps it current; `null` hides the badge.
+ */
+export const useServicesRunningCount = create<{ count: number | null }>(() => ({ count: null }));
+
 // ---------------------------------------------------------------------------
 // Processes a closing window or project would terminate. Features that own
 // child processes (Run/Debug sessions) publish them here, so the close guard can
