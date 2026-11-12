@@ -79,12 +79,12 @@ const previewMarks = StateField.define<DecorationSet>({
     for (const e of tr.effects) if (e.is(setPreviewMarks)) return e.value;
     return value.map(tr.changes);
   },
-  // Above the syntax highlighter (`Prec.high`), so a match nests inside its token span and
-  // `--fg-search-match` colours the text, as find matches do in an editor tab (#1733).
+  // Above the syntax highlighter (`Prec.high`), so a match nests inside its token span as find
+  // matches do in an editor tab.
   provide: (f) => Prec.highest(EditorView.decorations.from(f)),
 });
-const matchMark = Decoration.mark({ class: "cm-openidea-findMatch" });
-const currentMatchMark = Decoration.mark({ class: "cm-openidea-findMatch cm-openidea-findMatch-current" });
+/** IDEA's SEARCH_RESULT_ATTRIBUTES: a background only, so the syntax colours stay (#2858). */
+const matchMark = Decoration.mark({ class: "cm-openidea-searchResult" });
 const currentLineMark = Decoration.line({ class: "cm-activeLine" });
 const readOnly = [EditorState.readOnly.of(true), EditorView.editable.of(false)];
 
@@ -98,7 +98,7 @@ export function previewDecorations(doc: Text, line: number, highlights: readonly
     for (const [a, b] of h.ranges) {
       const from = l.from + Math.min(a, l.length);
       const to = l.from + Math.min(b, l.length);
-      if (to > from) out.push((h.line === line ? currentMatchMark : matchMark).range(from, to));
+      if (to > from) out.push(matchMark.range(from, to));
     }
   }
   return Decoration.set(out, true);

@@ -195,6 +195,7 @@ html {
   --fg-editor-selection: inherit;
   --bg-text-search-result: #114957;
   --bg-text-search-result-current: #165e70;
+  --bg-search-result: #2d543f;
   --bg-matched-brace: #43454a;
   --matched-brace-weight: var(--fw-code-bold);
   --bg-matched-tag: #3f4045;
@@ -621,6 +622,7 @@ html {
   --fg-editor-selection: inherit;
   --bg-text-search-result: #fcd47e;
   --bg-text-search-result-current: #f2bf57;
+  --bg-search-result: #ccccff;
   --bg-matched-brace: #93d9d9;
   --matched-brace-weight: inherit;
   --bg-matched-tag: #c9ecec;
@@ -913,6 +915,7 @@ html {
   --bg-editor-selection-inactive: #1f3f7a;
   --bg-text-search-result: #146a7d;
   --bg-text-search-result-current: #1d8aa3;
+  --bg-search-result: #006112;
   --bg-matched-brace: #55585f;
   --bg-matched-tag: #45474d;
   --bg-fold-placeholder: #33353b;
@@ -1178,6 +1181,7 @@ html {
   --bg-text-search-result: color-mix(in srgb, var(--palette-yellow) 22%, var(--palette-bg));
   --bg-search-match-current: color-mix(in srgb, var(--palette-yellow) 36%, var(--palette-bg));
   --bg-text-search-result-current: color-mix(in srgb, var(--palette-yellow) 36%, var(--palette-bg));
+  --bg-search-result: color-mix(in srgb, var(--palette-green) 22%, var(--palette-bg));
   --fg-search-match: var(--palette-fg);
   --border-tab-selected: var(--palette-accent);
   --border-indent-guide-active: var(--palette-accent);
