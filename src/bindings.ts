@@ -5864,7 +5864,12 @@ workspaceEdit?: boolean } |
 /**  A document's dirty flag changed (saved / modified externally). */
 { type: "docDirty"; doc: DocId; dirty: boolean } | 
 /**  A complete workspace edit can be undone as one operation. */
-{ type: "workspaceEditApplied"; id: number; paths: IpcPath[] } | 
+{ type: "workspaceEditApplied"; id: number; paths: IpcPath[]; 
+/**
+ *  Made by an agent through the MCP server's tools: undoable like a refactoring, but
+ *  not announced as one.
+ */
+byAgent: boolean } | 
 /**
  *  An open document's language changed (Settings › File Types, Override File
  *  Type), or its UI mode (a framework's root marker appeared or went).
