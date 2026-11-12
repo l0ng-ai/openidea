@@ -8,7 +8,7 @@ import { useRemote } from "@/platform/remote";
 import { PluginView } from "../views/PluginView";
 import { ServicePane } from "../views/ServicePane";
 import { defineBuiltinUiPoints } from "../points";
-import { clearUiContributions, syncUiContributions } from "../projection";
+import { clearUiContributions, syncUiContributions, uiPoint } from "../projection";
 import { bumpView } from "../views/viewStore";
 
 const originalProject = useProject.getState().project;
@@ -154,6 +154,15 @@ describe("detail views", () => {
     expect(stop).toHaveBeenCalledOnce();
     expect(screen.queryByRole("tab")).toBeNull();
   });
+});
+
+it("defines the secrets point in a project window, so the API key field shows", () => {
+  const undefine = defineBuiltinUiPoints();
+  try {
+    expect(uiPoint("secrets")?.Details).toBeDefined();
+  } finally {
+    undefine();
+  }
 });
 
 it("retries details after an error and refresh", async () => {

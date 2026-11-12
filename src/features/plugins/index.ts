@@ -31,7 +31,7 @@ import { ConsentDialogHost, provideConsentDialog } from "./consent";
 import { trackIconTheme } from "./iconThemes";
 import { pluginLineMarkerGutter } from "./lineMarkerGutter";
 import { defineBuiltinUiPoints } from "./points";
-import { startViewUi } from "./uiPoints";
+import { defineViewUiPoints, startViewUi } from "./uiPoints";
 import { showInstalledIntellijThemes, useIntellijThemesDialog } from "./intellijThemesDialogStore";
 import { startWorkspaceContains } from "./workspaceContains";
 import { startPluginDecorations } from "./decorations";
@@ -81,6 +81,8 @@ export function activate(): () => void {
     registerOverlay({ id: "plugins.intellijThemes", component: IntellijThemesDialogHost }),
     provideConsentDialog(),
     providePluginThemePreviews(),
+    // The `secrets` and `settings` points live here, not in `defineBuiltinUiPoints`.
+    defineViewUiPoints(),
     registerActions([
       {
         id: "plugins.settings",
