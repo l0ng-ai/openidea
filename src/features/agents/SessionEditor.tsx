@@ -2981,7 +2981,12 @@ function ChangesPane({
     }
   };
   const accept = async () => {
-    const targets = picked.length ? picked : (changes ?? []);
+    // Accepting brings over the task's whole work, committed or not: grouping only changes the listing.
+    const all =
+      grouped && !picked.length
+        ? await call(commands.agentChanges(task.id)).catch(() => changes ?? [])
+        : (changes ?? []);
+    const targets = picked.length ? picked : all;
     const count = targets.length;
     if (!count) return;
     const name = basename(targets[0]!.path);
@@ -3002,9 +3007,7 @@ function ChangesPane({
     });
     if (!ok) return;
     try {
-      // The grouped view accepts its uncommitted files only, never the commits.
-      const relPaths = grouped || picked.length ? targets.map((c) => c.relPath) : null;
-      const outcome = await acceptChanges(task.id, relPaths);
+      const outcome = await acceptChanges(task.id, picked.length ? picked.map((c) => c.relPath) : null);
       setSelected(new Set());
       if (outcome.skipped.length) {
         const skippedNames = outcome.skipped.map((s) => s.path).join(", ");
@@ -3036,17 +3039,12 @@ function ChangesPane({
             {changes.length} <T>{changes.length === 1 ? "file" : "files"}</T>
           </span>
         )}
-        {grouped && commits.length > 0 && (
-          <span className={styles.muted}>
-            {tx(commits.length === 1 ? "1 commit" : "{count} commits").replace("{count}", String(commits.length))}
-          </span>
-        )}
         <span className={styles.bannerSpacer} />
         {task.isolation === "worktree" && (
           <IconButton
             icon="check"
             title={picked.length ? "Accept Selected Changes…" : "Accept All Changes…"}
-            disabled={!changes?.length || task.status === "starting" || task.status === "running"}
+            disabled={(!changes?.length && !commits.length) || task.status === "starting" || task.status === "running"}
             onClick={() => void accept()}
           />
         )}

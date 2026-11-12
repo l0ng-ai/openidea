@@ -1501,4 +1501,18 @@ describe("grouped changes", () => {
     expect(screen.getByRole("button", { name: /1 changed file/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /1 commit/ })).toBeInTheDocument();
   });
+
+  it("accepts the task's committed work too, not only the uncommitted files", async () => {
+    backend.grouped = { uncommitted: [], commits: [commit({ files: [change("b.ts")] })] };
+    backend.changes = [change("b.ts")];
+    worktreeTask();
+    useAgents.setState({ tasks: new Map([["A", { ...task("A"), isolation: "worktree", status: "ready" }]]) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Committed");
+
+    const accept = screen.getByRole("button", { name: "Accept All Changes…" });
+    expect(accept).toBeEnabled();
+    fireEvent.click(accept);
+    await waitFor(() => expect(backend.accepted).toEqual([["A", null]]));
+  });
 });
