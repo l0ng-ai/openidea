@@ -384,6 +384,7 @@ const ICONS = {
   "db-mysql": "openidea/database/mysql",
   "db-sqlserver": "openidea/database/sqlserver",
   "db-oracle": "openidea/database/oracle",
+  "db-snowflake": "openidea/database/snowflake",
   "db-mariadb": "openidea/database/mariadb",
   "db-aurora": "openidea/database/aurora",
   "db-redshift": "openidea/database/redshift",

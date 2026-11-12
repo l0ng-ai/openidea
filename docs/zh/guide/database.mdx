@@ -3,7 +3,7 @@ title: "数据库"
 description: "连接 SQL 数据库、浏览架构、在查询控制台中执行查询，以及查看、编辑、导入和导出数据。"
 ---
 
-**数据库** 工具窗口可以连接 SQLite、PostgreSQL、MySQL/MariaDB、Microsoft SQL Server、Oracle 和 ClickHouse，以及兼容这些协议的数据库。驱动内置在 IDE 中，不需要下载 JDBC 驱动。
+**数据库** 工具窗口可以连接 SQLite、PostgreSQL、MySQL/MariaDB、Microsoft SQL Server、Oracle、ClickHouse 和 Snowflake，以及兼容这些协议的数据库。驱动内置在 IDE 中，不需要下载 JDBC 驱动。
 
 通过 **工具 › 数据库** 或 **视图 › 工具窗口 › 数据库** 打开。**工具** 菜单中还有 **新建数据源…** 和 **Open Query Console**（打开查询控制台）。
 
@@ -18,6 +18,7 @@ description: "连接 SQL 数据库、浏览架构、在查询控制台中执行�
 | SQL Server | Microsoft SQL Server                                                                         |
 | Oracle     | Oracle 19 及以上（内置 thin 驱动，无需客户端库）                                             |
 | ClickHouse | ClickHouse（通过 HTTP）                                                                      |
+| Snowflake  | Snowflake（通过 HTTPS，见下文）                                                              |
 | SQLite     | SQLite                                                                                       |
 
 预设会填好默认端口，必要时还会设置 SSL（例如 Redshift、Neon 和 Supabase 要求 SSL）。
@@ -109,7 +110,7 @@ description: "连接 SQL 数据库、浏览架构、在查询控制台中执行�
 - **浏览查询历史记录**：每个数据源最近 500 条语句，可搜索并粘贴回控制台。
 - 行数上限（100 到 50,000，默认 500）。
 - **事务：自动** / **事务：手动**。手动模式下会出现 **提交** 和 **回滚**。
-- 架构选择器（PostgreSQL、MySQL、SQL Server、Oracle）和数据源选择器。
+- 架构选择器（PostgreSQL、MySQL、SQL Server、Oracle、Snowflake）和数据源选择器。Snowflake 控制台还提供仓库和角色选择器。
 
 语句按 `;` 拆分，会正确处理字符串、注释和 PostgreSQL 的美元引号。Oracle 的 PL/SQL 块保持完整，只有 `/` 的一行表示语句结束。`:id`、`?`、`$1`、`@name` 等参数会弹出 **参数** 对话框；值按 SQL 文本插入，字符串需要自己加引号。
 
@@ -153,9 +154,28 @@ Oracle 连接使用内置的纯 Rust thin 驱动，不需要 Oracle 客户端库
 
 Oracle 的架构就是数据库用户；系统账户只在勾选 **显示内部系统架构** 后显示。
 
+## Snowflake
+
+选择 **数据源 › Snowflake** 并填写：
+
+- **账户：** 账户标识符（`myorg-myaccount` 或 `xy12345.eu-central-1`），或账户主机名。
+- **用户**，以及可选的 **数据库**、**模式**、**仓库** 和 **角色**（留空则使用用户的默认值）。
+- **身份验证：**
+  - **密钥对** — RSA 私钥文件（PKCS#8 `.p8`，加密或未加密，或 PKCS#1）及其密码短语。只保存路径，每次登录时读取密钥。
+  - **单点登录（网页浏览器）** — 在默认浏览器中打开身份提供方页面。远程项目中不可用。
+  - **密码**、**编程访问令牌** 或 **OAuth 令牌**。
+
+勾选 **保存密码** 时，密码短语、密码或令牌保存在操作系统的凭据存储中，不会写入数据源文件。在 **URL** 字段中输入 JDBC URL（`jdbc:snowflake://…?warehouse=…&db=…&role=…`）会填充各项设置。
+
+树中依次显示数据库、架构及其表、视图、例程、序列、暂存区、流、任务、管道和文件格式。这些信息通过 `SHOW` 命令读取，不需要运行中的仓库，只列出当前角色可见的对象。一个数据源的所有数据库共用一次登录；控制台和树使用各自的会话，长时间查询不会阻塞浏览。
+
+**高级** 属性是会话参数（例如 `QUERY_TAG`、`STATEMENT_TIMEOUT_IN_SECONDS`）。
+
+限制：`TIMESTAMP_LTZ` 值以 UTC 显示；不提供 SSH 隧道；结果以 JSON 读取。
+
 ## 暂不支持
 
-- MongoDB、Redis、Snowflake、BigQuery 等未列出的数据库，以及 JDBC 驱动。
+- MongoDB、Redis、BigQuery 等未列出的数据库，以及 JDBC 驱动。
 - SQL Server 的 `GO` 批处理分隔符。
 - “执行整个控制台”的操作（请选中后执行，或使用 **运行 SQL 脚本…**）。
 - 导出超出已加载页面的数据。
