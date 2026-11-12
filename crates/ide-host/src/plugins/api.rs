@@ -180,7 +180,7 @@ impl SecretStore for FileSecretStore {
 /// Largest response body a plugin receives.
 const MAX_RESPONSE: usize = 8 << 20;
 /// Largest stdout / stderr kept from a process.
-const MAX_OUTPUT: usize = 4 << 20;
+const MAX_OUTPUT: usize = 16 << 20;
 /// Most processes one plugin keeps running at once.
 const MAX_PROCESSES: usize = 8;
 /// Most output one stream of a handle holds until the plugin reads it.
@@ -2443,9 +2443,14 @@ impl HostApi for PluginApi {
         let read = |pipe: Option<Box<dyn Read + Send>>| {
             std::thread::spawn(move || {
                 let mut out = Vec::new();
+                let mut overflow = false;
                 if let Some(p) = pipe {
                     let mut p = p;
-                    let _ = p.by_ref().take(MAX_OUTPUT as u64).read_to_end(&mut out);
+                    let _ = p.by_ref().take((MAX_OUTPUT + 1) as u64).read_to_end(&mut out);
+                    if out.len() > MAX_OUTPUT {
+                        overflow = true;
+                        out.truncate(MAX_OUTPUT);
+                    }
                     let _ = std::io::copy(&mut p, &mut std::io::sink());
                 }
                 let mut text = String::from_utf8_lossy(&out).into_owned();
@@ -2454,7 +2459,7 @@ impl HostApi for PluginApi {
                     end -= 1;
                 }
                 text.truncate(end);
-                text
+                (text, overflow)
             })
         };
         let stdout = read(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
@@ -2474,11 +2479,18 @@ impl HostApi for PluginApi {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
-        Ok(ProcessOutput {
-            status: status.code(),
-            stdout: stdout.join().unwrap_or_default(),
-            stderr: stderr.join().unwrap_or_default(),
-        })
+        let (stdout, stdout_overflow) = stdout.join().unwrap_or_default();
+        let (stderr, _) = stderr.join().unwrap_or_default();
+        if stdout_overflow {
+            tracing::warn!(
+                plugin = %self.id(),
+                program = %cmd.program,
+                limit_mib = MAX_OUTPUT >> 20,
+                "process stdout exceeded limit"
+            );
+            return Err(HostError::Failed(format!("{} stdout exceeded {} MiB limit", cmd.program, MAX_OUTPUT >> 20)));
+        }
+        Ok(ProcessOutput { status: status.code(), stdout, stderr })
     }
 
     fn subscribe(&self, kind: EventKind) {

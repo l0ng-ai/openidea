@@ -6683,6 +6683,38 @@ fn process_timeout_returns_guest_error_without_disabling_plugin() {
     assert_eq!(info.stats.crashes, 0);
 }
 
+#[cfg(unix)]
+#[test]
+fn process_stdout_accepts_large_payloads_and_reports_overflow_explicitly() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture(Limits { timeout: Duration::from_secs(10), ..Limits::default() });
+    let package = f._tmp.path().join("api14-large-proc");
+    copy_dir(&sample("api14"), &package);
+    let manifest = package.join("plugin.toml");
+    let text =
+        std::fs::read_to_string(&manifest).unwrap().replace("optional = [", "optional = [\"process:api14-tool\", ");
+    std::fs::write(manifest, text).unwrap();
+    f.install(&package);
+
+    let medium_bytes = 5 * 1024 * 1024;
+    let medium = f._tmp.path().join("medium-tool");
+    std::fs::write(&medium, "#!/bin/sh\ndd if=/dev/zero bs=1048576 count=5 2>/dev/null | tr '\\0' 'x'\n").unwrap();
+    std::fs::set_permissions(&medium, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let medium = medium.canonicalize().unwrap();
+    f.host.choose_program("api14", "process:api14-tool", Some(&f.project), Some(&medium)).unwrap();
+    let out = f.run("api14", "process-run", None).unwrap().unwrap();
+    assert_eq!(out.len(), medium_bytes);
+
+    let huge = f._tmp.path().join("huge-tool");
+    std::fs::write(&huge, "#!/bin/sh\ndd if=/dev/zero bs=1048576 count=17 2>/dev/null | tr '\\0' 'x'\n").unwrap();
+    std::fs::set_permissions(&huge, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let huge = huge.canonicalize().unwrap();
+    f.host.choose_program("api14", "process:api14-tool", Some(&f.project), Some(&huge)).unwrap();
+    let err = f.run("api14", "process-run", None).unwrap_err();
+    assert!(err.contains("stdout exceeded 16 MiB limit"), "{err}");
+    assert_eq!(f.host.info_of("api14").unwrap().stats.crashes, 0);
+}
+
 /// A link already in the project is written through, so it is judged by where it points.
 #[cfg(unix)]
 #[test]
