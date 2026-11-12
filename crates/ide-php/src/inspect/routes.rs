@@ -133,16 +133,30 @@ impl<'a, 'p> Walker<'a, 'a, Calls<'a, 'p>> for CallWalker {
 /// whose route no route file names. Nothing while the project has no named
 /// route (its routes come from somewhere the engine doesn't read).
 fn laravel(cx: &InspectionContext<'_>, routes: &RouteTable, out: &mut Problems) {
-    if !routes.routes().iter().any(|route| route.name.is_some()) {
-        return;
+    for (start, end, message) in undefined_laravel_routes(cx.engine, cx.parsed, routes, cx.cancel) {
+        out.report(start, end, message);
     }
-    let resolver = cx.resolver();
+}
+
+/// The route names of `parsed` (a PHP file, or the PHP a Blade template
+/// compiles to) that no route of `routes` has, as `(start, end, message)`.
+pub(crate) fn undefined_laravel_routes(
+    engine: &crate::engine::PhpEngine,
+    parsed: &crate::syntax::ParsedFile,
+    routes: &RouteTable,
+    cancel: &ide_core::CancellationToken,
+) -> Vec<(u32, u32, String)> {
+    let mut out = Vec::new();
+    if !routes.routes().iter().any(|route| route.name.is_some()) {
+        return out;
+    }
+    let resolver = engine.resolver();
     // The places of the `ide.json` rules too.
-    let project = cx.engine.laravel();
+    let project = engine.laravel();
     let rules = project.as_ref().map(|project| project.ide_json.completions.as_slice()).unwrap_or_default();
-    for site in sites_with(cx.parsed, &resolver, &[&RouteName], rules, None) {
-        if cx.is_cancelled() {
-            return;
+    for site in sites_with(parsed, &resolver, &[&RouteName], rules, None) {
+        if cancel.is_cancelled() {
+            break;
         }
         // Only plain literals (no interpolation or escapes).
         if site.value.is_empty() || site.value.contains(['$', '\\', '{']) {
@@ -151,7 +165,8 @@ fn laravel(cx: &InspectionContext<'_>, routes: &RouteTable, out: &mut Problems) 
         let Some((kind, rule)) = classify(&site, &resolver, rules) else { continue };
         let value = prefixed(&site, rule);
         if kind.id() == RouteName.id() && routes.named(&value).next().is_none() {
-            out.report(site.start, site.end, format!("Route '{value}' is not defined"));
+            out.push((site.start, site.end, format!("Route '{value}' is not defined")));
         }
     }
+    out
 }

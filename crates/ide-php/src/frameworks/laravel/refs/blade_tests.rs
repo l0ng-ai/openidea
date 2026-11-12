@@ -313,6 +313,18 @@ fn php_in_bound_attributes_and_class_arrays() {
 }
 
 #[test]
+fn undefined_route_names_are_problems_of_the_template() {
+    let project = Project::app();
+    let text = "<a href=\"{{ route('posts.nope') }}\">x</a>\n<a href=\"{{ route('dashboard.posts.create') }}\">y</a>\n";
+    let problems = project.engine.blade_problems(text);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(problems[0].code.as_deref(), Some("PhpUndefinedRoute"));
+    assert_eq!(problems[0].message, "Route 'posts.nope' is not defined");
+    let start = text.find("posts.nope").unwrap() as u32;
+    assert_eq!((problems[0].range.start.line, problems[0].range.start.col), (0, start));
+}
+
+#[test]
 fn unclosed_sections_are_problems_of_the_template() {
     let project = Project::app();
     let problems =

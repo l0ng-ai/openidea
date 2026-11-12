@@ -105,7 +105,7 @@ use super::LaravelProject;
 use super::ide_json::CompletionRule;
 use super::routes::RouteAction;
 use crate::complete::{Completion, CompletionKind, Completions};
-use crate::engine::PhpEngine;
+use crate::engine::{EngineState, PhpEngine};
 use crate::names::{FileNames, NameKind, Resolution, fqn_eq};
 use crate::navigate::{Target, Usage, UsageKind};
 use crate::signature::Callee;
@@ -1529,12 +1529,40 @@ impl PhpEngine {
         .into_iter()
         .filter(|kind| crate::inspect::laravel::inspection_id(kind.id()).is_some_and(|id| enabled.contains(&id)))
         .collect();
-        if kinds.is_empty() {
+        // Route names have their own inspection (`crate::inspect::routes`).
+        let routes = if enabled.contains(&"PhpUndefinedRoute") && self.status().state == EngineState::Ready {
+            self.laravel_routes()
+        } else {
+            None
+        };
+        if kinds.is_empty() && routes.is_none() {
             return Vec::new();
         }
         let lines = crate::syntax::LineIndex::new(text);
         let mut out = Vec::new();
-        for found in self.undefined_references(&parsed, Path::new(""), &kinds, &CancellationToken::new()) {
+        let cancel = CancellationToken::new();
+        let undefined_routes =
+            routes.map(|routes| crate::inspect::routes::undefined_laravel_routes(self, &parsed, &routes, &cancel));
+        for (start, end, message) in undefined_routes.unwrap_or_default() {
+            let (Some(start), Some(end)) = (compiled.blade_offset(start), compiled.blade_offset(end)) else {
+                continue;
+            };
+            let diagnostic = Diagnostic {
+                range: lines.range(start, end),
+                severity: Severity::Warning,
+                message,
+                source: Some(crate::blade::structure::DIAGNOSTIC_SOURCE.into()),
+                code: Some("PhpUndefinedRoute".into()),
+                unnecessary: false,
+                deprecated: false,
+                server: None,
+            };
+            out.push((diagnostic, None));
+        }
+        if kinds.is_empty() {
+            return out;
+        }
+        for found in self.undefined_references(&parsed, Path::new(""), &kinds, &cancel) {
             let (Some(start), Some(end)) = (compiled.blade_offset(found.start), compiled.blade_offset(found.end))
             else {
                 continue;
