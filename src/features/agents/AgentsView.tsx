@@ -192,7 +192,10 @@ export function AgentsView() {
             const task = tasks.get(id);
             return task ? [task] : [];
           });
-          showContextMenu(e, taskMenu(selection));
+          showContextMenu(
+            e,
+            taskMenu(selection, () => setHistoryOpen(false)),
+          );
         }}
         renderNode={(n) =>
           n.kind === "group" ? (
