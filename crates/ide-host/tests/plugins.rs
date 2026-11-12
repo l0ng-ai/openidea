@@ -6648,6 +6648,41 @@ fn project_write_cannot_replace_the_git_file_of_a_linked_worktree() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn process_timeout_returns_guest_error_without_disabling_plugin() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture(Limits {
+        timeout: Duration::from_millis(120),
+        max_failures: 3,
+        restart_backoff: Duration::ZERO,
+        ..Limits::default()
+    });
+    let package = f._tmp.path().join("api14-slow-proc");
+    copy_dir(&sample("api14"), &package);
+    let manifest = package.join("plugin.toml");
+    let text =
+        std::fs::read_to_string(&manifest).unwrap().replace("optional = [", "optional = [\"process:api14-tool\", ");
+    std::fs::write(manifest, text).unwrap();
+    f.install(&package);
+
+    let slow = f._tmp.path().join("slow-tool");
+    std::fs::write(&slow, "#!/bin/sh\nsleep 5\n").unwrap();
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let slow = slow.canonicalize().unwrap();
+    f.host.choose_program("api14", "process:api14-tool", Some(&f.project), Some(&slow)).unwrap();
+
+    // Even past `max_failures` (3), external subprocess timeouts unwind as guest errors
+    // instead of poisoning the Wasm instance and disabling the plugin for the session.
+    for _ in 0..4 {
+        let err = f.run("api14", "process-run", None).unwrap_err();
+        assert!(err.contains("api14-tool timed out"), "{err}");
+    }
+    let info = f.host.info_of("api14").unwrap();
+    assert_eq!(info.status, PluginStatus::Active);
+    assert_eq!(info.stats.crashes, 0);
+}
+
 /// A link already in the project is written through, so it is judged by where it points.
 #[cfg(unix)]
 #[test]
