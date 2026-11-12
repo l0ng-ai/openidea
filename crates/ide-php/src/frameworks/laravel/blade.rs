@@ -779,6 +779,15 @@ impl PhpEngine {
                 .collect(),
             Sought::Component(tag) => component_tag_spans(text, tag),
         })?;
+        // A section or stack belongs to a layout: templates extending
+        // another layout name theirs alike but mean something else.
+        // Templates in no `@extends` chain (partials, components) count.
+        if let Sought::Name(..) = &sought {
+            let roots = self.layout_roots(blade.path, blade.text);
+            if let Some(mine) = roots.get(&crate::project::normalize(blade.path)) {
+                out.retain(|usage| roots.get(&crate::project::normalize(&usage.path)).is_none_or(|root| root == mine));
+            }
+        }
         if include_declaration
             && let Sought::Component(tag) = &sought
             && let Some(component) = self.laravel_blade().and_then(|catalog| catalog.component(tag).cloned())
@@ -787,6 +796,36 @@ impl PhpEngine {
             out.extend(files.map(|path| Usage { path, range: Range::default(), kind: UsageKind::Declaration }));
         }
         Some(out)
+    }
+
+    /// The top layout of every project template in an `@extends` chain
+    /// (extending another or extended), `own`'s current text `text`.
+    fn layout_roots(&self, own: &Path, text: &str) -> std::collections::HashMap<PathBuf, PathBuf> {
+        let mut out = std::collections::HashMap::new();
+        let Some(views) = self.laravel_views() else { return out };
+        let own = crate::project::normalize(own);
+        let mut parent: std::collections::HashMap<PathBuf, PathBuf> = std::collections::HashMap::new();
+        for view in views.views().iter().filter(|view| is_blade(&view.path) && !self.is_library(&view.path)) {
+            let path = crate::project::normalize(&view.path);
+            let found = if path == own { Some(text.to_owned()) } else { self.current_text(&path) };
+            let Some(found) = found else { continue };
+            let Some((name, _)) = structure::extends(&found) else { continue };
+            let Some(layout) = views.get(&super::views::normalize_name(&name)) else { continue };
+            parent.insert(path, crate::project::normalize(&layout.path));
+        }
+        let chained: Vec<PathBuf> = parent.keys().chain(parent.values()).cloned().collect();
+        for start in chained {
+            let mut root = start.clone();
+            // A cycle stops somewhere: still one root for the family.
+            for _ in 0..32 {
+                match parent.get(&root) {
+                    Some(up) if *up != start => root = up.clone(),
+                    _ => break,
+                }
+            }
+            out.insert(start, root);
+        }
+        out
     }
 
     /// The usages `find` finds (byte spans) in the project's templates

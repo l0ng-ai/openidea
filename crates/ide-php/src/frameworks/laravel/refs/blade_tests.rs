@@ -394,3 +394,36 @@ fn finds_usages_of_sections_and_components() {
     let template = Template::new(&project, show, "<p>/*|*/x</p>");
     assert!(project.engine.blade_name_usages(&template.blade(), template.pos, true).is_none());
 }
+
+/// A section belongs to its layout: Find Usages from one layout's
+/// `@yield` lists the templates extending it, not those of another layout
+/// filling a section of the same name; a partial in no chain still counts.
+#[test]
+fn section_usages_stay_in_their_layout() {
+    let project = Project::app_with(&[
+        ("resources/views/layouts/admin.blade.php", "<main>@yield('content')</main>\n"),
+        (
+            "resources/views/admin/home.blade.php",
+            "@extends('layouts.admin')\n@section('content')\nadmin\n@endsection\n",
+        ),
+        ("resources/views/partials/fill.blade.php", "@section('content', 'x')\n"),
+    ]);
+    let text = std::fs::read_to_string(project.root.join(LAYOUT))
+        .unwrap()
+        .replace("@yield('content')", "@yield('cont/*|*/ent')");
+    let template = Template::new(&project, LAYOUT, &text);
+    let found = project.engine.blade_name_usages(&template.blade(), template.pos, true).expect("a section");
+    let mut files: Vec<String> = found.iter().map(|usage| project.describe(&usage.path, usage.range).0).collect();
+    files.sort();
+    files.dedup();
+    assert!(files.contains(&"resources/views/posts/show.blade.php".to_owned()), "{files:?}");
+    assert!(files.contains(&"resources/views/partials/fill.blade.php".to_owned()), "{files:?}");
+    assert!(!files.iter().any(|file| file.contains("admin")), "{files:?}");
+    // From the admin layout: its own child, not the app layout's.
+    let admin = "resources/views/layouts/admin.blade.php";
+    let template = Template::new(&project, admin, "<main>@yield('cont/*|*/ent')</main>\n");
+    let found = project.engine.blade_name_usages(&template.blade(), template.pos, true).expect("a section");
+    let files: Vec<String> = found.iter().map(|usage| project.describe(&usage.path, usage.range).0).collect();
+    assert!(files.contains(&"resources/views/admin/home.blade.php".to_owned()), "{files:?}");
+    assert!(!files.contains(&"resources/views/posts/show.blade.php".to_owned()), "{files:?}");
+}
