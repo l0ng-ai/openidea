@@ -6682,7 +6682,9 @@ fn project_write_cannot_replace_the_git_file_of_a_linked_worktree() {
     }
     for rel in spellings {
         let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
-        assert!(err.contains("git's own files"), "{rel}: {err}");
+        // A stream name is refused before the path is looked at at all.
+        let refused = if rel.contains(':') { "file streams are not allowed" } else { "git's own files" };
+        assert!(err.contains(refused), "{rel}: {err}");
         assert_eq!(std::fs::read_to_string(&pointer).unwrap(), gitdir, "{rel}");
     }
 }
