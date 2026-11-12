@@ -575,9 +575,9 @@ mod tests {
 
         let s = store.set(SettingsScope::Global, "console.logColors.error", json!("#ff0000")).unwrap();
         assert_eq!(s.console.log_colors.error, "#ff0000");
+        assert!(!s.console.log_colors.enabled, "off by default");
+        let s = store.set(SettingsScope::Global, "console.logColors.enabled", json!(true)).unwrap();
         assert!(s.console.log_colors.enabled);
-        let s = store.set(SettingsScope::Global, "console.logColors.enabled", json!(false)).unwrap();
-        assert!(!s.console.log_colors.enabled);
         assert_eq!(s.console.log_colors.error, "#ff0000");
     }
 

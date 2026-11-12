@@ -209,7 +209,7 @@ pub struct LogLevelColors {
 impl Default for LogLevelColors {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             error: "var(--ansi-red)".into(),
             warn: "var(--ansi-yellow)".into(),
             info: "var(--ansi-green)".into(),

@@ -14,10 +14,13 @@ vi.mock("@tanstack/react-virtual", () => ({
   }),
 }));
 
-function setup(chunks: { kind: "stdout" | "stderr" | "system"; text: string }[], logColors?: object) {
+function setup(
+  chunks: { kind: "stdout" | "stderr" | "system"; text: string }[],
+  logColors: object = { enabled: true },
+) {
   const model = new ConsoleModel();
   for (const c of chunks) model.append(c);
-  useProject.setState({ settings: (logColors ? { console: { logColors } } : {}) as never });
+  useProject.setState({ settings: { console: { logColors } } as never });
   render(<ConsoleView model={model} version={1} softWrap={false} follow={false} onFollowChange={() => {}} cwd="/" />);
 }
 
@@ -47,6 +50,11 @@ describe("console log colours", () => {
     ]);
     expect(rowOf("plain line").style.color).toBe("");
     expect(rowOf("Process finished").style.color).toBe("");
+  });
+
+  it("is off by default", () => {
+    setup([{ kind: "stdout", text: "INFO plain\n" }], {});
+    expect(rowOf("INFO").style.color).toBe("");
   });
 
   it("does no colouring when disabled", () => {

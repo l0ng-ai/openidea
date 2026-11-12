@@ -266,7 +266,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       "<frozen importlib._bootstrap",
     ],
     logColors: {
-      enabled: true,
+      enabled: false,
       error: "var(--ansi-red)",
       warn: "var(--ansi-yellow)",
       info: "var(--ansi-green)",
