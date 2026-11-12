@@ -219,7 +219,8 @@ describe("Commit… from Local Changes with the modal interface", () => {
     ]);
   });
 
-  it("keeps the inclusion as it is when invoked elsewhere", async () => {
+  it("falls back to the default inclusion when invoked elsewhere", async () => {
+    useCommit.setState({ checks: new Map([["/p/src/a.ts", "none"]]) });
     row.blur();
     commitFromContext();
     await vi.waitFor(() => expect(showCommitDialog).toHaveBeenCalled());

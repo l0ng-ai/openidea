@@ -34,13 +34,15 @@ export function openCommit() {
 }
 
 /**
- * Commit… (⌘K) as an action: with the modal interface, invoked from Local Changes, the
- * dialog includes just the files selected there (IDEA).
+ * Commit… (⌘K) as an action: with the modal interface the dialog includes just the files
+ * selected in Local Changes when invoked from there, otherwise the default inclusion.
  */
 export function commitFromContext() {
-  const fromLocalChanges = !!(document.activeElement as HTMLElement | null)?.closest?.('[data-changes-tree="local"]');
-  const selection = isModalCommit() && fromLocalChanges ? useCommit.getState().selection : [];
-  if (selection.length) useCommit.setState({ checks: includeOnly(useVcs.getState().status, selection) });
+  if (isModalCommit()) {
+    const fromLocalChanges = !!(document.activeElement as HTMLElement | null)?.closest?.('[data-changes-tree="local"]');
+    const selection = fromLocalChanges ? useCommit.getState().selection : [];
+    useCommit.setState({ checks: selection.length ? includeOnly(useVcs.getState().status, selection) : new Map() });
+  }
   openCommit();
 }
 
