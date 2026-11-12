@@ -285,15 +285,17 @@ describe("database result tab context menu", () => {
   });
 
   it.each([
-    ["Orders", "Select Next Tab", "Customer count", "count-row"],
-    ["Orders", "Select Previous Tab", "Customers", "customer-row"],
-    ["Customer count", "Select Next Tab", "Output", null],
-    ["Output", "Select Previous Tab", "Customer count", "count-row"],
-    ["Output", "Select Next Tab", "Customers", "customer-row"],
-    ["Customers", "Select Previous Tab", "Output", null],
-  ])("navigates from clicked %s using %s to %s", async (clicked, action, selected, value) => {
+    ["Customer count", "Orders", "Select Next Tab", "Output", null],
+    ["Customer count", "Customers", "Select Previous Tab", "Orders", "order-row"],
+    ["Customers", "Customer count", "Select Previous Tab", "Output", null],
+    ["Output", "Customers", "Select Previous Tab", "Customer count", "count-row"],
+    ["Output", "Customer count", "Select Next Tab", "Customers", "customer-row"],
+    ["Customers", "Output", "Select Next Tab", "Orders", "order-row"],
+  ])("navigates from active %s through the %s menu using %s", async (active, clicked, action, selected, value) => {
+    useDatabase.setState({ activeResult: seeded.find((r) => r.title === active)?.id ?? OUTPUT_TAB });
     await show();
     openMenu(clicked);
+    expectSelected(active);
     await choose(action);
     expectSelected(selected);
     if (value) expect(screen.getByRole("gridcell", { name: value })).toBeInTheDocument();
@@ -302,11 +304,22 @@ describe("database result tab context menu", () => {
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
+  it("navigates from the active tab at execution rather than when the menu opened", async () => {
+    await show();
+    openMenu("Orders");
+    act(() => useDatabase.setState({ activeResult: 11 }));
+    expectSelected("Customers");
+    await choose("Select Next Tab");
+    expectSelected("Orders");
+    expect(screen.getByRole("gridcell", { name: "order-row" })).toBeInTheDocument();
+    expect(useDatabase.getState().results).toBe(seeded);
+  });
+
   it("cycles between one result and Output in either direction", async () => {
     useDatabase.setState({ results: [seeded[1]!], activeResult: 22 });
     await show();
     for (const action of ["Select Next Tab", "Select Previous Tab"]) {
-      openMenu("Orders");
+      openMenu("Output");
       await choose(action);
       expectOutput();
       openMenu("Output");

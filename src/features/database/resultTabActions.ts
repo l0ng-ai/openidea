@@ -17,9 +17,10 @@ function closeOthers(id: number) {
   for (const tab of useDatabase.getState().results) if (tab.id !== id) closeResult(tab.id);
 }
 
-function cycle(id: number, direction: 1 | -1) {
-  const ids = [OUTPUT_TAB, ...useDatabase.getState().results.map((r) => r.id)];
-  const index = ids.indexOf(id);
+function cycle(direction: 1 | -1) {
+  const { results, activeResult } = useDatabase.getState();
+  const ids = [OUTPUT_TAB, ...results.map((r) => r.id)];
+  const index = ids.indexOf(activeResult ?? OUTPUT_TAB);
   if (index >= 0) useDatabase.setState({ activeResult: ids[(index + direction + ids.length) % ids.length]! });
 }
 
@@ -72,7 +73,7 @@ export function registerResultTabActions(): () => void {
       category: "Database",
       keyWhen: "dbResultsFocus && !popupOpen",
       enabled: (c: ActionContext) => target(c) !== null && useDatabase.getState().results.length > 0,
-      run: (c: ActionContext) => cycle(target(c)!, direction),
+      run: () => cycle(direction),
     })),
   ]);
 }

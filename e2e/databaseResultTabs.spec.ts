@@ -143,7 +143,7 @@ test("result context menu fits the viewport, responds to hover and keyboard, and
   await expect(popup.getByRole("menuitem", { name: "Select Previous Tab", exact: true })).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(popup).toHaveCount(0);
-  await selected(page, "Result 2", "beta rows");
+  await selected(page, "Result 1", "alpha rows");
 });
 
 test("renames the clicked inactive result without changing its rows and navigates through Output with wraparound", async ({
@@ -177,12 +177,18 @@ test("renames the clicked inactive result without changing its rows and navigate
   await selected(page, "Customer summary", "alpha rows");
 
   await choose(page, "Result 3", "Select Next Tab");
+  await selected(page, "Result 2", "beta rows");
+  await choose(page, "Result 3", "Select Next Tab");
+  await selected(page, "Result 3", "third rows");
+  await choose(page, "Customer summary", "Select Next Tab");
   await selected(page, "Output");
   await expect(page.getByText("Seeded query output", { exact: true })).toBeVisible();
-  await choose(page, "Output", "Select Previous Tab");
-  await selected(page, "Result 3", "third rows");
-  await choose(page, "Output", "Select Next Tab");
+  await choose(page, "Customer summary", "Select Next Tab");
   await selected(page, "Customer summary", "alpha rows");
+  await choose(page, "Result 3", "Select Previous Tab");
+  await selected(page, "Output");
+  await choose(page, "Result 2", "Select Previous Tab");
+  await selected(page, "Result 3", "third rows");
 });
 
 test("rename owns deletion and Cmd+Enter without editing the previously focused query", async ({ workbench: page }) => {
