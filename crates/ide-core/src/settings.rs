@@ -288,7 +288,7 @@ pub enum NewTaskApprovals {
 }
 
 /// Agents › MCP Server: agents use the IDE's built-in tools.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct McpServerSettings {
     /// Serve the tools on 127.0.0.1 while the IDE runs.
@@ -296,6 +296,16 @@ pub struct McpServerSettings {
     /// Run the tools that change the project or start processes without asking first
     /// (IDEA's brave mode). Read from the IDE's own settings only, never a project's.
     pub run_without_confirmation: bool,
+    /// Finished agent tabs (`run_command`) the Run tool window shows; older ones are archived.
+    pub agent_tab_limit: u32,
+    /// Archived agent tabs kept; older ones are closed.
+    pub agent_archive_limit: u32,
+}
+
+impl Default for McpServerSettings {
+    fn default() -> Self {
+        Self { enabled: false, run_without_confirmation: false, agent_tab_limit: 10, agent_archive_limit: 999 }
+    }
 }
 
 /// Absent profiles retain automatic discovery for existing projects.

@@ -1,5 +1,7 @@
-//! Run configurations and builds; every call asks the user first.
+//! Run configurations, builds and agent commands; every start asks the user first.
 
+pub(crate) mod agent;
+mod agent_tools;
 mod build;
 mod configs;
 mod output;
@@ -11,7 +13,10 @@ use ide_core::IdeResult;
 use std::time::Duration;
 
 pub fn tools() -> Vec<Tool> {
-    vec![configs::get_run_configurations(), configs::execute_run_configuration(), build::build_project()]
+    let mut tools =
+        vec![configs::get_run_configurations(), configs::execute_run_configuration(), build::build_project()];
+    tools.extend(agent_tools::tools());
+    tools
 }
 
 /// The `timeout` argument: `default` when absent, at most `max` milliseconds. As in JetBrains

@@ -7854,5 +7854,14 @@
   "All Interpreters": "所有解释器",
   "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff.": "配置项目解释器及其软件包、IDE 已知的所有解释器，以及 Ruff。",
   "No credential store": "没有凭据存储",
-  "Values of agent and MCP server settings are kept in {path}, readable only by you.": "智能体和 MCP 服务器设置中的值保存在 {path} 中，仅你本人可读取。"
+  "Values of agent and MCP server settings are kept in {path}, readable only by you.": "智能体和 MCP 服务器设置中的值保存在 {path} 中，仅你本人可读取。",
+  "Run Agent Command": "运行智能体命令",
+  "Runs `{ name, command, cwd, env }` from the MCP server's `run_command` in the agent tab `name`; throws when it did not start.": "在智能体标签 `name` 中运行 MCP 服务器 `run_command` 传来的 `{ name, command, cwd, env }`；未能启动时抛出错误。",
+  "Archived agent tabs: {count}": "已归档的智能体标签：{count}",
+  "Archived agent tabs": "已归档的智能体标签",
+  "Close All Archived Tabs": "关闭所有已归档标签",
+  "Finished agent tabs to show": "显示的已结束智能体标签数",
+  "Commands agents run appear in the Run tool window as _agent_ tabs. Beyond this many finished ones, the oldest move to the archive at the end of the tab strip. Running commands are never archived.": "智能体运行的命令以 _agent_ 标签显示在运行工具窗口中。已结束的标签超过这个数量时，最旧的会移入标签栏末尾的归档。正在运行的命令永远不会被归档。",
+  "Archived agent tabs to keep": "保留的已归档智能体标签数",
+  "Beyond this many archived agent tabs, the oldest are closed.": "已归档的智能体标签超过这个数量时，最旧的会被关闭。"
 }

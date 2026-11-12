@@ -453,3 +453,131 @@ async fn brave_mode_runs_tools_without_asking_only_from_the_global_settings() {
     assert!(!format!("{result:?}").contains("denied"), "{result:?}");
     assert!(!h.events.lock().unwrap().iter().any(|e| matches!(e, IdeEvent::McpRequest { .. })), "nothing asked");
 }
+
+/// Answers `run_command`'s window requests the way the Run tool window does: starts the
+/// agent tab's configuration (shell from the default) and says whether it started. Returns
+/// the configurations it started, for reruns.
+#[cfg(unix)]
+fn run_tool_window(h: &Harness) -> Arc<std::sync::Mutex<Vec<ide_run::RunConfig>>> {
+    let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (host, events, out) = (h.host.clone(), h.events.clone(), started.clone());
+    tokio::spawn(async move {
+        let mut handled = std::collections::HashSet::new();
+        loop {
+            let request = events.lock().unwrap().iter().find_map(|e| match e {
+                IdeEvent::McpRequest {
+                    id,
+                    request: ide_core::event::McpUiRequest::AgentRun { name, command, cwd, env },
+                } if !handled.contains(id) => Some((*id, name.clone(), command.clone(), cwd.clone(), env.clone())),
+                _ => None,
+            });
+            let Some((id, name, command, cwd, env)) = request else {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                continue;
+            };
+            handled.insert(id);
+            let mut config = ide_run::RunConfig {
+                id: format!("mcp-agent:{name}"),
+                name: name.clone(),
+                kind: "shell".into(),
+                command,
+                args: Vec::new(),
+                cwd: Some(cwd),
+                env,
+                detected: false,
+                is_test: false,
+                debug_adapter: None,
+                allow_parallel: true,
+                extras: Default::default(),
+            };
+            config.extras.params.insert(ide_host::mcp::AGENT_PARAM.into(), name);
+            config.extras.emulate_terminal = true;
+            config.extras.target = Some(String::new());
+            out.lock().unwrap().push(config.clone());
+            let result = ide_host::ops::run::start(&host, "main", config, Arc::new(|_| {})).await;
+            let error = result.err().map(|e| e.message);
+            let _ = host.mcp_requests.answer("main", id, error.is_none(), error);
+        }
+    });
+    started
+}
+
+#[cfg(unix)]
+fn agent_process(h: &Harness, name: &str) -> ide_core::RunId {
+    let id = format!("mcp-agent:{name}");
+    h.host.processes.list().into_iter().filter(|r| r.config_id == id && r.running).map(|r| r.id).max().unwrap()
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_commands_run_in_named_tabs_and_report_what_the_user_did() {
+    let h = Harness::new();
+    h.trust().await;
+    h.host.mcp_requests.set_ready("main", true);
+    h.host
+        .global_settings
+        .set(ide_workspace::SettingsScope::Global, "mcpServer.runWithoutConfirmation", json!(true))
+        .unwrap();
+    let started = run_tool_window(&h);
+
+    // A command that finishes within the wait, in a tab named with the prefix.
+    let done = h.json("run_command", json!({"name": "check", "command": "echo hel''lo; exit 3"})).await;
+    assert_eq!(done["name"], "_agent_check", "{done}");
+    assert_eq!(done["state"], "failed", "{done}");
+    assert_eq!(done["exitCode"], 3);
+    assert_eq!(done["startedBy"], "agent");
+    assert!(done["output"].as_str().unwrap().contains("hello"), "{done}");
+    assert!(done.get("interventions").is_none());
+
+    // The finished name runs the next command; a running one is refused, never stopped.
+    let running =
+        h.json("run_command", json!({"name": "_agent_check", "command": "echo ready; sleep 30", "timeout": 0})).await;
+    assert_eq!(running["state"], "running", "{running}");
+    let matched = h.json("wait_for_run", json!({"name": "check", "pattern": "(?m)^ready", "timeout": 10000})).await;
+    assert_eq!(matched["waitEnded"], "matched", "{matched}");
+    let refused = h.error("run_command", json!({"name": "check", "command": "true"})).await;
+    assert!(refused.contains("still running `echo ready; sleep 30`"), "{refused}");
+    assert!(refused.contains("Last output:\nready"), "the refusal quotes the last output: {refused}");
+
+    // What the user types ends a wait at once, with advice for the agent.
+    let process = agent_process(&h, "_agent_check");
+    ide_host::ops::run::stdin(&h.host, process, "y\x7fyes\r").unwrap();
+    let typed = h.json("wait_for_run", json!({"name": "check", "timeout": 10000})).await;
+    assert_eq!(typed["waitEnded"], "userIntervened", "{typed}");
+    assert_eq!(typed["interventions"][0]["message"], "User input: yes");
+    assert!(typed["advice"].as_str().unwrap().contains("Do not stop the process"));
+    let input = h.json("send_run_input", json!({"name": "check", "text": "abc", "keys": ["Enter"]})).await;
+    assert!(input.get("interventions").is_none(), "the agent's own input is no intervention: {input}");
+
+    let stopped = h.json("stop_run", json!({"name": "check", "force": true, "timeout": 10000})).await;
+    assert_eq!(stopped["state"], "stoppedByAgent", "{stopped}");
+    assert!(stopped.get("interventions").is_none());
+
+    // The user's Stop, rerun and closing the tab are reported with their time.
+    h.json("run_command", json!({"name": "server", "command": "sleep 30", "timeout": 0})).await;
+    ide_host::ops::run::stop(&h.host, "main", agent_process(&h, "_agent_server")).unwrap();
+    let stop = h.json("wait_for_run", json!({"name": "server", "timeout": 10000})).await;
+    assert!(stop["interventions"][0]["message"].as_str().unwrap().starts_with("The user stopped this command at"));
+    let ended = h.json("wait_for_run", json!({"name": "server", "timeout": 10000})).await;
+    assert_eq!(ended["state"], "stoppedByUser", "{ended}");
+
+    let config = started.lock().unwrap().last().cloned().unwrap();
+    ide_host::ops::run::start(&h.host, "main", config, Arc::new(|_| {})).await.unwrap();
+    let status = h.json("get_run_status", json!({"name": "server"})).await;
+    assert_eq!(status["startedBy"], "user", "{status}");
+    assert!(status["interventions"][0]["message"].as_str().unwrap().starts_with("The user reran this command at"));
+    h.json("stop_run", json!({"name": "server", "force": true, "timeout": 10000})).await;
+    h.host.mcp_agent_runs.closed(&h.root, "_agent_server");
+    let closed = h.json("get_run_status", json!({"name": "server"})).await;
+    assert!(closed["tabClosedAt"].is_string(), "{closed}");
+    assert!(closed["interventions"][0]["message"].as_str().unwrap().starts_with("The user closed this tab at"));
+
+    let log = h.json("read_run_output", json!({"name": "check", "lines": 20})).await;
+    assert!(log["output"].as_str().unwrap().contains("abc"), "{log}");
+    let from_start = h.json("read_run_output", json!({"name": "check", "offset": 0})).await;
+    assert!(from_start["output"].as_str().unwrap().contains("hello"), "one log across the tab's commands");
+    let runs = h.json("list_runs", json!({})).await;
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 2, "{runs}");
+    let missing = h.error("get_run_status", json!({"name": "nothing"})).await;
+    assert!(missing.contains("no agent tab named `_agent_nothing`"), "{missing}");
+}

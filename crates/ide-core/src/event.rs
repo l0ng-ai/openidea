@@ -8,13 +8,18 @@
 use crate::{DebugSessionId, Diagnostic, DocId, RunId, ServerId, TaskId, TerminalId, TextChange};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// What a built-in MCP tool asks the project window for. `AgentRun` runs `command` (a shell
+/// line) in the Run tool window's agent tab `name` on a pseudo-terminal, answered once the
+/// process started or failed to.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum McpUiRequest {
     Confirm { client: String, tool: String, subject: String, project: String, detail: Option<String> },
     OpenFile { path: crate::IpcPath, line: Option<u32>, column: Option<u32> },
+    AgentRun { name: String, command: String, cwd: crate::IpcPath, env: BTreeMap<String, String> },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
