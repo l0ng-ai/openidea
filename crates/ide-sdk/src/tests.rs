@@ -2260,7 +2260,7 @@ fn file_runtime_uses_nearest_virtualenv_and_explicit_project_settings_win() {
     let outer = fake_venv(root, ".venv");
     let inner = fake_venv(&root.join("apps/api"), ".venv");
     let near = root.join("apps/api/src/package");
-    let mut settings = Settings::default();
+    let settings = Settings::default();
     assert_eq!(crate::apply::python_interpreter_near(root, Some(&near), &settings), Some(inner));
     assert_eq!(crate::apply::python_interpreter_near(root, Some(&root.join("apps/other")), &settings), Some(outer));
     let mut settings = Settings::default();
