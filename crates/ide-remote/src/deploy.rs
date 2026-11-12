@@ -10,6 +10,9 @@ use specta::Type;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// Remote folders listed (or files checked) at the same time.
+pub(crate) const LIST_CONCURRENCY: usize = 16;
+
 /// Mapping eligibility uses a common synthetic server root: mapping and exclusion
 /// paths are both relative to that root, so checking never opens a connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -199,20 +202,35 @@ impl Deployment<'_> {
     }
 
     /// Remote files under `dir` (recursively), excluded ones left out.
+    /// Files under `dir`, by path. Lists [`LIST_CONCURRENCY`] folders at a time: one round trip
+    /// per folder after another made large trees take minutes.
     async fn remote_files(&self, dir: &str, out: &mut Vec<ide_ssh::RemoteEntry>) -> IdeResult<()> {
-        for e in self.fs.list(dir).await? {
+        use futures::stream::{FuturesUnordered, StreamExt};
+        let start = out.len();
+        let mut pending = vec![dir.to_owned()];
+        let mut listing = FuturesUnordered::new();
+        loop {
+            while listing.len() < LIST_CONCURRENCY
+                && let Some(dir) = pending.pop()
+            {
+                listing.push(async move { self.fs.list(&dir).await });
+            }
+            let Some(entries) = listing.next().await else { break };
             if self.cancel.is_cancelled() {
                 return Err(IdeError::cancelled());
             }
-            if self.exclude.remote(&e.path) {
-                continue;
-            }
-            if e.is_dir && !e.is_symlink {
-                Box::pin(self.remote_files(&e.path, out)).await?;
-            } else if !e.is_dir {
-                out.push(e);
+            for e in entries? {
+                if self.exclude.remote(&e.path) {
+                    continue;
+                }
+                if e.is_dir && !e.is_symlink {
+                    pending.push(e.path);
+                } else if !e.is_dir {
+                    out.push(e);
+                }
             }
         }
+        out[start..].sort_by(|a, b| a.path.cmp(&b.path));
         Ok(())
     }
 

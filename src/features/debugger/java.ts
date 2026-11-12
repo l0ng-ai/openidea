@@ -139,6 +139,9 @@ export async function javaLaunchConfig(
   const classPaths = parsed.explicitClasspath
     ? parsed.explicitClasspath.split(info.pathListSeparator)
     : info.classPaths;
+  // java-debug starts the JVM itself, bypassing the Run process that echoes its
+  // command line. Echo the equivalent launch here so Debug and Run stay comparable.
+  preparation?.report?.(`${joinJavaArgs([resolved.command, ...resolved.args])}\n`);
   if (kotlin) {
     return {
       name: rc.name,

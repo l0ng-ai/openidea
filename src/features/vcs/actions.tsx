@@ -44,7 +44,7 @@ import { gotoChange, rollbackSelectedLines } from "./gutter";
 import { openLocalHistory } from "./localHistoryKind";
 import { showSelectionHistory } from "./selectionHistoryKind";
 import { openLogTab, revealCommit, selectGitTab, useGitLog } from "./logStore";
-import { isModalCommit, openCommit, pushAfterCommit } from "./commitUi";
+import { commitFromContext, isModalCommit, pushAfterCommit } from "./commitUi";
 import { allRepos, runRemote } from "./ops";
 import { showPushDialog, showUpdateDialog, type PushTarget, type UpdateTarget } from "./remoteUi";
 import { comparePathsWithRevision, showDirectoryWorkingDiff } from "./comparePaths";
@@ -212,7 +212,7 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "commit",
       when: VCS,
-      run: openCommit,
+      run: commitFromContext,
     },
     {
       id: "vcs.commitAndPush",
@@ -223,7 +223,7 @@ export function registerVcsActions(): () => void {
       run: async () => {
         const { message, amend } = useCommit.getState();
         // Nothing to commit with yet (or the modal interface): IDEA shows where the message is typed.
-        if (isModalCommit() || (!message.trim() && !amend)) return openCommit();
+        if (isModalCommit() || (!message.trim() && !amend)) return commitFromContext();
         const id = await commitChanges();
         if (id !== undefined) await pushAfterCommit();
       },

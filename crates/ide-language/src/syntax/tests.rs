@@ -887,6 +887,17 @@ fn outline_more_languages() {
         ",
     );
     check_outline(
+        "prisma",
+        "datasource db {\n  provider = \"sqlite\"\n}\nmodel User {\n  id Int @id\n  @@map(\"users\")\n}\nenum Role {\n  ADMIN\n}\n",
+        "
+        Module db
+        Class User
+          Field id
+        Enum Role
+          EnumMember ADMIN
+        ",
+    );
+    check_outline(
         "nix",
         "{ pkgs, ... }:\nlet\n  foo = 1;\n  bar = x: x;\nin { inherit foo; }\n",
         "

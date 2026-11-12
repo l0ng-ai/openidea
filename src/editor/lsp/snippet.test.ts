@@ -23,7 +23,7 @@ describe("lspSnippetToCm", () => {
   });
 
   it("handles LSP escapes", () => {
-    expect(lspSnippetToCm("cost \\$5 \\} \\\\")).toBe("cost $5 \\} \\");
+    expect(lspSnippetToCm("cost \\$5 \\} \\\\")).toBe("cost $5 \\} \\" + "${0}");
     expect(expand(lspSnippetToCm("a \\${1}")).text).toBe("a ${1}");
   });
 
@@ -37,8 +37,8 @@ describe("lspSnippetToCm", () => {
 
   it("resolves variables, defaults and unknown names", () => {
     const vars = snippetVariables("/p/src/Main.kt");
-    expect(lspSnippetToCm("class $TM_FILENAME_BASE", vars)).toBe("class Main");
-    expect(lspSnippetToCm("${NOPE:dflt}", vars)).toBe("dflt");
+    expect(lspSnippetToCm("class $TM_FILENAME_BASE", vars)).toBe("class Main${0}");
+    expect(lspSnippetToCm("${NOPE:dflt}", vars)).toBe("dflt${0}");
     expect(lspSnippetToCm("$NOPE", vars)).toBe("${NOPE}");
   });
 
@@ -51,13 +51,38 @@ describe("lspSnippetToCm", () => {
   });
 
   it("treats a lone dollar as text", () => {
-    expect(lspSnippetToCm("$ x $")).toBe("$ x $");
+    expect(lspSnippetToCm("$ x $")).toBe("$ x $${0}");
   });
 
   it("selects the first field when instantiated", () => {
     const { text, sel } = expand(lspSnippetToCm("call(${1:arg}, $2)$0"));
     expect(text).toBe("call(arg, )");
     expect([sel.from, sel.to]).toEqual([5, 8]);
+  });
+
+  it.each([
+    ["val", {}, "val"],
+    ["$TM_FILENAME_BASE", { TM_FILENAME_BASE: "Main" }, "Main"],
+    ["${MISSING:val}", {}, "val"],
+    ["\\${1}", {}, "${1}"],
+    ["cost \\$5", {}, "cost $5"],
+    ["first\n\tlast", {}, "first\n  last"],
+    ["/* 😀 */ val", {}, "/* 😀 */ val"],
+  ])("places the caret at the end of a fieldless snippet (%s)", (source, vars, expected) => {
+    const { text, sel } = expand(lspSnippetToCm(source, vars));
+    expect(text).toBe(expected);
+    expect([sel.from, sel.to]).toEqual([expected.length, expected.length]);
+  });
+
+  it.each([
+    ["before$0after", "beforeafter", 6, 6],
+    ["${1:arg}after", "argafter", 0, 3],
+    ["${1|val,other|}after", "valafter", 0, 3],
+    ["$UNKNOWN after", "UNKNOWN after", 0, 7],
+  ])("preserves the selected field in %s", (source, expected, from, to) => {
+    const { text, sel } = expand(lspSnippetToCm(source));
+    expect(text).toBe(expected);
+    expect([sel.from, sel.to]).toEqual([from, to]);
   });
 
   it("produces plain text previews", () => {

@@ -1,7 +1,8 @@
 import { StreamLanguage, type StreamParser } from "@codemirror/language";
 import { logWarning } from "./highlight";
 
-const LEVELS =
+/** Level vocabulary, shared with the console line colouring (`ui/logColors`). */
+export const LEVELS =
   "FATAL|CRITICAL|SEVERE|EMERG|ALERT|ERROR|ERR|WARNING|WARN|NOTICE|INFO|DEBUG|TRACE|VERBOSE|FINEST|FINER|FINE";
 // Upper case anywhere; any case only where a level is unmistakable: `[warn]`, `<Info>`, `level=error`.
 const LEVEL_UPPER = new RegExp(`^(?:${LEVELS})\\b`);
