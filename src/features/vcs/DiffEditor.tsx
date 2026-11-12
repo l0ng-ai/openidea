@@ -1138,7 +1138,7 @@ export function DiffEditor({
   const eolOnly = ready && !binary && rawA !== rawB && sameText;
   const eolDiffers = ready && !binary && (badgeA !== badgeB || eolOnly);
   const identical = ready && chunkInfo.count === 0 && rawA === rawB;
-  // Equal texts with different git modes: the change git records (chmod), like IDEA's diff header.
+  // Equal texts with different git modes: the change git records (chmod).
   const modeChange =
     identical && modes !== null && modes.a !== null && modes.b !== null && modes.a !== modes.b
       ? { from: modes.a, to: modes.b }
