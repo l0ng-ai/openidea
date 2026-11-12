@@ -125,6 +125,8 @@ fn gix_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
                             ChangeKind::Conflicted
                         }
                         EntryStatus::Change(WtChange::Removed) => ChangeKind::Deleted,
+                        // `content_change` is `None` when only the executable bit changed:
+                        // still a modification `git status` lists and `git commit` records.
                         EntryStatus::Change(_) => ChangeKind::Modified,
                         EntryStatus::IntentToAdd => ChangeKind::Added,
                         EntryStatus::NeedsUpdate(_) => continue,
@@ -400,6 +402,40 @@ mod tests {
         assert_eq!(from_git, show(gix_status(&repo, &ignored).unwrap()));
         assert!(from_git.0.iter().any(|l| l.starts_with("renamed with space.txt: Some(Renamed)")), "{from_git:?}");
         assert_eq!(from_git.1, ["conflict.txt"]);
+    }
+
+    /// A chmod-only change is a modification `git status` lists and `git commit`
+    /// records, so status keeps it (#2853): hidden, the Commit view could not show
+    /// or commit what a push would carry. `core.fileMode=false` reports nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_mode_only_change_is_reported_only_when_git_tracks_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        for file_mode in ["true", "false"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path();
+            git(dir, &["init", "-q"]);
+            git(dir, &["config", "user.name", "Test User"]);
+            git(dir, &["config", "user.email", "test@example.com"]);
+            git(dir, &["config", "commit.gpgsign", "false"]);
+            git(dir, &["config", "core.fileMode", file_mode]);
+            std::fs::write(dir.join("script.sh"), "#!/bin/sh\n").unwrap();
+            commit_all(dir, "base");
+            std::fs::set_permissions(dir.join("script.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            let repo = Repo::discover(dir).unwrap().expect("repository found");
+            let status = repo.status().unwrap();
+            let entry = status.iter().find(|f| f.rel_path == "script.sh");
+            if file_mode == "true" {
+                assert_eq!(
+                    entry.and_then(|f| f.unstaged),
+                    Some(ChangeKind::Modified),
+                    "a mode-only change is modified"
+                );
+            } else {
+                assert!(entry.is_none(), "core.fileMode=false hides mode changes");
+            }
+        }
     }
 
     /// git answers status when gitoxide can't read a directory; in Restricted Mode that run

@@ -270,6 +270,22 @@ export async function loadSide(path: string, side: DiffSide): Promise<string> {
   }
 }
 
+/**
+ * The file's git mode on `side` (`100644`, `100755`, `120000`…), `null` when the
+ * side has no repository mode — non-git sides and absent files. When the texts
+ * compare equal but the modes differ, the diff reports a mode-only change.
+ */
+export async function loadSideMode(path: string, side: DiffSide): Promise<string | null> {
+  switch (side.type) {
+    case "rev":
+      return call(commands.vcsFileMode(side.path ?? path, side.rev)).catch(() => null);
+    case "worktree":
+      return call(commands.vcsFileMode(path, "WT")).catch(() => null);
+    default:
+      return null;
+  }
+}
+
 export const isWorktree = (s: DiffSide) => s.type === "worktree";
 /** Path of a side backed by a file on disk (editable in the diff), else null. */
 export const sideFile = (s: DiffSide, path: string): string | null =>
