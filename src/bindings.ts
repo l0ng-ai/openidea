@@ -1880,7 +1880,12 @@ endedMs: number | null;
 /**  Whether it can be stopped on its own. */
 cancellable: boolean } | 
 /**  A message between sessions in a subagent's conversation: its task (`incoming`) or its report. */
-{ type: "message"; incoming: boolean; text: string } | { type: "permission"; id: number; title: string; options: AgentPermissionOption[]; 
+{ type: "message"; incoming: boolean; text: string } | { type: "permission"; id: number; title: string; 
+/**
+ *  The shell command the request asks to run, from its structured input; `None` for
+ *  any other request, whatever its title says.
+ */
+command?: string | null; options: AgentPermissionOption[]; 
 /**
  *  Set when the request asks `AskUserQuestion`'s questions; answered with a JSON object
  *  of question to answer instead of an option.

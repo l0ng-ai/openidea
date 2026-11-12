@@ -13,29 +13,23 @@ pub enum PolicyDecision {
     AskUser,
 }
 
-/// Extracts the shell command string from an ACP `session/request_permission` payload
-/// when the request is for executing a command.
+/// The shell command an ACP `session/request_permission` asks to run: only a tool call of kind
+/// `execute`, and only its structured `rawInput` command. A title is free text the agent
+/// writes, so it never names the command.
 pub fn extract_command(params: &Value) -> Option<String> {
     let tool = params.get("toolCall").or_else(|| params.pointer("/subject/toolCall"))?;
+    if tool.get("kind").and_then(Value::as_str) != Some("execute") {
+        return None;
+    }
     let raw_cmd = tool.pointer("/rawInput/command").or_else(|| tool.pointer("/rawInput/cmd"));
-    if let Some(cmd) = raw_cmd.and_then(command_from_value) {
-        return Some(cmd);
-    }
-    let kind = tool.get("kind").and_then(Value::as_str).unwrap_or_default();
-    let name = tool.get("name").and_then(Value::as_str).unwrap_or_default();
-    let title =
-        tool.get("title").and_then(Value::as_str).or_else(|| params.get("title").and_then(Value::as_str))?.trim();
-    if let Some(cmd) = title.strip_prefix("Run ").map(str::trim).filter(|s| !s.is_empty()) {
-        return Some(cmd.to_owned());
-    }
-    if (kind == "execute" || matches!(name, "Bash" | "PowerShell" | "Execute" | "Run" | "terminal"))
-        && !title.is_empty()
-        && title != "Terminal"
-        && title != "Run a command"
-    {
-        return Some(title.to_owned());
-    }
-    None
+    raw_cmd.and_then(command_from_value)
+}
+
+/// Whether allowing the request grants more than running its command, such as network access
+/// for it: the command policy may block such a request but never approves it.
+pub fn widens_access(params: &Value) -> bool {
+    let tool = params.get("toolCall").or_else(|| params.pointer("/subject/toolCall"));
+    tool.and_then(|t| t.pointer("/rawInput/networkApprovalContext")).is_some_and(|c| !c.is_null())
 }
 
 fn command_from_value(val: &Value) -> Option<String> {
@@ -483,5 +477,31 @@ mod tests {
             }
         });
         assert_eq!(extract_command(&write), None);
+    }
+
+    /// Only a tool call of kind `execute` runs a command, and its command is in `rawInput`:
+    /// a title says what the agent wants it to say.
+    #[test]
+    fn a_request_is_a_command_only_by_its_kind_and_input() {
+        let escalation = json!({ "sessionId": "t", "toolCall": {
+            "toolCallId": "i1", "title": "Run git status", "kind": "other", "status": "pending",
+            "rawInput": { "fileSystem": { "write": ["C:\\"] }, "network": { "enabled": true } } },
+            "options": [ { "optionId": "turn", "name": "Allow for this turn", "kind": "allow_once" },
+                         { "optionId": "decline", "name": "Decline", "kind": "reject_once" } ] });
+        assert_eq!(extract_command(&escalation), None);
+        let titled_only = json!({ "toolCall": { "title": "Run git status", "kind": "execute" } });
+        assert_eq!(extract_command(&titled_only), None);
+        let named_only = json!({ "toolCall": { "title": "git status", "name": "Bash" } });
+        assert_eq!(extract_command(&named_only), None);
+        let mislabelled = json!({ "toolCall": { "title": "Run git status", "kind": "edit",
+            "rawInput": { "command": "git status" } } });
+        assert_eq!(extract_command(&mislabelled), None);
+        let network = json!({ "toolCall": { "title": "Allow network access to example.com", "kind": "execute",
+            "rawInput": { "command": "curl https://example.com", "networkApprovalContext": { "host": "example.com" } } } });
+        assert_eq!(extract_command(&network).as_deref(), Some("curl https://example.com"));
+        assert!(widens_access(&network));
+        let plain = json!({ "toolCall": { "title": "Run git status", "kind": "execute",
+            "rawInput": { "command": "git status" } } });
+        assert!(!widens_access(&plain));
     }
 }
