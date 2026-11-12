@@ -19,12 +19,6 @@ export const codeLensPositions = Facet.define<
   Readonly<Record<string, "top" | "right">>
 >({ combine: (v) => Object.assign({}, ...v) });
 
-/**
- * Where the line-end hint publishes its measured width, so the widgets that follow it on the same
- * line (inline blame) step past the out-of-flow hint instead of stacking under it.
- */
-export const LENS_INLINE_WIDTH_VAR = "--openidea-lens-inline-width";
-
 /** Groups lenses by line start, ordered by line then `order`. Exported for tests. */
 export function groupLenses(
   state: EditorState,
@@ -122,7 +116,6 @@ class LensWidget extends WidgetType {
       dom.appendChild(host);
     }
     this.fill(host, view);
-    if (this.inline) this.publishWidth(dom);
     return dom;
   }
 
@@ -130,22 +123,7 @@ class LensWidget extends WidgetType {
     const host = this.inline ? (dom.firstElementChild as HTMLElement | null) : dom;
     if (!host) return false;
     this.fill(host, view);
-    if (this.inline) this.publishWidth(dom);
     return true;
-  }
-
-  override destroy(dom: HTMLElement): void {
-    (dom.closest(".cm-line") as HTMLElement | null)?.style.removeProperty(LENS_INLINE_WIDTH_VAR);
-  }
-
-  /** Publishes the hint's width on its line so later line-end widgets (inline blame) step past it. */
-  private publishWidth(dom: HTMLElement) {
-    requestAnimationFrame(() => {
-      const inner = dom.firstElementChild as HTMLElement | null;
-      const line = dom.closest(".cm-line") as HTMLElement | null;
-      if (!inner || !line || !dom.isConnected) return;
-      line.style.setProperty(LENS_INLINE_WIDTH_VAR, `${Math.round(inner.getBoundingClientRect().width)}px`);
-    });
   }
 
   private fill(dom: HTMLElement, view: EditorView) {
@@ -269,6 +247,10 @@ const lensTheme = EditorView.theme({
     alignItems: "center",
     gap: "12px",
     whiteSpace: "nowrap",
+    // Pinned to the line, the hint may run past the editor's edge (IDEA clips it there); cap it so a
+    // long one cannot stretch across the whole window first.
+    maxWidth: "min(60ch, 50vw)",
+    overflow: "hidden",
     pointerEvents: "auto",
   },
   ".cm-openidea-lensItem": {
