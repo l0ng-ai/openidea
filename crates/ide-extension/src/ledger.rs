@@ -467,7 +467,10 @@ fn is_executable(p: &Path) -> bool {
         meta.permissions().mode() & 0o111 != 0
     }
     #[cfg(not(unix))]
-    true
+    {
+        let _ = &meta;
+        true
+    }
 }
 
 /// blake3 of a file, hex.
