@@ -645,7 +645,7 @@ impl RemotePlugins {
         d.add("plugin_set_active_file", move |c| {
             let h = h.clone();
             async move {
-                alive(&h)?.set_active_file(&c.window, c.arg("path")?, None);
+                alive(&h)?.set_active_file(&c.window, c.arg("path")?, c.arg("editor")?);
                 Ok(())
             }
         });
