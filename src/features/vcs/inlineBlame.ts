@@ -10,6 +10,7 @@ import {
 } from "@codemirror/view";
 import type { BlameLine } from "@/bindings";
 import { HEAVY_LIMIT, onEditorEvent, type EditorDocContext } from "@/editor/api";
+import { LENS_INLINE_WIDTH_VAR } from "@/editor/core/cm/codeLens";
 import { executeAction } from "@/platform/actions";
 import { tx, useI18n } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
@@ -260,7 +261,8 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
     EditorView.baseTheme({
       ".cm-vcs-inline-blame": {
         color: "var(--fg-inlay)",
-        marginLeft: "3ch",
+        // Steps past a code-vision hint drawn at the line end (it is out of flow, see codeLens.ts).
+        marginLeft: `calc(3ch + var(${LENS_INLINE_WIDTH_VAR}, 0px))`,
         display: "inline-block",
         maxWidth: "min(60ch, 50vw)",
         overflow: "hidden",

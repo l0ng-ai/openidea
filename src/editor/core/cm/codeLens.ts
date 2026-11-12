@@ -19,6 +19,12 @@ export const codeLensPositions = Facet.define<
   Readonly<Record<string, "top" | "right">>
 >({ combine: (v) => Object.assign({}, ...v) });
 
+/**
+ * Where the line-end hint publishes its measured width, so the widgets that follow it on the same
+ * line (inline blame) step past the out-of-flow hint instead of stacking under it.
+ */
+export const LENS_INLINE_WIDTH_VAR = "--openidea-lens-inline-width";
+
 /** Groups lenses by line start, ordered by line then `order`. Exported for tests. */
 export function groupLenses(
   state: EditorState,
@@ -108,13 +114,38 @@ class LensWidget extends WidgetType {
     // The inline one shares no class with the row, so none of the row's block styles reach into the line.
     const dom = document.createElement(this.inline ? "span" : "div");
     dom.className = this.inline ? "cm-openidea-lensInline" : "cm-openidea-lens";
-    this.fill(dom, view);
+    // The line-end hint draws from a zero-width anchor in an absolutely positioned inner box: an
+    // in-flow box would wrap to the next line when the line is soft-wrapped and there is no room.
+    const host = this.inline ? document.createElement("span") : dom;
+    if (this.inline) {
+      host.className = "cm-openidea-lensInlineInner";
+      dom.appendChild(host);
+    }
+    this.fill(host, view);
+    if (this.inline) this.publishWidth(dom);
     return dom;
   }
 
   override updateDOM(dom: HTMLElement, view: EditorView): boolean {
-    this.fill(dom, view);
+    const host = this.inline ? (dom.firstElementChild as HTMLElement | null) : dom;
+    if (!host) return false;
+    this.fill(host, view);
+    if (this.inline) this.publishWidth(dom);
     return true;
+  }
+
+  override destroy(dom: HTMLElement): void {
+    (dom.closest(".cm-line") as HTMLElement | null)?.style.removeProperty(LENS_INLINE_WIDTH_VAR);
+  }
+
+  /** Publishes the hint's width on its line so later line-end widgets (inline blame) step past it. */
+  private publishWidth(dom: HTMLElement) {
+    requestAnimationFrame(() => {
+      const inner = dom.firstElementChild as HTMLElement | null;
+      const line = dom.closest(".cm-line") as HTMLElement | null;
+      if (!inner || !line || !dom.isConnected) return;
+      line.style.setProperty(LENS_INLINE_WIDTH_VAR, `${Math.round(inner.getBoundingClientRect().width)}px`);
+    });
   }
 
   private fill(dom: HTMLElement, view: EditorView) {
@@ -217,22 +248,29 @@ const lensTheme = EditorView.theme({
     whiteSpace: "nowrap",
     overflow: "hidden",
   },
-  // "right": after the line's text, on its baseline, with IDEA's spacing. The
-  // anchor stays in the line's flow, so later line-end widgets (inline blame,
-  // spell-error hints) chain after it instead of stacking under it, the way
-  // IDEA lays its line-end inlays out. `.cm-line` is `white-space: pre`, so
-  // the box offers no soft-wrap opportunity and can never drop to the next
-  // line; `line-height` keeps its box within the text line's ascent so it
-  // never stretches the line either.
+  // "right": a zero-width anchor at the end of the line, with the hint drawn from an absolutely
+  // positioned inner box, the way IDEA paints line-end inlays. Nothing here takes part in the
+  // line's flow: the hint can neither wrap to the next line (a soft-wrapped line has no room for
+  // it) nor stretch the line's height, and it overflows past the editor edge instead.
   ".cm-openidea-lensInline": {
     display: "inline-block",
-    whiteSpace: "nowrap",
+    width: "0",
+    position: "relative",
     lineHeight: "1",
     color: "var(--fg-inlay, var(--fg-muted))",
     WebkitUserSelect: "none",
     userSelect: "none",
   },
-  ".cm-openidea-lensInline > .cm-openidea-lensItem": { marginLeft: "12px" },
+  ".cm-openidea-lensInlineInner": {
+    position: "absolute",
+    left: "12px",
+    bottom: "-2px",
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    whiteSpace: "nowrap",
+    pointerEvents: "auto",
+  },
   ".cm-openidea-lensItem": {
     display: "inline-flex",
     alignItems: "center",
