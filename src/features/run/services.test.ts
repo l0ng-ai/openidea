@@ -195,6 +195,27 @@ describe("run configurations in Services", () => {
     expect(configs).toEqual([first, second, fresh]);
   });
 
+  it("groups configurations by their folders first, as Run/Debug Configurations does", () => {
+    const kind = "spring-boot";
+    const gateway = { ...config("gateway", kind), folder: "Infra" };
+    const auth = { ...config("auth", kind), folder: "Infra" };
+    const orders = { ...config("orders", kind), folder: "Business" };
+    const loose = config("loose", kind);
+    const sessions = [session("s1", auth, "running", 1)];
+    const [group] = runServiceItems([loose, gateway, orders, auth], sessions, [kind], {
+      [kind]: [auth.id, gateway.id],
+    });
+    expect(group!.children!.map((c) => c.key)).toEqual([
+      "run:folder:spring-boot:Infra",
+      "run:folder:spring-boot:Business",
+      "run:config:loose",
+    ]);
+    expect(group!.children![0]).toMatchObject({ label: "Infra", icon: "folder", detail: "1 running" });
+    expect(group!.children![0]!.children!.map((c) => c.key)).toEqual(["run:config:auth", "run:config:gateway"]);
+    expect(group!.children![1]!.children!.map((c) => c.key)).toEqual(["run:config:orders"]);
+    expect(group!.detail).toBe("1 running");
+  });
+
   it("keeps stable service identity and session details after refresh and rename", () => {
     const renamed = { ...build, name: "Renamed build" };
     const items = runServiceItems(
