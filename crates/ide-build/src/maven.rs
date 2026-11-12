@@ -2352,6 +2352,50 @@ mod tests {
         assert!(b.join("mod/pom.xml").is_file());
     }
 
+    /// The launcher recorded on an external project is that project's wrapper, and
+    /// running it uses the external directory as the working directory.
+    #[cfg(unix)]
+    #[test]
+    fn external_project_wrapper_runs_in_its_own_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(b.join("src/main/java")).unwrap();
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::write(a.join("pom.xml"), "<project><artifactId>a</artifactId></project>").unwrap();
+        std::fs::write(
+            b.join("pom.xml"),
+            "<project><artifactId>b</artifactId><build><sourceDirectory>src/main/java</sourceDirectory></build></project>",
+        )
+        .unwrap();
+        std::fs::write(b.join("src/main/java/B.java"), "class B {}").unwrap();
+        let script = b.join("mvnw");
+        std::fs::write(&script, "#!/bin/sh\npwd > \"$1\"\nprintf 'BUILD SUCCESS\\n'\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let model = load_with_linked(&a, None, &[], &["../B/pom.xml".into()]);
+        let project = model.projects.iter().find(|p| p.artifact_id == "b").unwrap();
+        let cwd = a.join(&project.dir);
+        assert_eq!(dunce::canonicalize(&cwd).unwrap(), b);
+        let marker = tmp.path().join("cwd");
+        let out = crate::process::run(
+            &project.command,
+            &[marker.to_string_lossy().into_owned()],
+            &cwd,
+            &std::collections::BTreeMap::new(),
+            &ide_core::CancellationToken::new(),
+            |_, _| {},
+        )
+        .unwrap();
+        assert!(out.success, "{}", out.text);
+        let recorded = dunce::canonicalize(std::fs::read_to_string(&marker).unwrap().trim()).unwrap();
+        assert_eq!(recorded, b);
+    }
+
     #[test]
     fn chosen_profiles_bring_their_modules_and_dependencies() {
         let tmp = tempfile::tempdir().unwrap();

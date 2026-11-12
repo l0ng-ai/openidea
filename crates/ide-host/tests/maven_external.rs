@@ -49,6 +49,7 @@ async fn external_maven_link_persists_reloads_and_unlink_keeps_files() {
     assert_eq!(b.pom, canonical);
     assert_eq!(dunce::canonicalize(root.join(&b.dir)).unwrap(), sibling);
     assert_eq!(host.project("main").unwrap().content_roots(), vec![sibling.clone()]);
+    assert_eq!(host.project("main").unwrap().lsp.jdtls_import_roots(), vec![sibling.clone()]);
 
     let reloaded = ops::build::build_model(&host, "main").await.unwrap();
     assert_eq!(
@@ -62,6 +63,7 @@ async fn external_maven_link_persists_reloads_and_unlink_keeps_files() {
     let gone = ops::build::build_model(&host, "main").await.unwrap();
     assert!(gone.maven.unwrap().projects.iter().all(|p| p.artifact_id != "b"));
     assert!(host.project("main").unwrap().content_roots().is_empty());
+    assert!(host.project("main").unwrap().lsp.jdtls_import_roots().is_empty());
     assert_eq!(saved(), Vec::<String>::new());
     assert_eq!(std::fs::read_to_string(root.join("pom.xml")).unwrap(), a_pom);
     assert_eq!(std::fs::read_to_string(sibling.join("pom.xml")).unwrap(), b_pom);

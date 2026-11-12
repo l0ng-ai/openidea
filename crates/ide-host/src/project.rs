@@ -142,6 +142,10 @@ impl Host {
         crate::plugins::injections::configure_lsp(&lsp);
         lsp.set_execution_allowed(trusted.load(Ordering::Acquire));
         lsp.set_content_roots(extra_roots.clone());
+        lsp.set_jdtls_import_roots(ide_build::maven_external_roots(
+            &root,
+            &settings.effective().languages.java.maven.linked_projects,
+        ));
         let settings = Arc::new(settings);
         {
             let settings = settings.clone();
@@ -1120,6 +1124,10 @@ impl Project {
         }
         let (roots, excludes) = (self.content_roots(), self.exclude_globs());
         self.lsp.set_content_roots(roots.clone());
+        self.lsp.set_jdtls_import_roots(ide_build::maven_external_roots(
+            &self.root,
+            &self.settings.effective().languages.java.maven.linked_projects,
+        ));
         self.index.set_scope(index_roots(&self.root, roots.clone()), excludes.clone());
         self.watcher.set_excludes(&excludes);
         let mut watchers = self.content_watchers.lock();
@@ -1786,6 +1794,8 @@ mod maven_linkage_tests {
         let mut settings = ide_core::settings::Settings::default();
         settings.languages.java.maven.linked_projects = vec!["../B/pom.xml".into()];
         assert_eq!(super::content_roots(&settings, &a, &base.join("cache")), vec![b]);
+        // External links must not replace jdtls's scan of the opened root with a build-file list.
+        assert_eq!(super::jdtls_maven_import(&a, &settings), (Vec::new(), None));
         settings.languages.java.maven.linked_projects.clear();
         assert!(super::content_roots(&settings, &a, &base.join("cache")).is_empty());
     }
