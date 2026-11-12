@@ -84,6 +84,10 @@ registerAction({
 
 用 `executeAction(id, arg?)` 执行 action。`registerAction` 返回 disposer。
 
+### 右键菜单的所属元素
+
+`showContextMenu(at, items, { owner })` 可以将菜单关联到目标元素，而不选中该元素。菜单打开期间，`ContextMenuHost` 为目标添加 `data-context-menu-open` 标记，并在关闭、替换或卸载菜单时移除。共享 Tabs 样式通过该标记保留目标的悬停外观，不覆盖已选中或带颜色标签页的样式。该行为需要显式启用；数据库结果标签页会为鼠标和键盘菜单操作提供所属元素。
+
 ## Keymap 与键盘分发
 
 默认快捷键写在 `src/platform/keymaps/` 里，而不是写在 action 上。keymap 是 action id 到绑定的映射：

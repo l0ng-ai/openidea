@@ -661,7 +661,9 @@ export function ResultsView() {
   const tabMenu = (id: string, e: MouseEvent) => {
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
-    showContextMenu(e.clientX || e.clientY ? e : { x: rect.left, y: rect.bottom }, resultTabMenu(Number(id)));
+    showContextMenu(e.clientX || e.clientY ? e : { x: rect.left, y: rect.bottom }, resultTabMenu(Number(id)), {
+      owner: e.currentTarget,
+    });
   };
   if (!results.length && !hasOutput)
     return (
@@ -686,6 +688,7 @@ export function ResultsView() {
         showContextMenu(
           { x: rect.left, y: rect.bottom },
           resultTabMenu(Number(tab.id.slice("db-results-tab-".length))),
+          { owner: tab.parentElement },
         );
       }}
     >

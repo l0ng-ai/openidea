@@ -146,6 +146,81 @@ test("result context menu fits the viewport, responds to hover and keyboard, and
   await selected(page, "Result 1", "alpha rows");
 });
 
+for (const [theme, label] of [
+  ["solarized-light", "Solarized Light"],
+  ["solarized-dark", "Solarized Dark"],
+]) {
+  test(`${label}: retains the inactive context-menu target's hover until dismissal without selecting it`, async ({
+    workbench: page,
+  }, info) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.keyboard.press("Meta+,");
+    const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+    await settings
+      .locator('[role="treeitem"][aria-level="2"]')
+      .filter({ hasText: /^Appearance$/ })
+      .click();
+    await settings.getByRole("button", { name: "Theme", exact: true }).click();
+    await page.getByRole("option", { name: label, exact: true }).click();
+    await settings.getByRole("button", { name: "Apply", exact: true }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-color-theme", theme);
+    await page.keyboard.press("Escape");
+    await seedResults(page);
+    const target = tab(page, "Result 1");
+    const surface = target.locator("..");
+    const other = tab(page, "Result 3");
+    const otherSurface = other.locator("..");
+    await page.mouse.move(0, 0);
+    const idle = await surface.evaluate((element) => getComputedStyle(element).backgroundColor);
+    const selectedColor = await tab(page, "Result 2")
+      .locator("..")
+      .evaluate((element) => getComputedStyle(element).backgroundColor);
+    await target.hover();
+    const hovered = await surface.evaluate((element) => getComputedStyle(element).backgroundColor);
+    expect(hovered).not.toBe(idle);
+
+    await target.click({ button: "right" });
+    await menu(page).getByRole("menuitem", { name: "Close", exact: true }).hover();
+    expect(await surface.evaluate((element) => element.matches(":hover"))).toBe(false);
+    await expect(surface).toHaveCSS("background-color", hovered);
+    await expect(surface.getByRole("button", { name: "Close Tab", exact: true })).toHaveCSS("opacity", "1");
+    await selected(page, "Result 2", "beta rows");
+    await page.screenshot({ path: info.outputPath("context-menu-owner.png"), animations: "disabled" });
+    await page.keyboard.press("Escape");
+    await expect(menu(page)).toHaveCount(0);
+    await page.mouse.move(0, 0);
+    await expect(surface).toHaveCSS("background-color", idle);
+    await expect(surface.getByRole("button", { name: "Close Tab", exact: true })).toHaveCSS("opacity", "0");
+
+    await target.focus();
+    await target.press("Shift+F10");
+    await menu(page).getByRole("menuitem", { name: "Close", exact: true }).hover();
+    await expect(surface).toHaveCSS("background-color", hovered);
+    await selected(page, "Result 2", "beta rows");
+    await page.getByRole("tree", { name: "Project", exact: true }).click({ position: { x: 10, y: 10 } });
+    await expect(menu(page)).toHaveCount(0);
+    await expect(surface).toHaveCSS("background-color", idle);
+
+    await target.click({ button: "right" });
+    await other.click({ button: "right" });
+    await menu(page).getByRole("menuitem", { name: "Close", exact: true }).hover();
+    await expect(surface).toHaveCSS("background-color", idle);
+    await expect(otherSurface).toHaveCSS("background-color", hovered);
+    await selected(page, "Result 2", "beta rows");
+    await menu(page).getByRole("menuitem", { name: "Select Previous Tab", exact: true }).click();
+    await expect(menu(page)).toHaveCount(0);
+    await page.mouse.move(0, 0);
+    await expect(otherSurface).toHaveCSS("background-color", idle);
+    await selected(page, "Result 1", "alpha rows");
+
+    await target.click({ button: "right" });
+    await menu(page).getByRole("menuitem", { name: "Close", exact: true }).hover();
+    await expect(surface).toHaveCSS("background-color", selectedColor);
+    await page.keyboard.press("Escape");
+    await expect(menu(page)).toHaveCount(0);
+  });
+}
+
 test("renames the clicked inactive result without changing its rows and navigates through Output with wraparound", async ({
   workbench: page,
 }) => {

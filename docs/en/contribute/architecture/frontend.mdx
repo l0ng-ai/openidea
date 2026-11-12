@@ -84,6 +84,10 @@ Main fields:
 
 Run actions with `executeAction(id, arg?)`. `registerAction` returns a disposer.
 
+### Context-menu owners
+
+`showContextMenu(at, items, { owner })` can associate a menu with its target element without selecting it. `ContextMenuHost` marks that element with `data-context-menu-open` while the menu is open and removes the marker on dismissal, replacement or unmount. Shared Tabs styles use the marker to retain the target's hover appearance without overriding selected or tinted tabs. Ownership is opt-in; database result tabs supply it for pointer and keyboard menu gestures.
+
 ## Keymaps and the dispatcher
 
 Default shortcuts live in `src/platform/keymaps/`, never on the action. A keymap maps action ids to bindings:
