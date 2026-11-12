@@ -25,6 +25,7 @@ import { segmentLine, type SegmentMark } from "./segments";
 import styles from "./Run.module.css";
 import { useConsoleSelection } from "./useConsoleSelection";
 import { hostBinding, formatBinding, hasPrimaryModifier, registerKeyClaim } from "@/platform/keymap";
+import { WidestColumns } from "@/platform/consoleColumns";
 import { tx } from "@/platform/i18n";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
 import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "@/ui/consoleFind";
@@ -215,6 +216,9 @@ export function ConsoleView({
   const inputInline =
     !!input && !!model.openLine && lastRow?.kind === "line" && !lastRow.fold && lines[lastRow.index] === model.openLine;
   const inputRow = !!input && !inputInline;
+  const [widest] = useState(() => new WidestColumns());
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` marks in-place appends to `lines`
+  const columns = useMemo(() => widest.measure(lines), [widest, lines, version]);
   const rows = folded;
   const count = rows.length + (inputRow ? 1 : 0);
   const toggleFold = (id: number) =>
@@ -563,7 +567,15 @@ export function ConsoleView({
         onPaste={onPaste}
         data-autofocus=""
       >
-        <div ref={innerRef} className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
+        <div
+          ref={innerRef}
+          className={styles.consoleInner}
+          style={{
+            height: virtualizer.getTotalSize(),
+            // Rows are mounted only near the viewport; the widest line sets the scroll width.
+            minWidth: softWrap ? undefined : `calc(${columns}ch + 24px)`,
+          }}
+        >
           {items.map((item) => {
             const row = rows[item.index];
             if (!row) {
