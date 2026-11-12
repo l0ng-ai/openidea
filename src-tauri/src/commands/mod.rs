@@ -455,6 +455,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         tools::jdk_download_vendors,
         tools::jdk_download_releases,
         tools::jdk_download_location,
+        tools::jdtls_required_java,
         tools::jdk_download,
         scaffold::scaffold_catalog,
         scaffold::scaffold_options,
