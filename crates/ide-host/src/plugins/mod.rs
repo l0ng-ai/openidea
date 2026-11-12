@@ -1690,8 +1690,9 @@ impl PluginHost {
     }
 
     /// The UI reports which file its focused editor shows (`editor-focused`).
-    pub fn set_active_file(&self, client: &str, path: Option<String>) {
-        self.post_events(Some(client), vec![WorkbenchEvent::EditorFocused(path)]);
+    /// The editor snapshot carries the caret so line-scoped features stay current.
+    pub fn set_active_file(&self, client: &str, path: Option<String>, editor: Option<PluginEditor>) {
+        self.post_window_events(client, vec![WorkbenchEvent::EditorFocused(path)], editor);
     }
 
     /// Where plugin secrets are kept (default: files under the plugins

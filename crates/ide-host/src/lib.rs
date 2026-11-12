@@ -275,7 +275,7 @@ impl Host {
         project.plugin_diagnostics.close();
         if let Some(plugins) = plugins::editor_plugin_host() {
             plugins.invalidate_client_navigation(&project.root, Some(window), None);
-            plugins.set_active_file(window, None);
+            plugins.set_active_file(window, None, None);
         }
         if !project.light {
             self.environment.project_closed();

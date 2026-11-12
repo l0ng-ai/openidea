@@ -370,7 +370,8 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginSetSecret(pluginId, name, value));
   },
   setActiveFile: async (path) => {
-    await commands.pluginSetActiveFile(path);
+    const editor = editorContext();
+    await commands.pluginSetActiveFile(path, editor && editor.path === path ? editor : null);
   },
   setTheme: (pluginId, themeId) => call(commands.pluginSetTheme(pluginId, themeId)),
   setThemeFrame: async (color) => {

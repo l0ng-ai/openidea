@@ -786,11 +786,17 @@ impl KeychainSecrets {
     }
 }
 
-/// The UI reports the focused editor's file (`editor-focused` events).
+/// The UI reports the focused editor's file (`editor-focused` events), with its
+/// caret so plugins can scope line labels without re-reading the document.
 #[tauri::command]
 #[specta::specta]
-pub fn plugin_set_active_file(window: Window, state: State<'_, AppState>, path: Option<String>) {
-    state.plugins.set_active_file(window.label(), path);
+pub fn plugin_set_active_file(
+    window: Window,
+    state: State<'_, AppState>,
+    path: Option<String>,
+    editor: Option<PluginEditor>,
+) {
+    state.plugins.set_active_file(window.label(), path, editor);
 }
 
 /// Selects a plugin theme; both `None` restores the built-in theme.

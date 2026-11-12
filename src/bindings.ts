@@ -1356,8 +1356,15 @@ export const commands = {
 	pluginSecrets: (pluginId: string) => typedError<PluginSecretState[], IdeError>(__TAURI_INVOKE("plugin_secrets", { pluginId })),
 	/**  Stores a plugin secret (`None` or empty deletes it). The value never goes back to the UI or the plugin. */
 	pluginSetSecret: (pluginId: string, name: string, value: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_secret", { pluginId, name, value })),
-	/**  The UI reports the focused editor's file (`editor-focused` events). */
-	pluginSetActiveFile: (path: string | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path }),
+	/**
+	 *  The UI reports the focused editor's file (`editor-focused` events), with its
+	 *  caret so plugins can scope line labels without re-reading the document.
+	 */
+	pluginSetActiveFile: (path: string | null, editor: {
+	path: string,
+	language: string,
+	selections: Range[],
+} | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path, editor }),
 	/**  Selects a plugin theme; both `None` restores the built-in theme. */
 	pluginSetTheme: (pluginId: string | null, themeId: string | null) => typedError<{
 	pluginId: string,
