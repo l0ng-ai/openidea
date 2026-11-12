@@ -826,8 +826,8 @@ fn format_formats_the_php_in_blocks_and_echoes() {
     use crate::blade::format::{BladeFormatOptions, format};
     let options =
         BladeFormatOptions { indent: 4, use_tabs: false, line_width: 120, php: Some(crate::stubs::PhpVersion::LATEST) };
-    let messy = "<div>\n@php\n$total=0;\nforeach($items as $item){$total+=$item->price;}\n@endphp\n<p>{{$total*2}}</p>\n<p>{{ $x or 'default' }}</p>\n@php $one = 1; @endphp\n</div>\n";
-    let formatted = "<div>\n    @php\n        $total = 0;\n        foreach ($items as $item) {\n            $total += $item->price;\n        }\n    @endphp\n    <p>{{ $total * 2 }}</p>\n    <p>{{ $x or 'default' }}</p>\n    @php $one = 1; @endphp\n</div>\n";
+    let messy = "<div>\n@php\n$total=0;\nforeach($items as $item){$total+=$item->price;}\n@endphp\n<p>{{$total*2}}</p>\n<p>{{ $x or 'default' }}</p>\n@php $one=1; @endphp\n<?php echo $a+1 ?>\n@php $a=1; $b=2; @endphp\n</div>\n";
+    let formatted = "<div>\n    @php\n        $total = 0;\n        foreach ($items as $item) {\n            $total += $item->price;\n        }\n    @endphp\n    <p>{{ $total * 2 }}</p>\n    <p>{{ $x or 'default' }}</p>\n    @php $one = 1; @endphp\n    <?php echo $a + 1 ?>\n    @php $a=1; $b=2; @endphp\n</div>\n";
     assert_eq!(format(messy, &options, &[]), formatted);
     assert_eq!(format(formatted, &options, &[]), formatted, "stable");
 }
@@ -838,7 +838,7 @@ fn format_formats_directive_arguments() {
     let options =
         BladeFormatOptions { indent: 4, use_tabs: false, line_width: 120, php: Some(crate::stubs::PhpVersion::LATEST) };
     let messy = "@if($a==1&&$b)\n<p>x</p>\n@elseif (count($items)>2)\n<p>y</p>\n@endif\n@foreach($items as $key=>$item)\n@include('posts._card',['post'=>$item])\n@endforeach\n@for($i=0;$i<3;$i++)\n@endfor\n@lang('messages.welcome',['name'=>$name])\n@isset($a,$b)\n@endisset\n@php($x=1)\n@section('title', $title)\n";
-    let formatted = "@if($a == 1 && $b)\n    <p>x</p>\n@elseif (count($items) > 2)\n    <p>y</p>\n@endif\n@foreach($items as $key => $item)\n    @include('posts._card', ['post' => $item])\n@endforeach\n@for($i = 0; $i < 3; $i++)\n@endfor\n@lang('messages.welcome', ['name' => $name])\n@isset($a, $b)\n@endisset\n@php($x=1)\n@section('title', $title)\n";
+    let formatted = "@if($a == 1 && $b)\n    <p>x</p>\n@elseif (count($items) > 2)\n    <p>y</p>\n@endif\n@foreach($items as $key => $item)\n    @include('posts._card', ['post' => $item])\n@endforeach\n@for($i = 0; $i < 3; $i++)\n@endfor\n@lang('messages.welcome', ['name' => $name])\n@isset($a, $b)\n@endisset\n@php($x = 1)\n@section('title', $title)\n";
     assert_eq!(format(messy, &options, &[]), formatted);
     assert_eq!(format(formatted, &options, &[]), formatted, "stable");
     // Laravel's style (Pint): `! $x`, `'a'.$b`.

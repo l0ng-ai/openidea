@@ -266,6 +266,20 @@ fn format_code(text: &str, custom: &[String], options: &BladeFormatOptions) -> S
         }
         Some(printed.strip_prefix("<?php")?.trim_matches(['\n', '\r', ' ', '\t']).to_owned())
     };
+    // Statements written on one line, formatted onto one line: `None` when
+    // they need several (or don't parse). The final `;` stays as written.
+    let one_line = |code: &str| -> Option<String> {
+        let code = code.trim();
+        // `<?php echo $x ?>` needs no `;`; the PHP to format does.
+        let printed = if code.ends_with(';') { formatted(code)? } else { formatted(&format!("{code};"))? };
+        if printed.is_empty()
+            || printed.contains('\n')
+            || crate::syntax::ParsedFile::parse("b.php", format!("<?php\n{printed}\n")).has_errors()
+        {
+            return None;
+        }
+        Some(if code.ends_with(';') { printed } else { printed.strip_suffix(';').unwrap_or(&printed).to_owned() })
+    };
     let mut out = String::with_capacity(text.len() + 16);
     let mut at = 0usize;
     for node in parse_with(text, custom) {
@@ -319,6 +333,22 @@ fn format_code(text: &str, custom: &[String], options: &BladeFormatOptions) -> S
                     .map(|line| if line.is_empty() { String::new() } else { format!("{code_lead}{line}") })
                     .collect();
                 format!("{head}\n{}\n{tail_lead}{tail}", printed.join("\n"))
+            }
+            // `@php $x=1; @endphp`, `<?php echo $x ?>`: kept on one line.
+            NodeKind::Php if !inner.trim().is_empty() => {
+                let Some(printed) = one_line(inner) else { continue };
+                let head = text[span.start..code.start as usize].trim_end();
+                let tail = text[code.end as usize..span.end].trim_start();
+                format!("{head} {printed} {tail}")
+            }
+            // `@php($x=1)`: a statement.
+            NodeKind::Directive { name }
+                if name.eq_ignore_ascii_case("php") && !written.contains('\n') && written.ends_with(')') =>
+            {
+                let Some(printed) = one_line(inner) else { continue };
+                let head = &text[span.start..code.start as usize];
+                let tail = &text[code.end as usize..span.end];
+                format!("{head}{printed}{tail}")
             }
             // A directive's arguments, written on one line and closed.
             NodeKind::Directive { name } if !written.contains('\n') && written.ends_with(')') => {
