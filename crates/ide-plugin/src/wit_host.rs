@@ -26,6 +26,7 @@ pub(crate) mod bindings {
             "openidea:plugin/tasks.task": super::TaskRes,
             "openidea:plugin/process.child": super::ChildRes,
             "openidea:plugin/ipc.connection": super::ConnectionRes,
+            "openidea:plugin/net.websocket": super::WebSocketRes,
             "openidea:plugin/auth.loopback": super::LoopbackRes,
         },
     });
@@ -160,6 +161,19 @@ pub struct ProjectRes {
 pub struct ChildRes {
     id: u64,
     host: std::sync::Arc<dyn crate::HostApi>,
+}
+
+/// A project-bound background WebSocket owned by this plugin instance.
+/// Releasing the component resource closes the underlying transport.
+pub struct WebSocketRes {
+    id: u64,
+    host: std::sync::Arc<dyn crate::HostApi>,
+}
+
+impl Drop for WebSocketRes {
+    fn drop(&mut self) {
+        self.host.websocket_close(self.id);
+    }
 }
 
 impl Drop for ChildRes {
@@ -1416,7 +1430,11 @@ impl net::Host for StoreData {
             .map_err(to_wit))
     }
 
-    fn websocket_connect(&mut self, project: Resource<ProjectRes>, req: net::WebsocketRequest) -> Fallible<u64> {
+    fn websocket_connect(
+        &mut self,
+        project: Resource<ProjectRes>,
+        req: net::WebsocketRequest,
+    ) -> Fallible<Resource<WebSocketRes>> {
         let capability = match net_capability(&req.url) {
             Ok(capability) => capability,
             Err(error) => return Ok(Err(wit::Error::Invalid(error))),
@@ -1435,30 +1453,40 @@ impl net::Host for StoreData {
             subprotocol: req.subprotocol,
         };
         let root = self.table.get(&project)?.root.clone();
-        Ok(self.host.websocket_connect(&root, request).map_err(to_wit))
+        match self.host.websocket_connect(&root, request) {
+            Ok(id) => self.push(WebSocketRes { id, host: self.host.clone() }).map(Ok),
+            Err(error) => Ok(Err(to_wit(error))),
+        }
+    }
+}
+
+impl net::HostWebsocket for StoreData {
+    fn id(&mut self, this: Resource<WebSocketRes>) -> wasmtime::Result<u64> {
+        Ok(self.table.get(&this)?.id)
     }
 
-    fn websocket_send(&mut self, project: Resource<ProjectRes>, connection: u64, bytes: Vec<u8>) -> Fallible<()> {
-        let root = self.table.get(&project)?.root.clone();
-        Ok(self.host.websocket_send(&root, connection, bytes).map_err(to_wit))
+    fn send(&mut self, this: Resource<WebSocketRes>, bytes: Vec<u8>) -> Fallible<()> {
+        let id = self.table.get(&this)?.id;
+        Ok(self.host.websocket_send(id, bytes).map_err(to_wit))
     }
 
-    fn websocket_drain(
-        &mut self,
-        project: Resource<ProjectRes>,
-        connection: u64,
-        limit: u32,
-    ) -> Fallible<net::WebsocketBatch> {
-        let root = self.table.get(&project)?.root.clone();
+    fn drain(&mut self, this: Resource<WebSocketRes>, limit: u32) -> Fallible<net::WebsocketBatch> {
+        let id = self.table.get(&this)?.id;
         Ok(self
             .host
-            .websocket_drain(&root, connection, limit as usize)
+            .websocket_drain(id, limit as usize)
             .map(|batch| net::WebsocketBatch { messages: batch.messages, closed: batch.closed })
             .map_err(to_wit))
     }
 
-    fn websocket_close(&mut self, connection: u64) -> wasmtime::Result<()> {
-        self.host.websocket_close(connection);
+    fn close(&mut self, this: Resource<WebSocketRes>) -> Fallible<()> {
+        let id = self.table.get(&this)?.id;
+        self.host.websocket_close(id);
+        Ok(Ok(()))
+    }
+
+    fn drop(&mut self, this: Resource<WebSocketRes>) -> wasmtime::Result<()> {
+        self.table.delete(this)?;
         Ok(())
     }
 }

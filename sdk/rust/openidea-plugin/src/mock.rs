@@ -764,6 +764,7 @@ pub mod current {
     pub type ProjectRes = MockProject;
     pub type EditorRes = MockEditor;
     pub type TaskRes = MockTaskRes;
+    pub type WebSocketRes = u64;
 
     pub(super) fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
         CURRENT.with(|c| {
@@ -1840,7 +1841,7 @@ pub mod current {
         })
     }
 
-    pub fn websocket_connect(project: &ProjectRes, req: &WebSocketRequest) -> Result<u64, Error> {
+    pub fn websocket_connect(project: &ProjectRes, req: &WebSocketRequest) -> Result<WebSocketRes, Error> {
         with(|s| {
             require(s, "project.read")?;
             if !req.url.starts_with("wss://") {
@@ -1857,6 +1858,9 @@ pub mod current {
             }
             if req.subprotocol.trim().is_empty() {
                 return Err(Error::Invalid("WebSocket subprotocol is required".into()));
+            }
+            if s.websockets.values().filter(|socket| !socket.closed).count() >= 8 {
+                return Err(Error::Invalid("at most 8 WebSocket connections per plugin".into()));
             }
             let mut request = req.clone();
             for (_, value) in &mut request.headers {
@@ -1885,38 +1889,40 @@ pub mod current {
             Ok(id)
         })
     }
-    pub fn websocket_send(project: &ProjectRes, connection: u64, bytes: &[u8]) -> Result<(), Error> {
+    pub fn websocket_id(connection: &WebSocketRes) -> u64 {
+        *connection
+    }
+
+    pub fn websocket_send(connection: &WebSocketRes, bytes: &[u8]) -> Result<(), Error> {
         with(|s| {
             let socket = s
                 .websockets
-                .get_mut(&connection)
-                .filter(|socket| !socket.closed && socket.project == project.root)
+                .get_mut(connection)
+                .filter(|socket| !socket.closed)
                 .ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
             socket.sent.push(bytes.to_vec());
             Ok(())
         })
     }
-    pub fn websocket_drain(project: &ProjectRes, connection: u64, limit: u32) -> Result<WebSocketBatch, Error> {
+    pub fn websocket_drain(connection: &WebSocketRes, limit: u32) -> Result<WebSocketBatch, Error> {
         with(|s| {
             if limit == 0 || limit > 256 {
                 return Err(Error::Invalid("WebSocket drain limit must be between 1 and 256".into()));
             }
-            let socket = s
-                .websockets
-                .get_mut(&connection)
-                .filter(|socket| socket.project == project.root)
-                .ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
+            let socket =
+                s.websockets.get_mut(connection).ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
             let count = usize::min(limit as usize, socket.incoming.len());
             let messages = socket.incoming.drain(..count).collect();
             Ok(WebSocketBatch { messages, closed: socket.closed && socket.incoming.is_empty() })
         })
     }
-    pub fn websocket_close(connection: u64) {
+    pub fn websocket_close(connection: &WebSocketRes) -> Result<(), Error> {
         with(|s| {
-            if let Some(socket) = s.websockets.get_mut(&connection) {
+            if let Some(socket) = s.websockets.get_mut(connection) {
                 socket.closed = true;
             }
-        })
+        });
+        Ok(())
     }
 
     pub fn secret_set(name: &str, value: &str) -> Result<(), Error> {
@@ -2433,7 +2439,7 @@ mod tests {
     use crate::host::{self, WebSocket, WebSocketRequest};
 
     #[test]
-    fn background_websocket_mock_records_transport_and_enforces_project_scope() {
+    fn background_websocket_mock_records_transport_and_resource_lifecycle() {
         let mock = MockHost::install().with_capabilities(&["project.read", "secrets", "net:relay.example"]);
         mock.declare_secret("token");
         host::secret_set("token", "member-secret").unwrap();
@@ -2447,20 +2453,33 @@ mod tests {
             },
         )
         .unwrap();
-        socket.send(&project, b"outbound").unwrap();
+        socket.send(b"outbound").unwrap();
         mock.push_websocket_message(socket.id(), b"inbound").unwrap();
-        assert_eq!(socket.drain(&project, 8).unwrap().messages, [b"inbound"]);
+        assert_eq!(socket.drain(8).unwrap().messages, [b"inbound"]);
 
         let recorded = &mock.websockets()[0];
         assert_eq!(recorded.request.headers[0].1, "Bearer member-secret");
         assert_eq!(recorded.sent, [b"outbound"]);
 
-        mock.add_project("/other");
-        let other =
-            host::projects().unwrap().into_iter().find(|candidate| candidate.root().unwrap() == "/other").unwrap();
-        assert!(matches!(socket.send(&other, b"escape"), Err(Error::NotFound(_))));
         mock.close_websocket(socket.id()).unwrap();
-        assert!(socket.drain(&project, 8).unwrap().closed);
+        assert!(socket.drain(8).unwrap().closed);
+    }
+
+    #[test]
+    fn background_websocket_mock_limits_open_resources_per_plugin() {
+        let mock = MockHost::install().with_capabilities(&["project.read", "net:relay.example"]);
+        let project = mock.invocation().project().unwrap();
+        let request = WebSocketRequest {
+            url: "wss://relay.example/socket".into(),
+            headers: vec![("authorization".into(), "Bearer test".into())],
+            subprotocol: "example.v1".into(),
+        };
+        let sockets: Vec<_> = (0..8).map(|_| WebSocket::connect(&project, &request).unwrap()).collect();
+        assert!(
+            matches!(WebSocket::connect(&project, &request), Err(Error::Invalid(message)) if message.contains("at most 8"))
+        );
+        drop(sockets);
+        assert!(WebSocket::connect(&project, &request).is_ok());
     }
 
     #[test]

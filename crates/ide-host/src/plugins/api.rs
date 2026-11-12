@@ -2302,20 +2302,18 @@ impl HostApi for PluginApi {
                 &authorization,
                 &request.subprotocol,
             ))
-            .map_err(HostError::Failed)
+            .map_err(|error| match error {
+                super::websocket::ConnectError::Invalid(message) => HostError::Invalid(message),
+                super::websocket::ConnectError::Failed(message) => HostError::Failed(message),
+            })
     }
 
-    fn websocket_send(&self, root: &Path, connection: u64, bytes: Vec<u8>) -> Result<(), HostError> {
-        self.shared.websockets.send(self.id(), &to_ipc(root), connection, bytes).map_err(HostError::Failed)
+    fn websocket_send(&self, connection: u64, bytes: Vec<u8>) -> Result<(), HostError> {
+        self.shared.websockets.send(self.id(), connection, bytes).map_err(HostError::Failed)
     }
 
-    fn websocket_drain(
-        &self,
-        root: &Path,
-        connection: u64,
-        limit: usize,
-    ) -> Result<ide_plugin::WebSocketBatch, HostError> {
-        self.shared.websockets.drain(self.id(), &to_ipc(root), connection, limit).map_err(HostError::Invalid)
+    fn websocket_drain(&self, connection: u64, limit: usize) -> Result<ide_plugin::WebSocketBatch, HostError> {
+        self.shared.websockets.drain(self.id(), connection, limit).map_err(HostError::Invalid)
     }
 
     fn websocket_close(&self, connection: u64) {

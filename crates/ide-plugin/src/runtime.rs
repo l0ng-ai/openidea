@@ -437,12 +437,12 @@ pub trait HostApi: Send + Sync {
         let _ = (root, request);
         Err(HostError::Invalid("background WebSockets are unavailable on this host".into()))
     }
-    fn websocket_send(&self, root: &Path, connection: u64, bytes: Vec<u8>) -> Result<(), HostError> {
-        let _ = (root, connection, bytes);
+    fn websocket_send(&self, connection: u64, bytes: Vec<u8>) -> Result<(), HostError> {
+        let _ = (connection, bytes);
         Err(HostError::Invalid("background WebSockets are unavailable on this host".into()))
     }
-    fn websocket_drain(&self, root: &Path, connection: u64, limit: usize) -> Result<crate::WebSocketBatch, HostError> {
-        let _ = (root, connection, limit);
+    fn websocket_drain(&self, connection: u64, limit: usize) -> Result<crate::WebSocketBatch, HostError> {
+        let _ = (connection, limit);
         Err(HostError::Invalid("background WebSockets are unavailable on this host".into()))
     }
     fn websocket_close(&self, connection: u64) {

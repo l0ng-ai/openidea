@@ -26,8 +26,15 @@ const MAX_BYTES: usize = 8 << 20;
 const MAX_FRAME: usize = 1 << 20;
 const DRAIN_BATCH: usize = 32;
 const CLOSED_HANDLE_TTL: Duration = Duration::from_secs(60);
+const MAX_CONNECTIONS_PER_PLUGIN: usize = 8;
 
 pub type ConnectionId = u64;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConnectError {
+    Invalid(String),
+    Failed(String),
+}
 
 struct Connection {
     plugin: String,
@@ -41,6 +48,7 @@ struct Connection {
 struct Inner {
     next: AtomicU64,
     connections: Mutex<HashMap<ConnectionId, Arc<Connection>>>,
+    pending: Mutex<HashMap<String, usize>>,
     sink: Option<Arc<dyn PluginEventSink>>,
 }
 
@@ -49,13 +57,23 @@ pub struct WebSocketHub(Arc<Inner>);
 
 impl Default for WebSocketHub {
     fn default() -> Self {
-        Self(Arc::new(Inner { next: AtomicU64::new(1), connections: Mutex::new(HashMap::new()), sink: None }))
+        Self(Arc::new(Inner {
+            next: AtomicU64::new(1),
+            connections: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
+            sink: None,
+        }))
     }
 }
 
 impl WebSocketHub {
     pub fn new(sink: Arc<dyn PluginEventSink>) -> Self {
-        Self(Arc::new(Inner { next: AtomicU64::new(1), connections: Mutex::new(HashMap::new()), sink: Some(sink) }))
+        Self(Arc::new(Inner {
+            next: AtomicU64::new(1),
+            connections: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
+            sink: Some(sink),
+        }))
     }
 
     pub async fn connect(
@@ -65,53 +83,67 @@ impl WebSocketHub {
         url: &str,
         authorization: &str,
         subprotocol: &str,
-    ) -> Result<ConnectionId, String> {
-        validate_url(url)?;
+    ) -> Result<ConnectionId, ConnectError> {
+        validate_url(url).map_err(ConnectError::Invalid)?;
         if authorization.is_empty() || authorization.len() > 4096 || subprotocol.is_empty() || subprotocol.len() > 256 {
-            return Err("invalid WebSocket credentials or subprotocol".into());
+            return Err(ConnectError::Invalid("invalid WebSocket credentials or subprotocol".into()));
         }
-        let mut request = url.into_client_request().map_err(|_| "invalid WebSocket URL")?;
-        request
-            .headers_mut()
-            .insert("authorization", authorization.parse().map_err(|_| "invalid authorization header")?);
-        request
-            .headers_mut()
-            .insert("sec-websocket-protocol", subprotocol.parse().map_err(|_| "invalid WebSocket subprotocol")?);
-        let config = WebSocketConfig::default()
-            .read_buffer_size(16 << 10)
-            .write_buffer_size(16 << 10)
-            .max_write_buffer_size(2 << 20)
-            .max_message_size(Some(MAX_FRAME))
-            .max_frame_size(Some(MAX_FRAME));
-        let tls = ide_http::client::tls_config().map(Arc::new).map(Connector::Rustls).map_err(|error| error.message)?;
-        let (socket, response) = tokio::time::timeout(
-            Duration::from_secs(10),
-            connect_async_tls_with_config(request, Some(config), false, Some(tls)),
-        )
-        .await
-        .map_err(|_| "WebSocket connection timed out")?
-        .map_err(|_| "WebSocket connection failed")?;
-        if response.headers().get("sec-websocket-protocol").and_then(|value| value.to_str().ok()) != Some(subprotocol) {
-            return Err("WebSocket server did not accept the required subprotocol".into());
-        }
+        self.reserve(plugin)?;
+        let result = async {
+            let mut request =
+                url.into_client_request().map_err(|_| ConnectError::Invalid("invalid WebSocket URL".into()))?;
+            request.headers_mut().insert(
+                "authorization",
+                authorization.parse().map_err(|_| ConnectError::Invalid("invalid authorization header".into()))?,
+            );
+            request.headers_mut().insert(
+                "sec-websocket-protocol",
+                subprotocol.parse().map_err(|_| ConnectError::Invalid("invalid WebSocket subprotocol".into()))?,
+            );
+            let config = WebSocketConfig::default()
+                .read_buffer_size(16 << 10)
+                .write_buffer_size(16 << 10)
+                .max_write_buffer_size(2 << 20)
+                .max_message_size(Some(MAX_FRAME))
+                .max_frame_size(Some(MAX_FRAME));
+            let tls = ide_http::client::tls_config()
+                .map(Arc::new)
+                .map(Connector::Rustls)
+                .map_err(|error| ConnectError::Failed(error.message))?;
+            let (socket, response) = tokio::time::timeout(
+                Duration::from_secs(10),
+                connect_async_tls_with_config(request, Some(config), false, Some(tls)),
+            )
+            .await
+            .map_err(|_| ConnectError::Failed("WebSocket connection timed out".into()))?
+            .map_err(|_| ConnectError::Failed("WebSocket connection failed".into()))?;
+            if response.headers().get("sec-websocket-protocol").and_then(|value| value.to_str().ok())
+                != Some(subprotocol)
+            {
+                return Err(ConnectError::Failed("WebSocket server did not accept the required subprotocol".into()));
+            }
 
-        let id = self.0.next.fetch_add(1, Ordering::Relaxed);
-        let (stop, stopped) = watch::channel(false);
-        let connection = Arc::new(Connection {
-            plugin: plugin.to_owned(),
-            project: project.to_owned(),
-            outgoing: Arc::new(Inbox::new(MAX_MESSAGES, MAX_BYTES, MAX_FRAME)),
-            incoming: Arc::new(Inbox::new(MAX_MESSAGES, MAX_BYTES, MAX_FRAME)),
-            wake: Notify::new(),
-            stop,
-        });
-        self.0.connections.lock().insert(id, connection.clone());
-        tokio::spawn(run_socket(id, socket, connection, Arc::downgrade(&self.0), stopped));
-        Ok(id)
+            let id = self.0.next.fetch_add(1, Ordering::Relaxed);
+            let (stop, stopped) = watch::channel(false);
+            let connection = Arc::new(Connection {
+                plugin: plugin.to_owned(),
+                project: project.to_owned(),
+                outgoing: Arc::new(Inbox::new(MAX_MESSAGES, MAX_BYTES, MAX_FRAME)),
+                incoming: Arc::new(Inbox::new(MAX_MESSAGES, MAX_BYTES, MAX_FRAME)),
+                wake: Notify::new(),
+                stop,
+            });
+            self.0.connections.lock().insert(id, connection.clone());
+            tokio::spawn(run_socket(id, socket, connection, Arc::downgrade(&self.0), stopped));
+            Ok(id)
+        }
+        .await;
+        self.release(plugin);
+        result
     }
 
-    pub fn send(&self, plugin: &str, project: &str, connection: ConnectionId, bytes: Vec<u8>) -> Result<(), String> {
-        let connection = self.connection(plugin, project, connection)?;
+    pub fn send(&self, plugin: &str, connection: ConnectionId, bytes: Vec<u8>) -> Result<(), String> {
+        let connection = self.connection(plugin, connection)?;
         match connection.outgoing.push(bytes) {
             Push::Wake => {
                 connection.wake.notify_one();
@@ -127,17 +159,11 @@ impl WebSocketHub {
         }
     }
 
-    pub fn drain(
-        &self,
-        plugin: &str,
-        project: &str,
-        connection: ConnectionId,
-        limit: usize,
-    ) -> Result<WebSocketBatch, String> {
+    pub fn drain(&self, plugin: &str, connection: ConnectionId, limit: usize) -> Result<WebSocketBatch, String> {
         if limit == 0 || limit > DRAIN_BATCH {
             return Err("invalid drain limit".into());
         }
-        let connection_state = self.connection(plugin, project, connection)?;
+        let connection_state = self.connection(plugin, connection)?;
         let batch = connection_state.incoming.drain(limit);
         if batch.more {
             self.emit_ready(connection, plugin);
@@ -178,14 +204,40 @@ impl WebSocketHub {
         }
     }
 
-    fn connection(&self, plugin: &str, project: &str, id: ConnectionId) -> Result<Arc<Connection>, String> {
+    /// Returns the project captured when this plugin opened the resource.
+    /// Consumers use this instead of accepting a project selected by plugin code.
+    pub fn project(&self, plugin: &str, id: ConnectionId) -> Result<String, String> {
+        Ok(self.connection(plugin, id)?.project.clone())
+    }
+
+    fn connection(&self, plugin: &str, id: ConnectionId) -> Result<Arc<Connection>, String> {
         self.0
             .connections
             .lock()
             .get(&id)
-            .filter(|connection| connection.plugin == plugin && connection.project == project)
+            .filter(|connection| connection.plugin == plugin)
             .cloned()
             .ok_or_else(|| "unknown WebSocket connection".into())
+    }
+
+    fn reserve(&self, plugin: &str) -> Result<(), ConnectError> {
+        let open = self.0.connections.lock().values().filter(|connection| connection.plugin == plugin).count();
+        let mut pending = self.0.pending.lock();
+        if open + pending.get(plugin).copied().unwrap_or_default() >= MAX_CONNECTIONS_PER_PLUGIN {
+            return Err(ConnectError::Invalid("at most 8 WebSocket connections per plugin".into()));
+        }
+        *pending.entry(plugin.to_owned()).or_default() += 1;
+        Ok(())
+    }
+
+    fn release(&self, plugin: &str) {
+        let mut pending = self.0.pending.lock();
+        if let Some(count) = pending.get_mut(plugin) {
+            *count -= 1;
+            if *count == 0 {
+                pending.remove(plugin);
+            }
+        }
     }
 
     fn emit_ready(&self, connection: ConnectionId, plugin: &str) {
@@ -328,7 +380,7 @@ mod tests {
         let (url, server) = server().await;
         let hub = WebSocketHub::default();
         let connection = hub.connect("plugin", "/project", &url, "Bearer test", "openidea.test.v1").await.unwrap();
-        hub.send("plugin", "/project", connection, b"message".to_vec()).unwrap();
+        hub.send("plugin", connection, b"message".to_vec()).unwrap();
         hub.disconnect("plugin", connection).unwrap();
         assert_eq!(server.await.unwrap(), [b"message"]);
     }
@@ -348,10 +400,10 @@ mod tests {
         server.await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(
-            hub.drain("plugin", "/project", connection, 1).unwrap(),
+            hub.drain("plugin", connection, 1).unwrap(),
             WebSocketBatch { messages: vec![vec![1, 2, 3]], closed: true }
         );
-        assert!(hub.drain("plugin", "/project", connection, 1).is_err());
+        assert!(hub.drain("plugin", connection, 1).is_err());
     }
 
     #[test]
@@ -368,10 +420,10 @@ mod tests {
         });
         hub.0.connections.lock().insert(1, connection.clone());
 
-        assert!(hub.send("plugin", "/other-project", 1, b"cross-project".to_vec()).is_err());
-        assert!(hub.drain("plugin", "/other-project", 1, 1).is_err());
-        assert!(hub.send("plugin", "/project", 1, b"first".to_vec()).is_ok());
-        assert!(hub.send("plugin", "/project", 1, b"second".to_vec()).unwrap_err().contains("rejected"));
+        assert!(hub.send("other-plugin", 1, b"cross-plugin".to_vec()).is_err());
+        assert!(hub.drain("other-plugin", 1, 1).is_err());
+        assert!(hub.send("plugin", 1, b"first".to_vec()).is_ok());
+        assert!(hub.send("plugin", 1, b"second".to_vec()).unwrap_err().contains("rejected"));
         assert_eq!(connection.outgoing.drain(1).messages, [b"first"]);
     }
 
@@ -382,5 +434,20 @@ mod tests {
         assert!(validate_url("ws://relay.example/socket").unwrap_err().contains("WSS"));
         assert!(validate_url("wss://token@relay.example/socket").is_err());
         assert!(validate_url("wss://relay.example/socket?token=x").is_err());
+    }
+
+    #[test]
+    fn connection_limit_is_enforced_before_connecting() {
+        let hub = WebSocketHub::default();
+        for _ in 0..MAX_CONNECTIONS_PER_PLUGIN {
+            hub.reserve("plugin").unwrap();
+        }
+        assert_eq!(
+            hub.reserve("plugin"),
+            Err(ConnectError::Invalid("at most 8 WebSocket connections per plugin".into()))
+        );
+        for _ in 0..MAX_CONNECTIONS_PER_PLUGIN {
+            hub.release("plugin");
+        }
     }
 }

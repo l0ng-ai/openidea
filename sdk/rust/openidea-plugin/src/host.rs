@@ -638,7 +638,9 @@ mod imp {
             .map_err(error)
     }
 
-    pub fn websocket_connect(project: &ProjectRes, req: &WebSocketRequest) -> Result<u64, Error> {
+    pub type WebSocketRes = wit::net::Websocket;
+
+    pub fn websocket_connect(project: &ProjectRes, req: &WebSocketRequest) -> Result<WebSocketRes, Error> {
         let request = wit::net::WebsocketRequest {
             url: req.url.clone(),
             headers: req
@@ -651,18 +653,23 @@ mod imp {
         wit::net::websocket_connect(project, &request).map_err(error)
     }
 
-    pub fn websocket_send(project: &ProjectRes, connection: u64, bytes: &[u8]) -> Result<(), Error> {
-        wit::net::websocket_send(project, connection, bytes).map_err(error)
+    pub fn websocket_id(connection: &WebSocketRes) -> u64 {
+        connection.id()
     }
 
-    pub fn websocket_drain(project: &ProjectRes, connection: u64, limit: u32) -> Result<WebSocketBatch, Error> {
-        wit::net::websocket_drain(project, connection, limit)
+    pub fn websocket_send(connection: &WebSocketRes, bytes: &[u8]) -> Result<(), Error> {
+        connection.send(bytes).map_err(error)
+    }
+
+    pub fn websocket_drain(connection: &WebSocketRes, limit: u32) -> Result<WebSocketBatch, Error> {
+        connection
+            .drain(limit)
             .map(|batch| WebSocketBatch { messages: batch.messages, closed: batch.closed })
             .map_err(error)
     }
 
-    pub fn websocket_close(connection: u64) {
-        wit::net::websocket_close(connection)
+    pub fn websocket_close(connection: &WebSocketRes) -> Result<(), Error> {
+        connection.close().map_err(error)
     }
 
     pub fn secret_set(name: &str, value: &str) -> Result<(), Error> {
@@ -1155,7 +1162,7 @@ pub fn fetch(request: &HttpRequest) -> Result<HttpResponse, Error> {
 
 /// A host-owned background WebSocket. Dropping it closes the connection.
 pub struct WebSocket {
-    id: u64,
+    inner: imp::WebSocketRes,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1173,22 +1180,28 @@ pub struct WebSocketBatch {
 
 impl WebSocket {
     pub fn connect(project: &Project, request: &WebSocketRequest) -> Result<Self, Error> {
-        imp::websocket_connect(&project.inner, request).map(|id| Self { id })
+        imp::websocket_connect(&project.inner, request).map(|inner| Self { inner })
     }
     pub fn id(&self) -> u64 {
-        self.id
+        imp::websocket_id(&self.inner)
     }
-    pub fn send(&self, project: &Project, bytes: &[u8]) -> Result<(), Error> {
-        imp::websocket_send(&project.inner, self.id, bytes)
+    pub fn send(&self, bytes: &[u8]) -> Result<(), Error> {
+        imp::websocket_send(&self.inner, bytes)
     }
-    pub fn drain(&self, project: &Project, limit: u32) -> Result<WebSocketBatch, Error> {
-        imp::websocket_drain(&project.inner, self.id, limit)
+    pub fn drain(&self, limit: u32) -> Result<WebSocketBatch, Error> {
+        imp::websocket_drain(&self.inner, limit)
+    }
+    pub fn close(&self) -> Result<(), Error> {
+        imp::websocket_close(&self.inner)
     }
 }
 
 impl Drop for WebSocket {
     fn drop(&mut self) {
-        imp::websocket_close(self.id)
+        // The WIT resource also closes on its own drop. Calling close here
+        // keeps the native mock faithful to that lifecycle; host close is
+        // intentionally idempotent.
+        let _ = imp::websocket_close(&self.inner);
     }
 }
 
