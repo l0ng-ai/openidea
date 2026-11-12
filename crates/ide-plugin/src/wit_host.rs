@@ -1299,14 +1299,16 @@ impl StoreData {
     }
 
     /// Grants at most one short unwind window per call when a blocking host I/O
-    /// call failed at or near `self.deadline` without caller cancellation.
+    /// call failed at or near `self.deadline` without caller cancellation. An
+    /// error well before the deadline leaves the window for a later call.
     fn grant_io_error_grace(&mut self) {
-        if !self.host_io_grace_used && !self.cancel.is_set() {
+        if self.host_io_grace_used || self.cancel.is_set() {
+            return;
+        }
+        let min_deadline = Instant::now() + HOST_IO_UNWIND_GRACE;
+        if min_deadline > self.deadline {
+            self.deadline = min_deadline;
             self.host_io_grace_used = true;
-            let min_deadline = Instant::now() + HOST_IO_UNWIND_GRACE;
-            if min_deadline > self.deadline {
-                self.deadline = min_deadline;
-            }
         }
     }
 }
