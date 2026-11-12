@@ -11,6 +11,7 @@ import clsx from "clsx";
 import { useActions, allActions, type Action } from "@/platform/actions";
 import { defaultPreset, formatBinding, type Keymap, PRESET_TITLES, PRESETS, useKeymap } from "@/platform/keymap";
 import { call, commands } from "@/platform/ipc";
+import { notifications } from "@/workbench/contributions";
 import { ask, confirm, showError } from "@/workbench/messages";
 import {
   HighlightedText,
@@ -72,6 +73,21 @@ export function keymapSearchLabels(): string[] {
 }
 
 const groupKey = (path: readonly string[]) => `grp:${path.join("/")}`;
+
+/**
+ * The JSON written by "Export Keymap as JSON…": the keymap's name, the preset
+ * it is based on, and every configurable action's resolved bindings, so the
+ * mapping can be read or compared to IDEA offline.
+ */
+export function keymapJson(name: string, basedOn: string, actions: readonly Action[], draft: KeymapDraft): string {
+  const bindings: Keymap = {};
+  for (const action of actions) {
+    if (!isKeymapAction(action, draft)) continue;
+    const keys = resolveBindings(draft, action.id);
+    if (keys.length) bindings[action.id] = keys;
+  }
+  return JSON.stringify({ name, basedOn, actions: bindings }, null, 2);
+}
 
 function sortGroup(g: GroupNode): void {
   const actions = g.children.filter((c) => c.kind === "action");
@@ -261,6 +277,41 @@ export function KeymapPage() {
     });
   };
 
+  const exportKeymap = async () => {
+    const { save } = await import("@/platform/dialog");
+    const name = keymapName(selectedId, customs);
+    const path = await save({
+      title: tx("Export Keymap"),
+      defaultPath: `${name.replace(/[/\\:*?"<>|]/g, "_")}.json`,
+      filters: [{ name: tx("OpenIDEA Keymap"), extensions: ["json"] }],
+    });
+    if (!path) return;
+    const json = keymapJson(
+      name,
+      isCustom ? (customs[selectedId]?.parent ?? draft.preset) : selectedId,
+      allActions(),
+      draft,
+    );
+    try {
+      // The save dialog already confirmed replacing an existing file.
+      await call(commands.fsDelete(path)).catch(() => {});
+      await call(commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(json))));
+      notifications().notify({
+        level: "info",
+        title: tx("Keymap exported"),
+        body: path,
+        key: "keymap.export",
+      });
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot export keymap"),
+        body: e instanceof Error ? e.message : String(e),
+        key: "keymap.export",
+      });
+    }
+  };
+
   const gearMenu = (): MenuItem[] => [
     {
       label: "Duplicate…",
@@ -268,6 +319,7 @@ export function KeymapPage() {
       run: () => setNameDialog({ mode: "duplicate", initial: copyName(keymapName(selectedId, customs), customs) }),
     },
     { label: "Import IntelliJ IDEA Keymap…", run: () => void importIdeaKeymap() },
+    { label: "Export Keymap as JSON…", run: () => void exportKeymap() },
     {
       label: "Rename…",
       icon: "edit",
