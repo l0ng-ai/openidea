@@ -12,7 +12,6 @@ use std::sync::Arc;
 const RUN_TIMEOUT_MS: usize = 10_000;
 const WAIT_TIMEOUT_MS: usize = 30_000;
 const STOP_TIMEOUT_MS: usize = 10_000;
-const MAX_TIMEOUT_MS: usize = 1_800_000;
 /// Lines of output returned at most, by default (as JetBrains' `execute_terminal_command`).
 const DEFAULT_MAX_LINES: usize = 2000;
 /// Bytes of the log read for one result at most.
@@ -87,7 +86,7 @@ fn output_view(call: &Call, run: &AgentRun, from: u64) -> IdeResult<Map<String, 
 }
 
 fn deadline(call: &Call, default: usize) -> IdeResult<tokio::time::Instant> {
-    Ok(tokio::time::Instant::now() + timeout(call, default, MAX_TIMEOUT_MS)?)
+    Ok(tokio::time::Instant::now() + timeout(call, default)?)
 }
 
 fn pattern(call: &Call) -> IdeResult<Option<regex_lite::Regex>> {
