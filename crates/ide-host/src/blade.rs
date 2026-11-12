@@ -217,10 +217,23 @@ impl LanguageService for BladeService {
     ) -> Answer<References> {
         let info = self.info(doc)?;
         let engine = self.php.engine()?;
+        // A section or stack name, or a component tag.
+        if let Some(usages) = engine.blade_name_usages(&blade(&info), pos, include_declaration) {
+            let locations = usages.into_iter().map(|usage| Location::file(usage.path, usage.range)).collect();
+            return Some(Ok(References { locations, ..References::default() }));
+        }
         let name = match view_ref_at(&info.text, pos) {
             Some((ViewRef::View(name), _)) => name,
             Some(_) => return None,
-            None if compile(&info.text, false).to_php(pos).is_some() => return None,
+            // The template's PHP: what it names, as from a PHP file.
+            None if compile(&info.text, false).to_php(pos).is_some() => {
+                let usages = match engine.blade_references(&blade(&info), pos, include_declaration, cancel)? {
+                    Ok(usages) => usages,
+                    Err(e) => return Some(Err(e)),
+                };
+                let locations = usages.into_iter().map(|usage| Location::file(usage.path, usage.range)).collect();
+                return Some(Ok(References { locations, ..References::default() }));
+            }
             None => engine.laravel_view_name(&info.path)?,
         };
         let usages = match engine.laravel_view_usages(&name, cancel)? {

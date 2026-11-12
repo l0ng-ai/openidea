@@ -743,6 +743,89 @@ impl PhpEngine {
         let path = self.document_path(blade.doc)?;
         self.string_ref_rename(&parsed, &path, parsed.line_index().byte(at), new_name, cancel)
     }
+
+    /// Find usages of the section or stack name (`@section('content')`,
+    /// `@yield('content')`, `@push`/`@stack`) or the component tag name
+    /// (`<x-alert`) at `pos` of a template: the same name in the project's
+    /// templates (the component's class and view as its declarations).
+    /// `None` when the caret is on neither.
+    pub fn blade_name_usages(
+        &self,
+        blade: &BladeDocument,
+        pos: Pos,
+        include_declaration: bool,
+    ) -> Option<Vec<crate::navigate::Usage>> {
+        use crate::blade::structure::{name_at, names};
+        use crate::blade::views::{ViewRef, view_ref_at};
+        use crate::navigate::{Usage, UsageKind};
+        enum Sought {
+            Name(crate::blade::structure::NameKind, String),
+            Component(String),
+        }
+        let lines = LineIndex::new(blade.text);
+        let custom = self.custom_directives();
+        let sought = match name_at(blade.text, lines.byte(pos), &custom) {
+            Some(name) => Sought::Name(name.kind, name.name),
+            None => match view_ref_at(blade.text, pos)? {
+                (ViewRef::Component(tag), _) => Sought::Component(tag),
+                _ => return None,
+            },
+        };
+        let views = self.laravel_views()?;
+        let own = crate::project::normalize(blade.path);
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for view in views.views().iter().filter(|view| is_blade(&view.path) && !self.is_library(&view.path)) {
+            let path = crate::project::normalize(&view.path);
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            let text = if path == own { Some(blade.text.to_owned()) } else { self.current_text(&path) };
+            let Some(text) = text else { continue };
+            let lines = LineIndex::new(&text);
+            let spans: Vec<std::ops::Range<u32>> = match &sought {
+                Sought::Name(kind, name) => names(&text, &custom)
+                    .into_iter()
+                    .filter(|found| found.kind == *kind && found.name == *name)
+                    .map(|found| found.span)
+                    .collect(),
+                Sought::Component(tag) => crate::blade::tags::component_tags(&text)
+                    .into_iter()
+                    .filter(|found| found.name(&text) == tag)
+                    .map(|found| found.name)
+                    .collect(),
+            };
+            out.extend(spans.into_iter().map(|span| Usage {
+                path: view.path.clone(),
+                range: lines.range(span.start, span.end),
+                kind: UsageKind::Code,
+            }));
+        }
+        if include_declaration
+            && let Sought::Component(tag) = &sought
+            && let Some(component) = self.laravel_blade().and_then(|catalog| catalog.component(tag).cloned())
+        {
+            let files = component.class.map(|(_, path)| path).into_iter().chain(component.view);
+            out.extend(files.map(|path| Usage { path, range: Range::default(), kind: UsageKind::Declaration }));
+        }
+        Some(out)
+    }
+
+    /// Find usages of what the PHP at `pos` of a template names (a
+    /// translation key, a route, a config key, a class or member), as from
+    /// a PHP file. Usages in templates, this one included, are read from
+    /// disk and given in the templates' own positions.
+    pub fn blade_references(
+        &self,
+        blade: &BladeDocument,
+        pos: Pos,
+        include_declaration: bool,
+        cancel: &ide_core::CancellationToken,
+    ) -> Option<ide_core::IdeResult<Vec<crate::navigate::Usage>>> {
+        let compiled = self.blade_sync(blade);
+        let at = compiled.to_php(pos)?;
+        self.references(blade.doc, at, include_declaration, cancel)
+    }
 }
 
 impl PhpEngine {

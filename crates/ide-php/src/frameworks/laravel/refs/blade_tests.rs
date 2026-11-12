@@ -338,3 +338,59 @@ fn unclosed_sections_are_problems_of_the_template() {
         assert!(project.engine.blade_problems(&text).is_empty(), "{}", view.name);
     }
 }
+
+/// Find usages from the PHP of a template, as from a PHP file: a
+/// translation key's declarations and usages, this template's included (in
+/// its own positions).
+#[test]
+fn finds_usages_from_the_php_of_a_template() {
+    let project = Project::app();
+    let text = std::fs::read_to_string(project.root.join(LAYOUT))
+        .unwrap()
+        .replace("messages.welcome", "messages.wel/*|*/come");
+    let template = Template::new(&project, LAYOUT, &text);
+    let found = project
+        .engine
+        .blade_references(&template.blade(), template.pos, true, &CancellationToken::new())
+        .expect("answered")
+        .unwrap();
+    project.engine.document_closed(DocId(90));
+    let mut found: Vec<(String, u32, String)> =
+        found.iter().map(|usage| project.describe(&usage.path, usage.range)).collect();
+    found.sort();
+    let line = text.lines().position(|line| line.contains("messages.wel")).unwrap() as u32;
+    assert!(found.contains(&("lang/en/messages.php".to_owned(), 4, "welcome".to_owned())), "{found:?}");
+    assert!(found.contains(&("lang/fr/messages.php".to_owned(), 4, "welcome".to_owned())), "{found:?}");
+    assert!(found.contains(&(LAYOUT.to_owned(), line, "messages.welcome".to_owned())), "{found:?}");
+    let welcome = "resources/views/welcome.blade.php".to_owned();
+    assert!(found.contains(&(welcome, 3, "messages.welcome".to_owned())), "{found:?}");
+}
+
+/// Find usages of a section name and of a component tag from a template.
+#[test]
+fn finds_usages_of_sections_and_components() {
+    let project = Project::app();
+    let text = std::fs::read_to_string(project.root.join(LAYOUT))
+        .unwrap()
+        .replace("@yield('content')", "@yield('cont/*|*/ent')");
+    let template = Template::new(&project, LAYOUT, &text);
+    let found = project.engine.blade_name_usages(&template.blade(), template.pos, true).expect("a section");
+    let mut files: Vec<String> = found.iter().map(|usage| project.describe(&usage.path, usage.range).0).collect();
+    files.sort();
+    files.dedup();
+    assert!(files.contains(&"resources/views/posts/show.blade.php".to_owned()), "{files:?}");
+    assert!(files.contains(&LAYOUT.to_owned()), "{files:?}");
+    assert!(found.iter().all(|usage| project.describe(&usage.path, usage.range).2 == "content"), "{found:?}");
+
+    let show = "resources/views/posts/show.blade.php";
+    let text = std::fs::read_to_string(project.root.join(show)).unwrap().replace("<x-alert", "<x-al/*|*/ert");
+    let template = Template::new(&project, show, &text);
+    let found = project.engine.blade_name_usages(&template.blade(), template.pos, true).expect("a component");
+    let described: Vec<(String, u32, String)> =
+        found.iter().map(|usage| project.describe(&usage.path, usage.range)).collect();
+    assert!(described.iter().any(|(file, _, text)| file == show && text == "alert"), "{described:?}");
+    assert!(described.iter().any(|(file, ..)| file == "app/View/Components/Alert.php"), "{described:?}");
+    // Elsewhere in a template: none of these.
+    let template = Template::new(&project, show, "<p>/*|*/x</p>");
+    assert!(project.engine.blade_name_usages(&template.blade(), template.pos, true).is_none());
+}
