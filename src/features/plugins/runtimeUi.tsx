@@ -319,6 +319,12 @@ export function refreshEventKinds() {
 }
 
 function post(event: WorkbenchEvent) {
+  // A caret event replaces the queued one for the same file: only the latest
+  // position matters, and moving the caret must not flood every plugin batch.
+  if (event.kind === "caretMoved") {
+    const queued = queue.findIndex((queued) => queued.kind === "caretMoved" && queued.value.path === event.value.path);
+    if (queued >= 0) queue.splice(queued, 1);
+  }
   queue.push(event);
   if (postTimer) return;
   postTimer = setTimeout(() => {
@@ -340,6 +346,8 @@ function trackWorkbenchEvents(): () => void {
     if (e.type === "inputModeChanged" && wanted.has("input-mode-changed"))
       post({ kind: "inputModeChanged", value: { path: e.path, mode: e.mode, sub: e.sub } });
     if (e.type === "docSaved" && wanted.has("file-saved")) post({ kind: "fileSaved", value: e.path });
+    if (e.type === "caretMoved" && wanted.has("caret-moved"))
+      post({ kind: "caretMoved", value: { path: e.path, line: e.line, col: e.col } });
   });
   const offActions = onActionExecuted((id, _arg, source) => {
     if (!wanted.has("action-performed")) return;

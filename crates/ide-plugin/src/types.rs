@@ -115,13 +115,14 @@ pub enum EventKind {
     FileSaved,
     FilesChanged,
     EditorFocused,
+    CaretMoved,
     ActionPerformed,
     VcsChanged,
     Scheduled,
 }
 
 impl EventKind {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::FileClosed,
         Self::SettingsChanged,
         Self::InputModeChanged,
@@ -133,6 +134,7 @@ impl EventKind {
         Self::FileSaved,
         Self::FilesChanged,
         Self::EditorFocused,
+        Self::CaretMoved,
         Self::ActionPerformed,
         Self::VcsChanged,
         Self::Scheduled,
@@ -151,6 +153,7 @@ impl EventKind {
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
             Self::EditorFocused => "editor-focused",
+            Self::CaretMoved => "caret-moved",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
             Self::Scheduled => "scheduled",
@@ -227,6 +230,16 @@ pub struct InputMode {
     pub sub: Option<String>,
 }
 
+/// The caret moved in the focused editor. Positions are 0-based; `col` counts
+/// UTF-16 code units, as everywhere in the plugin API.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CaretMoved {
+    pub path: String,
+    pub line: u32,
+    pub col: u32,
+}
+
 /// A workbench event delivered to plugins.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
@@ -243,6 +256,7 @@ pub enum WorkbenchEvent {
     FileSaved(String),
     FilesChanged(FilesChanged),
     EditorFocused(Option<String>),
+    CaretMoved(CaretMoved),
     ActionPerformed(ActionPerformed),
     VcsChanged(String),
     Scheduled,
@@ -262,6 +276,7 @@ impl WorkbenchEvent {
             Self::FileSaved(_) => EventKind::FileSaved,
             Self::FilesChanged(_) => EventKind::FilesChanged,
             Self::EditorFocused(_) => EventKind::EditorFocused,
+            Self::CaretMoved(_) => EventKind::CaretMoved,
             Self::ActionPerformed(_) => EventKind::ActionPerformed,
             Self::VcsChanged(_) => EventKind::VcsChanged,
             Self::Scheduled => EventKind::Scheduled,

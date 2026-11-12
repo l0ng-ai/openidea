@@ -200,6 +200,27 @@ fn released_gitai_publishes_labels_and_markers_for_an_open_file() {
     assert_eq!(items.len(), 1, "line mode labels only the focused line: {items:?}");
     assert_eq!(items[0].range.start.line, 1, "the focused caret line is labelled");
 
+    // A caret event moves the label with the caret, without a new CLI run.
+    host.post_window_events(
+        "main",
+        vec![WorkbenchEvent::CaretMoved(ide_host::plugins::CaretMoved { path: path.clone(), line: 0, col: 0 })],
+        Some(PluginEditor {
+            path: path.clone(),
+            language: "rust".into(),
+            selections: vec![ide_core::Range::new(ide_core::Pos::new(0, 0), ide_core::Pos::new(0, 0))],
+        }),
+    );
+    host.flush_events_at(Instant::now() + Duration::from_secs(5));
+    assert!(host.wait_events(Duration::from_secs(20)), "caret batch did not finish");
+    let sets = host.decoration_sets();
+    let items = sets
+        .get(&info.id)
+        .and_then(|sets| sets.iter().find(|set| set.path.0 == canonical))
+        .map(|set| set.items.as_slice())
+        .unwrap_or_default();
+    assert_eq!(items.len(), 1, "caret-moved keeps one label: {items:?}");
+    assert_eq!(items[0].range.start.line, 0, "the label follows the caret");
+
     let doc = ide_plugin::ProviderDocument {
         path: file.clone(),
         language: "rust".into(),

@@ -427,6 +427,10 @@ working. New in 1.6:
   line-end labels as `set_decorations`, and renders each item's `markdown_hover`
   as a hover card. Set ids, limits and `clear_decorations` are shared with
   `set_decorations`.
+- [Events](#events): `caret-moved` (API 1.6) delivers `{path, line, col}` with
+  0-based UTF-16 positions when the caret moves in the focused editor, so
+  line-scoped labels follow it. Subscribe at run time or declare
+  `on-event:caret-moved`; requires `events`.
 
 ### API 1.5
 

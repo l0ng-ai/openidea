@@ -162,6 +162,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "file-saved",
     "files-changed",
     "editor-focused",
+    "caret-moved",
     "action-performed",
     "vcs-changed",
 ];

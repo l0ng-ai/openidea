@@ -240,6 +240,9 @@ pub enum EventKind {
     FileSaved,
     FilesChanged,
     EditorFocused,
+    /// The caret moved in the focused editor (`Event::Other`, JSON
+    /// `{path, line, col}` with 0-based UTF-16 positions).
+    CaretMoved,
     /// Needs `events.input`.
     ActionPerformed,
     VcsChanged,
@@ -261,6 +264,7 @@ impl EventKind {
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
             Self::EditorFocused => "editor-focused",
+            Self::CaretMoved => "caret-moved",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
             Self::Scheduled => "scheduled",

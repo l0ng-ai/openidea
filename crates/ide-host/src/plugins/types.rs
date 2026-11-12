@@ -4,7 +4,8 @@ use super::theme::ThemeDef;
 use ide_extension::package::PluginIcon;
 use ide_extension::{CapabilityInfo, ContributionInfo, UiContribution};
 pub use ide_plugin::{
-    ActionPerformed, ActionSource, EventKind, NotificationLevel, PickItem, Prompt, StatusItem, WorkbenchEvent,
+    ActionPerformed, ActionSource, CaretMoved, EventKind, NotificationLevel, PickItem, Prompt, StatusItem,
+    WorkbenchEvent,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;

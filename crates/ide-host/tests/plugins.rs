@@ -6053,6 +6053,7 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
                 mode: "visual".into(),
                 sub: Some("linewise".into()),
             }),
+            E::CaretMoved(ide_plugin::CaretMoved { path: path.clone(), line: 4, col: 2 }),
         ],
         Some(PluginEditor {
             path: path.clone(),
@@ -6064,10 +6065,17 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
     assert!(f.host.wait_events(Duration::from_secs(5)));
     let received: serde_json::Value = serde_json::from_str(&f.run("api14", "events", None).unwrap().unwrap()).unwrap();
     let events = received.as_array().unwrap();
-    assert_eq!(events.len(), 3, "{received}");
+    assert_eq!(events.len(), 4, "{received}");
     assert_eq!(events[0]["kind"], "settings-changed");
     assert_eq!(events[0]["data"], "[\"enabled\"]");
     assert_eq!(events[2]["kind"], "input-mode-changed");
+    assert_eq!(events[3]["kind"], "caret-moved");
+    let caret: serde_json::Value =
+        serde_json::from_str(events[3]["data"].as_str().expect("caret data is JSON")).unwrap();
+    assert_eq!(caret["path"], path.as_str());
+    assert_eq!(caret["line"], 4);
+    assert_eq!(caret["col"], 2);
+    assert_eq!(events[3]["editor"][0], path.as_str());
     assert_eq!(events[2]["editor"][0], path);
     assert_eq!(events[2]["editor"][1][0], serde_json::json!([0, 0, 0, 0]));
 }

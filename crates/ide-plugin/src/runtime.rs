@@ -1008,6 +1008,10 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
             kind: "input-mode-changed".into(),
             data: serde_json::to_string(&mode).expect("mode serializes"),
         }),
+        WorkbenchEvent::CaretMoved(caret) => wit_events::Event::Other(wit_types::Extension {
+            kind: "caret-moved".into(),
+            data: serde_json::json!({ "path": caret.path, "line": caret.line, "col": caret.col }).to_string(),
+        }),
         WorkbenchEvent::FileOpened(p) => wit_events::Event::FileOpened(p),
         WorkbenchEvent::FileSaved(p) => wit_events::Event::FileSaved(p),
         WorkbenchEvent::FilesChanged(batch) => wit_events::Event::Other(wit_types::Extension {

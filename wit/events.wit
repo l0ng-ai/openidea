@@ -35,6 +35,9 @@ interface events {
     /// API 1.5 also delivers `extensions-changed` (JSON array of the extension
     /// points this plugin declares whose contributions changed) through `other`,
     /// to the declaring plugin only and without a capability.
+    /// API 1.6 also delivers `caret-moved` (JSON {path, line, col}, 0-based
+    /// UTF-16 positions) through `other` when the caret moves in the focused
+    /// editor; it requires `events`.
     /// Kinds: `file-opened`, `file-saved`, `files-changed` (batched disk changes
     /// as `other`, with created/modified/removed path lists in JSON), `editor-focused` (the focused editor
     /// changed), `vcs-changed` (a repository's state changed: commit,
