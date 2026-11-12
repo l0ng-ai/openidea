@@ -22,6 +22,7 @@ import type {
   EventKind,
   PluginContextKey,
   PluginEvent,
+  ProjectInfo,
   Prompt,
   StatusItem,
   WorkbenchEvent,
@@ -29,7 +30,7 @@ import type {
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { setPluginDecorations } from "./decorations";
-import { editorsFor, onEditorEvent } from "@/editor/api";
+import { editorsFor, onEditorEvent, useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
 import { isTauri, onIdeEvent } from "@/platform/ipc";
@@ -308,9 +309,28 @@ let queue: WorkbenchEvent[] = [];
 let postTimer: ReturnType<typeof setTimeout> | null = null;
 let postDue = 0;
 let settleTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingCaret: { editor: TextEditorHandle; project: ProjectInfo | null; doc: number; path: string } | null = null;
+
+function invalidateCaret() {
+  if (settleTimer) clearTimeout(settleTimer);
+  settleTimer = null;
+  pendingCaret = null;
+  queue = queue.filter((event) => event.kind !== "caretMoved");
+}
+
+function isCurrentCaret(caret: NonNullable<typeof pendingCaret>): boolean {
+  return (
+    pendingCaret === caret &&
+    useEditorRegistry.getState().active === caret.editor &&
+    caret.editor.ctx.doc === caret.doc &&
+    caret.editor.ctx.path === caret.path &&
+    useProject.getState().project === caret.project
+  );
+}
 
 function flush() {
   postTimer = null;
+  if (pendingCaret && !isCurrentCaret(pendingCaret)) invalidateCaret();
   const batch = queue;
   queue = [];
   if (!batch.length) return;
@@ -356,19 +376,32 @@ function post(event: WorkbenchEvent) {
 /** Reports the events plugins subscribed to: files opened and saved, actions run, repositories changed. */
 function trackWorkbenchEvents(): () => void {
   refreshEventKinds();
+  const offActive = useEditorRegistry.subscribe((s, prev) => {
+    if (s.active !== prev.active) invalidateCaret();
+  });
+  const offProject = useProject.subscribe((s, prev) => {
+    if (s.project !== prev.project) invalidateCaret();
+  });
   const offEditor = onEditorEvent((e) => {
+    if (e.type === "docClosed" && e.doc === pendingCaret?.doc) invalidateCaret();
     if (e.type === "docOpened" && wanted.has("file-opened")) post({ kind: "fileOpened", value: e.path });
     if (e.type === "docClosed" && wanted.has("file-closed")) post({ kind: "fileClosed", value: e.path });
     if (e.type === "inputModeChanged" && wanted.has("input-mode-changed"))
       post({ kind: "inputModeChanged", value: { path: e.path, mode: e.mode, sub: e.sub } });
     if (e.type === "docSaved" && wanted.has("file-saved")) post({ kind: "fileSaved", value: e.path });
     if (e.type === "caretMoved" && wanted.has("caret-moved")) {
+      const editor = useEditorRegistry.getState().active;
+      if (!editor || editor.ctx.doc !== e.doc || editor.ctx.path !== e.path) return;
+      if (pendingCaret && !isCurrentCaret(pendingCaret)) invalidateCaret();
+      const identity = { editor, project: useProject.getState().project, doc: e.doc, path: e.path };
+      pendingCaret = identity;
       const caret = { path: e.path, line: e.line, col: e.col, settled: false };
       post({ kind: "caretMoved", value: caret });
       // Once the caret rests, send one settled event: a plugin may then load the
       // conversation behind the label. Movement keeps postponing it.
       if (settleTimer) clearTimeout(settleTimer);
       settleTimer = setTimeout(() => {
+        if (!isCurrentCaret(identity)) return;
         settleTimer = null;
         post({ kind: "caretMoved", value: { ...caret, settled: true } });
       }, CARET_SETTLE_MS);
@@ -395,13 +428,14 @@ function trackWorkbenchEvents(): () => void {
   });
   return () => {
     offEditor();
+    offActive();
+    offProject();
     offActions();
     offVcs();
     offSettings();
     if (postTimer) clearTimeout(postTimer);
     postTimer = null;
-    if (settleTimer) clearTimeout(settleTimer);
-    settleTimer = null;
+    invalidateCaret();
     queue = [];
   };
 }
