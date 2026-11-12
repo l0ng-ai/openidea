@@ -147,7 +147,23 @@ impl Repo {
                 _ => return Err(IdeError::invalid(format!("invalid path {}", path.display()))),
             }
         }
-        Ok(parts.join("/"))
+        Ok(self.index_spelling(parts.join("/")))
+    }
+
+    /// `rel` as the index spells it. On a case-insensitive worktree (`core.ignoreCase`) the
+    /// IDE names a file the way the disk does, which differs from its index entry after a
+    /// case-only rename of it or a parent directory; git's pathspecs and tree lookups are
+    /// case-sensitive and only find the index's spelling.
+    fn index_spelling(&self, rel: String) -> String {
+        if rel.is_empty() {
+            return rel;
+        }
+        let Ok(repo) = self.gix() else { return rel };
+        if !ignores_case(&repo) {
+            return rel;
+        }
+        let Ok(index) = repo.index_or_empty() else { return rel };
+        index_spelling(&index, &rel).unwrap_or(rel)
     }
 
     fn strip_root(&self, path: &Path) -> Option<PathBuf> {
@@ -186,6 +202,36 @@ impl Repo {
         }
         p
     }
+}
+
+/// Whether the worktree's file system ignores case, as `git init`/`clone` recorded it.
+pub(crate) fn ignores_case(repo: &gix::Repository) -> bool {
+    repo.config_snapshot().boolean("core.ignoreCase").unwrap_or(false)
+}
+
+/// The index's spelling of the file or directory `rel` when it differs only in ASCII case
+/// (git's own case folding), `None` when the index has `rel` as spelled or not at all.
+fn index_spelling(index: &gix::index::State, rel: &str) -> Option<String> {
+    let rel = rel.as_bytes();
+    if index.entry_by_path(rel.as_bstr()).is_some() {
+        return None;
+    }
+    let mut found = None;
+    for entry in index.entries() {
+        let path: &[u8] = entry.path(index);
+        let spelled = match path.len().cmp(&rel.len()) {
+            std::cmp::Ordering::Equal => path,
+            std::cmp::Ordering::Greater if path[rel.len()] == b'/' => &path[..rel.len()],
+            _ => continue,
+        };
+        if spelled == rel {
+            return None;
+        }
+        if found.is_none() && spelled.eq_ignore_ascii_case(rel) {
+            found = Some(spelled.to_str_lossy().into_owned());
+        }
+    }
+    found
 }
 
 /// Blob content of `rel` at `rev`. `rev` is a revision (`HEAD`, a branch, an id) or

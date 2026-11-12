@@ -1,7 +1,7 @@
 import { useRef } from "react";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
-import { useSelectionBoundary } from "./useSelectionBoundary";
+import { selectReadingPane, useSelectionBoundary } from "./useSelectionBoundary";
 
 afterEach(() => {
   window.getSelection()?.removeAllRanges();
@@ -97,4 +97,39 @@ it("removes the boundary listener when the pane unmounts", () => {
   document.body.append(container);
   expect(select(first, 0, last, 13).toString()).toContain("Branch or tag");
   container.remove();
+});
+
+function FocusablePane() {
+  const ref = useRef<HTMLDivElement>(null);
+  useSelectionBoundary(ref);
+  return (
+    <div ref={ref} tabIndex={0} data-testid="pane">
+      <p>GET /data.json</p>
+      <input aria-label="Filter" defaultValue="query" />
+    </div>
+  );
+}
+
+it("selects only the pane's text on primary+A", () => {
+  const view = render(
+    <>
+      <div>Request history</div>
+      <FocusablePane />
+    </>,
+  );
+  const pane = view.getByTestId("pane");
+  const event = fireEvent.keyDown(pane, { key: "a", ctrlKey: true, metaKey: true });
+  expect(event).toBe(false);
+  const range = window.getSelection()!.getRangeAt(0);
+  expect(range.startContainer).toBe(pane);
+  expect(range.endContainer).toBe(pane);
+  expect(window.getSelection()!.toString()).not.toContain("Request history");
+});
+
+it("leaves Select All in an editable field to the field", () => {
+  const view = render(<FocusablePane />);
+  const input = view.getByLabelText("Filter");
+  expect(fireEvent.keyDown(input, { key: "a", ctrlKey: true, metaKey: true })).toBe(true);
+  expect(selectReadingPane(input)).toBe(false);
+  expect(selectReadingPane(document.body)).toBe(false);
 });

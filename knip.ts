@@ -12,6 +12,7 @@ const config: KnipConfig = {
     "!src/editor/core/cm/django/parser.terms.ts",
     "scripts/**/*.ts",
     "perf/**/*.ts",
+    "evals/**/*.ts",
     "e2e/**/*.ts",
     "smoke/**/*.ts",
   ],

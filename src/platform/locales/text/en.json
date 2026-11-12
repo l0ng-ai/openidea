@@ -1331,5 +1331,14 @@
   "Examples": "Examples",
   "Remove File": "Remove File",
   "Delegate IDE build/run actions to Maven": "Delegate IDE build/run actions to Maven",
-  "Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server.": "Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server."
+  "Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server.": "Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server.",
+  "Export Keymap as JSON…": "Export Keymap as JSON…",
+  "Export Keymap": "Export Keymap",
+  "OpenIDEA Keymap": "OpenIDEA Keymap",
+  "Keymap exported": "Keymap exported",
+  "Cannot export keymap": "Cannot export keymap",
+  "Close Agent Task": "Close Agent Task",
+  "Close and New Agent Task": "Close and New Agent Task",
+  "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.": "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.",
+  "Closes the agent task tab in the editor, then opens the New Task page.": "Closes the agent task tab in the editor, then opens the New Task page."
 }

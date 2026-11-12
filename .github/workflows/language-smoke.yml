@@ -24,6 +24,7 @@ on:
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/language-smoke.yml"
+      - ".github/tool-versions.env"
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
@@ -38,16 +39,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # Pinned so a server release can't fail an unrelated PR; bump them deliberately.
-  VTSLS: 0.3.0
-  TYPESCRIPT: 6.0.3
-  BASEDPYRIGHT: 1.40.2
-  RUFF: 0.17.3
-  GOPLS: v0.24.0
-  JDTLS: 1.63.0-202610191322
-  KOTLIN_LSP: 263.7084.0
-  GRADLE: 8.14.3
-  INTELEPHENSE: 1.18.5
 
 jobs:
   smoke:
@@ -61,6 +52,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      # Tool versions, shared with the evals (pnpm eval).
+      - run: grep -E '^[A-Z0-9_]+=' .github/tool-versions.env >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rust-analyzer, rustfmt" }
       # One build cache for every language; main saves it.
@@ -96,7 +89,7 @@ jobs:
 
       - if: matrix.language == 'java' || matrix.language == 'kotlin'
         uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: "21" }
+        with: { distribution: temurin, java-version: "${{ env.JAVA }}" }
       - if: matrix.language == 'java'
         run: |
           mkdir -p "$RUNNER_TEMP/jdtls"

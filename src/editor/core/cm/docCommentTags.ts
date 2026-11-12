@@ -5,7 +5,8 @@
  * scanned; the colours come from the highlight style (`--syn-doc-comment-tag*`, `--syn-doc-markup`).
  */
 import { highlightingFor, syntaxTree } from "@codemirror/language";
-import { Prec, RangeSetBuilder, type EditorState, type Extension } from "@codemirror/state";
+import { tags } from "@lezer/highlight";
+import { Prec, type EditorState, type Extension } from "@codemirror/state";
 import { Decoration, ViewPlugin, type DecorationSet, type EditorView, type ViewUpdate } from "@codemirror/view";
 import { docCommentMarkup, docCommentTag, docCommentTagValue } from "./highlight";
 
@@ -140,26 +141,64 @@ export function docCommentTagRanges(
   return out;
 }
 
+/**
+ * The doc comments between `from` and `to`, clipped to them. A Lezer grammar has one
+ * node for `/* *\/` and `/** *\/` alike, so the highlighter gives a doc comment the plain
+ * comment colour; IntelliJ gives it the doc comment colour, and these ranges carry it.
+ */
+export function docCommentBodies(
+  state: EditorState,
+  language: string,
+  from: number,
+  to: number,
+): Array<{ from: number; to: number }> {
+  if (!Object.hasOwn(DIALECTS, language)) return [];
+  const out: Array<{ from: number; to: number }> = [];
+  syntaxTree(state).iterate({
+    from,
+    to,
+    enter: (node) => {
+      if (!COMMENT.test(node.name)) return;
+      const doc =
+        language === "Kotlin" ? node.name === "docComment" : opensDoc(state.sliceDoc(node.from, node.from + 4));
+      const body = { from: Math.max(node.from, from), to: Math.min(node.to, to) };
+      if (doc && body.from < body.to) out.push(body);
+      return false;
+    },
+  });
+  return out;
+}
+
 const TAGS = { tag: docCommentTag, value: docCommentTagValue, markup: docCommentMarkup };
 const marks = new Map<string, Decoration>();
 
+function markFor(cls: string): Decoration {
+  let mark = marks.get(cls);
+  if (!mark) marks.set(cls, (mark = Decoration.mark({ class: cls })));
+  return mark;
+}
+
 function decorations(view: EditorView, language: string): DecorationSet {
+  const ranges = [];
+  // The comment's own colour first: a mark spanning the tags' wraps theirs, so a tag keeps its colour.
+  const body = highlightingFor(view.state, [tags.docComment]);
+  if (body)
+    for (const range of view.visibleRanges)
+      for (const r of docCommentBodies(view.state, language, range.from, range.to))
+        ranges.push(markFor(body).range(r.from, r.to));
   // A fold inside one line splits it into two visible ranges that both scan that whole line.
   const found = view.visibleRanges
     .flatMap((range) => docCommentTagRanges(view.state, language, range.from, range.to))
     .sort((a, b) => a.from - b.from);
-  const builder = new RangeSetBuilder<Decoration>();
   let end = -1;
   for (const r of found) {
     if (r.from < end) continue;
     const cls = highlightingFor(view.state, [TAGS[r.kind]]);
     if (!cls) continue;
-    let mark = marks.get(cls);
-    if (!mark) marks.set(cls, (mark = Decoration.mark({ class: cls })));
-    builder.add(r.from, r.to, mark);
+    ranges.push(markFor(cls).range(r.from, r.to));
     end = r.to;
   }
-  return builder.finish();
+  return Decoration.set(ranges, true);
 }
 
 /** Doc comment tag highlighting for a CodeMirror language (by name); none where IntelliJ has none. */

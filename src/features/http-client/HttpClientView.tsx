@@ -3,10 +3,20 @@
  * exchange (right): status line, timing, body (pretty-printed JSON / XML /
  * HTML or raw), response headers and the request as sent.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import type { HttpExchange, HttpHistoryEntry } from "@/platform/ipc";
-import { EmptyState, IconButton, SplitGroup, SplitHandle, SplitPanel, Spinner, Tabs, T } from "@/ui";
+import {
+  EmptyState,
+  IconButton,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  Spinner,
+  Tabs,
+  T,
+  useSelectionBoundary,
+} from "@/ui";
 import { bodyKind, formatMs, formatSize, prettyBody } from "./format";
 import { cancelRunning, clearHistory, refreshHistory, selectEntry, useHttpClient } from "./store";
 import styles from "./HttpClient.module.css";
@@ -43,6 +53,8 @@ type Tab = "body" | "headers" | "request";
 
 function ExchangeView({ ex }: { ex: HttpExchange }) {
   const [tab, setTab] = useState<Tab>("body");
+  const pane = useRef<HTMLDivElement>(null);
+  useSelectionBoundary(pane);
   const [raw, setRaw] = useState(false);
   const r = ex.response;
   const kind = r?.body != null ? bodyKind(r.contentType, r.body) : "text";
@@ -88,7 +100,8 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
           ) : undefined
         }
       />
-      <div className={styles.tabBody}>
+      {/* Focusable, so Select All and Copy work on the response like in a read-only editor. */}
+      <div ref={pane} className={styles.tabBody} tabIndex={0}>
         {tab === "body" &&
           (r == null ? (
             <pre className={styles.pre}>{ex.entry.error}</pre>

@@ -6,7 +6,8 @@ use gix::status::index_worktree::Item as WtItem;
 use gix::status::plumbing::index_as_worktree::{Change as WtChange, EntryStatus};
 use ide_core::IdeResult;
 use ide_core::ignored::IgnoredNames;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 #[derive(Default)]
 struct Entry {
@@ -23,6 +24,7 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
         tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
         cli_status(r, &ignored)
     })?;
+    let mut disk = r.gix().is_ok_and(|repo| crate::repo::ignores_case(&repo)).then(DiskSpelling::default);
     Ok(map
         .into_iter()
         .filter(|(_, e)| e.staged.is_some() || e.unstaged.is_some())
@@ -36,8 +38,13 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
                 e.renamed_from = None;
                 e.unstaged = Some(ChangeKind::Conflicted);
             }
+            // Untracked paths come from the disk already; tracked ones are the index's spelling.
+            let path = match disk.as_mut() {
+                Some(disk) if e.unstaged != Some(ChangeKind::Untracked) => disk.spell(r.root(), &rel),
+                _ => None,
+            };
             FileStatus {
-                path: r.abs_path(&rel).into(),
+                path: r.abs_path(path.as_deref().unwrap_or(&rel)).into(),
                 rel_path: rel,
                 staged: e.staged,
                 unstaged: e.unstaged,
@@ -45,6 +52,44 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
             }
         })
         .collect())
+}
+
+/// Spells repository paths the way a case-insensitive disk does, so that the tree, tabs and
+/// editors (which use the disk's names) find a tracked file's status after a case-only rename.
+#[derive(Default)]
+struct DiskSpelling {
+    /// Directory → its entries' names by ASCII-lowercased name.
+    dirs: HashMap<PathBuf, HashMap<String, String>>,
+}
+
+impl DiskSpelling {
+    /// `rel` as spelled on disk, `None` when it already is (or isn't there).
+    fn spell(&mut self, root: &Path, rel: &str) -> Option<String> {
+        let mut dir = root.to_path_buf();
+        let mut parts: Vec<String> = Vec::new();
+        let mut changed = false;
+        let mut rest = rel.split('/').filter(|s| !s.is_empty());
+        for part in rest.by_ref() {
+            let names = self.dirs.entry(dir.clone()).or_insert_with(|| {
+                std::fs::read_dir(&dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .map(|name| (name.to_ascii_lowercase(), name))
+                    .collect()
+            });
+            let Some(name) = names.get(&part.to_ascii_lowercase()).cloned() else {
+                parts.push(part.to_owned());
+                break;
+            };
+            changed |= name != part;
+            dir.push(&name);
+            parts.push(name);
+        }
+        parts.extend(rest.map(str::to_owned));
+        changed.then(|| parts.join("/"))
+    }
 }
 
 type Entries = (BTreeMap<String, Entry>, HashSet<String>);
