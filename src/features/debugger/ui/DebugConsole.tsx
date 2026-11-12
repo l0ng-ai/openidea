@@ -17,6 +17,7 @@ import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { useConsoleFont } from "@/platform/consoleFont";
 import { spanStyle } from "@/ui/ansi";
+import { logLineColor } from "@/ui/logColors";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
 import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions, type FindResult } from "@/ui/consoleFind";
 import {
@@ -124,6 +125,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const fontStyle = { fontFamily: consoleFont.family, fontSize: `${consoleFont.size}px` };
   // Settings › Console › Use soft wraps is the default; the toggle overrides it for this console.
   const defaultWrap = useWorkflowSettings((s) => s.console.softWrap);
+  const logColors = useWorkflowSettings((s) => s.console.logColors);
   const [wrapOverride, setWrapOverride] = useState<boolean | null>(null);
   const softWrap = wrapOverride ?? defaultWrap;
   const programmatic = useRef(false);
@@ -454,13 +456,15 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
             {virtualizer.getVirtualItems().map((item) => {
               const l = lines?.[item.index];
               if (!l) return null;
+              // The level colour is the inherited fallback; spans with their own ANSI colour win.
+              const color = logLineColor(l.text, l.category, logColors);
               return (
                 <span
                   key={item.key}
                   data-index={item.index}
                   ref={virtualizer.measureElement}
                   className={clsx(styles.out, styles[`cat-${l.category}`])}
-                  style={{ transform: `translateY(${item.start}px)` }}
+                  style={{ transform: `translateY(${item.start}px)`, color }}
                 >
                   <DebugLine line={l} marks={marksByLine.get(item.index)} length={l.text.length} cwd={cwd} />
                 </span>
