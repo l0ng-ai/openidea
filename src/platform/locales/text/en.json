@@ -138,6 +138,7 @@
   "Roll back the changes to {count} files?": "Roll back the changes to {count} files?",
   "They go back to how they were when the task started, in the task's worktree.": "They go back to how they were when the task started, in the task's worktree.",
   "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.": "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.",
+  "They go back to the last commit; changes made after it are lost.": "They go back to the last commit; changes made after it are lost.",
   "Cannot roll back the changes": "Cannot roll back the changes",
   "Cannot connect": "Cannot connect",
   "Rollback Selected Changes…": "Rollback Selected Changes…",
@@ -1359,5 +1360,10 @@
   "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.": "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.",
   "Closes the agent task tab in the editor, then opens the New Task page.": "Closes the agent task tab in the editor, then opens the New Task page.",
   "May be incomplete: plugin indexes are still updating": "May be incomplete: plugin indexes are still updating",
-  "Plugin indexes could not be updated; see the plugin notification": "Plugin indexes could not be updated; see the plugin notification"
+  "Plugin indexes could not be updated; see the plugin notification": "Plugin indexes could not be updated; see the plugin notification",
+  "Uncommitted": "Uncommitted",
+  "Committed": "Committed",
+  "Working tree": "Working tree",
+  "1 commit": "1 commit",
+  "{count} commits": "{count} commits"
 }
