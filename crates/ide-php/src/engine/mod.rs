@@ -569,6 +569,8 @@ impl PhpEngine {
                 && old.class_likes.len() == new.class_likes.len();
             if !same {
                 self.shared.modification.fetch_add(1, Ordering::SeqCst);
+                // What the other open files call may have appeared or gone.
+                self.shared.inspect_open_documents_but(Some(doc));
                 continue;
             }
             // Same declarations, some of them moved: only the models holding
@@ -816,11 +818,19 @@ impl PhpEngine {
 
     /// The editor closed the document: the file on disk counts again.
     pub fn document_closed(&self, doc: DocId) {
-        if self.shared.documents.lock().remove(&doc).is_some() {
-            self.shared.inspections.closed(doc, &self.shared.sink);
-            self.shared.parses.remove(doc);
-            self.shared.open_summaries.lock().remove(&doc);
-            self.shared.modification.fetch_add(1, Ordering::SeqCst);
+        let Some(closed) = self.shared.documents.lock().remove(&doc) else { return };
+        self.shared.inspections.closed(doc, &self.shared.sink);
+        self.shared.parses.remove(doc);
+        self.shared.open_summaries.lock().remove(&doc);
+        self.shared.modification.fetch_add(1, Ordering::SeqCst);
+        // Closed unsaved, the other open files see the file on disk again;
+        // edited since its declarations were last compared (saved and closed
+        // before its own inspection ran), they may not have seen the edit.
+        let edited = self.shared.unsettled.lock().remove(&doc).is_some();
+        let unsaved =
+            !closed.embedded && std::fs::read_to_string(&closed.path).map_or(true, |disk| *disk != *closed.text);
+        if edited || unsaved {
+            self.shared.inspect_open_documents();
         }
     }
 
@@ -1739,7 +1749,14 @@ impl Shared {
     /// Other files' declarations changed: the open documents are inspected
     /// again.
     fn inspect_open_documents(&self) {
-        let open: Vec<DocId> = self.documents.lock().values().filter(|d| !d.embedded).map(|d| d.doc).collect();
+        self.inspect_open_documents_but(None);
+    }
+
+    /// [`inspect_open_documents`](Self::inspect_open_documents), but for
+    /// `except` (the document whose edit changed them, inspected already).
+    fn inspect_open_documents_but(&self, except: Option<DocId>) {
+        let open: Vec<DocId> =
+            self.documents.lock().values().filter(|d| !d.embedded && Some(d.doc) != except).map(|d| d.doc).collect();
         for doc in open {
             self.inspections.schedule(doc);
         }

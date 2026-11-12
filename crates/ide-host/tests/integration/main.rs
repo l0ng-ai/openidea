@@ -7,6 +7,7 @@ mod distribution;
 mod external_log;
 mod language_service;
 mod light_edit;
+mod php_editor;
 mod php_engine;
 mod php_fixture;
 mod plugins;
