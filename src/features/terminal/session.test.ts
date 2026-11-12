@@ -78,6 +78,9 @@ describe("Windows PTY metadata", () => {
 });
 
 describe("terminal clear output", () => {
+  const initialPlatform = usePlatform.getState();
+  beforeEach(() => usePlatform.setState({ os: "windows", windowsBuildNumber: 22631 }));
+  afterEach(() => usePlatform.setState(initialPlatform));
   const write = (session: TerminalSession, data: string) =>
     new Promise<void>((resolve) => session.term.write(data, resolve));
   const create = () => {
@@ -87,7 +90,7 @@ describe("terminal clear output", () => {
   };
 
   it.each(["\x1b[H\x1b[2J", "\x1b[H\x1b[J"])(
-    "removes scrollback when a program erases the viewport with %s",
+    "keeps scrollback when a program erases the viewport with %s",
     async (erase) => {
       const session = create();
       try {
@@ -95,8 +98,8 @@ describe("terminal clear output", () => {
         expect(session.term.buffer.active.baseY).toBeGreaterThan(0);
         await write(session, `${erase}new prompt`);
         await write(session, "");
-        expect(session.term.buffer.active.baseY).toBe(0);
-        expect(session.term.buffer.active.getLine(0)?.translateToString(true)).toBe("new prompt");
+        expect(session.term.buffer.active.baseY).toBeGreaterThan(0);
+        expect(session.term.buffer.active.getLine(0)?.translateToString(true)).toBe("old-1");
       } finally {
         session.dispose();
       }
@@ -112,6 +115,57 @@ describe("terminal clear output", () => {
       await write(session, "");
       expect(session.term.buffer.active.baseY).toBe(0);
       expect(session.term.buffer.active.getLine(0)?.translateToString(true)).toBe("new prompt");
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it.each(["macos", "linux"] as const)("keeps scrollback for the same row erase on %s", async (os) => {
+    usePlatform.setState({ os, windowsBuildNumber: null });
+    const session = create();
+    try {
+      await write(session, "old-1\r\nold-2\r\nold-3\r\nold-4\r\nold-5\r\n");
+      await write(session, "\x1b[Hnew prompt\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K");
+      expect(session.term.buffer.active.baseY).toBeGreaterThan(0);
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("recognizes ConPTY output when Windows metadata arrives after session creation", async () => {
+    usePlatform.setState({ os: "macos", windowsBuildNumber: null });
+    const session = create();
+    try {
+      await write(session, "old-1\r\nold-2\r\nold-3\r\nold-4\r\nold-5\r\n");
+      usePlatform.setState({ os: "windows", windowsBuildNumber: 22631 });
+      await write(session, "\x1b[Hnew prompt\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K");
+      await write(session, "");
+      expect(session.term.buffer.active.baseY).toBe(0);
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("keeps scrollback for a resize-triggered ConPTY repaint, then clears on cls", async () => {
+    ipc.commands.termSpawn.mockResolvedValue({ id: 42, title: "pwsh" });
+    const session = create();
+    try {
+      await session.start();
+      await write(session, "old-1\r\nold-2\r\nold-3\r\nold-4\r\nold-5\r\n");
+      await write(session, "\x1b[Hpartial\x1b[K");
+      session.term.resize(20, 5);
+      await write(session, "\x1b[Hrepaint\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K");
+      expect(session.term.buffer.active.baseY).toBeGreaterThan(0);
+      await write(session, "\x1b[Hrepaint again\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K");
+      expect(session.term.buffer.active.baseY).toBeGreaterThan(0);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 1_100);
+      try {
+        await write(session, "\x1b[Hnew prompt\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K");
+        await write(session, "");
+      } finally {
+        clock.mockRestore();
+      }
+      expect(session.term.buffer.active.baseY).toBe(0);
     } finally {
       session.dispose();
     }

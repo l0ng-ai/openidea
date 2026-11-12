@@ -11,10 +11,11 @@ export function windowsPty(): ITerminalOptions["windowsPty"] {
 }
 
 /** Restored terminals can be constructed before appInfo answers. */
-export function watchWindowsPty(term: Terminal) {
+export function watchWindowsPty(term: Terminal, onChange?: () => void) {
   const unsubscribe = usePlatform.subscribe((next, previous) => {
     if (next.os !== previous.os || next.windowsBuildNumber !== previous.windowsBuildNumber) {
       term.options.windowsPty = windowsPty() ?? {};
+      onChange?.();
     }
   });
   return { dispose: unsubscribe };
