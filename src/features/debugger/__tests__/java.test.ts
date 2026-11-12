@@ -95,6 +95,18 @@ describe("Java debugging (java-debug through jdtls)", () => {
     });
   });
 
+  it("echoes the equivalent Java command in the Debug console", async () => {
+    const report = vi.fn();
+    await javaLaunchConfig(app, "/p", {
+      request: 1,
+      signal: new AbortController().signal,
+      report,
+    });
+    expect(report).toHaveBeenCalledWith(
+      '/jdk21/bin/java -Xmx1g -cp /p/target/classes:/m2/a.jar a.Main --port "8081 x"\n',
+    );
+  });
+
   it("debugs Spring Boot with coloured console output, as Run does", async () => {
     const boot = { ...app, kind: "spring-boot" };
     expect(JSON.parse((await javaLaunchConfig(boot, "/p")).extraJson!).vmArgs).toBe(
