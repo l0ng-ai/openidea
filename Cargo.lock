@@ -4443,6 +4443,7 @@ dependencies = [
  "ide-tools",
  "ide-vcs",
  "ide-vfs",
+ "ide-web",
  "ide-workspace",
  "ignore",
  "jsonschema",

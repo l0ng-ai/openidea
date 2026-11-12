@@ -35,6 +35,7 @@ pub mod syntax;
 pub mod term;
 pub mod tools;
 pub mod vcs;
+pub mod web;
 
 use crate::Host;
 use ide_core::{IdeError, IdeResult};
