@@ -112,6 +112,16 @@ async fn reads_unsaved_text_and_searches_the_overlay_with_a_limit() {
     assert_eq!(found["more"], true);
     let all = h.json("search_text", json!({"q":"fresh","limit":20})).await;
     assert_eq!(all["items"][0]["filePath"], "src/a.txt");
+    // The matched line comes with the result (unsaved text included), and lines around it on request.
+    assert_eq!(all["items"][0]["lineText"], "fresh needle text");
+    assert!(all["items"][0].get("contextAfter").is_none());
+    let after = h.json("search_text", json!({"q":"fresh","context":"+1"})).await;
+    assert_eq!(after["items"][0]["contextAfter"], json!(["needle needle"]));
+    let before = h.json("search_regex", json!({"q":"needle needle","context":"-1"})).await;
+    assert_eq!(before["items"][0]["lineText"], "needle needle");
+    assert_eq!(before["items"][0]["contextBefore"], json!(["fresh needle text"]));
+    let bad = h.error("search_text", json!({"q":"fresh","context":"around"})).await;
+    assert!(bad.contains("context must be"), "{bad}");
     let all = h.json("search_text", json!({"q":"needle","limit":20})).await;
     assert!(all["items"].as_array().unwrap().iter().all(|v| !v["filePath"].as_str().unwrap().contains("ignored")));
     let files = h.json("search_file", json!({"q":"*.txt","paths":["src/**"]})).await;

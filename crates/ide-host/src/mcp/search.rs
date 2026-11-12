@@ -38,6 +38,14 @@ const LINE_WINDOW: usize = 500;
 const PATHS_DESCRIPTION: &str = "Optional list of project-relative glob patterns to filter results. Supports '!' \
 excludes. Trailing '/' expands to '**'. Patterns without '/' are treated as '**/pattern'. Empty strings are ignored.";
 const LIMIT_DESCRIPTION: &str = "Maximum number of results to return";
+const CONTEXT_DESCRIPTION: &str = "Lines around each match to return besides the matched line (`lineText`): \"+N\" the \
+N lines after it (`contextAfter`), \"-N\" the N lines before it (`contextBefore`), \"N\" (or the number N) N lines on \
+each side. At most 50. Default: the matched line only.";
+/// A matched line longer than this (UTF-16 units) is cut to the match and [`SNIPPET_AROUND`] units
+/// on each side of it; a longer context line to its start.
+const MAX_LINE_TEXT: usize = 300;
+const SNIPPET_AROUND: usize = 100;
+const MAX_CONTEXT_LINES: u32 = 50;
 
 pub fn tools() -> Vec<Tool> {
     vec![search_text(), search_regex(), search_symbol(), search_file()]
@@ -49,6 +57,8 @@ fn search_text() -> Tool {
         "Searches for a text substring within project files.
 Use this tool for fast text search with match coordinates.
 Results include match coordinates when available (1-based line/column, end exclusive).
+Each result has the matched line (`lineText`; a long line cut to the match and 100 characters on each side, marked
+with …), and with `context` the lines around it.
 
 Paths are glob patterns relative to the project root.
 Examples: [\"src/**\", \"!**/test/**\"], [\"**/*.kt\"], [\"foo/\"].",
@@ -57,6 +67,7 @@ Examples: [\"src/**\", \"!**/test/**\"], [\"**/*.kt\"], [\"foo/\"].",
     .param(Param::required("q", ParamType::String, "Text to search for"))
     .param(Param::optional("paths", ParamType::StringList, PATHS_DESCRIPTION))
     .param(Param::optional("limit", ParamType::Integer, LIMIT_DESCRIPTION))
+    .param(Param::optional("context", ParamType::String, CONTEXT_DESCRIPTION))
     .output(result_schema())
 }
 
@@ -66,6 +77,8 @@ fn search_regex() -> Tool {
         "Searches for regex matches within project files.
 Use this tool when you need regex search with match coordinates.
 Results include match coordinates when available (1-based line/column, end exclusive).
+Each result has the matched line (`lineText`; a long line cut to the match and 100 characters on each side, marked
+with …), and with `context` the lines around it.
 The pattern uses Rust regex syntax and is case-sensitive; prefix `(?i)` to ignore case.
 
 Paths are glob patterns relative to the project root.
@@ -75,6 +88,7 @@ Examples: [\"src/**\", \"!**/test/**\"], [\"**/*.kt\"], [\"foo/\"].",
     .param(Param::required("q", ParamType::String, "Regex pattern to search for"))
     .param(Param::optional("paths", ParamType::StringList, PATHS_DESCRIPTION))
     .param(Param::optional("limit", ParamType::Integer, LIMIT_DESCRIPTION))
+    .param(Param::optional("context", ParamType::String, CONTEXT_DESCRIPTION))
     .output(result_schema())
 }
 
@@ -84,6 +98,7 @@ fn search_symbol() -> Tool {
         "Searches for symbols (classes, methods, fields).
 Use this tool for semantic lookup by identifier fragments.
 Results include match coordinates when available (1-based line/column, end exclusive).
+Project results have their line (`lineText`), and with `context` the lines around it.
 
 Paths are glob patterns relative to the project root.
 By default this searches project symbols only.
@@ -99,6 +114,7 @@ If you don't find a suitable result, try again with include_external=true to sea
 with include_external=true.",
     ))
     .param(Param::optional("limit", ParamType::Integer, LIMIT_DESCRIPTION))
+    .param(Param::optional("context", ParamType::String, CONTEXT_DESCRIPTION))
     .output(result_schema())
 }
 
@@ -145,6 +161,13 @@ struct SearchItem {
     name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     container: Option<String>,
+    /// The text of `start_line` (cut when long).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_text: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    context_before: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    context_after: Vec<String>,
 }
 
 impl SearchItem {
@@ -182,7 +205,9 @@ fn result_schema() -> Value {
                 "type": "object",
                 "properties": {
                     "filePath": string, "startLine": int, "startColumn": int, "endLine": int, "endColumn": int,
-                    "name": string, "container": string,
+                    "name": string, "container": string, "lineText": string,
+                    "contextBefore": { "type": "array", "items": string },
+                    "contextAfter": { "type": "array", "items": string },
                 },
                 "required": ["filePath"],
             } },
@@ -205,6 +230,87 @@ fn query(call: &Call, empty: &str) -> IdeResult<String> {
         return Err(IdeError::invalid(empty));
     }
     Ok(q)
+}
+
+// --- matched lines -------------------------------------------------------------
+
+/// The `context` argument as (lines before, lines after).
+fn context(call: &Call) -> IdeResult<(u32, u32)> {
+    let invalid = || IdeError::invalid("context must be \"+N\", \"-N\" or N (lines after, before, or on each side)");
+    let (sign, n) = match call.args.get("context") {
+        None | Some(Value::Null) => return Ok((0, 0)),
+        Some(Value::Number(n)) => (None, n.as_u64().ok_or_else(invalid)?),
+        Some(Value::String(s)) => {
+            let s = s.trim();
+            match s.strip_prefix('+').map(|r| ('+', r)).or_else(|| s.strip_prefix('-').map(|r| ('-', r))) {
+                Some((sign, rest)) => (Some(sign), rest.trim().parse().map_err(|_| invalid())?),
+                None => (None, s.parse().map_err(|_| invalid())?),
+            }
+        }
+        Some(_) => return Err(invalid()),
+    };
+    let n = (n.min(MAX_CONTEXT_LINES as u64)) as u32;
+    Ok(match sign {
+        Some('+') => (0, n),
+        Some(_) => (n, 0),
+        None => (n, n),
+    })
+}
+
+/// `line`, or when longer than [`MAX_LINE_TEXT`] UTF-16 units, the part from [`SNIPPET_AROUND`]
+/// units before 0-based UTF-16 column `start` to as many after `end`, with `…` where it was cut.
+fn snippet(line: &str, start: usize, end: usize) -> String {
+    let units: usize = line.chars().map(char::len_utf16).sum();
+    if units <= MAX_LINE_TEXT {
+        return line.to_owned();
+    }
+    let from = start.saturating_sub(SNIPPET_AROUND);
+    let to = end.max(start).saturating_add(SNIPPET_AROUND).min(units);
+    let (mut out, mut at) = (String::new(), 0);
+    for c in line.chars() {
+        if at >= from && at < to {
+            out.push(c);
+        }
+        at += c.len_utf16();
+    }
+    let before = if from > 0 { "\u{2026}" } else { "" };
+    let after = if to < units { "\u{2026}" } else { "" };
+    format!("{before}{out}{after}")
+}
+
+/// A context line: its first [`MAX_LINE_TEXT`] UTF-16 units.
+fn context_line(line: &str) -> String {
+    snippet(line, 0, MAX_LINE_TEXT.saturating_sub(SNIPPET_AROUND))
+}
+
+/// Fills `line_text` and the context of `items`, whose files are `absolute(item)` (none: left
+/// as they are); each file is read once, with unsaved editor text.
+async fn fill_lines(
+    call: &Call,
+    items: &mut [SearchItem],
+    absolute: impl Fn(&SearchItem) -> Option<PathBuf>,
+    (before, after): (u32, u32),
+) {
+    let host = call.host();
+    let mut current: Option<(PathBuf, Option<Vec<String>>)> = None;
+    for item in items {
+        let (Some(path), Some(line)) = (absolute(item), item.start_line) else { continue };
+        if current.as_ref().is_none_or(|(p, _)| p != &path) {
+            let text = crate::ops::fs::read_text(&host, call.window(), path.clone()).await.ok();
+            let lines = text.map(|t| t.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l).to_owned()).collect());
+            current = Some((path, lines));
+        }
+        let Some((_, Some(lines))) = &current else { continue };
+        let index = line as usize - 1;
+        let Some(text) = lines.get(index) else { continue };
+        let start = item.start_column.unwrap_or(1) as usize - 1;
+        let end = if item.end_line == Some(line) { item.end_column.map_or(start, |c| c as usize - 1) } else { start };
+        item.line_text = Some(snippet(text, start, end));
+        let first = index.saturating_sub(before as usize);
+        item.context_before = lines[first..index].iter().map(|l| context_line(l)).collect();
+        let last = (index + after as usize).min(lines.len() - 1);
+        item.context_after = lines[index + 1..=last].iter().map(|l| context_line(l)).collect();
+    }
 }
 
 // --- path globs ----------------------------------------------------------------
@@ -416,6 +522,7 @@ struct TextHit {
 async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
     let pattern = query(&call, if is_regex { "Regex pattern is empty" } else { "Search text is empty" })?;
     let limit = limit(&call, DEFAULT_LIMIT)?;
+    let around = context(&call)?;
     let scope = PathScope::new(call.root(), &call.str_list("paths")?)?;
     // Globs Find in Files cannot take are applied afterwards, so the engine must not
     // stop at `limit` matches the filter may drop.
@@ -494,7 +601,7 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
     let more = hits.len() > limit || summary.limit_hit || timed_out;
     hits.truncate(limit);
     extend_spanning(&call, &query, &mut hits, spanning).await;
-    let items = hits
+    let mut items: Vec<SearchItem> = hits
         .into_iter()
         .map(|h| SearchItem {
             file_path: h.file_path,
@@ -505,6 +612,9 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
             ..Default::default()
         })
         .collect();
+    let absolute: std::collections::HashMap<&str, &Path> =
+        files.iter().map(|(path, file)| (path.as_str(), file.path.0.as_path())).collect();
+    fill_lines(&call, &mut items, |item| absolute.get(item.file_path.as_str()).map(|p| p.to_path_buf()), around).await;
     let partial_result_reason = timed_out.then_some(SEARCH_TIMEOUT_PARTIAL_RESULT_REASON);
     Output::json(SearchResult { items, more, partial_result_reason })
 }
@@ -726,6 +836,7 @@ async fn symbol_search(call: Call) -> IdeResult<Output> {
     let started = Instant::now();
     let q = query(&call, "Search query is empty")?;
     let limit = limit(&call, SYMBOL_SEARCH_DEFAULT_LIMIT)?;
+    let around = context(&call)?;
     let scope = PathScope::new(call.root(), &call.str_list("paths")?)?;
     let external = call.flag("include_external", false)?;
     let host = call.host();
@@ -775,6 +886,13 @@ async fn symbol_search(call: Call) -> IdeResult<Output> {
     }
     let more = items.len() > limit || timed_out;
     items.truncate(limit);
+    // Project files (relative paths, or absolute ones of content roots); library URIs are left out.
+    let root = call.root().to_path_buf();
+    let absolute = |item: &SearchItem| {
+        let path = Path::new(&item.file_path);
+        (!item.file_path.contains("://")).then(|| if path.is_absolute() { path.to_path_buf() } else { root.join(path) })
+    };
+    fill_lines(&call, &mut items, absolute, around).await;
     let indexing = indexing_before || project.index.status().indexing;
     let partial_result_reason = if indexing {
         Some(INDEXING_PARTIAL_RESULT_REASON)
@@ -867,6 +985,17 @@ mod tests {
         assert_eq!(byte_at("a😀b", 4), Some(6));
         assert_eq!(byte_at("a😀b", 2), None);
         assert_eq!(byte_at("ab", 5), None);
+    }
+
+    #[test]
+    fn long_lines_are_cut_around_the_match() {
+        assert_eq!(snippet("short line", 0, 5), "short line");
+        let line = format!("{}needle{}", "a".repeat(400), "b".repeat(400));
+        let cut = snippet(&line, 400, 406);
+        assert_eq!(cut, format!("\u{2026}{}needle{}\u{2026}", "a".repeat(100), "b".repeat(100)));
+        let start = snippet(&line, 0, 0);
+        assert!(start.starts_with('a') && start.ends_with('\u{2026}') && start.chars().count() == 101);
+        assert_eq!(context_line(&"x".repeat(1000)).chars().count(), MAX_LINE_TEXT + 1);
     }
 
     #[test]
