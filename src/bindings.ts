@@ -891,7 +891,7 @@ export const commands = {
 	/**  Which coordinate element the caret is in. */
 	kind: PomCompletionKind,
 	/**  The suggestions, local repository first. */
-	options: PomCompletionOption_Serialize[],
+	options: PomCompletionOption[],
 } | null, IdeError>(__TAURI_INVOKE("maven_dependency_completion", { doc, offset, request })),
 	/**
 	 *  Build › Build Project / Rebuild Project / Build Module (`file`: a file or folder of the
@@ -8023,7 +8023,19 @@ export type PluginsSnapshot = {
  *  The completion offered at a caret of a POM: the replaced value span (UTF-16
  *  offsets) and the suggestions, local ones first.
  */
-export type PomCompletion = PomCompletion_Serialize | PomCompletion_Deserialize;
+export type PomCompletion = {
+	/**  UTF-16 offset where the completed text starts: the value's first character. */
+	from: number,
+	/**
+	 *  UTF-16 offset where the replaced value ends: past the caret when the caret
+	 *  sits inside an existing value, which is then replaced whole.
+	 */
+	to: number,
+	/**  Which coordinate element the caret is in. */
+	kind: PomCompletionKind,
+	/**  The suggestions, local repository first. */
+	options: PomCompletionOption[],
+};
 
 /**  The coordinate element a POM completion fills. */
 export type PomCompletionKind = 
@@ -8038,62 +8050,10 @@ export type PomCompletionKind =
  *  One suggestion: the coordinate as inserted, and an optional note shown in
  *  the lookup (the owning group of an artifactId, its newest installed version).
  */
-export type PomCompletionOption = PomCompletionOption_Serialize | PomCompletionOption_Deserialize;
-
-/**
- *  One suggestion: the coordinate as inserted, and an optional note shown in
- *  the lookup (the owning group of an artifactId, its newest installed version).
- */
-export type PomCompletionOption_Deserialize = {
+export type PomCompletionOption = {
 	/**  The text the completion inserts (`org.example.lib`, `example-lib`, `1.2.0`). */
 	label: string,
 	detail: string | null,
-};
-
-/**
- *  One suggestion: the coordinate as inserted, and an optional note shown in
- *  the lookup (the owning group of an artifactId, its newest installed version).
- */
-export type PomCompletionOption_Serialize = {
-	/**  The text the completion inserts (`org.example.lib`, `example-lib`, `1.2.0`). */
-	label: string,
-	detail?: string | null,
-};
-
-/**
- *  The completion offered at a caret of a POM: the replaced value span (UTF-16
- *  offsets) and the suggestions, local ones first.
- */
-export type PomCompletion_Deserialize = {
-	/**  UTF-16 offset where the completed text starts: the value's first character. */
-	from: number,
-	/**
-	 *  UTF-16 offset where the replaced value ends: past the caret when the caret
-	 *  sits inside an existing value, which is then replaced whole.
-	 */
-	to: number,
-	/**  Which coordinate element the caret is in. */
-	kind: PomCompletionKind,
-	/**  The suggestions, local repository first. */
-	options: PomCompletionOption_Deserialize[],
-};
-
-/**
- *  The completion offered at a caret of a POM: the replaced value span (UTF-16
- *  offsets) and the suggestions, local ones first.
- */
-export type PomCompletion_Serialize = {
-	/**  UTF-16 offset where the completed text starts: the value's first character. */
-	from: number,
-	/**
-	 *  UTF-16 offset where the replaced value ends: past the caret when the caret
-	 *  sits inside an existing value, which is then replaced whole.
-	 */
-	to: number,
-	/**  Which coordinate element the caret is in. */
-	kind: PomCompletionKind,
-	/**  The suggestions, local repository first. */
-	options: PomCompletionOption_Serialize[],
 };
 
 /**  What a go-to-declaration in a POM found, and where. */
