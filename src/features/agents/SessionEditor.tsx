@@ -38,6 +38,7 @@ import { confirm } from "@/workbench/messages";
 import {
   Button,
   Checkbox,
+  Chip,
   EmptyState,
   Icon,
   IconButton,
@@ -317,16 +318,28 @@ function SessionStatus({
   task,
   entries,
   head,
+  changes,
+  commits,
+  changesOpen,
+  onToggleChanges,
 }: {
   task: AgentTask;
   entries: AgentEntry[] | null;
   head: string | null;
+  changes: AgentChange[] | null;
+  commits: readonly AgentCommit[];
+  changesOpen: boolean;
+  onToggleChanges: () => void;
 }) {
   const tx = useTx();
   const project = useProject((s) => s.project);
-  const projectName = project?.workspace ? basename(task.projectRoot ?? project.root) : null;
-  const where = task.isolation === "worktree" ? branchLabel(task.branch) : null;
+  const projectRoot = task.projectRoot ?? project?.root ?? null;
+  const projectName = project?.workspace && projectRoot ? basename(projectRoot) : project?.name;
+  const local = task.isolation !== "worktree";
+  const branch = local ? head : branchLabel(task.branch) || null;
   const pickedModel = task.status !== "archived" && task.config.some((o) => o.category === "model");
+  const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
+  const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
   return (
     <div
       className={styles.statusBar}
@@ -335,25 +348,74 @@ function SessionStatus({
         showContextMenu(e, taskMenu([task]));
       }}
     >
-      <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
-      <span className={styles.statusText} title={task.cwd}>
-        {providerName(task.provider)}
-        {/* The composer's model picker shows the model when the agent offers one. */}
-        {task.model && !pickedModel ? ` · ${task.model}` : ""}
-        {projectName ? ` · ${projectName}` : ""}
-        {" · "}
-        {where ?? (
+      <span className={styles.agent} title={task.cwd}>
+        <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
+        <span className={styles.agentName}>
+          {providerName(task.provider)}
+          {/* The composer's model picker shows the model when the agent offers one. */}
+          {task.model && !pickedModel ? ` · ${task.model}` : ""}
+        </span>
+      </span>
+      {/* The same three facts as the new-task composer: project, checkout, branch. */}
+      <span className={styles.where}>
+        {projectName && (
+          <Chip icon="folder" title={projectRoot ?? undefined}>
+            {projectName}
+          </Chip>
+        )}
+        <Chip icon={local ? "folder" : "branch"}>
+          <T>{local ? "Local checkout" : "New worktree"}</T>
+        </Chip>
+        {branch && (
           <>
-            <T>Local checkout</T>
-            {head ? ` · ${head}` : ""}
+            {local && (
+              <span className={styles.note}>
+                <T>on</T>
+              </span>
+            )}
+            <Chip icon="branch" title={branch}>
+              {branch}
+            </Chip>
           </>
         )}
-        {" · "}
+      </span>
+      <span className={styles.state}>
         <T>{statusLabel(task.status)}</T>
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
       </span>
-      <Meters task={task} entries={entries} />
-      <StatusActions task={task} />
+      {/* What changed sits above the meter, time and terminal; those keep their one row at the right. */}
+      <span className={styles.statusEnd}>
+        {(!!changes?.length || !!commits.length) && (
+          <span className={styles.statusChips}>
+            {!!changes?.length && (
+              <button type="button" className={styles.statusChip} aria-expanded={changesOpen} onClick={onToggleChanges}>
+                <Icon name="edit" size={12} />
+                {/* The counts are the chip's own items, so its gap spaces them and the label can still truncate. */}
+                <span className={styles.statusChipLabel}>
+                  {tx(changes.length === 1 ? "1 changed file" : "{count} changed files").replace(
+                    "{count}",
+                    String(changes.length),
+                  )}
+                </span>
+                {added > 0 && <span className={styles.added}>+{added}</span>}
+                {removed > 0 && <span className={styles.removed}>−{removed}</span>}
+              </button>
+            )}
+            {!!commits.length && (
+              <button type="button" className={styles.statusChip} aria-expanded={changesOpen} onClick={onToggleChanges}>
+                <Icon name="commit" size={12} />
+                <span className={styles.statusChipLabel}>
+                  {tx(commits.length === 1 ? "1 commit" : "{count} commits").replace("{count}", String(commits.length))}
+                </span>
+              </button>
+            )}
+          </span>
+        )}
+        <span className={styles.statusMeters}>
+          <Meters task={task} entries={entries} />
+          <StatusActions task={task} />
+        </span>
+      </span>
     </div>
   );
 }
@@ -2428,26 +2490,10 @@ function QuestionForm({
 
 /**
  * What needs the user or tells where the agent is, above the composer: an approval it
- * waits for (answered with 1, 2, 3… when the focus isn't in a text field), the plan, the
- * task's changes, then what runs and what is queued, and a line saying what it does now.
+ * waits for (answered with 1, 2, 3… when the focus isn't in a text field), the plan,
+ * then what runs and what is queued, and a line saying what it does now.
  */
-function Tray({
-  task,
-  entries,
-  changes,
-  commits,
-  changesOpen,
-  onToggleChanges,
-  children,
-}: {
-  task: AgentTask;
-  entries: AgentEntry[] | null;
-  changes: AgentChange[] | null;
-  commits: readonly AgentCommit[];
-  changesOpen: boolean;
-  onToggleChanges: () => void;
-  children: ReactNode;
-}) {
+function Tray({ task, entries, children }: { task: AgentTask; entries: AgentEntry[] | null; children: ReactNode }) {
   const tx = useTx();
   const pending = entries?.find(
     (e): e is PermissionEntry => e.type === "permission" && !e.chosen && !e.questions?.length,
@@ -2456,41 +2502,20 @@ function Tray({
   const [planOpen, setPlanOpen] = useState(false);
   const done = plan?.items.filter((i) => i.status === "completed").length ?? 0;
   const planShown = plan && plan.items.length > 0 && done < plan.items.length;
-  const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
-  const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
   return (
     <div className={styles.tray}>
       {pending && <PendingPermission task={task} entry={pending} />}
-      {(planShown || !!changes?.length || !!commits.length) && (
+      {planShown && (
         <div className={styles.trayStrip}>
-          {planShown && (
-            <button
-              type="button"
-              className={styles.trayChip}
-              aria-expanded={planOpen}
-              onClick={() => setPlanOpen(!planOpen)}
-            >
-              <Icon name="todo" size={13} />
-              {tx`Plan ${done}/${plan.items.length}`}
-            </button>
-          )}
-          {!!changes?.length && (
-            <button type="button" className={styles.trayChip} aria-pressed={changesOpen} onClick={onToggleChanges}>
-              <Icon name="edit" size={13} />
-              {tx(changes.length === 1 ? "1 changed file" : "{count} changed files").replace(
-                "{count}",
-                String(changes.length),
-              )}
-              {added > 0 && <span className={styles.added}>+{added}</span>}
-              {removed > 0 && <span className={styles.removed}>−{removed}</span>}
-            </button>
-          )}
-          {!!commits.length && (
-            <button type="button" className={styles.trayChip} aria-pressed={changesOpen} onClick={onToggleChanges}>
-              <Icon name="commit" size={13} />
-              {tx(commits.length === 1 ? "1 commit" : "{count} commits").replace("{count}", String(commits.length))}
-            </button>
-          )}
+          <button
+            type="button"
+            className={styles.trayChip}
+            aria-expanded={planOpen}
+            onClick={() => setPlanOpen(!planOpen)}
+          >
+            <Icon name="todo" size={13} />
+            {tx`Plan ${done}/${plan.items.length}`}
+          </button>
         </div>
       )}
       {planShown && planOpen && (
@@ -2659,7 +2684,15 @@ function SessionComposer({
     );
   return (
     <div className={styles.composerArea}>
-      <SessionStatus task={task} entries={entries} head={head} />
+      <SessionStatus
+        task={task}
+        entries={entries}
+        head={head}
+        changes={changes}
+        commits={commits}
+        changesOpen={changesOpen}
+        onToggleChanges={onToggleChanges}
+      />
       {task.status === "archived" && (
         <div className={styles.banner}>
           <span className={styles.bannerText}>
@@ -2672,14 +2705,7 @@ function SessionComposer({
           />
         </div>
       )}
-      <Tray
-        task={task}
-        entries={entries}
-        changes={changes}
-        commits={commits}
-        changesOpen={changesOpen}
-        onToggleChanges={onToggleChanges}
-      >
+      <Tray task={task} entries={entries}>
         <WorkingSubagents entries={entries} onOpen={onOpenSubagent} />
         <BackgroundTasks task={task} />
         {task.queue.length > 0 && <Queue task={task} />}
