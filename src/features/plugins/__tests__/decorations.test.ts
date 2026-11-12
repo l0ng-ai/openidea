@@ -4,6 +4,7 @@ import { EditorView } from "@codemirror/view";
 import type { DecorationSet } from "@/bindings";
 import { _addEditor, _removeEditor, type EditorDocContext, type TextEditorHandle } from "@/editor/api";
 import { useProject } from "@/platform/project";
+import { loadMarkdown, renderMarkup } from "@/editor/lsp/markdown";
 import { getFileDecoration } from "@/workbench/contributions";
 import { decorationExtension, setPluginDecorations } from "../decorations";
 import { capabilityDescription } from "../consent";
@@ -64,6 +65,115 @@ it("renders plain annotations, maps them through edits, and withdraws them", () 
   expect(editor.view.dom.querySelector('[title="hover"]')?.textContent).toBe("te");
   setPluginDecorations("test", []);
   expect(editor.view.dom.textContent).not.toContain("<plain>");
+});
+
+it.each(["initial hover", "warm initial hover", "live refresh"])(
+  "blocks automatic plugin Markdown resources on %s",
+  async (phase) => {
+    // jsdom has resource loading disabled; these addresses must never be requested.
+    const markdown = [
+      "**safe text** [safe link](https://docs.example.invalid/guide)",
+      '<a href="https://docs.example.invalid/raw">raw safe link</a>',
+      "[source](file:///p/a.txt#L1) [library](jdt://contents/a.class)",
+      "`![literal](https://code.example.invalid/inline)`",
+      '```text\n<img src="https://code.example.invalid/fenced">\n```',
+      "![preview](https://assets.example.invalid/markdown)",
+      "![relative](/plugin-resource)",
+      '<img src="//assets.example.invalid/raw" srcset="https://assets.example.invalid/2x 2x" onerror="alert(1)">',
+      '<picture><source srcset="https://assets.example.invalid/source 1x"><img src="https://assets.example.invalid/fallback"></picture>',
+      '<video autoplay src="https://assets.example.invalid/video" poster="https://assets.example.invalid/poster"><source src="https://assets.example.invalid/media"><track src="https://assets.example.invalid/track"></video>',
+      '<audio autoplay src="https://assets.example.invalid/audio"></audio>',
+      '<input type="image" src="https://assets.example.invalid/input">',
+      '<table background="https://assets.example.invalid/background"><tr><td>safe table</td></tr></table>',
+      '<svg><image href="https://assets.example.invalid/svg"></image></svg>',
+      '<math><mtext><img src="https://assets.example.invalid/math"></mtext></math>',
+      '<iframe src="https://assets.example.invalid/frame"></iframe>',
+      '<object data="https://assets.example.invalid/object"><embed src="https://assets.example.invalid/embed"></object>',
+      '<link rel="stylesheet" href="https://assets.example.invalid/style">',
+      '<div style="background:url(https://assets.example.invalid/css)">safe raw text</div>',
+    ].join("\n\n");
+    const item = (markdownHover: string) => ({
+      ...set(),
+      items: [{ range, style: "highlight", hover: null, after: " + model", markdownHover }],
+    });
+    if (phase === "warm initial hover") await loadMarkdown();
+    setPluginDecorations("test", [item(phase === "live refresh" ? "loading conversation" : markdown)]);
+    vi.useFakeTimers();
+    try {
+      const label = [...editor.view.dom.querySelectorAll("span")].find((span) => span.textContent === " + model")!;
+      label.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 1, clientY: 1 }));
+      await vi.advanceTimersByTimeAsync(400);
+    } finally {
+      vi.useRealTimers();
+    }
+    const card = document.querySelector(".cm-tooltip .cm-lsp-hover")!;
+    expect(card).not.toBeNull();
+    // The first hover exercises the lazy parser; subsequent cases use the loaded parser.
+    await loadMarkdown();
+    if (phase === "live refresh") {
+      expect(card.textContent).toContain("loading conversation");
+      setPluginDecorations("test", [item(markdown)]);
+      expect(document.querySelector(".cm-tooltip .cm-lsp-hover")).toBe(card);
+    }
+    await vi.waitFor(() => expect(card.querySelector("strong")?.textContent).toBe("safe text"));
+    expect([...card.querySelectorAll("a")].map((link) => link.getAttribute("href"))).toEqual([
+      "https://docs.example.invalid/guide",
+      "https://docs.example.invalid/raw",
+      "file:///p/a.txt#L1",
+      "jdt://contents/a.class",
+    ]);
+    expect(card.querySelector("pre > code")?.textContent).toBe('<img src="https://code.example.invalid/fenced">');
+    expect(card.textContent).toContain("![literal](https://code.example.invalid/inline)");
+    expect(card.textContent).toContain("safe raw text");
+    expect(card.querySelector("td")?.textContent).toBe("safe table");
+    expect([
+      ...card.querySelectorAll(
+        "img, picture, source, video, audio, track, iframe, object, embed, link, style, svg, math, [src], [srcset], [poster], [background], [srcdoc], [style], [onerror]",
+      ),
+    ]).toEqual([]);
+  },
+);
+
+it("reports a failed Markdown load without retrying or inserting plugin resources", async () => {
+  await loadMarkdown();
+  const failure = new Error("Markdown chunk unavailable");
+  const loader = vi.spyOn(await import("@/editor/lsp/markdown"), "loadMarkdown").mockRejectedValueOnce(failure);
+  const logger = vi.spyOn(await import("@/platform/errorLog"), "logError").mockImplementation(() => {});
+  try {
+    setPluginDecorations("test", [
+      {
+        ...set(),
+        items: [
+          {
+            range,
+            style: "highlight",
+            hover: null,
+            after: " + model",
+            markdownHover: "**safe text** ![remote](https://assets.example.invalid/image)",
+          },
+        ],
+      },
+    ]);
+    vi.useFakeTimers();
+    const label = [...editor.view.dom.querySelectorAll("span")].find((span) => span.textContent === " + model")!;
+    label.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 1, clientY: 1 }));
+    await vi.advanceTimersByTimeAsync(400);
+    expect(logger).toHaveBeenCalledExactlyOnceWith("cannot render plugin Markdown", failure);
+    expect(loader).toHaveBeenCalledTimes(1);
+    const card = document.querySelector(".cm-tooltip .cm-lsp-hover")!;
+    expect(card.textContent).toContain("safe text");
+    expect(card.querySelector("img, [src], [srcset]")).toBeNull();
+  } finally {
+    vi.useRealTimers();
+    loader.mockRestore();
+    logger.mockRestore();
+  }
+});
+
+it("leaves the shared documentation image policy unchanged", async () => {
+  await loadMarkdown();
+  const dom = renderMarkup({ kind: "markdown", value: "![docs](https://docs.example.invalid/image)" });
+  expect(dom.querySelector("img")?.getAttribute("src")).toBe("https://docs.example.invalid/image");
 });
 
 it("renders a Markdown hover card instead of the native tooltip", async () => {

@@ -10,8 +10,9 @@ import {
 import type { DecorationSet, Range } from "@/bindings";
 import { registerEditorContribution, useEditorRegistry, type EditorDocContext } from "@/editor/api";
 import { hoverCard } from "@/editor/lsp/hover";
-import { renderMarkup } from "@/editor/lsp/markdown";
+import { highlightInto, loadMarkdown, markupToHtml, renderMarkup } from "@/editor/lsp/markdown";
 import { commands, isTauri } from "@/platform/ipc";
+import { logError } from "@/platform/errorLog";
 import { useProject } from "@/platform/project";
 import { setFileDecorations, type FileDecoration } from "@/workbench/contributions";
 import styles from "./decorations.module.css";
@@ -132,12 +133,48 @@ function refreshedMarkdown(card: OpenHover) {
   return null;
 }
 
+/** Plugin Markdown has no authority to load resources from the workbench. */
+function withoutPluginResources(html: string): string {
+  // Template contents are inert: strip resources before they enter the rendered DOM.
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  for (const element of template.content.querySelectorAll("img, picture, audio, video, source, track"))
+    element.remove();
+  for (const element of template.content.querySelectorAll("[src], [srcset], [poster], [background]")) {
+    for (const attribute of ["src", "srcset", "poster", "background"]) element.removeAttribute(attribute);
+  }
+  return template.innerHTML;
+}
+
+/** Keep the shared renderer's links/styles without its unfiltered async Markdown rewrite. */
+function renderPluginMarkdown(value: string, language: string | null): HTMLElement {
+  const dom = renderMarkup({ kind: "plaintext", value: "" }, language);
+  let rendered: string | undefined;
+  const update = () => {
+    const html = withoutPluginResources(markupToHtml({ kind: "markdown", value }));
+    if (html === rendered) return;
+    rendered = html;
+    dom.innerHTML = html;
+    for (const code of dom.querySelectorAll<HTMLElement>("pre > code")) {
+      const declared = [...code.classList].find((name) => name.startsWith("language-"));
+      const text = (code.textContent ?? "").replace(/\n+$/, "");
+      code.textContent = text;
+      void highlightInto(code, text, declared?.slice("language-".length) ?? language);
+    }
+  };
+  update();
+  void loadMarkdown()
+    .then(update)
+    .catch((error: unknown) => logError("cannot render plugin Markdown", error));
+  return dom;
+}
+
 /** Replace the content of cards whose labels were published again. */
 function refreshOpenHovers(plugin: string) {
   for (const card of openHovers) {
     if (card.plugin !== plugin) continue;
     const markdown = refreshedMarkdown(card);
-    if (markdown) card.dom.replaceChildren(renderMarkup({ kind: "markdown", value: markdown }, card.uiMode));
+    if (markdown) card.dom.replaceChildren(renderPluginMarkdown(markdown, card.uiMode));
   }
 }
 
@@ -220,7 +257,7 @@ function markdownHover(field: StateField<PlacedDecorations>, ctx: EditorDocConte
       end: placed.to,
       above: true,
       create: () => {
-        const dom = hoverCard([renderMarkup({ kind: "markdown", value: placed.markdown }, ctx.uiMode)]);
+        const dom = hoverCard([renderPluginMarkdown(placed.markdown, ctx.uiMode)]);
         const card: OpenHover = {
           plugin: placed.plugin,
           path: placed.path,
