@@ -14,8 +14,7 @@ import {
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
-import { useProject } from "@/platform/project";
-import { resolveMonoFont } from "@/platform/fonts";
+import { useConsoleFont } from "@/platform/consoleFont";
 import { Icon, showContextMenu } from "@/ui";
 import { spanStyle } from "@/ui/ansi";
 import type { ConsoleLine, ConsoleModel } from "./console";
@@ -185,10 +184,8 @@ export function ConsoleView({
   const patterns = useWorkflowSettings((s) => s.console.foldPatterns);
   // The Run console uses Tools › Terminal › Font (which can follow Editor › Font),
   // so the font and fallback configured there apply to process output too.
-  const terminalFont = useWorkflowSettings((s) => s.terminal);
-  const editorFont = useProject((s) => s.settings?.editor);
-  const consoleFont = resolveMonoFont(terminalFont, editorFont);
-  const rowHeight = Math.max(16, Math.round(consoleFont.size * 1.5));
+  const consoleFont = useConsoleFont();
+  const { rowHeight } = consoleFont;
   /** A row's box: at its virtual offset, and never shorter than one line — a blank line has no text. */
   const rowStyle = (start: number) => ({
     transform: `translateY(${start}px)`,
