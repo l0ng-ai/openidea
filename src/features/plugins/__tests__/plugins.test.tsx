@@ -1055,6 +1055,17 @@ describe("secrets", () => {
     await waitFor(() => expect(screen.getByText("Not set")).toBeInTheDocument());
     expect(await backend.secrets("ai")).toEqual([]);
   });
+  it("shows a declared secret on the plugin's details page", async () => {
+    const ai = plugin({ id: "ai", name: "AI Commit", contributions: [{ point: "secrets", label: "API key" }] });
+    const snapshot = {
+      plugins: [ai],
+      activeTheme: null,
+      ui: [{ pluginId: "ai", point: "secrets", key: "api-key", decl: { name: "api-key", label: "API key" } }],
+    };
+    setPluginsBackend({ ...createMemoryPluginsBackend([ai]), list: async () => snapshot });
+    render(<PluginsPage initialTab="installed" />);
+    expect(await screen.findByLabelText("Value of API key")).toBeInTheDocument();
+  });
 });
 
 describe("plugin line markers", () => {
