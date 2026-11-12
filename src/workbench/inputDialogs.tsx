@@ -158,6 +158,7 @@ function PromptDialog({ options, done }: { options: PromptInputOptions; done: (v
   return (
     <Dialog
       open
+      blockWorkbenchShortcuts
       title={options.title}
       onClose={close}
       width={420}
@@ -238,6 +239,7 @@ function ChooseDialog({ options, done }: { options: ChooseItemOptions; done: (v:
   return (
     <Dialog
       open
+      blockWorkbenchShortcuts
       title={options.title}
       onClose={() => done(null)}
       width={360}
@@ -286,6 +288,7 @@ function PickDialog({ options, done }: { options: PickItemsOptions; done: (v: st
   return (
     <Dialog
       open
+      blockWorkbenchShortcuts
       title={options.title}
       onClose={() => done(null)}
       width={420}

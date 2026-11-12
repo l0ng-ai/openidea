@@ -104,6 +104,10 @@ Binding syntax: modifiers `Meta Ctrl Alt Shift` joined with `+` to a key (`Meta+
 
 `installKeyboardDispatcher` listens to `keydown` in the capture phase so IDE shortcuts win over CodeMirror's defaults, resolves the stroke against the active keymap plus the user's overrides, and runs the first enabled action (`when` and `keyWhen`). A component that needs a keystroke for itself registers a key claim (`registerKeyClaim`), e.g. Vim mode for its shortcut conflicts.
 
+Blocking prompts (`promptInput`, `chooseItem`, `pickItems` and message dialogs) opt into `<Dialog blockWorkbenchShortcuts>`. Its effect acquires the reference-counted `suspendKeyboardDispatch()` guard and releases it on cleanup, so closing a nested prompt does not resume background shortcuts while another prompt is open. Native field editing and dialog-local keys still work. This is opt-in: non-modal workbench popups such as Search Everywhere keep their existing routing.
+
+Suspended keyboard and mouse dispatch clears pending chords and modifier taps, preventing a stale shortcut from firing after dismissal. Plain text fields also retain native, unshifted `Backspace`/`Delete` combinations; Shift-modified bindings and terminal inputs keep their existing routing.
+
 ## Context keys and `when` clauses
 
 Components publish facts as context keys (`src/platform/context.ts`); actions and keybindings are enabled by a `when` expression over them.

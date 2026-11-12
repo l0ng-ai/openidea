@@ -982,7 +982,7 @@ function showPlan(path: string, id: string, statement: SqlStatement, plan: DbPla
     const old = s.results.find((r) => r.plan);
     const tab: ResultTab = {
       id: old?.id ?? nextTab++,
-      title: PLAN_TITLE,
+      title: old?.title ?? PLAN_TITLE,
       path,
       sourceId: id,
       outcome: { statement, result: null, error: null },

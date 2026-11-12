@@ -104,6 +104,10 @@ export const intellijMacos: Record<string, string[]> = {
 
 `installKeyboardDispatcher` 在捕获阶段监听 `keydown`，因此 IDE 快捷键优先于 CodeMirror 的默认按键；它把击键与当前 keymap 及用户覆盖项匹配，然后运行第一个启用的 action（满足 `when` 和 `keyWhen`）。需要自己处理某个按键的组件注册一个 key claim（`registerKeyClaim`），比如 Vim 模式处理快捷键冲突时。
 
+阻塞式提示框（`promptInput`、`chooseItem`、`pickItems` 和消息对话框）通过 `<Dialog blockWorkbenchShortcuts>` 显式启用快捷键隔离。其 effect 获取带引用计数的 `suspendKeyboardDispatch()` 保护，并在清理时释放，因此关闭嵌套提示框不会在其他提示框仍打开时恢复后台快捷键。输入框的系统文本编辑和对话框内部按键仍然有效。该行为需要显式启用：Search Everywhere 等非模态工作台弹出框保留原有的按键路由。
+
+暂停期间，键盘和鼠标分发会清除待完成的组合键及修饰键连按状态，避免关闭提示框后触发残留快捷键。普通文本输入框也会保留未按 Shift 的原生 `Backspace`/`Delete` 组合键；带 Shift 的绑定和终端输入保持原有路由。
+
 ## 上下文键与 `when` 子句
 
 组件把事实发布为上下文键（`src/platform/context.ts`）；action 和快捷键通过基于这些键的 `when` 表达式决定是否启用。
