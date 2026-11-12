@@ -283,6 +283,9 @@ export function matchGenerators(
     .sort((a, b) => tx(a.title).localeCompare(tx(b.title)));
 }
 
+/** The best score of a match in an action's category, description or keywords. */
+const KEYWORD_CEILING = 330;
+
 export function matchActions(
   actions: readonly Action[],
   query: string,
@@ -313,7 +316,9 @@ export function matchActions(
       );
       const best = Math.max(-Infinity, ...extra.map((s) => matchText(s, q, { wordAligned: true })?.score ?? -Infinity));
       const idHit = a.id.toLowerCase().includes(q.toLowerCase()) ? 0 : -Infinity;
-      score = Math.max(best, idHit) - 400;
+      // Below any word-aligned title match: an exact keyword (`model` of New
+      // Observer) doesn't outrank the title it names (New Eloquent Model).
+      score = Math.min(Math.max(best, idHit) - 400, KEYWORD_CEILING);
       if (!Number.isFinite(score)) continue;
     }
     if (!enabled) score -= 150;
