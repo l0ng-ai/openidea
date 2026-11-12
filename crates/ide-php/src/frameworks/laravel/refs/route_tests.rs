@@ -736,3 +736,22 @@ fn no_route_hints_outside_laravel_projects() {
     assert_eq!(project.engine.laravel_route_lenses(doc), None);
     assert_eq!(project.engine.laravel_route_list(""), None);
 }
+
+/// A route's HTTP request names the fields of the Form Request its
+/// controller method takes, each with an empty value of its rules' type.
+#[test]
+fn route_requests_carry_the_form_request_fields() {
+    let project = Project::app();
+    let store = project.engine.laravel_route_list("dashboard.posts.store").unwrap();
+    let request = &store.first().expect("the route").request;
+    assert!(request.starts_with("### dashboard.posts.store\nPOST "), "{request}");
+    assert!(
+        request.ends_with(
+            "Content-Type: application/json\n\n{\n  \"title\": \"\",\n  \"slug\": \"\",\n  \"body\": \"\",\n  \"status\": \"\",\n  \"published_at\": \"\"\n}\n"
+        ),
+        "{request}"
+    );
+    // A GET has no body.
+    let show = project.engine.laravel_route_list("posts.show").unwrap();
+    assert!(!show[0].request.contains("\n\n"), "{}", show[0].request);
+}

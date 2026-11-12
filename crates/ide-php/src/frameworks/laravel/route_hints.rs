@@ -218,7 +218,65 @@ pub fn matches(info: &RouteInfo, query: &str) -> bool {
     query.split_whitespace().all(|term| haystack.contains(&term.to_lowercase()))
 }
 
+/// The fields of the Form Request the controller method of `route` takes,
+/// if it takes one.
+fn form_request_of(route: &RouteDef, resolver: &crate::types::Resolver<'_>) -> Option<Vec<(String, Vec<String>)>> {
+    use crate::summary::TypeHint;
+    use crate::types::provider::laravel::LaravelProvider;
+    let RouteAction::Controller { class, method, .. } = &route.action else { return None };
+    let model = resolver.class_model(class)?;
+    let declared = model.method(method)?.declared()?;
+    declared.params.iter().find_map(|param| match param.type_hint.as_ref()? {
+        TypeHint::Named(fqn) => LaravelProvider::form_request_fields(resolver, fqn),
+        _ => None,
+    })
+}
+
+/// A JSON body naming `fields` (with their rule names), each with an empty
+/// value of the type its rules give (`0`, `false`, `[]`, `""`).
+fn json_body(fields: &[(String, Vec<String>)]) -> String {
+    let value = |rules: &[String]| {
+        let has = |names: &[&str]| rules.iter().any(|rule| names.iter().any(|name| rule.eq_ignore_ascii_case(name)));
+        if has(&["integer", "int", "numeric", "decimal", "digits", "digits_between"]) {
+            "0"
+        } else if has(&["boolean", "bool", "accepted", "declined"]) {
+            "false"
+        } else if has(&["array", "list"]) {
+            "[]"
+        } else {
+            "\"\""
+        }
+    };
+    let lines: Vec<String> = fields
+        .iter()
+        .map(|(field, rules)| format!("  {}: {}", serde_json::Value::String(field.clone()), value(rules)))
+        .collect();
+    format!("{{\n{}\n}}", lines.join(",\n"))
+}
+
 impl PhpEngine {
+    /// [`route_info`], with the request's JSON body naming the fields of
+    /// the Form Request its controller method takes (`store(StorePostRequest
+    /// $request)`), as Laravel Idea's request generation does.
+    fn route_info_with_body(
+        &self,
+        route: &RouteDef,
+        app_url: &str,
+        resolver: &crate::types::Resolver<'_>,
+    ) -> RouteInfo {
+        let mut info = route_info(route, app_url);
+        if info.request.ends_with("\n\n{}\n")
+            && let Some(fields) = form_request_of(route, resolver)
+            && !fields.is_empty()
+        {
+            let base = info.request.len() - "{}\n".len();
+            info.request.truncate(base);
+            info.request.push_str(&json_body(&fields));
+            info.request.push('\n');
+        }
+        info
+    }
+
     /// The application's URL (see [`app_url`]), open buffers first.
     pub fn laravel_app_url(&self) -> Option<String> {
         let project = self.laravel()?;
@@ -234,11 +292,12 @@ impl PhpEngine {
     pub fn laravel_route_list(&self, query: &str) -> Option<Vec<RouteInfo>> {
         let routes = self.laravel_routes()?;
         let app_url = self.laravel_app_url()?;
+        let resolver = self.resolver();
         Some(
             routes
                 .routes()
                 .iter()
-                .map(|route| route_info(route, &app_url))
+                .map(|route| self.route_info_with_body(route, &app_url, &resolver))
                 .filter(|info| matches(info, query))
                 .collect(),
         )
@@ -277,7 +336,7 @@ impl PhpEngine {
                         }
                         _ => false,
                     })
-                    .map(|route| route_info(route, &app_url))
+                    .map(|route| self.route_info_with_body(route, &app_url, &resolver))
                     .collect();
                 if !pointing.is_empty() {
                     out.push(RouteLens { range: method.name_loc.range, routes: pointing });
@@ -305,13 +364,14 @@ impl PhpEngine {
         let lines = parsed.line_index();
         let (from, to) = lines.byte_range(range);
         let app_url = self.laravel_app_url()?;
+        let resolver = self.resolver();
         // One hint per registration: a resource registers several routes.
         let mut out: Vec<(u32, RouteHint)> = Vec::new();
         for route in here {
             if route.end < from || route.end > to {
                 continue;
             }
-            let info = route_info(route, &app_url);
+            let info = self.route_info_with_body(route, &app_url, &resolver);
             match out.iter_mut().find(|(end, _)| *end == route.end) {
                 Some((_, hint)) => hint.routes.push(info),
                 None => out.push((

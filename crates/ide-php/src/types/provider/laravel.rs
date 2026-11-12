@@ -1099,6 +1099,27 @@ impl LaravelProvider {
             .min_by_key(|rules| !rules.class.eq_ignore_ascii_case(model.fqn()))
     }
 
+    /// The fields a Form Request validates (its own `rules()`, else a
+    /// parent's) with their rule names, not the nested ones (`tags.*`,
+    /// `address.city`). `None` for a class that isn't a Form Request or
+    /// whose rules aren't known.
+    pub(crate) fn form_request_fields(resolver: &Resolver<'_>, class: &str) -> Option<Vec<(String, Vec<String>)>> {
+        let model = resolver.class_model(class)?;
+        if !model.is_subclass_of(FORM_REQUEST) {
+            return None;
+        }
+        let facts = resolver.laravel();
+        let rules = Self::rules_of(&facts, &model)?;
+        Some(
+            rules
+                .fields
+                .iter()
+                .filter(|entry| !entry.field.contains(['.', '*']))
+                .map(|entry| (entry.field.clone(), entry.rules.clone()))
+                .collect(),
+        )
+    }
+
     /// A Form Request's field read as a property (`$request->title`),
     /// typed from its rules.
     fn request_property(resolver: &Resolver<'_>, class: &str, name: &str) -> Option<Type> {

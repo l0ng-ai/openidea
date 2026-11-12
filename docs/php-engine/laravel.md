@@ -70,7 +70,7 @@ return redirect()->route('posts.show', $post);   // completes, goes to ->name('s
 - **Resources:** the actions in `Route::resource(…)->only([...])` and `except([...])`.
 - Also understood: `Route::resources()`, `apiResources()`, `singleton()`, `apiSingleton()`, `fallback()`, `->names('prefix')`, `domain()`, the array form of `Route::group([...])`, groups with `withoutMiddleware`, routes registered inside `if` blocks, and route files at paths computed from `config('…')`.
 
-**Route hints.** A code lens above each controller method lists the routes that reach it (method, URI, name), and an inlay hint after each `Route::get(…)` shows the full URI with group prefixes and domain. Clicking one offers to go to the route, copy its URL, open it in the browser (using `APP_URL` from `.env`) or create an HTTP client request (`.http` file). Settings › PHP › Laravel › Hints turns them off.
+**Route hints.** A code lens above each controller method lists the routes that reach it (method, URI, name), and an inlay hint after each `Route::get(…)` shows the full URI with group prefixes and domain. Clicking one offers to go to the route, copy its URL, open it in the browser (using `APP_URL` from `.env`) or create an HTTP client request (`.http` file; a `POST`, `PUT` or `PATCH` gets a JSON body naming the fields of the Form Request its controller method takes, each with an empty value of its rules' type). Settings › PHP › Laravel › Hints turns them off.
 
 **Route search.** Search Everywhere has a **Routes** tab, searching by name or by part of the URI.
 
