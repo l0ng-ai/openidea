@@ -435,6 +435,22 @@ impl Rewrite {
     }
 }
 
+/// A rewrite of a template's compiled PHP, in the template's offsets;
+/// `None` when a piece of it falls outside the code the template wrote.
+fn template_rewrite(rewrite: Rewrite, compiled: &crate::blade::Compiled) -> Option<Rewrite> {
+    let pieces = rewrite
+        .pieces
+        .into_iter()
+        .map(|piece| match piece {
+            Piece::Text(text) => Some(Piece::Text(text)),
+            Piece::Source(start, end) => {
+                Some(Piece::Source(compiled.blade_offset(start)?, compiled.blade_offset(end)?))
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(Rewrite { start: compiled.blade_offset(rewrite.start)?, end: compiled.blade_offset(rewrite.end)?, pieces })
+}
+
 /// `text[start..end]` with the outermost rewrites inside it applied (each
 /// rendered with the rewrites inside its kept pieces). `skip` is the
 /// rewrite being rendered.
@@ -1546,6 +1562,26 @@ impl PhpEngine {
             }
             let key = load(&mut files, &file)?;
             let work = files.get_mut(&key).expect("loaded");
+            // A Blade template's calls are found in the PHP it compiles to
+            // and rewritten in the template (the code inside `{{ }}` and
+            // directives is copied verbatim).
+            if crate::frameworks::laravel::views::is_blade(&file) {
+                let compiled = self.blade_compile(&file, &work.text);
+                let call_parsed = ParsedFile::parse(&key, compiled.php.as_str());
+                let index = LineIndex::new(&work.text);
+                let starts: Vec<u32> = ranges.iter().filter_map(|r| compiled.php_offset(index.byte(r.start))).collect();
+                let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                for site in calls_at(&call_parsed, &starts, target.constructor) {
+                    let rewrite = site_rewrite(call_parsed.text(), &site, &old, &new, named_ok)
+                        .map_err(|why| IdeError::invalid(format!("A call in {name} {why}; change it by hand first")))?;
+                    let Some(rewrite) = rewrite else { continue };
+                    let mapped = template_rewrite(rewrite, &compiled).ok_or_else(|| {
+                        IdeError::invalid(format!("A call in {name} can't be changed there; change it by hand first"))
+                    })?;
+                    work.rewrites.push(mapped);
+                }
+                continue;
+            }
             let call_parsed = ParsedFile::parse(&key, work.text.as_str());
             let index = call_parsed.line_index();
             let starts: Vec<u32> = ranges.iter().map(|r| index.byte(r.start)).collect();

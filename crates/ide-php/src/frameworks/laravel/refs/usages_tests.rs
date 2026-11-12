@@ -219,3 +219,38 @@ fn renaming_a_scope_or_relation_renames_the_names_laravel_uses() {
     let edits = project.rename_edits("app/Models/Post.php", &scope, "live");
     assert_eq!(edits.len(), 1, "{edits:?}");
 }
+
+/// Change signature rewrites the calls in Blade templates too.
+#[test]
+fn change_signature_rewrites_calls_in_templates() {
+    use crate::refactor::signature::SignatureParameter;
+    let mut project = Project::app();
+    let text = std::fs::read_to_string(project.root.join("app/Enums/PostStatus.php")).unwrap();
+    let (doc, pos) = project.open("app/Enums/PostStatus.php", &text.replace("function label", "function la/*|*/bel"));
+    let info = project.engine.change_signature_info(doc, ide_core::Range::new(pos, pos)).expect("offered");
+    let mut signature = info.signature;
+    signature.parameters.push(SignatureParameter {
+        old_index: None,
+        name: "locale".into(),
+        ty: "string".into(),
+        default_value: String::new(),
+        call_value: "'en'".into(),
+        by_ref: false,
+        variadic: false,
+        promoted: false,
+    });
+    let edit = project.engine.change_signature(doc, pos, &signature, &CancellationToken::new()).unwrap().unwrap();
+    let show = project.root.join("resources/views/posts/show.blade.php");
+    let template = edit
+        .files
+        .iter()
+        .find_map(|file| match file {
+            FileEdit::Edit { path, edits, .. } if **path == *show => Some(edits.clone()),
+            _ => None,
+        })
+        .expect("the template's call is changed");
+    let mut document = ide_text::Document::new(&std::fs::read_to_string(&show).unwrap());
+    document.apply_edits(&template).unwrap();
+    assert!(document.text().to_string().contains("{{ $post->status->label('en') }}"), "{}", document.text());
+    project.engine.document_closed(doc);
+}
