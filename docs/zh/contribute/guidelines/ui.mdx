@@ -28,6 +28,8 @@ description: "前端 UI 代码的规则：设计 token、CSS Modules、图标、
 
 先用 `src/ui/` 里的基础组件，再考虑自己写：`Button`、`BarButton`、`Input`、`Checkbox`、`Select`、`Dialog`、`Popup`、`Menu`、`Tooltip`、`List`、`Tree`、`Tabs`、`Splitter`、`Scrollbar`、`Spinner`、`Kbd`，以及用于翻译文本的 `T`。它们已经处理好焦点、键盘导航、主题和标签翻译。工作台级别的部件（工具窗口、状态栏项、浮层）来自 [contribution](/zh/contribute/architecture/frontend)，不要自己写布局。
 
+工具栏图标操作使用 `IconButton`：悬停时整个点击区域使用 `--bg-toolbar-hover`，按下和选中状态使用对应的工具栏 token。保留图标的语义颜色和键盘焦点环。
+
 ## 无障碍
 
 - 使用真正的 `<button>` 和 `<input>` 元素（或渲染它们的基础组件），不要用可点击的 `<div>`。

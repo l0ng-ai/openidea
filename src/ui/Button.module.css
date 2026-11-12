@@ -72,7 +72,7 @@
   color: var(--fg-faint);
 }
 
-/* Toolbar / action buttons: transparent on hover, filled when pressed or selected. */
+/* Toolbar / action buttons share the toolbar hover, pressed and selected tokens. */
 .iconButton {
   flex: none;
   display: inline-flex;
@@ -89,6 +89,7 @@
   outline-offset: -2px;
 }
 .iconButton:not(:disabled):hover {
+  background: var(--bg-toolbar-hover);
   color: var(--fg-strong);
 }
 .iconButton:not(:disabled):active {
