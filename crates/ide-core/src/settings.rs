@@ -304,7 +304,7 @@ pub struct McpServerSettings {
 
 impl Default for McpServerSettings {
     fn default() -> Self {
-        Self { enabled: false, run_without_confirmation: false, agent_tab_limit: 10, agent_archive_limit: 999 }
+        Self { enabled: false, run_without_confirmation: false, agent_tab_limit: 1, agent_archive_limit: 999 }
     }
 }
 

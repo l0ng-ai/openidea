@@ -356,7 +356,7 @@ function AgentArchive({ sessions, activeId }: { sessions: RunSession[]; activeId
         onClick={() => setOpen((o) => !o)}
       >
         <Icon name="folder" size={14} />
-        <span className={styles.agentArchiveCount}>{count}</span>
+        <span className={styles.agentArchiveCount}>{tx`Archived (${count})`}</span>
       </button>
       <Menu
         open={open}

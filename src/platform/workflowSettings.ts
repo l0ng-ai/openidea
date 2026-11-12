@@ -552,7 +552,7 @@ export function validateAgentSecurity(raw: unknown): AgentSecurityValid {
   };
 }
 
-export const DEFAULT_AGENT_RUNS: AgentRunSettingsValid = { tabLimit: 10, archiveLimit: 999 };
+export const DEFAULT_AGENT_RUNS: AgentRunSettingsValid = { tabLimit: 1, archiveLimit: 999 };
 
 /** From `mcpServer` (Agents › IDE MCP Server). */
 export function validateAgentRuns(raw: unknown): AgentRunSettingsValid {
