@@ -197,6 +197,8 @@ pub struct TaskRes {
 const MAX_EDITS: usize = 10_000;
 const MAX_DIAGNOSTICS: usize = 5_000;
 const MAX_REQUEST_BODY: usize = 8 << 20;
+/// Upper bound for a WebSocket handshake; the call's remaining time can make it shorter.
+const WEBSOCKET_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_FIND: u32 = 10_000;
 const MAX_STATUS_TEXT: usize = 128;
 const MAX_PICK_ITEMS: usize = 5000;
@@ -1499,9 +1501,13 @@ impl net::Host for StoreData {
             subprotocol: req.subprotocol,
         };
         let root = self.table.get(&project)?.root.clone();
-        match self.host.websocket_connect(&root, request, self.remaining()) {
+        let timeout = WEBSOCKET_HANDSHAKE_TIMEOUT.min(self.io_timeout());
+        match self.host.websocket_connect(&root, request, timeout) {
             Ok(id) => self.push(WebSocketRes { id, host: self.host.clone() }).map(Ok),
-            Err(error) => Ok(Err(to_wit(error))),
+            Err(error) => {
+                self.grant_io_error_grace();
+                Ok(Err(to_wit(error)))
+            }
         }
     }
 }

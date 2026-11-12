@@ -74,7 +74,10 @@ interface net {
         /// `wss://` requires `net:<host>`; loopback `ws://` is allowed for tests.
         url: string,
         /// Secret placeholders are expanded by the host as for HTTP requests.
+        /// `host`, `connection`, `upgrade` and `sec-websocket-*` belong to the
+        /// handshake and are rejected.
         headers: list<header>,
+        /// Empty for none; otherwise the server must accept this subprotocol.
         subprotocol: string,
     }
 

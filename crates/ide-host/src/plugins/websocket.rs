@@ -18,7 +18,12 @@ use std::{
 use tokio::sync::{Notify, watch};
 use tokio_tungstenite::{
     Connector, connect_async_tls_with_config,
-    tungstenite::{Message, client::IntoClientRequest, protocol::WebSocketConfig},
+    tungstenite::{
+        Message,
+        client::IntoClientRequest,
+        http::{HeaderName, HeaderValue},
+        protocol::WebSocketConfig,
+    },
 };
 
 const MAX_MESSAGES: usize = 256;
@@ -102,9 +107,10 @@ impl WebSocketHub {
                         "WebSocket header {name:?} is managed by the handshake"
                     )));
                 }
-                let name = name.parse().map_err(|_| ConnectError::Invalid("invalid WebSocket header name".into()))?;
-                let value =
-                    value.parse().map_err(|_| ConnectError::Invalid("invalid WebSocket header value".into()))?;
+                let name: HeaderName =
+                    name.parse().map_err(|_| ConnectError::Invalid("invalid WebSocket header name".into()))?;
+                let value = HeaderValue::from_str(value)
+                    .map_err(|_| ConnectError::Invalid("invalid WebSocket header value".into()))?;
                 request.headers_mut().append(name, value);
             }
             if !subprotocol.is_empty() {
@@ -266,7 +272,7 @@ fn validate_url(url: &str) -> Result<(), String> {
         return Err("WebSocket requires WSS outside loopback".into());
     }
     if !parsed.username().is_empty() || parsed.password().is_some() || parsed.fragment().is_some() {
-        return Err("WebSocket credentials and query strings are forbidden".into());
+        return Err("WebSocket URLs may not carry credentials or a fragment".into());
     }
     Ok(())
 }
