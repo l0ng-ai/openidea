@@ -246,6 +246,20 @@ describe("model view dialog", () => {
     expect(ipc.phpLaravelModelView).toHaveBeenCalledTimes(3);
   });
 
+  it("reads the view again when PHP files change on disk", async () => {
+    const { emitLocalIdeEvent } = await import("@/platform/ipc");
+    await mount();
+    expect(ipc.phpLaravelModelView).toHaveBeenCalledTimes(1);
+    const changed = (path: string) =>
+      act(() => emitLocalIdeEvent({ type: "fsChanged", created: [], modified: [path], removed: [] } as never));
+    changed("/p/resources/css/app.css");
+    await new Promise((r) => setTimeout(r, 400));
+    expect(ipc.phpLaravelModelView).toHaveBeenCalledTimes(1);
+    changed("/p/database/migrations/2024_01_01_000000_add_x_to_posts_table.php");
+    changed("/p/app/Models/Post.php");
+    await waitFor(() => expect(ipc.phpLaravelModelView).toHaveBeenCalledTimes(2));
+  });
+
   it("shows the engine's failure", async () => {
     await mount();
     ipc.phpLaravelAddColumns.mockResolvedValue({

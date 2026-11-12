@@ -11,7 +11,14 @@
  */
 import { useEffect, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { create } from "zustand";
-import { call, commands, type LaravelLocation, type LaravelModelView, type LaravelNewColumn } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  onIdeEvent,
+  type LaravelLocation,
+  type LaravelModelView,
+  type LaravelNewColumn,
+} from "@/platform/ipc";
 import { t, tx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 import { ipcPath } from "@/platform/paths";
@@ -161,6 +168,20 @@ function ModelPanel({ cls }: { cls: string }) {
     !!shown &&
     awaited.tries < REFRESH_TRIES &&
     !awaited.names.every((name) => shown.columns.some((c) => c.name === name));
+  // PHP files changed on disk (the model, a migration, a related class):
+  // the view is read again, once the batch settles.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const off = onIdeEvent("fsChanged", (e) => {
+      if (![...e.created, ...e.modified, ...e.removed].some((p) => String(p).endsWith(".php"))) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => setGeneration((g) => g + 1), FILES_SETTLE_MS);
+    });
+    return () => {
+      clearTimeout(timer);
+      off();
+    };
+  }, []);
   useEffect(() => {
     if (!waiting) return;
     const timer = setTimeout(() => {
@@ -414,6 +435,8 @@ async function addColumns(cls: string, columns: LaravelNewColumn[], fillable: bo
 /** How often, and how far apart, the view is read again after adding columns. */
 const REFRESH_TRIES = 8;
 const REFRESH_DELAY_MS = 400;
+/** How long the view waits for a batch of file changes to end. */
+const FILES_SETTLE_MS = 300;
 
 function AddColumns({ view, onDone }: { view: LaravelModelView; onDone: (added: string[]) => void }) {
   const [rows, setRows] = useState<ColumnRow[]>(() => [emptyRow()]);

@@ -318,7 +318,7 @@ Not read: `helperCode` and any other key not listed here.
 - **Eloquent:** `*_count` properties follow the query only as far as types go: a model passed through an untyped parameter, a property or a `@param Post` loses them, as does a model counted in a local scope's body (the scope's `withCount` isn't seen by its callers); `withSum()`/`withAvg()`/`withExists()` properties aren't typed; the alias of `'comments as replies'` has no goto to its relation. Tables of a database schema other than the default one aren't used. A query builder's table is lost through a variable reassigned in a loop.
 - **Artisan:** option keys aren't checked (an unknown `--opt` isn't reported), and a key renamed in a signature isn't renamed in the calls.
 - **Generators:** a listener is registered only where an event service provider has a `$listen` array (Laravel 11 otherwise discovers listeners); a module provider only in a nwidart `module.json`. An `ide.json` `dataFile` is read again only when its `ide.json` is.
-- **Model view:** it doesn't refresh by itself when files change while it's open, and Add columns has no length, default or index modifiers.
+- **Model view:** Add columns has no length, default or index modifiers. It follows files written to disk while it's open, not unsaved buffers.
 - **Analysis:** a file whose syntax tree is more than 1,500 levels deep isn't analysed (it gets one syntax error saying so); no hand-written code in the corpora comes near that.
 
 ## Measurements
