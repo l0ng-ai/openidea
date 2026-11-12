@@ -69,7 +69,14 @@ pub fn sdk_python_effective(host: &Host, window: &str, near: Option<PathBuf>) ->
         }
         None => (project.root.clone(), project.settings.effective()),
     };
-    Ok(ide_sdk::apply::python_interpreter_near(&root, near.as_deref(), &settings).map(Into::into))
+    // A member with no Python of its own falls back to the primary project's
+    // (the same chain run configurations use), so every answer names one interpreter.
+    let interpreter = ide_sdk::apply::python_interpreter_near(&root, near.as_deref(), &settings).or_else(|| {
+        (root != project.root)
+            .then(|| ide_sdk::apply::python_interpreter(&project.root, &project.settings.effective()))
+            .flatten()
+    });
+    Ok(interpreter.map(Into::into))
 }
 
 /// The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`.
