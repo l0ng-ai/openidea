@@ -11,4 +11,4 @@ tree-sitter = "xml"
 [[language-servers]]
 name = "lemminx"
 command = "lemminx"
-install-hint = "Install Eclipse LemMinX (https://github.com/redhat-developer/vscode-xml/releases, binary `lemminx`)"
+install-hint = "Install Eclipse LemMinX (https://github.com/redhat-developer/vscode-xml/releases) and put the lemminx binary on PATH"

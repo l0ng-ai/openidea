@@ -1167,7 +1167,7 @@ function CommitPanel({ included }: { included: number }) {
             className={styles.pushButton}
             disabled={!canCommit || !!remoteBusy}
             onClick={() => void runner.run(true)}
-            title="⌥⌘↩"
+            title={`${tx(commitAndPushLabel(amend))} (⌥⌘↩)`}
           >
             <span>
               <T>{commitAndPushLabel(amend)}</T>

@@ -79,14 +79,7 @@ describe("page tree", () => {
     );
     const appearance = BEHAVIOR_PAGES.find((p) => p.id === "appearance")!;
     expect(specLabels(appearance)).toEqual(
-      expect.arrayContaining([
-        "Accent colour",
-        "High Contrast",
-        "UI font size",
-        "Zoom",
-        "Compact mode",
-        "Antialiasing",
-      ]),
+      expect.arrayContaining(["Accent color", "High Contrast", "UI font size", "Zoom", "Compact mode", "Antialiasing"]),
     );
   });
 });
