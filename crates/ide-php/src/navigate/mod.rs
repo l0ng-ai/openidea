@@ -335,6 +335,10 @@ impl PhpEngine {
                 else {
                     continue;
                 };
+                // `PoCo`: its capitals start words (PostController, not PostFactory).
+                if !matches_humps(declared, name) {
+                    continue;
+                }
                 let container = Some(namespace_of(&decl.fqn)).filter(|ns| !ns.is_empty()).map(str::to_owned);
                 let symbol = SymbolInfo {
                     name: declared.to_owned(),
@@ -425,4 +429,36 @@ fn stub_lookup(stubs: &StubSet, kind: NameKind, fqn: &str) -> Option<(String, Lo
         NameKind::Constant => stubs.constant(fqn).map(|(file, constant)| (file.path.clone(), constant.name_loc)),
         NameKind::Namespace => None,
     }
+}
+
+/// Whether `name` matches `query` the way IDEA's CamelHumps do: when the
+/// query has capitals after its first character, each capital matches a
+/// word start of `name` (a capital, or a letter after `_` or a digit), the
+/// other characters any later character, case ignored. A query without
+/// such capitals (`bkrepo`) or all in capitals (`VERSION`) matches as the
+/// fuzzy ranking found it.
+pub(crate) fn matches_humps(name: &str, query: &str) -> bool {
+    let query: Vec<char> = query.chars().collect();
+    // All capitals (`VERSION`) or none after the first: no humps.
+    if !query.iter().skip(1).any(|c| c.is_uppercase()) || !query.iter().any(|c| c.is_lowercase()) {
+        return true;
+    }
+    let name: Vec<char> = name.chars().collect();
+    let starts_word = |i: usize| {
+        i == 0
+            || name[i].is_uppercase() && !name[i - 1].is_uppercase()
+            || !name[i - 1].is_alphanumeric()
+            || name[i - 1].is_ascii_digit() && !name[i].is_ascii_digit()
+            || name[i].is_uppercase() && name.get(i + 1).is_some_and(|next| next.is_lowercase())
+    };
+    fn go(name: &[char], query: &[char], at: usize, q: usize, starts_word: &dyn Fn(usize) -> bool) -> bool {
+        let Some(&wanted) = query.get(q) else { return true };
+        let hump = wanted.is_uppercase();
+        (at..name.len()).any(|i| {
+            name[i].to_lowercase().eq(wanted.to_lowercase())
+                && (!hump || starts_word(i))
+                && go(name, query, i + 1, q + 1, starts_word)
+        })
+    }
+    go(&name, &query, 0, 0, &starts_word)
 }

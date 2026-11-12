@@ -278,6 +278,20 @@ fn workspace_symbols_rank_fuzzy_matches() {
 }
 
 #[test]
+fn capitals_in_the_query_start_words() {
+    use super::matches_humps;
+    assert!(matches_humps("PostController", "PoCo"));
+    assert!(!matches_humps("PostFactory", "PoCo"), "the c of Factory starts no word");
+    assert!(matches_humps("PostFactory", "poco"), "no capitals after the first: fuzzy");
+    assert!(matches_humps("HTMLParser", "HPa"));
+    assert!(matches_humps("parse_HTTP_request", "pHR"));
+    assert!(matches_humps("Base64Encoder", "B64E"));
+    assert!(!matches_humps("Book", "BoK"));
+    assert!(matches_humps("VERSION", "VERSION"), "all capitals: fuzzy");
+    assert!(!matches_humps("ResponseFactory", "PoFa"), "the first capital starts a word too");
+}
+
+#[test]
 fn ranking_prefers_exact_then_prefix_then_shorter() {
     let names: Vec<String> = ["bookrepository", "book", "abook", "books", "unrelated"].map(String::from).to_vec();
     let ranked: Vec<&str> = rank(&names, "Book", 10).into_iter().map(|(_, i)| names[i].as_str()).collect();
