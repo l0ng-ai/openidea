@@ -1761,7 +1761,7 @@ pub mod current {
     pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
         with(|s| {
             require(s, "events")?;
-            if !matches!(kind, "file-opened" | "file-saved" | "files-changed")
+            if !matches!(kind, "file-opened" | "file-saved" | "files-changed" | "document-changed")
                 || globs.len() > 64
                 || globs.iter().any(|g| {
                     let relative = g.trim_start_matches("./");
@@ -1785,6 +1785,9 @@ pub mod current {
                 }
                 "files-changed" => {
                     s.subscriptions.insert(EventKind::FilesChanged);
+                }
+                "document-changed" => {
+                    s.subscriptions.insert(EventKind::DocumentChanged);
                 }
                 _ => {}
             }
