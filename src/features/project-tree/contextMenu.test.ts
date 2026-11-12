@@ -213,6 +213,20 @@ describe("project view context menu", () => {
       expect(l).not.toContain(fileOnly);
   });
 
+  it("offers Import Module from Existing Sources on the project root only", () => {
+    const off = registerActions([
+      { id: "maven.importExternal", title: "Import Module from Existing Sources", run: () => undefined },
+    ]);
+    try {
+      expect(labels(contextMenuItems([node(ROOT, true, true)]))).toContain("Import Module from Existing Sources");
+      expect(labels(contextMenuItems([node(`${ROOT}/src`, true)]))).not.toContain(
+        "Import Module from Existing Sources",
+      );
+    } finally {
+      off();
+    }
+  });
+
   it("keeps the project root menu short and disables what cannot apply", () => {
     const items = contextMenuItems([node(ROOT, true, true)]);
     const l = labels(items);

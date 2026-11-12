@@ -255,6 +255,56 @@ fn index_spelling(index: &gix::index::State, rel: &str) -> Option<String> {
     found
 }
 
+/// The mode a worktree file would be committed with (`100755` when executable,
+/// `100644` otherwise, `120000` for a symlink), `None` when `abs` is not a file.
+/// On filesystems without an executable bit git can't record one, so it is `100644`.
+pub(crate) fn worktree_mode(root: &Path, rel: &str) -> IdeResult<Option<String>> {
+    let meta = match std::fs::symlink_metadata(root.join(rel)) {
+        Ok(m) => m,
+        Err(_) => return Ok(None),
+    };
+    if meta.file_type().is_symlink() {
+        return Ok(Some("120000".to_owned()));
+    }
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Ok(Some(if meta.permissions().mode() & 0o111 != 0 { "100755" } else { "100644" }.to_owned()))
+    }
+    #[cfg(not(unix))]
+    Ok(Some("100644".to_owned()))
+}
+
+/// The entry's mode of `rel` at `rev` as git prints it (`100644`, `100755`, `120000`,
+/// `160000`…), `None` when the path is absent there. Same `rev` rules as [`blob_at`].
+pub(crate) fn mode_at(repo: &gix::Repository, rel: &str, rev: &str) -> IdeResult<Option<String>> {
+    if let Some(stage) = rev.strip_prefix(':') {
+        let stage = match stage {
+            "" | "0" => gix::index::entry::Stage::Unconflicted,
+            "1" => gix::index::entry::Stage::Base,
+            "2" => gix::index::entry::Stage::Ours,
+            "3" => gix::index::entry::Stage::Theirs,
+            other => return Err(IdeError::invalid(format!("invalid index stage :{other}"))),
+        };
+        let index = repo.index_or_empty().map_err(gx)?;
+        let Some(entry) = index.entry_by_path_and_stage(BStr::new(rel.as_bytes()), stage) else {
+            return Ok(None);
+        };
+        return Ok(entry.mode.to_tree_entry_mode().map(|m| format!("{:o}", m.value())));
+    }
+    let Some(tree) = tree_of(repo, rev)? else { return Ok(None) };
+    let Some(entry) = tree.lookup_entry_by_path(Path::new(rel)).map_err(gx)? else {
+        return Ok(None);
+    };
+    if !entry.mode().is_blob_or_symlink() {
+        return Ok(None);
+    }
+    Ok(Some(format!("{:o}", entry.mode().value())))
+}
+
 /// Blob content of `rel` at `rev`. `rev` is a revision (`HEAD`, a branch, an id) or
 /// `:N` for index stage N (`:` / `:0` = the merged index entry).
 pub(crate) fn blob_at(repo: &gix::Repository, rel: &str, rev: &str) -> IdeResult<Option<Vec<u8>>> {

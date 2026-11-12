@@ -727,6 +727,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
       {mode !== "dialog" && <OperationBanner />}
       <div
         className={styles.treeWrap}
+        data-changes-tree={mode}
         onKeyDownCapture={(e) => {
           if (checkboxes && e.key === " " && !e.metaKey && !e.ctrlKey && selected.size) {
             e.preventDefault();
@@ -979,7 +980,16 @@ export function useCommitRunner(included: number, onCommitted?: () => void): Com
 }
 
 /** Amend, message history and the message field with its inspections and failed checks. */
-export function CommitMessageField({ included, runner }: { included: number; runner: CommitRunner }) {
+export function CommitMessageField({
+  included,
+  runner,
+  autoFocus = false,
+}: {
+  included: number;
+  runner: CommitRunner;
+  /** The message takes the initial focus of the dialog it is in (the Commit dialog). */
+  autoFocus?: boolean;
+}) {
   const message = useCommit((s) => s.message);
   const amend = useCommit((s) => s.amend);
   const focusTick = useCommit((s) => s.focusTick);
@@ -1052,6 +1062,7 @@ export function CommitMessageField({ included, runner }: { included: number; run
       </div>
       <textarea
         ref={ref}
+        data-autofocus={autoFocus ? "" : undefined}
         className={clsx(styles.message, !showMargin && styles.noMargin, emptyError && styles.messageError)}
         aria-invalid={emptyError || undefined}
         style={{ ["--guide" as string]: `${margin}ch` }}
