@@ -1,8 +1,9 @@
+import { registerAction } from "@/platform/actions";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { EditorInput } from "@/workbench/contributions";
 import { Chunk, getChunks } from "@codemirror/merge";
-import { Text } from "@codemirror/state";
+import { StateEffect, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { ContextMenuHost, iconMarkup } from "@/ui";
 
@@ -50,6 +51,7 @@ import { DiffEditorTab } from "../diff-editor-tab";
 import { diffInput, withChain, type DiffData } from "../diffInput";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { useProject } from "@/platform/project";
+import { useVcs } from "../store";
 import { applyKeymapSettings, installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { setContext } from "@/platform/context";
 import { registerCompareActions } from "../compare";
@@ -78,11 +80,48 @@ beforeEach(() => {
 });
 
 describe("Diff toolbar", () => {
+  it("opens the displayed revisions in a separate window through the registered action", async () => {
+    const run = vi.fn();
+    const off = registerAction({ id: "vcs.showDiffInNewWindow", title: "Show Diff in New Window", run });
+    try {
+      render(<DiffEditor input={input} />);
+      fireEvent.click(screen.getByRole("button", { name: "Show Diff in New Window" }));
+      await waitFor(() => expect(run).toHaveBeenCalled());
+      expect(run.mock.calls[0]![0].arg).toBe(input.data);
+    } finally {
+      off();
+    }
+  });
+
   it("can start an embedded comparison side by side without overwriting saved viewer preferences", async () => {
     localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode: "unified" }));
     const mounted = render(<DiffEditor input={{ ...input, data: { ...(input.data as object), mode: "split" } }} />);
     await waitFor(() => expect(mounted.container.querySelectorAll(".cm-editor")).toHaveLength(2));
     expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).mode).toBe("unified");
+    mounted.unmount();
+    localStorage.removeItem("openidea.vcs.diffOptions");
+  });
+  it.each([
+    {
+      name: "an added file",
+      left: { type: "text", text: "", label: "(does not exist)", absent: true },
+      right: { type: "rev", rev: "abc123" },
+    },
+    {
+      name: "a deleted file",
+      left: { type: "rev", rev: "HEAD" },
+      right: { type: "text", text: "", label: "(deleted)", absent: true },
+    },
+  ])("shows $name alone, full width, keeping the saved side-by-side mode", async ({ left, right }) => {
+    localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode: "split" }));
+    const mounted = render(<DiffEditor input={{ ...input, data: { path: "/p/a.ts", left, right } } as EditorInput} />);
+    await waitFor(() => expect(mounted.container.querySelectorAll(".cm-editor")).toHaveLength(1));
+    expect(mounted.container.querySelector(".cm-mergeView")).toBeNull();
+    // Nothing to compare word by word: the lines are tinted, without darker fragments.
+    expect(mounted.container.querySelector(".cm-changedText, .cm-diffWord")).toBeNull();
+    expect(screen.getByRole("button", { name: "Side-by-side Viewer" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Unified Viewer" })).toBeDisabled();
+    expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).mode).toBe("split");
     mounted.unmount();
     localStorage.removeItem("openidea.vcs.diffOptions");
   });
@@ -145,6 +184,18 @@ describe("Diff toolbar", () => {
     expect(screen.queryByText("Contents differ only in line separators")).toBeNull();
   });
 
+  it("titles a revision with its short commit id, HEAD resolved, and the file's repository path", async () => {
+    const before = useVcs.getState();
+    useVcs.setState({ roots: ["/p"], heads: { "/p": { head: "main", headCommit: "81a179900123456789abcdef" } } });
+    const mounted = render(
+      <DiffEditor input={{ ...input, data: { ...(input.data as object), path: "/p/src/a.ts", mode: "split" } }} />,
+    );
+    await waitFor(() => expect(mounted.container.querySelectorAll(".cm-editor")).toHaveLength(2));
+    expect(screen.getByTitle("81a17990 src/a.ts")).toBeInTheDocument();
+    expect(screen.getByTitle("abc123 src/a.ts")).toBeInTheDocument();
+    mounted.unmount();
+    useVcs.setState({ roots: before.roots, heads: before.heads });
+  });
   it("puts Jump to Source right after Next Difference, in the navigation group", async () => {
     render(<DiffEditor input={input} />);
     await screen.findByRole("button", { name: "Jump to Source" });
@@ -404,6 +455,55 @@ it.each([
   expect(openInput.mock.calls[0]![0].data).toMatchObject({ path, reveal });
 });
 
+describe("Compare Previous / Next File buttons (#2492)", () => {
+  const chained = (index: number) => {
+    texts.HEAD = "same\nold\n";
+    texts.abc123 = "same\nnew\n";
+    const items: DiffData[] = ["/p/a.ts", "/p/b.ts", "/p/c.ts"].map((path) => ({
+      path,
+      left: { type: "rev", rev: "HEAD" },
+      right: { type: "rev", rev: "abc123" },
+    }));
+    return diffInput(withChain(items, index));
+  };
+  const fileButtons = () => [
+    screen.getByRole("button", { name: "Compare Previous File" }),
+    screen.getByRole("button", { name: "Compare Next File" }),
+  ];
+
+  it("follows Next Difference in the toolbar and steps to the next file at once", async () => {
+    render(<DiffEditor input={chained(1)} />);
+    const toolbar = screen.getByRole("toolbar", { name: "Diff" });
+    expect(
+      within(toolbar)
+        .getAllByRole("button")
+        .slice(0, 4)
+        .map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Previous Difference", "Next Difference", "Compare Previous File", "Compare Next File"]);
+    fireEvent.click(fileButtons()[1]!);
+    await waitFor(() => expect(openInput).toHaveBeenCalledOnce());
+    expect(openInput.mock.calls[0]![0].data).toMatchObject({
+      path: "/p/c.ts",
+      reveal: "first",
+    });
+  });
+
+  it.each([
+    [0, [true, false]],
+    [1, [false, false]],
+    [2, [false, true]],
+  ])("disables the direction without a file at index %i", (index, disabled) => {
+    render(<DiffEditor input={chained(index)} />);
+    expect(fileButtons().map((b) => b.hasAttribute("disabled"))).toEqual(disabled);
+  });
+
+  it("has no file buttons for a single diff", () => {
+    render(<DiffEditor input={input} />);
+    expect(screen.queryByRole("button", { name: "Compare Next File" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Compare Previous File" })).toBeNull();
+  });
+});
+
 const doc = (s: string) => Text.of(s.split("\n"));
 
 describe("mapLine", () => {
@@ -586,6 +686,27 @@ describe("Diff navigation caret", () => {
       fireEvent.click(button);
       expect(view().state.doc.lineAt(view().state.selection.main.head).number).toBe(2);
       expect(view().hasFocus).toBe(true);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it.each(["split", "unified"] as const)("leaves the scrolling to the smooth scroll in the %s viewer", async (mode) => {
+    const { mounted, view } = await reveal(mode);
+    try {
+      // A scrollIntoView in the same update sets scrollTop at once and cuts the animation off.
+      let instant = false;
+      view().dispatch({
+        effects: StateEffect.appendConfig.of(
+          EditorView.updateListener.of((u) => {
+            if (u.transactions.some((tr) => tr.scrollIntoView || tr.effects.length)) instant = true;
+          }),
+        ),
+      });
+      instant = false;
+      fireEvent.click(await screen.findByRole("button", { name: "Next Difference" }));
+      expect(view().state.doc.lineAt(view().state.selection.main.head).number).toBe(2);
+      expect(instant).toBe(false);
     } finally {
       mounted.unmount();
     }

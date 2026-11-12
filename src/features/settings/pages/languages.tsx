@@ -1,14 +1,11 @@
-import { LanguageServerTargetsPage } from "../languages/LanguageServerTarget";
-import { PluginFormattersPage } from "../languages/PluginFormattersPage";
 /**
- * PyCharm's top-level "Python" group (Interpreter), "Project Structure", and
+ * PyCharm's top-level "Python" group (Interpreter) and
  * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript. Pages live in
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
 import { GoPage, JavaPage, NodePage, PhpPage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
 import { MarkdownPage } from "../languages/MarkdownPage";
 import { OxfmtPage, PrettierPage, RuffPage } from "../languages/FormatterPage";
-import { ProjectStructurePage } from "../languages/ProjectStructurePage";
 import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
 import { GoBuildTagsPage, GO_BUILD_TAG_SECTIONS } from "../languages/GoBuildTags";
 import { GoModulesPage, GO_MODULE_SECTIONS } from "../languages/GoModules";
@@ -17,25 +14,6 @@ import type { PageSpec } from "./spec";
 export const LANGUAGES_GROUP = "Languages & Frameworks";
 
 export const LANGUAGE_PAGES: PageSpec[] = [
-  {
-    id: "languages.serverTargets",
-    title: "Language server targets",
-    group: LANGUAGES_GROUP,
-    projectScope: true,
-    defaultScope: "project",
-    order: 451,
-    keywords: ["lsp", "container", "target"],
-    component: LanguageServerTargetsPage,
-  },
-  {
-    id: "languages.pluginFormatters",
-    title: "Plugin Formatters",
-    group: LANGUAGES_GROUP,
-    projectScope: true,
-    order: 450,
-    keywords: ["format", "plugins"],
-    component: PluginFormattersPage,
-  },
   {
     id: "python.interpreter",
     projectScope: true,
@@ -63,29 +41,6 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "Google",
     ],
     component: PythonInterpreterPage,
-  },
-  {
-    id: "projectStructure",
-    title: "Project Structure",
-    // IntelliJ IDEA order: … Version Control, Project Structure, Build, Execution, Deployment, Languages & Frameworks …
-    order: 350,
-    keywords: [
-      "project structure",
-      "content root",
-      "sources root",
-      "test sources",
-      "resources",
-      "excluded",
-      "mark directory as",
-      "project sdk",
-      "language level",
-      "modules",
-      "libraries",
-      "facets",
-      "artifacts",
-      "sdks",
-    ],
-    component: ProjectStructurePage,
   },
   {
     id: "languages.go",

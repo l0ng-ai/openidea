@@ -14,3 +14,23 @@ name = "yaml-language-server"
 command = "yaml-language-server"
 args = ["--stdio"]
 install-hint = "npm i -g yaml-language-server"
+
+[language-servers.settings.yaml.schemas]
+"https://raw.githubusercontent.com/compose-spec/compose-go/v2.16.2/schema/compose-spec.json" = [
+  "compose.yml",
+  "compose.yaml",
+  "compose.*.yml",
+  "compose.*.yaml",
+  "docker-compose.yml",
+  "docker-compose.yaml",
+  "docker-compose.*.yml",
+  "docker-compose.*.yaml",
+  "*-compose.yml",
+  "*-compose.yaml",
+  "*-compose.*.yml",
+  "*-compose.*.yaml",
+  "*.compose.yml",
+  "*.compose.yaml",
+  "*.compose.*.yml",
+  "*.compose.*.yaml",
+]

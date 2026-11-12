@@ -3,6 +3,7 @@ import { IpcError } from "@/platform/ipc";
 import { missingAdapter } from "../missingAdapter";
 
 const unavailable = (message: string) => new IpcError({ kind: "unavailable", message });
+const invalid = (message: string) => new IpcError({ kind: "invalidInput", message });
 
 describe("missing debug adapters", () => {
   it("offers OpenIDEA's debugpy when the interpreter has none", () => {
@@ -39,6 +40,33 @@ describe("missing debug adapters", () => {
       title: "PHP Debug (Xdebug) is not installed",
       body: e.message,
     });
+  });
+
+  it("offers to reinstall Delve when it is too old for the Go toolchain", () => {
+    const message =
+      "launch failed: Failed to launch /p/api: Version of Delve is too old for Go version go1.27.0 " +
+      "(maximum supported version 1.26, suppress this error with --check-go-version=false)";
+    // The failed `launch` response arrives as `invalidInput` (a DAP error, not a missing binary).
+    expect(missingAdapter("delve", invalid(message))).toMatchObject({
+      tool: "delve",
+      title: "Delve is too old for Go 1.27.0",
+      action: "Reinstall and Debug",
+      body: `${message}. Reinstalling Delve runs go install github.com/go-delve/delve/cmd/dlv@latest.`,
+    });
+  });
+
+  it("offers the reinstall even when delve exited during startup", () => {
+    const e = unavailable(
+      "debug adapter `delve` exited during startup:\nVersion of Delve is too old for Go version go1.27.0",
+    );
+    expect(missingAdapter("delve", e)).toMatchObject({ tool: "delve", action: "Reinstall and Debug" });
+  });
+
+  it("keeps a Go launch that failed for another reason as a plain error", () => {
+    expect(missingAdapter("delve", invalid("launch failed: could not find project directory"))).toBeNull();
+    expect(
+      missingAdapter("delve", unavailable("debug adapter `delve` exited during startup:\nexit status 1")),
+    ).toBeNull();
   });
 
   it("leaves other failures and adapters without an installer alone", () => {

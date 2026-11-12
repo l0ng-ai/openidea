@@ -476,3 +476,16 @@ export function filesOf(nodes: readonly ChangeNode[]): FileStatus[] {
     }
   return out;
 }
+
+/**
+ * Changed files at or below `paths` (absolute, a directory expands to its files):
+ * the files a drop assigns to a change list. Unversioned and conflicted paths are
+ * left out — an unversioned file only joins a list once it has been added to Git.
+ */
+export function changedPathsUnder(paths: readonly string[], status: readonly FileStatus[]): string[] {
+  const wanted = paths.map(stripSlash);
+  return status
+    .filter((f) => groupOf(f) === "changes")
+    .map((f) => stripSlash(f.path))
+    .filter((p) => wanted.some((w) => p === w || p.startsWith(`${w}/`)));
+}

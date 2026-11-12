@@ -24,7 +24,13 @@ import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { confirmDialog, openDialog } from "./dialogs";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
 import { currentRepo, loadBranches, refreshNow, repoName, useVcs } from "./store";
-import { groupWorktrees, isCurrentWorktree, worktreeContainsProject, type RepoWorktrees } from "./worktrees";
+import {
+  groupWorktrees,
+  isCurrentWorktree,
+  worktreeContainsProject,
+  worktreeMoveTarget,
+  type RepoWorktrees,
+} from "./worktrees";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -685,6 +691,34 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
     await reload();
   };
 
+  const move = async () => {
+    if (!current || !currentGroup || current.main || containsProject) return;
+    const { open } = await import("@/platform/dialog");
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: tx("Move Worktree"),
+      defaultPath: current.path.replace(/[\\/][^\\/]+[\\/]?$/, "") || undefined,
+    });
+    const folder = Array.isArray(picked) ? picked[0] : picked;
+    if (!folder) return;
+    const to = worktreeMoveTarget(current.path, folder);
+    if (isCurrentWorktree(to, current.path)) return;
+    const ok = await confirmDialog({
+      title: "Move Worktree",
+      message: tx`Move the worktree at ${current.path} to ${to}?`,
+      okLabel: "Move",
+    });
+    if (!ok) return;
+    try {
+      await call(commands.vcsMoveWorktree(currentGroup.root, current.path, to));
+      setSelected(`w:${to}`);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+    await reload();
+  };
+
   return (
     <div className={className}>
       <div className={styles.manageBar} role="toolbar" aria-label={tx("Worktrees")}>
@@ -702,6 +736,14 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
           size="small"
           disabled={!current || current.main || containsProject}
           onClick={() => void remove()}
+        />
+        <IconButton
+          icon="export"
+          title={containsProject ? "Cannot move a worktree containing the open project." : "Move Worktree…"}
+          aria-label="Move Worktree…"
+          size="small"
+          disabled={!current || current.main || containsProject}
+          onClick={() => void move()}
         />
         <IconButton
           icon="folder"

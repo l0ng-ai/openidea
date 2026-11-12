@@ -116,13 +116,33 @@ interface MenuListProps {
   "aria-label"?: string;
   /** Focus the first item on mount. */
   autoFocusFirst?: boolean;
+  /**
+   * Numeric mnemonics, like IDEA's Select In popup: label the first nine
+   * enabled rows 1–9 and activate one on that digit. Submenus never inherit it.
+   */
+  numbers?: boolean;
 }
 
-export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, ...aria }: MenuListProps) {
+export function MenuList({
+  items,
+  onDone,
+  onCloseLevel,
+  autoFocusFirst = true,
+  numbers = false,
+  ...aria
+}: MenuListProps) {
   // Action enablement follows the context keys: opening the menu moves focus
   // (e.g. editorTextFocus → popupOpen) right after the first render.
   useContextKeys();
   const resolved = resolveMenuItems(items);
+  // IDEA numeric mnemonics: the first nine selectable rows, in display order.
+  const numbersOf: Array<number | undefined> = [];
+  if (numbers) {
+    let n = 0;
+    resolved.forEach((r, i) => {
+      if (n < 9 && selectable(r)) numbersOf[i] = ++n;
+    });
+  }
   const [active, setActive] = useState(() => (autoFocusFirst ? resolved.findIndex(selectable) : -1));
   const [openSub, setOpenSubIndex] = useState<number | null>(null);
   const [subAnchor, setSubAnchor] = useState<HTMLElement | null>(null);
@@ -288,6 +308,15 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
         break;
       default:
         if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+          if (numbers && /^[1-9]$/.test(e.key)) {
+            const n = Number(e.key);
+            for (let i = 0; i < resolved.length; i++)
+              if (numbersOf[i] === n) {
+                activate(i);
+                break;
+              }
+            return;
+          }
           const ch = e.key.toLowerCase();
           const n = resolved.length;
           for (let s = 1; s <= n; s++) {
@@ -350,6 +379,11 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
               onMouseLeave={() => leave(i)}
               onClick={() => activate(i)}
             >
+              {numbers && (
+                <span className={styles.mnemonic} data-menu-number={numbersOf[i]} aria-hidden={true}>
+                  {numbersOf[i] ?? ""}
+                </span>
+              )}
               <span className={styles.icon} data-menu-icon={!r.checked && r.icon ? "" : undefined}>
                 {r.checked ? <Icon name="check" size={13} /> : r.icon ? <Icon name={r.icon} size={14} /> : null}
               </span>
@@ -396,10 +430,12 @@ export interface MenuProps {
   items: MenuItem[];
   placement?: Placement;
   "aria-label"?: string;
+  /** Numeric mnemonics on the first nine rows; see `MenuList`. */
+  numbers?: boolean;
 }
 
 /** A dropdown menu anchored to an element or point. */
-export function Menu({ open, onClose, anchor, items, placement = "bottom-start", ...aria }: MenuProps) {
+export function Menu({ open, onClose, anchor, items, placement = "bottom-start", numbers, ...aria }: MenuProps) {
   return (
     <Popup
       open={open}
@@ -410,7 +446,7 @@ export function Menu({ open, onClose, anchor, items, placement = "bottom-start",
       autoFocus={false}
       className={styles.popup}
     >
-      <MenuList items={items} onDone={onClose} aria-label={aria["aria-label"]} />
+      <MenuList items={items} onDone={onClose} numbers={numbers} aria-label={aria["aria-label"]} />
     </Popup>
   );
 }
@@ -419,7 +455,7 @@ export function Menu({ open, onClose, anchor, items, placement = "bottom-start",
 // Context menus
 
 interface ContextMenuState {
-  menu: { x: number; y: number; items: MenuItem[]; id: number } | null;
+  menu: { x: number; y: number; items: MenuItem[]; numbers: boolean; id: number } | null;
 }
 
 export const useContextMenuStore = create<ContextMenuState>(() => ({ menu: null }));
@@ -428,10 +464,11 @@ let menuSeq = 0;
 export function showContextMenu(
   at: { clientX: number; clientY: number } | { x: number; y: number },
   items: MenuItem[],
+  options?: { numbers?: boolean },
 ) {
   const x = "clientX" in at ? at.clientX : at.x;
   const y = "clientY" in at ? at.clientY : at.y;
-  useContextMenuStore.setState({ menu: { x, y, items, id: ++menuSeq } });
+  useContextMenuStore.setState({ menu: { x, y, items, numbers: !!options?.numbers, id: ++menuSeq } });
 }
 
 export function hideContextMenu() {
@@ -454,7 +491,7 @@ export function ContextMenuHost() {
       onClose={hideContextMenu}
       className={styles.popup}
     >
-      <MenuList items={menu.items} onDone={hideContextMenu} aria-label="Context menu" />
+      <MenuList items={menu.items} numbers={menu.numbers} onDone={hideContextMenu} aria-label="Context menu" />
     </Popup>
   );
 }

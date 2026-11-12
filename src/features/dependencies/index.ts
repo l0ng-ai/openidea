@@ -210,7 +210,7 @@ export function activate(): () => void {
     extensions: (doc) => {
       if (doc.virtual || doc.readOnly) return [];
       if (/(?:^|\/)Cargo\.toml$/.test(doc.path)) return extension(doc);
-      if (/(?:^|\/)go\.mod$/.test(doc.path)) return versionCompletion(doc);
+      if (/(?:^|\/)(?:go\.mod|package\.json)$/.test(doc.path)) return versionCompletion(doc);
       return [];
     },
   });

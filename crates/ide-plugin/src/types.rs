@@ -94,6 +94,10 @@ pub enum Prompt {
     Confirm { title: String, message: String },
     #[serde(rename_all = "camelCase")]
     PickDirectory { title: String, initial: Option<String> },
+    /// The host's own question under `net:ask` (never plugin-initiated): the
+    /// plugin reached an HTTPS host its manifest does not list.
+    #[serde(rename_all = "camelCase")]
+    NetPermission { host: String, session_only: bool },
 }
 
 /// Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`).
@@ -106,6 +110,7 @@ pub enum EventKind {
     RunExited,
     TerminalExited,
     ContentTabAction,
+    ExtensionsChanged,
     FileOpened,
     FileSaved,
     FilesChanged,
@@ -116,13 +121,14 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::FileClosed,
         Self::SettingsChanged,
         Self::InputModeChanged,
         Self::RunExited,
         Self::TerminalExited,
         Self::ContentTabAction,
+        Self::ExtensionsChanged,
         Self::FileOpened,
         Self::FileSaved,
         Self::FilesChanged,
@@ -140,6 +146,7 @@ impl EventKind {
             Self::RunExited => "run-exited",
             Self::TerminalExited => "terminal-exited",
             Self::ContentTabAction => "content-tab-action",
+            Self::ExtensionsChanged => "extensions-changed",
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
@@ -159,7 +166,11 @@ impl EventKind {
     pub fn capability(self) -> Option<ide_extension::Capability> {
         match self {
             Self::ActionPerformed | Self::InputModeChanged => Some(ide_extension::Capability::InputEvents),
-            Self::Scheduled | Self::RunExited | Self::TerminalExited | Self::ContentTabAction => None,
+            Self::Scheduled
+            | Self::RunExited
+            | Self::TerminalExited
+            | Self::ContentTabAction
+            | Self::ExtensionsChanged => None,
             _ => Some(ide_extension::Capability::Events),
         }
     }
@@ -225,6 +236,8 @@ pub enum WorkbenchEvent {
     ContentTabAction(crate::ContentTabAction),
     FileClosed(String),
     SettingsChanged(Vec<String>),
+    /// Ids of extension points the receiving plugin declares whose contributions changed.
+    ExtensionsChanged(Vec<String>),
     InputModeChanged(InputMode),
     FileOpened(String),
     FileSaved(String),
@@ -243,6 +256,7 @@ impl WorkbenchEvent {
             Self::ContentTabAction(_) => EventKind::ContentTabAction,
             Self::FileClosed(_) => EventKind::FileClosed,
             Self::SettingsChanged(_) => EventKind::SettingsChanged,
+            Self::ExtensionsChanged(_) => EventKind::ExtensionsChanged,
             Self::InputModeChanged(_) => EventKind::InputModeChanged,
             Self::FileOpened(_) => EventKind::FileOpened,
             Self::FileSaved(_) => EventKind::FileSaved,
@@ -437,7 +451,13 @@ pub fn net_host(url: &str) -> Result<String, String> {
         return Err(format!("unsupported scheme {:?}", parsed.scheme()));
     }
     match parsed.host() {
-        Some(url::Host::Domain(host)) => Ok(host.trim_end_matches('.').to_ascii_lowercase()),
+        Some(url::Host::Domain(host)) => {
+            let host = host.trim_end_matches('.').to_ascii_lowercase();
+            if host.is_empty() || host.contains('*') {
+                return Err("URL must name one exact host".into());
+            }
+            Ok(host)
+        }
         Some(url::Host::Ipv4(host)) => Ok(host.to_string()),
         Some(url::Host::Ipv6(host)) => Ok(host.to_string()),
         None => Err("URL has no host".into()),
@@ -479,8 +499,21 @@ mod tests {
             net_capability("http://example.com/").unwrap(),
             ide_extension::Capability::NetHttp("example.com".into())
         );
+        for (url, host) in [
+            ("https://EXAMPLE.com.:8443/", "example.com"),
+            ("https://bücher.example/", "xn--bcher-kva.example"),
+            ("https://xn--bcher-kva.example/", "xn--bcher-kva.example"),
+            ("https://127.1/", "127.0.0.1"),
+            ("https://[0:0:0:0:0:0:0:1]:8443/", "::1"),
+            ("https://sub.example.com/", "sub.example.com"),
+        ] {
+            assert_eq!(net_host(url).unwrap(), host);
+        }
+        assert_ne!(net_host("https://аpi.example/").unwrap(), net_host("https://api.example/").unwrap());
         assert!(net_host("file:///etc/passwd").is_err());
         assert!(net_host("example.com").is_err());
+        assert!(net_host("https://*.example.com/").is_err());
+        assert!(net_host("https://./").is_err());
     }
 }
 

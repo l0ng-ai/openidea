@@ -23,6 +23,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "code.commentBlock": ["Shift+Meta+/"],
   "build.buildProject": ["Meta+B"],
   "project.copyElement": [],
+  "project.delete": ["Meta+Backspace"],
   "run.debug": ["Meta+F11"],
   "project.open": ["F3"],
   "debug.jumpToSource": ["F3"],

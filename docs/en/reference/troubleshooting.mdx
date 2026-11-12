@@ -1,0 +1,75 @@
+---
+title: "Troubleshooting"
+description: "Find the logs, and fix common problems: Restricted Mode, missing code insight, Java memory use, stale caches, shortcuts, startup and download issues."
+---
+
+## Find the logs
+
+**Help › Show Log in Finder** (macOS), **Help › Show Log in Explorer** (Windows) or **Help › Show Log in Files** (Linux) opens the log folder with the current log selected. Log files are named `openidea.<date>.log`. See [Data directories and logs](/en/reference/data-directories#logs) for the locations and for turning on more detail with `RUST_LOG`.
+
+## Nothing runs, and code insight is missing
+
+If a banner says **Restricted Mode: project commands and tools are disabled.**, the project isn't trusted. In Restricted Mode, language servers, builds, run configurations and other project commands don't start, and actions that need them fail with "Project is in Restricted Mode. Trust the project to enable execution."
+
+Click **Trust Project** in the banner if you trust the source. To review or revoke decisions, open **Settings › Security › Project Trust**. Folders under **Trusted locations** trust every project inside them without asking.
+
+## Code insight is missing for one language
+
+- **The language server isn't installed.** OpenIDEA shows a notification such as "rust-analyzer is not installed" with **Install** and **Language Servers…**. Install it there, or open **Settings › Languages & Frameworks › Language Servers** to install a server, point to one you installed yourself, or check what OpenIDEA found.
+- **The project is still indexing.** Wait for the **Indexing** task in the status bar to finish.
+- **Power Save Mode is on.** A banner above the editor says "Power save mode is on: completion and documentation popups and usage highlighting are off." Click **Turn Off**, or toggle **File › Power Save Mode**.
+
+See [Languages](/en/languages/index) for what each language needs.
+
+## The Java language server uses a lot of memory
+
+The Java language server (jdtls) analyses every module it imports, so large Maven or Gradle builds need memory. It runs with `-Xmx2G` by default.
+
+- **Give it more or less memory.** In **Settings › Languages & Frameworks › Java**, under **Language Server**, set **JVM options**, for example `-Xmx4g`. An option set here replaces the default for the same setting.
+- **Import less.** In the Maven tool window, right-click modules you don't work on and choose **Unlink Maven Projects**. The language server stops importing them; the files stay in the Project view, and adding the `pom.xml` again brings them back.
+- **Share one server.** **Share JDT LS across builds** on the same page uses one jdtls process for the linked builds of a project window.
+
+See [Java and Kotlin](/en/languages/java) for more.
+
+## Results look stale or wrong
+
+If navigation, search or highlighting doesn't match the files, rebuild the caches with **File › Invalidate Caches…** and choose **Invalidate and Restart**. The symbol index is always rebuilt. Also check **Clear language server workspaces (Java import data and indexes)** when a language server keeps old project data, or **Clear build tool caches (Maven / Gradle sync results)** after build file problems.
+
+## A shortcut does nothing
+
+1. Open **Settings › Keymap**, click **Find Actions by Shortcut** and press the shortcut to see which action has it.
+2. If OpenIDEA never receives the key, another program has taken it: the operating system (for example `⌃⌘D` on macOS) or an app such as a GPU overlay. Change that program's shortcut or assign a different one in OpenIDEA.
+3. With Vim mode on, Vim may handle the key in the editor. See [Vim mode](/en/guide/vim).
+
+## Windows warns before installing
+
+The Windows packages aren't code-signed yet, so Microsoft Defender SmartScreen may show an unknown-publisher warning. Choose **More info**, then **Run anyway**. See [Install](/en/guide/install#windows).
+
+## The window stays blank on Linux
+
+WebKitGTK's DMA-BUF renderer fails on Wayland with the NVIDIA driver. OpenIDEA detects this combination and sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` itself. If you see a blank or broken window in another setup, quit OpenIDEA and start it from a terminal with that variable set, for example:
+
+```sh
+WEBKIT_DISABLE_DMABUF_RENDERER=1 ./OpenIDEA_<version>_amd64.AppImage
+```
+
+## OpenIDEA exits at startup with a data directory error
+
+`OPENIDEA_LOCAL_DATA_DIR` is set to a relative path or to a folder that can't be written. Fix or remove the variable. See [Move the local data](/en/reference/data-directories#move-the-local-data).
+
+## Settings don't take effect
+
+If a `settings.toml` you edited by hand can't be parsed or has a value of the wrong type, OpenIDEA ignores that whole file and writes a warning such as "has invalid settings, ignoring it" to the log. Fix the file, or change the setting in the Settings window, which writes valid TOML. See the [settings reference](/en/reference/settings).
+
+## Downloads or updates are slow or fail
+
+- Check **Settings › Appearance & Behavior › System Settings › HTTP Proxy**. **Check connection…** tests a URL through the current proxy settings.
+- From mainland China, set **Update source** to **CNB (China mirror)** in **Settings › Appearance & Behavior › System Settings › Updates**. If a download fails or is cancelled, the notification offers to retry from the other source.
+
+## Report a problem
+
+1. In **About OpenIDEA**, use **Copy Info** to copy the version and platform.
+2. Click **Report an Issue** (or go to [GitHub issues](https://github.com/l0ng-ai/openidea/issues/new/choose)) and describe the steps to reproduce.
+3. Attach the relevant part of the log.
+
+Questions and feedback are also welcome on [Discord](https://discord.gg/2Zy4yn7gP).

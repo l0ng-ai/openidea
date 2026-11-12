@@ -1,0 +1,359 @@
+---
+title: "语言功能"
+description: "为任意语言添加补全、悬停、导航、嵌入提示、语义着色、格式化等功能，或者贡献一门全新的语言。"
+---
+
+插件可以在三个层次上扩展编辑器：
+
+1. **声明式地添加语言。** `[[contributes.languages]]` 提供文件识别、注释、缩进、语言服务器和调试器，
+   不需要写代码。`[[contributes.snippets]]` 提供实时模板。
+2. **为 IDE 没有语法的语言提供语法。** 可选的 `syntax-provider` 导出返回高亮、结构和折叠。
+3. **编辑器提供者（provider）**，适用于任何语言，内置语言也可以：补全、悬停、跳转到定义、行号槽标记、
+   语义 token、嵌入提示、格式化、代码透镜等。在 `[[contributes.providers]]` 下声明。
+
+快速修复和问题报告见 [诊断与检查](/zh/plugins/guides/diagnostics)；基于全部文件构建的项目级导航见
+[索引](/zh/plugins/guides/indexing)。
+
+## 声明提供者
+
+```toml
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+
+[[contributes.providers]]
+kinds = ["completion", "hover"]
+languages = ["markdown"]          # 编辑器语言 id；"*" 表示任意语言（1–64 项）
+```
+
+只有声明的语言与文档语言匹配的插件才会被调用，代码会在第一次调用时加载，所以不需要 `activation`。
+宿主只调用你声明过的类型（kind）。提供者需要代码（`wasm`），但不需要额外权限：文档会随调用一起传入。
+在提供者里调用的宿主函数仍按原有规则检查权限。
+
+| 类型（kind）                                                                                                                                                                                               | 导出（WIT）                 | Rust trait，`register_plugin!` 名称                        | API |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- | ---------------------------------------------------------- | --- |
+| `completion`                                                                                                                                                                                               | `providers`                 | `providers::Providers`，`providers`                        | 1.0 |
+| `inline-completion`                                                                                                                                                                                        | `providers`                 | `providers::Providers`，`providers`                        | 1.0 |
+| `definition`                                                                                                                                                                                               | `providers`                 | `providers::Providers`，`providers`                        | 1.0 |
+| `line-markers`                                                                                                                                                                                             | `providers`                 | `providers::Providers`，`providers`                        | 1.0 |
+| `code-actions`                                                                                                                                                                                             | `providers`、`file-actions` | 见 [诊断](/zh/plugins/guides/diagnostics)                  | 1.0 |
+| `semantic-tokens`                                                                                                                                                                                          | `semantic-tokens-provider`  | `semantic_tokens::SemanticTokens`，`semantic_tokens`       | 1.3 |
+| `hover`                                                                                                                                                                                                    | `hover-provider`            | `hover::HoverProvider`，`hover`                            | 1.3 |
+| `inlay-hints`                                                                                                                                                                                              | `inlay-hints-provider`      | `inlay_hints::InlayHints`，`inlay_hints`                   | 1.3 |
+| `diagnostics`                                                                                                                                                                                              | `diagnostics-provider`      | 见 [诊断](/zh/plugins/guides/diagnostics)                  | 1.3 |
+| `formatting`、`signature-help`、`document-highlights`、`document-links`、`code-lenses`、`selection-ranges`、`folding`、`colors`、`document-symbols`、`implementation`、`type-definition`、`gutter-actions` | `language-features`         | `language_features::LanguageFeatures`，`language_features` | 1.4 |
+| `injections`                                                                                                                                                                                               | `injections`                | `language_features::Injections`，`injections`              | 1.4 |
+
+多个导出可以一次注册：`register_plugin!(MyPlugin, providers, hover, language_features)`。
+每个 trait 方法都有返回空结果的默认实现，只实现声明过的即可。
+
+## 最小示例
+
+```rust
+use openidea_plugin::hover::{Hover, HoverProvider};
+use openidea_plugin::providers::{CompletionItem, CompletionKind, Document, Providers};
+use openidea_plugin::{Error, Invocation, Plugin, Position, register_plugin, text};
+
+#[derive(Default)]
+struct Todos;
+
+impl Plugin for Todos {
+    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+        Err(Error::NotFound(id.into()))
+    }
+}
+
+impl Providers for Todos {
+    fn completion(&mut self, _doc: &Document, _at: Position, _trigger: Option<&str>) -> Vec<CompletionItem> {
+        let mut item = CompletionItem::new("todo", CompletionKind::Snippet);
+        item.insert_text = "TODO(${1:owner}): $0".into();
+        item.snippet = true;
+        item.detail = Some("TODO comment".into());
+        vec![item]
+    }
+}
+
+impl HoverProvider for Todos {
+    fn hover(&mut self, doc: &Document, at: Position) -> Option<Hover> {
+        let offset = text::offset(&doc.text, at)?;
+        doc.text[offset..].starts_with("TODO").then(|| Hover::new("**TODO**: tracked work"))
+    }
+}
+
+register_plugin!(Todos, providers, hover);
+```
+
+每个提供者都会收到一个 `Document`：绝对路径 `path`、编辑器语言 id `language`、版本号 `version`，
+以及包含未保存修改的完整 `text`。位置使用从 0 开始的行号和 UTF-16 列号；
+`openidea_plugin::text::offset` 和 `text::position` 用于与字节偏移互相转换。
+
+## 时间预算
+
+编辑器提供者运行在编辑路径上：
+
+- 超过约 **50 ms** 的结果会被丢弃，**500 ms** 时仍在运行的调用会被中断。同一类型的所有插件同时被调用，
+  各自都有完整的预算。
+- 提供者与插件的命令、事件、视图共用同一个实例：能看到同一份内存，但也要排在它们后面。排在长命令之后的调用
+  会像慢调用一样在 50 ms 时被丢弃，所以命令和事件处理要尽量短。
+- `inline-completion` 不受 50 ms 限制（可能要访问网络），但用户继续输入时会立即取消。
+  可以检查 `Task::is_cancelled`，或者交给宿主中断。
+- `formatting` 和代码操作的延迟解析使用 5 秒的命令预算。
+
+## 补全、内联补全、导航与行号槽标记
+
+这些都是 `providers::Providers`（WIT `providers`）的方法：
+
+- **`completion(doc, at, trigger)`** 返回 `CompletionItem`，与语言服务器的结果合并显示。`kind`
+  （`CompletionKind`）决定图标。补全项可以是 `snippet`（`$1`、`${1:name}`、`$0`），可以替换 `replace` 范围，
+  按 `filter_text` 而不是标签匹配，按 `sort_text` 排序，带 `documentation`，还能用 `additional_edits`
+  修改文档其他位置（比如加 import）。
+- **`inline_completion(doc, at)`** 在光标处返回幽灵文本（`InlineSuggestion { insert_text, replace }`）。
+  可参考 [AI Completion](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/ai-completion)。
+- **`definition(doc, at)`** 返回 `Location` 列表，与语言服务器的结果合并，用于跳转到声明（`⌘B` / `Ctrl+B`）。
+- **`line_markers(doc)`** 返回行号槽图标，带 `tooltip` 和可选的点击跳转目标 `target`。
+
+```rust
+use openidea_plugin::providers::{Document, LineMarker, Providers};
+
+impl Providers for Mapper {
+    fn line_markers(&mut self, doc: &Document) -> Vec<LineMarker> {
+        self.links(doc)
+            .into_iter()
+            .map(|(line, target)| LineMarker {
+                line,
+                icon: Some("implemented".into()),
+                tooltip: "Go to the XML statement".into(),
+                target: Some(target),
+            })
+            .collect()
+    }
+}
+```
+
+[MyBatis Navigator](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/mybatis) 在 Java 和 XML 中使用了
+`definition`、`line-markers` 和 `completion`。
+
+**标记图标。** `icon` 可以是图标名（包括已注册的插件图标）、别名 `navigate`（默认）、`implemented`、
+`implementing`、`overridden`、`overriding`、`run`，或者声明为标记图标的包内 SVG（API 1.3）：
+
+```toml
+[[contributes.markerIcons]]
+id = "resource"
+icon = "icons/resource.svg"
+iconDark = "icons/resource_dark.svg"   # 可选
+```
+
+返回 `icon: Some("icons/resource.svg".into())` 即可使用。标记 SVG 最大 64 KiB，与视图图标一样经过净化；
+未知图标会回退为导航图标。如果点击时要执行命令而不是跳转，请用下文的 `gutter-actions`。
+
+## 语义 token
+
+`semantic-tokens`（API 1.3）为声明语言的文档着色，也包括插件没有贡献的语言，比如 `php`：
+
+```rust
+use openidea_plugin::semantic_tokens::{Document, SemanticToken, SemanticTokens, TokenKind, TokenModifier};
+use openidea_plugin::{Range, text};
+
+impl SemanticTokens for MyPlugin {
+    fn semantic_tokens(&mut self, doc: &Document) -> Vec<SemanticToken> {
+        let (start, end) = (text::position(&doc.text, 10), text::position(&doc.text, 14));
+        vec![SemanticToken::new(Range { start, end }, TokenKind::Method).modifier(TokenModifier::Static)]
+    }
+}
+```
+
+每个 token 覆盖一行中的一段，带 LSP token 类型和修饰符（WIT 中为 kebab-case 字符串）。插件 token 与语言服务器的
+合并，重叠处以插件为准，所以配色方案会像对待服务器 token 一样为它们着色。每次编辑后都会重新请求；每个文档最多
+65,536 个。
+
+## 悬停
+
+`hover`（API 1.3）在悬停提示中追加 Markdown。宿主同时询问语言服务器和插件，先显示服务器的内容，
+再用分隔线依次显示各插件的内容。`Hover::new(markdown).range(range)` 指明悬停描述的文本范围（服务器没给范围时使用）。
+每个插件最多 64 KiB Markdown。
+
+## 嵌入提示
+
+`inlay-hints`（API 1.3）在代码中显示简短标签：
+
+```rust
+use openidea_plugin::inlay_hints::{Document, InlayHint, InlayHints, InlayKind};
+use openidea_plugin::Range;
+
+impl InlayHints for MyPlugin {
+    fn inlay_hints(&mut self, _doc: &Document, range: Range) -> Vec<InlayHint> {
+        vec![InlayHint::new(range.start, ": string").kind(InlayKind::Type).tooltip("returns string")]
+    }
+}
+```
+
+`range` 是文档的可见部分，范围外的提示会被丢弃。`kind`（`Type`、`Parameter` 或 `Other`）决定由哪个
+**嵌入提示** 设置控制显示。`.padding_left()` 和 `.padding_right()` 添加空格。标签截断到 256 字节，
+提示文字截断到 1 KiB，每次调用最多 10,000 个。
+
+## 更多语言功能（API 1.4）
+
+声明 `engines.openidea = "^1.4"` 后可以使用下列类型，实现 `language_features::LanguageFeatures`
+并注册 `language_features`：
+
+| 类型                  | 方法                                             | 宿主如何使用                                                                                                                                                                          |
+| --------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `formatting`          | `format(doc, range, options)`                    | 在 **设置 › 编辑器 › 代码样式 › 格式化工具 › 插件格式化工具** 中为每种语言选择插件（有已启用的插件提供格式化工具时才显示）。用于重新格式化代码、格式化选区和保存时格式化。预算 5 秒。 |
+| `signature-help`      | `signature_help(doc, at)`                        | 语言服务器没有返回签名时使用。                                                                                                                                                        |
+| `document-highlights` | `document_highlights(doc, at)`                   | 追加到服务器的高亮之后（`text`、`read`、`write`）。                                                                                                                                   |
+| `document-links`      | `document_links(doc)`                            | Ctrl/⌘ 点击目标：绝对路径、项目相对路径或 HTTP(S) URL。                                                                                                                               |
+| `code-lenses`         | `code_lenses(doc)`                               | 与服务器的透镜一起显示。点击时执行插件声明的命令。                                                                                                                                    |
+| `selection-ranges`    | `selection_ranges(doc, at)`                      | 用于 **扩展选区**，从内到外；无结果时回退到 tree-sitter。                                                                                                                             |
+| `folding`             | `folding(doc)`                                   | 与 tree-sitter 的折叠合并。                                                                                                                                                           |
+| `colors`              | `colors(doc)`、`color_presentations(doc, color)` | 颜色色块与取色器；各通道是 0–1 的浮点数。                                                                                                                                             |
+| `document-symbols`    | `document_symbols(doc)`                          | 用于结构视图和痕迹导航，仅当服务器没有返回符号时生效。                                                                                                                                |
+| `implementation`      | `implementation(doc, at)`                        | 与服务器的实现结果合并。                                                                                                                                                              |
+| `type-definition`     | `type_definition(doc, at)`                       | 与服务器的类型声明结果合并。                                                                                                                                                          |
+| `gutter-actions`      | `gutter_actions(doc)`                            | 行号槽按钮，执行插件声明的命令，可带参数。                                                                                                                                            |
+
+下面是 [Blame Annotations](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/blame-annotations)
+示例中提供命令入口的代码透镜：
+
+```rust
+use openidea_plugin::language_features::{CodeLens, Document, LanguageFeatures};
+use openidea_plugin::Range;
+
+impl LanguageFeatures for BlameAnnotations {
+    fn code_lenses(&mut self, _doc: &Document) -> Vec<CodeLens> {
+        vec![CodeLens {
+            range: Range::default(),
+            title: "Show blame annotations".into(),
+            command: "annotate".into(),   // 本插件声明的命令
+            argument: None,
+        }]
+    }
+}
+register_plugin!(BlameAnnotations, language_features);
+```
+
+[Test Runner](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/test-runner) 演示了 `gutter-actions`。
+所有这些功能共同的规则：
+
+- 语言服务器缺失或不可用时，插件结果照常生效；服务器的其他错误仍按错误处理。
+- `document-symbol.parent` 是返回的扁平列表中的下标。父节点必须排在前面并包含子节点的范围；
+  无效的父节点会变成根节点，层级最多 64 层。
+- 每个列表最多 10,000 项，每个字符串最多 64 KiB；无效范围会被丢弃。格式化编辑必须有效且互不重叠。
+- 禁用已选定的格式化插件后，会报告为不可用，而不是悄悄换用其他格式化工具。
+
+## 嵌入语言（injections）
+
+`injections`（API 1.4）标出宿主文档中属于另一种语言的范围，比如字符串字面量里的 SQL。
+为**宿主**语言声明这个类型，实现 `Injections` 并注册 `injections`：
+
+```rust
+use openidea_plugin::language_features::{Document, Injection, Injections};
+use openidea_plugin::text;
+
+impl Injections for MyPlugin {
+    fn injections(&mut self, doc: &Document) -> Vec<Injection> {
+        let Some(start) = doc.text.find("[[") else { return vec![] };
+        let Some(len) = doc.text[start + 2..].find("]]") else { return vec![] };
+        vec![Injection {
+            range: openidea_plugin::Range {
+                start: text::position(&doc.text, start + 2),
+                end: text::position(&doc.text, start + 2 + len),
+            },
+            language: "sql".into(),
+        }]
+    }
+}
+```
+
+宿主会这样处理这些范围：
+
+- 用嵌入语言的解析器和当前配色方案为每个范围着色，编辑后 300 ms 刷新。
+- 把补全、悬停、诊断以及 API 1.4 的各项功能转给嵌入语言的**插件**提供者。传入的是一份虚拟文档：
+  保留原路径和坐标，范围外的文本替换为空白。
+- 如果嵌入语言配置了语言服务器，还会把补全、悬停、签名帮助、导航、引用、高亮和代码操作转给它；
+  每个范围有一份独立的内存中同级文档（不会写入磁盘）。格式化和重命名仍由宿主语言的服务器处理。
+
+限制：每个文档最多 1,000 个互不重叠的范围、32 种嵌入语言；超过 2 MiB 的文档不处理；嵌入不会递归。
+
+## 为插件语言提供语法
+
+对于插件贡献、但 IDE 没有 tree-sitter 语法的语言，可以导出 `syntax-provider`（world `plugin-syntax`）。
+这里的偏移是文本中的 **UTF-8 字节**范围，由 IDE 负责转换。
+
+```rust
+use openidea_plugin::syntax::{Fold, Highlight, Symbol, SyntaxProvider, Token};
+
+impl SyntaxProvider for Solidity {
+    fn highlights(&mut self, _language: &str, text: &str) -> Vec<Token> {
+        lex(text).map(|(range, keyword)| Token { range, kind: if keyword { Highlight::Keyword } else { Highlight::Variable } }).collect()
+    }
+    fn outline(&mut self, _language: &str, text: &str) -> Vec<Symbol> { outline(text) }   // 可选
+    fn folding(&mut self, _language: &str, text: &str) -> Vec<Fold> {                     // 可选
+        openidea_plugin::syntax::bracket_folds(text, b'{', b'}', &[])
+    }
+}
+register_plugin!(Solidity, syntax);
+```
+
+它运行在编辑路径上，每个文档版本只调用一次（有缓存），所以要快；通常手写一个词法分析器即可。
+加上 `activation = ["on-language:<id>"]`，让组件在打开第一个文件时加载。结果会被校验：裁剪到文本范围内，
+重叠部分丢弃。完整示例见 [Solidity](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/solidity)。
+
+## 贡献一门语言
+
+```toml
+[[contributes.languages]]
+path = "languages/solidity.toml"
+```
+
+文件使用 IDE 自己的 [语言定义格式](/zh/languages/adding)（与仓库中的 `languages/<id>.toml` 相同）：
+
+```toml
+id = "solidity"
+name = "Solidity"
+extensions = ["sol"]
+line-comment = "//"
+block-comment = ["/*", "*/"]
+indent = { tab-size = 4, insert-spaces = true }
+
+[[language-servers]]
+name = "solidity-language-server"
+command = "nomicfoundation-solidity-language-server"
+args = ["--stdio"]
+root-markers = ["hardhat.config.ts", "foundry.toml", "package.json"]
+install-hint = "npm install -g @nomicfoundation/solidity-language-server"
+```
+
+- 插件语言和内置语言一样加入语言注册表：文件识别（`extensions`、`filenames`、`first-line`）、注释、缩进、
+  `ui-mode`、`framework-ui-modes`，以及其中声明的 `language-servers` 和 `debugger`。
+- 每个语言服务器或调试器命令都会变成一个可选的 `process:<program>` 权限。拒绝它不影响插件其他部分。
+- 插件不能覆盖内置或用户定义：它们的 id、扩展名和文件名优先。用户仍可以在 **设置 › 文件类型**
+  中把文件映射到插件语言。
+- 在远程项目中，语言定义会发送到服务器，由服务器在那边启动语言服务器。
+
+`openidea-plugin new my-lang --template language` 可以创建一个纯数据的语言插件。
+
+## 代码片段
+
+```toml
+[[contributes.snippets]]           # API 1.4
+language = "sql"
+path = "snippets/sql.json"
+```
+
+```json
+{
+  "Select rows": {
+    "prefix": ["sel", "select"],
+    "body": ["SELECT ${1:column}", "FROM ${2:table}$0"],
+    "description": "Select rows from a table"
+  }
+}
+```
+
+`prefix` 和 `body` 可以是字符串或字符串数组（body 各行以换行连接）。`$1`、`${1:default}` 和结尾的 `$0`
+会成为联动的实时模板字段；`\$` 表示字面量美元符号。片段会出现在补全中，可按 Tab 展开，并以只读形式按插件分组列在
+**设置 › 编辑器 › 实时模板** 中。不需要代码或权限。限制：每个文件 1 MiB、1,000 个条目、每条 32 个前缀、每个 body 64 KiB。
+
+## 测试
+
+在本机运行时 SDK 调用的是模拟宿主，所以可以在 `cargo test` 中直接调用 trait 方法。
+`MockHost::provider_document()` 返回模拟编辑器当前未保存的快照。参见 [测试](/zh/plugins/testing)。

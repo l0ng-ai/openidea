@@ -165,6 +165,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::OpenProject { .. }
             | PluginEvent::PromptRequested { .. }
             | PluginEvent::PromptClosed { .. }
+            | PluginEvent::PromptWaiting { .. }
             | PluginEvent::RevealView { .. }
             | PluginEvent::CommitRequested { .. }
             | PluginEvent::EndpointsChanged { .. }
@@ -292,6 +293,7 @@ impl RemotePlugins {
             }
         };
         let host = Arc::new(PluginHost::new(data_dir.join(PLUGINS_DIR), Arc::new(sink), Limits::default())?);
+        host.set_net_hosts_session_only();
         projects.set_plugin_host(&host);
         host.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(projects)))));
         host.set_secret_store(Arc::new(ClientSecrets { peer: peer.clone(), runtime: projects.runtime.clone() }));
@@ -456,7 +458,8 @@ impl RemotePlugins {
                     selected_paths: paths.unwrap_or_default(),
                     global_settings: matches!(settings_scope, Some(SettingsScope::Global)),
                 };
-                blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
+                super::commands::run_command(&c.host, host, plugin_id, command_id, arg, invocation, c.arg("request")?)
+                    .await
             }
         });
         let h = host.clone();

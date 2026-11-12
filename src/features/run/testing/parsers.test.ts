@@ -6,6 +6,7 @@ import {
   goParser,
   jsParser,
   jvmParser,
+  nodeOutput,
   nodeStatus,
   parseAll,
   parseDuration,
@@ -203,6 +204,8 @@ AssertionError: expected 1 to be 0 // Object.is equality
  ❯ src/b.test.ts:12:17
      10|   it("removes item", () => {
 
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
  Test Files  1 failed | 1 passed (2)
       Tests  1 failed | 3 passed (4)
    Start at  10:00:00
@@ -215,6 +218,12 @@ AssertionError: expected 1 to be 0 // Object.is equality
     expect(leaf(r, "src/b.test.ts", "cart", "adds item")?.own).toBe("passed");
     expect(leaf(r, "src/b.test.ts", "cart", "removes item")).toMatchObject({ own: "failed", durationMs: 4 });
     expect(nodeStatus(r.get("src/b.test.ts")!)).toBe("failed");
+  });
+
+  it("keeps the summary out of a failure's output", () => {
+    const output = leaf(results(jsParser(), fixture), "src/b.test.ts", "cart", "removes item")!.output;
+    expect(output[0]).toBe("AssertionError: expected 1 to be 0 // Object.is equality");
+    expect(output.some((l) => l.includes("Test Files") || l.includes("⎯"))).toBe(false);
   });
 
   it("links the failure location", () => {
@@ -231,6 +240,59 @@ AssertionError: expected 1 to be 0 // Object.is equality
     const r = results(jsParser(), fixture);
     expect(r.summary).toMatchObject({ passed: 3, failed: 1, durationMs: 412 });
     expect(r.counts()).toMatchObject({ passed: 3, failed: 1 });
+  });
+
+  it("gives each test its console output, and a group that of its tests", () => {
+    const r = results(
+      jsParser(),
+      `stdout | src/a.test.ts
+file level log
+
+stdout | src/a.test.ts > cart > adds
+adding item
+
+stderr | src/a.test.ts > cart > adds
+warn: low stock
+
+stdout | src/a.test.ts > top
+top line 1
+top line 2
+
+ ✓ src/a.test.ts > cart > adds 1ms
+ ✓ src/a.test.ts > top 0ms
+`,
+    );
+    const adds = leaf(r, "src/a.test.ts", "cart", "adds")!;
+    expect(adds).toMatchObject({ own: "passed", output: ["adding item", "warn: low stock"] });
+    expect(leaf(r, "src/a.test.ts", "top")?.output).toEqual(["top line 1", "top line 2"]);
+    expect(nodeOutput(r.get("src/a.test.ts")!)).toEqual([
+      "file level log",
+      "adding item",
+      "warn: low stock",
+      "top line 1",
+      "top line 2",
+    ]);
+  });
+
+  it("nests the default reporter's failed tests under their suites", () => {
+    const r = results(
+      jsParser(),
+      ` ❯ tests/cart.test.ts (5 tests | 1 failed) 12ms
+   ❯ Cart (4)
+     × intentionally fails 10ms
+   × top level fails 1ms
+
+ FAIL  tests/cart.test.ts > Cart > intentionally fails
+AssertionError: x
+`,
+    );
+    expect(leaf(r, "tests/cart.test.ts", "Cart", "intentionally fails")).toMatchObject({
+      own: "failed",
+      durationMs: 10,
+    });
+    expect(leaf(r, "tests/cart.test.ts", "intentionally fails")).toBeUndefined();
+    expect(leaf(r, "tests/cart.test.ts", "top level fails")?.own).toBe("failed");
+    expect(r.counts().failed).toBe(2);
   });
 
   it("handles flat verbose lines", () => {

@@ -1,0 +1,397 @@
+---
+title: "Language features"
+description: "Add completion, hover, navigation, inlay hints, semantic colours, formatting and more to any language, or contribute a whole new language."
+---
+
+Plugins extend the editor at three levels:
+
+1. **A language, declaratively.** `[[contributes.languages]]` adds file detection,
+   comments, indentation, language servers and a debugger, with no code.
+   `[[contributes.snippets]]` adds live templates.
+2. **Syntax for a language the IDE has no grammar for.** The optional `syntax-provider`
+   export returns highlighting, structure and folds.
+3. **Editor providers** for any language, built-in or not: completion, hover, go to
+   definition, gutter markers, semantic tokens, inlay hints, formatting, code lenses and
+   the rest. Declare them under `[[contributes.providers]]`.
+
+Quick fixes and problems are on [Diagnostics and inspections](/en/plugins/guides/diagnostics);
+project-wide navigation built from every file is on [Indexing](/en/plugins/guides/indexing).
+
+## Declare providers
+
+```toml
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+
+[[contributes.providers]]
+kinds = ["completion", "hover"]
+languages = ["markdown"]          # editor language ids; "*" for any (1–64 entries)
+```
+
+Only plugins whose declaration matches the document's language are called, and loading
+the code is part of the first call, so no `activation` entry is needed. The host calls only
+the kinds you declare. Providers need code (`wasm`) but no extra capability: the document
+comes with the call. Host functions you call from a provider keep their usual capability
+checks.
+
+| Kind                                                                                                                                                                                                       | Export (WIT)                | Rust trait, `register_plugin!` name                        | API |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- | ---------------------------------------------------------- | --- |
+| `completion`                                                                                                                                                                                               | `providers`                 | `providers::Providers`, `providers`                        | 1.0 |
+| `inline-completion`                                                                                                                                                                                        | `providers`                 | `providers::Providers`, `providers`                        | 1.0 |
+| `definition`                                                                                                                                                                                               | `providers`                 | `providers::Providers`, `providers`                        | 1.0 |
+| `line-markers`                                                                                                                                                                                             | `providers`                 | `providers::Providers`, `providers`                        | 1.0 |
+| `code-actions`                                                                                                                                                                                             | `providers`, `file-actions` | see [Diagnostics](/en/plugins/guides/diagnostics)          | 1.0 |
+| `semantic-tokens`                                                                                                                                                                                          | `semantic-tokens-provider`  | `semantic_tokens::SemanticTokens`, `semantic_tokens`       | 1.3 |
+| `hover`                                                                                                                                                                                                    | `hover-provider`            | `hover::HoverProvider`, `hover`                            | 1.3 |
+| `inlay-hints`                                                                                                                                                                                              | `inlay-hints-provider`      | `inlay_hints::InlayHints`, `inlay_hints`                   | 1.3 |
+| `diagnostics`                                                                                                                                                                                              | `diagnostics-provider`      | see [Diagnostics](/en/plugins/guides/diagnostics)          | 1.3 |
+| `formatting`, `signature-help`, `document-highlights`, `document-links`, `code-lenses`, `selection-ranges`, `folding`, `colors`, `document-symbols`, `implementation`, `type-definition`, `gutter-actions` | `language-features`         | `language_features::LanguageFeatures`, `language_features` | 1.4 |
+| `injections`                                                                                                                                                                                               | `injections`                | `language_features::Injections`, `injections`              | 1.4 |
+
+Combine exports in one call: `register_plugin!(MyPlugin, providers, hover, language_features)`.
+Every trait method has a default that returns nothing, so implement only what you declared.
+
+## A minimal provider
+
+```rust
+use openidea_plugin::hover::{Hover, HoverProvider};
+use openidea_plugin::providers::{CompletionItem, CompletionKind, Document, Providers};
+use openidea_plugin::{Error, Invocation, Plugin, Position, register_plugin, text};
+
+#[derive(Default)]
+struct Todos;
+
+impl Plugin for Todos {
+    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+        Err(Error::NotFound(id.into()))
+    }
+}
+
+impl Providers for Todos {
+    fn completion(&mut self, _doc: &Document, _at: Position, _trigger: Option<&str>) -> Vec<CompletionItem> {
+        let mut item = CompletionItem::new("todo", CompletionKind::Snippet);
+        item.insert_text = "TODO(${1:owner}): $0".into();
+        item.snippet = true;
+        item.detail = Some("TODO comment".into());
+        vec![item]
+    }
+}
+
+impl HoverProvider for Todos {
+    fn hover(&mut self, doc: &Document, at: Position) -> Option<Hover> {
+        let offset = text::offset(&doc.text, at)?;
+        doc.text[offset..].starts_with("TODO").then(|| Hover::new("**TODO**: tracked work"))
+    }
+}
+
+register_plugin!(Todos, providers, hover);
+```
+
+Every provider gets a `Document` with the absolute `path`, the editor `language` id, a
+`version` and the full `text`, unsaved edits included. Positions are 0-based lines and
+UTF-16 columns; `openidea_plugin::text::offset` and `text::position` convert between them
+and byte offsets.
+
+## Budgets
+
+Editor providers run on the editing path:
+
+- A result later than about **50 ms** is dropped; a call still running at **500 ms** is
+  interrupted. Every plugin providing a kind is asked at the same time, so each has the
+  whole budget.
+- Providers share the plugin's single instance with its commands, events and views. They
+  see the same memory but also wait behind them: a provider call queued behind a long
+  command is dropped at 50 ms like a slow one. Keep commands and event handlers short.
+- `inline-completion` is exempt from the 50 ms (it may need the network) but is cancelled
+  as soon as the user types on. Check `Task::is_cancelled` or let the host interrupt it.
+- `formatting` and code-action resolution use the 5-second command budget.
+
+## Completion, inline completion, navigation and gutter markers
+
+These are methods of `providers::Providers` (WIT `providers`):
+
+- **`completion(doc, at, trigger)`** returns `CompletionItem`s that join the language
+  servers' list. `kind` (`CompletionKind`) picks the icon. An item can be a `snippet`
+  (`$1`, `${1:name}`, `$0`), replace a `replace` range, match on `filter_text` instead of its
+  label, sort by `sort_text`, carry `documentation`, and bring `additional_edits` elsewhere
+  in the document (an import).
+- **`inline_completion(doc, at)`** returns ghost text at the caret
+  (`InlineSuggestion { insert_text, replace }`).
+  [AI Completion](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/ai-completion)
+  is a working example.
+- **`definition(doc, at)`** returns `Location`s, merged with the language server's for
+  Go to Declaration (`⌘B` / `Ctrl+B`).
+- **`line_markers(doc)`** returns gutter icons with a `tooltip` and an optional `target`
+  opened on click.
+
+```rust
+use openidea_plugin::providers::{Document, LineMarker, Providers};
+
+impl Providers for Mapper {
+    fn line_markers(&mut self, doc: &Document) -> Vec<LineMarker> {
+        self.links(doc)
+            .into_iter()
+            .map(|(line, target)| LineMarker {
+                line,
+                icon: Some("implemented".into()),
+                tooltip: "Go to the XML statement".into(),
+                target: Some(target),
+            })
+            .collect()
+    }
+}
+```
+
+[MyBatis Navigator](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/mybatis)
+uses `definition`, `line-markers` and `completion` for Java and XML.
+
+**Marker icons.** `icon` accepts an icon name (including registered plugin icons), the
+aliases `navigate` (default), `implemented`, `implementing`, `overridden`, `overriding`
+and `run`, or a package SVG declared as a marker icon (API 1.3):
+
+```toml
+[[contributes.markerIcons]]
+id = "resource"
+icon = "icons/resource.svg"
+iconDark = "icons/resource_dark.svg"   # optional
+```
+
+Return `icon: Some("icons/resource.svg".into())` to use it. Marker SVGs are at most
+64 KiB and sanitised like view icons; unknown icons keep the navigation glyph. For a
+clickable command instead of navigation, use `gutter-actions` (below).
+
+## Semantic tokens
+
+`semantic-tokens` (API 1.3) colours tokens in documents of the declared languages,
+including languages the plugin doesn't contribute, such as `php`:
+
+```rust
+use openidea_plugin::semantic_tokens::{Document, SemanticToken, SemanticTokens, TokenKind, TokenModifier};
+use openidea_plugin::{Range, text};
+
+impl SemanticTokens for MyPlugin {
+    fn semantic_tokens(&mut self, doc: &Document) -> Vec<SemanticToken> {
+        let (start, end) = (text::position(&doc.text, 10), text::position(&doc.text, 14));
+        vec![SemanticToken::new(Range { start, end }, TokenKind::Method).modifier(TokenModifier::Static)]
+    }
+}
+```
+
+A token covers part of one line and carries an LSP token type and modifiers (kebab-case
+strings in the WIT). Tokens join the language server's and win where they overlap one, so
+the colour scheme styles them like the server's. They are requested again after each edit;
+at most 65,536 per document.
+
+## Hover
+
+`hover` (API 1.3) adds Markdown to the hover. The host asks the language server and the
+plugins together and shows the server's hover first, then each plugin's below a rule.
+`Hover::new(markdown).range(range)` names the text the hover describes (used when the
+server names none). At most 64 KiB of Markdown per plugin.
+
+## Inlay hints
+
+`inlay-hints` (API 1.3) shows short labels inside the code:
+
+```rust
+use openidea_plugin::inlay_hints::{Document, InlayHint, InlayHints, InlayKind};
+use openidea_plugin::Range;
+
+impl InlayHints for MyPlugin {
+    fn inlay_hints(&mut self, _doc: &Document, range: Range) -> Vec<InlayHint> {
+        vec![InlayHint::new(range.start, ": string").kind(InlayKind::Type).tooltip("returns string")]
+    }
+}
+```
+
+`range` is the visible part of the document; hints outside it are dropped. `kind`
+(`Type`, `Parameter` or `Other`) decides which **Inlay Hints** setting shows the hint.
+`.padding_left()` and `.padding_right()` add spaces. Labels are cut at 256 bytes, tooltips
+at 1 KiB, and at most 10,000 hints per call.
+
+## More language features (API 1.4)
+
+Declare any of these kinds with `engines.openidea = "^1.4"`, implement
+`language_features::LanguageFeatures` and register `language_features`:
+
+| Kind                  | Method                                           | How the host uses it                                                                                                                                                                                                                 |
+| --------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `formatting`          | `format(doc, range, options)`                    | **Settings › Editor › Code Style › Formatter › Plugin Formatters** picks a plugin per language (shown once an enabled plugin provides a formatter). Used by Reformat Code, selection formatting and format on save. 5-second budget. |
+| `signature-help`      | `signature_help(doc, at)`                        | Used when the language server returns no signatures.                                                                                                                                                                                 |
+| `document-highlights` | `document_highlights(doc, at)`                   | Appended to the server's highlights (`text`, `read`, `write`).                                                                                                                                                                       |
+| `document-links`      | `document_links(doc)`                            | Ctrl/⌘-click targets: absolute paths, project-relative paths or HTTP(S) URLs.                                                                                                                                                        |
+| `code-lenses`         | `code_lenses(doc)`                               | Shown beside the server's lenses. A click runs one of the plugin's declared commands.                                                                                                                                                |
+| `selection-ranges`    | `selection_ranges(doc, at)`                      | **Extend Selection**, innermost to outermost; falls back to tree-sitter.                                                                                                                                                             |
+| `folding`             | `folding(doc)`                                   | Merged with tree-sitter folds.                                                                                                                                                                                                       |
+| `colors`              | `colors(doc)`, `color_presentations(doc, color)` | Colour swatches and the colour picker; channels are floats in 0–1.                                                                                                                                                                   |
+| `document-symbols`    | `document_symbols(doc)`                          | Structure and breadcrumbs, only when the server returns no symbols.                                                                                                                                                                  |
+| `implementation`      | `implementation(doc, at)`                        | Merged with the server's implementations.                                                                                                                                                                                            |
+| `type-definition`     | `type_definition(doc, at)`                       | Merged with the server's type declarations.                                                                                                                                                                                          |
+| `gutter-actions`      | `gutter_actions(doc)`                            | Gutter buttons that run one of the plugin's declared commands, with an optional argument.                                                                                                                                            |
+
+A code lens that offers a command, from the
+[Blame Annotations](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/blame-annotations)
+example:
+
+```rust
+use openidea_plugin::language_features::{CodeLens, Document, LanguageFeatures};
+use openidea_plugin::Range;
+
+impl LanguageFeatures for BlameAnnotations {
+    fn code_lenses(&mut self, _doc: &Document) -> Vec<CodeLens> {
+        vec![CodeLens {
+            range: Range::default(),
+            title: "Show blame annotations".into(),
+            command: "annotate".into(),   // a command this plugin declares
+            argument: None,
+        }]
+    }
+}
+register_plugin!(BlameAnnotations, language_features);
+```
+
+[Test Runner](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/test-runner)
+shows `gutter-actions`. Rules that apply to all of them:
+
+- A missing or unavailable language server lets plugin results through; other server
+  errors stay errors.
+- `document-symbol.parent` is an index into the returned flat list. A parent must come
+  first and contain its children; invalid parents become roots, depth is capped at 64.
+- Each list holds at most 10,000 items, text at most 64 KiB per string; invalid ranges are
+  dropped. Format edits must be valid and must not overlap.
+- Disabling the selected formatter reports it as unavailable rather than silently using
+  another one.
+
+## Embedded languages (injections)
+
+`injections` (API 1.4) marks ranges of a host document that contain another language,
+such as SQL inside string literals. Declare the kind for the **host** language,
+implement `Injections` and register `injections`:
+
+```rust
+use openidea_plugin::language_features::{Document, Injection, Injections};
+use openidea_plugin::text;
+
+impl Injections for MyPlugin {
+    fn injections(&mut self, doc: &Document) -> Vec<Injection> {
+        let Some(start) = doc.text.find("[[") else { return vec![] };
+        let Some(len) = doc.text[start + 2..].find("]]") else { return vec![] };
+        vec![Injection {
+            range: openidea_plugin::Range {
+                start: text::position(&doc.text, start + 2),
+                end: text::position(&doc.text, start + 2 + len),
+            },
+            language: "sql".into(),
+        }]
+    }
+}
+```
+
+What the host does with the ranges:
+
+- Highlights each range with the embedded language's parser and the current colour
+  scheme, refreshed 300 ms after edits.
+- Routes completion, hover, diagnostics and the API 1.4 features to the embedded
+  language's **plugin** providers, through a virtual document that keeps the original path
+  and positions and blanks out text outside the ranges.
+- When the embedded language has a configured language server, routes completion, hover,
+  signature help, navigation, references, highlights and code actions to it, each range in
+  its own in-memory sibling document (never written to disk). Formatting and rename stay
+  with the host language's server.
+
+Limits: at most 1,000 non-overlapping ranges and 32 embedded languages per document;
+documents over 2 MiB are skipped; injections are not recursive.
+
+## Syntax for a plugin language
+
+For a language the plugin contributes and the IDE has no tree-sitter grammar for, export
+`syntax-provider` (world `plugin-syntax`). Offsets here are **UTF-8 byte** ranges into the
+text; the IDE converts them.
+
+```rust
+use openidea_plugin::syntax::{Fold, Highlight, Symbol, SyntaxProvider, Token};
+
+impl SyntaxProvider for Solidity {
+    fn highlights(&mut self, _language: &str, text: &str) -> Vec<Token> {
+        lex(text).map(|(range, keyword)| Token { range, kind: if keyword { Highlight::Keyword } else { Highlight::Variable } }).collect()
+    }
+    fn outline(&mut self, _language: &str, text: &str) -> Vec<Symbol> { outline(text) }   // optional
+    fn folding(&mut self, _language: &str, text: &str) -> Vec<Fold> {                     // optional
+        openidea_plugin::syntax::bracket_folds(text, b'{', b'}', &[])
+    }
+}
+register_plugin!(Solidity, syntax);
+```
+
+It runs once per document version (cached) on the editing path, so keep it fast; a
+hand-written lexer is typical. Add `activation = ["on-language:<id>"]` so the component
+loads with the first file. Results are validated: clamped to the text, overlaps dropped.
+[Solidity](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/solidity) is the
+complete example.
+
+## Contributing a language
+
+```toml
+[[contributes.languages]]
+path = "languages/solidity.toml"
+```
+
+The file uses the IDE's own [language definition format](/en/languages/adding) (the same
+as `languages/<id>.toml` in the repository):
+
+```toml
+id = "solidity"
+name = "Solidity"
+extensions = ["sol"]
+line-comment = "//"
+block-comment = ["/*", "*/"]
+indent = { tab-size = 4, insert-spaces = true }
+
+[[language-servers]]
+name = "solidity-language-server"
+command = "nomicfoundation-solidity-language-server"
+args = ["--stdio"]
+root-markers = ["hardhat.config.ts", "foundry.toml", "package.json"]
+install-hint = "npm install -g @nomicfoundation/solidity-language-server"
+```
+
+- Plugin languages join the registry like built-in ones: detection (`extensions`,
+  `filenames`, `first-line`), comments, indentation, `ui-mode`, `framework-ui-modes`, and
+  the `language-servers` and `debugger` they declare.
+- Each language server or debugger command becomes an optional `process:<program>`
+  capability. Refusing it keeps the rest of the plugin working.
+- A plugin can't replace a built-in or user definition: their ids, extensions and file
+  names win. Users can still map files to a plugin language in **Settings › File Types**.
+- In a remote project the definitions go to the server, which starts the servers there.
+
+`openidea-plugin new my-lang --template language` starts a data-only language plugin.
+
+## Snippets
+
+```toml
+[[contributes.snippets]]           # API 1.4
+language = "sql"
+path = "snippets/sql.json"
+```
+
+```json
+{
+  "Select rows": {
+    "prefix": ["sel", "select"],
+    "body": ["SELECT ${1:column}", "FROM ${2:table}$0"],
+    "description": "Select rows from a table"
+  }
+}
+```
+
+`prefix` and `body` take a string or an array of strings (body lines join with newlines).
+`$1`, `${1:default}` and a final `$0` become linked live-template fields; `\$` is a literal
+dollar. Snippets show in completion, expand with Tab, and are listed read-only under
+**Settings › Editor › Live Templates**, grouped by plugin. No code or capability is needed.
+Limits: 1 MiB per file, 1,000 entries, 32 prefixes per entry, 64 KiB per body.
+
+## Testing
+
+On your machine the SDK calls its mock host, so call your trait methods directly in
+`cargo test`. `MockHost::provider_document()` returns the current unsaved snapshot of the
+mock editor. See [Testing](/en/plugins/testing).

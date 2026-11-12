@@ -4,9 +4,17 @@
 //! for the Build tool window, the Problems view and the editor.
 
 mod fingerprint;
+mod launch_resources;
 mod parse;
+mod single;
+mod up_to_date;
 
-pub use fingerprint::{LaunchFingerprint, launch_fingerprint};
+pub use fingerprint::{LaunchFingerprint, launch_fingerprint, menu_fingerprint};
+pub use launch_resources::process_launch_resources;
+pub use single::{
+    SingleFileTarget, compile_file_plan, find_javac, javac_step, single_file_classpath, single_file_target,
+};
+pub use up_to_date::{menu_up_to_date, record_menu_build};
 
 use crate::process::{self, Stream};
 use crate::{BuildModel, maven};
@@ -258,13 +266,26 @@ pub(super) fn maven_steps(
         BuildKind::Rebuild => &["clean", "test-compile"],
         BuildKind::Artifacts => &["package", "-DskipTests"],
     };
+    // The IDE's compile builds are not coverage runs. JaCoCo's offline `instrument`
+    // rewrites target/classes in `process-classes`; `jacoco.skip` prevents that in this
+    // build. It does not restore classes instrumented by an earlier build: Rebuild's
+    // `clean` removes those, while an incremental Build can still reuse them.
+    let skip_jacoco = matches!(kind, BuildKind::Build | BuildKind::Rebuild);
     let tops: Vec<&maven::MavenProject> = m.projects.iter().filter(|p| !p.aggregated).collect();
     if tops.is_empty() {
         return Err(IdeError::not_found("no Maven project found"));
     }
     let step = |p: &maven::MavenProject, extra: &[String]| {
-        let mut s = BuildStep::new(&p.command, &["-B", "-Dstyle.color=never"], &subdir(root, &p.dir), Format::Maven);
+        let mut s = BuildStep::new(
+            &p.command,
+            &["-B", "-Dstyle.color=never", maven::LOCAL_REPO_TRACKING_ARG],
+            &subdir(root, &p.dir),
+            Format::Maven,
+        );
         s.args.extend(p.options.iter().cloned());
+        if skip_jacoco {
+            s.args.push("-Djacoco.skip=true".into());
+        }
         s.args.extend(extra.iter().cloned());
         s.args.extend(goals.iter().map(|g| (*g).to_owned()));
         s.env = p.env.clone();
@@ -1029,6 +1050,22 @@ mod tests {
     }
 
     #[test]
+    fn maven_compile_steps_skip_jacoco_but_artifacts_do_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("demo");
+        write(&root, "pom.xml", "<project><artifactId>demo</artifactId></project>");
+        let model = crate::load(&root, &tmp.path().join("cache"), None);
+        for (kind, expected) in [(BuildKind::Build, true), (BuildKind::Rebuild, true), (BuildKind::Artifacts, false)] {
+            let plan = plan(&root, &model, kind, None, None).unwrap();
+            assert_eq!(
+                plan.steps[0].args.iter().any(|arg| arg == "-Djacoco.skip=true"),
+                expected,
+                "{kind:?}: {plan:?}"
+            );
+        }
+    }
+
+    #[test]
     fn plans_per_build_system() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("demo");
@@ -1044,9 +1081,25 @@ mod tests {
         assert_eq!(p.system, BuildSystem::Maven);
         assert_eq!(p.title, "demo");
         assert_eq!(p.steps.len(), 1);
-        assert_eq!(p.steps[0].args, ["-B", "-Dstyle.color=never", "test-compile"]);
+        assert_eq!(
+            p.steps[0].args,
+            ["-B", "-Dstyle.color=never", maven::LOCAL_REPO_TRACKING_ARG, "-Djacoco.skip=true", "test-compile"]
+        );
         let p = plan(&root, &model, BuildKind::Rebuild, Some(&root.join("core/src/main/java/A.java")), None).unwrap();
-        assert_eq!(p.steps[0].args, ["-B", "-Dstyle.color=never", "-pl", "core", "-am", "clean", "test-compile"]);
+        assert_eq!(
+            p.steps[0].args,
+            [
+                "-B",
+                "-Dstyle.color=never",
+                maven::LOCAL_REPO_TRACKING_ARG,
+                "-Djacoco.skip=true",
+                "-pl",
+                "core",
+                "-am",
+                "clean",
+                "test-compile"
+            ]
+        );
         assert_eq!(p.steps[0].cwd, root);
         assert_eq!(p.title, "demo: build module 'core'");
 
@@ -1320,12 +1373,38 @@ mod tests {
             assert_eq!(step.cwd, root);
             assert_eq!(step.program, "mvnw");
             assert_eq!(step.env["JAVA_HOME"], "/jdk");
-            assert_eq!(step.args, ["-B", "-Dstyle.color=never", "-s", "settings.xml", "-pl", "app", "-am", goal]);
+            assert_eq!(
+                step.args,
+                [
+                    "-B",
+                    "-Dstyle.color=never",
+                    maven::LOCAL_REPO_TRACKING_ARG,
+                    "-s",
+                    "settings.xml",
+                    "-Djacoco.skip=true",
+                    "-pl",
+                    "app",
+                    "-am",
+                    goal
+                ]
+            );
             // Rebuild cleans first, as IDEA's Rebuild does.
             let plan = launch_plan(root, &model, &root.join("app"), test, BuildKind::Rebuild).unwrap();
             assert_eq!(
                 plan.steps[0].args,
-                ["-B", "-Dstyle.color=never", "-s", "settings.xml", "-pl", "app", "-am", "clean", goal]
+                [
+                    "-B",
+                    "-Dstyle.color=never",
+                    maven::LOCAL_REPO_TRACKING_ARG,
+                    "-s",
+                    "settings.xml",
+                    "-Djacoco.skip=true",
+                    "-pl",
+                    "app",
+                    "-am",
+                    "clean",
+                    goal
+                ]
             );
         }
     }

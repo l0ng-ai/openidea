@@ -8,7 +8,7 @@ import { activeEditor } from "@/editor/api";
 import { executeAction, getAction } from "@/platform/actions";
 import { call, commands, isTauri, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { validateProjectStructure } from "@/platform/languageSettings";
+import { effectiveContentRoots, validateProjectStructure } from "@/platform/languageSettings";
 import { useBuildModel } from "@/platform/buildModel";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { showContextMenu, type MenuItem } from "@/ui";
@@ -32,6 +32,7 @@ import {
   hasRelativeImports,
 } from "./producers";
 import { runWithExecutor } from "./executors";
+import { jdwpLaunch } from "./javaDebug";
 import { goModulePath, loadGoModules } from "./goModules";
 import { isPythonPackage, loadPythonPackages } from "./pythonPackages";
 import { remoteDebugBlocked } from "./remote";
@@ -48,7 +49,7 @@ async function ensureConfigs() {
 /** The focused editor's file, text and caret line. */
 /** Project folders outside its root: Project Structure content roots and Gradle modules (as of the last sync). */
 export function projectContentRoots(): string[] {
-  const own = validateProjectStructure(useProject.getState().settings?.projectStructure).contentRoots;
+  const own = effectiveContentRoots(validateProjectStructure(useProject.getState().settings?.projectStructure));
   // The build model keeps the folders of modules outside the project absolute.
   const gradle = (useBuildModel.getState().model?.gradle ?? [])
     .flatMap((g) => g.projects)
@@ -136,6 +137,14 @@ async function buildFirst(build: RunConfig, show?: boolean): Promise<boolean> {
       if (check()) unsub();
     });
   });
+}
+
+/**
+ * Like IDEA, Debug is offered only where a debugger can run it: a debug plan, a debug adapter, or a
+ * Maven / Gradle configuration whose JVM gets a JDWP agent (a JUnit test run through Surefire).
+ */
+export function canDebugProduced(p: Produced): boolean {
+  return !!(p.debug || p.config?.debugAdapter || p.missing || (p.config && jdwpLaunch(p.config)));
 }
 
 /** Runs or debugs a production (adopting it as the selected temporary configuration). */
@@ -371,8 +380,7 @@ export function contextMenuItems(menu: ContextMenuId, ctx: MenuGroupContext): Me
   const arg: ContextArg = { path, line, dir, content: dir ? undefined : input.content };
   return [
     { kind: "action", action: "run.runContext", arg, label: tx`Run '${p.name}'`, icon: "run" },
-    // Like IDEA, Debug only where a debugger can run it.
-    ...(p.debug || p.config?.debugAdapter || p.missing
+    ...(canDebugProduced(p)
       ? ([
           { kind: "action", action: "run.debugContext", arg, label: tx`Debug '${p.name}'`, icon: "debug" },
         ] as MenuItem[])

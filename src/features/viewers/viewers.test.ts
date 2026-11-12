@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { registerTextEditorWrapper, resolveFileEditor } from "@/workbench/contributions";
 import { activate as activateViewers } from "./index";
-import { binaryInput, formatSize, imageInput, isImagePath, isMarkdownPath, isSvgPath, wantsHexView } from "./fileKinds";
+import {
+  associatedApplication,
+  binaryInput,
+  formatSize,
+  imageInput,
+  isImagePath,
+  isMarkdownPath,
+  isSvgPath,
+  wantsHexView,
+} from "./fileKinds";
 import {
   BYTES_PER_ROW,
   MAX_SCROLL_PX,
@@ -27,6 +36,17 @@ describe("file kinds", () => {
     expect(isSvgPath("/p/x.svg")).toBe(true);
     expect(isMarkdownPath("/p/README.md")).toBe(true);
     expect(isMarkdownPath("/p/notes.txt")).toBe(false);
+  });
+
+  it("matches files opened with an associated application", () => {
+    const office = ["*.xlsx", "*.pdf"];
+    expect(associatedApplication("/p/a.xlsx", office, "windows")).toBe(true);
+    expect(associatedApplication("/p/A.XLSX", office, "macos")).toBe(true);
+    expect(associatedApplication("/p/A.XLSX", office, "linux")).toBe(false);
+    expect(associatedApplication("/p/a.txt", office, "windows")).toBe(false);
+    expect(associatedApplication("/p/a.xlsx.bak", office, "windows")).toBe(false);
+    // Only the file name matches, not a directory that looks like a pattern.
+    expect(associatedApplication("/p/*.xlsx/report.txt", office, "windows")).toBe(false);
   });
 
   it("builds viewer inputs keyed apart from text tabs", () => {

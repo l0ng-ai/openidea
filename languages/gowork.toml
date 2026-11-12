@@ -8,5 +8,6 @@ ui-mode = "GoMod"
 [[language-servers]]
 name = "gopls"
 command = "gopls"
+initialization-options = { semanticTokens = true, vulncheck = "Imports" }
 root-markers = ["go.work"]
 install-hint = "go install golang.org/x/tools/gopls@latest"

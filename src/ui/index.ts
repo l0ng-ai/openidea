@@ -10,6 +10,7 @@ export * from "./Select";
 export * from "./Tabs";
 export {
   FILES_DRAG,
+  REMOTE_FILES_DRAG,
   dragRequiresAlt,
   dragSession,
   dropZoneAt,
@@ -37,6 +38,7 @@ export { lazyComponent, lazyWhen, prefetchLazyComponents } from "./lazy";
 export { Given, T } from "./T";
 export { selectableText, copyMenuFor, copyText } from "./selectableText";
 export { useSelectionBoundary } from "./useSelectionBoundary";
+export { lockDragCursor, type DragCursor } from "./dragCursor";
 export { useSanitizedField } from "./useSanitizedField";
 export * from "./rowSelection";
 export * from "./LogPane";

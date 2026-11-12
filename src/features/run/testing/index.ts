@@ -12,7 +12,7 @@ import type { TestEvent, TestOutputParser } from "./types";
 
 export type { TestEvent, TestOutputParser, TestStatus } from "./types";
 export { parseDuration } from "./types";
-export { TestResults, nodeStatus, type TestNode } from "./results";
+export { TestResults, nodeOutput, nodeStatus, type TestNode } from "./results";
 export { cargoParser, goParser, jsParser, jvmParser, phpunitParser, pytestParser, rubyParser, unittestParser };
 
 /** Runs several parsers side by side (unknown tool: e.g. `make test`). */

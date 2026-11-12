@@ -1,0 +1,240 @@
+---
+title: "运行目标"
+description: "贡献运行配置，把测试输出解析进测试树，从代码中启动运行，用运行目标把运行包进容器，以及执行已批准的程序。"
+---
+
+插件运行的任何东西都要经过 `process:<program>` 权限：用户批准程序后，IDE 按绝对路径和内容哈希固定（pin）它，
+并在每次启动前重新校验。在此基础上，插件可以：
+
+| 目标                                           | 使用                                                            | API       |
+| ---------------------------------------------- | --------------------------------------------------------------- | --------- |
+| 项目包含某个标记文件时提供固定命令             | `[[contributes.runDetectors]]`（无需代码）                      | 1.0       |
+| 在代码中计算项目的运行配置                     | `[[contributes.runConfigurations]]` + `run-configurations` 导出 | 1.4       |
+| 把测试输出转成 IDE 的测试树                    | `test-results` 导出，`framework = "plugin"`                     | 1.4       |
+| 从命令中启动自己的某个配置                     | `host::start_run`（WIT `run.start`）                            | 1.4       |
+| 让项目的所有运行都经过包装程序（DDEV、容器等） | `host::register_run_target`（WIT `run-targets`）                | 1.4       |
+| 每次启动前检查包装程序的运行环境               | `run-target-validation` 导出                                    | 1.5       |
+| 运行程序并读取输出                             | `Project::run_process`、`host::run_command`、`host::start`      | 1.0 / 1.3 |
+
+## 运行检测器
+
+运行检测器是一种静态配置，在项目根目录包含其标记文件之一时提供：
+
+```toml
+[[contributes.runDetectors]]
+id = "forge-test"
+name = "forge test"
+files = ["foundry.toml"]     # 根目录包含其中任一文件时提供
+command = "forge"            # 单个程序；对应 process:forge 权限
+args = ["test"]
+test = true                  # 结果进入测试树
+# framework = "plugin"       # API 1.4：用 test-results 导出解析输出
+```
+
+只要 `process:<command>` 已授权，这个配置就会出现在检测到的配置中，并启动已批准的程序。不需要代码。
+[Solidity](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/solidity) 为 Foundry 和 Hardhat 声明了检测器。
+
+## 由代码提供配置
+
+当配置取决于项目内容（比如 `package.json` 中的脚本）时，声明标记文件并导出 `run-configurations`：
+
+```toml
+engines.openidea = "^1.4"
+
+[capabilities]
+required = ["process:openidea-example-tests"]
+
+[[contributes.runConfigurations]]
+files = ["example.tests"]   # 1–16 个标记文件；只有存在其中之一时才会调用导出
+```
+
+```rust
+use openidea_plugin::{PluginRunConfiguration, RunConfigurations, register_plugin};
+
+impl RunConfigurations for TestRunner {
+    fn configurations(&mut self, _root: &str) -> Vec<PluginRunConfiguration> {
+        vec![PluginRunConfiguration {
+            id: "tests".into(),
+            name: "Example tests".into(),
+            program: "openidea-example-tests".into(),   // 已声明并授权的 process: 名称
+            test: true,
+            framework: Some("plugin".into()),
+            ..Default::default()
+        }]
+    }
+}
+
+register_plugin!(TestRunner, run_configurations);
+```
+
+每个 `PluginRunConfiguration` 包含 `id`、`name`、`program`、`args`、可选的项目内 `cwd`、`test` 和可选的 `framework`。
+请返回该项目根目录的完整列表；列出配置时会刷新。宿主最多保留 1000 项 / 4 MiB，导出失败时保留上一次有效的列表，
+程序未获批准的条目不会提供。该导出在没有窗口的情况下运行，不能弹出对话框。
+
+## 测试结果
+
+设置 `framework = "plugin"`（在检测器或返回的配置上）后，IDE 会把运行输出交给 `test-results` 导出。
+注册 `test_results` 并实现 `TestResults`：
+
+```rust
+use openidea_plugin::{PluginTestEvent, TestFailed, TestPassed, TestResults, TestStart};
+
+impl TestResults for TestRunner {
+    fn parse(&mut self, _config: &str, chunk: &str) -> Vec<PluginTestEvent> {
+        self.pending.push_str(chunk);           // 分块不一定是完整的行
+        let mut events = vec![];
+        while let Some(end) = self.pending.find('\n') {
+            let line: String = self.pending.drain(..=end).collect();
+            let Some((kind, name)) = line.trim().split_once(' ') else { continue };
+            let id = name.to_owned();
+            match kind {
+                "start" => events.push(PluginTestEvent::TestStarted(TestStart { id, parent: None, name: name.into(), location: None })),
+                "pass" => events.push(PluginTestEvent::Passed(TestPassed { id, duration_ms: None })),
+                "fail" => events.push(PluginTestEvent::Failed(TestFailed {
+                    id, duration_ms: None, message: "failed".into(), expected: None, actual: None, location: None,
+                })),
+                _ => {}
+            }
+        }
+        events
+    }
+
+    fn select_tests(&mut self, config: &str, tests: &[Vec<String>]) -> Option<Vec<String>> {
+        // 只运行这些测试的完整替换参数列表；不支持时返回 None。
+        (config == "tests" && tests.iter().all(|p| p.len() == 1)).then(|| tests.iter().map(|p| p[0].clone()).collect())
+    }
+}
+```
+
+- `parse(config, chunk)` 收到配置的短 id 和顺序到达的输出分块，分块不一定在换行处结束：请在两次调用之间保留残缺的行。
+- 事件：`SuiteStarted`、`TestStarted`、`Passed`、`Failed`（比较类失败可带 `expected` / `actual`）、`Skipped`、`Output`。
+  测试 id 只在本次运行内有效；父节点必须已经存在。位置使用项目内的绝对路径、从 0 开始的行号和 UTF-16 列号；耗时单位为毫秒。
+- 每批调用使用编辑器提供者预算，最多返回 10,000 个事件 / 4 MiB。解析器缺失、出错或返回无效结果时，该次运行改用内置解析器。
+- `select_tests(config, tests)` 收到测试树中的名称路径（从父套件到测试，与树中显示一致），返回只运行这些测试的**完整**参数列表。
+  有了它才能使用 **重新运行失败的测试**，以及测试树条目上的 **运行** / **调试**。默认返回 `None`（不支持选择）。
+
+## 从代码启动运行
+
+`host::start_run(config, &args, debug)`（API 1.4）在发起调用窗口的 **运行** 工具窗口中启动本插件的某个配置
+（检测器 id 或导出返回的配置；短 id 或 `plugin:<plugin-id>:<config-id>` 均可），并追加 `args`。
+它返回一个操作 id，随后会收到 `run-exited` 事件（`{id, config, status, killed}`），即使没有订阅也会发给所属插件。
+[Test Runner](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/test-runner) 示例中，行号槽按钮把测试名作为参数传入：
+
+```rust
+fn run_command(&mut self, _id: &str, _ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
+    let args = arg.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    host::start_run("tests", &args, false).map(Some)
+}
+```
+
+停止、重新运行和运行目标由 IDE 负责，启动和重新运行时都会校验已批准的程序。调试使用参数中所指源文件对应的调试器
+（或保存的配置上明确选择的调试器），没有调试器时返回 `invalid`。只能在命令或事件中调用，不能在激活或提供者中调用。
+
+## 运行目标
+
+运行目标是项目级的包装程序：选用它的每一次运行、测试、脚本和解释器启动，都会被改写为通过插件所有的程序执行，
+比如 `ddev`、`lando` 或容器 CLI。运行目标会出现在 **设置 › 构建、执行、部署 › 运行目标** 以及每个运行配置的
+**运行于** 选择器中，并标注所属插件。
+
+```rust
+use openidea_plugin::{PluginRunTarget, host};
+
+let project = ctx.project().ok_or("Open a project first")?;
+host::register_run_target(&project, &PluginRunTarget {
+    id: "ddev".into(),
+    name: "DDEV".into(),
+    program: "ddev".into(),                                   // 需要 process:ddev
+    args: vec!["exec".into()],
+    workdir_args: vec!["--dir={cwd}".into(), "--".into()],
+    container_root: Some("/var/www/html".into()),
+    commands: vec![("composer".into(), vec!["composer".into()])],
+})?;
+```
+
+### 命令行如何构造
+
+宿主直接构造 argv，不经过 shell：
+
+- 无覆盖：`program + args + workdir_args + command + command arguments`。
+- 覆盖项的名称与命令的程序名（去掉 `.exe`、`.cmd`、`.bat` 的文件名）匹配时：
+  `program + override + workdir_args + command arguments`。覆盖项同时替换 `args` **和**命令名，所以要包含工具本身。
+
+以上面的目标为例，在 `public/` 下运行 `php x.php` 会变成 `ddev exec --dir=/var/www/html/public -- php x.php`，
+`composer install` 会变成 `ddev composer --dir=/var/www/html/public -- install`。
+
+- `workdir_args` 的每个元素都可以包含 `{cwd}`，替换为映射到 `container_root` 下的配置工作目录。没有 `container_root`
+  或工作目录在项目之外时，会省略全部 `workdir_args`。不提供 `workdir_args` 时，由包装程序自己管理目录。
+- 设置了 `container_root` 时，argv 中的项目路径会映射到该目录下。项目之外的本地绝对工具路径会变成工具的文件名。
+- 包装程序进程总是在配置的**本地**工作目录中启动，这样 DDEV 之类的工具才能找到自己的项目。配置的环境变量和 env 文件
+  会传给包装程序；是否转发进容器由包装程序决定。
+
+**按命令设置工作目录参数**（API 1.5）。`host::register_run_target_with_overrides` 接受
+`PluginRunTargetWithOverrides`，其 `commands` 是 `PluginCommandOverride { name, args, workdir_args }`。
+`workdir_args: None` 继承目标的列表，`Some(vec![])` 省略，`Some(args)` 为该命令替换：
+
+```rust
+use openidea_plugin::PluginCommandOverride;
+
+PluginCommandOverride { name: "composer".into(), args: vec!["composer".into()], workdir_args: Some(vec![]) }
+```
+
+这样 `composer install` 就变成 `ddev composer install`，而 `php x.php` 仍是 `ddev exec --dir=/var/www/html/public -- php x.php`。
+
+### 选用运行目标
+
+注册本身不会改变任何选择。第一次注册时，项目窗口会询问 _"在此项目中使用 `<name>` 运行 PHP / Node / Composer？"_，
+提供 **使用** 和 **暂不使用**；答案按项目、插件和目标 id 记住。选择 **使用** 会把它设为项目的默认运行目标，
+以及 PHP 和 Node 的运行目标。解释器设置中还有 **在目标中运行** 选项（默认运行目标、**本地计算机** 或某个具名目标）。
+单个配置上明确指定的目标优先。
+
+### 规则与限制
+
+- 每次启动都会检查项目信任、包装程序的进程授权及其可执行文件固定（包括在 **设置 › 插件** 中按项目选择的可执行文件）。
+- 在插件运行目标上调试会返回 `invalid`；语言服务器、工具发现和版本探测仍在本地进行。
+- 目标缺失时运行直接失败，不会悄悄改为本地运行。
+- 每个插件每个项目最多 32 个目标、64 个命令覆盖，每个前缀最多 256 个参数（各 16 KiB），每次注册的元数据最多 256 KiB。
+- 目标在空闲回收后保留。停止、禁用、重新加载或卸载插件时撤回；`host::unregister_run_target(&project, id)` 删除单个目标。
+  远程项目中，注册和执行都在服务器上进行。
+
+[Container Runner](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/container-runner) 是一个附带假包装程序的可运行示例。
+
+### 启动前校验（API 1.5）
+
+导出 `run-target-validation`，在运行或测试即将启动前检查包装程序的运行环境：
+
+```rust
+use openidea_plugin::{RunTargetLaunch, RunTargetValidation, register_plugin};
+
+impl RunTargetValidation for MyPlugin {
+    fn validate(&mut self, project: &str, _target_id: &str, _launch: &RunTargetLaunch) -> Result<(), String> {
+        if runtime_is_running(project) { Ok(()) } else { Err("Project runtime is stopped".into()) }
+    }
+}
+register_plugin!(MyPlugin, run_target_validation);
+```
+
+`RunTargetLaunch` 包含 `operation`（`Run` 或 `Test`）、被包装的程序名 `program` 和本地绝对工作目录 `cwd`；
+不传递参数和环境变量。返回 `Err(message)` 会通过正常的错误路径拒绝启动，消息前加插件名（最多 4096 字节）。
+陷入异常或超时（默认 5 秒）也会拒绝启动。没有该导出的插件照常启动。
+
+## 运行程序
+
+| 函数                                                 | 作用                                                                                     |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `Project::run_process(program, &args, stdin)`        | 在项目根目录运行已固定的程序并等待结束：`{ status, stdout, stderr }`，各 4 MiB。         |
+| `host::run_command(&Command, Some(&project), stdin)` | API 1.3：同上，可用 `Command::env` 追加环境变量。                                        |
+| `host::start(&Command, Some(&project))`              | API 1.3：保持运行的 `Child`：`poll`、`write`、`close_stdin`、`wait`、`kill`。最多 8 个。 |
+| `host::open_terminal(title, program, &args)`         | 运行该程序的终端标签页（见 [视图](/zh/plugins/guides/views)）。                          |
+
+```rust
+use openidea_plugin::host::{self, Command};
+
+let project = ctx.project().ok_or("Open a project first")?;
+let out = host::run_command(&Command::new("forge").arg("build").env("FOUNDRY_PROFILE", "ci"), Some(&project), None)?;
+```
+
+- 只能在受信任项目中运行 `process:` 授权所固定的程序。远程项目中，程序在服务器上解析和运行。
+- 环境变量只能追加：名称已存在于准备好的环境中（包括登录 shell 的 `PATH`）会报错。最多 64 项。
+- 调用会随任务或调用一起取消，超时即终止；耗时的工作请放进 `host::begin_task`。丢弃 `Child` 会终止进程，
+  禁用或回收插件会结束它启动的所有子进程。
+- 用户可以在 **设置 › 插件** 中为 `process:` 授权全局或按项目选择可执行文件；插件仍使用其声明的程序名调用。

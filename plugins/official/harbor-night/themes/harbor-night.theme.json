@@ -1,7 +1,7 @@
 // Harbor Night: UI theme. Keys are the CSS variables of src/styles/tokens.css,
 // grouped like its Islands Light block. Delete a line to keep the built-in value
 // of the base named by "kind". Comments are allowed (// and /* */).
-// Full reference: docs/plugins/themes.md.
+// Full reference: plugins/themes.md.
 {
   "id": "harbor-night",
   "name": "Harbor Night",

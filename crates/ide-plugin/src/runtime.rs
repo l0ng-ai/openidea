@@ -104,6 +104,12 @@ pub trait HostApi: Send + Sync {
         let _ = client;
         None
     }
+    /// What other plugins contributed to `point`, as (plugin id, JSON). Only the
+    /// plugin that declares the point may read it.
+    fn extension_contributions(&self, point: &str) -> Result<Vec<(String, String)>, HostError> {
+        let _ = point;
+        Err(HostError::NotFound("extension points are unavailable on this host".into()))
+    }
 
     /// Registers a project-scoped wrapper after validating its process grant and pin.
     fn register_run_target(&self, root: &Path, target: crate::PluginRunTarget) -> Result<(), HostError> {
@@ -350,6 +356,13 @@ pub trait HostApi: Send + Sync {
     }
     /// Roots of the open projects.
     fn projects(&self) -> Vec<std::path::PathBuf>;
+    /// Roots of the workspace members attached to the project at `root` (a
+    /// project window group's folders, as the editor and LSP resolve them).
+    /// Empty for a plain project.
+    fn member_roots(&self, root: &Path) -> Vec<std::path::PathBuf> {
+        let _ = root;
+        Vec::new()
+    }
     /// The most specific open project containing a document (including a new file).
     fn project_of(&self, path: &Path) -> Option<std::path::PathBuf> {
         if !path.is_absolute() {
@@ -419,6 +432,21 @@ pub trait HostApi: Send + Sync {
     fn publish_diagnostics(&self, path: &Path, items: Vec<ide_core::Diagnostic>) -> Result<(), HostError>;
     /// Performs `request` (its host is granted), filling in secret placeholders.
     fn fetch(&self, request: HttpRequest, cancel: &CancellationToken) -> Result<HttpResponse, HostError>;
+    /// The `net:ask` answer for a request to HTTPS host `host` of this plugin
+    /// (`subject`): `Some(true)` allowed and remembered (a host the user
+    /// already allowed connects without asking again, also in the background),
+    /// `Some(false)` allowed for this request only, `None` refused — also when
+    /// nobody could be asked (`client` is `None` outside commands and native view actions).
+    fn net_ask(
+        &self,
+        subject: &ide_extension::ledger::Subject,
+        client: Option<&str>,
+        host: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Option<bool>, HostError> {
+        let _ = (subject, client, host, cancel);
+        Ok(None)
+    }
     fn secret_is_set(&self, name: &str) -> bool;
 
     /// Stores or deletes a secret declared by this plugin; never returns its value.
@@ -771,7 +799,7 @@ impl CallCancel {
         self.token.lock().clone()
     }
 
-    fn is_set(&self) -> bool {
+    pub(crate) fn is_set(&self) -> bool {
         self.flag.load(Ordering::Acquire)
     }
 
@@ -796,15 +824,19 @@ pub struct StoreData {
     stderr_seen: usize,
     pub(crate) plugin_id: String,
     pub(crate) granted: Vec<Capability>,
+    pub(crate) subject: ide_extension::ledger::Subject,
     pub(crate) host: Arc<dyn HostApi>,
     pub(crate) invocation: Invocation,
     /// The running call is a command or an event.
     pub(crate) interactive: bool,
+    pub(crate) net_interactive: bool,
     /// Editor window for pick, pick-many, input and confirm during action resolution.
     pub(crate) action_prompt_client: Option<String>,
     /// Tasks begun by the running call and not ended yet.
     pub(crate) open_tasks: Vec<u64>,
     pub(crate) last_report: Option<Instant>,
+    /// One-shot unwind window after a blocking host I/O call times out.
+    pub(crate) host_io_grace_used: bool,
 }
 
 impl WasiView for StoreData {
@@ -913,6 +945,9 @@ pub struct RuntimeSetup {
     pub version: String,
     /// Capabilities granted to the plugin.
     pub granted: Vec<Capability>,
+    /// Whose grant this is (installed id, or the package directory of a
+    /// linked or project plugin): what `net:ask` answers are remembered for.
+    pub subject: ide_extension::ledger::Subject,
     pub host: Arc<dyn HostApi>,
     pub limits: Limits,
 }
@@ -974,6 +1009,10 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
             kind: "settings-changed".into(),
             data: serde_json::to_string(&keys).expect("keys serialize"),
         }),
+        WorkbenchEvent::ExtensionsChanged(points) => wit_events::Event::Other(wit_types::Extension {
+            kind: "extensions-changed".into(),
+            data: serde_json::to_string(&points).expect("points serialize"),
+        }),
         WorkbenchEvent::InputModeChanged(mode) => wit_events::Event::Other(wit_types::Extension {
             kind: "input-mode-changed".into(),
             data: serde_json::to_string(&mode).expect("mode serializes"),
@@ -1022,12 +1061,15 @@ impl Runtime {
             stderr_seen: 0,
             plugin_id: setup.plugin_id,
             granted: setup.granted,
+            subject: setup.subject,
             host: setup.host,
             invocation: Invocation::default(),
             interactive: false,
+            net_interactive: false,
             action_prompt_client: None,
             open_tasks: Vec::new(),
             last_report: None,
+            host_io_grace_used: false,
         };
         let mut store = Store::new(&engine.engine, data);
         store.limiter(|d| &mut d.store_limits);
@@ -1174,7 +1216,6 @@ impl Runtime {
         let launch = wit_rtv::LaunchInfo {
             operation: match launch.operation {
                 crate::RunTargetOperation::Run => wit_rtv::Operation::Run,
-                crate::RunTargetOperation::Debug => wit_rtv::Operation::Debug,
                 crate::RunTargetOperation::Test => wit_rtv::Operation::Test,
             },
             program: launch.program,
@@ -1637,6 +1678,7 @@ impl Runtime {
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
             store.data_mut().interactive = true;
+            store.data_mut().net_interactive = true;
             let r = e.plugin.openidea_plugin_commands().call_run(
                 &mut *store,
                 id,
@@ -1762,10 +1804,12 @@ impl Runtime {
         if self.exports.views.is_none() {
             return Err(CallError::missing_export("view-provider"));
         }
+        let net_interactive = !matches!(&event, ViewEvent::Message { .. });
         let event = event_to_wit_view(event);
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
             store.data_mut().interactive = true;
+            store.data_mut().net_interactive = net_interactive;
             let views = e.views.as_ref().expect("checked");
             let r = views.call_handle(&mut *store, view, &event, wasmtime::component::Resource::new_borrow(ctx.rep()));
             store.data_mut().drop_invocation(ctx);
@@ -1817,6 +1861,7 @@ impl Runtime {
         let data = self.store.data_mut();
         data.invocation = Invocation::default();
         data.interactive = false;
+        data.net_interactive = false;
         data.action_prompt_client = None;
         // Tasks don't outlive the call that began them.
         for id in std::mem::take(&mut data.open_tasks) {
@@ -1881,6 +1926,7 @@ fn arm(store: &mut Store<StoreData>, limits: &Limits, timeout: Duration) -> wasm
     data.deadline = now + timeout;
     data.timeout = timeout;
     data.last_report = None;
+    data.host_io_grace_used = false;
     data.cancel.reset();
     // The callback above runs every tick and decides.
     store.set_epoch_deadline(1);

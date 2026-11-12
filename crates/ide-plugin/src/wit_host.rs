@@ -64,6 +64,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
             "openidea:plugin/database": super::bindings::openidea::plugin::database,
             "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
         },
     });
 }
@@ -101,6 +102,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
             "openidea:plugin/database": super::bindings::openidea::plugin::database,
             "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
         },
     });
 }
@@ -138,6 +140,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
             "openidea:plugin/database": super::bindings::openidea::plugin::database,
             "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
         },
     });
 }
@@ -316,6 +319,23 @@ impl StoreData {
         };
         let started = Instant::now();
         let answer = self.host.ask(client.as_deref(), prompt, &self.cancel.token());
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        answer.map_err(to_wit)
+    }
+
+    /// The user's answer for a request to `host` under `net:ask`:
+    /// `Some(_)` allows it (`true`: the host is remembered). `None` when
+    /// nobody could be asked or the user refused. Commands and view actions pass
+    /// their window; background and scheduled calls ask nobody, so only an
+    /// already-allowed host connects there.
+    fn ask_net(&mut self, host: &str) -> Result<Option<bool>, wit::Error> {
+        let client = self.net_interactive.then(|| self.invocation.client.clone()).flatten();
+        let subject = self.subject.clone();
+        let started = Instant::now();
+        let answer = self.host.net_ask(&subject, client.as_deref(), host, &self.cancel.token());
+        // The wait doesn't count against the call's wall-clock budget.
         let waited = started.elapsed();
         self.deadline += waited;
         self.call_started += waited;
@@ -666,7 +686,7 @@ impl workspace::HostProject for StoreData {
             return Ok(Err(e));
         }
         let root = self.table.get(&this)?.root.clone();
-        let real = match sandbox::resolve_in_root(&root, &path) {
+        let real = match self.resolve_in_project(&root, &path) {
             Ok(real) => real,
             Err(e) => {
                 let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
@@ -679,20 +699,41 @@ impl workspace::HostProject for StoreData {
         Ok(sandbox::read_text(&real).map_err(wit::Error::Failed))
     }
 
+    fn read_bytes(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<Vec<u8>> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&this)?.root.clone();
+        let real = match self.resolve_in_project(&root, &path) {
+            Ok(real) => real,
+            Err(e) => {
+                let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
+                return Ok(Err(e));
+            }
+        };
+        // The bytes on disk: an unsaved text buffer does not apply, binary files are the point.
+        Ok(sandbox::read_bytes(&real).map_err(wit::Error::Failed))
+    }
+
     fn exists(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<bool> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
         }
         let root = self.table.get(&this)?.root.clone();
-        match sandbox::inside_root(&root, &path) {
+        match self.inside_project(&root, &path) {
             Err(e) => Ok(Err(wit::Error::Invalid(e))),
             Ok(false) => {
                 Ok(Err(wit::Error::Invalid(format!("{path}: access outside the project root is not allowed"))))
             }
             Ok(true) => {
                 let requested = Path::new(&path);
-                let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
-                Ok(Ok(joined.exists()))
+                let joined =
+                    |root: &Path| if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
+                let mut exists = joined(&root).exists();
+                if !exists && !requested.is_absolute() {
+                    exists = self.host.member_roots(&root).iter().any(|root| joined(root).exists());
+                }
+                Ok(Ok(exists))
             }
         }
     }
@@ -702,7 +743,7 @@ impl workspace::HostProject for StoreData {
             return Ok(Err(e));
         }
         let root = self.table.get(&this)?.root.clone();
-        let real = match sandbox::resolve_in_root(&root, &path) {
+        let real = match self.resolve_in_project(&root, &path) {
             Ok(real) => real,
             Err(e) => {
                 let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
@@ -761,7 +802,7 @@ impl workspace::HostProject for StoreData {
             return Ok(Err(too_much_to_write(&path)));
         }
         let root = self.table.get(&this)?.root.clone();
-        let real = match sandbox::resolve_new_in_root(&root, &path) {
+        let real = match self.resolve_writable_in_project(&root, &path) {
             Ok(real) => real,
             Err(e) => return Ok(Err(wit::Error::Invalid(e))),
         };
@@ -817,6 +858,27 @@ fn core_range(r: wit::Range) -> ide_core::Range {
     ide_core::Range::new(pos(r.start), pos(r.end))
 }
 impl StoreData {
+    /// A `project` resource's path: inside the resource's root, or — for a
+    /// project window group — inside any of its member roots (as the editor and
+    /// LSP resolve them). When no root accepts the path, the resource root's own
+    /// refusal is the error, as if there were no members.
+    fn resolve_in_project(&self, root: &Path, path: &str) -> Result<PathBuf, String> {
+        sandbox::resolve_in_root(root, path).or_else(|root_error| {
+            sandbox::resolve_in_roots(&self.host.member_roots(root), path).map_err(|_| root_error)
+        })
+    }
+    /// [`Self::resolve_in_project`] for a content write's destination.
+    fn resolve_writable_in_project(&self, root: &Path, path: &str) -> Result<PathBuf, String> {
+        sandbox::resolve_writable_in_root(root, path).or_else(|root_error| {
+            sandbox::resolve_writable_in_roots(&self.host.member_roots(root), path).map_err(|_| root_error)
+        })
+    }
+    /// Whether a `project` resource's path lands inside the resource's root or
+    /// any member of its workspace group, without requiring it to exist.
+    fn inside_project(&self, root: &Path, path: &str) -> Result<bool, String> {
+        sandbox::inside_root(root, path)
+            .or_else(|root_error| sandbox::inside_roots(&self.host.member_roots(root), path).map_err(|_| root_error))
+    }
     fn decoration_path(&self, path: &str) -> Result<PathBuf, wit::Error> {
         if Path::new(path).is_absolute() {
             return Ok(PathBuf::from(path));
@@ -1129,6 +1191,11 @@ impl events::Host for StoreData {
         {
             return Ok(Err(to_wit(e)));
         }
+        if kind == EventKind::ExtensionsChanged
+            && let Err(e) = self.host.require_api(kind.name(), 5)
+        {
+            return Ok(Err(to_wit(e)));
+        }
         if let Some(cap) = kind.capability()
             && let Err(e) = self.require(cap)
         {
@@ -1200,6 +1267,11 @@ impl tasks::HostTask for StoreData {
     }
 }
 
+/// Headroom reserved before `StoreData::deadline` so a timed-out host subprocess
+/// or HTTP request can unwind as a recoverable `wit::Error` in guest code instead
+/// of immediately tripping the Wasm epoch trap on re-entry.
+const HOST_IO_UNWIND_GRACE: Duration = Duration::from_millis(250);
+
 impl StoreData {
     /// Lets the running call reach `from` plus the background budget (the
     /// longer of it and what was left), so a task that keeps saying it is alive
@@ -1216,6 +1288,28 @@ impl StoreData {
     /// can't be interrupted by the epoch callback, so they get this as timeout).
     fn remaining(&self) -> Duration {
         self.deadline.saturating_duration_since(Instant::now())
+    }
+
+    /// Budget handed to a blocking host I/O call (`process.run`, `net.fetch`),
+    /// leaving room before `self.deadline` when possible so a timed-out I/O call
+    /// returns `Err` to the guest instead of trapping the Wasm instance.
+    fn io_timeout(&self) -> Duration {
+        let rem = self.remaining();
+        if !self.host_io_grace_used && rem > HOST_IO_UNWIND_GRACE * 2 { rem - HOST_IO_UNWIND_GRACE } else { rem }
+    }
+
+    /// Grants at most one short unwind window per call when a blocking host I/O
+    /// call failed at or near `self.deadline` without caller cancellation. An
+    /// error well before the deadline leaves the window for a later call.
+    fn grant_io_error_grace(&mut self) {
+        if self.host_io_grace_used || self.cancel.is_set() {
+            return;
+        }
+        let min_deadline = Instant::now() + HOST_IO_UNWIND_GRACE;
+        if min_deadline > self.deadline {
+            self.deadline = min_deadline;
+            self.host_io_grace_used = true;
+        }
     }
 }
 
@@ -1269,8 +1363,26 @@ impl net::Host for StoreData {
             Ok(h) => h,
             Err(e) => return Ok(Err(wit::Error::Invalid(e))),
         };
-        if let Err(e) = self.require(capability) {
-            return Ok(Err(e));
+        let mut grants = self.granted.clone();
+        if let Err(e) = self.require(capability.clone()) {
+            // `net:ask`: an HTTPS (or loopback) host the manifest does not list
+            // may ask the user — commands and view actions from a window only. Plain
+            // HTTP elsewhere always needs `net.http:<host>`.
+            let askable =
+                matches!(&capability, Capability::Net(_)) && self.granted.iter().any(|g| g.covers(&Capability::NetAsk));
+            let allowed = match &capability {
+                Capability::Net(host) if askable => match self.ask_net(host) {
+                    Ok(Some(_)) => true,
+                    Ok(None) => false,
+                    // A cancelled or failed question is not a refusal.
+                    Err(e) => return Ok(Err(e)),
+                },
+                _ => false,
+            };
+            if !allowed {
+                return Ok(Err(e));
+            }
+            grants.push(capability.clone());
         }
         if req.headers.iter().any(|h| h.value.contains("{{secret:"))
             && let Err(e) = self.require(Capability::Secrets)
@@ -1286,13 +1398,15 @@ impl net::Host for StoreData {
             url: req.url,
             headers: req.headers.into_iter().map(|h| (h.name, h.value)).collect(),
             body: req.body,
-            timeout: wanted.min(self.remaining()),
-            grants: self.granted.clone(),
+            timeout: wanted.min(self.io_timeout()),
+            grants,
         };
         let token = self.cancel.token();
-        Ok(self
-            .host
-            .fetch(request, &token)
+        let outcome = self.host.fetch(request, &token);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome
             .map(|r| net::Response {
                 status: r.status,
                 headers: r.headers.into_iter().map(|(name, value)| net::Header { name, value }).collect(),
@@ -1381,8 +1495,12 @@ impl process::Host for StoreData {
         };
         let cwd = self.cwd_of(cwd)?;
         let token = self.cancel.token();
-        let timeout = self.remaining();
-        Ok(self.host.run_process(cmd, cwd.as_deref(), stdin, &token, timeout).map(to_output).map_err(to_wit))
+        let timeout = self.io_timeout();
+        let outcome = self.host.run_process(cmd, cwd.as_deref(), stdin, &token, timeout);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome.map(to_output).map_err(to_wit))
     }
 
     fn run_command(
@@ -1397,8 +1515,12 @@ impl process::Host for StoreData {
         };
         let cwd = self.cwd_of(cwd)?;
         let token = self.cancel.token();
-        let timeout = self.remaining();
-        Ok(self.host.run_process(cmd, cwd.as_deref(), stdin, &token, timeout).map(to_output).map_err(to_wit))
+        let timeout = self.io_timeout();
+        let outcome = self.host.run_process(cmd, cwd.as_deref(), stdin, &token, timeout);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome.map(to_output).map_err(to_wit))
     }
 
     fn start(&mut self, cmd: process::Command, cwd: Option<Resource<ProjectRes>>) -> Fallible<Resource<ChildRes>> {
@@ -2319,6 +2441,19 @@ impl bindings::openidea::plugin::database::Host for StoreData {
         self.deadline += waited;
         self.call_started += waited;
         Ok(result.map_err(to_wit))
+    }
+}
+impl bindings::openidea::plugin::extensions::Host for StoreData {
+    fn contributions(&mut self, point: String) -> Fallible<Vec<bindings::openidea::plugin::extensions::Contribution>> {
+        Ok(self
+            .host
+            .extension_contributions(&clip(point, 128))
+            .map(|list| {
+                list.into_iter()
+                    .map(|(plugin, data)| bindings::openidea::plugin::extensions::Contribution { plugin, data })
+                    .collect()
+            })
+            .map_err(to_wit))
     }
 }
 impl bindings::openidea::plugin::mcp::Host for StoreData {

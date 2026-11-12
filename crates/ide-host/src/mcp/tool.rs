@@ -51,7 +51,12 @@ impl Call {
     pub async fn ask(&self, request: ide_core::event::McpUiRequest) -> IdeResult<()> {
         self.host.mcp_requests.ask(self, request).await
     }
+    /// Asks the user before a tool changes the project or starts a process, unless brave mode
+    /// is on — read from the IDE's own settings only, which a project's settings can't set.
     pub async fn confirm(&self, subject: &str, detail: Option<String>) -> IdeResult<()> {
+        if self.host.global_settings.effective().mcp_server.run_without_confirmation {
+            return self.project.require_trust();
+        }
         self.ask(ide_core::event::McpUiRequest::Confirm {
             client: self.client.clone(),
             tool: self.tool.clone(),

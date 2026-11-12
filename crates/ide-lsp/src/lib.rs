@@ -1,6 +1,6 @@
 //! Language server manager.
 //!
-//! Servers start lazily per `(server name, workspace root, target)` when a document of
+//! Servers start lazily per `(server name, workspace root)` when a document of
 //! a matching language opens. Several servers may serve one language (e.g.
 //! `vtsls` + `eslint`); results are merged. Every request takes positions in
 //! IDE coordinates (UTF-16, 0-based) and returns IDE types from [`types`],
@@ -10,22 +10,25 @@ mod angular;
 mod arduino;
 mod caps;
 mod clang_tidy;
+mod compose;
 mod convert;
 mod external_project;
 mod file_ops;
 mod file_watch;
+mod go_mod;
 mod go_scope;
 mod handler;
 mod injections;
 mod inspect;
 pub mod jdtls;
+mod kotlin_lsp;
 mod launch;
 mod library_source;
 mod loading;
+mod notebook;
 mod pull;
 mod scope;
 mod server;
-mod target;
 mod tcp;
 mod text;
 mod ts_file_moves;
@@ -33,10 +36,14 @@ mod tsserver_bridge;
 pub mod types;
 mod uri;
 mod virtual_doc;
+mod vue_navigation;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
 pub use inspect::{FileInspection, InspectHost, InspectOptions};
+pub use jdtls::jvm_inspect::JdtJvmInspector;
+pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
+pub use notebook::{NotebookCell, NotebookCellDoc, cell_uri};
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
 pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
 
@@ -87,10 +94,6 @@ pub type ApplyEditHook = Arc<dyn Fn(WorkspaceEdit) -> bool + Send + Sync>;
 /// settings before each launch; receives the server's workspace root.
 pub type ConfigFn = dyn Fn(&mut LanguageServerConfig, &Path) + Send + Sync;
 pub type ConfigHook = Arc<ConfigFn>;
-/// Returns true when target configuration replaces host toolchain configuration.
-pub type TargetConfigFn = dyn Fn(&LanguageId, &mut LanguageServerConfig) -> bool + Send + Sync;
-/// Fetches a bounded read-only container document after rechecking grants and trust.
-pub type TargetReadFn = dyn Fn(&ide_language::ServerTarget, &str) -> IdeResult<String> + Send + Sync;
 /// Prepares dependencies on a blocking worker immediately before launching an installed server.
 pub type PrepareFn = dyn Fn(&LanguageServerConfig, &Path, &CancellationToken) + Send + Sync;
 /// The servers a language uses, from its definition's list (user settings
@@ -112,6 +115,10 @@ struct DocState {
     version: i32,
     text: Arc<DocText>,
     servers: Vec<Attached>,
+    /// Open YAML document whose filename does not match a Compose glob and whose content is Compose.
+    compose_detected: bool,
+    /// The notebook a code cell belongs to: synced through `notebookDocument/*`, not as a file.
+    notebook: Option<PathBuf>,
 }
 
 impl DocState {
@@ -187,7 +194,7 @@ struct JdtlsWorkspace {
 }
 
 fn is_local_jdtls(config: &LanguageServerConfig) -> bool {
-    config.name == "jdtls" && config.target_key.is_none() && config.target.is_none()
+    config.name == "jdtls"
 }
 
 pub struct LspManager {
@@ -203,8 +210,6 @@ pub struct LspManager {
     apply_edit_hook: RwLock<Option<ApplyEditHook>>,
     applied_edits: tokio::sync::broadcast::Sender<(ide_core::ServerId, WorkspaceEdit)>,
     config_hook: RwLock<Option<ConfigHook>>,
-    target_hook: RwLock<Option<Arc<TargetConfigFn>>>,
-    target_read_hook: RwLock<Option<Arc<TargetReadFn>>>,
     prepare_hook: RwLock<Option<Arc<PrepareFn>>>,
     servers_hook: RwLock<Option<Arc<ServersFn>>>,
     candidates_hook: RwLock<Option<Arc<CandidateFn>>>,
@@ -216,14 +221,20 @@ pub struct LspManager {
     shutting_down: AtomicBool,
     execution_allowed: AtomicBool,
     java_usages_warned: AtomicBool,
+    /// java-debug DAP port → the module path whose jdtls serves it.
+    debug_servers: Mutex<HashMap<u16, PathBuf>>,
     configuration_cache: Arc<Mutex<jdtls::configuration::ConfigurationCache>>,
     /// `window/showMessage` texts already surfaced; servers repeat them on every restart/reconfigure.
     shown_messages: Mutex<HashSet<(String, String)>>,
+    /// go.mod files whose upgrades gopls has been asked to check this session.
+    go_mod_checked: Mutex<HashSet<PathBuf>>,
     /// Virtual (non-`file:`) URIs a server returned, by the server that owns them.
     virtual_origins: Mutex<HashMap<String, ide_core::ServerId>>,
     /// Contents fetched for virtual URIs.
     virtual_docs: Mutex<HashMap<String, VirtualDocument>>,
     injections: injections::State,
+    /// Open notebooks by path. Locked before `docs` when both are.
+    notebooks: Mutex<HashMap<PathBuf, notebook::NotebookState>>,
 }
 
 /// Fetched virtual documents kept before the cache is reset.
@@ -317,8 +328,47 @@ impl<T> Outcome<T> {
     }
 }
 
+/// How often a rename the server withdrew (`ContentModified`) is asked, and the pause between.
+const RENAME_ATTEMPTS: u32 = 5;
+const RENAME_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// Implementation requests of one line-marker pass in flight at once.
 const IMPLEMENTATION_CONCURRENCY: usize = 4;
+
+/// How a virtual document's content was decoded, and whether it can be
+/// re-decoded ("Reload with Encoding").
+struct Decoding {
+    encoding: String,
+    has_bom: bool,
+    can_reload: bool,
+}
+
+impl Decoding {
+    /// Text the server decoded itself: no raw bytes here to re-read.
+    fn server_text() -> Self {
+        Decoding { encoding: "utf-8".into(), has_bom: false, can_reload: false }
+    }
+}
+
+/// jdtls' source attachment of a `jdt:` class (`java.project.resolveSourceAttachment`).
+struct SourceAttachment {
+    path: Option<String>,
+    encoding: Option<String>,
+    can_edit_encoding: bool,
+}
+
+/// Reads a `jar:` document's source: an entry as is, a class from the sources
+/// jar next to its binary. `encoding` decodes with it instead of detecting.
+fn read_jar_source(uri: &str, encoding: Option<&str>) -> Option<(String, ide_vfs::LoadedText)> {
+    match library_source::parse(uri) {
+        Some(e) if !e.entry.ends_with(".class") => {
+            library_source::read_entry(&e.jar, &e.entry, encoding).map(|loaded| (e.entry, loaded))
+        }
+        Some(_) => library_source::class_source(uri, encoding)
+            .and_then(|(source, loaded)| Some((library_source::parse(&source)?.entry, loaded))),
+        None => None,
+    }
+}
 
 /// Library classes in `jar:` targets (the official Kotlin LSP) go to their source
 /// in the artifact's sources jar when it is cached, at the declaration of the
@@ -334,8 +384,9 @@ async fn library_sources(snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<L
                 let Some(uri) = loc.uri.as_deref().filter(|u| u.starts_with("jar:") && u.ends_with(".class")) else {
                     return loc;
                 };
-                let Some((source, text)) = library_source::class_source(uri) else { return loc };
-                let range = name.as_deref().map(|n| library_source::declaration_range(&text, n)).unwrap_or_default();
+                let Some((source, loaded)) = library_source::class_source(uri, None) else { return loc };
+                let range =
+                    name.as_deref().map(|n| library_source::declaration_range(&loaded.text, n)).unwrap_or_default();
                 Location { path: source.clone().into(), range, uri: Some(source) }
             })
             .collect()
@@ -413,8 +464,6 @@ impl LspManager {
             apply_edit_hook: RwLock::new(None),
             applied_edits: tokio::sync::broadcast::channel(64).0,
             config_hook: RwLock::new(None),
-            target_hook: RwLock::new(None),
-            target_read_hook: RwLock::new(None),
             prepare_hook: RwLock::new(None),
             servers_hook: RwLock::new(None),
             candidates_hook: RwLock::new(None),
@@ -426,11 +475,14 @@ impl LspManager {
             shutting_down: AtomicBool::new(false),
             execution_allowed: AtomicBool::new(true),
             java_usages_warned: AtomicBool::new(false),
+            debug_servers: Mutex::new(HashMap::new()),
             configuration_cache: Arc::new(Mutex::new(Default::default())),
             shown_messages: Mutex::new(HashSet::new()),
+            go_mod_checked: Mutex::new(HashSet::new()),
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
             injections: injections::State::default(),
+            notebooks: Mutex::new(HashMap::new()),
         })
     }
 
@@ -512,15 +564,13 @@ impl LspManager {
                 // Outside the project (library sources, …): reuse a running instance.
                 servers
                     .iter()
-                    .filter(|s| s.name == cfg.name && s.config.target_key == cfg.target_key)
+                    .filter(|s| s.name == cfg.name)
                     .min_by_key(|s| s.root != self.project_root)
                     .map(|s| s.root.clone())
                     .unwrap_or_else(|| self.project_root.clone())
             })
         };
-        if let Some(s) =
-            servers.iter().find(|s| s.name == cfg.name && s.root == root && s.config.target_key == cfg.target_key)
-        {
+        if let Some(s) = servers.iter().find(|s| s.name == cfg.name && s.root == root) {
             s.add_language(language);
             return s.clone();
         }
@@ -575,7 +625,7 @@ impl LspManager {
             .docs
             .lock()
             .iter()
-            .filter(|(_, d)| !d.uri.as_str().starts_with("openidea-target:"))
+            .filter(|(_, d)| d.notebook.is_none())
             .map(|(id, d)| (*id, d.language.clone(), d.path.clone()))
             .collect();
         let wanted: Vec<(DocId, Vec<Arc<Server>>)> =
@@ -609,6 +659,11 @@ impl LspManager {
         }
         for (doc, server) in opened {
             self.schedule_pull(doc, Some(&server), Duration::ZERO);
+        }
+        for server in self.attach_notebook_servers() {
+            if !start.iter().any(|s| s.id == server.id) {
+                start.push(server);
+            }
         }
         for server in &start {
             self.ensure_started(server);
@@ -679,8 +734,7 @@ impl LspManager {
             }
             tail.set_effective_config(generation, cfg.clone());
             let prepare = me.prepare_hook.read().clone();
-            if cfg.target.is_none()
-                && !launch_cancel.is_cancelled()
+            if !launch_cancel.is_cancelled()
                 && me.launcher.available(&cfg, &tail.root)
                 && let Some(prepare) = prepare
             {
@@ -691,7 +745,7 @@ impl LspManager {
             let root = tail.root.clone();
             if let Some(message) = &cfg.launch_error {
                 // A missing binary still asks to be installed first.
-                let missing = cfg.target.is_none() && !me.launcher.available(&cfg, &root);
+                let missing = !me.launcher.available(&cfg, &root);
                 return Err(if missing { LaunchError::Missing } else { LaunchError::Config(message.clone()) });
             }
             if !me.execution_allowed.load(Ordering::Acquire) || launch_cancel.is_cancelled() {
@@ -830,7 +884,7 @@ impl LspManager {
                 false
             } else {
                 let open_close = run.caps.read().open_close;
-                for (id, d) in docs.iter_mut() {
+                for (id, d) in docs.iter_mut().filter(|(_, d)| d.notebook.is_none()) {
                     let params = d.did_open_params();
                     for a in
                         d.servers.iter_mut().filter(|a| a.server.id == server.id && a.opened_gen != Some(generation))
@@ -852,7 +906,9 @@ impl LspManager {
         for doc in reopened {
             self.schedule_pull(doc, Some(&server), Duration::ZERO);
         }
+        self.reopen_notebooks(&server, &run);
         self.check_clang_tidy(&server).await;
+        self.check_vue_navigation(&server).await;
         server.refresh_busy_status(&self.sink);
         server.announce_ready(generation);
         self.spawn_supervisor(server, generation, peer);
@@ -1034,6 +1090,8 @@ impl LspManager {
         servers: Vec<Arc<Server>>,
     ) {
         let canonical = dunce::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        let canonical_path = canonical.clone();
+        let compose_detected = language.as_str() == "yaml" && compose::is_content_detected_compose_file(&path, text);
         let mut state = DocState {
             path,
             canonical,
@@ -1042,9 +1100,13 @@ impl LspManager {
             version: version as i32,
             text: Arc::new(DocText::new(text)),
             servers: servers.iter().map(|s| Attached { server: s.clone(), opened_gen: None }).collect(),
+            compose_detected,
+            notebook: None,
         };
-        {
+        let compose_added = {
             let mut docs = self.docs.lock();
+            let already_detected =
+                compose_detected && docs.values().any(|d| d.compose_detected && d.path == state.path);
             let params = state.did_open_params();
             for a in &mut state.servers {
                 if let Some(run) = a.server.running() {
@@ -1055,15 +1117,29 @@ impl LspManager {
                 }
             }
             docs.insert(doc, state);
-        }
+            compose_detected && !already_detected
+        };
         self.schedule_pull(doc, None, Duration::ZERO);
         for s in &servers {
             self.ensure_started(s);
+            // Waits for a server still starting, so it is not tied to `running()` below.
+            if s.name == "gopls"
+                && let Some(me) = self.me.upgrade()
+            {
+                let (path, server) = (canonical_path.clone(), s.clone());
+                self.runtime.spawn(async move { me.check_go_mod(doc, &path, server).await });
+            }
             if s.running().is_some()
                 && let Some(me) = self.me.upgrade()
             {
+                if s.name == compose::SERVER && compose_added {
+                    me.reconfigure_soon();
+                }
+                let hint = me.clone();
                 let server = s.clone();
                 self.runtime.spawn(async move { me.check_clang_tidy(&server).await });
+                let server = s.clone();
+                self.runtime.spawn(async move { hint.check_vue_navigation(&server).await });
             }
         }
     }
@@ -1132,7 +1208,18 @@ impl LspManager {
                 tracing::debug!("{}: didChange: {e}", server.name);
             }
         }
+        let compose_changed = if d.language.as_str() == "yaml" && !compose::is_named_compose_file(&d.path) {
+            let now = compose::is_compose_content(text.as_str());
+            let changed = std::mem::replace(&mut d.compose_detected, now) != now;
+            let closed_path = d.path.clone();
+            changed && !docs.iter().any(|(id, other)| *id != doc && other.compose_detected && other.path == closed_path)
+        } else {
+            false
+        };
         drop(docs);
+        if compose_changed && let Some(me) = self.me.upgrade() {
+            me.reconfigure_soon();
+        }
         self.schedule_pull(doc, None, pull::AFTER_EDIT);
         self.invalidate_injections(doc);
         self.schedule_injections(doc);
@@ -1146,7 +1233,7 @@ impl LspManager {
             return;
         }
         let docs = self.docs.lock();
-        for d in docs.values() {
+        for d in docs.values().filter(|d| d.notebook.is_none()) {
             if !d.servers.iter().any(|a| a.server.id == server.id && a.opened_gen == Some(generation)) {
                 continue;
             }
@@ -1183,6 +1270,7 @@ impl LspManager {
         drop(docs);
         self.schedule_pull(doc, None, Duration::ZERO);
         self.pull_dependents(doc);
+        self.go_mod_saved(doc);
     }
 
     pub fn did_close(&self, doc: DocId) {
@@ -1192,7 +1280,16 @@ impl LspManager {
     }
 
     fn close_document(&self, doc: DocId) {
-        let Some(d) = self.docs.lock().remove(&doc) else { return };
+        let (d, compose_removed) = {
+            let mut docs = self.docs.lock();
+            let Some(d) = docs.remove(&doc) else { return };
+            let removed =
+                d.compose_detected && !docs.values().any(|other| other.compose_detected && other.path == d.path);
+            (d, removed)
+        };
+        if compose_removed && let Some(me) = self.me.upgrade() {
+            me.reconfigure_soon();
+        }
         for a in &d.servers {
             self.forget_pulled(&a.server, &d.path, a.server.running().as_ref());
             let Some(run) = a.server.running() else { continue };
@@ -1210,13 +1307,23 @@ impl LspManager {
     fn snapshot(&self, doc: DocId) -> IdeResult<DocSnap> {
         let docs = self.docs.lock();
         let d = docs.get(&doc).ok_or_else(|| IdeError::not_found(format!("{doc} is not open")))?;
+        // A cell is asked only of the servers its notebook is open on (those that sync notebooks).
+        let servers = d
+            .servers
+            .iter()
+            .filter(|a| {
+                d.notebook.is_none()
+                    || a.opened_gen.is_some_and(|g| a.server.running().is_some_and(|run| run.generation == g))
+            })
+            .map(|a| a.server.clone())
+            .collect();
         Ok(DocSnap {
             version: d.version,
             path: d.path.clone(),
             uri: d.uri.clone(),
             language: d.language.clone(),
             text: d.text.clone(),
-            servers: d.servers.iter().map(|a| a.server.clone()).collect(),
+            servers,
         })
     }
 
@@ -2351,8 +2458,25 @@ impl LspManager {
         let query = || async {
             let mut params = snap.pos_params(t, pos);
             params["newName"] = json!(new_name);
-            let r: Option<lsp::WorkspaceEdit> =
-                self.call(t, "textDocument/rename", params, Some(cancel), LONG_TIMEOUT).await?;
+            // A server still analysing an edit withdraws the rename (`ContentModified`, which
+            // arrives as a cancellation). The user asked for it: ask again shortly instead of
+            // dropping it without a word, and say why if it keeps being withdrawn.
+            let mut attempt = 0;
+            let r: Option<lsp::WorkspaceEdit> = loop {
+                match self.call(t, "textDocument/rename", params.clone(), Some(cancel), LONG_TIMEOUT).await {
+                    Err(e) if e.kind == ide_core::error::ErrorKind::Cancelled && !cancel.is_cancelled() => {
+                        attempt += 1;
+                        if attempt >= RENAME_ATTEMPTS {
+                            return Err(IdeError::invalid(format!(
+                                "{} was still analysing a change and withdrew the rename; try again",
+                                t.server.name
+                            )));
+                        }
+                        tokio::time::sleep(RENAME_RETRY_DELAY).await;
+                    }
+                    r => break r?,
+                }
+            };
             Ok(r.map(|e| convert::workspace_edit(&self.conv(t.enc()), e)).unwrap_or_default())
         };
         // The Angular server renames in the file's own project only, whatever is open.
@@ -2941,15 +3065,8 @@ impl LspManager {
     }
 
     fn origin_server(&self, uri: &str) -> Option<Arc<Server>> {
-        let id = self.virtual_origins.lock().get(uri).copied();
-        self.servers
-            .lock()
-            .iter()
-            .find(|s| {
-                Some(s.id) == id
-                    || s.effective_config().target.as_ref().is_some_and(|t| target::external_path(t, uri).is_some())
-            })
-            .cloned()
+        let id = *self.virtual_origins.lock().get(uri)?;
+        self.servers.lock().iter().find(|s| s.id == id).cloned()
     }
 
     /// The binary archive behind a library document, never its displayed tab title.
@@ -2981,8 +3098,9 @@ impl LspManager {
         let original = uri.to_owned();
         let archive = sources.clone();
         let found = tokio::task::spawn_blocking(move || {
-            library_source::source_in_archive(&original, &archive).map(|(uri, text)| {
-                let range = name.as_deref().map(|n| library_source::declaration_range(&text, n)).unwrap_or_default();
+            library_source::source_in_archive(&original, &archive, None).map(|(uri, loaded)| {
+                let range =
+                    name.as_deref().map(|n| library_source::declaration_range(&loaded.text, n)).unwrap_or_default();
                 Location { path: uri.clone().into(), uri: Some(uri), range }
             })
         })
@@ -3016,29 +3134,6 @@ impl LspManager {
     /// is read from its archive, a `jar:` class shown as its library source
     /// (see [`library_source`]) or else decompiled by the server. Cached.
     pub async fn virtual_document(&self, uri: &str) -> IdeResult<VirtualDocument> {
-        if uri.starts_with("openidea-target:") {
-            let server = self
-                .origin_server(uri)
-                .ok_or_else(|| IdeError::unavailable("container language server is no longer available"))?;
-            let target = server
-                .effective_config()
-                .target
-                .ok_or_else(|| IdeError::unavailable("container language server is no longer available"))?;
-            let path = target::external_path(&target, uri)
-                .ok_or_else(|| IdeError::invalid("invalid container document URI"))?;
-            let read = self
-                .target_read_hook
-                .read()
-                .clone()
-                .ok_or_else(|| IdeError::unavailable("container document reader is unavailable"))?;
-            let languages = server.languages();
-            let title = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned());
-            let description = Some(path.clone());
-            let text = tokio::task::spawn_blocking(move || read(&target, &path))
-                .await
-                .map_err(|e| IdeError::unavailable(e.to_string()))??;
-            return Ok(self.store_virtual(uri, text, title, description, &languages, Some(server.id)));
-        }
         if let Some(d) = self.virtual_docs.lock().get(uri) {
             return Ok(d.clone());
         }
@@ -3047,28 +3142,10 @@ impl LspManager {
         if scheme == "jar" {
             let found = {
                 let uri = uri.to_owned();
-                tokio::task::spawn_blocking(move || match library_source::parse(&uri) {
-                    Some(e) if !e.entry.ends_with(".class") => {
-                        library_source::read_entry(&e.jar, &e.entry).map(|text| (e.entry, text))
-                    }
-                    Some(_) => library_source::class_source(&uri)
-                        .and_then(|(source, text)| Some((library_source::parse(&source)?.entry, text))),
-                    None => None,
-                })
-                .await
-                .ok()
-                .flatten()
+                tokio::task::spawn_blocking(move || read_jar_source(&uri, None)).await.ok().flatten()
             };
-            if let Some((entry, text)) = found {
-                let title = entry.rsplit('/').next().unwrap_or(&entry).to_owned();
-                return Ok(self.store_virtual(
-                    uri,
-                    text,
-                    Some(title),
-                    None,
-                    &[],
-                    self.origin_server(uri).map(|s| s.id),
-                ));
+            if let Some((entry, loaded)) = found {
+                return Ok(self.store_jar_entry(uri, entry, loaded));
             }
         }
         let class_file = scheme == "jdt" || (scheme == "file" && uri.ends_with(".class"));
@@ -3139,7 +3216,21 @@ impl LspManager {
                     continue;
                 }
             };
-            return Ok(self.store_virtual(uri, text, None, description, &languages, Some(t.server.id)));
+            // jdtls decodes attached sources itself: its attachment encoding is
+            // the document's real charset, and editable ones can be re-decoded.
+            let decoding = if scheme == "jdt" && t.server.name == jdtls::SERVER && !virtual_doc::is_decompiled(&text) {
+                match self.jdt_source_attachment(uri).await {
+                    Some(att) if att.path.is_some() => Decoding {
+                        encoding: att.encoding.unwrap_or_else(|| "utf-8".into()),
+                        has_bom: false,
+                        can_reload: att.can_edit_encoding,
+                    },
+                    _ => Decoding::server_text(),
+                }
+            } else {
+                Decoding::server_text()
+            };
+            return Ok(self.store_virtual(uri, text, None, description, &languages, Some(t.server.id), decoding));
         }
         if jar_class && error.is_none() {
             return Err(IdeError::not_found(format!(
@@ -3151,6 +3242,7 @@ impl LspManager {
     }
 
     /// Caches `text` as the virtual document `uri`, titled `title` (else after the URI).
+    #[allow(clippy::too_many_arguments)]
     fn store_virtual(
         &self,
         uri: &str,
@@ -3159,6 +3251,7 @@ impl LspManager {
         description: Option<String>,
         languages: &[LanguageId],
         server: Option<ide_core::ServerId>,
+        decoding: Decoding,
     ) -> VirtualDocument {
         let decompiled = if virtual_doc::scheme(uri) == "csharp" {
             virtual_doc::is_csharp_decompiled(uri)
@@ -3179,6 +3272,9 @@ impl LspManager {
             title,
             description: description.or_else(|| virtual_doc::description(uri)),
             decompiled,
+            encoding: decoding.encoding,
+            has_bom: decoding.has_bom,
+            can_reload_encoding: decoding.can_reload,
         };
         if let Some(server) = server {
             self.virtual_origins.lock().entry(uri.to_owned()).or_insert(server);
@@ -3191,13 +3287,165 @@ impl LspManager {
         doc
     }
 
-    /// Called when a server sends `workspace/applyEdit`; installed by `src-tauri`
-    /// so edits flow through `ide-workspace::Documents`.
-    pub fn set_target_hooks(&self, configure: Box<TargetConfigFn>, read: Box<TargetReadFn>) {
-        *self.target_hook.write() = Some(Arc::from(configure));
-        *self.target_read_hook.write() = Some(Arc::from(read));
+    /// Caches a decoded `jar:` entry under the document's original URI, titled
+    /// after the entry; the backend owns these bytes, so they can be re-decoded.
+    fn store_jar_entry(&self, uri: &str, entry: String, loaded: ide_vfs::LoadedText) -> VirtualDocument {
+        let title = entry.rsplit('/').next().unwrap_or(&entry).to_owned();
+        self.store_virtual(
+            uri,
+            loaded.text,
+            Some(title),
+            None,
+            &[],
+            self.origin_server(uri).map(|s| s.id),
+            Decoding { encoding: loaded.encoding, has_bom: loaded.has_bom, can_reload: true },
+        )
     }
 
+    /// The source attachment jdtls resolves for a `jdt:` class; `None` when the
+    /// command is unavailable or the class's container cannot be queried.
+    async fn jdt_source_attachment(&self, uri: &str) -> Option<SourceAttachment> {
+        let result = self
+            .jdtls_command(
+                &self.project_root,
+                "java.project.resolveSourceAttachment",
+                vec![json!({ "classFileUri": uri })],
+            )
+            .await
+            .ok()?;
+        if result.get("errorMessage").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
+            return None;
+        }
+        let attrs = result.get("attributes")?;
+        let non_empty = |key: &str| attrs.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+        Some(SourceAttachment {
+            path: non_empty("sourceAttachmentPath"),
+            encoding: non_empty("sourceAttachmentEncoding"),
+            can_edit_encoding: attrs.get("canEditEncoding").and_then(Value::as_bool).unwrap_or(true),
+        })
+    }
+
+    /// Updates a `jdt:` class's source attachment encoding. The command drops
+    /// the attachment when the path is omitted, so the resolved path is always
+    /// sent along with the encoding.
+    async fn update_jdt_source_encoding(&self, uri: &str, path: &str, encoding: &str) -> IdeResult<()> {
+        let result = self
+            .jdtls_command(
+                &self.project_root,
+                "java.project.updateSourceAttachment",
+                vec![json!({
+                    "classFileUri": uri,
+                    "attributes": { "sourceAttachmentPath": path, "sourceAttachmentEncoding": encoding },
+                })],
+            )
+            .await?;
+        if let Some(error) = result.get("errorMessage").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            return Err(IdeError::unavailable(error));
+        }
+        Ok(())
+    }
+
+    /// Waits until the resolved attachment reports `encoding`; `false` once
+    /// `until` passes. Maven applies attachment updates in a background job,
+    /// so the new encoding is not visible immediately after the update.
+    async fn wait_for_jdt_source_encoding(&self, uri: &str, encoding: &str, until: tokio::time::Instant) -> bool {
+        loop {
+            match self.jdt_source_attachment(uri).await {
+                Some(att) if att.encoding.as_deref() == Some(encoding) => return true,
+                _ if tokio::time::Instant::now() < until => {
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                }
+                _ => return false,
+            }
+        }
+    }
+
+    /// "Reload with Encoding" for a virtual document: re-reads its origin with
+    /// `encoding` and replaces the cached content. `jar:` entries are re-read
+    /// here; `jdt:` sources are decoded by jdtls, so its source attachment
+    /// encoding is updated and the contents fetched again (keeping the server's
+    /// text and positions in sync). Server-generated content cannot be re-decoded.
+    pub async fn reload_virtual(&self, uri: &str, encoding: &str) -> IdeResult<VirtualDocument> {
+        ide_vfs::encode("", encoding, false)?;
+        match virtual_doc::scheme(uri) {
+            "jar" => {
+                let (owned_uri, owned_encoding) = (uri.to_owned(), encoding.to_owned());
+                let found = tokio::task::spawn_blocking(move || read_jar_source(&owned_uri, Some(&owned_encoding)))
+                    .await
+                    .map_err(|e| IdeError::internal(e.to_string()))?;
+                let Some((entry, loaded)) = found else {
+                    return Err(IdeError::not_found(format!(
+                        "no source is available for {}",
+                        virtual_doc::title(uri, false)
+                    )));
+                };
+                Ok(self.store_jar_entry(uri, entry, loaded))
+            }
+            "jdt" if self.origin_server(uri).is_none_or(|s| s.name == jdtls::SERVER) => {
+                let Some(att) = self.jdt_source_attachment(uri).await else {
+                    return Err(IdeError::unavailable("jdtls cannot resolve the source attachment of this class"));
+                };
+                let Some(path) = att.path else {
+                    return Err(IdeError::invalid("this class has no attached sources to re-decode"));
+                };
+                if !att.can_edit_encoding {
+                    return Err(IdeError::invalid("the source attachment encoding of this library cannot be changed"));
+                }
+                self.update_jdt_source_encoding(uri, &path, encoding).await?;
+                // Maven containers apply the update in a background job (persist
+                // attached sources, then refresh the classpath): wait until the
+                // resolved attachment reports the new encoding, else the refetch
+                // below would still decode with the old one.
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+                let first_try = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+                if !self.wait_for_jdt_source_encoding(uri, encoding, first_try).await {
+                    // jdtls matches the existing encoding attribute by reference
+                    // (`==`), so an entry restored from the saved container state
+                    // gains a duplicate attribute and keeps the old value. That
+                    // update still refreshes the container, after which a second
+                    // update replaces the value correctly.
+                    self.update_jdt_source_encoding(uri, &path, encoding).await?;
+                    if !self.wait_for_jdt_source_encoding(uri, encoding, deadline).await {
+                        return Err(IdeError::unavailable(
+                            "jdtls did not apply the source attachment encoding; try reloading again",
+                        ));
+                    }
+                }
+                // JDT keeps the class file's decoded buffer cached, so
+                // classFileContents would still return the old decoding: re-read
+                // the attached source entry here, like `jar:` documents. The
+                // server's open document is kept in sync by the regular
+                // document change flow.
+                let (owned_uri, owned_path, owned_encoding) = (uri.to_owned(), path.clone(), encoding.to_owned());
+                let found = tokio::task::spawn_blocking(move || {
+                    library_source::source_in_archive(&owned_uri, Path::new(&owned_path), Some(&owned_encoding))
+                })
+                .await
+                .map_err(|e| IdeError::internal(e.to_string()))?;
+                if let Some((_source_uri, loaded)) = found {
+                    return Ok(self.store_virtual(
+                        uri,
+                        loaded.text,
+                        None,
+                        None,
+                        &[],
+                        self.origin_server(uri).map(|s| s.id),
+                        Decoding { encoding: loaded.encoding, has_bom: loaded.has_bom, can_reload: true },
+                    ));
+                }
+                // Attachments that are not readable archives (e.g. folders):
+                // fall back to the server's contents.
+                self.virtual_docs.lock().remove(uri);
+                self.virtual_document(uri).await
+            }
+            _ => Err(IdeError::invalid(
+                "this document's content is generated by a language server and cannot be re-decoded with another encoding",
+            )),
+        }
+    }
+
+    /// Called when a server sends `workspace/applyEdit`; installed by `src-tauri`
+    /// so edits flow through `ide-workspace::Documents`.
     pub fn set_config_hook(&self, hook: Box<ConfigFn>) {
         *self.config_hook.write() = Some(Arc::from(hook));
     }
@@ -3218,24 +3466,21 @@ impl LspManager {
             cfg.launch_error = Some("Project is in Restricted Mode".into());
             return cfg;
         }
-        let in_target = self.target_hook.read().clone().is_some_and(|hook| {
-            server
-                .languages()
-                .iter()
-                .filter(|language| {
-                    self.language_servers(language)
-                        .iter()
-                        .any(|c| c.name == server.name && c.target_key == server.config.target_key)
-                })
-                .any(|language| hook(language, &mut cfg))
-        });
-        if !in_target && let Some(hook) = self.config_hook.read().clone() {
+        if let Some(hook) = self.config_hook.read().clone() {
             hook(&mut cfg, &server.root);
         }
-        if let Some(target) = &mut cfg.target {
-            target.origin = Some(server.id);
+        if cfg.name == compose::SERVER {
+            compose::configure_yaml_compose_schemas(&mut cfg, &self.open_compose_files());
         }
         cfg
+    }
+
+    fn open_compose_files(&self) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> =
+            self.docs.lock().values().filter(|d| d.compose_detected).map(|d| d.path.clone()).collect();
+        files.sort();
+        files.dedup();
+        files
     }
 
     /// Restarts running servers whose settings-derived configuration changed
@@ -3274,11 +3519,17 @@ impl LspManager {
             join_all(servers.iter().map(|s| self.stop_instance(s, true))).await;
             return;
         }
+        let existing: Vec<ide_core::ServerId> = self.servers.lock().iter().map(|s| s.id).collect();
         self.reconfigure_jdtls_workspace().await;
         self.stop_unlisted().await;
         let Some(me) = self.me.upgrade() else { return };
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         for s in servers {
+            // Created in this pass (the jdtls of a new workspace layout): it starts with the
+            // current configuration, though it may not have recorded it yet.
+            if !existing.contains(&s.id) {
+                continue;
+            }
             // The settings hook may run tools (`npm root -g`), as when the server starts.
             let next = match tokio::task::spawn_blocking({
                 let (me, s) = (me.clone(), s.clone());
@@ -3308,11 +3559,6 @@ impl LspManager {
                 }
                 continue;
             }
-            if next.target != current.target {
-                for doc in self.docs.lock().values_mut().filter(|d| d.uri.as_str().starts_with("openidea-target:")) {
-                    doc.servers.retain(|a| a.server.id != s.id);
-                }
-            }
             match s.status() {
                 ide_core::event::ServerStatus::Ready
                 | ide_core::event::ServerStatus::Busy
@@ -3333,7 +3579,7 @@ impl LspManager {
             }
         }
         self.attach_fallbacks();
-        self.detach_shadowed_servers().await;
+        self.detach_shadowed_fallbacks().await;
         self.injection_providers_changed();
     }
 
@@ -3370,9 +3616,9 @@ impl LspManager {
         }
     }
 
-    /// Detaches fallbacks shadowed by enabled servers and instances whose target
-    /// no longer matches the document's language. Stop them once unused.
-    async fn detach_shadowed_servers(&self) {
+    /// A server enabled again shadows the fallbacks attached in its place: they
+    /// leave the open documents, and stop once no document uses them.
+    async fn detach_shadowed_fallbacks(&self) {
         let open: Vec<(DocId, LanguageId, PathBuf)> =
             self.docs.lock().iter().map(|(id, d)| (*id, d.language.clone(), d.path.clone())).collect();
         let mut shadowed: Vec<(DocId, Vec<ide_core::ServerId>)> = Vec::new();
@@ -3387,10 +3633,7 @@ impl LspManager {
                 .filter(|a| {
                     !wanted.iter().any(|w| w.id == a.server.id)
                         && (configs.iter().any(|c| c.fallback && c.name == a.server.name)
-                            || (a.server.name == "clangd" && wanted.iter().any(|s| s.name == arduino::SERVER))
-                            || !configs
-                                .iter()
-                                .any(|c| c.name == a.server.name && c.target_key == a.server.config.target_key))
+                            || (a.server.name == "clangd" && wanted.iter().any(|s| s.name == arduino::SERVER)))
                 })
                 .map(|a| a.server.id)
                 .collect();
@@ -3446,11 +3689,7 @@ impl LspManager {
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         let unlisted: Vec<Arc<Server>> = servers
             .into_iter()
-            .filter(|s| {
-                !s.languages().iter().any(|l| {
-                    self.language_servers(l).iter().any(|c| c.name == s.name && c.target_key == s.config.target_key)
-                })
-            })
+            .filter(|s| !s.languages().iter().any(|l| self.language_servers(l).iter().any(|c| c.name == s.name)))
             .collect();
         if unlisted.is_empty() {
             return;

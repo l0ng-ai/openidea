@@ -32,7 +32,7 @@ import { setPluginDecorations } from "./decorations";
 import { editorsFor, onEditorEvent } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
-import { onIdeEvent } from "@/platform/ipc";
+import { isTauri, onIdeEvent } from "@/platform/ipc";
 import { openExternalUrl } from "@/platform/openUrl";
 import { tx, VerbatimTextContext } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -45,6 +45,7 @@ import { confirm } from "@/workbench/messages";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { editorContext } from "./editorContext";
 import { pluginsBackend } from "./backend";
+import { askNetPermission } from "./netAsk";
 import { usePluginT } from "./pluginText";
 import { setPluginOutput } from "./views/outputStore";
 import { PLUGIN_LOG_EDITOR_KIND } from "./views/logEditor";
@@ -373,7 +374,7 @@ async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | 
     case "pickDirectory": {
       if (signal.aborted) return null;
       try {
-        const { open } = await import("@tauri-apps/plugin-dialog");
+        const { open } = await import("@/platform/dialog");
         if (signal.aborted) return null;
         const selected = await open({
           directory: true,
@@ -408,13 +409,19 @@ async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | 
       return (await confirm({ title: prompt.title, message: prompt.message, ok: tx("OK"), signal, verbatim: true }))
         ? []
         : null;
+    case "netPermission":
+      // The host's own question: answered before this (`answerPrompt`).
+      return null;
   }
 }
 
-async function answerPrompt(promptId: string, prompt: Prompt) {
+async function answerPrompt(promptId: string, prompt: Prompt, pluginId: string) {
   const controller = new AbortController();
   openPrompts.set(promptId, controller);
-  const answer = await askUser(prompt, controller.signal);
+  const answer =
+    prompt.kind === "netPermission"
+      ? await askNetPermission(pluginId, prompt.host, prompt.sessionOnly, controller.signal)
+      : await askUser(prompt, controller.signal);
   openPrompts.delete(promptId);
   if (controller.signal.aborted) return;
   await pluginsBackend()
@@ -599,11 +606,14 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       void openExternalUrl(e.url);
       return true;
     case "promptRequested":
-      void answerPrompt(e.promptId, e.prompt);
+      void answerPrompt(e.promptId, e.prompt, e.pluginId);
       return true;
     case "promptClosed":
       openPrompts.get(e.promptId)?.abort();
       openPrompts.delete(e.promptId);
+      return true;
+    case "promptWaiting":
+      bringWindowToFront();
       return true;
     case "commitRequested":
       void answerCommit(e.requestId, e.request);
@@ -614,6 +624,18 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     default:
       return false;
   }
+}
+
+/** Another window ran a command of a plugin whose prompt is open here: show this window. */
+function bringWindowToFront() {
+  if (!isTauri()) return;
+  void import("@tauri-apps/api/window")
+    .then(async ({ getCurrentWindow }) => {
+      const w = getCurrentWindow();
+      if (await w.isMinimized()) await w.unminimize();
+      await w.setFocus();
+    })
+    .catch(() => undefined);
 }
 
 /**

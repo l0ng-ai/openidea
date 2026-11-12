@@ -70,6 +70,16 @@
 .field > button {
   flex-shrink: 0;
 }
+.field > .port {
+  flex: 0 0 64px;
+}
+/* A checkbox in the controls column of the rows above (label column + gap). */
+.option {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 2px 0 2px 148px;
+}
 .note {
   color: var(--fg-subtle);
   font-size: var(--fs-small);

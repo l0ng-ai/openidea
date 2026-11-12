@@ -76,6 +76,23 @@ describe("the commit plugins see", () => {
     expect(draftRevision()).toBeGreaterThan(before);
   });
 
+  it("leaves another repository's staged files out of the only repository committed", async () => {
+    const staged: FileStatus = {
+      path: "/w/b/new.yml",
+      relPath: "new.yml",
+      staged: "added",
+      unstaged: null,
+      renamedFrom: null,
+    };
+    const changed: FileStatus = { ...files[0]!, path: "/w/a/Foo.java", relPath: "Foo.java" };
+    useVcs.setState({ root: "/w", repo: "/w/a", roots: ["/w/a", "/w/b"], status: [changed, staged] });
+    useCommit.setState({ checks: new Map([["/w/b/new.yml", "none" as const]]) });
+    const selection = (await maybeCommitService()!.selection())!;
+    expect(selection.repositories).toEqual([
+      { root: "/w/a", options: expect.objectContaining({ stage: ["/w/a/Foo.java"], exclude: [] }) },
+    ]);
+  });
+
   it("is null without a repository", async () => {
     useVcs.setState({ root: null });
     expect(await maybeCommitService()!.selection()).toBeNull();

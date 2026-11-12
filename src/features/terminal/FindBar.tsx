@@ -20,8 +20,11 @@ export const useTerminalFind = create<{ open: boolean; seq: number; query: strin
 
 /** Opens (or refocuses) the find bar, seeding it with the terminal selection. */
 export function openTerminalFind() {
-  // While open, the terminal selection is the current match: keep the query.
-  const selection = useTerminalFind.getState().open ? "" : activeSession()?.term.getSelection().trim();
+  // While open, a selection placed by SearchAddon is the current match: keep the query.
+  // A fresh user selection in the terminal still seeds the find bar.
+  const session = activeSession();
+  const { open } = useTerminalFind.getState();
+  const selection = session && (!open || !session.isSearchSelection) ? session.term.getSelection().trim() : "";
   useTerminalFind.setState((s) => ({
     open: true,
     seq: s.seq + 1,

@@ -26,6 +26,7 @@ import {
   useAgentCommands,
   useAgents,
 } from "./store";
+import { useAgentSettings } from "./agentSettings";
 import styles from "./Home.module.css";
 
 export function HomeEditor({ docked = false }: { docked?: boolean; input?: EditorInput }) {
@@ -95,7 +96,8 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setStarting(false));
   };
-  const config = draftConfig(provider, draft);
+  const defaults = useAgentSettings().defaults;
+  const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
 
   return (
     <div className={clsx(styles.home, docked && styles.docked)}>

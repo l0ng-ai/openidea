@@ -200,27 +200,39 @@ describe("configuration navigation result reuse", () => {
     expect(lspGoto).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["settled", "refresh"])("does not swallow an in-flight click on its own server %s event", async (event) => {
-    let resolve!: (r: Awaited<ReturnType<typeof commands.lspGoto>>) => void;
-    lspGoto.mockImplementationOnce(
-      () =>
-        new Promise((r) => {
-          resolve = r;
-        }),
-    );
-    const view = editor();
-    const pending = requestNavigation(view, 10, "definition");
-    await vi.waitFor(() => expect(lspGoto).toHaveBeenCalledOnce());
-    if (event === "settled") {
-      emitLocalIdeEvent({ type: "languageServer", server: 1, name: "jdtls", status: "busy", message: null });
-      vi.setSystemTime(Date.now() + 1600);
-      emitLocalIdeEvent({ type: "languageServer", server: 1, name: "jdtls", status: "ready", message: null });
-    } else emitLocalIdeEvent({ type: "lspRefresh", server: 1, kind: "codeLens" });
-    resolve({ status: "ok", data: [target] });
-    expect(await pending).toEqual([target]);
-    await requestNavigation(view, 10, "definition");
-    expect(lspGoto).toHaveBeenCalledTimes(2);
-  });
+  it.each(["settled", "refresh", "fsChanged", "excludedDirsChanged"])(
+    "does not swallow an in-flight click on a %s event",
+    async (event) => {
+      let resolve!: (r: Awaited<ReturnType<typeof commands.lspGoto>>) => void;
+      lspGoto.mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            resolve = r;
+          }),
+      );
+      const view = editor();
+      const pending = requestNavigation(view, 10, "definition");
+      await vi.waitFor(() => expect(lspGoto).toHaveBeenCalledOnce());
+      if (event === "settled") {
+        emitLocalIdeEvent({ type: "languageServer", server: 1, name: "jdtls", status: "busy", message: null });
+        vi.setSystemTime(Date.now() + 1600);
+        emitLocalIdeEvent({ type: "languageServer", server: 1, name: "jdtls", status: "ready", message: null });
+      } else if (event === "refresh") emitLocalIdeEvent({ type: "lspRefresh", server: 1, kind: "codeLens" });
+      // The build writing its output right after an edit.
+      else if (event === "fsChanged")
+        emitLocalIdeEvent({
+          type: "fsChanged",
+          created: ["/p/target/classes/Config.class"],
+          modified: [],
+          removed: [],
+        });
+      else emitLocalIdeEvent({ type: "excludedDirsChanged", dirs: ["/p/target"] });
+      resolve({ status: "ok", data: [target] });
+      expect(await pending).toEqual([target]);
+      await requestNavigation(view, 10, "definition");
+      expect(lspGoto).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("does not retain errors or missing targets during import", async () => {
     const view = editor();

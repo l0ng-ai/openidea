@@ -21,3 +21,25 @@ args = ["--lsp"]
 root-markers = [".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "oxlint.config.mts"]
 require-root-marker = true
 install-hint = "npm i -D oxlint"
+
+# ESLint: only below a project's ESLint configuration; the server runs the project's own eslint.
+[[language-servers]]
+name = "eslint"
+command = "vscode-eslint-language-server"
+args = ["--stdio"]
+root-markers = ["eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.ts", "eslint.config.mts", "eslint.config.cts", ".eslintrc", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json", ".eslintrc.yml", ".eslintrc.yaml", "package.json#eslintConfig"]
+require-root-marker = true
+install-hint = "npm i -g vscode-langservers-extracted"
+
+[language-servers.settings]
+# Read by every request (`experimental.useFlatConfig`); ESLint picks flat or legacy config itself.
+experimental = {}
+validate = "on"
+run = "onType"
+quiet = false
+onIgnoredFiles = "off"
+rulesCustomizations = []
+nodePath = ""
+problems = { shortenToSingleLine = false }
+workingDirectory = { mode = "auto" }
+codeAction = { disableRuleComment = { enable = true, location = "separateLine" }, showDocumentation = { enable = true } }

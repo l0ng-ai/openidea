@@ -17,7 +17,7 @@ import {
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
-import { Checkbox, Dialog, Icon, Popup, SelectListbox, showContextMenu, type MenuItem } from "@/ui";
+import { Checkbox, Dialog, Icon, lockDragCursor, Popup, SelectListbox, showContextMenu, type MenuItem } from "@/ui";
 import { parseDelimited, toCsv, toOneRow, toTsv, type Cell } from "./model";
 import { initialJsonText, isJsonColumn, isJsonValue } from "./jsonValue";
 import { JsonValueWindow } from "./JsonValueEditor";
@@ -520,6 +520,7 @@ export function Grid(props: GridProps) {
   const startResize = (e: MouseEvent, col: number) => {
     e.preventDefault();
     e.stopPropagation();
+    const releaseCursor = lockDragCursor("ew-resize");
     const startX = e.clientX;
     const start = widths[col] ?? 100;
     const move = (ev: globalThis.MouseEvent) => {
@@ -529,6 +530,7 @@ export function Grid(props: GridProps) {
     const up = () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
+      releaseCursor();
     };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);

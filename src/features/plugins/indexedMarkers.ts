@@ -97,7 +97,10 @@ export function indexedMarkers(path: string): Extension {
         display: "flex",
         alignItems: "center",
       },
-      ".cm-plugin-mapping-button svg": { width: "16px", height: "16px" },
+      // Only the indexed-marker column sizes its icons to 16px. Line markers reuse the button class
+      // in their own 14px column (lineMarkerGutter.ts, LineMarkers.module.css), whose `overflow: hidden`
+      // would clip an icon this size at its edges.
+      ".cm-plugin-mapping-gutter .cm-plugin-mapping-button svg": { width: "16px", height: "16px" },
       ".cm-plugin-mapping-button:focus-visible": { outline: "1px solid var(--accent)" },
     }),
     ViewPlugin.fromClass(

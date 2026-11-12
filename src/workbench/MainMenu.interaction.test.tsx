@@ -253,6 +253,25 @@ describe("main menu presentation", () => {
     expect(screen.getByRole("button", { name: "Main Menu" })).toBeInTheDocument();
   });
 
+  it("shows the titles in the separate toolbar row, which never collapses to the button", async () => {
+    act(() => useProject.setState({ settings: { appearance: { mainMenuStyle: "toolbar" } } as Settings }));
+    render(<MainMenu row />);
+    await screen.findByRole("menubar");
+    expect(screen.queryByRole("button", { name: "Main Menu" })).toBeNull();
+    fireEvent.click(titles().getByRole("menuitem", { name: "File" }));
+    expect(await screen.findByRole("menu", { name: "File" })).toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.getByRole("menubar")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Main Menu" })).toBeNull();
+  });
+
+  it("keeps the hamburger button in a title bar whose menu has its own row", () => {
+    act(() => useProject.setState({ settings: { appearance: { mainMenuStyle: "toolbar" } } as Settings }));
+    render(<MainMenu />);
+    expect(screen.getByRole("button", { name: "Main Menu" })).toBeInTheDocument();
+  });
+
   it("applies the setting immediately and restores toolbar visibility when switching from an expanded hamburger", async () => {
     const expanded = vi.fn();
     render(<MainMenu onExpandedChange={expanded} />);

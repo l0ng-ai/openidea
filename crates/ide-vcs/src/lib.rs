@@ -638,8 +638,8 @@ mod text_encoding;
 mod write;
 
 pub use cli::{
-    GitCommandObserver, detected_git_executable, git_version, set_askpass_env, set_git_command_observer,
-    set_git_executable,
+    GitCommandObserver, detected_git_executable, filter_overrides_from, git_version, restrict, set_askpass_env,
+    set_git_command_observer, set_git_executable,
 };
 pub use diff::build_partial_patch;
 pub use ignore::{IgnoreDestination, add_to_ignore};
@@ -674,6 +674,8 @@ pub fn clone(
     let dest = dest.to_string_lossy();
     // Cloning must not inherit an enclosing project's executable Git settings.
     let cwd = tempfile::tempdir()?;
+    // No repository's config applies in that empty folder, so the user's git runs as it is.
+    let _scope = ExecutionScope::enter(true);
     let args = clone_args(url, &dest, depth)?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     cli::run_streaming(cwd.path(), &args, cancel, on_output)
@@ -709,6 +711,8 @@ mod clone_tests {
 
 /// Creates an empty repository in `dir` (`git init`).
 pub fn init(dir: &Path) -> IdeResult<()> {
+    // `git init` runs nothing a repository config names, so the configured git runs as it is.
+    let _scope = ExecutionScope::enter(true);
     cli::run(dir, &["init", "-q"], None).map(|_| ())
 }
 
@@ -731,7 +735,8 @@ pub struct Repo {
 }
 
 impl Repo {
-    /// Discovers the repository containing `path`; `Ok(None)` when not under git.
+    /// Discovers the repository containing `path`; `Ok(None)` when not under git. The
+    /// repository is in Restricted Mode until [`Repo::set_execution_allowed`] says otherwise.
     pub fn discover(path: &Path) -> IdeResult<Option<Self>> {
         repo::discover(path)
     }
@@ -902,63 +907,91 @@ impl Repo {
         self.log_details_cancellable(revision, &CancellationToken::new())
     }
     pub fn log_details_cancellable(&self, revision: &str, cancel: &CancellationToken) -> IdeResult<LogDetails> {
+        self.log_details_batch_cancellable(&[revision.to_string()], cancel)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| IdeError::not_found("commit not found"))
+    }
+    pub fn log_details_batch_cancellable(
+        &self,
+        revisions: &[String],
+        cancel: &CancellationToken,
+    ) -> IdeResult<Vec<LogDetails>> {
         let allowed = self.execution_allowed.load(std::sync::atomic::Ordering::Acquire);
         let _scope = crate::ExecutionScope::enter(allowed);
         let repo = self.gix()?;
-        let object =
-            repo.find_object(repo::resolve(&repo, revision)?).map_err(repo::gx)?.peel_to_commit().map_err(repo::gx)?;
-        let commit_id = object.id;
-        let id = commit_id.to_string();
-        let contains = format!("--contains={id}");
-        let branches =
-            cli::run_cancellable(self.root(), &["branch", "-a", &contains, refs::DIRECT_BRANCH_FORMAT], cancel)?;
-        let cache_key = format!("{allowed}:{id}");
-        let cached = self.log_signatures.lock().unwrap_or_else(|p| p.into_inner()).get(&cache_key).cloned();
-        let mut details = if let Some(details) = cached {
-            details
-        } else {
-            let end = object.data.windows(2).position(|s| s == b"\n\n").unwrap_or(object.data.len());
-            let headers = &object.data[..end];
-            let signed = headers.windows(8).any(|s| s == b"\ngpgsig ") || headers.windows(8).any(|s| s == b"\ngpgsig-");
-            let output = if allowed && signed {
-                Some(cli::run_cancellable(
-                    self.root(),
-                    &["log", "-1", "--format=%G?%x00%GS%x00%GK%x00%GF", "--end-of-options", &id],
-                    cancel,
-                )?)
+        let shallow: std::collections::HashSet<gix::ObjectId> =
+            repo.shallow_commits().map_err(repo::gx)?.map(|ids| ids.iter().copied().collect()).unwrap_or_default();
+        let mut out = Vec::with_capacity(revisions.len());
+        let mut commit_ids = Vec::with_capacity(revisions.len());
+        for revision in revisions {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            let object = repo
+                .find_object(repo::resolve(&repo, revision)?)
+                .map_err(repo::gx)?
+                .peel_to_commit()
+                .map_err(repo::gx)?;
+            let commit_id = object.id;
+            commit_ids.push(commit_id);
+            let id = commit_id.to_string();
+            let cache_key = format!("{allowed}:{id}");
+            let cached = self.log_signatures.lock().unwrap_or_else(|p| p.into_inner()).get(&cache_key).cloned();
+            let details = if let Some(details) = cached {
+                details
             } else {
-                None
-            };
-            let text = output.as_ref().map(|out| out.stdout_str()).unwrap_or_default();
-            let fields: Vec<_> = text.trim_end().split('\0').collect();
-            let message = {
-                let mut index = self.log_index.lock().unwrap_or_else(|p| p.into_inner());
-                let message = index.message(&repo, commit_id)?;
-                index.flush();
-                message
-            };
-            let details = LogDetails {
-                message,
-                containing_branches: Vec::new(),
-                signature: if !signed {
-                    "N".into()
+                let end = object.data.windows(2).position(|s| s == b"\n\n").unwrap_or(object.data.len());
+                let headers = &object.data[..end];
+                let signed =
+                    headers.windows(8).any(|s| s == b"\ngpgsig ") || headers.windows(8).any(|s| s == b"\ngpgsig-");
+                let output = if allowed && signed {
+                    Some(cli::run_cancellable(
+                        self.root(),
+                        &["log", "-1", "--format=%G?%x00%GS%x00%GK%x00%GF", "--end-of-options", &id],
+                        cancel,
+                    )?)
                 } else {
-                    fields.first().filter(|s| !s.is_empty()).unwrap_or(&"E").to_string()
-                },
-                signer: fields.get(1).unwrap_or(&"").to_string(),
-                key: fields.get(2).unwrap_or(&"").to_string(),
-                fingerprint: fields.get(3).unwrap_or(&"").to_string(),
+                    None
+                };
+                let text = output.as_ref().map(|out| out.stdout_str()).unwrap_or_default();
+                let fields: Vec<_> = text.trim_end().split('\0').collect();
+                let message = {
+                    let mut index = self.log_index.lock().unwrap_or_else(|p| p.into_inner());
+                    index.message(&repo, commit_id)?
+                };
+                let details = LogDetails {
+                    message,
+                    containing_branches: Vec::new(),
+                    signature: if !signed {
+                        "N".into()
+                    } else {
+                        fields.first().filter(|s| !s.is_empty()).unwrap_or(&"E").to_string()
+                    },
+                    signer: fields.get(1).unwrap_or(&"").to_string(),
+                    key: fields.get(2).unwrap_or(&"").to_string(),
+                    fingerprint: fields.get(3).unwrap_or(&"").to_string(),
+                };
+                self.log_signatures.lock().unwrap_or_else(|p| p.into_inner()).insert(cache_key, details.clone());
+                details
             };
-            self.log_signatures.lock().unwrap_or_else(|p| p.into_inner()).insert(cache_key, details.clone());
-            details
+            out.push(details);
+        }
+        let branches_per_commit = {
+            let mut index = self.log_index.lock().unwrap_or_else(|p| p.into_inner());
+            let res = index.containing_branches_batch(&repo, &commit_ids, &shallow, cancel)?;
+            index.flush();
+            res
         };
-        details.containing_branches =
-            branches.stdout_str().lines().filter(|s| !s.is_empty()).map(str::to_string).collect();
-        Ok(details)
+        for (details, branches) in out.iter_mut().zip(branches_per_commit) {
+            details.containing_branches = branches;
+        }
+        Ok(out)
     }
 
     /// Lists one immutable revision directory. Directory names end in `/`.
     pub fn revision_children(&self, revision: &str, directory: &str) -> IdeResult<Vec<String>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let repo = self.gix()?;
         let id = repo::resolve(&repo, revision)?.to_string();
         let directory = self.rel_path(std::path::Path::new(directory))?;
@@ -1029,7 +1062,9 @@ impl Repo {
         let rel = path.map(|p| self.rel_path(p)).transpose()?;
         let overrides = cli::filter_overrides(self.root(), cancel)?;
         let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
-        args.extend(["--literal-pathspecs", "--no-pager", "diff", "--no-ext-diff", "--no-textconv", rev, "--"]);
+        args.extend(["--literal-pathspecs", "--no-pager", "diff", "--no-ext-diff", "--no-textconv"]);
+        args.extend_from_slice(cli::submodule_guards());
+        args.extend([rev, "--"]);
         if let Some(rel) = &rel {
             args.push(rel);
         }
@@ -1148,11 +1183,13 @@ impl Repo {
     /// Edit Commit Message without touching the index or the working tree; returns HEAD
     /// before and after.
     pub fn reword(&self, commit: &str, message: &str) -> IdeResult<HeadChange> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::reword(self, commit, message).map(|(before, after)| HeadChange { before, after })
     }
 
     /// Undoes a history rewrite: HEAD goes from `after` back to `before`, local changes kept.
     pub fn restore_head(&self, before: &str, after: &str) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::restore_head(self, before, after)
     }
 
@@ -1274,6 +1311,7 @@ impl Repo {
     /// Whether the repository has an executable hook `name` (e.g. `pre-push`), wherever
     /// `core.hooksPath` puts it: the Push dialog then offers to skip it.
     pub fn has_hook(&self, name: &str) -> IdeResult<bool> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::has_hook(self, name)
     }
     /// Pushes a local branch, or its history up to `revision`, to its upstream (Git Log
@@ -1524,11 +1562,17 @@ impl Repo {
     }
 }
 
-thread_local! { static EXECUTION_ALLOWED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) }; }
-struct ExecutionScope(bool);
+// `None`: nobody has decided yet. Git started now is restricted, and the first scope entered
+// decides. The flag governs the git CLI only: gitoxide follows the repository's own flag.
+thread_local! { static EXECUTION_ALLOWED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) }; }
+struct ExecutionScope(Option<bool>);
 impl ExecutionScope {
+    /// The outermost scope decides; a scope inside it can only restrict.
     fn enter(allowed: bool) -> Self {
-        Self(EXECUTION_ALLOWED.with(|current| current.replace(current.get() && allowed)))
+        Self(
+            EXECUTION_ALLOWED
+                .with(|current| current.replace(Some(current.get().map_or(allowed, |outer| outer && allowed)))),
+        )
     }
 }
 impl Drop for ExecutionScope {
@@ -1537,9 +1581,12 @@ impl Drop for ExecutionScope {
     }
 }
 pub(crate) fn execution_allowed() -> bool {
-    EXECUTION_ALLOWED.with(|current| current.get())
+    EXECUTION_ALLOWED.with(|current| current.get().unwrap_or(false))
 }
 impl Repo {
+    /// Whether git may run what the repository's config names (hooks, filters, the fsmonitor,
+    /// signature verifiers, a promisor) and use the configured git executable. A repository
+    /// starts without it: only a caller that knows the project is trusted grants it.
     pub fn set_execution_allowed(&self, allowed: bool) {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         self.execution_allowed.store(allowed, std::sync::atomic::Ordering::Release);

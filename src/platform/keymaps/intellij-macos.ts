@@ -303,6 +303,7 @@ export const intellijMacos: Record<string, string[]> = {
   "vcs.rollback": ["Meta+Alt+Z"],
   "vcs.addToVcs": ["Meta+Alt+A"],
   "vcs.showDiff": ["Meta+D"],
+  "vcs.showDiffInNewWindow": [],
   "vcs.nextChange": ["Ctrl+Alt+Shift+Down"],
   "vcs.prevChange": ["Ctrl+Alt+Shift+Up"],
   "vcs.branches": [],

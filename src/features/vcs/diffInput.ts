@@ -16,7 +16,8 @@ export type DiffSide =
   | { type: "worktree"; label?: string }
   /** Another file (Compare With…, Compare Files); editable like the working file. */
   | { type: "file"; path: string; label?: string }
-  | { type: "text"; text: string; label: string }
+  /** `absent`: the file doesn't exist on this side (added / deleted), as IDEA's EmptyContent. */
+  | { type: "text"; text: string; label: string; absent?: boolean }
   /** A Local History revision. */
   | { type: "history"; id: string; label: string };
 
@@ -63,6 +64,15 @@ export interface DiffData {
 }
 
 export const DIFF_KIND = "diff";
+
+/**
+ * Whether only one side exists (an added or deleted file): IDEA shows that side alone
+ * (SimpleOnesideDiffViewer) instead of a side-by-side diff with an empty half.
+ */
+export function oneSided(data: Pick<DiffData, "left" | "right">): boolean {
+  const absent = (s: DiffSide) => s.type === "text" && !!s.absent;
+  return absent(data.left) !== absent(data.right);
+}
 
 export function sideKey(s: DiffSide): string {
   switch (s.type) {
@@ -142,6 +152,16 @@ export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?
 export const vcsDiffInFront = () => !workflowSettings().vcs.commit.nonModal;
 
 /**
+ * Double-click / Enter on a change: IDEA's "Show on Double-Click" — the Commit tool
+ * window opens the diff, Local Changes and the Commit dialog the source file. An
+ * explicit Diff / Source in the changes view's View Options overrides both.
+ */
+export const opensDiffOnActivate = () => {
+  const commit = workflowSettings().vcs.commit;
+  return commit.doubleClickOpensDiff ?? commit.nonModal;
+};
+
+/**
  * Diffs the user opens (changed files, a log entry's file, Show Diff, Shelf, compare
  * with a revision, Compare actions): the modal commit interface shows them in the front
  * window (#1863), the non-modal one keeps editor tabs. Passive previews, diffs embedded
@@ -180,11 +200,12 @@ export function workingDiffData(path: string, line?: number, side?: "staged" | "
   const kind = st ? effectiveKind(st) : null;
   const left: DiffSide =
     kind === "untracked" || kind === "added"
-      ? { type: "text", text: "", label: "(does not exist)" }
+      ? { type: "text", text: "", label: "(does not exist)", absent: true }
       : st?.renamedFrom
         ? { type: "rev", rev: "HEAD", path: renamedFromPath(st) ?? undefined, label: `HEAD (${st.renamedFrom})` }
         : { type: "rev", rev: "HEAD" };
-  const right: DiffSide = kind === "deleted" ? { type: "text", text: "", label: "(deleted)" } : { type: "worktree" };
+  const right: DiffSide =
+    kind === "deleted" ? { type: "text", text: "", label: "(deleted)", absent: true } : { type: "worktree" };
   return { path, left, right, line };
 }
 
@@ -202,7 +223,7 @@ export function commitFileDiffData(
   const parent = commit.parents[0];
   const left: DiffSide =
     !parent || file.kind === "added"
-      ? { type: "text", text: "", label: "(does not exist)" }
+      ? { type: "text", text: "", label: "(does not exist)", absent: true }
       : {
           type: "rev",
           rev: parent,
@@ -211,7 +232,7 @@ export function commitFileDiffData(
         };
   const right: DiffSide =
     file.kind === "deleted"
-      ? { type: "text", text: "", label: "(deleted)" }
+      ? { type: "text", text: "", label: "(deleted)", absent: true }
       : { type: "rev", rev: commit.id, label: commit.shortId };
   return { path, left, right };
 }
@@ -227,10 +248,10 @@ export function revisionChangeDiffData(change: RevisionChange, root = currentRep
         path: change.oldPath ? joinRoot(change.oldPath, root) : undefined,
         label: before.slice(0, 8),
       }
-    : { type: "text", text: "", label: "(does not exist)" };
+    : { type: "text", text: "", label: "(does not exist)", absent: true };
   const right: DiffSide = after
     ? { type: "rev", rev: after, label: after.slice(0, 8) }
-    : { type: "text", text: "", label: "(deleted)" };
+    : { type: "text", text: "", label: "(deleted)", absent: true };
   return { path, left, right };
 }
 

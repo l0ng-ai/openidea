@@ -20,6 +20,7 @@ import {
   toCsv,
   toTsv,
 } from "./model";
+import { listsDatabases } from "./store";
 import { VENDORS, sourceUrl, vendorById, vendorOf, vendorPreset } from "./vendors";
 
 describe("clipboard formats", () => {
@@ -160,6 +161,15 @@ describe("connection targets", () => {
     expect(splitTarget("pg")).toEqual({ id: "pg", database: null });
     expect(splitTarget("pg:my:db")).toEqual({ id: "pg", database: "my:db" });
   });
+
+  it("lists databases under PostgreSQL and SQL Server hosts unless single-database mode", () => {
+    expect(listsDatabases({ driver: "postgres" })).toBe(true);
+    expect(listsDatabases({ driver: "sqlServer" })).toBe(true);
+    expect(listsDatabases({ driver: "postgres", options: { singleDatabase: true } })).toBe(false);
+    expect(listsDatabases({ driver: "sqlServer", options: { singleDatabase: true } })).toBe(false);
+    expect(listsDatabases({ driver: "mysql" })).toBe(false);
+    expect(listsDatabases(undefined)).toBe(false);
+  });
 });
 
 describe("parseSourceUrl", () => {
@@ -210,6 +220,14 @@ describe("data source types", () => {
     ).toBe(true);
     const labels = VENDORS.map((v) => v.label);
     expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
+  });
+
+  it("adds StarRocks on the MySQL driver with the 9030 preset (#2452)", () => {
+    expect(vendorPreset(vendorById("starrocks")!)).toEqual({ driver: "mysql", vendor: "starrocks", port: 9030 });
+    expect(sourceUrl({ driver: "mysql", vendor: "starrocks", host: "sr", port: 9030, database: "" })).toBe(
+      "jdbc:starrocks://sr:9030",
+    );
+    expect(parseSourceUrl("starrocks://root@sr.local:9030/test")?.source.vendor).toBe("starrocks");
   });
 
   it("falls back to the driver for unknown or mismatched presets", () => {

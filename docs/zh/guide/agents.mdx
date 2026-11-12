@@ -1,0 +1,142 @@
+---
+title: "Agent"
+description: "在 IDE 中运行 Claude Code、Codex、Gemini CLI 等编码 agent，每个任务可以在独立的 Git worktree 中或直接在当前工作区里进行。"
+---
+
+OpenIDEA 可以运行命令行编码 agent，并在 IDE 中为它们提供聊天界面。每段对话是一个 **任务**。任务可以在一个新的 Git worktree 中进行，不影响你自己的改动；也可以直接在项目里修改文件。你可以以 diff 的形式查看它改了什么、回应它的权限请求，并同时运行多个任务。
+
+OpenIDEA 本身不带模型或账号：它启动你已安装并登录的 agent，通过 [Agent Client Protocol](https://agentclientprotocol.com)（ACP）与之通信。
+
+## 支持的 agent
+
+以下 agent 是内置的。先安装 agent 自己的命令行工具，并在终端里登录一次；OpenIDEA 会在 `PATH` 中找到它。
+
+| Agent          | OpenIDEA 启动的命令         | 登录命令              |
+| -------------- | --------------------------- | --------------------- |
+| Claude Code    | `claude`                    | `claude`              |
+| Codex          | `codex app-server`          | `codex login`         |
+| Gemini CLI     | `gemini --experimental-acp` | `gemini`              |
+| GitHub Copilot | `copilot --acp`             | `copilot`             |
+| Cursor         | `cursor-agent acp`          | `cursor-agent login`  |
+| OpenCode       | `opencode acp`              | `opencode auth login` |
+| Qwen Code      | `qwen --experimental-acp`   | `qwen`                |
+| Qoder          | `qodercli --acp`            | `qodercli login`      |
+| Qoder CN       | `qoderclicn --acp`          | `qoderclicn login`    |
+| Kimi CLI       | `kimi acp`                  | `kimi`                |
+| Goose          | `goose acp`                 | `goose configure`     |
+| Auggie         | `auggie --acp`              | `auggie login`        |
+| Kiro           | `kiro-cli acp`              | `kiro-cli login`      |
+| Mistral Vibe   | `vibe-acp`                  | `vibe`                |
+
+**Claude Code** 和 **Codex** 通过它们自己的协议驱动（Claude Code 的 stream-json 模式和 `codex app-server`）。它们的 ACP 适配器（`claude-acp`、`codex-acp`）不再列出；已经在用它们的任务照常运行，为这两个 id 写一个 [agent 文件](#添加自定义-agent)也会重新列出。agent 需要登录时，任务中会提示该运行哪条命令。
+
+未被标记为受信任的项目中无法使用 agent。
+
+## 新建任务
+
+| 操作                | macOS | Windows / Linux    |
+| ------------------- | ----- | ------------------ |
+| **新建 Agent 任务** | `⇧⌘I` | `Ctrl+Alt+Shift+I` |
+
+<Steps>
+  <Step title="打开“新建 Agent 任务”页面">
+    按快捷键，或在右侧的 **智能体** 工具窗口中单击 **新建 Agent 任务**。
+  </Step>
+  <Step title="描述任务">
+    写下要 agent 做的事。输入 `@` 引用文件，输入 `/` 使用 agent 的斜杠命令；agent 支持时还可以粘贴或附加图片（**附加图片…**）。
+  </Step>
+  <Step title="选择工作位置">
+    - **新 worktree**：agent 在新的 Git worktree 中工作，分支名为 `agent/<任务>`，从你选择的基础分支创建，不会动你的工作区。worktree 创建在项目旁边名为 `<项目名>.worktrees` 的文件夹中。
+    - **当前工作区**：agent 直接修改你的文件。
+  </Step>
+  <Step title="选择 agent 及其设置">
+    选择 agent，以及它提供的模型、模式等选项。这些选项会在该 agent 跑完第一个任务后出现。
+  </Step>
+  <Step title="发送">
+    任务会在编辑器标签页中打开并开始运行。
+  </Step>
+</Steps>
+
+## 使用任务
+
+任务标签页显示整段对话：你的消息、agent 的回复、思考过程、计划、它运行的工具以及启动的子 agent。agent 工作期间：
+
+- 你发送的消息会进入队列，在本轮结束后发出（**排队中的消息**）。**立即发送** 会停止当前这一轮并接着发送这条消息；排队的消息也可以编辑或移除。
+- **停止** 结束当前这一轮。
+- `⌘F` / `Ctrl+F` 在对话中查找。
+
+在你自己的消息上可以 **编辑**（其后的消息会被替换，已经改动的文件保持不变）或 **撤回消息**。在回复上可以 **复制 Markdown**、**引用回复**、**重新生成回复**，以及 **从此处创建分支对话**，从这一点开始一个新任务。
+
+### 权限
+
+agent 要运行命令或调用需要授权的工具时，任务中会显示请求，并归入 **等待输入**。从 agent 提供的选项中选择，例如 **允许一次**、**在此会话中允许**、**始终允许**、**拒绝**、**始终拒绝** 或 **拒绝并停止**。很多 agent 还有模式选择器，可以自动批准编辑甚至所有操作，请谨慎使用。
+
+### 查看改动
+
+在任务标题栏中单击 **显示更改**，列出任务改动过的文件；单击文件可以打开它从任务开始到现在的 diff。worktree 任务的改动在它的 `agent/…` 分支上：用 **在终端中打开** 在那里打开终端，满意后用 Git 工具合并或 cherry-pick 这个分支（见 [版本控制](/zh/guide/vcs)）。
+
+### 从编辑器提供上下文
+
+- 编辑器和项目视图右键菜单中的 **发送给 Agent** 会把选区或选中的文件作为 `@` 引用加到你最近输入的消息中。它默认没有快捷键，可以在 **设置 › 按键映射** 中分配。
+- agent 接受内嵌文件时，256 KB 以内的引用文件会直接嵌入提示词。
+- 打开 [内置 MCP 服务器](/zh/guide/mcp) 后，每个任务都会把 OpenIDEA 的工具作为 MCP 服务器提供给 agent，让它可以使用 IDE 的搜索、符号查询、问题列表、运行配置等功能。
+
+## 智能体工具窗口
+
+**智能体** 工具窗口按需要你处理的程度列出项目中的任务：**等待输入**、**失败**、用量到达上限、**正在运行**、**待审阅** 和 **已归档**。它的角标显示等待输入或有未读回复的任务数。
+
+任务默认在编辑器标签页中打开。**在工具窗口中聊天** 和 **在编辑器中聊天** 切换对话的打开位置，也可以把任务拖到编辑区。任务的右键菜单中有 **打开**、**重命名…**、**在终端中打开**、**复制为新任务**、**归档** / **取消归档** 和 **删除…**。删除 worktree 任务时会一并删除它的 worktree。
+
+任务按项目保存，重启后仍在。agent 支持恢复会话时，下次发消息会从上次中断处继续；这类 agent 空闲五分钟后会被停止，下次发消息时再重新启动。
+
+## 管理 agent
+
+**设置 › 工具 › 智能体**（也可以在 agent 选择器中点 **更多 Agent…**）有两个标签页：
+
+- **内置**：每个内置 agent 的可执行文件是否在 `PATH` 中找到、指定 **自定义可执行文件** 的输入框、传给 agent 进程的 **环境变量**（格式为 `NAME=value; OTHER=value`）以及登录方式。改动对新会话生效。
+- **ACP 注册表**：[ACP Registry](https://agentclientprotocol.com) 中发布的 agent，可以搜索、**安装**、**更新** 和 **移除**。安装的 agent 保存在 OpenIDEA 的数据目录中；注册表提供 SHA-256 时会校验下载内容。
+
+**设置 › 工具 › 智能体 › 聊天** 决定任务标题栏显示哪些信息：**上下文窗口用量**、**任务耗时**、**用量限额**（agent 报告时，例如 Claude Code）和 **会话花费**。
+
+## 添加自定义 agent
+
+任何通过 stdio 使用 ACP 的 agent，都可以用一个 agent 文件添加：OpenIDEA 配置目录下的 `agents/<id>.toml`。
+
+| 系统    | agent 文件目录                                           |
+| ------- | -------------------------------------------------------- |
+| macOS   | `~/Library/Application Support/ai.l0ng.openidea/agents/` |
+| Windows | `%APPDATA%\ai.l0ng.openidea\agents\`                     |
+| Linux   | `~/.config/ai.l0ng.openidea/agents/`                     |
+
+```toml
+# agents/my-agent.toml
+name = "My Agent"
+command = "/usr/local/bin/my-agent"
+args = ["--acp"]
+
+[env]
+MY_AGENT_LOG = "info"
+```
+
+<ParamField path="name" type="string">
+  在 agent 选择器中显示的名称，默认为文件名。
+</ParamField>
+<ParamField path="command" type="string" required>
+  要启动的可执行文件，可以是路径，也可以是 `PATH` 中的命令名。
+</ParamField>
+<ParamField path="args" type="string[]">
+  以 ACP 模式启动 agent 所需的参数。
+</ParamField>
+<ParamField path="env" type="table">
+  传给 agent 进程的额外环境变量。
+</ParamField>
+<ParamField path="driver" type="string" default="acp">
+  ACP agent 用 `acp`；`claude` 和 `codex` 分别使用 Claude Code 和 Codex 的协议。
+</ParamField>
+
+文件名（去掉 `.toml`）就是 agent 的 ID。以内置 agent 命名的文件（`gemini.toml`、`claude.toml`…）会替换该 agent 的启动命令；在 **内置** 标签页中设置自定义可执行文件或环境变量时，写入的就是这个文件。无法解析的文件会被跳过并记录到日志。
+
+## 限制
+
+- agent 在你的电脑上运行，使用你自己的凭据、订阅或 API key；OpenIDEA 不做代理，也不计费。
+- worktree 任务要求项目是至少有一次提交的 Git 仓库。

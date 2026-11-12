@@ -510,10 +510,10 @@ export async function checkoutAndRebase(name: string) {
   await rebaseOnto(current, branchRef(current, false));
 }
 
-/** Update for a branch other than the current one: fast-forwards it to its upstream. */
+/** Update for a branch: the current one updates its repository, another fast-forwards to its upstream. */
 export async function updateBranch(name: string) {
   const b = useVcs.getState().branches.find((x) => !x.remote && x.name === name);
-  if (b?.current) return void executeAction("vcs.update");
+  if (b?.current) return void executeAction("vcs.update", { repo: currentRepo() });
   if (!b?.upstream) {
     notifications().notify({ group: "vcs", level: "warning", title: `Branch '${name}' has no tracked branch` });
     return;

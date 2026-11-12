@@ -86,7 +86,11 @@ export async function selectionOf(plan: CommitPlan): Promise<CommitSelection> {
   const stage = [...plan.stage, ...partial.whole];
   const fallback = useVcs.getState().root ?? "";
   const repositories = repos.map((repo) => {
-    const inRepo = (path: string) => repos.length === 1 || (rootOf(path, roots) ?? null) === repo;
+    // A path in another known repository never goes to this one, even when it is the only one committed.
+    const inRepo = (path: string) => {
+      const root = rootOf(path, roots);
+      return root === null ? repos.length === 1 : root === repo;
+    };
     const options: CommitOptions = {
       amend,
       signOff,
