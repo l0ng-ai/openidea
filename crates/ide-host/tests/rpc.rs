@@ -286,6 +286,64 @@ async fn serves_projects_files_documents_search_and_runs() {
     );
 }
 
+/// A `--listen` connection must present the per-launch secret in `initialize`
+/// before any other request is served, and a wrong secret closes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tcp_listen_requires_the_secret() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: tmp.path().join("config"),
+        data_dir: tmp.path().join("data"),
+        local_data_dir: tmp.path().join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    let connect = |secret| {
+        let host = host.clone();
+        async move {
+            let (client_io, server_io) = tokio::io::duplex(1 << 20);
+            let (sr, sw) = tokio::io::split(server_io);
+            let slot = Arc::new(OnceLock::new());
+            tokio::spawn(rpc::serve_listen(host, Dispatcher::standard(), slot, sr, sw, "s3cret".to_owned()));
+            let (cr, cw) = tokio::io::split(client_io);
+            let peer = Peer::connect(cr, cw, Arc::new(Client::default()));
+            match secret {
+                Some(s) => peer.request::<_, Value>("initialize", json!({ "version": 2, "secret": s }), None).await,
+                None => peer.request::<_, Value>("initialize", json!({ "version": 2 }), None).await,
+            }
+            .map(|_| peer)
+        }
+    };
+
+    // Requests before authentication are refused…
+    let unauthed = {
+        let (client_io, server_io) = tokio::io::duplex(1 << 20);
+        let (sr, sw) = tokio::io::split(server_io);
+        let slot = Arc::new(OnceLock::new());
+        tokio::spawn(rpc::serve_listen(host.clone(), Dispatcher::standard(), slot, sr, sw, "s3cret".to_owned()));
+        let (cr, cw) = tokio::io::split(client_io);
+        Peer::connect(cr, cw, Arc::new(Client::default()))
+    };
+    let err = invoke(&unauthed, "project_current", json!({})).await.unwrap_err();
+    assert!(err.message.contains("initialize"), "{err:?}");
+    unauthed.kill();
+
+    // …a missing or wrong secret fails and the server drops the connection…
+    assert!(connect(None).await.is_err(), "initialize without a secret");
+    assert!(connect(Some("wrong")).await.is_err(), "initialize with a wrong secret");
+    let wrong = connect(Some("wrong-secret")).await;
+    assert!(wrong.is_err());
+
+    // …the right secret authenticates and the session serves normally.
+    let peer = connect(Some("s3cret")).await.unwrap();
+    invoke(&peer, "project_current", json!({})).await.unwrap();
+    peer.kill();
+}
+
 trait EventType {
     fn event_type(&self) -> String;
 }

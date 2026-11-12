@@ -2,7 +2,12 @@
 //! the desktop app and `openidea-server`, over the server's stdio (an SSH exec
 //! channel).
 //!
-//! * client → server request `initialize` `{ version }` → [`ServerInfo`];
+//! * client → server request `initialize` `{ version, secret? }` → [`ServerInfo`.
+//!   On a `--listen` (TCP) connection `secret` must be the server's per-launch
+//!   token (`OPENIDEA_LISTEN_SECRET` or the one it prints to stderr) and must be
+//!   the first request — every other request is refused until it authenticates,
+//!   and a wrong secret closes the connection. stdio needs none: SSH already
+//!   authenticated the channel. TCP is plaintext: bind loopback or tunnel it;
 //! * client → server request `invoke` `{ window, cmd, args }` → the command's
 //!   result, `args` as the desktop command takes them (camelCase names). A
 //!   streaming argument is `{ "$channel": <id> }`;
@@ -283,7 +288,7 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let handler = Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: peer.clone() });
+    let handler = Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: peer.clone(), auth: None });
     let p = Peer::connect(reader, writer, handler);
     let _ = peer.set(p.clone());
     p.closed().await;
@@ -291,6 +296,33 @@ where
     for window in host.projects.read().keys() {
         host.mcp_reports.forget_window(window);
     }
+}
+
+/// [`serve`](Self::serve) for a `--listen` server: returns the created `Peer`
+/// so the caller can track it for event broadcast, and sets `peer` too.
+/// `secret` is the per-launch token `initialize` must carry; a connection that
+/// fails it is closed, and every other request is refused before it.
+pub async fn serve_listen<R, W>(
+    host: Arc<Host>,
+    dispatcher: Dispatcher,
+    peer: Arc<OnceLock<Peer>>,
+    reader: R,
+    writer: W,
+    secret: String,
+) -> Peer
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let handler =
+        Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: peer.clone(), auth: Some(Auth::new(secret)) });
+    let p = Peer::connect(reader, writer, handler);
+    let _ = peer.set(p.clone());
+    p.closed().await;
+    for window in host.projects.read().keys() {
+        host.mcp_reports.forget_window(window);
+    }
+    p
 }
 
 /// Sends a window's events to the client as `event` notifications.
@@ -365,6 +397,30 @@ struct ServerHandler {
     host: Arc<Host>,
     dispatcher: Dispatcher,
     peer: Arc<OnceLock<Peer>>,
+    /// TCP transport authentication (`--listen`); `None` on stdio, where the
+    /// parent process (SSH) already authenticated the channel.
+    auth: Option<Auth>,
+}
+
+/// The per-launch secret an `initialize` must carry before any other request is
+/// served. A wrong secret closes the connection; the compare is constant-time.
+struct Auth {
+    secret: Vec<u8>,
+    done: std::sync::atomic::AtomicBool,
+}
+
+impl Auth {
+    fn new(secret: String) -> Self {
+        Self { secret: secret.into_bytes(), done: std::sync::atomic::AtomicBool::new(false) }
+    }
+
+    /// Byte-wise equal-length compare that doesn't early-exit on a mismatch.
+    fn matches(&self, given: &[u8]) -> bool {
+        if given.len() != self.secret.len() {
+            return false;
+        }
+        given.iter().zip(&self.secret).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+    }
 }
 
 pub fn server_info() -> ServerInfo {
@@ -382,6 +438,22 @@ impl Handler for ServerHandler {
 
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
         let internal = |e: serde_json::Error| (codes::INTERNAL_ERROR, e.to_string());
+        if let Some(auth) = &self.auth
+            && !auth.done.load(std::sync::atomic::Ordering::Acquire)
+        {
+            if method != "initialize" {
+                return Err((codes::INVALID_REQUEST, "initialize with the secret first".to_owned()));
+            }
+            let given = params.get("secret").and_then(Value::as_str).unwrap_or_default();
+            if !auth.matches(given.as_bytes()) {
+                tracing::warn!("rejected a client with a wrong secret");
+                if let Some(peer) = self.peer.get() {
+                    peer.kill();
+                }
+                return Err((codes::INVALID_PARAMS, "wrong secret".to_owned()));
+            }
+            auth.done.store(true, std::sync::atomic::Ordering::Release);
+        }
         match method {
             "initialize" => serde_json::to_value(server_info()).map_err(internal),
             "commands" => serde_json::to_value(self.dispatcher.commands()).map_err(internal),
