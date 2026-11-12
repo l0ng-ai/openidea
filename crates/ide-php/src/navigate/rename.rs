@@ -699,6 +699,15 @@ impl PhpEngine {
             }
         }
 
+        // A Blade class component's tags follow its class (`<x-alert>`).
+        if let Some((NameKind::ClassLike, fqn)) = &renamed_name {
+            for (usage, renamed) in self.component_class_rename_usages(fqn, &new) {
+                let key = path_key(&usage.path);
+                let edits = &mut files.entry(key).or_insert_with(|| (usage.path.clone(), Vec::new())).1;
+                edits.push(TextEdit { range: usage.range, new_text: renamed });
+            }
+        }
+
         // A model method's other names (Laravel) follow it: `published()`
         // for `scopePublished`, `$post->author` for `author()`.
         for (alias, renamed) in self.model_method_alias_renames(&sought, &new) {

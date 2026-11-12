@@ -179,14 +179,14 @@ impl Project {
             .collect()
     }
 
-    /// The rename's edits as `(relative path, line, replaced text, new
-    /// text)`, sorted.
+    /// The rename's text edits as `(relative path, line, replaced text, new
+    /// text)`, sorted (a class's file renamed with it left out).
     fn rename_edits(&mut self, rel: &str, source: &str, new_name: &str) -> Vec<(String, u32, String, String)> {
         let (doc, pos) = self.open(rel, source);
         let edit = self.engine.rename(doc, pos, new_name, &CancellationToken::new()).unwrap().unwrap();
         let mut out = Vec::new();
         for file in &edit.files {
-            let FileEdit::Edit { path, edits, .. } = file else { panic!("only text edits") };
+            let FileEdit::Edit { path, edits, .. } = file else { continue };
             let path = PathBuf::from(path.clone());
             for edit in edits {
                 let (path, line, old) = self.describe(&path, edit.range);

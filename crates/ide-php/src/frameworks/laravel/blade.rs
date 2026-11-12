@@ -844,6 +844,42 @@ impl PhpEngine {
             .unwrap_or_default()
     }
 
+    /// For a rename of the class component `fqn` to `new` (its short
+    /// name): the tags of the component in the project's templates, opening
+    /// and closing, with the last segment of their name renamed
+    /// (`<x-alert>` to `<x-notice>`, `forms.input` to `forms.field`). Only
+    /// tags named after the class (discovered); an alias stays.
+    pub(crate) fn component_class_rename_usages(&self, fqn: &str, new: &str) -> Vec<(crate::navigate::Usage, String)> {
+        let Some(catalog) = self.laravel_blade() else { return Vec::new() };
+        let short = fqn.rsplit('\\').next().unwrap_or(fqn);
+        let (old_segment, new_segment) = (kebab(short), kebab(new));
+        let tags: Vec<String> = catalog
+            .components
+            .iter()
+            .filter(|component| {
+                component
+                    .class
+                    .as_ref()
+                    .is_some_and(|(class, _)| crate::names::fqn_eq(crate::names::NameKind::ClassLike, class, fqn))
+                    && component.tag.rsplit(['.', ':']).next() == Some(old_segment.as_str())
+            })
+            .map(|component| component.tag.clone())
+            .collect();
+        if tags.is_empty() || old_segment == new_segment {
+            return Vec::new();
+        }
+        let found = self.template_usages(None, |text| {
+            let mut spans = Vec::new();
+            for tag in &tags {
+                // The last segment of each name: opening and closing tags.
+                let names = component_tag_spans(text, tag).into_iter().chain(closing_tag_spans(text, tag));
+                spans.extend(names.map(|name| name.end - old_segment.len() as u32..name.end));
+            }
+            spans
+        });
+        found.unwrap_or_default().into_iter().map(|usage| (usage, new_segment.clone())).collect()
+    }
+
     /// Find usages of what the PHP at `pos` of a template names (a
     /// translation key, a route, a config key, a class or member), as from
     /// a PHP file. Usages in templates, this one included, are read from
@@ -1001,5 +1037,15 @@ fn component_tag_spans(text: &str, tag: &str) -> Vec<std::ops::Range<u32>> {
         .into_iter()
         .filter(|found| found.name(text) == tag)
         .map(|found| found.name)
+        .collect()
+}
+
+/// The names (after `</x-`) of the closing tags of component `tag` in `text`.
+pub(crate) fn closing_tag_spans(text: &str, tag: &str) -> Vec<std::ops::Range<u32>> {
+    let written = format!("</x-{tag}");
+    let continues = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':');
+    text.match_indices(&written)
+        .filter(|(at, _)| !text[at + written.len()..].starts_with(continues))
+        .map(|(at, _)| (at + 4) as u32..(at + written.len()) as u32)
         .collect()
 }

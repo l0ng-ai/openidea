@@ -495,3 +495,30 @@ fn finds_a_component_class_tags_in_templates() {
     assert!(tags.contains(&"resources/views/posts/show.blade.php".to_owned()), "{found:?}");
     assert!(tags.contains(&"resources/views/layouts/app.blade.php".to_owned()), "{found:?}");
 }
+
+/// Renaming a class component renames its tags (named after the class) in
+/// the templates, opening and closing.
+#[test]
+fn renaming_a_component_class_renames_its_tags() {
+    let mut project = Project::app();
+    let text = std::fs::read_to_string(project.root.join("app/View/Components/Alert.php")).unwrap();
+    let edits = project.rename_edits(
+        "app/View/Components/Alert.php",
+        &text.replace("class Alert", "class Al/*|*/ert"),
+        "NoticeBox",
+    );
+    let tags: Vec<(String, String, String)> =
+        edits.iter().filter(|e| e.0.ends_with(".blade.php")).map(|e| (e.0.clone(), e.2.clone(), e.3.clone())).collect();
+    assert_eq!(
+        tags,
+        [
+            ("resources/views/layouts/app.blade.php".to_owned(), "alert".to_owned(), "notice-box".to_owned()),
+            ("resources/views/posts/create.blade.php".to_owned(), "alert".to_owned(), "notice-box".to_owned()),
+            ("resources/views/posts/show.blade.php".to_owned(), "alert".to_owned(), "notice-box".to_owned()),
+        ]
+    );
+    // Closing tags too, not a longer name.
+    let spans =
+        crate::frameworks::laravel::blade::closing_tag_spans("<x-alert>a</x-alert> </x-alerts> </x-alert >", "alert");
+    assert_eq!(spans, [14..19, 37..42]);
+}
