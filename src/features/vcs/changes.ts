@@ -390,7 +390,12 @@ export function renamedFromPath(fs: FileStatus): string | null {
 export function planCommit(status: readonly FileStatus[], checks: ReadonlyMap<string, CheckState>): CommitPlan {
   const plan: CommitPlan = { stage: [], exclude: [], included: [], partial: [] };
   for (const fs of status) {
-    if (!groupOf(fs)) continue;
+    if (!groupOf(fs)) {
+      // Listed nowhere, yet staged: added to the index, then deleted from disk. It is no
+      // change against HEAD, so the commit must not pick up the staged addition.
+      if (fs.staged && fs.staged !== "conflicted" && fs.unstaged !== "ignored") plan.exclude.push(stripSlash(fs.path));
+      continue;
+    }
     const c = checkOf(fs, checks);
     const path = stripSlash(fs.path);
     if (c === "none") {
