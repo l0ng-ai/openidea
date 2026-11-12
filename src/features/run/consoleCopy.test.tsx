@@ -66,12 +66,20 @@ describe("Copying run output", () => {
     expect(log.textContent?.replace(/\n/g, "")).toBe("first" + "second");
   });
 
-  it("puts the same text on the clipboard when the selection is copied with ⌘C", async () => {
+  it("puts the same text on the clipboard when a selection is copied with ⌘C", async () => {
     const { log } = setup("first\n\nsecond\n");
-    selectedText(log);
+    // A selection of the rows, not Select All: that path copies the model and would hide a character
+    // the DOM adds.
+    const rows = log.querySelectorAll("[data-index]");
+    const range = document.createRange();
+    range.setStart(rows[0]!, 0);
+    range.setEnd(rows[2]!, rows[2]!.childNodes.length);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
     fireEvent.keyDown(log, { key: "c", code: "KeyC", metaKey: true });
     await waitFor(() => expect(clipboard.writeText).toHaveBeenCalledTimes(1));
-    // The copy helper trims the trailing break; the blank line in the middle stays a break.
-    expect(clipboard.writeText.mock.calls[0]![0].split("\n")).toEqual(["first", "", "second"]);
+    // Three rows, each ending in its own break: the blank one contributes nothing else.
+    expect(clipboard.writeText.mock.calls[0]![0]).toBe("first\n\nsecond\n");
   });
 });
