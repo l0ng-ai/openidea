@@ -58,6 +58,7 @@ export function setPluginDecorations(plugin: string, sets: DecorationSet[]) {
   versions.set(plugin, (versions.get(plugin) ?? 0) + 1);
   snapshots.set(plugin, sets);
   updateTree(plugin, sets);
+  refreshOpenHovers(plugin);
   for (const editor of useEditorRegistry.getState().editors) editor.view.dispatch({ effects: refresh.of(null) });
 }
 
@@ -96,10 +97,48 @@ class AfterText extends WidgetType {
 
 /** A Markdown hover placed on a range (and its `after` label). */
 interface PlacedHover {
+  plugin: string;
+  path: string;
+  range: Range;
   from: number;
   to: number;
   after: boolean;
   markdown: string;
+}
+
+/** A hover card that is open now; refreshed when its plugin pushes new data. */
+interface OpenHover {
+  plugin: string;
+  path: string;
+  range: Range;
+  dom: HTMLElement;
+  uiMode: EditorDocContext["uiMode"];
+}
+
+const openHovers = new Set<OpenHover>();
+
+function sameRange(a: Range, b: Range) {
+  return (
+    a.start.line === b.start.line && a.start.col === b.start.col && a.end.line === b.end.line && a.end.col === b.end.col
+  );
+}
+
+/** The conversation a plugin now has for an open card, if it is still there. */
+function refreshedMarkdown(card: OpenHover) {
+  for (const set of currentSets(snapshots.get(card.plugin) ?? []))
+    if (!set.tree && set.path === card.path)
+      for (const item of set.items)
+        if (item.markdownHover && sameRange(item.range, card.range)) return item.markdownHover;
+  return null;
+}
+
+/** Replace the content of cards whose labels were published again. */
+function refreshOpenHovers(plugin: string) {
+  for (const card of openHovers) {
+    if (card.plugin !== plugin) continue;
+    const markdown = refreshedMarkdown(card);
+    if (markdown) card.dom.replaceChildren(renderMarkup({ kind: "markdown", value: markdown }, card.uiMode));
+  }
 }
 
 interface PlacedDecorations {
@@ -110,18 +149,29 @@ interface PlacedDecorations {
 export function decorationExtension(ctx: EditorDocContext) {
   const field = StateField.define<PlacedDecorations>({
     create: (state) => build(state.doc),
-    update: (value, tr) =>
-      tr.effects.some((e) => e.is(refresh))
-        ? build(tr.state.doc)
-        : // Mapped decorations stay valid, but hover positions would not follow edits.
-          { decorations: value.decorations.map(tr.changes), hovers: [] },
+    update: (value, tr) => {
+      if (tr.effects.some((e) => e.is(refresh))) return build(tr.state.doc);
+      if (tr.docChanged)
+        return {
+          decorations: value.decorations.map(tr.changes),
+          // Follow the same positions as the rendered labels: the mark starts
+          // after an insertion at its edge, and an after label tracks its text.
+          hovers: value.hovers.map((h) => ({
+            ...h,
+            from: tr.changes.mapPos(h.from, 1),
+            to: tr.changes.mapPos(h.to, h.after ? 1 : -1),
+          })),
+        };
+      // A caret move or a selection change must not drop the hover data.
+      return value;
+    },
     provide: (field) => EditorView.decorations.from(field, (value) => value.decorations),
   });
 
   const build = (doc: Text): PlacedDecorations => {
     const ranges = [];
     const hovers: PlacedHover[] = [];
-    for (const sets of snapshots.values())
+    for (const [plugin, sets] of snapshots)
       for (const set of currentSets(sets))
         if (!set.tree && set.path === ctx.path) {
           for (const item of set.items) {
@@ -131,7 +181,8 @@ export function decorationExtension(ctx: EditorDocContext) {
               to = offset(doc, item.range.end);
             if (from == null || to == null || from > to) continue;
             const markdown = item.markdownHover || null;
-            if (markdown) hovers.push({ from, to, after: !!item.after, markdown });
+            if (markdown)
+              hovers.push({ plugin, path: ctx.path, range: item.range, from, to, after: !!item.after, markdown });
             if (from < to)
               ranges.push(
                 Decoration.mark({
@@ -168,9 +219,18 @@ function markdownHover(field: StateField<PlacedDecorations>, ctx: EditorDocConte
       pos: placed.from,
       end: placed.to,
       above: true,
-      create: () => ({
-        dom: hoverCard([renderMarkup({ kind: "markdown", value: placed.markdown }, ctx.uiMode)]),
-      }),
+      create: () => {
+        const dom = hoverCard([renderMarkup({ kind: "markdown", value: placed.markdown }, ctx.uiMode)]);
+        const card: OpenHover = {
+          plugin: placed.plugin,
+          path: placed.path,
+          range: placed.range,
+          dom,
+          uiMode: ctx.uiMode,
+        };
+        openHovers.add(card);
+        return { dom, destroy: () => openHovers.delete(card) };
+      },
     };
   };
 }

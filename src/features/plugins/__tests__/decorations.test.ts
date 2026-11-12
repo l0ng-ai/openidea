@@ -93,6 +93,60 @@ it("renders a Markdown hover card instead of the native tooltip", async () => {
   vi.useRealTimers();
 });
 
+it("keeps the Markdown hover after the caret moves", async () => {
+  setPluginDecorations("test", [
+    {
+      ...set(),
+      items: [{ range, style: "highlight", hover: null, after: " + model", markdownHover: "**model** card" }],
+    },
+  ]);
+  // A click or arrow key is an ordinary selection transaction.
+  editor.view.dispatch({ selection: { anchor: 0 } });
+
+  vi.useFakeTimers();
+  const label = [...editor.view.dom.querySelectorAll("span")].find((span) => span.textContent === " + model")!;
+  label.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 1, clientY: 1 }));
+  await vi.advanceTimersByTimeAsync(400);
+  expect(document.querySelector(".cm-tooltip .cm-lsp-hover")?.textContent).toContain("model");
+  vi.useRealTimers();
+});
+
+it("keeps the Markdown hover after an edit shifts the label", async () => {
+  setPluginDecorations("test", [
+    {
+      ...set(),
+      items: [{ range, style: "highlight", hover: null, after: " + model", markdownHover: "**model** card" }],
+    },
+  ]);
+  editor.view.dispatch({ changes: { from: 0, insert: "xy" } });
+
+  vi.useFakeTimers();
+  const label = [...editor.view.dom.querySelectorAll("span")].find((span) => span.textContent === " + model")!;
+  label.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 1, clientY: 1 }));
+  await vi.advanceTimersByTimeAsync(400);
+  expect(document.querySelector(".cm-tooltip .cm-lsp-hover")?.textContent).toContain("model");
+  vi.useRealTimers();
+});
+
+it("updates an open hover card when the plugin loads the conversation", async () => {
+  const item = (markdownHover: string) => ({
+    ...set(),
+    items: [{ range, style: "highlight", hover: null, after: " + model", markdownHover }],
+  });
+  setPluginDecorations("test", [item("**model** is loading…")]);
+  vi.useFakeTimers();
+  const label = [...editor.view.dom.querySelectorAll("span")].find((span) => span.textContent === " + model")!;
+  label.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 1, clientY: 1 }));
+  await vi.advanceTimersByTimeAsync(400);
+  const card = document.querySelector(".cm-tooltip .cm-lsp-hover")!;
+  expect(card.textContent).toContain("loading");
+
+  // Hydration finishes while the card is open; the same card shows it.
+  setPluginDecorations("test", [item("the real conversation")]);
+  expect(card.textContent).toContain("the real conversation");
+  vi.useRealTimers();
+});
+
 it("filters project roots and unknown styles and replaces tree badges", () => {
   setPluginDecorations("test", [set("/other")]);
   expect(editor.view.dom.textContent).not.toContain("<plain>");
