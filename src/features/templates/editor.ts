@@ -28,7 +28,7 @@ import {
   type Transaction,
 } from "@codemirror/state";
 import { EditorView, keymap, type Command } from "@codemirror/view";
-import { executeAction } from "@/platform/actions";
+import { executeAction, getAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure, type StructuralRanges } from "@/editor/structure";
@@ -480,6 +480,12 @@ export function applyPostfix(view: EditorView, t: PostfixTemplate, target: Postf
     const expr = t.wrapCompound && isCompound(c.text) ? `(${c.text})` : c.text;
     // The key may have grown since the target was computed (completion).
     const end = Math.max(target.end, view.state.selection.main.head);
+    if (t.action && getAction(t.action)) {
+      void runPostfixAction(view, t.action, c.from, target.dot, end, !!t.statement).then(async (ran) => {
+        if (!ran) await expandInto(view, t, c.from, target.dot, { predefined: { EXPR: expr }, expression: c.text });
+      });
+      return;
+    }
     void expandInto(view, t, c.from, end, { predefined: { EXPR: expr }, expression: c.text });
   };
   if (candidates.length <= 1) {
@@ -496,6 +502,28 @@ export function applyPostfix(view: EditorView, t: PostfixTemplate, target: Postf
     },
     onCancel: () => view.focus(),
   });
+}
+
+/**
+ * Removes the `.key`, selects the expression and runs `action` on it. A statement is
+ * ended with `;` first, so the language server sees complete code. False when the
+ * action is unavailable here (the expression stays selected for the template).
+ */
+async function runPostfixAction(
+  view: EditorView,
+  action: string,
+  from: number,
+  dot: number,
+  end: number,
+  statement: boolean,
+): Promise<boolean> {
+  const after = view.state.doc.sliceString(end, Math.min(view.state.doc.length, end + 80));
+  const insert = statement && !/^[ \t]*;/.test(after) ? ";" : "";
+  view.dispatch({ changes: { from: dot, to: end, insert }, selection: EditorSelection.range(from, dot) });
+  if (await executeAction(action)) return true;
+  if (insert)
+    view.dispatch({ changes: { from: dot, to: dot + insert.length }, selection: EditorSelection.range(from, dot) });
+  return false;
 }
 
 function postfixAt(state: EditorState, pos: number): { target: PostfixTarget; templates: PostfixTemplate[] } | null {
