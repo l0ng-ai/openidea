@@ -57,8 +57,8 @@ use std::sync::Arc;
 use ide_core::{DocId, IdeError, IdeResult, Range, TextEdit, WorkspaceEdit};
 use mago_span::HasSpan;
 use mago_syntax::cst::{
-    ArrowFunction, Assignment, AssignmentOperator, Closure, Expression, Function, Literal, Method, MethodBody,
-    Modifier, Node, NodeKind, Statement, Variable,
+    Argument, ArrayElement, ArrowFunction, Assignment, AssignmentOperator, Closure, Expression, Function, Literal,
+    Method, MethodBody, Modifier, Node, NodeKind, Statement, Variable,
 };
 use serde::{Deserialize, Serialize};
 
@@ -130,6 +130,56 @@ pub(super) fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// A call to `compact()`.
+fn is_compact(node: Node<'_, '_>) -> bool {
+    let Node::FunctionCall(call) = node else { return false };
+    let Expression::Identifier(name) = call.function else { return false };
+    let name = name.value();
+    name.rsplit(|&b| b == b'\\').next().unwrap_or(name).eq_ignore_ascii_case(b"compact")
+}
+
+/// The variables the `compact()` calls below `scope` read, as `(name,
+/// offset)`: their string arguments, in arrays too. `None` when a call
+/// names them otherwise (`compact($names)`), so which it reads isn't known.
+fn compact_reads(scope: Node<'_, '_>) -> Option<Vec<(String, u32)>> {
+    fn names(expr: &Expression<'_>, out: &mut Vec<(String, u32)>) -> bool {
+        match expr {
+            Expression::Literal(Literal::String(string)) => match string.value {
+                Some(value) => {
+                    out.push((lossy(value), string.span.start.offset));
+                    true
+                }
+                None => false,
+            },
+            Expression::Array(array) => array.elements.iter().all(|element| match element {
+                ArrayElement::Value(element) => names(element.value, out),
+                _ => false,
+            }),
+            Expression::LegacyArray(array) => array.elements.iter().all(|element| match element {
+                ArrayElement::Value(element) => names(element.value, out),
+                _ => false,
+            }),
+            _ => false,
+        }
+    }
+    let mut out = Vec::new();
+    let mut known = true;
+    visit(scope, &mut |node| {
+        if !is_compact(node) {
+            return;
+        }
+        let Node::FunctionCall(call) = node else { return };
+        for argument in call.argument_list.arguments.iter() {
+            let value = match argument {
+                Argument::Positional(argument) => argument.value,
+                Argument::Named(argument) => argument.value,
+            };
+            known &= names(value, &mut out);
+        }
+    });
+    known.then_some(out)
+}
+
 fn loop_level(level: Option<&Expression<'_>>) -> Option<u64> {
     match level {
         None => Some(1),
@@ -170,6 +220,8 @@ impl<'a> Walk<'a> {
                 self.occurrences.push(Occurrence { name, offset: variable.span.start.offset, arrows: arrows.clone() });
             }
             Node::IndirectVariable(_) | Node::NestedVariable(_) => self.refused = true,
+            // Reads variables by name: they can't be renamed or passed in.
+            Node::FunctionCall(_) if is_compact(node) => self.refused = true,
             Node::Closure(closure) => {
                 // Only the captures belong to this scope.
                 if let Some(clause) = &closure.use_clause {
@@ -712,16 +764,22 @@ fn analyze(
             .iter()
             .find(|n| matches!(n.kind(), NodeKind::While | NodeKind::DoWhile | NodeKind::For | NodeKind::Foreach))
             .map(span_of);
+        // `compact('a')` after the selection reads `$a` too.
+        let compacts = compact_reads(scope_node)?;
         let read_later = |name: &str| {
-            around.occurrences.iter().any(|o| {
-                let outside = !(selection.0 <= o.offset && o.offset < selection.1);
-                let later =
-                    o.offset >= selection.1 || loop_span.is_some_and(|span| contains(span, (o.offset, o.offset)));
-                o.name == name
-                    && outside
-                    && later
-                    && (!o.arrows.is_empty() || flow.read_at(o.offset).is_some() || flow.is_binding(o.offset))
-            })
+            let compacted = compacts.iter().any(|(compacted, at)| {
+                compacted == name && (*at >= selection.1 || loop_span.is_some_and(|span| contains(span, (*at, *at))))
+            });
+            compacted
+                || around.occurrences.iter().any(|o| {
+                    let outside = !(selection.0 <= o.offset && o.offset < selection.1);
+                    let later =
+                        o.offset >= selection.1 || loop_span.is_some_and(|span| contains(span, (o.offset, o.offset)));
+                    o.name == name
+                        && outside
+                        && later
+                        && (!o.arrows.is_empty() || flow.read_at(o.offset).is_some() || flow.is_binding(o.offset))
+                })
         };
 
         let used = first_use_order(&walk.occurrences);

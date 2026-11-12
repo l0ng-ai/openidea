@@ -1062,3 +1062,20 @@ fn inline_call_is_refused_where_behaviour_would_change() {
         assert_eq!(p.inline_call(marked), None, "{marked}");
     }
 }
+
+/// `compact('a')` reads `$a`: a variable it names after the selection is a
+/// result; one it names inside the selection, or names it can't tell,
+/// refuse the extraction.
+#[test]
+fn variables_compact_reads_after_the_selection_are_results() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    let before = "<?php\nfunction show(object $post): array\n{\n    /*|*/$title = $post->title;\n    $year = 2024;/*|*/\n\n    return compact('post', 'title', ['year']);\n}\n";
+    let after = "<?php\nfunction show(object $post): array\n{\n    [$title, $year] = extracted($post);\n\n    return compact('post', 'title', ['year']);\n}\n\nfunction extracted(object $post): array\n{\n    $title = $post->title;\n    $year = 2024;\n\n    return [$title, $year];\n}\n";
+    assert_eq!(p.method(before).as_deref(), Some(after));
+    for refused in [
+        "<?php\nfunction show($post)\n{\n    /*|*/$title = $post->title;/*|*/\n    return compact($names);\n}\n",
+        "<?php\nfunction show($post)\n{\n    $title = $post->title;\n    /*|*/return compact('title');/*|*/\n}\n",
+    ] {
+        assert_eq!(p.method(refused), None, "{refused}");
+    }
+}
