@@ -67,10 +67,13 @@ fn is_executable(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
+        return metadata.permissions().mode() & 0o111 != 0;
     }
     #[cfg(not(unix))]
-    true
+    {
+        let _ = &metadata;
+        true
+    }
 }
 
 /// [`search_path`]'s directories, in order and once each. Only absolute ones: a
