@@ -136,6 +136,7 @@ mod tests {
 pub enum OutputDecoder {
     Utf8(Utf8Decoder),
     Other(Box<encoding_rs::Decoder>),
+    Mixed(Box<MixedDecoder>),
 }
 
 impl OutputDecoder {
@@ -147,10 +148,38 @@ impl OutputDecoder {
         }
     }
 
+    /// [`Self::for_label`] for output read from pipes: a UTF-8 console decodes the lines that
+    /// are not UTF-8 in the system's console code page, the one Windows' own programs
+    /// (`ping`, `dir`, `cmd`'s messages) write pipes in, whatever the system's language.
+    pub fn for_pipes(label: Option<&str>) -> Self {
+        match Self::for_label(label) {
+            Self::Utf8(d) => {
+                match ide_core::output_encoding::console_code_page().and_then(NativeDecoder::for_code_page) {
+                    Some(native) => Self::Mixed(Box::new(MixedDecoder::new(native))),
+                    None => Self::Utf8(d),
+                }
+            }
+            other => other,
+        }
+    }
+
     pub fn decode_into(&mut self, bytes: &[u8], out: &mut String) {
         match self {
             Self::Utf8(d) => d.decode_into(bytes, out),
             Self::Other(d) => decode_with(d, bytes, out, false),
+            Self::Mixed(d) => d.decode_into(bytes, out),
+        }
+    }
+
+    /// Whether part of a line is held back until it shows its encoding.
+    pub fn holds(&self) -> bool {
+        matches!(self, Self::Mixed(d) if d.holds())
+    }
+
+    /// Decodes the held part of a line now (no more output came for a while).
+    pub fn release(&mut self, out: &mut String) {
+        if let Self::Mixed(d) = self {
+            d.release(out);
         }
     }
 
@@ -162,7 +191,128 @@ impl OutputDecoder {
                 decode_with(d, &[], &mut out, true);
                 out
             }
+            Self::Mixed(d) => d.finish(),
         }
+    }
+}
+
+/// Decoder for a Windows code page: `encoding_rs`'s, or Windows' own for the single-byte
+/// pages `encoding_rs` lacks (the OEM pages 437, 850, 852…).
+pub enum NativeDecoder {
+    Encoding(Box<encoding_rs::Decoder>),
+    #[cfg(windows)]
+    SingleByte(u32),
+}
+
+impl NativeDecoder {
+    /// `None` for UTF-8 and for code pages neither can decode piece by piece.
+    pub fn for_code_page(cp: u32) -> Option<Self> {
+        if let Some(enc) = ide_core::output_encoding::encoding_for_code_page(cp) {
+            return (enc != encoding_rs::UTF_8)
+                .then(|| Self::Encoding(Box::new(enc.new_decoder_without_bom_handling())));
+        }
+        #[cfg(windows)]
+        if ide_core::output_encoding::is_single_byte_code_page(cp) {
+            return Some(Self::SingleByte(cp));
+        }
+        None
+    }
+
+    fn decode_into(&mut self, bytes: &[u8], out: &mut String, last: bool) {
+        match self {
+            Self::Encoding(d) => decode_with(d, bytes, out, last),
+            #[cfg(windows)]
+            Self::SingleByte(cp) => out.push_str(&ide_core::output_encoding::decode_code_page(bytes, *cp)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Line {
+    /// Only ASCII so far, which reads the same in both.
+    Open,
+    Utf8,
+    Native,
+}
+
+/// UTF-8, and the system code page for the lines that are not UTF-8: on pipes, cargo, git
+/// or node write UTF-8 while Windows' own programs write the console code page (GBK,
+/// Shift_JIS, EUC-KR, 866…), even within one command. Each line is decoded as one of them.
+/// The part of a line after its first non-ASCII byte is held until the line ends or turns
+/// out not to be UTF-8; [`Self::release`] decodes a held prompt when no more output comes.
+pub struct MixedDecoder {
+    utf8: Utf8Decoder,
+    native: NativeDecoder,
+    line: Line,
+    held: Vec<u8>,
+}
+
+impl MixedDecoder {
+    pub fn new(native: NativeDecoder) -> Self {
+        Self { utf8: Utf8Decoder::new(), native, line: Line::Open, held: Vec::new() }
+    }
+
+    pub fn decode_into(&mut self, bytes: &[u8], out: &mut String) {
+        for piece in bytes.split_inclusive(|b| *b == b'\n') {
+            let ends = piece.last() == Some(&b'\n');
+            match self.line {
+                Line::Utf8 => self.utf8.decode_into(piece, out),
+                Line::Native => self.native.decode_into(piece, out, false),
+                Line::Open => {
+                    let mut rest = piece;
+                    if self.held.is_empty() {
+                        let ascii = piece.iter().take_while(|b| b.is_ascii()).count();
+                        out.push_str(std::str::from_utf8(&piece[..ascii]).unwrap_or_default());
+                        rest = &piece[ascii..];
+                    }
+                    self.held.extend_from_slice(rest);
+                    let decided = match std::str::from_utf8(&self.held) {
+                        Err(e) if e.error_len().is_some() => Some(Line::Native),
+                        Ok(_) if ends => Some(Line::Utf8),
+                        _ => None,
+                    };
+                    if let Some(line) = decided {
+                        self.line = line;
+                        self.flush_held(out);
+                    }
+                }
+            }
+            if ends {
+                self.line = Line::Open;
+            }
+        }
+    }
+
+    fn flush_held(&mut self, out: &mut String) {
+        let held = std::mem::take(&mut self.held);
+        match self.line {
+            Line::Native => self.native.decode_into(&held, out, false),
+            Line::Open | Line::Utf8 => self.utf8.decode_into(&held, out),
+        }
+    }
+
+    pub fn holds(&self) -> bool {
+        !self.held.is_empty()
+    }
+
+    /// Decodes the held part of the line as UTF-8: held text has been UTF-8 so far.
+    pub fn release(&mut self, out: &mut String) {
+        if self.holds() {
+            self.line = Line::Utf8;
+            self.flush_held(out);
+        }
+    }
+
+    pub fn finish(&mut self) -> String {
+        let mut out = String::new();
+        if self.holds() {
+            self.line = if std::str::from_utf8(&self.held).is_ok() { Line::Utf8 } else { Line::Native };
+            self.flush_held(&mut out);
+        }
+        out.push_str(&self.utf8.finish());
+        self.native.decode_into(&[], &mut out, true);
+        self.line = Line::Open;
+        out
     }
 }
 
@@ -180,7 +330,8 @@ fn decode_with(d: &mut encoding_rs::Decoder, bytes: &[u8], out: &mut String, las
 
 #[cfg(test)]
 mod encoding_tests {
-    use super::OutputDecoder;
+    use super::{MixedDecoder, NativeDecoder, OutputDecoder};
+    use ide_core::output_encoding::encoding_for_code_page;
 
     #[test]
     fn gbk_split_across_chunks() {
@@ -201,5 +352,112 @@ mod encoding_tests {
         d.decode_into("héllo".as_bytes(), &mut out);
         assert_eq!(out, "héllo");
         assert!(matches!(d, OutputDecoder::Utf8(_)));
+    }
+
+    fn mixed(cp: u32) -> MixedDecoder {
+        MixedDecoder::new(NativeDecoder::for_code_page(cp).expect("code page"))
+    }
+
+    fn encode(cp: u32, text: &str) -> Vec<u8> {
+        let (bytes, _, unmappable) = encoding_for_code_page(cp).expect("code page").encode(text);
+        assert!(!unmappable, "{text} in {cp}");
+        bytes.into_owned()
+    }
+
+    /// Simplified and Traditional Chinese, Korean, Japanese, Cyrillic (OEM and ANSI), Western.
+    const SAMPLES: &[(u32, &str)] = &[
+        (936, "正在 Ping 127.0.0.1 具有 32 字节的数据:"),
+        (950, "系統找不到指定的路徑。"),
+        (949, "지정된 경로를 찾을 수 없습니다."),
+        (932, "指定されたパスが見つかりません。"),
+        (866, "Системе не удается найти указанный путь."),
+        (1251, "Системе не удается найти указанный путь."),
+        (1252, "Le chemin d'accès spécifié est introuvable."),
+    ];
+
+    #[test]
+    fn utf8_and_code_page_lines_mix_whatever_the_chunks() {
+        for &(cp, native) in SAMPLES {
+            let mut bytes = "   Compiling 编译 ü\n".as_bytes().to_vec();
+            bytes.extend(encode(cp, native));
+            bytes.extend_from_slice(b"\r\n");
+            bytes.extend_from_slice("ok ✓\n".as_bytes());
+            bytes.extend(encode(cp, native));
+            let expected = format!("   Compiling 编译 ü\n{native}\r\nok ✓\n{native}");
+            for split in 0..=bytes.len() {
+                let mut d = mixed(cp);
+                let mut out = String::new();
+                d.decode_into(&bytes[..split], &mut out);
+                d.decode_into(&bytes[split..], &mut out);
+                out.push_str(&d.finish());
+                assert_eq!(out, expected, "code page {cp}, split at {split}");
+            }
+        }
+    }
+
+    #[test]
+    fn byte_by_byte_code_page_output() {
+        for &(cp, native) in SAMPLES {
+            let bytes = [encode(cp, native), b"\n".to_vec()].concat();
+            let mut d = mixed(cp);
+            let mut out = String::new();
+            for b in &bytes {
+                d.decode_into(std::slice::from_ref(b), &mut out);
+            }
+            assert!(!d.holds());
+            assert_eq!(out, format!("{native}\n"), "code page {cp}");
+        }
+    }
+
+    #[test]
+    fn ascii_and_code_page_prompts_show_at_once_and_utf8_ones_on_release() {
+        let mut d = mixed(936);
+        let mut out = String::new();
+        d.decode_into(b"Password: ", &mut out);
+        assert_eq!(out, "Password: ");
+        assert!(!d.holds());
+
+        out.clear();
+        d.decode_into(&encode(936, "请按任意键继续. . ."), &mut out);
+        assert_eq!(out, "请按任意键继续. . .");
+        assert!(!d.holds());
+
+        let mut d = mixed(936);
+        out.clear();
+        d.decode_into("Continue? 继续 ".as_bytes(), &mut out);
+        assert_eq!(out, "Continue? ");
+        assert!(d.holds());
+        d.release(&mut out);
+        assert_eq!(out, "Continue? 继续 ");
+        d.decode_into("[y/N]\n".as_bytes(), &mut out);
+        assert_eq!(out, "Continue? 继续 [y/N]\n");
+    }
+
+    #[test]
+    fn a_released_line_split_inside_a_character_completes() {
+        let mut d = mixed(949);
+        let mut out = String::new();
+        let bytes = "é中".as_bytes();
+        d.decode_into(&bytes[..3], &mut out);
+        d.release(&mut out);
+        d.decode_into(&bytes[3..], &mut out);
+        out.push_str(&d.finish());
+        assert_eq!(out, "é中");
+    }
+
+    #[test]
+    fn utf8_code_page_has_no_mixed_decoder() {
+        assert!(NativeDecoder::for_code_page(65001).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn oem_code_pages_without_an_encoding_rs_table_decode_through_windows() {
+        for cp in [437, 850, 852] {
+            let mut d = mixed(cp);
+            let mut out = String::new();
+            d.decode_into(b"caf\x82\r\n", &mut out);
+            assert_eq!(out, "caf\u{e9}\r\n", "code page {cp}");
+        }
     }
 }
