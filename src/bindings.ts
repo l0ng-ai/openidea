@@ -967,6 +967,8 @@ export const commands = {
 	scaffoldCreate: (req: CreateRequest, request: RequestId, onEvent: Channel<ScaffoldEvent>) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("scaffold_create", { req, request, onEvent })),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
+	/**  The Python interpreters of the recently opened projects, each with its project. */
+	sdkPythonProjectInterpreters: () => typedError<ProjectInterpreter[], IdeError>(__TAURI_INVOKE("sdk_python_project_interpreters")),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
 	sdkPythonInterpreter: (path: string) => typedError<{
 	/**
@@ -8261,6 +8263,12 @@ export type ProjectInfo_Serialize = {
 	unity?: UnityProjectInfo | null,
 };
 
+/**  An interpreter another project uses: the project root and the SDK itself. */
+export type ProjectInterpreter = {
+	project: IpcPath,
+	sdk: Sdk,
+};
+
 /**  A project-level library (Project Structure › Libraries). */
 export type ProjectLibrary = {
 	name?: string,
@@ -8414,6 +8422,20 @@ export type PythonSettings = {
 	interpreter?: string,
 	/**  Activate the interpreter's virtualenv in new terminal sessions. */
 	activateVirtualenv?: boolean,
+	/**
+	 *  Interpreters the user added to Settings › Python › All Interpreters (executable paths).
+	 *  Detection contributes the rest; `hidden_interpreters` removes some of them.
+	 */
+	interpreters?: string[],
+	/**
+	 *  Interpreters the user removed from that list, as executable paths: detection does
+	 *  not list them again.
+	 */
+	hiddenInterpreters?: string[],
+	/**  Hide interpreters that belong to another project (a virtualenv inside its folder). */
+	hideOtherProjectInterpreters?: boolean,
+	/**  Show each interpreter's path under its name on the interpreters page. */
+	showInterpreterPaths?: boolean,
 };
 
 /**  Half-open range `[start, end)`. */

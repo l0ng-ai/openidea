@@ -1021,11 +1021,28 @@ pub struct PythonSettings {
     pub interpreter: String,
     /// Activate the interpreter's virtualenv in new terminal sessions.
     pub activate_virtualenv: bool,
+    /// Interpreters the user added to Settings › Python › All Interpreters (executable paths).
+    /// Detection contributes the rest; `hidden_interpreters` removes some of them.
+    pub interpreters: Vec<String>,
+    /// Interpreters the user removed from that list, as executable paths: detection does
+    /// not list them again.
+    pub hidden_interpreters: Vec<String>,
+    /// Hide interpreters that belong to another project (a virtualenv inside its folder).
+    pub hide_other_project_interpreters: bool,
+    /// Show each interpreter's path under its name on the interpreters page.
+    pub show_interpreter_paths: bool,
 }
 
 impl Default for PythonSettings {
     fn default() -> Self {
-        Self { interpreter: String::new(), activate_virtualenv: true }
+        Self {
+            interpreter: String::new(),
+            activate_virtualenv: true,
+            interpreters: Vec::new(),
+            hidden_interpreters: Vec::new(),
+            hide_other_project_interpreters: false,
+            show_interpreter_paths: true,
+        }
     }
 }
 

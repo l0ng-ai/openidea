@@ -114,6 +114,58 @@
   color: var(--fg-secondary);
   font-variant-numeric: tabular-nums;
 }
+
+/* Settings › Python › All Interpreters (PyCharm's "All interpreters"). */
+.interpretersRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 8px;
+  cursor: default;
+  outline: none;
+}
+.interpretersRowWithPath {
+  min-height: 42px;
+  padding: 3px 8px;
+}
+.interpretersRow:hover {
+  background: var(--bg-hover);
+}
+.interpretersRow.selected,
+.interpretersRow.selected:hover,
+.interpretersRow:focus-visible:not(.selected) {
+  background: var(--bg-list-selected);
+}
+.interpretersText {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+}
+.interpretersName {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.interpretersPath {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.interpretersInvalid {
+  flex-shrink: 0;
+  color: var(--danger);
+  font-size: var(--fs-small);
+}
 .empty {
   padding: 18px 8px;
   text-align: center;

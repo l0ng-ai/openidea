@@ -1,6 +1,7 @@
 /** Shared controls of the interpreter / toolchain settings pages. */
 import { useEffect, useMemo, useState } from "react";
 import { IconButton, Select, Spinner, type SelectOption } from "@/ui";
+import type { IconName } from "@/ui/icons";
 import { useProject } from "@/platform/project";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
@@ -49,6 +50,10 @@ export interface SdkFieldProps {
   "aria-label": string;
   /** Extra fixed choices before the detected ones (e.g. `workspace`). */
   extra?: SelectOption[];
+  /** Paths not offered as choices (interpreters removed from the IDE-wide list). */
+  exclude?: readonly string[];
+  /** Icon of a detected choice (e.g. the interpreter's environment type). */
+  optionIcon?: (sdk: Sdk) => IconName;
   /** Oldest usable Java version: older JDKs are marked, and Download JDK preselects it. */
   minJava?: number | null;
   /** The configured value no longer exists (PyCharm's "Invalid" SDK): kept selectable, marked as such. */
@@ -68,6 +73,8 @@ export function SdkField({
   directory,
   browseTitle,
   extra,
+  exclude,
+  optionIcon,
   minJava,
   invalid,
   ...aria
@@ -75,13 +82,17 @@ export function SdkField({
   const { list, loading, refresh } = useDetected(kind);
   const options = useMemo<SelectOption[]>(() => {
     const out: SelectOption[] = [];
+    const norm = (path: string) => path.replace(/\\/g, "/").toLowerCase();
+    const excluded = new Set((exclude ?? []).map(norm));
     if (emptyLabel !== undefined) out.push({ value: "", label: emptyLabel, detail: emptyDetail });
     out.push(...(extra ?? []));
     for (const sdk of list) {
+      if (excluded.has(norm(sdk.path))) continue;
       const major = minJava ? javaMajor(sdk.version) : null;
       const tooOld = major !== null && !!minJava && major < minJava;
       const detail = tooOld ? tx`too old, needs JDK ${minJava}+ · ${tildify(sdk.path)}` : tildify(sdk.path);
-      out.push({ value: sdk.path, label: sdk.name, detail });
+      if (out.some((option) => option.value === sdk.path)) continue;
+      out.push({ value: sdk.path, label: sdk.name, detail, icon: optionIcon?.(sdk) });
     }
     if (value && !out.some((o) => o.value === value)) {
       out.push(
@@ -92,7 +103,7 @@ export function SdkField({
     }
     if (kind === "jdk") out.push({ value: DOWNLOAD_JDK, label: "Download JDK…", icon: "plus" });
     return out;
-  }, [list, value, emptyLabel, emptyDetail, extra, kind, minJava, invalid]);
+  }, [list, value, emptyLabel, emptyDetail, extra, exclude, optionIcon, kind, minJava, invalid]);
   const [downloading, setDownloading] = useState(false);
   const browse = async () => {
     const picked = await choosePath({ directory: !!directory, title: browseTitle, defaultPath: value || undefined });
