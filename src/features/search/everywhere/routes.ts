@@ -41,7 +41,10 @@ export function matchRoutes(
   if (!text || !routes.length) return { items: [], hasMore: false };
   const words = text.split(/\s+/);
   const head = (words[0] ?? "").toUpperCase();
-  const method = HTTP_METHODS.has(head) ? head : null;
+  // A method alone (`post`) is both: the routes of that method, and text to
+  // find (`posts.index`); with more after it, it filters.
+  const alone = HTTP_METHODS.has(head) && words.length === 1 ? head : null;
+  const method = HTTP_METHODS.has(head) && !alone ? head : null;
   const rest = (method ? words.slice(1).join(" ") : text).trim();
   const wantPath = strip(rest).toLowerCase();
   const wantName = rest.toLowerCase();
@@ -78,6 +81,7 @@ export function matchRoutes(
         if (fuzzy) score = 300 + fuzzy.score;
       }
     }
+    if (!score && alone && r.method.split("|").includes(alone)) score = 200;
     if (score) hits.push({ item: item(r, indices, score), score });
   }
   hits.sort((a, b) => b.score - a.score || a.item.rel.localeCompare(b.item.rel) || a.item.line - b.item.line);

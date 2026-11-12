@@ -40,6 +40,24 @@ describe("endpoints in Search Everywhere", () => {
     }
   });
 
+  it("reads a method alone as text too", () => {
+    const laravel = [
+      route({ method: "GET", url: "/posts", name: "posts.index", controller: "PostController", methodName: "index" }),
+      route({
+        method: "POST",
+        url: "/dashboard/items",
+        name: "items.store",
+        controller: "ItemController",
+        methodName: "store",
+      }),
+      route({ method: "GET", url: "/about", name: "about", controller: "PageController", methodName: "about" }),
+    ];
+    const found = matchRoutes(laravel, "post", 5).items.map((i) => i.display);
+    // Text first, then the routes of the method.
+    expect(found).toEqual(["GET /posts", "POST /dashboard/items"]);
+    expect(matchRoutes(laravel, "POST items", 5).items.map((i) => i.display)).toEqual(["POST /dashboard/items"]);
+  });
+
   it("honours an HTTP method prefix", () => {
     expect(matchRoutes(routes, "GET /deeplink/menu/x", 5).items).toEqual([]);
     expect(matchRoutes(routes, "GET /deeplink/menu", 5).items[0]?.container).toBe("DeepLinkController.getMenuDetail");
