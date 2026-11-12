@@ -76,6 +76,8 @@ export interface PluginsBackend {
     paths: string[],
     settingsScope?: "global" | "project",
     commandChain?: string[],
+    /** Aborting rejects the call and cancels that backend request. */
+    signal?: AbortSignal,
   ): Promise<string | null>;
   /** Workbench events plugins subscribed to (see `eventKinds`). */
   postEvents(events: WorkbenchEvent[]): Promise<void>;
@@ -152,6 +154,8 @@ export interface PluginsBackend {
   saveWebFile(name: string, filters: FileFilter[] | undefined, bytes: Uint8Array): Promise<string | null>;
   /** Open dialog for a web view's `openidea.openFile`; `null` when cancelled. */
   openWebFile(filters: FileFilter[] | undefined): Promise<{ name: string; data: Uint8Array } | null>;
+  /** The bytes of a file on this machine, at most 64 MiB (a web custom editor's `document.bytes`). */
+  readFileBytes(path: string): Promise<Uint8Array>;
   /** Which of a plugin's declared secrets are stored (values never come back). */
   secrets(pluginId: string): Promise<PluginSecretState[]>;
   /** Stores a secret (`null` removes it). */
@@ -212,7 +216,7 @@ export const tauriPluginsBackend: PluginsBackend = {
   },
   program: (id, program, scope) => call(commands.pluginProgram(id, program, scope)),
   pickProgram: async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({ directory: false, multiple: false, title: tx("Choose plugin executable") });
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },
@@ -227,10 +231,40 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginUninstall(id));
   },
   reload: (id) => call(commands.pluginReload(id)),
-  runCommand: (pluginId, commandId, arg, editor, paths, settingsScope, commandChain) =>
-    call(
-      commands.pluginRunCommand(pluginId, commandId, arg, editor, paths, settingsScope ?? null, commandChain ?? null),
-    ),
+  runCommand: async (pluginId, commandId, arg, editor, paths, settingsScope, commandChain, signal) => {
+    signal?.throwIfAborted();
+    const request = signal ? nextRequestId() : null;
+    const run = () =>
+      call(
+        commands.pluginRunCommand(
+          pluginId,
+          commandId,
+          arg,
+          editor,
+          paths,
+          settingsScope ?? null,
+          commandChain ?? null,
+          request,
+        ),
+      );
+    if (!signal) return run();
+    // An abort settles this call even while the backend keeps working: a plugin
+    // that ignores its cancellation must not hold the caller (or a serialized
+    // queue behind it) open forever.
+    let abort = () => {};
+    const aborted = new Promise<never>((_, reject) => {
+      abort = () => {
+        if (request !== null) void commands.cancelRequest(request).catch(() => {});
+        reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      };
+      signal.addEventListener("abort", abort, { once: true });
+    });
+    try {
+      return await Promise.race([run(), aborted]);
+    } finally {
+      signal.removeEventListener("abort", abort);
+    }
+  },
   postEvents: async (events) => {
     await commands.pluginPostEvents(events, editorContext());
   },
@@ -272,7 +306,7 @@ export const tauriPluginsBackend: PluginsBackend = {
   unpackPackage: (path) => call(commands.pluginUnpackPackage(path)),
   rollBack: (id) => call(commands.pluginRollBack(id)),
   pickPackage: async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({
       multiple: false,
       title: tx("Install Plugin from Package File"),
@@ -281,7 +315,7 @@ export const tauriPluginsBackend: PluginsBackend = {
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },
   pickIntellijTheme: async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({
       multiple: false,
       title: tx("Import IntelliJ Theme"),
@@ -316,20 +350,21 @@ export const tauriPluginsBackend: PluginsBackend = {
     return webSchemeUrl(page.path);
   },
   saveWebFile: async (name, filters, bytes) => {
-    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { save } = await import("@/platform/dialog");
     const path = await save({ defaultPath: name, filters });
     if (!path) return null;
     await call(commands.pluginWebSaveFile(path, toBase64(bytes)));
     return path;
   },
   openWebFile: async (filters) => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({ multiple: false, filters });
     const path = (Array.isArray(picked) ? picked[0] : picked) ?? null;
     if (!path) return null;
     const data = fromBase64(await call(commands.pluginWebReadFile(path)));
     return { name: path.split(/[\\/]/).pop() ?? path, data };
   },
+  readFileBytes: async (path) => fromBase64(await call(commands.pluginWebReadFile(path))),
   secrets: (pluginId) => call(commands.pluginSecrets(pluginId)),
   setSecret: async (pluginId, name, value) => {
     await call(commands.pluginSetSecret(pluginId, name, value));
@@ -342,7 +377,7 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginSetThemeFrame(color));
   },
   pickFolder: async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({ directory: true, multiple: false, title: "Install Plugin from Disk" });
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },
@@ -439,6 +474,9 @@ function samplePlugins(): PluginInfo[] {
     },
     publisher: null,
     previousVersion: null,
+    depends: [],
+    dependents: [],
+    extensionPoints: [],
   };
   return [
     {
@@ -691,6 +729,9 @@ export function createMemoryPluginsBackend(
     },
     saveWebFile: async () => null,
     openWebFile: async () => null,
+    readFileBytes: async () => {
+      throw new IpcError({ kind: "unavailable", message: "reading the document needs the desktop app" });
+    },
     secrets: async (pluginId) =>
       [...secrets.entries()]
         .filter(([k]) => k.startsWith(`${pluginId}/`))

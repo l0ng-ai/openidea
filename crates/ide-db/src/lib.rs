@@ -12,6 +12,8 @@ pub mod secrets;
 pub mod source;
 pub mod split;
 pub mod sql;
+mod watch;
+pub use watch::SourcesWatch;
 
 pub use conn::{Held, Pool, QueryResult, ResultColumn};
 pub use history::HistoryEntry;
@@ -57,6 +59,7 @@ impl DbTableKind {
 pub enum DbObjectKind {
     Function,
     Procedure,
+    Package,
     Trigger,
     Sequence,
 }
@@ -92,12 +95,21 @@ pub struct SequenceInfo {
     pub data_type: String,
 }
 
-/// A schema's routines (procedures and functions) and sequences.
+/// An Oracle package (its procedures and functions are not listed separately).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+#[serde(rename = "DbPackageInfo")]
+pub struct PackageInfo {
+    pub name: String,
+}
+
+/// A schema's routines (procedures and functions), packages and sequences.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 #[serde(rename = "DbSchemaObjects")]
 pub struct SchemaObjects {
     pub routines: Vec<RoutineInfo>,
+    pub packages: Vec<PackageInfo>,
     pub sequences: Vec<SequenceInfo>,
 }
 
@@ -225,6 +237,9 @@ pub struct DbManager {
     /// Manual-commit data sources, each with the connection of its open
     /// transaction (taken by the first statement after a commit / rollback).
     sessions: Mutex<HashMap<String, Session>>,
+    /// The data sources as last read from disk, for [`DbManager::reconcile_sources`]
+    /// (`None` until [`DbManager::watch_sources`]).
+    on_disk: Mutex<Option<Vec<DataSource>>>,
 }
 
 type Session = Arc<tokio::sync::Mutex<Option<Held>>>;
@@ -296,7 +311,7 @@ fn through_tunnel(e: IdeError, source: &DataSource, via: Option<&str>) -> IdeErr
 
 /// Options › Run keep-alive query: pings the pool until it is closed or dropped
 /// (a dropped SSH tunnel or an idle-killing proxy stays alive meanwhile).
-fn keep_alive(pool: &Arc<Pool>, every: Duration) {
+pub(crate) fn keep_alive(pool: &Arc<Pool>, every: Duration) {
     let pool = Arc::downgrade(pool);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(every);
@@ -352,6 +367,7 @@ impl DbManager {
             tunnel_open: tokio::sync::Mutex::new(()),
             ssh,
             session_passwords: Mutex::default(),
+            on_disk: Mutex::default(),
             sessions: Mutex::default(),
         }
     }
@@ -464,7 +480,43 @@ impl DbManager {
                 }
             }
         }
+        // Our own write is not reported as an edit on disk.
+        if let Some(known) = self.on_disk.lock().as_mut() {
+            *known = self.sources().unwrap_or(sources);
+        }
         Ok(())
+    }
+
+    /// Watches the data source files (the project's and the global one) for edits made
+    /// outside the IDE; `on_change` runs on a background thread once they settle, and
+    /// should call [`DbManager::reconcile_sources`]. Stops when the result is dropped.
+    pub fn watch_sources(&self, on_change: Box<dyn Fn() + Send>) -> IdeResult<SourcesWatch> {
+        *self.on_disk.lock() = Some(self.sources().unwrap_or_default());
+        SourcesWatch::start(&self.root, self.global.as_ref().map(|(dir, _)| dir.as_path()), on_change)
+    }
+
+    /// Re-reads the data sources after their files changed on disk: connections of
+    /// removed or changed sources close, as on [`DbManager::save_sources`] (saved
+    /// passwords stay, the source may come back). Returns whether the list the tree
+    /// shows changed, or the files no longer parse (the tree reports the error).
+    pub async fn reconcile_sources(&self) -> bool {
+        let now = match self.sources() {
+            Ok(now) => now,
+            Err(e) => {
+                tracing::warn!("data sources: {}", e.message);
+                return true;
+            }
+        };
+        let before = self.on_disk.lock().replace(now.clone()).unwrap_or_default();
+        if before == now {
+            return false;
+        }
+        for o in &before {
+            if now.iter().find(|s| s.id == o.id) != Some(o) {
+                self.disconnect_source(&o.id).await;
+            }
+        }
+        true
     }
 
     /// Remembers `password` for the session, and in the saved passwords when
@@ -853,6 +905,14 @@ impl DbManager {
                 })
                 .collect();
         }
+        if let Some(q) = sql::packages(driver, schema) {
+            out.packages = pool
+                .rows(&q, MAX_META_ROWS)
+                .await?
+                .into_iter()
+                .filter_map(|r| Some(PackageInfo { name: r.into_iter().next().flatten()? }))
+                .collect();
+        }
         if let Some(q) = sql::sequences(driver, schema) {
             out.sequences = pool
                 .rows(&q, MAX_META_ROWS)
@@ -870,9 +930,29 @@ impl DbManager {
         Ok(out)
     }
 
-    /// The definition of a routine (every overload), trigger or sequence.
+    /// The definition of a routine (every overload), package (spec and body), trigger or sequence.
     pub async fn object_ddl(&self, id: &str, schema: &str, kind: DbObjectKind, name: &str) -> IdeResult<String> {
         let pool = self.pool(id).await?;
+        if kind == DbObjectKind::Package {
+            let mut defs: Vec<String> = Vec::new();
+            for body in [false, true] {
+                let Some(q) = sql::package_ddl(pool.driver(), schema, name, body) else { continue };
+                match pool.rows(&q, MAX_META_ROWS).await {
+                    Ok(rows) => defs.extend(rows.into_iter().filter_map(|r| r.into_iter().next().flatten())),
+                    // A spec-only package has no body: the spec alone still opens.
+                    Err(e) if body => tracing::warn!("package body {schema}.{name}: {}", e.message),
+                    Err(e) => return Err(e),
+                }
+            }
+            if defs.is_empty() {
+                return Err(IdeError::not_found(format!("{schema}.{name}")));
+            }
+            return Ok(defs
+                .iter()
+                .map(|d| format!("{};\n", d.trim_end().trim_end_matches(';')))
+                .collect::<Vec<_>>()
+                .join("\n"));
+        }
         let (q, column) = sql::object_ddl(pool.driver(), schema, kind, name)
             .ok_or_else(|| IdeError::invalid(format!("no {kind:?} objects in this database")))?;
         let defs: Vec<String> = pool

@@ -14,6 +14,7 @@ type Entry =
   | { kind: "project"; open: boolean; m: RecentMatch };
 
 const ACTIONS: { id: string; label: string; icon: IconName }[] = [
+  { id: "file.newProject", label: "New Project…", icon: "plus" },
   { id: "file.openProject", label: "Open…", icon: "folder" },
   { id: "vcs.clone", label: "Clone Repository…", icon: "branch" },
   { id: "remote.connect", label: "Remote Development…", icon: "terminal" },
@@ -159,7 +160,7 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
               {e.kind === "action" ? (
                 <>
                   <Icon name={e.icon} size={16} className={styles.actionIcon} />
-                  <span className={styles.label}>{e.label}</span>
+                  <span className={styles.label}>{tx(e.label)}</span>
                 </>
               ) : (
                 <ProjectRow m={e.m} active={i === current} />

@@ -1,0 +1,111 @@
+---
+title: "JavaScript and TypeScript"
+description: "Language servers, Node.js detection, npm scripts, tests, debugging and framework support for JavaScript, TypeScript, Vue, Svelte, Astro and Angular."
+---
+
+OpenIDEA edits JavaScript (`.js`, `.mjs`, `.cjs`, `.jsx`) and TypeScript (`.ts`, `.mts`, `.cts`, `.tsx`) with highlighting and structure that work without any setup, and gets completion, navigation, refactoring and diagnostics from a TypeScript language server. Vue, Svelte, Astro and Angular projects get their framework's own server on top. See the [support matrix](/en/languages/index) for every language at a glance.
+
+## Language servers
+
+| Files                           | Server                                 | Notes                                                                                               |
+| ------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| JS, JSX, TS, TSX                | `vtsls`                                | Default TypeScript server.                                                                          |
+| JS, JSX, TS, TSX                | `typescript-language-server`           | Fallback: used only while `vtsls` is not installed.                                                 |
+| `.vue`                          | `vue-language-server` + `vtsls`        | Vue's hybrid mode: TypeScript inside `.vue` files comes from `vtsls` with `@vue/typescript-plugin`. |
+| `.svelte`                       | `svelte-language-server`               |                                                                                                     |
+| `.astro`                        | `astro-ls`                             | Needs Node.js and a TypeScript library.                                                             |
+| TS and HTML in Angular projects | `angular-language-server` (`ngserver`) | Only below `angular.json` or `node_modules/@angular/core`.                                          |
+| All of the above                | `oxlint`                               | Only below an `.oxlintrc.json`, `.oxlintrc.jsonc`, `oxlint.config.ts` or `oxlint.config.mts`.       |
+
+The TypeScript servers start for a workspace marked by `tsconfig.json`, `jsconfig.json` or `package.json`. Files outside any `tsconfig.json` / `jsconfig.json` are still registered with tsserver, so loose scripts get code insight too.
+
+Two behaviours differ from the servers' defaults: renaming a symbol never introduces an `import { a as b }` alias, and moving a file does not make the server rewrite imports on its own; the IDE asks for the import updates first and shows them as a preview you can undo.
+
+### TypeScript version
+
+**Settings › Languages & Frameworks › TypeScript** picks the TypeScript that `vtsls` and `typescript-language-server` load:
+
+- **Bundled** (default): the language server's own TypeScript.
+- The project's `node_modules/typescript`, when it is installed.
+- Any TypeScript `lib` directory, chosen with the folder button.
+
+The Vue, Astro and Angular servers use the selected version too. TypeScript 7 (the native port) has no language-service API, so the IDE installs `typescript-language-server`, Vue, Svelte and Astro servers together with `typescript@6`.
+
+## Setup
+
+### Installing the servers
+
+When you open a file whose server is missing, a notification names it (for example "vtsls (TypeScript) is not installed") with **Install** and **Language Servers…** buttons. **Install** runs npm (or pnpm) and puts the package in the IDE's own tools folder, so nothing is installed globally and no `sudo` is needed. This needs `npm` or `pnpm` on `PATH`.
+
+All servers, debuggers and formatters are listed in **Settings › Languages & Frameworks › Language Servers**, where you can install, reinstall, point a server at your own executable, or change its arguments, environment and initialization options. A server already on your `PATH` is used as well.
+
+| Tool                                                                                   | Installed with                                                                |
+| -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `vtsls`, `typescript-language-server`                                                  | npm (`@vtsls/language-server`; `typescript-language-server` + `typescript@6`) |
+| `vue-language-server`, `svelte-language-server`, `astro-ls`, `angular-language-server` | npm                                                                           |
+| `oxlint`                                                                               | npm                                                                           |
+| Prettier, oxfmt                                                                        | npm                                                                           |
+| JavaScript Debugger (vscode-js-debug)                                                  | GitHub release (`microsoft/vscode-js-debug`)                                  |
+
+The Astro and Angular servers also run from the project's own `node_modules/.bin` when it has them.
+
+### Node.js
+
+**Settings › Languages & Frameworks › Node.js** has:
+
+- **Node interpreter**: the `node` that runs npm scripts, Node files and the Node-based language servers. **Default** uses `node` on `PATH`. The list shows every Node.js found on `PATH` and those installed by nvm, Volta, fnm, mise and asdf.
+- **Run in target**: run Node and package-manager commands locally or in one of the run targets from **Settings › Build, Execution, Deployment › Run Targets**.
+- **Package manager**: `npm`, `pnpm`, `yarn` or `bun` for the detected script configurations. **Auto** reads `packageManager` in `package.json`, then the lock file (`pnpm-lock.yaml`, `yarn.lock`, `bun.lock` / `bun.lockb`, `package-lock.json`), and otherwise uses npm.
+
+## Formatting
+
+**Reformat Code** (`⌥⌘L` / `Ctrl+Alt+L`) uses the language server unless an external formatter is configured to win:
+
+- **Prettier** (**Settings › Languages & Frameworks › Prettier**) formats JavaScript, JSX, TypeScript, TSX, JSON, Vue, HTML, CSS, SCSS, Less, GraphQL, YAML and Markdown by default. The executable is found in the project's `node_modules`, then the managed installation, then `PATH`, unless you set **Prettier path**.
+- **oxfmt** (**Settings › Languages & Frameworks › oxfmt**) replaces Prettier for an enabled language in files below an oxfmt configuration (`.oxfmtrc.json`, `oxfmt.config.ts`), or when it is the selected provider.
+
+On both pages, **Formatting provider** chooses between **Automatic (language server first)** and the tool itself, **Run on save** formats on save, and **Enabled languages** limits which languages the tool handles.
+
+## Run and test
+
+OpenIDEA detects run configurations when the project opens:
+
+- One configuration per `package.json` script (`npm run build`, `pnpm run dev`, …), for the root package, nested packages and workspace members. Scripts named `test`, `jest`, `vitest` or `test:*` are test configurations.
+- One per task in `deno.json` / `deno.jsonc` (`deno task <name>`).
+
+In `package.json`, the gutter shows run icons on each `scripts` entry to run or debug it.
+
+**Run Context Configuration** (`⌃⇧R` / `Ctrl+Shift+F10`) on a source file:
+
+- A test file (`*.test.*`, `*.spec.*`, or anything under `__tests__/`) runs through the closest test script with the file added. The gutter icons on `test`, `it` and `describe` blocks run one test or suite by adding `-t <name>`.
+- Any other `.js` file runs with `node` (with `deno run` or `bun run` in a project with `deno.json` or `bun.lock`).
+- A `.ts` file runs with Node.js directly on 22.18+ / 23.6+, with `--experimental-strip-types` on 22.6–22.17 and 23.0–23.5, else through `tsx` or `ts-node`.
+
+Jest and Vitest output is turned into the test tree, with **Rerun Failed Tests**. **Run with Coverage** works for scripts that run `vitest` or `jest` (Vitest needs a coverage provider such as `@vitest/coverage-v8`; the IDE offers to add it) and for `node` / `tsx` / `ts-node` runs through `c8`. See [Testing](/en/guide/testing) and [Coverage](/en/guide/coverage).
+
+## Debugging
+
+Debugging uses the JavaScript Debugger (vscode-js-debug); if it is missing, the first debug session offers to install it.
+
+- **Debug** works for npm script configurations, Node.js files and `deno run` / `deno test`. Child processes are attached automatically.
+- **Attach to Node.js** is a run configuration type for a process started with `--inspect` on this or another machine (default port 9229), with local and remote root mapping.
+- **Attach to Process…** in the Run menu lists running Node.js processes.
+
+With **Do not step into library scripts** (**Settings › Build, Execution, Deployment › Debugger › Stepping**, on by default), stepping skips Node.js internals and `node_modules`. More in [Debugging](/en/guide/debugging).
+
+## Framework support
+
+- **React**: JSX and TSX get their own highlighting modes and full TypeScript server support. There is no React-specific tooling beyond that.
+- **Vue**: `.vue` files are highlighted per block and served by Vue Language Server in hybrid mode. In a Vue CLI project without `tsconfig.json`, webpack's `resolve.alias` entries (such as `@/`) are read so imports resolve. Prettier formats `.vue` files. Emmet works in templates.
+- **Svelte**: Svelte Language Server; highlighting uses the HTML mode (script as TypeScript, style as CSS). Emmet works in markup.
+- **Astro**: Astro Language Server with its own highlighting mode. It needs Node.js; if it can't find one, select it in **Settings › Languages & Frameworks › Node.js**.
+- **Angular**: in projects with `angular.json` or `@angular/core` installed, templates in HTML files and inline `template:` strings get Angular highlighting, and the Angular Language Server adds template completion, navigation and rename. The server is configured for the project's Angular version.
+
+## Limitations
+
+- No built-in ESLint integration; oxlint is the bundled linter. You can still add any server with **Add Language Server…** on the Language Servers page.
+- No browser (Chrome/Edge) debugging; only Node.js and Deno are debugged.
+- Bun runs but can't be debugged: its inspector uses the WebKit protocol, which vscode-js-debug can't attach to.
+- Deno has run and debug support but no Deno language server; Deno files use the TypeScript servers.
+- Coverage of Deno tasks is not supported.
+- Emmet expands in HTML, Vue and Svelte, not in JSX.

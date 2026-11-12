@@ -2,7 +2,7 @@
  * ANSI escape handling for process output (Run and Debug consoles): one stateful
  * parser per stream turns text with SGR colours into styled spans, keeping a style
  * across chunks and dropping the other escapes. Colours are the `--ansi-*` palette
- * (`ansi.module.css`).
+ * of the color scheme (`tokens.css`, Color Scheme › Console Colors).
  */
 /* eslint-disable no-control-regex -- escape-sequence parsing matches control characters by design */
 import type { CSSProperties } from "react";

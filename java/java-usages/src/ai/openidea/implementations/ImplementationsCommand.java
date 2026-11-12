@@ -1,5 +1,6 @@
 package ai.openidea.implementations;
 
+import ai.openidea.Documents;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -27,6 +28,7 @@ public final class ImplementationsCommand implements IDelegateCommandHandler {
 
     @Override
     public Object executeCommand(String command, List<Object> arguments, IProgressMonitor monitor) throws Exception {
+        Documents.awaitChanges(monitor);
         List<Location> locations = new ArrayList<>();
         boolean complete = find(arguments, locations, monitor);
         return Map.of("locations", locations, "complete", complete);

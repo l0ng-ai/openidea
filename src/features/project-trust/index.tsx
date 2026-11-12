@@ -141,7 +141,7 @@ function TrustSettings() {
   };
   const addLocation = async () => {
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
+      const { open } = await import("@/platform/dialog");
       const picked = await open({ directory: true, multiple: false, title: "Add Trusted Location" });
       const path = Array.isArray(picked) ? picked[0] : picked;
       if (!path) return;

@@ -319,8 +319,13 @@ export async function saveSource(
   const id = source.id ?? "";
   if (password !== undefined) await call(commands.dbSetPassword(id, password, !!source.savePassword));
   if (sshSecret !== undefined) await call(commands.dbSetSshSecret(id, sshSecret, !!source.ssh?.saveSecret));
-  forget(id);
+  // What the tree had loaded for this source is reloaded with the new settings, so its
+  // expanded nodes don't stay on Loading.
+  const st = useDatabase.getState();
+  const loaded = id in st.databases || Object.keys(st.schemas).some((t) => splitTarget(t).id === id);
   await loadSources();
+  if (loaded) await refresh(id);
+  else forget(id);
 }
 
 /** Copy/Paste › Duplicate: a copy of data source `id` named `<name> [2]` (its password is not copied). */
@@ -497,9 +502,9 @@ export function consoleTints(s: Pick<DatabaseState, "consoles" | "sources">): Ma
   return out;
 }
 
-/** PostgreSQL data sources show their server's databases (IDEA's data source › database › schema). */
+/** PostgreSQL / SQL Server data sources show their server's databases (IDEA's data source › database › schema). */
 export function listsDatabases(source: DataSource | undefined): boolean {
-  return source?.driver === "postgres" && !source.options?.singleDatabase;
+  return (source?.driver === "postgres" || source?.driver === "sqlServer") && !source.options?.singleDatabase;
 }
 
 /**

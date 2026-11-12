@@ -5,7 +5,7 @@
  */
 import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import type { EditorDocContext } from "@/editor/api";
+import { emptyGutterSpacer, gutterSpacer, type EditorDocContext } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands, type RunConfig } from "@/platform/ipc";
@@ -338,6 +338,8 @@ class ScriptMarker extends GutterMarker {
   }
 }
 
+const scriptSpacer = gutterSpacer(styles.runMarker ?? "");
+
 const DEBOUNCE = 300;
 
 export function npmGutter(ctx: EditorDocContext): Extension {
@@ -378,7 +380,9 @@ export function npmGutter(ctx: EditorDocContext): Extension {
           view.state.field(entriesField).map((e) => new ScriptMarker(e, path).range(e.pos)),
           true,
         ),
-      initialSpacer: () => new ScriptMarker({ name: "", line: 0 }, path),
+      // Reserve width only while the file has scripts, like the run gutter.
+      initialSpacer: () => emptyGutterSpacer,
+      updateSpacer: (_spacer, update) => (update.state.field(entriesField).length ? scriptSpacer : emptyGutterSpacer),
       domEventHandlers: {
         mousedown: (view, block, event) => {
           const entry = view.state.field(entriesField).find((e) => e.pos === block.from);

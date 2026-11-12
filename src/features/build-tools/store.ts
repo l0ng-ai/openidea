@@ -26,9 +26,17 @@ import {
 import { buildToolRecovery } from "@/platform/buildToolRecovery";
 import { useBuildModel } from "@/platform/buildModel";
 import { useProject } from "@/platform/project";
+import { hostOs } from "@/platform/remote";
 import { editorService, notifications } from "@/workbench/contributions";
 import { cancelTask, removeTask, upsertTask, useTasks } from "@/workbench/tasks";
-import { gradleRoots, profileKey, profilesList, type GradleRunOptions, type MavenRunOptions } from "./model";
+import {
+  gradleRoots,
+  mavenGoalConfig,
+  profileKey,
+  profilesList,
+  type GradleRunOptions,
+  type MavenRunOptions,
+} from "./model";
 
 export interface BuildSettings {
   maven: MavenRunOptions;
@@ -37,7 +45,7 @@ export interface BuildSettings {
 
 export const DEFAULT_SETTINGS: BuildSettings = {
   maven: { offline: false, skipTests: false, profiles: {} },
-  gradle: { offline: false },
+  gradle: { offline: false, skipTests: false },
 };
 
 interface SyncState {
@@ -123,6 +131,8 @@ export const toggleSkipTests = () =>
   updateSettings((s) => ({ ...s, maven: { ...s.maven, skipTests: !s.maven.skipTests } }));
 export const toggleGradleOffline = () =>
   updateSettings((s) => ({ ...s, gradle: { ...s.gradle, offline: !s.gradle.offline } }));
+export const toggleGradleSkipTests = () =>
+  updateSettings((s) => ({ ...s, gradle: { ...s.gradle, skipTests: !s.gradle.skipTests } }));
 
 /** Delay before reloading Maven after a profile toggle, so a few toggles in a row reload once. */
 export const PROFILE_RELOAD_DELAY_MS = 800;
@@ -287,22 +297,46 @@ export async function unlinkProjects(pom: string | null) {
   await setLinked(root, [pom], false);
 }
 
-/** Project-relative `pom.xml` paths of `picked` inside `root`; others are skipped. */
-function projectPoms(root: string, picked: readonly string[]): string[] {
-  const base = root.replace(/\\/g, "/").replace(/\/$/, "");
-  return picked.flatMap((p) => {
-    const path = p.replace(/\\/g, "/");
-    if (!path.startsWith(`${base}/`)) return [];
+/** A picked path in one comparable form: slashes unified, `\\?\` prefixes stripped. */
+function comparablePath(p: string) {
+  const slashes = p.replace(/\\/g, "/");
+  const unc = /^\/\/\?\/UNC\//i.exec(slashes);
+  if (unc) return `//${slashes.slice(unc[0].length)}`;
+  return slashes.replace(/^\/\/\?\//, "");
+}
+
+/**
+ * Splits `picked` into project-relative `pom.xml` paths inside `root` and the rest
+ * (outside the project, not a `pom.xml`, or escaping via `.`/`..`). Drive-letter
+ * case and `\\?\` prefixes must not matter on Windows, where the dialog may hand
+ * back either form (#2626).
+ */
+function projectPoms(root: string, picked: readonly string[]): { inside: string[]; outside: string[] } {
+  const base = comparablePath(root).replace(/\/$/, "");
+  const ignoreCase = hostOs() === "windows";
+  const inside: string[] = [];
+  const outside: string[] = [];
+  for (const p of picked) {
+    const path = comparablePath(p);
+    const underRoot = ignoreCase
+      ? path.slice(0, base.length + 1).toLowerCase() === `${base.toLowerCase()}/`
+      : path.startsWith(`${base}/`);
+    if (!underRoot) {
+      outside.push(p);
+      continue;
+    }
     const pom = path.slice(base.length + 1);
     const parts = pom.split("/");
-    return parts.some((part) => part === ".." || part === ".") || parts.pop() !== "pom.xml" ? [] : [pom];
-  });
+    if (parts.some((part) => part === ".." || part === ".") || parts.pop() !== "pom.xml") outside.push(p);
+    else inside.push(pom);
+  }
+  return { inside, outside };
 }
 
 export async function addProjects() {
   const root = useProject.getState().project?.root;
   if (!root || useProject.getState().project?.workspace || !isTauri()) return;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     title: tx`Add Maven Projects`,
     directory: false,
@@ -310,8 +344,19 @@ export async function addProjects() {
     defaultPath: root,
     filters: [{ name: "pom.xml", extensions: ["xml"] }],
   });
-  const poms = projectPoms(root, typeof picked === "string" ? [picked] : (picked ?? []));
+  const paths = typeof picked === "string" ? [picked] : (picked ?? []);
+  if (!paths.length) return;
+  const { inside: poms, outside } = projectPoms(root, paths);
   if (poms.length) await setLinked(root, poms, true);
+  // Dropping every pick silently looks exactly like the button doing nothing (#2626).
+  if (outside.length)
+    notifications().notify({
+      group: "tools",
+      level: "warning",
+      title: tx`Some Maven projects were not added`,
+      body: tx`These are outside the open project, and Maven only links POMs inside it: ${outside.slice(0, 3).join(", ")}${outside.length > 3 ? ` (+${outside.length - 3} more)` : ""}`,
+      key: "maven-add-outside-root",
+    });
 }
 
 /** Links independent Gradle builds without changing their files or build scripts. */
@@ -325,7 +370,7 @@ export async function linkGradleProjects() {
     !isTauri()
   )
     return;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     title: tx`Link Gradle Projects`,
     directory: false,
@@ -519,6 +564,35 @@ export function resetBuild() {
 
 export function runConfig(config: RunConfig, mode: "run" | "debug") {
   void executeAction(mode === "debug" ? "run.debugConfig" : "run.runConfig", { config, temporary: true });
+}
+
+/** Runs `config` in the Run tool window; resolves with its exit code (`null` when it didn't start or was stopped). */
+function runToExit(config: RunConfig): Promise<number | null> {
+  return new Promise((resolve) => {
+    const onExit = (code: number | null, stopped: boolean) => resolve(stopped ? null : code);
+    void executeAction("run.runConfig", { config, temporary: true, onExit }).then((ran) => {
+      if (!ran) resolve(null);
+    });
+  });
+}
+
+/**
+ * Generate Sources and Update Folders: runs `generate-sources` for the Maven project at `pom`, or
+ * for every top-level project, then reloads the Maven projects so folders created by the build
+ * (`target/generated-sources/...`) become source folders.
+ */
+export async function generateSources(pom?: string | null): Promise<void> {
+  const { model, settings } = useBuild.getState();
+  const maven = model?.maven;
+  if (!maven) return;
+  const projects = maven.projects.filter((p) => (pom ? p.pom === pom : !p.aggregated));
+  let ran = false;
+  for (const project of projects) {
+    const code = await runToExit(mavenGoalConfig(project, ["generate-sources"], maven, settings.maven));
+    if (code === null) return;
+    ran ||= code === 0;
+  }
+  if (ran) await syncTool("maven");
 }
 
 export async function createRunConfig(config: RunConfig) {

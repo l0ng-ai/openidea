@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findColors, formatColor, fromHex6, parseComputed, toHex6, type ColorMatch } from "./colors";
+import { findColors, formatColor, fromHex, parseComputed, toHex6, toHex8, type ColorMatch } from "./colors";
 
 const NAMES = new Set(["red", "rebeccapurple", "white"]);
 const isName = (w: string) => NAMES.has(w.toLowerCase());
@@ -60,9 +60,13 @@ describe("formatColor", () => {
 });
 
 describe("conversions", () => {
-  it("round-trips the color input's hex and reads computed colors", () => {
+  it("round-trips opaque and alpha hex and reads computed colors", () => {
     expect(toHex6([27, 118, 108, 1])).toBe("#1b766c");
-    expect(fromHex6("#1b766c", 0.5)).toEqual([27, 118, 108, 0.5]);
+    expect(toHex8([27, 118, 108, 0.5])).toBe("#1b766c80");
+    expect(fromHex("#1b766c")).toEqual([27, 118, 108, 1]);
+    expect(fromHex("1B766C80")).toEqual([27, 118, 108, 128 / 255]);
+    expect(fromHex("#1b766c8")).toBeNull();
+    expect(fromHex("#gg766c80")).toBeNull();
     expect(parseComputed("rgb(27, 118, 108)")).toEqual([27, 118, 108, 1]);
     expect(parseComputed("rgba(0, 0, 0, 0.25)")).toEqual([0, 0, 0, 0.25]);
     expect(parseComputed("color(display-p3 1 0 0)")).toBeNull();

@@ -1,0 +1,151 @@
+---
+title: "Manifest"
+description: "Every field of plugin.toml: identity, API requirement, code, activation, capabilities and contributions."
+---
+
+Every plugin is a directory with a `plugin.toml` at its root. The manifest says who the plugin is, which plugin API it needs, where its code is (if any), when to load it, what it may do, and what it contributes to the IDE.
+
+## Example
+
+```toml
+id = "acme.word-tools"
+name = "Word Tools"
+version = "1.2.0"
+description = "Counts and transforms words."
+authors = ["You <you@example.com>"]
+homepage = "https://example.com"
+license = "MIT"
+change-notes = "1.2.0 — adds Shout."
+categories = ["tools"]
+icon = "icon.svg"
+icon-dark = "icon_dark.svg"
+engines.openidea = "^1.2"
+wasm = "dist/plugin.wasm"
+activation = ["on-language:markdown"]
+
+[capabilities]
+required = ["editor.read", "editor.write"]
+optional = ["net:api.example.com"]
+
+[[contributes.commands]]
+id = "count"
+title = "Word Tools: Count Words"
+category = "Word Tools"
+when = "editorFocus"
+
+[[contributes.keymaps]]
+command = "count"
+key = "Ctrl+Alt+C"
+mac = "Meta+Alt+C"
+```
+
+## Top-level fields
+
+| Field              | Required | Description                                                                                                                                                                                                       |
+| ------------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`               | Yes      | Segments of `[a-z0-9][a-z0-9_-]*` joined by `.`, at most 64 characters. The part before the first `.` is the publisher namespace (`acme` in `acme.word-tools`); a signed package must use its publisher's prefix. |
+| `name`             | Yes      | Display name. Must not be empty.                                                                                                                                                                                  |
+| `version`          | Yes      | A semantic version such as `1.2.0`.                                                                                                                                                                               |
+| `description`      | No       | One or two sentences shown in Settings › Plugins and the marketplace.                                                                                                                                             |
+| `authors`          | No       | List of strings.                                                                                                                                                                                                  |
+| `homepage`         | No       | URL shown in the plugin's details.                                                                                                                                                                                |
+| `license`          | No       | License name, for example an SPDX id.                                                                                                                                                                             |
+| `change-notes`     | No       | Release notes shown under **What's New** in the plugin's details.                                                                                                                                                 |
+| `categories`       | No       | Up to 3 marketplace categories (see below).                                                                                                                                                                       |
+| `icon`             | No       | Package SVG for Settings › Plugins and the marketplace. At most 16 KiB, sanitised (no scripts, external references or `foreignObject`); an invalid icon fails the package. Needs `engines.openidea = "^1.2"`.     |
+| `icon-dark`        | No       | Variant used with dark themes. Needs `icon`.                                                                                                                                                                      |
+| `engines.openidea` | Yes      | A semver requirement on the plugin API, for example `"^1.4"`. The IDE refuses a package whose requirement doesn't match its API. See [API versions](/en/plugins/versioning).                                      |
+| `wasm`             | No       | Path of the component. Omit it for data-only plugins.                                                                                                                                                             |
+| `activation`       | No       | Events that load the code (see below). Needs `wasm`.                                                                                                                                                              |
+| `[capabilities]`   | No       | `required` and `optional` lists of capability strings. See [Permissions and capabilities](/en/plugins/capabilities).                                                                                              |
+| `[contributes]`    | No       | Contribution points (see below).                                                                                                                                                                                  |
+
+Unknown top-level fields are an error.
+
+All paths are relative to the package directory and may not leave it. The manifest is validated as a whole: if one contribution is invalid, nothing is installed or loaded. Contribution types the IDE does not know (from a newer API) are skipped with a warning.
+
+### Categories
+
+`languages`, `themes`, `icon-themes`, `linters` (linters and formatters), `vcs`, `ai`, `frameworks`, `tools`, `other`.
+
+Without `categories`, a plugin that contributes themes, icon themes or languages is filed under those, any other under `other`. Categories the IDE doesn't know, and any after the first three it knows, are ignored; `openidea-plugin check` warns about both.
+
+### Activation
+
+Code is loaded lazily. Without `activation`, it loads the first time one of the plugin's commands runs.
+
+| Event                 | Fires when                                                                          |
+| --------------------- | ----------------------------------------------------------------------------------- |
+| `on-command:<id>`     | That command runs; implied for every command. `on-command:*` means any of them.     |
+| `on-language:<id>`    | A file of that language is opened (`*`: any language).                              |
+| `on-file:<glob>`      | A project file matching the glob is opened.                                         |
+| `on-view:<id>`        | One of the plugin's views or custom editors is shown.                               |
+| `on-schedule:<secs>`  | Every `secs` seconds, at least 60. The plugin gets a `scheduled` event.             |
+| `on-event:<kind>`     | A workbench event of that kind (see [Lifecycle and events](/en/plugins/lifecycle)). |
+| `on-startup-finished` | Shortly after the workbench is ready. Use sparingly.                                |
+
+Duplicates are an error. Some event kinds need a newer API: `on-event:files-changed` needs `^1.3`; `file-closed`, `settings-changed`, `input-mode-changed`, `run-exited`, `terminal-exited` and `content-tab-action` need `^1.4`.
+
+### Capabilities
+
+```toml
+[capabilities]
+required = ["project.read", "process:checkstyle"]
+optional = ["net:api.openai.com", "secrets"]
+```
+
+The user approves **required** capabilities as a whole when installing. **Optional** ones can be refused individually, and the plugin must cope with `Error::Denied` when it lacks them. The full list and what each unlocks is in [Permissions and capabilities](/en/plugins/capabilities).
+
+## Contribution points
+
+Each contribution point is a table (`[contributes.settings]`) or an array of tables (`[[contributes.commands]]`). Contributions are live as soon as the plugin is enabled, before its code loads.
+
+| Point               | Declaration                                                                      | Code needed   | Guide                                                                                                                           |
+| ------------------- | -------------------------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `commands`          | `id`, `title`, `category?`, `when?`, `icon?`                                     | to run them   | [Commands and actions](/en/plugins/guides/commands)                                                                             |
+| `menus`             | `menu`, `command`, `when?`, `view?`, `submenu?`                                  | no            | [Commands and actions](/en/plugins/guides/commands)                                                                             |
+| `keymaps`           | `command`, `key`, `mac?`                                                         | no            | [Commands and actions](/en/plugins/guides/commands)                                                                             |
+| `statusBar`         | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                      | no            | [Views and decorations](/en/plugins/guides/views)                                                                               |
+| `settings`          | `schema` (a JSON file), or `pages` (API 1.3), `title?`                           | no            | [Lifecycle and events](/en/plugins/lifecycle#settings)                                                                          |
+| `secrets`           | `name`, `label`, `description?`                                                  | to use them   | [Permissions and capabilities](/en/plugins/capabilities#secrets)                                                                |
+| `providers`         | `kinds`, `languages`                                                             | yes           | [Language features](/en/plugins/guides/language-features)                                                                       |
+| `documentIndexers`  | `extensions`                                                                     | yes           | [Indexing](/en/plugins/guides/indexing)                                                                                         |
+| `endpoints`         | `files` (API 1.3)                                                                | yes           | [README: Project HTTP endpoints](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#project-http-endpoints-api-13) |
+| `views`             | `id`, `title`, `icon?`, `location`, `web?`, `group?`, `when?`                    | without `web` | [Views and decorations](/en/plugins/guides/views)                                                                               |
+| `customEditors`     | `id`, `title`, `patterns`, `priority`, `layout?`, `web?`                         | without `web` | [Views and decorations](/en/plugins/guides/views)                                                                               |
+| `markerIcons`       | `id`, `icon`, `iconDark?`, `markers?`, `tooltip?` (API 1.3): gutter marker icons | no            | [Language features](/en/plugins/guides/language-features)                                                                       |
+| `fileIcons`         | `id`, `patterns`, `icon`, `iconDark?`                                            | no            | [Icon themes](/en/plugins/guides/icon-themes)                                                                                   |
+| `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables`              | no            | [File actions](/en/plugins/guides/file-actions)                                                                                 |
+| `snippets`          | `language`, `path` (API 1.4)                                                     | no            | [Language features](/en/plugins/guides/language-features)                                                                       |
+| `commitChecks`      | `id`, `title`                                                                    | yes           | [README: Commits](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#commits)                                      |
+| `runDetectors`      | `id`, `name`, `files`, `command`, `args?`, `test?`, `framework?`                 | no            | [Run targets](/en/plugins/guides/run-targets)                                                                                   |
+| `runConfigurations` | `files` (API 1.4)                                                                | yes           | [Run targets](/en/plugins/guides/run-targets)                                                                                   |
+| `mcpTools`          | `name`, `description`, `inputSchema`, `readOnly`, `destructive` (API 1.4)        | yes           | [MCP tools](/en/plugins/guides/mcp)                                                                                             |
+| `themes`            | `path`, `editor-scheme?`                                                         | no            | [Themes](/en/plugins/guides/themes)                                                                                             |
+| `iconThemes`        | `id`, `label`, `path`                                                            | no            | [Icon themes](/en/plugins/guides/icon-themes)                                                                                   |
+| `languages`         | `path` (a `languages/<id>.toml` file)                                            | no            | [Adding a language](/en/languages/adding)                                                                                       |
+
+Item ids (commands, views, themes, …) match `[a-z0-9][a-z0-9._-]*`, at most 64 characters. Menus, shortcuts and status bar items refer to the plugin's own declared commands; inside the IDE a command's action id is `plugin.<plugin id>.<command id>`.
+
+## Translations
+
+A package translates its own text with `locales/<tag>.json` files (`fr.json`, `zh-CN.json`). No manifest entry is needed. Each file maps the English source text to its translation:
+
+```json
+{ "Count Words": "Compter les mots", "Refresh": "Actualiser" }
+```
+
+The IDE applies the catalog of the selected UI language (the exact tag, then the language, then a variant such as `zh-TW` for `zh`) to the titles, categories, labels and tooltips the manifest declares, and to the text views show. Text the plugin builds itself (notifications, error messages, `html` bodies) is not translated: read `host::locale()` when building it. `openidea-plugin check` refuses a catalog that is not a JSON object of strings.
+
+## The 0.1 format
+
+Manifests in the old 0.1 format (`openidea-api = "0.1"`, `permissions = [...]`) still load: their permissions become required capabilities and their contributions work. Their code no longer runs; rebuild it against the 1.x SDK and switch to `engines.openidea` and `[capabilities]`. You can't mix the two formats in one manifest.
+
+## Checking a manifest
+
+```sh
+openidea-plugin check            # the current folder
+openidea-plugin check path/to/plugin
+```
+
+`check` validates the manifest, every contribution and the component exactly as installing would. See [Testing and debugging](/en/plugins/testing).

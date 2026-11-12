@@ -155,6 +155,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::TaskProgress { .. }
             | PluginEvent::TaskEnded { .. }
             | PluginEvent::SubscriptionsChanged
+            | PluginEvent::WebsocketReady { .. }
             | PluginEvent::ViewChanged { .. }
             | PluginEvent::ViewMessage { .. }
             | PluginEvent::OpenTerminal { .. }
@@ -165,6 +166,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::OpenProject { .. }
             | PluginEvent::PromptRequested { .. }
             | PluginEvent::PromptClosed { .. }
+            | PluginEvent::PromptWaiting { .. }
             | PluginEvent::RevealView { .. }
             | PluginEvent::CommitRequested { .. }
             | PluginEvent::EndpointsChanged { .. }
@@ -457,7 +459,8 @@ impl RemotePlugins {
                     selected_paths: paths.unwrap_or_default(),
                     global_settings: matches!(settings_scope, Some(SettingsScope::Global)),
                 };
-                blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
+                super::commands::run_command(&c.host, host, plugin_id, command_id, arg, invocation, c.arg("request")?)
+                    .await
             }
         });
         let h = host.clone();

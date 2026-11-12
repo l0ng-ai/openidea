@@ -1,8 +1,6 @@
-import { commands } from "@/platform/ipc";
-import { provideEditorService } from "@/workbench/contributions";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Text } from "@codemirror/state";
-import { fragmentOffset, followReference, linkReference, looksLikePath, resolvePath, textReference } from "./links";
+import { fragmentOffset, linkReference, looksLikePath, resolvePath, textReference } from "./links";
 
 const at = (src: string, marker = "|") => {
   const offset = src.indexOf(marker);
@@ -73,8 +71,25 @@ describe("links and fragments", () => {
     const text = Text.of(['<a href="b.html#top">']);
     const range = { start: { line: 0, col: 9 }, end: { line: 0, col: 19 } };
     const link = { range, path: "/p/b.html", fragment: "top", url: null, tooltip: null };
-    expect(linkReference(text, [link], 12)).toMatchObject({ kind: "file", path: "/p/b.html", fragment: "top" });
-    expect(linkReference(text, [link], 2)).toBeNull();
+    expect(linkReference(text, [link], 12, "/p/a.html")).toMatchObject({
+      kind: "file",
+      path: "/p/b.html",
+      fragment: "top",
+    });
+    expect(linkReference(text, [link], 2, "/p/a.html")).toBeNull();
+  });
+
+  // On Windows, opening `//server/share` signs in to that server with the user's credentials.
+  it("follows no server link to a share the file is not on", () => {
+    const text = Text.of(['<a href="file:////evil/share/b.html">']);
+    const range = { start: { line: 0, col: 9 }, end: { line: 0, col: 35 } };
+    const link = { range, path: "//evil/share/b.html", fragment: null, url: null, tooltip: null };
+    expect(linkReference(text, [link], 12, "C:/p/a.html")).toBeNull();
+    expect(linkReference(text, [link], 12, "//nas/work/a.html")).toBeNull();
+    expect(linkReference(text, [{ ...link, path: "//nas/work/b.html" }], 12, "//NAS/Work/a.html")).toMatchObject({
+      kind: "file",
+      path: "//nas/work/b.html",
+    });
   });
 
   it("locates line, element id and Markdown heading fragments", () => {
@@ -91,31 +106,4 @@ describe("links and fragments", () => {
     }
     expect(fragmentOffset("x", "/i.html", "nope")).toBeNull();
   });
-});
-
-it("opens a container document link in the editor and resolves its fragment through virtual content", async () => {
-  const uri = "openidea-target://target/7/usr/lib/library.php";
-  const openFile = vi.fn(async () => {});
-  provideEditorService({ openFile } as never);
-  const read = vi.spyOn(commands, "lspVirtualDocument").mockResolvedValue({
-    status: "ok",
-    data: {
-      uri,
-      text: "<?php\nfunction library() {}\n",
-      title: "library.php",
-      description: null,
-      languageId: "php",
-      decompiled: false,
-    },
-  });
-  const disk = vi.spyOn(commands, "fsReadText");
-  try {
-    await followReference({ kind: "file", path: uri, fragment: "L2", from: 0, to: 1 });
-    expect(read).toHaveBeenCalledWith(uri);
-    expect(disk).not.toHaveBeenCalled();
-    expect(openFile).toHaveBeenCalledWith(uri, { focus: true, selection: { line: 1, col: 0 } });
-  } finally {
-    read.mockRestore();
-    disk.mockRestore();
-  }
 });

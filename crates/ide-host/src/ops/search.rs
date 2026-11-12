@@ -79,6 +79,8 @@ pub(crate) fn search_project(
         let language = project.languages.detect(path, text.lines().next());
         Some(syntax.literals(&language, text)?.into_iter().map(literal_range).collect())
     };
+    let defaults = project.documents.file_defaults();
+    let decode = |path: &Path, bytes: &[u8]| ide_vfs::decode_text(bytes, defaults.fallback_for(path));
     let mut total = SearchSummary::default();
     for dir in std::iter::once(root).filter(|_| include_root).chain(&content_roots) {
         let mut remaining = query.clone();
@@ -89,7 +91,7 @@ pub(crate) fn search_project(
             &remaining,
             Some(&filter),
             Some(&literals),
-            &|p| project.documents.search_text_of(p),
+            ide_search::TextSource { overlay: &|p| project.documents.search_text_of(p), decode: &decode },
             cancel,
             &|mut file| {
                 if dir != root {

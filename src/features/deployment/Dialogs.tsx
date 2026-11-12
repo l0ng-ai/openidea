@@ -1,4 +1,4 @@
-/** Deployment comparison and SSH password prompt. */
+/** Deployment comparison and SSH / FTP password prompt. */
 import { useState } from "react";
 import { Checkbox, Dialog, Input } from "@/ui";
 import { useDeployment } from "./store";
@@ -18,7 +18,7 @@ export function SecretDialog() {
   return (
     <Dialog
       open
-      title="SSH Password"
+      title={prompt.ssh.startsWith("ftp:") ? "FTP Password" : "SSH Password"}
       onClose={() => finish(null)}
       width={420}
       buttons={[

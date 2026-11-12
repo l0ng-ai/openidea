@@ -1,5 +1,11 @@
 import { expect, it, vi } from "vitest";
-import { registerEndpointProvider, searchEndpoints, type EndpointEntry } from "./contributions";
+import {
+  endpointsChanged,
+  onEndpointsChanged,
+  registerEndpointProvider,
+  searchEndpoints,
+  type EndpointEntry,
+} from "./contributions";
 
 const endpoint: EndpointEntry = {
   method: "GET",
@@ -43,4 +49,23 @@ it("keeps a replacement provider registered when its predecessor is disposed", a
     disposeNew();
   }
   expect(await searchEndpoints("/p")).toEqual([]);
+});
+
+it("keeps notifying endpoint listeners after one throws", () => {
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const second = vi.fn();
+  const offs = [
+    onEndpointsChanged(() => {
+      throw new Error("boom");
+    }),
+    onEndpointsChanged(second),
+  ];
+  try {
+    endpointsChanged();
+  } finally {
+    offs.forEach((off) => off());
+  }
+  expect(second).toHaveBeenCalledOnce();
+  expect(error).toHaveBeenCalledOnce();
+  error.mockRestore();
 });

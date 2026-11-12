@@ -65,6 +65,11 @@ export interface EditorContribution {
    * editable side, the merge result), which get `doc: -1`. Default false.
    */
   embedded?: boolean;
+  /**
+   * Extensions for a notebook code cell's editor, whose `doc` and `path` are the cell's
+   * language-server document and URI (see {@link cellEditorExtensions}).
+   */
+  cellExtensions?: (ctx: EditorDocContext) => Extension | Extension[];
 }
 
 /**
@@ -180,6 +185,20 @@ export function embeddedEditorExtensions(path: string): Extension {
 
 const embeddedOf = (m: Map<string, EditorContribution>) => [...m.values()].filter((c) => c.embedded);
 
+/** The `cellExtensions` of every contribution, for the editor of a notebook code cell. */
+export function cellEditorExtensions(ctx: EditorDocContext): Extension[] {
+  const out: Extension[] = [];
+  for (const c of editorContributions()) {
+    if (!c.cellExtensions) continue;
+    try {
+      out.push(c.cellExtensions(ctx));
+    } catch (e) {
+      console.error(`editor contribution ${c.id} failed`, e);
+    }
+  }
+  return out;
+}
+
 useEditorRegistry.subscribe((s, prev) => {
   if (s.contributions === prev.contributions) return;
   const now = embeddedOf(s.contributions);
@@ -255,10 +274,20 @@ export function whenSynced(view: EditorView): Promise<void> {
   return view.state.facet(documentSynced)?.() ?? Promise.resolve();
 }
 
+/** Edits made outside text editors (notebook cells) that language servers must have before a request. */
+const pendingEdits = new Set<() => Promise<void>>();
+
+/** `settled` resolves once the owner's edits reached the backend; included in {@link whenAllSynced}. */
+export function registerPendingEdits(settled: () => Promise<void>): () => void {
+  pendingEdits.add(settled);
+  return () => void pendingEdits.delete(settled);
+}
+
 /** Every open editor's edits reached the backend (language servers answer from its copy). */
 export function whenAllSynced(): Promise<void> {
   const editors = useEditorRegistry.getState().editors;
-  return editors.size ? Promise.all([...editors].map((e) => whenSynced(e.view))).then(() => {}) : Promise.resolve();
+  const waits = [...[...editors].map((e) => whenSynced(e.view)), ...[...pendingEdits].map((settled) => settled())];
+  return waits.length ? Promise.all(waits).then(() => {}) : Promise.resolve();
 }
 
 /** True for doc changes that did not originate from typing in *this* view. */
@@ -334,6 +363,22 @@ export class LaneMarker extends GutterMarker {
     return el;
   }
 }
+
+/**
+ * A gutter spacer that renders nothing: pair it with `gutter`'s `updateSpacer`
+ * to reserve icon width only while the file has something to show.
+ */
+export const emptyGutterSpacer = new (class extends GutterMarker {})();
+
+/** A gutter spacer reserving one icon of width, styled by `className`. */
+export const gutterSpacer = (className: string) =>
+  new (class extends GutterMarker {
+    override toDOM(): Node {
+      const el = document.createElement("span");
+      el.className = className;
+      return el;
+    }
+  })();
 
 /**
  * The floating row at the editor's top-right (IDEA's inspection widget area): widgets
@@ -579,6 +624,8 @@ export interface CodeLens {
   run?: (view: EditorView, event: MouseEvent) => void;
   /** Lower first within a line. Default 100. */
   order?: number;
+  /** The Code Vision setting that places it ("usages", "author"); a lens without one goes above the line. */
+  kind?: string;
 }
 
 export const codeLenses = Facet.define<readonly CodeLens[], readonly CodeLens[]>({

@@ -1,4 +1,5 @@
 /** The Services tree (Docker → Containers / Images / Volumes / Networks), built from a snapshot. */
+import { tx } from "@/platform/i18n";
 import type { DockerContainer, DockerImage, DockerNetwork, DockerSnapshot, DockerVolume } from "@/platform/ipc";
 
 export type GroupKind = "devContainers" | "containers" | "images" | "networks" | "volumes";
@@ -52,6 +53,14 @@ export function isUntaggedImage(i: DockerImage): boolean {
 export function imageRef(i: DockerImage): string {
   if (!i.repository || i.repository === "<none>") return shortId(i.id);
   return !i.tag || i.tag === "<none>" ? i.repository : `${i.repository}:${i.tag}`;
+}
+
+/**
+ * The local key of an image node. `docker images` lists every tag of one image
+ * on its own row with the same id, so the reference keeps the keys unique.
+ */
+export function imageKey(i: DockerImage): string {
+  return `image:${i.id}:${imageRef(i)}`;
 }
 
 export function rootNodes(): ServiceNode[] {
@@ -151,7 +160,13 @@ export function groupChildren(
         .map(containerNode);
     case "images": {
       const imgs = filters.showUntaggedImages ? snap.images : snap.images.filter((i) => !isUntaggedImage(i));
-      return imgs.map((image) => ({ kind: "image", key: `image:${image.id}`, image }));
+      const seen = new Set<string>();
+      return imgs.flatMap((image): ServiceNode[] => {
+        const key = imageKey(image);
+        if (seen.has(key)) return [];
+        seen.add(key);
+        return [{ kind: "image", key, image }];
+      });
     }
     case "volumes":
       return snap.volumes.map((volume) => ({ kind: "volume", key: `volume:${volume.name}`, volume }));
@@ -201,7 +216,7 @@ export function nodeLabel(n: ServiceNode): string {
     case "docker":
       return "Docker";
     case "group":
-      return GROUPS.find(([g]) => g === n.group)![1];
+      return tx(GROUPS.find(([g]) => g === n.group)![1]);
     case "compose":
       return `Docker-compose: ${n.project}`;
     case "container":

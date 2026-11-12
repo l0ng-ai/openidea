@@ -5,14 +5,14 @@ for (const [id, selector] of [
   ["editor.inspections", "[class*='split'] > [class*='details']"],
   ["languages.servers", "[class*='body'] > [class*='details']"],
   ["plugins", "[class*='body'] > [class*='details']"],
-  ["tools.agents", "section[aria-label='Codex executable']"],
+  ["agents.list", "section[aria-label='Codex']"],
 ]) {
   test(`${id} keeps its details usable beside the list`, async ({ workbench: page }) => {
     await page.keyboard.press("Meta+,");
     const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
     await expect(dialog).toBeVisible();
     await page.evaluate(async (id) => {
-      if (id === "tools.agents") {
+      if (id === "agents.list") {
         const path = "/src/features/agents/registry.ts";
         const { tauriCommands } = await import(/* @vite-ignore */ path);
         tauriCommands.providers = async () => [
@@ -26,6 +26,9 @@ for (const [id, selector] of [
             installed: true,
             commandOverridden: false,
             env: {},
+            config: [],
+            commands: [],
+            source: { kind: "builtin" },
           },
         ];
       }
@@ -82,16 +85,13 @@ for (const id of ["editor.fileTemplates", "editor.liveTemplates"]) {
 }
 
 test("Project Structure keeps every details pane usable in a compact window", async ({ workbench: page }) => {
-  await page.keyboard.press("Meta+,");
-  await expect(page.getByRole("dialog", { name: "Settings", exact: true })).toBeVisible();
-  await page.evaluate(async () => {
-    const path = "/src/features/settings/model/staging.ts";
-    (await import(/* @vite-ignore */ path)).selectPage("projectStructure");
-  });
+  await page.keyboard.press("Meta+;");
+  const dialog = page.getByRole("dialog", { name: "Project Structure", exact: true });
+  await expect(dialog).toBeVisible();
   await page.setViewportSize({ width: 520, height: 760 });
   for (const section of ["Modules", "Libraries", "Facets", "Artifacts", "SDKs"]) {
-    await page.getByRole("tab", { name: section, exact: true }).click();
-    const details = page.locator("[class*='splitLayout'] > [class*='detailPane']");
+    await dialog.getByRole("button", { name: section, exact: true }).click();
+    const details = dialog.locator("[class*='splitLayout'] > [class*='detailPane']");
     await expect(details).toBeAttached();
     expect((await details.boundingBox())!.width).toBeGreaterThan(200);
   }

@@ -28,6 +28,7 @@ import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidge
 import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
 import { DIFF_KIND, diffTitle, type DiffData } from "./diffInput";
+import { installDiffEditorHost } from "./DiffWindow";
 import { VcsDialogHost } from "./dialogs";
 import { changeMarkers } from "./gutter";
 import { installHunkPopup } from "./HunkPopup";
@@ -47,6 +48,7 @@ import { installFileConfirmations } from "./confirmations";
 import { installIncomingCheck } from "./incoming";
 import { closeLogTab, installGitLog, selectGitTab, useGitLog } from "./logStore";
 import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
+import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
 
 /** The Resolve/Continue/Abort buttons exist in the title bar only while there is something to resolve. */
@@ -150,6 +152,7 @@ function conflictsBody(names: string[]): string {
 
 /** Settings › Version Control › Log (also used by the Settings window). */
 export { activateComparisonWindow, ComparisonWindow } from "./ComparisonWindow";
+export { activateDiffWindow, DiffWindow } from "./DiffWindow";
 
 /** The diff viewer (editor kind `diff`), also for windows that show diffs without Git (deployment). */
 export function activateDiffViewer(): () => void {
@@ -213,6 +216,7 @@ export function activate(): () => void {
   useCommit.setState({ signOff: workflowSettings().vcs.git.signOff });
   const disposers = [
     installVcsStore(),
+    installRootSync(),
     installGitLog(),
     installDiagnosticsTracking(),
     installPreparedMessage(),
@@ -220,6 +224,7 @@ export function activate(): () => void {
     provideCommit(),
     installIncomingCheck(),
     installFileConfirmations(),
+    installDiffEditorHost(),
     // Settings › Git › Sign-off commit: the default of Commit Options › Sign-off Commit.
     onWorkflowSettingsChange(
       (w) => w.vcs.git.signOff,

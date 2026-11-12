@@ -1,0 +1,106 @@
+---
+title: "Terminal"
+description: "Use the built-in terminal: tabs, splits, shells, links, find, and terminal settings."
+---
+
+The **Terminal** tool window runs your shell in the IDE. Each tab is a real pseudo-terminal session, rendered with xterm.js. In a remote project the shell runs on the remote machine.
+
+## Open the terminal
+
+| Action                                | macOS  | Windows/Linux  |
+| ------------------------------------- | ------ | -------------- |
+| Show or hide the Terminal tool window | `⌥F12` | `Alt+F12`      |
+| New Terminal Tab (terminal focused)   | `⌘T`   | `Ctrl+Shift+T` |
+
+Showing an empty Terminal window opens a tab in the start directory (the project root by default). To open a terminal in a specific folder, right-click it in the Project tool window and choose **Open In › Terminal**, or run **Open in Terminal**.
+
+## Tabs and splits
+
+- **+** (**New Tab**) opens a tab with the default shell.
+- The **▾** button (**More Terminal Options**) has **New Terminal Tab**, **New Predefined Session** (one entry per installed shell, plus **SSH Session…**), **Split Right**, **Split Down** and **Settings**.
+- Right-click a tab for **Rename Session…**, **Close Tab**, **Close Other Tabs**, **Split Right**, **Split and Move Right**, **Split Down**, **Split and Move Down** and **Unsplit**. Double-clicking a tab also renames it.
+- Drag tabs to reorder them, or drop a tab on the edge of another group to split.
+
+A tab is named after your custom name, otherwise after the program running in it (when the shell reports it), otherwise `Local`, `Local (2)` and so on. A spinner shows while a command runs; **Exited** or **Failed** shows once the session ends.
+
+When a session's process exits, the terminal prints the exit code; press `Enter` to restart it. With **Close session when it ends** on (the default), the tab closes instead. Closing a tab that still runs a program asks you to confirm.
+
+### Across restarts
+
+OpenIDEA remembers each project's terminal tabs: their directory, custom names, the shell used and the split layout (up to 32 tabs). After a restart each tab starts a **new** session in its directory. Scrollback and running commands are not restored.
+
+## Keys in the terminal
+
+| Action              | macOS       | Windows/Linux                                      |
+| ------------------- | ----------- | -------------------------------------------------- |
+| Copy selection      | `⌘C`        | `Ctrl+Shift+C`, or `Ctrl+C` with a selection       |
+| Paste               | `⌘V`        | `Ctrl+Shift+V`                                     |
+| Find in terminal    | `⌘F`        | **Find in Terminal** action (no default key)       |
+| Clear buffer        | `⌘K`        | **Clear Terminal Buffer** action (no default key)  |
+| Close session       | `⌘W`        | **Close Terminal Session** action (no default key) |
+| Start / end of line | `⌘←` / `⌘→` | shell default                                      |
+| Word left / right   | `⌥←` / `⌥→` | shell default                                      |
+| Delete word / line  | `⌥⌫` / `⌘⌫` | shell default                                      |
+
+Other `Ctrl` combinations go to the shell. `Shift+Enter` sends `Esc` + `Return`, which TUIs such as Claude Code treat as a newline. `Esc` clears a selection first, then goes to the shell.
+
+With **Override IDE shortcuts** on (the default), the terminal keeps most keys for the shell. A short list of IDE shortcuts still works: tool window keys, Find Action, Go to File, Class and Symbol, Settings, Push, Recent Files, the switcher and the terminal actions. Use **Configure terminal keybindings** on the settings page to review them.
+
+The pane's context menu has **Copy**, **Paste**, **Select All**, **Clear Buffer**, **Split Right**, **Split Down** and **Close Session** (plus **Restart Session** after the process exits).
+
+## Find
+
+`⌘F` (or **Find in Terminal**) opens the find bar over the scrollback (10,000 lines). Toggle **Match Case** (`Alt+C`), **Words** (`Alt+W`) and **Regex** (`Alt+X`); `Enter` and `Shift+Enter` move between matches, `Esc` closes the bar.
+
+## Links, paths and drops
+
+- `http`, `https` and `file` URLs open in your browser. OSC 8 hyperlinks from programs work too.
+- File locations such as `src/main.rs:42:7` or `Main.java(42,7)` open in the editor at that line. Paths resolve against the shell's current directory, then by file name across the project.
+- Pasting copied files pastes their paths, quoted for the shell in use (bash/zsh/fish, PowerShell or cmd). Pasting an image from the clipboard saves it to a file and pastes that file's path.
+- Dropping files from your file manager onto the terminal types their quoted paths at the prompt. They are not run.
+
+Turn off **Highlight hyperlinks** in the settings to stop detecting links.
+
+## Shell and environment
+
+The default shell is:
+
+- **macOS/Linux**: your login shell (from the user database, then `$SHELL`), falling back to `/bin/zsh`, `/bin/bash`, `/bin/sh`. zsh, bash, sh, fish, ksh, dash, tcsh and csh start as login shells.
+- **Windows**: `pwsh.exe`, then `powershell.exe`, then `%COMSPEC%`, then `cmd.exe`.
+
+**New Predefined Session** also offers the other shells it finds: zsh, bash, fish, nu and pwsh on macOS/Linux; PowerShell, cmd, WSL and Git Bash on Windows.
+
+Every session gets `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=OpenIDEA` and `TERM_PROGRAM_VERSION`, plus `LANG=en_US.UTF-8` if `LANG` is unset. Your own variables from the settings are added on top.
+
+With **Shell integration** on, zsh, bash and fish report the current directory and command start/end to the IDE. That keeps links and new splits in the right folder and lets the tab title follow the running program.
+
+## Settings
+
+**Settings › Tools › Terminal**:
+
+| Setting                                  | Default      | Notes                                                                                                                 |
+| ---------------------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------- |
+| **Start directory**                      | Project root | Relative paths resolve against the project root. **Open in Terminal** still opens the chosen folder. Project setting. |
+| **Environment variables**                | none         | Added to new sessions. Project setting.                                                                               |
+| **Shell path**                           | login shell  | A command line, e.g. `/bin/zsh --login`. **Installed Shells** lists what was found.                                   |
+| **Default Tab name**                     | `Local`      |                                                                                                                       |
+| **Audible bell**                         | on           |                                                                                                                       |
+| **Close session when it ends**           | on           |                                                                                                                       |
+| **Mouse reporting**                      | on           | Off: programs can't capture the mouse.                                                                                |
+| **Copy to clipboard on selection**       | off          |                                                                                                                       |
+| **Paste on middle mouse button click**   | on           |                                                                                                                       |
+| **Move focus to the Editor with Escape** | off          | Otherwise `Esc` goes to the shell.                                                                                    |
+| **Override IDE shortcuts**               | on           | See above.                                                                                                            |
+| **Shell integration**                    | on           |                                                                                                                       |
+| **Highlight hyperlinks**                 | on           |                                                                                                                       |
+| **Use Option as Meta key**               | off          | macOS only.                                                                                                           |
+| **Cursor shape**                         | Block        | Block, Underline or Vertical.                                                                                         |
+| **Blinking cursor**                      | on           |                                                                                                                       |
+| **Use editor font**                      | on           | Off: set **Font**, **Size** (6–72), **Line height**, **Fallback font** and **Column width**.                          |
+
+Changes apply to open sessions right away. Colours follow the IDE theme.
+
+## Related
+
+- **Tools › Start SSH Session…** opens an SSH connection from a saved SSH configuration in a terminal tab. See [SSH](/en/guide/remote/ssh).
+- Docker containers can open a shell in a terminal tab with **Create Terminal**. See [Docker and services](/en/guide/services).

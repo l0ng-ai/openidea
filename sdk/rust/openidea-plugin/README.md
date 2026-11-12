@@ -3,6 +3,26 @@
 The Rust API is documented by `cargo doc`. Web pages shipped alongside a Rust
 component use `window.openidea` rather than Rust imports.
 
+## Background WebSockets
+
+`host::WebSocket` keeps a bounded, host-owned connection alive between plugin
+calls. `connect`, `send` and `drain` require the same explicit `Project`, so a
+handle cannot be reused from another project. Non-loopback endpoints must use
+`wss://`; the URL cannot contain
+credentials, a query, or a fragment. Authentication is supplied through one
+`Authorization` header, whose value may contain a declared
+`{{secret:name}}`. The manifest must grant `net:<host>`, `secrets` when a
+placeholder is used, plus `project.read` and `events`.
+
+The outgoing and incoming
+queues are bounded (256 frames, 8 MiB total, 1 MiB per frame). A full queue
+rejects the new frame explicitly instead of reporting it as sent.
+
+Declare `activation = ["on-event:websocket-ready"]` and handle that event to
+call `drain` without polling. Inbound frames are plugin protocol data.
+`drain` returns a `closed` flag with the final queued frames; the handle is
+removed after that drain, or after a short expiry if the plugin abandons it.
+
 API 1.3 adds `Event::FilesChanged(FilesChanged)` for debounced external file
 creation, modification and removal in open projects. Declare
 `engines.openidea = "^1.3"`, the `events` capability and
@@ -33,7 +53,7 @@ and references. Existing indexers work without another export; declare
 cover exactly the name, using UTF-16 columns. The host merges native results,
 previews indexed renames and applies them as one undoable workspace edit.
 The existing `project.read` capability and trusted-project boundary apply.
-See [the indexing contract](../../../docs/plugins/indexing.md#find-usages-and-rename-api-13)
+See [the indexing contract](../../../plugins/indexing.md#find-usages-and-rename-api-13)
 and [the minimal fixture](../../../crates/ide-plugin/tests/fixtures/indexer).
 
 API 1.3 also adds diagnostics for unsaved documents. Declare

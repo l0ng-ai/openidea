@@ -38,9 +38,7 @@ interface RevisionData {
 
 export async function openExternalLog() {
   const picked = isTauri()
-    ? await (
-        await import("@tauri-apps/plugin-dialog")
-      ).open({ title: tx("Open Git Log"), directory: true, multiple: true })
+    ? await (await import("@/platform/dialog")).open({ title: tx("Open Git Log"), directory: true, multiple: true })
     : await choosePath({ title: "Open Git Log", directory: true });
   const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
   if (!paths.length) return;

@@ -1,0 +1,295 @@
+---
+title: "命令与动作"
+description: "声明命令，为它们配置快捷键，放进菜单和状态栏，并响应工作台事件与提交。"
+---
+
+命令是代码插件最基本的单元：用户可以执行的一件事。每条 `[[contributes.commands]]`
+都会成为一个 IDE 动作，动作 id 固定为 `plugin.<plugin-id>.<command-id>`。它和内置动作一样，
+会出现在 **查找操作**（`⌘⇧A` / `Ctrl+Shift+A`）和 **随处搜索** 中，可以在 **设置 › 按键映射**
+里绑定快捷键，也可以放进菜单、工具栏和状态栏。
+
+插件启用后，声明的命令立即可用，**早于**任何插件代码加载。代码在其中某个命令第一次执行时才实例化
+（每个命令都隐含 `on-command:<id>` 激活事件），所以命令再多也不会拖慢启动。激活和空闲回收见
+[生命周期](/zh/plugins/lifecycle)。
+
+## 声明命令
+
+```toml
+[[contributes.commands]]
+id = "count"                          # [a-z0-9][a-z0-9._-]*
+title = "Word Tools: Count Words"
+category = "Word Tools"               # 在查找操作和按键映射中的分组
+when = "editorFocus"                  # 可选：启用条件
+# icon = "run"                        # API 1.4：内置图标名或包内 SVG
+```
+
+| 字段       | 必填 | 说明                                                                                                                      |
+| ---------- | ---- | ------------------------------------------------------------------------------------------------------------------------- |
+| `id`       | 是   | 插件内唯一。动作 id 为 `plugin.<plugin-id>.<id>`。                                                                        |
+| `title`    | 是   | 1–256 字节，可通过插件的 `locales/<tag>.json` 翻译。                                                                      |
+| `category` | 否   | 最多 256 字节。在查找操作和 **设置 › 按键映射** 中作为分组。                                                              |
+| `when`     | 否   | `when` 子句（见下）。为假时命令不可用，菜单项显示为灰色。                                                                 |
+| `icon`     | 否   | API 1.4（`engines.openidea = "^1.4"`）。内置图标名或包内 `.svg` 路径，工具栏菜单（`editor.title`、`mainToolbar`）会用到。 |
+
+### `when` 子句
+
+`when` 与内置动作使用同一套表达式：`key`、`key == value`、`key != value`、`!`、`&&`、`||`
+以及括号。常用的键：
+
+- `editorFocus`：焦点在文本编辑器中。
+- `editorLangId == sql`：当前编辑器的语言 id。
+- `workspaceContains:pom.xml`：打开的项目包含这个精确路径（相对项目根目录，不支持通配符）。
+  在工作区中，任一项目包含即为真；文件变化时会重新计算。不认识这个键的 IDE 视其为假。
+- `plugin.<plugin-id>.<key>`：插件自己用 `host::set_context` 设置的键（见下）。
+
+## 执行命令
+
+实现 [`Plugin::run_command`](https://github.com/l0ng-ai/openidea/blob/main/sdk/rust/openidea-plugin/src/lib.rs)
+（WIT 导出 `commands.run`）。`ctx` 代表发起调用的窗口：`ctx.project()`、`ctx.editor()`
+和 `ctx.selected_paths()`。
+
+```rust
+use openidea_plugin::{Error, Invocation, NotificationLevel, Plugin, host, register_plugin};
+
+#[derive(Default)]
+struct WordTools;
+
+impl Plugin for WordTools {
+    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+        let editor = ctx.editor().ok_or("no file is open")?;
+        match id {
+            "count" => {
+                let words = editor.document()?.text.split_whitespace().count();
+                host::notify(NotificationLevel::Info, "Word count", &format!("{words} words"));
+                Ok(None)
+            }
+            // 所有选区（光标即空选区）作为一次可撤销的修改。
+            "shout" => {
+                editor.transform_selections(|s| s.to_uppercase())?;
+                Ok(None)
+            }
+            _ => Err(Error::NotFound(format!("command {id}"))),
+        }
+    }
+}
+
+register_plugin!(WordTools);
+```
+
+这段代码需要在 `[capabilities]` 中声明 `editor.read` 和 `editor.write`
+（见 [权限](/zh/plugins/capabilities)）。完整示例可参考
+[String Tools](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/string-tools)，它有 26 个命令。
+
+返回值的含义：
+
+- `Ok(Some(text))` 会展示给用户；`Ok(None)` 什么也不显示。
+- 返回错误时显示 _"`<title>` failed: …"_，插件继续运行。`"msg".into()` 即 `Error::Failed`。
+- `Error::Cancelled`（用户放弃）和 `Error::Denied`（缺少权限）不算插件出错。
+
+### 参数与选中的文件
+
+- `arg` 是可选字符串。从查找操作或快捷键执行时为 `None`；其他功能带参数执行
+  `plugin.<plugin-id>.<command-id>`，或通知按钮、代码透镜、行号槽动作传参时才有值。
+- `ctx.selected_paths()` 列出项目视图或编辑器标签页菜单所针对的文件和文件夹（此时参数是其中第一个），
+  其他情况下为空。
+- 从 `problems.context` 和 `searchResults.context` 菜单执行时，`selected_paths()` 是该问题或匹配项所在文件，
+  `arg` 是 JSON `{"path": "…", "line": 0, "column": 0}`（行从 0 开始，列为 UTF-16 单位）。
+
+### 限制
+
+每次命令调用有 5 秒墙钟时间和 CPU 燃料预算。较长的工作请用 `host::begin_task(title, cancellable)`
+开启任务：任务打开期间调用最多可运行 60 秒，每次 `report` 或 `is_cancelled` 都会续期。
+对话框（`host::pick`、`input`、`confirm` 等）等待用户期间不计入预算。
+
+## 快捷键
+
+```toml
+[[contributes.keymaps]]
+command = "count"
+key = "Ctrl+Alt+C"
+mac = "Meta+Alt+C"        # 可选；缺省时 macOS 原样使用 `key`
+```
+
+- 修饰键：`Meta`、`Ctrl`、`Alt`、`Shift`。按键：`A`–`Z`、`0`–`9`、`F1`–`F24`、`Enter`、`Escape`、
+  `Tab`、`Space`、`Backspace`、`Delete`、`Insert`、`Home`、`End`、`PageUp`、`PageDown`、`Up`、`Down`、
+  `Left`、`Right`、`Minus`、`Equal`、`Comma`、`Period`、`Slash`、`Semicolon`、`Quote`。
+- 组合键序列（chord）是用空格分隔的两次按键：`Meta+K Meta+C`。
+- 除功能键外，每次按键都必须包含 `Ctrl`、`Alt` 或 `Meta`，单独的字母键留给输入。
+- 没有 `mac` 时，macOS 原样使用 `key`，`Ctrl` 仍然是 `Ctrl`。想用 `⌘` 就写 `mac` 并使用 `Meta`。
+- 插件快捷键只是默认值，优先级低于 IDE：按键映射预设或用户已经占用该按键、或该动作已有绑定时，
+  插件的快捷键会被丢弃。用户可以在 **设置 › 按键映射** 中重新绑定。
+
+## 菜单
+
+```toml
+[[contributes.menus]]
+menu = "editor.context"
+command = "test-selection"
+when = "editorLangId == markdown"   # 可选
+```
+
+| `menu`                  | 位置                                             | API |
+| ----------------------- | ------------------------------------------------ | --- |
+| `editor.context`        | 编辑器右键菜单                                   | 1.0 |
+| `projectView.context`   | 项目工具窗口右键菜单                             | 1.0 |
+| `editorTab.context`     | 编辑器标签页右键菜单                             | 1.0 |
+| `tools`                 | 主菜单中的 **工具**                              | 1.0 |
+| `viewItem.context`      | 插件自有视图中条目的右键菜单（需要 `view`）      | 1.2 |
+| `commit.message`        | 提交信息上方的工具栏（提交工具窗口和提交对话框） | 1.3 |
+| `editor.title`          | 编辑器标签栏的动作区                             | 1.4 |
+| `mainToolbar`           | 主工具栏                                         | 1.4 |
+| `problems.context`      | 问题工具窗口中问题条目的右键菜单                 | 1.4 |
+| `searchResults.context` | 搜索结果的右键菜单                               | 1.4 |
+
+使用 1.0 之后加入的菜单，需要在 `engines.openidea` 中至少声明对应的 API 版本。每个条目都必须指向插件声明过的命令。
+菜单的 `when` 与命令自身的 `when` 同时生效。
+
+**工具栏图标。** `editor.title`、`mainToolbar` 和 `commit.message` 的条目会显示图标：优先使用命令的 `icon`，
+否则使用插件清单中的 `icon`。
+
+**子菜单**（API 1.3）。在右键菜单（`*.context`）中，`submenu` 相同的条目会按声明顺序归到同一个子菜单下。
+只有一个可见条目的子菜单会直接显示为普通条目。子菜单标题通过插件的文本目录翻译。
+
+```toml
+[[contributes.menus]]
+menu = "editor.context"
+command = "arthas.watch"
+submenu = "Arthas"
+```
+
+**视图条目菜单**（API 1.2）。`viewItem.context` 需要 `view`，即插件自己声明、由代码渲染为 `tree`、`list`
+或表格的视图 id（不能是网页视图）。每个命令都会收到条目的 key 作为参数。只有菜单的 `when` 能使用
+`viewItem`（条目 key）和 `viewItemKind`（key 中第一个 `:` 之前的部分，例如 `pod:default/nginx` 对应 `pod`）。
+表格行的 key 是十进制行号。详见 [视图与装饰](/zh/plugins/guides/views)。
+
+```toml
+[[contributes.menus]]
+menu = "viewItem.context"
+view = "pods"
+command = "kube.logs"
+when = "viewItemKind == pod"
+```
+
+## 状态栏项
+
+```toml
+[[contributes.statusBar]]
+id = "branch"
+text = "main"              # 1–128 字节，代码可替换
+tooltip = "Current branch" # 最多 1 KiB
+command = "refresh"        # 点击时执行的插件命令
+align = "right"            # left 或 right（默认 right）
+priority = 100             # 0–1000
+```
+
+声明的状态栏项在代码运行前就会显示。在代码中：
+
+- `host::set_status_item(id, &StatusItem { text, tooltip, command })` 在所有窗口中显示或更新状态栏项
+  （每个插件最多 8 个；插件空闲时仍保留）；`remove_status_item(id)` 移除。
+- `host::set_window_status_item(id, item)`（API 1.4）只在发起调用的窗口中覆盖它；
+  `remove_window_status_item(id)` 恢复为全局项。只能在窗口的命令或事件中调用。
+
+## 在代码中设置上下文键
+
+`host::set_context(key, value)` 设置 `plugin.<plugin-id>.<key>`，供 `when` 子句使用
+（`true`、数字或最多 1024 字节的文本）。键名为 1–64 个 `A-Za-z0-9_-` 字符，每个插件最多 100 个。
+在命令或事件中设置的键只作用于该窗口；在此之外设置的键作用于所有窗口，窗口级的值优先。
+这些键在窗口重新加载和空闲回收后仍保留，插件停止时清除。
+
+```rust
+host::set_context("ready", true)?;   // when = "plugin.acme.word-tools.ready"
+```
+
+## 带按钮的通知
+
+`host::notify(level, title, body)` 在命令或事件来源的窗口中显示通知气泡（没有来源窗口时显示在所有窗口）。
+`host::notify_with_actions` 可以加最多三个按钮，每个按钮执行插件声明的一个命令：
+
+```rust
+use openidea_plugin::{NotificationAction, NotificationLevel, host};
+
+let retry = NotificationAction::new("Retry", "check").argument("again");
+host::notify_with_actions(NotificationLevel::Warning, "Check failed", "The server did not answer.", &[retry])?;
+```
+
+API 1.5 新增 `Project::notify(level, title, body, actions)`：只在该项目的窗口中显示（项目在多个窗口打开时，
+选最近获得焦点的那个），定时任务或后台工作中也能用。项目已关闭时返回 `Error::NotFound`。
+按钮标题最多 256 字节，参数最多 64 KiB；引用未声明的命令会导致整条通知被拒绝。
+
+## 执行其他命令
+
+`host::execute_command(id, arg)`（API 1.4，WIT `command-runner.execute`）在发起调用的窗口中执行稳定的 IDE
+动作 id 或 `plugin.<plugin-id>.<command-id>`。执行插件自己的命令无需权限；执行 IDE 动作和其他插件的命令需要
+高风险权限 `ide.commands`。IDE 动作返回 `None`，插件命令返回其结果。最多嵌套 8 层，且只能在窗口的命令或事件中调用。
+
+## 事件
+
+命令是一种入口，工作台事件是另一种。在 `activate` 中用 `host::subscribe(EventKind::FileSaved)` 订阅，
+或声明 `activation = ["on-event:file-saved"]` 让第一个事件唤醒插件，然后在
+`Plugin::handle_events(events, ctx)` 中批量处理（WIT `events.wit`，导出 `event-handler`）。
+
+| 类型                 | 权限           | 触发时机                                          |
+| -------------------- | -------------- | ------------------------------------------------- |
+| `file-opened`        | `events`       | 文件在编辑器中打开                                |
+| `file-saved`         | `events`       | 文件写入磁盘之后                                  |
+| `file-closed`        | `events`       | API 1.4：编辑器关闭（JSON 路径字符串）            |
+| `files-changed`      | `events`       | API 1.3：打开项目中防抖后的新建 / 修改 / 删除路径 |
+| `editor-focused`     | `events`       | 获得焦点的编辑器变化                              |
+| `vcs-changed`        | `events`       | 仓库状态变化（提交、检出、拉取等）                |
+| `settings-changed`   | `events`       | API 1.4：插件中发生变化的设置键                   |
+| `action-performed`   | `events.input` | 执行了 IDE 动作：id、标题、来源、快捷键           |
+| `input-mode-changed` | `events.input` | API 1.4：当前编辑器的 Vim 模式变化                |
+| `scheduled`          | 无             | `on-schedule:<secs>` 的周期到了                   |
+
+事件按窗口分批送达，旧的在前。空闲的插件会先攒 2 秒再被唤醒。`host::subscribe_paths(kind, &["config/*.yaml"])`
+（API 1.3）可以按项目相对通配符过滤 `file-opened`、`file-saved` 和 `files-changed`。比 SDK 新的事件类型以
+`Event::Other { kind, data }` 送达；这个枚举标记了 `#[non_exhaustive]`，匹配时要加 `_` 分支。
+可运行的示例见 [Key Promoter](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/key-promoter)
+（`action-performed`）和 [Git Toolbox](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/git-toolbox)
+（`on-schedule`、`vcs-changed`）。
+
+## 提交
+
+插件可以参与用户正在准备的提交（API 1.3，`commit.wit`）：
+
+- **提交信息上方的按钮：** 一条 `commit.message` 菜单项。
+- **读取草稿：** `host::pending_commit()`（`vcs.read`）返回提交此刻会包含的内容：每个文件的仓库、路径、状态，
+  以及只包含已勾选改动的 `git diff`（总计 1 MiB，超出则标记 `truncated`），外加提交信息、是否修订（Amend）和
+  `revision`。会先保存这些文件未保存的编辑器内容，但不会暂存任何东西。
+- **写入提交信息：** `host::set_commit_message(revision, text)`（`vcs.write`）只在草稿仍处于 `revision`
+  时替换信息，否则返回 `Error::Stale`，保留用户输入的文字。
+
+```rust
+let draft = host::pending_commit()?.ok_or("no repository")?;
+let message = ask_the_model(&draft.changes)?;
+host::set_commit_message(draft.revision, &message)?;
+```
+
+两者都只能在受信任项目中、窗口的命令或事件里调用。
+
+**提交前检查。** 每条 `[[contributes.commitChecks]]`（`id`、`title`）都会列在 **提交选项** 中，默认开启。
+用户提交时，在 IDE 自己的检查之后，IDE 调用 `commit-checker` 导出。用
+`register_plugin!(MyPlugin, commit_checks)` 注册，并实现 `openidea_plugin::commit::CommitChecks`：
+
+```rust
+use openidea_plugin::commit::{CommitChecks, CommitProblem};
+use openidea_plugin::{CommitDraft, Error, Invocation};
+
+impl CommitChecks for MyPlugin {
+    fn check(&mut self, _check: &str, draft: &CommitDraft, _ctx: &Invocation) -> Result<Vec<CommitProblem>, Error> {
+        if draft.message.lines().next().is_some_and(|l| l.len() > 72) {
+            return Ok(vec![CommitProblem::new("The subject line is longer than 72 characters")]);
+        }
+        Ok(vec![])
+    }
+}
+```
+
+发现问题会阻止提交，并带着检查标题显示在提交信息旁边，直到用户修改或选择 **仍然提交**。
+检查本身失败、超时或缺少 `vcs.read` 时，也会作为问题报告。
+
+## 相关内容
+
+- [清单](/zh/plugins/manifest)：完整的 `plugin.toml` 参考。
+- [视图与装饰](/zh/plugins/guides/views)：按钮会执行代码的工具窗口。
+- [API 参考](/zh/plugins/api/index)：全部宿主函数。

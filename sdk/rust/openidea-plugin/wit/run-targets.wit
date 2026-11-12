@@ -1,4 +1,4 @@
-package openidea:plugin@1.5.0;
+package openidea:plugin@1.6.0;
 
 /// Project-scoped targets owned by the registering plugin (API 1.4).
 interface run-targets {
@@ -16,10 +16,7 @@ interface run-targets {
     /// Without workdir-args the wrapper manages its container directory itself.
     /// The wrapper always starts in the configuration's LOCAL working directory.
     /// Environment reaches the wrapper; forwarding into a container depends on its conventions.
-    /// Registration never selects the target. Debugging requires container-root and an
-    /// explicitly supported language debugger placement. Connect-back adapters listen
-    /// on the host; the target must configure the debuggee to connect to that host.
-    /// Stdio adapters run inside the target and must be installed there.
+    /// Registration never selects the target. Debugging plugin targets is invalid.
     record run-target {
         id: string,
         name: string,

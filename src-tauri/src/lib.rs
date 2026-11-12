@@ -35,6 +35,7 @@ mod updates;
 mod window_groups;
 #[cfg(any(windows, test))]
 mod window_work_area;
+mod window_zoom;
 mod windows;
 
 use parking_lot::Mutex;
@@ -89,7 +90,9 @@ pub fn run() {
     linux_webkit::configure();
 
     let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
-    let local_data_dir = ide_host::data_dirs::local_data_dir(&context.config().identifier);
+    // A custom directory from Settings › System Settings › Caches applies here too
+    // (`OPENIDEA_LOCAL_DATA_DIR` still wins), so tools resolve against the new root.
+    let local_data_dir = ide_host::data_dirs::startup_local_data_dir(&context.config().identifier);
     // Managed LSP/DAP installs; must run before other threads start and before PATH is cached.
     match &local_data_dir {
         Ok(data) => {
@@ -249,6 +252,7 @@ pub fn run() {
             window_groups::frame_changed(window.app_handle(), window.label());
         }
         tauri::WindowEvent::Destroyed => {
+            window_zoom::forget(window.label());
             #[cfg(target_os = "macos")]
             {
                 page_swipe::forget(window.label());

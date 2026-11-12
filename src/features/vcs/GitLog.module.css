@@ -224,7 +224,7 @@
   inset-block: 0;
   inset-inline-end: 0;
   width: 6px;
-  cursor: col-resize;
+  cursor: ew-resize;
   touch-action: none;
 }
 .columnResize:focus-visible {
@@ -310,7 +310,9 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  max-width: 50%;
+  /* May use the whole subject cell when space allows (#2447); shrinks with
+     per-label ellipsis before crowding out the commit message. */
+  max-width: 100%;
   overflow: hidden;
   margin-left: auto;
 }
@@ -328,7 +330,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
-  max-width: 180px;
+  /* Sizes to content (#2447): truncates with ellipsis only when .refs runs
+     out of room; the full name stays available via the title tooltip. */
 }
 /* Outlined tag glyph in the ref's colour. */
 .ref::before {

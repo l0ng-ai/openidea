@@ -1,0 +1,146 @@
+---
+title: "Java 与 Kotlin"
+description: "OpenIDEA 如何借助 JDT LS、Kotlin LSP、Maven 和 Gradle 为 Java 与 Kotlin 项目提供代码智能、构建、运行、测试和调试。"
+---
+
+Java 的代码智能由 Eclipse JDT Language Server（jdtls）提供，OpenIDEA 还为它加载了一组随应用发布的扩展 bundle；Kotlin 使用 JetBrains 的 Kotlin LSP。Maven 和 Gradle 项目会自动导入，两种语言的运行、测试和调试都走同一套运行配置。与其他语言的对比见[语言支持总览](/zh/languages/index)。
+
+## 语言服务器
+
+| 语言                | 服务器                                 | 备选                                                                | 调试器                                |
+| ------------------- | -------------------------------------- | ------------------------------------------------------------------- | ------------------------------------- |
+| Java                | Eclipse JDT Language Server（`jdtls`） | `kmp-lsp`                                                           | Microsoft java-debug，加载在 jdtls 内 |
+| Kotlin              | Kotlin LSP（JetBrains，`kotlin-lsp`）  | Kotlin Language Server（fwcd，`kotlin-language-server`）、`kmp-lsp` | Kotlin Debug Adapter（fwcd）          |
+| Groovy、Gradle 脚本 | `groovy-language-server`（需自行提供） |                                                                     |                                       |
+| JSP                 | 无（仅语法高亮）                       |                                                                     |                                       |
+
+备选服务器只在排在它前面的服务器未安装时才会启动。想手动指定，打开 **设置 › 语言和框架 › 语言服务器**，选中其中一个服务器，在 **Java 语言服务器**（或 Kotlin 语言服务器）里选择：**自动** 使用第一个可用的，**无** 关闭代码智能。这个选择可以全局生效，也可以只对当前项目生效。
+
+`kmp-lsp` 不运行 JVM，提供基于语法的 Java 代码智能，没有 JDT 的编译分析、Lombok 支持和 JDT 的重构。构建和运行 Java “应用程序”配置、类路径发现以及 Java 调试器都需要 jdtls。
+
+### 随 IDE 提供的部分
+
+在原版 jdtls 之上，OpenIDEA 会加载仓库 [`java/`](https://github.com/l0ng-ai/openidea/tree/main/java) 目录里的扩展 bundle：
+
+- **java-usages**：查找用法能区分读和写；对字段，还会一并找出它的 getter、setter 和 builder（包括 Lombok 生成的）。查找用法默认只搜项目源码（**项目文件**），选择 **项目和库** 时才会搜索依赖 jar。
+- **Spring 配置导航**：见 [Spring](#spring)。
+- **kotlin-bridge**：在 Java 与 Kotlin 混合的 Maven 项目里，让 Java 代码能看到 Kotlin 类。见下文“Maven 项目中的 Kotlin”。
+- **Lombok**：应用内置一个打过补丁的 Lombok agent（1.18.48，修复了在当前 JDT LS 上的问题），无需下载。
+
+没有源码的库类会以反编译后的 `jdt://` 文档打开。依赖有源码包时，jdtls 会下载 Maven 和 Eclipse 源码。
+
+## 环境配置
+
+### 安装服务器
+
+打开 Java 或 Kotlin 文件时，如果对应的服务器缺失，会弹出通知并提供 **安装** 按钮。也可以在 **设置 › 语言和框架 › 语言服务器** 里安装、重新安装或卸载每个工具。所有工具都装进 IDE 自己的工具目录，不需要管理员权限：
+
+| 工具                                | 来源                                                       |
+| ----------------------------------- | ---------------------------------------------------------- |
+| Eclipse JDT Language Server         | download.eclipse.org 上的最新 milestone                    |
+| Java 调试器（Microsoft java-debug） | Open VSX 上的 `vscjava.vscode-java-debug` 扩展             |
+| Lombok（jdtls agent）               | 随应用内置                                                 |
+| Kotlin LSP（JetBrains）             | `Kotlin/kotlin-lsp` 的 GitHub release                      |
+| Kotlin Language Server（fwcd）      | `fwcd/kotlin-language-server` 的 GitHub release，需要 Java |
+| Kotlin Debug Adapter                | `fwcd/kotlin-debug-adapter` 的 GitHub release，需要 Java   |
+| kmp-lsp                             | `Hessesian/kmp-lsp` 的 GitHub release                      |
+
+`PATH` 上已有的 `jdtls`（Homebrew、Scoop 或 release 压缩包）也能直接用。OpenIDEA 直接在 JVM 上启动它，不经过它自带的 Python 启动脚本，所以不需要装 Python。没装 java-debug 就开始调试时，IDE 会提示安装，并带着这个 bundle 重启 jdtls。
+
+Groovy 没有安装程序：需要自行构建 [groovy-language-server](https://github.com/GroovyLanguageServer/groovy-language-server)，以 `groovy-language-server` 的名字放到 `PATH` 上，或在 **语言服务器** 页面里指定可执行文件。
+
+### JDK 检测
+
+OpenIDEA 会在这些位置查找已安装的 JDK：`JAVA_HOME`、`PATH` 上的 `java`、`/Library/Java/JavaVirtualMachines`（系统级和用户级）、`/usr/lib/jvm`、Homebrew、SDKMAN、mise、asdf、`~/.jdks`，以及 Windows 上 `Program Files` 下常见的厂商目录。IDE 自己下载的 JDK 也会被找到。JDK 列表旁的 **重新检测** 可以重新扫描。
+
+**设置 › 语言和框架 › Java** 里有两项 JDK 设置：
+
+- **项目 JDK › SDK**：用于编译和运行项目。它是 jdtls 的默认运行时、运行/调试使用的 JDK，也是 Maven 和 Gradle 的 `JAVA_HOME`。选 **自动** 时，每个模块使用与其目标 Java 版本匹配的已安装 JDK。
+- **语言服务器 › JDK**：只用来运行 jdtls，因此 Java 8 或 17 的项目也能用上新版 jdtls。选 **自动** 时，项目 JDK 版本够新就用它，否则用第一个满足要求的已安装 JDK；一个都没有时，会自动下载 Eclipse Temurin 到单独的语言服务器运行时目录。
+
+jdtls 需要 JDK 21 或更高版本，部分 jdtls 版本要求更高，OpenIDEA 会从已安装的 jdtls 中读取实际要求。检测到的每个 JDK 还会作为运行时（`JavaSE-17`、`JavaSE-21`……）注册给 jdtls，所以目标是 Java 17 的模块会针对 JDK 17 编译，而不是针对运行 jdtls 的那个 JDK。
+
+**语言级别** 在构建文件没有指定时决定 Java 源码和字节码级别。每个 JDK 列表里都有 **下载 JDK…**，可以选择版本，把 Eclipse Temurin 下载到 IDE 的 JDK 目录。当 jdtls、某个运行配置或 Maven/Gradle 同步找不到足够新的 JDK 时，也会提示同样的下载。
+
+Kotlin Language Server（fwcd）最高只能在 Java 21 上运行。如果 `JAVA_HOME` 指向更新的 JDK，IDE 会改用已安装 JDK 中符合要求的最新版本来启动它。
+
+### 内存与 JVM 选项
+
+每个项目窗口各自启动一个 jdtls，有独立的工作区和索引。jdtls 默认使用以下 JVM 选项：
+
+```text
+-XX:+UseG1GC -XX:G1PeriodicGCInterval=60000 -XX:MinHeapFreeRatio=10 -XX:MaxHeapFreeRatio=30 -Xmx2G -Xms100m
+```
+
+G1 加上周期性回收，可以在导入或构建结束后把内存还给系统。要调整上限，在 **设置 › 语言和框架 › Java › 语言服务器 › JVM 选项** 中填写，例如 `-Xmx1g` 或 `-Xmx4g`。你设置的选项会替换同一项的默认值；指定其他回收器（如 `-XX:+UseZGC`）时，默认的回收器相关选项会全部去掉。该设置可以全局配置，也可以按项目配置。
+
+**在构建间共享 JDT LS** 让一个本地项目窗口里所有关联的构建共用一个 jdtls，而不是每个构建一个。不同项目窗口之间仍然是各自独立的进程。
+
+jdtls 的工作区保存在 IDE 的数据目录（`lsp/jdtls/`）中，不在项目里；jdtls 也不会往项目里写 `.project`、`.classpath` 或 `.settings`。见[数据目录与日志](/zh/reference/data-directories)。
+
+### Lombok
+
+项目用到 Lombok 时（在构建文件、继承的父 POM 或 Gradle 构建中声明，或源码里有相关 import），OpenIDEA 会给 jdtls 加上 Lombok agent。默认使用 **语言服务器** 页面里的那个，也就是内置的版本；没有时会退回到 Maven 或 Gradle 缓存里最新的 Lombok。你在 **JVM 选项** 里自己写的 `-javaagent` 优先。项目自身的 Lombok 依赖不会被改动。
+
+## 构建工具
+
+jdtls 会自动导入 Maven 和 Gradle 项目（包括 Gradle wrapper）。没有构建文件的目录会作为普通 Java 项目打开，`lib/` 下的 jar 会加入类路径。OpenIDEA 还提供 **Maven** 和 **Gradle** 工具窗口，用来执行目标和任务、重新加载、切换 profile 以及分析依赖。相关设置在 **设置 › 构建、执行、部署 › Maven** 和 **Gradle**：
+
+- Maven：**将 IDE 构建/运行操作委托给 Maven**（运行和调试时用 Maven 的 `javac` 而不是 jdtls 构建）、**JRE**、**Maven 主路径**（默认用项目的 `mvnw`，没有则用 `PATH` 上的 `mvn`）、**用户设置文件**、**Toolchains 文件**、**本地仓库**、**活动 profiles**、**线程数** 和 **使用 Maven Daemon (mvnd)**。在 Maven 工具窗口里选的 profile 也会传给 jdtls，编辑器看到的依赖与该 profile 一致。
+- Gradle：**构建和运行使用**（Gradle 或 OpenIDEA）、**Gradle 使用的 JVM**、**分发**（Gradle 包装器或本地安装）、**Gradle 主路径** 和 **Gradle 用户主目录**。
+
+IDE 会把代理设置传给 jdtls，所以在代理环境下也能解析依赖。工具窗口的用法见[构建工具](/zh/guide/build-tools)。
+
+### Maven 项目中的 Kotlin
+
+在含 Kotlin 源码的 Maven 项目里，每次保存后 OpenIDEA 会在后台用项目自己的 Maven 配置构建 Kotlin 代码，输出到一个私有目录，再把编译好的 Kotlin 类作为库交给 jdtls。这样同一模块或其他模块的 Java 代码就能调用 Kotlin 代码。这次构建的错误会以 `kotlin-bridge` 的名义出现在 **问题** 中；在下一次构建成功之前，继续使用上一次成功的结果。这个桥接只覆盖编译后的 Kotlin API，从 Java 跳转到 Kotlin 源码、分析未保存的 Kotlin 修改以及跨语言重构都不在其中。
+
+## 运行与测试
+
+| 对象                          | 运行方式                                                                         |
+| ----------------------------- | -------------------------------------------------------------------------------- |
+| `main` 方法                   | **应用程序** 配置，使用模块的运行时或测试类路径；支持 Java 25 的实例 `main` 方法 |
+| `@SpringBootApplication` 类   | **Spring Boot** 配置，可设置活动 profile 和更新操作                              |
+| 可执行 jar                    | **JAR 应用程序** 配置                                                            |
+| WAR                           | **Tomcat 服务器** 配置，运行在本地 Tomcat 安装上（IDE 不会往安装目录里写东西）   |
+| JUnit 4、JUnit 5、TestNG 测试 | Maven（Surefire `-Dtest=…`）或 Gradle（`--tests …`）测试配置                     |
+
+main 方法、测试类和测试方法旁的边栏图标会创建这些配置；Maven 和 Gradle 的运行配置会从构建文件中自动检测。对 Gradle 项目，**构建和运行使用** 决定“应用程序”是作为 Gradle 的 `JavaExec` 任务运行（默认），还是由 OpenIDEA 用 jdtls 给出的类路径直接启动。
+
+测试结果从 Maven 和 Gradle 生成的 JUnit XML 报告中读取，通过的测试也会列出；测试树支持只重跑失败的测试。Gradle 运行配置的 VM 选项会作用到 Gradle fork 出来的 JVM（`run`、`bootRun`、`test`）。类路径超出命令行长度限制时（Windows 上常见），会改用参数文件或只含 manifest 的 jar。
+
+另见[运行配置](/zh/guide/run)和[测试](/zh/guide/testing)。
+
+## 调试
+
+Java 调试使用 jdtls 内的 Microsoft java-debug，Kotlin 调试使用 Kotlin Debug Adapter。可以调试：
+
+- “应用程序”、Spring Boot、“JAR 应用程序”和“Tomcat 服务器”配置。
+- 会启动 JVM 的 Maven 和 Gradle 配置（测试、`spring-boot:run`、`bootRun`、`run`）：IDE 会加上 JDWP agent，等 JVM 就绪后自动附加，输出和测试树仍留在运行工具窗口里。
+- 在别处启动的进程：使用 **远程 JVM 调试** 配置。
+
+**运行 › 调试操作 › 重新加载已更改的类**（HotSwap）会编译你的修改并加载到正在运行的会话中。Spring Boot 和 Tomcat 配置还支持 **运行 › 更新应用**（`⌘F10` / `Ctrl+F10`），行为由 **执行“更新”操作时** 选项决定。
+
+另见[调试](/zh/guide/debugging)。
+
+## 框架支持
+
+### Spring
+
+- **Spring Boot 运行配置**：根据 `@SpringBootApplication` 类创建，默认显示在 **服务** 工具窗口中。
+- **配置导航**：在 `application.yml` 或 `.properties` 的键上转到定义，会打开绑定到它的 Java 成员（`@ConfigurationProperties`、`@Value`、`Environment.getProperty`）；反过来，从 Java、YAML、properties 或 Spring XML 里的 `${…}` 占位符也能跳到配置键。依赖中 `spring-configuration-metadata.json` 描述的键会跳到对应的源类。对配置键执行 **查找用法**，会同时列出配置声明和 Java 中的使用处。
+- **Spring Web 端点**：Java 和 Kotlin 控制器中的请求映射旁有边栏图标，还有 **在 HTTP 客户端中生成请求** 和 **为控制器生成请求** 两个操作，会把请求写进一个临时 `.http` 文件。随处搜索的 **全部** 标签页可以按请求路径搜索。见 [HTTP Client](/zh/guide/http-client)。
+- **Facet**：在 **项目结构**（`⌘;` / `Ctrl+Alt+Shift+S`）里记录模块使用的框架（Web、Spring、JPA）。添加 Web Facet 还会把其中的 `WEB-INF/lib/*.jar` 加入 jdtls 的类路径。
+
+### MyBatis
+
+MyBatis mapper 接口与 XML 语句之间的跳转由 MyBatis Navigator 插件（[`plugins/official/mybatis`](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/mybatis)）提供，不属于 IDE 本体。
+
+## 已知限制
+
+- 每个项目窗口运行一个 jdtls，同时打开多个大项目时内存会叠加。可以在 **JVM 选项** 中调低 `-Xmx`，或关闭暂时不用的窗口。**在构建间共享 JDT LS** 只在单个窗口内有效。
+- 没有 jdtls 时（例如只用 `kmp-lsp`），“应用程序”配置、依赖类路径的功能和 Java 调试都不可用。
+- Java 测试通过 Maven 或 Gradle 运行，两者都没有的项目没有测试运行器。
+- jdtls 自带的 ECJ 编译器有些地方比 javac 严格。已知例子：把泛型方法调用直接用作 `if`、`while`、`for`、`do` 条件或三元运算符条件——例如 `<T> T getCacheObject(String key)` 方法配合 `if (getCacheObject(key))`——javac 可以编译，ECJ 则报 `Type mismatch: cannot convert from Object to boolean`。先把调用赋值给 `boolean` 变量即可两边都编译通过（见 [#2624](https://github.com/l0ng-ai/openidea/issues/2624)）。
+- Kotlin 桥接只支持 Maven，只把编译后的 Kotlin 类暴露给 Java，不提供从 Java 到 Kotlin 源码的跳转或重构。
+- Groovy 需要自行构建 `groovy-language-server`，JSP 只有语法高亮。

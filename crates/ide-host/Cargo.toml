@@ -10,11 +10,11 @@ name = "openidea-server"
 path = "src/bin/server.rs"
 
 [dependencies]
-percent-encoding = "2"
 encoding_rs.workspace = true
 ide-core.workspace = true
 ide-mcp.workspace = true
 futures.workspace = true
+tokio-tungstenite.workspace = true
 ide-text.workspace = true
 ide-vfs.workspace = true
 regex-syntax.workspace = true
@@ -28,6 +28,8 @@ ide-search.workspace = true
 ide-lsp.workspace = true
 ide-vcs.workspace = true
 ide-dap.workspace = true
+ide-heap.workspace = true
+ide-jvm-attach.workspace = true
 ide-build.workspace = true
 ide-analysis.workspace = true
 ide-coverage.workspace = true
@@ -50,6 +52,7 @@ ide-notebook.workspace = true
 ide-extension.workspace = true
 ide-plugin.workspace = true
 ide-tools = { path = "../ide-tools" }
+ide-scaffold.workspace = true
 ide-docker = { path = "../ide-docker" }
 semver = "1"
 serde.workspace = true

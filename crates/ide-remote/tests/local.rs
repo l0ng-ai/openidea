@@ -319,3 +319,38 @@ async fn browser_mappings_resolve_symlinks_and_download_to_the_project() {
     assert!(report.errors.is_empty());
     assert_eq!(std::fs::read_to_string(local).unwrap(), "from the server");
 }
+
+#[tokio::test]
+async fn download_into_copies_only_the_selected_items() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = tmp.path().join("srv/www/site/current");
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(server.join("drush/sub")).unwrap();
+    std::fs::create_dir_all(server.join("drush/empty")).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(server.join("drush/a.txt"), "a").unwrap();
+    std::fs::write(server.join("drush/sub/b.txt"), "b").unwrap();
+    std::fs::write(server.join("index.php"), "php").unwrap();
+    std::fs::write(project.join("index.php"), "old").unwrap();
+    let service = service(tmp.path());
+    // Remote paths use `/`, as the local file system lists them on Windows too.
+    let remotes = [server.join("drush"), server.join("index.php")].map(|p| p.to_str().unwrap().replace('\\', "/"));
+    let report = service
+        .download_into(&FsConnection::Local, &remotes, &project, &CancellationToken::new(), &mut |_, _, _| {})
+        .await
+        .unwrap();
+    assert_eq!(report.files, 3, "{report:?}");
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert_eq!(std::fs::read_to_string(project.join("drush/a.txt")).unwrap(), "a");
+    assert_eq!(std::fs::read_to_string(project.join("drush/sub/b.txt")).unwrap(), "b");
+    assert!(project.join("drush/empty").is_dir());
+    assert_eq!(std::fs::read_to_string(project.join("index.php")).unwrap(), "php");
+    assert!(!project.join("srv").exists() && !project.join("www").exists());
+
+    let missing = [server.join("gone").to_str().unwrap().to_owned()];
+    let report = service
+        .download_into(&FsConnection::Local, &missing, &project, &CancellationToken::new(), &mut |_, _, _| {})
+        .await
+        .unwrap();
+    assert_eq!((report.files, report.errors.len()), (0, 1), "{report:?}");
+}

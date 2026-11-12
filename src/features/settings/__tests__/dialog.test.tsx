@@ -575,42 +575,6 @@ describe("Settings dialog", () => {
       expect(settingsSet.mock.calls).toEqual([["global", "languages.java.jdtlsShared", "true"]]);
     });
 
-    it("disables sharing for a Java language server target only in project scope", async () => {
-      current = setAt(current, "languageServerTargets", { java: { target: "docker:java", server: "jdtls" } });
-      useProject.setState({ settings: current });
-      const dialog = await openDialog("languages.java");
-      fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
-      const checkbox = within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" });
-      expect(checkbox).toBeDisabled();
-      expect(within(dialog).getByText(/Select Local machine for the Java language server/)).toBeInTheDocument();
-      fireEvent.click(within(dialog).getByRole("radio", { name: "Global" }));
-      expect(checkbox).toBeEnabled();
-      fireEvent.click(checkbox);
-      await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
-      expect(settingsSet.mock.calls).toEqual([["global", "languages.java.jdtlsShared", "true"]]);
-    });
-
-    it.each([{ java: { target: "", server: "jdtls" } }, { python: { target: "docker:python" } }])(
-      "keeps sharing available when Java runs locally: %j",
-      async (targets) => {
-        current = setAt(current, "languageServerTargets", targets);
-        useProject.setState({ settings: current });
-        const dialog = await openDialog("languages.java");
-        fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
-        expect(within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" })).toBeEnabled();
-      },
-    );
-
-    it("uses a staged project Java language server target before Apply", async () => {
-      const dialog = await openDialog("languages.java");
-      fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
-      const checkbox = within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" });
-      expect(checkbox).toBeEnabled();
-      act(() => stage("languages.servers", "project", "languageServerTargets.java.target", "docker:java"));
-      expect(checkbox).toBeDisabled();
-      expect(settingsSet).not.toHaveBeenCalled();
-    });
-
     it("Settings for New Projects edits the global layer on every page", async () => {
       render(<SettingsDialog />);
       await act(async () => {
@@ -666,6 +630,13 @@ describe("Settings dialog", () => {
     expect(within(dialog).getByLabelText("UI font size")).toHaveValue("13");
   });
 
+  it("keeps Project Structure out of the Settings page tree", async () => {
+    useProject.setState({ project: { name: "demo", root: "/project" } as never });
+    const dialog = await openDialog("appearance");
+    const tree = within(dialog).getByRole("tree", { name: "Settings pages" });
+    expect(within(tree).queryByText("Project Structure")).toBeNull();
+  });
+
   it("opens Project Structure as its own standalone IDEA-style dialog instead of Settings", async () => {
     useProject.setState({ project: { name: "demo", root: "/project" } as never });
     render(
@@ -691,7 +662,11 @@ describe("Settings dialog", () => {
     expect(within(nav).getByRole("button", { name: "Modules" })).toHaveAttribute("aria-current", "page");
     expect(within(psDialog).getByRole("tab", { name: "Sources" })).toBeInTheDocument();
     expect(within(psDialog).getByRole("tab", { name: "Paths" })).toBeInTheDocument();
-    expect(within(psDialog).getByRole("tab", { name: "Dependencies" })).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(within(nav).getByRole("button", { name: "Dependencies" }));
+    });
+    expect(within(nav).getByRole("button", { name: "Dependencies" })).toHaveAttribute("aria-current", "page");
+    expect(within(psDialog).getByRole("group", { name: "The project depends on these projects" })).toBeInTheDocument();
   });
 
   it("preserves pending Project Structure edits when its shortcut is invoked again", async () => {
@@ -711,9 +686,10 @@ describe("Settings dialog", () => {
     await act(async () => executeAction("file.projectStructure", "modules"));
     fireEvent.click(screen.getByRole("tab", { name: "Paths" }));
     expect(screen.getByLabelText("Test output path")).toBeDisabled();
-    fireEvent.click(screen.getByRole("tab", { name: "Dependencies" }));
-    expect(screen.getByRole("button", { name: "Add Library" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Add Module Dependency" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Dependencies" }));
+    // Project dependencies are supported: the checklist is live, no disabled placeholder.
+    expect(screen.getByRole("group", { name: "The project depends on these projects" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Project…" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Artifacts" }));
     expect(screen.getByRole("button", { name: "JAR" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "WAR" })).toBeDisabled();

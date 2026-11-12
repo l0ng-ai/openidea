@@ -100,6 +100,8 @@
   const documentApi = Object.freeze({
     /** `{ version, text, readOnly, name }` of the document a custom editor shows (`name`: the file's, no directory). */
     get: () => call("document.get"),
+    /** The bytes of the file the custom editor shows (read-only, so the disk is current). */
+    bytes: () => call("document.bytes"),
     /** Called with `{ version, text }` when the document changes other than through this frame. */
     onChange: (fn) => {
       if (typeof fn === "function") documentListeners.push(fn);

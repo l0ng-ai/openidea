@@ -1,0 +1,71 @@
+---
+title: "Ruby"
+description: "Ruby LSP 与 Solargraph、基于版本管理器的解释器识别、Rake/RSpec/Minitest 运行、rdbg 调试以及 Rails。"
+---
+
+OpenIDEA 无需配置即可高亮 Ruby 文件（`.rb`、`.rake`、`.gemspec`、`.ru`、`.rbi`、`.jbuilder`、`.podspec`，以及 `Gemfile`、`Rakefile`、`Podfile`、`Vagrantfile` 等文件名）和 ERB 模板。代码智能由 Ruby LSP 提供。Rake 任务、RSpec、Minitest 和 `rails server` 会被识别为运行配置，调试使用 Ruby `debug` gem 中的 `rdbg`。其他语言见[支持矩阵](/zh/languages/index)。
+
+## 语言服务器
+
+| 服务器                | 启用条件                                                                     |
+| --------------------- | ---------------------------------------------------------------------------- |
+| `ruby-lsp`（Shopify） | 默认。工作区根：`Gemfile`、`.ruby-version` 或 `.rubocop.yml`。               |
+| `solargraph`          | 备选：仅在未安装 Ruby LSP 时使用。工作区根：`Gemfile` 或 `.solargraph.yml`。 |
+
+ERB 文件（`.erb`、`.html.erb` 等）只有语法高亮，没有语言服务器。
+
+## 环境配置
+
+### Ruby 解释器
+
+**设置 › 语言和框架 › Ruby 语言 › Ruby 解释器** 用于选择运行 `ruby`、`rake`、`rspec` 配置的 Ruby；它的标准库和 Bundler 解析出的 gem 会显示在项目树的 **外部库** 中。
+
+**自动**（默认）会先找与 `.ruby-version`（从项目目录向上查找）匹配的安装，其次是 mise 或 asdf 固定的版本，最后用 `PATH` 上的 `ruby`。列表会列出 rbenv、rvm、chruby（`~/.rubies`、`/opt/rubies`）、mise、asdf 安装的 Ruby，Homebrew 的 Ruby，以及 `PATH` 上的 Ruby（版本管理器的 shim 除外）。
+
+### 安装语言服务器
+
+打开 Ruby 文件而没有任何服务器时，IDE 会弹出通知并提供 **安装** 按钮。所有工具也都列在 **设置 › 语言和框架 › 语言服务器** 中。
+
+| 工具             | 安装方式                                                                                                              |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Ruby LSP         | 用 `gem install ruby-lsp` 装进项目所用的 Ruby（它会在 Bundler 下重新启动自身，放在路径含空格的私有 gem 目录里会出错） |
+| Solargraph       | 用 `gem install` 装进 IDE 自己的工具目录                                                                              |
+| `rdbg`（调试器） | IDE 不负责安装：执行 `gem install debug`，或把 `debug` 加进 Gemfile                                                   |
+
+两种安装都需要 `PATH` 上有 `gem`。即使 Ruby 的 gem `bin` 目录不在 `PATH` 上（例如 Homebrew 的 Ruby），IDE 也能找到 gem 的可执行文件。
+
+## 运行与测试
+
+项目根目录有 `Gemfile`、`Rakefile`、`.ruby-version`、`config.ru` 或 `.gemspec` 时，会自动检测：
+
+- 存在 `bin/rails` 时生成 **rails server**。
+- `Rakefile` 中定义的每个任务一个 **Rake 任务** 配置，包括 `namespace` 块以及 `Rake::TestTask` / `RSpec::Core::RakeTask` 定义的任务。`test`、`spec`、`*:test`、`*:spec` 是测试配置。
+- 项目有 `spec/`、`.rspec` 或 Gemfile 中引用了 `rspec` 时生成 **RSpec 测试**。
+- 否则，如果有 `test/` 目录且没有 `test` Rake 任务，生成一个 **minitest** 配置，加载 `test/` 下所有 `*_test.rb` / `test_*.rb`。
+
+有 `Gemfile` 时，这些配置通过 `bundle exec` 运行。**Ruby 语言**、**Rake 任务**、**RSpec 测试** 三种运行配置类型都有 **通过 Bundler 运行（bundle exec）** 选项，以及可填 binstub 等命令的 **启动器** 字段。
+
+**运行上下文配置**（`⌃⇧R` / `Ctrl+Shift+F10`）：
+
+- `*_spec.rb` 文件通过 RSpec 运行，并以该文件为目标。
+- `*_test.rb` / `test_*.rb` 文件通过 `rake test`（以 `TEST=<file>` 传入）或 minitest 配置运行。
+- 其他 `.rb` 文件用 `ruby` 运行，并把项目的源代码目录加入加载路径（`-I`）。
+
+在 Minitest 和 Test::Unit 文件中，边栏图标可以单独运行某个测试类、模块或测试方法（`--name=Class#test_x`）。IDE 会在运行时加载一个报告器（不改动项目文件），把 Minitest 结果写入测试树，并带上每个测试真实的文件和行号。支持 **重新运行失败的测试**。详见[测试](/zh/guide/testing)。
+
+**使用覆盖率运行** 通过 SimpleCov 支持 `ruby`、`bundle`、`rake`、`rspec`、`rails` 运行；使用 Bundler 的项目需要在 Gemfile 中加入 `simplecov`。详见[覆盖率](/zh/guide/coverage)。
+
+## 调试
+
+**调试** 适用于 Ruby 文件以及检测出的 Rake、RSpec、minitest 和 `rails server` 配置。IDE 会从项目所用的 Ruby 启动 `rdbg`（`bundle` 也取自同一安装），因此请先为该 Ruby 安装 `debug` gem。详见[调试](/zh/guide/debugging)。
+
+## 框架支持
+
+- **Rails**：提供 `rails server` 运行配置，项目的 gem（包括 Rails）显示在外部库中，ERB 有语法高亮，Rails 运行支持覆盖率。除 Ruby LSP 本身提供的能力外，没有 Rails 专属的导航（路由、控制器到视图等）。
+
+## 已知限制
+
+- RSpec 只能按文件或整个套件运行，单个 `describe` / `it` 没有边栏运行图标。
+- 不支持附加或远程调试 Ruby 进程。
+- ERB 模板没有代码智能。
+- IDE 不会安装 `debug` gem。

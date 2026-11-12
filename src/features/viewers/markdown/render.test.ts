@@ -91,6 +91,31 @@ describe("markdown preview rendering", () => {
     expect(root.textContent).not.toContain("outline");
   });
 
+  it("lets only a link name another host", () => {
+    const at = (name: string) => `https://example.com/${name}`;
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown(
+      [
+        `[A link](${at("link")})`,
+        `<img src="a.png" srcset="b.png 1x, ${at("srcset")} 2x">`,
+        `<picture><source srcset="${at("source")}"><img src="a.png"></picture>`,
+        `<input type="image" src="${at("input")}">`,
+        `<video poster="${at("poster")}" src="${at("video")}"></video>`,
+        `<table background="${at("table")}"><tr><td background="${at("cell")}">cell</td></tr></table>`,
+        '<input type="image" src="//example.com/no-scheme">',
+        String.raw`<input type="image" src="/\example.com/mixed">`,
+      ].join("\n\n"),
+    );
+    const named = [...root.querySelectorAll("*")].flatMap((el) =>
+      [...el.attributes]
+        .filter((attr) => attr.value.includes("example.com"))
+        .map((attr) => `${el.localName}[${attr.name}]`),
+    );
+    expect(named).toEqual(["a[href]"]);
+    expect([...root.querySelectorAll("img")].map((img) => img.dataset.src)).toEqual(["a.png", "a.png"]);
+    expect(root.querySelector("td")?.textContent).toBe("cell");
+  });
+
   it("keeps the raw HTML READMEs rely on", () => {
     const root = document.createElement("div");
     root.innerHTML = renderMarkdown(
@@ -202,6 +227,24 @@ describe("markdown preview rendering", () => {
     expect(resolveLink(file, "javascript:alert(1)")).toBeNull();
     expect(joinPath("C:/repo/docs", "../a.md")).toBe("C:/repo/a.md");
     expect(joinPath("/repo", "../../a.md")).toBe("/a.md");
+  });
+
+  // On Windows, opening `//server/share` signs in to that server with the user's credentials.
+  it("resolves no link to a network share, however the file spells it", () => {
+    const file = "C:/repo/docs/guide.md";
+    for (const href of [
+      "/\\evil/share/x.png",
+      "/%5Cevil/share/x.png",
+      "//evil/share/x.png",
+      "/%2Fevil/share/x.png",
+      "file:///%5Cevil/share/x.png",
+      "file:////evil/share/x.png",
+      "%5C%5Cevil%5Cshare%5Cx.png",
+    ]) {
+      expect(resolveLink(file, href), href).toBeNull();
+    }
+    expect(resolveLink("/guide.md", "../%5Cevil/share/x.png"), "file at the root").toBeNull();
+    expect(resolveLink(file, "/docs/a.png")).toEqual({ kind: "file", path: "/docs/a.png" });
   });
 
   it("interpolates the preview offset between blocks", () => {

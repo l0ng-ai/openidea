@@ -1,0 +1,52 @@
+---
+title: "SQL"
+description: "SQL files, the sqls language server, and running SQL against a data source with schema-aware completion."
+---
+
+SQL files (`.sql`, `.ddl`, `.dml`, `.psql`, `.pgsql`, `.mysql`) get highlighting out of the box. Most SQL support, including running statements and completing table and column names, comes from the [Database tool window](/en/guide/database): any editable SQL file can be bound to a data source and works like a query console. For other languages, see the [support matrix](/en/languages/index).
+
+## Language server
+
+The SQL language definition names [sqls](https://github.com/sqls-server/sqls). When it is missing, opening a SQL file shows a "sqls is not installed" notification with **Install**, which runs `go install github.com/sqls-server/sqls@latest` into the IDE's tools folder. This needs Go on your `PATH`. A `sqls` already on your `PATH` is used as is.
+
+The IDE does not pass your data sources to sqls. Without its own configuration file, sqls knows no schema, so you can ignore the notification if you only use the database features below. To turn the server off, select sqls in **Settings › Languages & Frameworks › Language Servers** and clear **Use sqls for SQL files**.
+
+## SQL files and data sources
+
+Define data sources in the **Database** tool window first (see [Database](/en/guide/database)). Supported databases are SQLite, PostgreSQL, MySQL and MariaDB, Microsoft SQL Server, ClickHouse and Oracle, plus compatible products such as Amazon Aurora, Redshift, CockroachDB, TiDB and Supabase.
+
+Every editable SQL file shows a toolbar above the editor. Its **Data source** list binds the file to one data source. With only one data source configured, files use it automatically. **Query Console** (`⌘⇧L` / `Ctrl+Shift+Q`) opens the query console of the data source selected in the Database tool window (or the only one).
+
+The toolbar has:
+
+- **Execute**: runs the statement at the caret, or every statement in the selection. Also **Execute SQL Statement** (`⌘↩` / `Ctrl+Enter`).
+- **Explain Plan**: shows the query plan of the statement at the caret.
+- **Cancel Running Statement** and **Browse Query History**.
+- A transaction mode switch (**Tx: Auto** / **Tx: Manual**) with **Commit** and **Roll Back** in manual mode (not for ClickHouse).
+- A schema (or, for SQL Server, database) list that sets where unqualified names resolve.
+
+Results open in result tabs. Statements are split at `;`, respecting strings, quoted identifiers, comments, PostgreSQL dollar quoting and Oracle PL/SQL blocks.
+
+### Parameters
+
+Statements can contain parameters: `:name`, `?`, `?1`, `@name` and `$1`. Before running, the IDE asks for their values and inserts each value as SQL text, so string values need their quotes. Named parameters share one value; every bare `?` is asked for separately.
+
+## Editing support
+
+The IDE itself provides the following, using the dialect and the introspected schema of the bound data source:
+
+- Completion of keywords, schemas, tables, views, columns, functions, aliases and join conditions. Without a data source, it completes keywords and built-in functions only.
+- Parameter info for the target columns inside `INSERT … VALUES (…)`.
+- Inspections for unresolved tables, columns and aliases.
+- **Go to Declaration or Usages** for aliases and CTEs in the text, and for tables and columns (revealed in the Database tool window).
+- **Quick Documentation** for tables and columns.
+- **Reformat Code** with a built-in SQL formatter.
+- Live templates for SQL contexts (statement, query and code positions).
+
+None of this needs sqls.
+
+## Limitations
+
+- Without a bound data source there is no schema, so completion offers only keywords and functions, and statements cannot run.
+- The dialect follows the bound data source. Unbound files are analyzed as SQLite, and there is no per-file dialect setting.
+- sqls is not configured by the IDE.

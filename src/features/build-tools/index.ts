@@ -48,8 +48,10 @@ import {
   resetBuild,
   setExpanded,
   setCurrentProject,
+  generateSources,
   syncTool,
   toggleGradleOffline,
+  toggleGradleSkipTests,
   toggleMavenOffline,
   toggleSkipTests,
   useBuild,
@@ -302,6 +304,20 @@ export function activate(): () => void {
         run: () => syncTool("maven"),
       },
       {
+        id: "maven.generateSources",
+        title: "Generate Sources and Update Folders For All Projects",
+        description:
+          "Runs generate-sources, then reloads the Maven projects so generated folders become source folders",
+        category: "Maven",
+        icon: "folder-generated-source",
+        when: MAVEN_WHEN,
+        keywords: ["maven", "generate", "sources", "generated", "update folders"],
+        run: ({ arg }) => {
+          const pom = (arg as { pom?: unknown } | null | undefined)?.pom;
+          return generateSources(typeof pom === "string" ? pom : null);
+        },
+      },
+      {
         id: "maven.cancelReload",
         title: "Stop Reloading Maven Projects",
         category: "Maven",
@@ -435,6 +451,17 @@ export function activate(): () => void {
         keywords: ["gradle", "offline"],
         toggled: () => useBuild.getState().settings.gradle.offline,
         run: () => toggleGradleOffline(),
+      },
+      {
+        id: "gradle.toggleSkipTests",
+        title: "Toggle 'Skip Tests' Mode",
+        description: "Runs Gradle with -x test",
+        category: "Gradle",
+        icon: "skip-tests",
+        when: GRADLE_WHEN,
+        keywords: ["gradle", "skip tests"],
+        toggled: () => useBuild.getState().settings.gradle.skipTests,
+        run: () => toggleGradleSkipTests(),
       },
       {
         id: "gradle.expandAll",

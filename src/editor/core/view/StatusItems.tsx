@@ -10,7 +10,7 @@ import { BarButton, Icon, Menu, badgeKind, fileIconName } from "@/ui";
 import { notifications, useProjectViewLead } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { ENCODING_CHOICES, useEditorPrefs } from "@/platform/editorSettings";
-import { isVirtualUri } from "@/platform/virtualDocs";
+import { isVirtualUri, invalidateVirtualDocument } from "@/platform/virtualDocs";
 import { editorController, isTextInput, useEditorStatus, useGotoLine, useTabs } from "../controller";
 import { useDocMeta, useOutline } from "../model/document";
 import { symbolChain } from "./outline";
@@ -352,6 +352,7 @@ const ENCODINGS = ENCODING_CHOICES;
 /** File encoding widget (IDEA: click → choose an encoding, then Reload or Convert). */
 export function EncodingStatus() {
   const meta = useActiveMeta();
+  const prefs = useEditorPrefs();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   if (!meta) return null;
@@ -360,7 +361,11 @@ export function EncodingStatus() {
     if (!model) return;
     void editorController()
       .manager.backend.setEncoding(meta.doc, encoding, reload)
-      .then((enc) => model.setMeta({ encoding: enc, ...(reload ? {} : { dirty: true }) }))
+      .then((enc) => {
+        model.setMeta({ encoding: enc.encoding, hasBom: enc.hasBom, ...(reload ? {} : { dirty: true }) });
+        // Reopening the tab must fetch the re-decoded contents, not the old cache.
+        if (reload && isVirtualUri(meta.path)) invalidateVirtualDocument(meta.path);
+      })
       .catch((e: unknown) =>
         notifications().notify({
           level: "error",
@@ -370,6 +375,27 @@ export function EncodingStatus() {
       );
   };
   const current = meta.encoding.toLowerCase();
+  const nativeToAsciiProperties = prefs.encodings.nativeToAscii && meta.path.endsWith(".properties");
+  const canToggleBom = current === "utf-8" && !nativeToAsciiProperties;
+  const label = ENCODINGS.find(([id]) => id === current)?.[1] ?? meta.encoding;
+  const applyBom = (hasBom: boolean) => {
+    const controller = editorController();
+    const model = controller.manager.get(meta.path);
+    if (!model) return;
+    void controller.manager.backend
+      .setBom(meta.doc, hasBom)
+      .then(async (enc) => {
+        model.setMeta({ encoding: enc.encoding, hasBom: enc.hasBom, dirty: true });
+        if (controller.autoSave()) await model.save("auto");
+      })
+      .catch((e: unknown) =>
+        notifications().notify({
+          level: "error",
+          title: tx("Cannot change the UTF-8 BOM"),
+          body: e instanceof Error ? e.message : String(e),
+        }),
+      );
+  };
   const group = (reload: boolean) =>
     ENCODINGS.filter(([id]) => id !== current).map(([id, label]) => ({
       id: `${reload ? "reload" : "convert"}.${id}`,
@@ -385,7 +411,7 @@ export function EncodingStatus() {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        {ENCODINGS.find(([id]) => id === current)?.[1] ?? meta.encoding}
+        {meta.hasBom ? `${label} BOM` : label}
       </BarButton>
       <Menu
         open={open}
@@ -394,8 +420,24 @@ export function EncodingStatus() {
         placement="top-end"
         aria-label="File encoding"
         items={[
-          { id: "reload", label: "Reload with Encoding", disabled: meta.dirty, submenu: group(true) },
+          {
+            id: "reload",
+            label: "Reload with Encoding",
+            disabled: meta.dirty || !meta.canReloadEncoding,
+            submenu: group(true),
+          },
           { id: "convert", label: "Convert to Encoding", disabled: meta.readOnly, submenu: group(false) },
+          ...(canToggleBom
+            ? [
+                { kind: "separator" as const },
+                {
+                  id: "toggle-bom",
+                  label: meta.hasBom ? "Remove UTF-8 BOM" : "Add UTF-8 BOM",
+                  disabled: meta.readOnly,
+                  run: () => applyBom(!meta.hasBom),
+                },
+              ]
+            : []),
           { kind: "separator" },
           {
             id: "configure",

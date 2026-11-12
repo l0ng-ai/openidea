@@ -1,0 +1,112 @@
+---
+title: "MCP Server"
+description: "让 Claude Code、Codex 等 MCP 客户端在你打开的项目上使用 OpenIDEA 的搜索、代码洞察、编辑、运行和 Git 工具。"
+---
+
+OpenIDEA 内置了一个 [Model Context Protocol](https://modelcontextprotocol.io)（MCP）服务器。打开后，在 IDE 之外运行的 AI agent（例如终端里的 Claude Code、Codex 或 Cursor）就能对你打开的项目调用 IDE 的工具：借助项目索引搜索、通过语言服务器查询符号、读取问题视图、重命名、重新格式化、构建、执行运行配置以及查看 Git 状态。
+
+在 OpenIDEA 内启动的 agent 任务（见 [Agent](/zh/guide/agents)）在服务器开启期间会自动获得同样的工具。
+
+## 开启
+
+<Steps>
+  <Step title="打开设置页面">进入 **设置 › 智能体 › IDE MCP 服务器**。</Step>
+  <Step title="启用">打开 **启用 MCP 服务器** 并应用。默认是关闭的。</Step>
+  <Step title="查看状态">
+    **状态** 显示服务器正在使用的端口，或启动失败的原因。**端点** 显示当前窗口所在项目的 URL。
+  </Step>
+</Steps>
+
+服务器只监听 `127.0.0.1` 上的一个随机端口，每个请求都必须带上令牌，令牌在每次启动 OpenIDEA 时都会变化。来自其他 Origin 或 Host 的请求会被拒绝。
+
+## 连接客户端
+
+设置页面的 **客户端配置** 下有两个按钮，都会复制一段大多数客户端都能识别的 `mcpServers` JSON 配置。
+
+- **复制 Stdio 配置**（推荐）：客户端以 `--mcp-stdio` 参数启动 OpenIDEA 的可执行文件，由它转发给正在运行的 IDE。配置里没有令牌，OpenIDEA 重启后依然可用。
+- **复制 HTTP 配置**：客户端带着 `Authorization: Bearer <token>` 连接 `http://127.0.0.1:<port>/mcp`。由于端口和令牌会变，OpenIDEA 重启后这份配置就失效了。
+
+stdio 配置大致如下（路径以你机器上的为准）：
+
+```json
+{
+  "mcpServers": {
+    "openidea": {
+      "type": "stdio",
+      "command": "/Applications/OpenIDEA.app/Contents/MacOS/openidea",
+      "args": ["--mcp-stdio", "--project", "/path/to/project"]
+    }
+  }
+}
+```
+
+`--project` 指定客户端要操作的项目。省略时，转发程序使用客户端启动它时所在的目录，这样一份配置就能用于你在 OpenIDEA 中打开的所有项目。
+
+<Tabs>
+  <Tab title="Claude Code">
+    在项目目录的终端中为当前项目添加服务器：
+
+    ```sh
+    claude mcp add openidea -- /Applications/OpenIDEA.app/Contents/MacOS/openidea --mcp-stdio
+    ```
+
+    也可以把复制的 JSON 放到项目根目录的 `.mcp.json` 中，与团队共享。
+
+  </Tab>
+  <Tab title="Codex">
+    在 `~/.codex/config.toml` 中添加：
+
+    ```toml
+    [mcp_servers.openidea]
+    command = "/Applications/OpenIDEA.app/Contents/MacOS/openidea"
+    args = ["--mcp-stdio"]
+    ```
+
+    Codex 会在你运行 `codex` 的目录中启动它。
+
+  </Tab>
+  <Tab title="其他客户端">
+    把复制的配置粘贴到客户端的 MCP 设置中（例如 Cursor 的 `mcp.json`）。只支持 HTTP 的客户端可以用 **复制 HTTP 配置**，但每次 OpenIDEA 重启后都要更新。
+  </Tab>
+</Tabs>
+
+请以 **复制 Stdio 配置** 得到的可执行文件路径为准，上面的 macOS 路径只是示例。在 Windows 上，它是安装目录（或便携版目录）中的 `openidea.exe`。
+
+工具只在 OpenIDEA 运行且项目已打开时可用。客户端可以指定已打开项目中的任意目录，服务器会选出包含它的那个项目。HTTP 客户端通过 `X-OpenIDEA-Project` 请求头或 `?project=` 查询参数指定项目。
+
+服务器运行期间，OpenIDEA 会把端口和令牌写入应用数据目录下的 `mcp/server.json`（只有你自己可读），stdio 转发程序从这里读取。
+
+## 工具
+
+| 类别       | 工具                                                                        |
+| ---------- | --------------------------------------------------------------------------- |
+| 文件       | `read_file`、`list_directory_tree`、`create_new_file`、`apply_patch`        |
+| 搜索       | `search_text`、`search_regex`、`search_symbol`、`search_file`               |
+| 编辑器     | `get_all_open_file_paths`、`get_current_file`、`open_file_in_editor`        |
+| 代码       | `get_symbol_info`、`find_references`、`rename_refactoring`、`reformat_file` |
+| 问题       | `get_file_problems`、`get_project_problems`                                 |
+| 运行与构建 | `get_run_configurations`、`execute_run_configuration`、`build_project`      |
+| Git        | `get_repositories`、`git_status`、`git_diff`                                |
+
+几点说明：
+
+- `read_file` 还能读取依赖的源代码，以及 jar 和 zip 压缩包中的文件。
+- `search_symbol` 和 `find_references` 使用 IDE 的索引和语言服务器；`get_symbol_info` 返回的内容与快速文档相同。
+- `get_file_problems` 和 `get_project_problems` 返回的是问题工具窗口当前显示的内容（已应用你的检查配置文件），而不是重新分析的结果。
+- `rename_refactoring` 通过语言服务器重命名，文本搜索找不到的引用也会一并更新；也可以只预览不写入。
+- `apply_patch` 接受 Codex 的 `apply_patch` 格式和 unified diff，路径必须在项目内。
+- `git_diff` 比较的是磁盘上的文件，不包含编辑器中尚未保存的内容。
+
+插件可以添加更多工具，它们会出现在同一个列表中。标记为破坏性操作的插件工具同样会先请求确认。
+
+## 安全
+
+- **未受信任的项目** 只开放只读工具。写文件、重命名、重新格式化、构建或运行的工具都要求项目已被信任。
+- **运行和构建会先询问。** `execute_run_configuration` 和 `build_project` 会在 OpenIDEA 中弹出对话框，说明是哪个客户端、哪个项目、哪个工具以及要运行什么，选择 **允许** 或 **拒绝**；多个请求会排队。
+- 会写入的工具拒绝项目之外的路径。
+
+## 限制
+
+- 远程项目（通过 SSH、服务器或容器打开的项目）暂不支持 MCP 服务器。
+- 服务器只为 OpenIDEA 中已打开的项目提供服务，关闭项目窗口后该项目的工具就不可用了。
+- 响应是普通 JSON，服务器不通过 SSE 推送流式结果。

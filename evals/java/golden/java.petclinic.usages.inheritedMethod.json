@@ -1,0 +1,24 @@
+{
+  "tools": {
+    "jdtls": "1.63.0-202610191322",
+    "java": "21.0.13.0.2 (Homebrew)"
+  },
+  "groups": {
+    "usages": [
+      "src/main/java/org/springframework/samples/petclinic/owner/Owner.java:108",
+      "src/main/java/org/springframework/samples/petclinic/owner/Owner.java:132",
+      "src/main/java/org/springframework/samples/petclinic/owner/Owner.java:161",
+      "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java:125",
+      "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java:161",
+      "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java:86",
+      "src/main/java/org/springframework/samples/petclinic/owner/PetController.java:153",
+      "src/main/java/org/springframework/samples/petclinic/owner/PetController.java:187",
+      "src/test/java/org/springframework/samples/petclinic/service/ClinicServiceTests.java:122",
+      "src/test/java/org/springframework/samples/petclinic/service/ClinicServiceTests.java:182",
+      "src/test/java/org/springframework/samples/petclinic/service/ClinicServiceTests.java:229",
+      "src/test/java/org/springframework/samples/petclinic/service/ClinicServiceTests.java:234",
+      "src/test/java/org/springframework/samples/petclinic/service/EntityUtils.java:46",
+      "src/test/java/org/springframework/samples/petclinic/vet/VetTests.java:38"
+    ]
+  }
+}

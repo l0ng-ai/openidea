@@ -26,11 +26,19 @@ interface ExternalChange {
   apply(): Promise<unknown>;
 }
 
-export type ProjectStructureSection = "project" | "modules" | "libraries" | "facets" | "artifacts" | "sdks";
+export type ProjectStructureSection =
+  | "project"
+  | "modules"
+  | "dependencies"
+  | "libraries"
+  | "facets"
+  | "artifacts"
+  | "sdks";
 
 const PROJECT_STRUCTURE_SECTIONS: readonly ProjectStructureSection[] = [
   "project",
   "modules",
+  "dependencies",
   "libraries",
   "facets",
   "artifacts",

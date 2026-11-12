@@ -1,4 +1,4 @@
-package openidea:plugin@1.5.0;
+package openidea:plugin@1.6.0;
 
 interface lifecycle {
     use types.{context, error};
@@ -76,7 +76,7 @@ interface syntax-provider {
 
 /// Optional pre-launch gate for targets owned by this plugin (API 1.5).
 interface run-target-validation {
-    enum operation { run, debug, test }
+    enum operation { run, test }
     record launch-info {
         operation: operation,
         /// Bare program name before wrapping; no arguments or environment.

@@ -95,6 +95,15 @@ fn lazy_summaries_seek_and_index_survive_refresh_and_restart() {
     let window = repo.log(&LogQuery { seek: Some(ids[5].clone()), limit: 20, ..query.clone() }).unwrap();
     assert!(window.iter().any(|c| c.id == ids[5]));
     assert!(window[0].log_position.unwrap() > 0);
+    let prefix_window =
+        repo.log(&LogQuery { seek: Some(ids[5][..8].to_string()), limit: 20, ..query.clone() }).unwrap();
+    assert!(prefix_window.iter().any(|c| c.id == ids[5]));
+    let single = repo.log(&LogQuery { branch: Some(ids[5].clone()), skip: 0, limit: 1, ..Default::default() }).unwrap();
+    assert_eq!(single.len(), 1);
+    assert_eq!(single[0].id, ids[5]);
+    assert_eq!(single[0].message, "summary 5\n\nneedle body 5");
+    assert!(!single[0].message_truncated);
+    assert_eq!(single[0].on_current_branch, Some(true));
     assert!(repo.log(&LogQuery { request: Some(ide_core::RequestId(1)), ..query.clone() }).is_ok());
     let cancel = ide_core::CancellationToken::new();
     cancel.cancel();
@@ -111,6 +120,15 @@ fn lazy_summaries_seek_and_index_survive_refresh_and_restart() {
     assert_eq!(hit[0].id, ids[69]);
     assert_eq!(repo.log_details(&ids[69]).unwrap().message, "summary 69\n\nneedle body 69");
     assert_eq!(repo.log_details(&ids[69]).unwrap().signature, "N");
+    git(dir, &["checkout", "-qb", "side", &ids[0]]);
+    let side = commit(dir, "side.txt", "side commit");
+    git(dir, &["checkout", "-q", "main"]);
+    let fresh_repo = Repo::discover(dir).unwrap().unwrap();
+    let off_branch = fresh_repo.log(&LogQuery { branch: Some(side), skip: 0, limit: 1, ..Default::default() }).unwrap();
+    assert_eq!(off_branch[0].on_current_branch, Some(false));
+    let on_branch =
+        fresh_repo.log(&LogQuery { branch: Some(ids[5].clone()), skip: 0, limit: 1, ..Default::default() }).unwrap();
+    assert_eq!(on_branch[0].on_current_branch, Some(true));
 }
 
 #[test]

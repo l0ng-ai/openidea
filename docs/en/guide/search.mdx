@@ -1,0 +1,104 @@
+---
+title: "Search and navigation"
+description: "Search Everywhere, Go to File, Class and Symbol, Find and Replace in Files, recent files and locations, bookmarks and Run Anything."
+---
+
+## Search Everywhere
+
+| Action                     | macOS  | Windows / Linux    |
+| -------------------------- | ------ | ------------------ |
+| **Search Everywhere**      | `⇧⇧`   | `Shift Shift`      |
+| **Go to Class…**           | `⌘O`   | `Ctrl+N`           |
+| **Go to File…**            | `⇧⌘O`  | `Ctrl+Shift+N`     |
+| **Go to Symbol…**          | `⌥⌘O`  | `Ctrl+Alt+Shift+N` |
+| **Find Action…**           | `⇧⌘A`  | `Ctrl+Shift+A`     |
+| **Search Text Everywhere** | `⌥⇧⌘E` | `Ctrl+Alt+Shift+E` |
+
+Press `Shift` twice to open Search Everywhere. All the commands above open the same popup on a different tab: **All**, **Classes**, **Files**, **Symbols**, **Actions** and **Text**. Press `⇥` / `Tab` to move to the next tab.
+
+- **All** shows the best matches of every kind in sections, plus **Endpoints**: HTTP routes of web frameworks, found by request path (`/api/users`, optionally prefixed with a method such as `POST`) or by controller and method name. With an empty query it lists recent files and recent actions.
+- Matching is fuzzy: `usrctl` finds `UserController`. For files you can add a line and column, as in `Main.kt:42` or `Main.kt:42:5`, and you can paste an absolute path or a `file://` URL.
+- **Classes**, **Files** and **Symbols** search the project by default. Check **Include non-project items** (or press the tab's shortcut again) to include libraries and other files outside the project. When nothing matches in the project, the search widens by itself.
+- The scope menu narrows results to **All Places**, **Project Files**, **Project Production Files** or **Project Test Files**.
+- **Actions** finds every command by name, including settings pages and toggles; **Include disabled actions** also lists commands that don't apply right now. Running an action from here is the same as using its menu item or shortcut.
+- `↵` / `Enter` opens the selected item; `⇧↵` / `Shift+Enter` opens it in a split to the side. Right-click a result to copy its path or name, or to search in its directory.
+
+Classes and symbols come from the IDE's own index (available as soon as a file is indexed) merged with the language servers' workspace symbols.
+
+## Go to line and recent places
+
+| Action                     | macOS       | Windows / Linux                    |
+| -------------------------- | ----------- | ---------------------------------- |
+| **Go to Line:Column…**     | `⌘L`        | `Ctrl+G`                           |
+| **Recent Files**           | `⌘E`        | `Ctrl+E`                           |
+| **Recent Locations**       | `⇧⌘E`       | `Ctrl+Shift+E`                     |
+| **Last Edit Location**     | `⇧⌘⌫`       | `Ctrl+Shift+Backspace`             |
+| **Switcher**               | `⌃⇥`        | `Ctrl+Tab`                         |
+| **Back** / **Forward**     | `⌘[` / `⌘]` | `Ctrl+Alt+Left` / `Ctrl+Alt+Right` |
+| **Jump to Navigation Bar** | `⌘↑`        | `Alt+Home`                         |
+| **Select In…**             | `⌥F1`       | `Alt+F1`                           |
+
+- **Recent Files** lists recently opened files and the tool windows; type to filter.
+- **Recent Locations** shows the places you visited or edited with a few lines of code around each. Press the shortcut again (or check **Show changed only**) to see only edited places.
+- **Switcher** works like an application switcher: hold `⌃` / `Ctrl`, press `⇥` / `Tab` to move through open files and tool windows, and release to switch.
+- **Select In…** reveals the current file in the Project view or another tool window.
+
+## Find and replace in a file
+
+| Action                          | macOS | Windows / Linux |
+| ------------------------------- | ----- | --------------- |
+| **Find**                        | `⌘F`  | `Ctrl+F`        |
+| **Replace**                     | `⌘R`  | `Ctrl+R`        |
+| **Find Next Occurrence**        | `⌘G`  | `F3`            |
+| **Find Previous Occurrence**    | `⇧⌘G` | `Shift+F3`      |
+| **Open Results in Find Window** | `⌥F7` | `Alt+F7`        |
+
+The find bar at the top of the editor has match case, whole words and regex options. Matches are highlighted as you type. **Add Selection for Next Occurrence** (`⌃G` / `Alt+J`) and **Select All Occurrences** (`⌃⌘G` / `Ctrl+Alt+Shift+J`) turn matches into carets for multi-caret editing.
+
+## Find and replace in files
+
+| Action                | macOS | Windows / Linux |
+| --------------------- | ----- | --------------- |
+| **Find in Files…**    | `⇧⌘F` | `Ctrl+Shift+F`  |
+| **Replace in Files…** | `⇧⌘R` | `Ctrl+Shift+R`  |
+| **Find** tool window  | `⌘3`  | `Alt+3`         |
+
+The **Find in Files** popup searches as you type and previews the selected match below the list.
+
+- **Match Case** (`⌥C` / `Alt+C`), **Words** (`⌥W` / `Alt+W`) and **Regex** (`⌥X` / `Alt+X`) control matching. When the text looks like a regular expression, the popup offers **Search with Regex**.
+- **File mask** (`⌥K` / `Alt+K`) limits the search to file names such as `*.ts, *.tsx`.
+- The search context menu limits matches to **In Comments**, **In String Literals**, or everything **Except Comments and String Literals** (and the other combinations).
+- The scope is **In Project**, **Module**, **Directory** or **Scope**. Scope offers **Project Files**, **Project Production Files**, **Project Test Files**, **Open Files**, **Recently Viewed Files** and your custom scopes (**Edit Scopes…**).
+- `⌥↓` / `Alt+Down` in the search field shows recent searches. **Pin Window** keeps the popup open while you work in the editor.
+- **Open in Find Window** moves the results to the **Find** tool window, grouped by file (optionally by directory), where you can rerun the search later.
+
+For replacing, type the replacement in the second field. **Preserve Case** keeps the case pattern of each match. **Replace** replaces the selected match; **Replace All** replaces every match and asks first when they span more than one file. Excluded results are skipped.
+
+The search uses ripgrep's engine. It skips folders that `.gitignore` excludes, `.git` and binary files, and it searches the unsaved text of open editors rather than the version on disk.
+
+## Bookmarks
+
+| Action                            | macOS       | Windows / Linux               |
+| --------------------------------- | ----------- | ----------------------------- |
+| **Toggle Bookmark**               | `F3`        | `F11`                         |
+| **Toggle Bookmark with Mnemonic** | `⌥F3`       | `Ctrl+F11`                    |
+| **Show Bookmarks**                | `⌘F3`       | `Shift+F11`                   |
+| **Bookmarks** tool window         | `⌘2`        | `Alt+2`                       |
+| Toggle numbered bookmark 0–9      | `⌃⇧0`–`⌃⇧9` | `Ctrl+Shift+0`–`Ctrl+Shift+9` |
+| Go to numbered bookmark 0–9       | `⌃0`–`⌃9`   | `Ctrl+0`–`Ctrl+9`             |
+
+A bookmark marks a line, a file or a folder (from the Project view or an editor tab context menu: **Add Bookmark**). A line bookmark can have a mnemonic, a digit or a letter, shown in the gutter. **Show Bookmarks** opens a popup with a preview; the **Bookmarks** tool window organizes bookmarks into lists and lets you add descriptions. **Edit › Bookmarks** has **Next Bookmark** and **Previous Bookmark** too.
+
+## Run Anything
+
+| Action            | macOS | Windows / Linux |
+| ----------------- | ----- | --------------- |
+| **Run Anything…** | `⌃⌃`  | `Ctrl Ctrl`     |
+
+Press `Ctrl` twice to open Run Anything, a command line for the project:
+
+- Type a shell command and press `↵` / `Enter` to run it in the project directory. Its output appears in the **Run** tool window.
+- Matching run configurations and build tool goals (for example Maven and Gradle tasks) are listed as you type; `⇥` / `Tab` completes.
+- With an empty line it shows your recent commands; **Clear History** empties the list.
+
+Run Anything is also in **Run › Run Anything…**. See [Run configurations](/en/guide/run) for the configurations it lists.

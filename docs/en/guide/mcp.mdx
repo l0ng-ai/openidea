@@ -1,0 +1,113 @@
+---
+title: "MCP server"
+description: "Let Claude Code, Codex and other MCP clients use OpenIDEA's search, code insight, editing, run and Git tools on your open projects."
+---
+
+OpenIDEA has a built-in [Model Context Protocol](https://modelcontextprotocol.io) server. With it on, AI agents running outside the IDE, such as Claude Code in a terminal, Codex or Cursor, can call the IDE's tools on the projects you have open: search with the project index, look up symbols through the language servers, read the Problems view, rename, reformat, build, run configurations and read Git status.
+
+Agent tasks started inside OpenIDEA (see [Agents](/en/guide/agents)) get the same tools automatically while the server is on.
+
+## Turn it on
+
+<Steps>
+  <Step title="Open the settings page">Go to **Settings › Agents › IDE MCP Server**.</Step>
+  <Step title="Enable it">Turn on **Enable MCP server** and apply. It is off by default.</Step>
+  <Step title="Check the status">
+    **Status** shows the port it is running on, or why it failed to start. **Endpoint** shows the URL for the current
+    window's project.
+  </Step>
+</Steps>
+
+The server listens on `127.0.0.1` only, on a random port, and every request must carry a token that changes each time OpenIDEA starts. Requests from another origin or host are refused.
+
+## Connect a client
+
+The settings page has two buttons under **Client configuration**. Both copy an `mcpServers` entry in the JSON format most clients accept.
+
+- **Copy Stdio Config** (recommended): the client starts OpenIDEA's executable with `--mcp-stdio`, which relays to the running IDE. It holds no token and keeps working after OpenIDEA restarts.
+- **Copy HTTP Config**: the client connects to `http://127.0.0.1:<port>/mcp` with `Authorization: Bearer <token>`. It stops working when OpenIDEA restarts, because the port and token change.
+
+The stdio configuration looks like this (the path is the one on your machine):
+
+```json
+{
+  "mcpServers": {
+    "openidea": {
+      "type": "stdio",
+      "command": "/Applications/OpenIDEA.app/Contents/MacOS/openidea",
+      "args": ["--mcp-stdio", "--project", "/path/to/project"]
+    }
+  }
+}
+```
+
+`--project` names the project the client works on. Leave it out and the bridge uses the directory the client starts it in, so one configuration works for every project you open in OpenIDEA.
+
+<Tabs>
+  <Tab title="Claude Code">
+    Add the server for the current project from a terminal in the project directory:
+
+    ```sh
+    claude mcp add openidea -- /Applications/OpenIDEA.app/Contents/MacOS/openidea --mcp-stdio
+    ```
+
+    Or paste the copied JSON into a `.mcp.json` file at the project root to share it with your team.
+
+  </Tab>
+  <Tab title="Codex">
+    Add the server to `~/.codex/config.toml`:
+
+    ```toml
+    [mcp_servers.openidea]
+    command = "/Applications/OpenIDEA.app/Contents/MacOS/openidea"
+    args = ["--mcp-stdio"]
+    ```
+
+    Codex starts it in the directory you run `codex` from.
+
+  </Tab>
+  <Tab title="Other clients">
+    Paste the copied configuration into the client's MCP settings (for example `mcp.json` in Cursor). Clients that only speak HTTP can use **Copy HTTP Config**, but must be updated after every restart of OpenIDEA.
+  </Tab>
+</Tabs>
+
+Use the executable path from **Copy Stdio Config**; the macOS path above is only an example. On Windows it is `openidea.exe` in the installation (or portable) folder.
+
+OpenIDEA must be running with the project open for the tools to work. A client may name any folder inside an open project; the server picks the open project that contains it. HTTP clients name it with the `X-OpenIDEA-Project` header or the `?project=` query.
+
+While the server runs, OpenIDEA writes its port and token to `mcp/server.json` in its application data directory (readable only by you); the stdio bridge reads it from there.
+
+## Tools
+
+| Area          | Tools                                                                       |
+| ------------- | --------------------------------------------------------------------------- |
+| Files         | `read_file`, `list_directory_tree`, `create_new_file`, `apply_patch`        |
+| Search        | `search_text`, `search_regex`, `search_symbol`, `search_file`               |
+| Editors       | `get_all_open_file_paths`, `get_current_file`, `open_file_in_editor`        |
+| Code          | `get_symbol_info`, `find_references`, `rename_refactoring`, `reformat_file` |
+| Problems      | `get_file_problems`, `get_project_problems`                                 |
+| Run and build | `get_run_configurations`, `execute_run_configuration`, `build_project`      |
+| Git           | `get_repositories`, `git_status`, `git_diff`                                |
+
+Notes on what they do:
+
+- `read_file` also reads sources of dependencies and files inside jar and zip archives.
+- `search_symbol` and `find_references` use the IDE's index and the language servers; `get_symbol_info` returns what Quick Documentation shows.
+- `get_file_problems` and `get_project_problems` return what the Problems tool window shows, after your inspection profile is applied, rather than a fresh analysis.
+- `rename_refactoring` renames through the language server, so references that a text search would miss are updated too. It can preview without writing.
+- `apply_patch` accepts the Codex `apply_patch` format and unified diffs. Paths must stay inside the project.
+- `git_diff` compares files on disk, so unsaved editor text is not included.
+
+Plugins can add more tools; they appear in the same list. A plugin tool marked as destructive asks for confirmation the same way.
+
+## Safety
+
+- **Untrusted projects** expose only the read-only tools. Tools that write files, rename, reformat, build or run need a project you have trusted.
+- **Running and building ask first.** `execute_run_configuration` and `build_project` show a dialog in OpenIDEA naming the client, the project, the tool and what will run. Choose **Allow** or **Deny**; several requests queue up.
+- Tools that write refuse paths outside the project.
+
+## Limits
+
+- Remote projects (opened over SSH, on a server or in a container) are not supported by the MCP server yet.
+- The server serves only projects open in OpenIDEA. Closing the project's window makes its tools unavailable.
+- Responses are plain JSON; the server does not stream over SSE.

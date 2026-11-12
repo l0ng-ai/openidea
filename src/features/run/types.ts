@@ -547,6 +547,7 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
     ...(config.kind === "dotnet-test" ||
     config.kind === "django-test" ||
     config.kind === "phpunit" ||
+    config.kind === "junit" ||
     config.kind === "rspec"
       ? { isTest: true }
       : {}),

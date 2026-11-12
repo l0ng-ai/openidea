@@ -138,3 +138,22 @@ export function RecognizedFileTypes() {
     </div>
   );
 }
+
+/** Files opened in associated applications: names handed to the OS instead of an editor. */
+export function AssociatedApplicationsRow() {
+  const [patterns, setPatterns] = useSetting<string[]>("files.associatedApplications");
+  return (
+    <Row
+      label="File name patterns"
+      stacked
+      hint="Files matching these patterns open in their system application instead of an editor."
+    >
+      <GlobListEditor
+        value={patterns ?? []}
+        onChange={setPatterns}
+        placeholder="*.xlsx"
+        aria-label="Files opened in associated applications"
+      />
+    </Row>
+  );
+}

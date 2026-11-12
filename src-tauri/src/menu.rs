@@ -865,6 +865,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("navigate.findAction", "Find Action…"),
         act("help.keymapReference", "Keymap Reference"),
         SEP,
+        act("app.whatsNew", "What's New"),
         act("help.showLog", show_log),
     ];
     if !mac {

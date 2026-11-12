@@ -273,6 +273,32 @@ pub enum DebugEvent {
         change_type: String,
         message: String,
     },
+    /// The session's capabilities changed after it started: fetch them again.
+    Capabilities,
+    /// The adapter's `invalidated` event: what it shows for `areas` (`all`, `stacks`, `threads`,
+    /// `variables`; empty means all) is stale and has to be fetched again.
+    Invalidated {
+        areas: Vec<String>,
+    },
+    JvmBackend {
+        state: JvmBackendState,
+    },
+}
+
+/// The backend that reads a debugged JVM's objects (instances, fields, referrers).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum JvmBackendState {
+    Ready,
+    /// Turned off for the rest of the session: the debug adapter lacks what it needs.
+    Unsupported {
+        detail: String,
+    },
+    /// The Kotlin JDWP link only forwards now; inspecting stops.
+    Degraded {
+        detail: String,
+    },
+    Closed,
 }
 
 /// Where backend crates publish [`IdeEvent`]s. Cheap to clone via `Arc`.
@@ -293,4 +319,28 @@ pub struct NullSink;
 
 impl EventSink for NullSink {
     fn emit(&self, _: IdeEvent) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn jvm_backend_events_json_shape() {
+        let degraded = DebugEvent::JvmBackend { state: JvmBackendState::Degraded { detail: "x".into() } };
+        assert_eq!(
+            serde_json::to_value(&degraded).unwrap(),
+            json!({"kind": "jvmBackend", "state": {"kind": "degraded", "detail": "x"}})
+        );
+        assert_eq!(serde_json::to_value(DebugEvent::Capabilities).unwrap(), json!({"kind": "capabilities"}));
+    }
+
+    #[test]
+    fn invalidated_event_json_shape() {
+        assert_eq!(
+            serde_json::to_value(DebugEvent::Invalidated { areas: vec!["variables".into()] }).unwrap(),
+            json!({"kind": "invalidated", "areas": ["variables"]})
+        );
+    }
 }

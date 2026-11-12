@@ -27,6 +27,24 @@ import { tx } from "@/platform/i18n";
 
 export const TOOLS_GROUP = "Tools";
 
+const SEND_KEY_OPTIONS = [
+  { value: "enter", label: "Enter" },
+  { value: "modEnter", label: "⌘Enter" },
+];
+const WHILE_RUNNING_OPTIONS = [
+  { value: "queue", label: "Queues the message for after the turn" },
+  { value: "steer", label: "Sends it into the turn" },
+];
+const TOOL_CALL_OPTIONS = [
+  { value: "grouped", label: "Grouped by what they did" },
+  { value: "each", label: "One per line" },
+];
+const THINKING_OPTIONS = [
+  { value: "auto", label: "Open while it streams" },
+  { value: "expanded", label: "Always open" },
+  { value: "collapsed", label: "Folded" },
+];
+
 const L = WORKFLOW_LIMITS;
 const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent);
 
@@ -109,7 +127,7 @@ function ShellPathRow() {
     void commands.termAvailableShells().then(setShells, () => undefined);
   }, []);
   const browse = async () => {
-    const { open: pick } = await import("@tauri-apps/plugin-dialog");
+    const { open: pick } = await import("@/platform/dialog");
     const picked = await pick({ multiple: false, title: "Shell Path" });
     const path = Array.isArray(picked) ? picked[0] : picked;
     if (path) set(quotePath(path));
@@ -220,6 +238,7 @@ function TerminalOptions() {
           />
           <BoundToggle k="terminal.shellIntegration" label="Shell integration" />
           <BoundToggle k="terminal.highlightHyperlinks" label="Highlight hyperlinks" />
+          <BoundToggle k="terminal.highlightSelection" label="Highlight occurrences of selected text" />
           {isMac && <BoundToggle k="terminal.optionAsMeta" label="Use Option as Meta key" />}
         </>
       }
@@ -630,13 +649,67 @@ export const TOOLS_PAGES: PageSpec[] = [
     ],
   },
   {
-    // Under Settings › Tools › Agents (the agents feature registers `tools.agents`).
-    id: "tools.agents.chat",
+    id: "agents.chat",
     title: "Chat",
-    group: TOOLS_GROUP,
-    order: 0,
-    keywords: ["agent", "claude", "codex", "usage", "quota", "rate limit", "cost", "tokens", "meter"],
+    group: "Agents",
+    order: 460,
+    keywords: [
+      "agent",
+      "claude",
+      "codex",
+      "usage",
+      "quota",
+      "rate limit",
+      "cost",
+      "tokens",
+      "meter",
+      "send",
+      "reasoning",
+    ],
     sections: [
+      {
+        title: "Sending",
+        options: [
+          { kind: "select", key: "agents.sendWith", label: "Send messages with", options: SEND_KEY_OPTIONS },
+          {
+            kind: "select",
+            key: "agents.whileRunning",
+            label: "While the agent works, sending",
+            options: WHILE_RUNNING_OPTIONS,
+            hint: "The other way is a modifier away: ⌘↵ with Enter, ⌘⇧↵ with ⌘↵",
+          },
+        ],
+      },
+      {
+        title: "Conversation",
+        options: [
+          {
+            kind: "toggle",
+            key: "agents.foldTurns",
+            label: "Fold a finished turn's work",
+            hint: "Reasoning and tool calls before the reply fold into one line under its message",
+          },
+          {
+            kind: "select",
+            key: "agents.toolCalls",
+            label: "Tool calls",
+            options: TOOL_CALL_OPTIONS,
+          },
+          {
+            kind: "select",
+            key: "agents.thinking",
+            label: "Reasoning",
+            options: THINKING_OPTIONS,
+          },
+          { kind: "toggle", key: "agents.expandToolOutput", label: "Show tool output without opening it" },
+          {
+            kind: "toggle",
+            key: "agents.smoothText",
+            label: "Reveal streaming text smoothly",
+            hint: "Text appears at a steady pace instead of in bursts",
+          },
+        ],
+      },
       {
         title: "Shown in the Task Header",
         options: [

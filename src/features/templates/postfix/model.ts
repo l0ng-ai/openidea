@@ -20,6 +20,11 @@ export interface PostfixTemplate {
   statement?: boolean;
   /** Wrap compound expressions (`a + b`) in parentheses for `$EXPR$`. */
   wrapCompound?: boolean;
+  /**
+   * An editor action run on the selected expression instead of inserting `body`
+   * (IDEA's `.var` is Introduce Variable); `body` remains for when it isn't available.
+   */
+  action?: string;
 }
 
 const NAME: TemplateVariable = { name: "NAME", expression: "suggestVariableName()", defaultValue: '"value"' };
@@ -220,10 +225,12 @@ const java = set(
     { key: "not", description: "!expr", body: "!$EXPR$$END$", wrapCompound: true },
     {
       key: "var",
-      description: "var name = expr;",
+      description: "T name = expr;",
       body: "var $NAME$ = $EXPR$;$END$",
       statement: true,
       variables: [NAME],
+      // The server declares the expression's type, as IDEA does by default.
+      action: "refactor.extractVariable",
     },
     { key: "return", description: "return expr;", body: "return $EXPR$;$END$", statement: true },
     { key: "sout", description: "System.out.println(expr)", body: "System.out.println($EXPR$);$END$", statement: true },

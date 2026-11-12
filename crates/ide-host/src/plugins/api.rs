@@ -71,6 +71,12 @@ pub trait PluginWorkspace: Send + Sync {
 
     /// Roots of the open projects.
     fn projects(&self) -> Vec<PathBuf>;
+    /// Roots of the workspace members attached to the project at `root` (a
+    /// project window group's folders, as the editor and LSP resolve them).
+    /// Empty for a plain project.
+    fn member_roots(&self, _root: &Path) -> Vec<PathBuf> {
+        Vec::new()
+    }
     /// Unsaved text of the open document at `path`.
     fn buffer_text(&self, path: &Path) -> Option<String>;
     /// A window's unsaved text, with the normal project overlay as fallback.
@@ -174,7 +180,7 @@ impl SecretStore for FileSecretStore {
 /// Largest response body a plugin receives.
 const MAX_RESPONSE: usize = 8 << 20;
 /// Largest stdout / stderr kept from a process.
-const MAX_OUTPUT: usize = 4 << 20;
+const MAX_OUTPUT: usize = 16 << 20;
 /// Most processes one plugin keeps running at once.
 const MAX_PROCESSES: usize = 8;
 /// Most output one stream of a handle holds until the plugin reads it.
@@ -482,6 +488,7 @@ type SettingSnapshots = BTreeMap<(Option<String>, String), BTreeMap<String, Stri
 /// State shared by the host and every plugin's [`PluginApi`].
 pub(super) struct Shared {
     pub sink: Arc<dyn PluginEventSink>,
+    pub websockets: super::websocket::WebSocketHub,
     pub workspace: RwLock<Option<Arc<dyn PluginWorkspace>>>,
     /// `<plugins>/.data`: one directory per plugin id.
     pub data_dir: PathBuf,
@@ -530,6 +537,8 @@ pub(super) struct Shared {
     pub event_editors: RwLock<HashMap<String, ide_plugin::EditorContext>>,
     /// Validated UI declarations (settings schemas, declared views).
     pub ui: Arc<ide_extension::UiStore>,
+    /// Extension points plugins declare and what was contributed to them.
+    pub registry: Arc<ide_extension::ExtensionRegistry>,
     /// The UI language the windows report (BCP 47).
     pub locale: RwLock<String>,
     /// (plugin, window) → the log tabs its code opened there, oldest first:
@@ -551,11 +560,14 @@ impl Shared {
         pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
         ui: Arc<ide_extension::UiStore>,
         ledger: Arc<Mutex<Ledger>>,
+        registry: Arc<ide_extension::ExtensionRegistry>,
     ) -> Arc<Self> {
         Arc::new(Self {
             ui,
+            registry,
             locale: RwLock::new("en".into()),
-            sink,
+            sink: sink.clone(),
+            websockets: super::websocket::WebSocketHub::new(sink.clone()),
             workspace: RwLock::new(None),
             secrets: RwLock::new(Arc::new(FileSecretStore { dir: data_dir.clone() })),
             pins,
@@ -765,6 +777,7 @@ impl Shared {
 
         self.kill_processes(plugin);
         self.connections.clear(plugin);
+        self.websockets.disconnect_plugin(plugin);
         self.setting_snapshots.lock().retain(|(_, p), _| p != plugin);
         let channels: Vec<_> = {
             let mut output = self.output.lock();
@@ -884,6 +897,13 @@ impl Shared {
 
     pub fn allow_prompts(&self, plugin: &str) {
         self.prompts_blocked.lock().remove(plugin);
+    }
+
+    /// A window other than `client` where `plugin` waits for the user's answer (a prompt or a
+    /// Commit request). The plugin runs one call at a time, so anything else asked of it waits
+    /// behind that answer.
+    pub fn waiting_elsewhere(&self, plugin: &str, client: &str) -> Option<String> {
+        self.prompts.lock().values().find(|p| p.plugin == plugin && p.client != client).map(|p| p.client.clone())
     }
 
     /// The user answered (`Some`) or dismissed (`None`) a prompt.
@@ -1253,6 +1273,8 @@ pub(super) fn commit_draft(
         let Some(r) = ide_vcs::Repo::discover(&repo.root.0).map_err(failed)? else {
             return Err(HostError::NotFound(format!("{} is not in a git repository", repo.root.0.display())));
         };
+        // Both callers have checked that the window's project is trusted.
+        r.set_execution_allowed(true);
         let pending = r.pending_changes(&repo.options, budget, &|path| Ok(workspace.vcs_encoding(path))).map_err(
             |e| match e.kind {
                 ide_core::error::ErrorKind::InvalidInput => HostError::Invalid(e.message),
@@ -1330,6 +1352,21 @@ impl HostApi for PluginApi {
         let host = self.shared.workspace()?.database_host()?;
         let root = host.project(client).ok()?.root.clone();
         host.mcp_executable.read().as_ref().map(|exe| ide_mcp::stdio_command(exe, &root))
+    }
+
+    fn extension_contributions(&self, point: &str) -> Result<Vec<(String, String)>, HostError> {
+        self.require_api("extension points", 5)?;
+        match self.shared.registry.point_owner(point) {
+            None => Err(HostError::NotFound(format!("no running plugin declares {point}"))),
+            Some(owner) if owner != self.id() => Err(HostError::Denied(format!("extension point {point}"))),
+            Some(_) => Ok(self
+                .shared
+                .registry
+                .contributions_to(point)
+                .into_iter()
+                .map(|c| (c.plugin, c.data.to_string()))
+                .collect()),
+        }
     }
 
     fn register_run_target(&self, root: &Path, target: ide_plugin::PluginRunTarget) -> Result<(), HostError> {
@@ -2000,6 +2037,10 @@ impl HostApi for PluginApi {
         self.shared.workspace().map(|w| w.projects()).unwrap_or_default()
     }
 
+    fn member_roots(&self, root: &Path) -> Vec<PathBuf> {
+        self.shared.workspace().map(|w| w.member_roots(root)).unwrap_or_default()
+    }
+
     fn buffer_text(&self, path: &Path) -> Option<String> {
         self.shared.workspace()?.buffer_text(path)
     }
@@ -2064,7 +2105,7 @@ impl HostApi for PluginApi {
     }
 
     fn vcs_status(&self, root: &Path) -> Result<Option<RepositoryStatus>, HostError> {
-        let Some(repo) = ide_vcs::Repo::discover(root).map_err(failed)? else { return Ok(None) };
+        let Some(repo) = self.repo(root)? else { return Ok(None) };
         let info = repo.branch_info().map_err(failed)?;
         let changed = repo.status().map_err(failed)?.len();
         Ok(Some(RepositoryStatus {
@@ -2090,7 +2131,7 @@ impl HostApi for PluginApi {
         if !workspace.is_some_and(|w| w.trusted(root)) {
             return Err(HostError::Failed("the project is in Restricted Mode: git does not run there".into()));
         }
-        let Some(repo) = ide_vcs::Repo::discover(root).map_err(failed)? else {
+        let Some(repo) = self.repo(root)? else {
             return Err(HostError::NotFound("the project is not in a git repository".into()));
         };
         match repo.fetch(cancel, &|_| {}) {
@@ -2140,23 +2181,29 @@ impl HostApi for PluginApi {
             out.sort();
             return Ok(out);
         }
+        // A project window group's members are project scope too (their files
+        // are in the group's index, and a group root holds none of them).
+        let mut roots = vec![root.to_path_buf()];
+        roots.extend(self.member_roots(root));
         let mut out = Vec::new();
-        for (n, entry) in ignore::WalkBuilder::new(root)
-            .hidden(false)
-            .filter_entry(|e| e.file_name() != ".git")
-            .build()
-            .flatten()
-            .enumerate()
-        {
-            if n >= MAX_WALK || out.len() >= limit {
-                break;
-            }
-            if !entry.file_type().is_some_and(|t| t.is_file()) {
-                continue;
-            }
-            let Ok(rel) = entry.path().strip_prefix(root) else { continue };
-            if matcher.is_match(rel) {
-                out.push(to_ipc(entry.path()));
+        'walk: for root in &roots {
+            for (n, entry) in ignore::WalkBuilder::new(root)
+                .hidden(false)
+                .filter_entry(|e| e.file_name() != ".git")
+                .build()
+                .flatten()
+                .enumerate()
+            {
+                if n >= MAX_WALK || out.len() >= limit {
+                    break 'walk;
+                }
+                if !entry.file_type().is_some_and(|t| t.is_file()) {
+                    continue;
+                }
+                let Ok(rel) = entry.path().strip_prefix(root) else { continue };
+                if matcher.is_match(rel) {
+                    out.push(to_ipc(entry.path()));
+                }
             }
         }
         out.sort();
@@ -2229,6 +2276,49 @@ impl HostApi for PluginApi {
                 () = cancel.cancelled() => Err(HostError::Cancelled),
             }
         })
+    }
+
+    fn websocket_connect(
+        &self,
+        root: &Path,
+        request: ide_plugin::WebSocketRequest,
+        timeout: Duration,
+    ) -> Result<u64, HostError> {
+        let secrets = self.shared.secrets.read().clone();
+        let plugin = self.id().to_owned();
+        let headers = request
+            .headers
+            .into_iter()
+            .map(|(name, value)| {
+                let value = fill_secrets(&value, |name| secrets.get(&plugin, name))?;
+                Ok((name, value))
+            })
+            .collect::<Result<Vec<_>, HostError>>()?;
+        net_runtime()
+            .block_on(self.shared.websockets.connect(
+                &plugin,
+                &to_ipc(root),
+                &request.url,
+                &headers,
+                &request.subprotocol,
+                timeout,
+            ))
+            .map_err(|error| match error {
+                super::websocket::ConnectError::Invalid(message) => HostError::Invalid(message),
+                super::websocket::ConnectError::Failed(message) => HostError::Failed(message),
+            })
+    }
+
+    fn websocket_send(&self, connection: u64, bytes: Vec<u8>) -> Result<(), HostError> {
+        self.shared.websockets.send(self.id(), connection, bytes).map_err(HostError::Failed)
+    }
+
+    fn websocket_drain(&self, connection: u64, limit: usize) -> Result<ide_plugin::WebSocketBatch, HostError> {
+        self.shared.websockets.drain(self.id(), connection, limit).map_err(HostError::Invalid)
+    }
+
+    fn websocket_close(&self, connection: u64) {
+        let _ = self.shared.websockets.disconnect(self.id(), connection);
     }
 
     /// The `net:ask` answer: a host the user allowed with "always" is
@@ -2399,9 +2489,14 @@ impl HostApi for PluginApi {
         let read = |pipe: Option<Box<dyn Read + Send>>| {
             std::thread::spawn(move || {
                 let mut out = Vec::new();
+                let mut overflow = false;
                 if let Some(p) = pipe {
                     let mut p = p;
-                    let _ = p.by_ref().take(MAX_OUTPUT as u64).read_to_end(&mut out);
+                    let _ = p.by_ref().take((MAX_OUTPUT + 1) as u64).read_to_end(&mut out);
+                    if out.len() > MAX_OUTPUT {
+                        overflow = true;
+                        out.truncate(MAX_OUTPUT);
+                    }
                     let _ = std::io::copy(&mut p, &mut std::io::sink());
                 }
                 let mut text = String::from_utf8_lossy(&out).into_owned();
@@ -2410,7 +2505,7 @@ impl HostApi for PluginApi {
                     end -= 1;
                 }
                 text.truncate(end);
-                text
+                (text, overflow)
             })
         };
         let stdout = read(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
@@ -2430,11 +2525,18 @@ impl HostApi for PluginApi {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
-        Ok(ProcessOutput {
-            status: status.code(),
-            stdout: stdout.join().unwrap_or_default(),
-            stderr: stderr.join().unwrap_or_default(),
-        })
+        let (stdout, stdout_overflow) = stdout.join().unwrap_or_default();
+        let (stderr, _) = stderr.join().unwrap_or_default();
+        if stdout_overflow {
+            tracing::warn!(
+                plugin = %self.id(),
+                program = %cmd.program,
+                limit_mib = MAX_OUTPUT >> 20,
+                "process stdout exceeded limit"
+            );
+            return Err(HostError::Failed(format!("{} stdout exceeded {} MiB limit", cmd.program, MAX_OUTPUT >> 20)));
+        }
+        Ok(ProcessOutput { status: status.code(), stdout, stderr })
     }
 
     fn subscribe(&self, kind: EventKind) {
@@ -2873,9 +2975,24 @@ impl HostWorkspace {
             .and_then(|w| host.project(w).ok())
             .filter(|p| p.root == root)
             .or_else(|| host.windows_for_root(root).first().and_then(|w| host.project(w).ok()))
+            // A project window group's member root: its files belong to the
+            // group's project, like everywhere else in the editor.
+            .or_else(|| {
+                host.projects()
+                    .into_iter()
+                    .find(|p| crate::project::workspace_member_roots(&p.root).iter().any(|m| m.as_path() == root))
+            })
     }
     fn projects(&self) -> Vec<Arc<crate::project::Project>> {
         self.0.upgrade().map(|h| h.projects()).unwrap_or_default()
+    }
+
+    /// The open project whose workspace group contains `root` (the group root
+    /// itself matches `p.root == root` and needs no member lookup).
+    fn project_covering(&self, root: &Path) -> Option<Arc<crate::project::Project>> {
+        self.projects().into_iter().find(|p| {
+            p.root == root || crate::project::workspace_member_roots(&p.root).iter().any(|m| m.as_path() == root)
+        })
     }
 
     /// The project holding an open document at `path`, and its id.
@@ -2967,6 +3084,10 @@ impl PluginWorkspace for HostWorkspace {
     ) -> Result<ide_plugin::TextSearch, HostError> {
         let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
         let project = self.project_for(client, root).ok_or_else(|| HostError::NotFound("project closed".into()))?;
+        // Matches must land in the project root or, for a project window group,
+        // in any of its members.
+        let mut roots = vec![root.to_path_buf()];
+        roots.extend(crate::project::workspace_member_roots(root));
         if limit == 0 {
             return Ok(ide_plugin::TextSearch::default());
         }
@@ -2996,8 +3117,9 @@ impl PluginWorkspace for HostWorkspace {
             if cancel.is_cancelled() {
                 return Err(HostError::Cancelled);
             }
-            // Restrict project.read to the project root, including symlink targets.
-            let Ok(path) = ide_plugin::resolve_in_root(root, &to_ipc(&file.path.0)) else {
+            // Restrict project.read to the project root and its workspace
+            // members, including symlink targets.
+            let Ok(path) = ide_plugin::resolve_in_roots(&roots, &to_ipc(&file.path.0)) else {
                 continue;
             };
             let text = project.documents.text_of(&path).or_else(|| {
@@ -3063,10 +3185,17 @@ impl PluginWorkspace for HostWorkspace {
     }
 
     fn projects(&self) -> Vec<PathBuf> {
-        let mut roots: Vec<PathBuf> = HostWorkspace::projects(self).iter().map(|p| p.root.clone()).collect();
+        let mut roots: Vec<PathBuf> = HostWorkspace::projects(self)
+            .iter()
+            .flat_map(|p| std::iter::once(p.root.clone()).chain(crate::project::workspace_member_roots(&p.root)))
+            .collect();
         roots.sort();
         roots.dedup();
         roots
+    }
+
+    fn member_roots(&self, root: &Path) -> Vec<PathBuf> {
+        crate::project::workspace_member_roots(root)
     }
 
     fn buffer_text(&self, path: &Path) -> Option<String> {
@@ -3079,9 +3208,9 @@ impl PluginWorkspace for HostWorkspace {
     }
 
     fn indexed_files(&self, root: &Path, matches: &dyn Fn(&Path) -> bool, limit: usize) -> Option<Vec<PathBuf>> {
-        // The index of the project rooted at `root` (a workspace member's files are in its own).
-        let project = HostWorkspace::projects(self).into_iter().find(|p| p.root == root)?;
-        project.index.files_matching(root, matches, limit)
+        // The index covering `root`: the project rooted there, or the workspace
+        // group project whose member it is (a member's files are in the group's).
+        HostWorkspace::project_covering(self, root)?.index.files_matching(root, matches, limit)
     }
 
     fn symbols(
@@ -3092,9 +3221,7 @@ impl PluginWorkspace for HostWorkspace {
         cancel: &CancellationToken,
         deadline: Instant,
     ) -> Result<Vec<ide_plugin::SymbolInfo>, HostError> {
-        let project = HostWorkspace::projects(self)
-            .into_iter()
-            .find(|p| p.root == root)
+        let project = HostWorkspace::project_covering(self, root)
             .ok_or_else(|| HostError::NotFound("the project is no longer open".into()))?;
         let stopped = || cancel.is_cancelled() || Instant::now() >= deadline;
         let interrupted = || {
@@ -3104,15 +3231,13 @@ impl PluginWorkspace for HostWorkspace {
                 HostError::Failed("symbol search timed out".into())
             }
         };
+        // The symbols of the requested root and, for a project window group, of
+        // its members (a member's symbols are in the group's index).
+        let members = crate::project::workspace_member_roots(root);
+        let in_scope = |path: &Path| path.starts_with(root) || members.iter().any(|m| path.starts_with(m));
         let symbols = project
             .index
-            .find_symbols_until(
-                query,
-                ide_index::SymbolFilter::All,
-                limit.min(1000),
-                &|path| path.starts_with(root),
-                &stopped,
-            )
+            .find_symbols_until(query, ide_index::SymbolFilter::All, limit.min(1000), &in_scope, &stopped)
             .ok_or_else(interrupted)?;
         let mut out = Vec::new();
         for s in symbols {
@@ -3154,7 +3279,8 @@ impl PluginWorkspace for HostWorkspace {
     }
 
     fn trusted(&self, root: &Path) -> bool {
-        HostWorkspace::projects(self).iter().any(|p| p.root == root && p.is_trusted())
+        // A workspace member is as trusted as the group's project it was opened with.
+        HostWorkspace::project_covering(self, root).is_some_and(|p| p.is_trusted())
     }
 
     fn project_of(&self, window: &str) -> Option<PathBuf> {
@@ -3179,6 +3305,12 @@ impl PluginWorkspace for HostWorkspace {
             .iter()
             .filter(|p| path.starts_with(&p.root))
             .max_by_key(|p| p.root.as_os_str().len())
+            // A project window group's member files report through the group's project.
+            .or_else(|| {
+                projects
+                    .iter()
+                    .find(|p| crate::project::workspace_member_roots(&p.root).iter().any(|m| path.starts_with(m)))
+            })
             .ok_or_else(|| HostError::Invalid(format!("{} is not in an open project", path.display())))?;
         project.sink.emit(ide_core::IdeEvent::Diagnostics {
             path: path.to_path_buf().into(),
@@ -3193,15 +3325,25 @@ impl PluginWorkspace for HostWorkspace {
             .into_iter()
             .filter(|p| path.starts_with(&p.root))
             .max_by_key(|p| p.root.as_os_str().len())
+            .or_else(|| {
+                HostWorkspace::projects(self)
+                    .into_iter()
+                    .find(|p| crate::project::workspace_member_roots(&p.root).iter().any(|m| path.starts_with(m)))
+            })
             .and_then(|p| p.vcs_encoding(path, None).ok())
             .unwrap_or_else(|| encoding_rs::UTF_8.into())
     }
 
     fn plugin_settings(&self, plugin: &str, root: Option<&Path>) -> serde_json::Map<String, serde_json::Value> {
         let Some(host) = self.0.upgrade() else { return serde_json::Map::new() };
+        // A member root reads the settings of the group's project, like the
+        // group's own root does.
         let settings = match root.and_then(|r| host.projects().into_iter().find(|p| p.root == r)) {
             Some(p) => p.settings.effective(),
-            None => host.global_settings.effective(),
+            None => match root.map(|r| HostWorkspace::project_covering(self, r)) {
+                Some(Some(p)) => p.settings.effective(),
+                _ => host.global_settings.effective(),
+            },
         };
         settings.plugins.get(plugin).cloned().unwrap_or_default()
     }
@@ -3217,7 +3359,14 @@ mod tests {
         )
         .unwrap();
         let sink: Arc<dyn PluginEventSink> = Arc::new(|_: Option<&str>, _: PluginEvent| {});
-        let shared = Shared::new(sink, dir.join(".data"), pins, ide_extension::UiStore::new(), Arc::default());
+        let shared = Shared::new(
+            sink,
+            dir.join(".data"),
+            pins,
+            ide_extension::UiStore::new(),
+            Arc::default(),
+            Arc::new(ide_extension::ExtensionRegistry::new()),
+        );
         PluginApi { pkg: Package::new(manifest, dir.to_path_buf()), shared }
     }
 
@@ -3500,6 +3649,55 @@ mod tests {
         );
     }
 
+    /// A workspace whose container root has no files: the member holds them.
+    struct Members(PathBuf, Vec<PathBuf>);
+    impl PluginWorkspace for Members {
+        fn projects(&self) -> Vec<PathBuf> {
+            vec![self.0.clone()]
+        }
+        fn member_roots(&self, root: &Path) -> Vec<PathBuf> {
+            if root == self.0 { self.1.clone() } else { Vec::new() }
+        }
+        fn buffer_text(&self, _: &Path) -> Option<String> {
+            None
+        }
+        fn document(&self, _: &Path) -> Option<(u64, String)> {
+            None
+        }
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+            Err(HostError::Stale)
+        }
+        fn trusted(&self, _: &Path) -> bool {
+            true
+        }
+        fn project_of(&self, _: &str) -> Option<PathBuf> {
+            None
+        }
+        fn publish_diagnostics(&self, _: &str, _: &Path, _: Vec<ide_core::Diagnostic>) -> Result<(), HostError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn find_files_cover_workspace_members() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let (root, member) = (base.join("workspace"), base.join("member"));
+        std::fs::create_dir_all(root.join(".openidea")).unwrap();
+        std::fs::create_dir_all(member.join("src")).unwrap();
+        std::fs::write(root.join(".openidea/workspace.json"), "{}").unwrap();
+        std::fs::write(member.join("src/UserMapper.xml"), "<mapper/>").unwrap();
+        let api = api(&root, Arc::default());
+        *api.shared.workspace.write() = Some(Arc::new(Members(root.clone(), vec![member.clone()])));
+        // The container holds no sources: the member's files are project scope.
+        assert_eq!(api.find_files(&root, "**/*Mapper.xml", 10).unwrap(), [to_ipc(&member.join("src/UserMapper.xml"))]);
+        // A member root lists its own files, like any project root.
+        assert_eq!(api.find_files(&member, "src/*.xml", 10).unwrap(), [to_ipc(&member.join("src/UserMapper.xml"))]);
+        // And a path outside the group is never listed.
+        std::fs::write(base.join("OutsideMapper.xml"), "<mapper/>").unwrap();
+        assert!(api.find_files(&root, "**/*Mapper.xml", 10).unwrap().len() == 1);
+    }
+
     #[test]
     fn process_environment_only_adds_variables() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3667,10 +3865,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let api = shell_api(tmp.path());
         let token = CancellationToken::new();
-        let cmd = shell("head -c 5242880 /dev/zero; head -c 5242880 /dev/zero >&2");
+        // stdout within the limit comes back whole; stderr beyond it is truncated (stdout beyond it fails).
+        let cmd = shell(&format!("head -c 5242880 /dev/zero; head -c {} /dev/zero >&2", MAX_OUTPUT + (1 << 20)));
         let out = api.run_process(cmd.clone(), None, None, &token, Duration::from_secs(5)).unwrap();
         assert_eq!(out.status, Some(0));
-        assert_eq!((out.stdout.len(), out.stderr.len()), (MAX_OUTPUT, MAX_OUTPUT));
+        assert_eq!((out.stdout.len(), out.stderr.len()), (5 << 20, MAX_OUTPUT));
         let id = api.start_process(cmd, None, None).unwrap();
         let out = api.wait_process(id, MAX_PENDING, Duration::from_secs(5), &token).unwrap();
         assert_eq!(out.status, Some(0));
@@ -3805,6 +4004,16 @@ fn valid_range(document: &ide_text::Document, range: ide_core::Range) -> bool {
 }
 
 impl PluginApi {
+    /// The repository of `root`, which may execute only when `root` is a trusted project.
+    /// Status needs it there: a restricted repository is read without its config, so it knows
+    /// no upstream. The other reads use [`Self::read_repo`] and never execute.
+    fn repo(&self, root: &Path) -> Result<Option<ide_vcs::Repo>, HostError> {
+        let repo = ide_vcs::Repo::discover(root).map_err(failed)?;
+        if let Some(repo) = &repo {
+            repo.set_execution_allowed(self.shared.workspace().is_some_and(|w| w.trusted(root)));
+        }
+        Ok(repo)
+    }
     fn read_repo(&self, root: &Path) -> Result<Option<ide_vcs::Repo>, HostError> {
         if !self.shared.workspace().is_some_and(|w| w.trusted(root)) {
             return Err(HostError::Failed("the project is in Restricted Mode: git does not run there".into()));
@@ -3952,6 +4161,7 @@ mod workbench_tests {
             Arc::default(),
             ide_extension::UiStore::new(),
             Arc::default(),
+            Arc::new(ide_extension::ExtensionRegistry::new()),
         );
         *shared.workspace.write() =
             Some(Arc::new(Workspace { root: root.into(), trusted, text: text.map(str::to_owned) }));
@@ -4068,6 +4278,36 @@ mod workbench_tests {
         std::fs::write(&path, "x".repeat(5 << 20)).unwrap();
         assert!(api.vcs_diff(&root, None, None, &cancel).is_err());
     }
+    /// Security audit lead 2: status has no trust check to stop it, so in Restricted Mode the
+    /// repository it opens must not run what its config names.
+    #[test]
+    fn vcs_status_runs_no_repository_program_in_restricted_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "user.name", "Test"]);
+        git(&root, &["config", "user.email", "test@example.com"]);
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "base"]);
+        let marker = dir.path().join("FILTER-RAN");
+        let clean = format!("echo x > '{}'; cat", marker.to_str().unwrap().replace('\\', "/"));
+        git(&root, &["config", "filter.marker.clean", &clean]);
+        std::fs::write(root.join(".gitattributes"), "*.txt filter=marker\n").unwrap();
+        // Same length as the committed text: only reading the file tells them apart.
+        std::fs::write(root.join("a.txt"), "BASE\n").unwrap();
+
+        let restricted = api(&root, false, None);
+        let status = restricted.vcs_status(&root);
+        assert!(!marker.exists(), "status ran the repository's clean filter in Restricted Mode");
+        assert_eq!(status.unwrap().unwrap().changed_files, 2);
+
+        // Control: the same call runs the fixture's filter in a trusted project.
+        api(&root, true, None).vcs_status(&root).unwrap();
+        assert!(marker.exists(), "control: a trusted status did not run the clean filter, fixture is not live");
+    }
+
     #[cfg(unix)]
     #[test]
     fn vcs_reads_never_run_repository_configured_helpers() {

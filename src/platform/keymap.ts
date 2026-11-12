@@ -12,7 +12,7 @@
  */
 import { create } from "zustand";
 import { executeAction, executeActionFrom, getAction, isActionKeyEnabled } from "./actions";
-import { getContext } from "./context";
+import { evaluateWhen, getContext } from "./context";
 import { intellijMacos } from "./keymaps/intellij-macos";
 import { intellijWindows } from "./keymaps/intellij-windows";
 import { eclipseMacos } from "./keymaps/eclipse-macos";
@@ -571,8 +571,25 @@ export function installKeyboardDispatcher(
       : physicalSeq.replace(/Numpad(Add|Subtract|Multiply|Divide)/g, (key) => keypadAliases[key]!);
     const ctx = getContext();
     const exact = bindings.filter(([b]) => b === seq).map(([, id]) => id);
-    // Later presets/overrides win; the first enabled match runs.
-    for (const id of exact.reverse()) {
+    // Later presets/overrides win; the first enabled match runs. When several
+    // actions share the sequence, a binding whose `keyWhen` matches the current
+    // context runs before one without it: the context-specific claim beats the
+    // context-free one at equal specificity, so Eclipse's Alt+Shift+R renames
+    // in the project view instead of reaching the Git log's Edit Commit
+    // Message. An unmatching `keyWhen` fails the enablement check below, and
+    // when no `keyWhen` matches, the preset/override order decides as before.
+    const keyWhenMatches = (id: string) => {
+      const action = getAction(id);
+      return !!action?.keyWhen && evaluateWhen(action.keyWhen, ctx);
+    };
+    const ordered = exact.reverse();
+    const preferred: string[] = [];
+    const fallback: string[] = [];
+    for (const id of ordered) {
+      if (keyWhenMatches(id)) preferred.push(id);
+      else fallback.push(id);
+    }
+    for (const id of [...preferred, ...fallback]) {
       const action = getAction(id);
       if (action && isActionKeyEnabled(action, ctx)) {
         e.preventDefault();

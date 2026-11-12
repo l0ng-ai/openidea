@@ -342,3 +342,31 @@ async fn applies_driver_properties_and_the_startup_script_on_connect() -> IdeRes
     assert_eq!(db.schemas("s1").await?, vec!["main"]);
     Ok(())
 }
+
+#[tokio::test]
+async fn data_sources_edited_on_disk_close_their_connections() -> IdeResult<()> {
+    let (tmp, db) = setup().await;
+    std::fs::File::create(tmp.path().join("other.db")).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _watch = db.watch_sources(Box::new(move || _ = tx.send(())))?;
+    db.pool("s1").await?;
+    assert_eq!(db.connected(), vec!["s1"]);
+
+    // Our own save is no edit on disk.
+    let mut sources = db.sources()?;
+    sources[0].name = "renamed".into();
+    db.save_sources(sources.clone()).await?;
+    assert!(!db.reconcile_sources().await);
+
+    // Edited outside the IDE (by hand, by an agent): the watcher reports it, and the
+    // connection made with the old settings closes.
+    db.pool("s1").await?;
+    sources[0].file = Some("other.db".into());
+    ide_db::source::save(tmp.path(), &sources)?;
+    rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the watcher reports the edit");
+    assert!(db.reconcile_sources().await);
+    assert!(db.connected().is_empty());
+    assert_eq!(db.sources()?[0].file.as_ref().map(|f| f.0.clone()), Some("other.db".into()));
+    assert!(!db.reconcile_sources().await);
+    Ok(())
+}

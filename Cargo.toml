@@ -5,7 +5,7 @@ members = ["crates/*", "src-tauri"]
 exclude = ["sdk", "plugins"]
 
 [workspace.package]
-version = "0.1.40"
+version = "0.1.42"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"
@@ -43,10 +43,15 @@ ide-ssh = { path = "crates/ide-ssh" }
 ide-remote = { path = "crates/ide-remote" }
 ide-host = { path = "crates/ide-host" }
 ide-mcp = { path = "crates/ide-mcp" }
+ide-scaffold = { path = "crates/ide-scaffold" }
 ide-notebook = { path = "crates/ide-notebook" }
 ide-extension = { path = "crates/ide-extension" }
 ide-plugin = { path = "crates/ide-plugin" }
 ide-cli = { path = "crates/ide-cli" }
+ide-jvm-attach = { path = "crates/ide-jvm-attach" }
+ide-jvm-inspect = { path = "crates/ide-jvm-inspect" }
+ide-jdwp = { path = "crates/ide-jdwp" }
+ide-heap = { path = "crates/ide-heap" }
 
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }
@@ -63,6 +68,7 @@ parking_lot = "0.12"
 rayon = "1"
 dashmap = "6"
 futures = "0.3"
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "__rustls-tls"] }
 
 # errors & diagnostics
 thiserror = "2"
@@ -82,7 +88,8 @@ trash = "5"
 blake3 = "1"
 dunce = "1"
 dirs = "6"
-zip = { version = "9", default-features = false, features = ["deflate"] }
+memmap2 = "0.9"
+zip = { version = "9.2.3", default-features = false, features = ["deflate"] }
 
 # search, index, language
 grep-searcher = "0.1"
@@ -106,7 +113,8 @@ rustls-platform-verifier = "0.7"
 # Until SQLx releases its libsqlite3-sys 0.39 update (RUSTSEC-2026-0459).
 sqlx = { version = "0.9", git = "https://github.com/transact-rs/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "sqlite", "postgres", "mysql"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls", "sql-browser-tokio"] }
-oracle = { version = "0.6", default-features = false }
+# Pure-Rust thin Oracle driver; pinned to the beta until it stabilizes.
+oracledb = "=26.0.0-beta.5"
 bb8 = "0.9"
 uuid = { version = "1", features = ["v4"] }
 # OS credential stores

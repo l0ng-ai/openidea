@@ -416,3 +416,40 @@ async fn rust_references_and_rename_through_mcp() {
     assert!(project.documents.text_snapshot(doc.id).unwrap().text.contains("format_amount"));
     assert!(std::fs::read_to_string(h.root.join("src/main.rs")).unwrap().contains("format_amount"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn brave_mode_runs_tools_without_asking_only_from_the_global_settings() {
+    let h = Harness::new();
+    h.trust().await;
+    h.host.mcp_requests.set_ready("main", true);
+    let p = h.host.project("main").unwrap();
+    // A project's own settings can't turn the confirmations off.
+    let project_layer =
+        p.settings.set(ide_workspace::SettingsScope::Project, "mcpServer.runWithoutConfirmation", json!(true));
+    assert!(project_layer.is_err());
+    let denied = h.error("build_project", json!({}));
+    let answer = async {
+        let id = h.request().await;
+        h.host.mcp_requests.answer("main", id, false, None).unwrap();
+    };
+    let (error, ()) = tokio::join!(denied, answer);
+    assert!(error.contains("denied by the user"), "{error}");
+
+    h.events.lock().unwrap().clear();
+    h.host
+        .global_settings
+        .set(ide_workspace::SettingsScope::Global, "mcpServer.runWithoutConfirmation", json!(true))
+        .unwrap();
+    let (host, root) = (h.host.clone(), h.root.clone());
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        tokio::task::spawn_blocking(move || {
+            Registry::new(host).call(&root, "build_project", "{}", CancellationToken::new())
+        }),
+    )
+    .await
+    .expect("ran without waiting for an answer")
+    .unwrap();
+    assert!(!format!("{result:?}").contains("denied"), "{result:?}");
+    assert!(!h.events.lock().unwrap().iter().any(|e| matches!(e, IdeEvent::McpRequest { .. })), "nothing asked");
+}

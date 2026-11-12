@@ -70,6 +70,7 @@ ide-mcp.workspace = true
 ide-notebook.workspace = true
 ide-jsonrpc.workspace = true
 ide-tools = { path = "../crates/ide-tools" }
+ide-scaffold.workspace = true
 ide-plugin = { path = "../crates/ide-plugin" }
 ide-extension = { path = "../crates/ide-extension" }
 ide-docker = { path = "../crates/ide-docker" }
@@ -107,6 +108,7 @@ windows = { version = "0.62", features = [
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

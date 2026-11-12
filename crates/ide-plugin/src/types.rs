@@ -104,12 +104,14 @@ pub enum Prompt {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventKind {
+    WebsocketReady,
     FileClosed,
     SettingsChanged,
     InputModeChanged,
     RunExited,
     TerminalExited,
     ContentTabAction,
+    ExtensionsChanged,
     FileOpened,
     FileSaved,
     FilesChanged,
@@ -120,13 +122,15 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
+        Self::WebsocketReady,
         Self::FileClosed,
         Self::SettingsChanged,
         Self::InputModeChanged,
         Self::RunExited,
         Self::TerminalExited,
         Self::ContentTabAction,
+        Self::ExtensionsChanged,
         Self::FileOpened,
         Self::FileSaved,
         Self::FilesChanged,
@@ -138,12 +142,14 @@ impl EventKind {
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::WebsocketReady => "websocket-ready",
             Self::FileClosed => "file-closed",
             Self::SettingsChanged => "settings-changed",
             Self::InputModeChanged => "input-mode-changed",
             Self::RunExited => "run-exited",
             Self::TerminalExited => "terminal-exited",
             Self::ContentTabAction => "content-tab-action",
+            Self::ExtensionsChanged => "extensions-changed",
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
@@ -163,7 +169,11 @@ impl EventKind {
     pub fn capability(self) -> Option<ide_extension::Capability> {
         match self {
             Self::ActionPerformed | Self::InputModeChanged => Some(ide_extension::Capability::InputEvents),
-            Self::Scheduled | Self::RunExited | Self::TerminalExited | Self::ContentTabAction => None,
+            Self::Scheduled
+            | Self::RunExited
+            | Self::TerminalExited
+            | Self::ContentTabAction
+            | Self::ExtensionsChanged => None,
             _ => Some(ide_extension::Capability::Events),
         }
     }
@@ -220,15 +230,41 @@ pub struct InputMode {
     pub sub: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WebsocketReady {
+    pub plugin_id: String,
+    pub connection: u64,
+}
+
+/// A host-owned background WebSocket request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebSocketRequest {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub subprotocol: String,
+}
+
+/// Frames received from a host-owned WebSocket and its transport state.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSocketBatch {
+    pub messages: Vec<Vec<u8>>,
+    pub closed: bool,
+}
+
 /// A workbench event delivered to plugins.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum WorkbenchEvent {
+    WebsocketReady(WebsocketReady),
     RunExited(crate::RunExited),
     TerminalExited(crate::TerminalExited),
     ContentTabAction(crate::ContentTabAction),
     FileClosed(String),
     SettingsChanged(Vec<String>),
+    /// Ids of extension points the receiving plugin declares whose contributions changed.
+    ExtensionsChanged(Vec<String>),
     InputModeChanged(InputMode),
     FileOpened(String),
     FileSaved(String),
@@ -242,11 +278,13 @@ pub enum WorkbenchEvent {
 impl WorkbenchEvent {
     pub fn kind(&self) -> EventKind {
         match self {
+            Self::WebsocketReady(_) => EventKind::WebsocketReady,
             Self::RunExited(_) => EventKind::RunExited,
             Self::TerminalExited(_) => EventKind::TerminalExited,
             Self::ContentTabAction(_) => EventKind::ContentTabAction,
             Self::FileClosed(_) => EventKind::FileClosed,
             Self::SettingsChanged(_) => EventKind::SettingsChanged,
+            Self::ExtensionsChanged(_) => EventKind::ExtensionsChanged,
             Self::InputModeChanged(_) => EventKind::InputModeChanged,
             Self::FileOpened(_) => EventKind::FileOpened,
             Self::FileSaved(_) => EventKind::FileSaved,

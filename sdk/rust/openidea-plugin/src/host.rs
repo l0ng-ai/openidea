@@ -7,6 +7,7 @@ use crate::types::*;
 #[cfg(target_arch = "wasm32")]
 mod imp {
     //! Calls through the `openidea:plugin@1.0.0` world.
+    use super::{WebSocketBatch, WebSocketRequest};
     use crate::bindings::openidea::plugin as wit;
     use crate::types::*;
 
@@ -246,6 +247,10 @@ mod imp {
 
     pub fn project_read(p: &ProjectRes, path: &str) -> Result<String, Error> {
         p.read_file(path).map_err(error)
+    }
+
+    pub fn project_read_bytes(p: &ProjectRes, path: &str) -> Result<Vec<u8>, Error> {
+        p.read_bytes(path).map_err(error)
     }
 
     pub fn project_write(p: &ProjectRes, path: &str, text: &str) -> Result<(), Error> {
@@ -633,6 +638,40 @@ mod imp {
             .map_err(error)
     }
 
+    pub type WebSocketRes = wit::net::Websocket;
+
+    pub fn websocket_connect(project: &ProjectRes, req: &WebSocketRequest) -> Result<WebSocketRes, Error> {
+        let request = wit::net::WebsocketRequest {
+            url: req.url.clone(),
+            headers: req
+                .headers
+                .iter()
+                .map(|(name, value)| wit::net::Header { name: name.clone(), value: value.clone() })
+                .collect(),
+            subprotocol: req.subprotocol.clone(),
+        };
+        wit::net::websocket_connect(project, &request).map_err(error)
+    }
+
+    pub fn websocket_id(connection: &WebSocketRes) -> u64 {
+        connection.id()
+    }
+
+    pub fn websocket_send(connection: &WebSocketRes, bytes: &[u8]) -> Result<(), Error> {
+        connection.send(bytes).map_err(error)
+    }
+
+    pub fn websocket_drain(connection: &WebSocketRes, limit: u32) -> Result<WebSocketBatch, Error> {
+        connection
+            .drain(limit)
+            .map(|batch| WebSocketBatch { messages: batch.messages, closed: batch.closed })
+            .map_err(error)
+    }
+
+    pub fn websocket_close(connection: &WebSocketRes) -> Result<(), Error> {
+        connection.close().map_err(error)
+    }
+
     pub fn secret_set(name: &str, value: &str) -> Result<(), Error> {
         wit::secrets::set(name, value).map_err(error)
     }
@@ -831,6 +870,11 @@ mod imp {
         wit::settings::get(key)
     }
 
+    pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
+        let list = wit::extensions::contributions(point).map_err(error)?;
+        Ok(list.into_iter().map(|c| crate::Contribution { plugin: c.plugin, data: c.data }).collect())
+    }
+
     pub fn run_process(
         program: &str,
         args: &[String],
@@ -1014,6 +1058,14 @@ impl Project {
         imp::project_read(&self.inner, path)
     }
 
+    /// Reads the bytes of a file inside the project (absolute or
+    /// root-relative) — images, archives, fonts — at most 16 MiB, the file on
+    /// disk. Paths leaving the root are rejected; a missing path is
+    /// `Error::NotFound`. Needs `project.read`.
+    pub fn read_bytes(&self, path: &str) -> Result<Vec<u8>, Error> {
+        imp::project_read_bytes(&self.inner, path)
+    }
+
     /// Replaces the text of a file inside the project (absolute or
     /// root-relative), or creates it with the directories it needs, at most
     /// 16 MiB: in one step, keeping the file's encoding and BOM (a new file is
@@ -1106,6 +1158,51 @@ pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error
 /// `secrets`). `Error::Cancelled` when the call was superseded.
 pub fn fetch(request: &HttpRequest) -> Result<HttpResponse, Error> {
     imp::fetch(request)
+}
+
+/// A host-owned background WebSocket. Dropping it closes the connection.
+pub struct WebSocket {
+    inner: imp::WebSocketRes,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WebSocketRequest {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub subprotocol: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WebSocketBatch {
+    pub messages: Vec<Vec<u8>>,
+    pub closed: bool,
+}
+
+impl WebSocket {
+    pub fn connect(project: &Project, request: &WebSocketRequest) -> Result<Self, Error> {
+        imp::websocket_connect(&project.inner, request).map(|inner| Self { inner })
+    }
+    pub fn id(&self) -> u64 {
+        imp::websocket_id(&self.inner)
+    }
+    pub fn send(&self, bytes: &[u8]) -> Result<(), Error> {
+        imp::websocket_send(&self.inner, bytes)
+    }
+    pub fn drain(&self, limit: u32) -> Result<WebSocketBatch, Error> {
+        imp::websocket_drain(&self.inner, limit)
+    }
+    pub fn close(&self) -> Result<(), Error> {
+        imp::websocket_close(&self.inner)
+    }
+}
+
+impl Drop for WebSocket {
+    fn drop(&mut self) {
+        // The WIT resource also closes on its own drop. Calling close here
+        // keeps the native mock faithful to that lifecycle; host close is
+        // intentionally idempotent.
+        let _ = imp::websocket_close(&self.inner);
+    }
 }
 
 /// Whether the user stored secret `name` (declared under `[[contributes.secrets]]`).
@@ -1755,4 +1852,14 @@ pub fn unregister_run_target(project: &Project, id: &str) {
 /// Stdio bridge argv for the invoking project, none while the built-in MCP server is off.
 pub fn mcp_stdio_command() -> Option<Vec<String>> {
     imp::mcp_stdio_command()
+}
+
+/// What other plugins contributed to `point`, an extension point this plugin
+/// declares in `[[extension-points]]`, in the order those plugins started.
+/// `Error::Denied` for another plugin's point, `Error::NotFound` while no
+/// running plugin declares it. Contributions change when plugins are enabled,
+/// disabled, updated or reloaded: subscribe to `EventKind::ExtensionsChanged`
+/// to refresh what was derived from them. Needs `engines.openidea = "^1.4"`.
+pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
+    imp::extension_contributions(point)
 }

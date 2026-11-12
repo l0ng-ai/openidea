@@ -60,11 +60,18 @@ it("opens a merge commit's file in the front window under the modal interface", 
 
 it("keeps a merge commit's file in an editor tab with the non-modal interface, and previews too", async () => {
   await showChangesDiff([merge]);
+  // The preview tab: looking through a commit's files reuses one tab.
   expect(openInput).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "git-merge-diff" }), {
-    preview: false,
+    preview: true,
     focus: true,
   });
   modal(true);
   await showChangesDiff([merge], true);
   expect(front.merge).not.toHaveBeenCalled();
+});
+
+it("opens a commit's file diff in the preview tab with the non-modal interface", async () => {
+  const file = { ...merge, mergeParents: undefined } as LogChange;
+  await showChangesDiff([file]);
+  expect(openInput).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "diff" }), { preview: true, focus: true });
 });

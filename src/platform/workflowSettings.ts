@@ -19,6 +19,7 @@ export interface IssueLinkValid {
 
 export interface GitSettingsValid {
   inlineBlame: boolean;
+  showBranchInProjectView: boolean;
   executable: string;
   updateMethod: UpdateMethod;
   autoUpdateOnPushRejected: boolean;
@@ -52,6 +53,8 @@ export interface CommitSettingsValid {
   wrapAtMargin: boolean;
   /** Plugin before-commit checks turned off (`<plugin id>/<check id>`). */
   disabledPluginChecks: string[];
+  /** Double-click opens the diff (`true`), the source file (`false`), or follows the interface (`null`). */
+  doubleClickOpensDiff: boolean | null;
 }
 
 export interface VcsSettingsValid {
@@ -115,6 +118,7 @@ export interface TerminalSettingsValid {
   overrideIdeShortcuts: boolean;
   shellIntegration: boolean;
   highlightHyperlinks: boolean;
+  highlightSelection: boolean;
   optionAsMeta: boolean;
   escapeToEditor: boolean;
   cursorShape: CursorShape;
@@ -145,6 +149,11 @@ export interface ExternalToolValid {
   openConsole: boolean;
 }
 
+export interface AgentSecurityValid {
+  allowedCommands: string[];
+  blockedCommands: string[];
+}
+
 export interface WorkflowSettings extends RemoteSettings {
   vcs: VcsSettingsValid;
   console: ConsoleSettingsValid;
@@ -153,6 +162,7 @@ export interface WorkflowSettings extends RemoteSettings {
   terminal: TerminalSettingsValid;
   actionsOnSave: ActionsOnSaveValid;
   externalTools: ExternalToolValid[];
+  agentSecurity: AgentSecurityValid;
 }
 
 export const WORKFLOW_LIMITS = {
@@ -188,6 +198,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     historyLimit: 1000,
     git: {
       inlineBlame: false,
+      showBranchInProjectView: false,
       executable: "",
       updateMethod: "merge",
       autoUpdateOnPushRejected: false,
@@ -219,6 +230,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       showRightMargin: true,
       wrapAtMargin: false,
       disabledPluginChecks: [],
+      doubleClickOpensDiff: null,
     },
     confirmation: {
       onCreate: "ask",
@@ -271,6 +283,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     overrideIdeShortcuts: true,
     shellIntegration: true,
     highlightHyperlinks: true,
+    highlightSelection: true,
     optionAsMeta: false,
     escapeToEditor: false,
     cursorShape: "block",
@@ -284,12 +297,18 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
   },
   actionsOnSave: { optimizeImports: false, cleanup: false },
   externalTools: [],
+  agentSecurity: {
+    allowedCommands: [],
+    blockedCommands: ["rm -rf *", "rm -rf /", "mkfs*", "dd *", ":(){ :|:& };:", "shutdown*", "reboot*"],
+  },
   ...DEFAULT_REMOTE,
 };
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
 const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
+/** A boolean the user may leave unset. */
+const tri = (v: unknown): boolean | null => (typeof v === "boolean" ? v : null);
 const text = (v: unknown, d: string) => (typeof v === "string" ? v : d);
 const nonEmpty = (v: unknown, d: string) => (typeof v === "string" && v.trim() ? v : d);
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[], d: T): T =>
@@ -316,6 +335,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
     historyLimit: num(v.historyLimit, d.historyLimit, L.historyLimit, true),
     git: {
       inlineBlame: bool(g.inlineBlame, d.git.inlineBlame),
+      showBranchInProjectView: bool(g.showBranchInProjectView, d.git.showBranchInProjectView),
       executable: text(g.executable, d.git.executable).trim(),
       updateMethod: oneOf(g.updateMethod, ["merge", "rebase"] as const, d.git.updateMethod),
       autoUpdateOnPushRejected: bool(g.autoUpdateOnPushRejected, d.git.autoUpdateOnPushRejected),
@@ -347,6 +367,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       showRightMargin: bool(c.showRightMargin, d.commit.showRightMargin),
       wrapAtMargin: bool(c.wrapAtMargin, d.commit.wrapAtMargin),
       disabledPluginChecks: strings(c.disabledPluginChecks, d.commit.disabledPluginChecks),
+      doubleClickOpensDiff: tri(c.doubleClickOpensDiff),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),
@@ -435,6 +456,7 @@ export function validateTerminal(raw: unknown): TerminalSettingsValid {
     overrideIdeShortcuts: bool(v.overrideIdeShortcuts, d.overrideIdeShortcuts),
     shellIntegration: bool(v.shellIntegration, d.shellIntegration),
     highlightHyperlinks: bool(v.highlightHyperlinks, d.highlightHyperlinks),
+    highlightSelection: bool(v.highlightSelection, d.highlightSelection),
     optionAsMeta: bool(v.optionAsMeta, d.optionAsMeta),
     escapeToEditor: bool(v.escapeToEditor, d.escapeToEditor),
     cursorShape: oneOf(v.cursorShape, ["block", "underline", "bar"] as const, d.cursorShape),
@@ -482,6 +504,15 @@ export function validateExternalTools(raw: unknown): ExternalToolValid[] {
   return out;
 }
 
+export function validateAgentSecurity(raw: unknown): AgentSecurityValid {
+  const v = obj(raw);
+  const d = DEFAULT_WORKFLOW.agentSecurity;
+  return {
+    allowedCommands: strings(v.allowedCommands, d.allowedCommands),
+    blockedCommands: strings(v.blockedCommands, d.blockedCommands),
+  };
+}
+
 export function validateWorkflow(raw: unknown): WorkflowSettings {
   const root = obj(raw);
   return {
@@ -492,6 +523,7 @@ export function validateWorkflow(raw: unknown): WorkflowSettings {
     terminal: validateTerminal(root.terminal),
     actionsOnSave: validateActionsOnSave(root.actionsOnSave),
     externalTools: validateExternalTools(root.externalTools),
+    agentSecurity: validateAgentSecurity(root.agentSecurity),
     ...validateRemote(root),
   };
 }

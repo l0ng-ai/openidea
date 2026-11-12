@@ -221,8 +221,11 @@ pub fn set_settings(
         || key == "editor.codeStyle"
         || key.starts_with("editor.codeStyle.")
         || key == "inspections"
-        || key.starts_with("inspections.");
-    let toolchain = ["languages", "tools", "languageServers", "languageServerTargets", "projectStructure"]
+        || key.starts_with("inspections.")
+        || key == "files"
+        || key == "files.composeFileOverrides"
+        || key.starts_with("files.composeFileOverrides.");
+    let toolchain = ["languages", "tools", "languageServers", "projectStructure"]
         .iter()
         .any(|k| key == *k || key.starts_with(&format!("{k}.")));
     // Code style only reaches servers as settings (e.g. jdtls' formatter profile); builds don't depend on it.

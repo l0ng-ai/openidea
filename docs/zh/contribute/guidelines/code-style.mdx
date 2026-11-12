@@ -1,0 +1,72 @@
+---
+title: "代码风格"
+description: "Rust 与 TypeScript 的格式化、lint 和死代码检查，以及注释、错误处理和生成文件的约定。"
+---
+
+格式和 lint 规则都由工具强制执行：本地由 pre-commit 钩子执行，CI 里再查一遍。把编辑器配置成使用同样的工具，基本就不用操心这些。
+
+## Rust
+
+| 工具       | 命令                                                    | 配置                                                                            |
+| ---------- | ------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| rustfmt    | `cargo fmt --all`（CI：`--check`）                      | `rustfmt.toml`：`max_width = 120`、`use_small_heuristics = "Max"`；edition 2024 |
+| clippy     | `cargo clippy --workspace --all-targets -- -D warnings` | 警告即错误                                                                      |
+| cargo-deny | `cargo deny check`                                      | `deny.toml`：安全公告、许可证、禁用项、来源                                     |
+
+开发过程中只对改动的 crate 跑 clippy（`cargo clippy -p <crate> --all-targets -- -D warnings`），并且在提交前跑一次就够了。插件 SDK 和官方插件是独立的 workspace，CI 还会针对 `wasm32-wasip2` 检查它们。
+
+约定：
+
+- 每个 crate 的 `lib.rs`（以及重要的模块）开头都有一段 `//!` 文档注释，说明它的契约。契约变了要同步更新。
+- crate 内部用自己的错误类型（`thiserror`、`anyhow`），在公开边界转换为 `IdeError`。
+- Tauri 命令和 IPC 类型上的文档注释会变成 `src/bindings.ts` 中的 JSDoc，写的时候要考虑前端读者。
+- 用 `tracing` 打日志，不要用 `println!`。在 `openidea-server` 中 stdout 承载协议。
+- 阻塞或耗时的工作放到 `spawn_blocking` / rayon，并响应 `CancellationToken`。
+
+## TypeScript 与 React
+
+| 工具     | 命令                                     | 配置                                                      |
+| -------- | ---------------------------------------- | --------------------------------------------------------- |
+| oxfmt    | `pnpm format`（CI：`pnpm format:check`） | `.oxfmtrc.json`：行宽 120、双引号、分号、处处尾逗号       |
+| oxlint   | `pnpm lint`                              | `.oxlintrc.json`：TypeScript 和 React 插件                |
+| 类型检查 | `pnpm typecheck`                         | `tsconfig.json` 以及 `perf/`、`scripts/`、`smoke/` 的配置 |
+| knip     | `pnpm knip`                              | `knip.ts`：未使用的文件、导出和依赖                       |
+
+`pnpm knip` 发现没人 import 的导出、没人引用的文件或没人用的依赖时会失败。请删掉死代码，而不是屏蔽检查；只在本文件内使用的导出是允许的。
+
+约定：
+
+- 应用内模块通过 `@/` 别名导入（`@/platform/ipc`、`@/workbench/contributions`）。
+- 状态放在 zustand store 里；功能通过 action 和 contribution 暴露行为，而不是导出给其他功能 import 的单例。
+- 样式和 UI 规则见 [UI 规范](/zh/contribute/guidelines/ui)，文本见[本地化](/zh/contribute/guidelines/i18n)。
+
+## pre-commit 钩子
+
+`pnpm install` 会安装一个 pre-commit 钩子（`simple-git-hooks` + `lint-staged`），对暂存的文件运行：
+
+- JavaScript 和 TypeScript 文件：`oxlint --fix`；
+- 所有文件：`oxfmt`（TOML 和生成文件在其配置中被忽略）；
+- Rust 文件：`rustfmt --edition 2024`。
+
+## 注释
+
+注释要少而有用，并与周围代码风格一致：
+
+- 解释**为什么**、某个约束或不明显的契约；不要复述下一行代码在做什么。
+- 某行代码是因为某个具体 bug 报告而存在时，像现有代码那样注明 issue 编号（`(#1878)`）。
+- 不要在注释里保留变更记录或注释掉的代码；历史在 git 里。
+
+## 生成的文件
+
+以下文件禁止手改，要重新生成：
+
+| 文件                                               | 命令                                                               |
+| -------------------------------------------------- | ------------------------------------------------------------------ |
+| `src/bindings.ts`                                  | `pnpm gen:bindings`                                                |
+| `src/editor/core/cm/{angular,jsp,astro}/parser.ts` | `pnpm gen:angular-grammar`、`gen:jsp-grammar`、`gen:astro-grammar` |
+| `plugins/themes.md` 中的 token 参考                | `pnpm gen:theme-docs`                                              |
+| `plugins/official/*/dist/plugin.wasm`              | `plugins/build.sh`                                                 |
+
+## 提交与 PR 标题
+
+使用带 scope 的 [Conventional Commits](https://www.conventionalcommits.org/)：`fix(editor): keep the caret visible after folding`、`feat(vcs): …`、`perf(index): …`。全仓库格式化的那次提交记录在 `.git-blame-ignore-revs` 里，用 `git blame --ignore-revs-file .git-blame-ignore-revs` 可以跳过它。

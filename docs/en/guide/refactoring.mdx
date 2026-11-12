@@ -1,0 +1,93 @@
+---
+title: "Refactoring"
+description: "Rename, introduce and extract, inline, move, change signature and safe delete, and which ones depend on the language server."
+---
+
+The **Refactor** menu has IntelliJ IDEA's refactorings with their usual shortcuts. Most of them are carried out by the file's language server, so what is available depends on the language: Rename works almost everywhere, while Extract Method, Inline or Change Signature appear only where the server offers them. When a refactoring cannot run at the caret, a hint says why (for example "Cannot perform refactoring. Select the code to extract").
+
+## Refactor This
+
+| Action             | macOS | Windows / Linux    |
+| ------------------ | ----- | ------------------ |
+| **Refactor This…** | `⌃T`  | `Ctrl+Alt+Shift+T` |
+
+**Refactor This…** lists only the refactorings that apply at the caret or selection: first the ones below, then any other refactorings the language server offers there (for example "Convert to arrow function" in TypeScript).
+
+## Available refactorings
+
+| Refactoring              | macOS | Windows / Linux | Works through                                          |
+| ------------------------ | ----- | --------------- | ------------------------------------------------------ |
+| **Rename…**              | `⇧F6` | `Shift+F6`      | Language server; local variables also without one      |
+| **Change Signature…**    | `⌘F6` | `Ctrl+F6`       | Language server                                        |
+| **Introduce Variable…**  | `⌥⌘V` | `Ctrl+Alt+V`    | Language server; simple cases also without one         |
+| **Introduce Constant…**  | `⌥⌘C` | `Ctrl+Alt+C`    | Language server; simple cases also without one         |
+| **Introduce Field…**     | `⌥⌘F` | `Ctrl+Alt+F`    | Language server                                        |
+| **Introduce Parameter…** | `⌥⌘P` | `Ctrl+Alt+P`    | Language server                                        |
+| **Extract Method…**      | `⌥⌘M` | `Ctrl+Alt+M`    | Language server                                        |
+| **Inline…**              | `⌥⌘N` | `Ctrl+Alt+N`    | Language server                                        |
+| **Move…**                | `F6`  | `F6`            | Language server (symbols); the IDE (files and folders) |
+| **Safe Delete…**         | `⌘⌦`  | `Alt+Delete`    | The IDE, using the server's references                 |
+| **Pull Members Up…**     | —     | —               | Java only                                              |
+| **Push Members Down…**   | —     | —               | Java only                                              |
+
+## Rename
+
+<Steps>
+  <Step title="Start the rename">
+    Put the caret on a name and press `⇧F6` / `Shift+F6`. The name becomes editable in place, and its other occurrences
+    in the file change as you type.
+  </Step>
+  <Step title="Finish or cancel">
+    Press `↵` / `Enter` or `⇥` / `Tab` to apply the rename across the project. `Esc` restores the old name.
+  </Step>
+  <Step title="Use the dialog for more options">
+    Press `⇧F6` / `Shift+F6` a second time to open the rename dialog instead.
+  </Step>
+</Steps>
+
+When the change touches more than one file, or renames or moves files, a preview lists the affected files before anything is written; confirm with **Do Refactor**. If the server may have missed usages (for example while it is still loading the project), the preview says so and the button reads **Rename Anyway**.
+
+Without a running language server, only local variables are renamed, from the syntax tree. Members, types and other cross-file symbols wait for the server.
+
+## Introduce and extract
+
+**Introduce Variable**, **Introduce Constant**, **Introduce Field**, **Introduce Parameter** and **Extract Method** work like this:
+
+1. Select the expression or statements. With only a caret, a chooser lists the expressions around it; each is highlighted while you move through the list.
+2. If the expression occurs several times, choose whether to replace this occurrence or all of them (**Multiple occurrences found**).
+3. The new name is then edited in place. `↑` / `↓` cycle through suggested names; `↵` / `Enter` accepts.
+
+When the language server cannot help, Introduce Variable and Introduce Constant still work from the syntax tree in clear-cut cases, and refuse with a hint otherwise.
+
+## Move, copy and rename files
+
+In the Project view, **Rename…** (`⇧F6` / `Shift+F6`), **Move…** (`F6`, drag and drop, or cut and paste) and **Copy…** (`F5`, copy and paste, or `⌥`-drag / `Alt`-drag) open a dialog. With **Search for references** on, references to the file are updated through the language servers that support it (for example imports in TypeScript); **Search in comments and strings** also looks there. The changes are shown in a preview first.
+
+In the editor, **Move…** on a symbol runs the server's move refactoring, where the language has one.
+
+## Safe Delete
+
+<Steps>
+  <Step title="Start">
+    Put the caret on a declaration and press `⌘⌦` / `Alt+Delete`, or use **Safe Delete…** on a file in the Project view.
+  </Step>
+  <Step title="Confirm">Confirm the deletion. You can also search comments and strings.</Step>
+  <Step title="Review usages">
+    If the symbol is still used, **Usages Detected** offers **View Usages**, **Delete Anyway** or **Cancel**. Otherwise
+    the declaration is removed together with its doc comment and annotations, as one undo step.
+  </Step>
+</Steps>
+
+## Pull Members Up and Push Members Down
+
+These move fields and methods between a Java class and its superclasses or subclasses. A dialog lets you pick the members and the destination; problems the move would cause are listed in **Problems Detected** before you continue. They are provided by the Java extension bundled with OpenIDEA, so they are not available for other languages.
+
+## Undo
+
+A refactoring is one undo step, even when it changed several files. After a multi-file refactoring, a notification offers **Undo** (and then **Redo**).
+
+## Limits
+
+- Refactorings other than Rename, Safe Delete and the syntax-based fallbacks need a running language server that offers them. Check the **Language Services** widget in the status bar if one is missing.
+- Change Signature appears only when the server offers a signature rewrite as a code action.
+- There is no structural search-and-replace refactoring in this menu; see **Edit › Find › Replace Structurally…** in [Inspections](/en/guide/inspections).

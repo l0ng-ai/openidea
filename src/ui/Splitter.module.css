@@ -18,11 +18,11 @@
 }
 .handle[aria-orientation="vertical"] {
   width: 1px;
-  cursor: col-resize;
+  cursor: ew-resize;
 }
 .handle[aria-orientation="horizontal"] {
   height: 1px;
-  cursor: row-resize;
+  cursor: ns-resize;
 }
 .handle::after {
   content: "";

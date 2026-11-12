@@ -91,6 +91,13 @@ describe("database object SQL", () => {
     );
   });
 
+  it("drops an Oracle package with neither IF EXISTS nor CASCADE", () => {
+    expect(dropSql("oracle", { kind: "package", schema: "hr", name: "pkg" }, { ifExists: true, cascade: true })).toBe(
+      'drop package "hr"."pkg";',
+    );
+    expect(reference("oracle", { kind: "package", schema: "hr", name: "pkg" })).toBe('"hr"."pkg"');
+  });
+
   it("renames per dialect", () => {
     expect(renameSql("sqlite", { kind: "table", schema: "main", name: "users" }, "people")).toBe(
       "alter table users rename to people;",

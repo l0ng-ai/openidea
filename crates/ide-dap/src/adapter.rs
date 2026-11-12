@@ -31,7 +31,6 @@ pub enum Transport {
 /// A fully resolved adapter command line.
 #[derive(Clone, Debug)]
 pub struct AdapterSpec {
-    pub target: Option<crate::target::TargetMapping>,
     pub adapter: String,
     pub command: String,
     pub args: Vec<String>,
@@ -52,7 +51,6 @@ pub struct AdapterSpec {
 /// Built-in adapters used when no language definition names `adapter`.
 fn builtin(adapter: &str) -> Option<DebuggerConfig> {
     let cfg = |command: &str, args: &[&str], transport: &str, hint: &str| DebuggerConfig {
-        target_placement: None,
         adapter: adapter.to_owned(),
         command: command.to_owned(),
         args: args.iter().map(|a| (*a).to_owned()).collect(),
@@ -73,6 +71,13 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             &[],
             "stdio",
             "Install Kotlin Debug Adapter in Settings › Languages & Frameworks › Language Servers",
+        ),
+        // Inside the language server: reached through `debugServer`, never started.
+        "kotlin-lsp" => cfg(
+            "kotlin-lsp",
+            &[],
+            "tcp",
+            "Install JetBrains Kotlin LSP in Settings › Languages & Frameworks › Language Servers",
         ),
         // Windows installs `python.exe`; `python3.exe` there is at most a Store alias.
         "debugpy" => cfg(
@@ -151,7 +156,6 @@ pub fn default_type(adapter: &str) -> Option<&'static str> {
 
 pub fn resolve(config: &DebuggerConfig, cwd: PathBuf) -> AdapterSpec {
     AdapterSpec {
-        target: None,
         adapter: config.adapter.clone(),
         command: config.command.clone(),
         args: config.args.clone(),
@@ -552,7 +556,7 @@ impl AdapterLauncher for ProcessLauncher {
                     program_output: None,
                 });
             }
-            if spec.adapter == DEBUGPY_TOOL && spec.target.is_none() {
+            if spec.adapter == DEBUGPY_TOOL {
                 prepare_debugpy(&mut spec).await?;
             }
             if is_plugin_bundle(&spec.command) {
@@ -573,7 +577,7 @@ impl AdapterLauncher for ProcessLauncher {
                 }
             };
             let launch_after_configuration =
-                if spec.adapter == "gdb" && spec.target.is_none() { prepare_gdb(&spec, &binary).await? } else { false };
+                if spec.adapter == "gdb" { prepare_gdb(&spec, &binary).await? } else { false };
             let base_args = substitute_root(&spec.args, &spec.cwd);
             match spec.transport {
                 Transport::Stdio => {

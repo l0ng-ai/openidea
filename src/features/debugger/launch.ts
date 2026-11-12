@@ -1,7 +1,7 @@
 import { parseArgs, formatArgs } from "@/platform/commandLine";
 /** Run configuration → DAP launch configuration, per adapter. */
 import { workflowSettings } from "@/platform/workflowSettings";
-import type { LaunchConfig, RunConfig } from "@/platform/ipc";
+import { call, commands, type LaunchConfig, type RunConfig } from "@/platform/ipc";
 import { hostOs } from "@/platform/remote";
 
 function isAbsolute(p: string) {
@@ -35,6 +35,18 @@ function base(rc: RunConfig, adapter: string, cwd: string): LaunchConfig {
     env: { ...rc.env },
     extraJson: null,
   };
+}
+
+/**
+ * `rc` with its `.env` files loaded underneath its explicit variables (mirrors Run):
+ * Debug used to drop them because `base` only copies `env`. Absolute paths go to the
+ * backend, which parses with the same loader runs use.
+ */
+export async function withEnvFiles(rc: RunConfig, root: string): Promise<RunConfig> {
+  const files = rc.envFiles?.filter((f) => f.trim()) ?? [];
+  if (!files.length) return rc;
+  const loaded = await call(commands.runEnvFiles(files.map((f) => join(root, f))));
+  return { ...rc, env: { ...loaded, ...rc.env } };
 }
 
 function cargoLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig {

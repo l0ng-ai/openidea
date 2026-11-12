@@ -36,6 +36,7 @@ import {
 import { markdownImages } from "./markdownImages";
 import { selectionMarks } from "./selectionMarks";
 import { seamlessSelection } from "./selectionLayer";
+import { useEditorRegistry } from "@/editor/api";
 import type { EditorExtras } from "@/platform/editorSettings";
 import { openideaHighlightStyle } from "./highlight";
 import {
@@ -49,10 +50,11 @@ import {
 } from "./editing";
 import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
 import { enterInDocComment } from "./docComment";
-import { skipClosingQuote, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
+import { skipClosingQuote, smartAngleBrackets, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
 import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
 import { LINE_INSET } from "./lineInset";
+import { codeLensPositions } from "./codeLens";
 
 // --- soft wraps ---------------------------------------------------------------
 
@@ -374,10 +376,16 @@ const richCopy = EditorView.domEventHandlers({
 
 // --- caret / scrolling / mouse ----------------------------------------------
 
+/**
+ * Font zoom new editors start from. ⌘/Ctrl+wheel keeps every open editor on the
+ * same value (#2480), so editors opened afterwards match the others.
+ */
+let sharedFontZoom = 0;
+
 /** Font zoom of one editor (⌘ + wheel), in px relative to the configured size. */
 export const setFontZoom = StateEffect.define<number>();
 export const fontZoom = StateField.define<number>({
-  create: () => 0,
+  create: () => sharedFontZoom,
   update: (v, tr) => tr.effects.reduce((acc, e) => (e.is(setFontZoom) ? e.value : acc), v),
   // Highest precedence: its style comes after the configured font size, which it scales.
   provide: (f) =>
@@ -400,11 +408,35 @@ export function stepFontZoom(view: EditorView, delta: number): void {
   if (next !== z) view.dispatch({ effects: setFontZoom.of(next) });
 }
 
-const wheelZoom = EditorView.domEventHandlers({
+/**
+ * Steps the font zoom of every open editor to the same value, so ⌘/Ctrl+wheel
+ * resizes all editor areas together (#2480) instead of only the focused one.
+ */
+export function stepAllEditorsFontZoom(origin: EditorView, delta: number): void {
+  const current = origin.state.field(fontZoom, false);
+  if (current === undefined) return;
+  const next = Math.max(-6, Math.min(36, current + delta));
+  if (next === current) return;
+  sharedFontZoom = next;
+  for (const ed of useEditorRegistry.getState().editors) {
+    if (ed.view.state.field(fontZoom, false) === undefined) continue;
+    if (ed.view.state.field(fontZoom) !== next) ed.view.dispatch({ effects: setFontZoom.of(next) });
+  }
+}
+
+/** Resets every open editor's font zoom, and the value new editors start from. */
+export function resetAllEditorsFontZoom(): void {
+  sharedFontZoom = 0;
+  for (const ed of useEditorRegistry.getState().editors)
+    if (ed.view.state.field(fontZoom, false)) ed.view.dispatch({ effects: setFontZoom.of(0) });
+}
+
+/** Exported for tests: the ⌘/Ctrl+wheel handler of the prefs compartment. */
+export const wheelZoom = EditorView.domEventHandlers({
   wheel(e, view) {
     if (!e.metaKey && !e.ctrlKey) return false;
     e.preventDefault();
-    stepFontZoom(view, e.deltaY < 0 ? 1 : -1);
+    stepAllEditorsFontZoom(view, e.deltaY < 0 ? 1 : -1);
     return true;
   },
 });
@@ -526,7 +558,12 @@ export function prefsExtension(o: PrefsOptions): Extension {
   const { prefs } = o;
   const g = prefs.general;
   const k = prefs.smartKeys;
-  const out: Extension[] = [];
+  const out: Extension[] = [
+    codeLensPositions.of({
+      usages: prefs.inlay.codeVisionUsagesPosition,
+      author: prefs.inlay.codeVisionAuthorPosition,
+    }),
+  ];
   if (!o.readOnly)
     out.push(markdownImages({ path: o.path, folder: g.markdownImageFolder, pattern: g.markdownImageNamePattern }));
   if (g.scrollPastEnd) out.push(scrollPastEnd());
@@ -559,6 +596,8 @@ export function prefsExtension(o: PrefsOptions): Extension {
   // Pairing: closeBrackets() reads the brackets list from language data; ours comes first.
   const brackets = [...(k.pairBrackets ? ["(", "[", "{"] : []), ...(k.pairQuotes ? ["'", '"'] : [])];
   out.push(Prec.highest(EditorState.languageData.of(() => [{ closeBrackets: { brackets } }])));
+  // `<` pairs where the syntax says a generic type list starts, as in IDEA — no separate option.
+  if (k.pairBrackets && !o.readOnly) out.push(smartAngleBrackets(o.language));
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));
   if (k.pairQuotes) out.push(Prec.highest(skipClosingQuote));
   if (k.tabOutOfPair) out.push(tabOut);

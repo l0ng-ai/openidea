@@ -26,7 +26,7 @@ async function retrieve(path: string, choose: boolean) {
   try {
     let sources: string | null = null;
     if (choose) {
-      const { open } = await import("@tauri-apps/plugin-dialog");
+      const { open } = await import("@/platform/dialog");
       const selected = await open({
         title: tx("Choose Sources…"),
         filters: [{ name: tx("Source archives"), extensions: ["jar", "zip"] }],

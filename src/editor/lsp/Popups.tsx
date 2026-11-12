@@ -181,7 +181,12 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
       className={clsx(styles.listPopup, popup.preview && styles.withPreview)}
       style={popup.preview ? undefined : { width }}
     >
-      <div className={styles.listMain} style={popup.preview ? { width } : undefined}>
+      <div
+        className={styles.listMain}
+        style={popup.preview ? { width } : undefined}
+        data-testid="list-popup"
+        aria-busy={popup.busy || undefined}
+      >
         <div className={styles.listHeader}>
           <span className={styles.listTitle}>{popup.title}</span>
           {query && <span className={styles.query}>{query}</span>}
@@ -218,6 +223,9 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
                 <div
                   className={clsx(styles.item, item.disabled && styles.disabled, item.emphasis && styles.emphasis)}
                   title={item.disabled ?? undefined}
+                  data-testid="list-popup-item"
+                  data-path={item.location?.path}
+                  data-line={item.location?.line}
                 >
                   {popup.numbered && <span className={styles.mnemonic}>{n > 0 && n <= 9 ? n : ""}</span>}
                   <ItemIcon item={item} />
@@ -445,7 +453,7 @@ function DocPopup({ popup }: { popup: Extract<LspPopup, { kind: "doc" }> }) {
       // As in IDEA the popup leaves the keyboard to the editor until F1 focuses it.
       autoFocus={false}
     >
-      <div ref={scope} className={styles.docScope}>
+      <div ref={scope} data-testid="doc-popup" className={styles.docScope}>
         <DocView host="popup" history={popup} themeClasses={popup.themeClasses} />
       </div>
     </Popup>
@@ -532,15 +540,42 @@ function DefinitionPopup({ popup }: { popup: Extract<LspPopup, { kind: "definiti
   );
 }
 
+const PREVIEW_SIZE_KEY = "openidea.refactor.previewSize";
+
+function loadPreviewSize(): { w: number; h: number } | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(PREVIEW_SIZE_KEY) ?? "null") as { w?: unknown; h?: unknown } | null;
+    return typeof v?.w === "number" && typeof v.h === "number" ? { w: v.w, h: v.h } : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePreviewSize(size: { w: number; h: number }) {
+  try {
+    localStorage.setItem(PREVIEW_SIZE_KEY, JSON.stringify(size));
+  } catch {
+    // Private mode etc. — the size just isn't remembered.
+  }
+}
+
 function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }> }) {
   const root = useProject((s) => s.project?.root ?? "");
   const { summary } = popup;
+  const [initialSize] = useState(loadPreviewSize);
   return (
     <Dialog
       open
       onClose={closePopup}
       title={popup.title}
+      className={styles.previewDialog}
       width={560}
+      minWidth={400}
+      minHeight={220}
+      maxHeight={480}
+      resizable="both"
+      initialSize={initialSize}
+      onResized={savePreviewSize}
       buttons={[
         {
           label: popup.confirmLabel,
@@ -581,12 +616,14 @@ function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }
           })}
         </ul>
       ) : (
-        <ul className={styles.previewList} aria-label={tx("Changes")}>
+        <ul data-testid="refactor-preview" className={styles.previewList} aria-label={tx("Changes")}>
           {summary.entries.map((e) => (
             <li key={e.path} className={styles.previewRow}>
               <Icon name={fileIconName(basename(e.path), e.path)} size={14} className={styles.itemIcon} />
               <span className={styles.previewName}>{basename(e.path)}</span>
-              <span className={styles.previewPath}>{relativePath(root, e.path)}</span>
+              <span className={styles.previewPath} title={relativePath(root, e.path)}>
+                {relativePath(root, e.path)}
+              </span>
               <span className={styles.spacer} />
               {e.operation === "rename" && e.to && <span className={styles.previewOp}>→ {basename(e.to)}</span>}
               {e.operation && e.operation !== "rename" && <span className={styles.previewOp}>{e.operation}</span>}

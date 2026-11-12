@@ -23,6 +23,7 @@ import {
   type EditorDocumentLifecycle,
   type EditorInput,
 } from "@/workbench/contributions";
+import { pluginsBackend } from "../backend";
 import { PluginView } from "./PluginView";
 import { WebView, type DocumentState, type FrameDocument } from "./WebView";
 import styles from "./PluginView.module.css";
@@ -143,6 +144,8 @@ function session(key: string, path: string): Promise<Session> {
       });
       const frameDocument: FrameDocument = {
         read: () => ({ version, text: view.state.doc.toString(), readOnly: attachment.readOnly, name: basename(path) }),
+        // The file's bytes, for a binary custom editor the page renders.
+        bytes: () => pluginsBackend().readFileBytes(path),
         edit: (at, changes) => {
           if (at !== version) throw new Error("stale");
           // One edit of the document's history: Undo in the text editor (or this tab) reverts it.

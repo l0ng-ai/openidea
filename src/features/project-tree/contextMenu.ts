@@ -1,5 +1,6 @@
 /** Context menu and "New" popup of the project view. */
 import { executeAction, getAction } from "@/platform/actions";
+import { getContext } from "@/platform/context";
 import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform/keymap";
 import { relativePath, useProject } from "@/platform/project";
@@ -332,8 +333,8 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     { kind: "separator" },
   );
 
-  // Git ›
-  if (inProject && project?.isGit) {
+  // Git › (`vcsAvailable` also covers repositories nested below a non-Git project root)
+  if (inProject && (project?.isGit || getContext().vcsAvailable === true)) {
     const arg = vcsArg(nodes);
     const dirs = nodes.some((n) => n.dir);
     push(

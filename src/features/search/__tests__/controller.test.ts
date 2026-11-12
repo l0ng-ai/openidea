@@ -83,6 +83,44 @@ describe("SeController", () => {
     expect(deps.cancel).toHaveBeenCalled();
   });
 
+  it("lists directories with the files, by score, files first on a tie", async () => {
+    const { c, last } = setup({
+      findFiles: async () => [
+        { ...fm("src/util.ts"), score: 5 },
+        { ...fm("lib/utils/a.ts"), score: 2 },
+      ],
+      findDirs: async () => [
+        { path: "/p/src/utils", relPath: "src/utils/", score: 5, indices: [4, 5, 6, 7] },
+        { path: "/p/lib/utils", relPath: "lib/utils/", score: 3, indices: [] },
+      ],
+    });
+    c.run({ query: "util", tab: "files", includeNonProject: false, extra: {} });
+    await flush();
+    const items = last().sections.get("files")!.items;
+    expect(items.map((i) => i.key)).toEqual([
+      "f:/p/src/util.ts",
+      "d:/p/src/utils",
+      "d:/p/lib/utils",
+      "f:/p/lib/utils/a.ts",
+    ]);
+    expect(items[1]).toMatchObject({
+      kind: "file",
+      folder: true,
+      name: "utils",
+      dir: "src",
+      nameIndices: [0, 1, 2, 3],
+    });
+
+    // A `File.kt:42` query asks for a file.
+    c.run({ query: "util:3", tab: "files", includeNonProject: false, extra: {} });
+    await flush();
+    expect(
+      last()
+        .sections.get("files")!
+        .items.every((i) => !("folder" in i) || !i.folder),
+    ).toBe(true);
+  });
+
   it("parses File.kt:42 and opens files at the line", async () => {
     const findFiles = vi.fn(async () => [fm("File.kt")]);
     const { c, last } = setup({ findFiles });
