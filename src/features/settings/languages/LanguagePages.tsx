@@ -13,7 +13,7 @@ import { JAVA_LANGUAGE_LEVELS, PHP_LANGUAGE_LEVELS } from "@/platform/languageSe
 import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form";
 import { choosePath } from "./api";
 import { usePageContext, useSetting } from "../components/context";
-import { SdkField, tildify, useDetected } from "./components";
+import { SdkField, tildify, useDetected, useJdtlsJdk } from "./components";
 import styles from "./Sdk.module.css";
 
 function PathInput({
@@ -391,6 +391,11 @@ export function JavaPage() {
   const sharedDisabled = scope === "project" && workspace;
   const [vmArgs, setVmArgs] = useSetting<string>("languages.java.jdtlsVmArgs");
   const [languageLevel, setLanguageLevel] = useSetting<string>("languages.java.languageLevel");
+  const [jdtlsJdk] = useSetting<string>("languages.java.jdtlsJdk");
+  const jdtls = useJdtlsJdk(
+    "Runs jdtls only; the project keeps its Project JDK. When empty, a suitable installed JDK is used first, otherwise Eclipse Temurin is downloaded automatically into a separate language-server folder. The jdtls executable itself is set in Language Servers.",
+    jdtlsJdk ?? "",
+  );
   const id = useId();
   return (
     <div className={styles.page}>
@@ -404,7 +409,7 @@ export function JavaPage() {
           directory
           browseTitle="Select JDK Home Directory"
           aria-label="Project JDK"
-          hint="Compiles and runs the project: the default jdtls runtime, Run/Debug, and JAVA_HOME for Maven and Gradle."
+          hint="Compiles and runs the project: Run/Debug and JAVA_HOME for Maven and Gradle; it also runs jdtls when new enough for it."
         />
         <Row
           label="Language level"
@@ -439,7 +444,8 @@ export function JavaPage() {
           directory
           browseTitle="Select JDK Home Directory"
           aria-label="Language server JDK"
-          hint="Runs jdtls only; the project keeps its Project JDK. When empty, a suitable installed JDK is used first, otherwise Eclipse Temurin is downloaded automatically into a separate language-server folder. The jdtls executable itself is set in Language Servers."
+          hint={jdtls.hint}
+          minJava={jdtls.minJava}
         />
         <Row
           label="JVM options"
