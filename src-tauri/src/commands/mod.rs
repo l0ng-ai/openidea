@@ -154,6 +154,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_rename,
         agent::agent_delete,
         agent::agent_changes,
+        agent::agent_grouped_changes,
         agent::agent_base_text,
         agent::agent_rollback_changes,
         agent::agent_accept_changes,

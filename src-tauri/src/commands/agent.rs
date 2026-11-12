@@ -3,8 +3,9 @@
 use crate::state::AppState;
 use ide_agent::registry::AgentRegistry;
 use ide_agent::{
-    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt,
-    AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpServer, McpServerInput, NewAgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentCommand, AgentEntry, AgentEvent, AgentProbe,
+    AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpServer, McpServerInput,
+    NewAgentTask,
 };
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
@@ -368,6 +369,17 @@ pub async fn agent_delete(
 #[specta::specta]
 pub async fn agent_changes(window: Window, state: State<'_, AppState>, task: String) -> IdeResult<Vec<AgentChange>> {
     agent::changes(&state.host, window.label(), task).await
+}
+
+/// The task's uncommitted changes and the commits made since it started.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_grouped_changes(
+    window: Window,
+    state: State<'_, AppState>,
+    task: String,
+) -> IdeResult<AgentChanges> {
+    agent::grouped_changes(&state.host, window.label(), task).await
 }
 
 /// Rollback: the task's changed files among `paths` (all without) back as they were when it started.

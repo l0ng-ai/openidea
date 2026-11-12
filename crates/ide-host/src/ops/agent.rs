@@ -5,9 +5,9 @@ use crate::Host;
 use crate::rpc::Dispatcher;
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
-    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt,
-    AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpScope, McpServer, McpServerInput,
-    NewAgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentCommand, AgentEntry, AgentEvent, AgentProbe,
+    AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpScope, McpServer,
+    McpServerInput, NewAgentTask,
 };
 use ide_core::error::ErrorKind;
 use ide_core::{IdeError, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
@@ -304,6 +304,12 @@ pub async fn changes(host: &Host, window: &str, task: String) -> IdeResult<Vec<A
     host.project(window)?.agents.changes(&task).await
 }
 
+/// The task's uncommitted changes and the commits made since it started.
+pub async fn grouped_changes(host: &Host, window: &str, task: String) -> IdeResult<AgentChanges> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.grouped_changes(&task).await
+}
+
 /// Content of `path` when the task started (left side of its diff).
 pub async fn base_text(host: &Host, window: &str, task: String, path: IpcPath) -> IdeResult<Option<String>> {
     host.require_trust(window)?;
@@ -476,6 +482,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         |c| async move { delete(&c.host, &c.window, c.arg("task")?, c.arg("removeWorktree")?).await },
     );
     d.add("agent_changes", |c| async move { changes(&c.host, &c.window, c.arg("task")?).await });
+    d.add("agent_grouped_changes", |c| async move { grouped_changes(&c.host, &c.window, c.arg("task")?).await });
     d.add("agent_base_text", |c| async move { base_text(&c.host, &c.window, c.arg("task")?, c.arg("path")?).await });
     d.add("agent_rollback_changes", |c| async move {
         rollback_changes(&c.host, &c.window, c.arg("task")?, c.arg("paths")?).await

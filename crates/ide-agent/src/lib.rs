@@ -1343,6 +1343,15 @@ impl AgentManager {
         blocking(move || at.changes(&before)).await
     }
 
+    /// The task's uncommitted changes and, for a worktree task, the commits made since it
+    /// started (newest first). Both are read against the same `HEAD`.
+    pub async fn grouped_changes(&self, id: &str) -> IdeResult<AgentChanges> {
+        let task = self.task(id)?;
+        let at = task.base();
+        let before = task.state.lock().before.clone();
+        blocking(move || at.grouped_changes(&before)).await
+    }
+
     /// Content of `path` (in the task's directory) when the task started.
     pub async fn base_text(&self, id: &str, path: PathBuf) -> IdeResult<Option<String>> {
         let at = self.task(id)?.base();

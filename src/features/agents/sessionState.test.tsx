@@ -1200,6 +1200,7 @@ describe("session state across tasks and hosts", () => {
         kind: "modified",
         added: 8,
         removed: 2,
+        oldPath: null,
       },
     ];
     localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
@@ -1381,6 +1382,7 @@ describe("accept changes", () => {
         kind: "modified",
         added: 8,
         removed: 2,
+        oldPath: null,
       },
     ];
     localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
@@ -1416,6 +1418,7 @@ describe("accept changes", () => {
         kind: "modified",
         added: 8,
         removed: 2,
+        oldPath: null,
       },
     ];
     localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
