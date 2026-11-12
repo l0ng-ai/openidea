@@ -205,12 +205,13 @@ function buildDecorations(state: EditorState): DecorationSet {
 }
 
 const lensTheme = EditorView.theme({
+  // IDEA paints code vision with the colour scheme's Inline hints attribute.
   ".cm-openidea-lens": {
     display: "flex",
     alignItems: "center",
     gap: "12px",
     height: "16px",
-    color: "var(--fg-muted)",
+    color: "var(--fg-inlay, var(--fg-muted))",
     WebkitUserSelect: "none",
     userSelect: "none",
     whiteSpace: "nowrap",
@@ -222,7 +223,7 @@ const lensTheme = EditorView.theme({
     alignItems: "baseline",
     gap: "12px",
     marginLeft: "12px",
-    color: "var(--fg-muted)",
+    color: "var(--fg-inlay, var(--fg-muted))",
     WebkitUserSelect: "none",
     userSelect: "none",
     whiteSpace: "nowrap",
@@ -236,9 +237,10 @@ const lensTheme = EditorView.theme({
     background: "none",
     font: "inherit",
     color: "inherit",
-    // The items take the UI font; the row keeps the editor's, so its `ch`-based indent guides line up with the code.
+    // The items take the UI font (IDEA's label font) at the editor's size minus 3 (HintUtil.getSize),
+    // so hints shrink with the editor font; the row keeps the editor's, so its `ch`-based indent guides line up with the code.
     fontFamily: "var(--font-ui)",
-    fontSize: "var(--fs-tiny)",
+    fontSize: "calc(1em - 3px)",
   },
   ".cm-openidea-lensAction": { cursor: "pointer" },
   ".cm-openidea-lensAction:hover": { color: "var(--accent)", textDecoration: "underline" },
