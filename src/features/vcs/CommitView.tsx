@@ -568,10 +568,11 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const viewRef = useRef<HTMLButtonElement>(null);
 
   const repos = useVcs((s) => s.roots);
+  const heads = useVcs((s) => s.heads);
   const projectRoots = useEffectiveRoots();
   const roots = useMemo(
-    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging),
-    [status, root, groupByDir, lists, repos, groupByStaging],
+    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging, heads),
+    [status, root, groupByDir, lists, repos, groupByStaging, heads],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -882,6 +883,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                     <T>partial</T>
                   </span>
                 )}
+                {n.detail && n.detailIcon && <Icon name={n.detailIcon} size={14} className={styles.detailIcon} />}
                 {n.detail && <span className={styles.detail}>{n.detail}</span>}
               </span>
             );
