@@ -75,9 +75,12 @@ pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
         DbDriver::Clickhouse => {
             "SELECT name FROM system.databases WHERE lower(name) NOT IN ('system', 'information_schema') ORDER BY name"
         }
+        // `information_schema.schemata` lists only owned schemas before PostgreSQL 10 (and on servers
+        // built on such a core): a read-only account would see none. Any schema it may use is listed.
         DbDriver::Postgres if system => {
-            "SELECT schema_name FROM information_schema.schemata \
-             WHERE schema_name NOT LIKE 'pg\\_toast%' AND schema_name NOT LIKE 'pg\\_temp%' ORDER BY 1"
+            "SELECT nspname FROM pg_catalog.pg_namespace \
+             WHERE nspname NOT LIKE 'pg\\_toast%' AND nspname NOT LIKE 'pg\\_temp%' \
+             AND has_schema_privilege(nspname, 'USAGE') ORDER BY 1"
         }
         DbDriver::Mysql if system => "SELECT schema_name FROM information_schema.schemata ORDER BY 1",
         DbDriver::SqlServer if system => "SELECT schema_name FROM information_schema.schemata ORDER BY 1",
@@ -92,9 +95,10 @@ pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
              'OUTLN', 'SYS', 'SYSTEM', 'XDB', 'XS$NULL') ORDER BY username"
         }
         DbDriver::Postgres => {
-            "SELECT schema_name FROM information_schema.schemata \
-             WHERE schema_name NOT IN ('pg_catalog', 'information_schema') \
-             AND schema_name NOT LIKE 'pg\\_toast%' AND schema_name NOT LIKE 'pg\\_temp%' ORDER BY 1"
+            "SELECT nspname FROM pg_catalog.pg_namespace \
+             WHERE nspname NOT IN ('pg_catalog', 'information_schema') \
+             AND nspname NOT LIKE 'pg\\_toast%' AND nspname NOT LIKE 'pg\\_temp%' \
+             AND has_schema_privilege(nspname, 'USAGE') ORDER BY 1"
         }
         DbDriver::Mysql => {
             "SELECT schema_name FROM information_schema.schemata \
@@ -973,6 +977,17 @@ mod tests {
             "DELETE FROM \"s\".\"t\" WHERE \"k\" IS NULL"
         );
         assert!(edit_statement(DbDriver::Postgres, "s", "t", &DbRowEdit::Delete { key: vec![] }).is_err());
+    }
+
+    #[test]
+    fn postgres_lists_the_schemas_the_user_may_use() {
+        for system in [false, true] {
+            let sql = schemas(DbDriver::Postgres, system);
+            assert!(sql.contains("FROM pg_catalog.pg_namespace"), "{sql}");
+            assert!(sql.contains("has_schema_privilege(nspname, 'USAGE')"), "{sql}");
+            assert!(sql.contains("NOT LIKE 'pg\\_toast%'"), "{sql}");
+            assert_eq!(sql.contains("NOT IN ('pg_catalog', 'information_schema')"), !system, "{sql}");
+        }
     }
 
     #[test]
