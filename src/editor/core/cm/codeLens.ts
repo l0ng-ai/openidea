@@ -217,17 +217,19 @@ const lensTheme = EditorView.theme({
     whiteSpace: "nowrap",
     overflow: "hidden",
   },
-  // "right": after the line's text, on its baseline, with IDEA's spacing.
+  // "right": after the line's text, on its baseline, with IDEA's spacing. The
+  // zero-width anchor always fits on the line, so it can never wrap to the
+  // next one: the hint just overflows past the line's end (clipped by the
+  // editor), like IDEA's line-end inlays.
   ".cm-openidea-lensInline": {
-    display: "inline-flex",
-    alignItems: "baseline",
-    gap: "12px",
-    marginLeft: "12px",
+    display: "inline-block",
+    width: "0",
+    whiteSpace: "nowrap",
     color: "var(--fg-inlay, var(--fg-muted))",
     WebkitUserSelect: "none",
     userSelect: "none",
-    whiteSpace: "nowrap",
   },
+  ".cm-openidea-lensInline > .cm-openidea-lensItem": { marginLeft: "12px" },
   ".cm-openidea-lensItem": {
     display: "inline-flex",
     alignItems: "center",
@@ -237,10 +239,10 @@ const lensTheme = EditorView.theme({
     background: "none",
     font: "inherit",
     color: "inherit",
-    // The items take the UI font (IDEA's label font) at the editor's size minus 3 (HintUtil.getSize),
-    // so hints shrink with the editor font; the row keeps the editor's, so its `ch`-based indent guides line up with the code.
+    // The items take the UI font (IDEA's label font) at the editor's size minus 1 (HintUtil.getSize),
+    // so hints scale with the editor font; the row keeps the editor's, so its `ch`-based indent guides line up with the code.
     fontFamily: "var(--font-ui)",
-    fontSize: "calc(1em - 3px)",
+    fontSize: "calc(1em - 1px)",
   },
   ".cm-openidea-lensAction": { cursor: "pointer" },
   ".cm-openidea-lensAction:hover": { color: "var(--accent)", textDecoration: "underline" },
