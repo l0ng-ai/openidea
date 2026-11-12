@@ -6,7 +6,7 @@
 mod application_focus;
 mod cli;
 mod commands;
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, dev))]
 mod dev;
 mod events;
 mod jump_list;
@@ -53,8 +53,8 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
 
 pub fn export_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {
     let target = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/bindings.ts"));
-    // Rewritten only when it changes: every debug launch exports, also a second instance that just
-    // hands its path over, and a rewrite makes Vite reload the running app's windows.
+    // Rewritten only when it changes: every development launch exports, also a second instance that
+    // just hands its path over, and a rewrite makes Vite reload the running app's windows.
     let fresh = std::env::temp_dir().join(format!("openidea-bindings-{}.ts", std::process::id()));
     builder
         .export(
@@ -69,12 +69,21 @@ pub fn export_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {
     }
 }
 
+/// Prepare the desktop context without starting the event loop or opening a window.
+pub fn startup_context(_builder: &tauri_specta::Builder<tauri::Wry>) -> tauri::Context<tauri::Wry> {
+    let context = tauri::generate_context!();
+    #[cfg(all(debug_assertions, dev))]
+    let context = dev::configure(context);
+    #[cfg(all(debug_assertions, dev))]
+    export_bindings(_builder);
+    context
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     ide_workspace::process::mark_start();
-    let context = tauri::generate_context!();
-    #[cfg(debug_assertions)]
-    let context = dev::configure(context);
+    let builder = specta_builder();
+    let context = startup_context(&builder);
     if let Some(project) = ide_mcp::stdio_request(&std::env::args().collect::<Vec<_>>()) {
         let app_data = dirs::data_dir().unwrap_or_default().join(&context.config().identifier);
         std::process::exit(ide_mcp::stdio::run(&ide_mcp::discovery_path(&app_data), project));
@@ -106,13 +115,9 @@ pub fn run() {
         refresh();
     }
 
-    let builder = specta_builder();
-    #[cfg(debug_assertions)]
-    export_bindings(&builder);
-
     let app = tauri::Builder::default().manage(WindowsState::default());
     // Single instance first: a second launch focuses this one and opens its path argument.
-    // Debug builds have a separate identifier per worktree.
+    // Development launches have a separate identifier per worktree.
     let app = app.plugin(tauri_plugin_single_instance::init(windows::on_second_instance));
     // Install before window-state restores maximized geometry during window creation.
     #[cfg(windows)]
@@ -134,8 +139,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build());
     // Files of plugins' web views, for their sandboxed frames.
     let app = app.register_asynchronous_uri_scheme_protocol(plugin_web::SCHEME, plugin_web::handle);
-    // E2E automation bridge (Tauri MCP), debug builds only, localhost only.
-    #[cfg(debug_assertions)]
+    // E2E automation bridge (Tauri MCP), development launches only, localhost only.
+    #[cfg(all(debug_assertions, dev))]
     let app = app.plugin(tauri_plugin_mcp_bridge::Builder::new().bind_address("127.0.0.1").build());
 
     // Paths macOS asked to open (Finder's Open With, the Dock) before setup ran: the first window takes them.
