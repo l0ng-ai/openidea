@@ -63,6 +63,16 @@ class LCollection implements \ArrayAccess, \IteratorAggregate {
     /** @return TValue|null */
     public function first() { return null; }
 
+    /**
+     * Laravel's `first()` and `get()`: the default's own template.
+     *
+     * @template TPickDefault
+     * @param (callable(TValue, TKey): bool)|null $callback
+     * @param TPickDefault|(\Closure(): TPickDefault) $default
+     * @return TValue|TPickDefault
+     */
+    public function pick(?callable $callback = null, $default = null) { return null; }
+
     /** @return array<TKey, TValue> */
     public function all() { return []; }
 
@@ -287,6 +297,12 @@ fn laravel_style_collection() {
             // A static constructor with its own templates, returning `static<…>`.
             ("LCollection::make(['a' => new Book()])/*|*/;", "Lib\\LCollection<string, Lib\\Book>"),
             ("LCollection::make([new Book()])->first()/*|*/;", "?Lib\\Book"),
+            // A template only a left-out optional parameter names is its
+            // default, `null`, not `mixed` (as PHPStan binds it).
+            ("LCollection::make([new Book()])->pick()/*|*/;", "?Lib\\Book"),
+            ("LCollection::make([new Book()])->pick(null)/*|*/;", "?Lib\\Book"),
+            ("LCollection::make([new Book()])->pick(null, 'x')/*|*/;", "Lib\\Book|string"),
+            ("LCollection::make([new Book()])->pick(default: 1)/*|*/;", "Lib\\Book|int"),
             ("LCollection::make([1])->map(fn (int $i): string => 'x')/*|*/;", "Lib\\LCollection<int, string>"),
             ("function f(BookCollection $b) { $b->filter()/*|*/; }", "Lib\\BookCollection"),
             // `static` through a generic parent keeps the subclass, whose

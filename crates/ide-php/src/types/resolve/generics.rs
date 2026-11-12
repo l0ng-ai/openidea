@@ -399,12 +399,38 @@ impl Resolver<'_> {
         }
         let names: Vec<String> = own.iter().map(|param| param.name.clone()).collect();
         let mut inferred = Bindings::new();
+        let mut passed = vec![false; params.len()];
         if let Some(args) = args {
-            self.infer_args(params, &args(), &names, &mut inferred);
+            let args = args();
+            self.infer_args(params, &args, &names, &mut inferred);
+            for (position, arg) in args.iter().enumerate() {
+                let at = match &arg.name {
+                    Some(name) => params.iter().position(|param| param.name.as_deref() == Some(name.as_str())),
+                    None if arg.spread => None,
+                    None => Some(position.min(params.len().saturating_sub(1))),
+                };
+                match at {
+                    Some(at) if at < passed.len() => passed[at] = true,
+                    // A spread may fill any of the remaining parameters.
+                    _ if arg.spread => passed.iter_mut().skip(position).for_each(|p| *p = true),
+                    _ => {}
+                }
+            }
         }
         for param in own {
+            let only = [param.name.clone()];
+            let users: Vec<usize> = (0..params.len()).filter(|&i| mentions(&params[i].ty, &only)).collect();
             let ty = match inferred.remove(&param.name) {
                 Some(ty) => ty,
+                // Only optional parameters left out name it (Laravel's
+                // `first(?callable $callback = null, TFirstDefault $default =
+                // null)`): it is their default, `null`, as PHPStan binds it.
+                None if args.is_some()
+                    && !users.is_empty()
+                    && users.iter().all(|&i| params[i].optional && !passed[i]) =>
+                {
+                    Type::Null
+                }
                 None => substitute(&param.fallback(), bindings),
             };
             bindings.insert(param.name.clone(), ty);
