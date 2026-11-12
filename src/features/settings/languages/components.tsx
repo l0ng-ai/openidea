@@ -80,7 +80,13 @@ export function SdkField({
       const detail = tooOld ? tx`too old, needs JDK ${minJava}+ · ${tildify(sdk.path)}` : tildify(sdk.path);
       out.push({ value: sdk.path, label: sdk.name, detail });
     }
-    if (value && !out.some((o) => o.value === value)) out.push({ value, label: tildify(value), detail: "custom" });
+    // A configured interpreter that no longer exists is PyCharm's "Invalid" SDK:
+    // it stays selectable (to fix or clear) but is marked as such in the list.
+    if (kind === "python" && value && !out.some((o) => o.value === value)) {
+      out.push({ value, label: `Invalid — ${tildify(value)}`, detail: tildify(value), keywords: "invalid missing" });
+    } else if (value && !out.some((o) => o.value === value)) {
+      out.push({ value, label: tildify(value), detail: "custom" });
+    }
     if (kind === "jdk") out.push({ value: DOWNLOAD_JDK, label: "Download JDK…", icon: "plus" });
     return out;
   }, [list, value, emptyLabel, emptyDetail, extra, kind, minJava]);

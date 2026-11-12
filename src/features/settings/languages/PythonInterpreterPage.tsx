@@ -148,6 +148,9 @@ export function PythonInterpreterPage() {
 
   const autoDetail = auto ? tildify(auto) : "No virtualenv in the project";
   const current = detected?.find((s) => s.path === python);
+  // A configured interpreter whose executable is gone (PyCharm's "Invalid"): the
+  // backend falls back for runs, the packages table explains what happened.
+  const invalid = !!interpreter && !!python && !current && !packages && !loading && !!error;
 
   return (
     <div className={styles.page}>
@@ -175,8 +178,15 @@ export function PythonInterpreterPage() {
       </div>
       {python && (
         <div className={styles.path} title={python}>
-          {current ? `${current.name} — ` : ""}
+          {invalid ? "Invalid — " : current ? `${current.name} — ` : ""}
           {tildify(python)}
+        </div>
+      )}
+      {invalid && (
+        <div className={clsx(styles.empty, styles.error)} role="alert">
+          <T>
+            The configured Python interpreter does not exist. Run configurations use the project virtualenv instead.
+          </T>
         </div>
       )}
 
@@ -282,7 +292,7 @@ export function PythonInterpreterPage() {
               <T>No interpreter selected. Choose one above or add a new one.</T>
             </div>
           )}
-          {python && error && (
+          {python && error && !invalid && (
             <div className={clsx(styles.empty, styles.error)} role="alert">
               {error}
             </div>
@@ -293,6 +303,11 @@ export function PythonInterpreterPage() {
           {python && !error && !packages && loading && (
             <div className={styles.empty}>
               <T>Loading packages…</T>
+            </div>
+          )}
+          {invalid && (
+            <div className={styles.empty}>
+              <T>Fix the interpreter path above or add a new interpreter.</T>
             </div>
           )}
         </div>

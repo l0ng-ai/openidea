@@ -5,6 +5,7 @@ import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { tx } from "@/platform/i18n";
 import { notifications, registerStatusItem } from "@/workbench/contributions";
+import { useEditorRegistry } from "@/editor/api";
 import { BarButton, Menu, type MenuItem } from "@/ui";
 import { Icon } from "@/ui/icons";
 import { effectivePython, type Sdk } from "./api";
@@ -52,6 +53,22 @@ export function isPythonPath(path: string): boolean {
   return /\.(py|pyi|pyw)$/.test(name) || markers.includes(name) || /^requirements[\w.-]*\.txt$/.test(name);
 }
 
+/**
+ * The directory the interpreter lookup asks about: the open file's, when it lies in a
+ * workspace member (the backend then resolves that member's settings first). Paths
+ * outside the workspace or without one resolve as before (`null`).
+ */
+export function nearMember(projects: string[] | undefined, file: string | null | undefined): string | null {
+  if (!projects?.length || !file) return null;
+  const path = file.replaceAll("\\", "/");
+  const dir = path.slice(0, path.lastIndexOf("/")) || null;
+  if (!dir) return null;
+  const member = projects
+    .filter((root) => dir === root || dir.startsWith(root.replaceAll("\\", "/") + "/"))
+    .sort((a, b) => b.length - a.length)[0];
+  return member ? dir : null;
+}
+
 export function interpreterChoices(sdks: Sdk[], current: string | null): { path: string; name: string }[] {
   const choices = [...new Map(sdks.map((sdk) => [sdk.path, sdk])).values()];
   if (!current || choices.some((sdk) => sdk.path === current)) return choices;
@@ -69,8 +86,12 @@ function PythonStatus() {
   const root = useProject((s) => s.project?.root);
   const trusted = useProject((s) => s.project?.trusted !== false);
   const configured = useProject((s) => s.settings?.languages?.python?.interpreter ?? "");
+  const members = useProject((s) => s.project?.workspace?.projects);
   const status = usePopup((s) => s.status);
   const open = usePopup((s) => s.open);
+  // A workspace member's files resolve through that member's own settings first,
+  // so the widget names the interpreter the open file actually runs with.
+  const active = useEditorRegistry((s) => s.active?.ctx.path);
   const anchor = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     reset();
@@ -86,7 +107,10 @@ function PythonStatus() {
         if (!live || sequence !== request) return;
         const [python, sdks] =
           visible || configured
-            ? await Promise.all([effectivePython(), (detected ??= call(commands.sdkDetect("python")))])
+            ? await Promise.all([
+                effectivePython(nearMember(members, active)),
+                (detected ??= call(commands.sdkDetect("python"))),
+              ])
             : [null, [] as Sdk[]];
         if (live && sequence === request) usePopup.setState({ status: { root, configured, visible, python, sdks } });
       } catch (e) {
@@ -122,13 +146,18 @@ function PythonStatus() {
       off.forEach((dispose) => dispose());
       reset();
     };
-  }, [root, configured, trusted]);
+  }, [root, configured, trusted, members, active]);
   // The widget only renders once its project's status is in the store, so the popup action
   // sees the same state as the button without waiting for an effect to publish a flag.
   if (!popupShown() || !status) return null;
   const current = status;
   const choices = interpreterChoices(current.sdks, current.python);
-  const label = choices.find((sdk) => sdk.path === current.python)?.name ?? tx("No interpreter");
+  // A configured interpreter the backend cannot resolve (its file is gone) reads
+  // as "Invalid" — PyCharm marks such SDKs instead of showing them as working.
+  const invalid = !!current.configured && !current.python;
+  const label = invalid
+    ? tx("Invalid interpreter")
+    : (choices.find((sdk) => sdk.path === current.python)?.name ?? tx("No interpreter"));
   const names = new Map<string, number>();
   for (const sdk of choices) names.set(sdk.name, (names.get(sdk.name) ?? 0) + 1);
   const items: MenuItem[] = [
@@ -149,13 +178,13 @@ function PythonStatus() {
     <>
       <BarButton
         ref={anchor}
-        tooltip={current.python ?? tx("No interpreter")}
+        tooltip={invalid ? tx("The configured interpreter does not exist") : (current.python ?? tx("No interpreter"))}
         aria-label={tx`Python Interpreter: ${label}`}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => void executeAction("python.interpreterPopup")}
       >
-        {!current.python && <Icon name="warning" size={14} />}
+        {(!current.python || invalid) && <Icon name="warning" size={14} />}
         {label}
       </BarButton>
       <Menu
