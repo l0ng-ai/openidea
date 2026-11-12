@@ -629,6 +629,23 @@ impl Documents {
     /// `version` (checked under the document's lock). `Ok(None)` when it
     /// changed since; nothing is applied then.
     pub fn apply_edits_at(&self, doc: DocId, version: u32, edits: &[TextEdit]) -> IdeResult<Option<u32>> {
+        self.versioned_edits(doc, version, edits, false)
+    }
+
+    /// [`apply_edits_at`](Self::apply_edits_at) for a background caller (a plugin
+    /// event, not a command in the editor): the editor gets no Undo entry for it,
+    /// and it isn't reported back as a local change.
+    pub fn apply_background_edits_at(&self, doc: DocId, version: u32, edits: &[TextEdit]) -> IdeResult<Option<u32>> {
+        self.versioned_edits(doc, version, edits, true)
+    }
+
+    fn versioned_edits(
+        &self,
+        doc: DocId,
+        version: u32,
+        edits: &[TextEdit],
+        background: bool,
+    ) -> IdeResult<Option<u32>> {
         self.with_doc(doc, |st| {
             if st.doc.version() != version {
                 return Ok(None);
@@ -640,9 +657,6 @@ impl Documents {
                 return Ok(Some(version));
             }
             let (set, applied, bytes) = st.doc.apply_edits_detailed(edits)?;
-            // Background callers (including plugins) never create a local Undo
-            // entry. The frontend also treats this patch as external, so it
-            // cannot be reported back as a local document-changed event.
             self.patched(
                 doc,
                 st,
@@ -651,7 +665,7 @@ impl Documents {
                     changes: set,
                     applied: &applied,
                     edits: &bytes,
-                    workspace_edit: true,
+                    workspace_edit: background,
                 },
             );
             self.set_dirty(doc, st, true);

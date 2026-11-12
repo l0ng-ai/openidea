@@ -527,6 +527,18 @@ pub fn net_capability(url: &str) -> Result<ide_extension::Capability, String> {
     }
 }
 
+/// The grant a WebSocket URL requires: the same as its `https`/`http` counterpart.
+pub fn websocket_capability(url: &str) -> Result<ide_extension::Capability, String> {
+    let mut parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
+    let scheme = match parsed.scheme() {
+        "wss" => "https",
+        "ws" => "http",
+        other => return Err(format!("unsupported WebSocket scheme {other:?}")),
+    };
+    parsed.set_scheme(scheme).map_err(|()| "invalid WebSocket URL".to_owned())?;
+    net_capability(parsed.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -561,6 +573,15 @@ mod tests {
             assert_eq!(net_host(url).unwrap(), host);
         }
         assert_ne!(net_host("https://аpi.example/").unwrap(), net_host("https://api.example/").unwrap());
+        assert_eq!(
+            websocket_capability("wss://Collab.example.com/socket?room=1").unwrap(),
+            ide_extension::Capability::Net("collab.example.com".into())
+        );
+        assert_eq!(
+            websocket_capability("ws://localhost:9000/").unwrap(),
+            ide_extension::Capability::Net("localhost".into())
+        );
+        assert!(websocket_capability("https://example.com/").is_err());
         assert!(net_host("file:///etc/passwd").is_err());
         assert!(net_host("example.com").is_err());
         assert!(net_host("https://*.example.com/").is_err());
