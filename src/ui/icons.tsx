@@ -438,6 +438,8 @@ const ICONS = {
   "gutter-implementing": "gutter/implementingMethod",
   "gutter-overridden": "gutter/overridenMethod",
   "gutter-overriding": "gutter/overridingMethod",
+  "gutter-javadoc-read": "gutter/javadocRead",
+  "gutter-javadoc-edit": "gutter/javadocEdit",
   stop: "run/stop",
   rerun: "run/rerun",
   "hot-reload": "openidea/general/hotReload",

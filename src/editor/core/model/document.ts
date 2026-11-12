@@ -469,6 +469,18 @@ export class DocModel {
     this.applySettings();
   }
 
+  /** Rendered doc comments toggled for this file (wins over settings until the file is closed). */
+  renderedDocsOverride: boolean | null = null;
+
+  renderedDocsOn(): boolean {
+    return this.renderedDocsOverride ?? prefsOf(this.settings()).appearance.renderDocComments;
+  }
+
+  toggleRenderedDocs() {
+    this.renderedDocsOverride = !this.renderedDocsOn();
+    this.applySettings();
+  }
+
   setIndent(indent: { tabSize: number; insertSpaces: boolean }) {
     this.indentOverride = indent;
     this.applySettings();
@@ -497,6 +509,7 @@ export class DocModel {
           info: this.info,
           readOnly: this.meta.readOnly,
           wrapOverride: this.softWrapOverride,
+          renderedDocsOverride: this.renderedDocsOverride,
         }),
       ),
     ];
@@ -532,6 +545,7 @@ export class DocModel {
             info: this.info,
             readOnly,
             wrapOverride: this.softWrapOverride,
+            renderedDocsOverride: this.renderedDocsOverride,
           }),
         ),
       ]);
