@@ -104,6 +104,11 @@ impl Mappings {
         &self.root
     }
 
+    /// The local folder of the mapping that holds `local`.
+    pub fn local_root(&self, local: &Path) -> Option<&Path> {
+        self.entries.iter().find_map(|(l, _, _)| local.starts_with(l).then_some(l.as_path()))
+    }
+
     /// The remote path of a local file or folder (`None`: not under any mapping).
     pub fn remote(&self, local: &Path) -> Option<String> {
         self.entries.iter().find_map(|(l, r, _)| {

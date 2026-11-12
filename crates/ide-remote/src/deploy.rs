@@ -153,6 +153,24 @@ impl Deployment<'_> {
         self.exclude.local(local.strip_prefix(self.map.project_root()).unwrap_or(local))
     }
 
+    /// Fails when writing or deleting `local` would go through a symbolic link that
+    /// leaves its mapped folder.
+    async fn confined(&self, local: &Path) -> IdeResult<()> {
+        let Some(root) = self.map.local_root(local) else {
+            return Err(IdeError::invalid(format!("{} is not under a mapped folder", local.display())));
+        };
+        // A missing mapped folder has nothing inside it to follow.
+        let Ok(root) = tokio::fs::canonicalize(root).await else { return Ok(()) };
+        if crate::service::stays_inside(&root, local).await {
+            Ok(())
+        } else {
+            Err(IdeError::invalid(format!(
+                "{} leads outside the mapped folder through a symbolic link",
+                local.display()
+            )))
+        }
+    }
+
     /// Local files under `paths` (folders recursively), excluded names left out.
     fn local_files(&self, paths: &[PathBuf], report: &mut TransferReport) -> Vec<PathBuf> {
         let mut out = Vec::new();
@@ -265,6 +283,10 @@ impl Deployment<'_> {
             }
             let rel = self.rel(local);
             progress(&rel, i, jobs.len());
+            if let Err(e) = self.confined(local).await {
+                report.fail(rel, e);
+                continue;
+            }
             match self.fs.download(remote, local).await {
                 Ok(()) => report.files += 1,
                 Err(e) => report.fail(rel, e),
@@ -365,9 +387,15 @@ impl Deployment<'_> {
             progress(&step.path, i, steps.len());
             let r = match step.action {
                 SyncAction::Upload => self.fs.upload(&local, &remote, self.preserve_time).await,
-                SyncAction::Download => self.fs.download(&remote, &local).await,
+                SyncAction::Download => match self.confined(&local).await {
+                    Ok(()) => self.fs.download(&remote, &local).await,
+                    Err(e) => Err(e),
+                },
                 SyncAction::DeleteRemote => self.fs.remove(&remote).await,
-                SyncAction::DeleteLocal => std::fs::remove_file(&local).map_err(IdeError::from),
+                SyncAction::DeleteLocal => match self.confined(&local).await {
+                    Ok(()) => tokio::fs::remove_file(&local).await.map_err(IdeError::from),
+                    Err(e) => Err(e),
+                },
             };
             match r {
                 Ok(()) => report.files += 1,
