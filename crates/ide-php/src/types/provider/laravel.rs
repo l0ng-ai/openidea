@@ -1504,14 +1504,16 @@ impl TypeProvider for LaravelProvider {
     }
 
     /// The `Builder $query` of a model's local scope (`scopePublished`, a
-    /// `#[Scope]` method), declared raw, is the model's builder.
+    /// `#[Scope]` method), declared raw or not declared at all
+    /// (`scopeActive($query)`), is the model's builder.
     fn parameter(&self, site: &ParameterSite<'_>, resolver: &Resolver<'_>) -> Option<Type> {
         let scope = scope_name(&site.method.name).is_some() || is_scope_attributed(site.method);
         if site.index != 0 || !scope || site.method.is_static {
             return None;
         }
-        let raw = matches!(site.declared, Type::Named { fqn, args }
-            if args.is_empty() && fqn.trim_start_matches('\\').eq_ignore_ascii_case(ELOQUENT_BUILDER));
+        let raw = *site.declared == Type::Mixed
+            || matches!(site.declared, Type::Named { fqn, args }
+                if args.is_empty() && fqn.trim_start_matches('\\').eq_ignore_ascii_case(ELOQUENT_BUILDER));
         if !raw || !Self::installed(resolver) {
             return None;
         }

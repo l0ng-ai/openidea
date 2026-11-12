@@ -380,6 +380,14 @@ fn scope_builders_are_the_models() {
     // Its scopes complete on it.
     let source = scope(&project, "return $query->publ/*|*/;");
     assert!(names(&project.eloquent_labels(POST, &source)).contains(&"published"));
+    // An untyped query parameter, of a scope by name or by attribute.
+    let source = post_with(&project, "public function scopeDrafts($query)\n    {\n        return $query/*|*/;\n    }");
+    assert_eq!(project.type_in(POST, &source), "Illuminate\\Database\\Eloquent\\Builder<App\\Models\\Post>");
+    let source = post_with(
+        &project,
+        "#[\\Illuminate\\Database\\Eloquent\\Attributes\\Scope]\n    protected function drafts($query)\n    {\n        return $query/*|*/;\n    }",
+    );
+    assert_eq!(project.type_in(POST, &source), "Illuminate\\Database\\Eloquent\\Builder<App\\Models\\Post>");
     // Not a scope: a raw builder stays raw.
     let source = post_with(
         &project,
