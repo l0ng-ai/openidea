@@ -40,8 +40,8 @@ use ide_core::Severity;
 use super::{Inspection, InspectionContext, Problems, QuickFix};
 use crate::engine::{EngineState, is_meta_path};
 use crate::frameworks::laravel::refs::{
-    ArtisanCommandKind, AuthGuard, ConfigKey, ControllerAction, EloquentField, EnvKey, Gate, InertiaPageKind,
-    PasswordBroker, ReferenceKind, TranslationKey, ValidationRule, ViewName, ViteAsset,
+    ArtisanCommandKind, ArtisanOptionKind, AuthGuard, ConfigKey, ControllerAction, EloquentField, EnvKey, Gate,
+    InertiaPageKind, PasswordBroker, ReferenceKind, TranslationKey, ValidationRule, ViewName, ViteAsset,
 };
 
 /// One "undefined …" inspection; see the module documentation.
@@ -51,7 +51,7 @@ pub struct UndefinedReference {
 }
 
 /// The inspections, as `(inspection id, kind)`.
-const INSPECTIONS: [(&str, &dyn ReferenceKind); 12] = [
+const INSPECTIONS: [(&str, &dyn ReferenceKind); 13] = [
     ("PhpUndefinedConfigKey", &ConfigKey),
     ("PhpUndefinedEnvKey", &EnvKey),
     ("PhpUndefinedTranslation", &TranslationKey),
@@ -64,6 +64,7 @@ const INSPECTIONS: [(&str, &dyn ReferenceKind); 12] = [
     ("PhpUnknownPasswordBroker", &PasswordBroker),
     ("PhpUndefinedController", &ControllerAction),
     ("PhpUnknownArtisanCommand", &ArtisanCommandKind),
+    ("PhpUnknownArtisanOption", &ArtisanOptionKind),
 ];
 
 impl UndefinedReference {

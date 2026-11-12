@@ -307,6 +307,13 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
       "Reports Artisan command names, in Artisan::call(), $this->call(), Schedule::command() or $this->artisan(), that no command of the project, its packages or Laravel has. Only reported when vendor/ is installed, so that the packages' commands are known.",
   },
   {
+    code: "PhpUnknownArtisanOption",
+    name: "Unknown Artisan option",
+    group: "Laravel",
+    description:
+      "Reports keys of the parameters given to an Artisan command (Artisan::call('cache:clear', ['--store' => 'redis'])) that are none of its options or arguments. Only reported when vendor/ is installed and the command is known; the options every command takes (--verbose, --quiet, …) are fine.",
+  },
+  {
     code: "BladeUnclosedSection",
     producer: BLADE_PRODUCER,
     name: "Unclosed Blade section",

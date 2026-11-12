@@ -308,3 +308,32 @@ fn finds_usages_of_an_option_key_of_the_same_command() {
     // Not the key given to another command.
     assert!(!found.iter().any(|(path, line, _)| path == "app/Http/Probe.php" && *line == 10), "{found:?}");
 }
+
+/// A parameters key that is none of the command's options or arguments is
+/// reported; the options every command takes, unknown commands and
+/// projects without `vendor/` aren't.
+#[test]
+fn reports_unknown_option_keys() {
+    const OPTION: &str = "PhpUnknownArtisanOption";
+    let mut project = Project::app();
+    let body = [
+        "Artisan::call('posts:publish', ['--dry-run' => true]);",
+        "Artisan::call('posts:publish', ['--dryrun' => true]);",
+        "Artisan::call('posts:publish', ['--verbose' => true, '-q' => true, '--no-interaction' => true]);",
+        "Artisan::call('posts:publish', ['post' => 1]);",
+        "Artisan::call('nowhere', ['--force' => true]);",
+    ]
+    .join("\n    ");
+    assert_eq!(
+        project.problems_in("app/Http/Probe.php", &probe(&body), OPTION),
+        [
+            (10, "'--dryrun' is not an option of Artisan command 'posts:publish'".to_owned()),
+            (12, "'post' is not an argument of Artisan command 'posts:publish'".to_owned()),
+        ]
+    );
+    let mut bare = Project::new(&[
+        ("composer.json", r#"{"require": {"laravel/framework": "^11.0"}, "autoload": {"psr-4": {"App\\": "app/"}}}"#),
+        ("artisan", "#!/usr/bin/env php\n"),
+    ]);
+    assert!(bare.problems_in("app/Http/Probe.php", &probe("Artisan::call('x', ['--y' => 1]);"), OPTION).is_empty());
+}

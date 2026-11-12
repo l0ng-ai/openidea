@@ -371,4 +371,47 @@ impl ReferenceKind for ArtisanOptionKind {
         }
         Some(out)
     }
+
+    /// A key that is no option or argument of the command (only when
+    /// `vendor/` is installed and the command is known), Symfony's global
+    /// options aside.
+    fn undefined(&self, cx: &RefContext<'_>, value: &str) -> Option<Undefined> {
+        let commands = commands(cx);
+        if !commands.vendor {
+            return None;
+        }
+        let command = Self::command(cx, &commands)?;
+        let key = value.trim();
+        let global = key.trim_start_matches('-');
+        if key.is_empty() || GLOBAL_OPTIONS.contains(&global) || Self::parameter(command, key).is_some() {
+            return None;
+        }
+        let what = if key.starts_with('-') { "an option" } else { "an argument" };
+        Some(Undefined {
+            message: format!("'{key}' is not {what} of Artisan command '{}'", command.name),
+            severity: Severity::Warning,
+            fixes: Vec::new(),
+        })
+    }
 }
+
+/// The options every Artisan command takes (Symfony's application), with
+/// their shortcuts.
+const GLOBAL_OPTIONS: &[&str] = &[
+    "help",
+    "h",
+    "quiet",
+    "q",
+    "verbose",
+    "v",
+    "vv",
+    "vvv",
+    "version",
+    "V",
+    "ansi",
+    "no-ansi",
+    "no-interaction",
+    "n",
+    "env",
+    "silent",
+];
