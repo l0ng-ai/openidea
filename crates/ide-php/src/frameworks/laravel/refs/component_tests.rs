@@ -522,3 +522,18 @@ fn renaming_a_component_class_renames_its_tags() {
         crate::frameworks::laravel::blade::closing_tag_spans("<x-alert>a</x-alert> </x-alerts> </x-alert >", "alert");
     assert_eq!(spans, [14..19, 37..42]);
 }
+
+/// An anonymous component's props are typed from what its callers bind:
+/// `$status` in `badge.blade.php` completes `PostStatus`'s members.
+#[test]
+fn anonymous_component_props_are_typed_from_their_callers() {
+    let project = Project::app();
+    let badge = "resources/views/components/badge.blade.php";
+    let props = project.engine.anonymous_component_props(&project.root.join(badge));
+    assert_eq!(props.as_ref(), &[("status".to_owned(), r"App\Enums\PostStatus".to_owned())]);
+    let labels = project.blade_php_labels(badge, "@props(['status'])\n{{ $status->/*|*/ }}");
+    assert!(labels.contains(&"label".to_owned()), "{labels:?}");
+    // A class component's view: its own variables, not these.
+    let alert = project.root.join("resources/views/components/alert.blade.php");
+    assert!(project.engine.anonymous_component_props(&alert).is_empty());
+}

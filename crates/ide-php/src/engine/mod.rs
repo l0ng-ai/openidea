@@ -251,6 +251,8 @@ struct Shared {
     laravel_views: Mutex<Option<(u64, Arc<ViewTable>)>>,
     /// The variables passed to each view file, for a modification count.
     view_variables: Mutex<ViewVariables>,
+    /// The props of anonymous components' views, typed from their callers.
+    component_props: Mutex<ViewVariables>,
     /// The Blade components and custom directives, for a modification count.
     laravel_blade: Mutex<Option<(u64, Arc<BladeCatalog>)>>,
     /// What Laravel support shows (Settings › PHP › Laravel).
@@ -469,6 +471,7 @@ impl PhpEngine {
             laravel_routes: Mutex::new(None),
             laravel_views: Mutex::new(None),
             view_variables: Mutex::new(HashMap::new()),
+            component_props: Mutex::new(HashMap::new()),
             laravel_blade: Mutex::new(None),
             laravel_settings: Mutex::new(LaravelSettings::default()),
             live_schema: RwLock::new(None),
@@ -1186,6 +1189,10 @@ impl PhpEngine {
     /// The cache of [`PhpEngine::laravel_view_variables`].
     pub(crate) fn view_variables_cache(&self) -> &Mutex<ViewVariables> {
         &self.shared.view_variables
+    }
+
+    pub(crate) fn component_props_cache(&self) -> &Mutex<ViewVariables> {
+        &self.shared.component_props
     }
 
     /// What Laravel support shows.

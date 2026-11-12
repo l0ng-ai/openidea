@@ -172,14 +172,21 @@ fn finds_and_renames_member_usages_in_templates() {
         .filter(|usage| usage.3 == UsageKind::Code)
         .map(|usage| (usage.0, usage.1, usage.2))
         .collect();
-    // `badge.blade.php`'s `$status->label()` isn't: an anonymous
-    // component's `@props` are untyped.
-    assert_eq!(found, [("resources/views/posts/show.blade.php".to_owned(), 10, "label".to_owned())]);
+    // `badge.blade.php`'s `$status->label()` too: the anonymous component's
+    // `$status` prop is typed from `_card.blade.php`'s `:status="$post->status"`.
+    assert_eq!(
+        found,
+        [
+            ("resources/views/components/badge.blade.php".to_owned(), 3, "label".to_owned()),
+            ("resources/views/posts/show.blade.php".to_owned(), 10, "label".to_owned()),
+        ]
+    );
     let edits = project.rename("app/Enums/PostStatus.php", &source, "title");
     assert_eq!(
         edits,
         [
             ("app/Enums/PostStatus.php".to_owned(), 10, "label".to_owned()),
+            ("resources/views/components/badge.blade.php".to_owned(), 3, "label".to_owned()),
             ("resources/views/posts/show.blade.php".to_owned(), 10, "label".to_owned()),
         ]
     );

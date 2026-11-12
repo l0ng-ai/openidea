@@ -413,7 +413,8 @@ impl PhpEngine {
             .is_some_and(|catalog| catalog.components.iter().any(|known| known.view.as_deref() == Some(own.as_path())))
             || crate::blade::views::ViewPaths::new(&self.root()).is_component_view(path);
         let mut variables: Vec<(String, String)> = self.laravel_view_variables(path).as_ref().clone();
-        for (name, ty) in self.laravel_component_variables(path) {
+        let props = self.anonymous_component_props(path);
+        for (name, ty) in self.laravel_component_variables(path).into_iter().chain(props.iter().cloned()) {
             if !variables.iter().any(|(known, _)| *known == name) {
                 variables.push((name, ty));
             }
@@ -425,6 +426,108 @@ impl PhpEngine {
             .filter_map(|component| Some((component.tag.clone(), component.class.as_ref()?.0.clone())))
             .collect();
         compile_full(text, is_component, &variables, &custom, &classes)
+    }
+
+    /// The props of the anonymous component whose view is `path`, typed
+    /// from what its callers bind them to (`<x-badge :status="$post->status"
+    /// />` makes `$status` a `PostStatus` in `badge.blade.php`; the types of
+    /// several callers joined). Empty for other templates, and for props
+    /// no caller binds.
+    pub(crate) fn anonymous_component_props(&self, path: &Path) -> std::sync::Arc<Vec<(String, String)>> {
+        let modification = self.edit_count();
+        let path = crate::project::normalize(path);
+        if let Some(found) = self.component_props_cache().lock().get(&path).filter(|(at, _)| *at == modification) {
+            return found.1.clone();
+        }
+        // A component used (through others) by its own callers gets nothing
+        // more on the way round.
+        thread_local! {
+            static IN_PROGRESS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+        }
+        if IN_PROGRESS.with(|views| views.borrow().contains(&path)) {
+            return std::sync::Arc::new(Vec::new());
+        }
+        IN_PROGRESS.with(|views| views.borrow_mut().push(path.clone()));
+        let found = std::sync::Arc::new(self.anonymous_component_props_uncached(&path));
+        IN_PROGRESS.with(|views| views.borrow_mut().retain(|view| *view != path));
+        self.component_props_cache().lock().insert(path, (modification, found.clone()));
+        found
+    }
+
+    fn anonymous_component_props_uncached(&self, path: &Path) -> Vec<(String, String)> {
+        let Some(catalog) = self.laravel_blade() else { return Vec::new() };
+        let Some(component) = catalog
+            .components
+            .iter()
+            .find(|component| component.class.is_none() && component.view.as_deref() == Some(path))
+        else {
+            return Vec::new();
+        };
+        let Some(own) = self.current_text(path) else { return Vec::new() };
+        let props: Vec<String> = crate::blade::structure::props(&own).into_iter().map(|prop| prop.name).collect();
+        if props.is_empty() {
+            return Vec::new();
+        }
+        let Some(views) = self.laravel_views() else { return Vec::new() };
+        let resolver = self.resolver();
+        // The types of a few callers type a prop well enough; a component
+        // used everywhere doesn't compile every template.
+        const ENOUGH_CALLERS: usize = 3;
+        const MAX_CALLERS: usize = 12;
+        let mut found: Vec<(String, Vec<Type>)> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut compiled_callers = 0usize;
+        for view in views.views().iter().filter(|view| is_blade(&view.path) && !self.is_library(&view.path)) {
+            let caller = crate::project::normalize(&view.path);
+            if caller == path || !seen.insert(caller.clone()) {
+                continue;
+            }
+            // Enough callers seen for every prop, or enough compiled.
+            let wanted = |name: &str| {
+                found.iter().find(|(known, _)| known == name).is_none_or(|(_, t)| t.len() < ENOUGH_CALLERS)
+            };
+            if compiled_callers >= MAX_CALLERS || !props.iter().any(|prop| wanted(prop)) {
+                break;
+            }
+            let Some(text) = self.current_text(&caller) else { continue };
+            let tags: Vec<_> =
+                component_tags(&text).into_iter().filter(|tag| tag.name(&text) == component.tag).collect();
+            // Only callers binding a prop still wanted are compiled.
+            let binds = tags.iter().flat_map(|tag| tag.attributes.iter()).any(|attribute| {
+                attribute.bound_code(&text).is_some() && {
+                    let written =
+                        text[attribute.name.start as usize..attribute.name.end as usize].trim_start_matches(':');
+                    let name = crate::blade::camel(written);
+                    props.contains(&name) && wanted(&name)
+                }
+            });
+            if !binds {
+                continue;
+            }
+            compiled_callers += 1;
+            let compiled = self.blade_compile(&caller, &text);
+            for tag in &tags {
+                for attribute in &tag.attributes {
+                    let Some(code) = attribute.bound_code(&text) else { continue };
+                    let written =
+                        text[attribute.name.start as usize..attribute.name.end as usize].trim_start_matches(':');
+                    let name = crate::blade::camel(written);
+                    if !props.contains(&name) {
+                        continue;
+                    }
+                    let Some(ty) = bound_type(&compiled, &code, &resolver) else { continue };
+                    match found.iter_mut().find(|(known, _)| *known == name) {
+                        Some((_, types)) => types.push(ty),
+                        None => found.push((name, vec![ty])),
+                    }
+                }
+            }
+        }
+        found
+            .into_iter()
+            .map(|(name, types)| (name, Type::union(types).widen().to_string()))
+            .filter(|(_, ty)| ty != "mixed")
+            .collect()
     }
 
     /// The named slots component `component` takes: the variables its view
@@ -881,4 +984,20 @@ impl PhpEngine {
             open: None,
         })
     }
+}
+
+/// The type of the bound attribute code `code` (template offsets) in the
+/// compiled template: the compiled PHP with the code parenthesized, the
+/// parenthesized expression typed where it is (its loop variables and
+/// all). `None` when the code isn't in the PHP.
+fn bound_type(compiled: &Compiled, code: &std::ops::Range<u32>, resolver: &crate::types::Resolver<'_>) -> Option<Type> {
+    let (start, end) = (compiled.php_offset(code.start)?, compiled.php_offset(code.end)?);
+    let php = &compiled.php;
+    let probe = format!("{}({}){}", &php[..start as usize], &php[start as usize..end as usize], &php[end as usize..]);
+    let parsed = ParsedFile::parse("probe.php", probe.as_str());
+    let names = FileNames::resolve(&parsed);
+    let summary = FileSummary::extract(&parsed);
+    let types = ExprTypes::new(&parsed, &names, &summary, resolver);
+    let (expr, frames) = types.find(start)?;
+    Some(types.type_of(expr, &frames).widen())
 }
