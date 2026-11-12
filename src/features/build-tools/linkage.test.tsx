@@ -10,7 +10,7 @@ import { GradleView, MavenView } from "./BuildToolView";
 import { activate } from "./index";
 import { expandableKeys, gradleChildren, gradleRoots, gradleProjectKey } from "./model";
 import { executeBuildLine } from "./runAnything";
-import { useBuild } from "./store";
+import { classifyPickedPoms, useBuild } from "./store";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -241,14 +241,31 @@ it("re-adds a picked POM using the plus button and preserves other unlinked root
   );
 });
 
-it.each([null, "/outside/pom.xml", "/p/a/build.xml", "/p/../outside/pom.xml", "/p/a/pom.xml"])(
-  "ignores cancelled, invalid, outside or already linked picks: %s",
+it.each([null, "/p/a/build.xml", "/p/a/pom.xml", "not-a-file"])(
+  "ignores cancelled, invalid or already linked picks: %s",
   async (picked) => {
     mocks.open.mockResolvedValue(picked);
     await executeAction("maven.addProjects");
     expect(mocks.set).not.toHaveBeenCalled();
   },
 );
+
+it("links a sibling pom.xml outside the opened project and collapses duplicate spellings", async () => {
+  mocks.get.mockResolvedValue({
+    languages: { java: { maven: { unlinkedProjects: [], linkedProjects: [] } } },
+  });
+  mocks.open.mockResolvedValue(["/p/../B/pom.xml", "/B/pom.xml", "/other/notes.xml"]);
+  await act(async () => {
+    await executeAction("maven.addProjects");
+  });
+  expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.linkedProjects", '["/B/pom.xml"]');
+  expect(mocks.notify).toHaveBeenCalledWith(
+    expect.objectContaining({
+      level: "warning",
+      body: expect.stringContaining("/other/notes.xml"),
+    }),
+  );
+});
 
 it("links `\\\\?\\`-prefixed and differently-cased picks on Windows", async () => {
   const os = usePlatform.getState().os;
@@ -272,8 +289,8 @@ it("links `\\\\?\\`-prefixed and differently-cased picks on Windows", async () =
   }
 });
 
-it("warns about picks outside the project instead of silently doing nothing", async () => {
-  mocks.open.mockResolvedValue("/other/pom.xml");
+it("warns about a pick that is not a pom.xml instead of silently doing nothing", async () => {
+  mocks.open.mockResolvedValue("/other/readme.xml");
   await act(async () => {
     await executeAction("maven.addProjects");
   });
@@ -282,9 +299,29 @@ it("warns about picks outside the project instead of silently doing nothing", as
     expect.objectContaining({
       level: "warning",
       title: expect.stringContaining("not added"),
-      body: expect.stringContaining("/other/pom.xml"),
+      body: expect.stringContaining("/other/readme.xml"),
     }),
   );
+});
+
+it("classifies inside, sibling and lexical paths without a filesystem walk", () => {
+  expect(classifyPickedPoms("/p", ["/p/a/../stub/pom.xml", "/p/../B/pom.xml", "/B/pom.xml"])).toEqual({
+    link: ["stub/pom.xml", "/B/pom.xml"],
+    rejected: [],
+  });
+  expect(classifyPickedPoms("/p", ["/p/a/build.xml"])).toEqual({ link: [], rejected: ["/p/a/build.xml"] });
+  const os = usePlatform.getState().os;
+  usePlatform.setState({ os: "windows" });
+  try {
+    expect(
+      classifyPickedPoms("C:\\Projects\\demo", [
+        "\\\\?\\C:\\Projects\\demo\\..\\B\\pom.xml",
+        "c:/Projects/demo/svc/pom.xml",
+      ]),
+    ).toEqual({ link: ["C:/Projects/B/pom.xml", "svc/pom.xml"], rejected: [] });
+  } finally {
+    usePlatform.setState({ os });
+  }
 });
 
 it("links picked POMs that no reactor lists as independent top-level projects", async () => {
@@ -302,6 +339,27 @@ it("links picked POMs that no reactor lists as independent top-level projects", 
     "languages.java.maven.linkedProjects",
     '["tools/pom.xml","stub/pom.xml"]',
   );
+});
+
+it("unlinking an external project removes the link and does not delete it from disk", async () => {
+  mocks.get.mockResolvedValue({ languages: { java: { maven: { linkedProjects: ["/B/pom.xml"] } } } });
+  const external = {
+    ...model.maven!.projects[0]!,
+    pom: "/B/pom.xml",
+    dir: "/B",
+    artifactId: "b",
+    displayName: "project-b",
+  };
+  const linked: BuildModel = { ...model, maven: { ...model.maven!, projects: [...model.maven!.projects, external] } };
+  mocks.model.mockResolvedValue(linked);
+  await act(async () => {
+    useBuild.setState({ model: linked });
+  });
+  await act(async () => {
+    await executeAction("maven.unlinkProjects", { pom: "/B/pom.xml" });
+  });
+  expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.linkedProjects", "[]");
+  expect(mocks.set).not.toHaveBeenCalledWith("project", "languages.java.maven.unlinkedProjects", expect.anything());
 });
 
 it("unlinking a linked independent project removes the link instead of hiding it", async () => {

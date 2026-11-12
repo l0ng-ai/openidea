@@ -106,7 +106,9 @@ pub struct MavenProject {
     pub profiles: Vec<String>,
     /// Java feature version the project compiles for (`maven.compiler.release`, `java.version`…).
     pub java_version: Option<u32>,
-    /// Maven launcher: the nearest `mvnw` up to the project root (absolute), else `mvn`.
+    /// Maven launcher: the nearest `mvnw` (absolute), else `mvn`. Inside the opened
+    /// project the search stops at its root; outside it, the search stops before
+    /// that root so a linked project keeps its own wrapper.
     pub command: String,
     /// Options before the goals (`-s`, `-Dmaven.repo.local=`); filled in by the shell from settings.
     pub options: Vec<String>,
@@ -1032,10 +1034,6 @@ pub(crate) fn plugin(
 
 const MAX_PROJECTS: usize = 1000;
 
-fn rel_path(root: &Path, p: &Path) -> String {
-    p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/")
-}
-
 /// The POMs that are not modules of another one: the root `pom.xml`, else the
 /// shallowest `pom.xml` of each branch (a folder holding several builds). An
 /// aggregate POM directly inside `src/` counts too (issue #1001: `src/pom.xml`
@@ -1049,18 +1047,29 @@ pub fn is_maven_project(root: &Path) -> bool {
     !top_level_poms(root).is_empty()
 }
 
-/// The `mvnw` nearest to `dir`, looking up to `root`.
+/// The `mvnw` nearest to `dir`. Inside `root` the walk stops at `root`. Outside it,
+/// the walk stops before entering `root` or any ancestor of `root`: a sibling project
+/// keeps its own wrapper, and the search does not continue to the filesystem root.
 fn wrapper(root: &Path, dir: &Path) -> String {
     let name = if cfg!(windows) { "mvnw.cmd" } else { "mvnw" };
-    let mut cur = Some(dir);
+    let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let dir = dunce::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let external = !dir.starts_with(&root);
+    let mut cur = Some(dir.as_path());
     while let Some(d) = cur {
         if d.join(name).is_file() {
             return d.join(name).to_string_lossy().into_owned();
         }
-        if d == root {
+        if !external && d == root {
             break;
         }
-        cur = d.parent();
+        let Some(parent) = d.parent() else { break };
+        // `parent` inside the opened project, or an ancestor of it (the common parent,
+        // then the filesystem root). Stop before inspecting those.
+        if external && (parent.starts_with(&root) || root.starts_with(parent)) {
+            break;
+        }
+        cur = Some(parent);
     }
     if cfg!(windows) { "mvn.cmd".into() } else { "mvn".into() }
 }
@@ -1104,20 +1113,114 @@ pub(crate) fn load_with(root: &Path, local_repo: Option<PathBuf>, profiles: &[St
     load_with_linked(root, local_repo, profiles, &[])
 }
 
-/// The POMs of `linked` (project-relative, from Settings) that exist inside `root`.
+/// The `pom.xml` files `linked` names. Each entry is used as written (project-relative,
+/// `../sibling/pom.xml`, or absolute) and canonicalized; a path that is not an existing
+/// `pom.xml` is skipped. Nothing here lists a directory or walks parents looking for builds.
 fn linked_poms(root: &Path, linked: &[String]) -> Vec<PathBuf> {
     let base = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let mut out: Vec<PathBuf> = Vec::new();
     for pom in linked {
-        let pom = normalized_pom(pom);
-        if pom.is_empty() || pom.starts_with("../") || pom == ".." {
-            continue;
-        }
-        let path = root.join(&pom);
-        let inside = dunce::canonicalize(&path).is_ok_and(|p| p.starts_with(&base));
-        if path.is_file() && inside && !out.contains(&path) {
+        let Some(path) = dunce::canonicalize(base.join(pom.trim())).ok() else { continue };
+        if is_pom_file(&path) && !out.contains(&path) {
             out.push(path);
         }
+    }
+    out
+}
+
+fn is_pom_file(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| if cfg!(windows) { name.eq_ignore_ascii_case("pom.xml") } else { name == "pom.xml" })
+}
+
+/// Identity of `path` (both canonical) within `root`: project-relative inside it,
+/// otherwise the absolute path with forward slashes.
+fn project_rel(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
+}
+
+/// Canonical `pom.xml` paths named by `linked`, keyed by the spelling to store and to
+/// show so unlink removes the same entry settings hold. The first spelling wins.
+fn linked_identities(root: &Path, linked: &[String]) -> HashMap<PathBuf, String> {
+    let mut out = HashMap::new();
+    for entry in linked {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let Some(path) = dunce::canonicalize(root.join(entry)).ok() else { continue };
+        if is_pom_file(&path) {
+            out.entry(path).or_insert_with(|| entry.replace('\\', "/"));
+        }
+    }
+    out
+}
+
+/// Stable, deduplicated form of `poms` for `languages.java.maven.linkedProjects`.
+/// An existing `pom.xml` inside `root` is project-relative; one outside it is the
+/// canonical absolute path. Spellings of the same file (`../B/pom.xml`, an absolute
+/// path, a symlink) collapse to one entry. A path that exists and is not a `pom.xml`
+/// is dropped. A `pom.xml` that cannot be resolved yet is kept, so a link is not
+/// discarded while its volume is offline. No directory is scanned.
+pub fn normalize_linked_poms(root: &Path, poms: &[String]) -> Vec<String> {
+    let Some(root) = dunce::canonicalize(root).ok() else {
+        let mut out = Vec::new();
+        for pom in poms {
+            let pom = normalized_pom(pom);
+            if !pom.is_empty() && pom_name_ok(&pom) && !out.contains(&pom) {
+                out.push(pom);
+            }
+        }
+        return out;
+    };
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for pom in poms {
+        let pom = pom.trim();
+        if pom.is_empty() {
+            continue;
+        }
+        let key = match dunce::canonicalize(root.join(pom)) {
+            Ok(path) if is_pom_file(&path) => project_rel(&root, &path),
+            Ok(_) => continue,
+            Err(_) => {
+                let fallback = normalized_pom(pom);
+                let joined = root.join(pom);
+                if !pom_name_ok(&fallback) || (joined.exists() && !is_pom_file(&joined)) {
+                    continue;
+                }
+                fallback
+            }
+        };
+        if key.is_empty() || !seen.insert(key.clone()) {
+            continue;
+        }
+        out.push(key);
+    }
+    out
+}
+
+fn pom_name_ok(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if cfg!(windows) { name.eq_ignore_ascii_case("pom.xml") } else { name == "pom.xml" }
+}
+
+/// Directories of linked `pom.xml` files that sit outside `root` (the opened project
+/// stays the root). Callers keep the outermost directory only. Modules a POM declares
+/// outside its own directory are not included: a linked file cannot widen the indexed
+/// tree to an arbitrary path.
+pub fn external_pom_dirs(root: &Path, linked: &[String]) -> Vec<PathBuf> {
+    let base = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut out = Vec::new();
+    for pom in linked_poms(root, linked) {
+        let Some(dir) = pom.parent() else { continue };
+        if dir.starts_with(&base) || out.iter().any(|have| have == dir) {
+            continue;
+        }
+        out.push(dir.to_path_buf());
     }
     out
 }
@@ -1130,7 +1233,9 @@ pub fn has_projects(root: &Path, settings: &ide_core::settings::MavenSettings) -
 /// The model with the chosen `profiles` (`-P` entries; `!id` deactivates: their modules,
 /// dependencies and properties are part of the model, those turned off are not) and the
 /// `linked` POMs (Add Maven Projects): builds that no reactor lists, shown as independent
-/// top-level projects. A linked POM that turns out to be a module of the root reactor stays that module.
+/// top-level projects, including a `pom.xml` outside the opened root. A linked POM that
+/// turns out to be a module of the root reactor stays that module. The same canonical file
+/// is loaded once, so a cycle or a second spelling does not duplicate it or edit either POM.
 pub fn load_with_linked(
     root: &Path,
     local_repo: Option<PathBuf>,
@@ -1140,6 +1245,8 @@ pub fn load_with_linked(
     let mut resolver = Resolver::new(local_repo, profiles);
     let mut model = MavenModel::default();
     let mut seen: HashSet<PathBuf> = HashSet::new();
+    let canonical_root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let linked_ids = linked_identities(&canonical_root, linked);
     let mut tops = top_level_poms(root);
     for pom in linked_poms(root, linked) {
         if !tops.contains(&pom) {
@@ -1153,11 +1260,12 @@ pub fn load_with_linked(
             break;
         }
         let canonical = dunce::canonicalize(&path).unwrap_or_else(|_| path.clone());
-        if !seen.insert(canonical) {
+        if !seen.insert(canonical.clone()) {
             continue;
         }
         let Some(pom) = resolver.pom(&path) else { continue };
         let dir = path.parent().unwrap_or(root).to_path_buf();
+        let dir_canon = dunce::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
         let ctx = resolver.context(&path, 0);
         let props = resolver.properties_for(&pom, &ctx, &dir);
         let i = |s: &str| interpolate(s, &props);
@@ -1232,23 +1340,30 @@ pub fn load_with_linked(
             }
         }
         let artifact_id = i(&pom.artifact_id);
+        let module_ids: Vec<String> = modules
+            .iter()
+            .map(|m| {
+                let canonical = dunce::canonicalize(m).unwrap_or_else(|_| m.clone());
+                linked_ids.get(&canonical).cloned().unwrap_or_else(|| project_rel(&canonical_root, &canonical))
+            })
+            .collect();
         model.projects.push(MavenProject {
             project_root: None,
-            pom: rel_path(root, &path),
-            dir: rel_path(root, &dir),
+            pom: linked_ids.get(&canonical).cloned().unwrap_or_else(|| project_rel(&canonical_root, &canonical)),
+            dir: project_rel(&canonical_root, &dir_canon),
             group_id: i(props.get("project.groupId").map(String::as_str).unwrap_or_default()),
             version: i(props.get("project.version").map(String::as_str).unwrap_or_default()),
             display_name: pom.name.as_deref().map(i).filter(|n| !n.is_empty()).unwrap_or_else(|| artifact_id.clone()),
             artifact_id,
             packaging,
             parent: pom.parent.as_ref().map(|p| format!("{}:{}:{}", p.group_id, p.artifact_id, i(&p.version))),
-            modules: modules.iter().map(|m| rel_path(root, m)).collect(),
+            modules: module_ids,
             aggregated,
             plugins,
             dependencies,
             profiles: ctx.profiles.iter().map(|(id, _)| id.clone()).collect(),
             java_version: jv,
-            command: wrapper(root, &dir),
+            command: wrapper(&canonical_root, &dir_canon),
             options: Vec::new(),
             env: BTreeMap::new(),
         });
@@ -1341,17 +1456,27 @@ impl UnlinkedProjects {
 
 fn normalized_pom(pom: &str) -> String {
     let pom = pom.replace('\\', "/");
-    let mut parts = Vec::new();
+    let unc = pom.starts_with("//");
+    let absolute = pom.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
     for part in pom.split('/') {
         match part {
             "" | "." => {}
-            ".." if parts.last().is_some_and(|p| *p != "..") => {
+            // Keep a drive letter (`C:`) and a leading `..` that has nothing to climb.
+            ".." if parts.last().is_some_and(|p| *p != ".." && !p.ends_with(':')) => {
                 parts.pop();
             }
             part => parts.push(part),
         }
     }
-    parts.join("/")
+    let joined = parts.join("/");
+    if unc {
+        format!("//{joined}")
+    } else if absolute {
+        format!("/{joined}")
+    } else {
+        joined
+    }
 }
 
 /// Every POM of the model (for change detection).
@@ -2145,6 +2270,86 @@ mod tests {
         assert!(!has_projects(deep.path(), &Default::default()));
         assert!(has_projects(deep.path(), &settings));
         assert_eq!(top(&load_linked(deep.path(), &settings)), [("a/b/c/tool".into(), false)]);
+    }
+
+    /// A sibling Maven project is linked beside the opened root. Its reactor, including a
+    /// module that points back at the opened project, is read once. Neither POM is rewritten,
+    /// and only the linked project's directory is an extra content root — not the common
+    /// parent and not a module that lives outside that directory.
+    #[test]
+    fn external_sibling_keeps_its_directory_and_does_not_edit_poms() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let a = base.join("A");
+        let b = base.join("B");
+        let c = base.join("C");
+        std::fs::create_dir_all(a.join("core")).unwrap();
+        std::fs::create_dir_all(b.join("mod")).unwrap();
+        std::fs::create_dir_all(&c).unwrap();
+        let a_pom = "<project><groupId>demo</groupId><artifactId>a</artifactId><version>1</version><packaging>pom</packaging><modules><module>core</module></modules></project>";
+        let b_pom = "<project><groupId>demo</groupId><artifactId>b</artifactId><version>1</version><packaging>pom</packaging><modules><module>mod</module><module>../A</module><module>../C</module><module>.</module></modules></project>";
+        let c_pom = "<project><groupId>demo</groupId><artifactId>c</artifactId><version>1</version><modules><module>../B</module></modules></project>";
+        std::fs::write(a.join("pom.xml"), a_pom).unwrap();
+        std::fs::write(a.join("core/pom.xml"), "<project><artifactId>core</artifactId></project>").unwrap();
+        std::fs::write(b.join("pom.xml"), b_pom).unwrap();
+        std::fs::write(b.join("mod/pom.xml"), "<project><artifactId>bmod</artifactId></project>").unwrap();
+        std::fs::write(c.join("pom.xml"), c_pom).unwrap();
+        let wrapper = if cfg!(windows) { "mvnw.cmd" } else { "mvnw" };
+        std::fs::write(a.join(wrapper), "#!/bin/sh\n").unwrap();
+        std::fs::write(b.join(wrapper), "#!/bin/sh\n").unwrap();
+        std::fs::write(base.join(wrapper), "#!/bin/sh\n").unwrap();
+
+        let discovered = load_with_linked(&a, None, &[], &[]);
+        assert_eq!(discovered.projects.iter().map(|p| p.artifact_id.as_str()).collect::<Vec<_>>(), ["a", "core"]);
+
+        let stored = vec!["../B/pom.xml".into()];
+        let linked = load_with_linked(&a, None, &[], &stored);
+        let b_project = linked.projects.iter().find(|p| p.artifact_id == "b").unwrap();
+        assert!(!b_project.aggregated);
+        assert_eq!(b_project.pom, "../B/pom.xml");
+        assert_eq!(dunce::canonicalize(a.join(&b_project.dir)).unwrap(), b);
+        assert_eq!(dunce::canonicalize(&b_project.command).unwrap(), dunce::canonicalize(b.join(wrapper)).unwrap());
+        let a_project = linked.projects.iter().find(|p| p.artifact_id == "a").unwrap();
+        assert!(!a_project.aggregated);
+        assert_eq!(a_project.modules, ["core/pom.xml"]);
+        assert_eq!(dunce::canonicalize(&a_project.command).unwrap(), dunce::canonicalize(a.join(wrapper)).unwrap());
+        assert_eq!(linked.projects.iter().filter(|p| p.artifact_id == "a").count(), 1);
+        assert_eq!(linked.projects.iter().filter(|p| p.artifact_id == "b").count(), 1);
+        assert!(linked.projects.iter().any(|p| p.artifact_id == "c" && p.aggregated));
+        assert!(linked.projects.iter().any(|p| p.artifact_id == "bmod" && p.aggregated));
+        let again = load_with_linked(&a, None, &[], &stored);
+        assert_eq!(
+            again.projects.iter().map(|p| &p.pom).collect::<Vec<_>>(),
+            linked.projects.iter().map(|p| &p.pom).collect::<Vec<_>>()
+        );
+
+        let absolute = b.join("pom.xml").to_string_lossy().replace('\\', "/");
+        let via_a = a.join("../B/pom.xml").to_string_lossy().replace('\\', "/");
+        let normalized = normalize_linked_poms(
+            &a,
+            &[
+                "../B/pom.xml".into(),
+                absolute,
+                via_a,
+                a.join("pom.xml").to_string_lossy().into_owned(),
+                b.to_string_lossy().into_owned(),
+                "stub/pom.xml".into(),
+                "notes.xml".into(),
+            ],
+        );
+        assert_eq!(normalized.len(), 3, "{normalized:?}");
+        assert_eq!(normalized[0], dunce::canonicalize(b.join("pom.xml")).unwrap().to_string_lossy().replace('\\', "/"));
+        assert_eq!(normalized[1], "pom.xml");
+        assert_eq!(normalized[2], "stub/pom.xml");
+        assert_eq!(crate::maven_external_roots(&a, &normalized), vec![b.clone()]);
+        assert_eq!(crate::maven_external_roots(&a, &stored), vec![b.clone()]);
+
+        let removed = load_with_linked(&a, None, &[], &[]);
+        assert!(removed.projects.iter().all(|p| p.artifact_id != "b"));
+        assert_eq!(std::fs::read_to_string(a.join("pom.xml")).unwrap(), a_pom);
+        assert_eq!(std::fs::read_to_string(b.join("pom.xml")).unwrap(), b_pom);
+        assert_eq!(std::fs::read_to_string(c.join("pom.xml")).unwrap(), c_pom);
+        assert!(b.join("mod/pom.xml").is_file());
     }
 
     #[test]

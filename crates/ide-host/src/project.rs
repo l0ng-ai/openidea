@@ -1239,8 +1239,9 @@ pub(crate) fn workspace_member_roots(root: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// Workspace members in manifest order, or extra Project Structure directories and the
-/// Gradle project folders outside the project as of the last sync (`build_cache`).
+/// Workspace members in manifest order, or extra Project Structure directories, Gradle
+/// project folders outside the project, and directories of Maven POMs linked from
+/// outside it (`build_cache` is the Gradle sync cache).
 fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
     if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
         if workspace.is_container(root) {
@@ -1332,7 +1333,10 @@ fn extra_content_roots(settings: &ide_core::settings::Settings, root: &Path, bui
         .iter()
         .chain(settings.project_structure.dependencies.iter())
         .map(|r| PathBuf::from(r.trim()));
-    for p in user.chain(ide_build::gradle_external_roots(root, build_cache, &settings.languages.java.gradle)) {
+    for p in user
+        .chain(ide_build::gradle_external_roots(root, build_cache, &settings.languages.java.gradle))
+        .chain(ide_build::maven_external_roots(root, &settings.languages.java.maven.linked_projects))
+    {
         if p.is_absolute() && p.is_dir() && !p.starts_with(root) && !out.contains(&p) {
             out.push(p);
         }
@@ -1766,6 +1770,24 @@ mod maven_linkage_tests {
         // The whole reactor unlinked: the import exclusions are enough.
         settings.languages.java.maven.unlinked_projects = vec!["pom.xml".into()];
         assert_eq!(super::jdtls_maven_import(root, &settings).1, None);
+    }
+
+    #[test]
+    fn external_maven_link_is_a_content_root_and_not_its_sibling_module() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let a = base.join("A");
+        let b = base.join("B");
+        let c = base.join("C");
+        for dir in [&a, &b, &c] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("pom.xml"), "<project/>").unwrap();
+        }
+        let mut settings = ide_core::settings::Settings::default();
+        settings.languages.java.maven.linked_projects = vec!["../B/pom.xml".into()];
+        assert_eq!(super::content_roots(&settings, &a, &base.join("cache")), vec![b]);
+        settings.languages.java.maven.linked_projects.clear();
+        assert!(super::content_roots(&settings, &a, &base.join("cache")).is_empty());
     }
 
     #[test]

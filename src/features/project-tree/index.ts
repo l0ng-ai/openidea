@@ -18,6 +18,7 @@ import {
   useProjectViewRoots,
 } from "@/workbench/contributions";
 import { registerProjectActions } from "./actions";
+import { mavenExternalRoots } from "./mavenRoots";
 import { gradleModuleGroups } from "./moduleGroups";
 import { FileRefactorDialogHost } from "./FileRefactorDialogs";
 import { NewPopupHost } from "./NewPopup";
@@ -126,7 +127,11 @@ export function activate(): () => void {
             gradleModuleGroups(g.projects, g.projects.find((p) => p.path === ":")?.name ?? "", project.root, g.dir),
           )
         : [];
-    const key = JSON.stringify([paths, groups]);
+    const mavenRoots =
+      own && project && build.root === project.root
+        ? mavenExternalRoots(build.model?.maven?.projects ?? [], project.root)
+        : [];
+    const key = JSON.stringify([paths, groups, mavenRoots]);
     if (key === shownRoots) return;
     shownRoots = key;
     contentRoots.forEach((d) => d());
@@ -139,6 +144,18 @@ export function activate(): () => void {
         path,
         order: -100 + i,
       }),
+    );
+    mavenRoots.forEach((root, i) =>
+      contentRoots.push(
+        registerProjectViewRoot({
+          id: root.id,
+          label: root.label,
+          detail: root.detail,
+          icon: folderIconName("module"),
+          path: root.path,
+          order: -50 + i,
+        }),
+      ),
     );
     groups.forEach((g, i) =>
       contentRoots.push(registerProjectViewRoot({ ...g, id: g.id!, order: -200 + i, beforeProject: true })),

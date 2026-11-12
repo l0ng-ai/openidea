@@ -305,32 +305,64 @@ function comparablePath(p: string) {
   return slashes.replace(/^\/\/\?\//, "");
 }
 
-/**
- * Splits `picked` into project-relative `pom.xml` paths inside `root` and the rest
- * (outside the project, not a `pom.xml`, or escaping via `.`/`..`). Drive-letter
- * case and `\\?\` prefixes must not matter on Windows, where the dialog may hand
- * back either form (#2626).
- */
-function projectPoms(root: string, picked: readonly string[]): { inside: string[]; outside: string[] } {
-  const base = comparablePath(root).replace(/\/$/, "");
-  const ignoreCase = hostOs() === "windows";
-  const inside: string[] = [];
-  const outside: string[] = [];
-  for (const p of picked) {
-    const path = comparablePath(p);
-    const underRoot = ignoreCase
-      ? path.slice(0, base.length + 1).toLowerCase() === `${base.toLowerCase()}/`
-      : path.startsWith(`${base}/`);
-    if (!underRoot) {
-      outside.push(p);
+function isPomFileName(path: string): boolean {
+  const name = path.split("/").pop() ?? "";
+  return hostOs() === "windows" ? name.toLowerCase() === "pom.xml" : name === "pom.xml";
+}
+
+/** Lexical `.` / `..` collapse. A drive letter stays the first component. */
+function lexicalPath(path: string): string {
+  const unc = path.startsWith("//");
+  const rooted = path.startsWith("/");
+  const drive = /^[A-Za-z]:\//.test(path);
+  const parts: string[] = [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      const top = parts[parts.length - 1];
+      if (top && top !== ".." && !(drive && parts.length === 1)) parts.pop();
+      else if (!rooted && !drive) parts.push("..");
       continue;
     }
-    const pom = path.slice(base.length + 1);
-    const parts = pom.split("/");
-    if (parts.some((part) => part === ".." || part === ".") || parts.pop() !== "pom.xml") outside.push(p);
-    else inside.push(pom);
+    parts.push(part);
   }
-  return { inside, outside };
+  if (unc) return `//${parts.join("/")}`;
+  if (rooted) return `/${parts.join("/")}`;
+  return parts.join("/");
+}
+
+function isInsideRoot(root: string, path: string): boolean {
+  const prefix = `${root}/`;
+  return hostOs() === "windows" ? path.toLowerCase().startsWith(prefix.toLowerCase()) : path.startsWith(prefix);
+}
+
+/**
+ * POMs to link, and picks to reject. Inside the opened project the link is
+ * project-relative; outside it the link is the absolute `pom.xml`. `.` and `..`
+ * collapse first, so `root/a/../b/pom.xml` is `b/pom.xml` and `root/../B/pom.xml`
+ * is that sibling. The backend canonicalizes spellings of the same file. A pick
+ * that is not a `pom.xml` is rejected. Drive-letter case and `\\?\` prefixes must
+ * not matter on Windows (#2626).
+ */
+export function classifyPickedPoms(root: string, picked: readonly string[]): { link: string[]; rejected: string[] } {
+  const base = lexicalPath(comparablePath(root).replace(/\/$/, ""));
+  const link: string[] = [];
+  const rejected: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of picked) {
+    const path = lexicalPath(comparablePath(raw));
+    const absolute = path.startsWith("/") || path.startsWith("//") || /^[A-Za-z]:\//.test(path);
+    if (!isPomFileName(path) || (!isInsideRoot(base, path) && !absolute)) {
+      rejected.push(raw);
+      continue;
+    }
+    const key = isInsideRoot(base, path) ? path.slice(base.length + 1) : path;
+    const id = hostOs() === "windows" ? key.toLowerCase() : key;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    link.push(key);
+  }
+  return { link, rejected };
 }
 
 export async function addProjects() {
@@ -346,15 +378,15 @@ export async function addProjects() {
   });
   const paths = typeof picked === "string" ? [picked] : (picked ?? []);
   if (!paths.length) return;
-  const { inside: poms, outside } = projectPoms(root, paths);
-  if (poms.length) await setLinked(root, poms, true);
+  const { link, rejected } = classifyPickedPoms(root, paths);
+  if (link.length) await setLinked(root, link, true);
   // Dropping every pick silently looks exactly like the button doing nothing (#2626).
-  if (outside.length)
+  if (rejected.length)
     notifications().notify({
       group: "tools",
       level: "warning",
       title: tx`Some Maven projects were not added`,
-      body: tx`These are outside the open project, and Maven only links POMs inside it: ${outside.slice(0, 3).join(", ")}${outside.length > 3 ? ` (+${outside.length - 3} more)` : ""}`,
+      body: tx`These files are not named pom.xml, so they were not added: ${rejected.slice(0, 3).join(", ")}${rejected.length > 3 ? ` (+${rejected.length - 3} more)` : ""}`,
       key: "maven-add-outside-root",
     });
 }
