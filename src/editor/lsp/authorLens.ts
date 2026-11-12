@@ -6,7 +6,7 @@
  */
 import type { Text } from "@codemirror/state";
 import { call, commands, isTauri, onIdeEvent, type BlameLine } from "@/platform/ipc";
-import { DEFAULT_DATE_FORMAT, dateFormatOptions, formatPattern } from "@/platform/dateFormat";
+import { dateFormatOptions, formatDay } from "@/platform/dateFormat";
 
 export interface AuthorSummary {
   author: string;
@@ -35,12 +35,12 @@ export function authorSummary(blame: readonly BlameLine[], from: number, to: num
 }
 
 /**
- * The date as the Date Formats page shows it: the user's pattern when the
- * override is on, the default `dd.MM.yyyy` pattern otherwise (`09.11.2026`).
+ * The date exactly as the blame gutter renders it (`features/vcs/model.ts` `formatDate`): the user's
+ * pattern when the Date Formats override is on, the system's compact date otherwise. One commit then
+ * reads the same in the gutter, the hints and the Git log.
  */
 function shortDate(ms: number): string {
-  const o = dateFormatOptions();
-  return formatPattern(new Date(ms), o.overrideSystem ? o.pattern : DEFAULT_DATE_FORMAT.pattern);
+  return formatDay(new Date(ms), dateFormatOptions(), true);
 }
 
 export function authorLabel(s: AuthorSummary): string {
@@ -49,9 +49,10 @@ export function authorLabel(s: AuthorSummary): string {
 }
 
 export function authorTooltip(s: AuthorSummary): string {
+  const when = s.timeMs > 0 ? ` on ${formatDay(new Date(s.timeMs), dateFormatOptions())}` : "";
   return s.others
-    ? `Last changed by ${s.author}; also ${s.authors.slice(1).join(", ")}`
-    : `Last changed by ${s.author}`;
+    ? `Last changed by ${s.author}${when}; also ${s.authors.slice(1).join(", ")}`
+    : `Last changed by ${s.author}${when}`;
 }
 
 interface Entry {
