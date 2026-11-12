@@ -19,6 +19,7 @@ import {
   registerServiceView,
   registerToolWindow,
   showServiceView,
+  useServicesRunningCount,
 } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 import { addFileIconProvider } from "@/ui";
@@ -58,6 +59,9 @@ import type { PruneTarget } from "@/platform/ipc";
 
 const PROJECT = "projectOpen";
 
+/** The window badge: how many of the listed services are running (the run provider tracks them). */
+const useServicesBadge = () => useServicesRunningCount((s) => s.count);
+
 /** The connection of the selection, else the first one. */
 const currentConnection = () => selectedTarget()?.conn ?? connections()[0]?.id ?? null;
 
@@ -71,6 +75,7 @@ export function activate(): () => void {
       anchor: "bottom",
       order: 8,
       stripe: "onUse",
+      useBadge: useServicesBadge,
       component: ServicesHost,
       headerContent: ServicesTabs,
       headerActions: ServicesHeaderActions,
