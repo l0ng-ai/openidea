@@ -11,6 +11,10 @@
 //!   every line they span as written.
 //! - The attribute lines of a tag written over several lines go one level
 //!   in (a line starting with `>` or `/>` stays at the tag's level).
+//! - The PHP of `@php … @endphp` (and `<?php … ?>`) blocks written over
+//!   several lines is formatted as PHP files are ([`crate::format`],
+//!   PSR-12), and so is an echo's expression when it stays on one line;
+//!   code that doesn't parse is left as written.
 //! - Trailing whitespace goes, and the text ends with one line break.
 //!
 //! An element left open where its closing tag is written in another branch
@@ -25,6 +29,11 @@ use super::{NodeKind, parse_with};
 pub struct BladeFormatOptions {
     pub indent: u32,
     pub use_tabs: bool,
+    /// Code Style › Hard wrap at, for the PHP formatted inside.
+    pub line_width: u32,
+    /// The language level the PHP inside `@php` blocks and echoes is
+    /// formatted at (PSR-12, [`crate::format`]); `None` leaves it as written.
+    pub php: Option<crate::stubs::PhpVersion>,
 }
 
 /// Elements without content (no closing tag).
@@ -121,7 +130,7 @@ pub fn format(text: &str, options: &BladeFormatOptions, custom: &[String]) -> St
         .flat_map(|name| [name.clone(), format!("end{name}"), format!("else{name}"), format!("unless{name}")])
         .collect();
     let custom = custom.as_slice();
-    let text = space_echoes(text, custom);
+    let text = format_code(text, custom, options);
     let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let (events, regions) = analyse(&text, custom);
     // The base indentation of each shifted region, once.
@@ -230,24 +239,90 @@ pub fn format(text: &str, options: &BladeFormatOptions, custom: &[String]) -> St
     out
 }
 
-/// `{{$x}}` as `{{ $x }}` and `{!!$x!!}` as `{!! $x !!}` (one line only).
-fn space_echoes(text: &str, custom: &[String]) -> String {
+/// The code inside the template's Blade constructs: `{{$x}}` as
+/// `{{ $x }}` and `{!!$x!!}` as `{!! $x !!}` (one line only), their
+/// expression formatted as PHP when it stays on one line, and the PHP of
+/// `@php … @endphp` or `<?php … ?>` blocks written over several lines
+/// formatted (it starts at column 0 here; the indentation pass shifts it).
+/// Code that doesn't parse is left as written.
+fn format_code(text: &str, custom: &[String], options: &BladeFormatOptions) -> String {
+    let php = options.php.map(|version| {
+        let settings = crate::format::FormatOptions {
+            indent: options.indent,
+            use_tabs: options.use_tabs,
+            line_width: options.line_width,
+        };
+        (version, settings)
+    });
+    // `source` formatted as a PHP file, without its opening tag.
+    let formatted = |source: &str| -> Option<String> {
+        let (version, settings) = php.as_ref()?;
+        let file = format!("<?php\n{source}\n");
+        let edit = crate::format::format_text(&file, None, *version, settings);
+        let mut printed = file.clone();
+        if let Some(edit) = edit {
+            printed.replace_range(edit.start as usize..edit.end as usize, &edit.text);
+        }
+        Some(printed.strip_prefix("<?php")?.trim_matches(['\n', '\r', ' ', '\t']).to_owned())
+    };
     let mut out = String::with_capacity(text.len() + 16);
     let mut at = 0usize;
     for node in parse_with(text, custom) {
-        let (NodeKind::Echo { raw }, Some(code)) = (&node.kind, &node.code) else { continue };
         let span = node.span.start as usize..node.span.end as usize;
+        let Some(code) = &node.code else { continue };
+        let inner = &text[code.start as usize..code.end as usize];
         let written = &text[span.clone()];
-        let (open, close) = if *raw { ("{!!", "!!}") } else { ("{{", "}}") };
-        if !written.starts_with(open) || !written.ends_with(close) || written.contains('\n') {
-            continue;
-        }
-        let inner = text[code.start as usize..code.end as usize].trim();
-        if inner.is_empty() {
-            continue;
-        }
+        let replacement = match &node.kind {
+            NodeKind::Echo { raw } => {
+                let (open, close) = if *raw { ("{!!", "!!}") } else { ("{{", "}}") };
+                if !written.starts_with(open) || !written.ends_with(close) || written.contains('\n') {
+                    continue;
+                }
+                let expression = inner.trim();
+                if expression.is_empty() {
+                    continue;
+                }
+                // As the value of an assignment: one line, or as written.
+                let printed = formatted(&format!("$__e = {expression};"))
+                    .and_then(|printed| {
+                        let value = printed.strip_prefix("$__e = ")?.strip_suffix(';')?;
+                        (!value.contains('\n')).then(|| value.to_owned())
+                    })
+                    .unwrap_or_else(|| expression.to_owned());
+                format!("{open} {printed} {close}")
+            }
+            NodeKind::Php if written.contains('\n') && !inner.trim().is_empty() => {
+                let Some(printed) = formatted(inner) else { continue };
+                // A parse error leaves the file as it was: keep the code.
+                if printed.is_empty()
+                    || crate::syntax::ParsedFile::parse("b.php", format!("<?php\n{printed}\n")).has_errors()
+                {
+                    continue;
+                }
+                let head = &text[span.start..code.start as usize];
+                let tail = &text[code.end as usize..span.end];
+                // At the indentation the code and the closer had: inside
+                // raw text (a `<script>`) nothing indents them again.
+                let lead = |line: &str| line[..line.len() - line.trim_start().len()].to_owned();
+                let code_lead = inner
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .map(lead)
+                    .min_by_key(|lead| columns(lead, options.indent))
+                    .unwrap_or_default();
+                let line_start = text[..span.start].rfind('\n').map_or(0, |at| at + 1);
+                let own = &text[line_start..span.start];
+                let tail_lead = if own.trim().is_empty() { own } else { "" };
+                let printed: Vec<String> = printed
+                    .lines()
+                    .map(|line| if line.is_empty() { String::new() } else { format!("{code_lead}{line}") })
+                    .collect();
+                format!("{head}\n{}\n{tail_lead}{tail}", printed.join("\n"))
+            }
+            _ => continue,
+        };
         out.push_str(&text[at..span.start]);
-        out.push_str(&format!("{open} {inner} {close}"));
+        out.push_str(&replacement);
         at = span.end;
     }
     out.push_str(&text[at..]);

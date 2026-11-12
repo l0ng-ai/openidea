@@ -731,7 +731,7 @@ fn outline_nests_blocks_and_lists_sections_includes_and_components() {
 
 fn blade_format(text: &str) -> String {
     use crate::blade::format::{BladeFormatOptions, format};
-    format(text, &BladeFormatOptions { indent: 4, use_tabs: false }, &["admin".to_owned()])
+    format(text, &BladeFormatOptions { indent: 4, use_tabs: false, line_width: 120, php: None }, &["admin".to_owned()])
 }
 
 #[test]
@@ -779,7 +779,7 @@ fn format_is_safe_and_stable_on_a_real_app() {
     }
     let mut files = Vec::new();
     walk(&dir, &mut files);
-    let options = crate::blade::format::BladeFormatOptions { indent: 4, use_tabs: false };
+    let options = crate::blade::format::BladeFormatOptions { indent: 4, use_tabs: false, line_width: 120, php: None };
     let strip = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
     let (mut lines, mut changed) = (0, 0);
     let mut failures = Vec::new();
@@ -794,6 +794,12 @@ fn format_is_safe_and_stable_on_a_real_app() {
         }
         lines += text.lines().count();
         changed += text.lines().zip(out.lines()).filter(|(a, b)| a.trim_end() != *b).count();
+        // With the PHP inside formatted too: stable.
+        let php = crate::blade::format::BladeFormatOptions { php: Some(crate::stubs::PhpVersion::LATEST), ..options };
+        let out = crate::blade::format::format(&text, &php, &[]);
+        if crate::blade::format::format(&out, &php, &[]) != out {
+            failures.push(format!("not stable with PHP formatted: {}", file.display()));
+        }
     }
     eprintln!("{} templates, {changed} of {lines} lines changed", files.len());
     assert!(failures.is_empty(), "{failures:#?}");
@@ -813,4 +819,15 @@ fn format_edits_change_lines_in_place_and_only_the_range() {
     let some = edits(text, &formatted, Some((2, 2)));
     assert_eq!(some.len(), 1);
     assert_eq!((some[0].range.start.line, some[0].new_text.as_str()), (2, "    <p>b</p>"));
+}
+
+#[test]
+fn format_formats_the_php_in_blocks_and_echoes() {
+    use crate::blade::format::{BladeFormatOptions, format};
+    let options =
+        BladeFormatOptions { indent: 4, use_tabs: false, line_width: 120, php: Some(crate::stubs::PhpVersion::LATEST) };
+    let messy = "<div>\n@php\n$total=0;\nforeach($items as $item){$total+=$item->price;}\n@endphp\n<p>{{$total*2}}</p>\n<p>{{ $x or 'default' }}</p>\n@php $one = 1; @endphp\n</div>\n";
+    let formatted = "<div>\n    @php\n        $total = 0;\n        foreach ($items as $item) {\n            $total += $item->price;\n        }\n    @endphp\n    <p>{{ $total * 2 }}</p>\n    <p>{{ $x or 'default' }}</p>\n    @php $one = 1; @endphp\n</div>\n";
+    assert_eq!(format(messy, &options, &[]), formatted);
+    assert_eq!(format(formatted, &options, &[]), formatted, "stable");
 }
