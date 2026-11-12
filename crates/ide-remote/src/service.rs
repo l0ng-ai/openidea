@@ -329,8 +329,11 @@ impl RemoteService {
                 Err(e) => report.fail(remote.clone(), e),
             }
         }
+        let root = tokio::fs::canonicalize(dir).await?;
         for folder in &folders {
-            if let Err(e) = tokio::fs::create_dir_all(folder).await {
+            if !stays_inside(&root, folder).await {
+                report.fail(folder.display().to_string(), outside(folder));
+            } else if let Err(e) = tokio::fs::create_dir_all(folder).await {
                 report.fail(folder.display().to_string(), e.into());
             }
         }
@@ -339,6 +342,10 @@ impl RemoteService {
                 break;
             }
             progress(remote, i, jobs.len());
+            if !stays_inside(&root, local).await {
+                report.fail(remote.clone(), outside(local));
+                continue;
+            }
             if let Some(parent) = local.parent()
                 && let Err(e) = tokio::fs::create_dir_all(parent).await
             {
@@ -595,6 +602,29 @@ async fn remote_tree(
 
 /// Where remote `path`, inside the downloaded `selected` file or folder, lands under local `dir`:
 /// `dir/<name of selected>/<rest>`. `None` for a name that would leave `dir`.
+/// Whether writing `path` stays in the download folder `root` (canonical): its closest
+/// existing ancestor resolves inside it, and `path` itself is not a symbolic link, so a link
+/// already in the folder can't send a download elsewhere.
+pub(crate) async fn stays_inside(root: &Path, path: &Path) -> bool {
+    if tokio::fs::symlink_metadata(path).await.is_ok_and(|m| m.file_type().is_symlink()) {
+        return false;
+    }
+    let mut existing = path;
+    loop {
+        match tokio::fs::canonicalize(existing).await {
+            Ok(real) => return real.starts_with(root),
+            Err(_) => match existing.parent() {
+                Some(parent) => existing = parent,
+                None => return false,
+            },
+        }
+    }
+}
+
+fn outside(path: &Path) -> IdeError {
+    IdeError::invalid(format!("{} leads outside the download folder through a symbolic link", path.display()))
+}
+
 fn download_target(dir: &Path, selected: &str, path: &str) -> Option<PathBuf> {
     let selected = selected.trim_end_matches('/');
     let name = selected.rsplit('/').next()?;

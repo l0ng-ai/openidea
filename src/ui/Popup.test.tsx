@@ -193,6 +193,31 @@ describe("Menu action enablement", () => {
     expect(input).toHaveFocus();
   });
 
+  it("keeps the text selection a context menu was opened on", async () => {
+    render(
+      <>
+        <p>Selected text</p>
+        <ContextMenuHost />
+      </>,
+    );
+    // WebKit drops the page's selection whenever focus moves.
+    const drop = () => document.getSelection()!.removeAllRanges();
+    document.addEventListener("focusin", drop);
+    try {
+      const text = screen.getByText("Selected text").firstChild!;
+      document.getSelection()!.setBaseAndExtent(text, 0, text, 8);
+      act(() => showContextMenu({ x: 0, y: 0 }, [{ label: "Copy", run: () => undefined }]));
+      expect(screen.getByRole("menuitem", { name: /Copy/ })).toHaveFocus();
+      expect(document.getSelection()!.toString()).toBe("Selected");
+      act(() => hideContextMenu());
+      await act(async () => {});
+      expect(document.getSelection()!.toString()).toBe("Selected");
+    } finally {
+      document.removeEventListener("focusin", drop);
+      document.getSelection()!.removeAllRanges();
+    }
+  });
+
   it("highlights the row under the pointer without moving focus", () => {
     render(
       <MenuList

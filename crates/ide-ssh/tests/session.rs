@@ -44,8 +44,9 @@ impl server::Handler for Sshd {
         Ok(if user == "dev" && password == "secret" { Auth::Accept } else { Auth::reject() })
     }
 
-    async fn auth_publickey(&mut self, user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
-        Ok(if user == "dev" && key.key_data() == self.client_key.key_data() { Auth::Accept } else { Auth::reject() })
+    async fn auth_publickey(&mut self, user: &str, key: server::VerifiedPublicKey<'_>) -> Result<Auth, Self::Error> {
+        let accept = user == "dev" && key.public_key.key_data() == self.client_key.key_data();
+        Ok(if accept { Auth::Accept } else { Auth::reject() })
     }
 
     async fn channel_open_session(

@@ -1403,6 +1403,18 @@ describe("marketplace", () => {
       await waitFor(() => expect(consents.map(([id]) => id)).toEqual(["a", "b"]));
     });
 
+    it("links an installed plugin without its own homepage to its marketplace repository", async () => {
+      const repository = "https://github.com/acme/a";
+      setPluginsBackend({
+        ...createMemoryPluginsBackend([plugin({ id: "a", name: "A Plugin", version: "1.0.0" })]),
+        marketUrl: async () => "https://plugins.example/index.json",
+        market: async () => [{ ...offered("a", "1.0.0", "1.0.0"), homepage: repository }],
+      });
+      render(<PluginsPage initialTab="installed" />);
+      await screen.findByRole("heading", { level: 2, name: "A Plugin" });
+      expect(await screen.findByRole("link", { name: repository })).toHaveAttribute("href", repository);
+    });
+
     it("marks installed plugins with updates and updates one from its details", async () => {
       setConsentPrompt(async () => ({ optional: [] }));
       const consents = updatesBackend({ a: preview("a", "1.1.0"), b: preview("b", "2.0.0") });

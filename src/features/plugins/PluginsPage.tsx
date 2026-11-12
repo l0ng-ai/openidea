@@ -137,6 +137,16 @@ export function catalogState(
 
 const vendorOf = (authors: readonly string[]) => authors.join(", ");
 
+/** Where to read more about a plugin: its manifest's homepage, else the marketplace's (its repository). */
+function useHomepage(plugin: PluginInfo): string | null {
+  const listed = usePlugins((s) =>
+    plugin.homepage || plugin.source !== "installed"
+      ? undefined
+      : s.market?.find((m) => m.id === plugin.id && m.homepage)?.homepage,
+  );
+  return plugin.homepage || listed || null;
+}
+
 /** The marketplace's newer version of an installed plugin, if there is one this IDE can load. */
 function useMarketUpdate(plugin: PluginInfo): MarketPlugin | undefined {
   return usePlugins((s) =>
@@ -608,6 +618,7 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
   const busy = usePlugins((s) => !!s.busy[plugin.id]);
   const installing = usePlugins((s) => s.installing);
   const update = useMarketUpdate(plugin);
+  const homepage = useHomepage(plugin);
   const status = STATUS[plugin.status];
   const [confirmUninstall, setConfirmUninstall] = useState(false);
 
@@ -635,12 +646,12 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
           <T>Code</T>
         </dt>
         <dd>{plugin.hasCode ? tx("WebAssembly component (sandboxed)") : tx("None — contributions only")}</dd>
-        {plugin.homepage && (
+        {homepage && (
           <>
             <dt>
               <T>Homepage</T>
             </dt>
-            <Homepage value={plugin.homepage} />
+            <Homepage value={homepage} />
           </>
         )}
       </dl>

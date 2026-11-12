@@ -1,0 +1,11 @@
+{
+  "tools": {
+    "jdtls": "1.63.0-202610191322",
+    "java": "21.0.13.0.2 (Homebrew)"
+  },
+  "groups": {
+    "documentation": [
+      "org.springframework.data.domain.PageRequest Basic Java Bean implementation of Pageable. Author: Oliver Gierke Thomas Darimont Anastasiia Smirnova Mark Paluch Thach Le Source: spring-data-commons-4.1.0.jar"
+    ]
+  }
+}

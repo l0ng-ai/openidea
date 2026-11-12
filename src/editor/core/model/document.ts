@@ -272,6 +272,20 @@ export class DocModel {
       },
       {
         applyRemote: (cs, grouped) => this.applyRemote(cs, grouped),
+        onLocalCommitted: (baseVersion, version, changes) => {
+          const eventChanges: Array<{ from: number; to: number; insert: string }> = [];
+          changes.iterChanges((from, to, _fromB, _toB, inserted) => {
+            eventChanges.push({ from, to, insert: inserted.toString() });
+          });
+          _emitEditorEvent({
+            type: "docChanged",
+            doc: this.doc,
+            path: this.path,
+            baseVersion,
+            version,
+            changes: eventChanges,
+          });
+        },
         onDiscarded: (reason) => {
           logError(`document ${this.path}: unsaved edits replaced by the file's content`, reason);
           manager.notify({

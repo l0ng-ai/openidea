@@ -121,6 +121,43 @@ describe("SeController", () => {
     ).toBe(true);
   });
 
+  it("lists scratch files with the indexed files, ranked by name", async () => {
+    const outsideFiles = vi.fn(async () => [
+      { path: "/data/scratches/scratch_3.md", relPath: "Scratches/scratch_3.md" },
+      { path: "/data/scratches/notes.txt", relPath: "Scratches/notes.txt" },
+    ]);
+    const { c, last } = setup({
+      findFiles: async () => [{ ...fm("tests/test_scratch_dir.py"), score: (1 << 20) + 50 }],
+      outsideFiles,
+      inFileSet: (set, path) => path.startsWith("/p/") && (set === "all" || set === "test"),
+    });
+    c.run({ query: "scratch_3", tab: "files", includeNonProject: false, extra: {} });
+    await flush();
+    expect(last().sections.get("files")!.items[0]).toMatchObject({
+      key: "f:/data/scratches/scratch_3.md",
+      name: "scratch_3.md",
+      dir: "Scratches",
+      nameIndices: [0, 1, 2, 3, 4, 5, 6, 7, 8],
+    });
+
+    c.run({ query: "scratch", tab: "files", includeNonProject: false, extra: {} });
+    await flush();
+    expect(
+      last()
+        .sections.get("files")!
+        .items.map((i) => i.key),
+    ).toEqual(["f:/data/scratches/scratch_3.md", "f:/p/tests/test_scratch_dir.py"]);
+
+    // Production / test file sets are project scopes.
+    c.run({ query: "scratch", tab: "files", includeNonProject: false, fileSet: "test", extra: {} });
+    await flush();
+    expect(
+      last()
+        .sections.get("files")!
+        .items.map((i) => i.key),
+    ).not.toContain("f:/data/scratches/scratch_3.md");
+  });
+
   it("parses File.kt:42 and opens files at the line", async () => {
     const findFiles = vi.fn(async () => [fm("File.kt")]);
     const { c, last } = setup({ findFiles });

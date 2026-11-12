@@ -24,8 +24,8 @@ Visual style: dark, low-contrast greys, one cool accent
   Plugin docs: `plugins/README.md`, `plugins/themes.md`.
 - `java/` — JDT LS extension bundles (`java-usages`, `kotlin-bridge`) and the patched
   Lombok agent, embedded into the app by `ide-sdk` / `ide-tools`.
-- `e2e/` — Playwright UI tests (`pnpm e2e`). `fixtures/` — sample projects per language
-  for manual and automated testing.
+- `e2e/` — Playwright UI tests (`pnpm e2e`). `evals/` — code-intelligence evals (`pnpm eval`).
+  `fixtures/` — sample projects per language for manual and automated testing.
 - `docs/` — the Mintlify documentation site (`docs.json` navigation, `en/` and `zh/` pages);
   preview with `npx mint dev` in `docs/`.
 
@@ -59,9 +59,12 @@ Unclear product decisions → `needs-decision` and stop.
 
 ## Skills
 
+Do not use Impeccable or its related skills in this repository, including globally installed copies.
+
 Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
 `verify` drives the running app through Tauri MCP and captures screenshot evidence;
-`issue-fix` takes an issue from reproduction to one PR.
+`issue-fix` takes an issue from reproduction to one PR;
+`eval` takes a failing code-intelligence eval to a fix with before / after numbers.
 
 ## Commands
 
@@ -81,6 +84,11 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
   `pnpm gen:bindings`.
 - `pnpm perf` (UI interaction latency / frames / leaks), `pnpm perf:rust` (criterion
   benches vs budgets). Budgets: `perf/budgets.json`.
+- `pnpm eval [--only <id>] [--runs n] [--save-baseline]` — Java code intelligence (navigation,
+  usages, gutter markers) in the production workbench against a release `openidea-server` and
+  jdtls: time to feedback / first result / complete, results vs `evals/<language>/golden/`.
+  Report: `target/eval/report.json`. Goldens and `evals/budgets.json` are changed by people only.
+  Tool versions: `.github/tool-versions.env` (shared with Language smoke).
 - `pnpm release:prepare <version>` — the release commit's changes: app version everywhere,
   `Cargo.lock`, and the plugin API snapshot when `wit/` moved to a new version.
 

@@ -104,6 +104,7 @@ pub enum Prompt {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventKind {
+    DocumentChanged,
     WebsocketReady,
     FileClosed,
     SettingsChanged,
@@ -122,7 +123,8 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
+        Self::DocumentChanged,
         Self::WebsocketReady,
         Self::FileClosed,
         Self::SettingsChanged,
@@ -142,6 +144,7 @@ impl EventKind {
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::DocumentChanged => "document-changed",
             Self::WebsocketReady => "websocket-ready",
             Self::FileClosed => "file-closed",
             Self::SettingsChanged => "settings-changed",
@@ -230,6 +233,24 @@ pub struct InputMode {
     pub sub: Option<String>,
 }
 
+/// One UTF-16 replacement in a locally edited editor document.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct DocumentTextChange {
+    pub from: u32,
+    pub to: u32,
+    pub insert: String,
+}
+
+/// Local changes accepted by the editor's shared document model.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentChanged {
+    pub path: String,
+    pub base_version: u64,
+    pub version: u64,
+    pub changes: Vec<DocumentTextChange>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct WebsocketReady {
@@ -257,6 +278,7 @@ pub struct WebSocketBatch {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum WorkbenchEvent {
+    DocumentChanged(DocumentChanged),
     WebsocketReady(WebsocketReady),
     RunExited(crate::RunExited),
     TerminalExited(crate::TerminalExited),
@@ -278,6 +300,7 @@ pub enum WorkbenchEvent {
 impl WorkbenchEvent {
     pub fn kind(&self) -> EventKind {
         match self {
+            Self::DocumentChanged(_) => EventKind::DocumentChanged,
             Self::WebsocketReady(_) => EventKind::WebsocketReady,
             Self::RunExited(_) => EventKind::RunExited,
             Self::TerminalExited(_) => EventKind::TerminalExited,
@@ -504,6 +527,18 @@ pub fn net_capability(url: &str) -> Result<ide_extension::Capability, String> {
     }
 }
 
+/// The grant a WebSocket URL requires: the same as its `https`/`http` counterpart.
+pub fn websocket_capability(url: &str) -> Result<ide_extension::Capability, String> {
+    let mut parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
+    let scheme = match parsed.scheme() {
+        "wss" => "https",
+        "ws" => "http",
+        other => return Err(format!("unsupported WebSocket scheme {other:?}")),
+    };
+    parsed.set_scheme(scheme).map_err(|()| "invalid WebSocket URL".to_owned())?;
+    net_capability(parsed.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -538,6 +573,15 @@ mod tests {
             assert_eq!(net_host(url).unwrap(), host);
         }
         assert_ne!(net_host("https://аpi.example/").unwrap(), net_host("https://api.example/").unwrap());
+        assert_eq!(
+            websocket_capability("wss://Collab.example.com/socket?room=1").unwrap(),
+            ide_extension::Capability::Net("collab.example.com".into())
+        );
+        assert_eq!(
+            websocket_capability("ws://localhost:9000/").unwrap(),
+            ide_extension::Capability::Net("localhost".into())
+        );
+        assert!(websocket_capability("https://example.com/").is_err());
         assert!(net_host("file:///etc/passwd").is_err());
         assert!(net_host("example.com").is_err());
         assert!(net_host("https://*.example.com/").is_err());

@@ -43,8 +43,6 @@ pub enum ConnectError {
 
 struct Connection {
     plugin: String,
-    #[allow(dead_code, reason = "read by document subscriptions (#2610)")]
-    project: String,
     outgoing: Arc<Inbox>,
     incoming: Arc<Inbox>,
     wake: Notify,
@@ -85,7 +83,7 @@ impl WebSocketHub {
     pub async fn connect(
         &self,
         plugin: &str,
-        project: &str,
+        _project: &str,
         url: &str,
         headers: &[(String, String)],
         subprotocol: &str,
@@ -146,7 +144,6 @@ impl WebSocketHub {
             let (stop, stopped) = watch::channel(false);
             let connection = Arc::new(Connection {
                 plugin: plugin.to_owned(),
-                project: project.to_owned(),
                 outgoing: Arc::new(Inbox::new(MAX_MESSAGES, MAX_BYTES, MAX_FRAME)),
                 incoming: Arc::new(Inbox::new(MAX_MESSAGES, MAX_BYTES, MAX_FRAME)),
                 wake: Notify::new(),
@@ -223,13 +220,6 @@ impl WebSocketHub {
         }
     }
 
-    /// Returns the project captured when this plugin opened the resource.
-    /// Consumers use this instead of accepting a project selected by plugin code.
-    #[allow(dead_code, reason = "read by document subscriptions (#2610)")]
-    pub fn project(&self, plugin: &str, id: ConnectionId) -> Result<String, String> {
-        Ok(self.connection(plugin, id)?.project.clone())
-    }
-
     fn connection(&self, plugin: &str, id: ConnectionId) -> Result<Arc<Connection>, String> {
         self.0
             .connections
@@ -269,7 +259,11 @@ impl WebSocketHub {
 
 fn validate_url(url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|_| "invalid WebSocket URL")?;
-    let loopback = parsed.host_str().is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"));
+    // `host_str` keeps an IPv6 address in brackets.
+    let loopback = parsed.host_str().is_some_and(|host| {
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    });
     if parsed.scheme() != "wss" && !(parsed.scheme() == "ws" && loopback) {
         return Err("WebSocket requires WSS outside loopback".into());
     }
@@ -455,7 +449,6 @@ mod tests {
         let (stop, _) = watch::channel(false);
         let connection = Arc::new(Connection {
             plugin: "plugin".into(),
-            project: "/project".into(),
             outgoing: Arc::new(Inbox::new(1, MAX_BYTES, MAX_FRAME)),
             incoming: Arc::new(Inbox::new(1, MAX_BYTES, MAX_FRAME)),
             wake: Notify::new(),
@@ -475,6 +468,8 @@ mod tests {
         assert!(validate_url("wss://relay.example/socket").is_ok());
         assert!(validate_url("wss://relay.example/socket?channel=main&token=opaque").is_ok());
         assert!(validate_url("ws://127.0.0.1:9000/socket").is_ok());
+        assert!(validate_url("ws://[::1]:9000/socket").is_ok());
+        assert!(validate_url("ws://localhost:9000/socket").is_ok());
         assert!(validate_url("ws://relay.example/socket").unwrap_err().contains("WSS"));
         assert!(validate_url("wss://token@relay.example/socket").is_err());
         assert!(validate_url("wss://relay.example/socket#fragment").is_err());

@@ -20,6 +20,18 @@ rejects the new frame explicitly instead of reporting it as sent.
 
 Declare `activation = ["on-event:websocket-ready"]` and handle that event to
 call `drain` without polling. Inbound frames are plugin protocol data.
+
+## Background document edits
+
+`host::subscribe_paths("document-changed", &["src/**/*.md"])` delivers each
+committed local edit to an open project document as versioned UTF-16
+replacements (`DocumentChanged::text_edits` converts them to ranges). It needs
+`events`, `project.read` and `editor.read`, and is only available for named
+paths. `Project::document` and `Project::apply_document_edits` read and edit an
+open document from a background event; applying against a stale version fails
+without changing the editor, so the plugin can merge or surface the conflict.
+These edits do not enter the local Undo history and are not re-emitted as
+`document-changed` events.
 `drain` returns a `closed` flag with the final queued frames; the handle is
 removed after that drain, or after a short expiry if the plugin abandons it.
 

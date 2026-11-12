@@ -36,6 +36,12 @@ const MAX_PER_PASS = 40;
 const CONCURRENCY = 4;
 /** Lines above/below the viewport that are counted too, so scrolling feels instant. */
 const MARGIN_LINES = 10;
+/**
+ * Passes that ask again for a count that came back incomplete. Servers call an empty answer
+ * incomplete while any of their progress runs, and jdtls reports progress for a few
+ * milliseconds around many requests without settling afterwards.
+ */
+const INCOMPLETE_RETRIES = 3;
 const usagesBackoff = featureBackoff();
 
 export interface LensTarget {
@@ -116,6 +122,8 @@ class UsagesLensPlugin {
   private pending = new Set<RequestId>();
   /** Keys whose count came back incomplete (the server was indexing): not shown, asked again once it settles. */
   private incomplete = new Set<string>();
+  /** Times each key's count came back incomplete, for the passes that ask again before it settles. */
+  private retries = new Map<string, number>();
   private unsubscribe: () => void;
   private offReady: () => void;
   private offSettled: () => void;
@@ -131,11 +139,13 @@ class UsagesLensPlugin {
     this.offReady = onLspRefresh("codeLens", () => {
       this.cache.clear();
       this.incomplete.clear();
+      this.retries.clear();
       this.refresh();
     });
     this.offSettled = onServerSettled(() => {
       if (!this.incomplete.size) return;
       this.incomplete.clear();
+      this.retries.clear();
       this.refresh();
     });
     this.offBlame = onBlameInvalidated(() => this.refresh());
@@ -176,6 +186,7 @@ class UsagesLensPlugin {
     if (this.cacheDoc !== text) {
       this.cache = new Map();
       this.incomplete = new Set();
+      this.retries = new Map();
       this.cacheDoc = text;
     }
     try {
@@ -193,6 +204,7 @@ class UsagesLensPlugin {
       const key = (t: LensTarget) => `${t.line}:${t.col}:${t.name}`;
       const todo = usages ? visible.filter((t) => !this.cache.has(key(t)) && !this.incomplete.has(key(t))) : [];
       let unavailable = false;
+      let retry = false;
       for (let i = 0; i < todo.length && !unavailable; i += CONCURRENCY) {
         await Promise.all(
           todo.slice(i, i + CONCURRENCY).map(async (t) => {
@@ -213,8 +225,13 @@ class UsagesLensPlugin {
                 );
               }, wanted);
               if (wanted()) {
-                if (incomplete) this.incomplete.add(key(t));
-                else this.cache.set(key(t), refs.length);
+                if (!incomplete) this.cache.set(key(t), refs.length);
+                else {
+                  const tries = (this.retries.get(key(t)) ?? 0) + 1;
+                  this.retries.set(key(t), tries);
+                  if (tries > INCOMPLETE_RETRIES) this.incomplete.add(key(t));
+                  else retry = true;
+                }
               }
             } catch (e) {
               if (wanted() && isUnavailable(e)) unavailable = true;
@@ -226,6 +243,7 @@ class UsagesLensPlugin {
         if (!wanted()) return;
       }
       if (unavailable) usagesBackoff.mark(doc.doc);
+      if (retry) this.schedule();
       const lines = await blame;
       if (!wanted()) return;
       const lenses: CodeLens[] = [];

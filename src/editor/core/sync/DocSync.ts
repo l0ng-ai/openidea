@@ -36,6 +36,8 @@ export interface SyncTransport {
 export interface SyncHost {
   /** Apply a change set (in local-text coordinates) to every view, annotated as remote. */
   applyRemote(changes: ChangeSet, workspaceEdit?: boolean): void;
+  /** A locally produced batch accepted by the versioned backend. */
+  onLocalCommitted?(baseVersion: number, version: number, changes: ChangeSet): void;
   /** Called after a hard resync discarded local changes the backend never saw. */
   onDiscarded?(reason: unknown): void;
   /** Non-recoverable transport errors (logged by default). */
@@ -190,12 +192,15 @@ export class DocSync {
   }
 
   private onAck(version: number) {
+    const baseVersion = this.serverVersion;
+    const committed = this.inflight!;
     this.confirmed = this.inflight!.apply(this.confirmed);
     this.serverVersion = version;
     this.inflight = null;
     this.inflightStale = false;
     this.rebases = 0;
     this.acked++;
+    this.host.onLocalCommitted?.(baseVersion, version, committed);
     this.drainRemote();
     this.flush();
     this.resolveIdle();

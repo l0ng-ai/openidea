@@ -340,6 +340,11 @@ function trackWorkbenchEvents(): () => void {
     if (e.type === "inputModeChanged" && wanted.has("input-mode-changed"))
       post({ kind: "inputModeChanged", value: { path: e.path, mode: e.mode, sub: e.sub } });
     if (e.type === "docSaved" && wanted.has("file-saved")) post({ kind: "fileSaved", value: e.path });
+    if (e.type === "docChanged" && wanted.has("document-changed"))
+      post({
+        kind: "documentChanged",
+        value: { path: e.path, baseVersion: e.baseVersion, version: e.version, changes: e.changes },
+      });
   });
   const offActions = onActionExecuted((id, _arg, source) => {
     if (!wanted.has("action-performed")) return;
@@ -533,6 +538,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       return true;
     case "subscriptionsChanged":
       refreshEventKinds();
+      return true;
+    case "websocketReady":
+      post({ kind: "websocketReady", value: { pluginId: e.pluginId, connection: e.connection } });
       return true;
     case "viewChanged":
       bumpView(e.pluginId, e.view);

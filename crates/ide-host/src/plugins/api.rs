@@ -111,8 +111,9 @@ pub trait PluginWorkspace: Send + Sync {
     /// Version and text of the open document at `path`.
     fn document(&self, path: &Path) -> Option<(u64, String)>;
     /// Applies `edits` to the open document at `path` if it is still at
-    /// `version`, as one change (one undo step in the editor).
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit]) -> Result<u64, HostError>;
+    /// `version`, as one change: one undo step in the editor, or none for a
+    /// `background` caller (a plugin event rather than a command).
+    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit], background: bool) -> Result<u64, HostError>;
     /// Code from the project may run (git hooks and config on fetch).
     fn trusted(&self, root: &Path) -> bool;
     /// Root of the project open in `window`.
@@ -2051,13 +2052,14 @@ impl HostApi for PluginApi {
 
     fn apply_edits(
         &self,
-        _client: Option<&str>,
+        client: Option<&str>,
         path: &Path,
         version: u64,
         edits: Vec<TextEdit>,
     ) -> Result<u64, HostError> {
         let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("no project is open".into()))?;
-        workspace.apply_edits(path, version, &edits)
+        // Edits from a window's command are undoable; `editor.apply-edits-at` from a background event isn't.
+        workspace.apply_edits(path, version, &edits, client.is_none())
     }
 
     fn storage_get(&self, key: &str) -> Result<Option<String>, HostError> {
@@ -3266,11 +3268,16 @@ impl PluginWorkspace for HostWorkspace {
         Some((u64::from(snap.version), snap.text))
     }
 
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit]) -> Result<u64, HostError> {
+    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit], background: bool) -> Result<u64, HostError> {
         let (project, doc) =
             self.open_document(path).ok_or_else(|| HostError::NotFound(format!("{} is not open", path.display())))?;
         let version = u32::try_from(version).map_err(|_| HostError::Stale)?;
-        match project.documents.apply_edits_at(doc, version, edits) {
+        let applied = if background {
+            project.documents.apply_background_edits_at(doc, version, edits)
+        } else {
+            project.documents.apply_edits_at(doc, version, edits)
+        };
+        match applied {
             Ok(Some(v)) => Ok(u64::from(v)),
             Ok(None) => Err(HostError::Stale),
             Err(e) if e.kind == ide_core::error::ErrorKind::InvalidInput => Err(HostError::Invalid(e.message)),
@@ -3600,7 +3607,7 @@ mod tests {
         fn document(&self, _: &Path) -> Option<(u64, String)> {
             None
         }
-        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit], _: bool) -> Result<u64, HostError> {
             Err(HostError::Stale)
         }
         fn trusted(&self, _: &Path) -> bool {
@@ -3664,7 +3671,7 @@ mod tests {
         fn document(&self, _: &Path) -> Option<(u64, String)> {
             None
         }
-        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit], _: bool) -> Result<u64, HostError> {
             Err(HostError::Stale)
         }
         fn trusted(&self, _: &Path) -> bool {
@@ -4125,7 +4132,7 @@ mod workbench_tests {
         fn document(&self, _: &Path) -> Option<(u64, String)> {
             self.text.clone().map(|s| (1, s))
         }
-        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit], _: bool) -> Result<u64, HostError> {
             Err(HostError::Stale)
         }
         fn trusted(&self, _: &Path) -> bool {

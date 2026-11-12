@@ -114,8 +114,9 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "tomcat":
       return "tomcat";
     case "npm":
-    case "bun":
       return "file-npm";
+    case "bun":
+      return "file-bun";
     case "deno":
       return "file-ts";
     case "cargo":

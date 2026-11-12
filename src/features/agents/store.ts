@@ -678,6 +678,22 @@ export function openTaskInEditorLocation(task: string) {
   openTask(task);
 }
 
+/**
+ * Closes the agent task tab that is active in the editor; the task keeps running and stays in the
+ * Agents tool window. `null` when the active tab isn't an agent task, `false` when closing was cancelled.
+ */
+export function closeActiveTask(): Promise<boolean> | null {
+  const active = editorService().activeInput?.();
+  if (active?.kind !== SESSION_KIND) return null;
+  return editorService().closeInput?.(active.key) ?? Promise.resolve(false);
+}
+
+/** Close Agent Task, then the New Task page, unless closing was cancelled. */
+export async function closeAndNewTask() {
+  if ((await closeActiveTask()) === false) return;
+  openHome();
+}
+
 /** Opens the New Task page; `prompt` pre-fills it. */
 export function openHome(prompt?: string) {
   const project = useProject.getState().project;

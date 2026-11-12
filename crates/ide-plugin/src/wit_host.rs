@@ -838,6 +838,52 @@ impl workspace::HostProject for StoreData {
 }
 
 impl editor::Host for StoreData {
+    fn document_at(&mut self, project: Resource<ProjectRes>, path: String) -> Fallible<editor::Document> {
+        if let Err(error) = self.require(Capability::ProjectRead).and_then(|_| self.require(Capability::EditorRead)) {
+            return Ok(Err(error));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        let path = match self.resolve_in_project(&root, &path) {
+            Ok(path) => path,
+            Err(error) => return Ok(Err(wit::Error::Invalid(error))),
+        };
+        Ok(match self.host.document(&path) {
+            Some((version, text)) => Ok(editor::Document { version, text }),
+            None => Err(wit::Error::NotFound(format!("{} is not open", path.display()))),
+        })
+    }
+
+    fn apply_edits_at(
+        &mut self,
+        project: Resource<ProjectRes>,
+        path: String,
+        version: u64,
+        edits: Vec<wit::TextEdit>,
+    ) -> Fallible<u64> {
+        if let Err(error) = self.require(Capability::ProjectRead).and_then(|_| self.require(Capability::EditorWrite)) {
+            return Ok(Err(error));
+        }
+        if edits.len() > MAX_EDITS {
+            return Ok(Err(wit::Error::Invalid(format!("more than {MAX_EDITS} edits"))));
+        }
+        if edits.iter().map(|edit| edit.text.len()).sum::<usize>() > crate::runtime::MAX_TEXT * 8 {
+            return Ok(Err(wit::Error::Invalid("edits too large".into())));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        let path = match self.resolve_in_project(&root, &path) {
+            Ok(path) => path,
+            Err(error) => return Ok(Err(wit::Error::Invalid(error))),
+        };
+        let edits = edits
+            .into_iter()
+            .map(|edit| ide_core::TextEdit {
+                range: ide_core::Range::new(pos(edit.range.start), pos(edit.range.end)),
+                new_text: edit.text,
+            })
+            .collect();
+        Ok(self.host.apply_edits(None, &path, version, edits).map_err(to_wit))
+    }
+
     fn open_editors(&mut self) -> Fallible<Vec<editor::OpenEditor>> {
         if let Err(e) = self.require(Capability::EditorRead).and_then(|_| self.require_window()) {
             return Ok(Err(e));
@@ -1213,6 +1259,11 @@ impl events::Host for StoreData {
         {
             return Ok(Err(to_wit(e)));
         }
+        if kind == EventKind::DocumentChanged {
+            return Ok(Err(wit::Error::Invalid(
+                "document-changed is delivered only for paths named with subscribe-paths".into(),
+            )));
+        }
         if let Some(cap) = kind.capability()
             && let Err(e) = self.require(cap)
         {
@@ -1225,6 +1276,14 @@ impl events::Host for StoreData {
     fn subscribe_paths(&mut self, kind: String, globs: Vec<String>) -> Fallible<()> {
         if let Err(e) = self.require(Capability::Events) {
             return Ok(Err(e));
+        }
+        if kind == EventKind::DocumentChanged.name() {
+            if let Err(e) = self.host.require_api(&kind, 6) {
+                return Ok(Err(to_wit(e)));
+            }
+            if let Err(e) = self.require(Capability::ProjectRead).and_then(|_| self.require(Capability::EditorRead)) {
+                return Ok(Err(e));
+            }
         }
         Ok(self.host.subscribe_paths(&kind, globs).map_err(to_wit))
     }
@@ -1439,7 +1498,7 @@ impl net::Host for StoreData {
         project: Resource<ProjectRes>,
         req: net::WebsocketRequest,
     ) -> Fallible<Resource<WebSocketRes>> {
-        let capability = match net_capability(&req.url) {
+        let capability = match crate::types::websocket_capability(&req.url) {
             Ok(capability) => capability,
             Err(error) => return Ok(Err(wit::Error::Invalid(error))),
         };

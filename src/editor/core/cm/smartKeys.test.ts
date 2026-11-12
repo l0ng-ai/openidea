@@ -272,6 +272,8 @@ describe("smart angle brackets", () => {
   it("pairs capitalized type positions in Kotlin (stream parser)", () => {
     pair("kotlin", KOTLIN, "class A {\n  val x: List|\n}", "class A {\n  val x: List<|>\n}");
     pair("kotlin", KOTLIN, "class Box|", "class Box<|>");
+    pair("kotlin", KOTLIN, "class Box  |", "class Box  <|>");
+    pair("kotlin", KOTLIN, "val box = Bo|x", "val box = Bo<|x");
     // Kotlin puts a function's type parameters right after `fun`.
     pair("kotlin", KOTLIN, "fun |", "fun <|>");
     // Lowercase values are comparisons, not types.
