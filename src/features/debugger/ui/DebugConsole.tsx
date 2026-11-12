@@ -15,6 +15,8 @@ import { EmptyState, IconButton, showContextMenu, T, type MenuItem } from "@/ui"
 import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { useProject } from "@/platform/project";
+import { resolveMonoFont } from "@/platform/fonts";
 import { spanStyle } from "@/ui/ansi";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
 import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions, type FindResult } from "@/ui/consoleFind";
@@ -117,6 +119,12 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const [follow, setFollow] = useState(true);
   const stick = useRef(true);
   stick.current = follow;
+  // The debug console uses the same font as the Run console: Tools › Terminal ›
+  // Font (which can follow Editor › Font).
+  const terminalFont = useWorkflowSettings((s) => s.terminal);
+  const editorFont = useProject((s) => s.settings?.editor);
+  const consoleFont = resolveMonoFont(terminalFont, editorFont);
+  const rowHeight = Math.max(16, Math.round(consoleFont.size * 1.5));
   // Settings › Console › Use soft wraps is the default; the toggle overrides it for this console.
   const defaultWrap = useWorkflowSettings((s) => s.console.softWrap);
   const [wrapOverride, setWrapOverride] = useState<boolean | null>(null);
@@ -140,7 +148,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const virtualizer = useVirtualizer({
     count: lines?.length ?? 0,
     getScrollElement: () => scroller.current,
-    estimateSize: () => 18,
+    estimateSize: () => rowHeight,
     overscan: 30,
     getItemKey: (i) => lines?.[i]?.id ?? i,
   });
@@ -429,6 +437,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
         <div
           ref={scroller}
           className={clsx(styles.consoleOutput, !softWrap && styles.noWrap)}
+          style={{ fontFamily: consoleFont.family, fontSize: `${consoleFont.size}px`, lineHeight: `${rowHeight}px` }}
           onScroll={(e) => {
             if (programmatic.current) return;
             const el = e.currentTarget;
