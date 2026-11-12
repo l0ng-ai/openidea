@@ -4925,6 +4925,39 @@ async fn scoped_java_usages_search_the_sources_unless_libraries_are_asked_for() 
     assert!(seen.lock().is_empty());
 }
 
+/// jdtls' searches wait for its index themselves, and it reports background work (builds,
+/// validation) for long stretches: a method nothing calls is answered at once meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_usages_of_an_unused_method_do_not_wait_for_background_work() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    s.respond("workspace/executeCommand", json!([]));
+    let (doc, _) = h.open("a.java", "void unused() {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    s.peer()
+        .notify("$/progress", json!({ "token": "build", "value": { "kind": "begin", "title": "Building" } }))
+        .unwrap();
+    h.wait_status("jdtls", ServerStatus::Busy).await;
+    // Until the project is imported, finding nothing may only mean it is not indexed yet.
+    let refs = h.mgr.references(doc, Pos::new(0, 6), true, false, Default::default()).await.unwrap();
+    assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
+    s.peer().notify("language/status", json!({"type": "ServiceReady", "message": "ServiceReady"})).unwrap();
+    for _ in 0..200 {
+        let refs = h.mgr.references(doc, Pos::new(0, 6), true, false, Default::default()).await.unwrap();
+        if refs.incomplete.is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let started = std::time::Instant::now();
+    let refs = h.mgr.references(doc, Pos::new(0, 6), true, true, Default::default()).await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2), "waited {:?}", started.elapsed());
+    assert!(refs.locations.is_empty());
+    assert_eq!(refs.incomplete, None);
+}
+
 /// A library method's usages in the sources are shown before the dependencies and the JDK
 /// are searched, which takes seconds; scope widening searches the sources alone again.
 #[tokio::test(flavor = "multi_thread")]
