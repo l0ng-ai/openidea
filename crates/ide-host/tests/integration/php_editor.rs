@@ -428,3 +428,26 @@ async fn blade_view_variables_follow_controller_body_edits() {
     let found = s.goto(controller, Pos::new(name.line, name.col + 2)).await;
     assert!(s.lands_on(&found, "resources/views/posts/show.blade.php", 0), "{found:?}");
 }
+
+/// An action whose edit creates a file reports it, so the editor opens it
+/// (Generate › JSON resource from a model).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_an_action_creates_is_reported_for_the_editor_to_open() {
+    let s = Session::start("laravel-app", Some("laravel-stubs")).await;
+    let post = s.open("app/Models/Post.php").await;
+    let at = s.pos(post, "public function getRouteKeyName", "public").await;
+    let range = ide_core::Range::new(at, at);
+    let actions = ops::lsp::lsp_code_actions(&s.host, WINDOW, post, range, vec![]).await.unwrap();
+    let action = actions
+        .into_iter()
+        .find(|action| action.title.contains("JSON resource"))
+        .expect("Generate JSON resource is offered");
+    let action = match (&action.edit, &action.command) {
+        (None, None) => ops::lsp::lsp_resolve_code_action(&s.host, WINDOW, post, action).await.unwrap(),
+        _ => action,
+    };
+    let applied = ops::lsp::lsp_execute_code_action(&s.host, WINDOW, RequestId(9), post, action, vec![]).await.unwrap();
+    let resource = s.path("app/Http/Resources/PostResource.php");
+    assert!(resource.is_file());
+    assert!(applied.created.iter().any(|path| **path == *resource), "{:?}", applied.created);
+}

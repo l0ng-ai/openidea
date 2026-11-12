@@ -1127,7 +1127,11 @@ async fn laravel_create_controller_quick_fix() {
         ops::lsp::lsp_execute_code_action(&host, "main", ide_core::RequestId(9), doc.id, create.clone(), vec![])
             .await
             .unwrap();
-    assert!(applied.created.is_empty(), "{applied:?}");
+    // The created file is listed; the editor goes to `open` (its method) first.
+    assert_eq!(
+        applied.created.iter().map(|path| PathBuf::from(path.clone())).collect::<Vec<_>>(),
+        [controller.clone()]
+    );
     let open = applied.open.expect("the location to open");
     assert_eq!(PathBuf::from(open.path), controller);
     let created = std::fs::read_to_string(&controller).unwrap();

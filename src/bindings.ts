@@ -1722,8 +1722,9 @@ export type AppearanceSettings = {
 };
 
 /**
- *  What applying a code action did: the files its command reports created,
- *  and where the editor opens next ([`CodeAction::open`]).
+ *  What applying a code action did: the files its edit creates and those its
+ *  command reports created, and where the editor opens next
+ *  ([`CodeAction::open`]).
  */
 export type AppliedCodeAction = {
 	created: IpcPath[],

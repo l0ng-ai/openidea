@@ -209,8 +209,9 @@ pub struct CodeAction {
     pub open: Option<Location>,
 }
 
-/// What applying a code action did: the files its command reports created,
-/// and where the editor opens next ([`CodeAction::open`]).
+/// What applying a code action did: the files its edit creates and those its
+/// command reports created, and where the editor opens next
+/// ([`CodeAction::open`]).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AppliedCodeAction {

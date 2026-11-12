@@ -860,6 +860,17 @@ pub async fn lsp_execute_code_action(
         }
         let edited = action.edit.is_some();
         let open = action.open;
+        // Files the edit itself creates (Generate's JSON resource), for the
+        // editor to open as for those a command creates.
+        let made: Vec<ide_core::IpcPath> = action
+            .edit
+            .iter()
+            .flat_map(|edit| &edit.files)
+            .filter_map(|file| match file {
+                ide_core::FileEdit::Create { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
         if let Some(edit) = action.edit {
             let documents = project.documents.clone();
             tokio::task::spawn_blocking(move || apply_edit(&documents, &edit))
@@ -879,6 +890,7 @@ pub async fn lsp_execute_code_action(
                 .collect(),
             None => Vec::new(),
         };
+        let created = made.into_iter().chain(created).collect();
         Ok(AppliedCodeAction { created, open })
     }
     .await;
