@@ -404,6 +404,68 @@ pub fn guards(config: &ConfigKeys) -> Vec<AuthEntry> {
     auth_entries(config, "auth.guards", "driver", "web")
 }
 
+/// The user model of each guard of `config/auth.php`, and the default
+/// guard: what `Auth::user()`, `Auth::guard('admin')->user()` and
+/// `$request->user()` return.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UserModels {
+    /// `auth.defaults.guard`.
+    pub default_guard: Option<String>,
+    /// `(guard, model)`: the `model` of the guard's provider, fully
+    /// qualified.
+    pub guards: Vec<(String, String)>,
+}
+
+impl UserModels {
+    /// The model of guard `guard`, else of the default guard.
+    pub fn model(&self, guard: Option<&str>) -> Option<&str> {
+        let guard = guard.filter(|guard| !guard.is_empty()).or(self.default_guard.as_deref())?;
+        self.guards.iter().find(|(name, _)| name == guard).map(|(_, model)| model.as_str())
+    }
+}
+
+/// The user models of the guards (`auth.guards.*.provider`, then
+/// `auth.providers.*.model`: `Foo::class` resolved with the imports of
+/// `config/auth.php`, read with `text_of`, or a class-name string, or
+/// either as the default of `env('AUTH_MODEL', …)`). Without
+/// `config/auth.php`, Laravel's own: the `web` guard and `App\Models\User`.
+pub fn user_models(config: &ConfigKeys, text_of: &dyn Fn(&Path) -> Option<String>) -> UserModels {
+    if config.get("auth.guards").is_none() {
+        return UserModels {
+            default_guard: Some("web".to_owned()),
+            guards: vec![("web".to_owned(), "App\\Models\\User".to_owned())],
+        };
+    }
+    let default_guard = config.string_value("auth.defaults.guard").or_else(|| Some("web".to_owned()));
+    let mut files: Vec<(PathBuf, Option<FileNames>, usize)> = Vec::new();
+    let mut guards = Vec::new();
+    for guard in config.children(Some("auth.guards")) {
+        let Some(provider) = config.string_value(&format!("{}.provider", guard.key)) else { continue };
+        let Some(entry) = config.get(&format!("auth.providers.{provider}.model")) else { continue };
+        let Some(mut written) = entry.value.as_deref().map(|value| value.trim().to_owned()) else { continue };
+        if let Some(call) = written.strip_prefix("env(").or_else(|| written.strip_prefix("\\env(")) {
+            let open = written.len() - call.len() - 1;
+            let Some(default) = call_arguments(&written, open).and_then(|args| args.get(1).cloned()) else { continue };
+            written = default;
+        }
+        // The names of the file, resolved once; at its end every import
+        // is in scope.
+        if !files.iter().any(|(path, ..)| *path == entry.path) {
+            let names = text_of(&entry.path).map(|text| {
+                let parsed = ParsedFile::parse(&entry.path.to_string_lossy(), text.as_str());
+                (FileNames::resolve(&parsed), text.len())
+            });
+            let (names, end) = names.map_or((None, 0), |(names, end)| (Some(names), end));
+            files.push((entry.path.clone(), names, end));
+        }
+        let Some((_, Some(names), end)) = files.iter().find(|(path, ..)| *path == entry.path) else { continue };
+        if let Some(model) = class_name(names, &written, *end) {
+            guards.push((guard.segment().to_owned(), model));
+        }
+    }
+    UserModels { default_guard, guards }
+}
+
 /// The password brokers (`auth.passwords.*`, with their providers).
 pub fn brokers(config: &ConfigKeys) -> Vec<AuthEntry> {
     auth_entries(config, "auth.passwords", "provider", "users")

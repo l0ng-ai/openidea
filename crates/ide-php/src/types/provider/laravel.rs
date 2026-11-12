@@ -94,6 +94,10 @@ const SUPPORT_COLLECTION: &str = "Illuminate\\Support\\Collection";
 const FACTORY: &str = "Illuminate\\Database\\Eloquent\\Factories\\Factory";
 const CARBON: &str = "Illuminate\\Support\\Carbon";
 const CARBON_IMMUTABLE: &str = "Carbon\\CarbonImmutable";
+const AUTH_FACTORY: &str = "Illuminate\\Contracts\\Auth\\Factory";
+const GUARD: &str = "Illuminate\\Contracts\\Auth\\Guard";
+const AUTHENTICATABLE: &str = "Illuminate\\Contracts\\Auth\\Authenticatable";
+const HTTP_REQUEST: &str = "Illuminate\\Http\\Request";
 
 /// Laravel's castable classes and the type of the attribute they cast to.
 const CAST_CLASSES: &[(&str, &str)] = &[
@@ -330,6 +334,86 @@ impl LaravelProvider {
         }
     }
 
+    /// `Auth::user()`, `auth()->user()`, `Auth::guard('admin')->user()` and
+    /// `$request->user()` (`user('admin')`): the model of the guard's
+    /// provider in `config/auth.php` (the default guard's without a name),
+    /// in place of `Authenticatable` (`null` stays). `guard('admin')` gives
+    /// the guard with its name as a generic argument, for its `user()`.
+    fn auth_user(
+        resolver: &Resolver<'_>,
+        target: &Type,
+        name: &str,
+        string: &str,
+        core: &Type,
+        context: &Context,
+    ) -> Option<Type> {
+        if name.eq_ignore_ascii_case("guard") {
+            if string.is_empty() || !Self::is_a(resolver, target, context, &[AUTH_FACTORY]) {
+                return None;
+            }
+            return Self::named_guard(resolver, core, string);
+        }
+        if !name.eq_ignore_ascii_case("user") {
+            return None;
+        }
+        let guard = if Self::is_a(resolver, target, context, &[HTTP_REQUEST]) {
+            string
+        } else if Self::is_a(resolver, target, context, &[AUTH_FACTORY, GUARD]) {
+            target
+                .members()
+                .iter()
+                .find_map(|member| match member {
+                    Type::Named { args, .. } => match args.as_slice() {
+                        [Type::LiteralString(guard)] => Some(guard.as_str()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .unwrap_or_default()
+        } else {
+            return None;
+        };
+        let models = resolver.user_models();
+        let model = resolver.class_model(models.model(Some(guard))?)?;
+        let user = Type::named(model.fqn());
+        if *core == Type::Mixed {
+            return Some(Type::union([user, Type::Null]));
+        }
+        let mut replaced = false;
+        let ty = core.map(&mut |ty| match ty {
+            Type::Named { fqn, .. } if fqn.trim_start_matches('\\').eq_ignore_ascii_case(AUTHENTICATABLE) => {
+                replaced = true;
+                Some(user.clone())
+            }
+            _ => None,
+        });
+        replaced.then_some(ty)
+    }
+
+    /// The guards among the members of `ty` (what `guard('admin')` or
+    /// `auth('admin')` returns), with the guard's name as their generic
+    /// argument; Laravel's guard contract when there are none.
+    fn named_guard(resolver: &Resolver<'_>, ty: &Type, guard: &str) -> Option<Type> {
+        let name = || vec![Type::LiteralString(guard.to_owned())];
+        let guards: Vec<Type> = ty
+            .members()
+            .iter()
+            .filter_map(|member| match member {
+                Type::Named { fqn, .. }
+                    if resolver.class_model(fqn).is_some_and(|model| model.is_subclass_of(GUARD)) =>
+                {
+                    Some(Type::generic(fqn, name()))
+                }
+                _ => None,
+            })
+            .collect();
+        if guards.is_empty() {
+            resolver.class_model(GUARD)?;
+            return Some(Type::generic(GUARD, name()));
+        }
+        Some(Type::union(guards))
+    }
+
     /// The `make()` of a container: the binding a string names, else the
     /// class an argument names (`Foo::class`).
     fn make(resolver: &Resolver<'_>, class: &str, string: &str) -> Option<Type> {
@@ -357,6 +441,9 @@ impl LaravelProvider {
             .then(|| Self::facade_service(resolver, receiver, context))
             .flatten();
         let target = facade.as_ref().unwrap_or(receiver);
+        if let Some(ty) = Self::auth_user(resolver, target, name, string, core, context) {
+            return Some(ty);
+        }
         if is_make(name)
             && Self::is_a(resolver, target, context, &[CONTAINER, CONTAINER_CLASS])
             && let Some(made) = Self::make(resolver, class, string)
@@ -1370,6 +1457,12 @@ impl TypeProvider for LaravelProvider {
         match site.kind {
             CallKind::Function => {
                 let short = short_name(site.name);
+                // `auth('admin')`: the guard, with its name.
+                if short.eq_ignore_ascii_case("auth") && !string.is_empty() {
+                    let next = (site.next)();
+                    let payload = format!("auth:{}:{string}", site.name);
+                    return Some(provided(self.key(), payload, vec![next.clone()], next));
+                }
                 if !short.eq_ignore_ascii_case("app") && !short.eq_ignore_ascii_case("resolve") {
                     return None;
                 }
@@ -1434,6 +1527,13 @@ impl TypeProvider for LaravelProvider {
                     return short_name(fqn).eq_ignore_ascii_case("app").then(|| Type::named(APPLICATION));
                 }
                 Self::make(resolver, class, string)
+            }
+            "auth" => {
+                let (fqn, guard) = rest.split_once(':')?;
+                if fqn.contains('\\') && resolver.declarations().function(fqn).is_some() {
+                    return None;
+                }
+                Self::named_guard(resolver, args.first()?, guard)
             }
             "call" => {
                 let [name, class, counted, string] = rest.splitn(4, ':').collect::<Vec<_>>()[..] else {

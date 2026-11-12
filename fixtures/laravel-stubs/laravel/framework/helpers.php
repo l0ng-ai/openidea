@@ -12,7 +12,7 @@ function resolve($name, array $parameters = []) { return null; }
 /** @return mixed */
 function config($key = null, $default = null) { return null; }
 
-/** @return mixed */
+/** @return \Illuminate\Contracts\Auth\Factory|\Illuminate\Contracts\Auth\Guard|\Illuminate\Contracts\Auth\StatefulGuard */
 function auth($guard = null) { return null; }
 
 /** @return mixed */

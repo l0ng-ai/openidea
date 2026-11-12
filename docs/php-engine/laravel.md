@@ -158,6 +158,8 @@ Password::broker('users');          // brokers of config/auth.php
 
 Abilities complete and resolve in `Gate::allows/denies/authorize`, `$user->can/cannot`, `authorize()`, `@can` and `can:` middleware. A policy is found the way Laravel finds it: registered for the model or a parent class, then `#[UsePolicy]`, then the `Gate::guessPolicyNamesUsing` callback, then the naming conventions. Inherited policy methods count. `Gate::define('x', [PostPolicy::class, 'publish'])` goes to the method.
 
+The authenticated user is the model of the guard's provider in `config/auth.php` (`'model' => User::class`, through the file's imports and `env('AUTH_MODEL', …)`): the default guard's for `Auth::user()`, `auth()->user()` and `$request->user()`, the named guard's for `Auth::guard('admin')->user()`, `auth('admin')->user()` and `$request->user('admin')`. It stays nullable, as Laravel declares it; a guard the configuration doesn't have keeps Laravel's `Authenticatable`. Without `config/auth.php` it is `App\Models\User`.
+
 ### Artisan
 
 - **Run Artisan Command…** lists the project's commands, with their arguments and options.

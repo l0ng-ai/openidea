@@ -541,6 +541,52 @@ fn every_generator_generates_files_that_parse() {
     assert!(failures.is_empty(), "failing generators:\n{}", failures.join("\n"));
 }
 
+/// The authenticated user is the model of the guard's provider in `config/auth.php`: the
+/// default guard's for `Auth::user()`, `auth()->user()` and `$request->user()`, the named
+/// guard's for `Auth::guard('admin')->user()` and `$request->user('admin')`.
+#[test]
+fn the_authenticated_user_is_the_guards_model() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = fixture_app(tmp.path());
+    // The admins are posts here, so the guard's model shows.
+    let auth = root.join("config/auth.php");
+    let config = std::fs::read_to_string(&auth).unwrap();
+    let config = config.replacen(
+        "'model' => App\\Models\\User::class,\n        ],\n    ],",
+        "'model' => Post::class,\n        ],\n    ],",
+        1,
+    );
+    let config = config.replacen("<?php\n", "<?php\n\nuse App\\Models\\Post;\n", 1);
+    // The users' model as Laravel 11 writes it.
+    let config = config.replacen(
+        "'model' => App\\Models\\User::class,",
+        "'model' => env('AUTH_MODEL', App\\Models\\User::class),",
+        1,
+    );
+    assert!(config.contains("=> Post::class"), "{config}");
+    std::fs::write(&auth, config).unwrap();
+    let engine = open_engine(&root, &tmp.path().join("cache"));
+    let text = "<?php\nnamespace App\\Parity;\n\nuse Illuminate\\Http\\Request;\nuse Illuminate\\Support\\Facades\\Auth;\n\nfunction probe(Request $request) {\n    $a = Auth::user();\n    $b = auth()->user();\n    $c = $request->user();\n    $d = Auth::guard('admin')->user();\n    $e = $request->user('admin');\n    $f = Auth::guard('missing')->user();\n    $g = auth('admin')->user();\n}\n";
+    let doc = DocId(5_000);
+    engine.document_opened(doc, &root.join("app/Parity/AuthProbe.php"), 1, text);
+    let type_of = |var: &str| {
+        let at = text.find(&format!("{var} =")).unwrap() + 1;
+        let line = text[..at].matches('\n').count() as u32;
+        let col = (at - text[..at].rfind('\n').map_or(0, |n| n + 1)) as u32;
+        let hover = engine.hover(doc, Pos::new(line, col)).expect("a hover").markdown;
+        hover.lines().find(|line| line.contains(var)).unwrap_or_default().replace(&format!(" {var}"), "")
+    };
+    assert_eq!(type_of("$a"), "?App\\Models\\User");
+    assert_eq!(type_of("$b"), "?App\\Models\\User");
+    assert_eq!(type_of("$c"), "?App\\Models\\User");
+    assert_eq!(type_of("$d"), "?App\\Models\\Post");
+    assert_eq!(type_of("$e"), "?App\\Models\\Post");
+    assert_eq!(type_of("$g"), "?App\\Models\\Post");
+    // A guard the configuration doesn't have: what Laravel declares.
+    assert_eq!(type_of("$f"), "?Illuminate\\Contracts\\Auth\\Authenticatable");
+    engine.shutdown();
+}
+
 /// The checklist's parts that don't depend on the fixture's names, on a real application
 /// with `vendor/` (`LARAVEL_APP_DIR`): the project model, completion of the kinds every app
 /// has values for, and every generator (in memory; nothing is written).

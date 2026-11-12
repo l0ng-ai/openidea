@@ -255,11 +255,18 @@ namespace Illuminate\Auth\Access {
 }
 
 namespace Illuminate\Contracts\Auth {
-    interface Guard {}
+    interface Authenticatable {}
+    interface Guard {
+        /** @return \Illuminate\Contracts\Auth\Authenticatable|null */
+        public function user();
+    }
+    interface Factory {
+        public function guard($name = null);
+    }
 }
 
 namespace Illuminate\Auth {
-    class AuthManager {
+    class AuthManager implements \Illuminate\Contracts\Auth\Factory {
         public function guard($name = null): ?\Illuminate\Contracts\Auth\Guard { return null; }
         public function shouldUse($name): void {}
     }

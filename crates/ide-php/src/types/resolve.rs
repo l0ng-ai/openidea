@@ -56,6 +56,7 @@ use super::model::{
 };
 use super::provider::TypeProviders;
 use super::{Hierarchy, LazyType, Relative, SignatureParam, Type};
+use crate::frameworks::laravel::auth::UserModels;
 use crate::meta::PhpStormMeta;
 use crate::names::{NameKind, fqn_eq};
 use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl, LaravelFacts, Macro, TypeHint};
@@ -123,6 +124,11 @@ pub trait Declarations {
     /// cheaply (class models need them, after every modification).
     fn macros(&self) -> Vec<Macro> {
         self.laravel().macros
+    }
+    /// The user model of each guard of the Laravel project's
+    /// `config/auth.php`.
+    fn user_models(&self) -> UserModels {
+        UserModels::default()
     }
     /// The Symfony configuration and the `#[Route]` names and repository
     /// entities of the project. The [`Resolver`] caches them per
@@ -218,6 +224,8 @@ struct CacheState {
     laravel: Option<Arc<LaravelFacts>>,
     /// The Laravel macros.
     macros: Option<Arc<Vec<Macro>>>,
+    /// The Laravel guards' user models.
+    user_models: Option<Arc<UserModels>>,
     /// The Symfony configuration and facts.
     symfony: Option<Arc<SymfonyProject>>,
 }
@@ -231,6 +239,7 @@ impl CacheState {
             self.meta = None;
             self.laravel = None;
             self.macros = None;
+            self.user_models = None;
             self.symfony = None;
             self.generation = generation;
         }
@@ -311,6 +320,18 @@ impl TypeCache {
 
     fn insert_macros(&self, generation: u64, macros: Arc<Vec<Macro>>) {
         self.state.write().at(generation).macros = Some(macros);
+    }
+
+    fn user_models(&self, generation: u64) -> Option<Arc<UserModels>> {
+        let state = self.state.read();
+        if state.generation != generation {
+            return None;
+        }
+        state.user_models.clone()
+    }
+
+    fn insert_user_models(&self, generation: u64, models: Arc<UserModels>) {
+        self.state.write().at(generation).user_models = Some(models);
     }
 
     fn symfony(&self, generation: u64) -> Option<Arc<SymfonyProject>> {
@@ -448,6 +469,17 @@ impl<'a> Resolver<'a> {
         let macros = Arc::new(self.decls.macros());
         self.cache.insert_macros(self.generation, macros.clone());
         macros
+    }
+
+    /// The user model of each guard of the Laravel project, cached for the
+    /// modification counter.
+    pub fn user_models(&self) -> Arc<UserModels> {
+        if let Some(models) = self.cache.user_models(self.generation) {
+            return models;
+        }
+        let models = Arc::new(self.decls.user_models());
+        self.cache.insert_user_models(self.generation, models.clone());
+        models
     }
 
     /// The project's Symfony configuration, `#[Route]` names and

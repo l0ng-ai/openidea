@@ -1503,6 +1503,15 @@ impl Declarations for PhpEngine {
         facts
     }
 
+    /// The user models of the guards of `config/auth.php`; none outside a
+    /// Laravel project.
+    fn user_models(&self) -> crate::frameworks::laravel::auth::UserModels {
+        match self.laravel_config() {
+            Some(config) => crate::frameworks::laravel::auth::user_models(&config, &|path| self.text_of(path)),
+            None => Default::default(),
+        }
+    }
+
     /// The macros of the indexed files registering some (their open
     /// buffers first) and of open buffers not indexed as such, in path
     /// order.
