@@ -1016,6 +1016,10 @@ const MAX_BATCH: usize = 1000;
 
 fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
     match e {
+        WorkbenchEvent::DocumentChanged(value) => wit_events::Event::Other(wit_types::Extension {
+            kind: "document-changed".into(),
+            data: serde_json::to_string(&value).expect("document change serializes"),
+        }),
         WorkbenchEvent::WebsocketReady(value) => wit_events::Event::Other(wit_types::Extension {
             kind: "websocket-ready".into(),
             data: serde_json::to_string(&value).expect("WebSocket ready event serializes"),
