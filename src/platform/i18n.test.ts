@@ -287,6 +287,8 @@ describe("catalogs", () => {
     "CMake",
     "f-string",
     "Tailwind CSS",
+    "Bun",
+    "bun-dap (Bun)",
   ]);
   const translated = SUPPORTED_LOCALES.filter((locale) => locale !== "en").sort();
 
