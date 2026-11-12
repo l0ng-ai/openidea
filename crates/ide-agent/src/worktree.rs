@@ -318,24 +318,47 @@ pub(crate) fn accept(
         reason: "the checkout has changes of its own to it; accept it by hand".to_owned(),
     };
     for change in changes {
-        // A case-only rename on a case-insensitive disk: both names reach the same file, so
-        // rename it in place before bringing it to the task's version.
-        if let Some(old) = renamed_from.get(&change.rel_path)
-            && old != &change.rel_path
-            && old.to_lowercase() == change.rel_path.to_lowercase()
-            && local_root.join(old).exists()
-            && same_file(&local_root.join(old), &local_root.join(&change.rel_path))
-        {
-            std::fs::rename(local_root.join(old), local_root.join(&change.rel_path))?;
+        // A case-only rename (`a.txt` → `A.txt`). Where the disk resolves both
+        // spellings to one file it is renamed in place and `apply` then refreshes
+        // the content. On a case-sensitive disk the two names are different files:
+        // the old one's unchanged-ness (it is the file the checkout had) decides —
+        // then the task's version lands at the new name and the old one goes.
+        let old = renamed_from.get(&change.rel_path);
+        let case_only =
+            old.is_some_and(|o| o != &change.rel_path && o.to_lowercase() == change.rel_path.to_lowercase());
+        if case_only {
+            let old = old.expect("case_only implies a rename source");
+            let (old_path, new_path) = (local_root.join(old), local_root.join(&change.rel_path));
+            if same_file(&old_path, &new_path) {
+                std::fs::rename(&old_path, &new_path)?;
+            } else {
+                if !apply(old)? {
+                    skipped.push(skip(old));
+                    continue;
+                }
+                // `apply(old)` removed the old file (the task's tree has it only at
+                // the new name); now write that version under the new name. `apply`
+                // can't do it — it reads the new name's own base/absence — so the
+                // write is open-coded from the same task bytes `apply` would use.
+                if let Ok(bytes) = std::fs::read(repo.root().join(&change.rel_path)) {
+                    if let Some(parent) = new_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&new_path, bytes)?;
+                }
+                accepted.push(change.rel_path.clone());
+                continue;
+            }
         }
         if !apply(&change.rel_path)? {
             skipped.push(skip(&change.rel_path));
             continue;
         }
         accepted.push(change.rel_path.clone());
-        // A rename also takes the file away from its old path (unless only its case changed).
-        if let Some(old) = renamed_from.get(&change.rel_path)
-            && old.to_lowercase() != change.rel_path.to_lowercase()
+        // A rename also takes the file away from its old path (a case-only rename
+        // is handled above).
+        if !case_only
+            && let Some(old) = old
             && !apply(old)?
         {
             skipped.push(skip(old));
@@ -550,7 +573,18 @@ mod tests {
 
     fn git(dir: &Path, args: &[&str]) {
         let ok = std::process::Command::new("git")
-            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                // Hermetic line endings: a developer or CI runner with
+                // `core.autocrlf=true` would otherwise check the fixtures out as CRLF.
+                "-c",
+                "core.autocrlf=false",
+            ])
             .args(args)
             .current_dir(dir)
             .status()
@@ -634,6 +668,9 @@ mod tests {
         let repo = tmp.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
         git(&repo, &["init", "-q", "-b", "main"]);
+        // Hermetic line endings: a machine with `core.autocrlf=true` would check
+        // the fixtures and the worktree out as CRLF.
+        git(&repo, &["config", "core.autocrlf", "false"]);
         std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
         std::fs::write(repo.join("gone.txt"), "bye\n").unwrap();
         git(&repo, &["add", "."]);
