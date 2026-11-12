@@ -6,8 +6,7 @@
  */
 import type { Text } from "@codemirror/state";
 import { call, commands, isTauri, onIdeEvent, type BlameLine } from "@/platform/ipc";
-import { dateFormatOptions, formatPattern } from "@/platform/dateFormat";
-import { LOCALES, resolveLocale, useI18n } from "@/platform/i18n";
+import { DEFAULT_DATE_FORMAT, dateFormatOptions, formatPattern } from "@/platform/dateFormat";
 
 export interface AuthorSummary {
   author: string;
@@ -35,13 +34,13 @@ export function authorSummary(blame: readonly BlameLine[], from: number, to: num
   return { author: authors[0]!, others: authors.length - 1, authors, timeMs: latest.get(authors[0]!) ?? 0 };
 }
 
-/** Numeric short date in the UI language, PyCharm code-vision style (`2026/9/3`, `9/3/2026`);
- *  the Date Formats override pattern wins when enabled. */
+/**
+ * The date as the Date Formats page shows it: the user's pattern when the
+ * override is on, the default `dd.MM.yyyy` pattern otherwise (`09.11.2026`).
+ */
 function shortDate(ms: number): string {
   const o = dateFormatOptions();
-  if (o.overrideSystem) return formatPattern(new Date(ms), o.pattern);
-  const tag = LOCALES[resolveLocale(useI18n.getState().locale)].tag;
-  return new Intl.DateTimeFormat(tag, { year: "numeric", month: "numeric", day: "numeric" }).format(new Date(ms));
+  return formatPattern(new Date(ms), o.overrideSystem ? o.pattern : DEFAULT_DATE_FORMAT.pattern);
 }
 
 export function authorLabel(s: AuthorSummary): string {

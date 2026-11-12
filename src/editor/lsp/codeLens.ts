@@ -17,7 +17,7 @@ import { posToOffset } from "./positions";
 import { featureBackoff, onLspRefresh, onServerSettled } from "./availability";
 import { editorPrefs } from "@/platform/editorSettings";
 import { authorLabel, authorSummary, authorTooltip, blameFor, onBlameInvalidated } from "./authorLens";
-import { tx, useI18n } from "@/platform/i18n";
+import { tx } from "@/platform/i18n";
 
 const LENS_KINDS = new Set<SymbolKind>([
   "class",
@@ -128,7 +128,6 @@ class UsagesLensPlugin {
   private offReady: () => void;
   private offSettled: () => void;
   private offBlame: () => void;
-  private offLocale: () => void;
   private skipped = false;
 
   constructor(private view: EditorView) {
@@ -136,8 +135,6 @@ class UsagesLensPlugin {
     this.unsubscribe = useProject.subscribe((s, prev) => {
       if (s.settings !== prev.settings) this.refresh();
     });
-    // The author hint's date follows the UI language.
-    this.offLocale = useI18n.subscribe(() => this.refresh());
     // Counts computed while the server was indexing may be incomplete.
     this.offReady = onLspRefresh("codeLens", () => {
       this.cache.clear();
@@ -285,7 +282,6 @@ class UsagesLensPlugin {
     this.offReady();
     this.offSettled();
     this.offBlame();
-    this.offLocale();
     this.cancel();
   }
 }
