@@ -362,3 +362,15 @@ fn renames_option_keys() {
         project.engine.document_closed(doc);
     }
 }
+
+/// Find Usages from an option's name in the signature lists the calls'
+/// keys.
+#[test]
+fn finds_option_usages_from_the_signature() {
+    let mut project = Project::app();
+    let publish = std::fs::read_to_string(project.root.join(PUBLISH)).unwrap().replace("\r\n", "\n");
+    let source = publish.replacen("{--dry-run :", "{--dry-/*|*/run :", 1);
+    let found: Vec<(String, u32, String)> =
+        project.references(PUBLISH, &source).into_iter().map(|(path, line, text, _)| (path, line, text)).collect();
+    assert!(found.contains(&(PRUNE.to_owned(), 16, "--dry-run".to_owned())), "{found:?}");
+}
