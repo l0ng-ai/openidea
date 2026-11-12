@@ -371,3 +371,58 @@ $e->sortByName();",
     assert!(edits.iter().all(|edit| edit.new_text == "sortByTitle"));
     project.engine.document_closed(doc);
 }
+
+/// A model's `@method static` tags (SoftDeletes' `onlyTrashed()`) are calls it forwards to its
+/// builder: its builders and relations have them, keeping the builder or relation.
+#[test]
+fn a_models_static_method_tags_are_its_builders() {
+    const NOTES: &str = r#"<?php
+namespace App\Models {
+    /**
+     * @method static \Illuminate\Database\Eloquent\Builder<static> onlyTrashed()
+     * @method static static restoreOrCreate(array $attributes = [])
+     */
+    trait SoftDeletes {}
+    class Note extends \Illuminate\Database\Eloquent\Model
+    {
+        use SoftDeletes;
+    }
+    class Folder extends \Illuminate\Database\Eloquent\Model
+    {
+        public function notes() { return $this->hasMany(Note::class); }
+    }
+}
+"#;
+    let mut project = Project::new(&[
+        ("lib/framework.php", FRAMEWORK),
+        ("lib/app.php", APP),
+        ("lib/project.php", PROJECT),
+        ("lib/application.php", APPLICATION),
+        ("lib/notes.php", NOTES),
+    ]);
+    let body = |code: &str| {
+        format!(
+            "<?php\nnamespace Main;\n\nuse App\\Models\\{{Note, Folder}};\n\nfunction f(Folder $folder) {{\n{code}\n}}\n"
+        )
+    };
+    let mut type_of = |code: &str| {
+        let (text, pos) = caret(&body(code));
+        let doc = project.open(MAIN, &text);
+        let hover = project.engine.hover(doc, pos).map(|hover| hover.markdown).unwrap_or_default();
+        project.engine.document_closed(doc);
+        hover
+    };
+    let builder = "Illuminate\\Database\\Eloquent\\Builder<App\\Models\\Note>";
+    assert!(type_of("$x/*|*/ = Note::onlyTrashed();").contains(builder));
+    assert!(type_of("$x/*|*/ = Note::where('a', 1)->onlyTrashed();").contains(builder));
+    let relation = type_of("$x/*|*/ = $folder->notes()->onlyTrashed();");
+    assert!(relation.contains("HasMany") && relation.contains("App\\Models\\Note"), "{relation}");
+    let restored = type_of("$x/*|*/ = $folder->notes()->restoreOrCreate([]);");
+    assert!(restored.contains("App\\Models\\Note") && !restored.contains("HasMany"), "{restored}");
+    // And they complete there.
+    let (text, pos) = caret(&body("$folder->notes()->only/*|*/"));
+    let doc = project.open(MAIN, &text);
+    let found = project.engine.completion(doc, pos, None, &CancellationToken::new()).expect("handled");
+    project.engine.document_closed(doc);
+    assert!(has(&found, "onlyTrashed"));
+}

@@ -74,6 +74,7 @@ use super::{
 };
 use crate::frameworks::laravel::validation::rule_type;
 use crate::summary::{ClassKind, Column, LaravelFacts, ModelCasts, RequestRules, Visibility, counted_spec};
+use crate::types::model::Origin;
 use crate::types::{ClassModel, Context, LazyType, Resolver, ShapeField, ShapeKey, Type};
 
 const APPLICATION: &str = "Illuminate\\Foundation\\Application";
@@ -782,6 +783,9 @@ impl LaravelProvider {
         if model.is_some_and(|model| Self::has_scope(resolver, model, name)) {
             return Some(forwarding.clone());
         }
+        if let Some(ty) = model.and_then(|model| Self::builder_tag(resolver, model, name, forwarding, context)) {
+            return Some(ty);
+        }
         if *core != Type::Mixed {
             return Some(Self::keep_builder(resolver, core.clone(), forwarding, context));
         }
@@ -795,6 +799,44 @@ impl LaravelProvider {
     /// `ty`, with a raw (or query) builder replaced by `builder`.
     fn keep_builder(resolver: &Resolver<'_>, ty: Type, builder: &Type, context: &Context) -> Type {
         if Self::raw_builder(resolver, &ty, context) { builder.clone() } else { ty }
+    }
+
+    /// The `@method static` tags of `model` and its traits (SoftDeletes'
+    /// `onlyTrashed()`, `whereTitle()` of a generated docblock): calls the
+    /// model forwards to its builder, so members of its builders and
+    /// relations too.
+    fn builder_tags(resolver: &Resolver<'_>, model: &str, out: &mut Vec<MagicMember>) {
+        let Some(class) = resolver.class_model(model) else { return };
+        for method in class.methods.iter().filter(|method| method.origin == Origin::Magic && method.is_static) {
+            out.push(MagicMember {
+                name: method.name.clone(),
+                is_static: false,
+                target: MagicTarget::Method { class: class.fqn().to_owned(), method: method.name.clone() },
+            });
+        }
+    }
+
+    /// What `@method static` tag `name` of `model` ([`Self::builder_tags`])
+    /// returns on `forwarding`, a builder or relation of the model: the
+    /// receiver itself where the tag returns a builder, else what the tag
+    /// says on the model (`static` the model).
+    fn builder_tag(
+        resolver: &Resolver<'_>,
+        model: &str,
+        name: &str,
+        forwarding: &Type,
+        context: &Context,
+    ) -> Option<Type> {
+        let class = resolver.class_model(model)?;
+        let method = class.method(name)?;
+        if method.origin != Origin::Magic || !method.is_static {
+            return None;
+        }
+        let ty = resolver.method_return(&Type::named(class.fqn()), name, context);
+        if Self::is_a(resolver, &ty, context, &[ELOQUENT_BUILDER]) {
+            return Some(forwarding.clone());
+        }
+        (ty != Type::Mixed).then_some(ty)
     }
 
     /// `scope{Name}()` on `model`, or a `#[Scope]` method `name`.
@@ -1167,6 +1209,7 @@ impl LaravelProvider {
             }
             if let Some(Type::Named { fqn: related, .. }) = args.first() {
                 Self::scopes(resolver, related, false, &mut out);
+                Self::builder_tags(resolver, related, &mut out);
             }
             if relation {
                 Self::forwarded_methods(resolver, ELOQUENT_BUILDER, false, &mut out);
