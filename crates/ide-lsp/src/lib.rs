@@ -2851,7 +2851,7 @@ impl LspManager {
         let params = json!({ "textDocument": snap.ident() });
         let r: Option<Value> = self.call(t, "textDocument/semanticTokens/full", params, None, DEFAULT_TIMEOUT).await?;
         let Some(data) = r.as_ref().and_then(|v| v.get("data")).and_then(Value::as_array) else { return Ok(None) };
-        let data: Vec<u32> = data.iter().map(|n| n.as_u64().unwrap_or(0) as u32).collect();
+        let data: Vec<i64> = data.iter().map(|n| n.as_i64().unwrap_or(0)).collect();
         let (enc, legend) = {
             let caps = t.caps();
             (caps.encoding, caps.semantic_legend.clone().unwrap_or_default())

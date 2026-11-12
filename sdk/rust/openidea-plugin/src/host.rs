@@ -257,6 +257,23 @@ mod imp {
         p.write_file(path, text).map_err(error)
     }
 
+    pub fn project_document(p: &ProjectRes, path: &str) -> Result<Document, Error> {
+        wit::editor::document_at(p, path).map(|d| Document { version: d.version, text: d.text }).map_err(error)
+    }
+
+    pub fn project_apply_document_edits(
+        p: &ProjectRes,
+        path: &str,
+        version: u64,
+        edits: &[TextEdit],
+    ) -> Result<u64, Error> {
+        let edits: Vec<wit::types::TextEdit> = edits
+            .iter()
+            .map(|edit| wit::types::TextEdit { range: range_out(edit.range), text: edit.text.clone() })
+            .collect();
+        wit::editor::apply_edits_at(p, path, version, &edits).map_err(error)
+    }
+
     pub fn invocation_project(i: InvocationRef<'_>) -> Option<ProjectRes> {
         i.project()
     }
@@ -1064,6 +1081,18 @@ impl Project {
     /// `Error::NotFound`. Needs `project.read`.
     pub fn read_bytes(&self, path: &str) -> Result<Vec<u8>, Error> {
         imp::project_read_bytes(&self.inner, path)
+    }
+
+    /// Versioned text of an explicitly named open document. This works from
+    /// background events and requires `project.read` plus `editor.read`.
+    pub fn document(&self, path: &str) -> Result<Document, Error> {
+        imp::project_document(&self.inner, path)
+    }
+
+    /// Applies versioned edits to an explicitly named open document. Returns
+    /// [`Error::Stale`] without writing when its version changed.
+    pub fn apply_document_edits(&self, path: &str, version: u64, edits: &[TextEdit]) -> Result<u64, Error> {
+        imp::project_apply_document_edits(&self.inner, path, version, edits)
     }
 
     /// Replaces the text of a file inside the project (absolute or

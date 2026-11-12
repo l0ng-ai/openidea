@@ -1,4 +1,5 @@
 import { useEffect, type RefObject } from "react";
+import { hasPrimaryModifier } from "@/platform/keymap";
 
 /** Keep selections started in a reading pane from extending into neighboring panes. */
 export function useSelectionBoundary(ref: RefObject<HTMLElement | null>): void {
@@ -29,13 +30,23 @@ export function useSelectionBoundary(ref: RefObject<HTMLElement | null>): void {
       if (e.button === 0) html.setAttribute("data-selection-lock", "");
     };
     const unlock = () => html.removeAttribute("data-selection-lock");
+    // Select All in the pane selects its text; the browser's would select across the whole
+    // window (Ctrl+A reaches the webview directly; ⌘A goes to the native Select All).
+    const selectAll = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== "a" || !hasPrimaryModifier(e) || e.shiftKey || e.altKey) return;
+      if (!selectReadingPane(e.target as Element)) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
     root.setAttribute("data-selection-scope", "");
+    root.addEventListener("keydown", selectAll);
     root.addEventListener("mousedown", lock);
     doc.addEventListener("mouseup", unlock, true);
     doc.addEventListener("dragend", unlock, true);
     doc.addEventListener("selectionchange", clamp);
     return () => {
       root.removeAttribute("data-selection-scope");
+      root.removeEventListener("keydown", selectAll);
       root.removeEventListener("mousedown", lock);
       doc.removeEventListener("mouseup", unlock, true);
       doc.removeEventListener("dragend", unlock, true);
@@ -66,4 +77,21 @@ function textEdge(root: HTMLElement, side: "start" | "end"): { node: Node; offse
   const text = side === "start" ? walker.firstChild() : walker.lastChild();
   if (!text) return { node: root, offset: side === "start" ? 0 : root.childNodes.length };
   return { node: text, offset: side === "start" ? 0 : text.textContent!.length };
+}
+
+/**
+ * Selects the text of the reading pane (`useSelectionBoundary`) that `focused` is in, unless it
+ * is an editable field, which selects its own text. False when it isn't in one.
+ */
+export function selectReadingPane(focused: Element | null): boolean {
+  if (!(focused instanceof HTMLElement) || focused.isContentEditable) return false;
+  if (focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement) return false;
+  const pane = focused.closest<HTMLElement>("[data-selection-scope]");
+  const selection = pane?.ownerDocument.getSelection();
+  if (!pane || !selection) return false;
+  const range = pane.ownerDocument.createRange();
+  range.selectNodeContents(pane);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return true;
 }

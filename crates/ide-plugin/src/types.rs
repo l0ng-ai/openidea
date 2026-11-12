@@ -104,6 +104,7 @@ pub enum Prompt {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventKind {
+    DocumentChanged,
     WebsocketReady,
     FileClosed,
     SettingsChanged,
@@ -122,7 +123,8 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
+        Self::DocumentChanged,
         Self::WebsocketReady,
         Self::FileClosed,
         Self::SettingsChanged,
@@ -142,6 +144,7 @@ impl EventKind {
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::DocumentChanged => "document-changed",
             Self::WebsocketReady => "websocket-ready",
             Self::FileClosed => "file-closed",
             Self::SettingsChanged => "settings-changed",
@@ -230,6 +233,24 @@ pub struct InputMode {
     pub sub: Option<String>,
 }
 
+/// One UTF-16 replacement in a locally edited editor document.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct DocumentTextChange {
+    pub from: u32,
+    pub to: u32,
+    pub insert: String,
+}
+
+/// Local changes accepted by the editor's shared document model.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentChanged {
+    pub path: String,
+    pub base_version: u64,
+    pub version: u64,
+    pub changes: Vec<DocumentTextChange>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct WebsocketReady {
@@ -257,6 +278,7 @@ pub struct WebSocketBatch {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum WorkbenchEvent {
+    DocumentChanged(DocumentChanged),
     WebsocketReady(WebsocketReady),
     RunExited(crate::RunExited),
     TerminalExited(crate::TerminalExited),
@@ -278,6 +300,7 @@ pub enum WorkbenchEvent {
 impl WorkbenchEvent {
     pub fn kind(&self) -> EventKind {
         match self {
+            Self::DocumentChanged(_) => EventKind::DocumentChanged,
             Self::WebsocketReady(_) => EventKind::WebsocketReady,
             Self::RunExited(_) => EventKind::RunExited,
             Self::TerminalExited(_) => EventKind::TerminalExited,

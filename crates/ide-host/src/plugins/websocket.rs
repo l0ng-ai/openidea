@@ -43,8 +43,6 @@ pub enum ConnectError {
 
 struct Connection {
     plugin: String,
-    #[allow(dead_code, reason = "read by document subscriptions (#2610)")]
-    project: String,
     outgoing: Arc<Inbox>,
     incoming: Arc<Inbox>,
     wake: Notify,
@@ -85,7 +83,7 @@ impl WebSocketHub {
     pub async fn connect(
         &self,
         plugin: &str,
-        project: &str,
+        _project: &str,
         url: &str,
         headers: &[(String, String)],
         subprotocol: &str,
@@ -146,7 +144,6 @@ impl WebSocketHub {
             let (stop, stopped) = watch::channel(false);
             let connection = Arc::new(Connection {
                 plugin: plugin.to_owned(),
-                project: project.to_owned(),
                 outgoing: Arc::new(Inbox::new(MAX_MESSAGES, MAX_BYTES, MAX_FRAME)),
                 incoming: Arc::new(Inbox::new(MAX_MESSAGES, MAX_BYTES, MAX_FRAME)),
                 wake: Notify::new(),
@@ -221,13 +218,6 @@ impl WebSocketHub {
             let _ = connection.stop.send(true);
             connection.wake.notify_one();
         }
-    }
-
-    /// Returns the project captured when this plugin opened the resource.
-    /// Consumers use this instead of accepting a project selected by plugin code.
-    #[allow(dead_code, reason = "read by document subscriptions (#2610)")]
-    pub fn project(&self, plugin: &str, id: ConnectionId) -> Result<String, String> {
-        Ok(self.connection(plugin, id)?.project.clone())
     }
 
     fn connection(&self, plugin: &str, id: ConnectionId) -> Result<Arc<Connection>, String> {
@@ -455,7 +445,6 @@ mod tests {
         let (stop, _) = watch::channel(false);
         let connection = Arc::new(Connection {
             plugin: "plugin".into(),
-            project: "/project".into(),
             outgoing: Arc::new(Inbox::new(1, MAX_BYTES, MAX_FRAME)),
             incoming: Arc::new(Inbox::new(1, MAX_BYTES, MAX_FRAME)),
             wake: Notify::new(),

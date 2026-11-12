@@ -2036,3 +2036,32 @@ fn status_skips_a_directory_it_cannot_read() {
     assert_eq!(status_of(&st, "a.txt").unstaged, Some(ChangeKind::Modified));
     assert_eq!(status_of(&st, "new.txt").unstaged, Some(ChangeKind::Untracked));
 }
+
+#[test]
+fn a_case_only_directory_rename_keeps_status_and_head_content() {
+    let fx = Fixture::new();
+    fx.write("src/financial/table/index.vue", "<template/>\n");
+    fx.commit_all("initial");
+    std::fs::rename(fx.path("src/financial"), fx.path("src/tmp")).unwrap();
+    std::fs::rename(fx.path("src/tmp"), fx.path("src/Financial")).unwrap();
+    if !fx.path("src/financial/table/index.vue").exists() {
+        return; // A case-sensitive file system: these are different directories.
+    }
+    fx.git(&["config", "core.ignorecase", "true"]);
+    fx.write("src/Financial/table/index.vue", "<template>x</template>\n");
+    fx.write("src/Financial/added/index.vue", "new\n");
+    let repo = fx.repo();
+    let st = repo.status().unwrap();
+    let modified = status_of(&st, "src/financial/table/index.vue");
+    assert_eq!(modified.unstaged, Some(ChangeKind::Modified));
+    // Tabs and the project tree name the file as the disk does.
+    assert_eq!(modified.path.0, fx.path("src/Financial/table/index.vue"));
+    assert_eq!(status_of(&st, "src/Financial/added/index.vue").path.0, fx.path("src/Financial/added/index.vue"));
+
+    let on_disk = fx.path("src/Financial/table/index.vue");
+    assert_eq!(repo.file_at(&on_disk, None, encoding_rs::UTF_8).unwrap().as_deref(), Some("<template/>\n"));
+    repo.stage(&[on_disk]).unwrap();
+    let st = repo.status().unwrap();
+    assert_eq!(status_of(&st, "src/financial/table/index.vue").staged, Some(ChangeKind::Modified));
+    assert_eq!(fx.git(&["diff", "--cached", "--name-only"]), "src/financial/table/index.vue");
+}

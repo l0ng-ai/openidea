@@ -35,7 +35,8 @@ interface events {
     /// API 1.5 also delivers `extensions-changed` (JSON array of the extension
     /// points this plugin declares whose contributions changed) through `other`,
     /// to the declaring plugin only and without a capability.
-    /// Kinds: `file-opened`, `file-saved`, `websocket-ready`
+    /// Kinds: `file-opened`, `file-saved`, `document-changed` (versioned UTF-16
+    /// replacements from explicit path subscriptions), `websocket-ready`
     /// (a host-owned connection has messages to drain), `files-changed` (batched disk changes
     /// as `other`, with created/modified/removed path lists in JSON), `editor-focused` (the focused editor
     /// changed), `vcs-changed` (a repository's state changed: commit,
@@ -46,7 +47,7 @@ interface events {
     subscribe: func(kind: string) -> result<_, error>;
     /// Replaces this kind's subscription with project-relative globs (OR).
     /// Empty globs pause delivery; `subscribe` restores unfiltered delivery.
-    /// Kinds: file-opened, file-saved, files-changed. Requires `events`.
+    /// Kinds: file-opened, file-saved, document-changed, files-changed. Requires `events`.
     subscribe-paths: func(kind: string, globs: list<string>) -> result<_, error>;
     unsubscribe: func(kind: string);
 }

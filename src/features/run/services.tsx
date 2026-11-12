@@ -66,6 +66,23 @@ import styles from "./RunServices.module.css";
 export const RUN_PROVIDER = "runConfigurations";
 const TYPE_PREFIX = "run:type:";
 const CONFIG_PREFIX = "run:config:";
+/** A folder of a type's configurations (`run:folder:<kind>:<name>`), as in Run/Debug Configurations. */
+const FOLDER_PREFIX = "run:folder:";
+
+function folderKey(kind: string, name: string): string {
+  return `${FOLDER_PREFIX}${kind}:${name}`;
+}
+
+function parseFolderKey(key: string): { kind: string; folder: string } {
+  const rest = key.slice(FOLDER_PREFIX.length);
+  const colon = rest.indexOf(":");
+  return { kind: rest.slice(0, colon), folder: rest.slice(colon + 1) };
+}
+
+/** The configuration nodes of a type's group, inside folders included. */
+function configItems(items: readonly ServiceTreeItem[] | undefined): ServiceTreeItem[] {
+  return (items ?? []).flatMap((item) => (item.key.startsWith(FOLDER_PREFIX) ? (item.children ?? []) : [item]));
+}
 const STORAGE_KEY = "openidea.services.runTypes:";
 /** Docker run kinds whose containers/deployments are already shown under the Docker provider in Services. */
 const DOCKER_PROVIDER_KINDS: ReadonlySet<string> = new Set(["docker-compose", "docker-dockerfile", "docker-image"]);
@@ -258,7 +275,8 @@ function executionDetail(s: ServiceSession | undefined): string | undefined {
 }
 
 /**
- * Groups by configuration type: only the types added in this window list their
+ * Groups by configuration type, then by the configurations' folders (first, as in
+ * Run/Debug Configurations): only the types added in this window list their
  * configurations, and a configuration removed from the window stays out even
  * while it runs (its console is in the Run tool window). A configuration deleted
  * since it ran (`removed`) stays only while its run is live.
@@ -282,7 +300,8 @@ export function runServiceItems(
       if (s.config.kind === kind && shown(s) && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
     const hiddenIds = new Set(hidden[kind] ?? []);
     const visible = entries.filter((c) => !hiddenIds.has(c.id));
-    const children = orderServices(visible, order[kind]).map((c): ServiceTreeItem => {
+    const ordered = orderServices(visible, order[kind]);
+    const item = (c: RunConfig): ServiceTreeItem => {
       const s = latest.get(c.id);
       return {
         key: CONFIG_PREFIX + c.id,
@@ -291,11 +310,30 @@ export function runServiceItems(
         detail: executionDetail(s),
         dim: !s || !liveServiceSession(s),
       };
-    });
-    const running = visible.filter((c) => {
-      const s = latest.get(c.id);
-      return !!s && liveServiceSession(s);
-    }).length;
+    };
+    const runningIn = (entries: readonly RunConfig[]) =>
+      entries.filter((c) => {
+        const s = latest.get(c.id);
+        return !!s && liveServiceSession(s);
+      }).length;
+    const folders: string[] = [];
+    for (const c of ordered) if (c.folder && !folders.includes(c.folder)) folders.push(c.folder);
+    const children: ServiceTreeItem[] = [
+      ...folders.map((name): ServiceTreeItem => {
+        const inFolder = ordered.filter((c) => c.folder === name);
+        const live = runningIn(inFolder);
+        return {
+          key: folderKey(kind, name),
+          label: name,
+          icon: "folder",
+          detail: live ? tx`${live} running` : undefined,
+          expanded: true,
+          children: inFolder.map(item),
+        };
+      }),
+      ...ordered.filter((c) => !c.folder).map(item),
+    ];
+    const running = runningIn(visible);
     return [
       {
         key: TYPE_PREFIX + kind,
@@ -346,6 +384,8 @@ interface Resolved {
   session: ServiceSession | undefined;
   /** Sessions of a group's configurations. */
   sessions: ServiceSession[];
+  /** A folder's node: its name (its configurations are the group's). */
+  folder?: string;
 }
 
 function resolve(item: ServiceTreeItem): Resolved {
@@ -359,6 +399,16 @@ function resolve(item: ServiceTreeItem): Resolved {
       config: null,
       session: undefined,
       sessions: executions.filter((s) => s.config.kind === kind),
+    };
+  }
+  if (item.key.startsWith(FOLDER_PREFIX)) {
+    const { kind, folder } = parseFolderKey(item.key);
+    return {
+      kind,
+      folder,
+      config: null,
+      session: undefined,
+      sessions: executions.filter((s) => s.config.kind === kind && s.config.folder === folder),
     };
   }
   // A configuration (`run:config:<id>`).
@@ -394,7 +444,8 @@ function debug(r: Resolved) {
   else if (r.config) void executeAction("run.debugConfig", { config: r.config, show: false });
 }
 
-function groupConfigs(kind: string): RunConfig[] {
+/** The configurations of a type's group (of one of its folders), in their order there. */
+function groupConfigs(kind: string, folder?: string): RunConfig[] {
   const root = useProject.getState().project?.root ?? null;
   const location = projectLocation(root);
   const { configs, sessions } = useRun.getState();
@@ -409,20 +460,24 @@ function groupConfigs(kind: string): RunConfig[] {
     configRemoved,
     currentHidden(),
   ).find((item) => item.key === TYPE_PREFIX + kind);
-  return (group?.children ?? []).flatMap((item) => {
+  const items =
+    folder === undefined
+      ? configItems(group?.children)
+      : group?.children?.find((item) => item.key === folderKey(kind, folder))?.children;
+  return (items ?? []).flatMap((item) => {
     const id = item.key.slice(CONFIG_PREFIX.length);
     const config = configs.find((c) => c.id === id) ?? latest.get(id)?.config;
     return config ? [config] : [];
   });
 }
 
-async function startAll(kind: string, restart: boolean): Promise<void> {
+async function startAll(kind: string, restart: boolean, folder?: string): Promise<void> {
   const root = useProject.getState().project?.root;
-  const entries = groupConfigs(kind).filter((c) => !isDebugOnly(c));
+  const entries = groupConfigs(kind, folder).filter((c) => !isDebugOnly(c));
   if (restart) {
     const { sessions } = useRun.getState();
     const running = serviceSessions(sessions, useDebugRunSessions.getState().serviceSessions).filter(
-      (s) => s.config.kind === kind && liveServiceSession(s),
+      (s) => s.config.kind === kind && (folder === undefined || s.config.folder === folder) && liveServiceSession(s),
     );
     await stopServiceSessions(running);
     await waitForExit(
@@ -476,22 +531,22 @@ function itemActions(item: ServiceTreeItem): ServiceItemAction[] {
   const r = resolve(item);
   const running = r.sessions.filter(liveServiceSession);
   if (!r.config && r.kind) {
-    const kind = r.kind;
-    const entries = groupConfigs(kind).filter((c) => !isDebugOnly(c));
+    const { kind, folder } = r;
+    const entries = groupConfigs(kind, folder).filter((c) => !isDebugOnly(c));
     return [
       {
         id: "run-all",
         title: "Run All",
         icon: "run",
         disabled: !entries.some((c) => !running.some((s) => s.config.id === c.id)),
-        run: () => startAll(kind, false),
+        run: () => startAll(kind, false, folder),
       },
       {
         id: "restart-all",
         title: "Restart All",
         icon: "rerun",
         disabled: !entries.length,
-        run: () => startAll(kind, true),
+        run: () => startAll(kind, true, folder),
       },
       {
         id: "stop-all",
@@ -554,7 +609,8 @@ export function registerRunServiceActions(): () => void {
       category: "Run",
       hidden: true,
       run: async ({ arg }) => {
-        if (typeof arg !== "string" || (!arg.startsWith(TYPE_PREFIX) && !arg.startsWith(CONFIG_PREFIX))) return;
+        if (typeof arg !== "string" || ![TYPE_PREFIX, FOLDER_PREFIX, CONFIG_PREFIX].some((p) => arg.startsWith(p)))
+          return;
         const action = itemActions({ key: arg, label: "", icon: "" }).find((a) => a.id === id);
         if (action && !action.disabled) await action.run();
       },
@@ -607,7 +663,7 @@ function menu(item: ServiceTreeItem): MenuItem[] {
     run: a.run,
   }));
   const r = resolve(item);
-  if (!r.config && r.kind) {
+  if (!r.config && r.kind && r.folder === undefined) {
     const kind = r.kind;
     items.push(
       { kind: "separator" },
@@ -662,10 +718,10 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
   const r = resolve(item);
   if (!r.config)
     return (
-      <EmptyState title={kindLabel(r.kind ?? "")}>
+      <EmptyState title={r.folder ?? kindLabel(r.kind ?? "")}>
         <div>
-          {item.children?.length
-            ? t("run.services.configurationCount", { count: item.children.length })
+          {configItems(item.children).length
+            ? t("run.services.configurationCount", { count: configItems(item.children).length })
             : txTemplate("No configurations of this type")}
         </div>
       </EmptyState>
@@ -830,7 +886,7 @@ export const runServiceProvider: ServiceProviderContribution = {
         configRemoved,
         currentHidden(),
       ).find((g) => g.key === TYPE_PREFIX + kind);
-      const ids = group?.children?.map((c) => c.key.slice(CONFIG_PREFIX.length)) ?? [];
+      const ids = configItems(group?.children).map((c) => c.key.slice(CONFIG_PREFIX.length));
       const from = source.key.slice(CONFIG_PREFIX.length),
         to = target.key.slice(CONFIG_PREFIX.length);
       if (!ids.includes(from) || !ids.includes(to)) return;

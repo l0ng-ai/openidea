@@ -960,6 +960,10 @@
   "Toggle {name}": "Toggle {name}",
   "true": "true",
   "false": "false",
+  "bun-dap (Bun)": "bun-dap (Bun)",
+  "Bun": "Bun",
+  "Run a TypeScript or JavaScript file with Bun": "Run a TypeScript or JavaScript file with Bun",
+  "Working directory": "Working directory",
   "This file was auto-detected as a Docker Compose configuration based on its content": "This file was auto-detected as a Docker Compose configuration based on its content",
   "Not a Compose file": "Not a Compose file",
   "Keep as Docker Compose": "Keep as Docker Compose",
@@ -1336,5 +1340,9 @@
   "Export Keymap": "Export Keymap",
   "OpenIDEA Keymap": "OpenIDEA Keymap",
   "Keymap exported": "Keymap exported",
-  "Cannot export keymap": "Cannot export keymap"
+  "Cannot export keymap": "Cannot export keymap",
+  "Close Agent Task": "Close Agent Task",
+  "Close and New Agent Task": "Close and New Agent Task",
+  "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.": "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.",
+  "Closes the agent task tab in the editor, then opens the New Task page.": "Closes the agent task tab in the editor, then opens the New Task page."
 }

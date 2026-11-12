@@ -357,8 +357,8 @@ export function registerLspActions(): () => void {
       description: "Shows `{ text, tone? }` as a transient hint at the caret of the active editor.",
       run: ({ arg }) => {
         const view = activeEditor()?.view;
-        const a = (arg ?? {}) as { text?: string; tone?: "info" | "warning" | "error" };
-        if (view && a.text) showHint(view, a.text, { tone: a.tone });
+        const a = (arg ?? {}) as { text?: string; tone?: "info" | "warning" | "error"; data?: Record<string, string> };
+        if (view && a.text) showHint(view, a.text, { tone: a.tone, data: a.data });
       },
     },
   ]);
