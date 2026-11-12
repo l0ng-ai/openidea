@@ -2371,7 +2371,7 @@
   "Use Call Hierarchy (⌃⌥H) or Type Hierarchy (⌃H) on a symbol to see its hierarchy here": "심볼에서 호출 계층 구조(⌃⌥H) 또는 타입 계층 구조(⌃H)를 사용하면 여기에 계층 구조가 표시됩니다",
   "Use DROP CASCADE syntax": "DROP CASCADE 구문 사용",
   "Use Default Theme": "기본 테마 사용",
-  "Use Find Usages (⌥F7) on a symbol to see its usages here": "심볼에서 사용 위치 찾기(⌥F7)를 사용하면 여기에 사용 위치가 표시됩니다",
+  "Use Find Usages ({key}) on a symbol to see its usages here": "심볼에서 사용 위치 찾기({key})를 사용하면 여기에 사용 위치가 표시됩니다",
   "Use IF EXISTS syntax": "IF EXISTS 구문 사용",
   "Use Option as Meta key": "Option을 Meta 키로 사용",
   "Use SSH tunnel": "SSH 터널 사용",

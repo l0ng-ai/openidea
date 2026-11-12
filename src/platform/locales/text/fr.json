@@ -2286,7 +2286,7 @@
   "Use Call Hierarchy (⌃⌥H) or Type Hierarchy (⌃H) on a symbol to see its hierarchy here": "Utilisez Hiérarchie des appels (⌃⌥H) ou Hiérarchie des types (⌃H) sur un symbole pour voir ici sa hiérarchie",
   "Use DROP CASCADE syntax": "Utiliser la syntaxe DROP CASCADE",
   "Use Default Theme": "Utiliser le thème par défaut",
-  "Use Find Usages (⌥F7) on a symbol to see its usages here": "Utilisez Rechercher les utilisations (⌥F7) sur un symbole pour voir ici ses utilisations",
+  "Use Find Usages ({key}) on a symbol to see its usages here": "Utilisez Rechercher les utilisations ({key}) sur un symbole pour voir ici ses utilisations",
   "Use IF EXISTS syntax": "Utiliser la syntaxe IF EXISTS",
   "Use Option as Meta key": "Utiliser Option comme touche Meta",
   "Use SSH tunnel": "Utiliser un tunnel SSH",
