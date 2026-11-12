@@ -134,6 +134,22 @@ describe("terminal clear output", () => {
     }
   });
 
+  it("removes prompts left in the viewport after empty commands and cls", async () => {
+    const session = create();
+    try {
+      const output = await start(session);
+      await output(Array.from({ length: 8 }, () => "PS /repo> \r\n").join(""));
+      await output("\x1b]133;OpenIDEA;ClearScrollback\x07\x1b[HPS /repo> \x1b[K");
+      const lines = Array.from({ length: session.term.buffer.active.length }, (_, i) =>
+        session.term.buffer.active.getLine(i)?.translateToString(true),
+      );
+      expect(lines).toEqual(["PS /repo> ", "", "", ""]);
+      expect(session.term.buffer.active.baseY).toBe(0);
+    } finally {
+      session.dispose();
+    }
+  });
+
   it("clears old history in order and retains multi-screen output after a split marker", async () => {
     const session = create();
     try {

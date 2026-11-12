@@ -580,7 +580,7 @@ export class TerminalSession {
 
   private writePtyOutput(chunk: string) {
     const data = this.outputTail + chunk;
-    let output = data.replaceAll(CLEAR_SCROLLBACK_MARKER, "\x1b[3J");
+    let output = data.replaceAll(CLEAR_SCROLLBACK_MARKER, "\x1b[2J\x1b[3J");
     let held = 0;
     for (let n = Math.min(CLEAR_SCROLLBACK_MARKER.length - 1, output.length); n > 0; n--) {
       if (output.endsWith(CLEAR_SCROLLBACK_MARKER.slice(0, n))) {
