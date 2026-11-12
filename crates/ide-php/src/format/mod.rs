@@ -61,6 +61,21 @@ impl FormatOptions {
     }
 }
 
+impl FormatOptions {
+    /// Mago's Pint preset (Laravel's code style: `! $x`, `'a'.$b`, breaks
+    /// as written kept) with the editor's indentation and line length: the
+    /// PHP inside Blade templates, which only Laravel projects have.
+    pub fn pint_settings(&self) -> FormatSettings {
+        FormatSettings {
+            print_width: self.line_width.max(1) as usize,
+            tab_width: self.indent.max(1) as usize,
+            use_tabs: self.use_tabs,
+            end_of_line: EndOfLine::Lf,
+            ..FormatterPreset::Pint.settings()
+        }
+    }
+}
+
 /// Mago's version for a language level: it decides syntax the printer may
 /// use (for example `new Foo()->m()` without parentheses from PHP 8.4).
 pub(crate) fn mago_version(version: PhpVersion) -> PHPVersion {
@@ -83,8 +98,18 @@ pub fn format_text(
     version: PhpVersion,
     options: &FormatOptions,
 ) -> Option<ByteEdit> {
+    format_text_with(text, range, version, options.settings())
+}
+
+/// [`format_text`] with the formatter's own `settings` (another preset).
+pub fn format_text_with(
+    text: &str,
+    range: Option<(u32, u32)>,
+    version: PhpVersion,
+    settings: FormatSettings,
+) -> Option<ByteEdit> {
     let arena = LocalArena::new();
-    let formatter = Formatter::new(&arena, mago_version(version), options.settings());
+    let formatter = Formatter::new(&arena, mago_version(version), settings);
     let file = File::ephemeral(Cow::Borrowed(b"format.php"), Cow::Owned(text.as_bytes().to_vec()));
     let (start, end, new) = match range {
         None => {

@@ -12,9 +12,10 @@
 //! - The attribute lines of a tag written over several lines go one level
 //!   in (a line starting with `>` or `/>` stays at the tag's level).
 //! - The PHP of `@php … @endphp` (and `<?php … ?>`) blocks written over
-//!   several lines is formatted as PHP files are ([`crate::format`],
-//!   PSR-12), and so is an echo's expression when it stays on one line;
-//!   code that doesn't parse is left as written.
+//!   several lines is formatted ([`crate::format`], in Laravel Pint's
+//!   style: Blade is Laravel's), and so are an echo's expression and a
+//!   directive's arguments when they stay on one line (`@if($a==1)` as
+//!   `@if($a == 1)`); code that doesn't parse is left as written.
 //! - Trailing whitespace goes, and the text ends with one line break.
 //!
 //! An element left open where its closing tag is written in another branch
@@ -258,7 +259,7 @@ fn format_code(text: &str, custom: &[String], options: &BladeFormatOptions) -> S
     let formatted = |source: &str| -> Option<String> {
         let (version, settings) = php.as_ref()?;
         let file = format!("<?php\n{source}\n");
-        let edit = crate::format::format_text(&file, None, *version, settings);
+        let edit = crate::format::format_text_with(&file, None, *version, settings.pint_settings());
         let mut printed = file.clone();
         if let Some(edit) = edit {
             printed.replace_range(edit.start as usize..edit.end as usize, &edit.text);
@@ -318,6 +319,35 @@ fn format_code(text: &str, custom: &[String], options: &BladeFormatOptions) -> S
                     .map(|line| if line.is_empty() { String::new() } else { format!("{code_lead}{line}") })
                     .collect();
                 format!("{head}\n{}\n{tail_lead}{tail}", printed.join("\n"))
+            }
+            // A directive's arguments, written on one line and closed.
+            NodeKind::Directive { name } if !written.contains('\n') && written.ends_with(')') => {
+                let arguments = inner.trim();
+                let lower = name.to_ascii_lowercase();
+                // `@php($x = 1)` is a statement.
+                if arguments.is_empty() || lower == "php" {
+                    continue;
+                }
+                // As the PHP construct the arguments are part of.
+                let (open, close) = match lower.as_str() {
+                    "if" | "elseif" | "unless" | "while" | "switch" | "case" => ("if (", ") {"),
+                    "foreach" | "forelse" => ("foreach (", ") {"),
+                    "for" => ("for (", ") {"),
+                    _ => ("__directive(", ");"),
+                };
+                let source =
+                    if close == ");" { format!("{open}{arguments});") } else { format!("{open}{arguments}) {{\n}}") };
+                let Some(printed) = formatted(&source).and_then(|printed| {
+                    let rest = printed.strip_prefix(open)?;
+                    let end = rest.rfind(close)?;
+                    let printed = &rest[..end];
+                    (!printed.contains('\n')).then(|| printed.to_owned())
+                }) else {
+                    continue;
+                };
+                let head = &text[span.start..code.start as usize];
+                let tail = &text[code.end as usize..span.end];
+                format!("{head}{printed}{tail}")
             }
             _ => continue,
         };

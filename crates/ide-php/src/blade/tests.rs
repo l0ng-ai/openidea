@@ -831,3 +831,29 @@ fn format_formats_the_php_in_blocks_and_echoes() {
     assert_eq!(format(messy, &options, &[]), formatted);
     assert_eq!(format(formatted, &options, &[]), formatted, "stable");
 }
+
+#[test]
+fn format_formats_directive_arguments() {
+    use crate::blade::format::{BladeFormatOptions, format};
+    let options =
+        BladeFormatOptions { indent: 4, use_tabs: false, line_width: 120, php: Some(crate::stubs::PhpVersion::LATEST) };
+    let messy = "@if($a==1&&$b)\n<p>x</p>\n@elseif (count($items)>2)\n<p>y</p>\n@endif\n@foreach($items as $key=>$item)\n@include('posts._card',['post'=>$item])\n@endforeach\n@for($i=0;$i<3;$i++)\n@endfor\n@lang('messages.welcome',['name'=>$name])\n@isset($a,$b)\n@endisset\n@php($x=1)\n@section('title', $title)\n";
+    let formatted = "@if($a == 1 && $b)\n    <p>x</p>\n@elseif (count($items) > 2)\n    <p>y</p>\n@endif\n@foreach($items as $key => $item)\n    @include('posts._card', ['post' => $item])\n@endforeach\n@for($i = 0; $i < 3; $i++)\n@endfor\n@lang('messages.welcome', ['name' => $name])\n@isset($a, $b)\n@endisset\n@php($x=1)\n@section('title', $title)\n";
+    assert_eq!(format(messy, &options, &[]), formatted);
+    assert_eq!(format(formatted, &options, &[]), formatted, "stable");
+    // Laravel's style (Pint): `! $x`, `'a'.$b`.
+    assert_eq!(
+        format(
+            "@if(!$a)
+@endif
+{{ 'a' . $b }}
+",
+            &options,
+            &[]
+        ),
+        "@if(! $a)
+@endif
+{{ 'a'.$b }}
+"
+    );
+}
