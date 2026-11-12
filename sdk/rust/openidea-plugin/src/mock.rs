@@ -1466,6 +1466,58 @@ pub mod current {
         })
     }
 
+    fn mock_document_path(project: &ProjectRes, path: &str, editor: &Editor) -> bool {
+        path == editor.path
+            || format!("{}/{}", project.root.trim_end_matches('/'), path.trim_start_matches('/')) == editor.path
+    }
+
+    pub fn project_document(project: &ProjectRes, path: &str) -> Result<Document, Error> {
+        editor(|s, e| {
+            require(s, "project.read")?;
+            require(s, "editor.read")?;
+            if !mock_document_path(project, path, e) {
+                return Err(Error::NotFound(format!("{path} is not open")));
+            }
+            Ok(Document { version: e.version, text: e.text.clone() })
+        })
+    }
+
+    pub fn project_apply_document_edits(
+        project: &ProjectRes,
+        path: &str,
+        version: u64,
+        edits: &[TextEdit],
+    ) -> Result<u64, Error> {
+        editor(|s, e| {
+            require(s, "project.read")?;
+            require(s, "editor.write")?;
+            if !mock_document_path(project, path, e) {
+                return Err(Error::NotFound(format!("{path} is not open")));
+            }
+            if version != e.version {
+                return Err(Error::Stale);
+            }
+            let mut spans = Vec::with_capacity(edits.len());
+            for edit in edits {
+                let start = crate::text::offset(&e.text, edit.range.start);
+                let end = crate::text::offset(&e.text, edit.range.end);
+                match (start, end) {
+                    (Some(start), Some(end)) if start <= end => spans.push((start, end, edit.text.clone())),
+                    _ => return Err(Error::Invalid("edit range is outside the document".into())),
+                }
+            }
+            spans.sort_by_key(|(start, _, _)| *start);
+            if spans.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+                return Err(Error::Invalid("overlapping edits".into()));
+            }
+            for (start, end, text) in spans.into_iter().rev() {
+                e.text.replace_range(start..end, &text);
+            }
+            e.version += 1;
+            Ok(e.version)
+        })
+    }
+
     pub fn open_editors() -> Result<Vec<OpenEditor>, Error> {
         with(|s| {
             require(s, "editor.read")?;
