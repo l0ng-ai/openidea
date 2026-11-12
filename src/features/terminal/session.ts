@@ -92,7 +92,7 @@ export interface SessionOptions {
 
 /** Mouse-tracking DEC private modes (X10, normal, button, any-event, encodings). */
 const MOUSE_MODES = new Set([9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016]);
-const RESIZE_REPAINT_MS = 1_000;
+const CLEAR_SCROLLBACK_MARKER = "\x1b]133;OpenIDEA;ClearScrollback\x07";
 
 let audio: AudioContext | null = null;
 
@@ -226,9 +226,7 @@ export class TerminalSession {
   private readonly ptyResize = settledResize((cols, rows) => this.resizePty(cols, rows));
   /** Keystrokes typed while the PTY is still starting; sent as soon as it exists. */
   private pendingInput = "";
-  private fullScreenEraseRow = -1;
-  private resizeRepaintUntil = 0;
-  private conptyClearHandlers: IDisposable[] = [];
+  private outputTail = "";
   private lastSize = { cols: 0, rows: 0 };
   /** Per-tab font size offset (px) relative to `workflowSettings().terminal.fontSize`. */
   private fontZoom = 0;
@@ -315,7 +313,7 @@ export class TerminalSession {
     this.searchAddon.findPrevious = runSearch(this.searchAddon.findPrevious.bind(this.searchAddon));
 
     this.disposables.push(
-      watchWindowsPty(this.term, () => this.syncConptyClearHandlers()),
+      watchWindowsPty(this.term),
       this.searchAddon.onDidChangeResults((r) => {
         for (const l of this.searchListeners) l({ index: r.resultIndex, count: r.resultCount });
       }),
@@ -356,8 +354,6 @@ export class TerminalSession {
         return modes.length > 0 && modes.every((m) => MOUSE_MODES.has(m));
       }),
     );
-    this.syncConptyClearHandlers();
-    this.disposables.push({ dispose: () => this.conptyClearHandlers.forEach((handler) => handler.dispose()) });
     this.selectionHighlights = installSelectionHighlights(this.term, {
       isSearchSelection: () => this.searchSelection,
     });
@@ -582,46 +578,19 @@ export class TerminalSession {
     if (this.ime.accept(data)) this.input(data);
   }
 
-  private syncConptyClearHandlers() {
-    this.conptyClearHandlers.forEach((handler) => handler.dispose());
-    this.conptyClearHandlers = [];
-    this.fullScreenEraseRow = -1;
-    this.resizeRepaintUntil = 0;
-    if (this.term.options.windowsPty?.backend !== "conpty") return;
-
-    this.conptyClearHandlers = [
-      this.term.onResize(() => {
-        this.fullScreenEraseRow = -1;
-        if (this.ptyId !== null) this.resizeRepaintUntil = Date.now() + RESIZE_REPAINT_MS;
-      }),
-      // ConPTY turns Clear-Host into home plus one erase-to-end per screen row.
-      this.term.parser.registerCsiHandler({ final: "H" }, (params) => {
-        const home =
-          (params[0] === undefined || params[0] === 0 || params[0] === 1) &&
-          (params[1] === undefined || params[1] === 0 || params[1] === 1);
-        const repaint = home && Date.now() < this.resizeRepaintUntil;
-        this.fullScreenEraseRow = home && !repaint && this.term.buffer.active.type === "normal" ? 0 : -1;
-        return false;
-      }),
-      this.term.parser.registerCsiHandler({ final: "K" }, (params) => {
-        if (this.fullScreenEraseRow < 0) return false;
-        const row = this.term.buffer.active.cursorY;
-        const mode = params[0];
-        if (
-          this.term.buffer.active.type !== "normal" ||
-          row !== this.fullScreenEraseRow ||
-          (mode !== undefined && mode !== 0 && mode !== 2)
-        ) {
-          this.fullScreenEraseRow = -1;
-          return false;
-        }
-        if (++this.fullScreenEraseRow === this.term.rows) {
-          this.fullScreenEraseRow = -1;
-          this.term.write("\x1b[3J");
-        }
-        return false;
-      }),
-    ];
+  private writePtyOutput(chunk: string) {
+    const data = this.outputTail + chunk;
+    let output = data.replaceAll(CLEAR_SCROLLBACK_MARKER, "\x1b[3J");
+    let held = 0;
+    for (let n = Math.min(CLEAR_SCROLLBACK_MARKER.length - 1, output.length); n > 0; n--) {
+      if (output.endsWith(CLEAR_SCROLLBACK_MARKER.slice(0, n))) {
+        held = n;
+        break;
+      }
+    }
+    this.outputTail = output.slice(output.length - held);
+    output = output.slice(0, output.length - held);
+    if (output) this.term.write(output);
   }
 
   private doFit() {
@@ -653,7 +622,6 @@ export class TerminalSession {
     if (this.disposed || this.ptyId === null) return;
     if (this.lastSize.cols === cols && this.lastSize.rows === rows) return;
     this.lastSize = { cols, rows };
-    if (this.term.options.windowsPty?.backend === "conpty") this.resizeRepaintUntil = Date.now() + RESIZE_REPAINT_MS;
     void commands.termResize(this.ptyId, cols, rows);
   }
 
@@ -661,6 +629,7 @@ export class TerminalSession {
   async start() {
     if (this.disposed || this.snapshot.status === "starting" || this.snapshot.status === "running") return;
     const generation = ++this.generation;
+    this.outputTail = "";
     const custom = this.opts.command;
     this.update({ status: "starting", exitCode: null, appTitle: null, commandRunning: !!custom && !custom.shell });
     if (!isTauri()) {
@@ -673,7 +642,7 @@ export class TerminalSession {
     this.lastSize = { cols, rows };
     const channel = new Channel<string>();
     channel.onmessage = (chunk) => {
-      if (generation === this.generation && !this.disposed) this.term.write(chunk);
+      if (generation === this.generation && !this.disposed) this.writePtyOutput(chunk);
     };
     try {
       const t = workflowSettings().terminal;
