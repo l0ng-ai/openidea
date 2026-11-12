@@ -28,7 +28,7 @@ import { featureBackoff } from "./availability";
 import { iconNode } from "./iconMarkup";
 import { editorPrefs } from "@/platform/editorSettings";
 import { spellingIntentions } from "./spelling";
-import { inspectionsAt } from "./diagnostics";
+import { inspectionsAt, isLocalDiagnostic } from "./diagnostics";
 import { SPELLING_INSPECTION } from "@/platform/inspections";
 import { editInspectionSettings, intentionControls } from "@/platform/inspectionControls";
 import { runInteractiveCodeAction } from "./interactiveCommand";
@@ -136,10 +136,16 @@ async function fetchIntentions(view: EditorView): Promise<CodeAction[]> {
 export type EditorQuickFix = CodeAction | { title: string; run: () => void | Promise<void> };
 
 /** Enabled quick fixes of the problem at `from..to`, including local inspections. */
-export async function quickFixesAt(view: EditorView, from: number, to: number): Promise<EditorQuickFix[]> {
+export async function quickFixesAt(
+  view: EditorView,
+  from: number,
+  to: number,
+  { localOnly = false }: { localOnly?: boolean } = {},
+): Promise<EditorQuickFix[]> {
   const local = contributedQuickFixes(view, from, to).map((fix) => ({ title: fix.label, run: fix.run }));
   const doc = docOf(view);
-  if (!doc) return local;
+  // A problem the UI found (a typo): the server's fixes at its range are for other problems.
+  if (!doc || localOnly) return local;
   try {
     await whenSynced(view);
     const actions = await lspRequest(() =>
@@ -160,17 +166,17 @@ export async function applyQuickFix(view: EditorView) {
   const state = view.state;
   const caret = state.selection.main.head;
   const line = state.doc.lineAt(caret);
-  const problems: Array<PlacedProblem & { rank: number }> = [];
+  const problems: Array<PlacedProblem & { rank: number; local: boolean }> = [];
   forEachDiagnostic(state, (d, from, to) => {
     if (d.severity === "hint" || to < line.from || from > line.to) return;
     const rank =
       (d.severity === "error" ? 0 : d.severity === "warning" ? 1 : 2) + (from <= caret && caret <= to ? 0 : 3);
-    problems.push({ from, to, severity: d.severity, rank });
+    problems.push({ from, to, severity: d.severity, rank, local: isLocalDiagnostic(d) });
   });
   problems.sort((a, b) => a.rank - b.rank);
   try {
     for (const p of problems) {
-      const fix = (await quickFixesAt(view, p.from, p.to))[0];
+      const fix = (await quickFixesAt(view, p.from, p.to, { localOnly: p.local }))[0];
       if (view.state.doc !== state.doc) return;
       if (fix) return applyCodeAction(view, fix);
     }
