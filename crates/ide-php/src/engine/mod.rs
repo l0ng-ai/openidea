@@ -122,6 +122,10 @@ pub struct EngineStatus {
     pub persistent: bool,
 }
 
+/// An open document's version before its first edit since its declarations
+/// were last compared, and that version's summary when it was extracted.
+type Unsettled = (OpenDocument, Option<Arc<FileSummary>>);
+
 /// An open document, which overrides the file on disk.
 #[derive(Clone, Debug)]
 pub struct OpenDocument {
@@ -176,7 +180,27 @@ struct Shared {
     idle: Condvar,
     status: Mutex<EngineStatus>,
     cancel: CancellationToken,
+    /// Goes up when what other files see can have changed (the
+    /// declarations of an open document, a file on disk): the type and
+    /// framework caches are kept for it. An edit inside a function body
+    /// leaves it alone ([`PhpEngine::settle_edits`]), as IntelliJ's
+    /// out-of-code-block modification count does.
     modification: AtomicU64,
+    /// Goes up with every edit of an open document, inside bodies too: for
+    /// what is read from the bodies of other files (the variables
+    /// controllers pass a view).
+    edits: AtomicU64,
+    /// Goes up when an edit inside a body moved declarations without
+    /// changing them ([`PhpEngine::framework_count`]).
+    moves: AtomicU64,
+    /// Files written with the text their open buffer already holds (an
+    /// editor's save): their index update changes nothing the engine
+    /// answers from, so it neither drops the caches nor inspects again.
+    saved: Mutex<std::collections::HashSet<PathBuf>>,
+    /// The open documents edited since their declarations were last
+    /// compared, with their version before the first such edit (and its
+    /// summary, when it was extracted).
+    unsettled: Mutex<HashMap<DocId, Unsettled>>,
     /// Goes up with every watcher batch, rescan and Laravel model reset:
     /// what is read only from files on disk that aren't open (folder
     /// listings, `.env`, Vite and Inertia files) is kept for it.
@@ -414,6 +438,10 @@ impl PhpEngine {
             }),
             cancel: CancellationToken::new(),
             modification: AtomicU64::new(0),
+            edits: AtomicU64::new(0),
+            moves: AtomicU64::new(0),
+            saved: Mutex::new(std::collections::HashSet::new()),
+            unsettled: Mutex::new(HashMap::new()),
             disk: AtomicU64::new(0),
             parts: parts::FileParts::default(),
             view_listings: Mutex::new(HashMap::new()),
@@ -493,9 +521,79 @@ impl PhpEngine {
         self.shared.server
     }
 
-    /// Goes up with every document edit and watcher batch.
+    /// Goes up when an open document's declarations change, and with every
+    /// watcher batch: what is cached for one count holds for every file.
+    /// Edits inside function bodies don't move it.
     pub fn modification_count(&self) -> u64 {
+        self.settle_edits();
         self.shared.modification.load(Ordering::SeqCst)
+    }
+
+    /// Goes up with [`modification_count`](Self::modification_count) and
+    /// with every edit of an open document, inside bodies too.
+    pub fn edit_count(&self) -> u64 {
+        self.modification_count() + self.shared.edits.load(Ordering::SeqCst)
+    }
+
+    /// Compares the declarations of the documents edited since the last
+    /// call with those before the edits, and moves the modification count
+    /// when they differ, when the file is a script (routes, config and
+    /// translation files are read as text) or a service provider (read for
+    /// its Blade directives and bindings), or when the document closed.
+    fn settle_edits(&self) {
+        let pending: Vec<(DocId, Unsettled)> = {
+            let mut unsettled = self.shared.unsettled.lock();
+            if unsettled.is_empty() {
+                return;
+            }
+            unsettled.drain().collect()
+        };
+        for (doc, (before, old)) in pending {
+            let Some(current) = self.shared.documents.lock().get(&doc).cloned() else {
+                self.shared.modification.fetch_add(1, Ordering::SeqCst);
+                continue;
+            };
+            if current.version == before.version {
+                continue;
+            }
+            // The old version is parsed apart: the cache holds the current one.
+            let old = old.unwrap_or_else(|| {
+                let name = format!("{}#{}", before.path.display(), before.version);
+                Arc::new(FileSummary::extract(&ParsedFile::parse(&name, before.text.clone())))
+            });
+            let new = self.open_summary(&current);
+            let same = same_declarations(&old, &new)
+                && old.laravel == new.laravel
+                && old.symfony == new.symfony
+                && old.meta == new.meta
+                && old.class_likes.len() == new.class_likes.len();
+            if !same {
+                self.shared.modification.fetch_add(1, Ordering::SeqCst);
+                continue;
+            }
+            // Same declarations, some of them moved: only the models holding
+            // their positions are dropped (and what framework support read
+            // from the classes, which holds positions too).
+            let moved: Vec<String> = old
+                .class_likes
+                .iter()
+                .zip(&new.class_likes)
+                .filter(|(was, now)| was != now)
+                .map(|(_, now)| now.fqn.clone())
+                .collect();
+            if !moved.is_empty() {
+                let generation = self.shared.modification.load(Ordering::SeqCst);
+                self.shared.types.forget_classes(generation, &moved);
+                self.shared.moves.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// The count Laravel and Symfony support cache what they read from
+    /// classes for: [`modification_count`](Self::modification_count), and
+    /// moved declarations too (their caches keep positions).
+    pub(crate) fn framework_count(&self) -> u64 {
+        self.modification_count() + self.shared.moves.load(Ordering::SeqCst)
     }
 
     /// The indexes, once the engine is active.
@@ -635,7 +733,21 @@ impl PhpEngine {
         if changed.is_empty() && removed.is_empty() {
             return;
         }
-        self.shared.modification.fetch_add(1, Ordering::SeqCst);
+        // An editor saving an open document: the engine already answers from
+        // that text.
+        let saves: Vec<&PathBuf> = changed
+            .iter()
+            .filter(|path| {
+                self.open_document(path).is_some_and(|document| {
+                    !document.embedded && std::fs::read_to_string(path).is_ok_and(|disk| *disk == *document.text)
+                })
+            })
+            .collect();
+        let only_saves = removed.is_empty() && saves.len() == changed.len();
+        self.shared.saved.lock().extend(saves.into_iter().cloned());
+        if !only_saves {
+            self.shared.modification.fetch_add(1, Ordering::SeqCst);
+        }
         let mut q = self.shared.queue.lock();
         if !q.rescan {
             for p in removed {
@@ -689,10 +801,16 @@ impl PhpEngine {
         if version < document.version || document.embedded {
             return;
         }
+        let before = document.clone();
         document.version = version;
         document.text = Arc::from(text);
         drop(documents);
-        self.shared.modification.fetch_add(1, Ordering::SeqCst);
+        // Whether other files see a change is decided when a cache next asks
+        // (`settle_edits`), not on every keystroke.
+        let old =
+            self.shared.open_summaries.lock().get(&doc).filter(|(v, _)| *v == before.version).map(|(_, s)| s.clone());
+        self.shared.unsettled.lock().entry(doc).or_insert((before, old));
+        self.shared.edits.fetch_add(1, Ordering::SeqCst);
         self.shared.inspections.schedule(doc);
     }
 
@@ -752,7 +870,7 @@ impl PhpEngine {
     /// Settings › PHP › Laravel can force detection on or off and limit the
     /// modules read ([`PhpEngine::set_laravel_settings`]).
     pub fn laravel(&self) -> Option<Arc<LaravelProject>> {
-        let modification = self.modification_count();
+        let modification = self.framework_count();
         let settings = self.laravel_settings();
         if settings.detection == LaravelDetection::Disabled {
             return None;
@@ -886,7 +1004,7 @@ impl PhpEngine {
     /// buffers first), or `None` when the project isn't a Laravel project.
     /// Read again when the modification count moves.
     pub fn laravel_config(&self) -> Option<Arc<ConfigKeys>> {
-        let modification = self.modification_count();
+        let modification = self.framework_count();
         if let Some((at, keys)) = &*self.shared.laravel_config.lock()
             && *at == modification
         {
@@ -916,7 +1034,7 @@ impl PhpEngine {
         slot: &Mutex<Option<(u64, Arc<T>)>>,
         build: impl FnOnce(&LaravelProject) -> T,
     ) -> Option<Arc<T>> {
-        self.laravel_cached_for(self.modification_count(), slot, |project, _| build(project))
+        self.laravel_cached_for(self.framework_count(), slot, |project, _| build(project))
     }
 
     /// [`laravel_cached`](Self::laravel_cached) for `generation` (a
@@ -951,7 +1069,7 @@ impl PhpEngine {
     /// The translation keys of the Laravel project (`lang/`, open buffers
     /// first), or `None` when the project isn't a Laravel project.
     pub fn laravel_translations(&self) -> Option<Arc<Translations>> {
-        self.laravel_cached_for(self.modification_count(), &self.shared.laravel_lang, |project, previous| {
+        self.laravel_cached_for(self.framework_count(), &self.shared.laravel_lang, |project, previous| {
             Translations::read_parts(project, self, previous)
         })
     }
@@ -1001,7 +1119,7 @@ impl PhpEngine {
     /// open buffers first), or `None` when the project isn't a Laravel
     /// project. Read again when the modification count moves.
     pub fn laravel_routes(&self) -> Option<Arc<RouteTable>> {
-        let modification = self.modification_count();
+        let modification = self.framework_count();
         if let Some((at, routes)) = &*self.shared.laravel_routes.lock()
             && *at == modification
         {
@@ -1018,7 +1136,7 @@ impl PhpEngine {
     /// isn't a Laravel project. Read again when the modification count
     /// moves.
     pub fn laravel_views(&self) -> Option<Arc<ViewTable>> {
-        let modification = self.modification_count();
+        let modification = self.framework_count();
         if let Some((at, views)) = &*self.shared.laravel_views.lock()
             && *at == modification
         {
@@ -1034,7 +1152,7 @@ impl PhpEngine {
     /// or `None` when the project isn't a Laravel project. Read again when
     /// the modification count moves.
     pub fn laravel_blade(&self) -> Option<Arc<BladeCatalog>> {
-        let modification = self.modification_count();
+        let modification = self.framework_count();
         if let Some((at, catalog)) = &*self.shared.laravel_blade.lock()
             && *at == modification
         {
@@ -1588,6 +1706,22 @@ impl Shared {
         let started = Instant::now();
         let stats = index.update(&update, &drop, &self.cancel)?;
         log_stats("update", &stats, started);
+        let only_saves = {
+            let mut saved = self.saved.lock();
+            let only = drop.is_empty() && update.iter().all(|path| saved.contains(&normalize(path)));
+            for path in &update {
+                saved.remove(&normalize(path));
+            }
+            only
+        };
+        if only_saves {
+            // Open buffers saved: what the engine answers from didn't change.
+            let (files, declarations) = index.counts()?;
+            let mut status = self.status.lock();
+            status.files = files;
+            status.declarations = declarations;
+            return Ok(());
+        }
         // Caches filled between the batch arriving and now saw the old index.
         self.modification.fetch_add(1, Ordering::SeqCst);
         let (files, declarations) = index.counts()?;
@@ -1712,4 +1846,50 @@ fn log_stats(what: &str, stats: &IndexStats, started: Instant) {
         stats.removed,
         started.elapsed().as_millis()
     );
+}
+
+/// Whether two versions of a file declare the same things to other files:
+/// their summaries equal but for positions (an edit in one body moves the
+/// declarations after it) and the parse error flag. A script (no class or
+/// function: routes, config, translations) and a service provider are
+/// never the same, as framework support reads their code, not just their
+/// declarations.
+fn same_declarations(old: &FileSummary, new: &FileSummary) -> bool {
+    let script = |s: &FileSummary| s.class_likes.is_empty() && s.functions.is_empty();
+    let provider = |s: &FileSummary| {
+        s.class_likes.iter().any(|class| class.extends.iter().any(|parent| parent.ends_with("ServiceProvider")))
+    };
+    if script(old) || script(new) || provider(old) || provider(new) {
+        return false;
+    }
+    match (serde_json::to_value(old), serde_json::to_value(new)) {
+        (Ok(mut old), Ok(mut new)) => {
+            without_positions(&mut old);
+            without_positions(&mut new);
+            old == new
+        }
+        _ => false,
+    }
+}
+
+/// Drops every [`Loc`](crate::summary::Loc) (an object of exactly `start`,
+/// `end` and `range`) and the `has_errors` flag from a serialized summary.
+fn without_positions(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            map.remove("has_errors");
+            for field in map.values_mut() {
+                let is_loc = field.as_object().is_some_and(|loc| {
+                    loc.len() == 3 && loc.contains_key("start") && loc.contains_key("end") && loc.contains_key("range")
+                });
+                if is_loc {
+                    *field = serde_json::Value::Null;
+                } else {
+                    without_positions(field);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(without_positions),
+        _ => {}
+    }
 }

@@ -303,6 +303,30 @@ impl TypeCache {
     fn insert_symfony(&self, generation: u64, project: Arc<SymfonyProject>) {
         self.state.write().at(generation).symfony = Some(project);
     }
+
+    /// Drops the models of the class-likes `fqns` and of every class-like
+    /// built on them (extending, implementing, using or mixing them in),
+    /// keeping the rest of `generation`: an edit inside a body of the file
+    /// declaring them moved their members, nothing else.
+    pub fn forget_classes(&self, generation: u64, fqns: &[String]) {
+        let mut state = self.state.write();
+        if state.generation != generation || fqns.is_empty() {
+            return;
+        }
+        let names: Vec<String> = fqns.iter().map(|fqn| fqn.trim_start_matches('\\').to_ascii_lowercase()).collect();
+        let named = |fqn: &String| names.iter().any(|name| fqn.trim_start_matches('\\').eq_ignore_ascii_case(name));
+        state.models.retain(|key, model| {
+            if names.contains(key) {
+                return false;
+            }
+            let Some(model) = model else { return true };
+            !(named(&model.class.fqn)
+                || model.parents.iter().any(named)
+                || model.interfaces.iter().any(named)
+                || model.traits.iter().any(named)
+                || model.mixins.iter().any(named))
+        });
+    }
 }
 
 /// Where a type is used: what `self`, `parent`, `static` and `$this` mean.

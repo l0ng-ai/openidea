@@ -1933,7 +1933,8 @@ impl PhpEngine {
     /// type)`, sorted by name; the types of one name joined), for the Blade
     /// compiler. Empty outside Laravel projects and for other files.
     pub fn laravel_view_variables(&self, path: &Path) -> Arc<Vec<(String, String)>> {
-        let modification = self.modification_count();
+        // Read from the bodies of the controllers that render the view: every edit counts.
+        let modification = self.edit_count();
         let path = crate::project::normalize(path);
         if let Some(found) = self.view_variables_cache().lock().get(&path).filter(|(at, _)| *at == modification) {
             return found.1.clone();

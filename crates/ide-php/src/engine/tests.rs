@@ -336,6 +336,95 @@ fn resolved_types_are_dropped_on_edit() {
     assert_eq!(engine.resolver().function_return(r"App\a"), Some(Type::Int));
 }
 
+const SHOP: &str = "<?php\nnamespace App;\n\nclass Shop\n{\n    public function open(): void\n    {\n        $a = 1;\n    }\n\n    public function close(): int { return 1; }\n}\n";
+
+/// The line of method `name` of `App\Shop` in the current class model.
+fn method_line(engine: &PhpEngine, name: &str) -> u32 {
+    let model = engine.class_model("App\\Shop").unwrap();
+    model.method(name).unwrap().declared().unwrap().name_loc.range.start.line
+}
+
+#[test]
+fn edits_inside_bodies_keep_the_caches() {
+    let f = Fixture::new();
+    let shop = f.write("src/Shop.php", SHOP);
+    f.write("src/Bank.php", "<?php\nnamespace App;\n\nclass Bank { public function pay(): int { return 1; } }\n");
+    let engine = f.open();
+    let doc = DocId::next();
+    engine.document_opened(doc, &shop, 1, SHOP);
+    assert_eq!(method_line(&engine, "close"), 10);
+    let bank = engine.class_model(r"App\Bank").unwrap();
+    let before = engine.modification_count();
+
+    // Typing inside a body: the declarations are the same, the caches stay.
+    let typed = SHOP.replace("$a = 1;", "$a = 1;\n        $b = $this->");
+    engine.document_changed(doc, 2, &typed);
+    assert_eq!(engine.modification_count(), before, "a body edit leaves the count alone");
+    assert!(Arc::ptr_eq(&bank, &engine.class_model(r"App\Bank").unwrap()), "other classes stay cached");
+    // The class's own model is built again: its members moved down a line.
+    assert_eq!(method_line(&engine, "close"), 11);
+
+    // A changed signature is seen everywhere.
+    engine.document_changed(doc, 3, &typed.replace("close(): int", "close(): string"));
+    assert!(engine.modification_count() > before, "a signature edit moves the count");
+    assert!(!Arc::ptr_eq(&bank, &engine.class_model(r"App\Bank").unwrap()));
+    engine.document_closed(doc);
+}
+
+#[test]
+fn edits_changing_an_inferred_return_count() {
+    let f = Fixture::new();
+    let text = "<?php\nnamespace App;\n\nclass User\n{\n    public function posts()\n    {\n        return $this->hasMany(Post::class);\n    }\n}\n";
+    let user = f.write("src/User.php", text);
+    let engine = f.open();
+    let doc = DocId::next();
+    engine.document_opened(doc, &user, 1, text);
+    let before = engine.modification_count();
+    // A relation's target is read from its body: other files see it.
+    engine.document_changed(doc, 2, &text.replace("Post::class", "Comment::class"));
+    assert!(engine.modification_count() > before, "the method's inferred return changed");
+    engine.document_closed(doc);
+}
+
+#[test]
+fn edits_of_scripts_always_count() {
+    let f = Fixture::new();
+    let routes = f.write("src/routes.php", "<?php\nfoo(function () { return 1; });\n");
+    let engine = f.open();
+    let doc = DocId::next();
+    engine.document_opened(doc, &routes, 1, "<?php\nfoo(function () { return 1; });\n");
+    let before = engine.modification_count();
+    engine.document_changed(doc, 2, "<?php\nfoo(function () { return 2; });\n");
+    assert!(engine.modification_count() > before, "routes, config and translations are read as text");
+    engine.document_closed(doc);
+}
+
+#[test]
+fn saving_an_open_buffer_keeps_the_caches() {
+    let f = Fixture::new();
+    let shop = f.write("src/Shop.php", SHOP);
+    let engine = f.open();
+    let doc = DocId::next();
+    let typed = SHOP.replace("$a = 1;", "$a = 2;");
+    engine.document_opened(doc, &shop, 1, SHOP);
+    engine.document_changed(doc, 2, &typed);
+    assert_eq!(method_line(&engine, "close"), 10);
+    let before = engine.modification_count();
+
+    // The editor saves: the watcher reports the file with the buffer's text.
+    std::fs::write(&shop, &typed).unwrap();
+    engine.files_changed(std::slice::from_ref(&shop), &[]);
+    assert!(engine.wait_idle(WAIT));
+    assert_eq!(engine.modification_count(), before, "a save changes nothing the engine answers from");
+
+    // Written by something else: the file on disk differs from the buffer.
+    std::fs::write(&shop, SHOP.replace("Shop", "Store")).unwrap();
+    engine.files_changed(std::slice::from_ref(&shop), &[]);
+    assert!(engine.wait_idle(WAIT));
+    assert!(engine.modification_count() > before);
+    engine.document_closed(doc);
+}
+
 #[test]
 fn expression_type_at_a_position() {
     use crate::types::Type;
