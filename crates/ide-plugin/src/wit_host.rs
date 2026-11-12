@@ -1259,6 +1259,11 @@ impl events::Host for StoreData {
         {
             return Ok(Err(to_wit(e)));
         }
+        if kind == EventKind::DocumentChanged {
+            return Ok(Err(wit::Error::Invalid(
+                "document-changed is delivered only for paths named with subscribe-paths".into(),
+            )));
+        }
         if let Some(cap) = kind.capability()
             && let Err(e) = self.require(cap)
         {
@@ -1271,6 +1276,14 @@ impl events::Host for StoreData {
     fn subscribe_paths(&mut self, kind: String, globs: Vec<String>) -> Fallible<()> {
         if let Err(e) = self.require(Capability::Events) {
             return Ok(Err(e));
+        }
+        if kind == EventKind::DocumentChanged.name() {
+            if let Err(e) = self.host.require_api(&kind, 6) {
+                return Ok(Err(to_wit(e)));
+            }
+            if let Err(e) = self.require(Capability::ProjectRead).and_then(|_| self.require(Capability::EditorRead)) {
+                return Ok(Err(e));
+            }
         }
         Ok(self.host.subscribe_paths(&kind, globs).map_err(to_wit))
     }

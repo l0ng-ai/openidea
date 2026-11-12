@@ -1761,6 +1761,10 @@ pub mod current {
     pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
         with(|s| {
             require(s, "events")?;
+            if kind == "document-changed" {
+                require(s, "project.read")?;
+                require(s, "editor.read")?;
+            }
             if !matches!(kind, "file-opened" | "file-saved" | "files-changed" | "document-changed")
                 || globs.len() > 64
                 || globs.iter().any(|g| {
@@ -1808,6 +1812,11 @@ pub mod current {
             };
             if let Some(cap) = cap {
                 require(s, cap)?;
+            }
+            if kind == EventKind::DocumentChanged {
+                return Err(Error::Invalid(
+                    "document-changed is delivered only for paths named with subscribe-paths".into(),
+                ));
             }
             s.path_subscriptions.remove(kind.name());
             s.subscriptions.insert(kind);

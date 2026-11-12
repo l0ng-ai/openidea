@@ -577,7 +577,7 @@ then run `openidea-plugin check`.
 | `Plugin::handle_events(events, ctx)`                                                                           | export `event-handler.handle`              | Batches of subscribed events, oldest first, per window.                                                                                                                                                                                                                                                                                                   |
 | `Plugin::activate` / `deactivate`                                                                              | export `lifecycle`                         | Per instance: after a crash or idle reclaim a new one is activated.                                                                                                                                                                                                                                                                                       |
 | `TextEditor::document()` → `{version, text}`                                                                   | `editor.text-editor.document`              | `selections()` are those when the command ran (0-based lines, UTF-16 columns).                                                                                                                                                                                                                                                                            |
-| `Project::document`, `apply_document_edits`, `apply_document_change`                                           | `editor.{document,apply-edits}-at`         | API 1.5: versioned access to an explicitly named open project document from background events. Requires project/editor capabilities; stale edits change nothing.                                                                                                                                                                                          |
+| `Project::document`, `apply_document_edits`                                                                    | `editor.{document,apply-edits}-at`         | API 1.6: versioned access to an explicitly named open project document from background events. Requires `project.read` and `editor.read`/`editor.write`; stale edits change nothing.                                                                                                                                                                      |
 | `WebSocket::{connect,send,drain,close}`                                                                        | `net.websocket-*`                          | API 1.6: project-bound, bounded host-owned WSS transport with secret-filled headers, close state and event-driven wakeups.                                                                                                                                                                                                                                |
 | `Project::{upsert_data_source,remove_data_source,data_sources,set_data_source_credential,connect_data_source}` | `database`                                 | API 1.4: owned project sources; requires `database.sources` and trust. See _Database sources_.                                                                                                                                                                                                                                                            |
 | `host::mcp_stdio_command()`                                                                                    | `mcp.stdio-command`                        | API 1.4: invoking project bridge argv, `None` while off. No URL/token.                                                                                                                                                                                                                                                                                    |
@@ -860,7 +860,7 @@ log/blame return empty lists and diff returns `None`.
 
 | Kind                 | Capability     | Delivered                                                                                                                                  |
 | -------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `document-changed`   | `events`       | API 1.6: a committed, versioned local edit for explicit project-relative path filters; never available unfiltered                          |
+| `document-changed`   | `events`       | API 1.6: a committed local edit as versioned UTF-16 replacements; `subscribe-paths` only, also needs `project.read` and `editor.read`      |
 | `websocket-ready`    | `events`       | API 1.6: a bounded host-owned WebSocket has frames or a final close state to drain                                                         |
 | `file-opened`        | `events`       | a file opens in an editor                                                                                                                  |
 | `file-closed`        | `events`       | API 1.4, `Event::Other`: JSON path string                                                                                                  |
@@ -924,13 +924,14 @@ accept it. A plugin may hold eight connections; dropping the handle closes it.
 Incoming frames use a separate bounded FIFO. Activate on
 `on-event:websocket-ready`, then call `drain`; the returned batch includes the
 final `closed` state. Queue overflow rejects the new frame and closes the
-connection instead of reporting delivery or growing memory.
+connection instead of reporting delivery or growing memory. Connections are
+removed on disconnect, plugin stop or transport failure.
 
 Native plugin tests use the same `WebSocket` wrapper with `MockHost`. Inspect
 opened connections and outbound frames with `websockets`, queue an inbound
 binary frame with `push_websocket_message`, and finish the peer side with
 `close_websocket`. The mock expands declared secret placeholders, enforces the
-network grant and project binding, records outbound frames, and reports
+network grant and project binding, and reports
 the final close only after queued frames have drained.
 
 Provider calls can use `host::project_of(&doc.path)` (`workspace.project-of`)

@@ -1,6 +1,7 @@
 //! Project-relative event filters, kept with runtime subscriptions across idle reclaim.
 use super::{LoadedPlugin, PluginHost};
 use globset::{GlobBuilder, GlobMatcher};
+use ide_extension::Capability;
 use ide_plugin::{EventKind, HostError, WorkbenchEvent};
 use std::{
     collections::{BTreeSet, HashMap},
@@ -149,14 +150,21 @@ impl PluginHost {
                 if plugin.dev_root.as_deref().is_some_and(|r| r != root) {
                     return None;
                 }
-                let relative = path.strip_prefix(&root).ok()?.to_string_lossy().replace('\\', "/");
                 if let WorkbenchEvent::DocumentChanged(change) = event {
-                    let filter = filters.and_then(|filters| filters.get(event.kind().name()));
-                    return filter.is_none_or(|filter| filter.matches(&root, path)).then(|| {
-                        let mut change = change.clone();
-                        change.path = relative;
-                        WorkbenchEvent::DocumentChanged(change)
-                    });
+                    // Typed text: only for plugins that may read editors, and only for paths they named.
+                    let filter = filters.and_then(|filters| filters.get(event.kind().name()))?;
+                    let granted = &plugin.meta.lock().granted;
+                    if !granted.contains(&Capability::ProjectRead)
+                        || !granted.contains(&Capability::EditorRead)
+                        || !filter.matches(&root, path)
+                    {
+                        return None;
+                    }
+                    let real = ide_plugin::resolve_real(path);
+                    let relative = real.strip_prefix(ide_plugin::resolve_real(&root)).ok()?;
+                    let mut change = change.clone();
+                    change.path = relative.to_string_lossy().replace('\\', "/");
+                    return Some(WorkbenchEvent::DocumentChanged(change));
                 }
                 filters
                     .and_then(|filters| filters.get(event.kind().name()))
