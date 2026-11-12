@@ -1,0 +1,8 @@
+/*
+ * xterm reads IME commits from its hidden textarea. Its `white-space: nowrap` makes WebKit
+ * store a typed trailing space as U+00A0, so a space committed by an IME (Fcitx5 on Linux)
+ * reached the shell as a non-breaking space. `pre` keeps the line unwrapped and the space a space.
+ */
+.xterm textarea.xterm-helper-textarea {
+  white-space: pre;
+}
