@@ -283,6 +283,19 @@ describe("commit inclusion", () => {
     ]);
   });
 
+  it("leaves out a file added to the index and then deleted, which no group lists", () => {
+    const files = [fs("src/A.java", null, "modified"), fs("src/Gone.java", "added", "deleted")];
+    expect(
+      buildChangeTree(files, "/r", false)
+        .flatMap((g) => g.children ?? [])
+        .map((n) => n.label),
+    ).toEqual(["A.java"]);
+    const plan = planCommit(files, new Map());
+    expect(plan.stage).toEqual(["/r/src/A.java"]);
+    expect(plan.exclude).toEqual(["/r/src/Gone.java"]);
+    expect(plan.included.map((f) => f.relPath)).toEqual(["src/A.java"]);
+  });
+
   it("aggregates checkbox state for groups", () => {
     const checks = new Map<string, CheckState>();
     expect(aggregateCheck([status[0]!, status[3]!], checks)).toMatchObject({ checked: true, indeterminate: false });
