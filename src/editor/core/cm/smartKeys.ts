@@ -279,10 +279,12 @@ function rustTypePosition(state: EditorState, pos: number): boolean {
  * `Box`, `fun <T>`), never a lowercase value (`a < b`).
  */
 function cLikeTypePosition(state: EditorState, pos: number): boolean {
-  let token: ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]> | null = null;
-  for (let cur = syntaxTree(state).topNode.firstChild; cur; cur = cur.nextSibling)
-    if (cur.to <= pos && /^[ \t]*$/.test(state.sliceDoc(cur.to, pos))) token = cur;
-  if (!token) return false;
+  // The token ending where the spaces and tabs before the caret start.
+  const lineStart = state.doc.lineAt(pos).from;
+  let end = pos;
+  while (end > lineStart && /[ \t]/.test(state.sliceDoc(end - 1, end))) end--;
+  const token = syntaxTree(state).resolveInner(end, -1);
+  if (token.to !== end || !token.parent) return false;
   // Kotlin puts a function's type parameters right after the `fun` keyword.
   if (token.name === "keyword") return state.sliceDoc(token.from, token.to) === "fun";
   return /^(?:typeName|variableName)/.test(token.name) && /^[A-Z]/.test(state.sliceDoc(token.from, token.to));
