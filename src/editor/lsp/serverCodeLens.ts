@@ -1,5 +1,5 @@
 /** Language-server and plugin lenses in the shared editor code-vision renderer. */
-import { StateEffect, StateField, type Extension } from "@codemirror/state";
+import { MapMode, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { codeLenses, shownAgain, whenSynced, type CodeLens, type EditorDocContext } from "@/editor/api";
 import { call, commands } from "@/platform/ipc";
@@ -11,7 +11,14 @@ const field = StateField.define<CodeLens[]>({
   create: () => [],
   update(value, tr) {
     for (const e of tr.effects) if (e.is(set)) return e.value;
-    return tr.docChanged ? [] : value;
+    // Map through edits so block widgets don't vanish/reappear and thrash scroll (#2710).
+    if (!tr.docChanged || !value.length) return value;
+    const out: CodeLens[] = [];
+    for (const l of value) {
+      const pos = tr.changes.mapPos(l.pos, -1, MapMode.TrackDel);
+      if (pos !== null) out.push({ ...l, pos });
+    }
+    return out;
   },
   provide: (f) => codeLenses.from(f),
 });
