@@ -687,6 +687,8 @@ async fn java_classpath_waits_for_a_config_restart_that_is_reaping_startup() {
             assert!(result.unwrap_err().message.contains("restart configuration error"));
         } else {
             assert!(result.is_ok(), "a configuration restart is transient: {result:?}");
+            // The module folder resolves to the instance serving its files, not a second one.
+            assert_eq!(h.mgr.servers().len(), 1);
             assert_eq!(state.launches.load(Ordering::SeqCst), 2);
             assert_eq!(h.mgr.servers()[0].id != old, shared);
         }
