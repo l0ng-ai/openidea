@@ -379,6 +379,12 @@ impl PhpEngine {
         self.laravel_blade().map(|catalog| catalog.directive_names()).unwrap_or_default()
     }
 
+    /// The Structure view of a template ([`crate::blade::structure::outline`]),
+    /// with the project's custom directives.
+    pub fn blade_outline(&self, text: &str) -> Vec<ide_core::OutlineItem> {
+        crate::blade::structure::outline(text, &self.custom_directives())
+    }
+
     /// Completion of the directive name after an `@` at `pos`: the built-in
     /// directives and, in a Laravel project, the custom ones.
     pub fn blade_directive_completion(&self, text: &str, pos: Pos) -> Option<Completions> {

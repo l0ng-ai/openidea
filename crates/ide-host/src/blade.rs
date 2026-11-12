@@ -143,6 +143,15 @@ impl LanguageService for BladeService {
         Some(Ok(item))
     }
 
+    fn document_symbols(&self, doc: DocId) -> Answer<Option<Vec<ide_core::OutlineItem>>> {
+        let info = self.info(doc)?;
+        let outline = match self.php.engine() {
+            Some(engine) => engine.blade_outline(&info.text),
+            None => ide_php::blade::structure::outline(&info.text, &[]),
+        };
+        Some(Ok(Some(outline)))
+    }
+
     fn hover(&self, doc: DocId, pos: Pos, _cancel: &CancellationToken) -> Answer<Option<Hover>> {
         let info = self.info(doc)?;
         let hover = self.php.engine().and_then(|engine| engine.blade_hover(&blade(&info), pos)).map(|hover| Hover {

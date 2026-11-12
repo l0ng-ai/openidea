@@ -12,7 +12,7 @@
 
 use std::ops::Range as Span;
 
-use ide_core::{Diagnostic, Range, Severity};
+use ide_core::{Diagnostic, OutlineItem, Range, Severity, SymbolKind};
 
 use super::{NodeKind, parse_with, string_args};
 use crate::syntax::LineIndex;
@@ -318,4 +318,145 @@ pub fn inspect(text: &str, custom: &[String]) -> Vec<Diagnostic> {
     }
     out.sort_by_key(|d| (d.range.start.line, d.range.start.col));
     out
+}
+
+/// Control-flow blocks of the [`outline`] and what closes each (besides
+/// `@end<name>`).
+const BLOCKS: &[(&str, &[&str])] = &[
+    ("if", &[]),
+    ("unless", &[]),
+    ("isset", &[]),
+    ("empty", &[]),
+    ("auth", &[]),
+    ("guest", &[]),
+    ("can", &[]),
+    ("cannot", &[]),
+    ("canany", &[]),
+    ("env", &[]),
+    ("production", &[]),
+    ("switch", &[]),
+    ("foreach", &[]),
+    ("forelse", &[]),
+    ("for", &[]),
+    ("while", &[]),
+    ("component", &[]),
+    ("slot", &[]),
+    ("once", &[]),
+    ("error", &[]),
+    ("fragment", &[]),
+    ("session", &[]),
+    ("verbatim", &[]),
+    ("php", &[]),
+];
+
+/// Directives shown as single entries of the [`outline`].
+const LEAVES: &[(&str, SymbolKind)] = &[
+    ("extends", SymbolKind::File),
+    ("include", SymbolKind::File),
+    ("includeIf", SymbolKind::File),
+    ("includeWhen", SymbolKind::File),
+    ("includeUnless", SymbolKind::File),
+    ("includeFirst", SymbolKind::File),
+    ("each", SymbolKind::File),
+    ("livewire", SymbolKind::File),
+    ("yield", SymbolKind::Module),
+    ("stack", SymbolKind::Module),
+    ("props", SymbolKind::Property),
+    ("aware", SymbolKind::Property),
+];
+
+/// The template's structure for the Structure view: its sections and
+/// stack pushes, the control-flow blocks (`@if`, `@foreach`, `@can`, …)
+/// with what they contain, the views it extends or includes, the
+/// sections and stacks it shows, and its component tags. A block left
+/// open runs to the end of the text.
+pub fn outline(text: &str, custom: &[String]) -> Vec<OutlineItem> {
+    let lines = LineIndex::new(text);
+    // Open blocks: the entry, and the directive names that close it.
+    let mut stack: Vec<(OutlineItem, Vec<String>, u32)> = Vec::new();
+    let mut roots: Vec<OutlineItem> = Vec::new();
+    let finish =
+        |item: OutlineItem, stack: &mut Vec<(OutlineItem, Vec<String>, u32)>, roots: &mut Vec<OutlineItem>| match stack
+            .last_mut()
+        {
+            Some((parent, _, _)) => parent.children.push(item),
+            None => roots.push(item),
+        };
+    let entry = |name: String, kind: SymbolKind, span: &Span<u32>, selection: &Span<u32>| OutlineItem {
+        name,
+        detail: None,
+        kind,
+        range: lines.range(span.start, span.end),
+        selection_range: lines.range(selection.start, selection.end),
+        children: Vec::new(),
+        visibility: None,
+    };
+    // Directives and component tags, in text order.
+    let mut events: Vec<(u32, Option<super::Node>, Option<super::tags::ComponentTag>)> = parse_with(text, custom)
+        .into_iter()
+        .filter(|node| matches!(node.kind, NodeKind::Directive { .. }))
+        .map(|node| (node.span.start, Some(node), None))
+        .collect();
+    events.extend(super::tags::component_tags(text).into_iter().map(|tag| (tag.start, None, Some(tag))));
+    events.sort_by_key(|(at, _, _)| *at);
+    for (_, node, tag) in events {
+        if let Some(tag) = tag {
+            let name = format!("<x-{}>", tag.name(text));
+            let item = entry(name, SymbolKind::Class, &(tag.start..tag.end), &tag.name);
+            finish(item, &mut stack, &mut roots);
+            continue;
+        }
+        let Some(node) = node else { continue };
+        let NodeKind::Directive { name } = &node.kind else { continue };
+        let lower = name.to_ascii_lowercase();
+        // A closer: the innermost open block it closes, and those inside it.
+        if let Some(at) = stack.iter().rposition(|(_, closers, _)| closers.contains(&lower)) {
+            while stack.len() > at {
+                let (mut item, _, start) = stack.pop().expect("open block");
+                let end = if stack.len() == at { node.span.end } else { node.span.start };
+                item.range = lines.range(start, end);
+                finish(item, &mut stack, &mut roots);
+            }
+            continue;
+        }
+        let label = match &node.code {
+            Some(code) => format!("@{name}({})", text[code.start as usize..code.end as usize].trim()),
+            None => format!("@{name}"),
+        };
+        let label = if label.chars().count() > 80 {
+            format!("{}…", label.chars().take(79).collect::<String>())
+        } else {
+            label
+        };
+        let selection = node.span.start..node.span.start + 1 + name.len() as u32;
+        let args = node.code.as_ref().map(|code| arguments(text, code)).unwrap_or_default();
+        let opener = OPENERS.iter().find(|opener| opener.open.iter().any(|open| open.eq_ignore_ascii_case(name)));
+        if let Some(opener) = opener {
+            if opener.inline_args.is_some_and(|inline| args.len() >= inline) {
+                finish(entry(label, SymbolKind::Module, &node.span, &selection), &mut stack, &mut roots);
+            } else {
+                let closers = opener.close.iter().map(|close| close.to_ascii_lowercase()).collect();
+                stack.push((entry(label, SymbolKind::Module, &node.span, &selection), closers, node.span.start));
+            }
+        } else if let Some((block, more)) = BLOCKS.iter().find(|(block, _)| block.eq_ignore_ascii_case(name)) {
+            // `@php($x = 1)` is a statement, not a block, and a bare
+            // `@empty` is the empty branch of `@forelse`.
+            let statement = *block == "php" && node.code.is_some();
+            let branch = *block == "empty" && node.code.is_none();
+            if statement || branch {
+                continue;
+            }
+            let mut closers = vec![format!("end{block}")];
+            closers.extend(more.iter().map(|close| close.to_ascii_lowercase()));
+            stack.push((entry(label, SymbolKind::Namespace, &node.span, &selection), closers, node.span.start));
+        } else if let Some((_, kind)) = LEAVES.iter().find(|(leaf, _)| leaf.eq_ignore_ascii_case(name)) {
+            finish(entry(label, *kind, &node.span, &selection), &mut stack, &mut roots);
+        }
+    }
+    let end = text.len() as u32;
+    while let Some((mut item, _, start)) = stack.pop() {
+        item.range = lines.range(start, end);
+        finish(item, &mut stack, &mut roots);
+    }
+    roots
 }

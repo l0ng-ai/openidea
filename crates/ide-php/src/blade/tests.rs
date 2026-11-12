@@ -692,3 +692,39 @@ fn goto_a_vue_component_from_its_tag() {
             .is_none()
     );
 }
+
+#[test]
+fn outline_nests_blocks_and_lists_sections_includes_and_components() {
+    use crate::blade::structure::outline;
+    let text = "@extends('layouts.app')\n\n@section('title', $title)\n\n@section('content')\n    @php($n = 1)\n    @foreach ($posts as $post)\n        @include('posts._card', ['post' => $post])\n        <x-alert :message=\"$post->title\" />\n    @endforeach\n    @forelse ($tags as $tag)\n        {{ $tag }}\n    @empty\n        none\n    @endforelse\n@endsection\n\n@push('scripts')\n    @can('edit')\n";
+    let shape = |items: &[ide_core::OutlineItem]| -> Vec<String> {
+        fn walk(items: &[ide_core::OutlineItem], depth: usize, out: &mut Vec<String>) {
+            for item in items {
+                out.push(format!("{}{} {}", "  ".repeat(depth), item.name, item.range.start.line));
+                walk(&item.children, depth + 1, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(items, 0, &mut out);
+        out
+    };
+    let items = outline(text, &[]);
+    assert_eq!(
+        shape(&items),
+        [
+            "@extends('layouts.app') 0",
+            "@section('title', $title) 2",
+            "@section('content') 4",
+            "  @foreach($posts as $post) 6",
+            "    @include('posts._card', ['post' => $post]) 7",
+            "    <x-alert> 8",
+            "  @forelse($tags as $tag) 10",
+            // Left open: they run to the end.
+            "@push('scripts') 17",
+            "  @can('edit') 18",
+        ]
+    );
+    // A block spans its closer.
+    assert_eq!(items[2].range.end.line, 15);
+    assert_eq!(items[3].range.end.line, 19);
+}
