@@ -430,6 +430,9 @@ impl Handler for ClientHandler {
                 crate::kotlin_lsp::record_import_state(&self.server, self.generation, &params)
             }
             "language/status" if self.server.name == "jdtls" && params["type"] == "ServiceReady" => {
+                if self.server.running_gen(self.generation).is_some() {
+                    self.server.set_java_ready();
+                }
                 mgr.java_import_ready(self.server.clone(), self.generation);
             }
             "language/status" if self.server.name == "jdtls" && params["type"] == "ProjectStatus" => {
