@@ -298,6 +298,41 @@ fn split_subcommands(command: &str) -> Vec<&str> {
     out
 }
 
+/// Whether every shell an agent may run `command` in (a POSIX shell, PowerShell, cmd.exe) reads
+/// it as the one command the policy sees. Outside double quotes no separator or redirection may
+/// remain after splitting (cmd.exe takes single quotes literally); `\` may only stand in a
+/// path (it escapes only in POSIX shells); no `^` may escape a quote (cmd.exe); no `%` (cmd.exe
+/// expands it before parsing); no carriage return; no typographic quotes (PowerShell ends
+/// strings at them).
+fn reads_alike_in_every_shell(command: &str) -> bool {
+    let chars: Vec<char> = command.chars().collect();
+    let mut in_double = false;
+    for (i, &c) in chars.iter().enumerate() {
+        let next = chars.get(i + 1).copied();
+        match c {
+            '"' => in_double = !in_double,
+            '\\' if !next.is_none_or(|n| n.is_ascii_alphanumeric() || matches!(n, '\\' | '.' | '_' | '-')) => {
+                return false;
+            }
+            '^' if matches!(next, Some('"' | '\'' | '\n' | '\r')) => return false,
+            '%' | '\r' | '\u{2018}'..='\u{201f}' => return false,
+            ';' | '&' | '|' | '<' | '>' | '\n' if !in_double => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
+/// A command as blocked patterns are compared with it: lower case, single spaces, and the
+/// program without its folder or `.exe` (`/bin/rm` and `RM.EXE` are `rm`).
+fn normalized_for_blocking(command: &str) -> String {
+    let mut words = command.split_whitespace().map(str::to_lowercase);
+    let Some(program) = words.next() else { return String::new() };
+    let program = program.rsplit(['/', '\\']).next().unwrap_or(&program);
+    let program = program.strip_suffix(".exe").unwrap_or(program);
+    std::iter::once(program.to_owned()).chain(words).collect::<Vec<_>>().join(" ")
+}
+
 /// Evaluates `command` against `settings`:
 /// 1. Blacklist takes precedence: if the full command or any sub-command matches a
 ///    `blocked_commands` entry, returns [`PolicyDecision::Blocked`].
@@ -312,12 +347,18 @@ pub fn evaluate_command(command: &str, settings: &AgentSecuritySettings) -> Poli
     }
     let subcommands = split_subcommands(cmd);
 
+    let normalized: Vec<String> =
+        std::iter::once(cmd).chain(subcommands.iter().copied()).map(normalized_for_blocking).collect();
     for pat in &settings.blocked_commands {
         let pat = pat.trim();
         if pat.is_empty() {
             continue;
         }
-        if matches_command(pat, cmd) || subcommands.iter().any(|sub| matches_command(pat, sub)) {
+        let normalized_pat = normalized_for_blocking(pat);
+        if matches_command(pat, cmd)
+            || subcommands.iter().any(|sub| matches_command(pat, sub))
+            || normalized.iter().any(|c| matches_command(&normalized_pat, c))
+        {
             return PolicyDecision::Blocked(pat.to_owned());
         }
     }
@@ -328,7 +369,7 @@ pub fn evaluate_command(command: &str, settings: &AgentSecuritySettings) -> Poli
 
     let all_allowed = subcommands.iter().all(|sub| {
         let s = sub.trim();
-        if s.is_empty() || has_unsafe_shell_syntax(s) {
+        if s.is_empty() || has_unsafe_shell_syntax(s) || !reads_alike_in_every_shell(s) {
             return false;
         }
         settings.allowed_commands.iter().any(|entry| matches_allow_entry(entry, s))
@@ -453,6 +494,58 @@ mod tests {
 
         // Blacklist still takes precedence over whitelist
         assert_eq!(evaluate_command("git status && rm -rf /", &settings), PolicyDecision::Blocked("rm -rf *".into()));
+    }
+
+    /// The command may run in PowerShell or cmd.exe as well as a POSIX shell: what any of them
+    /// would split or expand differently from the policy's reading is never auto-approved.
+    #[test]
+    fn what_another_shell_reads_as_two_commands_is_not_auto_approved() {
+        let settings = AgentSecuritySettings {
+            allowed_commands: vec!["git status".into(), "git commit".into()],
+            blocked_commands: vec![],
+        };
+        for cmd in [
+            // `\` escapes only in POSIX shells.
+            "git status \\; calc.exe",
+            "git status \\& calc.exe",
+            "git status \\| calc.exe",
+            "git status \\\\\\; calc.exe",
+            "git status \"\\\" ; calc.exe ; \\\"\"",
+            // cmd.exe: single quotes don't quote, `^` escapes a quote, `%` expands first.
+            "git status '&' calc.exe",
+            "git status ';' calc.exe",
+            "git status '>' out.txt",
+            "git status ^\" & calc.exe ^\"",
+            "git status %COMSPEC%",
+            // PowerShell also closes a string at a typographic quote.
+            "git status \"a \u{201d} ; calc.exe ; \u{201c} b\"",
+            "git status \u{2018}x\u{2019}",
+            // A carriage return ends the command line too.
+            "git status\r calc.exe",
+        ] {
+            assert_eq!(evaluate_command(cmd, &settings), PolicyDecision::AskUser, "{cmd:?}");
+        }
+        // Text every shell reads alike stays approvable.
+        for cmd in [
+            "git status -s",
+            "git status && git status",
+            "git commit -m \"fix <bug> & (issue); done\"",
+            "git status src\\main.rs C:\\work\\repo",
+            "git status HEAD^",
+        ] {
+            assert_eq!(evaluate_command(cmd, &settings), PolicyDecision::Allowed, "{cmd:?}");
+        }
+    }
+
+    #[test]
+    fn blocked_patterns_ignore_case_spacing_and_the_programs_folder() {
+        let settings = AgentSecuritySettings::default();
+        for cmd in
+            ["rm  -rf /", "RM -RF /", "/bin/rm -rf /", "Rm -Rf  /tmp/x", "C:\\Windows\\System32\\shutdown.exe /s"]
+        {
+            assert!(matches!(evaluate_command(cmd, &settings), PolicyDecision::Blocked(_)), "{cmd:?}");
+        }
+        assert_eq!(evaluate_command("git status", &settings), PolicyDecision::AskUser);
     }
 
     #[test]
