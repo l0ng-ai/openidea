@@ -77,6 +77,62 @@ describe("Windows PTY metadata", () => {
   });
 });
 
+describe("terminal clear output", () => {
+  const write = (session: TerminalSession, data: string) =>
+    new Promise<void>((resolve) => session.term.write(data, resolve));
+  const create = () => {
+    const session = new TerminalSession({ key: "clear", cwd: "/repo", onChange() {}, onFocus() {} });
+    session.term.resize(20, 4);
+    return session;
+  };
+
+  it.each(["\x1b[H\x1b[2J", "\x1b[H\x1b[J"])(
+    "removes scrollback when a program erases the viewport with %s",
+    async (erase) => {
+      const session = create();
+      try {
+        await write(session, "old-1\r\nold-2\r\nold-3\r\nold-4\r\nold-5\r\n");
+        expect(session.term.buffer.active.baseY).toBeGreaterThan(0);
+        await write(session, `${erase}new prompt`);
+        await write(session, "");
+        expect(session.term.buffer.active.baseY).toBe(0);
+        expect(session.term.buffer.active.getLine(0)?.translateToString(true)).toBe("new prompt");
+      } finally {
+        session.dispose();
+      }
+    },
+  );
+
+  it("removes scrollback after ConPTY's full-screen row erase across writes", async () => {
+    const session = create();
+    try {
+      await write(session, "old-1\r\nold-2\r\nold-3\r\nold-4\r\nold-5\r\n");
+      await write(session, "\x1b[Hnew prompt\x1b[K\r\n\x1b[K");
+      await write(session, "\r\n\x1b[K\r\n\x1b[K\x1b[2;1H");
+      await write(session, "");
+      expect(session.term.buffer.active.baseY).toBe(0);
+      expect(session.term.buffer.active.getLine(0)?.translateToString(true)).toBe("new prompt");
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("keeps scrollback for partial row erases and alternate-screen redraws", async () => {
+    const session = create();
+    try {
+      await write(session, "old-1\r\nold-2\r\nold-3\r\nold-4\r\nold-5\r\n");
+      const baseY = session.term.buffer.active.baseY;
+      await write(session, "\x1b[Hnew prompt\x1b[K");
+      expect(session.term.buffer.active.baseY).toBe(baseY);
+      await write(session, "\x1b[?1049h\x1b[H\x1b[2J");
+      await write(session, "\x1b[?1049l");
+      expect(session.term.buffer.active.baseY).toBe(baseY);
+    } finally {
+      session.dispose();
+    }
+  });
+});
+
 describe("openFileLink", () => {
   beforeEach(() => vi.clearAllMocks());
 

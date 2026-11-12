@@ -225,6 +225,7 @@ export class TerminalSession {
   private readonly ptyResize = settledResize((cols, rows) => this.resizePty(cols, rows));
   /** Keystrokes typed while the PTY is still starting; sent as soon as it exists. */
   private pendingInput = "";
+  private fullScreenEraseRow = -1;
   private lastSize = { cols: 0, rows: 0 };
   /** Per-tab font size offset (px) relative to `workflowSettings().terminal.fontSize`. */
   private fontZoom = 0;
@@ -318,6 +319,44 @@ export class TerminalSession {
       this.term.onData((data) => this.fromTerminal(data)),
       this.term.onBinary((data) => this.input(data)),
       this.term.onTitleChange((title) => this.update({ appTitle: title.trim() || null })),
+      // ConPTY turns Clear-Host into home plus one erase-to-end per screen row.
+      this.term.parser.registerCsiHandler({ final: "J" }, (params) => {
+        this.fullScreenEraseRow = -1;
+        const mode = params[0];
+        const fromHome = this.term.buffer.active.cursorX === 0 && this.term.buffer.active.cursorY === 0;
+        if (
+          this.term.buffer.active.type === "normal" &&
+          (mode === 2 || ((mode === undefined || mode === 0) && fromHome))
+        ) {
+          this.term.write("\x1b[3J");
+        }
+        return false;
+      }),
+      this.term.parser.registerCsiHandler({ final: "H" }, (params) => {
+        const home =
+          (params[0] === undefined || params[0] === 0 || params[0] === 1) &&
+          (params[1] === undefined || params[1] === 0 || params[1] === 1);
+        this.fullScreenEraseRow = home && this.term.buffer.active.type === "normal" ? 0 : -1;
+        return false;
+      }),
+      this.term.parser.registerCsiHandler({ final: "K" }, (params) => {
+        if (this.fullScreenEraseRow < 0) return false;
+        const row = this.term.buffer.active.cursorY;
+        const mode = params[0];
+        if (
+          this.term.buffer.active.type !== "normal" ||
+          row !== this.fullScreenEraseRow ||
+          (mode !== undefined && mode !== 0 && mode !== 2)
+        ) {
+          this.fullScreenEraseRow = -1;
+          return false;
+        }
+        if (++this.fullScreenEraseRow === this.term.rows) {
+          this.fullScreenEraseRow = -1;
+          this.term.write("\x1b[3J");
+        }
+        return false;
+      }),
       // OSC 7: `file://host/path` — shells report their cwd so relative links resolve correctly.
       this.term.parser.registerOscHandler(7, (data) => {
         try {
