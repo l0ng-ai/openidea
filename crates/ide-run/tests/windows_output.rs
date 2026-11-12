@@ -8,10 +8,8 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// `cmd`'s own messages reach the pipe in the console code page (GBK, Shift_JIS, EUC-KR,
-/// 437…, by the system's language), and still read right in a UTF-8 console.
-#[test]
-fn native_messages_in_the_console_code_page_are_decoded() {
+/// Stdout and stderr of a shell command line run on pipes in a UTF-8 console.
+fn run(command: &str) -> String {
     let (tx, events) = mpsc::channel();
     let tx = Mutex::new(tx);
     let sink: SharedSink = Arc::new(move |e: IdeEvent| {
@@ -19,10 +17,10 @@ fn native_messages_in_the_console_code_page_are_decoded() {
     });
     let root = tempfile::tempdir().unwrap();
     let config = RunConfig {
-        id: "t:dir".into(),
-        name: "t:dir".into(),
+        id: "t:out".into(),
+        name: "t:out".into(),
         kind: "shell".into(),
-        command: r"dir C:\openidea-no-such-dir".into(),
+        command: command.into(),
         args: Vec::new(),
         cwd: None,
         env: BTreeMap::new(),
@@ -44,14 +42,28 @@ fn native_messages_in_the_console_code_page_are_decoded() {
             _ => {}
         }
     }
-    let text: String = chunks
+    chunks
         .lock()
         .iter()
         .filter_map(|c| match c {
             OutputChunk::Stdout { text } | OutputChunk::Stderr { text } => Some(text.as_str()),
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+/// `cmd`'s own messages reach the pipe in the console code page (GBK, Shift_JIS, EUC-KR,
+/// 437…, by the system's language), and still read right in a UTF-8 console.
+#[test]
+fn native_messages_in_the_console_code_page_are_decoded() {
+    let text = run(r"dir C:\openidea-no-such-dir");
     assert!(text.trim().lines().count() >= 2, "{text:?}");
     assert!(!text.contains('\u{FFFD}'), "{text:?}");
+}
+
+/// `cmd /u` writes UTF-16LE, as `wsl.exe` does; it reads right whatever the system's language.
+#[test]
+fn utf16_output_is_decoded() {
+    let text = run("cmd /u /c echo 中文 한국어 OK");
+    assert_eq!(text, "中文 한국어 OK\r\n");
 }
