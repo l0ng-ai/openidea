@@ -43,8 +43,8 @@ use mago_syntax::cst::{
 use super::Extractor;
 use crate::names::{NameKind, Resolution};
 use crate::summary::{
-    Binding, Cast, Column, CountedRelation, DocType, Loc, ModelCasts, RenamedColumn, RequestRules, RouteFileKind,
-    RoutePath, RouteRegistration, RuleEntry, RuleMethod, Table, counted_spec,
+    Binding, Cast, Column, CountedRelation, DocType, Loc, Macro, Method, ModelCasts, RenamedColumn, RequestRules,
+    RouteFileKind, RoutePath, RouteRegistration, RuleEntry, RuleMethod, Table, Visibility, counted_spec,
 };
 use crate::types::ops::literal_type;
 use crate::types::{LazyType, Type};
@@ -293,6 +293,71 @@ impl Extractor<'_> {
             Expression::Literal(_) => LazyType::mixed(),
             other => self.value_type(other, false),
         }
+    }
+
+    // -------------------------------------------------------------- macros
+
+    /// `Collection::macro('name', function (…) { … })` (or an arrow
+    /// function): the closure as a method named after the macro.
+    pub(super) fn macro_registration(
+        &mut self,
+        class: &Expression<'_>,
+        selector: &ClassLikeMemberSelector<'_>,
+        list: &ArgumentList<'_>,
+        span: Span,
+    ) {
+        if !method_name(selector).is_some_and(|name| name.eq_ignore_ascii_case("macro")) {
+            return;
+        }
+        let Some(class) = self.class_ref(class) else { return };
+        let args = args(list);
+        let (Some(Expression::Literal(Literal::String(name))), Some(callback)) = (args.first(), args.get(1)) else {
+            return;
+        };
+        let Some(text) = name.value.filter(|text| !text.is_empty()) else { return };
+        // The name inside the quotes.
+        let mut name_span = name.span;
+        if name.raw.len() >= 2 {
+            name_span.start.offset += 1;
+            name_span.end.offset -= 1;
+        }
+        let doc = self.doc_at(callback.span().start.offset, &[]);
+        let (params, return_type, inferred_return) = match callback {
+            Expression::Closure(closure) => {
+                let params = self.params(&closure.parameter_list);
+                let return_type = self.return_type(&closure.return_type_hint);
+                let inferred = self
+                    .infers_return(&return_type, &doc)
+                    .then(|| super::infer::body_return(&self.infer(&params, &doc, &[]), &closure.body));
+                (params, return_type, inferred)
+            }
+            Expression::ArrowFunction(arrow) => {
+                let params = self.params(&arrow.parameter_list);
+                let return_type = self.return_type(&arrow.return_type_hint);
+                let inferred = self
+                    .infers_return(&return_type, &doc)
+                    .then(|| self.infer(&params, &doc, &[]).expr(arrow.expression));
+                (params, return_type, inferred)
+            }
+            _ => return,
+        };
+        let method = Method {
+            name: lossy(text),
+            name_loc: self.loc(name_span),
+            loc: self.loc(span),
+            visibility: Visibility::Public,
+            is_static: false,
+            is_abstract: false,
+            is_final: false,
+            by_ref_return: false,
+            params,
+            return_type,
+            inferred_return,
+            attributes: Vec::new(),
+            doc,
+        };
+        let class = class.trim_start_matches('\\').to_owned();
+        self.summary.laravel.macros.push(Macro { class, method, file: None });
     }
 
     // ---------------------------------------------------------- migrations

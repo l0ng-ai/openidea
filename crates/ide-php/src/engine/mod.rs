@@ -1503,6 +1503,35 @@ impl Declarations for PhpEngine {
         facts
     }
 
+    /// The macros of the indexed files registering some (their open
+    /// buffers first) and of open buffers not indexed as such, in path
+    /// order.
+    fn macros(&self) -> Vec<crate::summary::Macro> {
+        let indexed = self.index().and_then(|index| index.macro_files().ok()).unwrap_or_default();
+        let mut summaries: Vec<(PathBuf, Arc<FileSummary>)> =
+            indexed.iter().filter_map(|path| Some((path.clone(), self.shared_summary(path).ok()??))).collect();
+        let open: Vec<OpenDocument> = self.shared.documents.lock().values().cloned().collect();
+        for document in open {
+            if !indexed.contains(&document.path) {
+                let summary = self.open_summary(&document);
+                if !summary.laravel.macros.is_empty() {
+                    summaries.push((document.path.clone(), summary));
+                }
+            }
+        }
+        summaries.sort_by(|a, b| a.0.cmp(&b.0));
+        summaries
+            .iter()
+            .flat_map(|(path, summary)| {
+                summary
+                    .laravel
+                    .macros
+                    .iter()
+                    .map(|found| crate::summary::Macro { file: Some(path.clone()), ..found.clone() })
+            })
+            .collect()
+    }
+
     /// The configuration, then the facts of the indexed files that have
     /// some (their open buffers first) and of open buffers not indexed
     /// yet, in path order.

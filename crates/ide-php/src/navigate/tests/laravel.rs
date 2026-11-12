@@ -232,3 +232,142 @@ fn magic_members_cannot_be_renamed() {
         project.engine.document_closed(doc);
     }
 }
+
+/// Laravel macros (`Collection::macro('name', fn …)`): methods of the class
+/// and its subclasses, through a facade too, for completion, hover, goto
+/// and the call's type; a class whose methods are all static (`Str`) has
+/// static macros.
+#[test]
+fn macros_are_methods_of_their_class() {
+    const MACROABLE: &str = r#"<?php
+namespace Illuminate\Support\Traits {
+    trait Macroable
+    {
+        public static function macro($name, $macro) {}
+        public function __call($method, $parameters) {}
+        public static function __callStatic($method, $parameters) {}
+    }
+}
+namespace Illuminate\Support {
+    class Collection
+    {
+        use \Illuminate\Support\Traits\Macroable;
+        public function all(): array { return []; }
+    }
+    class Str
+    {
+        use \Illuminate\Support\Traits\Macroable;
+        public static function lower(string $value): string { return $value; }
+    }
+}
+namespace Illuminate\Support\Facades {
+    abstract class Facade
+    {
+        public static function __callStatic($method, $args) {}
+    }
+    class Request extends Facade
+    {
+        protected static function getFacadeAccessor() { return \Illuminate\Http\Request::class; }
+    }
+}
+namespace Illuminate\Http {
+    class Request
+    {
+        use \Illuminate\Support\Traits\Macroable;
+        public function path(): string { return ''; }
+    }
+}
+namespace Illuminate\Database\Eloquent {
+    class Collection extends \Illuminate\Support\Collection {}
+}
+"#;
+    const PROVIDER: &str = r#"<?php
+namespace App\Providers;
+
+use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Request;
+
+class AppServiceProvider
+{
+    public function boot(): void
+    {
+        Collection::macro('sortByName', function (string $key = 'name'): Collection {
+            return $this;
+        });
+        Collection::macro('firstName', fn () => 'name');
+        Str::macro('shout', fn (string $value): string => strtoupper($value));
+        Request::macro('isApi', function () {
+            return true;
+        });
+    }
+}
+"#;
+    let mut project =
+        Project::new(&[("lib/macroable.php", MACROABLE), ("app/Providers/AppServiceProvider.php", PROVIDER)]);
+    let body = |code: &str| {
+        format!(
+            "<?php\nnamespace Main;\n\nuse Illuminate\\Support\\{{Collection, Str}};\nuse Illuminate\\Http\\Request;\n\nfunction f(Collection $c, \\Illuminate\\Database\\Eloquent\\Collection $e, Request $r) {{\n{code}\n}}\n"
+        )
+    };
+    let complete = |project: &mut Project, code: &str| {
+        let (text, pos) = caret(&body(code));
+        let doc = project.open(MAIN, &text);
+        let found = project.engine.completion(doc, pos, None, &CancellationToken::new()).expect("handled");
+        project.engine.document_closed(doc);
+        found
+    };
+    let found = complete(&mut project, "$c->/*|*/");
+    assert_eq!(item(&found, "sortByName").1.as_deref(), Some("(string $key = …)"));
+    assert!(has(&found, "firstName") && has(&found, "all"));
+    // Inherited by a subclass; registered through a facade on its service.
+    assert!(has(&complete(&mut project, "$e->/*|*/"), "sortByName"));
+    assert!(has(&complete(&mut project, "$r->/*|*/"), "isApi"));
+    assert!(has(&complete(&mut project, "Str::/*|*/"), "shout"));
+
+    let provider_line = |needle: &str| line_of(PROVIDER, needle);
+    let mut goto = |code: &str| project.definition(MAIN, &body(code)).expect("handled");
+    let to = |needle: &str, name: &str| [target("app/Providers/AppServiceProvider.php", provider_line(needle), name)];
+    assert_eq!(goto("$c->sortBy/*|*/Name();"), to("'sortByName'", "sortByName"));
+    assert_eq!(goto("$e->sortBy/*|*/Name()->first/*|*/Name();").len(), 1);
+    assert_eq!(goto("$r->is/*|*/Api();"), to("'isApi'", "isApi"));
+    assert_eq!(goto("Str::sho/*|*/ut('a');"), to("'shout'", "shout"));
+
+    // What the calls return.
+    let mut hover = |code: &str| {
+        let (text, pos) = caret(&body(code));
+        let doc = project.open(MAIN, &text);
+        let hover = project.engine.hover(doc, pos).map(|hover| hover.markdown);
+        project.engine.document_closed(doc);
+        hover.unwrap_or_default()
+    };
+    assert!(hover("$x/*|*/ = $c->sortByName();").contains("Collection"), "{}", hover("$x/*|*/ = $c->sortByName();"));
+    assert!(hover("$x/*|*/ = $c->firstName();").contains("string"), "{}", hover("$x/*|*/ = $c->firstName();"));
+    assert!(hover("$x/*|*/ = Str::shout('a');").contains("string"));
+    assert!(hover("$x/*|*/ = $r->isApi();").contains("bool"), "{}", hover("$x/*|*/ = $r->isApi();"));
+
+    let (text, pos) = caret(&body(
+        "$c->sortBy/*|*/Name();
+$e->sortByName();",
+    ));
+    let doc = project.open(MAIN, &text);
+    // Find Usages and Rename: the name in `macro('…')` and every call.
+    let usages = project.engine.references(doc, pos, true, &CancellationToken::new()).expect("handled").unwrap();
+    let declaration_line = provider_line("'sortByName'");
+    assert_eq!(usages.len(), 3, "{usages:?}");
+    assert!(usages.iter().any(|usage| usage.path.ends_with("AppServiceProvider.php")
+        && usage.range.start.line == declaration_line
+        && usage.kind == crate::navigate::UsageKind::Declaration));
+    let edit = project.engine.rename(doc, pos, "sortByTitle", &CancellationToken::new()).expect("handled").unwrap();
+    let edits: Vec<&ide_core::TextEdit> = edit
+        .files
+        .iter()
+        .flat_map(|file| match file {
+            ide_core::FileEdit::Edit { edits, .. } => edits.iter().collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert_eq!(edits.len(), 3, "{edit:?}");
+    assert!(edits.iter().all(|edit| edit.new_text == "sortByTitle"));
+    project.engine.document_closed(doc);
+}

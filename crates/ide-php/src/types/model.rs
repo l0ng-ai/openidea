@@ -34,6 +34,11 @@
 //!    parents' mixins), for names nothing else has. In them `static` and
 //!    `$this` are the mixin, not the receiver.
 //!
+//! 8. **Laravel macros** ([`add_macros`], by the resolver): the closures
+//!    `Foo::macro('name', …)` registers, for names no real or magic member
+//!    has (a mixin's member gives way, as `__call` looks for macros
+//!    first). Subclasses inherit them as members of the parent.
+//!
 //! [`ClassModel::is_accessible`] applies PHP's visibility rules for a
 //! calling scope. A cycle in the hierarchy (`class A extends B`, `class B
 //! extends A`) is cut where it closes, the class meeting itself again
@@ -67,6 +72,9 @@ pub enum Origin {
     /// Provided by PHP itself (enum `cases()`, `from()`, `tryFrom()`,
     /// `name`, `value`).
     Builtin,
+    /// A Laravel macro (`Collection::macro('name', fn …)`): the declaring
+    /// class-like is made up, its one method the macro's closure.
+    Macro,
 }
 
 /// An enum method PHP provides.
@@ -629,6 +637,73 @@ pub(super) fn build(class: ClassLike, model: &mut dyn FnMut(&str) -> Option<Arc<
 
     dedupe(&mut b.model.traits);
     b.model
+}
+
+/// Adds Laravel macros to `model` (step 8): `macros` are the closures as
+/// methods. They are instance methods, except on a class whose own methods
+/// are all static (`Str`, `Arr`), whose macros are called statically.
+///
+/// Each macro's declaring class-like is made up: the class's name with the
+/// macro as its one method, its `name_loc` the macro's
+/// ([`is_macro_class`]).
+pub(super) fn add_macros(model: &mut ClassModel, macros: Vec<Method>) {
+    if macros.is_empty() {
+        return;
+    }
+    let class = &model.class;
+    let is_static = !class.methods.is_empty() && class.methods.iter().all(|method| method.is_static);
+    for method in macros {
+        if model.methods.get(&method.name).is_some_and(|known| known.origin != Origin::Mixin) {
+            continue;
+        }
+        let declaring = Arc::new(ClassLike {
+            kind: ClassKind::Class,
+            fqn: model.class.fqn.clone(),
+            name: model.class.name.clone(),
+            name_loc: method.name_loc,
+            loc: method.loc,
+            modifiers: Default::default(),
+            extends: Vec::new(),
+            implements: Vec::new(),
+            backing_type: None,
+            trait_uses: Vec::new(),
+            constants: Vec::new(),
+            cases: Vec::new(),
+            properties: Vec::new(),
+            methods: vec![method],
+            attributes: Vec::new(),
+            doc: None,
+            repository: None,
+        });
+        let method = &declaring.methods[0];
+        let macro_method = ModelMethod {
+            info: MemberInfo {
+                name: method.name.clone(),
+                declaring: declaring.clone(),
+                self_class: model.class.fqn.clone(),
+                visibility: Visibility::Public,
+                is_static,
+                origin: Origin::Macro,
+                overrides: None,
+                mixin: None,
+            },
+            is_abstract: false,
+            is_final: false,
+            source: MethodSource::Declared(0),
+        };
+        match model.methods.get_mut(&method.name) {
+            Some(mixin) => *mixin = macro_method,
+            None => {
+                model.methods.add(macro_method);
+            }
+        }
+    }
+}
+
+/// Whether `class` is the made-up declaring class-like of a Laravel macro
+/// ([`add_macros`]).
+pub fn is_macro_class(class: &ClassLike) -> bool {
+    matches!(class.methods.as_slice(), [method] if method.name_loc == class.name_loc)
 }
 
 struct Builder {

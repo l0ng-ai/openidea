@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{DocType, Loc};
+use super::{DocType, Loc, Method};
 use crate::types::LazyType;
 
 /// See the module documentation.
@@ -38,6 +38,9 @@ pub struct LaravelFacts {
     /// drafts_count'`). What `withCount(…)` and `loadCount(…)` calls count
     /// follows the query instead (the type of the models it loads).
     pub counted: Vec<CountedRelation>,
+    /// `Collection::macro('name', function (…) { … })` calls, in source
+    /// order.
+    pub macros: Vec<Macro>,
 }
 
 impl LaravelFacts {
@@ -49,6 +52,7 @@ impl LaravelFacts {
             && self.rules.is_empty()
             && self.rule_methods.is_empty()
             && self.counted.is_empty()
+            && self.macros.is_empty()
     }
 
     /// The facts of several files, in order.
@@ -69,6 +73,7 @@ impl LaravelFacts {
                 .extend(facts.routes.iter().map(|route| RouteRegistration { file: file.clone(), ..route.clone() }));
             out.rules.extend(facts.rules.iter().map(|rules| RequestRules { file: file.clone(), ..rules.clone() }));
             out.rule_methods.extend(facts.rule_methods.iter().cloned());
+            out.macros.extend(facts.macros.iter().map(|found| Macro { file: file.clone(), ..found.clone() }));
             for counted in &facts.counted {
                 if !out.counted.contains(counted) {
                     out.counted.push(counted.clone());
@@ -444,4 +449,21 @@ pub enum RouteFileKind {
     Channels,
     /// Any other group or `loadRoutesFrom`.
     Other,
+}
+
+/// A macro registered on a class with Laravel's `Macroable`
+/// (`Collection::macro('name', function (…) { … })`): a method the class
+/// and its subclasses get.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Macro {
+    /// The class `macro()` is called on, fully qualified without the
+    /// leading `\`: the class itself, or a facade standing for it.
+    pub class: String,
+    /// The closure as a method named after the macro: its `name_loc` is the
+    /// name inside the quotes, its `loc` the whole call.
+    pub method: Method,
+    /// The file registering the macro, when the facts were merged with their
+    /// files ([`LaravelFacts::merge_located`]); not stored in summaries.
+    #[serde(skip)]
+    pub file: Option<PathBuf>,
 }

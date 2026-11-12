@@ -22,6 +22,7 @@ pub(super) const SUBCLASSES: MultiDef = MultimapTableDefinition::new("subclasses
 pub(super) const NAMESPACES: MultiDef = MultimapTableDefinition::new("namespaces");
 /// [`META_FILES_KEY`] → the files with `.phpstorm.meta.php` directives;
 /// [`LARAVEL_FILES_KEY`] → the files with Laravel facts;
+/// [`MACRO_FILES_KEY`] → the files registering Laravel macros;
 /// [`SYMFONY_FILES_KEY`] → the files with Symfony facts.
 pub(super) const META_FILES: MultiDef = MultimapTableDefinition::new("meta_files");
 
@@ -42,6 +43,10 @@ pub const META_FILES_KEY: &str = "phpstorm_meta";
 /// The key of [`META_FILES`] listing the files with Laravel bindings,
 /// migrations or casts.
 pub const LARAVEL_FILES_KEY: &str = "laravel";
+
+/// The key of [`META_FILES`] listing the files registering Laravel macros
+/// (`Collection::macro(…)`), a few of the [`LARAVEL_FILES_KEY`] files.
+pub const MACRO_FILES_KEY: &str = "laravel_macros";
 
 /// The key of [`META_FILES`] listing the files with `#[Route]` names or
 /// repository entities.
@@ -130,6 +135,10 @@ fn entries(file: &str, summary: &FileSummary) -> Vec<Entry> {
     if !summary.laravel.is_empty() {
         let decl = Decl { kind: DeclKind::Namespace, fqn: String::new(), file: file.to_owned(), index: 0 };
         out.push(Entry { table: 4, key: LARAVEL_FILES_KEY.to_owned(), decl });
+    }
+    if !summary.laravel.macros.is_empty() {
+        let decl = Decl { kind: DeclKind::Namespace, fqn: String::new(), file: file.to_owned(), index: 0 };
+        out.push(Entry { table: 4, key: MACRO_FILES_KEY.to_owned(), decl });
     }
     if !summary.symfony.is_empty() {
         let decl = Decl { kind: DeclKind::Namespace, fqn: String::new(), file: file.to_owned(), index: 0 };

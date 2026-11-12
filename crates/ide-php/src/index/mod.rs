@@ -66,7 +66,7 @@ use crate::names::NameKind;
 use crate::summary::{ClassKind, FileSummary, SCHEMA_VERSION};
 use crate::syntax::ParsedFile;
 use tables::*;
-pub use tables::{LARAVEL_FILES_KEY, META_FILES_KEY, SYMFONY_FILES_KEY};
+pub use tables::{LARAVEL_FILES_KEY, MACRO_FILES_KEY, META_FILES_KEY, SYMFONY_FILES_KEY};
 pub use words::words;
 
 /// Bump whenever the tables or their encodings change.
@@ -474,6 +474,11 @@ impl PhpIndex {
     /// The files with Laravel bindings, migrations or casts, sorted.
     pub fn laravel_files(&self) -> IdeResult<Vec<PathBuf>> {
         Ok(self.multimap(META_FILES, LARAVEL_FILES_KEY)?.iter().map(Decl::path).collect())
+    }
+
+    /// The files registering Laravel macros, sorted.
+    pub fn macro_files(&self) -> IdeResult<Vec<PathBuf>> {
+        Ok(self.multimap(META_FILES, MACRO_FILES_KEY)?.iter().map(Decl::path).collect())
     }
 
     /// The files with `#[Route]` names or repository entities, sorted.

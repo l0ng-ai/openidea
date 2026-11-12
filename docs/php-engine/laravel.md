@@ -205,6 +205,10 @@ The file contents come from the **Laravel …** templates in Editor › File and
 - `scopeX` method to a `#[Scope]` method, one or all.
 - The validation intentions listed under Validation.
 
+### Macros
+
+`Foo::macro('name', function (…) { … })` (or an arrow function) adds `name` to class `Foo` and its subclasses for completion, hover, signature help, goto (to the name in the `macro()` call), Find Usages, Rename (the name and the calls) and the call's type (the closure's return type, else what it returns, `$this` being the receiver). The macros of `vendor/` count: Monica's `Collection::macro('sortByCollator', …)` and the framework's own are typed. A macro registered through one of Laravel's facades (`Request::macro(…)`, `Route::`, `Response::`, `View::`, `Http::` and the like) is a method of the facade's service; a class whose own methods are all static (`Str`, `Arr`) gets static macros. A macro is used only where the class has no method of that name (a mixin's gives way, as `__call` looks for macros first).
+
 ### Modules and packages
 
 Modules are read from `nwidart/laravel-modules` (`module.json`), from `konekt/concord` (`config/concord.php`, each module provider is a module) and from module folders (`modules/`, `app-modules/`, `app/Modules/`, `src/Modules/`). Their routes, views, translations, configuration and providers are part of the model, and generators can write into them.
@@ -319,6 +323,7 @@ Not read: `helperCode` and any other key not listed here.
 - **Livewire:** a discovered name's folder segments (`posts.` of `posts.create-post`) aren't renamed (they follow the namespace), and the view the component renders isn't moved.
 - **Validation:** `in:` values come from attributes named like the field, not from the Form Request's own model. `Rule::in()` with variadic strings isn't completed. `unique`/`exists` with more than two parameters aren't converted to `Rule::` objects. Only the common shapes of `Gate::guessPolicyNamesUsing` callbacks are followed.
 - **Eloquent:** `*_count` properties follow the query only as far as types go: a model passed through an untyped parameter, a property or a `@param Post` loses them, as does a model counted in a local scope's body (the scope's `withCount` isn't seen by its callers); `withSum()`/`withAvg()`/`withExists()` properties aren't typed; the alias of `'comments as replies'` has no goto to its relation. Tables of a database schema other than the default one aren't used. A query builder's table is lost through a variable reassigned in a loop.
+- **Macros:** only static `Foo::macro()` calls with a string name and a closure are read: not `$builder->macro()` (SoftDeletes' `onlyTrashed()`, the local macros of a query scope), `Foo::mixin(new Bar)`, a callable that isn't a closure, or a macro registered through a package's own facade.
 - **Artisan:** renaming an option doesn't change it inside command-line strings (`Artisan::call('posts:publish --dry-run')`).
 - **Generators:** a listener is registered only where an event service provider has a `$listen` array (Laravel 11 otherwise discovers listeners); a module provider only in a nwidart `module.json`. An `ide.json` `dataFile` is read again only when its `ide.json` is.
 - **Model view:** Add columns has no length, default or index modifiers. It follows files written to disk while it's open, not unsaved buffers.

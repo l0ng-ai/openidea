@@ -58,7 +58,7 @@ use super::provider::TypeProviders;
 use super::{Hierarchy, LazyType, Relative, SignatureParam, Type};
 use crate::meta::PhpStormMeta;
 use crate::names::{NameKind, fqn_eq};
-use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl, LaravelFacts, TypeHint};
+use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl, LaravelFacts, Macro, TypeHint};
 use crate::symfony::{SymfonyConfig, SymfonyProject};
 
 mod generics;
@@ -117,6 +117,12 @@ pub trait Declarations {
     /// The [`Resolver`] caches them per modification counter.
     fn laravel(&self) -> LaravelFacts {
         LaravelFacts::default()
+    }
+    /// The Laravel macros of the project, with their files: those of
+    /// [`Declarations::laravel`], which an implementation can find more
+    /// cheaply (class models need them, after every modification).
+    fn macros(&self) -> Vec<Macro> {
+        self.laravel().macros
     }
     /// The Symfony configuration and the `#[Route]` names and repository
     /// entities of the project. The [`Resolver`] caches them per
@@ -210,6 +216,8 @@ struct CacheState {
     meta: Option<Arc<PhpStormMeta>>,
     /// The merged Laravel facts.
     laravel: Option<Arc<LaravelFacts>>,
+    /// The Laravel macros.
+    macros: Option<Arc<Vec<Macro>>>,
     /// The Symfony configuration and facts.
     symfony: Option<Arc<SymfonyProject>>,
 }
@@ -222,6 +230,7 @@ impl CacheState {
             self.models.clear();
             self.meta = None;
             self.laravel = None;
+            self.macros = None;
             self.symfony = None;
             self.generation = generation;
         }
@@ -290,6 +299,18 @@ impl TypeCache {
 
     fn insert_laravel(&self, generation: u64, facts: Arc<LaravelFacts>) {
         self.state.write().at(generation).laravel = Some(facts);
+    }
+
+    fn macros(&self, generation: u64) -> Option<Arc<Vec<Macro>>> {
+        let state = self.state.read();
+        if state.generation != generation {
+            return None;
+        }
+        state.macros.clone()
+    }
+
+    fn insert_macros(&self, generation: u64, macros: Arc<Vec<Macro>>) {
+        self.state.write().at(generation).macros = Some(macros);
     }
 
     fn symfony(&self, generation: u64) -> Option<Arc<SymfonyProject>> {
@@ -417,6 +438,16 @@ impl<'a> Resolver<'a> {
         let facts = Arc::new(self.decls.laravel());
         self.cache.insert_laravel(self.generation, facts.clone());
         facts
+    }
+
+    /// The project's Laravel macros, cached for the modification counter.
+    pub fn macros(&self) -> Arc<Vec<Macro>> {
+        if let Some(macros) = self.cache.macros(self.generation) {
+            return macros;
+        }
+        let macros = Arc::new(self.decls.macros());
+        self.cache.insert_macros(self.generation, macros.clone());
+        macros
     }
 
     /// The project's Symfony configuration, `#[Route]` names and
@@ -564,7 +595,10 @@ impl<'a> Resolver<'a> {
         let depth = self.building.borrow().len();
         let outer_cycle = self.model_cycle.replace(usize::MAX);
         self.building.borrow_mut().push(key.clone());
-        let built = Some(Arc::new(model::build(class, &mut |name| self.class_model(name))));
+        let mut built = model::build(class, &mut |name| self.class_model(name));
+        let macros = self.macros_of(&built);
+        model::add_macros(&mut built, macros);
+        let built = Some(Arc::new(built));
         self.building.borrow_mut().pop();
         let cycle = self.model_cycle.get();
         self.model_cycle.set(outer_cycle.min(cycle));
@@ -576,6 +610,27 @@ impl<'a> Resolver<'a> {
             self.cache.insert_model(self.generation, key, built.clone());
         }
         built
+    }
+
+    /// The Laravel macros registered on the class of `model` (one using
+    /// `Macroable`), or on one of Laravel's facades standing for it
+    /// ([`FACADE_ROOTS`]), as methods.
+    fn macros_of(&self, model: &ClassModel) -> Vec<crate::summary::Method> {
+        if model.class.kind != crate::summary::ClassKind::Class || model.method("macro").is_none() {
+            return Vec::new();
+        }
+        let named = |class: &str| fqn_eq(NameKind::ClassLike, class, model.fqn());
+        let macros = self.macros();
+        macros
+            .iter()
+            .filter(|found| {
+                named(&found.class)
+                    || FACADE_ROOTS
+                        .iter()
+                        .any(|(facade, root)| fqn_eq(NameKind::ClassLike, &found.class, facade) && named(root))
+            })
+            .map(|found| found.method.clone())
+            .collect()
     }
 
     /// The models of the classes among the members of `ty`, with `self`,
@@ -1225,4 +1280,25 @@ const DECORATING: &[(&str, &[&str])] = &[
         &["Illuminate\\Database\\Eloquent\\Builder", "Illuminate\\Database\\Query\\Builder"],
     ),
     ("Illuminate\\Database\\Eloquent\\Builder", &["Illuminate\\Database\\Query\\Builder"]),
+];
+
+/// Laravel's facades whose service is a `Macroable` class, with that
+/// class: a macro registered through the facade (`Request::macro(…)`) is
+/// one of the class. Read from a table, not from `getFacadeAccessor()`:
+/// class models need the macros, and resolving a facade's service needs
+/// the container bindings of the whole project.
+const FACADE_ROOTS: &[(&str, &str)] = &[
+    ("Illuminate\\Support\\Facades\\Cache", "Illuminate\\Cache\\Repository"),
+    ("Illuminate\\Support\\Facades\\Config", "Illuminate\\Config\\Repository"),
+    ("Illuminate\\Support\\Facades\\File", "Illuminate\\Filesystem\\Filesystem"),
+    ("Illuminate\\Support\\Facades\\Http", "Illuminate\\Http\\Client\\Factory"),
+    ("Illuminate\\Support\\Facades\\Lang", "Illuminate\\Translation\\Translator"),
+    ("Illuminate\\Support\\Facades\\Process", "Illuminate\\Process\\Factory"),
+    ("Illuminate\\Support\\Facades\\Redirect", "Illuminate\\Routing\\Redirector"),
+    ("Illuminate\\Support\\Facades\\Request", "Illuminate\\Http\\Request"),
+    ("Illuminate\\Support\\Facades\\Response", "Illuminate\\Routing\\ResponseFactory"),
+    ("Illuminate\\Support\\Facades\\Route", "Illuminate\\Routing\\Router"),
+    ("Illuminate\\Support\\Facades\\URL", "Illuminate\\Routing\\UrlGenerator"),
+    ("Illuminate\\Support\\Facades\\View", "Illuminate\\View\\Factory"),
+    ("Illuminate\\Support\\Facades\\Vite", "Illuminate\\Foundation\\Vite"),
 ];

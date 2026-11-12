@@ -100,6 +100,17 @@ fn laravel(out: &mut String, facts: &LaravelFacts) {
     for counted in &facts.counted {
         let _ = writeln!(out, "laravel {} counts {} as {}", counted.class, counted.relation, counted.property);
     }
+    for found in &facts.macros {
+        let params: Vec<String> = found.method.params.iter().map(|param| format!("${}", param.name)).collect();
+        let _ = writeln!(
+            out,
+            "laravel macro {}::{}({}) {}",
+            found.class,
+            found.method.name,
+            params.join(", "),
+            name_loc(found.method.name_loc)
+        );
+    }
     for model in &facts.casts {
         let casts: Vec<String> =
             model.casts.iter().map(|cast| format!("{} => {}", cast.attribute, cast.cast)).collect();

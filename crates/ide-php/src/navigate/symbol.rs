@@ -303,6 +303,11 @@ impl PhpEngine {
         here: &Path,
         summary: &FileSummary,
     ) -> Option<PathBuf> {
+        // A Laravel macro: the file registering it.
+        if crate::types::model::is_macro_class(class) {
+            let macros = self.resolver().macros();
+            return macros.iter().find(|found| found.method == class.methods[0])?.file.clone();
+        }
         self.source_path(NameKind::ClassLike, &class.fqn, class.name_loc, here, summary)
     }
 
