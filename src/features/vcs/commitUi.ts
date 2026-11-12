@@ -6,6 +6,8 @@
 import { workflowSettings, type GitSettingsValid } from "@/platform/workflowSettings";
 import { toolWindowService } from "@/workbench/contributions";
 import { useCommit, type CommitTab } from "./commitStore";
+import type { FileStatus } from "@/bindings";
+import { groupOf, isPartiallyStaged, type CheckState } from "./changes";
 import { stashTabOf } from "./gitTabs";
 import { selectGitTab } from "./logStore";
 import { isProtectedBranch, pushWithAutoUpdate, showPushDialog } from "./remoteUi";
@@ -29,6 +31,31 @@ export function showLocalChanges(tab: CommitTab = "changes", focus = true) {
 export function openCommit() {
   if (!isModalCommit()) return showLocalChanges("changes");
   void import("./CommitDialog").then((m) => m.showCommitDialog());
+}
+
+/**
+ * Commit… (⌘K) as an action: with the modal interface the dialog includes just the files
+ * selected in Local Changes when invoked from there, otherwise the default inclusion.
+ */
+export function commitFromContext() {
+  if (isModalCommit()) {
+    const fromLocalChanges = !!(document.activeElement as HTMLElement | null)?.closest?.('[data-changes-tree="local"]');
+    const selection = fromLocalChanges ? useCommit.getState().selection : [];
+    useCommit.setState({ checks: selection.length ? includeOnly(useVcs.getState().status, selection) : new Map() });
+  }
+  openCommit();
+}
+
+/** Inclusion that commits only `paths` of `status` (files elsewhere left out, conflicts as they are). */
+export function includeOnly(status: readonly FileStatus[], paths: readonly string[]): Map<string, CheckState> {
+  const chosen = new Set(paths);
+  const checks = new Map<string, CheckState>();
+  for (const fs of status) {
+    const group = groupOf(fs);
+    if (!group || group === "conflicts") continue;
+    checks.set(fs.path, !chosen.has(fs.path) ? "none" : isPartiallyStaged(fs) ? "staged" : "all");
+  }
+  return checks;
 }
 
 /**
