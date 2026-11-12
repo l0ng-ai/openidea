@@ -520,7 +520,7 @@ function jsRuntime(lang: "js" | "ts", env: ToolEnv, s: FileSite): Produced {
   }
   if (s.inProject && env.bun) {
     const bun = pick(env, ["bun"]);
-    if (bun) return ok(fileConfig(s, "bun", bun.command, ["run", s.arg]));
+    if (bun) return ok(fileConfig(s, "bun", bun.command, ["run", s.arg], "bun-dap"));
   }
   const node = env.tool("node");
   const nodeCmd = node === undefined ? "node" : (node?.path ?? null);

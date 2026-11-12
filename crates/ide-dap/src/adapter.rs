@@ -124,6 +124,12 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "tcp",
             "Install Microsoft java-debug (Settings › Languages & Frameworks › Language Servers)",
         ),
+        "bun-dap" => cfg(
+            "bun-dap",
+            &["${port}", "127.0.0.1"],
+            "tcp",
+            "To install bun-dap: git clone https://github.com/morf-bls/bun-dap, run bun install && bun run build, then place dist/bun-dap in your PATH",
+        ),
         _ => return None,
     })
 }
