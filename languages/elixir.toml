@@ -11,9 +11,9 @@ tree-sitter = "elixir"
 name = "elixir-ls"
 command = "elixir-ls"
 root-markers = ["mix.exs"]
-install-hint = "Install ElixirLS (https://github.com/elixir-lsp/elixir-ls/releases) and expose language_server.sh as `elixir-ls`"
+install-hint = "Install ElixirLS (https://github.com/elixir-lsp/elixir-ls/releases) and put language_server.sh on PATH as elixir-ls"
 
 [debugger]
 adapter = "elixir-ls-debugger"
 command = "elixir-ls-debugger"
-install-hint = "Install ElixirLS and expose debug_adapter.sh as `elixir-ls-debugger`"
+install-hint = "Install ElixirLS and put debug_adapter.sh on PATH as elixir-ls-debugger"

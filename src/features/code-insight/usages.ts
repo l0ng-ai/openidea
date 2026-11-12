@@ -6,6 +6,7 @@ import { clearLineTokens } from "@/editor/lineTokens";
 import { showPendingHint } from "@/editor/lsp/hint";
 import { incompleteNote } from "@/editor/lsp/lsp";
 import { commands, IpcError, isCancelled, nextRequestId } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { synchronizeDocumentIndexes, toolWindowService } from "@/workbench/contributions";
 import {
@@ -230,7 +231,7 @@ export async function fetchUsages(
   let note: string | null = null;
   let librariesSkipped = false;
   await caretSynced(c);
-  await synchronizeDocumentIndexes(c.path);
+  const indexed = await synchronizeDocumentIndexes(c.path, "usages");
   if (c.view && c.view.state.doc !== before) throw new IpcError({ kind: "cancelled", message: "", data: null });
   let settled = false;
   const channel = new Channel<References>();
@@ -268,6 +269,7 @@ export async function fetchUsages(
     locs = fb.locs;
     note = fb.note;
   }
+  if (!indexed) note ??= tx("May be incomplete: plugin indexes are still updating");
   const files = await readManyFileLines(pathsToRead(locs, classified));
   return { groups: groupUsages(locs, files, classified), note, librariesSkipped };
 }

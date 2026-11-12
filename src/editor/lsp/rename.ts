@@ -56,7 +56,7 @@ async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
 async function prepareIndexes(view: EditorView, path: string): Promise<boolean> {
   const before = view.state.doc;
   try {
-    await synchronizeDocumentIndexes(path);
+    await synchronizeDocumentIndexes(path, "refactor");
     return view.state.doc === before;
   } catch (e) {
     reportLspError(view, e, true);
@@ -269,7 +269,7 @@ async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, o
   let renamed;
   const before = view.state.doc;
   try {
-    await synchronizeDocumentIndexes(doc.path);
+    await synchronizeDocumentIndexes(doc.path, "refactor");
     if (renameRequest !== request || view.state.doc !== before) return;
     renamed = await lspRequest(() => commands.lspRename(request, doc.doc, pos, newName));
     if (renameRequest !== request) return;

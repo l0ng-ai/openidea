@@ -605,7 +605,7 @@ async fn remote_tree(
 /// Whether writing `path` stays in the download folder `root` (canonical): its closest
 /// existing ancestor resolves inside it, and `path` itself is not a symbolic link, so a link
 /// already in the folder can't send a download elsewhere.
-async fn stays_inside(root: &Path, path: &Path) -> bool {
+pub(crate) async fn stays_inside(root: &Path, path: &Path) -> bool {
     if tokio::fs::symlink_metadata(path).await.is_ok_and(|m| m.file_type().is_symlink()) {
         return false;
     }

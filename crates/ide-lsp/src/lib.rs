@@ -773,7 +773,7 @@ impl LspManager {
             Err(LaunchError::Missing) => {
                 let cfg = server.effective_config();
                 let message =
-                    cfg.install_hint.clone().unwrap_or_else(|| format!("`{}` was not found on PATH", cfg.command));
+                    cfg.install_hint.clone().unwrap_or_else(|| format!("{} was not found on PATH", cfg.command));
                 if server.fail_start(
                     generation,
                     Conn::Missing,

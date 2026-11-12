@@ -105,9 +105,12 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "stdio",
             "Install netcoredbg (.NET debugger) in Settings › Languages & Frameworks › Language Servers",
         ),
-        "lldb-dap" => {
-            cfg("lldb-dap", &[], "stdio", "Install LLVM's lldb-dap (brew install llvm; on macOS `xcrun -f lldb-dap`)")
-        }
+        "lldb-dap" => cfg(
+            "lldb-dap",
+            &[],
+            "stdio",
+            "Install LLVM's lldb-dap (brew install llvm), or on macOS use the one found by xcrun -f lldb-dap",
+        ),
         // GDB's own DAP interpreter, stdio transport. The DAP support it needs shipped in GDB 14
         // (`prepare_gdb` refuses older ones with the required version in the message).
         "gdb" => cfg(

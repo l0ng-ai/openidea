@@ -128,6 +128,27 @@ impl Repo {
     /// worktree or paths already relative to it.
     pub(crate) fn rel_path(&self, path: &Path) -> IdeResult<String> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        Ok(self.index_spelling(self.given_rel_path(path)?))
+    }
+
+    /// The blob of `path` at `rev`. A revision may spell a file differently from the index (a
+    /// case-only rename staged or made since it): the spelling given wins when the revision has
+    /// it, the index's spelling is the fallback.
+    pub(crate) fn blob_of(&self, path: &Path, rev: &str) -> IdeResult<Option<Vec<u8>>> {
+        let repo = self.gix()?;
+        let given = self.given_rel_path(path)?;
+        let indexed = self.index_spelling(given.clone());
+        if !rev.starts_with(':')
+            && indexed != given
+            && let Some(bytes) = blob_at(&repo, &given, rev)?
+        {
+            return Ok(Some(bytes));
+        }
+        blob_at(&repo, &indexed, rev)
+    }
+
+    /// `path` relative to the worktree, spelled as given.
+    fn given_rel_path(&self, path: &Path) -> IdeResult<String> {
         let rel = if path.is_absolute() {
             self.strip_root(path)
                 .ok_or_else(|| IdeError::invalid(format!("{} is outside the repository", path.display())))?
@@ -147,7 +168,7 @@ impl Repo {
                 _ => return Err(IdeError::invalid(format!("invalid path {}", path.display()))),
             }
         }
-        Ok(self.index_spelling(parts.join("/")))
+        Ok(parts.join("/"))
     }
 
     /// `rel` as the index spells it. On a case-insensitive worktree (`core.ignoreCase`) the
