@@ -453,3 +453,22 @@ async fn brave_mode_runs_tools_without_asking_only_from_the_global_settings() {
     assert!(!format!("{result:?}").contains("denied"), "{result:?}");
     assert!(!h.events.lock().unwrap().iter().any(|e| matches!(e, IdeEvent::McpRequest { .. })), "nothing asked");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_files_says_why_a_file_could_not_be_checked() {
+    let h = Harness::new();
+    let untrusted = h.json("check_files", json!({"filePaths": ["src/a.txt"]})).await;
+    assert_eq!(untrusted["files"][0]["status"], "untrusted", "{untrusted}");
+    h.trust().await;
+    let files = h.json("check_files", json!({"filePaths": ["src/a.txt", "src/gone.txt"], "timeout": 5000})).await;
+    assert_eq!(files["files"][0]["filePath"], "src/a.txt");
+    assert_eq!(files["files"][0]["status"], "noLanguageServer", "{files}");
+    assert_eq!(files["files"][0]["problems"], json!([]));
+    assert_eq!(files["files"][1]["status"], "failed", "{files}");
+    assert!(files["files"][1]["error"].is_string());
+    // No cap of the tool's own: a very long timeout is taken as given, without overflowing.
+    let long = h.json("check_files", json!({"filePaths": ["src/a.txt"], "timeout": 9_000_000_000_000_i64})).await;
+    assert_eq!(long["files"][0]["status"], "noLanguageServer", "{long}");
+    let none = h.error("check_files", json!({"filePaths": []})).await;
+    assert!(none.contains("at least one file"), "{none}");
+}

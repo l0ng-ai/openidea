@@ -84,7 +84,7 @@ stdio 配置大致如下（路径以你机器上的为准）：
 | 搜索       | `search_text`、`search_regex`、`search_symbol`、`search_file`               |
 | 编辑器     | `get_all_open_file_paths`、`get_current_file`、`open_file_in_editor`        |
 | 代码       | `get_symbol_info`、`find_references`、`rename_refactoring`、`reformat_file` |
-| 问题       | `get_file_problems`、`get_project_problems`                                 |
+| 问题       | `get_file_problems`、`get_project_problems`、`check_files`                  |
 | 运行与构建 | `get_run_configurations`、`execute_run_configuration`、`build_project`      |
 | Git        | `get_repositories`、`git_status`、`git_diff`                                |
 
@@ -93,6 +93,7 @@ stdio 配置大致如下（路径以你机器上的为准）：
 - `read_file` 还能读取依赖的源代码，以及 jar 和 zip 压缩包中的文件。
 - `search_symbol` 和 `find_references` 使用 IDE 的索引和语言服务器；`get_symbol_info` 返回的内容与快速文档相同。
 - `get_file_problems` 和 `get_project_problems` 返回的是问题工具窗口当前显示的内容（已应用你的检查配置文件），而不是重新分析的结果。
+- `check_files` 才是重新分析，适合在任何工具修改文件之后调用：它从磁盘同步每个文件，通知语言服务器文件已保存（这样 `cargo check` 等保存时检查也会运行），并等到服务器答复且分析完成。每个文件都有一个 `status`，说明问题列表是否完整，或者为什么无法检查：没有对应的语言服务器，或者服务器未安装、配置错误、已崩溃。
 - `rename_refactoring` 通过语言服务器重命名，文本搜索找不到的引用也会一并更新；也可以只预览不写入。
 - `apply_patch` 接受 Codex 的 `apply_patch` 格式和 unified diff，路径必须在项目内。
 - `git_diff` 比较的是磁盘上的文件，不包含编辑器中尚未保存的内容。
