@@ -50,7 +50,11 @@ export interface SdkFieldProps {
   "aria-label": string;
   /** Extra fixed choices before the detected ones (e.g. `workspace`). */
   extra?: SelectOption[];
-  /** Paths not offered as choices (interpreters removed from the IDE-wide list). */
+  /**
+   * Paths not offered as choices (interpreters removed from the IDE-wide list). The current
+   * value stays selectable as a custom entry, so a hidden interpreter still in use does not
+   * disappear from the combo.
+   */
   exclude?: readonly string[];
   /** Icon of a detected choice (e.g. the interpreter's environment type). */
   optionIcon?: (sdk: Sdk) => IconName;

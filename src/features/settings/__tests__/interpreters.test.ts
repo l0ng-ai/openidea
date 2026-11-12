@@ -4,6 +4,7 @@ import {
   buildInterpreters,
   filterInterpreters,
   interpreterIcon,
+  interpreterPathKey,
   owningProject,
   projectName,
   sameInterpreterPath,
@@ -126,5 +127,21 @@ describe("Python interpreter list", () => {
       sameInterpreterPath("C:\\Project\\.venv\\Scripts\\python.exe", "c:/project/.venv/Scripts/python.exe", null),
     ).toBe(true);
     expect(sameInterpreterPath("/a/python", "/b/python", null)).toBe(false);
+    // POSIX paths are case-sensitive; Windows paths are not (the drive letter decides, not the host OS).
+    expect(sameInterpreterPath("/opt/Python/bin/python", "/opt/python/bin/python", null)).toBe(false);
+    expect(interpreterPathKey("C:/Python/python.exe")).toBe("c:/python/python.exe");
+    expect(interpreterPathKey("/opt/Python/python")).toBe("/opt/Python/python");
+  });
+
+  it("matches a `~/` setting against the interpreter it resolves to", () => {
+    // The backend expands `~`; the frontend does not know the home directory.
+    expect(
+      sameInterpreterPath("~/.pyenv/versions/3.10/bin/python", "/home/me/.pyenv/versions/3.10/bin/python", null),
+    ).toBe(true);
+    expect(
+      sameInterpreterPath("~/.pyenv/versions/3.10/bin/python", "/home/me/.pyenv/versions/3.11/bin/python", null),
+    ).toBe(false);
+    // `~/.venv` and a project-relative `.venv` resolve to the same absolute path.
+    expect(sameInterpreterPath("~/.venv/bin/python", ".venv/bin/python", "/home/me")).toBe(true);
   });
 });

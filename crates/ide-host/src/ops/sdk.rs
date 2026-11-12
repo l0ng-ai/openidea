@@ -7,6 +7,8 @@ use ide_core::{IdeError, IdeResult, RequestId};
 use ide_sdk::python::PythonPackage;
 use ide_sdk::{Sdk, SdkKind};
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn join_err(e: impl std::fmt::Display) -> IdeError {
     IdeError::internal(e.to_string())
@@ -66,22 +68,32 @@ pub async fn sdk_python_project_interpreters(host: &Host, window: &str) -> IdeRe
             .map(|p| p.path.into_path_buf())
             .filter(|root| current.as_deref() != Some(root.as_path()))
             .collect();
-        // Each project resolves its configured interpreter, else its own virtualenv; the
-        // probes run `python`, so keep them off the async runtime and off each other's way.
+        // Each project resolves its configured interpreter, else its own virtualenv. The
+        // probes run `python`, so keep them off the async runtime and bound how many run at
+        // once: the recent list can hold ~30 projects, and each probe starts a process.
+        const PROBES: usize = 4;
+        let results = Mutex::new(Vec::with_capacity(roots.len()));
+        let next = AtomicUsize::new(0);
         std::thread::scope(|scope| {
-            let handles: Vec<_> = roots
-                .iter()
-                .map(|root| {
-                    scope.spawn(|| {
+            for _ in 0..roots.len().min(PROBES) {
+                scope.spawn(|| {
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(root) = roots.get(index) else { break };
                         let settings = ide_workspace::SettingsStore::load(&config, Some(root)).effective();
-                        let python = ide_sdk::apply::python_interpreter(root, &settings)?;
-                        let sdk = ide_sdk::python_interpreter_sdk(&python, Some(root))?;
-                        Some(ProjectInterpreter { project: root.as_path().into(), sdk })
-                    })
-                })
-                .collect();
-            handles.into_iter().filter_map(|handle| handle.join().ok().flatten()).collect()
-        })
+                        let Some(python) = ide_sdk::apply::python_interpreter(root, &settings) else { continue };
+                        let Some(sdk) = ide_sdk::python_interpreter_sdk(&python, Some(root)) else { continue };
+                        results
+                            .lock()
+                            .unwrap()
+                            .push((index, ProjectInterpreter { project: root.as_path().into(), sdk }));
+                    }
+                });
+            }
+        });
+        let mut found = results.into_inner().unwrap();
+        found.sort_by_key(|(index, _)| *index);
+        found.into_iter().map(|(_, interpreter)| interpreter).collect()
     })
     .await
     .map_err(join_err)

@@ -10,7 +10,7 @@ import { BarButton, Menu, type MenuItem } from "@/ui";
 import { Icon } from "@/ui/icons";
 import { effectivePython, type Sdk } from "./api";
 import { tildify } from "./components";
-import { interpreterIcon } from "./interpreters";
+import { interpreterIcon, interpreterPathKey } from "./interpreters";
 
 /** What the widget last resolved for a project, so the popup action can read it without a render. */
 interface Status {
@@ -27,9 +27,6 @@ const reset = () => usePopup.setState({ open: false, status: null });
 
 /** Settings arrays default to `[]`; a stable instance keeps the store selector from re-rendering. */
 const EMPTY: string[] = [];
-
-/** `C:\a\b` / `C:/a/b`: the list settings and the SDKs spell paths differently. */
-const pathKey = (path: string) => path.replace(/\\/g, "/").toLowerCase();
 
 /** Whether the widget is on screen, read straight from the stores (the action runs outside a render). */
 function popupShown(): boolean {
@@ -160,9 +157,9 @@ function PythonStatus() {
   if (!popupShown() || !status) return null;
   const current = status;
   // Interpreters removed on the All Interpreters page are no longer offered.
-  const ignored = new Set(hidden.map(pathKey));
+  const ignored = new Set(hidden.map(interpreterPathKey));
   const choices = interpreterChoices(
-    current.sdks.filter((sdk) => !ignored.has(pathKey(sdk.path))),
+    current.sdks.filter((sdk) => !ignored.has(interpreterPathKey(sdk.path))),
     current.python,
   );
   // A configured interpreter the backend cannot resolve (its file is gone) reads

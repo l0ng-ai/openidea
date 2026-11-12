@@ -42,8 +42,16 @@ export function normalizeInterpreterPath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
-/** Comparison key: Windows paths are case-insensitive. */
-const key = (path: string) => normalizeInterpreterPath(path).toLowerCase();
+/** Windows paths (`C:\…`, `\\server\…`) are case-insensitive; a POSIX path is not. */
+function isWindowsPath(path: string): boolean {
+  return /^[A-Za-z]:\//.test(path) || path.startsWith("//");
+}
+
+/** What path comparisons use: separators unified, and case folded only where the filesystem does. */
+export function interpreterPathKey(path: string): string {
+  const normalized = normalizeInterpreterPath(path);
+  return isWindowsPath(normalized) ? normalized.toLowerCase() : normalized;
+}
 
 /** The icon for an interpreter's source: virtualenv / conda / uv / Poetry, version managers, system. */
 export function interpreterIcon(source: string): IconName {
@@ -69,27 +77,38 @@ export function interpreterIcon(source: string): IconName {
 
 /** The longest project root containing `path` (`null` outside every project). */
 export function owningProject(path: string, projects: readonly NamedProject[]): string | null {
-  const p = key(path);
+  const p = interpreterPathKey(path);
   let best: NamedProject | null = null;
   for (const project of projects) {
-    const root = key(project.root);
+    const root = interpreterPathKey(project.root);
     if (!root || (p !== root && !p.startsWith(`${root}/`))) continue;
-    if (!best || root.length > key(best.root).length) best = project;
+    if (!best || root.length > interpreterPathKey(best.root).length) best = project;
   }
   return best ? normalizeInterpreterPath(best.root) : null;
 }
 
 /** The name shown for a project root, falling back to its folder name. */
 export function projectName(root: string, projects: readonly NamedProject[]): string {
-  return projects.find((project) => key(project.root) === key(root))?.name ?? basename(root);
+  return (
+    projects.find((project) => interpreterPathKey(project.root) === interpreterPathKey(root))?.name ?? basename(root)
+  );
 }
 
 /** Whether two interpreter paths name the same interpreter (a relative setting is resolved against `root`). */
 export function sameInterpreterPath(a: string, b: string, root: string | null): boolean {
   if (!a || !b) return false;
   const absolute = (path: string) =>
-    root && !/^[A-Za-z]:[\\/]/.test(path) && !path.startsWith("/") ? `${root}/${path}` : path;
-  return key(absolute(a)) === key(absolute(b));
+    root && !/^[A-Za-z]:[\\/]/.test(path) && !path.startsWith("/") && !path.startsWith("~") ? `${root}/${path}` : path;
+  const resolved = (path: string) => interpreterPathKey(absolute(path));
+  if (resolved(a) === resolved(b)) return true;
+  // The backend expands `~`; the frontend knows no home directory, so a `~/…` setting is
+  // matched by the tail of the absolute path (`~/.pyenv/…` → `/.pyenv/…`).
+  const tail = (path: string) => (path.startsWith("~/") ? interpreterPathKey(path).slice(1) : null);
+  const [ta, tb] = [tail(a), tail(b)];
+  if (ta && tb) return ta === tb;
+  if (ta) return resolved(b).endsWith(ta);
+  if (tb) return resolved(a).endsWith(tb);
+  return false;
 }
 
 export interface BuildInterpreters {
@@ -123,7 +142,7 @@ export function buildInterpreters({
 }: BuildInterpreters): InterpreterRow[] {
   const rows = new Map<string, InterpreterRow>();
   const put = (sdk: Sdk, project: string | null, isAdded = false) => {
-    const id = key(sdk.path);
+    const id = interpreterPathKey(sdk.path);
     const existing = rows.get(id);
     if (existing) {
       existing.project ??= project;
@@ -145,8 +164,8 @@ export function buildInterpreters({
   for (const entry of fromProjects) put(entry.sdk, entry.project);
   for (const sdk of added) put(sdk, null, true);
   for (const path of missing) {
-    if (rows.has(key(path))) continue;
-    rows.set(key(path), {
+    if (rows.has(interpreterPathKey(path))) continue;
+    rows.set(interpreterPathKey(path), {
       path,
       name: path,
       version: null,
@@ -157,14 +176,16 @@ export function buildInterpreters({
       invalid: true,
     });
   }
-  const hiddenIds = new Set(hidden.map(key));
+  const hiddenIds = new Set(hidden.map(interpreterPathKey));
   // The interpreter the project is set to stays visible even if it was removed from the
   // list: hiding it would leave the project pointing at nothing the user can see.
   const out = [...rows.values()].filter(
-    (row) => !hiddenIds.has(key(row.path)) || (!!current && key(row.path) === key(current)),
+    (row) =>
+      !hiddenIds.has(interpreterPathKey(row.path)) ||
+      (!!current && interpreterPathKey(row.path) === interpreterPathKey(current)),
   );
   // A configured interpreter detection no longer finds (its file is gone) stays listed.
-  if (current && !out.some((row) => key(row.path) === key(current))) {
+  if (current && !out.some((row) => interpreterPathKey(row.path) === interpreterPathKey(current))) {
     out.push({
       path: current,
       name: current,
@@ -208,7 +229,12 @@ export function filterInterpreters(rows: readonly InterpreterRow[], opts: Filter
     .split(/\s+/)
     .filter((term) => term.length > 0);
   return rows.filter((row) => {
-    if (opts.hideOther && opts.currentProject && row.project && key(row.project) !== key(opts.currentProject))
+    if (
+      opts.hideOther &&
+      opts.currentProject &&
+      row.project &&
+      interpreterPathKey(row.project) !== interpreterPathKey(opts.currentProject)
+    )
       return false;
     if (!terms.length) return true;
     const hay = `${row.name}\n${row.path}\n${row.source}\n${row.project ?? ""}`.toLowerCase();
@@ -265,10 +291,10 @@ export function usePythonInterpreters(opts: { withProjects?: boolean } = {}): Py
     if (!added.length) return;
     let live = true;
     const known = new Set([
-      ...detected.map((sdk) => key(sdk.path)),
-      ...fromProjects.map((entry) => key(entry.sdk.path)),
+      ...detected.map((sdk) => interpreterPathKey(sdk.path)),
+      ...fromProjects.map((entry) => interpreterPathKey(entry.sdk.path)),
     ]);
-    const todo = added.filter((path) => !known.has(key(path)) && !probed.has(path));
+    const todo = added.filter((path) => !known.has(interpreterPathKey(path)) && !probed.has(path));
     if (!todo.length) return;
     void Promise.all(
       todo.map(async (path) => {
@@ -294,7 +320,7 @@ export function usePythonInterpreters(opts: { withProjects?: boolean } = {}): Py
   const projects = useMemo<NamedProject[]>(() => {
     const list: NamedProject[] = root ? [{ root, name: name || basename(root) }] : [];
     for (const entry of fromProjects) {
-      if (!list.some((project) => key(project.root) === key(entry.project)))
+      if (!list.some((project) => interpreterPathKey(project.root) === interpreterPathKey(entry.project)))
         list.push({ root: entry.project, name: basename(entry.project) });
     }
     return list;
