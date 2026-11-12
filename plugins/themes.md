@@ -231,7 +231,7 @@ The full table is `UI_KEYS` in [`src/features/plugins/intellijTheme.ts`](../src/
 | `--syn-rainbow-1` … `--syn-rainbow-5` (Semantic highlighting, rainbow indent guides) | `RAINBOW_COLOR1` … `RAINBOW_COLOR5` |
 | `--wave-error`, `--wave-warning` | `ERRORS_ATTRIBUTES`, `WARNING_ATTRIBUTES` (effect colour) |
 | `--bg-matched-brace`, `--bg-identifier-under-caret` | `MATCHED_BRACE_ATTRIBUTES`, `IDENTIFIER_UNDER_CARET_ATTRIBUTES` |
-| `--bg-text-search-result`, `--bg-search-match` | `TEXT_SEARCH_RESULT_ATTRIBUTES`, `SEARCH_RESULT_ATTRIBUTES` |
+| `--bg-text-search-result`, `--bg-search-result` | `TEXT_SEARCH_RESULT_ATTRIBUTES`, `SEARCH_RESULT_ATTRIBUTES` |
 | `--syn-self`, `--syn-keyword-arg`, `--syn-docstring`, `--syn-predefined` | `PY.SELF_PARAMETER`, `PY.KEYWORD_ARGUMENT`, `PY.DOC_COMMENT`, `PY.BUILTIN_NAME` |
 | `--ansi-*` | `CONSOLE_*_OUTPUT` (`CONSOLE_DARKGRAY_OUTPUT` is bright black, `CONSOLE_GRAY_OUTPUT` white) |
 
@@ -329,7 +329,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-263 themeable tokens: 125 in the UI theme file, 138 in the editor colour scheme file.
+264 themeable tokens: 125 in the UI theme file, 139 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -509,6 +509,7 @@ a token.
 | `--fg-editor-selection` | `inherit` | `inherit` |
 | `--bg-text-search-result` | `#114957` | `#fcd47e` |
 | `--bg-text-search-result-current` | `#165e70` | `#f2bf57` |
+| `--bg-search-result` | `#2d543f` | `#ccccff` |
 | `--bg-matched-brace` | `#43454a` | `#93d9d9` |
 | `--matched-brace-weight` | `var(--fw-code-bold)` | `inherit` |
 | `--bg-matched-tag` | `#3f4045` | `#c9ecec` |
