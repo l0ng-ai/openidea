@@ -48,6 +48,7 @@ struct WebSocketState {
     project: String,
     request: crate::host::WebSocketRequest,
     sent: Vec<Vec<u8>>,
+    subscriptions: BTreeSet<String>,
     incoming: VecDeque<Vec<u8>>,
     closed: bool,
 }
@@ -59,6 +60,7 @@ pub struct MockWebSocket {
     pub project: String,
     pub request: crate::host::WebSocketRequest,
     pub sent: Vec<Vec<u8>>,
+    pub subscriptions: Vec<String>,
     pub closed: bool,
 }
 
@@ -243,6 +245,7 @@ impl MockHost {
                 project: socket.project.clone(),
                 request: socket.request.clone(),
                 sent: socket.sent.clone(),
+                subscriptions: socket.subscriptions.iter().cloned().collect(),
                 closed: socket.closed,
             })
             .collect()
@@ -1892,6 +1895,7 @@ pub mod current {
                     project: project.root.clone(),
                     request,
                     sent: Vec::new(),
+                    subscriptions: BTreeSet::new(),
                     incoming: VecDeque::new(),
                     closed: false,
                 },
