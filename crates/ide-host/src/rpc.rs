@@ -265,6 +265,7 @@ impl Dispatcher {
             ops::run::start_request(&c.host, &c.window, c.arg("config")?, on_output, c.arg("request")?).await
         })
         .add("run_stop", |c| async move { ops::run::stop(&c.host, &c.window, c.arg("id")?) })
+        .add("web_url", |c| async move { ops::web::url(&c.host, &c.window, &c.arg::<PathBuf>("path")?).await })
         .add("run_stdin", |c| async move { ops::run::stdin(&c.host, c.arg("id")?, &c.arg::<String>("data")?) })
         .add("run_resize", |c| async move { ops::run::resize(&c.host, c.arg("id")?, c.arg("cols")?, c.arg("rows")?) })
         .add("run_close_stdin", |c| async move { ops::run::close_stdin(&c.host, c.arg("id")?) })

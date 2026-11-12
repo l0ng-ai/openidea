@@ -1102,6 +1102,47 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Group and commit rows of the grouped Changes pane. */
+.changeGroup {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.changeGroupName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+.changeCommit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.changeCommitHash {
+  flex: none;
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+}
+.changeCommitSummary {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.changeCommitTime {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+
 .added {
   color: var(--vcs-added);
 }

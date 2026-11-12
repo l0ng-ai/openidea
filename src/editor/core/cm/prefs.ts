@@ -50,6 +50,7 @@ import {
 } from "./editing";
 import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
 import { enterInDocComment } from "./docComment";
+import { renderDocComments } from "./renderedDocs";
 import { skipClosingQuote, smartAngleBrackets, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
 import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
@@ -485,6 +486,8 @@ export interface PrefsOptions {
   softWrap: boolean | undefined;
   /** Soft wraps toggled for the file, overriding `softWrap` and the file patterns. */
   wrapOverride?: boolean | null;
+  /** Rendered doc comments toggled for the file, overriding `appearance.renderDocComments`. */
+  renderedDocsOverride?: boolean | null;
   showWhitespace: boolean | undefined;
   /** Hard wrap column for this file's language. */
   hardWrapAt: number;
@@ -578,6 +581,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
     out.push(marginGuides([o.hardWrapAt, ...prefs.codeStyle.visualGuides]));
   if (prefs.appearance.methodSeparators)
     out.push(EditorView.editorAttributes.of({ class: "cm-openidea-methodSeparators" }));
+  if (o.renderedDocsOverride ?? prefs.appearance.renderDocComments) out.push(renderDocComments.of(true));
   const hidden = GUTTER_ICON_GROUPS.filter(
     (grp) => !prefs.showGutterIcons || prefs.gutterIconsDisabled.includes(grp.id),
   );

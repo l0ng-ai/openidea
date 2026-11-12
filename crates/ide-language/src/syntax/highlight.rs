@@ -502,6 +502,28 @@ mod tests {
                 ],
             ),
             (
+                "prisma",
+                "// hi\n/// Doc\nmodel User {\n  id    Int     @id @default(autoincrement())\n  email String? @db.VarChar(255)\n  role  Role\n  @@index([email])\n}\nenum Role { ADMIN }\ndatasource db {\n  provider = \"postgresql\"\n}\n",
+                &[
+                    ("// hi", K::Comment),
+                    ("/// Doc", K::DocComment),
+                    ("model", K::Keyword),
+                    ("User", K::Type),
+                    ("id", K::Property),
+                    ("Int", K::Type),
+                    ("@id", K::Attribute),
+                    ("@default", K::Attribute),
+                    ("autoincrement", K::FunctionCall),
+                    ("VarChar", K::Attribute),
+                    ("255", K::Number),
+                    ("Role", K::Type),
+                    ("@@index", K::Attribute),
+                    ("ADMIN", K::Constant),
+                    ("provider", K::Property),
+                    ("\"postgresql\"", K::String),
+                ],
+            ),
+            (
                 "hcl",
                 "# hi\nresource \"aws_instance\" \"web\" {\n  ami   = var.ami\n  count = 2\n  tags  = { Name = \"web-${var.env}\" }\n  name  = upper(\"x\")\n}\n",
                 &[

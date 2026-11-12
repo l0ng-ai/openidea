@@ -109,6 +109,7 @@
   "common.copy": "复制",
   "menu.activeEditor": "活动编辑器",
   "menu.editor.toggleSoftWrap": "软换行",
+  "menu.editor.toggleRenderedDocs": "渲染文档注释",
   "menu.app": "OpenIDEA",
   "menu.app.about": "关于 OpenIDEA",
   "menu.app.checkForUpdates": "检查更新…",

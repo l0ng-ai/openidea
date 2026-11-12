@@ -2853,14 +2853,14 @@ async fn rolling_back_restores_the_start_of_the_task_and_keeps_the_users_own_edi
     }
     assert_eq!(changed(&mgr, &task.id).await, ["mine.txt", "new.txt", "other.txt"]);
 
-    mgr.rollback_changes(&task.id, Some(vec!["other.txt".into()])).await.unwrap();
+    mgr.rollback_changes(&task.id, Some(vec!["other.txt".into()]), AgentChangesView::SinceStart).await.unwrap();
     assert_eq!(read("other.txt"), "base\n");
     assert_eq!(changed(&mgr, &task.id).await, ["mine.txt", "new.txt"]);
 
     // After a restart, from the saved copy.
     mgr.shutdown();
     let mgr = manager(&dir, Arc::new(FakeAgent::default()));
-    mgr.rollback_changes(&task.id, None).await.unwrap();
+    mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
     assert_eq!(read("mine.txt"), "my edit\n", "the user's edit stays");
     assert!(!dir.join("new.txt").exists());
     assert!(changed(&mgr, &task.id).await.is_empty());
@@ -2973,7 +2973,7 @@ async fn work_uncommitted_by_a_reset_during_a_local_task_is_not_rolled_back() {
 
         let base = mgr.base_text(&task.id, repo.dir.join("a.txt")).await.unwrap();
         assert_eq!(base.map(|b| b.replace("\r\n", "\n")).as_deref(), Some("base\n"), "{eol:?}");
-        mgr.rollback_changes(&task.id, None).await.unwrap();
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
         assert_eq!(repo.read("a.txt"), "base\n", "{eol:?}");
         assert_eq!(repo.read("mine.txt"), "my work\n", "{eol:?}: the user's work survives the rollback");
         assert!(changed(&mgr, &task.id).await.is_empty(), "{eol:?}");
@@ -2996,7 +2996,7 @@ async fn files_a_mixed_reset_during_a_local_task_leaves_behind_are_not_rolled_ba
         repo.git(&["reset", "-q", "HEAD~1"]);
         assert_eq!(changed(&mgr, &task.id).await, ["a.txt"], "{eol:?}");
 
-        mgr.rollback_changes(&task.id, None).await.unwrap();
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
         assert_eq!(repo.read("a.txt"), "base\n", "{eol:?}");
         assert_eq!(repo.read("mine.txt"), "my work\n", "{eol:?}");
         assert_eq!(repo.read("mine-new.txt"), "my new file\n", "{eol:?}");
@@ -3023,7 +3023,7 @@ async fn a_branch_switched_to_during_a_local_task_is_left_alone() {
         repo.git(&["checkout", "-q", "feature"]);
         assert_eq!(changed(&mgr, &task.id).await, ["a.txt"], "{eol:?}");
 
-        mgr.rollback_changes(&task.id, None).await.unwrap();
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
         assert_eq!(repo.read("a.txt"), "base\n", "{eol:?}");
         assert_eq!(repo.read("other.txt"), "feature\n", "{eol:?}");
         assert_eq!(repo.read("only-feature.txt"), "feature\n", "{eol:?}");
@@ -3048,7 +3048,7 @@ async fn commits_made_during_a_local_task_are_kept_by_its_rollback() {
         repo.write("a.txt", "agent\nagain\n");
         assert_eq!(changed(&mgr, &task.id).await, ["a.txt", "b.txt"], "{eol:?}");
 
-        mgr.rollback_changes(&task.id, None).await.unwrap();
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
         assert_eq!(repo.read("a.txt"), "agent\n", "{eol:?}: back to the commit, not to before it");
         assert!(!repo.dir.join("b.txt").exists(), "{eol:?}");
         assert!(changed(&mgr, &task.id).await.is_empty(), "{eol:?}");
@@ -3069,7 +3069,7 @@ async fn rolling_back_a_rename_brings_the_old_file_back() {
         let listed = changed(&mgr, &task.id).await;
         assert_eq!(listed, ["CASE.java", "New.java"], "{eol:?}");
 
-        mgr.rollback_changes(&task.id, Some(listed)).await.unwrap();
+        mgr.rollback_changes(&task.id, Some(listed), AgentChangesView::SinceStart).await.unwrap();
         assert_eq!(repo.read("Old.java"), "class Old {}\n", "{eol:?}");
         assert!(!repo.dir.join("New.java").exists(), "{eol:?}");
         assert_eq!(repo.read("Case.java"), "class Case {}\n", "{eol:?}");
@@ -3083,6 +3083,27 @@ async fn rolling_back_a_rename_brings_the_old_file_back() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_group_view_rolls_back_only_uncommitted_files() {
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("a.txt", "base\n");
+        repo.commit("init");
+        let (mgr, task) = repo.task().await;
+        repo.write("a.txt", "agent\n");
+        repo.commit("agent work");
+        repo.write("a.txt", "agent\nagain\n");
+
+        let grouped = mgr.grouped_changes(&task.id).await.unwrap();
+        assert_eq!(grouped.uncommitted.iter().map(|c| c.rel_path.as_str()).collect::<Vec<_>>(), ["a.txt"], "{eol:?}");
+        assert!(grouped.commits.is_empty(), "{eol:?}: local tasks have no commits to group");
+
+        mgr.rollback_changes(&task.id, None, AgentChangesView::Group).await.unwrap();
+        assert_eq!(repo.read("a.txt"), "agent\n", "{eol:?}: back to the commit, not to the start");
+        assert!(mgr.grouped_changes(&task.id).await.unwrap().uncommitted.is_empty(), "{eol:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_local_task_in_a_repository_without_commits_lists_and_rolls_back_its_changes() {
     for eol in EOLS {
         let repo = Checkout::new(eol);
@@ -3092,7 +3113,7 @@ async fn a_local_task_in_a_repository_without_commits_lists_and_rolls_back_its_c
         assert_eq!(changed(&mgr, &task.id).await, ["new.txt"], "{eol:?}");
         assert_eq!(mgr.base_text(&task.id, repo.dir.join("new.txt")).await.unwrap(), None, "{eol:?}");
 
-        mgr.rollback_changes(&task.id, None).await.unwrap();
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
         assert!(!repo.dir.join("new.txt").exists(), "{eol:?}");
         assert_eq!(repo.read("mine.txt"), "mine\n", "{eol:?}");
         assert!(changed(&mgr, &task.id).await.is_empty(), "{eol:?}");

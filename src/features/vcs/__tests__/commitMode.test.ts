@@ -24,7 +24,7 @@ import { useProject } from "@/platform/project";
 import { commitChangelist, commitFiles } from "../changelistsUi";
 import { initialChangelists, useChangelists } from "../changelists";
 import { gitTabs, shownTab, stashTabOf, stashTabs } from "../gitTabs";
-import { pushDialogNeeded } from "../commitUi";
+import { commitFromContext, pushDialogNeeded } from "../commitUi";
 import {
   installPreparedMessage,
   keepMessageAfterCommit,
@@ -185,6 +185,46 @@ describe("Commit File… and the modal commit interface", () => {
     await vi.waitFor(() => expect(showCommitDialog).toHaveBeenCalled());
     expect(useCommit.getState().checks.get("/p/src/a.ts")).toBe("all");
     expect(useCommit.getState().checks.get("/p/src/b.ts")).toBe("none");
+  });
+});
+
+describe("Commit… from Local Changes with the modal interface", () => {
+  const status: FileStatus[] = [
+    { path: "/p/src/a.ts", relPath: "src/a.ts", staged: null, unstaged: "modified", renamedFrom: null },
+    { path: "/p/src/b.ts", relPath: "src/b.ts", staged: null, unstaged: "modified", renamedFrom: null },
+    { path: "/p/new.txt", relPath: "new.txt", staged: null, unstaged: "untracked", renamedFrom: null },
+  ];
+  const tree = document.createElement("div");
+  tree.dataset.changesTree = "local";
+  const row = document.createElement("button");
+  tree.append(row);
+
+  beforeEach(() => {
+    showCommitDialog.mockClear();
+    document.body.append(tree);
+    useProject.setState({ settings: { vcs: { commit: { nonModal: false } } } as Settings });
+    useVcs.setState({ available: true, root: "/p", repo: "/p", roots: ["/p"], status });
+    useCommit.setState({ checks: new Map(), selection: ["/p/src/b.ts", "/p/new.txt"] });
+  });
+
+  it("includes just the files selected there", async () => {
+    row.focus();
+    commitFromContext();
+    await vi.waitFor(() => expect(showCommitDialog).toHaveBeenCalled());
+    const checks = useCommit.getState().checks;
+    expect([checks.get("/p/src/a.ts"), checks.get("/p/src/b.ts"), checks.get("/p/new.txt")]).toEqual([
+      "none",
+      "all",
+      "all",
+    ]);
+  });
+
+  it("falls back to the default inclusion when invoked elsewhere", async () => {
+    useCommit.setState({ checks: new Map([["/p/src/a.ts", "none"]]) });
+    row.blur();
+    commitFromContext();
+    await vi.waitFor(() => expect(showCommitDialog).toHaveBeenCalled());
+    expect(useCommit.getState().checks.size).toBe(0);
   });
 });
 

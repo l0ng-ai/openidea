@@ -373,6 +373,25 @@ pub async fn vcs_file_at(host: &Host, window: &str, path: PathBuf, rev: Option<S
     .await
 }
 
+/// The file's git mode at `rev` (`100644`, `100755`, `120000`…); `"WT"` reads the
+/// worktree's. `None` when the path is absent on that side. The diff viewer shows
+/// "File mode changed" when the texts compare equal but the modes differ.
+pub async fn vcs_file_mode(host: &Host, window: &str, path: PathBuf, rev: Option<String>) -> IdeResult<Option<String>> {
+    let project = host.project(window).ok();
+    let external = host.external_logs.read().get(host.owner_window(window)).and_then(|rs| {
+        rs.iter().filter(|r| path.starts_with(r.root())).max_by_key(|r| r.root().components().count()).cloned()
+    });
+    blocking(move || {
+        if let Some(project) = project {
+            return project.with_log_repo_of(&path, |r| r.file_mode_at(&path, rev.as_deref()));
+        }
+        external
+            .ok_or_else(|| ide_core::IdeError::unavailable("external Git log is not open"))?
+            .file_mode_at(&path, rev.as_deref())
+    })
+    .await
+}
+
 pub async fn vcs_blame(
     host: &Host,
     window: &str,
@@ -1392,6 +1411,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_branch_info", |c| async move { vcs_branch_info(&c.host, &c.window, c.arg("repo")?).await });
     d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?).await });
     d.add("vcs_file_at", |c| async move { vcs_file_at(&c.host, &c.window, c.arg("path")?, c.arg("rev")?).await });
+    d.add("vcs_file_mode", |c| async move { vcs_file_mode(&c.host, &c.window, c.arg("path")?, c.arg("rev")?).await });
     d.add("vcs_blame", |c| async move {
         vcs_blame(&c.host, &c.window, c.arg("path")?, c.arg("text")?, c.arg("revision")?).await
     });

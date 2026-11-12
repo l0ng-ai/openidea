@@ -2,6 +2,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { IconButton, Select, Spinner, type SelectOption } from "@/ui";
 import { useProject } from "@/platform/project";
+import { call, commands, isTauri } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
 import { useSetting } from "../components/context";
 import { choosePath, detectSdks, useSdks, type Sdk, type SdkKind } from "./api";
 import { DownloadJdkDialog } from "./DownloadJdkDialog";
@@ -47,6 +49,10 @@ export interface SdkFieldProps {
   "aria-label": string;
   /** Extra fixed choices before the detected ones (e.g. `workspace`). */
   extra?: SelectOption[];
+  /** Oldest usable Java version: older JDKs are marked, and Download JDK preselects it. */
+  minJava?: number | null;
+  /** The configured value no longer exists (PyCharm's "Invalid" SDK): kept selectable, marked as such. */
+  invalid?: boolean;
 }
 
 /** The "Download JDK…" entry of JDK combos (not a value). */
@@ -62,6 +68,8 @@ export function SdkField({
   directory,
   browseTitle,
   extra,
+  minJava,
+  invalid,
   ...aria
 }: SdkFieldProps) {
   const { list, loading, refresh } = useDetected(kind);
@@ -69,11 +77,22 @@ export function SdkField({
     const out: SelectOption[] = [];
     if (emptyLabel !== undefined) out.push({ value: "", label: emptyLabel, detail: emptyDetail });
     out.push(...(extra ?? []));
-    for (const sdk of list) out.push({ value: sdk.path, label: sdk.name, detail: tildify(sdk.path) });
-    if (value && !out.some((o) => o.value === value)) out.push({ value, label: tildify(value), detail: "custom" });
+    for (const sdk of list) {
+      const major = minJava ? javaMajor(sdk.version) : null;
+      const tooOld = major !== null && !!minJava && major < minJava;
+      const detail = tooOld ? tx`too old, needs JDK ${minJava}+ · ${tildify(sdk.path)}` : tildify(sdk.path);
+      out.push({ value: sdk.path, label: sdk.name, detail });
+    }
+    if (value && !out.some((o) => o.value === value)) {
+      out.push(
+        invalid
+          ? { value, label: tx`Invalid — ${tildify(value)}`, detail: tildify(value), keywords: "invalid missing" }
+          : { value, label: tildify(value), detail: "custom" },
+      );
+    }
     if (kind === "jdk") out.push({ value: DOWNLOAD_JDK, label: "Download JDK…", icon: "plus" });
     return out;
-  }, [list, value, emptyLabel, emptyDetail, extra, kind]);
+  }, [list, value, emptyLabel, emptyDetail, extra, kind, minJava, invalid]);
   const [downloading, setDownloading] = useState(false);
   const browse = async () => {
     const picked = await choosePath({ directory: !!directory, title: browseTitle, defaultPath: value || undefined });
@@ -97,6 +116,7 @@ export function SdkField({
       <IconButton icon="folder-open" size="small" title="Browse…" onClick={() => void browse()} />
       {downloading && (
         <DownloadJdkDialog
+          initialVersion={minJava ?? undefined}
           onClose={() => setDownloading(false)}
           onDownloaded={(sdk) => {
             setDownloading(false);
@@ -106,4 +126,44 @@ export function SdkField({
       )}
     </span>
   );
+}
+
+/** Feature release of a JDK version string: `21.0.3` → 21, `1.8.0_392` → 8. */
+export function javaMajor(version: string | null | undefined): number | null {
+  const m = /^(\d+)(?:\.(\d+))?/.exec(version ?? "");
+  if (!m) return null;
+  const major = Number(m[1]) === 1 && m[2] ? Number(m[2]) : Number(m[1]);
+  return Number.isFinite(major) ? major : null;
+}
+
+/** The Java version the installed jdtls needs; `null` until known (or not installed). */
+function useJdtlsRequiredJava(): number | null {
+  const [required, setRequired] = useState<number | null>(null);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let live = true;
+    call(commands.jdtlsRequiredJava())
+      .then((r) => live && setRequired(r))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  return required;
+}
+
+/**
+ * The language server JDK row's hint, stating the installed jdtls' Java requirement
+ * and whether the chosen JDK (`value`) meets it, and that requirement for [`SdkField`]'s `minJava`.
+ */
+export function useJdtlsJdk(hint: string, value: string): { hint: string; minJava: number | null } {
+  const required = useJdtlsRequiredJava();
+  const { list } = useDetected("jdk");
+  if (!required) return { hint, minJava: null };
+  const major = javaMajor(list.find((sdk) => sdk.path === value)?.version);
+  const tooOld = major !== null && major < required;
+  const need = tooOld
+    ? tx`The installed jdtls needs JDK ${required} or newer; the selected JDK ${major} is too old for it.`
+    : tx`The installed jdtls needs JDK ${required} or newer.`;
+  return { hint: `${tx(hint)} ${need}`, minJava: required };
 }

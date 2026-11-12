@@ -113,6 +113,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     rainbowIndentGuides: false,
     hardWrapGuides: true,
     intentionBulb: true,
+    renderDocComments: false,
     distractionFreeWidth: 80,
   },
   breadcrumbs: { show: true, placement: "bottom", disabledLanguages: [] as string[] },

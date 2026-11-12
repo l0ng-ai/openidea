@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import type { HttpExchange, HttpHistoryEntry } from "@/platform/ipc";
 import {
+  Button,
   EmptyState,
   IconButton,
   SplitGroup,
@@ -173,7 +174,23 @@ export function HttpClientView() {
       </SplitPanel>
       <SplitHandle />
       <SplitPanel id="http-response" minSize="200px">
-        {exchange ? (
+        {running ? (
+          <div className={styles.pending} role="status">
+            <div className={styles.pendingLine}>
+              <Spinner size={12} /> {tx`Sending request #${running.index + 1}…`}
+            </div>
+            {running.method && (
+              <div className={styles.pendingRequest}>
+                <span className={styles.pendingMethod}>{running.method}</span> {running.url}
+              </div>
+            )}
+            <div>
+              <Button onClick={cancelRunning}>
+                <T>Stop Request</T>
+              </Button>
+            </div>
+          </div>
+        ) : exchange ? (
           <ExchangeView key={exchange.entry.id} ex={exchange} />
         ) : selected ? (
           <div className={styles.center}>

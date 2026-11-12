@@ -164,10 +164,21 @@ pub fn set_settings(
     // A LightEdit window has no project layer: its values are global.
     let project_scope = matches!(scope, SettingsScope::Project) && current.as_ref().is_some_and(|p| !p.light);
     let is_proxy = key == "proxy" || key.starts_with("proxy.");
-    let Some(value) = host.take_proxy_password(key, value)? else {
+    let Some(mut value) = host.take_proxy_password(key, value)? else {
         host.apply_proxy();
         return Ok(SettingsApplied { settings: settings(host, window), project_scope, roots_changed: None });
     };
+    // One canonical spelling per linked POM, including a project outside the opened root.
+    if project_scope
+        && key == "languages.java.maven.linkedProjects"
+        && let Some(project) = current.as_ref()
+        && let Some(list) = value.as_array()
+    {
+        let poms: Vec<String> = list.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect();
+        if poms.len() == list.len() {
+            value = serde_json::json!(ide_build::maven::normalize_linked_poms(&project.root, &poms));
+        }
+    }
     let settings = match &current {
         Some(p) if project_scope => p.settings.set(scope, key, value)?,
         Some(p) => {

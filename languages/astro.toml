@@ -41,3 +41,5 @@ nodePath = ""
 problems = { shortenToSingleLine = false }
 workingDirectory = { mode = "auto" }
 codeAction = { disableRuleComment = { enable = true, location = "separateLine" }, showDocumentation = { enable = true } }
+# vscode-eslint reads it for every source.fixAll request (Actions on Save, Code Cleanup).
+codeActionOnSave = { mode = "all", rules = [] }

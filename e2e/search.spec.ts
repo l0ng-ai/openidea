@@ -105,6 +105,20 @@ test("Find in Files streams matches by file and opens the chosen one at its line
     });
   const preview = dialog.getByRole("region", { name: "Preview", exact: true }).locator(".cm-content");
   await expect(preview).toHaveAttribute("contenteditable", "true");
+  // Matches take the editor scheme's search result background (IDEA's SEARCH_RESULT_ATTRIBUTES) and keep the syntax colours.
+  const match = preview.locator(".cm-openidea-searchResult").first();
+  await expect(match).toHaveText("OrderService");
+  expect(
+    await match.evaluate((el) => {
+      const probe = document.createElement("span");
+      probe.style.backgroundColor = "var(--bg-search-result)";
+      el.parentElement!.append(probe);
+      const expected = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      const own = getComputedStyle(el);
+      return own.backgroundColor === expected && own.color === getComputedStyle(el.parentElement!).color;
+    }),
+  ).toBe(true);
   const originalPreview = await preview.textContent();
   await preview.focus();
   await page.keyboard.press("Meta+a");
