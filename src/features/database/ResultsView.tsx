@@ -665,6 +665,7 @@ export function ResultsView() {
   return (
     <div className={styles.view}>
       <Tabs
+        className={styles.resultTabs}
         variant="compact"
         aria-label="Results"
         activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
