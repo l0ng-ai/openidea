@@ -11,13 +11,12 @@
  *   pnpm perf -- --only typing --trace   Chrome trace of the last run → target/perf/traces/
  *   pnpm perf -- --only typing --profile --unminified   CPU profile + top functions
  */
-import { spawnSync } from "node:child_process";
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { createServer, type Server } from "node:http";
-import { extname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { gzipSync } from "node:zlib";
 import { chromium, type Browser } from "@playwright/test";
+import { buildBundle, serveBundle } from "./lib/bundle.ts";
 import { Harness, type Metrics, type Scenario } from "./lib/harness.ts";
 import { topFunctions, type CpuProfile } from "./lib/profile.ts";
 import { installInPage } from "./lib/inpage.ts";
@@ -65,18 +64,7 @@ if (only && scenarios.length !== only.length) {
 }
 
 function build() {
-  console.log("Building the workbench (vite build --mode perf)…");
-  const flags = args.unminified ? ["--minify", "false"] : [];
-  const r = spawnSync(
-    "pnpm",
-    ["exec", "vite", "build", "--mode", "perf", ...flags, "--outDir", DIST, "--emptyOutDir"],
-    {
-      cwd: ROOT,
-      stdio: ["ignore", "ignore", "inherit"],
-      shell: process.platform === "win32",
-    },
-  );
-  if (r.status !== 0) throw new Error("vite build failed");
+  buildBundle(ROOT, DIST, args.unminified ? ["--minify", "false"] : []);
 }
 
 /** Initial-load JavaScript / CSS from the built index.html (gzip sizes). */
@@ -90,33 +78,6 @@ function bundleMetrics(): Metrics {
     initialJsKb: js.reduce((s, f) => s + gz(f), 0),
     initialCssKb: css.reduce((s, f) => s + gz(f), 0),
   };
-}
-
-const MIME: Record<string, string> = {
-  ".html": "text/html",
-  ".js": "text/javascript",
-  ".css": "text/css",
-  ".json": "application/json",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".woff2": "font/woff2",
-  ".wasm": "application/wasm",
-};
-
-function serve(): Promise<{ server: Server; url: string }> {
-  const server = createServer((req, res) => {
-    const path = decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname);
-    let file = join(DIST, path);
-    if (!file.startsWith(DIST) || !existsSync(file) || statSync(file).isDirectory()) file = join(DIST, "index.html");
-    res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
-    createReadStream(file).pipe(res);
-  });
-  return new Promise((ok) =>
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      ok({ server, url: `http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}` });
-    }),
-  );
 }
 
 interface Capture {
@@ -180,7 +141,7 @@ async function main() {
   const results: ScenarioResult[] = args.unminified
     ? []
     : [{ id: "bundle", title: "Initial bundle (gzip)", metrics: bundleMetrics() }];
-  const { server, url } = await serve();
+  const { server, url } = await serveBundle(DIST);
   const browser = await chromium
     .launch({
       channel: args.channel === "chromium" ? undefined : args.channel,
