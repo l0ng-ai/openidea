@@ -305,6 +305,7 @@ const Row = memo(function Row({
       className={clsx(styles.content, cut && styles.cut, dropTarget && styles.dropTarget)}
       data-project-path={node.placeholder ? undefined : node.path}
       data-project-key={node.key}
+      data-project-icon={icon}
       data-dir={node.dir || undefined}
       title={deco.tooltip ?? hint ?? undefined}
       onClick={(e) => onClick(node, e)}

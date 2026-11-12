@@ -35,6 +35,7 @@ import {
 import {
   ANALYZER_KIND,
   addProjects,
+  importModuleFromExistingSources,
   linkGradleProjects,
   unlinkGradleProjects,
   requestSync,
@@ -280,10 +281,23 @@ export function activate(): () => void {
       {
         id: "maven.addProjects",
         title: "Add Maven Projects",
+        description:
+          "Choose one or more pom.xml files inside or outside the opened project. The opened folder stays the project root.",
         category: "Maven",
         icon: "plus",
         when: "projectOpen && !workspaceOpen",
         run: () => addProjects(),
+      },
+      {
+        id: "maven.importExternal",
+        title: "Import Module from Existing Sources",
+        description:
+          "Choose a module directory outside the opened project. If it contains pom.xml, that Maven project is attached. The opened folder stays the project root, and neither POM is edited.",
+        category: "Maven",
+        icon: "plus",
+        when: "projectOpen && !workspaceOpen",
+        keywords: ["import", "module", "existing", "sources", "external", "maven", "pom"],
+        run: () => importModuleFromExistingSources(),
       },
       {
         id: "maven.unlinkProjects",

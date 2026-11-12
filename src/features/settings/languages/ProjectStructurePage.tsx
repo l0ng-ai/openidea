@@ -64,6 +64,7 @@ import { choosePath, detectSdks, useSdks, type SdkKind } from "./api";
 import { DownloadJdkDialog } from "./DownloadJdkDialog";
 import { SdkField, tildify, useDetected, useJdtlsJdk, useProjectSetting } from "./components";
 import styles from "./Sdk.module.css";
+import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 
 export type ProjectStructureSectionId =
@@ -861,7 +862,10 @@ function ModulesSection() {
     <div className={styles.page}>
       {moduleError && (
         <div role="status" className={styles.note}>
-          <T>Select a module directory inside the project.</T>
+          <T>
+            Module overrides only apply to a directory inside the opened project. To import an existing module from
+            outside it, use Import Module from Existing Sources.
+          </T>
         </div>
       )}
       <div className={styles.splitLayout}>
@@ -869,6 +873,9 @@ function ModulesSection() {
           <div className={styles.tableToolbar}>
             <Button size="small" variant="ghost" icon="plus" onClick={() => void addModule()}>
               <T>Add Module Overrides</T>
+            </Button>
+            <Button size="small" variant="ghost" icon="plus" onClick={() => void executeAction("maven.importExternal")}>
+              <T>Import Module from Existing Sources</T>
             </Button>
             <span className={styles.spacer} />
             <IconButton

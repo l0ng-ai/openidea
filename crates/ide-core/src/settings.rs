@@ -1182,7 +1182,9 @@ pub struct MavenSettings {
     pub runner_jre: String,
     /// Project-relative root POMs removed from the Maven project model.
     pub unlinked_projects: Vec<String>,
-    /// Project-relative POMs outside the root reactor added as independent top-level projects.
+    /// POMs added as independent top-level projects. Inside the opened project the path is
+    /// project-relative (`tools/pom.xml`); outside it, the canonical absolute path. Linking
+    /// does not edit either POM.
     pub linked_projects: Vec<String>,
     /// Maven home (or its `mvn` executable); empty = the project's `mvnw`, else `mvn` on `PATH`.
     pub home: String,
