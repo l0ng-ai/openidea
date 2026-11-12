@@ -1,4 +1,13 @@
 {
+  "Unity Editor": "Unity Editor",
+  "Run this project in Unity Editor": "Run this project in Unity Editor",
+  "Attach to Unity Process": "Attach to Unity Process",
+  "Stop IDE Sessions": "Stop IDE Sessions",
+  "Open the project in Unity Editor, enable Editor Attaching and switch to Debug Mode. Select its process below. Stopping debugging disconnects without closing Unity.": "Open the project in Unity Editor, enable Editor Attaching and switch to Debug Mode. Select its process below. Stopping debugging disconnects without closing Unity.",
+  "No Unity Editor processes found. Open Unity Editor, then refresh.": "No Unity Editor processes found. Open Unity Editor, then refresh.",
+  "Install Unity Debugger": "Install Unity Debugger",
+  "Unity Debugger is not installed": "Unity Debugger is not installed",
+  "Debugger is not available": "Debugger is not available",
   "Debugging Kotlin with kotlin-debug-adapter": "Debugging Kotlin with kotlin-debug-adapter",
   "Waiting for kotlin-lsp to import the project": "Waiting for kotlin-lsp to import the project",
   "kotlin-lsp is not the Kotlin language server of this project.": "kotlin-lsp is not the Kotlin language server of this project.",

@@ -17,6 +17,7 @@ mod jvm_memory;
 pub mod kotlin;
 pub mod kotlin_lsp;
 mod session;
+pub mod unity;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
@@ -1093,6 +1094,16 @@ impl DebugManager {
             let _ = tokio::time::timeout(INIT_TIMEOUT, initialized.wait_for(|v| *v)).await;
         }
 
+        if s.adapter == "unity" {
+            if launch_result.is_none()
+                && let Some(launch) = launch.as_mut()
+            {
+                launch.await?;
+                launch_result = Some(());
+            }
+            unity::wait_for_threads(s).await?;
+        }
+
         // A fresh adapter has no breakpoints, so a file with none enabled needs no request; the
         // others go out together, as VS Code sends them, instead of one round trip per file.
         let (files, idle): (Vec<_>, Vec<_>) = self
@@ -1157,6 +1168,10 @@ impl DebugManager {
         }
         if let Some(link) = s.jdwp_link.lock().as_ref() {
             link.release();
+        }
+        if s.adapter == "unity" {
+            unity::settle_startup(s).await;
+            s.emit(ide_core::event::DebugEvent::Initialized);
         }
         Ok(())
     }

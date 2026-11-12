@@ -17,7 +17,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
 use tokio::sync::{mpsc, watch};
@@ -106,6 +106,7 @@ pub(crate) struct Session {
     pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
     /// Used only by a kotlin-lsp session: see [`Session::kotlin_lsp_quirks`].
     pub(crate) quirks: kotlin_lsp::Quirks,
+    pub(crate) unity_startup_activity: Mutex<Instant>,
 }
 
 /// Which threads of the program are suspended: each from its `stopped` event until a
@@ -256,6 +257,7 @@ impl Session {
             kotlin_mirror: Mutex::new(None),
             jvm_memory: tokio::sync::Mutex::default(),
             quirks: kotlin_lsp::Quirks::default(),
+            unity_startup_activity: Mutex::new(Instant::now()),
         }
     }
 
@@ -705,6 +707,15 @@ pub(crate) async fn event_loop(
 }
 
 async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut body: Value) {
+    if s.adapter == "unity"
+        && event == "output"
+        && body
+            .get("output")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.starts_with("Loaded assembly:") || text.starts_with("Resolved pending breakpoint"))
+    {
+        *s.unity_startup_activity.lock() = Instant::now();
+    }
     if let Some(mirror) = s.kotlin_mirror.lock().as_ref() {
         mirror.translate(&mut body);
     }
@@ -713,7 +724,9 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
     match event {
         "initialized" => {
             s.initialized.send_replace(true);
-            s.emit(DebugEvent::Initialized);
+            if s.adapter != "unity" {
+                s.emit(DebugEvent::Initialized);
+            }
         }
         "stopped" => {
             let all = body.get("allThreadsStopped").and_then(Value::as_bool).unwrap_or(false);

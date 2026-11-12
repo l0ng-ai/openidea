@@ -1283,6 +1283,14 @@ impl Tools {
         cancel: &CancellationToken,
     ) -> IdeResult<sources::Download> {
         match source {
+            ReleaseSource::Fixed { version, url, sha256 } => Ok(sources::Download {
+                version: version.into(),
+                name: url.rsplit('/').next().unwrap_or("download").into(),
+                url: url.into(),
+                size: None,
+                sha256: Some(sha256.into()),
+                checksum_url: None,
+            }),
             ReleaseSource::GitHub { repo } => match http.get_text(&sources::github_latest_url(repo), cancel) {
                 Ok(json) => sources::github_pick(&json, assets, self.platform),
                 Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
@@ -1423,7 +1431,11 @@ impl Tools {
         } else {
             archive::make_executable(&target)?;
             if self.exe_in(&bin, main).as_deref() != Some(target.as_path()) {
-                archive::link_executable(&bin, main, &target)?;
+                if spec.name == "unity-debug" && cfg!(unix) {
+                    archive::link_executable_with_runtime(&bin, main, &target, Some("mono"))?;
+                } else {
+                    archive::link_executable(&bin, main, &target)?;
+                }
             }
         }
         // Downloads made by the IDE itself are not quarantined, but archives may carry the flag.
