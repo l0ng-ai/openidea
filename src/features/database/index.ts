@@ -99,6 +99,7 @@ export function activate(): () => void {
         loaded: false,
         connected: new Set(),
         databases: {},
+        catalogs: {},
         schemas: {},
         tables: {},
         details: {},
@@ -200,6 +201,24 @@ export function activate(): () => void {
             return;
           }
           await (await import("./console")).executeInView(e.view, e.ctx.path);
+        },
+      },
+      {
+        id: "db.executeScript",
+        title: "Execute SQL Script",
+        category: "Tools",
+        icon: "gutter-run-all",
+        keywords: ["run all", "whole file", "statements"],
+        when: `editorTextFocus && editorLangId == ${SQL_LANGUAGE}`,
+        run: async () => {
+          const e = activeEditor();
+          if (!e || e.ctx.language !== SQL_LANGUAGE) return;
+          if (!useDatabase.getState().loaded) await loadSources();
+          if (!consoleSource(e.ctx.path) && !useDatabase.getState().sources.length) {
+            openSourceDialog(null);
+            return;
+          }
+          await (await import("./console")).executeScriptInView(e.view, e.ctx.path);
         },
       },
       {

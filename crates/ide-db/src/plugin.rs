@@ -171,7 +171,7 @@ impl DbManager {
     }
     /// Completes cleanup after removal from the file.
     pub async fn forget_plugin_source(&self, id: &str) {
-        for key in [id.to_owned(), crate::secrets::ssh_key(id)] {
+        for key in [id.to_owned(), crate::secrets::ssh_key(id), format!("{id}#sso")] {
             self.session_passwords.lock().remove(&key);
             self.saved_passwords.delete(&key);
         }

@@ -1643,6 +1643,12 @@ export const commands = {
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
 	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
 	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
+	dbSessionContext: (id: string) => typedError<DbSessionContext, IdeError>(__TAURI_INVOKE("db_session_context", { id })),
+	dbDatabaseCatalog: (id: string, database: string) => typedError<DbCatalogSchema[], IdeError>(__TAURI_INVOKE("db_database_catalog", { id, database })),
+	dbSavedCatalog: (id: string) => typedError<{
+	databases?: DbCatalogDatabase[],
+} | null, IdeError>(__TAURI_INVOKE("db_saved_catalog", { id })),
+	dbRetainCatalog: (id: string, databases: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_retain_catalog", { id, databases })),
 	dbSchemas: (id: string) => typedError<string[], IdeError>(__TAURI_INVOKE("db_schemas", { id })),
 	dbTables: (id: string, schema: string) => typedError<DbTableInfo[], IdeError>(__TAURI_INVOKE("db_tables", { id, schema })),
 	dbTableDetails: (id: string, schema: string, table: string) => typedError<DbTableDetails, IdeError>(__TAURI_INVOKE("db_table_details", { id, schema, table })),
@@ -3450,6 +3456,8 @@ export type DataSource_Deserialize = {
 	options?: DbOptions,
 	introspection?: DbIntrospection,
 	properties?: DbProperty[],
+	/**  Snowflake settings (`None`: not a Snowflake data source, or all defaults). */
+	snowflake?: DbSnowflake | null,
 	/**
 	 *  Stored app-wide and listed in every project. Implied by the file it is read from,
 	 *  so not written to it.
@@ -3492,6 +3500,8 @@ export type DataSource_Serialize = {
 	options: DbOptions,
 	introspection: DbIntrospection,
 	properties: DbProperty[],
+	/**  Snowflake settings (`None`: not a Snowflake data source, or all defaults). */
+	snowflake: DbSnowflake | null,
 	/**
 	 *  Stored app-wide and listed in every project. Implied by the file it is read from,
 	 *  so not written to it.
@@ -3512,6 +3522,19 @@ export type DateFormatSettings = {
 	use24Hour?: boolean,
 	/**  "Today", "Yesterday", "5 min ago". */
 	pretty?: boolean,
+};
+
+export type DbCatalogDatabase = {
+	name: string,
+	/**  When this database was read, in milliseconds since the Unix epoch. */
+	readAt: number | null,
+	schemas: DbCatalogSchema[],
+};
+
+/**  A schema of a database and its tables and views. */
+export type DbCatalogSchema = {
+	name: string,
+	tables: DbTableInfo[],
 };
 
 export type DbCellValue = {
@@ -3567,7 +3590,7 @@ export type DbDriver = "sqlite" | "postgres" |
 /**  Microsoft SQL Server. */
 "sqlServer" | "clickhouse" | 
 /**  Oracle Database (pure-Rust thin driver, no client library). */
-"oracle";
+"oracle" | "snowflake";
 
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
 export type DbForeignKey = {
@@ -3692,11 +3715,22 @@ export type DbRoutineInfo = {
  */
 export type DbRowEdit = { kind: "update"; key: DbCellValue[]; values: DbCellValue[] } | { kind: "insert"; values: DbCellValue[] } | { kind: "delete"; key: DbCellValue[] };
 
+/**  A schema object the tree lists by name under a folder of its kind. */
+export type DbSchemaObject = {
+	/**  `stage`, `stream`, `task`, `pipe`, `fileFormat`. */
+	kind: string,
+	name: string,
+	/**  What the list says about it (a stage's type, a stream's table, a task's schedule). */
+	detail: string,
+};
+
 /**  A schema's routines (procedures and functions), packages and sequences. */
 export type DbSchemaObjects = {
 	routines: DbRoutineInfo[],
 	packages: DbPackageInfo[],
 	sequences: DbSequenceInfo[],
+	/**  Objects of kinds only some databases have (Snowflake stages, streams, tasks…). */
+	others?: DbSchemaObject[],
 };
 
 export type DbSequenceInfo = {
@@ -3704,9 +3738,54 @@ export type DbSequenceInfo = {
 	dataType: string,
 };
 
+/**  What a Snowflake session computes with and acts as, and what it may switch to. */
+export type DbSessionContext = {
+	/**  Empty: no warehouse is in use. */
+	warehouse: string,
+	role: string,
+	warehouses: string[],
+	roles: string[],
+};
+
+/**
+ *  Snowflake connection settings beyond the shared ones: the account identifier is
+ *  [`DataSource::host`], the schema [`DbOptions::default_schema`].
+ */
+export type DbSnowflake = {
+	warehouse?: string,
+	role?: string,
+	auth?: DbSnowflakeAuth,
+	/**
+	 *  PEM private key of [`DbSnowflakeAuth::KeyPair`]; `~/` is the home directory. Only the
+	 *  path is stored: the key is read from the file at each login.
+	 */
+	privateKeyFile?: string,
+};
+
+/**
+ *  How a Snowflake data source signs in. The data source's one saved secret is what the
+ *  method needs: the private key's passphrase, the password, or the token.
+ */
+export type DbSnowflakeAuth = 
+/**  RSA key pair: a JWT signed with the private key file. */
+"keyPair" | 
+/**  User name and password. */
+"password" | 
+/**  Programmatic access token. */
+"token" | 
+/**  OAuth access token. */
+"oAuth" | 
+/**  Single sign-on in the web browser. */
+"browser";
+
 export type DbSortKey = {
 	column: string,
 	descending: boolean,
+};
+
+/**  What introspection has read of a data source. */
+export type DbSourceCatalog = {
+	databases?: DbCatalogDatabase[],
 };
 
 /**  Connect through an SSH tunnel: the database host and port are reached from `host`. */

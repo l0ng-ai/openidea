@@ -387,6 +387,10 @@
   gap: 8px;
   align-items: center;
 }
+.formRow[hidden],
+.formLabel[hidden] {
+  display: none;
+}
 /* Data source dialog. */
 .formSection {
   grid-column: 1 / -1;

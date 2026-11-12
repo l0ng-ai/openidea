@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { DataSource } from "@/platform/ipc";
 import { exportData, type ExportData } from "./export";
+import { isNumericColumn } from "./Grid";
 import {
   activeSchema,
   buildRowEdits,
@@ -112,6 +114,23 @@ describe("export formats", () => {
     );
   });
 
+  it("doubles quotes and backslashes in Snowflake SQL exports", () => {
+    const columns = [
+      { name: "ID", type: "NUMBER(38,0)" },
+      { name: "name", type: "VARCHAR(100)" },
+    ];
+    expect(exportData("sql", { columns, table: "ORDERS", driver: "snowflake", rows: [["1", "C:\\new\\file's"]] })).toBe(
+      `INSERT INTO ORDERS (ID, "name") VALUES (1, 'C:\\\\new\\\\file''s');`,
+    );
+  });
+
+  it("right-aligns Snowflake number types", () => {
+    for (const type of ["NUMBER(38,0)", "FIXED", "DECFLOAT", "FLOAT"])
+      expect(isNumericColumn(type, []), type).toBe(true);
+    for (const type of ["VARCHAR(100)", "TIMESTAMP_NTZ(9)", "BOOLEAN", "VARIANT", "FixedString(10)"])
+      expect(isNumericColumn(type, []), type).toBe(false);
+  });
+
   it("writes a Markdown table, numbers right-aligned", () => {
     expect(exportData("markdown", { ...data, rows: [["1", "a|b"]] })).toBe(
       "| id | name |\n| --: | --- |\n| 1 | a\\|b |",
@@ -172,6 +191,62 @@ describe("connection targets", () => {
   });
 });
 
+describe("Snowflake sources", () => {
+  const settings = { warehouse: "COMPUTE_WH", role: "ANALYST", auth: "keyPair", privateKeyFile: "" } as const;
+
+  it("start without a host and with key-pair authentication", () => {
+    expect(vendorPreset(vendorById("snowflake")!)).toEqual({
+      driver: "snowflake",
+      vendor: "",
+      port: 443,
+      host: "",
+      snowflake: { warehouse: "", role: "", auth: "keyPair", privateKeyFile: "" },
+    });
+  });
+
+  it("show a JDBC URL with the account's host and the session settings", () => {
+    const source = {
+      driver: "snowflake",
+      host: "my_org-my_account",
+      database: "ANALYTICS",
+      options: { defaultSchema: "PUBLIC" },
+      snowflake: settings,
+    } as unknown as DataSource;
+    expect(sourceUrl(source)).toBe(
+      "jdbc:snowflake://my-org-my-account.snowflakecomputing.com/?db=ANALYTICS&schema=PUBLIC&warehouse=COMPUTE_WH&role=ANALYST",
+    );
+    expect(sourceUrl({ driver: "snowflake", host: "", port: 8443 } as unknown as DataSource)).toBe(
+      "jdbc:snowflake://<account>.snowflakecomputing.com:8443/",
+    );
+    expect(
+      sourceUrl({ driver: "snowflake", host: "https://acct.snowflakecomputing.com/console" } as unknown as DataSource),
+    ).toBe("jdbc:snowflake://acct.snowflakecomputing.com/");
+  });
+
+  it("read the session settings of a JDBC URL", () => {
+    const parsed = parseSourceUrl(
+      "jdbc:snowflake://myorg-myaccount.snowflakecomputing.com:443/?warehouse=COMPUTE_WH&db=ANALYTICS&schema=PUBLIC" +
+        "&role=ANALYST&user=jane&authenticator=snowflake_jwt&private_key_file=%7E%2Fkeys%2Frsa_key.p8&QUERY_TAG=ide",
+    );
+    expect(parsed).toEqual({
+      source: {
+        driver: "snowflake",
+        host: "myorg-myaccount.snowflakecomputing.com",
+        port: 443,
+        user: "jane",
+        database: "ANALYTICS",
+        options: { defaultSchema: "PUBLIC" },
+        snowflake: { ...settings, privateKeyFile: "~/keys/rsa_key.p8" },
+        properties: [{ name: "QUERY_TAG", value: "ide" }],
+      },
+      password: null,
+    });
+    expect(
+      parseSourceUrl("snowflake://acct.snowflakecomputing.com/?authenticator=externalbrowser")?.source.snowflake,
+    ).toMatchObject({ auth: "browser" });
+  });
+});
+
 describe("parseSourceUrl", () => {
   it("reads PostgreSQL / MySQL URLs, plain and JDBC", () => {
     expect(parseSourceUrl("postgresql://ann:s%40cret@db.local:5433/shop?sslmode=require")).toEqual({
@@ -216,7 +291,9 @@ describe("data source types", () => {
     expect(vendorPreset(vendorById("supabase")!).ssl).toBe("require");
     expect(vendorPreset(vendorById("oracle")!)).toEqual({ driver: "oracle", vendor: "", port: 1521 });
     expect(
-      VENDORS.every((v) => ["postgres", "mysql", "sqlite", "sqlServer", "clickhouse", "oracle"].includes(v.driver)),
+      VENDORS.every((v) =>
+        ["postgres", "mysql", "sqlite", "sqlServer", "clickhouse", "oracle", "snowflake"].includes(v.driver),
+      ),
     ).toBe(true);
     const labels = VENDORS.map((v) => v.label);
     expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
@@ -337,7 +414,7 @@ describe("active schema", () => {
   });
 
   it("offers the schema dropdown to multi-schema drivers only", () => {
-    for (const driver of ["postgres", "mysql", "sqlServer", "oracle"] as const)
+    for (const driver of ["postgres", "mysql", "sqlServer", "oracle", "snowflake"] as const)
       expect(schemaSwitchable(driver)).toBe(true);
     for (const driver of ["sqlite", "clickhouse"] as const) expect(schemaSwitchable(driver)).toBe(false);
     expect(schemaSwitchable(undefined)).toBe(false);
