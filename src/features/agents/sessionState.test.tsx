@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
+import { emitLocalIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { EditorShownProvider } from "@/workbench/contributions";
 import { hideContextMenu, useContextMenuStore } from "@/ui";
@@ -19,6 +20,7 @@ import tagStyles from "@/ui/InlineTag.module.css";
 const backend = vi.hoisted(() => ({
   entries: new Map<string, AgentEntry[]>(),
   changes: [] as AgentChange[],
+  changesCalls: 0,
   grouped: { uncommitted: [] as AgentChange[], commits: [] as AgentCommit[] },
   rolledBack: [] as Array<[string, string[] | null, string | null]>,
   answers: [] as Array<[string, number, string | null]>,
@@ -53,7 +55,10 @@ vi.mock("@/platform/ipc", async (original) => ({
         return { status: "error", error: { kind: "unavailable", message: backend.entryError } };
       return { status: "ok", data: backend.entries.get(key) ?? [] };
     },
-    agentChanges: async () => ({ status: "ok", data: backend.changes }),
+    agentChanges: async () => {
+      backend.changesCalls += 1;
+      return { status: "ok", data: backend.changes };
+    },
     agentGroupedChanges: async () => ({ status: "ok", data: backend.grouped }),
     agentRollbackChanges: async (task: string, paths: string[] | null, view: string | null) => {
       backend.rolledBack.push([task, paths, view]);
@@ -163,6 +168,7 @@ beforeEach(() => {
   disconnect();
   localStorage.clear();
   backend.changes = [];
+  backend.changesCalls = 0;
   backend.grouped = { uncommitted: [], commits: [] };
   backend.rolledBack = [];
   backend.external = [];
@@ -1381,6 +1387,24 @@ describe("sessions from other apps", () => {
     await openHistory();
     expect(screen.getByText("no home")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Import" })).toBeNull();
+  });
+});
+
+describe("changes refresh", () => {
+  it("re-reads the changes only when the task's own checkout changes", async () => {
+    vi.useFakeTimers();
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    backend.changesCalls = 0;
+
+    // The watcher reports the main checkout and other tasks' worktrees too.
+    act(() => emitLocalIdeEvent({ type: "vcsChanged", root: "/elsewhere" }));
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    expect(backend.changesCalls).toBe(0);
+
+    act(() => emitLocalIdeEvent({ type: "vcsChanged", root: "/project" }));
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    expect(backend.changesCalls).toBe(1);
   });
 });
 
