@@ -13,6 +13,7 @@ import {
   completeFromList,
   completionStatus,
   currentCompletions,
+  moveCompletionSelection,
   pickedCompletion,
   selectedCompletion,
   snippet,
@@ -630,6 +631,12 @@ const lookupKeys = Prec.highest(
   }),
 );
 
+function moveLookup(view: EditorView, forward: boolean): boolean {
+  if (completionStatus(view.state) !== "active") return false;
+  focusedLookups.add(view);
+  return moveCompletionSelection(forward)(view);
+}
+
 /** IDEA inserts a sole candidate right away on explicit invocation (Code Completion › Automatically insert single suggestions). */
 const AUTO_INSERT_DELAY = 80; // past CodeMirror's interactionDelay
 
@@ -815,6 +822,9 @@ export function completionExtension() {
     lookupTracker,
     Prec.highest(
       keymap.of([
+        // macOS: ⌃N / ⌃P are line down / up in text, so they move through the lookup as ↓ / ↑ do.
+        { mac: "Ctrl-n", run: (view) => moveLookup(view, true) },
+        { mac: "Ctrl-p", run: (view) => moveLookup(view, false) },
         {
           key: "Tab",
           run: (view) => {
