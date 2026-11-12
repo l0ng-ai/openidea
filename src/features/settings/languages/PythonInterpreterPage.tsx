@@ -92,6 +92,22 @@ export function PythonInterpreterPage() {
     };
   }, [root]);
 
+  // The interpreter runs resolve to: the configured one while it exists, else the fallback.
+  const [resolved, setResolved] = useState<{ interpreter: string; path: string | null } | null>(null);
+  useEffect(() => {
+    if (!interpreter) return;
+    let live = true;
+    effectivePython()
+      .then((path) => live && setResolved({ interpreter, path }))
+      .catch(() => live && setResolved(null));
+    return () => {
+      live = false;
+    };
+  }, [root, interpreter]);
+  // A configured interpreter whose executable is gone (PyCharm's "Invalid"): runs fall back.
+  const invalid =
+    !!interpreter && resolved?.interpreter === interpreter && !sameInterpreter(resolved.path, interpreter, root);
+
   // Without a configured interpreter the project's virtualenv is used (like run configurations).
   const python = interpreter || auto;
   const { packages, error, loading, reload } = usePackages(python);
@@ -148,9 +164,6 @@ export function PythonInterpreterPage() {
 
   const autoDetail = auto ? tildify(auto) : "No virtualenv in the project";
   const current = detected?.find((s) => s.path === python);
-  // A configured interpreter whose executable is gone (PyCharm's "Invalid"): the
-  // backend falls back for runs, the packages table explains what happened.
-  const invalid = !!interpreter && !!python && !current && !packages && !loading && !!error;
 
   return (
     <div className={styles.page}>
@@ -166,6 +179,7 @@ export function PythonInterpreterPage() {
           emptyDetail={autoDetail}
           browseTitle="Select Python Interpreter"
           aria-label="Python interpreter"
+          invalid={invalid}
         />
         <Button
           size="small"
@@ -178,15 +192,13 @@ export function PythonInterpreterPage() {
       </div>
       {python && (
         <div className={styles.path} title={python}>
-          {invalid ? "Invalid — " : current ? `${current.name} — ` : ""}
+          {current && !invalid ? `${current.name} — ` : ""}
           {tildify(python)}
         </div>
       )}
       {invalid && (
         <div className={clsx(styles.empty, styles.error)} role="alert">
-          <T>
-            The configured Python interpreter does not exist. Run configurations use the project virtualenv instead.
-          </T>
+          <T>The configured Python interpreter no longer exists. Choose another interpreter or add a new one.</T>
         </div>
       )}
 
@@ -305,11 +317,6 @@ export function PythonInterpreterPage() {
               <T>Loading packages…</T>
             </div>
           )}
-          {invalid && (
-            <div className={styles.empty}>
-              <T>Fix the interpreter path above or add a new interpreter.</T>
-            </div>
-          )}
         </div>
       </div>
 
@@ -366,4 +373,11 @@ export function PythonInterpreterPage() {
       )}
     </div>
   );
+}
+
+/** Whether `resolved` (an absolute path from the backend) is the configured `interpreter` setting. */
+function sameInterpreter(resolved: string | null, interpreter: string, root: string | null): boolean {
+  if (!resolved) return false;
+  if (tildify(resolved) === tildify(interpreter)) return true;
+  return !!root && resolved === `${root.replace(/[\\/]+$/, "")}/${interpreter}`;
 }

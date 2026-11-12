@@ -63,6 +63,14 @@ fn run(kind: &str, command: &str, args: &[&str]) -> RunConfig {
     }
 }
 
+/// An interpreter executable at `rel` under `root` (resolution skips paths that don't exist).
+fn fake_interpreter(root: &Path, rel: &str) -> std::path::PathBuf {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "").unwrap();
+    path
+}
+
 #[test]
 fn project_venv_is_the_default_interpreter() {
     if cfg!(windows) {
@@ -75,8 +83,10 @@ fn project_venv_is_the_default_interpreter() {
     assert_eq!(python_interpreter(tmp.path(), &s), Some(py.clone()));
     assert_eq!(venv_of(&py), Some(tmp.path().join(".venv")));
     let mut s = Settings::default();
-    s.languages.python.interpreter = "/opt/py/bin/python3".into();
-    assert_eq!(python_interpreter(tmp.path(), &s).unwrap(), Path::new("/opt/py/bin/python3"));
+    // A configured interpreter wins over the virtualenv while its executable exists.
+    let configured = fake_interpreter(tmp.path(), "opt/py/bin/python3");
+    s.languages.python.interpreter = configured.to_string_lossy().into_owned();
+    assert_eq!(python_interpreter(tmp.path(), &s).unwrap(), configured);
 }
 
 #[test]
@@ -305,7 +315,9 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     }
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();
-    s.languages.python.interpreter = "/opt/py/bin/python3".into();
+    let python = fake_interpreter(tmp.path(), "opt/py/bin/python3");
+    let python = python.to_string_lossy().into_owned();
+    s.languages.python.interpreter = python.clone();
     s.languages.node.package_manager = "pnpm".into();
     let mut configs = vec![
         run("python", "uv", &["run", "python", "-m", "app"]),
@@ -317,17 +329,17 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
         run("django-test", ".venv/bin/python", &["manage.py", "test", "polls"]),
     ];
     apply_to_run_configs(&mut configs, tmp.path(), &s);
-    assert_eq!(configs[0].command, "/opt/py/bin/python3");
+    assert_eq!(configs[0].command, python);
     assert_eq!(configs[0].args, ["-m", "app"]);
-    assert_eq!(configs[1].command, "/opt/py/bin/python3");
+    assert_eq!(configs[1].command, python);
     assert_eq!(configs[1].args, ["-m", "pytest"]);
     assert_eq!(configs[2].args, ["-m", "pytest", "-x"]);
     assert_eq!(configs[3].command, "pnpm");
     assert_eq!(configs[4].command, "python3", "shell configs are left alone");
     // Django tests run on the selected interpreter, like `manage.py runserver`.
-    assert_eq!(configs[5].command, "/opt/py/bin/python3");
+    assert_eq!(configs[5].command, python);
     assert_eq!(configs[5].args, ["manage.py", "test"]);
-    assert_eq!(configs[6].command, "/opt/py/bin/python3");
+    assert_eq!(configs[6].command, python);
     assert_eq!(configs[6].args, ["manage.py", "test", "polls"]);
 }
 
