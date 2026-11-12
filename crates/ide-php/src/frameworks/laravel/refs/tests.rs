@@ -170,6 +170,18 @@ impl Project {
 
     /// The rename's edits as `(relative path, line, replaced text)`, sorted.
     fn rename(&mut self, rel: &str, source: &str, new_name: &str) -> Vec<(String, u32, String)> {
+        self.rename_edits(rel, source, new_name)
+            .into_iter()
+            .map(|(path, line, old, new)| {
+                assert_eq!(new, new_name);
+                (path, line, old)
+            })
+            .collect()
+    }
+
+    /// The rename's edits as `(relative path, line, replaced text, new
+    /// text)`, sorted.
+    fn rename_edits(&mut self, rel: &str, source: &str, new_name: &str) -> Vec<(String, u32, String, String)> {
         let (doc, pos) = self.open(rel, source);
         let edit = self.engine.rename(doc, pos, new_name, &CancellationToken::new()).unwrap().unwrap();
         let mut out = Vec::new();
@@ -177,8 +189,8 @@ impl Project {
             let FileEdit::Edit { path, edits, .. } = file else { panic!("only text edits") };
             let path = PathBuf::from(path.clone());
             for edit in edits {
-                assert_eq!(edit.new_text, new_name);
-                out.push(self.describe(&path, edit.range));
+                let (path, line, old) = self.describe(&path, edit.range);
+                out.push((path, line, old, edit.new_text.clone()));
             }
         }
         self.engine.document_closed(doc);

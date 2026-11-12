@@ -184,3 +184,38 @@ fn finds_and_renames_member_usages_in_templates() {
         ]
     );
 }
+
+/// Renaming a model method renames the names Laravel calls it by: a scope's
+/// calls, a relation read as a property (in templates too). Renamed out of
+/// its style (a scope to a name without the prefix), they are left alone.
+#[test]
+fn renaming_a_scope_or_relation_renames_the_names_laravel_uses() {
+    let mut project = Project::app();
+    let post = std::fs::read_to_string(project.root.join("app/Models/Post.php")).unwrap();
+    let scope = post.replace("scopePublished", "scopePub/*|*/lished");
+    let edits = project.rename_edits("app/Models/Post.php", &scope, "scopeLive");
+    let files: Vec<(&str, &str, &str)> =
+        edits.iter().map(|(file, _, old, new)| (file.as_str(), old.as_str(), new.as_str())).collect();
+    assert_eq!(
+        files,
+        [
+            ("app/Http/Controllers/Api/PostController.php", "published", "live"),
+            ("app/Http/Controllers/HomeController.php", "published", "live"),
+            ("app/Http/Controllers/PostController.php", "published", "live"),
+            ("app/Models/Post.php", "scopePublished", "scopeLive"),
+            ("app/Services/FeedBuilder.php", "published", "live"),
+        ]
+    );
+
+    let relation = post.replace("function author()", "function aut/*|*/hor()");
+    let edits = project.rename_edits("app/Models/Post.php", &relation, "writer");
+    let files: Vec<(&str, &str, &str)> =
+        edits.iter().map(|(file, _, old, new)| (file.as_str(), old.as_str(), new.as_str())).collect();
+    assert_eq!(
+        files,
+        [("app/Models/Post.php", "author", "writer"), ("resources/views/posts/show.blade.php", "author", "writer")]
+    );
+
+    let edits = project.rename_edits("app/Models/Post.php", &scope, "live");
+    assert_eq!(edits.len(), 1, "{edits:?}");
+}

@@ -699,6 +699,30 @@ impl PhpEngine {
             }
         }
 
+        // A model method's other names (Laravel) follow it: `published()`
+        // for `scopePublished`, `$post->author` for `author()`.
+        for (alias, renamed) in self.model_method_alias_renames(&sought, &new) {
+            let Sought::Alias { kind, name: old, .. } = &alias else { continue };
+            for usage in self.find_usages(std::slice::from_ref(&alias), path, here, false, cancel)? {
+                if usage.kind != UsageKind::Code || self.is_library(&usage.path) {
+                    continue;
+                }
+                let key = path_key(&usage.path);
+                let text = texts.entry(key.clone()).or_insert_with(|| file_text(self, &usage.path));
+                let Some(text) = text.as_deref() else { continue };
+                let (start, end) = LineIndex::new(text).byte_range(usage.range);
+                let written = text.get(start as usize..end as usize).unwrap_or_default();
+                let same = match kind {
+                    MemberKind::Method => written.eq_ignore_ascii_case(old),
+                    _ => written == old,
+                };
+                if same {
+                    let edits = &mut files.entry(key).or_insert_with(|| (usage.path.clone(), Vec::new())).1;
+                    edits.push(TextEdit { range: usage.range, new_text: renamed.clone() });
+                }
+            }
+        }
+
         let mut edit = WorkspaceEdit::default();
         for (_, (file, mut edits)) in files {
             edits.sort_by_key(|edit| (edit.range.start, edit.range.end));

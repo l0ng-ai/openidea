@@ -191,39 +191,49 @@ impl PhpEngine {
     /// Only uses that resolve to the method count, so a guess that names
     /// something else finds nothing.
     fn model_method_aliases(&self, sought: &[Sought]) -> Vec<Sought> {
-        use crate::types::provider::laravel::snake;
-        const MODEL: &str = r"Illuminate\Database\Eloquent\Model";
         let mut out = Vec::new();
         for sought in sought {
             let Sought::Member { kind: MemberKind::Method, name, declaring, .. } = sought else { continue };
-            if !self.class_model(declaring).is_some_and(|model| model.is_subclass_of(MODEL)) {
+            if !self.is_model(declaring) {
                 continue;
             }
-            let mut aliases: Vec<(MemberKind, String)> = Vec::new();
-            let mut alias = |kind: MemberKind, alias: String| {
-                let known = aliases.iter().any(|(k, a)| *k == kind && *a == alias);
-                if !alias.is_empty() && !known && !(kind == MemberKind::Method && alias.eq_ignore_ascii_case(name)) {
-                    aliases.push((kind, alias.clone()));
-                    out.push(Sought::Alias { kind, name: alias, of: Box::new(sought.clone()) });
-                }
-            };
-            let lower = name.to_ascii_lowercase();
-            if lower.starts_with("scope") && name.len() > 5 {
-                let rest = &name[5..];
-                let mut chars = rest.chars();
-                let first = chars.next().map(|c| c.to_ascii_lowercase().to_string()).unwrap_or_default();
-                alias(MemberKind::Method, first + chars.as_str());
-                continue;
+            for (kind, alias) in other_names(name).1 {
+                out.push(Sought::Alias { kind, name: alias, of: Box::new(sought.clone()) });
             }
-            if lower.starts_with("get") && lower.ends_with("attribute") && name.len() > 12 {
-                alias(MemberKind::Property, snake(&name[3..name.len() - 9]));
-                continue;
-            }
-            alias(MemberKind::Property, name.clone());
-            alias(MemberKind::Property, snake(name));
-            alias(MemberKind::Property, format!("{}_count", snake(name)));
         }
         out
+    }
+
+    /// For a rename of model methods among `sought` to `new`: their other
+    /// names ([`model_method_aliases`](Self::model_method_aliases)), each
+    /// with what it becomes. Only when the new name is of the same style
+    /// (a scope renamed to a scope, an accessor to an accessor).
+    pub(crate) fn model_method_alias_renames(&self, sought: &[Sought], new: &str) -> Vec<(Sought, String)> {
+        let mut out = Vec::new();
+        for sought in sought {
+            let Sought::Member { kind: MemberKind::Method, name, declaring, .. } = sought else { continue };
+            if !self.is_model(declaring) {
+                continue;
+            }
+            let ((style, old), (new_style, renamed)) = (other_names_all(name), other_names_all(new));
+            if style != new_style {
+                continue;
+            }
+            let mut seen: Vec<(MemberKind, String)> = Vec::new();
+            for ((kind, alias), (_, renamed)) in old.into_iter().zip(renamed) {
+                if !keep_alias(name, kind, &alias) || seen.iter().any(|(k, a)| *k == kind && *a == alias) {
+                    continue;
+                }
+                seen.push((kind, alias.clone()));
+                out.push((Sought::Alias { kind, name: alias, of: Box::new(sought.clone()) }, renamed));
+            }
+        }
+        out
+    }
+
+    fn is_model(&self, fqn: &str) -> bool {
+        const MODEL: &str = r"Illuminate\Database\Eloquent\Model";
+        self.class_model(fqn).is_some_and(|model| model.is_subclass_of(MODEL))
     }
 
     pub(super) fn sought(&self, subject: Subject, path: &Path, here: &FileSummary) -> Vec<Sought> {
@@ -496,6 +506,58 @@ impl PhpEngine {
         ScanWalker.walk_program(parsed.program(), &mut scan);
         (scan.found, scan.taken)
     }
+}
+
+/// How a model method's other names are made ([`other_names`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AliasStyle {
+    /// `scopePublished`: `published()`.
+    Scope,
+    /// `getFirstNameAttribute`: `first_name`.
+    Accessor,
+    /// Any other method (a relation, an `Attribute` accessor): itself, its
+    /// snake case and `_count`, as properties.
+    Plain,
+}
+
+/// The other names of a model method `name`, every one of its style in a
+/// fixed order (two names of one style line up one to one).
+fn other_names_all(name: &str) -> (AliasStyle, Vec<(MemberKind, String)>) {
+    use crate::types::provider::laravel::snake;
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("scope") && name.len() > 5 {
+        let mut chars = name[5..].chars();
+        let first = chars.next().map(|c| c.to_ascii_lowercase().to_string()).unwrap_or_default();
+        return (AliasStyle::Scope, vec![(MemberKind::Method, first + chars.as_str())]);
+    }
+    if lower.starts_with("get") && lower.ends_with("attribute") && name.len() > 12 {
+        return (AliasStyle::Accessor, vec![(MemberKind::Property, snake(&name[3..name.len() - 9]))]);
+    }
+    let snake = snake(name);
+    let names = vec![
+        (MemberKind::Property, name.to_owned()),
+        (MemberKind::Property, snake.clone()),
+        (MemberKind::Property, format!("{snake}_count")),
+    ];
+    (AliasStyle::Plain, names)
+}
+
+/// Whether `alias` is another name of the method `name` (not empty, not the
+/// method itself).
+fn keep_alias(name: &str, kind: MemberKind, alias: &str) -> bool {
+    !alias.is_empty() && !(kind == MemberKind::Method && alias.eq_ignore_ascii_case(name))
+}
+
+/// [`other_names_all`], each once and without the method itself.
+fn other_names(name: &str) -> (AliasStyle, Vec<(MemberKind, String)>) {
+    let (style, all) = other_names_all(name);
+    let mut out: Vec<(MemberKind, String)> = Vec::new();
+    for (kind, alias) in all {
+        if keep_alias(name, kind, &alias) && !out.iter().any(|(k, a)| *k == kind && *a == alias) {
+            out.push((kind, alias));
+        }
+    }
+    (style, out)
 }
 
 /// The function or method of `here` with a parameter declared at `start`.
