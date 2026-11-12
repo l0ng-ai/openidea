@@ -764,12 +764,14 @@ const docMetrics = ViewPlugin.fromClass(
 
 const docsTheme = EditorView.theme({
   ".cm-openidea-renderedDoc": {
-    margin: "2px 0 4px",
+    // No vertical margin: the editor measures a block widget by its border box, so a
+    // margin would push every line below it away from its line number.
+    margin: "0",
     // The content keeps its whitespace (`pre`); prose reflows instead, so the comment's
     // own line breaks do not carry over and its paragraphs wrap at the visible width.
     whiteSpace: "normal",
     overflowWrap: "break-word",
-    padding: "2px 0 2px 12px",
+    padding: "4px 0 6px 12px",
     borderLeft: "2px solid var(--border)",
     color: "var(--syn-doc-comment)",
     fontFamily: "var(--font-ui)",

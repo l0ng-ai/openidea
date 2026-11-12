@@ -240,6 +240,14 @@ function themeRule(selector: string): CSSStyleDeclaration | null {
   return null;
 }
 
+it("gives the rendered comment no vertical margin, which would push the lines below off their numbers", () => {
+  open(true);
+  // The editor measures a block widget by its border box: a margin is height it never sees.
+  const rule = themeRule(".cm-openidea-renderedDoc")!;
+  expect(rule.marginTop || "0").toMatch(/^0(px)?$/);
+  expect(rule.marginBottom || "0").toMatch(/^0(px)?$/);
+});
+
 it("reflows the rendered text, so the source's line breaks do not carry over", () => {
   open(true);
   // The content is `white-space: pre`, which the widget inherits unless it says otherwise;
