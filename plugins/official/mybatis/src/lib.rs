@@ -42,6 +42,9 @@ pub struct MapperXml {
     pub extends_refs: Vec<Named>,
     /// `<include refid="…">` values.
     pub include_refs: Vec<Named>,
+    /// `resultType` / `parameterType` / `type` / `javaType` / `ofType` values —
+    /// Java class or type-alias references.
+    pub type_refs: Vec<Named>,
 }
 
 /// A method parameter: its effective name (`@Param("…")` wins) and where that
@@ -139,6 +142,21 @@ pub fn parse_xml(text: &str) -> MapperXml {
             && let Some(r) = named("refid")
         {
             out.include_refs.push(r);
+        }
+        // Java-class references, on any tag that carries them.
+        for attr_name in ["resultType", "parameterType", "javaType", "ofType"] {
+            if let Some(r) = named(attr_name) {
+                out.type_refs.push(r);
+            }
+        }
+        // `type="…"` means a Java type on `<resultMap>`, `<id>`/`<result>`,
+        // `<association>`/`<collection>` and `<cache>`.
+        if matches!(
+            name.as_str(),
+            "resultMap" | "id" | "result" | "association" | "collection" | "cache" | "arg" | "idArg"
+        ) && let Some(r) = named("type")
+        {
+            out.type_refs.push(r);
         }
     }
     out
@@ -540,16 +558,27 @@ fn result_map_of(head: &str) -> (Vec<LitSpan>, Vec<LitSpan>) {
 pub fn parse_java(text: &str) -> MapperJava {
     let package =
         text.lines().find_map(|l| l.trim().strip_prefix("package ").map(|p| p.trim_end_matches(';').trim().to_owned()));
-    let Some(i) = text.find("interface ") else { return MapperJava::default() };
-    let rest = &text[i + 10..];
+    // Mapper files are interfaces; `resultType`/`javaType` targets are usually
+    // classes — accept either so class navigation resolves a declaration.
+    let (i, kw) = ["interface ", "class "]
+        .iter()
+        .filter_map(|kw| text.find(kw).map(|i| (i, *kw)))
+        .min_by_key(|(i, _)| *i)
+        .unwrap_or((usize::MAX, "interface "));
+    if i == usize::MAX {
+        return MapperJava::default();
+    }
+    let rest = &text[i + kw.len()..];
     let indent = rest.len() - rest.trim_start().len();
     let simple: String = rest[indent..].chars().take_while(|c| ident(*c)).collect();
     let name = Some(match package {
         Some(p) => format!("{p}.{simple}"),
         None => simple.clone(),
     });
-    let decl =
-        Some(Named { name: simple.clone(), range: range_of(text, i + 10 + indent, i + 10 + indent + simple.len()) });
+    let decl = Some(Named {
+        name: simple.clone(),
+        range: range_of(text, i + kw.len() + indent, i + kw.len() + indent + simple.len()),
+    });
     let body_start = text[i..].find('{').map_or(text.len(), |b| i + b + 1);
     let mut methods = Vec::new();
     let mut annotation_sql = Vec::new();
@@ -702,6 +731,33 @@ impl Navigator {
         (java.name.as_deref() == Some(namespace)).then_some((path, java))
     }
 
+    /// The Java class a `resultType`/`type`/`javaType`/`ofType` value names.
+    /// A fully-qualified name maps straight to a path; a simple name (or a
+    /// MyBatis type alias, which is a simple name) is tried in the mapper's own
+    /// package first, then anywhere in the project by file name.
+    fn class_for(project: &Project, namespace: &str, type_name: &str) -> Option<(String, MapperJava)> {
+        let candidate = |fqn: &str| -> Option<(String, MapperJava)> {
+            let rel = format!("**/{}.java", fqn.replace('.', "/"));
+            let path = project.find_files(&rel, 1).ok()?.into_iter().next()?;
+            let java = parse_java(&project.read_file(&path).ok()?);
+            (java.name.as_deref() == Some(fqn)).then_some((path, java))
+        };
+        if type_name.contains('.') {
+            return candidate(type_name);
+        }
+        let package = namespace.rsplit_once('.').map(|(p, _)| p).unwrap_or("");
+        if !package.is_empty()
+            && let Some(hit) = candidate(&format!("{package}.{type_name}"))
+        {
+            return Some(hit);
+        }
+        // Simple name or alias: any class file of that simple name.
+        let rel = format!("**/{type_name}.java");
+        let path = project.find_files(&rel, 1).ok()?.into_iter().next()?;
+        let java = parse_java(&project.read_file(&path).ok()?);
+        java.name.is_some().then_some((path, java))
+    }
+
     /// Where `resultMap="…"` / `<include refid="…">` points: a `<resultMap id>` /
     /// `<sql id>` in this file, or in the mapper a `namespace.id` prefix names
     /// (ids never hold dots, so the last segment is the id).
@@ -804,6 +860,15 @@ impl Navigator {
             for r in &xml.include_refs {
                 if let Some(target) = self.anchor_target(&project, doc, &xml, &ns.name, &r.name, true) {
                     out.push((r.clone(), target, format!("sql {}", r.name)));
+                }
+            }
+            // `resultType`/`type`/`javaType`/`ofType` → the Java class.
+            for r in &xml.type_refs {
+                if let Some((path, java)) = Self::class_for(&project, &ns.name, &r.name)
+                    && let Some(decl) = java.decl
+                {
+                    let simple = r.name.rsplit('.').next().unwrap_or(&r.name);
+                    out.push((r.clone(), Location { path, range: decl.range }, format!("class {simple}")));
                 }
             }
             // Gutter arrows read top-down: the namespace marker precedes the statements'.
@@ -1385,6 +1450,75 @@ mod tests {
         add_mapper(&host, "src/main/resources/mapper/UserMapper.xml", RESULT_XML);
         host.add_file("pom.xml", "<project/>");
         host
+    }
+
+    const TYPE_XML: &str = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<mapper namespace=\"com.acme.UserMapper\">\n",
+        "  <resultMap id=\"userMap\" type=\"User\">\n",
+        "    <id property=\"id\" column=\"user_id\"/>\n",
+        "    <association property=\"order\" javaType=\"com.acme.Order\" ofType=\"Order\"/>\n",
+        "  </resultMap>\n",
+        "  <select id=\"findById\" resultType=\"com.acme.User\" parameterType=\"long\">\n",
+        "    select * from users\n",
+        "  </select>\n",
+        "</mapper>\n"
+    );
+
+    #[test]
+    fn parses_type_refs() {
+        let xml = parse_xml(TYPE_XML);
+        let names: Vec<_> = xml.type_refs.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["User", "com.acme.Order", "Order", "com.acme.User", "long"]);
+        // `type="User"` range covers the value, not the quotes.
+        assert_eq!(xml.type_refs[0].range, Range::new(Position::new(2, 32), Position::new(2, 36)));
+    }
+
+    fn type_setup() -> MockHost {
+        let host = MockHost::install();
+        host.add_file(
+            "src/main/java/com/acme/UserMapper.java",
+            "package com.acme;\npublic interface UserMapper {\n    User findById(Long id);\n}\n",
+        );
+        host.add_file("src/main/java/com/acme/User.java", "package com.acme;\npublic class User {\n    Long id;\n}\n");
+        host.add_file(
+            "src/main/java/com/acme/Order.java",
+            "package com.acme;\npublic class Order {\n    Long id;\n}\n",
+        );
+        add_mapper(&host, "src/main/resources/mapper/UserMapper.xml", TYPE_XML);
+        host.add_file("pom.xml", "<project/>");
+        host
+    }
+
+    #[test]
+    fn navigates_type_refs_to_java_classes() {
+        let _host = type_setup();
+        let mut n = Navigator::default();
+        let xml = doc("/project/src/main/resources/mapper/UserMapper.xml", "xml", TYPE_XML);
+        let user_class = parse_java("package com.acme;\npublic class User {\n    Long id;\n}\n");
+
+        // `type="User"` (simple name) → User.java in the mapper's package.
+        let got = n.definition(&xml, Position::new(2, 33));
+        assert_eq!(
+            got,
+            vec![Location {
+                path: "/project/src/main/java/com/acme/User.java".into(),
+                range: user_class.decl.unwrap().range
+            }]
+        );
+
+        // `resultType="com.acme.User"` (fq name) → the same class.
+        let got = n.definition(&xml, Position::new(6, 40));
+        assert_eq!(got.len(), 1);
+        assert!(got[0].path.ends_with("User.java"));
+
+        // `ofType="Order"` → Order.java.
+        let got = n.definition(&xml, Position::new(4, 69));
+        assert_eq!(got.len(), 1);
+        assert!(got[0].path.ends_with("Order.java"));
+
+        // `parameterType="long"` (primitive, no such class) resolves nowhere.
+        assert!(n.definition(&xml, Position::new(6, 67)).is_empty());
     }
 
     #[test]
