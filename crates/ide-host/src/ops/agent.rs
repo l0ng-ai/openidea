@@ -5,9 +5,9 @@ use crate::Host;
 use crate::rpc::Dispatcher;
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
-    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentCommand, AgentEntry, AgentEvent, AgentProbe,
-    AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpScope, McpServer,
-    McpServerInput, NewAgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCommand, AgentEntry,
+    AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession,
+    McpScope, McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::error::ErrorKind;
 use ide_core::{IdeError, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
@@ -316,10 +316,16 @@ pub async fn base_text(host: &Host, window: &str, task: String, path: IpcPath) -
     host.project(window)?.agents.base_text(&task, path.into_path_buf()).await
 }
 
-/// Rollback: the task's changed files among `paths` (all without) back as they were when it started.
-pub async fn rollback_changes(host: &Host, window: &str, task: String, paths: Option<Vec<String>>) -> IdeResult<()> {
+/// Rollback: the task's changed files among `paths` (all without) back as `view` compares them.
+pub async fn rollback_changes(
+    host: &Host,
+    window: &str,
+    task: String,
+    paths: Option<Vec<String>>,
+    view: Option<AgentChangesView>,
+) -> IdeResult<()> {
     host.require_trust(window)?;
-    host.project(window)?.agents.rollback_changes(&task, paths).await
+    host.project(window)?.agents.rollback_changes(&task, paths, view.unwrap_or_default()).await
 }
 
 /// Accept: copies a worktree task's changed files among `paths` (all without) into the
@@ -485,7 +491,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_grouped_changes", |c| async move { grouped_changes(&c.host, &c.window, c.arg("task")?).await });
     d.add("agent_base_text", |c| async move { base_text(&c.host, &c.window, c.arg("task")?, c.arg("path")?).await });
     d.add("agent_rollback_changes", |c| async move {
-        rollback_changes(&c.host, &c.window, c.arg("task")?, c.arg("paths")?).await
+        rollback_changes(&c.host, &c.window, c.arg("task")?, c.arg("paths")?, c.arg("view")?).await
     });
     d.add("agent_accept_changes", |c| async move {
         accept_changes(&c.host, &c.window, c.arg("task")?, c.arg("paths")?).await

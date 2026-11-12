@@ -35,6 +35,14 @@ pub(crate) fn head_of(path: &Path) -> IdeResult<(String, String)> {
     Ok((info.head.unwrap_or_else(|| commit.clone()), commit))
 }
 
+/// `HEAD`'s commit in `cwd`, `None` outside a repository or before its first commit.
+pub(crate) fn head_commit(cwd: &Path) -> IdeResult<Option<String>> {
+    match discover(cwd)? {
+        Some(repo) => Ok(repo.head()?.1),
+        None => Ok(None),
+    }
+}
+
 /// `git worktree add -b agent/<slug> <dir>/<slug> <base>`.
 pub(crate) fn create(project_root: &Path, worktrees_dir: &Path, title: &str, base: Option<&str>) -> IdeResult<Created> {
     let repo = repo_at(project_root)?;

@@ -512,6 +512,17 @@ pub struct AgentCommit {
     pub files: Vec<AgentChange>,
 }
 
+/// Which comparison a rollback of the task's changes uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentChangesView {
+    /// Everything since the commit the task started from.
+    #[default]
+    SinceStart,
+    /// The uncommitted files against `HEAD`; commits made since the start stay.
+    Group,
+}
+
 /// A task's uncommitted files and the commits made since it started.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

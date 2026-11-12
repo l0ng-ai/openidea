@@ -3,9 +3,9 @@
 use crate::state::AppState;
 use ide_agent::registry::AgentRegistry;
 use ide_agent::{
-    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentCommand, AgentEntry, AgentEvent, AgentProbe,
-    AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpServer, McpServerInput,
-    NewAgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCommand, AgentEntry,
+    AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession,
+    McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
@@ -382,7 +382,7 @@ pub async fn agent_grouped_changes(
     agent::grouped_changes(&state.host, window.label(), task).await
 }
 
-/// Rollback: the task's changed files among `paths` (all without) back as they were when it started.
+/// Rollback: the task's changed files among `paths` (all without) back as `view` compares them.
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_rollback_changes(
@@ -390,8 +390,9 @@ pub async fn agent_rollback_changes(
     state: State<'_, AppState>,
     task: String,
     paths: Option<Vec<String>>,
+    view: Option<AgentChangesView>,
 ) -> IdeResult<()> {
-    agent::rollback_changes(&state.host, window.label(), task, paths).await
+    agent::rollback_changes(&state.host, window.label(), task, paths, view).await
 }
 
 /// Accept: copies a worktree task's changed files among `paths` (all without) into the

@@ -55,6 +55,7 @@ vi.mock("@/platform/ipc", async (original) => ({
     },
     agentProviders: async () => ({ status: "ok", data: [] }),
     agentChanges: async () => ({ status: "ok", data: [] }),
+    agentGroupedChanges: async () => ({ status: "ok", data: { uncommitted: [], commits: [] } }),
     agentBaseText: async (_task: string, path: string) => ({ status: "ok", data: `base of ${path}` }),
     agentEntries: async () => ({ status: "ok", data: await backend.entries }),
   },

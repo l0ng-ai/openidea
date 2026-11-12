@@ -218,8 +218,12 @@ export const commands = {
 	agentGroupedChanges: (task: string) => typedError<AgentChanges, IdeError>(__TAURI_INVOKE("agent_grouped_changes", { task })),
 	/**  Content of `path` when the task started (left side of its diff). */
 	agentBaseText: (task: string, path: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path })),
-	/**  Rollback: the task's changed files among `paths` (all without) back as they were when it started. */
-	agentRollbackChanges: (task: string, paths: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rollback_changes", { task, paths })),
+	/**  Rollback: the task's changed files among `paths` (all without) back as `view` compares them. */
+	agentRollbackChanges: (task: string, paths: string[] | null, view: 
+/**  Everything since the commit the task started from. */
+"sinceStart" | 
+/**  The uncommitted files against `HEAD`; commits made since the start stay. */
+"group" | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rollback_changes", { task, paths, view })),
 	/**
 	 *  Accept: copies a worktree task's changed files among `paths` (all without) into the
 	 *  local checkout, uncommitted; files the checkout changed itself are left alone and reported.
@@ -1758,6 +1762,13 @@ export type AgentChanges = {
 	 */
 	commits: AgentCommit[],
 };
+
+/**  Which comparison a rollback of the task's changes uses. */
+export type AgentChangesView = 
+/**  Everything since the commit the task started from. */
+"sinceStart" | 
+/**  The uncommitted files against `HEAD`; commits made since the start stay. */
+"group";
 
 export type AgentCommand = {
 	/**  Without the leading `/`. */

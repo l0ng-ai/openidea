@@ -1362,9 +1362,14 @@ impl AgentManager {
         .await
     }
 
-    /// Rollback: puts the task's changed files among `rel_paths` (all with `None`) back as they
-    /// were when it started (files the user had changed then, as the user left them).
-    pub async fn rollback_changes(&self, id: &str, rel_paths: Option<Vec<String>>) -> IdeResult<()> {
+    /// Rollback: puts the task's changed files among `rel_paths` (all with `None`) back as
+    /// `view` compares them: as they were when it started, or as they are in `HEAD`.
+    pub async fn rollback_changes(
+        &self,
+        id: &str,
+        rel_paths: Option<Vec<String>>,
+        view: AgentChangesView,
+    ) -> IdeResult<()> {
         let task = self.task(id)?;
         if task.state.lock().busy {
             return Err(IdeError::invalid("the agent is working: stop it before rolling back its changes"));
@@ -1375,8 +1380,10 @@ impl AgentManager {
             (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)))
         };
         let restamped = blocking(move || {
-            let changes = at.changes(&before)?;
-            let rev = at.rev()?;
+            let (changes, rev) = match view {
+                AgentChangesView::Group => (at.grouped_changes(&before)?.uncommitted, worktree::head_commit(at.cwd())?),
+                AgentChangesView::SinceStart => (at.changes(&before)?, at.rev()?),
+            };
             let sources = match rev.as_deref() {
                 Some(rev) => worktree::rename_sources(at.cwd(), rev)?,
                 None => Default::default(),
