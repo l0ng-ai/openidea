@@ -31,6 +31,7 @@ import type {
 } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { isSameOrInside } from "@/platform/paths";
 import { basename, relativeDir, useProject } from "@/platform/project";
 import { notifications, useEditorShown, type EditorInput } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
@@ -171,11 +172,17 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
     if (!useAgents.getState().entries.has(id)) void loadEntries(id).catch(() => undefined);
     void refreshChanges(id);
   }, [id, connected]);
-  // A commit in the task's worktree moves its HEAD: pick it up without waiting for the agent.
+  // A commit in the task's checkout moves its HEAD: pick it up without waiting for the agent.
+  // The watcher reports every repository under the project, so the main checkout and other
+  // tasks' worktrees would otherwise re-read this task's commits for nothing.
+  const cwd = task?.cwd ?? null;
   useEffect(() => {
     if (!connected) return;
-    return onIdeEvent("vcsChanged", () => scheduleChanges(id));
-  }, [id, connected]);
+    return onIdeEvent("vcsChanged", (e) => {
+      if (!cwd || !isSameOrInside(cwd, e.root)) return;
+      scheduleChanges(id);
+    });
+  }, [id, connected, cwd]);
   // A kept-alive tab stays mounted behind the shown one: it isn't read there, nor searched.
   const shown = useEditorShown();
   useEffect(() => {
