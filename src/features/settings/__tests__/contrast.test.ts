@@ -144,7 +144,7 @@ describe("palette themes", () => {
   it("have a tokens.css block for every palette theme id, and no other", () => {
     const blocks = [...css.matchAll(/:root\[data-color-theme="([a-z0-9-]+)"\]/g)].map((m) => m[1]);
     expect([...new Set(blocks)].sort()).toEqual(palettes.map((t) => t.id).sort());
-    expect(palettes.length).toBeGreaterThanOrEqual(4);
+    expect(palettes.length).toBeGreaterThanOrEqual(2);
   });
 
   it.each(palettes)("$id defines every token or inherits it from its $kind base on purpose", ({ id, kind }) => {

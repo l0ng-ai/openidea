@@ -2269,7 +2269,9 @@ export type AppMetrics = {
 	memory: ProcessMemory[],
 };
 
-export type AppearanceSettings = {
+export type AppearanceSettings = AppearanceSettings_Serialize | AppearanceSettings_Deserialize;
+
+export type AppearanceSettings_Deserialize = {
 	/**
 	 *  A built-in theme id (`light`, `dark`, `dark-hc`, …), `system` (legacy
 	 *  "Sync with OS"), or a plugin's theme: `plugin:<plugin-id>/<theme-id>`.
@@ -2329,6 +2331,68 @@ export type AppearanceSettings = {
 	statusBarWidgets?: { [key in string]: boolean },
 	/**  Customize Main Toolbar; `None` = the default toolbar. */
 	mainToolbar?: MainToolbarSettings | null,
+};
+
+export type AppearanceSettings_Serialize = {
+	/**
+	 *  A built-in theme id (`light`, `dark`, `dark-hc`, …), `system` (legacy
+	 *  "Sync with OS"), or a plugin's theme: `plugin:<plugin-id>/<theme-id>`.
+	 */
+	theme: string,
+	accent: string,
+	uiFontSize: number | null,
+	locale: string,
+	/**  Follow the OS light/dark mode with the preferred themes below. */
+	syncWithOs: boolean,
+	preferredLightTheme: string,
+	preferredDarkTheme: string,
+	/**  A plugin's file icon theme (`<plugin-id>/<theme-id>`); empty = the built-in icons. */
+	fileIconTheme: string,
+	fileIconThemeOptions: { [key in string]: FileIconThemeOptions },
+	/**  IDE zoom in percent (50–300). */
+	zoom: number,
+	/**  Apply `ui_font_family` / `ui_font_size` (otherwise the theme's). */
+	useCustomFont: boolean,
+	uiFontFamily: string,
+	/**  Font tried when `ui_font_family` lacks a glyph; empty = none. */
+	uiFontFallback: string,
+	contrastScrollbars: boolean,
+	/**  Adjust colours for red-green vision deficiency. */
+	redGreenVision: boolean,
+	differentToolWindowBackground: boolean,
+	compactMode: boolean,
+	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
+	smallTreeIndents: boolean,
+	fullPathInTitle: boolean,
+	projectColorsInToolbar: boolean,
+	dndWithAltOnly: boolean,
+	menuIcons: boolean,
+	/**  `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar. */
+	mainMenuStyle: string,
+	/**  A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
+	mainMenuAlt: boolean,
+	/**  `subpixel` | `greyscale` | `none` */
+	ideAntialiasing: string,
+	editorAntialiasing: string,
+	showToolWindowBars: boolean,
+	showToolWindowNames: boolean,
+	showToolWindowBadges: boolean,
+	widescreenToolWindows: boolean,
+	/**  View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
+	showMainToolbar: boolean,
+	showStatusBar: boolean,
+	/**
+	 *  View › Appearance › Navigation Bar: the file path breadcrumbs, shown in
+	 *  the status bar by default, above the editor, or not at all.
+	 */
+	navigationBar: NavigationBarPosition,
+	/**
+	 *  Status bar widgets shown (`true`) or hidden (`false`) by the user
+	 *  (status bar context menu); widgets not listed use their default.
+	 */
+	statusBarWidgets: { [key in string]: boolean },
+	/**  Customize Main Toolbar; `None` = the default toolbar. */
+	mainToolbar: MainToolbarSettings | null,
 };
 
 export type ApplyOutcome = {
@@ -9067,7 +9131,7 @@ export type SettingsScope = "global" | "project";
 
 export type Settings_Deserialize = {
 	general?: GeneralSettings,
-	appearance?: AppearanceSettings,
+	appearance?: AppearanceSettings_Deserialize,
 	editor?: EditorSettings_Deserialize,
 	keymap?: string,
 	files?: FileSettings,
@@ -9131,7 +9195,7 @@ export type Settings_Deserialize = {
 
 export type Settings_Serialize = {
 	general: GeneralSettings,
-	appearance: AppearanceSettings,
+	appearance: AppearanceSettings_Serialize,
 	editor: EditorSettings_Serialize,
 	keymap: string,
 	files: FileSettings,
