@@ -24,6 +24,7 @@ ide-jsonrpc = { path = "crates/ide-jsonrpc" }
 ide-lsp = { path = "crates/ide-lsp" }
 ide-dap = { path = "crates/ide-dap" }
 ide-vcs = { path = "crates/ide-vcs" }
+ide-p4 = { path = "crates/ide-p4" }
 ide-terminal = { path = "crates/ide-terminal" }
 ide-run = { path = "crates/ide-run" }
 ide-workspace = { path = "crates/ide-workspace" }
