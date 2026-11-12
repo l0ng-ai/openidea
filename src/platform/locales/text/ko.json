@@ -3999,8 +3999,6 @@
   "Cannot exclude {name}": "{name}을(를) 제외할 수 없습니다",
   "Solarized Light": "Solarized 라이트",
   "Solarized Dark": "Solarized 다크",
-  "One Light": "One 라이트",
-  "One Dark": "One 다크",
   "Copied reference: {reference}": "참조 복사됨: {reference}",
   "{count} lines": "{count}줄",
   "Preview of {path}": "{path} 미리 보기",

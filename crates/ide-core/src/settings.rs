@@ -194,6 +194,19 @@ where
     Ok(serde_json::from_value(serde_json::Value::deserialize(d)?).unwrap_or_default())
 }
 
+/// A theme id, with the built-in themes that were removed read as the Islands theme of their kind.
+fn theme_id<'de, D>(d: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let id = String::deserialize(d)?;
+    Ok(match id.as_str() {
+        "one-light" => "light".into(),
+        "one-dark" => "dark".into(),
+        _ => id,
+    })
+}
+
 /// [`AgentSettings::defaults`], keeping only the text values of each agent's table.
 fn agent_defaults<'de, D>(d: D) -> Result<BTreeMap<String, BTreeMap<String, String>>, D::Error>
 where
@@ -557,13 +570,19 @@ pub enum NavigationBarPosition {
 pub struct AppearanceSettings {
     /// A built-in theme id (`light`, `dark`, `dark-hc`, …), `system` (legacy
     /// "Sync with OS"), or a plugin's theme: `plugin:<plugin-id>/<theme-id>`.
+    #[serde(deserialize_with = "theme_id")]
+    #[specta(type = String)]
     pub theme: String,
     pub accent: String,
     pub ui_font_size: f32,
     pub locale: String,
     /// Follow the OS light/dark mode with the preferred themes below.
     pub sync_with_os: bool,
+    #[serde(deserialize_with = "theme_id")]
+    #[specta(type = String)]
     pub preferred_light_theme: String,
+    #[serde(deserialize_with = "theme_id")]
+    #[specta(type = String)]
     pub preferred_dark_theme: String,
     /// A plugin's file icon theme (`<plugin-id>/<theme-id>`); empty = the built-in icons.
     pub file_icon_theme: String,
@@ -1423,6 +1442,19 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removed_one_themes_read_as_islands_themes() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"appearance":{"theme":"one-dark","preferredLightTheme":"one-light","preferredDarkTheme":"one-dark"}}"#,
+        )
+        .unwrap();
+        let a = settings.appearance;
+        assert_eq!((a.theme.as_str(), a.preferred_light_theme.as_str()), ("dark", "light"));
+        assert_eq!(a.preferred_dark_theme, "dark");
+        let kept: Settings = serde_json::from_str(r#"{"appearance":{"theme":"solarized-dark"}}"#).unwrap();
+        assert_eq!(kept.appearance.theme, "solarized-dark");
+    }
 
     #[test]
     fn window_close_settings_default_off_and_round_trip() {

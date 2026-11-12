@@ -320,6 +320,25 @@ describe("store", () => {
     }
   });
 
+  it("leaves a theme another window selected alone until this window's settings change", async () => {
+    const stop = [syncProjection(), followThemeSetting()];
+    try {
+      useProject.setState({ settings: { appearance: { theme: "plugin:theme-harbor-night/harbor-night" } } as never });
+      await refreshPlugins();
+      await waitFor(() => expect(usePlugins.getState().activeTheme?.theme.id).toBe("harbor-night"));
+      const setTheme = vi.spyOn(backend, "setTheme");
+      // Another window picked a built-in theme; this window's settings still name the plugin's.
+      act(() => usePlugins.setState({ activeTheme: null }));
+      await Promise.resolve();
+      expect(setTheme).not.toHaveBeenCalled();
+      act(() => useProject.setState({ settings: { appearance: { theme: "dark" } } as never }));
+      expect(setTheme).not.toHaveBeenCalled();
+    } finally {
+      stop.forEach((s) => s());
+      useProject.setState({ settings: null as never });
+    }
+  });
+
   it("installs from a folder, its plugin.toml, or a package file unpacked first", async () => {
     setConsentPrompt(async () => ({ optional: [] }));
     for (const [picked, unpacked] of [

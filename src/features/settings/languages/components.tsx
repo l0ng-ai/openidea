@@ -51,6 +51,8 @@ export interface SdkFieldProps {
   extra?: SelectOption[];
   /** Oldest usable Java version: older JDKs are marked, and Download JDK preselects it. */
   minJava?: number | null;
+  /** The configured value no longer exists (PyCharm's "Invalid" SDK): kept selectable, marked as such. */
+  invalid?: boolean;
 }
 
 /** The "Download JDK…" entry of JDK combos (not a value). */
@@ -67,6 +69,7 @@ export function SdkField({
   browseTitle,
   extra,
   minJava,
+  invalid,
   ...aria
 }: SdkFieldProps) {
   const { list, loading, refresh } = useDetected(kind);
@@ -80,10 +83,16 @@ export function SdkField({
       const detail = tooOld ? tx`too old, needs JDK ${minJava}+ · ${tildify(sdk.path)}` : tildify(sdk.path);
       out.push({ value: sdk.path, label: sdk.name, detail });
     }
-    if (value && !out.some((o) => o.value === value)) out.push({ value, label: tildify(value), detail: "custom" });
+    if (value && !out.some((o) => o.value === value)) {
+      out.push(
+        invalid
+          ? { value, label: tx`Invalid — ${tildify(value)}`, detail: tildify(value), keywords: "invalid missing" }
+          : { value, label: tildify(value), detail: "custom" },
+      );
+    }
     if (kind === "jdk") out.push({ value: DOWNLOAD_JDK, label: "Download JDK…", icon: "plus" });
     return out;
-  }, [list, value, emptyLabel, emptyDetail, extra, kind, minJava]);
+  }, [list, value, emptyLabel, emptyDetail, extra, kind, minJava, invalid]);
   const [downloading, setDownloading] = useState(false);
   const browse = async () => {
     const picked = await choosePath({ directory: !!directory, title: browseTitle, defaultPath: value || undefined });

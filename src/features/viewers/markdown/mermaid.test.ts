@@ -264,7 +264,7 @@ describe("mermaid in the markdown preview", () => {
     const changed = vi.fn();
     const off = subscribeTheme(changed);
     try {
-      root.dataset.colorTheme = "one-dark";
+      root.dataset.colorTheme = "solarized-light";
       const firstKey = themeKey();
       await renderMermaidIn(preview(SEQ)).done;
       root.dataset.colorTheme = "solarized-dark";
@@ -380,7 +380,8 @@ describe("mermaid in the markdown preview", () => {
           }),
         }),
       );
-      expect(document.querySelector("span[hidden]")).toBeNull();
+      // One probe element serves every token.
+      expect(document.querySelectorAll("span[hidden]")).toHaveLength(1);
     } finally {
       computed.mockRestore();
     }
@@ -488,7 +489,7 @@ describe("mermaid in the markdown preview", () => {
     const html = document.documentElement;
     const previous = html.dataset.colorTheme;
     try {
-      html.dataset.colorTheme = "one-dark";
+      html.dataset.colorTheme = "solarized-light";
       const root = preview(SEQ);
       await renderMermaidIn(root).done;
       root.querySelector<HTMLButtonElement>('[data-mermaid-tools] button[aria-label="Full screen"]')!.click();
@@ -510,7 +511,7 @@ describe("mermaid in the markdown preview", () => {
       expect(pan.style.transform).toBe(zoomed);
 
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-      html.dataset.colorTheme = "one-dark";
+      html.dataset.colorTheme = "solarized-light";
       await renderMermaidIn(root).done;
       expect(document.querySelector("[data-mermaid-preview]")).toBeNull();
     } finally {
