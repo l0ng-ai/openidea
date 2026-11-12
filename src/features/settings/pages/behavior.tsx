@@ -196,8 +196,8 @@ function AccentRow() {
   const [accent, setAccent] = useSetting<string>("appearance.accent");
   return (
     <Indented>
-      <Row label="Accent colour">
-        <ColorSwatches value={accent} presets={ACCENT_PRESETS} onChange={setAccent} aria-label="Accent colour" />
+      <Row label="Accent color">
+        <ColorSwatches value={accent} presets={ACCENT_PRESETS} onChange={setAccent} aria-label="Accent color" />
       </Row>
     </Indented>
   );
@@ -745,7 +745,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             keywords: ["icons", "file icons", "icon theme"],
             component: FileIconThemeRow,
           },
-          { kind: "custom", label: "Accent colour", keywords: ["accent color", "highlight"], component: AccentRow },
+          { kind: "custom", label: "Accent color", keywords: ["accent colour", "highlight"], component: AccentRow },
           { kind: "custom", label: "Different tool window background", component: ToolWindowBackgroundRow },
         ],
       },
