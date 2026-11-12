@@ -397,13 +397,13 @@ function Limit({ limit, now }: { limit: AgentLimit; now: number }) {
   );
 }
 
-/** Context window use: "12%", the numbers in the tooltip. */
+/** Context window use: "167k/1M (17%)", the exact counts in the tooltip. */
 function Usage({ usage }: { usage: AgentUsage }) {
   const label = usageLabel(usage);
   return (
     <span className={styles.meter} title={label.detail} aria-label={`Context ${label.short}, ${label.detail}`}>
       <span className={styles.usageBar} aria-hidden>
-        <span style={{ width: label.short }} />
+        <span style={{ width: `${label.percent}%` }} />
       </span>
       {label.short}
     </span>
