@@ -366,7 +366,8 @@ fn manager(dir: &Path, agent: Arc<FakeAgent>) -> AgentManager {
 fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentManager {
     // These tests speak to FakeAgent, never an installed CLI, including after a provider reload.
     let agents = dir.join("agents");
-    provider::set_builtin_command(&agents, "claude", Some(&dir.join("missing-claude").to_string_lossy())).unwrap();
+    provider::set_builtin_command(&agents, None, "claude", Some(&dir.join("missing-claude").to_string_lossy()))
+        .unwrap();
     let connector: Connector = Arc::new(move |_spec, _cwd, client, _stderr| {
         let (a, b) = duplex(1 << 20);
         let (ar, aw) = tokio::io::split(a);
@@ -385,6 +386,7 @@ fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentMan
             // The project is the boundary of the skill walk: nothing above it (such as the
             // user's profile, when temp lives under it) leaks into the test.
             home_dir: Some(dir.to_path_buf()),
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -1410,6 +1412,7 @@ async fn real_claude_task_in_a_worktree() {
             models_file: tmp.path().join("models.json"),
             custom_agents_dir: None,
             home_dir: None,
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
     );
@@ -2243,6 +2246,7 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
             models_file: tmp.path().join("models.json"),
             custom_agents_dir: Some(agents_dir.clone()),
             home_dir: None,
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -2553,6 +2557,7 @@ async fn delete_running_agent(no_load: bool) {
             models_file: root.join("models.json"),
             custom_agents_dir: None,
             home_dir: None,
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
         connector,
