@@ -298,10 +298,26 @@ function onTaskEvent(e: Extract<PluginEvent, { type: "taskStarted" | "taskProgre
 
 /** Batches are sent at most this often; the backend batches again per plugin. */
 const POST_INTERVAL_MS = 500;
+/** Caret events keep labels responsive instead of waiting for the batch. */
+const CARET_FLUSH_MS = 120;
+/** The caret is at rest after this long; conversation loads wait for it. */
+const CARET_SETTLE_MS = 600;
 
 let wanted = new Set<EventKind>();
 let queue: WorkbenchEvent[] = [];
 let postTimer: ReturnType<typeof setTimeout> | null = null;
+let postDue = 0;
+let settleTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flush() {
+  postTimer = null;
+  const batch = queue;
+  queue = [];
+  if (!batch.length) return;
+  void pluginsBackend()
+    .postEvents(batch)
+    .catch(() => {});
+}
 
 /**
  * Re-reads the event kinds plugins want. Besides `subscriptionsChanged`
@@ -326,15 +342,15 @@ function post(event: WorkbenchEvent) {
     if (queued >= 0) queue.splice(queued, 1);
   }
   queue.push(event);
-  if (postTimer) return;
-  postTimer = setTimeout(() => {
-    postTimer = null;
-    const batch = queue;
-    queue = [];
-    void pluginsBackend()
-      .postEvents(batch)
-      .catch(() => {});
-  }, POST_INTERVAL_MS);
+  const delay = event.kind === "caretMoved" ? CARET_FLUSH_MS : POST_INTERVAL_MS;
+  const due = Date.now() + delay;
+  // Keep whichever timer fires first (a caret event shortens a pending batch).
+  if (postTimer) {
+    if (due >= postDue) return;
+    clearTimeout(postTimer);
+  }
+  postDue = due;
+  postTimer = setTimeout(flush, delay);
 }
 
 /** Reports the events plugins subscribed to: files opened and saved, actions run, repositories changed. */
@@ -346,8 +362,17 @@ function trackWorkbenchEvents(): () => void {
     if (e.type === "inputModeChanged" && wanted.has("input-mode-changed"))
       post({ kind: "inputModeChanged", value: { path: e.path, mode: e.mode, sub: e.sub } });
     if (e.type === "docSaved" && wanted.has("file-saved")) post({ kind: "fileSaved", value: e.path });
-    if (e.type === "caretMoved" && wanted.has("caret-moved"))
-      post({ kind: "caretMoved", value: { path: e.path, line: e.line, col: e.col } });
+    if (e.type === "caretMoved" && wanted.has("caret-moved")) {
+      const caret = { path: e.path, line: e.line, col: e.col, settled: false };
+      post({ kind: "caretMoved", value: caret });
+      // Once the caret rests, send one settled event: a plugin may then load the
+      // conversation behind the label. Movement keeps postponing it.
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        settleTimer = null;
+        post({ kind: "caretMoved", value: { ...caret, settled: true } });
+      }, CARET_SETTLE_MS);
+    }
     if (e.type === "docChanged" && wanted.has("document-changed"))
       post({
         kind: "documentChanged",
@@ -375,6 +400,8 @@ function trackWorkbenchEvents(): () => void {
     offSettings();
     if (postTimer) clearTimeout(postTimer);
     postTimer = null;
+    if (settleTimer) clearTimeout(settleTimer);
+    settleTimer = null;
     queue = [];
   };
 }

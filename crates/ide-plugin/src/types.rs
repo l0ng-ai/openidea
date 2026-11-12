@@ -244,6 +244,9 @@ pub struct CaretMoved {
     pub path: String,
     pub line: u32,
     pub col: u32,
+    /// The caret came to rest at this position; plugins may load what a hover needs.
+    #[serde(default)]
+    pub settled: bool,
 }
 
 /// One UTF-16 replacement in a locally edited editor document.

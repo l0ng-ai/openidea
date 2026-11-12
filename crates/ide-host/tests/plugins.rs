@@ -6122,7 +6122,7 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
                 mode: "visual".into(),
                 sub: Some("linewise".into()),
             }),
-            E::CaretMoved(ide_plugin::CaretMoved { path: path.clone(), line: 4, col: 2 }),
+            E::CaretMoved(ide_plugin::CaretMoved { path: path.clone(), line: 4, col: 2, settled: true }),
         ],
         Some(PluginEditor {
             path: path.clone(),
@@ -6144,6 +6144,7 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
     assert_eq!(caret["path"], path.as_str());
     assert_eq!(caret["line"], 4);
     assert_eq!(caret["col"], 2);
+    assert_eq!(caret["settled"], true);
     assert_eq!(events[3]["editor"][0], path.as_str());
     assert_eq!(events[2]["editor"][0], path);
     assert_eq!(events[2]["editor"][1][0], serde_json::json!([0, 0, 0, 0]));

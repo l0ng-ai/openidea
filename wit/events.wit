@@ -38,8 +38,9 @@ interface events {
     /// API 1.6 also delivers `document-changed` (versioned UTF-16 replacements
     /// from explicit path subscriptions), `websocket-ready` (a host-owned
     /// connection has messages to drain) and `caret-moved` (JSON {path, line,
-    /// col}, 0-based UTF-16 positions, when the caret moves in the focused
-    /// editor; it requires `events`) through `other`.
+    /// col, settled}, 0-based UTF-16 positions, when the caret moves in the
+    /// focused editor; `settled` is true for the final position once the caret
+    /// rests, so costly work waits for it; it requires `events`) through `other`.
     /// Kinds: `file-opened`, `file-saved`, `document-changed`, `websocket-ready`, `caret-moved`, `files-changed` (batched disk changes
     /// as `other`, with created/modified/removed path lists in JSON), `editor-focused` (the focused editor
     /// changed), `vcs-changed` (a repository's state changed: commit,

@@ -204,7 +204,12 @@ fn released_gitai_publishes_labels_and_markers_for_an_open_file() {
     // A caret event moves the label with the caret, without a new CLI run.
     host.post_window_events(
         "main",
-        vec![WorkbenchEvent::CaretMoved(ide_host::plugins::CaretMoved { path: path.clone(), line: 0, col: 0 })],
+        vec![WorkbenchEvent::CaretMoved(ide_host::plugins::CaretMoved {
+            path: path.clone(),
+            line: 0,
+            col: 0,
+            settled: true,
+        })],
         Some(PluginEditor {
             path: path.clone(),
             language: "rust".into(),

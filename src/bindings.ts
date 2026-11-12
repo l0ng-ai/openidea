@@ -2596,6 +2596,8 @@ export type CaretMoved = {
 	path: string,
 	line: number,
 	col: number,
+	/**  The caret came to rest at this position; plugins may load what a hover needs. */
+	settled?: boolean,
 };
 
 /**
