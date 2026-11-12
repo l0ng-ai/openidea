@@ -345,7 +345,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `ide.commands`      | high   | Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing. API 1.4; declared own commands are exempt.      |
 | `database.sources`  | medium | API 1.4: manage only the plugin's own project database sources, write their secure credentials and request connection; trusted projects only.                           |
 | `project.read`      | low    | `Project::root`, `read_file`, `read_bytes`, `find_files`, `symbols`, `search_text`, `host::projects`, `publish_diagnostics`, `problems`, editor opening and decorations |
-| `project.write`     | medium | `Project::write_file` — creates and replaces text files inside the open projects                                                                                        |
+| `project.write`     | high   | `Project::write_file` — creates and replaces text files inside the open projects, the settings and build scripts a trusted project runs included                        |
 | `fs.read:<path>`    | high   | `host::fs::read_file`, `read_bytes`, `stat`, `read_dir` — files outside the projects, under the grant's directory                                                       |
 | `fs.write:<path>`   | high   | `host::fs::write_file`, `write_bytes` — files under that path; doesn't imply reading                                                                                    |
 | `editor.read`       | low    | `TextEditor::document`, `selections`, `host::open_editors`                                                                                                              |
@@ -388,7 +388,9 @@ keep the file's encoding and BOM (a new file is UTF-8), are capped at 16 MiB,
 and are refused while the editor holds unsaved changes for the same file. The
 path is resolved as a read's is, so a link inside a granted directory cannot be
 used to write outside it. `project.write` does the same inside the open
-projects, creating missing directories. Both are new in API 1.3
+projects, creating missing directories. It never writes git's own files:
+nothing inside a `.git` folder, nor the `.git` file of a linked worktree or
+submodule, whichever name or link leads there. Both are new in API 1.3
 (`engines.openidea = "^1.3"`).
 
 `host::fs::plugin_dir()` (API 1.3) returns a private directory belonging only to
@@ -591,6 +593,8 @@ then run `openidea-plugin check`.
 | `Plugin::handle_events(events, ctx)`                                                                           | export `event-handler.handle`              | Batches of subscribed events, oldest first, per window.                                                                                                                                                                                                                                                                                                   |
 | `Plugin::activate` / `deactivate`                                                                              | export `lifecycle`                         | Per instance: after a crash or idle reclaim a new one is activated.                                                                                                                                                                                                                                                                                       |
 | `TextEditor::document()` → `{version, text}`                                                                   | `editor.text-editor.document`              | `selections()` are those when the command ran (0-based lines, UTF-16 columns).                                                                                                                                                                                                                                                                            |
+| `Project::document`, `apply_document_edits`                                                                    | `editor.{document,apply-edits}-at`         | API 1.6: versioned access to an explicitly named open project document from background events. Requires `project.read` and `editor.read`/`editor.write`; stale edits change nothing.                                                                                                                                                                      |
+| `WebSocket::{connect,send,drain,close}`                                                                        | `net.websocket-*`                          | API 1.6: project-bound, bounded host-owned WSS transport with secret-filled headers, close state and event-driven wakeups.                                                                                                                                                                                                                                |
 | `Project::{upsert_data_source,remove_data_source,data_sources,set_data_source_credential,connect_data_source}` | `database`                                 | API 1.4: owned project sources; requires `database.sources` and trust. See _Database sources_.                                                                                                                                                                                                                                                            |
 | `host::mcp_stdio_command()`                                                                                    | `mcp.stdio-command`                        | API 1.4: invoking project bridge argv, `None` while off. No URL/token.                                                                                                                                                                                                                                                                                    |
 | `McpProvider::call(tool, arguments, ctx)`                                                                      | export `mcp-provider.call`                 | API 1.4: declared tools under plugin grants and command budget. See _Plugin MCP tools_.                                                                                                                                                                                                                                                                   |
@@ -637,7 +641,7 @@ then run `openidea-plugin check`.
 | `Project::symbols(query, limit)`                                                                               | `workspace.symbols`                        | New in 1.3; `project.read`. Fuzzy in-memory search (no LSP): name, camelCase kind, container and UTF-16 location. Queries ≤ 256 UTF-8 bytes; limits capped at 1000. Snapshot notes below.                                                                                                                                                                 |
 | `host::publish_diagnostics(path, items)`                                                                       | `diagnostics.publish`                      | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                                                                                                                                                         |
 | `host::fetch(request)` → `{status, headers, body}`                                                             | `net.fetch`                                | See _Network_.                                                                                                                                                                                                                                                                                                                                            |
-| `Project::run_process(program, args, stdin)` → `{code, stdout, stderr}`                                        | `process.run`                              | Only the pinned program of a `process:` grant; runs in the project root of a trusted project; 4 MiB of output; killed when the call is cancelled or times out.                                                                                                                                                                                            |
+| `Project::run_process(program, args, stdin)` → `{code, stdout, stderr}`                                        | `process.run`                              | Only the pinned program of a `process:` grant; runs in the project root of a trusted project; up to 16 MiB of stdout (fails if exceeded); killed when the call is cancelled or times out.                                                                                                                                                                 |
 | `host::run_command(cmd, project, stdin)` → `{code, stdout, stderr}`                                            | `process.run-command`                      | API 1.3: same limits as `run_process`, with append-only environment variables; needs the pinned `process:<program>` grant.                                                                                                                                                                                                                                |
 | `host::start(cmd, project)` → `Child`                                                                          | `process.start`                            | API 1.3: `poll(max_bytes)`, `write(text)`, `close_stdin()`, `wait(timeout_ms)`, `kill()`; at most 8 handles; dropping one kills its process.                                                                                                                                                                                                              |
 | `host::refresh_view(view)`                                                                                     | `views.refresh`                            | The view (or custom editors) render again; call it when the content changed.                                                                                                                                                                                                                                                                              |
@@ -881,6 +885,8 @@ log/blame return empty lists and diff returns `None`.
 
 | Kind                 | Capability     | Delivered                                                                                                                                  |
 | -------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `document-changed`   | `events`       | API 1.6: a committed local edit as versioned UTF-16 replacements; `subscribe-paths` only, also needs `project.read` and `editor.read`      |
+| `websocket-ready`    | `events`       | API 1.6: a bounded host-owned WebSocket has frames or a final close state to drain                                                         |
 | `file-opened`        | `events`       | a file opens in an editor                                                                                                                  |
 | `file-closed`        | `events`       | API 1.4, `Event::Other`: JSON path string                                                                                                  |
 | `settings-changed`   | `events`       | API 1.4, `Event::Other`: JSON array of this plugin's changed setting keys (effective values)                                               |
@@ -918,8 +924,8 @@ The SDK's event enums are `#[non_exhaustive]`; match them with a `_` arm.
 
 API 1.3 adds `host::subscribe_paths("file-opened", &["config/*.yaml"])`
 (`events.subscribe-paths`). The host matches project-relative globs before
-queueing an event or waking an idle plugin. `file-saved` and `files-changed` work
-the same way. For `files-changed`, each category is filtered and an empty batch
+queueing an event or waking an idle plugin. `file-saved`, `document-changed`
+and `files-changed` work the same way. For `files-changed`, each category is filtered and an empty batch
 is omitted; replacing or pausing a filter also affects batches already queued.
 Patterns use `/`, `*` stays within a directory, and `**` crosses
 directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
@@ -931,6 +937,27 @@ kind's filter, an empty list pauses it, `subscribe(kind)` restores all paths,
 and `unsubscribe(kind)` removes it. Filters survive idle reclaim and disappear
 on disable, uninstall or reload. Each window's events use its current project;
 files outside that project do not match.
+
+API 1.6 adds host-owned background WebSockets for plugins that consume event
+streams. `WebSocket::connect` binds the connection to the project passed to it
+and requires the endpoint's `net:<host>` grant and WSS outside loopback. Request
+headers go with the handshake (secret placeholders are expanded by the host);
+`Host`, `Connection`, `Upgrade` and `Sec-WebSocket-*` belong to the handshake and
+are rejected. An empty subprotocol requests none; otherwise the server must
+accept it. A plugin may hold eight connections; dropping the handle closes it.
+
+Incoming frames use a separate bounded FIFO. Activate on
+`on-event:websocket-ready`, then call `drain`; the returned batch includes the
+final `closed` state. Queue overflow rejects the new frame and closes the
+connection instead of reporting delivery or growing memory. Connections are
+removed on disconnect, plugin stop or transport failure.
+
+Native plugin tests use the same `WebSocket` wrapper with `MockHost`. Inspect
+opened connections and outbound frames with `websockets`, queue an inbound
+binary frame with `push_websocket_message`, and finish the peer side with
+`close_websocket`. The mock expands declared secret placeholders, enforces the
+network grant and project binding, and reports
+the final close only after queued frames have drained.
 
 Provider calls can use `host::project_of(&doc.path)` (`workspace.project-of`)
 without an invocation project or enumerating every open project. It returns the
@@ -1031,7 +1058,8 @@ Then `register_plugin!(MyPlugin, providers)` and implement
 `inline_completion`, `code_actions`, `definition`, `line_markers`. Each gets
 the document (path, language, version, text). Results join the language
 servers' (completion lists, ⌥⏎ quick fixes, ⌘B, gutter icons; a code action
-carries edits for any files, applied as one change). A completion item's
+carries edits for files in the project, applied as one change; an edit
+anywhere else, or to git's own files, disables it). A completion item's
 `kind` (`CompletionKind` in the SDK, a string in the WIT) picks its icon; it
 can be a `snippet` (`$1`, `${1:name}`, `$0`), match on `filter_text` instead
 of its label, and bring `additional_edits` elsewhere in the document (an
@@ -1048,7 +1076,8 @@ deletes files implements `file_actions::FileActions` too
 covers both): a `FileAction` carries `operations` (`FileOperation::Create {
 path, text, overwrite }`, `Rename`, `Delete`) and `edits`, applied as one
 workspace edit, so a failure changes nothing and one undo reverses it. A path
-outside the project root disables the action; `open` shows a file once the
+outside the project root, or one of git's own files (a `.git` folder's, or the
+`.git` file of a linked worktree), disables the action; `open` shows a file once the
 action is applied. Like a code action, it can leave `operations` and `edits`
 empty and set `data`: `resolve_file_action` computes them when the user picks
 it, with the same prompts and editor window as `resolve_code_action`. File actions are new in API 1.3. Problems (`publish_diagnostics`) can name
@@ -2052,7 +2081,9 @@ Each plugin gets its own wasmtime `Store`: no preopened directories, no
 environment, no network, no inherited stdio — only clocks and randomness from
 WASI, plus the host functions above. Every call into the plugin is bounded:
 
-- **CPU:** a fuel budget (≈ 5·10⁹ wasm instructions) per call;
+- **CPU:** a fuel budget (≈ 5·10⁹ wasm instructions) per call, scaled
+  proportionally with the background wall-clock budget once a call starts a
+  `tasks` progress handle and renewed on each `task.report`;
 - **time:** 5 s wall clock for commands, activation and deactivation; editor
   providers (syntax, completion, code actions, navigation, line markers) get
   50 ms — a later result is dropped, but the instance keeps running — and are
@@ -2460,7 +2491,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39, 1.4.0 with 0.1.40 and 1.5.0
-with 0.1.41. API 1.6.0 is planned with the next release. wasmtime decides what stays compatible: it resolves interface names
+with 0.1.41. API 1.6.0 is in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a

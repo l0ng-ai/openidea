@@ -5,7 +5,7 @@ members = ["crates/*", "src-tauri"]
 exclude = ["sdk", "plugins"]
 
 [workspace.package]
-version = "0.1.41"
+version = "0.1.42"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"
@@ -68,6 +68,7 @@ parking_lot = "0.12"
 rayon = "1"
 dashmap = "6"
 futures = "0.3"
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "__rustls-tls"] }
 
 # errors & diagnostics
 thiserror = "2"

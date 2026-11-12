@@ -5,7 +5,7 @@ import { incompleteNote } from "@/editor/lsp/lsp";
 import { IpcError, call, commands, nextRequestId } from "@/platform/ipc";
 import { toolWindowService } from "@/workbench/contributions";
 import { basename } from "@/platform/project";
-import { caretContext, hint, lspRequest, reportError, withDocument, type CaretContext } from "./ipc";
+import { caretContext, caretSynced, hint, lspRequest, reportError, withDocument, type CaretContext } from "./ipc";
 import { tx } from "@/platform/i18n";
 
 export type HierarchyMode = "call" | "type";
@@ -295,6 +295,7 @@ export async function showHierarchy(mode: HierarchyMode) {
     root: { name: c.word ?? basename(c.path), path: c.path, line: c.line, col: c.col },
   });
   toolWindowService().show("hierarchy");
+  await caretSynced(c);
   if ((await loadRoot(true)) !== "noTarget") return;
   // Nothing at the caret: retry at the enclosing method / class.
   const root = await enclosingRoot(c, mode);

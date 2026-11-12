@@ -27,10 +27,12 @@ export function attachDiagramTools(block: HTMLElement, svg: SVGSVGElement): void
   tools.className = styles.tools!;
   tools.setAttribute(TOOLS_ATTR, "");
   tools.append(
-    toolButton("fullscreen", tx("Full screen"), (button) => openDiagramPreview(svg, button)),
+    toolButton("fullscreen", tx("Full screen"), (button) => openDiagramPreview(block, svg, button)),
     toolButton("download", tx("Download image"), () => void saveDiagram(svg)),
   );
   block.append(tools);
+  // Redrawn (a theme change, an edit) while shown full screen: the preview follows.
+  if (preview?.block === block) preview.redraw(svg);
 }
 
 function toolButton(icon: ToolIcon, label: string, onClick: (button: HTMLButtonElement) => void): HTMLButtonElement {
@@ -49,13 +51,15 @@ function toolButton(icon: ToolIcon, label: string, onClick: (button: HTMLButtonE
 }
 
 let closeActive: (() => void) | null = null;
+/** The block shown full screen, and how to show its newest drawing. */
+let preview: { block: HTMLElement; redraw: (svg: SVGSVGElement) => void } | null = null;
 
 /**
  * The diagram over the whole window, fitted and centered: drag pans it anywhere,
  * ⌘/Ctrl+wheel zooms, double-click resets. Escape (or a click outside, or Close)
  * returns to the page, with focus back on the button that opened it.
  */
-function openDiagramPreview(svg: SVGSVGElement, returnTo?: HTMLElement): void {
+function openDiagramPreview(block: HTMLElement, svg: SVGSVGElement, returnTo?: HTMLElement): void {
   closeActive?.();
   const returnFocus = returnTo ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
   const overlay = document.createElement("div");
@@ -71,6 +75,7 @@ function openDiagramPreview(svg: SVGSVGElement, returnTo?: HTMLElement): void {
     if (closed) return;
     closed = true;
     if (closeActive === close) closeActive = null;
+    if (preview?.redraw === redraw) preview = null;
     document.removeEventListener("keydown", onKey, true);
     layer.release();
     overlay.remove();
@@ -93,7 +98,7 @@ function openDiagramPreview(svg: SVGSVGElement, returnTo?: HTMLElement): void {
 
   const tools = document.createElement("div");
   tools.className = styles.previewTools!;
-  const download = toolButton("download", tx("Download image"), () => void saveDiagram(svg));
+  const download = toolButton("download", tx("Download image"), () => void saveDiagram(current));
   tools.append(download, toolButton("close", tx("Close"), close));
   overlay.append(tools);
 
@@ -106,7 +111,10 @@ function openDiagramPreview(svg: SVGSVGElement, returnTo?: HTMLElement): void {
   // The canvas fills the window: the fitted drawing is centred in it, and the
   // whole window stays a drag surface once zoomed in. Top rows stay free of it
   // so the Close and Download buttons never cover the drawing.
-  const fitted = fittedCopy(svg, canvas.clientWidth, Math.max(1, canvas.clientHeight - 32));
+  const fit = (next: SVGSVGElement) => fittedCopy(next, canvas.clientWidth, Math.max(1, canvas.clientHeight - 32));
+  let current = svg;
+  let shown = fit(svg);
+  const fitted = shown;
   canvas.append(fitted);
   const width = Number(fitted.getAttribute("width"));
   const height = Number(fitted.getAttribute("height"));
@@ -118,6 +126,14 @@ function openDiagramPreview(svg: SVGSVGElement, returnTo?: HTMLElement): void {
       y: (canvas.clientHeight - height) / 2,
     },
   });
+  // In place, inside the pan/zoom layer, so the current pan and zoom stay.
+  const redraw = (next: SVGSVGElement) => {
+    current = next;
+    const copy = fit(next);
+    shown.replaceWith(copy);
+    shown = copy;
+  };
+  preview = { block, redraw };
   closeActive = close;
   download.focus({ preventScroll: true });
 }

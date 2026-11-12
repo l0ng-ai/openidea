@@ -85,6 +85,7 @@
   white-space: nowrap;
 }
 .commitHash {
+  flex-shrink: 0;
   color: var(--fg-subtle);
   font-family: var(--font-mono);
   font-size: var(--fs-small);
@@ -97,6 +98,7 @@
   color: var(--fg);
 }
 .commitMeta {
+  flex-shrink: 0;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
@@ -105,13 +107,20 @@
   color: var(--fg-faint);
   text-align: center;
 }
+.commitListBody {
+  flex: 1;
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+}
 .boxList {
   flex: 1;
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
 }
-/* Push dialogs: the list fills the body so a resizable window shows more rows. */
-.pushDialog > [data-dialog-body] {
+/* Push and commit list dialogs: the list fills the body so a resizable window shows more rows. */
+.pushDialog > [data-dialog-body],
+.listDialog > [data-dialog-body] {
   display: flex;
   flex-direction: column;
 }

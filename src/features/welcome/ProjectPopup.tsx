@@ -160,7 +160,7 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
               {e.kind === "action" ? (
                 <>
                   <Icon name={e.icon} size={16} className={styles.actionIcon} />
-                  <span className={styles.label}>{e.label}</span>
+                  <span className={styles.label}>{tx(e.label)}</span>
                 </>
               ) : (
                 <ProjectRow m={e.m} active={i === current} />

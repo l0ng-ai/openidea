@@ -349,6 +349,12 @@ export function nodeMenu(
         }
       : { kind: "action", action: "vcs.showDiff", arg: first?.path },
     {
+      kind: "action",
+      action: "vcs.showDiffInNewWindow",
+      arg: first?.path ? (opts?.roots ? changeNodeDiffData(opts.roots, first) : changeNodeDiff(first)) : undefined,
+      disabled: !first?.path,
+    },
+    {
       label: "Jump to Source",
       icon: "external-link",
       shortcut: "F4",
@@ -738,12 +744,6 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               e.stopPropagation();
               void deleteFiles(deletable);
             }
-          } else if (e.key === "F4") {
-            const n = selectedNodes().find((x) => x.type === "file");
-            if (n?.path) {
-              e.preventDefault();
-              void editorService().openFile(n.path, { focus: true });
-            }
           } else {
             // IDEA: Ctrl+C copies the file names, Ctrl+Shift+C the absolute paths (#1877).
             const stroke = strokeOf(e.nativeEvent);
@@ -788,6 +788,10 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             followSelection(nodes);
           }}
           onActivate={(n) => openNode(n, roots, mode === "dialog")}
+          onJumpToSource={(n) => {
+            const file = n.type === "file" ? n : selectedNodes().find((x) => x.type === "file");
+            if (file?.path && file.kind !== "deleted") void editorService().openFile(file.path, { focus: true });
+          }}
           onContextMenu={(node, sel, e: MouseEvent) => {
             if (!node) return;
             if (node.type === "group" && node.changelist) {
@@ -1163,7 +1167,7 @@ function CommitPanel({ included }: { included: number }) {
             className={styles.pushButton}
             disabled={!canCommit || !!remoteBusy}
             onClick={() => void runner.run(true)}
-            title="⌥⌘↩"
+            title={`${tx(commitAndPushLabel(amend))} (⌥⌘↩)`}
           >
             <span>
               <T>{commitAndPushLabel(amend)}</T>

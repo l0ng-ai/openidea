@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { Text } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { Prec, Text } from "@codemirror/state";
+import { Decoration, EditorView } from "@codemirror/view";
 import { redo, undo } from "@codemirror/commands";
 import { _emitEditorEvent, _provideCodePreview, _provideDocumentAttacher, setLibraryRoots } from "@/editor/api";
 import { createMemoryBackend } from "@/editor/core/backend";
@@ -88,6 +88,20 @@ describe("CodePreview", () => {
     expect(container.querySelector(".cm-content")?.textContent).toContain("val order = 1");
     expect(container.querySelector(".cm-content")?.getAttribute("contenteditable")).toBe("true");
     expect(container.querySelector(".cm-openidea-findMatch")?.textContent).toBe("order");
+  });
+
+  it("nests matches inside syntax token spans, so the search-match colour reaches the text", async () => {
+    // Like the syntax highlighter: a `Prec.high` mark with its own colour over "order".
+    const token = Prec.high(
+      EditorView.decorations.of(Decoration.set(Decoration.mark({ class: "token" }).range(15, 20))),
+    );
+    _provideCodePreview(async (path, editable) => [
+      await previewExtensions(path, undefined, undefined, editable),
+      token,
+    ]);
+    const { container } = render(<CodePreview path={path} line={1} highlights={[{ line: 1, ranges: [[4, 9]] }]} />);
+    await preview(container);
+    expect(container.querySelector(".token .cm-openidea-findMatch")?.textContent).toBe("order");
   });
 
   it.each([false, true])("shares edits, document undo and save with a tab (mounted: %s)", async (mounted) => {

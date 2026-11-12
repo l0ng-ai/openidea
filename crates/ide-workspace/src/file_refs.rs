@@ -93,11 +93,21 @@ pub fn base_dirs(path: &str, from: &Path, root: Option<&Path>, resource_roots: &
     dirs
 }
 
+/// Whether a path written in `from` may be looked up: joining a share's path replaces the
+/// directory it is joined to, and looking it up signs in to that share's server.
+fn reachable(path: &Path, from: &Path) -> bool {
+    ide_vfs::content_path_allowed(path, &[from])
+}
+
 /// Paths `value` may point at, most likely first.
 pub fn candidates(value: &str, from: &Path, root: Option<&Path>, resource_roots: &[PathBuf]) -> Vec<PathBuf> {
     let path = path_part(value);
     let rel = path.trim_start_matches('/');
-    base_dirs(&path, from, root, resource_roots).iter().map(|d| normalize(&d.join(rel))).collect()
+    base_dirs(&path, from, root, resource_roots)
+        .iter()
+        .map(|d| normalize(&d.join(rel)))
+        .filter(|p| reachable(p, from))
+        .collect()
 }
 
 /// The existing file or directory `value` names, if any.
@@ -132,7 +142,11 @@ pub fn complete(prefix: &str, from: &Path, root: Option<&Path>, resource_roots: 
         if base == Path::new("/") && !out.is_empty() {
             continue;
         }
-        let Ok(entries) = std::fs::read_dir(normalize(&base.join(rel))) else { continue };
+        let dir = normalize(&base.join(rel));
+        if !reachable(&dir, from) {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             if (name.starts_with('.') && !show_hidden) || out.iter().any(|c| c.name == name) {
@@ -208,5 +222,46 @@ mod tests {
             [("img".into(), true), ("public".into(), true), ("web".into(), true), ("splash.css".into(), false)]
         );
         assert_eq!(names("/img/"), [("logo.svg".into(), false)]);
+    }
+
+    /// A path written in a page must not make the host open a share on another server: on
+    /// Windows that signs in to it with the user's credentials. The inspection of unresolved
+    /// references looks every path up as soon as the page opens.
+    #[cfg(windows)]
+    #[test]
+    fn references_reach_no_share_but_the_one_the_page_is_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("web/img")).unwrap();
+        for f in ["web/index.html", "web/img/a.png"] {
+            std::fs::write(root.join(f), "").unwrap();
+        }
+        // The same folder reached over SMB through the loopback admin share.
+        let s = root.to_str().unwrap();
+        let share = PathBuf::from(format!(r"\\127.0.0.1\{}${}", &s[..1], &s[2..]));
+        let image = share.join(r"web\img\a.png");
+        assert!(image.exists(), "control: {} is not reachable over SMB, fixture not live", image.display());
+        let unc = image.to_str().unwrap();
+
+        let from = root.join("web/index.html");
+        // The last one is the NT spelling `\??\UNC\…` (a bare `?` would start the query).
+        for value in [unc.to_owned(), unc.replace('\\', "%5C"), format!(r"/\%3F%3F\UNC{}", &unc[1..])] {
+            assert_eq!(resolve(&value, &from, Some(root), &[]), None, "{value}");
+        }
+        let typed = format!("{}/", share.join("web").display());
+        assert_eq!(complete(&typed, &from, Some(root), &[]), [], "{typed}");
+
+        // A page that is on the share names its own files.
+        let from = share.join(r"web\index.html");
+        assert_eq!(resolve("img/a.png", &from, Some(&share), &[]), Some(image.clone()));
+        assert_eq!(complete("img/", &from, Some(&share), &[]), [PathCompletion { name: "a.png".into(), dir: false }]);
+        // The same page as the webview names it: the canonical path, with `/`.
+        let from = PathBuf::from(ide_core::ipc_path::to_ipc(&dunce::canonicalize(&from).unwrap()));
+        assert!(from.starts_with("//?/UNC/127.0.0.1"), "{}", from.display());
+        assert_eq!(resolve("img/a.png", &from, None, &[]), Some(from.parent().unwrap().join("img/a.png")));
+        assert_eq!(resolve(unc, &from, None, &[]), Some(image.clone()));
+        let other = format!(r"\\localhost\{}", &unc[r"\\127.0.0.1\".len()..]);
+        assert!(Path::new(&other).exists(), "control: {other} is not reachable over SMB");
+        assert_eq!(resolve(&other, &from, None, &[]), None);
     }
 }

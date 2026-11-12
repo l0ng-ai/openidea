@@ -6,9 +6,9 @@
 //! (`window_take_launch`), and re-taken whenever [`LAUNCH_EVENT`] fires (a
 //! second app instance asking an already-loaded window to open a path).
 //!
-//! Auxiliary windows ([`AuxKind`]: Settings, Compare with Local, Sync with Deployed) belong to a project window and share its project (see
+//! Auxiliary windows ([`AuxKind`]: Settings, Compare with Local, Diff, Sync with Deployed) belong to a project window and share its project (see
 //! [`AppState::project`]). Their labels name the kind and the parent
-//! (`settings-main`, `comparison-project-2-3`); their [`Launch`] says what to show.
+//! (`settings-main`, `comparison-project-2-3`, `diff-main-0`); their [`Launch`] says what to show.
 
 mod cli;
 #[cfg(windows)]
@@ -39,6 +39,8 @@ const SETTINGS_SIZE: (f64, f64) = (980.0, 720.0);
 const SETTINGS_MIN_SIZE: (f64, f64) = (900.0, 700.0);
 const COMPARISON_SIZE: (f64, f64) = (1100.0, 720.0);
 const COMPARISON_MIN_SIZE: (f64, f64) = (640.0, 360.0);
+const DIFF_SIZE: (f64, f64) = (1100.0, 720.0);
+const DIFF_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DEPLOYMENT_SIZE: (f64, f64) = (1400.0, 900.0);
 const DEPLOYMENT_MIN_SIZE: (f64, f64) = (800.0, 500.0);
 
@@ -63,6 +65,9 @@ pub struct Launch {
     /// Comparison windows: the revisions to compare (boxed: most launches have none).
     #[serde(default)]
     pub comparison: Option<Box<ComparisonLaunch>>,
+    /// Diff windows: the diff to show (boxed: most launches have none).
+    #[serde(default)]
+    pub diff_window: Option<Box<DiffLaunch>>,
     /// `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none).
     #[serde(default)]
     pub diff: Option<Box<DiffFilesLaunch>>,
@@ -103,6 +108,48 @@ pub struct ComparisonLaunch {
     pub to: Option<ComparisonRevision>,
     pub scope: Option<ComparisonScope>,
     pub repo: Option<ide_core::IpcPath>,
+}
+
+/// One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum DiffSide {
+    /// File content at a Git revision (`HEAD`, `:0` = index, a commit id).
+    Rev {
+        rev: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// The working file (unsaved editor buffer included).
+    Worktree {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// Another file (Compare With…, Compare Files).
+    File {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// Literal text: a side that does not exist.
+    Text { text: String, label: String },
+    /// A Local History revision.
+    History { id: String, label: String },
+}
+
+/// The diff a diff window shows (IDEA's "Show Diff in New Window"), from the UI's `DiffData`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffLaunch {
+    /// Absolute path of the file (the right side's path).
+    pub path: String,
+    pub left: DiffSide,
+    pub right: DiffSide,
+    /// 0-based line of the right side to reveal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
 }
 
 /// The two files of a command-line diff (`openidea diff a.txt b.txt`), both sides editable.
@@ -285,24 +332,26 @@ impl WindowsState {
 pub enum AuxKind {
     Settings,
     Comparison,
+    Diff,
     Deployment,
 }
 
 impl AuxKind {
-    const ALL: [AuxKind; 3] = [AuxKind::Settings, AuxKind::Comparison, AuxKind::Deployment];
+    const ALL: [AuxKind; 4] = [AuxKind::Settings, AuxKind::Comparison, AuxKind::Diff, AuxKind::Deployment];
 
     /// Label prefix, and the key of the one remembered geometry shared by every window of the kind.
     pub fn name(self) -> &'static str {
         match self {
             AuxKind::Settings => "settings",
             AuxKind::Comparison => "comparison",
+            AuxKind::Diff => "diff",
             AuxKind::Deployment => "deployment",
         }
     }
 
     /// Several per project window (`<kind>-<parent>-<n>`), else one (`<kind>-<parent>`).
     fn multiple(self) -> bool {
-        self == AuxKind::Comparison
+        matches!(self, AuxKind::Comparison | AuxKind::Diff)
     }
 
     /// Shows the project's documents: gets its parent's events and edits made in sibling windows,
@@ -934,8 +983,8 @@ pub enum OpenStep {
     Focus(String),
     /// Files open in this window: in its project, or join its LightEdit session.
     Files(String, Vec<PathBuf>),
-    /// A free window opens this.
-    Launch(String, Launch),
+    /// A free window opens this (boxed: the enum stays small).
+    Launch(String, Box<Launch>),
     /// A new window opens the project folder or (without one) the files in LightEdit.
     New(Option<PathBuf>, Vec<PathBuf>),
     /// A new window connects to a WSL distribution.
@@ -977,7 +1026,9 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
             steps.push(match windows.iter().find(|(_, h)| h.is_wsl_folder(&remote)) {
                 Some((label, _)) => OpenStep::Focus(label.clone()),
                 None => match free.next() {
-                    Some(label) => OpenStep::Launch(label, Launch { remote: Some(remote), ..Default::default() }),
+                    Some(label) => {
+                        OpenStep::Launch(label, Box::new(Launch { remote: Some(remote), ..Default::default() }))
+                    }
                     None => OpenStep::NewRemote(remote),
                 },
             });
@@ -989,7 +1040,7 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
         }
         roots.push((dir.clone(), ProjectTarget::Step(steps.len())));
         steps.push(match free.next() {
-            Some(label) => OpenStep::Launch(label, path_launch_of(Some(dir), Vec::new())),
+            Some(label) => OpenStep::Launch(label, Box::new(path_launch_of(Some(dir), Vec::new()))),
             None => OpenStep::New(Some(dir), Vec::new()),
         });
     }
@@ -1028,7 +1079,7 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
     steps.extend(in_windows.into_iter().map(|(label, files)| OpenStep::Files(label, files)));
     if !loose.is_empty() {
         steps.push(match free.next() {
-            Some(label) => OpenStep::Launch(label, path_launch_of(None, loose)),
+            Some(label) => OpenStep::Launch(label, Box::new(path_launch_of(None, loose))),
             None => OpenStep::New(None, loose),
         });
     }
@@ -1149,7 +1200,7 @@ pub(crate) fn run_open_at(
             },
             OpenStep::Launch(label, mut launch) => {
                 launch.add_positions(positions);
-                windows.set_launch(&label, launch);
+                windows.set_launch(&label, *launch);
                 if let Some(w) = app.get_webview_window(&label) {
                     let _ = app.emit_to(&label, LAUNCH_EVENT, ());
                     focus(&w);
@@ -1313,7 +1364,7 @@ fn plan_cli_launch(launch: Launch, windows: &[(String, Holds)]) -> Vec<OpenStep>
                 Some((label, _)) => OpenStep::Focus(label.clone()),
                 None => match windows.iter().find(|(_, h)| *h == Holds::Nothing) {
                     Some((label, _)) => {
-                        OpenStep::Launch(label.clone(), Launch { remote: Some(remote), ..Default::default() })
+                        OpenStep::Launch(label.clone(), Box::new(Launch { remote: Some(remote), ..Default::default() }))
                     }
                     None => OpenStep::NewRemote(remote),
                 },
@@ -1386,13 +1437,15 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
         }
     }
     let windows = app.state::<WindowsState>();
-    let label = if aux.kind.multiple() {
+    let label = if let Some(diff) = aux.launch.diff_window.as_deref() {
+        format!("diff-{parent_label}-{}", diff_window_id(diff))
+    } else if aux.kind.multiple() {
         format!("{}-{parent_label}-{}", aux.kind.name(), windows.aux_serial.fetch_add(1, Ordering::Relaxed))
     } else {
         format!("{}-{parent_label}", aux.kind.name())
     };
     if let Some(existing) = app.get_webview_window(&label) {
-        if aux.launch != Launch::default() {
+        if aux.kind != AuxKind::Diff && aux.launch != Launch::default() {
             windows.set_launch(&label, aux.launch);
             let _ = app.emit_to(label.as_str(), LAUNCH_EVENT, ());
         }
@@ -1492,6 +1545,35 @@ pub fn open_comparison_window(
             size: COMPARISON_SIZE,
             min_size: COMPARISON_MIN_SIZE,
             launch: Launch { comparison: Some(Box::new(comparison)), ..Default::default() },
+            background,
+        },
+    )
+}
+
+fn diff_window_id(diff: &DiffLaunch) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    (&diff.path, &diff.left, &diff.right).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Opens a window showing one diff of the project ("Show Diff in New Window"), like IDEA's
+/// diff window next to the Commit tool window.
+pub fn open_diff_window(
+    app: &AppHandle,
+    parent: &WebviewWindow,
+    diff: DiffLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Diff,
+            title: "Diff",
+            size: DIFF_SIZE,
+            min_size: DIFF_MIN_SIZE,
+            launch: Launch { diff_window: Some(Box::new(diff)), ..Default::default() },
             background,
         },
     )
@@ -1672,6 +1754,23 @@ fn dev_font_preferences(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diff_window_identity_keeps_revisions_distinct_and_ignores_reveal_line() {
+        let mut diff = DiffLaunch {
+            path: "/p/a.txt".into(),
+            left: DiffSide::Rev { rev: "HEAD".into(), path: None, label: None },
+            right: DiffSide::Worktree { label: None },
+            line: None,
+        };
+        let id = diff_window_id(&diff);
+        diff.line = Some(12);
+        assert_eq!(diff_window_id(&diff), id);
+        diff.right = DiffSide::Rev { rev: ":0".into(), path: None, label: None };
+        assert_ne!(diff_window_id(&diff), id);
+        diff.path = "/p/b.txt".into();
+        assert_ne!(diff_window_id(&diff), id);
+    }
 
     #[test]
     fn a_project_window_starts_with_the_header_its_page_draws() {
@@ -1955,7 +2054,7 @@ mod tests {
         assert_eq!(plan_cli_launch(launch(), &[]), vec![OpenStep::New(Some(project.clone()), vec![file.clone()])]);
         assert_eq!(
             plan_cli_launch(launch(), &[("main".into(), Holds::Nothing)]),
-            vec![OpenStep::Launch("main".into(), launch())]
+            vec![OpenStep::Launch("main".into(), Box::new(launch()))]
         );
     }
 
@@ -1991,15 +2090,18 @@ mod tests {
     fn opening_at_launch_gives_the_first_window_files_or_folder() {
         let main = [w("main", Holds::Nothing)];
         let files = plan_open(vec![(p("/x/a.txt"), false), (p("/y/b.rs"), false)], &main);
-        assert_eq!(files, [OpenStep::Launch("main".into(), path_launch_of(None, vec![p("/x/a.txt"), p("/y/b.rs")]))]);
+        assert_eq!(
+            files,
+            [OpenStep::Launch("main".into(), Box::new(path_launch_of(None, vec![p("/x/a.txt"), p("/y/b.rs")])))]
+        );
         let dir = plan_open(vec![(p("/proj"), true)], &main);
-        assert_eq!(dir, [OpenStep::Launch("main".into(), path_launch_of(Some(p("/proj")), Vec::new()))]);
+        assert_eq!(dir, [OpenStep::Launch("main".into(), Box::new(path_launch_of(Some(p("/proj")), Vec::new())))]);
         // Folder and files: the folder takes the first window, the files a new LightEdit one.
         let both = plan_open(vec![(p("/x/a.txt"), false), (p("/proj"), true)], &main);
         assert_eq!(
             both,
             [
-                OpenStep::Launch("main".into(), path_launch_of(Some(p("/proj")), Vec::new())),
+                OpenStep::Launch("main".into(), Box::new(path_launch_of(Some(p("/proj")), Vec::new()))),
                 OpenStep::New(None, vec![p("/x/a.txt")]),
             ]
         );
@@ -2058,7 +2160,7 @@ mod tests {
         assert_eq!(
             steps,
             [
-                OpenStep::Launch("project-1".into(), path_launch_of(Some(p("/b")), vec![p("/b/y.rs")])),
+                OpenStep::Launch("project-1".into(), Box::new(path_launch_of(Some(p("/b")), vec![p("/b/y.rs")]))),
                 OpenStep::Files("main".into(), vec![p("/a/x.rs")]),
             ]
         );
@@ -2088,7 +2190,7 @@ mod tests {
             RemoteLaunch { target: RemoteTarget::Wsl { distro: distro.into() }, path: linux_path.into() }
         );
         assert!(wsl_launch(&p(linux_path)).is_none());
-        let launch = Launch { remote: Some(remote.clone()), ..Default::default() };
+        let launch = Box::new(Launch { remote: Some(remote.clone()), ..Default::default() });
         let folder = vec![(p(share), true)];
         // A free window connects, else a new one; the window that has it open is focused.
         assert_eq!(plan_open(folder.clone(), &[w("main", Holds::Nothing)]), [OpenStep::Launch("main".into(), launch)]);
@@ -2157,7 +2259,7 @@ mod tests {
             [w("main", Holds::Other), w("project-2", Holds::Project(p("/proj"))), w("project-1", Holds::Nothing)];
         assert_eq!(
             plan_open(vec![(p("/x/a.txt"), false)], &free),
-            [OpenStep::Launch("project-1".into(), path_launch_of(None, vec![p("/x/a.txt")]))]
+            [OpenStep::Launch("project-1".into(), Box::new(path_launch_of(None, vec![p("/x/a.txt")])))]
         );
         let busy = [w("main", Holds::Other)];
         assert_eq!(plan_open(vec![(p("/x/a.txt"), false)], &busy), [OpenStep::New(None, vec![p("/x/a.txt")])]);
@@ -2236,13 +2338,15 @@ mod tests {
         assert_eq!(settings_label("project-2"), "settings-project-2");
         assert_eq!(auxiliary("settings-main"), Some((AuxKind::Settings, "main")));
         assert_eq!(auxiliary("comparison-project-2-14"), Some((AuxKind::Comparison, "project-2")));
+        assert_eq!(auxiliary("diff-project-2-3"), Some((AuxKind::Diff, "project-2")));
         assert_eq!(auxiliary("deployment-project-2"), Some((AuxKind::Deployment, "project-2")));
         for label in ["main", "project-1", "comparison-main", "comparison-main-x", "settings-", "settingsmain"] {
             assert_eq!(auxiliary(label), None, "{label}");
         }
         assert_eq!(state_key("comparison-main-3"), "comparison");
+        assert_eq!(state_key("diff-main-3"), "diff");
         assert_eq!(state_key("project-3"), "project-3");
-        let labels = ["comparison-main-0", "project-2", "main", "settings-main", "deployment-project-2"];
+        let labels = ["comparison-main-0", "diff-main-1", "project-2", "main", "settings-main", "deployment-project-2"];
         assert_eq!(sorted_labels(labels.into_iter().filter(|l| auxiliary_parent(l).is_none())), ["main", "project-2"]);
     }
 

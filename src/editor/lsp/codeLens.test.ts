@@ -118,6 +118,18 @@ describe("background usage counts", () => {
     expect(executeAction).toHaveBeenCalledWith("find.showUsages");
   });
 
+  it('leaves out "no usages" when Show “no usages” is off', async () => {
+    ipc.lspReferences.mockResolvedValue(refs(0));
+    useProject.setState({
+      settings: {
+        editor: { inlay: { codeVisionUsages: true, codeVisionAuthor: false, codeVisionNoUsages: false } },
+      } as never,
+    });
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual([]);
+  });
+
   it("does not cache an incomplete count while indexing, and retries on server refresh", async () => {
     ipc.lspReferences.mockResolvedValueOnce(refs(0, "indexing"));
     const view = editor();
@@ -126,6 +138,29 @@ describe("background usage counts", () => {
     emitLocalIdeEvent({ type: "lspRefresh", kind: "codeLens", server: 1 });
     await settle();
     expect(ipc.lspReferences).toHaveBeenCalledTimes(2);
+    expect(titles(view)).toEqual(["2 usages"]);
+  });
+
+  it("asks again for a count that came back incomplete during a short busy spell", async () => {
+    // jdtls reports progress for a few milliseconds around many requests: no settle follows it.
+    ipc.lspReferences.mockResolvedValueOnce(refs(0, "indexing"));
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual([]);
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2);
+    expect(titles(view)).toEqual(["2 usages"]);
+  });
+
+  it("stops asking again while the server keeps saying it is indexing, until it settles", async () => {
+    ipc.lspReferences.mockResolvedValue(refs(0, "indexing"));
+    const view = editor();
+    for (let i = 0; i < 10; i++) await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(4);
+    expect(titles(view)).toEqual([]);
+    ipc.lspReferences.mockResolvedValue(refs(2));
+    emitLocalIdeEvent({ type: "lspRefresh", kind: "codeLens", server: 1 });
+    await settle();
     expect(titles(view)).toEqual(["2 usages"]);
   });
 

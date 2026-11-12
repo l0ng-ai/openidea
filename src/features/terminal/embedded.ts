@@ -12,6 +12,7 @@ import { ownTerminalInput } from "./imeInput";
 import { Terminal, type IDisposable } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import "./xtermInput.css";
 import type { EmbeddedTerminal, EmbeddedTerminalOptions } from "@/workbench/contributions";
 import { isImeKey } from "@/platform/ime";
 import { terminalKeyAction } from "./keys";

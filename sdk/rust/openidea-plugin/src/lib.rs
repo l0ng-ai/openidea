@@ -242,7 +242,7 @@ pub mod endpoints_bindings {
 }
 
 /// The plugin API version this SDK targets.
-pub const API_VERSION: &str = "1.5";
+pub const API_VERSION: &str = "1.6";
 
 /// A plugin. One instance lives as long as the plugin's Wasm instance (until
 /// it is disabled, crashes or is reclaimed when idle).

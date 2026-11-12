@@ -43,6 +43,25 @@ type SearchHandler = Box<dyn Fn(&TextQuery, u32) -> Result<TextSearch, Error>>;
 type NetHandler = Box<dyn Fn(&HttpRequest) -> Result<HttpResponse, Error>>;
 type ProcessHandler = Box<dyn Fn(&[String], Option<&str>) -> Result<ProcessOutput, Error>>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WebSocketState {
+    project: String,
+    request: crate::host::WebSocketRequest,
+    sent: Vec<Vec<u8>>,
+    incoming: VecDeque<Vec<u8>>,
+    closed: bool,
+}
+
+/// A background WebSocket recorded by [`MockHost`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MockWebSocket {
+    pub id: u64,
+    pub project: String,
+    pub request: crate::host::WebSocketRequest,
+    pub sent: Vec<Vec<u8>>,
+    pub closed: bool,
+}
+
 /// A process run the plugin made.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessRun {
@@ -142,6 +161,8 @@ struct State {
     loopback_queries: VecDeque<Option<String>>,
     net: Option<NetHandler>,
     requests: Vec<HttpRequest>,
+    websockets: BTreeMap<u64, WebSocketState>,
+    next_websocket: u64,
     processes: BTreeMap<String, ProcessHandler>,
     runs: Vec<ProcessRun>,
     /// The programs `start`ed, by handle id.
@@ -212,6 +233,43 @@ const ALL: &[&str] = &[
 ];
 
 impl MockHost {
+    /// Background WebSockets opened by the plugin, including sent frames.
+    pub fn websockets(&self) -> Vec<MockWebSocket> {
+        self.state
+            .borrow()
+            .websockets
+            .iter()
+            .map(|(id, socket)| MockWebSocket {
+                id: *id,
+                project: socket.project.clone(),
+                request: socket.request.clone(),
+                sent: socket.sent.clone(),
+                closed: socket.closed,
+            })
+            .collect()
+    }
+
+    /// Queues one binary server frame for the next `WebSocket::drain` call.
+    pub fn push_websocket_message(&self, connection: u64, bytes: &[u8]) -> Result<(), Error> {
+        let mut state = self.state.borrow_mut();
+        let socket =
+            state.websockets.get_mut(&connection).ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
+        if socket.closed {
+            return Err(Error::NotFound("WebSocket connection".into()));
+        }
+        socket.incoming.push_back(bytes.to_vec());
+        Ok(())
+    }
+
+    /// Makes the next drain report a final remote close after queued frames.
+    pub fn close_websocket(&self, connection: u64) -> Result<(), Error> {
+        let mut state = self.state.borrow_mut();
+        let socket =
+            state.websockets.get_mut(&connection).ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
+        socket.closed = true;
+        Ok(())
+    }
+
     /// Registers one of this plugin's declared commands, callable without ide.commands.
     pub fn on_own_command(&self, id: &str, handler: impl Fn(Option<&str>) -> Result<Option<String>, Error> + 'static) {
         let stable = format!("plugin.mock.{id}");
@@ -705,11 +763,13 @@ impl Drop for MockTaskRes {
 pub mod current {
     //! The host functions, backed by the installed mock.
     use super::*;
+    use crate::host::{WebSocketBatch, WebSocketRequest};
 
     pub type InvocationRef<'a> = MockInvocation<'a>;
     pub type ProjectRes = MockProject;
     pub type EditorRes = MockEditor;
     pub type TaskRes = MockTaskRes;
+    pub type WebSocketRes = u64;
 
     pub(super) fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
         CURRENT.with(|c| {
@@ -1408,6 +1468,58 @@ pub mod current {
         })
     }
 
+    fn mock_document_path(project: &ProjectRes, path: &str, editor: &Editor) -> bool {
+        path == editor.path
+            || format!("{}/{}", project.root.trim_end_matches('/'), path.trim_start_matches('/')) == editor.path
+    }
+
+    pub fn project_document(project: &ProjectRes, path: &str) -> Result<Document, Error> {
+        editor(|s, e| {
+            require(s, "project.read")?;
+            require(s, "editor.read")?;
+            if !mock_document_path(project, path, e) {
+                return Err(Error::NotFound(format!("{path} is not open")));
+            }
+            Ok(Document { version: e.version, text: e.text.clone() })
+        })
+    }
+
+    pub fn project_apply_document_edits(
+        project: &ProjectRes,
+        path: &str,
+        version: u64,
+        edits: &[TextEdit],
+    ) -> Result<u64, Error> {
+        editor(|s, e| {
+            require(s, "project.read")?;
+            require(s, "editor.write")?;
+            if !mock_document_path(project, path, e) {
+                return Err(Error::NotFound(format!("{path} is not open")));
+            }
+            if version != e.version {
+                return Err(Error::Stale);
+            }
+            let mut spans = Vec::with_capacity(edits.len());
+            for edit in edits {
+                let start = crate::text::offset(&e.text, edit.range.start);
+                let end = crate::text::offset(&e.text, edit.range.end);
+                match (start, end) {
+                    (Some(start), Some(end)) if start <= end => spans.push((start, end, edit.text.clone())),
+                    _ => return Err(Error::Invalid("edit range is outside the document".into())),
+                }
+            }
+            spans.sort_by_key(|(start, _, _)| *start);
+            if spans.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+                return Err(Error::Invalid("overlapping edits".into()));
+            }
+            for (start, end, text) in spans.into_iter().rev() {
+                e.text.replace_range(start..end, &text);
+            }
+            e.version += 1;
+            Ok(e.version)
+        })
+    }
+
     pub fn open_editors() -> Result<Vec<OpenEditor>, Error> {
         with(|s| {
             require(s, "editor.read")?;
@@ -1690,7 +1802,11 @@ pub mod current {
     pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
         with(|s| {
             require(s, "events")?;
-            if !matches!(kind, "file-opened" | "file-saved" | "files-changed")
+            if kind == "document-changed" {
+                require(s, "project.read")?;
+                require(s, "editor.read")?;
+            }
+            if !matches!(kind, "file-opened" | "file-saved" | "files-changed" | "document-changed")
                 || globs.len() > 64
                 || globs.iter().any(|g| {
                     let relative = g.trim_start_matches("./");
@@ -1715,6 +1831,9 @@ pub mod current {
                 "files-changed" => {
                     s.subscriptions.insert(EventKind::FilesChanged);
                 }
+                "document-changed" => {
+                    s.subscriptions.insert(EventKind::DocumentChanged);
+                }
                 _ => {}
             }
             s.path_subscriptions.insert(kind.to_owned(), globs.iter().map(|g| (*g).to_owned()).collect());
@@ -1734,6 +1853,11 @@ pub mod current {
             };
             if let Some(cap) = cap {
                 require(s, cap)?;
+            }
+            if kind == EventKind::DocumentChanged {
+                return Err(Error::Invalid(
+                    "document-changed is delivered only for paths named with subscribe-paths".into(),
+                ));
             }
             s.path_subscriptions.remove(kind.name());
             s.subscriptions.insert(kind);
@@ -1786,6 +1910,13 @@ pub mod current {
         Some(host.to_ascii_lowercase())
     }
 
+    fn websocket_handshake_header(name: &str) -> bool {
+        name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("connection")
+            || name.eq_ignore_ascii_case("upgrade")
+            || name.get(.."sec-websocket-".len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case("sec-websocket-"))
+    }
+
     pub fn fetch(req: &HttpRequest) -> Result<HttpResponse, Error> {
         with(|s| {
             let host = net_host(&req.url).ok_or_else(|| Error::Invalid(format!("{:?} is not a URL", req.url)))?;
@@ -1820,6 +1951,93 @@ pub mod current {
                 None => Err(Error::Failed("no network in the mock (MockHost::on_fetch)".into())),
             }
         })
+    }
+
+    pub fn websocket_connect(project: &ProjectRes, req: &WebSocketRequest) -> Result<WebSocketRes, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            if !req.url.starts_with("wss://") {
+                return Err(Error::Invalid("background WebSocket requires wss://".into()));
+            }
+            let host = net_host(&req.url).ok_or_else(|| Error::Invalid("invalid WebSocket URL".into()))?;
+            let capability = format!("net:{host}");
+            if !s.capabilities.iter().any(|candidate| {
+                candidate == &capability
+                    || candidate == "net:*"
+                    || candidate.strip_prefix("net:*.").is_some_and(|suffix| host.ends_with(&format!(".{suffix}")))
+            }) {
+                return Err(Error::Denied(capability));
+            }
+            if req.subprotocol.len() > 256 {
+                return Err(Error::Invalid("WebSocket subprotocol is too long".into()));
+            }
+            if req.headers.iter().any(|(name, _)| websocket_handshake_header(name)) {
+                return Err(Error::Invalid("WebSocket handshake headers are managed by the host".into()));
+            }
+            if s.websockets.values().filter(|socket| !socket.closed).count() >= 8 {
+                return Err(Error::Invalid("at most 8 WebSocket connections per plugin".into()));
+            }
+            let mut request = req.clone();
+            for (_, value) in &mut request.headers {
+                while let Some(start) = value.find("{{secret:") {
+                    require(s, "secrets")?;
+                    let end =
+                        value[start..].find("}}").ok_or_else(|| Error::Invalid("unterminated secret".into()))? + start;
+                    let name = &value[start + 9..end];
+                    let secret =
+                        s.secrets.get(name).cloned().ok_or_else(|| Error::NotFound(format!("secret {name:?}")))?;
+                    value.replace_range(start..end + 2, &secret);
+                }
+            }
+            let id = s.next_websocket.max(1);
+            s.next_websocket = id + 1;
+            s.websockets.insert(
+                id,
+                WebSocketState {
+                    project: project.root.clone(),
+                    request,
+                    sent: Vec::new(),
+                    incoming: VecDeque::new(),
+                    closed: false,
+                },
+            );
+            Ok(id)
+        })
+    }
+    pub fn websocket_id(connection: &WebSocketRes) -> u64 {
+        *connection
+    }
+
+    pub fn websocket_send(connection: &WebSocketRes, bytes: &[u8]) -> Result<(), Error> {
+        with(|s| {
+            let socket = s
+                .websockets
+                .get_mut(connection)
+                .filter(|socket| !socket.closed)
+                .ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
+            socket.sent.push(bytes.to_vec());
+            Ok(())
+        })
+    }
+    pub fn websocket_drain(connection: &WebSocketRes, limit: u32) -> Result<WebSocketBatch, Error> {
+        with(|s| {
+            if limit == 0 || limit > 256 {
+                return Err(Error::Invalid("WebSocket drain limit must be between 1 and 256".into()));
+            }
+            let socket =
+                s.websockets.get_mut(connection).ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
+            let count = usize::min(limit as usize, socket.incoming.len());
+            let messages = socket.incoming.drain(..count).collect();
+            Ok(WebSocketBatch { messages, closed: socket.closed && socket.incoming.is_empty() })
+        })
+    }
+    pub fn websocket_close(connection: &WebSocketRes) -> Result<(), Error> {
+        with(|s| {
+            if let Some(socket) = s.websockets.get_mut(connection) {
+                socket.closed = true;
+            }
+        });
+        Ok(())
     }
 
     pub fn secret_set(name: &str, value: &str) -> Result<(), Error> {
@@ -2333,7 +2551,51 @@ fn glob_match(glob: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host;
+    use crate::host::{self, WebSocket, WebSocketRequest};
+
+    #[test]
+    fn background_websocket_mock_records_transport_and_resource_lifecycle() {
+        let mock = MockHost::install().with_capabilities(&["project.read", "secrets", "net:relay.example"]);
+        mock.declare_secret("token");
+        host::secret_set("token", "member-secret").unwrap();
+        let project = mock.invocation().project().unwrap();
+        let socket = WebSocket::connect(
+            &project,
+            &WebSocketRequest {
+                url: "wss://relay.example/socket".into(),
+                headers: vec![("authorization".into(), "Bearer {{secret:token}}".into())],
+                subprotocol: "example.v1".into(),
+            },
+        )
+        .unwrap();
+        socket.send(b"outbound").unwrap();
+        mock.push_websocket_message(socket.id(), b"inbound").unwrap();
+        assert_eq!(socket.drain(8).unwrap().messages, [b"inbound"]);
+
+        let recorded = &mock.websockets()[0];
+        assert_eq!(recorded.request.headers[0].1, "Bearer member-secret");
+        assert_eq!(recorded.sent, [b"outbound"]);
+
+        mock.close_websocket(socket.id()).unwrap();
+        assert!(socket.drain(8).unwrap().closed);
+    }
+
+    #[test]
+    fn background_websocket_mock_limits_open_resources_per_plugin() {
+        let mock = MockHost::install().with_capabilities(&["project.read", "net:relay.example"]);
+        let project = mock.invocation().project().unwrap();
+        let request = WebSocketRequest {
+            url: "wss://relay.example/socket".into(),
+            headers: vec![("authorization".into(), "Bearer test".into())],
+            subprotocol: "example.v1".into(),
+        };
+        let sockets: Vec<_> = (0..8).map(|_| WebSocket::connect(&project, &request).unwrap()).collect();
+        assert!(
+            matches!(WebSocket::connect(&project, &request), Err(Error::Invalid(message)) if message.contains("at most 8"))
+        );
+        drop(sockets);
+        assert!(WebSocket::connect(&project, &request).is_ok());
+    }
 
     #[test]
     fn path_subscriptions_replace_pause_and_restore() {

@@ -161,7 +161,6 @@ const UNTRANSLATED = new Set<string>([
   "Greenplum",
   "Java",
   "java-debug (Java)",
-  "kotlin-debug-adapter (Kotlin)",
   "js-debug (Node.js / TypeScript)",
   "JSON",
   "lldb-dap (C, C++, Swift)",
@@ -621,6 +620,26 @@ const catalogs = Object.fromEntries(
     .map((f) => [f.slice(0, -5), JSON.parse(readFileSync(new URL(f, TEXT_DIR), "utf8")) as Record<string, string>]),
 );
 
+/** Keys a JSON file defines more than once (at any depth); `JSON.parse` keeps only the last. */
+function duplicateKeys(url: URL): string[] {
+  const file = ts.parseJsonText(url.pathname, readFileSync(url, "utf8"));
+  const duplicates: string[] = [];
+  const visit = (node: ts.Node, path: string) => {
+    if (ts.isObjectLiteralExpression(node)) {
+      const seen = new Set<string>();
+      for (const property of node.properties) {
+        if (!ts.isPropertyAssignment(property) || !ts.isStringLiteral(property.name)) continue;
+        const key = path + property.name.text;
+        if (seen.has(key)) duplicates.push(key);
+        seen.add(key);
+        visit(property.initializer, `${key}.`);
+      }
+    }
+  };
+  file.statements.forEach((statement) => visit(statement.expression, ""));
+  return duplicates;
+}
+
 /** `{name}` templates of a catalog, as `txTemplate` matches them. */
 function templatePatterns(catalog: Record<string, string>): RegExp[] {
   return Object.keys(catalog)
@@ -657,6 +676,21 @@ it("uses only message keys of the English catalog", () => {
   // Ensure the check cannot pass because the scanner stopped finding keys.
   expect(scan.keys.some((use) => use.text === "app.unsaved.title")).toBe(true);
   expect(report(scan.keys.filter(({ text }) => !Object.hasOwn(en, text)))).toEqual([]);
+});
+
+const CATALOG_DIRS: [prefix: string, dir: URL][] = [
+  ["", new URL("./", import.meta.url)],
+  ["text/", TEXT_DIR],
+];
+
+it.each(
+  CATALOG_DIRS.flatMap(([prefix, dir]) =>
+    readdirSync(dir)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => ({ name: `${prefix}${f}`, url: new URL(f, dir) })),
+  ),
+)("defines each key once in $name", ({ url }) => {
+  expect(duplicateKeys(url)).toEqual([]);
 });
 
 describe.each(Object.keys(catalogs))("source-text catalog %s", (locale) => {

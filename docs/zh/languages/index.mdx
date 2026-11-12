@@ -11,9 +11,10 @@ OpenIDEA 用一个小的定义文件 `languages/<id>.toml` 描述每种语言：
 
 1. 单个文件的 **覆盖文件类型**（在项目树中文件的右键菜单或编辑器标签页的右键菜单里）。
 2. 精确文件名（`Dockerfile`、`go.mod`）或文件名模式。
-3. 扩展名，优先匹配最长的（`.html.erb` 先于 `.erb`）。
-4. 文件第一行：例如 `#!/usr/bin/env python3` 这样的 shebang，或 `<?php` 这类模式。
-5. 都不匹配时按纯文本处理。
+3. 框架目录：上层目录有 `manage.py` 的 `templates` 目录中的 `.html` 或 `.txt` 文件是 Django 模板。
+4. 扩展名，优先匹配最长的（`.html.erb` 先于 `.erb`）。
+5. 文件第一行：例如 `#!/usr/bin/env python3` 这样的 shebang，或 `<?php` 这类模式。
+6. 都不匹配时按纯文本处理。
 
 在 **设置 › 编辑器 › 文件类型**（**已识别的文件类型**）中可以为某种语言添加或移除文件名模式。
 
@@ -101,6 +102,7 @@ IDE 安装工具从不需要 `sudo`。工具装在本地数据目录下 IDE 自�
 | D                   | `d`                | `.d`, `.di`                                                 | 是   | —           | serve-d                                                                               | —                        |
 | Dart                | `dart`             | `.dart`                                                     | 是   | 是          | dart                                                                                  | dart                     |
 | Diff                | `diff`             | `.diff`, `.patch`, `.rej`                                   | 是   | —           | —                                                                                     | —                        |
+| Django Template     | `django-html`      | `.djhtml`, `templates/*.html`, `*.txt`                      | 是   | 是          | **vscode-html-language-server**                                                       | —                        |
 | Dockerfile          | `dockerfile`       | `.dockerfile`, `.containerfile`                             | 是   | —           | **dockerfile-language-server**                                                        | —                        |
 | Elixir              | `elixir`           | `.ex`, `.exs`                                               | 是   | 是          | **elixir-ls**                                                                         | **elixir-ls-debugger**   |
 | ERB                 | `erb`              | `.erb`, `.html.erb`, `.rhtml`, `.js.erb`, `.text.erb`, …    | 是   | —           | —                                                                                     | —                        |
@@ -128,7 +130,7 @@ IDE 安装工具从不需要 `sudo`。工具装在本地数据目录下 IDE 自�
 | JSON with Comments  | `jsonc`            | `.jsonc`, `.code-workspace`, `.code-snippets`               | 是   | 是          | **vscode-json-language-server**                                                       | —                        |
 | JSP                 | `jsp`              | `.jsp`, `.jspx`, `.jspf`, `.jsph`, `.tag`, …                | 是   | —           | —                                                                                     | —                        |
 | Julia               | `julia`            | `.jl`                                                       | 是   | —           | julia-languageserver                                                                  | —                        |
-| Kotlin              | `kotlin`           | `.kt`, `.kts`                                               | 是   | 是          | **kotlin-lsp** → **kotlin-language-server**                                           | **kotlin-debug-adapter** |
+| Kotlin              | `kotlin`           | `.kt`, `.kts`                                               | 是   | 是          | **kotlin-lsp** → **kotlin-language-server** → **kmp-lsp**                             | **kotlin-debug-adapter** |
 | LaTeX               | `latex`            | `.tex`, `.ltx`, `.sty`, `.cls`, `.dtx`, …                   | 是   | —           | **texlab**                                                                            | —                        |
 | Less                | `less`             | `.less`                                                     | 是   | —           | **vscode-css-language-server**                                                        | —                        |
 | Log                 | `log`              | `.log`                                                      | 是   | —           | —                                                                                     | —                        |

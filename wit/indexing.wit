@@ -29,6 +29,9 @@ interface document-indexer {
 
     /// A range of the document tied to a key the plugin chooses
     /// (`com.example.UserMapper#findById`, say). Keys are compared as is.
+    /// Ranges lie inside the document; an empty one marks a position (a
+    /// definition that is the whole file, at its start): Go to Declaration
+    /// lands there, Find Usages and Rename skip it.
     record anchor {
         key: string,
         range: range,

@@ -314,10 +314,12 @@ pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: Got
         && let Some(plugins) = crate::plugins::editor_plugin_host()
     {
         let project = host.project(window)?;
-        let (path, version) = project.documents.identity(doc)?;
-        if let Some(found) = plugins.navigation_at(&project.root, &path, version, pos, Some(window), |p| {
-            project.documents.by_path(p).and_then(|id| project.documents.version(id).ok())
-        }) {
+        // A notebook cell is a language-server document only: no plugin navigates in it.
+        if let Ok((path, version)) = project.documents.identity(doc)
+            && let Some(found) = plugins.navigation_at(&project.root, &path, version, pos, Some(window), |p| {
+                project.documents.by_path(p).and_then(|id| project.documents.version(id).ok())
+            })
+        {
             return Ok(found.targets);
         }
     }
@@ -544,7 +546,7 @@ pub async fn lsp_goto_implementation(
 /// classes and disk class files. Cached per project.
 pub async fn lsp_virtual_document(host: &Host, window: &str, uri: String) -> IdeResult<VirtualDocument> {
     if uri.starts_with("git-revision:") {
-        return crate::ops::vcs::revision_virtual_document(host, window, &uri).await;
+        return crate::ops::vcs::revision_virtual_document(host, window, &uri, None).await;
     }
     host.project(window)?.lsp.virtual_document(&uri).await
 }
@@ -830,7 +832,7 @@ pub async fn lsp_code_actions(
     };
     let plugin_actions: Vec<CodeAction> = plugin_actions
         .into_iter()
-        .map(|(plugin, a)| plugin_code_action(&plugin, &project.root, a))
+        .map(|(plugin, a)| plugin_code_action_in(&plugin, &plugin_edit_roots(&project), a))
         .filter(|a| {
             only.is_empty()
                 || a.kind.as_ref().is_some_and(|k| only.iter().any(|o| k == o || k.starts_with(&format!("{o}."))))
@@ -846,10 +848,21 @@ pub async fn lsp_code_actions(
     prepare_actions(project, doc, version, actions).await
 }
 
+/// Where a plugin's code action may change or open files: the project root and its content
+/// roots (a group's members, extra Project Structure folders), never git's own files.
+fn plugin_edit_roots(project: &crate::Project) -> Vec<std::path::PathBuf> {
+    std::iter::once(project.root.clone()).chain(project.content_roots()).collect()
+}
+
+#[cfg(test)]
 fn plugin_code_action(plugin: &str, root: &Path, a: ide_plugin::CodeAction) -> CodeAction {
+    plugin_code_action_in(plugin, &[root.to_path_buf()], a)
+}
+
+fn plugin_code_action_in(plugin: &str, roots: &[std::path::PathBuf], a: ide_plugin::CodeAction) -> CodeAction {
     // With `data` and nothing to apply, the plugin computes the edits when the action is picked.
     let lazy = a.edits.is_empty() && a.operations.is_empty() && a.data.is_some();
-    let (files, open, disabled_reason) = match plugin_file_edits(root, &a) {
+    let (files, open, disabled_reason) = match plugin_file_edits(roots, &a) {
         Ok((files, open)) => (files, open, None),
         Err(reason) => (Vec::new(), None, Some(reason)),
     };
@@ -876,17 +889,16 @@ fn plugin_code_action(plugin: &str, root: &Path, a: ide_plugin::CodeAction) -> C
 }
 
 /// The action's file operations, then its text edits, as one workspace edit's files, and the
-/// file to open. An action with file operations or an `open` target stays inside the project
-/// root as a whole: a path outside it disables the action.
+/// file to open. Every path stays inside `roots` (the project root first) and off git's own
+/// files: one that does not disables the action.
 fn plugin_file_edits(
-    root: &Path,
+    roots: &[std::path::PathBuf],
     a: &ide_plugin::CodeAction,
 ) -> Result<(Vec<ide_core::FileEdit>, Option<std::path::PathBuf>), String> {
     use ide_core::FileEdit;
     use ide_plugin::FileOperation;
-    let confine = !a.operations.is_empty() || a.open.is_some();
-    let confined = |path: &Path| ide_plugin::resolve_new_in_root(root, &path.to_string_lossy());
-    let writable = |path: &Path| ide_plugin::resolve_writable_in_root(root, &path.to_string_lossy());
+    let confined = |path: &Path| ide_plugin::resolve_new_in_roots(roots, &path.to_string_lossy());
+    let writable = |path: &Path| ide_plugin::resolve_writable_in_roots(roots, &path.to_string_lossy());
     let mut files = Vec::new();
     let mut created_with_text = Vec::new();
     for operation in &a.operations {
@@ -913,13 +925,14 @@ fn plugin_file_edits(
         }
     }
     for (path, edits) in &a.edits {
-        let path = if confine { writable(path)? } else { path.clone() };
+        let path = writable(path)?;
         if created_with_text.contains(&path) {
             return Err("put the text of a created file in its `create`, not in an edit".into());
         }
         files.push(FileEdit::Edit { path: path.into(), edits: edits.clone(), version: None });
     }
-    let open = a.open.as_deref().map(confined).transpose()?;
+    // Opening a file hands its text to the plugin, so a link is judged by the file it leads to.
+    let open = a.open.as_deref().map(writable).transpose()?;
     Ok((files, open))
 }
 
@@ -947,8 +960,9 @@ async fn resolve_action(host: &Host, window: &str, doc: DocId, action: CodeActio
     let plugin = r.plugin.clone();
     let invocation = ide_plugin::Invocation { client: Some(window.to_owned()), ..Default::default() };
     let resolved = blocking(move || plugins.resolve_code_action(&plugin, &d, pending, invocation)).await?;
-    let root = host.project(window)?.root.clone();
-    Ok(plugin_code_action(&r.plugin, &root, ide_plugin::CodeAction { data: None, ..resolved }))
+    let project = host.project(window)?;
+    let roots = plugin_edit_roots(&project);
+    Ok(plugin_code_action_in(&r.plugin, &roots, ide_plugin::CodeAction { data: None, ..resolved }))
 }
 
 /// Cancellable code actions with the kinds the servers advertise (Refactor This, refactoring availability).
@@ -2246,18 +2260,18 @@ mod tests {
         };
         for name in ["outside", "dangling"] {
             let create = FileOperation::Create { path: root.join(name), text: "text".into(), overwrite: true };
-            assert!(plugin_file_edits(&root, &action(vec![create], Vec::new())).is_err());
+            assert!(plugin_file_edits(std::slice::from_ref(&root), &action(vec![create], Vec::new())).is_err());
             let edits = vec![(root.join(name), vec![TextEdit { range: Range::default(), new_text: "text".into() }])];
-            assert!(plugin_file_edits(&root, &action(Vec::new(), edits)).is_err());
+            assert!(plugin_file_edits(std::slice::from_ref(&root), &action(Vec::new(), edits)).is_err());
         }
         let create = FileOperation::Create { path: root.join("inside"), text: "text".into(), overwrite: true };
-        let (files, _) = plugin_file_edits(&root, &action(vec![create], Vec::new())).unwrap();
+        let (files, _) = plugin_file_edits(std::slice::from_ref(&root), &action(vec![create], Vec::new())).unwrap();
         assert!(matches!(&files[0], FileEdit::Create { path, .. } if **path == root.join("target.txt")));
         let operations = vec![
             FileOperation::Rename { from: root.join("outside"), to: root.join("dangling") },
             FileOperation::Delete { path: root.join("outside") },
         ];
-        let (files, _) = plugin_file_edits(&root, &action(operations, Vec::new())).unwrap();
+        let (files, _) = plugin_file_edits(std::slice::from_ref(&root), &action(operations, Vec::new())).unwrap();
         assert!(matches!(&files[0], FileEdit::Rename { from, to }
             if **from == root.join("outside") && **to == root.join("dangling")));
         assert!(matches!(&files[1], FileEdit::Delete { path, .. } if **path == root.join("outside")));
@@ -2339,6 +2353,178 @@ mod tests {
         assert!(lazy.edit.is_none());
         let r: PluginActionRef = serde_json::from_value(lazy.data.unwrap()).unwrap();
         assert_eq!((r.data.as_deref(), r.file), (Some("ref"), true));
+    }
+
+    /// Advisory #4b: an action carrying only text edits (no file operation, no `open`) must still
+    /// be confined to the project root and kept off git's own files. A plugin needs no grant to
+    /// offer a quick fix, so this is decided here.
+    #[test]
+    fn a_plugin_edits_only_action_stays_in_the_project_and_off_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/config"), "[core]\n").unwrap();
+        std::fs::write(root.join("a.txt"), "a").unwrap();
+        let root = dunce::canonicalize(&root).unwrap();
+        let edits_only = |path: std::path::PathBuf| ide_plugin::CodeAction {
+            title: "Add import".into(),
+            kind: Some("quickfix".into()),
+            preferred: false,
+            edits: vec![(path, vec![TextEdit { range: Range::default(), new_text: "x".into() }])],
+            operations: Vec::new(),
+            open: None,
+            data: None,
+            file_action: false,
+        };
+        // In the project root: allowed.
+        assert_eq!(plugin_code_action("acme.x", &root, edits_only(root.join("a.txt"))).disabled_reason, None);
+        // Outside the root: disabled (previously an edits-only action was not confined).
+        let outside = plugin_code_action("acme.x", &root, edits_only(tmp.path().join("evil.txt")));
+        assert!(
+            outside.disabled_reason.as_deref().is_some_and(|r| r.contains("outside the project root")),
+            "{outside:?}"
+        );
+        assert!(outside.edit.unwrap().files.is_empty());
+        // Into .git: disabled.
+        let git = plugin_code_action("acme.x", &root, edits_only(root.join(".git/config")));
+        assert!(git.disabled_reason.as_deref().is_some_and(|r| r.contains("git's own files")), "{git:?}");
+    }
+
+    /// A project window group's files live in its members, outside the container root: a quick
+    /// fix reaches them, and their `.git` stays out of reach.
+    #[test]
+    fn a_plugin_action_reaches_the_content_roots_but_not_their_git() {
+        use ide_plugin::FileOperation::Create;
+        let tmp = tempfile::tempdir().unwrap();
+        for dir in ["group/.openidea", "member/.git", "member/src", "elsewhere"] {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        }
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(base.join("member/src/a.txt"), "a").unwrap();
+        std::fs::write(base.join("member/.git/config"), "[core]\n").unwrap();
+        let roots = [base.join("group"), base.join("member")];
+        let action =
+            |edits: Vec<std::path::PathBuf>, operations: Vec<ide_plugin::FileOperation>| ide_plugin::CodeAction {
+                title: "Fix".into(),
+                kind: Some("quickfix".into()),
+                preferred: false,
+                edits: edits
+                    .into_iter()
+                    .map(|path| (path, vec![TextEdit { range: Range::default(), new_text: "x".into() }]))
+                    .collect(),
+                operations,
+                open: None,
+                data: None,
+                file_action: false,
+            };
+        let offer = |a| plugin_code_action_in("acme.x", &roots, a);
+        assert_eq!(offer(action(vec![base.join("member/src/a.txt")], Vec::new())).disabled_reason, None);
+        let created = Create { path: base.join("member/src/b.txt"), text: String::new(), overwrite: false };
+        assert_eq!(offer(action(Vec::new(), vec![created])).disabled_reason, None);
+        for refused in [base.join("member/.git/config"), base.join("elsewhere/c.txt")] {
+            let offered = offer(action(vec![refused.clone()], Vec::new()));
+            assert!(offered.disabled_reason.is_some(), "{refused:?}: {offered:?}");
+            assert!(offered.edit.unwrap().files.is_empty());
+        }
+        let hook = Create { path: base.join("member/.git/hooks/pre-commit"), text: "x".into(), overwrite: false };
+        assert!(offer(action(Vec::new(), vec![hook])).disabled_reason.is_some());
+    }
+
+    /// Advisory #4b: a quick fix's file operations and its `open` are held to the same rule as its
+    /// edits, under every name that reaches git's own files.
+    #[test]
+    fn a_plugin_action_cannot_change_or_open_git_files() {
+        use ide_plugin::FileOperation::{Create, Delete, Rename};
+        let tmp = tempfile::tempdir().unwrap();
+        for dir in ["proj/.git/hooks", "worktree"] {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        }
+        let root = dunce::canonicalize(tmp.path().join("proj")).unwrap();
+        let worktree = dunce::canonicalize(tmp.path().join("worktree")).unwrap();
+        std::fs::write(
+            root.join(".git/config"),
+            "[core]
+",
+        )
+        .unwrap();
+        std::fs::write(root.join("a.txt"), "a").unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            "gitdir: elsewhere
+",
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("profile.txt"), "outside").unwrap();
+        let action =
+            |edits: Vec<std::path::PathBuf>, operations: Vec<ide_plugin::FileOperation>| ide_plugin::CodeAction {
+                title: "Add import".into(),
+                kind: Some("quickfix".into()),
+                preferred: false,
+                edits: edits
+                    .into_iter()
+                    .map(|path| (path, vec![TextEdit { range: Range::default(), new_text: "x".into() }]))
+                    .collect(),
+                operations,
+                open: None,
+                data: None,
+                file_action: false,
+            };
+        let refused = |root: &Path, action: ide_plugin::CodeAction, why: &str| {
+            let offered = plugin_code_action("acme.x", root, action);
+            assert!(offered.disabled_reason.as_deref().is_some_and(|r| r.contains(why)), "{offered:?}");
+            assert!(offered.edit.unwrap().files.is_empty());
+        };
+
+        for git in [root.join(".git/config"), root.join(".GIT/config"), ".git/hooks/pre-commit".into()] {
+            refused(&root, action(vec![git], Vec::new()), "git's own files");
+        }
+        for operation in [
+            Create {
+                path: root.join(".git/hooks/pre-commit"),
+                text: "#!/bin/sh
+"
+                .into(),
+                overwrite: false,
+            },
+            Rename { from: root.join("a.txt"), to: root.join(".git/config") },
+            Rename { from: root.join(".git/config"), to: root.join("b.txt") },
+            Delete { path: root.join(".git/config") },
+        ] {
+            refused(&root, action(Vec::new(), vec![operation]), "git's own files");
+        }
+        // Opening a file hands its text to the plugin's providers.
+        let opens =
+            |path: std::path::PathBuf| ide_plugin::CodeAction { open: Some(path), ..action(Vec::new(), Vec::new()) };
+        refused(&root, opens(root.join(".git/config")), "git's own files");
+        // An edit lands in the file a link leads to, and `open` shows that file: both are judged by it.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(tmp.path().join("profile.txt"), root.join("link.txt")).unwrap();
+            std::os::unix::fs::symlink(root.join(".git/config"), root.join("alias")).unwrap();
+            refused(&root, action(vec![root.join("link.txt")], Vec::new()), "outside the project root");
+            refused(&root, action(vec![root.join("alias")], Vec::new()), "git's own files");
+            refused(&root, opens(root.join("link.txt")), "outside the project root");
+            refused(&root, opens(root.join("alias")), "git's own files");
+        }
+        // A linked worktree's `.git` file, under the short name Windows opens it by as well.
+        if cfg!(windows) && worktree.join("GIT~1").exists() {
+            for operation in [
+                Delete { path: worktree.join("GIT~1") },
+                Create {
+                    path: worktree.join("GIT~1"),
+                    text: "gitdir: other
+"
+                    .into(),
+                    overwrite: true,
+                },
+            ] {
+                refused(&worktree, action(Vec::new(), vec![operation]), "git's own files");
+            }
+            refused(&worktree, action(vec![worktree.join("GIT~1")], Vec::new()), "git's own files");
+            refused(&worktree, opens(worktree.join("GIT~1")), "git's own files");
+        } else {
+            eprintln!("short name not tried: this volume keeps none");
+        }
     }
 
     #[test]

@@ -2,8 +2,10 @@
 
 use crate::exec::{executables_in, query, search_path, which};
 use crate::{Sdk, SdkKind, bin_dir, exe, home_dir, pinned, venv_of};
+use ide_core::process::host_var_os;
 use ide_core::version_managers::{self, Tool};
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -132,6 +134,66 @@ fn conda_env_list_prefixes(output: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The host's directory conventions; a parameter so tests cover every platform.
+#[derive(Clone, Copy)]
+enum Host {
+    Windows,
+    Mac,
+    Unix,
+}
+
+impl Host {
+    fn current() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else if cfg!(target_os = "macos") {
+            Self::Mac
+        } else {
+            Self::Unix
+        }
+    }
+}
+
+/// Where Poetry creates virtualenvs: `POETRY_VIRTUALENVS_PATH`, else `virtualenvs` in its
+/// cache dir — `POETRY_CACHE_DIR`, else `%LOCALAPPDATA%\pypoetry\Cache` (Windows),
+/// `~/Library/Caches/pypoetry` (macOS) or `$XDG_CACHE_HOME/pypoetry` / `~/.cache/pypoetry`.
+fn poetry_venv_dirs(host: Host, home: &Path, env: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
+    let var = |key: &str| env(key).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let cache = var("POETRY_CACHE_DIR").unwrap_or_else(|| match host {
+        Host::Windows => {
+            let local = var("LOCALAPPDATA").unwrap_or_else(|| home.join("AppData").join("Local"));
+            local.join("pypoetry").join("Cache")
+        }
+        Host::Mac => home.join("Library/Caches/pypoetry"),
+        Host::Unix => var("XDG_CACHE_HOME").unwrap_or_else(|| home.join(".cache")).join("pypoetry"),
+    });
+    var("POETRY_VIRTUALENVS_PATH").into_iter().chain([cache.join("virtualenvs")]).collect()
+}
+
+/// Where uv installs Pythons (`uv python dir`): `UV_PYTHON_INSTALL_DIR`, else `python` in its
+/// data dir — `%APPDATA%\uv` on Windows (`%APPDATA%\uv\data` when an older uv made it), else
+/// `$XDG_DATA_HOME/uv` / `~/.local/share/uv` (older uv on macOS: `~/Library/Application Support/uv`).
+fn uv_python_dirs(host: Host, home: &Path, env: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
+    let var = |key: &str| env(key).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let data = match host {
+        Host::Windows => {
+            let roaming = var("APPDATA").unwrap_or_else(|| home.join("AppData").join("Roaming"));
+            vec![roaming.join("uv"), roaming.join("uv").join("data")]
+        }
+        Host::Mac | Host::Unix => {
+            let xdg = var("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share")).join("uv");
+            let legacy = matches!(host, Host::Mac).then(|| home.join("Library/Application Support/uv"));
+            [xdg].into_iter().chain(legacy).collect()
+        }
+    };
+    var("UV_PYTHON_INSTALL_DIR").into_iter().chain(data.into_iter().map(|d| d.join("python"))).collect()
+}
+
+/// The interpreter of a uv-managed install: `python.exe` at its root on Windows, `bin/python3` elsewhere.
+fn uv_python(install: &Path) -> Option<PathBuf> {
+    [install.join(exe("python")), install.join("bin").join(exe("python3"))].into_iter().find(|p| p.is_file())
+}
+
 fn python(root: Option<&Path>) -> Vec<Sdk> {
     let mut found: Vec<(PathBuf, &'static str)> = Vec::new();
     if let Some(root) = root {
@@ -155,8 +217,10 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
     }
     if let Some(home) = home_dir() {
         // Virtualenvs managed by virtualenvwrapper / pipenv / poetry.
-        for dir in [".virtualenvs", ".local/share/virtualenvs", "Library/Caches/pypoetry/virtualenvs"] {
-            for env in subdirs(&home.join(dir)) {
+        let env_dirs = [".virtualenvs", ".local/share/virtualenvs"].map(|d| home.join(d));
+        let var = |key: &str| host_var_os(key);
+        for dir in env_dirs.into_iter().chain(poetry_venv_dirs(Host::current(), &home, var)) {
+            for env in subdirs(&dir) {
                 found.push((env.join(bin_dir()).join(exe("python")), "venv"));
             }
         }
@@ -164,8 +228,8 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
         for v in subdirs(&pyenv.join("versions")) {
             found.push((v.join(bin_dir()).join(exe("python")), "pyenv"));
         }
-        for v in subdirs(&home.join(".local/share/uv/python")) {
-            found.push((v.join(bin_dir()).join(exe("python3")), "uv"));
+        for dir in uv_python_dirs(Host::current(), &home, var) {
+            found.extend(subdirs(&dir).iter().filter_map(|v| uv_python(v)).map(|p| (p, "uv")));
         }
         for (v, manager) in version_managers::installs(Tool::Python) {
             found.extend(pinned::python_in_install(&v).map(|p| (p, manager)));
@@ -321,7 +385,7 @@ fn python_sdk_with_version(path: &Path, source: &str, root: Option<&Path>, versi
 }
 
 /// The prefix of a conda interpreter: `<env>/bin/python` on Unix, `<env>/python.exe` on Windows.
-fn conda_env_home(python: &Path) -> Option<PathBuf> {
+pub(crate) fn conda_env_home(python: &Path) -> Option<PathBuf> {
     let dir = python.parent()?;
     let bin = dir.file_name().is_some_and(|n| n == "bin" || n.eq_ignore_ascii_case("Scripts"));
     Some(if bin { dir.parent()? } else { dir }.to_path_buf())
@@ -996,5 +1060,103 @@ legacy                   C:\\Users\\dev\\.conda\\envs\\legacy
             conda_env_list_prefixes(output),
             vec![PathBuf::from("/opt/miniconda3"), PathBuf::from("/opt/miniconda3/envs/prod")]
         );
+    }
+}
+
+#[cfg(test)]
+mod env_manager_dir_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn env(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
+        let vars: HashMap<String, OsString> = vars.iter().map(|(k, v)| ((*k).to_owned(), (*v).into())).collect();
+        move |key| vars.get(key).cloned()
+    }
+
+    #[test]
+    fn poetry_venvs_follow_each_platforms_cache_dir() {
+        let home = Path::new("/home/me");
+        let local = Path::new("C:/Users/me/AppData/Local");
+        assert_eq!(
+            poetry_venv_dirs(Host::Windows, home, env(&[("LOCALAPPDATA", "C:/Users/me/AppData/Local")])),
+            vec![local.join("pypoetry").join("Cache").join("virtualenvs")]
+        );
+        assert_eq!(
+            poetry_venv_dirs(Host::Windows, home, env(&[])),
+            vec![home.join("AppData").join("Local").join("pypoetry").join("Cache").join("virtualenvs")]
+        );
+        assert_eq!(
+            poetry_venv_dirs(Host::Mac, home, env(&[])),
+            vec![home.join("Library").join("Caches").join("pypoetry").join("virtualenvs")]
+        );
+        assert_eq!(
+            poetry_venv_dirs(Host::Unix, home, env(&[])),
+            vec![home.join(".cache").join("pypoetry").join("virtualenvs")]
+        );
+        assert_eq!(
+            poetry_venv_dirs(Host::Unix, home, env(&[("XDG_CACHE_HOME", "/xdg/cache")])),
+            vec![Path::new("/xdg/cache").join("pypoetry").join("virtualenvs")]
+        );
+    }
+
+    #[test]
+    fn poetry_overrides_come_first_and_empty_ones_are_ignored() {
+        let home = Path::new("/home/me");
+        assert_eq!(
+            poetry_venv_dirs(
+                Host::Unix,
+                home,
+                env(&[("POETRY_VIRTUALENVS_PATH", "/envs"), ("POETRY_CACHE_DIR", "/cache")])
+            ),
+            vec![PathBuf::from("/envs"), Path::new("/cache").join("virtualenvs")]
+        );
+        assert_eq!(
+            poetry_venv_dirs(Host::Unix, home, env(&[("POETRY_VIRTUALENVS_PATH", ""), ("POETRY_CACHE_DIR", "")])),
+            vec![home.join(".cache").join("pypoetry").join("virtualenvs")]
+        );
+    }
+
+    #[test]
+    fn uv_pythons_follow_each_platforms_data_dir() {
+        let home = Path::new("/home/me");
+        let roaming = Path::new("C:/Users/me/AppData/Roaming");
+        assert_eq!(
+            uv_python_dirs(Host::Windows, home, env(&[("APPDATA", "C:/Users/me/AppData/Roaming")])),
+            vec![roaming.join("uv").join("python"), roaming.join("uv").join("data").join("python")]
+        );
+        assert_eq!(
+            uv_python_dirs(Host::Mac, home, env(&[])),
+            vec![
+                home.join(".local").join("share").join("uv").join("python"),
+                home.join("Library").join("Application Support").join("uv").join("python"),
+            ]
+        );
+        assert_eq!(
+            uv_python_dirs(Host::Unix, home, env(&[("XDG_DATA_HOME", "/xdg/data")])),
+            vec![Path::new("/xdg/data").join("uv").join("python")]
+        );
+        assert_eq!(
+            uv_python_dirs(Host::Unix, home, env(&[("UV_PYTHON_INSTALL_DIR", "/pythons")])),
+            vec![PathBuf::from("/pythons"), home.join(".local").join("share").join("uv").join("python")]
+        );
+    }
+
+    #[test]
+    fn a_uv_install_finds_its_interpreter_on_either_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Windows: python.exe at the install root.
+        let windows = tmp.path().join("cpython-3.13.15-windows-x86_64-none");
+        std::fs::create_dir_all(&windows).unwrap();
+        std::fs::write(windows.join(exe("python")), "").unwrap();
+        assert_eq!(uv_python(&windows), Some(windows.join(exe("python"))));
+        // Unix: bin/python3.
+        let unix = tmp.path().join("cpython-3.13.15-linux-x86_64-gnu");
+        std::fs::create_dir_all(unix.join("bin")).unwrap();
+        std::fs::write(unix.join("bin").join(exe("python3")), "").unwrap();
+        assert_eq!(uv_python(&unix), Some(unix.join("bin").join(exe("python3"))));
+        // uv's own bookkeeping folders (`.temp`, `.cache`) hold no interpreter.
+        let temp = tmp.path().join(".temp");
+        std::fs::create_dir_all(&temp).unwrap();
+        assert_eq!(uv_python(&temp), None);
     }
 }

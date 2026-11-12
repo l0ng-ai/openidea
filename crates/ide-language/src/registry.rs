@@ -22,6 +22,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("d", include_str!("../../../languages/d.toml")),
     ("dart", include_str!("../../../languages/dart.toml")),
     ("diff", include_str!("../../../languages/diff.toml")),
+    ("django-html", include_str!("../../../languages/django-html.toml")),
     ("dockerfile", include_str!("../../../languages/dockerfile.toml")),
     ("dotenv", include_str!("../../../languages/dotenv.toml")),
     ("elixir", include_str!("../../../languages/elixir.toml")),
@@ -371,14 +372,13 @@ impl LanguageRegistry {
             .map(|f| f.ui_mode.clone())
     }
 
-    /// Creating or removing `path` can change a file's `framework_ui_mode`:
-    /// it is a framework's root marker.
+    /// Creating or removing `path` can change a file's `framework_ui_mode` or its
+    /// language (`framework-files`): it is a framework's root marker.
     pub fn is_framework_marker(&self, path: &Path) -> bool {
-        self.state()
-            .languages
-            .iter()
-            .flat_map(|l| &l.framework_ui_modes)
-            .any(|f| f.root_markers.iter().any(|m| crate::markers::is_marker_path(path, m)))
+        let state = self.state();
+        let modes = state.languages.iter().flat_map(|l| &l.framework_ui_modes).map(|f| &f.root_markers);
+        let files = state.languages.iter().flat_map(|l| &l.framework_files).map(|f| &f.root_markers);
+        modes.chain(files).flatten().any(|m| crate::markers::is_marker_path(path, m))
     }
 
     /// Detects by Override File Type, exact file name, then file-name pattern
@@ -400,6 +400,9 @@ impl LanguageRegistry {
         if let Some((_, i)) = t.name_globs.iter().find(|(p, _)| wildcard_match(p, file_name)) {
             return languages[*i].id.clone();
         }
+        if let Some(l) = languages.iter().find(|l| l.framework_files.iter().any(|f| is_framework_file(f, path))) {
+            return l.id.clone();
+        }
         let lower = file_name.to_ascii_lowercase();
         let mut rest = lower.as_str();
         while let Some(dot) = rest.find('.') {
@@ -418,6 +421,19 @@ impl LanguageRegistry {
         }
         LanguageId::plain_text()
     }
+}
+
+/// `path` is one of `files`: its extension is listed, and the nearest folder above it named
+/// `files.folder` has a root marker in a directory above that folder.
+fn is_framework_file(files: &crate::FrameworkFiles, path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else { return false };
+    if !files.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
+        return false;
+    }
+    path.ancestors()
+        .skip(1)
+        .find(|dir| dir.file_name().is_some_and(|name| name == files.folder.as_str()))
+        .is_some_and(|folder| crate::marked_root(None, folder, &files.root_markers).is_some())
 }
 
 /// `*` matches any (possibly empty) run of characters, `?` exactly one; everything else is literal.
@@ -497,6 +513,7 @@ mod tests {
         "Brainfuck",
         "Cobol",
         "C#",
+        "Django Template",
         "Clojure",
         "ClojureScript",
         "Closure Stylesheets (GSS)",
@@ -651,6 +668,7 @@ mod tests {
             ("python", vec!["basedpyright", "pyright", "ty", "pyrefly"]),
             ("typescript", vec!["vtsls", "typescript-language-server"]),
             ("java", vec!["jdtls", "kmp-lsp"]),
+            ("kotlin", vec!["kotlin-lsp", "kotlin-language-server", "kmp-lsp"]),
         ] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let got: Vec<(&str, bool)> = cfg
@@ -799,6 +817,36 @@ mod tests {
         assert_eq!(mode("typescriptreact", "apps/web/src/app/app.tsx"), None);
         assert!(reg.is_framework_marker(&root.join("apps/admin/angular.json")));
         assert!(!reg.is_framework_marker(&root.join("apps/admin/package.json")));
+    }
+
+    #[test]
+    fn django_projects_make_html_in_templates_folders_templates() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let detect = |file: &str| reg.detect(&root.join(file), None).as_str().to_owned();
+        std::fs::create_dir_all(root.join("src/orders/templates/orders/email")).unwrap();
+        std::fs::create_dir_all(root.join("site/templates")).unwrap();
+        std::fs::write(root.join("src/manage.py"), "").unwrap();
+        assert_eq!(detect("src/orders/templates/orders/detail.html"), "django-html");
+        assert_eq!(detect("src/orders/templates/orders/email/body.TXT"), "django-html");
+        assert_eq!(detect("src/templates/base.html"), "django-html");
+        assert_eq!(detect("src/orders/templates/orders/data.json"), "json");
+        assert_eq!(detect("src/orders/static/orders/page.html"), "html");
+        // No `manage.py` above this `templates` folder.
+        assert_eq!(detect("site/templates/index.html"), "html");
+        assert_eq!(detect("page.djhtml"), "django-html");
+        assert!(reg.is_framework_marker(&root.join("src/manage.py")));
+    }
+
+    #[test]
+    fn the_django_fixture_has_templates_and_a_page() {
+        let reg = reg();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/django-app");
+        let detect = |file: &str| reg.detect(&fixture.join(file), None).as_str().to_owned();
+        assert_eq!(detect("shop/templates/shop/product_list.html"), "django-html");
+        assert_eq!(detect("shop/templates/shop/email/order.txt"), "django-html");
+        assert_eq!(detect("pages/promo.html"), "html");
     }
 
     #[test]

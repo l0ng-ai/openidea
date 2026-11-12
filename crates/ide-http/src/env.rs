@@ -105,6 +105,89 @@ pub fn environment_file(file: &Path, root: Option<&Path>, private: bool) -> IdeR
     Ok(path)
 }
 
+/// Where `{{name}}` is defined in the environment files that apply to `file`: the key `name`
+/// in each environment (and `$shared`) of the nearest private file, then of the nearest public
+/// file — the lookup order. Positions are 0-based lines and UTF-16 columns of the key, quotes
+/// included.
+pub fn variable_definitions(file: &Path, root: Option<&Path>, name: &str) -> Vec<ide_core::Location> {
+    let dirs = search_dirs(Some(file), root);
+    let mut out = Vec::new();
+    for file_name in [PRIVATE_FILE, PUBLIC_FILE] {
+        let Some(path) = dirs.iter().map(|d| d.join(file_name)).find(|p| p.is_file()) else { continue };
+        let Ok(text) = ide_vfs::load_text(&path) else { continue };
+        for range in environment_keys(&text.text, name) {
+            out.push(ide_core::Location { path: path.clone().into(), range, uri: None });
+        }
+    }
+    out
+}
+
+/// The ranges of keys equal to `name` one level inside the top-level object (an
+/// environment's variables), found by scanning the JSON text without building a value.
+fn environment_keys(text: &str, name: &str) -> Vec<ide_core::Range> {
+    use ide_core::{Pos, Range};
+    let mut found = Vec::new();
+    let (mut line, mut col) = (0u32, 0u32);
+    let mut depth = 0usize;
+    let mut chars = text.char_indices().peekable();
+    // Whether the last string closed at depth 2 may be a key: set after `{` or `,`.
+    let mut expect_key = false;
+    while let Some((_, c)) = chars.next() {
+        match c {
+            '"' => {
+                let start = Pos::new(line, col);
+                col += 1;
+                let mut value = String::new();
+                let mut escaped = false;
+                for (_, c) in chars.by_ref() {
+                    col += c.len_utf16() as u32;
+                    if escaped {
+                        value.push(match c {
+                            'n' => '\n',
+                            't' => '\t',
+                            other => other,
+                        });
+                        escaped = false;
+                    } else if c == '\\' {
+                        escaped = true;
+                    } else if c == '"' {
+                        break;
+                    } else {
+                        value.push(c);
+                    }
+                }
+                let end = Pos::new(line, col);
+                if depth == 2 && expect_key && value == name {
+                    let mut rest = chars.clone();
+                    while rest.peek().is_some_and(|(_, c)| c.is_whitespace()) {
+                        rest.next();
+                    }
+                    if rest.peek().is_some_and(|(_, c)| *c == ':') {
+                        found.push(Range { start, end });
+                    }
+                }
+                expect_key = false;
+                continue;
+            }
+            '{' | '[' => {
+                depth += 1;
+                expect_key = c == '{';
+            }
+            '}' | ']' => depth = depth.saturating_sub(1),
+            ',' => expect_key = true,
+            ':' => expect_key = false,
+            '\n' => {
+                line += 1;
+                col = 0;
+                continue;
+            }
+            _ => {}
+        }
+        col += c.len_utf16() as u32;
+    }
+    found
+}
+
 impl Environments {
     pub fn load(file: Option<&Path>, root: Option<&Path>) -> IdeResult<Self> {
         let dirs = search_dirs(file, root);
@@ -220,6 +303,44 @@ impl Resolver<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_variable_keys_in_every_environment_private_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("api")).unwrap();
+        std::fs::write(
+            root.join(PUBLIC_FILE),
+            "{\n  \"$shared\": { \"host\": \"shared\" },\n  \"dev\": {\n    \"name\": \"host\",\n    \"host\": \"localhost\",\n    \"ssl\": { \"host\": \"nested\" }\n  },\n  \"prod\": { \"hostname\": \"x\", \"host\": \"example.com\" }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("api").join(PRIVATE_FILE), "{ \"dev\": { \"😀\": 1, \"host\": \"secret\" } }")
+            .unwrap();
+        let file = root.join("api").join("requests.http");
+        let found = variable_definitions(&file, Some(root), "host");
+        let at: Vec<_> = found
+            .iter()
+            .map(|l| {
+                (
+                    l.path.0.file_name().unwrap().to_string_lossy().into_owned(),
+                    l.range.start.line,
+                    l.range.start.col,
+                    l.range.end.col,
+                )
+            })
+            .collect();
+        assert_eq!(
+            at,
+            vec![
+                (PRIVATE_FILE.to_owned(), 0, 20, 26),
+                (PUBLIC_FILE.to_owned(), 1, 15, 21),
+                (PUBLIC_FILE.to_owned(), 4, 4, 10),
+                (PUBLIC_FILE.to_owned(), 7, 29, 35),
+            ],
+            "values and nested objects are not definitions"
+        );
+        assert!(variable_definitions(&file, Some(root), "missing").is_empty());
+    }
 
     #[test]
     fn merges_private_public_and_shared() {

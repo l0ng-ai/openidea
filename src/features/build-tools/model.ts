@@ -83,6 +83,8 @@ export interface MavenRunOptions {
 
 export interface GradleRunOptions {
   offline: boolean;
+  /** Skip Tests toolbar toggle: task runs get `-x test` (no Maven-style toggle exists in IDEA's Gradle window). */
+  skipTests: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -514,6 +516,29 @@ export function gradleTaskPath(project: GradleProject, task: string): string {
   return project.path === ":" ? task : `${project.path}:${task}`;
 }
 
+/**
+ * Whether one of the builds has a task named `test`: `-x test` fails the whole run with
+ * "Task 'test' not found" in a build without one (Kotlin Multiplatform, non-JVM builds).
+ */
+export function gradleHasTestTask(models: readonly GradleModel[]): boolean {
+  return models.some((m) => m.projects.some((p) => p.tasks.some((t) => t.name === "test")));
+}
+
+/** Whether the command line already excludes the `test` task (`-x test`, `-xtest`, `--exclude-task test`). */
+function excludesTest(args: readonly string[]): boolean {
+  return args.some((a, i) => {
+    const value =
+      a === "-x" || a === "--exclude-task"
+        ? args[i + 1]
+        : a.startsWith("--exclude-task=")
+          ? a.slice("--exclude-task=".length)
+          : a.startsWith("-x")
+            ? a.slice(2)
+            : undefined;
+    return value === "test";
+  });
+}
+
 export function gradleTaskConfig(
   model: GradleModel,
   project: GradleProject,
@@ -522,6 +547,8 @@ export function gradleTaskConfig(
 ): RunConfig {
   const args = tasks.map((t) => (t.startsWith("-") || t.startsWith(":") ? t : gradleTaskPath(project, t)));
   if (options.offline && !args.includes("--offline")) args.push("--offline");
+  // Typed task names are project-path prefixed above, so the typed line is the one to inspect.
+  if (options.skipTests && gradleHasTestTask([model]) && !excludesTest(tasks)) args.push("-x", "test");
   const names = tasks.filter((t) => !t.startsWith("-"));
   return {
     id: `gradle:task:${JSON.stringify([model.dir, project.path])}:${tasks.join(" ")}`,
@@ -533,15 +560,17 @@ export function gradleTaskConfig(
     // As for Maven: the Gradle JVM / `JAVA_HOME` is derived from Settings at launch, not frozen here.
     env: {},
     detected: false,
-    isTest: names.some((t) => /(^|:)(test|check|build|integrationTest)$/.test(t)),
+    isTest: !options.skipTests && names.some((t) => /(^|:)(test|check|build|integrationTest)$/.test(t)),
     debugAdapter: null,
   };
 }
 
-/** Applies the current toggles to a saved configuration started from the tree. */
-export function withGradleOptions(config: RunConfig, options: GradleRunOptions): RunConfig {
-  if (!options.offline || config.args.includes("--offline")) return config;
-  return { ...config, args: [...config.args, "--offline"] };
+/** Applies the current toggles to a saved configuration started from the tree (`hasTestTask`: see {@link gradleHasTestTask}). */
+export function withGradleOptions(config: RunConfig, options: GradleRunOptions, hasTestTask = true): RunConfig {
+  let args = config.args;
+  if (options.offline && !args.includes("--offline")) args = [...args, "--offline"];
+  if (options.skipTests && hasTestTask && !excludesTest(args)) args = [...args, "-x", "test"];
+  return args === config.args ? config : { ...config, args };
 }
 
 // ---------------------------------------------------------------------------
@@ -565,7 +594,8 @@ export function goalCompletions(
   const head = line.slice(0, at);
   const word = line.slice(at).toLowerCase();
   const out: Completion[] = [];
-  const seen = new Set<string>();
+  // Already-typed goals are not offered again.
+  const seen = new Set<string>(parseGoalLine(head));
   const push = (label: string, detail?: string) => {
     if (seen.has(label) || !label.toLowerCase().startsWith(word)) return;
     seen.add(label);
@@ -589,7 +619,8 @@ export function taskCompletions(line: string, model: GradleModel, history: reado
   const head = line.slice(0, at);
   const word = line.slice(at).toLowerCase();
   const out: Completion[] = [];
-  const seen = new Set<string>();
+  // Already-typed tasks are not offered again.
+  const seen = new Set<string>(parseTaskLine(head));
   if (!head.trim())
     for (const h of history)
       if (h.toLowerCase().startsWith(line.toLowerCase()) && h !== line)

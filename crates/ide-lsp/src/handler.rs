@@ -10,6 +10,7 @@ use ide_core::{IdeEvent, TaskId};
 use ide_jsonrpc::{Handler, codes};
 use lsp_types as lsp;
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -229,16 +230,15 @@ impl ClientHandler {
                 return;
             }
         };
-        let Some(path) = uri_to_path(params.uri.as_str()) else { return };
+        let Some(path) = uri_to_path(params.uri.as_str())
+            .or_else(|| crate::notebook::is_cell_uri(params.uri.as_str()).then(|| PathBuf::from(params.uri.as_str())))
+        else {
+            return;
+        };
         if self.server.name == "jdtls"
-            && let Some(body) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics)
-            && mgr.first_message(&self.server.name, &body)
+            && let Some(failure) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics)
         {
-            mgr.sink().emit(ide_core::IdeEvent::Notify {
-                level: ide_core::event::NotifyLevel::Error,
-                title: "Maven project could not be configured".into(),
-                body: Some(body),
-            });
+            self.build_plan_failure(mgr, failure);
         }
         if !mgr.accepts_injected_diagnostics(&path, params.version) {
             return;
@@ -252,6 +252,17 @@ impl ClientHandler {
         }
         let shown = self.server.set_diagnostics(path.clone(), params.diagnostics);
         mgr.emit_diagnostics(&self.server, path, shown, self.encoding());
+    }
+
+    /// Once per unresolved plugin, whether m2e marked a `pom.xml` or only logged it.
+    fn build_plan_failure(&self, mgr: &LspManager, (plugin, body): (String, String)) {
+        if mgr.first_message(&self.server.name, &format!("build plan: {plugin}")) {
+            mgr.sink().emit(ide_core::IdeEvent::Notify {
+                level: ide_core::event::NotifyLevel::Error,
+                title: "Maven project could not be configured".into(),
+                body: Some(body),
+            });
+        }
     }
 
     fn show_message(&self, mgr: &LspManager, params: &Value) {
@@ -355,6 +366,19 @@ impl ClientHandler {
     }
 }
 
+/// Shown once per session when tsserver keeps aborting at its heap limit; the UI adds a
+/// button that opens the language server settings.
+const TSSERVER_OUT_OF_MEMORY: &str = "tsserver stopped because it reached its memory limit and is restarted, so code intelligence may pause or miss results. Raise typescript.tsserver.maxTsServerMemory (in MB) in the server's Workspace Configuration.";
+
+/// Whether a vtsls log line reports tsserver aborting, which is how Node exits at its heap
+/// limit: exit code 134 on Windows, `SIGABRT` elsewhere.
+fn tsserver_ran_out_of_memory(text: &str) -> bool {
+    text.split_once("TSServer exited. ").is_some_and(|(_, rest)| {
+        let rest = rest.trim_end();
+        rest.starts_with("Code: 134.") || rest.ends_with("Signal: SIGABRT")
+    })
+}
+
 impl Handler for ClientHandler {
     fn on_notification(&self, method: &str, params: Value) {
         let Some(mgr) = self.mgr.upgrade() else { return };
@@ -369,11 +393,27 @@ impl Handler for ClientHandler {
             "window/showMessage" => self.show_message(&mgr, &params),
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();
+                if self.server.config.tsserver_project && tsserver_ran_out_of_memory(text) {
+                    tracing::warn!("[{}] {text}", self.server.name);
+                    if mgr.first_message(&self.server.name, TSSERVER_OUT_OF_MEMORY) {
+                        mgr.sink().emit(IdeEvent::Notify {
+                            level: NotifyLevel::Error,
+                            title: "TypeScript server ran out of memory".into(),
+                            body: Some(TSSERVER_OUT_OF_MEMORY.into()),
+                        });
+                    }
+                }
                 if self.server.name == "jdtls"
                     && text.contains("Can't use Java ")
                     && text.contains(" to import Gradle project ")
                 {
                     self.show_message(&mgr, &json!({ "type": 1, "message": text.lines().next().unwrap_or(text) }));
+                }
+                if self.server.name == "jdtls"
+                    && params.get("type").and_then(Value::as_u64) == Some(1)
+                    && let Some(failure) = crate::jdtls::logged_build_plan_failure(text)
+                {
+                    self.build_plan_failure(&mgr, failure);
                 }
                 match params.get("type").and_then(Value::as_u64) {
                     Some(1) if self.server.name == "jdtls" && text.contains(crate::jdtls::reserved_names::IMPORT_FAILURE) => {
@@ -386,6 +426,9 @@ impl Handler for ClientHandler {
                 }
             }
             "tsserver/request" => mgr.forward_tsserver_requests(self.server.clone(), self.generation, params),
+            "intellij/workspaceImportState" if self.server.name == crate::kotlin_lsp::KOTLIN_LSP => {
+                crate::kotlin_lsp::record_import_state(&self.server, self.generation, &params)
+            }
             "language/status" if self.server.name == "jdtls" && params["type"] == "ServiceReady" => {
                 mgr.java_import_ready(self.server.clone(), self.generation);
             }
@@ -501,5 +544,21 @@ fn merge(base: &mut Value, layer: Value) {
             }
         }
         (base, layer) => *base = layer,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tsserver_ran_out_of_memory;
+
+    #[test]
+    fn tsserver_aborts_are_out_of_memory() {
+        assert!(tsserver_ran_out_of_memory("TSServer exited. Code: 134. Signal: null"));
+        assert!(tsserver_ran_out_of_memory("TSServer exited. Code: null. Signal: SIGABRT"));
+        assert!(!tsserver_ran_out_of_memory("TSServer exited. Code: 0. Signal: null"));
+        assert!(!tsserver_ran_out_of_memory("TSServer exited. Code: null. Signal: SIGTERM"));
+        assert!(!tsserver_ran_out_of_memory("TSServer exited. Code: 1340. Signal: null"));
+        assert!(!tsserver_ran_out_of_memory("Code: 134."));
+        assert!(tsserver_ran_out_of_memory("[error] TSServer exited. Code: 134. Signal: null\n"));
     }
 }

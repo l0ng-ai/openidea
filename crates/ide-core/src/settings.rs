@@ -63,6 +63,8 @@ pub struct Settings {
     pub agents: AgentSettings,
     /// Agents › MCP Server (global only).
     pub mcp_server: McpServerSettings,
+    /// Tools › Agents: Command Execution Policy.
+    pub agent_security: AgentSecuritySettings,
     /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
     #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
     pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
@@ -261,6 +263,9 @@ pub enum WhileRunning {
 pub struct McpServerSettings {
     /// Serve the tools on 127.0.0.1 while the IDE runs.
     pub enabled: bool,
+    /// Run the tools that change the project or start processes without asking first
+    /// (IDEA's brave mode). Read from the IDE's own settings only, never a project's.
+    pub run_without_confirmation: bool,
 }
 
 /// Absent profiles retain automatic discovery for existing projects.
@@ -408,6 +413,7 @@ impl Default for Settings {
             cmake: CMakeSettings::default(),
             agents: AgentSettings::default(),
             mcp_server: McpServerSettings::default(),
+            agent_security: AgentSecuritySettings::default(),
             plugins: BTreeMap::new(),
         }
     }
@@ -799,6 +805,9 @@ pub struct FileSettings {
     pub file_types: BTreeMap<String, FileTypeAssociation>,
     /// Override File Type: file (project-relative and `/`-separated, or absolute) → language id.
     pub file_type_overrides: BTreeMap<String, String>,
+    /// File Types › Files opened in associated applications: file-name patterns
+    /// (`*.xlsx`) opened with the system application instead of an editor.
+    pub associated_applications: Vec<String>,
     /// Compose detection choices, keyed by project-relative file path.
     pub compose_file_overrides: BTreeMap<String, ComposeFileOverride>,
 }
@@ -835,6 +844,15 @@ impl Default for FileSettings {
             local_history_max_mb: 512,
             file_types: BTreeMap::new(),
             file_type_overrides: BTreeMap::new(),
+            associated_applications: vec![
+                "*.xlsx".into(),
+                "*.xls".into(),
+                "*.docx".into(),
+                "*.doc".into(),
+                "*.pptx".into(),
+                "*.ppt".into(),
+                "*.pdf".into(),
+            ],
             compose_file_overrides: BTreeMap::new(),
         }
     }
@@ -1185,6 +1203,8 @@ pub struct MavenSettings {
     pub threads: String,
     /// Active Maven profiles (`-P`), comma-separated; empty leaves profiles to the POM/settings.
     pub active_profiles: String,
+    /// Delegate IDE build/run actions to Maven: launches build with Maven (`javac`) instead of jdtls (ECJ).
+    pub delegate_build: bool,
 }
 
 impl MavenSettings {
@@ -1689,10 +1709,12 @@ mod maven_linkage_tests {
     fn maven_runner_jre_defaults_and_round_trips() {
         let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
         assert!(old.runner_jre.is_empty());
+        assert!(!old.delegate_build);
         assert!(MavenSettings::default().runner_jre.is_empty());
-        let settings = MavenSettings { runner_jre: "/opt/jdk-21".into(), ..old };
+        let settings = MavenSettings { runner_jre: "/opt/jdk-21".into(), delegate_build: true, ..old };
         let encoded = serde_json::to_string(&settings).unwrap();
         assert!(encoded.contains(r#""runnerJre":"/opt/jdk-21""#));
+        assert!(encoded.contains(r#""delegateBuild":true"#));
         assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
     }
 

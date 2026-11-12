@@ -11,9 +11,10 @@ Each open file gets its language from the definitions, checked in this order:
 
 1. A per-file **Override File Type** (in the context menu of a file in the project tree or of an editor tab).
 2. An exact file name (`Dockerfile`, `go.mod`) or a file name pattern.
-3. The extension, longest match first (`.html.erb` before `.erb`).
-4. The first line: a shebang such as `#!/usr/bin/env python3`, or a pattern such as `<?php`.
-5. Otherwise the file is plain text.
+3. A framework's folder: an `.html` or `.txt` file in a `templates` folder with a `manage.py` above it is a Django template.
+4. The extension, longest match first (`.html.erb` before `.erb`).
+5. The first line: a shebang such as `#!/usr/bin/env python3`, or a pattern such as `<?php`.
+6. Otherwise the file is plain text.
 
 You can add or remove file name patterns per language in **Settings › Editor › File Types** (**Recognized File Types**).
 
@@ -106,6 +107,7 @@ The table lists every built-in language definition. Server and debugger names in
 | D                   | `d`                | `.d`, `.di`                                                 | Yes          | —           | serve-d                                                                               | —                        |
 | Dart                | `dart`             | `.dart`                                                     | Yes          | Yes         | dart                                                                                  | dart                     |
 | Diff                | `diff`             | `.diff`, `.patch`, `.rej`                                   | Yes          | —           | —                                                                                     | —                        |
+| Django Template     | `django-html`      | `.djhtml`, `templates/*.html`, `*.txt`                      | Yes          | Yes         | **vscode-html-language-server**                                                       | —                        |
 | Dockerfile          | `dockerfile`       | `.dockerfile`, `.containerfile`                             | Yes          | —           | **dockerfile-language-server**                                                        | —                        |
 | Elixir              | `elixir`           | `.ex`, `.exs`                                               | Yes          | Yes         | **elixir-ls**                                                                         | **elixir-ls-debugger**   |
 | ERB                 | `erb`              | `.erb`, `.html.erb`, `.rhtml`, `.js.erb`, `.text.erb`, …    | Yes          | —           | —                                                                                     | —                        |
@@ -133,7 +135,7 @@ The table lists every built-in language definition. Server and debugger names in
 | JSON with Comments  | `jsonc`            | `.jsonc`, `.code-workspace`, `.code-snippets`               | Yes          | Yes         | **vscode-json-language-server**                                                       | —                        |
 | JSP                 | `jsp`              | `.jsp`, `.jspx`, `.jspf`, `.jsph`, `.tag`, …                | Yes          | —           | —                                                                                     | —                        |
 | Julia               | `julia`            | `.jl`                                                       | Yes          | —           | julia-languageserver                                                                  | —                        |
-| Kotlin              | `kotlin`           | `.kt`, `.kts`                                               | Yes          | Yes         | **kotlin-lsp** → **kotlin-language-server**                                           | **kotlin-debug-adapter** |
+| Kotlin              | `kotlin`           | `.kt`, `.kts`                                               | Yes          | Yes         | **kotlin-lsp** → **kotlin-language-server** → **kmp-lsp**                             | **kotlin-debug-adapter** |
 | LaTeX               | `latex`            | `.tex`, `.ltx`, `.sty`, `.cls`, `.dtx`, …                   | Yes          | —           | **texlab**                                                                            | —                        |
 | Less                | `less`             | `.less`                                                     | Yes          | —           | **vscode-css-language-server**                                                        | —                        |
 | Log                 | `log`              | `.log`                                                      | Yes          | —           | —                                                                                     | —                        |

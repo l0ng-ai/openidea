@@ -53,8 +53,10 @@ import {
   toggleMaximizeToolWindow,
   toggleToolWindow,
   useToolWindowLayout,
+  viewModeOf,
   type SlotRecord,
   type ToolWindowSlot,
+  type ToolWindowViewMode,
 } from "./store";
 import { contentTabRegistry } from "./content";
 import styles from "./ToolWindows.module.css";
@@ -85,20 +87,36 @@ export function useToolWindows(): ToolWindowContribution[] {
 }
 
 /** Visible window per area, ignoring ids that aren't registered (yet) or don't dock there. */
-export function useEffectiveVisible(windows: ToolWindowContribution[]): SlotRecord {
+export function useEffectiveMaximized(windows: ToolWindowContribution[]): ToolWindowAnchor | null {
   const visible = useToolWindowLayout((s) => s.visible);
   const maximized = useToolWindowLayout((s) => s.maximized);
+  return useMemo(() => {
+    if (!maximized) return null;
+    const hasVisible = ([maximized, `${maximized}-split`] as const).some((slot) => {
+      const id = visible[slot];
+      return !!id && windows.some((w) => w.id === id && slotOf(w) === slot);
+    });
+    return hasVisible ? maximized : null;
+  }, [visible, windows, maximized]);
+}
+
+export function useEffectiveVisible(windows: ToolWindowContribution[]): SlotRecord {
+  const visible = useToolWindowLayout((s) => s.visible);
+  const effectiveMaximized = useEffectiveMaximized(windows);
   return useMemo(() => {
     const out = {} as SlotRecord;
     for (const slot of SLOTS) {
       const id = visible[slot];
       out[slot] =
-        id && windows.some((w) => w.id === id && slotOf(w) === slot && (!maximized || w.anchor === maximized))
+        id &&
+        windows.some(
+          (w) => w.id === id && slotOf(w) === slot && (!effectiveMaximized || w.anchor === effectiveMaximized),
+        )
           ? id
           : null;
     }
     return out;
-  }, [visible, windows, maximized]);
+  }, [visible, windows, effectiveMaximized]);
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +148,22 @@ export function moveToMenu(tw: ToolWindowContribution): MenuItem {
       { kind: "separator" },
       { label: "Restore Default Layout", run: resetToolWindowPlacements },
     ],
+  };
+}
+
+/** IDEA's View Modes that keep the window in the main window (no Float, no Window). */
+const VIEW_MODES: ToolWindowViewMode[] = ["dockPinned", "dockUnpinned", "undock"];
+
+/** "View Mode" submenu (IDEA: tool window options › View Mode): the `toolwindow.viewMode.*` actions for this window. */
+function viewModeMenu(id: string, current: ToolWindowViewMode): MenuItem {
+  return {
+    label: "View Mode",
+    submenu: VIEW_MODES.map((mode): MenuItem => ({
+      kind: "action",
+      action: `toolwindow.viewMode.${mode}`,
+      arg: id,
+      checked: mode === current,
+    })),
   };
 }
 
@@ -644,6 +678,7 @@ export function ToolWindowCornerActions({ className }: { className?: string }) {
 
 function ToolWindowActionsBar({ tw, className }: { tw: ToolWindowContribution; className?: string }) {
   const maximized = useToolWindowLayout((s) => s.maximized === tw.anchor);
+  const viewMode = useToolWindowLayout((s) => viewModeOf(tw.id, s.viewModes));
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLButtonElement>(null);
   const Actions = tw.headerActions;
@@ -653,6 +688,7 @@ function ToolWindowActionsBar({ tw, className }: { tw: ToolWindowContribution; c
   const more: MenuItem[] = [
     ...own,
     ...(own.length ? [{ kind: "separator" } as MenuItem] : []),
+    viewModeMenu(tw.id, viewMode),
     moveToMenu(tw),
     {
       label: maximized ? "Restore Size" : "Maximize",
@@ -830,6 +866,12 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
       aria-label={titleOf(tw)}
       hidden={hidden}
       tabIndex={-1}
+      // WebKit doesn't focus a clicked button. A menu opened from this window would then hand
+      // focus back to the editor on close, hiding an unpinned or undocked window.
+      onClickCapture={(e) => {
+        const button = (e.target as Element).closest<HTMLElement>("button[aria-haspopup]");
+        if (button && e.currentTarget.contains(button)) button.focus({ preventScroll: true });
+      }}
     >
       {!ownHeader && (
         <HeaderRow tw={tw} title actions>
@@ -938,8 +980,89 @@ function SplitHandle({ anchor, hidden }: { anchor: ToolWindowAnchor; hidden: boo
 }
 
 /**
+ * Inner edge of an undocked window: resizes it over the editor. Moves only the
+ * area's size variable while dragging; the side's size is stored on release.
+ */
+function UndockEdge({ anchor }: { anchor: ToolWindowAnchor }) {
+  const vertical = anchor !== "bottom";
+  const sign = anchor === "left" ? 1 : -1;
+  const measure = (el: HTMLElement) => {
+    const area = el.parentElement;
+    // The grid: undocked areas are positioned against it.
+    const grid = area?.offsetParent as HTMLElement | null;
+    if (!area || !grid) return null;
+    const room = vertical ? grid.clientWidth - EDITOR_MIN.width : grid.clientHeight - EDITOR_MIN.height;
+    return { area, size: vertical ? area.offsetWidth : area.offsetHeight, max: Math.max(MIN[anchor], room) };
+  };
+  const clamp = (raw: number, max: number) => Math.min(max, Math.max(MIN[anchor], Math.round(raw)));
+  const commit = (area: HTMLElement, px: number) => {
+    setToolWindowSize(anchor, px);
+    // Back to the store's value when it did not change (a clamped or too small size).
+    area.style.setProperty("--undock-size", `${useToolWindowLayout.getState().sizes[anchor]}px`);
+  };
+
+  const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const m = measure(el);
+    if (e.button !== 0 || !m) return;
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    const origin = vertical ? e.clientX : e.clientY;
+    const releaseCursor = lockDragCursor(vertical ? "ew-resize" : "ns-resize");
+    let next = m.size;
+    const move = (ev: globalThis.PointerEvent) => {
+      if (!(ev.buttons & 1)) return end();
+      next = clamp(m.size + sign * ((vertical ? ev.clientX : ev.clientY) - origin), m.max);
+      m.area.style.setProperty("--undock-size", `${next}px`);
+    };
+    const end = () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", end);
+      el.removeEventListener("pointercancel", end);
+      releaseCursor();
+      commit(m.area, next);
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", end);
+    el.addEventListener("pointercancel", end);
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const dir = (vertical ? ["ArrowLeft", "ArrowRight"] : ["ArrowUp", "ArrowDown"]).indexOf(e.key);
+    const m = measure(e.currentTarget);
+    if (dir < 0 || !m) return;
+    e.preventDefault();
+    commit(m.area, clamp(m.size + sign * (dir ? 1 : -1) * KEY_STEP, m.max));
+  };
+
+  return (
+    <div
+      role="separator"
+      aria-orientation={vertical ? "vertical" : "horizontal"}
+      aria-label={`Resize undocked ${anchor} tool window`}
+      tabIndex={0}
+      className={styles.undockEdge}
+      onPointerDown={onPointerDown}
+      onKeyDown={onKeyDown}
+    />
+  );
+}
+
+/** Whether the window shown in `slot` is undocked (shows over the editor). */
+function undockedIn(
+  visible: SlotRecord,
+  slot: ToolWindowSlot,
+  viewModes: Readonly<Record<string, ToolWindowViewMode>>,
+) {
+  const id = visible[slot];
+  return !!id && viewModeOf(id, viewModes) === "undock";
+}
+
+/**
  * One side's tool windows: the primary area and the split area, each an
- * island; with both showing they share the side at the stored ratio.
+ * island; with both showing they share the side at the stored ratio. An area
+ * showing an undocked window leaves the grid track and lies over the editor at
+ * the side's edge (the same element, so its window keeps focus and state).
  */
 function SidePanel({
   anchor,
@@ -951,24 +1074,42 @@ function SidePanel({
   visible: SlotRecord;
 }) {
   const mounted = useToolWindowLayout((s) => s.mounted);
-  const split = !!visible[anchor] && !!visible[`${anchor}-split`];
+  const viewModes = useToolWindowLayout((s) => s.viewModes);
+  const size = useToolWindowLayout((s) => s.sizes[anchor]);
+  const maximized = useEffectiveMaximized(windows) === anchor;
+  const undocked = (slot: ToolWindowSlot) => undockedIn(visible, slot, viewModes);
+  const docked = (slot: ToolWindowSlot) => !!visible[slot] && !undocked(slot);
+  const split = docked(anchor) && docked(`${anchor}-split`);
+  // Two undocked areas share the side's length like docked ones.
+  const bothUndocked = undocked(anchor) && undocked(`${anchor}-split`);
   // A lone area takes the whole side: flex-grow below 1 would leave the rest empty.
   const ratio = useToolWindowLayout((s) => s.splits[anchor]);
   const area = (slot: ToolWindowSlot, grow: number) => {
     const visibleId = visible[slot];
     const list = windows.filter((w) => slotOf(w) === slot && (mounted.has(w.id) || w.id === visibleId));
     if (!list.length) return null;
+    const over = undocked(slot);
+    const share = bothUndocked ? (slot === anchor ? ratio : 1 - ratio) : 1;
     return (
       <div
-        className={clsx(styles.island, styles.anchor)}
-        // The stored ratio; SplitHandle moves it directly while dragging.
-        style={{ flexGrow: grow }}
+        className={clsx(styles.island, styles.anchor, over && styles.undocked)}
+        // Docked: the stored ratio, which SplitHandle moves directly while dragging.
+        style={
+          over
+            ? ({
+                "--undock-size": `${size}px`,
+                "--undock-share": share,
+                "--undock-gap": bothUndocked ? "calc(var(--island-gap) / 2)" : "0px",
+              } as CSSProperties)
+            : { flexGrow: grow }
+        }
         data-slot={slot}
         hidden={!visibleId}
       >
         {list.map((w) => (
           <ToolWindowView key={w.id} tw={w} hidden={w.id !== visibleId} />
         ))}
+        {over && !maximized && <UndockEdge anchor={anchor} />}
       </div>
     );
   };
@@ -1010,6 +1151,7 @@ function syncTracks(grid: HTMLElement, visible: SlotRecord) {
 function GapHandle({
   anchor,
   visibleIds,
+  maximized,
   gridRef,
   editorRef,
   sync,
@@ -1017,12 +1159,12 @@ function GapHandle({
   anchor: ToolWindowAnchor;
   /** Windows shown on this side (primary and split area). */
   visibleIds: string[];
+  maximized: ToolWindowAnchor | null;
   gridRef: RefObject<HTMLDivElement | null>;
   editorRef: RefObject<HTMLDivElement | null>;
   sync: () => void;
 }) {
   const vertical = anchor !== "bottom";
-  const maximized = useToolWindowLayout((s) => s.maximized);
   const sign = anchor === "left" ? 1 : -1;
   const measure = () => {
     const island = gridRef.current?.querySelector<HTMLElement>(`[data-anchor="${anchor}"]`);
@@ -1117,6 +1259,7 @@ function useToolWindowAppearance() {
 export function ToolWindowLayout({ editor }: { editor: ReactNode }) {
   const windows = useToolWindows();
   const visible = useEffectiveVisible(windows);
+  const maximized = useEffectiveMaximized(windows);
   const appearance = useToolWindowAppearance();
   const { bars, widescreen } = appearance;
   const stripes = useStripes();
@@ -1150,7 +1293,6 @@ export function ToolWindowLayout({ editor }: { editor: ReactNode }) {
     />
   );
   const sizes = useToolWindowLayout((s) => s.sizes);
-  const maximized = useToolWindowLayout((s) => s.maximized);
   const stripeButtons = useToolWindowLayout((s) => s.stripeButtons);
   // The right stripe holds the right side's windows and Bottom Right.
   const hasRight = windows.some((w) => {
@@ -1164,10 +1306,17 @@ export function ToolWindowLayout({ editor }: { editor: ReactNode }) {
   const rightStripe = bars && (hasRight || dragging);
   const gridRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
+  // Undocked windows take no track: the editor keeps its size under them.
+  const viewModes = useToolWindowLayout((s) => s.viewModes);
+  const docked = useMemo(() => {
+    const out = { ...visible };
+    for (const slot of SLOTS) if (undockedIn(visible, slot, viewModes)) out[slot] = null;
+    return out;
+  }, [visible, viewModes]);
   const sync = () => {
-    if (gridRef.current) syncTracks(gridRef.current, visible);
+    if (gridRef.current) syncTracks(gridRef.current, docked);
   };
-  useLayoutEffect(sync, [visible, sizes, maximized]);
+  useLayoutEffect(sync, [docked, sizes, maximized]);
   useLayoutEffect(() => {
     if (!maximized || !editorRef.current?.contains(document.activeElement)) return;
     const id = visibleOn(visible, maximized)[0];
@@ -1177,7 +1326,8 @@ export function ToolWindowLayout({ editor }: { editor: ReactNode }) {
   const gap = (anchor: ToolWindowAnchor) => (
     <GapHandle
       anchor={anchor}
-      visibleIds={visibleOn(visible, anchor)}
+      visibleIds={visibleOn(docked, anchor)}
+      maximized={maximized}
       gridRef={gridRef}
       editorRef={editorRef}
       sync={sync}

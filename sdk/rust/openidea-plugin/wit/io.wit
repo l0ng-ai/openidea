@@ -43,6 +43,7 @@ interface diagnostics {
 /// HTTPS with `net:<host>`; unencrypted HTTP with `net.http:<host>`.
 interface net {
     use types.{error};
+    use workspace.{project};
 
     record header {
         name: string,
@@ -69,9 +70,41 @@ interface net {
         body: list<u8>,
     }
 
+    record websocket-request {
+        /// `wss://` requires `net:<host>`; loopback `ws://` is allowed for tests.
+        url: string,
+        /// Secret placeholders are expanded by the host as for HTTP requests.
+        /// `host`, `connection`, `upgrade` and `sec-websocket-*` belong to the
+        /// handshake and are rejected.
+        headers: list<header>,
+        /// Empty for none; otherwise the server must accept this subprotocol.
+        subprotocol: string,
+    }
+
+    record websocket-batch {
+        messages: list<list<u8>>,
+        /// The transport has ended. Any returned messages are still valid and
+        /// this connection is removed after this final drain.
+        closed: bool,
+    }
+
     /// Fails with `denied` for a host the plugin may not reach, `cancelled`
     /// when a newer request replaced the call or the user cancelled.
     fetch: func(req: request) -> result<response, error>;
+    /// A project-bound background WebSocket. At most eight may be open for a
+    /// plugin. Dropping this resource closes the transport and releases it.
+    resource websocket {
+        /// Stable connection identifier used by `websocket-ready` events.
+        id: func() -> u64;
+        send: func(bytes: list<u8>) -> result<_, error>;
+        drain: func(limit: u32) -> result<websocket-batch, error>;
+        close: func() -> result<_, error>;
+    }
+
+    /// Creates a project-bound WebSocket resource. The host retains the
+    /// project binding, so resource methods cannot be redirected to another
+    /// project.
+    websocket-connect: func(project: borrow<project>, req: websocket-request) -> result<websocket, error>;
 }
 
 /// Secrets the user stored for the plugin (Settings › Plugins, kept in the

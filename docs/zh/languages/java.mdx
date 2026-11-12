@@ -7,12 +7,12 @@ Java 的代码智能由 Eclipse JDT Language Server（jdtls）提供，OpenIDEA 
 
 ## 语言服务器
 
-| 语言                | 服务器                                 | 备选                                                     | 调试器                                |
-| ------------------- | -------------------------------------- | -------------------------------------------------------- | ------------------------------------- |
-| Java                | Eclipse JDT Language Server（`jdtls`） | `kmp-lsp`                                                | Microsoft java-debug，加载在 jdtls 内 |
-| Kotlin              | Kotlin LSP（JetBrains，`kotlin-lsp`）  | Kotlin Language Server（fwcd，`kotlin-language-server`） | Kotlin Debug Adapter（fwcd）          |
-| Groovy、Gradle 脚本 | `groovy-language-server`（需自行提供） |                                                          |                                       |
-| JSP                 | 无（仅语法高亮）                       |                                                          |                                       |
+| 语言                | 服务器                                 | 备选                                                                | 调试器                                |
+| ------------------- | -------------------------------------- | ------------------------------------------------------------------- | ------------------------------------- |
+| Java                | Eclipse JDT Language Server（`jdtls`） | `kmp-lsp`                                                           | Microsoft java-debug，加载在 jdtls 内 |
+| Kotlin              | Kotlin LSP（JetBrains，`kotlin-lsp`）  | Kotlin Language Server（fwcd，`kotlin-language-server`）、`kmp-lsp` | Kotlin Debug Adapter（fwcd）          |
+| Groovy、Gradle 脚本 | `groovy-language-server`（需自行提供） |                                                                     |                                       |
+| JSP                 | 无（仅语法高亮）                       |                                                                     |                                       |
 
 备选服务器只在排在它前面的服务器未安装时才会启动。想手动指定，打开 **设置 › 语言和框架 › 语言服务器**，选中其中一个服务器，在 **Java 语言服务器**（或 Kotlin 语言服务器）里选择：**自动** 使用第一个可用的，**无** 关闭代码智能。这个选择可以全局生效，也可以只对当前项目生效。
 
@@ -86,7 +86,7 @@ jdtls 的工作区保存在 IDE 的数据目录（`lsp/jdtls/`）中，不在项
 
 jdtls 会自动导入 Maven 和 Gradle 项目（包括 Gradle wrapper）。没有构建文件的目录会作为普通 Java 项目打开，`lib/` 下的 jar 会加入类路径。OpenIDEA 还提供 **Maven** 和 **Gradle** 工具窗口，用来执行目标和任务、重新加载、切换 profile 以及分析依赖。相关设置在 **设置 › 构建、执行、部署 › Maven** 和 **Gradle**：
 
-- Maven：**JRE**、**Maven 主路径**（默认用项目的 `mvnw`，没有则用 `PATH` 上的 `mvn`）、**用户设置文件**、**Toolchains 文件**、**本地仓库**、**活动 profiles**、**线程数** 和 **使用 Maven Daemon (mvnd)**。在 Maven 工具窗口里选的 profile 也会传给 jdtls，编辑器看到的依赖与该 profile 一致。
+- Maven：**将 IDE 构建/运行操作委托给 Maven**（运行和调试时用 Maven 的 `javac` 而不是 jdtls 构建）、**JRE**、**Maven 主路径**（默认用项目的 `mvnw`，没有则用 `PATH` 上的 `mvn`）、**用户设置文件**、**Toolchains 文件**、**本地仓库**、**活动 profiles**、**线程数** 和 **使用 Maven Daemon (mvnd)**。在 Maven 工具窗口里选的 profile 也会传给 jdtls，编辑器看到的依赖与该 profile 一致。
 - Gradle：**构建和运行使用**（Gradle 或 OpenIDEA）、**Gradle 使用的 JVM**、**分发**（Gradle 包装器或本地安装）、**Gradle 主路径** 和 **Gradle 用户主目录**。
 
 IDE 会把代理设置传给 jdtls，所以在代理环境下也能解析依赖。工具窗口的用法见[构建工具](/zh/guide/build-tools)。
@@ -141,5 +141,6 @@ MyBatis mapper 接口与 XML 语句之间的跳转由 MyBatis Navigator 插件�
 - 每个项目窗口运行一个 jdtls，同时打开多个大项目时内存会叠加。可以在 **JVM 选项** 中调低 `-Xmx`，或关闭暂时不用的窗口。**在构建间共享 JDT LS** 只在单个窗口内有效。
 - 没有 jdtls 时（例如只用 `kmp-lsp`），“应用程序”配置、依赖类路径的功能和 Java 调试都不可用。
 - Java 测试通过 Maven 或 Gradle 运行，两者都没有的项目没有测试运行器。
+- jdtls 自带的 ECJ 编译器有些地方比 javac 严格。已知例子：把泛型方法调用直接用作 `if`、`while`、`for`、`do` 条件或三元运算符条件——例如 `<T> T getCacheObject(String key)` 方法配合 `if (getCacheObject(key))`——javac 可以编译，ECJ 则报 `Type mismatch: cannot convert from Object to boolean`。先把调用赋值给 `boolean` 变量即可两边都编译通过（见 [#2624](https://github.com/l0ng-ai/openidea/issues/2624)）。
 - Kotlin 桥接只支持 Maven，只把编译后的 Kotlin 类暴露给 Java，不提供从 Java 到 Kotlin 源码的跳转或重构。
 - Groovy 需要自行构建 `groovy-language-server`，JSP 只有语法高亮。

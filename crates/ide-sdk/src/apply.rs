@@ -439,6 +439,46 @@ pub fn gradle_env(
     env
 }
 
+/// Settings › Build Tools › Gradle → jdtls `java.import.gradle.*`: the Java import of the Gradle
+/// build in `build_dir` runs the same Gradle installation, user home and JVM as the IDE's own
+/// Gradle runs ([`gradle_build_env`]: Gradle JVM, else the Project JDK, else an installed JDK
+/// this Gradle version runs on). Without it a project that ships no wrapper is never imported,
+/// one whose caches live in a configured user home resolves no dependencies, and an older Gradle
+/// fails on the JDK jdtls itself runs on. The wrapper stays jdtls's default unless a local
+/// distribution is chosen.
+pub fn configure_gradle_runtime(cfg: &mut LanguageServerConfig, root: &Path, build_dir: &Path, s: &Settings) {
+    if cfg.name != "jdtls" {
+        return;
+    }
+    let g = &s.languages.java.gradle;
+    let mut gradle = serde_json::Map::new();
+    if g.distribution == ide_core::settings::GradleDistribution::Local
+        && let Some(home) = setting_path(root, &g.home)
+    {
+        gradle.insert("home".into(), json!(home.to_string_lossy()));
+        gradle.insert("wrapper".into(), json!({"enabled": false}));
+    }
+    let gradle_build = ["settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts"]
+        .iter()
+        .any(|f| build_dir.join(f).is_file());
+    let env = if gradle_build {
+        let command = gradle_command(root, build_dir, s);
+        gradle_build_env(root, build_dir, &command.to_string_lossy(), s, None)
+    } else {
+        gradle_env(root, s, Default::default())
+    };
+    if let Some(home) = env.get("GRADLE_USER_HOME") {
+        gradle.insert("user".into(), json!({"home": home}));
+    }
+    if let Some(home) = env.get("JAVA_HOME") {
+        gradle.insert("java".into(), json!({"home": home}));
+    }
+    if gradle.is_empty() {
+        return;
+    }
+    merge(cfg.settings.get_or_insert_with(|| json!({})), json!({"java": {"import": {"gradle": gradle}}}));
+}
+
 /// Maven options from settings, placed before the goals: `-s <settings.xml>`,
 /// `-t <toolchains.xml>`, `-Dmaven.repo.local=<dir>`, `-T <count>` and `-P <profiles>`.
 pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
@@ -836,9 +876,10 @@ org.eclipse.jdt.core.compiler.codegen.targetPlatform={jdt_ver}\n"
         tracing::warn!("jdtls: cannot write compiler defaults: {e}");
         return;
     }
-    // jdtls accepts absolute filesystem paths as well as URLs (including paths
-    // containing spaces and Windows backslashes). Explicit server settings win later.
-    let defaults = json!({"settings": {"java": {"settings": {"url": file.to_string_lossy()}}}});
+    // A `file:` URI: jdtls parses the setting as a URI when matching watched-file
+    // changes, which fails on a bare path with spaces. Explicit server settings win later.
+    let url = url::Url::from_file_path(&file).map_or_else(|()| file.to_string_lossy().into_owned(), String::from);
+    let defaults = json!({"settings": {"java": {"settings": {"url": url}}}});
     let existing = cfg.initialization_options.clone();
     merge_init_options(cfg, defaults);
     if let Some(existing) = existing {
@@ -1685,12 +1726,15 @@ pub fn terminal_activation(root: &Path, s: &Settings, shell: &str) -> Option<Str
     if !s.languages.python.activate_virtualenv {
         return None;
     }
-    let venv = python_interpreter(root, s).as_deref().and_then(venv_of)?;
+    let python = python_interpreter(root, s)?;
+    let name = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
+    let name = Path::new(name).file_stem().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let Some(venv) = venv_of(&python) else {
+        return conda_activation(&python, &name, std::env::var_os("CONDA_EXE").map(PathBuf::from), which("conda"));
+    };
     if std::env::var_os("VIRTUAL_ENV").is_some_and(|v| Path::new(&v) == venv) {
         return None;
     }
-    let name = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
-    let name = Path::new(name).file_stem().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
     let script = |file: &str| venv.join(bin_dir()).join(file);
     let line = match name.as_str() {
         "fish" => format!("source {}", sh_quote(&script("activate.fish").to_string_lossy())),
@@ -1715,6 +1759,64 @@ pub fn terminal_activation(root: &Path, s: &Settings, shell: &str) -> Option<Str
     script(target).is_file().then_some(line)
 }
 
+/// `conda activate <prefix>` for a conda interpreter, as PyCharm does for a Conda project
+/// interpreter: conda envs have no activate script of their own, and the shells' conda hook
+/// comes from the installation (the env itself for `base`, the parent of `envs/`, else
+/// `CONDA_EXE` or the `conda` on PATH). `name` is the shell's lowercased file stem.
+fn conda_activation(python: &Path, name: &str, conda_exe: Option<PathBuf>, on_path: Option<PathBuf>) -> Option<String> {
+    let env = crate::discover::conda_env_home(python).filter(|env| env.join("conda-meta").is_dir())?;
+    if std::env::var_os("CONDA_PREFIX").is_some_and(|p| Path::new(&p) == env) {
+        return None;
+    }
+    let is_base = |dir: &Path| dir.join("condabin").is_dir();
+    // `<base>/bin/conda`, `<base>/condabin/conda[.bat]`, `<base>\Scripts\conda.exe`.
+    let base_of = |exe: PathBuf| exe.parent()?.parent().map(Path::to_path_buf).filter(|b| is_base(b));
+    let base = Some(env.clone())
+        .filter(|e| is_base(e))
+        .or_else(|| {
+            env.parent()
+                .filter(|p| p.file_name().is_some_and(|n| n == "envs"))?
+                .parent()
+                .map(Path::to_path_buf)
+                .filter(|b| is_base(b))
+        })
+        .or_else(|| conda_exe.and_then(base_of))
+        .or_else(|| on_path.and_then(base_of))?;
+    let prefix = env.to_string_lossy();
+    let conda = if cfg!(windows) { base.join("Scripts").join("conda.exe") } else { base.join("bin").join("conda") };
+    let posix = |hook: &str| {
+        conda.is_file().then(|| {
+            format!(
+                "eval \"$({} shell.{hook} hook)\" && conda activate {}",
+                sh_quote(&conda.to_string_lossy()),
+                sh_quote(&prefix)
+            )
+        })
+    };
+    match name {
+        "cmd" => {
+            let bat = base.join("condabin").join("conda.bat");
+            bat.is_file().then(|| format!("call \"{}\" activate \"{prefix}\"", bat.display()))
+        }
+        "pwsh" | "powershell" => {
+            let hook = base.join("shell").join("condabin").join("conda-hook.ps1");
+            let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
+            hook.is_file().then(|| format!("& {}; conda activate {}", quote(&hook.to_string_lossy()), quote(&prefix)))
+        }
+        "bash" => posix("bash"),
+        "zsh" => posix("zsh"),
+        "sh" | "dash" | "ksh" | "mksh" | "ash" => posix("posix"),
+        "fish" => conda.is_file().then(|| {
+            format!(
+                "{} shell.fish hook | source; and conda activate {}",
+                sh_quote(&conda.to_string_lossy()),
+                sh_quote(&prefix)
+            )
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod java_compiler_tests {
     use super::*;
@@ -1723,13 +1825,18 @@ mod java_compiler_tests {
         serde_json::to_value(cfg.initialization_options.as_ref().unwrap()).unwrap()
     }
 
+    fn prefs_path(options: &Value) -> PathBuf {
+        let url = options.pointer("/settings/java/settings/url").unwrap().as_str().unwrap();
+        url::Url::parse(url).unwrap().to_file_path().unwrap()
+    }
+
     #[test]
     fn serial_version_inspection_sets_the_compiler_option() {
         let tmp = tempfile::tempdir().unwrap();
         let url = |inspections: &InspectionSettings| {
             let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
             configure_java_compiler(&mut cfg, tmp.path(), inspections);
-            options(&cfg).pointer("/settings/java/settings/url").unwrap().as_str().unwrap().to_owned()
+            prefs_path(&options(&cfg))
         };
         let set = |o: ide_core::settings::InspectionOverride| {
             let mut s = InspectionSettings::default();
@@ -1768,7 +1875,9 @@ mod java_compiler_tests {
         merge_init_options(&mut cfg, json!({"settings": {"java": {"format": {"tabSize": 4}}}}));
         configure_java_compiler(&mut cfg, &cache, &InspectionSettings::default());
         let options = options(&cfg);
-        let path = PathBuf::from(options.pointer("/settings/java/settings/url").unwrap().as_str().unwrap());
+        let url = options.pointer("/settings/java/settings/url").unwrap().as_str().unwrap();
+        assert!(url.starts_with("file://") && !url.contains(' '), "{url}");
+        let path = prefs_path(&options);
         assert!(path.starts_with(&cache));
         let prefs = std::fs::read_to_string(&path).unwrap();
         assert_eq!(prefs.lines().count(), 2);
@@ -1904,6 +2013,67 @@ mod maven_linkage_tests {
     }
 
     #[test]
+    fn gradle_import_runs_the_gradle_the_ide_builds_with() {
+        let root = Path::new("/p");
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        cfg.settings = Some(json!({"java": {"import": {"gradle": {"enabled": true}}}}));
+        let initial = cfg.clone();
+        let mut settings = Settings::default();
+        configure_gradle_runtime(&mut cfg, root, root, &settings);
+        assert_eq!(cfg, initial, "no Gradle settings: jdtls keeps its own defaults and the wrapper");
+
+        let g = &mut settings.languages.java.gradle;
+        g.distribution = ide_core::settings::GradleDistribution::Local;
+        g.home = "tools/gradle-5.2.1".into();
+        g.user_home = "/caches/gradle".into();
+        g.jvm = "/jdk/8".into();
+        configure_gradle_runtime(&mut cfg, root, root, &settings);
+        let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
+        assert_eq!(gradle["enabled"], json!(true), "merged, not replaced");
+        let resolved = |s: &str| json!(setting_path(root, s).unwrap().to_string_lossy());
+        assert_eq!(gradle["home"], json!(root.join("tools/gradle-5.2.1").to_string_lossy()));
+        assert_eq!(gradle["wrapper"]["enabled"], json!(false));
+        assert_eq!(gradle["user"]["home"], resolved("/caches/gradle"));
+        assert_eq!(gradle["java"]["home"], resolved("/jdk/8"));
+
+        // The wrapper distribution keeps the wrapper even with a home left over.
+        let mut cfg = initial.clone();
+        settings.languages.java.gradle.distribution = ide_core::settings::GradleDistribution::Wrapper;
+        configure_gradle_runtime(&mut cfg, root, root, &settings);
+        let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
+        assert!(gradle.get("home").is_none() && gradle.get("wrapper").is_none());
+        assert_eq!(gradle["user"]["home"], resolved("/caches/gradle"));
+    }
+
+    #[test]
+    fn gradle_import_of_a_gradle_build_runs_on_the_project_jdk_like_the_ides_builds() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("build.gradle"), "plugins { id 'java' }").unwrap();
+        let jdk = root.join("jdk11");
+        std::fs::create_dir_all(jdk.join("bin")).unwrap();
+        std::fs::write(jdk.join("bin").join(crate::exe("java")), "").unwrap();
+        std::fs::write(jdk.join("release"), "JAVA_VERSION=\"11.0.2\"\n").unwrap();
+        let mut settings = Settings::default();
+        settings.languages.java.jdk = jdk.to_string_lossy().into_owned();
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        configure_gradle_runtime(&mut cfg, root, root, &settings);
+        let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
+        let expected =
+            gradle_build_env(root, root, &gradle_command(root, root, &settings).to_string_lossy(), &settings, None);
+        assert_eq!(gradle["java"]["home"], json!(expected["JAVA_HOME"]));
+        assert!(expected["JAVA_HOME"].ends_with("jdk11"));
+        assert!(gradle.get("wrapper").is_none(), "the wrapper stays on");
+
+        // An explicit Gradle JVM wins over the Project JDK.
+        settings.languages.java.gradle.jvm = "/gradle-jdk".into();
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        configure_gradle_runtime(&mut cfg, root, root, &settings);
+        let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
+        assert_eq!(gradle["java"]["home"], json!(setting_path(root, "/gradle-jdk").unwrap().to_string_lossy()));
+    }
+
+    #[test]
     fn explicit_gradle_links_scope_jdt_import_and_unlink_all_disables_gradle() {
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         cfg.args = vec!["-data".into(), "/cache/jdtls".into()];
@@ -2028,5 +2198,72 @@ mod java_compliance_tests {
         assert_eq!(c("4"), None);
         assert_eq!(c(""), None);
         assert_eq!(c("latest"), None);
+    }
+}
+
+#[cfg(test)]
+mod conda_activation_tests {
+    use super::*;
+
+    fn touch(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+    }
+
+    /// A conda prefix with its interpreter where conda puts it on this OS.
+    fn prefix(dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(dir.join("conda-meta")).unwrap();
+        let python = if cfg!(windows) { dir.join("python.exe") } else { dir.join("bin").join("python") };
+        touch(&python);
+        python
+    }
+
+    #[test]
+    fn conda_envs_activate_through_the_installations_shell_hooks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("miniconda3");
+        let base_python = prefix(&base);
+        std::fs::create_dir_all(base.join("condabin")).unwrap();
+        let conda = if cfg!(windows) { base.join("Scripts").join("conda.exe") } else { base.join("bin").join("conda") };
+        touch(&conda);
+        let bat = base.join("condabin").join("conda.bat");
+        touch(&bat);
+        let hook = base.join("shell").join("condabin").join("conda-hook.ps1");
+        touch(&hook);
+        let env = base.join("envs").join("agent-gateway");
+        let python = prefix(&env);
+        let q = |p: &Path| sh_quote(&p.to_string_lossy());
+
+        assert_eq!(
+            conda_activation(&python, "zsh", None, None).unwrap(),
+            format!("eval \"$({} shell.zsh hook)\" && conda activate {}", q(&conda), q(&env))
+        );
+        assert_eq!(
+            conda_activation(&python, "cmd", None, None).unwrap(),
+            format!("call \"{}\" activate \"{}\"", bat.display(), env.display())
+        );
+        assert_eq!(
+            conda_activation(&python, "powershell", None, None).unwrap(),
+            format!("& '{}'; conda activate '{}'", hook.display(), env.display())
+        );
+        assert_eq!(
+            conda_activation(&python, "fish", None, None).unwrap(),
+            format!("{} shell.fish hook | source; and conda activate {}", q(&conda), q(&env))
+        );
+        assert_eq!(conda_activation(&python, "nu", None, None), None, "no conda hook for this shell");
+        assert!(conda_activation(&base_python, "bash", None, None).unwrap().ends_with(&q(&base)), "base itself");
+
+        // A `--prefix` env elsewhere finds the installation through CONDA_EXE or PATH.
+        let elsewhere = tmp.path().join("project").join(".conda");
+        let python = prefix(&elsewhere);
+        assert_eq!(conda_activation(&python, "bash", None, None), None);
+        let line = conda_activation(&python, "bash", Some(conda.clone()), None).unwrap();
+        assert!(line.ends_with(&format!("conda activate {}", q(&elsewhere))), "{line}");
+        assert!(conda_activation(&python, "cmd", None, Some(bat.clone())).is_some());
+
+        // Not a conda prefix.
+        let plain = tmp.path().join("python");
+        touch(&plain.join("bin").join("python"));
+        assert_eq!(conda_activation(&plain.join("bin").join("python"), "bash", Some(conda), None), None);
     }
 }

@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { usePlatform } from "@/platform/platformInfo";
 import { Button, IconButton } from "./Button";
 import { Icon } from "./icons";
-import { FOCUSABLE, onWindowDeactivate, openLayer, trapTab } from "./popupState";
+import { FOCUSABLE, dismissPopups, onWindowDeactivate, openLayer, trapTab } from "./popupState";
+import { PopupAncestry } from "./Popup";
 import { tx, useGivenTx } from "@/platform/i18n";
 import { selectableText } from "./selectableText";
 import appIcon from "../../src-tauri/icons/128x128.png";
@@ -271,7 +272,9 @@ function DialogInner({
     return onWindowDeactivate(() => onCloseRef.current());
   }, [cancelOnDeactivate]);
 
+  const ancestry = useRef(useContext(PopupAncestry));
   useEffect(() => {
+    dismissPopups(new Set(ancestry.current.flatMap((r) => (r.current === null ? [] : [r.current]))));
     const layer = openLayer(() => ref.current);
     let previous = document.activeElement as HTMLElement | null;
     const el = ref.current;

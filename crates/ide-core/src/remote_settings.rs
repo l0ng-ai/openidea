@@ -108,7 +108,30 @@ impl Default for DeploymentSettings {
 pub enum DeploymentType {
     #[default]
     Sftp,
+    Ftp,
+    /// FTP secured with `AUTH TLS` (explicit FTPS).
+    Ftps,
     Local,
+}
+
+/// Host and login of an FTP / FTPS deployment server. The password is kept with
+/// the saved passwords, under the server's id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FtpConnection {
+    pub host: String,
+    /// `None`: 21.
+    pub port: Option<u16>,
+    /// Empty: anonymous login.
+    pub user: String,
+    /// Passive mode (the client opens data connections); off: active mode.
+    pub passive: bool,
+}
+
+impl Default for FtpConnection {
+    fn default() -> Self {
+        Self { host: String::new(), port: None, user: String::new(), passive: true }
+    }
 }
 
 /// A deployment filesystem and how project folders map onto it.
@@ -120,6 +143,8 @@ pub struct DeploymentServer {
     pub name: String,
     /// [`SshConfiguration::id`].
     pub ssh_config: String,
+    /// FTP / FTPS servers.
+    pub ftp: FtpConnection,
     /// Absolute remote folder the mappings are relative to; empty = the login directory.
     pub root_path: String,
     /// Web server URL of the root (Open in Browser on the deployed file).
@@ -225,8 +250,11 @@ mod deployment_tests {
             serde_json::from_str(r#"{"id":"existing","sshConfig":"ssh","rootPath":"/srv"}"#).unwrap();
         assert_eq!(legacy.kind, DeploymentType::Sftp);
         assert_eq!(legacy.ssh_config, "ssh");
-        for kind in [DeploymentType::Sftp, DeploymentType::Local] {
-            let server = DeploymentServer { kind, ..legacy.clone() };
+        assert!(legacy.ftp.passive);
+        let ftp =
+            FtpConnection { host: "ftp.example.com".into(), port: Some(2121), user: "web".into(), passive: false };
+        for kind in [DeploymentType::Sftp, DeploymentType::Ftp, DeploymentType::Ftps, DeploymentType::Local] {
+            let server = DeploymentServer { kind, ftp: ftp.clone(), ..legacy.clone() };
             assert_eq!(
                 serde_json::from_str::<DeploymentServer>(&serde_json::to_string(&server).unwrap()).unwrap(),
                 server

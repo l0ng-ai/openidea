@@ -55,6 +55,7 @@ fn lang(id: &str, ext: &str, server: LanguageServerConfig) -> LanguageConfig {
         indent: None,
         ui_mode: None,
         framework_ui_modes: Vec::new(),
+        framework_files: Vec::new(),
         formatter: None,
         scratch_template: None,
         tree_sitter: None,
@@ -917,5 +918,101 @@ async fn angular_language_server_end_to_end() {
             refs.locations.iter().map(|l| (l.path.to_path_buf(), l.range.start.line)).collect();
         assert_eq!(found, [(app_html.clone(), 0)]);
     }
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
+/// A notebook's code cells on basedpyright and Ruff (LSP 3.17 notebook sync): names flow from
+/// earlier cells, IPython magics parse, and locations and diagnostics name the cells.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires ruff and basedpyright on PATH"]
+async fn basedpyright_and_ruff_serve_notebook_cells() {
+    use ide_lsp::{NotebookCell, cell_uri};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let root = dunce::simplified(&root).to_path_buf();
+    std::fs::write(root.join("pyproject.toml"), "[tool.ruff.lint]\nselect = [\"F\"]\n").unwrap();
+    let path = root.join("analysis.ipynb");
+    std::fs::write(&path, "{}").unwrap();
+    let mut python = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("python")).unwrap();
+    python.language_servers.retain(|server| matches!(server.name.as_str(), "basedpyright" | "ruff"));
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![python]));
+    let cell = |id: &str, source: &str| NotebookCell { id: id.into(), source: source.into() };
+    let first = "import os\nimport sys\n\ndef area(r: float) -> float:\n    return 3.14 * r * r\n";
+    let second = "%matplotlib inline\nsize: int = area(2)\nos.pa";
+    mgr.sync_notebook(&path, &LanguageId::new("python"), &[cell("first", first), cell("second", second)]);
+    for name in ["basedpyright", "ruff"] {
+        retry(name, Duration::from_secs(60), || {
+            let status = last_status(&events, name);
+            if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, msg)) = &status {
+                panic!("{name} failed: {msg:?}");
+            }
+            async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+        })
+        .await;
+    }
+    let docs = mgr.notebook_cells(&path);
+    let b = docs[1].doc;
+    let (a_uri, b_uri) = (cell_uri(&path, "first"), cell_uri(&path, "second"));
+    assert_eq!((docs[0].uri.as_str(), docs[1].uri.as_str()), (a_uri.as_str(), b_uri.as_str()));
+
+    // `os`, imported in the first cell, completes in the second.
+    let labels = retry("completion in a cell", Duration::from_secs(30), || {
+        let mgr = mgr.clone();
+        async move {
+            let list = mgr.completion(b, Pos::new(2, 5), Some(".".into()), Default::default()).await.ok()?;
+            let labels: Vec<String> = list.items.into_iter().map(|i| i.label).collect();
+            labels.iter().any(|l| l == "path").then_some(labels)
+        }
+    })
+    .await;
+    assert!(labels.iter().any(|l| l == "path"), "{labels:?}");
+
+    let hover = mgr.hover(b, Pos::new(1, 13), Default::default()).await.unwrap().expect("hover on `area`");
+    assert!(
+        hover.contents.value.contains("area") && hover.contents.value.contains("float"),
+        "{}",
+        hover.contents.value
+    );
+
+    let defs = mgr.goto(b, Pos::new(1, 13), GotoKind::Definition).await.unwrap();
+    assert_eq!(defs.len(), 1, "{defs:?}");
+    assert_eq!((defs[0].path.to_path_buf(), defs[0].range.start.line), (std::path::PathBuf::from(&a_uri), 3));
+
+    let diagnostics = |source: &'static str, uri: String| {
+        let events = events.clone();
+        move || {
+            let items = events.lock().iter().rev().find_map(|e| match e {
+                IdeEvent::Diagnostics { path, source: s, items } if s == source && path.0 == Path::new(&uri) => {
+                    Some(items.clone())
+                }
+                _ => None,
+            });
+            async move { items.filter(|items| !items.is_empty()) }
+        }
+    };
+    // `float` is not assignable to `int`; the magic on line 0 is no error.
+    let typed =
+        retry("basedpyright cell diagnostics", Duration::from_secs(30), diagnostics("basedpyright", b_uri)).await;
+    assert!(typed.iter().any(|d| d.range.start.line == 1), "{typed:?}");
+    assert!(typed.iter().all(|d| d.range.start.line != 0), "{typed:?}");
+    // F401: `sys` is unused.
+    let linted = retry("ruff cell diagnostics", Duration::from_secs(30), diagnostics("ruff", a_uri)).await;
+    assert!(linted.iter().any(|d| d.code.as_deref() == Some("F401") && d.range.start.line == 1), "{linted:?}");
+
+    // An edit reaches both servers: the error is fixed.
+    let fixed = "%matplotlib inline\nsize: float = area(2)\nos.path";
+    mgr.sync_notebook(&path, &LanguageId::new("python"), &[cell("first", first), cell("second", fixed)]);
+    retry("diagnostics after the fix", Duration::from_secs(30), || {
+        let uri = cell_uri(&path, "second");
+        let clear = events.lock().iter().rev().find_map(|e| match e {
+            IdeEvent::Diagnostics { path, source, items } if source == "basedpyright" && path.0 == Path::new(&uri) => {
+                Some(items.is_empty())
+            }
+            _ => None,
+        });
+        async move { (clear == Some(true)).then_some(()) }
+    })
+    .await;
+    mgr.close_notebook(&path);
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }

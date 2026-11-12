@@ -34,10 +34,12 @@ import {
 } from "@/workbench/contributions";
 import {
   FILES_DRAG,
+  REMOTE_FILES_DRAG,
   HighlightedText,
   Icon,
   Popup,
   dragSession,
+  registerDropTarget,
   Tree,
   acquirePopup,
   fileIconName,
@@ -69,16 +71,9 @@ import {
   cancelEditing,
   checkEditingName,
   commitEditing,
-  copyPaths,
-  copySelection,
-  deleteSelection,
   dropPaths,
   importExternal,
   openFile,
-  openMoveDialog,
-  openRenameDialog,
-  openSelection,
-  paste,
   refreshOsClipboard,
   targetFolder,
   undoLastFileOperation,
@@ -729,6 +724,24 @@ export function ProjectView() {
     };
   }, []);
 
+  // Files and folders dragged from Remote Host download into the folder they are dropped on.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    return registerDropTarget(el, {
+      accepts: (type) => type === REMOTE_FILES_DRAG,
+      over: (_, x, y) => setDropTarget(folderAt(el, x, y)?.key ?? null),
+      leave: () => setDropTarget(null),
+      drop: (data, x, y) => {
+        setDropTarget(null);
+        const target = folderAt(el, x, y);
+        if (!target) return;
+        const { server, paths } = JSON.parse(data.payload) as { server: string; paths: string[] };
+        void executeAction("deployment.downloadRemoteInto", { server, paths, target: target.path });
+      },
+    });
+  }, []);
+
   // Reconcile external files and expired Copy/Cut state when returning from another app.
   useEffect(() => {
     void refreshOsClipboard();
@@ -737,43 +750,20 @@ export function ProjectView() {
     return () => window.removeEventListener("focus", refresh);
   }, []);
 
+  // The keymap owns the action keys (Delete, Shift+F6, F6, F4, copy/paste, New …):
+  // the global dispatcher runs them from the presets in the capture phase, so a
+  // cleared binding stays cleared and a rebound one follows the user (issue #2801).
+  // Only the strokes no preset binds stay local: ⌘Z undoing the last file
+  // refactoring (`project.undoMove` is unbound) and ⌃Enter's New popup on macOS.
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).tagName === "INPUT") return;
     const stroke = strokeOf(e.nativeEvent);
     let handled = true;
     switch (stroke && macStroke(stroke)) {
-      case "Delete":
-      case "Meta+Backspace":
-        void deleteSelection();
-        break;
-      case "Shift+F6":
-        void openRenameDialog();
-        break;
-      case "F6":
-        openMoveDialog();
-        break;
       case "Meta+Z":
         handled = undoLastFileOperation();
         break;
-      case "Meta+C":
-        copySelection(false);
-        break;
-      case "Meta+X":
-        copySelection(true);
-        break;
-      case "Meta+V":
-        void paste();
-        break;
-      case "Shift+Meta+C":
-        void copyPaths("absolute");
-        break;
-      case "F4":
-      case "Meta+Down":
-        openSelection();
-        break;
-      case "Meta+N":
       case "Ctrl+Enter":
-      case "Alt+Insert":
         showNewPopup();
         break;
       default:

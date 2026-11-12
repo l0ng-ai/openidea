@@ -356,6 +356,13 @@ pub trait HostApi: Send + Sync {
     }
     /// Roots of the open projects.
     fn projects(&self) -> Vec<std::path::PathBuf>;
+    /// Roots of the workspace members attached to the project at `root` (a
+    /// project window group's folders, as the editor and LSP resolve them).
+    /// Empty for a plain project.
+    fn member_roots(&self, root: &Path) -> Vec<std::path::PathBuf> {
+        let _ = root;
+        Vec::new()
+    }
     /// The most specific open project containing a document (including a new file).
     fn project_of(&self, path: &Path) -> Option<std::path::PathBuf> {
         if !path.is_absolute() {
@@ -425,6 +432,27 @@ pub trait HostApi: Send + Sync {
     fn publish_diagnostics(&self, path: &Path, items: Vec<ide_core::Diagnostic>) -> Result<(), HostError>;
     /// Performs `request` (its host is granted), filling in secret placeholders.
     fn fetch(&self, request: HttpRequest, cancel: &CancellationToken) -> Result<HttpResponse, HostError>;
+
+    fn websocket_connect(
+        &self,
+        root: &Path,
+        request: crate::WebSocketRequest,
+        timeout: Duration,
+    ) -> Result<u64, HostError> {
+        let _ = (root, request, timeout);
+        Err(HostError::Invalid("background WebSockets are unavailable on this host".into()))
+    }
+    fn websocket_send(&self, connection: u64, bytes: Vec<u8>) -> Result<(), HostError> {
+        let _ = (connection, bytes);
+        Err(HostError::Invalid("background WebSockets are unavailable on this host".into()))
+    }
+    fn websocket_drain(&self, connection: u64, limit: usize) -> Result<crate::WebSocketBatch, HostError> {
+        let _ = (connection, limit);
+        Err(HostError::Invalid("background WebSockets are unavailable on this host".into()))
+    }
+    fn websocket_close(&self, connection: u64) {
+        let _ = connection;
+    }
     /// The `net:ask` answer for a request to HTTPS host `host` of this plugin
     /// (`subject`): `Some(true)` allowed and remembered (a host the user
     /// already allowed connects without asking again, also in the background),
@@ -599,6 +627,10 @@ impl PluginEngine {
         let mut linker = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(|e| e.to_string())?;
         bindings::Plugin::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s).map_err(|e| e.to_string())?;
+        // Cranelift caches fuel in a JIT local across `new_epoch` yields and only
+        // reloads `VMStoreContext::fuel_consumed` across host import calls, so
+        // `tasks` host calls refill `StoreContextMut::set_fuel` directly on return.
+        bind_task_fuel_refill(&mut linker).map_err(|e| e.to_string())?;
 
         let weak = engine.weak();
         std::thread::Builder::new()
@@ -792,7 +824,7 @@ impl CallCancel {
         self.token.lock().clone()
     }
 
-    fn is_set(&self) -> bool {
+    pub(crate) fn is_set(&self) -> bool {
         self.flag.load(Ordering::Acquire)
     }
 
@@ -828,6 +860,10 @@ pub struct StoreData {
     /// Tasks begun by the running call and not ended yet.
     pub(crate) open_tasks: Vec<u64>,
     pub(crate) last_report: Option<Instant>,
+    /// One-shot unwind window after a blocking host I/O call times out.
+    pub(crate) host_io_grace_used: bool,
+    /// Fuel budget active for the running call (scales when a background task begins).
+    pub(crate) active_fuel: u64,
 }
 
 impl WasiView for StoreData {
@@ -980,6 +1016,14 @@ const MAX_BATCH: usize = 1000;
 
 fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
     match e {
+        WorkbenchEvent::DocumentChanged(value) => wit_events::Event::Other(wit_types::Extension {
+            kind: "document-changed".into(),
+            data: serde_json::to_string(&value).expect("document change serializes"),
+        }),
+        WorkbenchEvent::WebsocketReady(value) => wit_events::Event::Other(wit_types::Extension {
+            kind: "websocket-ready".into(),
+            data: serde_json::to_string(&value).expect("WebSocket ready event serializes"),
+        }),
         WorkbenchEvent::RunExited(value) => wit_events::Event::Other(wit_types::Extension {
             kind: "run-exited".into(),
             data: serde_json::to_string(&value).unwrap(),
@@ -1064,6 +1108,8 @@ impl Runtime {
             action_prompt_client: None,
             open_tasks: Vec::new(),
             last_report: None,
+            host_io_grace_used: false,
+            active_fuel: setup.limits.fuel,
         };
         let mut store = Store::new(&engine.engine, data);
         store.limiter(|d| &mut d.store_limits);
@@ -1080,7 +1126,7 @@ impl Runtime {
         });
         arm(&mut store, &setup.limits, setup.limits.timeout).map_err(|e| e.to_string())?;
         let api_hint = |e: wasmtime::Error| {
-            let msg = describe_trap(&e, &setup.limits);
+            let msg = describe_trap(&e, &setup.limits, setup.limits.fuel);
             if msg.contains("openidea:plugin/") { link_error(&msg) } else { msg }
         };
         let pre = engine.linker.instantiate_pre(component).map_err(api_hint)?;
@@ -1865,10 +1911,11 @@ impl Runtime {
         if !stderr.trim().is_empty() {
             tracing::info!(plugin = %data.plugin_id, "stderr: {}", stderr.trim_end());
         }
+        let active_fuel = data.active_fuel;
         match result {
             Ok(r) => Ok(r),
             Err(e) => {
-                let mut msg = describe_trap(&e, &self.limits);
+                let mut msg = describe_trap(&e, &self.limits, active_fuel);
                 // Typically the panic message: "panicked at src/lib.rs:1:2:\nboom".
                 let detail: Vec<&str> =
                     stderr.lines().filter(|l| !l.trim().is_empty() && !l.starts_with("note:")).collect();
@@ -1920,15 +1967,55 @@ fn arm(store: &mut Store<StoreData>, limits: &Limits, timeout: Duration) -> wasm
     data.deadline = now + timeout;
     data.timeout = timeout;
     data.last_report = None;
+    data.host_io_grace_used = false;
+    data.active_fuel = limits.fuel;
     data.cancel.reset();
     // The callback above runs every tick and decides.
     store.set_epoch_deadline(1);
     Ok(())
 }
 
-fn describe_trap(e: &wasmtime::Error, limits: &Limits) -> String {
+fn bind_task_fuel_refill(linker: &mut Linker<StoreData>) -> wasmtime::Result<()> {
+    use crate::wit_host::TaskRes;
+    use crate::wit_host::bindings::openidea::plugin::tasks::{Host, HostTask};
+    use wasmtime::StoreContextMut;
+    use wasmtime::component::Resource;
+
+    linker.allow_shadowing(true);
+    let tasks_iface = format!("openidea:plugin/tasks@{}", ide_extension::ENGINE_VERSION);
+    let mut inst = linker.instance(&tasks_iface)?;
+    inst.func_wrap("begin", |mut caller: StoreContextMut<'_, StoreData>, (title, cancellable): (String, bool)| {
+        let task = Host::begin(caller.data_mut(), title, cancellable)?;
+        let fuel = caller.data().active_fuel;
+        caller.set_fuel(fuel)?;
+        Ok((task,))
+    })?;
+    inst.func_wrap(
+        "[method]task.report",
+        |mut caller: StoreContextMut<'_, StoreData>,
+         (this, done, total, message): (Resource<TaskRes>, u32, Option<u32>, Option<String>)| {
+            HostTask::report(caller.data_mut(), this, done, total, message)?;
+            let fuel = caller.data().active_fuel;
+            caller.set_fuel(fuel)?;
+            Ok(())
+        },
+    )?;
+    inst.func_wrap(
+        "[method]task.is-cancelled",
+        |mut caller: StoreContextMut<'_, StoreData>, (this,): (Resource<TaskRes>,)| {
+            let cancelled = HostTask::is_cancelled(caller.data_mut(), this)?;
+            let fuel = caller.data().active_fuel;
+            caller.set_fuel(fuel)?;
+            Ok((cancelled,))
+        },
+    )?;
+    linker.allow_shadowing(false);
+    Ok(())
+}
+
+fn describe_trap(e: &wasmtime::Error, limits: &Limits, active_fuel: u64) -> String {
     match e.downcast_ref::<wasmtime::Trap>() {
-        Some(wasmtime::Trap::OutOfFuel) => format!("exceeded its CPU budget ({} fuel per call)", limits.fuel),
+        Some(wasmtime::Trap::OutOfFuel) => format!("exceeded its CPU budget ({active_fuel} fuel per call)"),
         Some(wasmtime::Trap::Interrupt) => CANCELLED.to_owned(),
         Some(wasmtime::Trap::UnreachableCodeReached) => "crashed (panic / unreachable)".to_owned(),
         Some(trap) => format!("trapped: {trap}"),

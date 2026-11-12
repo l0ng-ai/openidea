@@ -276,6 +276,9 @@ pub enum PluginEvent {
     /// The kinds of workbench events plugins want changed: re-fetch
     /// `plugin_event_kinds` (the UI reports only those).
     SubscriptionsChanged,
+    /// A background WebSocket has messages ready for its owning plugin.
+    #[serde(rename_all = "camelCase")]
+    WebsocketReady { plugin_id: String, connection: u64 },
     #[serde(rename_all = "camelCase")]
     ThemeChanged { theme: Option<ActiveTheme> },
     /// A plugin needs capabilities the user has not granted yet (first use
@@ -322,6 +325,10 @@ pub enum PluginEvent {
     /// The call that asked gave up (cancelled, or its plugin stopped): close the prompt.
     #[serde(rename_all = "camelCase")]
     PromptClosed { prompt_id: String },
+    /// A command of this window's prompting plugin was run from another window and refused
+    /// while the plugin waits for the answer here: bring this window to the front.
+    #[serde(rename_all = "camelCase")]
+    PromptWaiting { plugin_id: String },
     /// Bring the tool window of the plugin's view `view` to the front.
     #[serde(rename_all = "camelCase")]
     RevealView { plugin_id: String, view: String },

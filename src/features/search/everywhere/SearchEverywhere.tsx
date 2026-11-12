@@ -313,6 +313,8 @@ function SearchEverywhereDialog() {
         return;
       }
       case "file":
+        if (row.folder) return closeThen(() => void executeAction("navigate.selectInProjectView", row.path));
+        return closeThen(() => void openResult(row, { side }));
       case "symbol":
       case "text":
         return closeThen(() => void openResult(row, { side }));
@@ -448,7 +450,8 @@ function SearchEverywhereDialog() {
   useEffect(() => {
     if (nothingInProject) widenSearchEverywhere(searchQuery);
   }, [nothingInProject, searchQuery]);
-  const canSplit = activeRow?.kind === "file" || activeRow?.kind === "symbol" || activeRow?.kind === "text";
+  const canSplit =
+    (activeRow?.kind === "file" && !activeRow.folder) || activeRow?.kind === "symbol" || activeRow?.kind === "text";
   const onTabKey = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
     e.preventDefault();
@@ -708,7 +711,7 @@ function describe(row: SeRow | undefined): string {
 function previewOf(row: SeRow | undefined): { path: string; line: number; highlights: PreviewHighlight[] } | null {
   switch (row?.kind) {
     case "file":
-      return { path: row.path, line: row.line ?? 0, highlights: [] };
+      return row.folder ? null : { path: row.path, line: row.line ?? 0, highlights: [] };
     case "symbol":
       return {
         path: row.path,
@@ -780,7 +783,16 @@ function ResultRow({
         </span>
       );
     case "file":
-      return <FileRow path={row.path} name={row.name} dir={row.dir} indices={row.nameIndices} line={row.line} />;
+      return (
+        <FileRow
+          path={row.path}
+          name={row.name}
+          dir={row.dir}
+          indices={row.nameIndices}
+          line={row.line}
+          folder={row.folder}
+        />
+      );
     case "symbol":
       return (
         <>
@@ -911,18 +923,20 @@ function FileRow({
   dir,
   indices,
   line,
+  folder,
 }: {
   path: string;
   name: string;
   dir: string;
   indices: number[];
   line: number | null;
+  folder?: boolean;
 }) {
   const deco = useFileDecoration(path);
   const { icon } = useFilePresentation(path);
   return (
     <>
-      <Icon name={icon} size={16} className={styles.icon} />
+      <Icon name={folder ? "folder" : icon} size={16} className={styles.icon} />
       <span className={styles.main}>
         <span className={styles.name} style={deco.color ? { color: deco.color } : undefined}>
           <HighlightedText text={name} indices={indices} tone="strong" />
@@ -935,8 +949,9 @@ function FileRow({
 }
 
 type NavigationRow = Extract<SeRow, { kind: "file" | "symbol" | "text" }>;
+/** A row that opens in an editor (a directory selects in the Project view instead). */
 function isNavigationRow(row: SeRow): row is NavigationRow {
-  return row.kind === "file" || row.kind === "symbol" || row.kind === "text";
+  return (row.kind === "file" && !row.folder) || row.kind === "symbol" || row.kind === "text";
 }
 function openResult(row: NavigationRow, options: Parameters<typeof openLocation>[2]): Promise<void> {
   if (row.kind === "file")

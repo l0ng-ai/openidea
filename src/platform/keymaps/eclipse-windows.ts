@@ -23,6 +23,7 @@ export const eclipseWindows: Record<string, string[]> = {
   "code.commentBlock": ["Shift+Ctrl+/"],
   "build.buildProject": ["Ctrl+F9", "Ctrl+B"],
   "project.copyElement": [],
+  "project.delete": ["Delete"],
   "run.debug": ["Shift+Alt+D", "Shift+F9"],
   "project.open": ["F12", "Shift+Ctrl+E"],
   "debug.jumpToSource": ["F12", "Shift+Ctrl+E"],

@@ -7,6 +7,7 @@ use crate::types::*;
 #[cfg(target_arch = "wasm32")]
 mod imp {
     //! Calls through the `openidea:plugin@1.0.0` world.
+    use super::{WebSocketBatch, WebSocketRequest};
     use crate::bindings::openidea::plugin as wit;
     use crate::types::*;
 
@@ -254,6 +255,23 @@ mod imp {
 
     pub fn project_write(p: &ProjectRes, path: &str, text: &str) -> Result<(), Error> {
         p.write_file(path, text).map_err(error)
+    }
+
+    pub fn project_document(p: &ProjectRes, path: &str) -> Result<Document, Error> {
+        wit::editor::document_at(p, path).map(|d| Document { version: d.version, text: d.text }).map_err(error)
+    }
+
+    pub fn project_apply_document_edits(
+        p: &ProjectRes,
+        path: &str,
+        version: u64,
+        edits: &[TextEdit],
+    ) -> Result<u64, Error> {
+        let edits: Vec<wit::types::TextEdit> = edits
+            .iter()
+            .map(|edit| wit::types::TextEdit { range: range_out(edit.range), text: edit.text.clone() })
+            .collect();
+        wit::editor::apply_edits_at(p, path, version, &edits).map_err(error)
     }
 
     pub fn invocation_project(i: InvocationRef<'_>) -> Option<ProjectRes> {
@@ -650,6 +668,40 @@ mod imp {
             .map_err(error)
     }
 
+    pub type WebSocketRes = wit::net::Websocket;
+
+    pub fn websocket_connect(project: &ProjectRes, req: &WebSocketRequest) -> Result<WebSocketRes, Error> {
+        let request = wit::net::WebsocketRequest {
+            url: req.url.clone(),
+            headers: req
+                .headers
+                .iter()
+                .map(|(name, value)| wit::net::Header { name: name.clone(), value: value.clone() })
+                .collect(),
+            subprotocol: req.subprotocol.clone(),
+        };
+        wit::net::websocket_connect(project, &request).map_err(error)
+    }
+
+    pub fn websocket_id(connection: &WebSocketRes) -> u64 {
+        connection.id()
+    }
+
+    pub fn websocket_send(connection: &WebSocketRes, bytes: &[u8]) -> Result<(), Error> {
+        connection.send(bytes).map_err(error)
+    }
+
+    pub fn websocket_drain(connection: &WebSocketRes, limit: u32) -> Result<WebSocketBatch, Error> {
+        connection
+            .drain(limit)
+            .map(|batch| WebSocketBatch { messages: batch.messages, closed: batch.closed })
+            .map_err(error)
+    }
+
+    pub fn websocket_close(connection: &WebSocketRes) -> Result<(), Error> {
+        connection.close().map_err(error)
+    }
+
     pub fn secret_set(name: &str, value: &str) -> Result<(), Error> {
         wit::secrets::set(name, value).map_err(error)
     }
@@ -1044,6 +1096,18 @@ impl Project {
         imp::project_read_bytes(&self.inner, path)
     }
 
+    /// Versioned text of an explicitly named open document. This works from
+    /// background events and requires `project.read` plus `editor.read`.
+    pub fn document(&self, path: &str) -> Result<Document, Error> {
+        imp::project_document(&self.inner, path)
+    }
+
+    /// Applies versioned edits to an explicitly named open document. Returns
+    /// [`Error::Stale`] without writing when its version changed.
+    pub fn apply_document_edits(&self, path: &str, version: u64, edits: &[TextEdit]) -> Result<u64, Error> {
+        imp::project_apply_document_edits(&self.inner, path, version, edits)
+    }
+
     /// Replaces the text of a file inside the project (absolute or
     /// root-relative), or creates it with the directories it needs, at most
     /// 16 MiB: in one step, keeping the file's encoding and BOM (a new file is
@@ -1136,6 +1200,51 @@ pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error
 /// `secrets`). `Error::Cancelled` when the call was superseded.
 pub fn fetch(request: &HttpRequest) -> Result<HttpResponse, Error> {
     imp::fetch(request)
+}
+
+/// A host-owned background WebSocket. Dropping it closes the connection.
+pub struct WebSocket {
+    inner: imp::WebSocketRes,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WebSocketRequest {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub subprotocol: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WebSocketBatch {
+    pub messages: Vec<Vec<u8>>,
+    pub closed: bool,
+}
+
+impl WebSocket {
+    pub fn connect(project: &Project, request: &WebSocketRequest) -> Result<Self, Error> {
+        imp::websocket_connect(&project.inner, request).map(|inner| Self { inner })
+    }
+    pub fn id(&self) -> u64 {
+        imp::websocket_id(&self.inner)
+    }
+    pub fn send(&self, bytes: &[u8]) -> Result<(), Error> {
+        imp::websocket_send(&self.inner, bytes)
+    }
+    pub fn drain(&self, limit: u32) -> Result<WebSocketBatch, Error> {
+        imp::websocket_drain(&self.inner, limit)
+    }
+    pub fn close(&self) -> Result<(), Error> {
+        imp::websocket_close(&self.inner)
+    }
+}
+
+impl Drop for WebSocket {
+    fn drop(&mut self) {
+        // The WIT resource also closes on its own drop. Calling close here
+        // keeps the native mock faithful to that lifecycle; host close is
+        // intentionally idempotent.
+        let _ = imp::websocket_close(&self.inner);
+    }
 }
 
 /// Whether the user stored secret `name` (declared under `[[contributes.secrets]]`).

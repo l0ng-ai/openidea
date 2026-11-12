@@ -20,6 +20,9 @@ vi.mock("@/platform/virtualDocs", async (importOriginal) => {
           title: "UnityEngine.MonoBehaviour.cs",
           description: "UnityEngine.CoreModule",
           decompiled: true,
+          encoding: "utf-8",
+          hasBom: false,
+          canReloadEncoding: false,
         };
       if (uri !== JDT && uri !== "file:///p/target/classes/Lib.class") throw new Error(`no contents for ${uri}`);
       return {
@@ -29,6 +32,9 @@ vi.mock("@/platform/virtualDocs", async (importOriginal) => {
         title: "Lib.class",
         description: "/m2/lib-1.0.jar",
         decompiled: true,
+        encoding: "utf-8",
+        hasBom: false,
+        canReloadEncoding: false,
       };
     }),
   };

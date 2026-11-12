@@ -5,13 +5,20 @@
  * start with, and how it is launched. Launch edits are staged until Apply; installs run in
  * the background and keep running after the page closes.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { AgentConfigOption, AgentProvider, AgentRegistry, RegistryAgent, RequestId } from "@/bindings";
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import type {
+  AgentConfigOption,
+  AgentProvider,
+  AgentRegistry,
+  CustomAgentInput,
+  RegistryAgent,
+  RequestId,
+} from "@/bindings";
 import { isCancelled, nextRequestId } from "@/platform/ipc";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import clsx from "clsx";
-import { Button, Icon, IconButton, Input, List, ProgressBar, SearchField, Select, Spinner, T } from "@/ui";
+import { Button, Dialog, Icon, IconButton, Input, List, ProgressBar, SearchField, Select, Spinner, T } from "@/ui";
 import { useSettingsForm } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
 import { providerIcon } from "./model";
@@ -135,6 +142,9 @@ export function AgentList({
   const [job, setJob] = useState<Job | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -247,6 +257,51 @@ export function AgentList({
       .finally(() => setJob(null));
   };
 
+  const removeCustom = async (agent: Agent) => {
+    if (
+      !(await confirm({
+        title: tx`Remove ${agent.name}`,
+        message: tx`Remove ${agent.name} and delete its agent file? Its tasks stay, but can't continue without it.`,
+        ok: tx("Remove"),
+      }))
+    )
+      return;
+    setAgentError(agent.id, null);
+    setRemoving(agent.id);
+    try {
+      await backend.removeCustom(agent.id);
+      changed();
+    } catch (e) {
+      setAgentError(agent.id, errorText(e));
+    } finally {
+      setRemoving(null);
+    }
+  };
+
+  const importAcpJson = async () => {
+    setImporting(true);
+    setNotice(null);
+    try {
+      const text = await backend.pickAcpJson();
+      if (text == null) return;
+      const outcomes = await backend.importAcp(text);
+      const saved = outcomes.filter((o) => o.saved);
+      const skipped = outcomes.filter((o) => !o.saved);
+      const names = saved.map((o) => o.name).join(", ");
+      const parts = [saved.length ? tx`Imported ${names} from acp.json.` : tx("Imported nothing from acp.json.")];
+      if (skipped.length) {
+        const details = skipped.map((o) => `${o.name} (${o.reason})`).join(", ");
+        parts.push(tx`Skipped ${details}.`);
+      }
+      setNotice(parts.join(" "));
+      changed();
+    } catch (e) {
+      setNotice(errorText(e));
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const remove = async (agent: Agent) => {
     if (
       !(await confirm({
@@ -319,6 +374,19 @@ export function AgentList({
             </p>
           )
         )}
+        <div className={styles.customActions}>
+          <Button size="small" variant="secondary" disabled={busy} onClick={() => setAdding(true)}>
+            <T>Add Custom Agent…</T>
+          </Button>
+          <Button size="small" variant="secondary" disabled={busy || importing} onClick={() => void importAcpJson()}>
+            {importing ? <T>Importing…</T> : <T>Import acp.json</T>}
+          </Button>
+        </div>
+        {notice && (
+          <p className={styles.customNotice} role="status">
+            {notice}
+          </p>
+        )}
         {(!registry || registry.warning) && (
           <div className={styles.registryState}>
             {registryError ? (
@@ -351,7 +419,18 @@ export function AgentList({
           error={errors[agent.id] ?? null}
           onInstall={() => void install(agent)}
           onRemove={() => void remove(agent)}
+          onRemoveCustom={() => void removeCustom(agent)}
           onCancel={(request) => registryBackend.cancel(request)}
+        />
+      )}
+      {adding && (
+        <CustomAgentModal
+          backend={backend}
+          onClose={() => setAdding(false)}
+          onSaved={() => {
+            setAdding(false);
+            changed();
+          }}
         />
       )}
     </div>
@@ -409,6 +488,7 @@ function Details({
   error,
   onInstall,
   onRemove,
+  onRemoveCustom,
   onCancel,
 }: {
   agent: Agent;
@@ -421,10 +501,12 @@ function Details({
   error: string | null;
   onInstall: () => void;
   onRemove: () => void;
+  onRemoveCustom: () => void;
   onCancel: (request: RequestId) => void;
 }) {
   const { provider, registry } = agent;
   const installed = provider?.source.kind === "registry" || (!provider && registry?.installed != null);
+  const isCustom = provider?.source.kind === "custom";
   const canInstall = registry?.distribution != null;
   const update =
     provider?.source.kind === "registry" ? provider.source.update : registry?.update ? registry.version : null;
@@ -481,6 +563,11 @@ function Details({
                   {removing ? "Removing…" : "Remove"}
                 </Button>
               )}
+              {isCustom && (
+                <Button size="small" disabled={busy} onClick={onRemoveCustom}>
+                  {removing ? "Removing…" : "Remove"}
+                </Button>
+              )}
             </>
           )}
         </div>
@@ -521,6 +608,185 @@ function Details({
         </p>
       )}
     </section>
+  );
+}
+
+/** Suggests an agent-file id for a display name (`"My Agent!"` → `"my-agent"`). */
+function slugifyId(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** Splits arguments on whitespace, honoring single and double quotes. */
+function parseArgs(text: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  for (const ch of text.trim()) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (/\s/.test(ch)) {
+      if (current) {
+        out.push(current);
+        current = "";
+      }
+    } else {
+      current += ch;
+    }
+  }
+  if (current) out.push(current);
+  return out;
+}
+
+function CustomAgentModal({
+  backend,
+  onClose,
+  onSaved,
+}: {
+  backend: CommandsBackend;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const uid = useId();
+  const [name, setName] = useState("");
+  const [id, setId] = useState("");
+  const [idTouched, setIdTouched] = useState(false);
+  const [command, setCommand] = useState("");
+  const [argsText, setArgsText] = useState("");
+  const [envText, setEnvText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const changeName = (next: string) => {
+    setName(next);
+    if (!idTouched) setId(slugifyId(next));
+  };
+  const canSave = name.trim().length > 0 && id.trim().length > 0 && command.trim().length > 0 && !saving;
+
+  const browse = async () => {
+    try {
+      const trimmed = name.trim();
+      const title = trimmed ? tx`Select ${trimmed}` : tx("Select executable");
+      const path = await backend.chooseExecutable(title, command);
+      if (path) setCommand(path);
+      setError(null);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+
+  const save = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const input: CustomAgentInput = {
+        id: id.trim(),
+        name: name.trim(),
+        command: command.trim(),
+        args: parseArgs(argsText),
+        env: parseEnv(envText),
+      };
+      await backend.saveCustom(input);
+      onSaved();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={tx("Add Custom Agent")}
+      width={560}
+      buttons={[
+        { label: "Add", role: "default", disabled: !canSave, onClick: () => void save() },
+        { label: "Cancel", role: "cancel", onClick: onClose },
+      ]}
+    >
+      <div className={`${styles.form} ${styles.dialogForm}`}>
+        {error && (
+          <p className={styles.error} role="alert" style={{ gridColumn: "1 / -1" }}>
+            {error}
+          </p>
+        )}
+        <Row label={<T>Name</T>} htmlFor={`${uid}-name`}>
+          <div className={styles.field}>
+            <Input
+              id={`${uid}-name`}
+              data-autofocus
+              value={name}
+              placeholder={tx("My agent")}
+              onChange={(e) => changeName(e.target.value)}
+            />
+          </div>
+        </Row>
+        <Row
+          label={<T>ID</T>}
+          htmlFor={`${uid}-id`}
+          hint={<T>Letters, digits, dashes and underscores only; names the agent file.</T>}
+        >
+          <div className={styles.field}>
+            <Input
+              id={`${uid}-id`}
+              mono
+              value={id}
+              placeholder="my-agent"
+              onChange={(e) => {
+                setId(e.target.value);
+                setIdTouched(true);
+              }}
+            />
+          </div>
+        </Row>
+        <Row label={<T>Command</T>} htmlFor={`${uid}-command`}>
+          <div className={styles.field}>
+            <Input
+              id={`${uid}-command`}
+              mono
+              value={command}
+              placeholder={tx("/path/to/agent-acp")}
+              onChange={(e) => setCommand(e.target.value)}
+            />
+            <IconButton icon="folder-open" title="Browse…" disabled={saving} onClick={() => void browse()} />
+          </div>
+        </Row>
+        <Row
+          label={<T>Arguments</T>}
+          htmlFor={`${uid}-args`}
+          hint={<T>Separate arguments with spaces; quote ones containing spaces.</T>}
+        >
+          <div className={styles.field}>
+            <Input
+              id={`${uid}-args`}
+              mono
+              value={argsText}
+              placeholder="--acp"
+              onChange={(e) => setArgsText(e.target.value)}
+            />
+          </div>
+        </Row>
+        <Row label={<T>Environment variables</T>} htmlFor={`${uid}-env`}>
+          <div className={styles.field}>
+            <Input
+              id={`${uid}-env`}
+              mono
+              value={envText}
+              placeholder="NAME=value; OTHER=value"
+              onChange={(e) => setEnvText(e.target.value)}
+            />
+          </div>
+        </Row>
+      </div>
+    </Dialog>
   );
 }
 

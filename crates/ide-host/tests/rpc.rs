@@ -330,6 +330,7 @@ async fn local_deployment_runs_on_the_project_host() {
         "remote_delete",
         "remote_mkdir",
         "remote_rename",
+        "remote_download_into",
         "db_sources",
         "db_save_sources",
         "db_set_password",

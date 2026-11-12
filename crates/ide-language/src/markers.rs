@@ -5,10 +5,11 @@
 use std::path::{Path, PathBuf};
 
 /// The outermost ancestor of `file` containing a root marker, within
-/// `project_root` (any ancestor without one: loose files).
+/// `project_root` (any ancestor without one: loose files). A directory counts
+/// as its own ancestor: a module folder is served like the files in it.
 pub fn marked_root(project_root: Option<&Path>, file: &Path, markers: &[String]) -> Option<PathBuf> {
     let mut best = None;
-    for dir in file.ancestors().skip(1) {
+    for dir in file.ancestors().skip(usize::from(!file.is_dir())) {
         if project_root.is_some_and(|root| !dir.starts_with(root)) {
             break;
         }
@@ -110,6 +111,20 @@ mod tests {
         std::fs::create_dir_all(root.join("apps/web/node_modules/@angular/core")).unwrap();
         assert_eq!(marked_root(Some(root), &file, &markers), Some(root.join("apps/web")));
         assert_eq!(marked_root(Some(root), &root.join("apps/api/main.ts"), &markers), None);
+    }
+
+    #[test]
+    fn a_marked_directory_is_its_own_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let module = root.join("first");
+        std::fs::create_dir_all(module.join("src")).unwrap();
+        std::fs::write(module.join("pom.xml"), "").unwrap();
+        let markers = vec!["pom.xml".to_string()];
+        assert_eq!(marked_root(Some(root), &module.join("src/Main.java"), &markers), Some(module.clone()));
+        assert_eq!(marked_root(Some(root), &module, &markers), Some(module.clone()));
+        assert_eq!(marked_root(Some(root), &module.join("src"), &markers), Some(module));
+        assert_eq!(marked_root(Some(root), &root.join("second"), &markers), None);
     }
 
     #[test]

@@ -9,14 +9,15 @@ import {
   SCHEMES,
   schemeCss,
 } from "./colorScheme";
-import { deleteScheme, exportIcls, importScheme, parseIcls } from "./icls";
+import { deleteScheme, exportIcls, importScheme, parseIcls, SchemeParseError } from "./icls";
 import { validateSettings } from "@/features/settings/model/schema";
 import { colorSchemeItems } from "@/workbench/quickSwitch";
 import { useProject } from "./project";
 import type { Settings } from "./ipc";
 import { isClientSetting } from "./clientSettings";
 
-const fixture = (name: string) => readFileSync(`src/platform/__fixtures__/colorSchemes/${name}.icls`, "utf8");
+const fixture = (name: string, ext = "icls") =>
+  readFileSync(`src/platform/__fixtures__/colorSchemes/${name}.${ext}`, "utf8");
 beforeAll(() => _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8")));
 
 describe(".icls schemes", () => {
@@ -177,18 +178,66 @@ describe(".icls schemes", () => {
     expect([sign.applied, sign.skipped]).toEqual([1, 2]);
   });
 
+  it.each(["", "<scheme", '<scheme name="A"><attributes></scheme>', "<nope>", '<html name="x"/>'])(
+    "rejects malformed or non-scheme XML without mutating schemes: %s",
+    (xml) => {
+      const customs = importScheme({}, parseIcls(fixture("forest")).scheme).customs;
+      const before = structuredClone(customs);
+      expect(() => parseIcls(xml)).toThrow(SchemeParseError);
+      expect(customs).toEqual(before);
+    },
+  );
+
+  it("names what is wrong with a rejected file", () => {
+    expect(() => parseIcls("<nope>")).toThrow(/not valid XML/);
+    try {
+      parseIcls('<html name="x"/>');
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(SchemeParseError);
+      expect((error as Error).message).toMatch(/<scheme> element/);
+    }
+  });
+
+  it("imports a real-world .xml scheme from Material Theme UI (#2714)", () => {
+    const { scheme, applied, skipped } = parseIcls(fixture("material-darker", "xml"));
+    expect(scheme.name).toBe("Material Darker");
+    expect(scheme.parent).toBe("dark");
+    expect(scheme.attributes.keyword).toEqual({ foreground: "#c792ea", bold: false, italic: true });
+    expect(scheme.attributes.string?.foreground).toBe("#c3e88d");
+    expect(scheme.attributes.lineComment).toEqual({ foreground: "#616161", bold: false, italic: true });
+    expect(scheme.attributes.text).toEqual({ foreground: "#eeffff", background: "#212121" });
+    expect(scheme.attributes.caret?.foreground).toBe("#ffcc00");
+    expect(scheme.attributes.gutter?.background).toBe("#212121");
+    expect(scheme.attributes.lineNumber?.foreground).toBe("#424242");
+    expect(scheme.attributes.selection?.background).toBe("#353535");
+    expect(scheme.attributes.consoleBackground?.background).toBe("#212121");
+    expect([applied, skipped]).toEqual([13, 2]);
+  });
+
   it.each([
-    "",
-    "<scheme",
-    '<scheme name="A"><attributes></scheme>',
-    "<scheme/>",
-    '<html name="x"/>',
-    '<!DOCTYPE scheme [<!ENTITY a "red">]><scheme name="x"/>',
-  ])("rejects malformed XML without mutating schemes: %s", (xml) => {
-    const customs = importScheme({}, parseIcls(fixture("forest")).scheme).customs;
-    const before = structuredClone(customs);
-    expect(() => parseIcls(xml)).toThrow("Invalid .icls color scheme");
-    expect(customs).toEqual(before);
+    ["bom-utf8", "Bom Light"],
+    ["declared-encoding", "Café Solar"],
+  ] as const)("accepts the BOM and encoding-declaration variants of a scheme: %s", (name, schemeName) => {
+    const { scheme } = parseIcls(fixture(name));
+    expect(scheme.name).toBe(schemeName);
+    expect(scheme.attributes.keyword?.foreground).toBe(name === "bom-utf8" ? "#1122ff" : "#cc7832");
+    // Byte-order and encoding marks do not change what a scheme says.
+    expect(parseIcls(`\uFEFF${fixture(name)}`).scheme).toEqual(scheme);
+  });
+
+  it("unwraps a scheme element from its settings export and names a scheme after its file (#2714)", () => {
+    const { scheme } = parseIcls(fixture("one-dark-wrapped", "xml"));
+    expect(scheme.name).toBe("Imported scheme");
+    expect(scheme.attributes.keyword).toEqual({ foreground: "#c678dd", bold: true, italic: false });
+    expect(scheme.attributes.text).toEqual({ foreground: "#abb2bf", background: "#282c34" });
+    expect(parseIcls(fixture("one-dark-wrapped", "xml"), "One Dark").scheme.name).toBe("One Dark");
+  });
+
+  it("accepts a DOCTYPE prolog, which XML allows and old exporters emit (#2714)", () => {
+    const { scheme } = parseIcls('<!DOCTYPE scheme SYSTEM "scheme.dtd"><scheme name="D"><colors/></scheme>');
+    expect(scheme.name).toBe("D");
+    expect(() => parseIcls('<!DOCTYPE scheme [<!ENTITY a "red">]><scheme name="x"/>')).not.toThrow();
   });
 
   it.each([
@@ -285,7 +334,9 @@ describe(".icls schemes", () => {
       <option name="PY.BUILTIN_NAME"><value><option name="FOREGROUND" value="abcd"/></value></option>
     </attributes></scheme>`;
     const attrs = parseIcls(xml).scheme.attributes;
-    expect(attrs.keyword).toEqual({ foreground: "#112233", bold: false, italic: false, effect: "none" });
+    // PY.KEYWORD styles Python only now; the shared keyword keeps DEFAULT_KEYWORD's value.
+    expect(attrs.pyKeyword).toEqual({ foreground: "#112233", bold: false, italic: false, effect: "none" });
+    expect(attrs.keyword).toEqual({ foreground: "#ff0000", bold: true, italic: false });
     expect(attrs.pyNestedFunction?.foreground).toBe("#223344");
     expect(attrs.pyDocstring?.foreground).toBe("#334455");
     expect(attrs.pyDocstring?.effect).toBe("none");

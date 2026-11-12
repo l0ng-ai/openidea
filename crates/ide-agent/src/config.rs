@@ -107,7 +107,15 @@ pub(crate) fn parse_options(options: &Value) -> Vec<AgentConfigOption> {
             Some(AgentConfigOption {
                 name: str_of(o, "name").unwrap_or_else(|| id.clone()),
                 description: str_of(o, "description"),
-                category: str_of(o, "category").or_else(|| matches!(id.as_str(), "model" | "mode").then(|| id.clone())),
+                category: str_of(o, "category").or_else(|| {
+                    matches!(id.as_str(), "model" | "mode")
+                        .then(|| id.clone())
+                        .or_else(|| {
+                            matches!(id.as_str(), "effort" | "reasoning_effort" | "thinking" | "reasoning")
+                                .then(|| "thought_level".into())
+                        })
+                        .or_else(|| matches!(id.as_str(), "fast").then(|| "model_config".into()))
+                }),
                 current: str_of(o, "currentValue"),
                 values,
                 via: AgentConfigVia::Option,
@@ -331,6 +339,21 @@ mod tests {
                       "availableModes": [{"id": "https://agentclientprotocol.com/protocol/session-modes#yolo"}]}
         }));
         assert!(bypass_approvals(&url_mode));
+    }
+
+    #[test]
+    fn effort_and_fast_categories_are_inferred_from_ids() {
+        let c = options_of(&json!({
+            "configOptions": [
+                {"id": "effort", "type": "select", "currentValue": "high",
+                 "options": [{"value": "low"}, {"value": "high"}]},
+                {"id": "fast", "type": "select", "currentValue": "false",
+                 "options": [{"value": "false", "name": "Off"}, {"value": "true", "name": "On"}]}
+            ]
+        }));
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].category.as_deref(), Some("thought_level"));
+        assert_eq!(c[1].category.as_deref(), Some("model_config"));
     }
 
     #[test]

@@ -18,7 +18,7 @@ impl PluginWorkspace for OfflineWorkspace {
     fn document(&self, _: &Path) -> Option<(u64, String)> {
         None
     }
-    fn apply_edits(&self, _: &Path, _: u64, _: &[ide_core::TextEdit]) -> Result<u64, HostError> {
+    fn apply_edits(&self, _: &Path, _: u64, _: &[ide_core::TextEdit], _: bool) -> Result<u64, HostError> {
         Err(HostError::Denied("no project in ABI test".into()))
     }
     fn trusted(&self, _: &Path) -> bool {
@@ -86,14 +86,14 @@ fn released_gitai_publishes_labels_and_markers_for_an_open_file() {
         fn document(&self, path: &Path) -> Option<(u64, String)> {
             (path == self.file).then(|| (1, self.text.clone()))
         }
-        fn apply_edits(&self, _: &Path, _: u64, _: &[ide_core::TextEdit]) -> Result<u64, HostError> {
+        fn apply_edits(&self, _: &Path, _: u64, _: &[ide_core::TextEdit], _: bool) -> Result<u64, HostError> {
             Err(HostError::Denied("read-only ABI workspace".into()))
         }
         fn trusted(&self, _: &Path) -> bool {
             true
         }
-        fn project_of(&self, path: &str) -> Option<PathBuf> {
-            Path::new(path).starts_with(&self.root).then(|| self.root.clone())
+        fn project_of(&self, _window: &str) -> Option<PathBuf> {
+            Some(self.root.clone())
         }
         fn publish_diagnostics(&self, _: &str, _: &Path, _: Vec<ide_core::Diagnostic>) -> Result<(), HostError> {
             Ok(())
@@ -161,7 +161,8 @@ fn released_gitai_publishes_labels_and_markers_for_an_open_file() {
     host.flush_events_at(Instant::now() + Duration::from_secs(5));
     assert!(host.wait_events(Duration::from_secs(20)), "event batch did not finish");
 
-    assert_eq!(host.info_of(&info.id).unwrap().status, PluginStatus::Active);
+    let live = host.info_of(&info.id).unwrap();
+    assert_eq!(live.status, PluginStatus::Active, "{live:?}");
     let sets = host.decoration_sets();
     eprintln!("decoration sets: {sets:#?}");
     let canonical = dunce::canonicalize(&file).unwrap();

@@ -85,6 +85,8 @@ export interface ValidSettings extends WorkflowSettings {
     fileTypes: FileTypeAssociations;
     /** Override File Type: file → language id (project scope). */
     fileTypeOverrides: Record<string, string>;
+    /** Files opened in associated applications: file-name patterns. */
+    associatedApplications: string[];
   };
   keymapOverrides: Record<string, string[]>;
   customKeymaps: Record<string, CustomKeymapSettings>;
@@ -104,7 +106,7 @@ export interface ValidSettings extends WorkflowSettings {
   /** Tools › Agents › Chat: the meters in an agent task's header. */
   agents: Required<AgentSettings>;
   /** Agents › IDE MCP Server (global). */
-  mcpServer: { enabled: boolean };
+  mcpServer: { enabled: boolean; runWithoutConfirmation: boolean };
 }
 
 /** One `languageServers.<name>` entry; every field optional, like in settings.toml. */
@@ -166,6 +168,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     localHistoryMaxMb: 512,
     fileTypes: {},
     fileTypeOverrides: {},
+    associatedApplications: ["*.xlsx", "*.xls", "*.docx", "*.doc", "*.pptx", "*.ppt", "*.pdf"],
   },
   keymapOverrides: {},
   customKeymaps: {},
@@ -193,7 +196,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     defaults: {},
     mcpServers: {},
   },
-  mcpServer: { enabled: false },
+  mcpServer: { enabled: false, runWithoutConfirmation: false },
   ...DEFAULT_WORKFLOW,
 };
 
@@ -325,6 +328,9 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       localHistoryMaxMb: num(f.localHistoryMaxMb, d.files.localHistoryMaxMb, LIMITS.localHistoryMaxMb, true),
       fileTypes: validateFileTypes(f.fileTypes),
       fileTypeOverrides: validateFileTypeOverrides(f.fileTypeOverrides),
+      associatedApplications: Array.isArray(f.associatedApplications)
+        ? stringList(f.associatedApplications)
+        : [...d.files.associatedApplications],
     },
     keymapOverrides: overrides,
     customKeymaps,
@@ -359,7 +365,10 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       defaults: agentDefaults(agents.defaults),
       mcpServers: agentMcpServers(agents.mcpServers),
     },
-    mcpServer: { enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled) },
+    mcpServer: {
+      enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled),
+      runWithoutConfirmation: bool(obj(root.mcpServer).runWithoutConfirmation, d.mcpServer.runWithoutConfirmation),
+    },
     ...validateWorkflow(root),
   };
 }

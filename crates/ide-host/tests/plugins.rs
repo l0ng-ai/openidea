@@ -8,6 +8,7 @@
 use ide_core::error::ErrorKind;
 use ide_core::ipc_path::to_ipc;
 use ide_host::plugins::*;
+use ide_host::{Host, HostConfig};
 use ide_plugin::{EditorContext, HostError, Invocation, Limits};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
@@ -153,9 +154,20 @@ impl PluginWorkspace for TestWorkspace {
         let snap = self.documents.snapshot(self.documents.by_path(path)?).ok()?;
         Some((u64::from(snap.version), snap.text))
     }
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[ide_core::TextEdit]) -> Result<u64, HostError> {
+    fn apply_edits(
+        &self,
+        path: &Path,
+        version: u64,
+        edits: &[ide_core::TextEdit],
+        background: bool,
+    ) -> Result<u64, HostError> {
         let doc = self.documents.by_path(path).ok_or_else(|| HostError::NotFound("not open".into()))?;
-        match self.documents.apply_edits_at(doc, version as u32, edits) {
+        let applied = if background {
+            self.documents.apply_background_edits_at(doc, version as u32, edits)
+        } else {
+            self.documents.apply_edits_at(doc, version as u32, edits)
+        };
+        match applied {
             Ok(Some(v)) => Ok(u64::from(v)),
             Ok(None) => Err(HostError::Stale),
             Err(e) => Err(HostError::Failed(e.message)),
@@ -454,10 +466,10 @@ fn edits_are_refused_when_the_document_changed() {
         range: ide_core::Range::new(ide_core::Pos::new(0, 0), ide_core::Pos::new(0, 3)),
         new_text: "ONE".into(),
     };
-    assert_eq!(f.workspace.apply_edits(&editor.path, doc.0, std::slice::from_ref(&edit)), Err(HostError::Stale));
+    assert_eq!(f.workspace.apply_edits(&editor.path, doc.0, std::slice::from_ref(&edit), false), Err(HostError::Stale));
     assert_eq!(f.workspace.text("src/notes.txt"), "typed one two three\nfour five\n");
     let now = f.workspace.document(&editor.path).unwrap().0;
-    assert_eq!(f.workspace.apply_edits(&editor.path, now, &[edit]), Ok(now + 1));
+    assert_eq!(f.workspace.apply_edits(&editor.path, now, &[edit], false), Ok(now + 1));
     assert_eq!(f.workspace.text("src/notes.txt"), "ONEed one two three\nfour five\n");
     let _ = (
         std::any::type_name::<Runtime>(),
@@ -810,6 +822,28 @@ fn a_reporting_task_outlives_its_background_budget() {
 
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+#[test]
+fn background_tasks_scale_and_renew_cpu_fuel_budget() {
+    let f = fixture(Limits {
+        fuel: 3_500,
+        timeout: Duration::from_millis(500),
+        background: Duration::from_millis(5_000),
+        ..Limits::default()
+    });
+    f.install(&misbehave_pkg());
+    if f.host.set_capability("misbehave", "process:git", true).is_err() {
+        return;
+    }
+    // Warm up activation in its own call so `patient` starts with a fresh 3_500-fuel budget.
+    assert_eq!(f.run("misbehave", "echo", Some("warm")).unwrap().as_deref(), Some("warm"));
+
+    let out = f.run("misbehave", "patient", None).expect("background task succeeds").expect("output");
+    assert_eq!(out, "still here");
+
+    let err = f.run("misbehave", "spin", None).unwrap_err();
+    assert!(err.contains("exceeded its CPU budget (3500 fuel per call)"), "{err}");
 }
 
 #[test]
@@ -4162,6 +4196,35 @@ fn code_action_resolution_prompts_in_the_editor_window_under_the_command_budget(
 }
 
 #[test]
+fn a_command_from_another_window_is_refused_while_the_plugin_waits_for_an_answer() {
+    let (f, doc) = interactive_actions_fixture();
+    let action = f
+        .host
+        .provide_code_actions(&doc, ide_core::Range::default())
+        .into_iter()
+        .find(|(_, action)| action.data.as_deref() == Some("pick"))
+        .unwrap()
+        .1;
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+        let (id, _) = action_prompt(&f);
+        // Queued behind the open prompt it would not run until the prompt is answered.
+        let other = Invocation { client: Some("other-window".into()), ..Default::default() };
+        let err = f.host.run_command("misbehave", "anything", None, other).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert!(err.message.contains("waiting for your answer in another window"), "{}", err.message);
+        let events = f.take_events();
+        assert!(
+            events.iter().any(|(client, e)| client.as_deref() == Some("editor-window")
+                && matches!(e, PluginEvent::PromptWaiting { plugin_id } if plugin_id == "misbehave")),
+            "the prompting window is brought forward: {events:?}"
+        );
+        assert!(f.host.answer_prompt(&id, Some(vec!["b".into()])));
+        running.join().unwrap().unwrap();
+    });
+}
+
+#[test]
 fn code_action_prompts_dismiss_cancel_and_close_without_edits_or_hanging() {
     for (how, kind) in [
         ("dismiss", "pick"),
@@ -4782,8 +4845,14 @@ impl PluginWorkspace for EndpointWorkspace {
     fn project_of(&self, _: &str) -> Option<PathBuf> {
         self.roots.lock().first().cloned()
     }
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[ide_core::TextEdit]) -> Result<u64, HostError> {
-        self.inner.apply_edits(path, version, edits)
+    fn apply_edits(
+        &self,
+        path: &Path,
+        version: u64,
+        edits: &[ide_core::TextEdit],
+        background: bool,
+    ) -> Result<u64, HostError> {
+        self.inner.apply_edits(path, version, edits, background)
     }
     fn publish_diagnostics(
         &self,
@@ -6367,4 +6436,379 @@ fn markdown_decorations_publish_a_hover_card_and_clear() {
     );
     f.run("decorations", "clear", None).unwrap();
     assert!(f.host.decoration_sets()["decorations"].is_empty());
+}
+
+// ─── Project window groups ────────────────────────────────────────────────────
+// A group's container root holds only `.openidea` metadata; the files live in
+// the member projects. The plugin surface reaches them like the editor and the
+// language servers do.
+
+/// A real host over a project window group with the members `alpha` (holding a
+/// nested `inner` member, for deepest resolution) and `beta`.
+struct GroupFixture {
+    base: PathBuf,
+    host: Arc<Host>,
+    plugins: Arc<PluginHost>,
+    root: PathBuf,
+    alpha: PathBuf,
+    inner: PathBuf,
+    beta: PathBuf,
+    _runtime: tokio::runtime::Runtime,
+    _tmp: tempfile::TempDir,
+}
+
+impl GroupFixture {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let (root, alpha, beta) = (base.join("workspace"), base.join("alpha"), base.join("beta"));
+        let inner = alpha.join("inner");
+        for dir in [alpha.join("src"), inner.join("mappers"), beta.join("src")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        ide_workspace::workspace::Workspace::save(
+            &root,
+            "Group",
+            vec![alpha.clone(), inner.clone(), beta.clone()],
+            true,
+        )
+        .unwrap();
+        std::fs::write(alpha.join("src/needle.php"), "alpha needle\n").unwrap();
+        std::fs::write(inner.join("mappers/route.idx"), "def route:item\nref route:item\n").unwrap();
+        std::fs::write(beta.join("src/Notes.txt"), "beta needle\n").unwrap();
+        std::fs::write(base.join("secret.txt"), "top secret").unwrap();
+
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let host = Arc::new(Host::new(HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("data"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+            owner: |w| w,
+            runtime: runtime.handle().clone(),
+            project_environment: false,
+        }));
+        for dir in [&root, &alpha, &beta] {
+            host.trust.decide(dir, true, false).unwrap();
+        }
+        {
+            let _guard = runtime.enter();
+            let project = host.open_project("main", &root).unwrap();
+            assert!(project.index.wait_idle(Duration::from_secs(30)));
+        }
+        let plugins = Arc::new(
+            PluginHost::new(base.join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap(),
+        );
+        plugins.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(&host)))));
+        plugins.set_project_policy(Arc::new(|_| true));
+        Self { base, host, plugins, root, alpha, inner, beta, _runtime: runtime, _tmp: tmp }
+    }
+
+    /// Runs an installed plugin's `command` with `root` (default: the group
+    /// container) as the invoking project.
+    fn run(&self, id: &str, command: &str, arg: Option<&str>, root: Option<&Path>) -> Result<Option<String>, String> {
+        let inv = Invocation {
+            client: Some("main".into()),
+            workspace_root: Some(dunce::canonicalize(root.unwrap_or(&self.root)).unwrap()),
+            ..Default::default()
+        };
+        self.plugins.run_command(id, command, arg, inv).map_err(|e| e.message)
+    }
+
+    /// Installs `dir` with everything granted.
+    fn install(&self, dir: &Path) {
+        self.plugins.install_from_dir(dir, &Consent::all()).unwrap();
+    }
+
+    /// The roots the plugin surface lists, sorted and deduplicated.
+    fn listed_roots(&self) -> Vec<PathBuf> {
+        HostWorkspace(Arc::downgrade(&self.host)).projects()
+    }
+}
+
+impl Drop for GroupFixture {
+    fn drop(&mut self) {
+        self.host.close_project("main");
+    }
+}
+
+/// `projects()` lists the members with their own roots, and the member roots of
+/// the container are exactly the workspace manifest's.
+#[test]
+fn projects_list_the_workspace_members() {
+    let f = GroupFixture::new();
+    assert_eq!(
+        f.listed_roots(),
+        [f.alpha.clone(), f.inner.clone(), f.beta.clone(), f.root.clone()]
+            .iter()
+            .map(|p| dunce::canonicalize(p).unwrap())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        HostWorkspace(Arc::downgrade(&f.host)).member_roots(&f.root),
+        [f.alpha.clone(), f.inner.clone(), f.beta.clone()]
+            .iter()
+            .map(|p| dunce::canonicalize(p).unwrap())
+            .collect::<Vec<_>>()
+    );
+    // A member has no members of its own.
+    assert!(HostWorkspace(Arc::downgrade(&f.host)).member_roots(&f.alpha).is_empty());
+}
+
+/// `project-of(path)` resolves to the deepest member project containing the
+/// path, where the container and every member appear.
+#[test]
+fn project_of_resolves_to_the_deepest_workspace_member() {
+    let f = GroupFixture::new();
+    f.install(&sample("path-events"));
+    let project =
+        |path: &Path| f.run("test.path-events", "project", Some(path.to_str().unwrap()), None).unwrap().unwrap();
+    assert_eq!(project(&f.alpha.join("src/needle.php")), to_ipc(&f.alpha));
+    // The nested member, not its containing member.
+    assert_eq!(project(&f.inner.join("mappers/route.idx")), to_ipc(&f.inner));
+    assert_eq!(project(&f.beta.join("src/Notes.txt")), to_ipc(&f.beta));
+    // The container itself is still a project.
+    assert_eq!(project(&f.root), to_ipc(&f.root));
+    // And a path in no project resolves to none.
+    assert!(
+        f.run("test.path-events", "project", Some(f.base.join("secret.txt").to_str().unwrap()), None)
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// `project.read` and `project.write` reach the member files through the
+/// group's project, and never leave the group's roots.
+#[test]
+fn project_reads_and_writes_reach_workspace_members() {
+    let f = GroupFixture::new();
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-group-writer", "project.write"));
+    let notes = f.beta.join("src/Notes.txt");
+    assert_eq!(f.run("misbehave", "read", Some(notes.to_str().unwrap()), None).unwrap().unwrap(), "beta needle\n");
+    // Writing into a member creates its missing parent directories.
+    let fresh = f.beta.join("src/generated/mapper.xml");
+    f.run("misbehave", "projwrite", Some(fresh.to_str().unwrap()), None).unwrap();
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "written inside the project\n");
+    // `ctx.project()` is still the group's project.
+    assert_eq!(f.run("misbehave", "root", None, None).unwrap().unwrap(), to_ipc(&f.root));
+    // What is outside every root of the group stays refused, unwritten.
+    let outside = f.base.join("secret.txt");
+    let err = f.run("misbehave", "read", Some(outside.to_str().unwrap()), None).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    let err = f.run("misbehave", "projwrite", Some(outside.to_str().unwrap()), None).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "top secret");
+    // A member-scoped project reads its own files only: its root is the member.
+    assert_eq!(f.run("misbehave", "read", Some("src/Notes.txt"), Some(&f.beta)).unwrap().unwrap(), "beta needle\n");
+}
+
+/// Find in Files covers the members: search from the container finds member
+/// matches, a member-scoped project sees only its own.
+#[test]
+fn project_search_reaches_workspace_members() {
+    let f = GroupFixture::new();
+    f.install(&sample("api14"));
+    let search = |root: &Path, needle: &str| f.run("api14", "search-text", Some(needle), Some(root)).unwrap().unwrap();
+    // From the container: matches in the members come through.
+    let all = search(&f.root, "needle");
+    assert!(all.contains("needle.php"), "{all}");
+    assert!(all.contains("Notes.txt"), "{all}");
+    // The container holds no sources: `.openidea` metadata never matches.
+    assert!(!all.contains("workspace.json"), "{all}");
+    // From a member: only that member's matches.
+    let own = search(&f.beta, "needle");
+    assert!(own.contains("Notes.txt"), "{own}");
+    assert!(!own.contains("needle.php"), "{own}");
+    // What is outside every root is never found.
+    assert!(!search(&f.root, "top secret").contains("secret.txt"));
+}
+
+/// The document-indexer covers member files: discovery offers them, indexing
+/// one publishes its navigation, and files outside the group stay out.
+#[test]
+fn document_indexer_covers_workspace_members() {
+    let f = GroupFixture::new();
+    f.install(&sample("indexer"));
+    let mapping = f.inner.join("mappers/route.idx");
+    // Discovery: the member file is in the window's project scope.
+    let files = f
+        ._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, f.plugins.clone(), "main"))
+        .unwrap();
+    assert!(files.paths.iter().any(|p| p.0 == mapping), "{:?}", files.paths);
+    // Indexing the member file through the window's project publishes it: the
+    // open document is indexed at its version, like an editor click resolves.
+    let project = f.host.project("main").unwrap();
+    let doc = project.documents.open(&mapping).unwrap();
+    f._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_index(
+            &f.host,
+            f.plugins.clone(),
+            "main",
+            vec![mapping.clone()],
+            ide_core::RequestId::next(),
+        ))
+        .unwrap();
+    let result = f
+        .plugins
+        .navigation_at(&f.root, &mapping, doc.version, ide_core::Pos::new(1, 5), Some("main"), |_| None)
+        .unwrap();
+    assert_eq!(result.targets[0].path.0, mapping);
+    // A file outside the group is never offered, and indexing skips it.
+    let outside = f.base.join("escape.idx");
+    std::fs::write(&outside, "def outside:item\n").unwrap();
+    let files = f
+        ._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, f.plugins.clone(), "main"))
+        .unwrap();
+    assert!(!files.paths.iter().any(|p| p.0 == outside), "{:?}", files.paths);
+    f._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_index(
+            &f.host,
+            f.plugins.clone(),
+            "main",
+            vec![outside.clone()],
+            ide_core::RequestId::next(),
+        ))
+        .unwrap();
+    assert!(f.plugins.navigation_at(&f.root, &outside, 1, ide_core::Pos::new(0, 4), Some("main"), |_| None).is_none());
+}
+
+/// Advisory #4: `project.write` (Medium) must not reach VCS metadata such as `.git/hooks` or
+/// `.git/config`, which git runs as code; the `.git` is inside the project root, so root
+/// confinement alone does not stop it.
+#[test]
+fn project_write_cannot_reach_git_metadata() {
+    let f = fixture(Limits::default());
+    let init = std::process::Command::new("git").current_dir(&f.project).args(["init", "-q"]).output().unwrap();
+    assert!(init.status.success(), "git init");
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-project-writer", "project.write"));
+    // The grant works for an ordinary path, so each refusal below is the `.git` rule and nothing else.
+    assert_eq!(f.run("misbehave", "projwrite", Some("src/fresh.txt")).unwrap(), None);
+    for rel in [".git/hooks/pre-commit", ".git/config", ".GIT/config", "src/../.git/config"] {
+        let before = std::fs::read(f.project.join(rel)).ok();
+        let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
+        assert!(err.contains("git's own files"), "{rel}: {err}");
+        assert_eq!(std::fs::read(f.project.join(rel)).ok(), before, "{rel}");
+    }
+}
+
+/// In a linked worktree or a submodule `.git` is a file naming the real git folder. Replacing it,
+/// under any name that opens it, would point git at a folder of the plugin's choosing or leave the
+/// checkout without a repository.
+#[test]
+fn project_write_cannot_replace_the_git_file_of_a_linked_worktree() {
+    let f = fixture(Limits::default());
+    let pointer = f.project.join(".git");
+    let gitdir = "gitdir: /elsewhere/.git/worktrees/project\n";
+    std::fs::write(&pointer, gitdir).unwrap();
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-project-writer", "project.write"));
+    assert_eq!(f.run("misbehave", "projwrite", Some("src/fresh.txt")).unwrap(), None);
+    let mut spellings = vec![".git", ".GIT", ".git.", ".git ", ".git::$DATA"];
+    // Windows opens a file by its short name too, on a volume that keeps them.
+    if cfg!(windows) && f.project.join("GIT~1").exists() {
+        spellings.extend(["GIT~1", "git~1", "GIT~1.", "GIT~1 ", "GIT~1::$DATA"]);
+    } else {
+        eprintln!("short name not tried: this volume keeps none");
+    }
+    for rel in spellings {
+        let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
+        assert!(err.contains("git's own files"), "{rel}: {err}");
+        assert_eq!(std::fs::read_to_string(&pointer).unwrap(), gitdir, "{rel}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn process_timeout_returns_guest_error_without_disabling_plugin() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture(Limits {
+        timeout: Duration::from_millis(120),
+        max_failures: 3,
+        restart_backoff: Duration::ZERO,
+        ..Limits::default()
+    });
+    let package = f._tmp.path().join("api14-slow-proc");
+    copy_dir(&sample("api14"), &package);
+    let manifest = package.join("plugin.toml");
+    let text =
+        std::fs::read_to_string(&manifest).unwrap().replace("optional = [", "optional = [\"process:api14-tool\", ");
+    std::fs::write(manifest, text).unwrap();
+    f.install(&package);
+
+    let slow = f._tmp.path().join("slow-tool");
+    std::fs::write(&slow, "#!/bin/sh\nsleep 5\n").unwrap();
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let slow = slow.canonicalize().unwrap();
+    f.host.choose_program("api14", "process:api14-tool", Some(&f.project), Some(&slow)).unwrap();
+
+    // Even past `max_failures` (3), external subprocess timeouts unwind as guest errors
+    // instead of poisoning the Wasm instance and disabling the plugin for the session.
+    for _ in 0..4 {
+        let err = f.run("api14", "process-run", None).unwrap_err();
+        assert!(err.contains("api14-tool timed out"), "{err}");
+    }
+    let info = f.host.info_of("api14").unwrap();
+    assert_eq!(info.status, PluginStatus::Active);
+    assert_eq!(info.stats.crashes, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn process_stdout_accepts_large_payloads_and_reports_overflow_explicitly() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture(Limits { timeout: Duration::from_secs(10), ..Limits::default() });
+    let package = f._tmp.path().join("api14-large-proc");
+    copy_dir(&sample("api14"), &package);
+    let manifest = package.join("plugin.toml");
+    let text =
+        std::fs::read_to_string(&manifest).unwrap().replace("optional = [", "optional = [\"process:api14-tool\", ");
+    std::fs::write(manifest, text).unwrap();
+    f.install(&package);
+
+    let medium_bytes = 5 * 1024 * 1024;
+    let medium = f._tmp.path().join("medium-tool");
+    std::fs::write(&medium, "#!/bin/sh\ndd if=/dev/zero bs=1048576 count=5 2>/dev/null | tr '\\0' 'x'\n").unwrap();
+    std::fs::set_permissions(&medium, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let medium = medium.canonicalize().unwrap();
+    f.host.choose_program("api14", "process:api14-tool", Some(&f.project), Some(&medium)).unwrap();
+    let out = f.run("api14", "process-run", None).unwrap().unwrap();
+    assert_eq!(out.len(), medium_bytes);
+
+    let huge = f._tmp.path().join("huge-tool");
+    std::fs::write(&huge, "#!/bin/sh\ndd if=/dev/zero bs=1048576 count=17 2>/dev/null | tr '\\0' 'x'\n").unwrap();
+    std::fs::set_permissions(&huge, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let huge = huge.canonicalize().unwrap();
+    f.host.choose_program("api14", "process:api14-tool", Some(&f.project), Some(&huge)).unwrap();
+    let err = f.run("api14", "process-run", None).unwrap_err();
+    assert!(err.contains("stdout exceeded 16 MiB limit"), "{err}");
+    assert_eq!(f.host.info_of("api14").unwrap().stats.crashes, 0);
+}
+
+/// A link already in the project is written through, so it is judged by where it points.
+#[cfg(unix)]
+#[test]
+fn project_write_judges_a_link_by_its_target() {
+    let f = fixture(Limits::default());
+    let config = f.project.join(".git").join("config");
+    std::fs::create_dir(f.project.join(".git")).unwrap();
+    std::fs::write(&config, "[core]\n").unwrap();
+    let secret = f._tmp.path().join("secret.txt");
+    std::os::unix::fs::symlink(&config, f.project.join("alias")).unwrap();
+    std::os::unix::fs::symlink(&secret, f.project.join("escape")).unwrap();
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-project-writer", "project.write"));
+
+    // A folder that is not there, in front of the link, does not keep it from being followed.
+    for rel in ["alias", "missing/../alias"] {
+        let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
+        assert!(err.contains("git's own files"), "{rel}: {err}");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "[core]\n", "{rel}");
+    }
+    for rel in ["escape", "missing/../escape"] {
+        let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
+        assert!(err.contains("outside the project root"), "{rel}: {err}");
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "top secret", "{rel}");
+    }
 }
