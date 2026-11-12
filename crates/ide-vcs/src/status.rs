@@ -201,8 +201,16 @@ fn gix_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
 }
 
 /// `git status --porcelain=v2`: what git lists, unreadable directories skipped.
+/// In Restricted Mode git compares content without the repository's clean/process
+/// filters and doesn't ask submodules for their own status (which runs their config).
 fn cli_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
-    let out = crate::cli::run(r.root(), &["status", "--porcelain=v2", "-z", "--untracked-files=all"], None)?;
+    let overrides = crate::cli::filter_overrides(r.root(), &ide_core::CancellationToken::new())?;
+    let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
+    args.extend(["status", "--porcelain=v2", "-z", "--untracked-files=all"]);
+    if !crate::execution_allowed() {
+        args.push("--ignore-submodules=dirty");
+    }
+    let out = crate::cli::run(r.root(), &args, None)?;
     Ok(parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout), ignored))
 }
 
@@ -392,5 +400,42 @@ mod tests {
         assert_eq!(from_git, show(gix_status(&repo, &ignored).unwrap()));
         assert!(from_git.0.iter().any(|l| l.starts_with("renamed with space.txt: Some(Renamed)")), "{from_git:?}");
         assert_eq!(from_git.1, ["conflict.txt"]);
+    }
+
+    /// git answers status when gitoxide can't read a directory; in Restricted Mode that run
+    /// must not execute the repository's filters.
+    #[cfg(unix)]
+    #[test]
+    fn restricted_status_fallback_does_not_run_repository_filters() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        git(dir, &["init", "-q"]);
+        git(dir, &["config", "user.name", "Test User"]);
+        git(dir, &["config", "user.email", "test@example.com"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.txt"), "same\n").unwrap();
+        commit_all(dir, "base");
+        let marker = dir.join(".git/executed");
+        let script = dir.join(".git/marker.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display())).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(dir, &["config", "filter.marker.clean", script.to_str().unwrap()]);
+        std::fs::write(dir.join(".gitattributes"), "*.txt filter=marker\n").unwrap();
+        // Same size, new mtime: git has to read (and clean) the file to tell whether it changed.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(dir.join("a.txt"), "diff\n").unwrap();
+
+        let repo = Repo::discover(dir).unwrap().expect("repository found");
+        let entries = {
+            let _scope = crate::ExecutionScope::enter(false);
+            cli_status(&repo, &IgnoredNames::default()).unwrap()
+        };
+        assert!(entries.0.contains_key("a.txt"), "the change is still listed");
+        assert!(!marker.exists(), "Restricted Mode ran the repository's clean filter");
+        // Control: a trusted run does use the filter, so the fixture is live.
+        let _scope = crate::ExecutionScope::enter(true);
+        cli_status(&repo, &IgnoredNames::default()).unwrap();
+        assert!(marker.exists(), "control: git status did not run the filter");
     }
 }
