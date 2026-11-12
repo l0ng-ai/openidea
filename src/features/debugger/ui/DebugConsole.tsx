@@ -15,8 +15,7 @@ import { EmptyState, IconButton, showContextMenu, T, type MenuItem } from "@/ui"
 import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
-import { useProject } from "@/platform/project";
-import { resolveMonoFont } from "@/platform/fonts";
+import { useConsoleFont } from "@/platform/consoleFont";
 import { spanStyle } from "@/ui/ansi";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
 import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions, type FindResult } from "@/ui/consoleFind";
@@ -119,12 +118,9 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const [follow, setFollow] = useState(true);
   const stick = useRef(true);
   stick.current = follow;
-  // The debug console uses the same font as the Run console: Tools › Terminal ›
-  // Font (which can follow Editor › Font).
-  const terminalFont = useWorkflowSettings((s) => s.terminal);
-  const editorFont = useProject((s) => s.settings?.editor);
-  const consoleFont = resolveMonoFont(terminalFont, editorFont);
-  const rowHeight = Math.max(16, Math.round(consoleFont.size * 1.5));
+  // The debug console uses the same font as the Run console.
+  const consoleFont = useConsoleFont();
+  const { rowHeight } = consoleFont;
   const fontStyle = { fontFamily: consoleFont.family, fontSize: `${consoleFont.size}px` };
   // Settings › Console › Use soft wraps is the default; the toggle overrides it for this console.
   const defaultWrap = useWorkflowSettings((s) => s.console.softWrap);
@@ -155,7 +151,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   });
 
   // Wrapping changes every row's height; the end is pinned again below.
-  useLayoutEffect(() => virtualizer.measure?.(), [softWrap, virtualizer]);
+  useLayoutEffect(() => virtualizer.measure?.(), [softWrap, rowHeight, virtualizer]);
 
   useLayoutEffect(() => {
     const el = scroller.current;
