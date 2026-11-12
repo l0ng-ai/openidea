@@ -33,6 +33,8 @@ export interface PromptInputOptions {
   keepWhitespace?: boolean;
   /** A multi-line field: Enter adds a line, Cmd/Ctrl+Enter confirms. */
   multiline?: boolean;
+  /** A password field (characters hidden). */
+  secret?: boolean;
   /** Title, text and labels come from outside the IDE (a plugin) and are shown as written. */
   verbatim?: boolean;
 }
@@ -207,6 +209,7 @@ function PromptDialog({ options, done }: { options: PromptInputOptions; done: (v
           <Input
             data-autofocus
             aria-label={options.label ?? options.title}
+            type={options.secret ? "password" : undefined}
             value={value}
             placeholder={options.placeholder}
             disabled={pending}

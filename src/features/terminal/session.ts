@@ -842,7 +842,8 @@ export class TerminalSession {
     this.resizeObserver?.disconnect();
     this.host.removeEventListener("mousedown", this.onMiddleClick);
     this.host.removeEventListener("wheel", this.onWheelZoom, { capture: true });
-    if (this.ptyId !== null && !this.opts.command?.spawn) void commands.termKill(this.ptyId);
+    // A session with an owner (`onExit`) is ended by that owner.
+    if (this.ptyId !== null && !this.opts.command?.onExit) void commands.termKill(this.ptyId);
     this.ptyId = null;
     this.disposables.forEach((d) => d.dispose());
     this.term.dispose();

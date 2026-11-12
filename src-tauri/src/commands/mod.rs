@@ -677,7 +677,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         ssh::ssh_askpass_answer,
         ssh::git_credentials,
         ssh::git_credential_forget,
-        ssh::ssh_terminal_command,
+        ssh::ssh_open_terminal,
         deploy::deploy_coverage,
         deploy::deploy_upload,
         deploy::deploy_download,
