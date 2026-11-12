@@ -1368,12 +1368,20 @@ impl AgentManager {
         let restamped = blocking(move || {
             let changes = at.changes(&before)?;
             let rev = at.rev()?;
+            let sources = match rev.as_deref() {
+                Some(rev) => worktree::rename_sources(at.cwd(), rev)?,
+                None => Default::default(),
+            };
             let mut restamped = Vec::new();
             for change in changes.iter().filter(|c| rel_paths.as_ref().is_none_or(|p| p.contains(&c.rel_path))) {
-                worktree::restore(at.cwd(), rev.as_deref(), change, &before, saved.as_deref())?;
-                // Back to the user's own edits: not a change of the task any more.
-                if before.contains_key(&change.rel_path) {
-                    restamped.push((change.rel_path.clone(), worktree::stamp(&change.path.0)));
+                // A rename goes back to its old path too; the new one is taken away first, so a
+                // case-only rename on a case-insensitive disk ends as the old file.
+                for change in std::iter::once(change).chain(sources.get(&change.rel_path)) {
+                    worktree::restore(at.cwd(), rev.as_deref(), change, &before, saved.as_deref())?;
+                    // Back to the user's own edits: not a change of the task any more.
+                    if before.contains_key(&change.rel_path) {
+                        restamped.push((change.rel_path.clone(), worktree::stamp(&change.path.0)));
+                    }
                 }
             }
             Ok(restamped)
