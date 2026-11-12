@@ -282,7 +282,7 @@ export function KeymapPage() {
     const name = keymapName(selectedId, customs);
     const path = await save({
       title: tx("Export Keymap"),
-      defaultPath: `${name}.json`,
+      defaultPath: `${name.replace(/[/\\:*?"<>|]/g, "_")}.json`,
       filters: [{ name: tx("OpenIDEA Keymap"), extensions: ["json"] }],
     });
     if (!path) return;
@@ -293,7 +293,9 @@ export function KeymapPage() {
       draft,
     );
     try {
-      await call(commands.dbExportFile(path, json));
+      // The save dialog already confirmed replacing an existing file.
+      await call(commands.fsDelete(path)).catch(() => {});
+      await call(commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(json))));
       notifications().notify({
         level: "info",
         title: tx("Keymap exported"),
