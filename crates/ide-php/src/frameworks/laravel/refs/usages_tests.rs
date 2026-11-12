@@ -127,3 +127,60 @@ fn reports_undefined_views_in_blade_templates() {
         .collect();
     assert_eq!(views, [(0, "View 'posts.missing' is not defined")]);
 }
+
+/// The usages of a model method include the names Laravel calls it by: a
+/// local scope without its prefix, a relation read as a property; a
+/// factory's method or a column of the same name isn't one of them.
+#[test]
+fn finds_scopes_and_relations_by_the_names_laravel_uses() {
+    let mut project = Project::app();
+    let post = std::fs::read_to_string(project.root.join("app/Models/Post.php")).unwrap();
+    let code = |found: Vec<(String, u32, String, UsageKind)>| -> Vec<(String, String)> {
+        found.into_iter().filter(|u| u.3 == UsageKind::Code).map(|u| (u.0, u.2)).collect()
+    };
+
+    let found = code(project.references("app/Models/Post.php", &post.replace("scopePublished", "scopePub/*|*/lished")));
+    let files: Vec<&str> = found.iter().map(|(file, _)| file.as_str()).collect();
+    assert_eq!(
+        files,
+        [
+            "app/Http/Controllers/Api/PostController.php",
+            "app/Http/Controllers/HomeController.php",
+            "app/Http/Controllers/PostController.php",
+            "app/Services/FeedBuilder.php",
+        ],
+        "{found:?}"
+    );
+    assert!(found.iter().all(|(_, text)| text == "published"), "{found:?}");
+
+    let found =
+        code(project.references("app/Models/Post.php", &post.replace("function author()", "function aut/*|*/hor()")));
+    assert_eq!(found, [("resources/views/posts/show.blade.php".to_owned(), "author".to_owned())]);
+}
+
+/// Find usages of a PHP member reads Blade templates too (their compiled
+/// PHP, typed by the variables their controllers pass), so a rename edits
+/// the calls in templates.
+#[test]
+fn finds_and_renames_member_usages_in_templates() {
+    let mut project = Project::app();
+    let text = std::fs::read_to_string(project.root.join("app/Enums/PostStatus.php")).unwrap();
+    let source = text.replace("function label", "function la/*|*/bel");
+    let found: Vec<(String, u32, String)> = project
+        .references("app/Enums/PostStatus.php", &source)
+        .into_iter()
+        .filter(|usage| usage.3 == UsageKind::Code)
+        .map(|usage| (usage.0, usage.1, usage.2))
+        .collect();
+    // `badge.blade.php`'s `$status->label()` isn't: an anonymous
+    // component's `@props` are untyped.
+    assert_eq!(found, [("resources/views/posts/show.blade.php".to_owned(), 10, "label".to_owned())]);
+    let edits = project.rename("app/Enums/PostStatus.php", &source, "title");
+    assert_eq!(
+        edits,
+        [
+            ("app/Enums/PostStatus.php".to_owned(), 10, "label".to_owned()),
+            ("resources/views/posts/show.blade.php".to_owned(), 10, "label".to_owned()),
+        ]
+    );
+}

@@ -105,6 +105,14 @@ pub(crate) enum Sought {
         name: String,
         declaration: Range,
     },
+    /// Another name a model method is used by (Laravel): a local scope
+    /// called without its prefix, a relation or an accessor read as a
+    /// property. Found where the use resolves to the method `of`.
+    Alias {
+        kind: MemberKind,
+        name: String,
+        of: Box<Sought>,
+    },
 }
 
 impl Sought {
@@ -113,7 +121,9 @@ impl Sought {
     fn word(&self) -> Option<&str> {
         match self {
             Sought::Name { fqn, .. } => Some(short_name(fqn)),
-            Sought::Member { name, .. } | Sought::Parameter { name, .. } => Some(name.as_str()),
+            Sought::Member { name, .. } | Sought::Parameter { name, .. } | Sought::Alias { name, .. } => {
+                Some(name.as_str())
+            }
             Sought::Variable { .. } => None,
         }
     }
@@ -148,6 +158,8 @@ impl PhpEngine {
         if sought.is_empty() {
             return None;
         }
+        let mut sought = sought;
+        sought.extend(self.model_method_aliases(&sought));
         let found = self.find_usages(&sought, &path, &here, include_declaration, cancel);
         Some(found.and_then(|mut usages| {
             // A controller method's routes count as its usages, and a
@@ -170,6 +182,48 @@ impl PhpEngine {
             }
             Ok(usages)
         }))
+    }
+
+    /// The other names Eloquent model methods among `sought` are used by:
+    /// `published()` for the local scope `scopePublished`, the property
+    /// `author` for a relation `author()` (and `author_count`), `first_name`
+    /// for the accessor `getFirstNameAttribute` or `firstName(): Attribute`.
+    /// Only uses that resolve to the method count, so a guess that names
+    /// something else finds nothing.
+    fn model_method_aliases(&self, sought: &[Sought]) -> Vec<Sought> {
+        use crate::types::provider::laravel::snake;
+        const MODEL: &str = r"Illuminate\Database\Eloquent\Model";
+        let mut out = Vec::new();
+        for sought in sought {
+            let Sought::Member { kind: MemberKind::Method, name, declaring, .. } = sought else { continue };
+            if !self.class_model(declaring).is_some_and(|model| model.is_subclass_of(MODEL)) {
+                continue;
+            }
+            let mut aliases: Vec<(MemberKind, String)> = Vec::new();
+            let mut alias = |kind: MemberKind, alias: String| {
+                let known = aliases.iter().any(|(k, a)| *k == kind && *a == alias);
+                if !alias.is_empty() && !known && !(kind == MemberKind::Method && alias.eq_ignore_ascii_case(name)) {
+                    aliases.push((kind, alias.clone()));
+                    out.push(Sought::Alias { kind, name: alias, of: Box::new(sought.clone()) });
+                }
+            };
+            let lower = name.to_ascii_lowercase();
+            if lower.starts_with("scope") && name.len() > 5 {
+                let rest = &name[5..];
+                let mut chars = rest.chars();
+                let first = chars.next().map(|c| c.to_ascii_lowercase().to_string()).unwrap_or_default();
+                alias(MemberKind::Method, first + chars.as_str());
+                continue;
+            }
+            if lower.starts_with("get") && lower.ends_with("attribute") && name.len() > 12 {
+                alias(MemberKind::Property, snake(&name[3..name.len() - 9]));
+                continue;
+            }
+            alias(MemberKind::Property, name.clone());
+            alias(MemberKind::Property, snake(name));
+            alias(MemberKind::Property, format!("{}_count", snake(name)));
+        }
+        out
     }
 
     pub(super) fn sought(&self, subject: Subject, path: &Path, here: &FileSummary) -> Vec<Sought> {
@@ -371,6 +425,9 @@ impl PhpEngine {
         mode: ScanMode<'_>,
     ) -> Option<(Vec<Usage>, bool)> {
         let path = crate::index::key_path(file);
+        if crate::frameworks::laravel::views::is_blade(&path) {
+            return self.scan_template(file, &path, sought, mode);
+        }
         let open = documents.iter().find(|document| path_key(&document.path) == file);
         let parsed = match open {
             Some(document) => self.parse_open(document),
@@ -380,11 +437,51 @@ impl PhpEngine {
             }
         };
         let path = open.map_or(path, |document| document.path.clone());
+        let (found, taken) = self.scan_parsed(&parsed, file, sought, mode);
+        Some((found.into_iter().map(|(range, kind)| Usage { path: path.clone(), range, kind }).collect(), taken))
+    }
+
+    /// [`scan_file`](Self::scan_file) for a Blade template: the PHP it
+    /// compiles to (with the variables its controllers pass it), the
+    /// occurrences mapped back to the template. Read from disk when it is
+    /// open (its embedded document holds the compiled PHP).
+    fn scan_template(
+        &self,
+        file: &str,
+        path: &Path,
+        sought: &[Sought],
+        mode: ScanMode<'_>,
+    ) -> Option<(Vec<Usage>, bool)> {
+        let text = self.current_text(path)?.replace("\r\n", "\n");
+        let compiled = self.blade_compile(path, &text);
+        let parsed = ParsedFile::parse(file, compiled.php.as_str());
+        let (found, taken) = self.scan_parsed(&parsed, file, sought, mode);
+        let (compiled_lines, lines) = (parsed.line_index(), crate::syntax::LineIndex::new(&text));
+        let usages = found
+            .into_iter()
+            .filter_map(|(range, kind)| {
+                let start = compiled.blade_offset(compiled_lines.byte(range.start))?;
+                let end = compiled.blade_offset(compiled_lines.byte(range.end))?;
+                Some(Usage { path: path.to_path_buf(), range: lines.range(start, end), kind })
+            })
+            .collect();
+        Some((usages, taken))
+    }
+
+    /// The occurrences of `sought` in `parsed` (the file `file`), and
+    /// whether a probed variable name is taken.
+    fn scan_parsed(
+        &self,
+        parsed: &ParsedFile,
+        file: &str,
+        sought: &[Sought],
+        mode: ScanMode<'_>,
+    ) -> (Vec<(Range, UsageKind)>, bool) {
         let resolver = self.resolver();
-        let names = FileNames::resolve(&parsed);
-        let here = FileSummary::extract(&parsed);
-        let types = ExprTypes::new(&parsed, &names, &here, &resolver);
-        let lookup = Lookup { parsed: &parsed, names: &names, here: &here, resolver: &resolver, types: &types };
+        let names = FileNames::resolve(parsed);
+        let here = FileSummary::extract(parsed);
+        let types = ExprTypes::new(parsed, &names, &here, &resolver);
+        let lookup = Lookup { parsed, names: &names, here: &here, resolver: &resolver, types: &types };
         let probe = match mode {
             ScanMode::Probe(name) => Some(name),
             _ => None,
@@ -397,8 +494,7 @@ impl PhpEngine {
             scan.doc_comments();
         }
         ScanWalker.walk_program(parsed.program(), &mut scan);
-        let (found, taken) = (scan.found, scan.taken);
-        Some((found.into_iter().map(|(range, kind)| Usage { path: path.clone(), range, kind }).collect(), taken))
+        (scan.found, scan.taken)
     }
 }
 
@@ -546,6 +642,9 @@ impl<'a> Scan<'a, '_, '_> {
             (Sought::Parameter { owner, name }, Decl::Parameter { owner: found, name: found_name }) => {
                 name == found_name && self.decl_matches(owner, found)
             }
+            (Sought::Alias { of, .. }, Decl::Magic(magic)) => {
+                magic.method(self.lookup.resolver).is_some_and(|method| self.member_matches(of, &method))
+            }
             _ => false,
         }
     }
@@ -646,13 +745,15 @@ impl<'a> Scan<'a, '_, '_> {
     }
 
     fn members_sought(&self) -> bool {
-        self.sought.iter().any(|sought| matches!(sought, Sought::Member { .. }))
+        self.sought.iter().any(|sought| matches!(sought, Sought::Member { .. } | Sought::Alias { .. }))
     }
 
     fn member_name_sought(&self, kind: MemberKind, name: &[u8]) -> bool {
         let name = String::from_utf8_lossy(name);
         self.sought.iter().any(|sought| match sought {
-            Sought::Member { kind: k, name: n, .. } => *k == kind && same_member_name(kind, n, &name),
+            Sought::Member { kind: k, name: n, .. } | Sought::Alias { kind: k, name: n, .. } => {
+                *k == kind && same_member_name(kind, n, &name)
+            }
             _ => false,
         })
     }

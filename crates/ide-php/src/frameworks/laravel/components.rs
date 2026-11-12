@@ -340,9 +340,11 @@ impl PhpEngine {
         out
     }
 
-    /// The text of `path`: its open buffer, else the file on disk.
+    /// The text of `path`: its open buffer, else the file on disk. An open
+    /// template's embedded document holds its compiled PHP, not its text:
+    /// the file on disk is read.
     pub(crate) fn current_text(&self, path: &Path) -> Option<String> {
-        match self.open_document(path) {
+        match self.open_document(path).filter(|document| !document.embedded) {
             Some(document) => Some(document.text.to_string()),
             None => std::fs::read_to_string(path).ok(),
         }
