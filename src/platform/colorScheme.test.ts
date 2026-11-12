@@ -246,7 +246,7 @@ describe("color schemes", () => {
   });
 
   it("switches a chosen scheme of the other kind back to the theme's own when the theme turns light or dark", async () => {
-    expect(schemeAfterThemeChange("one-dark", "light")).toBe("theme-default");
+    expect(schemeAfterThemeChange("solarized-dark", "light")).toBe("theme-default");
     expect(schemeAfterThemeChange("solarized-light", "light")).toBeNull();
     expect(schemeAfterThemeChange("theme-default", "light")).toBeNull();
     const customs = { "custom-night": { name: "Night", parent: "dark" as const, attributes: {} } };
@@ -257,7 +257,7 @@ describe("color schemes", () => {
     root.dataset.theme = "dark";
     const previous = useProject.getState().settings;
     const scheme = () => useProject.getState().settings?.editor?.colorScheme;
-    useProject.setState({ settings: { editor: { colorScheme: "one-dark" } } as unknown as Settings });
+    useProject.setState({ settings: { editor: { colorScheme: "solarized-dark" } } as unknown as Settings });
     const dispose = installColorScheme();
     try {
       root.dataset.theme = "light";
