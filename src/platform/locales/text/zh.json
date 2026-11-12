@@ -7805,5 +7805,16 @@
   "Reads the names of schemas, tables and views of every database, so completion works for all of them.": "读取每个数据库的架构、表和视图名称，使补全对所有数据库都可用。",
   "Introspect": "内省",
   "Not Now": "暂不",
-  "Introspect All Databases": "内省所有数据库"
+  "Introspect All Databases": "内省所有数据库",
+  "Pin ({count})": "固定（{count}）",
+  "Unpin ({count})": "取消固定（{count}）",
+  "New Group": "新建组",
+  "Rename Group": "重命名组",
+  "Remove from Group": "从组中移除",
+  "Remove “{name}”? Its tasks move back to their status groups.": "移除“{name}”？其中的任务将回到各自的状态分组。",
+  "Pin Agent Tasks": "固定 Agent 任务",
+  "Unpin Agent Tasks": "取消固定 Agent 任务",
+  "New Agent Task Group": "新建 Agent 任务组",
+  "Rename Agent Task Group": "重命名 Agent 任务组",
+  "Remove Agent Task Group": "移除 Agent 任务组"
 }

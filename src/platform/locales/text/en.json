@@ -1402,5 +1402,16 @@
   "Reads the names of schemas, tables and views of every database, so completion works for all of them.": "Reads the names of schemas, tables and views of every database, so completion works for all of them.",
   "Introspect": "Introspect",
   "Not Now": "Not Now",
-  "Introspect All Databases": "Introspect All Databases"
+  "Introspect All Databases": "Introspect All Databases",
+  "Pin ({count})": "Pin ({count})",
+  "Unpin ({count})": "Unpin ({count})",
+  "New Group": "New Group",
+  "Rename Group": "Rename Group",
+  "Remove from Group": "Remove from Group",
+  "Remove “{name}”? Its tasks move back to their status groups.": "Remove “{name}”? Its tasks move back to their status groups.",
+  "Pin Agent Tasks": "Pin Agent Tasks",
+  "Unpin Agent Tasks": "Unpin Agent Tasks",
+  "New Agent Task Group": "New Agent Task Group",
+  "Rename Agent Task Group": "Rename Agent Task Group",
+  "Remove Agent Task Group": "Remove Agent Task Group"
 }
