@@ -1139,7 +1139,8 @@ pub fn load_with_linked(
 ) -> MavenModel {
     let mut resolver = Resolver::new(local_repo, profiles);
     let mut model = MavenModel::default();
-    let mut seen: HashSet<PathBuf> = HashSet::new();
+    // Canonical POM → its project, for a module listed again by a later aggregator.
+    let mut seen: HashMap<PathBuf, Option<usize>> = HashMap::new();
     let mut tops = top_level_poms(root);
     for pom in linked_poms(root, linked) {
         if !tops.contains(&pom) {
@@ -1153,9 +1154,15 @@ pub fn load_with_linked(
             break;
         }
         let canonical = dunce::canonicalize(&path).unwrap_or_else(|_| path.clone());
-        if !seen.insert(canonical) {
+        if let Some(known) = seen.get(&canonical) {
+            // Found as a top-level POM first, then listed by an aggregator elsewhere
+            // (`<module>../</module>` of `parent/pom.xml`): it is that aggregator's module.
+            if let (Some(known), true) = (known, aggregated) {
+                model.projects[*known].aggregated = true;
+            }
             continue;
         }
+        seen.insert(canonical.clone(), None);
         let Some(pom) = resolver.pom(&path) else { continue };
         let dir = path.parent().unwrap_or(root).to_path_buf();
         let ctx = resolver.context(&path, 0);
@@ -1168,7 +1175,7 @@ pub fn load_with_linked(
         }
         let mut modules: Vec<PathBuf> = Vec::new();
         for m in module_names {
-            let mut mp = dir.join(i(&m));
+            let mut mp = crate::gradle::normalize(&dir.join(i(&m)));
             if mp.is_dir() || mp.extension().is_none_or(|e| e != "xml") {
                 mp.push("pom.xml");
             }
@@ -1252,6 +1259,7 @@ pub fn load_with_linked(
             options: Vec::new(),
             env: BTreeMap::new(),
         });
+        seen.insert(canonical, Some(model.projects.len() - 1));
         for m in modules.into_iter().rev() {
             stack.push((m, true));
         }
@@ -2145,6 +2153,35 @@ mod tests {
         assert!(!has_projects(deep.path(), &Default::default()));
         assert!(has_projects(deep.path(), &settings));
         assert_eq!(top(&load_linked(deep.path(), &settings)), [("a/b/c/tool".into(), false)]);
+    }
+
+    /// #2877: an aggregator in a subfolder lists the root POM as `../`; linked, it holds every
+    /// module, the root one included, under the same POM paths the projects have.
+    #[test]
+    fn an_aggregator_in_a_subfolder_holds_the_root_pom() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let child = |id: &str, rel: &str| {
+            format!(
+                "<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version><relativePath>{rel}</relativePath></parent><artifactId>{id}</artifactId></project>"
+            )
+        };
+        write(root, "pom.xml", &child("app", "parent/pom.xml"));
+        write(
+            root,
+            "parent/pom.xml",
+            "<project><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version><packaging>pom</packaging><modules><module>../</module><module>../infra</module></modules></project>",
+        );
+        write(root, "infra/pom.xml", &child("infra", "../parent/pom.xml"));
+
+        let model = load_with_linked(root, None, &[], &["parent/pom.xml".into()]);
+        let tops: Vec<&str> = model.projects.iter().filter(|p| !p.aggregated).map(|p| p.artifact_id.as_str()).collect();
+        assert_eq!(tops, ["parent"]);
+        let parent = model.projects.iter().find(|p| p.artifact_id == "parent").unwrap();
+        assert_eq!(parent.modules, ["pom.xml", "infra/pom.xml"]);
+        for pom in &parent.modules {
+            assert!(model.projects.iter().any(|p| &p.pom == pom), "{pom}");
+        }
     }
 
     #[test]
