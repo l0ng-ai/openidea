@@ -44,6 +44,14 @@ pub trait Backend: Send + Sync {
     /// Text of `path` at `rev`; `None` when absent there.
     fn file_at(&self, path: &Path, rev: Option<&str>, encoding: TextEncoding) -> IdeResult<Option<String>>;
 
+    /// The file's mode at `rev` in the backend's own notation (git's `100644`,
+    /// `100755`, `120000`…; a Perforce backend reports the filetype, where
+    /// `+x` is the executable case). `None` when absent there. The diff viewer
+    /// shows "File mode changed" when the texts compare equal but the modes
+    /// differ. `rev` follows [`file_at`](Self::file_at)'s rules, `WT` reads the
+    /// worktree.
+    fn file_mode_at(&self, path: &Path, rev: Option<&str>) -> IdeResult<Option<String>>;
+
     /// Unified diff text of `path`'s working change (against the depot/HEAD
     /// side), empty when unchanged.
     fn diff_text(&self, path: &Path, staged: bool, encoding: TextEncoding) -> IdeResult<String>;
@@ -138,6 +146,32 @@ pub trait Backend: Send + Sync {
         encoding: &dyn Fn(&Path) -> IdeResult<TextEncoding>,
     ) -> IdeResult<Vec<PendingChange>>;
 
+    // ---- IDE file operations ----
+
+    /// Files or folders the IDE created (project tree New File, refactorings).
+    /// A checkout backend opens them for add (`p4 add`); Git tracks new files
+    /// by content, so this is a no-op. Called after the files exist on disk;
+    /// a failure leaves them as ordinary untracked files.
+    fn files_added(&self, _paths: &[PathBuf]) -> IdeResult<()> {
+        Ok(())
+    }
+
+    /// Files or folders the IDE deleted (project tree Delete, refactorings).
+    /// A checkout backend opens them for delete (`p4 delete`); Git records the
+    /// deletion at commit time, so this is a no-op. Called after they are gone
+    /// from disk.
+    fn files_deleted(&self, _paths: &[PathBuf]) -> IdeResult<()> {
+        Ok(())
+    }
+
+    /// A file or folder the IDE moved or renamed (project tree Rename/Move,
+    /// refactorings). A checkout backend records the rename (`p4 move`) so
+    /// history follows the file; Git detects renames from content, so this is
+    /// a no-op. Called after `from` is at `to` on disk.
+    fn file_moved(&self, _from: &Path, _to: &Path) -> IdeResult<()> {
+        Ok(())
+    }
+
     /// The concrete Git repository, when this backend is one — for the
     /// Git-only surface (branches, remotes, stash, rebase…). `None` for other
     /// backends; callers should degrade to hiding Git-only UI.
@@ -157,6 +191,10 @@ impl Backend for Repo {
 
     fn file_at(&self, path: &Path, rev: Option<&str>, encoding: TextEncoding) -> IdeResult<Option<String>> {
         Repo::file_at(self, path, rev, encoding)
+    }
+
+    fn file_mode_at(&self, path: &Path, rev: Option<&str>) -> IdeResult<Option<String>> {
+        Repo::file_mode_at(self, path, rev)
     }
 
     fn diff_text(&self, path: &Path, staged: bool, encoding: TextEncoding) -> IdeResult<String> {
