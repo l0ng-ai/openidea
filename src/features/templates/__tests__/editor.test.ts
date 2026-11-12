@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { registerAction } from "@/platform/actions";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
 import { completedSyntaxState } from "@/test/syntax";
@@ -91,6 +92,55 @@ describe("Tab expansion", () => {
     req.onPick(req.items[1]!, "");
     await tick();
     expect(v.state.doc.toString()).toBe("class A { void f() { boolean b = !(x > y)");
+  });
+});
+
+describe("Java .var", () => {
+  it("runs Introduce Variable on the expression, ended as a statement", async () => {
+    let seen: { doc: string; selected: string } | null = null;
+    const dispose = registerAction({
+      id: "refactor.extractVariable",
+      title: "Introduce Variable…",
+      run: () => {
+        const sel = view!.state.selection.main;
+        seen = { doc: view!.state.doc.toString(), selected: view!.state.sliceDoc(sel.from, sel.to) };
+      },
+    });
+    try {
+      const v = await editor(
+        "java",
+        "class A { void f() {\n  list.get(0).var\n} }",
+        "class A { void f() {\n  list.get(0).var".length,
+      );
+      expect(expandPostfixAtCaret(v)).toBe(true);
+      const req = useChooser.getState().request;
+      if (req)
+        req.onPick(
+          req.items.find((i) => i.label === "list.get(0)")!,
+          "",
+        );
+      await vi.waitFor(() => expect(seen).not.toBeNull());
+      expect(seen).toEqual({ doc: "class A { void f() {\n  list.get(0);\n} }", selected: "list.get(0)" });
+    } finally {
+      dispose();
+    }
+  });
+
+  it("falls back to the var template without Introduce Variable", async () => {
+    const v = await editor(
+      "java",
+      "class A { void f() {\n  name().var\n} }",
+      "class A { void f() {\n  name().var".length,
+    );
+    expect(expandPostfixAtCaret(v)).toBe(true);
+    const req = useChooser.getState().request;
+    if (req)
+      req.onPick(
+        req.items.find((i) => i.label === "name()")!,
+        "",
+      );
+    await vi.waitFor(() => expect(v.state.doc.toString()).toContain("var name = name();"));
+    expect(v.state.doc.toString()).toBe("class A { void f() {\n  var name = name();\n} }");
   });
 });
 
