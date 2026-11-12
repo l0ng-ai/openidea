@@ -2037,7 +2037,9 @@ Each plugin gets its own wasmtime `Store`: no preopened directories, no
 environment, no network, no inherited stdio — only clocks and randomness from
 WASI, plus the host functions above. Every call into the plugin is bounded:
 
-- **CPU:** a fuel budget (≈ 5·10⁹ wasm instructions) per call;
+- **CPU:** a fuel budget (≈ 5·10⁹ wasm instructions) per call, scaled
+  proportionally with the background wall-clock budget once a call starts a
+  `tasks` progress handle and renewed on each `task.report`;
 - **time:** 5 s wall clock for commands, activation and deactivation; editor
   providers (syntax, completion, code actions, navigation, line markers) get
   50 ms — a later result is dropped, but the instance keeps running — and are
