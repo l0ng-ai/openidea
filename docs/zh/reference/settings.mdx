@@ -18,7 +18,7 @@ description: "OpenIDEA 的设置保存在哪里、全局文件与项目文件如
 
 每个文件只保存与下层不同的值。表（table）按键逐个合并；而单个值或数组会整个替换下层的值（例如在项目中设置 `files.exclude`，会替换全局的整个列表）。
 
-有些设置在项目文件中会被忽略：`mcpServer` 和导入的配色方案（`editor.customSchemes`）只能全局配置。项目信任状态永远不会从设置文件中读取。
+有些设置在项目文件中会被忽略：`mcpServer`、导入的配色方案（`editor.customSchemes`）和 `agents.newTaskApprovals` 只能全局配置。项目信任状态永远不会从设置文件中读取。
 
 ## 文件格式
 

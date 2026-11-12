@@ -43,6 +43,9 @@ pub type AgentSink = Arc<dyn Fn(AgentEvent) + Send + Sync>;
 /// Returns the active command execution security policy for the project.
 pub type SecurityHook = Arc<dyn Fn() -> ide_core::settings::AgentSecuritySettings + Send + Sync>;
 
+/// Returns the user's choice of the approvals new tasks start with.
+pub type NewTaskApprovalsHook = Arc<dyn Fn() -> ide_core::settings::NewTaskApprovals + Send + Sync>;
+
 /// Entry changes are batched for this long before they are sent.
 const FLUSH_DELAY: Duration = Duration::from_millis(40);
 /// Updates that arrive this late after `session/load` returns are still replayed history.
@@ -107,6 +110,7 @@ struct Shared {
     connector: Connector,
     sink: RwLock<Option<AgentSink>>,
     security: RwLock<Option<SecurityHook>>,
+    new_task_approvals: RwLock<Option<NewTaskApprovalsHook>>,
     known: Mutex<HashMap<String, Known>>,
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
@@ -155,6 +159,11 @@ impl Shared {
         // Model-specific options are offered separately, never as provider-wide defaults.
         config.retain(|o| o.category.as_deref() != Some("thought_level"));
         config::add_client_options(provider, &mut config);
+        let hook = self.new_task_approvals.read().clone();
+        if hook.is_some_and(|ask| ask() == ide_core::settings::NewTaskApprovals::Ask) {
+            config::ask_for_approvals(&mut config);
+            return config;
+        }
         if let Some((o, v)) = config::bypass_mode(&config).map(|(o, v)| (o.id.clone(), v.value.clone()))
             && let Some(o) = config.iter_mut().find(|c| c.id == o)
         {
@@ -453,6 +462,7 @@ impl AgentManager {
             connector,
             sink: RwLock::new(None),
             security: RwLock::new(None),
+            new_task_approvals: RwLock::new(None),
             known: Mutex::new(known),
             providers,
             probes: Mutex::new(HashMap::new()),
@@ -499,6 +509,11 @@ impl AgentManager {
     /// Sets the callback used to read the active command execution security policy.
     pub fn set_security_hook(&self, hook: SecurityHook) {
         *self.shared.security.write() = Some(hook);
+    }
+
+    /// Sets the callback that reads which approvals new tasks start with.
+    pub fn set_new_task_approvals_hook(&self, hook: NewTaskApprovalsHook) {
+        *self.shared.new_task_approvals.write() = Some(hook);
     }
 
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.

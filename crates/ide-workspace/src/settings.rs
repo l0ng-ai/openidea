@@ -34,6 +34,9 @@ fn remove_global_settings(layer: &mut Json) {
     if let Some(editor) = layer.get_mut("editor").and_then(Json::as_object_mut) {
         editor.remove("customSchemes");
     }
+    if let Some(agents) = layer.get_mut("agents").and_then(Json::as_object_mut) {
+        agents.remove("newTaskApprovals");
+    }
 }
 
 fn defaults_json() -> Json {
@@ -276,6 +279,11 @@ impl SettingsStore {
         }
         if scope == SettingsScope::Project && (key == "mcpServer" || key.starts_with("mcpServer.")) {
             return Err(IdeError::invalid("MCP server belongs to user settings"));
+        }
+        if scope == SettingsScope::Project
+            && (key == "agents.newTaskApprovals" || (key == "agents" && value.get("newTaskApprovals").is_some()))
+        {
+            return Err(IdeError::invalid("the approvals new agent tasks start with belong to user settings"));
         }
         let file = self.file(scope).ok_or_else(|| IdeError::invalid("no project is open"))?.to_path_buf();
         let segments: Vec<&str> = key.split('.').collect();
@@ -1029,5 +1037,23 @@ mod tests {
                 .mcp_server
                 .enabled
         );
+    }
+
+    #[test]
+    fn new_task_approvals_are_a_user_setting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".openidea")).unwrap();
+        std::fs::write(project.join(".openidea/settings.toml"), "[agents]\nnewTaskApprovals = \"ask\"\n").unwrap();
+        let settings = SettingsStore::load(&config, Some(&project));
+        use ide_core::settings::NewTaskApprovals;
+        assert_eq!(settings.effective().agents.new_task_approvals, NewTaskApprovals::Bypass);
+        assert!(settings.set(SettingsScope::Project, "agents.newTaskApprovals", json!("bypass")).is_err());
+        assert!(settings.set(SettingsScope::Project, "agents", json!({"newTaskApprovals": "bypass"})).is_err());
+        let s = settings.set(SettingsScope::Global, "agents.newTaskApprovals", json!("ask")).unwrap();
+        assert_eq!(s.agents.new_task_approvals, NewTaskApprovals::Ask);
+        std::fs::write(project.join(".openidea/settings.toml"), "[agents]\nnewTaskApprovals = \"bypass\"\n").unwrap();
+        assert_eq!(settings.reload().agents.new_task_approvals, NewTaskApprovals::Ask);
     }
 }

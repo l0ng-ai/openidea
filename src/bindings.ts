@@ -2095,6 +2095,11 @@ export type AgentSettings_Deserialize = {
 	 *  send it into the turn.
 	 */
 	whileRunning?: WhileRunning,
+	/**
+	 *  Whether new tasks start in the agent's mode that approves everything (Claude Code's
+	 *  bypass permissions, Codex's full access) or in one that asks. User settings only.
+	 */
+	newTaskApprovals?: NewTaskApprovals,
 	/**  Settings new tasks of an agent start with: agent id → option id → value. */
 	defaults?: { [key in string]: { [key in string]: string } },
 	/**
@@ -2128,6 +2133,11 @@ export type AgentSettings_Serialize = {
 	 *  send it into the turn.
 	 */
 	whileRunning: WhileRunning,
+	/**
+	 *  Whether new tasks start in the agent's mode that approves everything (Claude Code's
+	 *  bypass permissions, Codex's full access) or in one that asks. User settings only.
+	 */
+	newTaskApprovals: NewTaskApprovals,
 	/**  Settings new tasks of an agent start with: agent id → option id → value. */
 	defaults: { [key in string]: { [key in string]: string } },
 	/**
@@ -7317,6 +7327,13 @@ export type NewAgentTask = {
 	/**  Branch to start the worktree from; the current branch when `None`. */
 	base: string | null,
 };
+
+/**  The approvals new agent tasks start with. */
+export type NewTaskApprovals = 
+/**  The agent's mode that approves everything without asking, when it has one. */
+"bypass" | 
+/**  A mode in which the agent asks before edits and commands. */
+"ask";
 
 /**  Result of `node_at`: the smallest named node covering a range, with its ancestors. */
 export type NodeAt = {

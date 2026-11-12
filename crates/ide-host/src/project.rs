@@ -664,6 +664,10 @@ impl Host {
             self.runtime.clone(),
         ));
         let settings = settings.clone();
+        {
+            let settings = settings.clone();
+            agents.set_new_task_approvals_hook(Arc::new(move || settings.effective().agents.new_task_approvals));
+        }
         agents.set_mcp_servers_hook(Box::new(move || {
             ide_agent::mcp::servers_from_settings(&Default::default(), &settings.effective().agents.mcp_servers)
         }));
