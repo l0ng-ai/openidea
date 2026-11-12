@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sendKeyAction } from "./Composer";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -43,6 +43,7 @@ vi.mock("@/platform/tauriCore", async (importOriginal) => ({
 
 import { isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { usePlatform } from "@/platform/platformInfo";
 import type { ProjectInfo } from "@/bindings";
 import { defaultTaskProject } from "./project";
 import { HomeEditor } from "./HomeEditor";
@@ -240,6 +241,35 @@ describe("New Task composer commands", () => {
     await screen.findByRole("listbox", { name: "Commands" });
     fireEvent.keyDown(box, { key: "Enter" });
     expect(useAgents.getState().composers.get(HOME)?.text).toBe("fix the failing build /triage ");
+  });
+});
+
+describe("New Task composer Home / End", () => {
+  const os = usePlatform.getState().os;
+  afterEach(() => {
+    usePlatform.setState({ os });
+    vi.restoreAllMocks();
+  });
+
+  it("moves the caret to the line's start or end on macOS, extending the selection with Shift", () => {
+    usePlatform.setState({ os: "macos" });
+    const modify = vi.fn();
+    vi.spyOn(window, "getSelection").mockReturnValue({ modify } as unknown as Selection);
+    render(<HomeEditor />);
+    const box = screen.getByRole("textbox");
+    expect(fireEvent.keyDown(box, { key: "Home" })).toBe(false);
+    fireEvent.keyDown(box, { key: "End", shiftKey: true });
+    fireEvent.keyDown(box, { key: "End", metaKey: true });
+    expect(modify.mock.calls).toEqual([
+      ["move", "backward", "lineboundary"],
+      ["extend", "forward", "lineboundary"],
+    ]);
+  });
+
+  it("leaves Home / End to the text box elsewhere", () => {
+    usePlatform.setState({ os: "windows" });
+    render(<HomeEditor />);
+    expect(fireEvent.keyDown(screen.getByRole("textbox"), { key: "Home" })).toBe(true);
   });
 });
 
