@@ -151,30 +151,12 @@ pub fn run() {
         let webview = request.message.webview_ref();
         if let Some(state) = webview.try_state::<AppState>() {
             let label = AppState::owner_window(webview.label());
-            if let Some(connection) = state.remote_dev.get(label) {
-                let label = label.to_owned();
-                let command = request.message.command().to_owned();
-                let invoke = invoke.clone();
-                let app = webview.app_handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    match connection.authorize_command(&label, &command).await {
-                        Ok(()) => {
-                            let resolver = request.resolver.clone();
-                            // Sync commands must run on the main thread, as they do in local windows.
-                            if let Err(error) = app.run_on_main_thread(move || {
-                                invoke(request);
-                            }) {
-                                resolver.reject(ide_core::IdeError::internal(format!(
-                                    "failed to dispatch command on the main thread: {error}"
-                                )));
-                            }
-                        }
-                        Err(error) => request.resolver.reject(error),
-                    }
-                });
-                return true;
-            }
-            if let Err(error) = state.host.authorize_command(webview.label(), request.message.command()) {
+            let command = request.message.command();
+            let authorized = match state.remote_dev.get(label) {
+                Some(connection) => connection.authorize_command(&state.host.trust, command),
+                None => state.host.authorize_command(webview.label(), command),
+            };
+            if let Err(error) = authorized {
                 request.resolver.reject(error);
                 return true;
             }

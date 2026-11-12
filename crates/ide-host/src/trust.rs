@@ -18,6 +18,15 @@ pub struct TrustStore {
     state: Mutex<IdeResult<TrustDecisions>>,
     /// Folders trusted for this process only, by the client that started it ([`TRUSTED_ROOT_ENV`]).
     inherited: Mutex<Vec<PathBuf>>,
+    remote_file: PathBuf,
+    remote: Mutex<IdeResult<RemoteDecisions>>,
+}
+
+/// This machine's decisions about remote projects, by location (see [`TrustStore::remote_decision`]).
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct RemoteDecisions {
+    trusted: Vec<String>,
+    restricted: Vec<String>,
 }
 
 /// Set by the desktop when it starts the server in a dev container of a folder the user trusts
@@ -40,7 +49,37 @@ impl TrustStore {
             }
             Err(e) => Err(e.into()),
         };
-        Self { file, state: Mutex::new(state), inherited: Mutex::default() }
+        let remote_file = data.join("remote-project-trust.json");
+        let remote = match std::fs::read(&remote_file) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| IdeError::invalid(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(RemoteDecisions::default()),
+            Err(e) => Err(e.into()),
+        };
+        Self { file, state: Mutex::new(state), inherited: Mutex::default(), remote_file, remote: Mutex::new(remote) }
+    }
+
+    /// The decision made on this machine for the remote project at `location` (`None`: none yet).
+    /// Commands a remote window runs here follow it, not the server's own trust.
+    pub fn remote_decision(&self, location: &str) -> IdeResult<Option<bool>> {
+        let remote = self.remote.lock().clone()?;
+        Ok(if remote.restricted.iter().any(|l| l == location) {
+            Some(false)
+        } else if remote.trusted.iter().any(|l| l == location) {
+            Some(true)
+        } else {
+            None
+        })
+    }
+
+    pub fn decide_remote(&self, location: &str, trusted: bool) -> IdeResult<()> {
+        let mut state = self.remote.lock();
+        let mut next = state.clone()?;
+        next.trusted.retain(|l| l != location);
+        next.restricted.retain(|l| l != location);
+        if trusted { &mut next.trusted } else { &mut next.restricted }.push(location.to_owned());
+        persist(&self.remote_file, &next)?;
+        *state = Ok(next);
+        Ok(())
     }
 
     pub fn decisions(&self) -> IdeResult<TrustDecisions> {
@@ -133,7 +172,7 @@ impl TrustStore {
     }
 }
 
-fn persist(file: &Path, state: &TrustDecisions) -> IdeResult<()> {
+fn persist<T: Serialize>(file: &Path, state: &T) -> IdeResult<()> {
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -317,6 +356,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "remote_current"
             | "remote_disconnect"
             | "remote_connect"
+            | "remote_trust_status"
+            | "remote_trust_set"
             | "remote_bootstrap_list"
             | "wsl_distros"
             | "wsl_resolve"
@@ -470,5 +511,19 @@ mod tests {
     #[test]
     fn restricted_mode_allows_clipboard_write_text() {
         assert!(super::restricted_command_allowed("clipboard_write_text"));
+    }
+
+    #[test]
+    fn remote_project_decisions_are_kept_on_this_machine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let load = || super::TrustStore::load(&tmp.path().join("config"), &tmp.path().join("data"));
+        let store = load();
+        let here = r#"[{"kind":"ssh","config":"box"},"/srv/app"]"#;
+        assert_eq!(store.remote_decision(here).unwrap(), None);
+        store.decide_remote(here, true).unwrap();
+        assert_eq!(store.remote_decision(here).unwrap(), Some(true));
+        assert_eq!(store.remote_decision(r#"[{"kind":"ssh","config":"box"},"/srv/other"]"#).unwrap(), None);
+        store.decide_remote(here, false).unwrap();
+        assert_eq!(load().remote_decision(here).unwrap(), Some(false));
     }
 }
