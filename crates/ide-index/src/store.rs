@@ -206,9 +206,11 @@ impl Store {
     }
 
     /// Writes the current index as one columnar snapshot for fast next start-up.
-    pub(crate) fn save_snapshot(&self, data: &IndexData) -> Result<()> {
+    /// Only records persisted below `root` are included; content roots outside it
+    /// are rescanned, as they are for the per-file records.
+    pub(crate) fn save_snapshot(&self, data: &IndexData, root: &Path) -> Result<()> {
         let mut snap = Snapshot::default();
-        for e in data.files.iter().flatten() {
+        for e in data.files.iter().flatten().filter(|e| e.path.starts_with(root)) {
             snap.rels.push_str(&e.rel);
             snap.rel_ends.push(snap.rels.len() as u32);
             for s in e.symbols.iter() {
@@ -355,7 +357,9 @@ mod tests {
         };
         let mut data = IndexData::default();
         data.insert(FileEntry::new(std::path::PathBuf::from("/p/src/Order.rs"), "src/Order.rs".into(), record));
-        store.save_snapshot(&data).unwrap();
+        // Content roots outside the project root are rescanned, not snapshotted.
+        data.insert(FileEntry::new(std::path::PathBuf::from("/elsewhere/x.rs"), "x.rs".into(), FileRecord::default()));
+        store.save_snapshot(&data, Path::new("/p")).unwrap();
 
         let snapshot = store.load_snapshot().expect("snapshot");
         assert_eq!(snapshot.len(), 1);

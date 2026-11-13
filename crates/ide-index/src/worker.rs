@@ -350,7 +350,7 @@ impl Shared {
         self.persist(&[], &[], true);
         if let Some(store) = &self.store {
             let d = self.data.read();
-            if let Err(e) = store.save_snapshot(&d) {
+            if let Err(e) = store.save_snapshot(&d, filter.root()) {
                 tracing::warn!("index snapshot: {e}");
             }
         }
