@@ -213,6 +213,7 @@ impl LspManager {
             {
                 if d.text.as_str() != cell.source {
                     Arc::make_mut(&mut d.text).set(&cell.source);
+                    d.changed = std::time::Instant::now();
                 }
                 d.version += 1;
                 state.cells.push((cell.id.clone(), doc));
@@ -234,6 +235,7 @@ impl LspManager {
                     servers: state.servers.iter().map(|s| Attached { server: s.clone(), opened_gen: None }).collect(),
                     compose_detected: false,
                     notebook: Some(path.to_owned()),
+                    changed: std::time::Instant::now(),
                 },
             );
             state.cells.push((cell.id.clone(), doc));
@@ -259,6 +261,7 @@ impl LspManager {
             }
             Arc::make_mut(&mut d.text).set(&cell.source);
             d.version += 1;
+            d.changed = std::time::Instant::now();
             content.push(json!({
                 "document": { "uri": d.uri, "version": d.version },
                 "changes": [{ "text": cell.source }],

@@ -18,14 +18,17 @@ Agent tasks started inside OpenIDEA (see [Agents](/en/guide/agents)) get the sam
   </Step>
 </Steps>
 
-The server listens on `127.0.0.1` only, on a random port, and every request must carry a token that changes each time OpenIDEA starts. Requests from another origin or host are refused.
+The server listens on `127.0.0.1` only, and every request must carry a bearer token. Requests from another origin or host are refused.
+
+- **Port.** By default it listens on the same port, 26371, in every run (**Use a fixed port** and **Port**), so HTTP clients and port forwards (an SSH tunnel to another machine, say) keep working after a restart. When the port is in use or reserved, that run takes a free port and **Status** says why. Turn **Use a fixed port** off for a free port in every run.
+- **Token.** By default the token changes each time OpenIDEA starts. Turn on **Keep the token** to keep one across runs, stored in OpenIDEA's application data for your account only; **Regenerate Token** replaces it, and clients configured with the old one stop working.
 
 ## Connect a client
 
 The settings page has two buttons under **Client configuration**. Both copy an `mcpServers` entry in the JSON format most clients accept.
 
 - **Copy Stdio Config** (recommended): the client starts OpenIDEA's executable with `--mcp-stdio`, which relays to the running IDE. It holds no token and keeps working after OpenIDEA restarts.
-- **Copy HTTP Config**: the client connects to `http://127.0.0.1:<port>/mcp` with `Authorization: Bearer <token>`. It stops working when OpenIDEA restarts, because the port and token change.
+- **Copy HTTP Config**: the client connects to `http://127.0.0.1:<port>/mcp` with `Authorization: Bearer <token>`. It keeps working after OpenIDEA restarts only with a fixed port and a kept token; otherwise copy it again after each restart.
 
 The stdio configuration looks like this (the path is the one on your machine):
 
@@ -85,8 +88,10 @@ While the server runs, OpenIDEA writes its port and token to `mcp/server.json` i
 | Search        | `search_text`, `search_regex`, `search_symbol`, `search_file`               |
 | Editors       | `get_all_open_file_paths`, `get_current_file`, `open_file_in_editor`        |
 | Code          | `get_symbol_info`, `find_references`, `rename_refactoring`, `reformat_file` |
-| Problems      | `get_file_problems`, `get_project_problems`                                 |
+| Problems      | `get_file_problems`, `get_project_problems`, `check_files`                  |
 | Run and build | `get_run_configurations`, `execute_run_configuration`, `build_project`      |
+| Commands      | `run_command`, `wait_for_run`, `send_run_input`, `stop_run`                 |
+| Command state | `get_run_status`, `read_run_output`, `list_runs`                            |
 | Git           | `get_repositories`, `git_status`, `git_diff`                                |
 
 Notes on what they do:
@@ -94,16 +99,28 @@ Notes on what they do:
 - `read_file` also reads sources of dependencies and files inside jar and zip archives.
 - `search_symbol` and `find_references` use the IDE's index and the language servers; `get_symbol_info` returns what Quick Documentation shows.
 - `get_file_problems` and `get_project_problems` return what the Problems tool window shows, after your inspection profile is applied, rather than a fresh analysis.
+- `check_files` is the fresh analysis, for after an edit made by any tool: it syncs each file from disk, tells its language servers it was saved (so on-save checks such as `cargo check` run) and waits until they answered and finished. Each file gets a `status` that says whether the problems are complete, or why it could not be checked: no language server for it, or one that is not installed, misconfigured or crashed.
 - `rename_refactoring` renames through the language server, so references that a text search would miss are updated too. It can preview without writing.
 - `apply_patch` accepts the Codex `apply_patch` format and unified diffs. Paths must stay inside the project.
 - `git_diff` compares files on disk, so unsaved editor text is not included.
+
+## Commands in the Run tool window
+
+`run_command` runs a shell command line in a tab of the Run tool window, with the shell of **Settings › Tools › Terminal**. The agent names the tab and OpenIDEA shows it as `_agent_<name>`, so you see the output as it comes and can type into the command, rerun it or stop it like any run.
+
+As JetBrains IDEs do, the command runs on pipes, not a terminal: programs print plain lines instead of progress bars and redraws. The agent gets that output cleaned of escape sequences and cut to 2000 lines (`maxLinesCount`); beyond that the end stays, or the start or both ends with `truncateMode`. The tab's raw output log stays complete.
+
+- **One tab per name.** A name whose command finished runs the next command in the same tab. A name whose command is still running is refused, with that command and its last output: the agent has to stop it with `stop_run` first or pick another name. Nothing is stopped behind your back.
+- **Following a command up.** `wait_for_run` waits for the command to end or for a pattern in its output (a server's "listening" line), `read_run_output` reads the output from any point, `get_run_status` tells whether it is running, succeeded, failed, crashed or was stopped by the agent or by you, and `send_run_input` writes text and Enter to its input; Ctrl+C stops it and Ctrl+D ends its input.
+- **You can step in.** What you type into the tab's input line, a rerun, a Stop and closing the tab are reported to the agent with their time. A wait ends at once, and the agent is advised to stop what it is doing, tell you it received the intervention and wait for your confirmation.
+- **Finished tabs are greyed out.** Beyond **Finished agent tabs to show** (1 by default) the oldest finished ones move to an archive at the end of the tab strip, shown as **Archived (n)**. Beyond **Archived agent tabs to keep** (999) the oldest archived ones are closed. Running commands are never archived or closed. Both settings are on **Settings › Agents › IDE MCP Server**.
 
 Plugins can add more tools; they appear in the same list. A plugin tool marked as destructive asks for confirmation the same way.
 
 ## Safety
 
 - **Untrusted projects** expose only the read-only tools. Tools that write files, rename, reformat, build or run need a project you have trusted.
-- **Running and building ask first.** `execute_run_configuration` and `build_project` show a dialog in OpenIDEA naming the client, the project, the tool and what will run. Choose **Allow** or **Deny**; several requests queue up.
+- **Running and building ask first.** `execute_run_configuration`, `build_project` and `run_command` show a dialog in OpenIDEA naming the client, the project, the tool and what will run. Choose **Allow** or **Deny**; several requests queue up.
 - Tools that write refuse paths outside the project.
 
 ## Limits

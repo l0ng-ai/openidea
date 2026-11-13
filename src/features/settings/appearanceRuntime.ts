@@ -6,6 +6,7 @@
  * pressed only" and "Save files if the IDE is idle".
  */
 import { executeAction, type Action } from "@/platform/actions";
+import { editorPrefs } from "@/platform/editorSettings";
 import { uiFontFamily } from "@/platform/fonts";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -51,6 +52,11 @@ export function applyAppearanceOptions(s: ValidSettings, root: HTMLElement = doc
   root.dataset.aaIde = a.ideAntialiasing;
   root.dataset.aaEditor = a.editorAntialiasing;
   applyZoom(a.zoom, root);
+}
+
+/** Editor › Font › "Enable ligatures" also covers mono text outside the editor (Find results, Usages…). */
+export function applyLigatures(raw: unknown, root: HTMLElement = document.documentElement): void {
+  flag(root, "ligatures", editorPrefs(raw).ligatures);
 }
 
 let lastZoom = 100;

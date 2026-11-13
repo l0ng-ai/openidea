@@ -58,6 +58,7 @@ import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
+import { agentName } from "./agentConfig";
 import { loadRunTemplates } from "./runTemplates";
 import { startedPort } from "@/platform/serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
@@ -1473,10 +1474,17 @@ export async function closeSessionTab(sessionId: string): Promise<boolean> {
   return true;
 }
 
-export function closeSession(sessionId: string) {
+/**
+ * Removes a session's tab (stopping its process). An agent tab's closing is told to the MCP
+ * server for the agent unless `agentTabClosed` is false (the archive dropping its oldest).
+ */
+export function closeSession(sessionId: string, options: { agentTabClosed?: boolean } = {}) {
   const session = getSession(sessionId);
   if (!session) return;
   if (isLive(session)) void stopSession(sessionId);
+  const agent = agentName(session.config);
+  if (agent !== null && options.agentTabClosed !== false && isTauri())
+    void call(commands.mcpAgentRunClosed(agent)).catch(() => {});
   const rt = runtimes.get(sessionId);
   if (rt) cancelFlush(rt);
   runtimes.delete(sessionId);

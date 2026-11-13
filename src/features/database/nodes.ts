@@ -7,6 +7,7 @@ import type {
   DbObjectKind as DbSchemaObjectKind,
   DbPackageInfo,
   DbRoutineInfo,
+  DbSchemaObject,
   DbSequenceInfo,
   DbTableInfo,
   DbTableKind,
@@ -25,7 +26,26 @@ export type Folder =
   | "procedures"
   | "functions"
   | "packages"
-  | "sequences";
+  | "sequences"
+  | OtherFolder;
+
+/** Folders of object kinds only some databases have (Snowflake), by the kind the backend names. */
+export const OTHER_FOLDERS = {
+  stage: "stages",
+  stream: "streams",
+  task: "tasks",
+  pipe: "pipes",
+  fileFormat: "fileFormats",
+} as const;
+
+export type OtherFolder = (typeof OTHER_FOLDERS)[keyof typeof OTHER_FOLDERS];
+
+export const isOtherFolder = (folder: Folder): folder is OtherFolder =>
+  (Object.values(OTHER_FOLDERS) as string[]).includes(folder);
+
+/** The folder an object of `kind` is listed in (unknown kinds are not shown). */
+export const otherFolder = (kind: string): OtherFolder | undefined =>
+  (OTHER_FOLDERS as Record<string, OtherFolder | undefined>)[kind];
 
 /** The folder a table, view or materialized view is listed in. */
 export function tableFolder(kind: DbTableKind): Folder {
@@ -55,6 +75,8 @@ export type DbNode =
   | { kind: "routine"; key: string; id: string; schema: string; routine: DbRoutineInfo }
   | { kind: "package"; key: string; id: string; schema: string; package: DbPackageInfo }
   | { kind: "sequence"; key: string; id: string; schema: string; sequence: DbSequenceInfo }
+  /** A stage, stream, task, pipe or file format: listed by name. */
+  | { kind: "object"; key: string; id: string; schema: string; object: DbSchemaObject }
   | ({ kind: "group"; key: string; group: Group } & InTable)
   | ({ kind: "column"; key: string; column: DbColumnInfo; foreignKey: boolean } & InTable)
   | ({ kind: "key"; key: string; columns: string[] } & InTable)

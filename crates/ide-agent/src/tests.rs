@@ -264,6 +264,23 @@ impl Handler for FakeAgent {
                     self.say(&session, &format!("late chose {chosen}"));
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
+                if text == "escalate" {
+                    // A request for wider access, titled with text the model wrote.
+                    let peer = self.latest();
+                    let answer: Value = tokio::runtime::Handle::current()
+                        .block_on(peer.request(
+                            "session/request_permission",
+                            json!({"sessionId": session, "toolCall": {"toolCallId": "e1", "title": "Run cargo test",
+                                "kind": "other", "rawInput": {"network": {"enabled": true}}},
+                                "options": [{"optionId": "yes", "name": "Allow for this turn", "kind": "allow_once"},
+                                            {"optionId": "no", "name": "Decline", "kind": "reject_once"}]}),
+                            None,
+                        ))
+                        .unwrap();
+                    let chosen = answer.pointer("/outcome/optionId").and_then(Value::as_str).unwrap_or("none");
+                    self.say(&session, &format!("escalation chose {chosen}"));
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
                 if text == "ask" {
                     let peer = self.latest();
                     let answer: Value = tokio::runtime::Handle::current()
@@ -344,7 +361,8 @@ impl Handler for FakeAgent {
                 let answer: Value = tokio::runtime::Handle::current()
                     .block_on(peer.request(
                         "session/request_permission",
-                        json!({"sessionId": session, "toolCall": {"toolCallId": "t1", "title": "Run cargo test"},
+                        json!({"sessionId": session, "toolCall": {"toolCallId": "t1", "title": "Run cargo test",
+                            "kind": "execute", "rawInput": {"command": "cargo test"}},
                             "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"},
                                         {"optionId": "no", "name": "Reject", "kind": "reject_once"}]}),
                         None,
@@ -366,7 +384,8 @@ fn manager(dir: &Path, agent: Arc<FakeAgent>) -> AgentManager {
 fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentManager {
     // These tests speak to FakeAgent, never an installed CLI, including after a provider reload.
     let agents = dir.join("agents");
-    provider::set_builtin_command(&agents, "claude", Some(&dir.join("missing-claude").to_string_lossy())).unwrap();
+    provider::set_builtin_command(&agents, None, "claude", Some(&dir.join("missing-claude").to_string_lossy()))
+        .unwrap();
     let connector: Connector = Arc::new(move |_spec, _cwd, client, _stderr| {
         let (a, b) = duplex(1 << 20);
         let (ar, aw) = tokio::io::split(a);
@@ -385,6 +404,7 @@ fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentMan
             // The project is the boundary of the skill walk: nothing above it (such as the
             // user's profile, when temp lives under it) leaks into the test.
             home_dir: Some(dir.to_path_buf()),
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -1410,6 +1430,7 @@ async fn real_claude_task_in_a_worktree() {
             models_file: tmp.path().join("models.json"),
             custom_agents_dir: None,
             home_dir: None,
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
     );
@@ -2243,6 +2264,7 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
             models_file: tmp.path().join("models.json"),
             custom_agents_dir: Some(agents_dir.clone()),
             home_dir: None,
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -2553,6 +2575,7 @@ async fn delete_running_agent(no_load: bool) {
             models_file: root.join("models.json"),
             custom_agents_dir: None,
             home_dir: None,
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -2853,14 +2876,14 @@ async fn rolling_back_restores_the_start_of_the_task_and_keeps_the_users_own_edi
     }
     assert_eq!(changed(&mgr, &task.id).await, ["mine.txt", "new.txt", "other.txt"]);
 
-    mgr.rollback_changes(&task.id, Some(vec!["other.txt".into()])).await.unwrap();
+    mgr.rollback_changes(&task.id, Some(vec!["other.txt".into()]), AgentChangesView::SinceStart).await.unwrap();
     assert_eq!(read("other.txt"), "base\n");
     assert_eq!(changed(&mgr, &task.id).await, ["mine.txt", "new.txt"]);
 
     // After a restart, from the saved copy.
     mgr.shutdown();
     let mgr = manager(&dir, Arc::new(FakeAgent::default()));
-    mgr.rollback_changes(&task.id, None).await.unwrap();
+    mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
     assert_eq!(read("mine.txt"), "my edit\n", "the user's edit stays");
     assert!(!dir.join("new.txt").exists());
     assert!(changed(&mgr, &task.id).await.is_empty());
@@ -2973,7 +2996,7 @@ async fn work_uncommitted_by_a_reset_during_a_local_task_is_not_rolled_back() {
 
         let base = mgr.base_text(&task.id, repo.dir.join("a.txt")).await.unwrap();
         assert_eq!(base.map(|b| b.replace("\r\n", "\n")).as_deref(), Some("base\n"), "{eol:?}");
-        mgr.rollback_changes(&task.id, None).await.unwrap();
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
         assert_eq!(repo.read("a.txt"), "base\n", "{eol:?}");
         assert_eq!(repo.read("mine.txt"), "my work\n", "{eol:?}: the user's work survives the rollback");
         assert!(changed(&mgr, &task.id).await.is_empty(), "{eol:?}");
@@ -2996,7 +3019,7 @@ async fn files_a_mixed_reset_during_a_local_task_leaves_behind_are_not_rolled_ba
         repo.git(&["reset", "-q", "HEAD~1"]);
         assert_eq!(changed(&mgr, &task.id).await, ["a.txt"], "{eol:?}");
 
-        mgr.rollback_changes(&task.id, None).await.unwrap();
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
         assert_eq!(repo.read("a.txt"), "base\n", "{eol:?}");
         assert_eq!(repo.read("mine.txt"), "my work\n", "{eol:?}");
         assert_eq!(repo.read("mine-new.txt"), "my new file\n", "{eol:?}");
@@ -3023,7 +3046,7 @@ async fn a_branch_switched_to_during_a_local_task_is_left_alone() {
         repo.git(&["checkout", "-q", "feature"]);
         assert_eq!(changed(&mgr, &task.id).await, ["a.txt"], "{eol:?}");
 
-        mgr.rollback_changes(&task.id, None).await.unwrap();
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
         assert_eq!(repo.read("a.txt"), "base\n", "{eol:?}");
         assert_eq!(repo.read("other.txt"), "feature\n", "{eol:?}");
         assert_eq!(repo.read("only-feature.txt"), "feature\n", "{eol:?}");
@@ -3048,7 +3071,7 @@ async fn commits_made_during_a_local_task_are_kept_by_its_rollback() {
         repo.write("a.txt", "agent\nagain\n");
         assert_eq!(changed(&mgr, &task.id).await, ["a.txt", "b.txt"], "{eol:?}");
 
-        mgr.rollback_changes(&task.id, None).await.unwrap();
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
         assert_eq!(repo.read("a.txt"), "agent\n", "{eol:?}: back to the commit, not to before it");
         assert!(!repo.dir.join("b.txt").exists(), "{eol:?}");
         assert!(changed(&mgr, &task.id).await.is_empty(), "{eol:?}");
@@ -3069,7 +3092,7 @@ async fn rolling_back_a_rename_brings_the_old_file_back() {
         let listed = changed(&mgr, &task.id).await;
         assert_eq!(listed, ["CASE.java", "New.java"], "{eol:?}");
 
-        mgr.rollback_changes(&task.id, Some(listed)).await.unwrap();
+        mgr.rollback_changes(&task.id, Some(listed), AgentChangesView::SinceStart).await.unwrap();
         assert_eq!(repo.read("Old.java"), "class Old {}\n", "{eol:?}");
         assert!(!repo.dir.join("New.java").exists(), "{eol:?}");
         assert_eq!(repo.read("Case.java"), "class Case {}\n", "{eol:?}");
@@ -3083,6 +3106,27 @@ async fn rolling_back_a_rename_brings_the_old_file_back() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_group_view_rolls_back_only_uncommitted_files() {
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("a.txt", "base\n");
+        repo.commit("init");
+        let (mgr, task) = repo.task().await;
+        repo.write("a.txt", "agent\n");
+        repo.commit("agent work");
+        repo.write("a.txt", "agent\nagain\n");
+
+        let grouped = mgr.grouped_changes(&task.id).await.unwrap();
+        assert_eq!(grouped.uncommitted.iter().map(|c| c.rel_path.as_str()).collect::<Vec<_>>(), ["a.txt"], "{eol:?}");
+        assert!(grouped.commits.is_empty(), "{eol:?}: local tasks have no commits to group");
+
+        mgr.rollback_changes(&task.id, None, AgentChangesView::Group).await.unwrap();
+        assert_eq!(repo.read("a.txt"), "agent\n", "{eol:?}: back to the commit, not to the start");
+        assert!(mgr.grouped_changes(&task.id).await.unwrap().uncommitted.is_empty(), "{eol:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_local_task_in_a_repository_without_commits_lists_and_rolls_back_its_changes() {
     for eol in EOLS {
         let repo = Checkout::new(eol);
@@ -3092,7 +3136,7 @@ async fn a_local_task_in_a_repository_without_commits_lists_and_rolls_back_its_c
         assert_eq!(changed(&mgr, &task.id).await, ["new.txt"], "{eol:?}");
         assert_eq!(mgr.base_text(&task.id, repo.dir.join("new.txt")).await.unwrap(), None, "{eol:?}");
 
-        mgr.rollback_changes(&task.id, None).await.unwrap();
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
         assert!(!repo.dir.join("new.txt").exists(), "{eol:?}");
         assert_eq!(repo.read("mine.txt"), "mine\n", "{eol:?}");
         assert!(changed(&mgr, &task.id).await.is_empty(), "{eol:?}");
@@ -3164,5 +3208,45 @@ async fn security_policy_auto_approves_whitelist_and_rejects_blacklist() {
             AgentEntry::Permission { chosen: Some(c), .. } if c.contains("Blocked by policy")
         )),
         "{blocked_entries:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn security_policy_never_auto_approves_a_request_that_only_reads_like_a_command() {
+    use ide_core::settings::AgentSecuritySettings;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent);
+    mgr.set_security_hook(Arc::new(|| AgentSecuritySettings {
+        allowed_commands: vec!["cargo test".into()],
+        blocked_commands: vec![],
+    }));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("escalate"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    let pending = entries
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, chosen: None, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the request was answered without the user: {entries:?}"));
+    mgr.respond(&task.id, pending, Some("no".into())).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(
+        entries.iter().any(|e| matches!(e, AgentEntry::Agent { text } if text == "escalation chose no")),
+        "{entries:?}"
     );
 }

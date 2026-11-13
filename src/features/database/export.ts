@@ -49,6 +49,19 @@ function laidOut(d: ExportData, o: ExportOptions): { head: string[] | null; rows
   return { head: null, rows: head.map((h, c) => [...(o.columnHeader ? [h] : []), ...rows.map((r) => r[c] ?? null)]) };
 }
 
+/** Normalize decimal text to JSON syntax without rounding its digits. */
+function jsonCell(v: Cell, numeric: boolean): string {
+  if (v === null) return "null";
+  const number = numeric ? Number(v) : NaN;
+  if (!Number.isFinite(number)) return JSON.stringify(v);
+  const parts = /^([+-]?)(\d*)(?:\.(\d*))?([eE][+-]?\d+)?$/.exec(v.trim());
+  if (!parts) return JSON.stringify(number);
+  const whole = parts[2]!.replace(/^0+/, "") || "0";
+  const fraction = parts[3] ?? "";
+  if (!/[1-9]/.test(whole + fraction)) return "0";
+  return `${parts[1] === "-" ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}${parts[4] ?? ""}`;
+}
+
 export function exportData(
   format: ExportFormat,
   d: ExportData,
@@ -71,13 +84,12 @@ export function exportData(
       return toTsv(t.head, t.rows);
     }
     case "json": {
-      const value = (v: Cell, i: number) =>
-        v === null ? null : numeric[i] && Number.isFinite(Number(v)) ? Number(v) : v;
-      return JSON.stringify(
-        d.rows.map((r) => Object.fromEntries(names.map((n, i) => [n, value(r[i] ?? null, i)]))),
-        null,
-        2,
-      );
+      const rows = d.rows.map((r) => {
+        const cells = Object.fromEntries(names.map((n, i) => [n, jsonCell(r[i] ?? null, numeric[i]!)]));
+        const members = Object.entries(cells).map(([name, value]) => `    ${JSON.stringify(name)}: ${value}`);
+        return members.length ? `  {\n${members.join(",\n")}\n  }` : "  {}";
+      });
+      return rows.length ? `[\n${rows.join(",\n")}\n]` : "[]";
     }
     case "sql": {
       const literal = (v: Cell, i: number) =>
@@ -85,7 +97,7 @@ export function exportData(
           ? "NULL"
           : numeric[i] && Number.isFinite(Number(v))
             ? v
-            : `'${(d.driver === "clickhouse" ? v.replace(/\\/g, "\\\\") : v).replace(/'/g, "''")}'`;
+            : `'${(d.driver === "clickhouse" || d.driver === "snowflake" ? v.replace(/\\/g, "\\\\") : v).replace(/'/g, "''")}'`;
       const head = `INSERT INTO ${quoteIdent(d.table, d.driver)} (${names.map((n) => quoteIdent(n, d.driver)).join(", ")}) VALUES`;
       return d.rows.map((r) => `${head} (${r.map(literal).join(", ")});`).join("\n");
     }

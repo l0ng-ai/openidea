@@ -179,7 +179,7 @@ impl SecretStore for FileSecretStore {
 }
 
 /// Largest response body a plugin receives.
-const MAX_RESPONSE: usize = 8 << 20;
+const MAX_RESPONSE: usize = 16 << 20;
 /// Largest stdout / stderr kept from a process.
 const MAX_OUTPUT: usize = 16 << 20;
 /// Most processes one plugin keeps running at once.
@@ -1276,12 +1276,13 @@ pub(super) fn commit_draft(
         };
         // Both callers have checked that the window's project is trusted.
         r.set_execution_allowed(true);
-        let pending = r.pending_changes(&repo.options, budget, &|path| Ok(workspace.vcs_encoding(path))).map_err(
-            |e| match e.kind {
+        let backend = &r as &dyn ide_vcs::Backend;
+        let pending = backend
+            .pending_changes(&repo.options, budget, &|path| Ok(workspace.vcs_encoding(path)))
+            .map_err(|e| match e.kind {
                 ide_core::error::ErrorKind::InvalidInput => HostError::Invalid(e.message),
                 _ => HostError::Failed(e.message),
-            },
-        )?;
+            })?;
         let root = to_ipc(r.root());
         for c in pending {
             budget -= c.diff.as_ref().map_or(0, String::len).min(budget);
@@ -1528,6 +1529,19 @@ impl HostApi for PluginApi {
             }
             return Err(error);
         }
+        Ok(())
+    }
+    fn open_diff(
+        &self,
+        client: &str,
+        diff: ide_plugin::ContentDiff,
+        file_name: Option<String>,
+    ) -> Result<(), HostError> {
+        super::execution::validate_diff(&diff)?;
+        if let Some(name) = &file_name {
+            super::execution::label(name, 256)?;
+        }
+        self.shared.sink.emit(Some(client), PluginEvent::OpenDiff { plugin_id: self.id().into(), diff, file_name });
         Ok(())
     }
     fn reply_content_tab(
@@ -2267,7 +2281,7 @@ impl HostApi for PluginApi {
                 let mut response = response;
                 while let Some(chunk) = response.chunk().await.map_err(|e| HostError::Failed(e.to_string()))? {
                     if body.len() + chunk.len() > MAX_RESPONSE {
-                        return Err(HostError::Failed("response larger than 8 MiB".into()));
+                        return Err(HostError::Failed(format!("response larger than {} MiB", MAX_RESPONSE >> 20)));
                     }
                     body.extend_from_slice(&chunk);
                 }
@@ -3950,6 +3964,72 @@ mod tests {
     }
 
     #[test]
+    fn fetch_accepts_responses_up_to_16_mib_and_rejects_larger_bodies() {
+        fn serve_bytes(total: usize) -> (u16, std::thread::JoinHandle<()>) {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let handle = std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0; 4096];
+                let _ = stream.read(&mut buf);
+                let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n");
+                if stream.write_all(header.as_bytes()).is_err() {
+                    return;
+                }
+                let chunk = [b'x'; 64 << 10];
+                let mut sent = 0;
+                while sent < total {
+                    let n = (total - sent).min(chunk.len());
+                    if stream.write_all(&chunk[..n]).is_err() {
+                        break;
+                    }
+                    sent += n;
+                }
+            });
+            (port, handle)
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let api = api(dir.path(), Arc::default());
+
+        let (ok_port, ok_worker) = serve_bytes(10 << 20);
+        let resp = api
+            .fetch(
+                HttpRequest {
+                    method: "GET".into(),
+                    url: format!("http://127.0.0.1:{ok_port}/"),
+                    headers: Vec::new(),
+                    body: None,
+                    timeout: Duration::from_secs(10),
+                    grants: vec![Capability::Net("127.0.0.1".into())],
+                },
+                &CancellationToken::new(),
+            )
+            .expect("10 MiB response within 16 MiB limit succeeds");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body.len(), 10 << 20);
+        ok_worker.join().unwrap();
+
+        let (big_port, big_worker) = serve_bytes(MAX_RESPONSE + (1 << 20));
+        let err = api
+            .fetch(
+                HttpRequest {
+                    method: "GET".into(),
+                    url: format!("http://127.0.0.1:{big_port}/"),
+                    headers: Vec::new(),
+                    body: None,
+                    timeout: Duration::from_secs(10),
+                    grants: vec![Capability::Net("127.0.0.1".into())],
+                },
+                &CancellationToken::new(),
+            )
+            .expect_err("response exceeding 16 MiB fails explicitly");
+        assert!(matches!(&err, HostError::Failed(msg) if msg.contains("response larger than 16 MiB")), "{err:?}");
+        big_worker.join().unwrap();
+    }
+
+    #[test]
     fn output_ring_keeps_utf8_and_is_withdrawn_on_stop() {
         let dir = tempfile::tempdir().unwrap();
         let api = api(dir.path(), Arc::default());
@@ -4045,6 +4125,11 @@ impl PluginApi {
         if items.len() > 10_000 || file.as_ref().and_then(|f| f.badge.as_ref()).is_some_and(|b| b.chars().count() > 2) {
             return Err(HostError::Invalid("decoration limit exceeded".into()));
         }
+        if let Some(note) = file.as_ref().and_then(|f| f.note.as_ref())
+            && (note.trim().is_empty() || note.chars().count() > 200 || note.contains(['\n', '\r']))
+        {
+            return Err(HostError::Invalid("a file note is one non-empty line of at most 200 characters".into()));
+        }
         items.retain(|d| decoration_style(&d.style));
         if items.iter().any(|d| d.range.start > d.range.end) {
             return Err(HostError::Invalid("reversed decoration range".into()));
@@ -4063,7 +4148,7 @@ impl PluginApi {
                 set_id: set.into(),
                 tree,
                 items,
-                file: file.filter(|f| decoration_style(&f.style)),
+                file: file.filter(|f| f.note.is_some() || decoration_style(&f.style)),
             })
         } else {
             None
@@ -4235,10 +4320,33 @@ mod workbench_tests {
             api.file_decorations(
                 Some(&path),
                 "tree",
-                Some(ide_plugin::FileDecoration { badge: Some("abc".into()), style: "info".into(), tooltip: None })
+                Some(ide_plugin::FileDecoration {
+                    badge: Some("abc".into()),
+                    style: "info".into(),
+                    tooltip: None,
+                    note: None
+                })
             )
             .is_err()
         );
+        let note = |text: &str| ide_plugin::FileDecoration {
+            badge: None,
+            style: String::new(),
+            tooltip: Some("why".into()),
+            note: Some(text.into()),
+        };
+        api.file_decorations(Some(&path), "notes", Some(note("entry point"))).unwrap();
+        let notes = |api: &PluginApi| {
+            api.shared.decoration_sets()["test"]
+                .iter()
+                .filter(|s| s.tree && s.set_id == "notes")
+                .map(|s| s.file.as_ref().and_then(|f| f.note.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(notes(&api), [Some("entry point".to_string())], "kept without a style");
+        for bad in ["", "two\nlines", &"x".repeat(201)] {
+            assert!(api.file_decorations(Some(&path), "notes", Some(note(bad))).is_err(), "{bad:?}");
+        }
         api.shared.clear_plugin("test", true);
         assert!(api.shared.decoration_sets().is_empty());
     }

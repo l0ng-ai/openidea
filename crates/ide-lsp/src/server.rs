@@ -127,7 +127,7 @@ pub struct Server {
     published: Mutex<HashMap<PathBuf, Instant>>,
     /// Woken on every `publishDiagnostics` (Inspect Code waits on it).
     pub published_notify: Notify,
-    /// Woken when the last `$/progress` task ends.
+    /// Woken when an empty answer stops being suspect (see [`Server::indexing`]).
     idle_notify: Notify,
     /// `experimental/serverStatus` (rust-analyzer): `None` until the server sends
     /// one, then whether it is still loading the project.
@@ -148,6 +148,8 @@ pub struct Server {
     /// The instance whose just registered external project is loading, until an open file's
     /// diagnostics arrive (0: none).
     pub external_loading: std::sync::atomic::AtomicU64,
+    /// jdtls sent `ServiceReady` on this instance: the project is imported.
+    java_ready: std::sync::atomic::AtomicBool,
     /// kotlin-lsp's project import as the current instance last reported it.
     pub(crate) import_state: watch::Sender<Option<crate::kotlin_lsp::ImportState>>,
 }
@@ -195,6 +197,7 @@ impl Server {
             external_diagnostics: std::sync::atomic::AtomicBool::new(false),
             external_refresh_queued: std::sync::atomic::AtomicBool::new(false),
             external_loading: std::sync::atomic::AtomicU64::new(0),
+            java_ready: std::sync::atomic::AtomicBool::new(false),
             import_state: watch::channel(None).0,
         }
     }
@@ -596,6 +599,22 @@ impl Server {
         self.phase_ended();
     }
 
+    /// Whether an empty search answer may only mean the server has not indexed the project
+    /// yet. jdtls' searches wait for its index themselves, and the progress it reports once
+    /// the project is imported is background work (builds, validation): only the import counts.
+    pub fn indexing(&self) -> bool {
+        if self.name == "jdtls" {
+            return self.is_busy() && !self.java_ready.load(std::sync::atomic::Ordering::Acquire);
+        }
+        self.is_busy()
+    }
+
+    /// Records jdtls' `ServiceReady`.
+    pub fn set_java_ready(&self) {
+        self.java_ready.store(true, std::sync::atomic::Ordering::Release);
+        self.phase_ended();
+    }
+
     /// Whether progress token `token` is still running on this instance.
     pub fn has_progress(&self, token: &str) -> bool {
         self.progress.lock().contains_key(token)
@@ -613,7 +632,7 @@ impl Server {
 
     fn phase_ended(&self) {
         self.phase_notify.notify_waiters();
-        if !self.is_busy() {
+        if !self.indexing() {
             self.idle_notify.notify_waiters();
         }
     }
@@ -623,11 +642,29 @@ impl Server {
         self.phase_notify.notified()
     }
 
-    /// Waits until no `$/progress` task is active; false on timeout or cancellation.
-    pub async fn wait_idle(&self, timeout: Duration, cancel: &CancellationToken) -> bool {
+    /// Waits until [`Server::indexing`] ends; false on timeout or cancellation.
+    pub async fn wait_indexed(&self, timeout: Duration, cancel: &CancellationToken) -> bool {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let notified = self.idle_notify.notified();
+            if !self.indexing() || self.running().is_none() {
+                return !self.indexing();
+            }
+            tokio::select! {
+                () = notified => {}
+                () = tokio::time::sleep_until(deadline) => return !self.indexing(),
+                () = cancel.cancelled() => return false,
+            }
+        }
+    }
+
+    /// Waits until no `$/progress` task is active, background work included (jdtls' builds,
+    /// rust-analyzer's `cargo check`), unlike [`Server::wait_indexed`]; false on timeout or
+    /// cancellation.
+    pub async fn wait_idle(&self, timeout: Duration, cancel: &CancellationToken) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let notified = self.phase_notify.notified();
             if !self.is_busy() || self.running().is_none() {
                 return !self.is_busy();
             }
@@ -723,6 +760,7 @@ impl Server {
     pub fn take_progress(&self) -> Vec<(TaskId, String)> {
         *self.loading.lock() = None;
         self.external_loading.store(0, std::sync::atomic::Ordering::Release);
+        self.java_ready.store(false, std::sync::atomic::Ordering::Release);
         self.progress.lock().drain().map(|(_, p)| (p.task, p.title)).collect()
     }
 
@@ -730,6 +768,20 @@ impl Server {
     pub fn set_diagnostics(&self, path: PathBuf, items: Vec<lsp::Diagnostic>) -> Vec<lsp::Diagnostic> {
         set_or_remove(&mut self.pushed.lock(), path.clone(), items);
         self.combine(path)
+    }
+
+    /// [`Server::set_diagnostics`] for a publication tagged with a document version older than
+    /// the text the server has now: shown, but not an answer for the current text, so
+    /// [`Server::last_published`] keeps its time.
+    pub fn set_obsolete_diagnostics(&self, path: PathBuf, items: Vec<lsp::Diagnostic>) -> Vec<lsp::Diagnostic> {
+        let before = self.last_published(&path);
+        let shown = self.set_diagnostics(path.clone(), items);
+        let mut published = self.published.lock();
+        match before {
+            Some(at) => published.insert(path, at),
+            None => published.remove(&path),
+        };
+        shown
     }
 
     /// Records a pulled report for `path` (`None` items: unchanged since `result_id`'s
@@ -957,7 +1009,7 @@ mod tests {
                 stalled: true,
             },
         );
-        assert!(!s.is_busy(), "a stuck task must not hold wait_idle or ReferencesIncomplete::Indexing");
+        assert!(!s.is_busy(), "a stuck task must not hold wait_indexed or ReferencesIncomplete::Indexing");
         s.progress.lock().get_mut("p").unwrap().stalled = false;
         assert!(s.is_busy(), "a reporting task keeps the server busy");
     }

@@ -48,7 +48,7 @@ async fn resolve_launch(
     let build = policy != BuildPolicy::NoBuild;
     let full = policy == BuildPolicy::Rebuild;
     let build_kind = if full { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
-    let (model, external, delegated, prefer_maven) = {
+    let (model, external, mut delegated, prefer_maven, is_maven) = {
         let project = project.clone();
         let settings = settings.clone();
         let module = module.clone();
@@ -68,13 +68,29 @@ async fn resolve_launch(
                     prefer_maven,
                 );
             let external = non_java || delegated;
-            (model, external, delegated, prefer_maven)
+            (model, external, delegated, prefer_maven, is_maven)
         })
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
     };
-    let external_build = if delegated { Some(project.lsp.java_external_build(&module, cancel).await?) } else { None };
+    let mut external_build =
+        if delegated { Some(project.lsp.java_external_build(&module, cancel).await?) } else { None };
     let mut info = project.lsp.java_launch(&module, test, build && !delegated, full, delegated, cancel).await?;
+    if info.errors.iter().any(|e| processor_recreated_a_file(&e.message)) {
+        if build && !delegated && is_maven {
+            // JDT runs an annotation processor again over sources it generated in the same build
+            // (MapStruct over MapStruct-Plus's mappers) and fails on the file it already wrote;
+            // javac doesn't, so Maven builds the module.
+            tracing::info!("Annotation processing failed in JDT; building with Maven");
+            delegated = true;
+            external_build = Some(project.lsp.java_external_build(&module, cancel).await?);
+            info = project.lsp.java_launch(&module, test, false, false, true, cancel).await?;
+        }
+        if delegated {
+            // Maven runs the annotation processors itself; JDT's failure to rerun one is no compile error.
+            drop_processor_recreate_errors(&mut info);
+        }
+    }
     let lsp_ms = started.elapsed().as_millis();
     let data_dir = host.local_data_dir.clone();
     let cancel = cancel.clone();
@@ -386,9 +402,59 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
 }
 
+/// An annotation processor's error for writing a file this build already wrote (JDT's
+/// `IdeFilerImpl`: "Source file already created", javac's Filer: "Attempt to recreate a file").
+fn processor_recreated_a_file(message: &str) -> bool {
+    message.contains("FilerException")
+        && (message.contains("Source file already created") || message.contains("Attempt to recreate a file"))
+}
+
+fn drop_processor_recreate_errors(info: &mut JavaLaunchInfo) {
+    let before = info.errors.len();
+    info.errors.retain(|e| !processor_recreated_a_file(&e.message));
+    info.error_count = info.error_count.saturating_sub((before - info.errors.len()) as u32);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognises_a_processor_recreating_its_output() {
+        assert!(processor_recreated_a_file(
+            "Internal error in the mapping processor: java.lang.RuntimeException: \
+             javax.annotation.processing.FilerException: Source file already created: /m/target/generated-sources/annotations/a/AMapper__4Impl.java"
+        ));
+        assert!(processor_recreated_a_file(
+            "javax.annotation.processing.FilerException: Attempt to recreate a file for type a.B"
+        ));
+        assert!(!processor_recreated_a_file("Source file already created"));
+        assert!(!processor_recreated_a_file("cannot find symbol"));
+    }
+
+    #[test]
+    fn a_delegated_launch_ignores_jdt_processor_recreate_errors() {
+        let error = |message: &str| ide_lsp::jdtls::JavaCompileError {
+            path: "src/main/java/a/A.java".into(),
+            line: 1,
+            column: 1,
+            message: message.into(),
+        };
+        let mut info = JavaLaunchInfo {
+            error_count: 2,
+            errors: vec![
+                error(
+                    "javax.annotation.processing.FilerException: Source file already created: /m/AMapper__1Impl.java",
+                ),
+                error("cannot find symbol"),
+            ],
+            ..Default::default()
+        };
+        drop_processor_recreate_errors(&mut info);
+        assert_eq!(info.error_count, 1);
+        assert_eq!(info.errors.len(), 1);
+        assert_eq!(info.errors[0].message, "cannot find symbol");
+    }
 
     #[test]
     fn delegated_launches_with_jdt_errors_recompile_with_maven() {

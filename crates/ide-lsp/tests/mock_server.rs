@@ -760,6 +760,40 @@ async fn java_classpath_does_not_retry_permanently_unavailable_servers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn external_maven_import_joins_the_opened_root_without_replacing_discovery() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let external = tempfile::tempdir().unwrap();
+    let external = dunce::canonicalize(external.path()).unwrap();
+    std::fs::write(external.join("pom.xml"), "<project><artifactId>b</artifactId></project>").unwrap();
+    let outside = external.join("src/Main.java");
+    std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+    std::fs::write(&outside, "class External {}").unwrap();
+    let inside = h.root.join("src/App.java");
+    std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
+    std::fs::write(&inside, "class App {}").unwrap();
+    // An in-root build with its own marker keeps a separate server.
+    let nested = h.root.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("mock.toml"), "").unwrap();
+    let nested_file = nested.join("Nested.java");
+    std::fs::write(&nested_file, "class Nested {}").unwrap();
+
+    h.mgr.set_jdtls_import_roots(vec![external.clone()]);
+    h.mgr.did_open(DocId::next(), &inside, &h.lang, 1, "class App {}");
+    h.mgr.did_open(DocId::next(), &outside, &h.lang, 1, "class External {}");
+    h.mgr.did_open(DocId::next(), &nested_file, &h.lang, 1, "class Nested {}");
+    let state = h.launcher.state("jdtls");
+    eventually(|| state.requested("initialize").len() == 2).await;
+    let inits = state.requested("initialize");
+    let project = inits.iter().find(|init| init["rootUri"] == uri_of(&h.root)).unwrap();
+    assert_eq!(project["initializationOptions"]["workspaceFolders"], json!([uri_of(&h.root), uri_of(&external)]));
+    assert!(project["initializationOptions"].get("projectConfigurations").is_none());
+    assert!(state.requested("initialize").iter().any(|init| init["rootUri"] == uri_of(&nested)));
+    assert_eq!(h.mgr.servers().len(), 2);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn shared_java_external_roots_reach_initialization_queries_and_watches() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     h.mgr.set_jdtls_shared_hook(Box::new(|| true));
@@ -2142,6 +2176,76 @@ async fn missing_server_reports_once() {
     assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
     assert_eq!(h.mgr.document_symbols(doc).await.unwrap(), None);
     assert!(h.mgr.semantic_tokens(doc).await.unwrap().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn checking_a_document_saves_it_and_waits_for_fresh_diagnostics() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let s = h.launcher.state("mock");
+    let (doc, path) = h.open("a.mk", "bad\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    // The server answers the save with a publish, as an on-save check (`cargo check`) does.
+    let (server, uri) = (s.clone(), uri_of(&path));
+    let publisher = tokio::spawn(async move {
+        eventually(|| !server.notified("textDocument/didSave").is_empty()).await;
+        let diag = json!({ "range": {"start":{"line":0,"character":0},"end":{"line":0,"character":3}},
+                           "severity": 1, "message": "on save" });
+        server.peer().notify("textDocument/publishDiagnostics", json!({ "uri": uri, "diagnostics": [diag] })).unwrap();
+    });
+    let cancel = CancellationToken::new();
+    let changed = Some(std::time::Instant::now());
+    let check = h.mgr.check_document(doc, changed, Duration::from_secs(20), &cancel).await.unwrap();
+    publisher.await.unwrap();
+    assert_eq!(check.diagnostics.iter().map(|d| d.message.as_str()).collect::<Vec<_>>(), ["on save"]);
+    assert!(check.servers[0].checked && !check.servers[0].incomplete, "{:?}", check.servers);
+
+    // A change the server never answered: what it has is reported as not fresh.
+    let changed = Some(std::time::Instant::now());
+    let stale = h.mgr.check_document(doc, changed, Duration::from_millis(800), &cancel).await.unwrap();
+    assert!(stale.servers[0].checked && stale.servers[0].incomplete, "{:?}", stale.servers);
+    assert_eq!(stale.diagnostics.len(), 1);
+
+    // The text changed before the call (the file watcher reloaded it), so the caller saw no
+    // change of its own: the old publication is still not fresh.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 3), "good")], &|| "good\n".to_owned());
+    let reloaded = h.mgr.check_document(doc, None, Duration::from_millis(800), &cancel).await.unwrap();
+    assert!(reloaded.servers[0].incomplete, "{:?}", reloaded.servers);
+
+    // A late publication tagged with the old version is no answer for the current text.
+    s.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "version": 1, "diagnostics": [] }))
+        .unwrap();
+    let late = h.mgr.check_document(doc, None, Duration::from_millis(800), &cancel).await.unwrap();
+    assert!(late.servers[0].incomplete, "{:?}", late.servers);
+    // One for the current version is.
+    s.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "version": 2, "diagnostics": [] }))
+        .unwrap();
+    let fresh = h.mgr.check_document(doc, None, Duration::from_secs(5), &cancel).await.unwrap();
+    assert!(fresh.servers[0].checked && !fresh.servers[0].incomplete, "{:?}", fresh.servers);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn checking_a_document_reports_servers_that_cannot_check() {
+    let cancel = CancellationToken::new();
+    let h = harness(&[("ghost", json!({}))]);
+    h.launcher.state("ghost").missing.store(true, Ordering::SeqCst);
+    let (doc, _) = h.open("a.mk", "x");
+    h.wait_status("ghost", ServerStatus::Missing).await;
+    let check = h.mgr.check_document(doc, None, Duration::from_secs(5), &cancel).await.unwrap();
+    assert!(check.diagnostics.is_empty());
+    let s = &check.servers[0];
+    assert_eq!((s.name.as_str(), s.status, s.checked), ("ghost", ServerStatus::Missing, false));
+    assert_eq!(s.message.as_deref(), Some("install ghost"));
+
+    let h = harness(&[("mock", incremental_caps())]);
+    h.mgr.set_config_hook(Box::new(|cfg, _| cfg.launch_error = Some("needs JDK 21".into())));
+    let (doc, _) = h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Misconfigured).await;
+    let check = h.mgr.check_document(doc, None, Duration::from_secs(5), &cancel).await.unwrap();
+    assert_eq!(check.servers[0].status, ServerStatus::Misconfigured);
+    assert!(check.servers[0].message.as_deref().is_some_and(|m| m.contains("needs JDK 21")), "{:?}", check.servers);
+    assert!(!check.servers[0].checked);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4923,6 +5027,39 @@ async fn scoped_java_usages_search_the_sources_unless_libraries_are_asked_for() 
         assert_eq!(arguments.len(), if libraries { 4 } else { 5 });
     }
     assert!(seen.lock().is_empty());
+}
+
+/// jdtls' searches wait for its index themselves, and it reports background work (builds,
+/// validation) for long stretches: a method nothing calls is answered at once meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_usages_of_an_unused_method_do_not_wait_for_background_work() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    s.respond("workspace/executeCommand", json!([]));
+    let (doc, _) = h.open("a.java", "void unused() {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    s.peer()
+        .notify("$/progress", json!({ "token": "build", "value": { "kind": "begin", "title": "Building" } }))
+        .unwrap();
+    h.wait_status("jdtls", ServerStatus::Busy).await;
+    // Until the project is imported, finding nothing may only mean it is not indexed yet.
+    let refs = h.mgr.references(doc, Pos::new(0, 6), true, false, Default::default()).await.unwrap();
+    assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
+    s.peer().notify("language/status", json!({"type": "ServiceReady", "message": "ServiceReady"})).unwrap();
+    for _ in 0..200 {
+        let refs = h.mgr.references(doc, Pos::new(0, 6), true, false, Default::default()).await.unwrap();
+        if refs.incomplete.is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let started = std::time::Instant::now();
+    let refs = h.mgr.references(doc, Pos::new(0, 6), true, true, Default::default()).await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2), "waited {:?}", started.elapsed());
+    assert!(refs.locations.is_empty());
+    assert_eq!(refs.incomplete, None);
 }
 
 /// A library method's usages in the sources are shown before the dependencies and the JDK

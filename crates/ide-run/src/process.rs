@@ -498,7 +498,8 @@ impl ProcessManager {
                     None,
                 )?;
             }
-            spawn_pump(rx, on_output.clone(), entry.clone(), sink, options.encoding.clone(), notice)?;
+            let decoder = || OutputDecoder::for_pipes(options.encoding.as_deref());
+            spawn_pump(rx, on_output.clone(), entry.clone(), sink, [decoder(), decoder()], notice)?;
             Ok(())
         })();
         if let Err(e) = result {
@@ -629,7 +630,10 @@ impl ProcessManager {
             #[cfg(unix)]
             Some(Box::new(wait_readable)),
         )
-        .and_then(|_| spawn_pump(rx, on_output, entry.clone(), sink, options.encoding.clone(), None));
+        .and_then(|_| {
+            let decoder = || OutputDecoder::for_label(options.encoding.as_deref());
+            spawn_pump(rx, on_output, entry.clone(), sink, [decoder(), decoder()], None)
+        });
         if let Err(e) = result {
             let _ = child.kill();
             let _ = child.wait();
@@ -1120,18 +1124,35 @@ fn chunk(stream: Stream, text: String) -> OutputChunk {
     }
 }
 
+/// Appends what `decode` writes to `pending`, through the notice filter when there is one.
+fn emit(
+    decode: impl FnOnce(&mut String),
+    notice: &mut Option<ide_core::output_encoding::NoticeFilter>,
+    decoded: &mut String,
+    pending: &mut String,
+) {
+    match notice {
+        Some(filter) => {
+            decode(decoded);
+            filter.filter(decoded, pending);
+            decoded.clear();
+        }
+        None => decode(pending),
+    }
+}
+
 /// Merges both streams in arrival order, batching consecutive output of the same stream.
+/// `decoders` decode stdout and stderr.
 fn spawn_pump(
     rx: mpsc::Receiver<Msg>,
     on_output: OutputFn,
     entry: Arc<Entry>,
     sink: SharedSink,
-    encoding: Option<String>,
+    decoders: [OutputDecoder; 2],
     notice: Option<String>,
 ) -> std::io::Result<()> {
     std::thread::Builder::new().name(format!("openidea-run-pump-{}", entry.id.0)).spawn(move || {
-        let mut out_dec = OutputDecoder::for_label(encoding.as_deref());
-        let mut err_dec = OutputDecoder::for_label(encoding.as_deref());
+        let [mut out_dec, mut err_dec] = decoders;
         // "Picked up JAVA_TOOL_OPTIONS: …" from every JVM given the console encoding, on
         // either stream (`spring-boot:run` copies its fork's stderr to Maven's stdout).
         let filter = || notice.clone().map(ide_core::output_encoding::NoticeFilter::new);
@@ -1140,6 +1161,8 @@ fn spawn_pump(
         let mut pending = String::new();
         let mut pending_stream = Stream::Stdout;
         let mut batch_started: Option<Instant> = None;
+        // Since when a decoder holds part of a line back to tell its encoding.
+        let mut held_since: Option<Instant> = None;
         let mut status: Option<Exit> = None;
         let mut drain_deadline: Option<Instant> = None;
 
@@ -1154,6 +1177,7 @@ fn spawn_pump(
             let now = Instant::now();
             let wait = [
                 batch_started.map(|t| (t + BATCH_INTERVAL).saturating_duration_since(now)),
+                held_since.map(|t| (t + BATCH_INTERVAL).saturating_duration_since(now)),
                 drain_deadline.map(|t| t.saturating_duration_since(now)),
             ]
             .into_iter()
@@ -1170,14 +1194,8 @@ fn spawn_pump(
                         Stream::Stdout => (&mut out_dec, &mut out_notice),
                         Stream::Stderr => (&mut err_dec, &mut err_notice),
                     };
-                    match notice {
-                        Some(filter) => {
-                            dec.decode_into(&bytes, &mut decoded);
-                            filter.filter(&decoded, &mut pending);
-                            decoded.clear();
-                        }
-                        None => dec.decode_into(&bytes, &mut pending),
-                    }
+                    emit(|out| dec.decode_into(&bytes, out), notice, &mut decoded, &mut pending);
+                    held_since = if out_dec.holds() || err_dec.holds() { held_since.or(Some(now)) } else { None };
                     if !pending.is_empty() && batch_started.is_none() {
                         batch_started = Some(Instant::now());
                     }
@@ -1192,6 +1210,25 @@ fn spawn_pump(
                 Err(RecvTimeoutError::Timeout) => {
                     if drain_deadline.is_some_and(|d| Instant::now() >= d) {
                         break;
+                    }
+                    // Nothing more came: show a held prompt.
+                    if held_since.is_some_and(|t| t.elapsed() >= BATCH_INTERVAL) {
+                        held_since = None;
+                        for (stream, dec, notice) in [
+                            (Stream::Stdout, &mut out_dec, &mut out_notice),
+                            (Stream::Stderr, &mut err_dec, &mut err_notice),
+                        ] {
+                            if dec.holds() {
+                                if stream != pending_stream {
+                                    flush(&mut pending, pending_stream, &mut batch_started);
+                                    pending_stream = stream;
+                                }
+                                emit(|out| dec.release(out), notice, &mut decoded, &mut pending);
+                            }
+                        }
+                        if !pending.is_empty() && batch_started.is_none() {
+                            batch_started = Some(Instant::now());
+                        }
                     }
                     if batch_started.is_some_and(|t| t.elapsed() >= BATCH_INTERVAL) {
                         flush(&mut pending, pending_stream, &mut batch_started);

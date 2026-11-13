@@ -19,8 +19,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const DEFAULT_TIMEOUT_MS: usize = 10_000;
-/// No limit in JetBrains; the process keeps running after the timeout anyway.
-const MAX_TIMEOUT_MS: usize = 1_800_000;
 /// Output of a failed before-launch process kept for the error message.
 const MAX_PROCESS_OUTPUT_LENGTH: usize = 20_000;
 /// A before-launch build gets this long.
@@ -541,7 +539,7 @@ tool window; output files are private and deleted after a day.",
             )?;
             let wait = call.flag("waitForExit", true)?;
             // As JetBrains: `timeout` is ignored without waiting, and 0 returns without waiting.
-            let limit = if wait { Some(timeout(&call, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)?) } else { None };
+            let limit = if wait { Some(timeout(&call, DEFAULT_TIMEOUT_MS)?) } else { None };
             let envs = call.args.get("envs").filter(|v| !v.is_null()).map(|_| call.str_map("envs")).transpose()?;
             let configs = load_configs(&call).await?;
             let mut config = match &target {

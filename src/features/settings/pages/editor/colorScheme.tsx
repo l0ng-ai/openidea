@@ -241,7 +241,9 @@ const SAMPLES: Record<string, CodeSample> = {
         ["black ", "ansiBlack"],
         ["red ", "ansiRed"],
         ["green ", "ansiGreen"],
-        ["yellow ", "ansiYellow"],
+        ["yellow", "ansiYellow"],
+      ],
+      [
         ["blue ", "ansiBlue"],
         ["magenta ", "ansiMagenta"],
         ["cyan ", "ansiCyan"],
@@ -251,7 +253,9 @@ const SAMPLES: Record<string, CodeSample> = {
         ["dark ", "ansiBrightBlack"],
         ["bright-red ", "ansiBrightRed"],
         ["bright-green ", "ansiBrightGreen"],
-        ["bright-yellow ", "ansiBrightYellow"],
+        ["bright-yellow", "ansiBrightYellow"],
+      ],
+      [
         ["bright-blue ", "ansiBrightBlue"],
         ["bright-magenta ", "ansiBrightMagenta"],
         ["bright-cyan ", "ansiBrightCyan"],

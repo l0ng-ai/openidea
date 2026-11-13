@@ -117,6 +117,7 @@ export class EditorSlot {
           indent: model.effectiveIndent(),
           formatIndent: model.formatIndent(),
           wrapOverride: model.softWrapOverride,
+          renderedDocsOverride: model.renderedDocsOverride,
           extra: this.slotExtensions(),
         }),
       ],

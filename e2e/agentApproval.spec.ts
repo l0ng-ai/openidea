@@ -49,6 +49,7 @@ const entries: AgentEntry[] = [
     type: "permission",
     id: 1,
     title: `Run ${command}`,
+    command,
     options: [
       { id: "once", kind: "allow_once", name: "Allow once" },
       { id: "always", kind: "allow_always", name: `Always allow \`${command}\`` },

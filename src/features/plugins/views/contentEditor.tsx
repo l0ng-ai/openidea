@@ -23,7 +23,12 @@ import logStyles from "@/ui/LogPane.module.css";
 import { notifyEditorDocumentChanged, type EditorDocumentLifecycle, type EditorInput } from "@/workbench/contributions";
 import { errorText, usePlugins } from "../store";
 import { bindContentControls } from "./contentActions";
-import { cancelPluginContentRequests, dispatchContentTabAction, type PluginContentEditorData } from "./contentTab";
+import {
+  cancelPluginContentRequests,
+  dispatchContentTabAction,
+  openPluginDiff,
+  type PluginContentEditorData,
+} from "./contentTab";
 
 export function pluginContentEditorTitle(input: EditorInput): string {
   const s = sessions.get(input.key);
@@ -311,20 +316,7 @@ function PluginContentEditorBody({ input, initialData }: { input: EditorInput; i
             notifyEditorDocumentChanged();
           }
           if (reply.diff) {
-            void executeAction("vcs.openDiff", {
-              path: session.data.fileName ?? session.data.title,
-              title: reply.diff.title ?? session.data.title,
-              left: {
-                type: "text",
-                text: reply.diff.left,
-                label: reply.diff.leftLabel ?? tx("Before"),
-              },
-              right: {
-                type: "text",
-                text: reply.diff.right,
-                label: reply.diff.rightLabel ?? tx("After"),
-              },
-            });
+            openPluginDiff(reply.diff, session.data.fileName ?? session.data.title, session.data.title);
           }
           if (reply.status !== undefined) {
             setStatus(reply.status ? { text: reply.status, isError: false } : null);

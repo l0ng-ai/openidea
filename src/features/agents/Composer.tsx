@@ -62,6 +62,7 @@ import { useCompletionAnchor } from "./useCompletionAnchor";
 import { useAgentSettings } from "./agentSettings";
 import styles from "./Composer.module.css";
 import { isImeKey } from "@/platform/ime";
+import { isMacHost } from "@/platform/keymap";
 
 const MAX_PROMPT_HEIGHT = 280;
 const MAX_ITEMS = 12;
@@ -138,9 +139,6 @@ export function Composer(props: ComposerProps) {
   const [files, setFiles] = useState<Item[]>([]);
   const [active, setActive] = useState(0);
   const composing = useRef(false);
-  // Start of the `@file` / `/command` still being typed: it edits character by character
-  // until it's completed or the caret leaves it, then it acts as one tag.
-  const typing = useRef<number | null>(null);
   const recalled = useRef<{ index: number; stash: string }>({ index: -1, stash: "" });
   const { sendWith, whileRunning } = useAgentSettings();
 
@@ -280,17 +278,14 @@ export function Composer(props: ComposerProps) {
       updateComposer(id, { files: [...current.files, { path: item.path, rel } satisfies FileRef] });
       if (item.dir && descend) {
         const insert = mentionOf(rel);
-        typing.current = completion.from;
         setText(text.slice(0, completion.from) + insert + text.slice(completion.to), completion.from + insert.length);
         return;
       }
-      typing.current = null;
       const next = applyCompletion(text, completion, mentionOf(rel));
       setText(next.text, next.caret);
     } else {
       // Inserted in place: the order of the message is kept, and the text is tagged
       // where it stands (see the mirror below the textarea).
-      typing.current = null;
       const next = applyCompletion(text, completion, `/${item.command.name}`);
       setText(next.text, next.caret);
     }
@@ -434,37 +429,6 @@ export function Composer(props: ComposerProps) {
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (composing.current || isImeKey(e.nativeEvent)) return;
-    const el = e.currentTarget;
-    if (!e.altKey && !e.metaKey && !e.ctrlKey && el.selectionStart === el.selectionEnd) {
-      const backward = e.key === "Backspace" || e.key === "ArrowLeft";
-      const forward = e.key === "Delete" || e.key === "ArrowRight";
-      if (backward || forward) {
-        let offset = 0;
-        for (const token of tokens) {
-          const end = offset + token.value.length;
-          const caret = el.selectionStart;
-          if (
-            token.kind !== "text" &&
-            offset !== typing.current &&
-            (backward ? caret > offset && caret <= end : caret >= offset && caret < end)
-          ) {
-            e.preventDefault();
-            if (e.key === "Backspace" || e.key === "Delete") {
-              setText(text.slice(0, offset) + text.slice(end), offset);
-            } else {
-              const next = backward ? offset : end;
-              el.setSelectionRange(
-                e.shiftKey ? Math.min(caret, next) : next,
-                e.shiftKey ? Math.max(caret, next) : next,
-              );
-            }
-            setCompletion(null);
-            return;
-          }
-          offset = end;
-        }
-      }
-    }
     if (open) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -489,6 +453,12 @@ export function Composer(props: ComposerProps) {
       e.preventDefault();
       if (!props.disabled) props.onSubmit(send === "now");
       recalled.current = { index: -1, stash: "" };
+      return;
+    }
+    // macOS text boxes scroll on Home / End and leave the caret where it is.
+    if ((e.key === "Home" || e.key === "End") && !e.altKey && !e.ctrlKey && !e.metaKey && isMacHost()) {
+      e.preventDefault();
+      getSelection()?.modify(e.shiftKey ? "extend" : "move", e.key === "Home" ? "backward" : "forward", "lineboundary");
       return;
     }
     if (e.key === "Tab" && e.shiftKey) {
@@ -637,19 +607,11 @@ export function Composer(props: ComposerProps) {
           value={text}
           aria-label={tx("Message")}
           placeholder={tx(props.placeholder)}
-          onChange={(e) => {
-            const value = e.target.value;
-            const from = completionAt(value, e.target.selectionStart)?.from ?? null;
-            // Typing into a tag reopens it; deleting up to a finished one leaves it whole.
-            if (value.length > text.length) typing.current = from;
-            else if (from !== typing.current) typing.current = null;
-            setText(value, e.target.selectionStart, false);
-          }}
+          onChange={(e) => setText(e.target.value, e.target.selectionStart, false)}
           // The controlled text, not the event's value: closing the completion popup can emit a
           // stale select event with the old text.
           onSelect={(e) => {
             const caret = e.currentTarget.selectionStart;
-            if (completionAt(e.currentTarget.value, caret)?.from !== typing.current) typing.current = null;
             setCompletion(composing.current ? null : completionAt(text, caret));
           }}
           onCompositionStart={() => {

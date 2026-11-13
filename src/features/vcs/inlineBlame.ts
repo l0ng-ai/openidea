@@ -62,6 +62,10 @@ class BlameCache {
 }
 
 class BlameWidget extends WidgetType {
+  /** Last offset applied, so the observer does not rewrite the style on every keystroke. */
+  private appliedWidth = -1;
+  private observer: MutationObserver | undefined;
+
   constructor(readonly line: BlameLine) {
     super();
   }
@@ -70,11 +74,34 @@ class BlameWidget extends WidgetType {
     return formatInlineBlame(other.line) === formatInlineBlame(this.line) && other.line.commit === this.line.commit;
   }
 
+  /**
+   * A code-vision hint drawn at the line end is out of flow (see codeLens.ts), so it does not make
+   * room for itself: step the blame past its measured width, as IDEA lays its line-end inlays out.
+   * The hint can also appear (or go away) after this widget mounted, hence the observer below.
+   */
+  private stepPastHint(el: HTMLElement) {
+    const hint = el.closest(".cm-line")?.querySelector<HTMLElement>(".cm-openidea-lensInlineInner");
+    const width = hint ? Math.round(hint.getBoundingClientRect().width) : 0;
+    if (width === this.appliedWidth) return;
+    this.appliedWidth = width;
+    el.style.marginLeft = width ? `calc(3ch + ${width}px)` : "";
+  }
+
   toDOM() {
     const el = document.createElement("span");
     el.className = "cm-vcs-inline-blame";
     el.textContent = formatInlineBlame(this.line);
     el.contentEditable = "false";
+    // The element is only measurable once CodeMirror has inserted it: defer to the next task, not a
+    // nested frame, so a widget that goes away first simply skips.
+    setTimeout(() => {
+      if (!el.isConnected) return;
+      this.stepPastHint(el);
+      const line = el.closest(".cm-line");
+      if (!line) return;
+      this.observer = new MutationObserver(() => this.stepPastHint(el));
+      this.observer.observe(line, { childList: true, subtree: true });
+    }, 0);
     if (!isUncommitted(this.line)) {
       el.setAttribute("role", "button");
       el.tabIndex = 0;
@@ -89,6 +116,11 @@ class BlameWidget extends WidgetType {
       });
     }
     return el;
+  }
+
+  destroy(): void {
+    this.observer?.disconnect();
+    this.observer = undefined;
   }
 }
 

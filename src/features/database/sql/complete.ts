@@ -68,13 +68,13 @@ export function quoteIdent(name: string, driver: DbDriver): string {
   const plain =
     driver === "postgres"
       ? /^[a-z_][a-z0-9_$]*$/
-      : // Oracle folds unquoted names to upper case; a lower-case name must stay quoted.
-        driver === "oracle"
+      : // Oracle and Snowflake fold unquoted names to upper case; a lower-case name must stay quoted.
+        driver === "oracle" || driver === "snowflake"
         ? /^[A-Z_][A-Z0-9_$]*$/
         : driver === "clickhouse"
           ? /^[A-Za-z_][A-Za-z0-9_]*$/
           : /^[A-Za-z_][A-Za-z0-9_$]*$/;
-  if (plain.test(name) && !isReserved(name)) return name;
+  if (plain.test(name) && !isReserved(name, driver)) return name;
   if (driver === "clickhouse") return `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   const q = driver === "mysql" ? "`" : '"';
   return q + name.split(q).join(q + q) + q;
@@ -99,7 +99,25 @@ export function aliasFor(table: string, taken: ReadonlySet<string>): string {
   return a;
 }
 
+/**
+ * What lies outside the schema model, for `database.schema.table` names (Snowflake): the data
+ * source's databases, and the schemas and tables of one, as far as they are loaded. Names are
+ * matched the way the dialect matches them.
+ */
+export interface SqlCatalog {
+  databases: readonly string[];
+  /** Schemas of a database (`null`: not a database, or not loaded). */
+  schemas(database: string): readonly string[] | null;
+  tables(database: string, schema: string): ReadonlyArray<{ name: string; view: boolean }> | null;
+  /** Tables of the other databases whose name starts with `prefix` (at most `limit`). */
+  search?(
+    prefix: string,
+    limit: number,
+  ): ReadonlyArray<{ database: string; schema: string; name: string; view: boolean }>;
+}
+
 export interface CompletionInput {
+  catalog?: SqlCatalog;
   model: DbCompletion | null;
   analysis: Analysis;
   driver: DbDriver;
@@ -107,7 +125,7 @@ export interface CompletionInput {
   sourceName?: string;
 }
 
-export function sqlCandidates({ model, analysis: a, driver, sourceName }: CompletionInput): SqlCandidate[] {
+export function sqlCandidates({ model, analysis: a, driver, sourceName, catalog }: CompletionInput): SqlCandidate[] {
   const eq = nameMatcher(driver);
   const ctx = a.context;
   if (ctx.kind === "none") return [];
@@ -117,7 +135,29 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
   const kw = (k: string) => (lower ? k.toLowerCase() : k);
   const tables = model?.tables ?? [];
   const defaultSchema = model?.defaultSchema ?? "";
-  const q = (n: string) => quoteIdent(n, driver);
+  const exact = (n: string) => quoteIdent(n, driver);
+  // Snowflake folds unquoted names to upper case, so a name typed in lower case may stay lower case.
+  const lowerQualifier = !!a.qualifier?.length && a.qualifier.every((p) => /[a-z]/.test(p) && p === p.toLowerCase());
+  // What is typed decides: the name's own prefix, else the qualifier before it, else the statement's keywords.
+  const upperQualifier = !!a.qualifier?.length && a.qualifier.every((p) => /[A-Z]/.test(p) && p === p.toUpperCase());
+  const lowerNames =
+    driver === "snowflake" && (typedLower || (!typedUpper && (lowerQualifier || (!upperQualifier && a.lowerKeywords))));
+  /** A database, schema or table name as it is written here. */
+  const qn = (n: string) => {
+    const text = exact(n);
+    return lowerNames && text === n ? n.toLowerCase() : text;
+  };
+  const q = qn;
+  const database = (name: string) => catalog?.databases.find((d) => eq(d, name));
+  const schemaCandidate = (s: string, boost: number, tail?: string): SqlCandidate => ({
+    label: s,
+    kind: "schema",
+    tail,
+    type: sourceName,
+    insert: `${qn(s)}.`,
+    retrigger: true,
+    boost,
+  });
   const out: SqlCandidate[] = [];
   const keywords = (list: readonly string[], boost: number) => {
     for (const k of list) out.push({ label: kw(k), kind: "keyword", boost });
@@ -141,7 +181,7 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
     label: names.join(", "),
     kind: "columns",
     tail: `(${ownerOf(r)})`,
-    insert: names.map((n) => (qualify ? `${q(refName(r))}.${q(n)}` : q(n))).join(", "),
+    insert: names.map((n) => (qualify ? `${qn(refName(r))}.${qn(n)}` : qn(n))).join(", "),
     boost,
   });
   const fkColumns = new Set(
@@ -151,13 +191,13 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
     !!t && fkColumns.has(`${t.schema}\u0000${t.name}\u0000${c}`);
   /** How a table is written from here: unqualified in the default schema. */
   const tableText = (t: DbCompletionTable) =>
-    eq(t.schema, defaultSchema) || driver === "sqlite" ? q(t.name) : `${q(t.schema)}.${q(t.name)}`;
+    eq(t.schema, defaultSchema) || driver === "sqlite" ? qn(t.name) : `${qn(t.schema)}.${qn(t.name)}`;
   const tableCandidate = (t: DbCompletionTable, boost: number, qualified = false): SqlCandidate => ({
     label: t.name,
     kind: t.kind !== "table" ? "view" : "table",
     tail: t.schema ? `(${t.schema})` : undefined,
     type: sourceName,
-    insert: qualified ? `${q(t.schema)}.${q(t.name)}` : tableText(t),
+    insert: qualified ? `${qn(t.schema)}.${qn(t.name)}` : tableText(t),
     boost,
     doc: tableDoc(t),
   });
@@ -172,7 +212,7 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
     kind: "column",
     tail: `(${owner})`,
     type: c.dataType ? c.dataType.toUpperCase() : undefined,
-    insert: insert ?? q(c.name),
+    insert: insert ?? qn(c.name),
     boost,
     primaryKey: !!c.primaryKey,
     foreignKey: isFk(table, c.name),
@@ -192,13 +232,33 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
       }
     }
     if (a.qualifier.length === 1) {
-      const inSchema = tables.filter((t) => eq(t.schema, first));
-      if (inSchema.length) return inSchema.map((t) => ({ ...tableCandidate(t, 30), insert: q(t.name) }));
+      const inSchema: SqlCandidate[] = tables
+        .filter((t) => eq(t.schema, first))
+        .map((t) => ({ ...tableCandidate(t, 30), insert: qn(t.name) }));
+      // `database.`: its schemas (a name can be a schema here and a database too).
+      const db = database(first!);
+      if (db) inSchema.push(...(catalog?.schemas(db) ?? []).map((s) => schemaCandidate(s, 20, `(${db})`)));
+      if (inSchema.length) return inSchema;
       const t = findTable(null, first!);
       if (t && ctx.kind !== "table") return t.columns.map((c) => columnCandidate(c, t.name, t, 50));
       return [];
     }
-    const t = findTable(first!, second!);
+    // Snowflake `database.schema.table`: the model holds the session's database only, keyed by the last two parts.
+    if (driver === "snowflake" && ctx.kind === "table") {
+      // `database.schema.`: the tables of that schema, wherever the database is.
+      const db = a.qualifier.length === 2 ? database(first!) : undefined;
+      if (!db) return [];
+      return (catalog?.tables(db, second!) ?? []).map((t) => ({
+        label: t.name,
+        kind: t.view ? "view" : "table",
+        tail: `(${db})`,
+        type: sourceName,
+        insert: qn(t.name),
+        boost: t.view ? 28 : 30,
+      }));
+    }
+    const [schema, name] = driver === "snowflake" ? a.qualifier.slice(-2) : [first, second];
+    const t = findTable(schema!, name!);
     return t ? t.columns.map((c) => columnCandidate(c, t.name, t, 50)) : [];
   }
 
@@ -218,9 +278,19 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
         const local = eq(t.schema, defaultSchema) || driver === "sqlite";
         out.push(tableCandidate(t, local ? (t.kind !== "table" ? 28 : 30) : 0, !local));
       }
-      for (const s of schemas)
-        if (!eq(s, defaultSchema) || schemas.size > 1)
-          out.push({ label: s, kind: "schema", type: sourceName, insert: `${q(s)}.`, retrigger: true, boost: 5 });
+      for (const s of schemas) if (!eq(s, defaultSchema) || schemas.size > 1) out.push(schemaCandidate(s, 5));
+      for (const d of catalog?.databases ?? []) out.push(schemaCandidate(d, 3, "(database)"));
+      // Tables of the other databases, once enough is typed to tell which: written fully qualified.
+      if (a.prefix.text.length >= 2)
+        for (const t of catalog?.search?.(a.prefix.text, 200) ?? [])
+          out.push({
+            label: t.name,
+            kind: t.view ? "view" : "table",
+            tail: `(${t.database}.${t.schema})`,
+            type: sourceName,
+            insert: `${qn(t.database)}.${qn(t.schema)}.${qn(t.name)}`,
+            boost: -5,
+          });
       if (ctx.join) keywords(["LATERAL"], -10);
       return out;
     }
@@ -248,6 +318,7 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
           keywords(["ON", "USING"], 25);
         }
         keywords(["AS", "WHERE", ...joinKeywords(driver), "GROUP BY", "ORDER BY", "LIMIT", "UNION", "UNION ALL"], 10);
+        if (driver === "snowflake") keywords(["QUALIFY", "SAMPLE", "PIVOT", "UNPIVOT", "MATCH_RECOGNIZE"], 10);
       }
       return out;
     }
@@ -343,7 +414,7 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
         kind: "function",
         tail: `(${f.params})`,
         type: f.returns?.toUpperCase(),
-        snippet: f.params ? `${name}(\${})` : `${name}()`,
+        snippet: f.params ? `${name}(\${})` : `${name}()\${0}`,
         boost: f.aggregate && clause !== "select" && clause !== "having" ? fnBoost - 4 : fnBoost,
       });
     }
@@ -373,9 +444,9 @@ function clauseKeywords(clause: Clause, driver: DbDriver, a: Analysis): string[]
     case "where":
     case "on":
     case "having":
-      return [...pred, "GROUP BY", "ORDER BY", "LIMIT"];
+      return [...pred, "GROUP BY", "ORDER BY", "LIMIT", ...(driver === "snowflake" ? ["QUALIFY"] : [])];
     case "group":
-      return ["HAVING", "ORDER BY", "LIMIT"];
+      return ["HAVING", "ORDER BY", "LIMIT", ...(driver === "snowflake" ? ["QUALIFY"] : [])];
     case "order":
       return ["ASC", "DESC", "LIMIT", "OFFSET", ...(driver === "mysql" ? [] : ["NULLS FIRST", "NULLS LAST"])];
     case "set":
@@ -383,7 +454,7 @@ function clauseKeywords(clause: Clause, driver: DbDriver, a: Analysis): string[]
     case "values":
       return ["DEFAULT", "NULL", "TRUE", "FALSE"];
     case "limit":
-      return ["OFFSET"];
+      return ["OFFSET", ...(driver === "snowflake" ? ["FETCH"] : [])];
     case "returning":
       return ["AS"];
     default:

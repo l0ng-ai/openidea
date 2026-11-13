@@ -74,12 +74,23 @@ export interface VcsSettingsValid {
   issueNavigation: IssueLinkValid[];
 }
 
+/** Mirrors `ide-core::workflow_settings::LogLevelColors` defaults. */
+export interface LogLevelColorsValid {
+  enabled: boolean;
+  error: string;
+  warn: string;
+  info: string;
+  debug: string;
+  trace: string;
+}
+
 export interface ConsoleSettingsValid {
   softWrap: boolean;
   overrideBuffer: boolean;
   bufferKb: number;
   encoding: string;
   foldPatterns: string[];
+  logColors: LogLevelColorsValid;
 }
 
 export interface DebuggerSettingsValid {
@@ -154,6 +165,14 @@ export interface AgentSecurityValid {
   blockedCommands: string[];
 }
 
+/** Agents › IDE MCP Server: the Run tool window's agent tabs (`run_command`). */
+export interface AgentRunSettingsValid {
+  /** Finished agent tabs shown; older ones go to the archive. */
+  tabLimit: number;
+  /** Archived agent tabs kept; older ones are closed. */
+  archiveLimit: number;
+}
+
 export interface WorkflowSettings extends RemoteSettings {
   vcs: VcsSettingsValid;
   console: ConsoleSettingsValid;
@@ -172,6 +191,8 @@ export const WORKFLOW_LIMITS = {
   bufferKb: { min: 16, max: 1_048_576 },
   tooltipDelay: { min: 0, max: 10_000 },
   terminationTimeoutMs: { min: 0, max: 600_000 },
+  agentTabLimit: { min: 0, max: 1000 },
+  agentArchiveLimit: { min: 0, max: 100_000 },
   terminalFontSize: { min: 6, max: 72 },
   terminalLineHeight: { min: 0.5, max: 3 },
   terminalColumnWidth: { min: 0.5, max: 2 },
@@ -254,6 +275,14 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       "at node:internal/",
       "<frozen importlib._bootstrap",
     ],
+    logColors: {
+      enabled: false,
+      error: "var(--ansi-red)",
+      warn: "var(--ansi-yellow)",
+      info: "var(--ansi-green)",
+      debug: "var(--ansi-cyan)",
+      trace: "var(--ansi-magenta)",
+    },
   },
   debugger: {
     showOnBreakpoint: true,
@@ -389,12 +418,22 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
 export function validateConsole(raw: unknown): ConsoleSettingsValid {
   const d = DEFAULT_WORKFLOW.console;
   const v = obj(raw);
+  const lc = obj(v.logColors);
+  const dl = d.logColors;
   return {
     softWrap: bool(v.softWrap, d.softWrap),
     overrideBuffer: bool(v.overrideBuffer, d.overrideBuffer),
     bufferKb: num(v.bufferKb, d.bufferKb, WORKFLOW_LIMITS.bufferKb, true),
     encoding: nonEmpty(v.encoding, d.encoding),
     foldPatterns: strings(v.foldPatterns, d.foldPatterns),
+    logColors: {
+      enabled: bool(lc.enabled, dl.enabled),
+      error: nonEmpty(lc.error, dl.error),
+      warn: nonEmpty(lc.warn, dl.warn),
+      info: nonEmpty(lc.info, dl.info),
+      debug: nonEmpty(lc.debug, dl.debug),
+      trace: nonEmpty(lc.trace, dl.trace),
+    },
   };
 }
 
@@ -513,6 +552,18 @@ export function validateAgentSecurity(raw: unknown): AgentSecurityValid {
   };
 }
 
+export const DEFAULT_AGENT_RUNS: AgentRunSettingsValid = { tabLimit: 1, archiveLimit: 999 };
+
+/** From `mcpServer` (Agents › IDE MCP Server). */
+export function validateAgentRuns(raw: unknown): AgentRunSettingsValid {
+  const v = obj(raw);
+  const d = DEFAULT_AGENT_RUNS;
+  return {
+    tabLimit: num(v.agentTabLimit, d.tabLimit, WORKFLOW_LIMITS.agentTabLimit, true),
+    archiveLimit: num(v.agentArchiveLimit, d.archiveLimit, WORKFLOW_LIMITS.agentArchiveLimit, true),
+  };
+}
+
 export function validateWorkflow(raw: unknown): WorkflowSettings {
   const root = obj(raw);
   return {
@@ -590,3 +641,14 @@ export const EXTERNAL_TOOL_MACROS: ReadonlyArray<{ name: string; description: st
   { name: "$SelectedText$", description: "Text selected in the editor" },
   { name: "$Prompt$", description: "Asks for a value when the tool runs" },
 ];
+
+/** Agents › IDE MCP Server limits on the Run tool window's agent tabs. */
+export function agentRunSettings(): AgentRunSettingsValid {
+  return validateAgentRuns(obj(useProject.getState().settings).mcpServer);
+}
+
+/** React hook over {@link agentRunSettings}. */
+export function useAgentRunSettings(): AgentRunSettingsValid {
+  const raw = useProject((p) => obj(p.settings).mcpServer);
+  return validateAgentRuns(raw);
+}

@@ -102,6 +102,11 @@ pub struct AgentSettings {
     #[serde(deserialize_with = "or_default")]
     #[specta(type = WhileRunning)]
     pub while_running: WhileRunning,
+    /// Whether new tasks start in the agent's mode that approves everything (Claude Code's
+    /// bypass permissions, Codex's full access) or in one that asks. User settings only.
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = NewTaskApprovals)]
+    pub new_task_approvals: NewTaskApprovals,
     /// Settings new tasks of an agent start with: agent id → option id → value.
     #[serde(deserialize_with = "agent_defaults")]
     #[specta(type = BTreeMap<String, BTreeMap<String, String>>)]
@@ -127,6 +132,7 @@ impl Default for AgentSettings {
             expand_tool_output: false,
             send_with: SendKey::Enter,
             while_running: WhileRunning::Queue,
+            new_task_approvals: NewTaskApprovals::Bypass,
             defaults: BTreeMap::new(),
             mcp_servers: BTreeMap::new(),
         }
@@ -194,6 +200,19 @@ where
     Ok(serde_json::from_value(serde_json::Value::deserialize(d)?).unwrap_or_default())
 }
 
+/// A theme id, with the built-in themes that were removed read as the Islands theme of their kind.
+fn theme_id<'de, D>(d: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let id = String::deserialize(d)?;
+    Ok(match id.as_str() {
+        "one-light" => "light".into(),
+        "one-dark" => "dark".into(),
+        _ => id,
+    })
+}
+
 /// [`AgentSettings::defaults`], keeping only the text values of each agent's table.
 fn agent_defaults<'de, D>(d: D) -> Result<BTreeMap<String, BTreeMap<String, String>>, D::Error>
 where
@@ -257,8 +276,19 @@ pub enum WhileRunning {
     Steer,
 }
 
+/// The approvals new agent tasks start with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum NewTaskApprovals {
+    /// The agent's mode that approves everything without asking, when it has one.
+    #[default]
+    Bypass,
+    /// A mode in which the agent asks before edits and commands.
+    Ask,
+}
+
 /// Agents › MCP Server: agents use the IDE's built-in tools.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct McpServerSettings {
     /// Serve the tools on 127.0.0.1 while the IDE runs.
@@ -266,6 +296,35 @@ pub struct McpServerSettings {
     /// Run the tools that change the project or start processes without asking first
     /// (IDEA's brave mode). Read from the IDE's own settings only, never a project's.
     pub run_without_confirmation: bool,
+    /// Finished agent tabs (`run_command`) the Run tool window shows; older ones are archived.
+    pub agent_tab_limit: u32,
+    /// Archived agent tabs kept; older ones are closed.
+    pub agent_archive_limit: u32,
+    /// Listen on [`Self::port`] in every run, rather than a free port each time, so HTTP clients and
+    /// port forwards keep working after a restart.
+    pub fixed_port: bool,
+    /// The port of [`Self::fixed_port`].
+    pub port: u16,
+    /// Keep the bearer token across runs (in the app data, readable by this user only) rather than
+    /// make a new one each run.
+    pub fixed_token: bool,
+}
+
+/// The default of [`McpServerSettings::port`].
+pub const DEFAULT_MCP_PORT: u16 = 26371;
+
+impl Default for McpServerSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            run_without_confirmation: false,
+            agent_tab_limit: 1,
+            agent_archive_limit: 999,
+            fixed_port: true,
+            port: DEFAULT_MCP_PORT,
+            fixed_token: false,
+        }
+    }
 }
 
 /// Absent profiles retain automatic discovery for existing projects.
@@ -557,13 +616,19 @@ pub enum NavigationBarPosition {
 pub struct AppearanceSettings {
     /// A built-in theme id (`light`, `dark`, `dark-hc`, …), `system` (legacy
     /// "Sync with OS"), or a plugin's theme: `plugin:<plugin-id>/<theme-id>`.
+    #[serde(deserialize_with = "theme_id")]
+    #[specta(type = String)]
     pub theme: String,
     pub accent: String,
     pub ui_font_size: f32,
     pub locale: String,
     /// Follow the OS light/dark mode with the preferred themes below.
     pub sync_with_os: bool,
+    #[serde(deserialize_with = "theme_id")]
+    #[specta(type = String)]
     pub preferred_light_theme: String,
+    #[serde(deserialize_with = "theme_id")]
+    #[specta(type = String)]
     pub preferred_dark_theme: String,
     /// A plugin's file icon theme (`<plugin-id>/<theme-id>`); empty = the built-in icons.
     pub file_icon_theme: String,
@@ -1002,11 +1067,28 @@ pub struct PythonSettings {
     pub interpreter: String,
     /// Activate the interpreter's virtualenv in new terminal sessions.
     pub activate_virtualenv: bool,
+    /// Interpreters the user added to Settings › Python › All Interpreters (executable paths).
+    /// Detection contributes the rest; `hidden_interpreters` removes some of them.
+    pub interpreters: Vec<String>,
+    /// Interpreters the user removed from that list, as executable paths: detection does
+    /// not list them again.
+    pub hidden_interpreters: Vec<String>,
+    /// Hide interpreters that belong to another project (a virtualenv inside its folder).
+    pub hide_other_project_interpreters: bool,
+    /// Show each interpreter's path under its name on the interpreters page.
+    pub show_interpreter_paths: bool,
 }
 
 impl Default for PythonSettings {
     fn default() -> Self {
-        Self { interpreter: String::new(), activate_virtualenv: true }
+        Self {
+            interpreter: String::new(),
+            activate_virtualenv: true,
+            interpreters: Vec::new(),
+            hidden_interpreters: Vec::new(),
+            hide_other_project_interpreters: false,
+            show_interpreter_paths: true,
+        }
     }
 }
 
@@ -1182,7 +1264,9 @@ pub struct MavenSettings {
     pub runner_jre: String,
     /// Project-relative root POMs removed from the Maven project model.
     pub unlinked_projects: Vec<String>,
-    /// Project-relative POMs outside the root reactor added as independent top-level projects.
+    /// POMs added as independent top-level projects. Inside the opened project the path is
+    /// project-relative (`tools/pom.xml`); outside it, the canonical absolute path. Linking
+    /// does not edit either POM.
     pub linked_projects: Vec<String>,
     /// Maven home (or its `mvn` executable); empty = the project's `mvnw`, else `mvn` on `PATH`.
     pub home: String,
@@ -1421,6 +1505,19 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removed_one_themes_read_as_islands_themes() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"appearance":{"theme":"one-dark","preferredLightTheme":"one-light","preferredDarkTheme":"one-dark"}}"#,
+        )
+        .unwrap();
+        let a = settings.appearance;
+        assert_eq!((a.theme.as_str(), a.preferred_light_theme.as_str()), ("dark", "light"));
+        assert_eq!(a.preferred_dark_theme, "dark");
+        let kept: Settings = serde_json::from_str(r#"{"appearance":{"theme":"solarized-dark"}}"#).unwrap();
+        assert_eq!(kept.appearance.theme, "solarized-dark");
+    }
 
     #[test]
     fn window_close_settings_default_off_and_round_trip() {

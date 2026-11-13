@@ -553,7 +553,12 @@ export function installKeyboardDispatcher(
     if (!chord) {
       if (isAltGrTyping(e)) return;
       const hasCommandMod = e.metaKey || e.ctrlKey || e.altKey;
-      if (!hasCommandMod && isPlainTextField(e.target) && !/^(Shift\+)?(F\d{1,2}|Escape)$/.test(stroke)) return;
+      if (isPlainTextField(e.target)) {
+        // Native deletion stays in the field; Shift bindings and terminal keys keep their own routing.
+        if ((e.key === "Backspace" || e.key === "Delete") && !e.shiftKey && !(e.target as Element).closest?.(".xterm"))
+          return;
+        if (!hasCommandMod && !/^(Shift\+)?(F\d{1,2}|Escape)$/.test(stroke)) return;
+      }
       if (isClaimed(e, stroke)) return;
     }
 
@@ -636,7 +641,10 @@ export function installKeyboardDispatcher(
   const onMouseDown = (e: MouseEvent) => {
     // Shift+click (extend a selection) is not half of a double Shift.
     resetTap();
-    if (suspended > 0) return;
+    if (suspended > 0) {
+      reset();
+      return;
+    }
     const stroke = mouseStrokeOf(e);
     if (!stroke) return;
     if (e.button === 0) {

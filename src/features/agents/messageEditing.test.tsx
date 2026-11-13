@@ -15,6 +15,7 @@ vi.mock("@/platform/ipc", async (original) => ({
   commands: {
     agentEntries: async () => ({ status: "ok", data: entries }),
     agentChanges: async () => ({ status: "ok", data: [] }),
+    agentGroupedChanges: async () => ({ status: "ok", data: { uncommitted: [], commits: [] } }),
     vcsBranchInfo: async () => ({ status: "ok", data: { head: "main" } }),
     agentRollback: ipc.rollback,
     agentPrompt: ipc.prompt,

@@ -43,6 +43,12 @@
   color: var(--fg-subtle);
   font-size: var(--fs-tiny);
 }
+/* A task is being dragged over this group: dropping it puts the task there. */
+.dropOver {
+  background: var(--bg-hover);
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
 .title {
   flex: 0 1 auto;
   min-width: 0;

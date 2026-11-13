@@ -55,7 +55,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.6";
+pub const API_VERSION: &str = "1.7";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
@@ -169,6 +169,11 @@ pub trait HostApi: Send + Sync {
     ) -> Result<(), HostError> {
         let _ = (client, tab, cancel, timeout);
         Err(HostError::Failed("content tabs unavailable".into()))
+    }
+    /// Opens a diff of two texts in the invoking window.
+    fn open_diff(&self, client: &str, diff: crate::ContentDiff, file_name: Option<String>) -> Result<(), HostError> {
+        let _ = (client, diff, file_name);
+        Err(HostError::Failed("diffs unavailable".into()))
     }
     /// Answers a content action in the invoking window.
     fn reply_content_tab(&self, client: &str, request: &str, reply: crate::ContentTabReply) -> Result<(), HostError> {
@@ -365,14 +370,7 @@ pub trait HostApi: Send + Sync {
     }
     /// The most specific open project containing a document (including a new file).
     fn project_of(&self, path: &Path) -> Option<std::path::PathBuf> {
-        if !path.is_absolute() {
-            return None;
-        }
-        let real = crate::resolve_real(path);
-        self.projects()
-            .into_iter()
-            .filter(|root| real.starts_with(crate::resolve_real(root)))
-            .max_by_key(|root| root.components().count())
+        crate::sandbox::innermost_root(self.projects(), path)
     }
 
     /// Searches the current in-memory index of an open project.

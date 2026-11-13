@@ -37,9 +37,10 @@ pub mod types;
 mod uri;
 mod virtual_doc;
 mod vue_navigation;
+mod vue_refs;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
-pub use inspect::{FileInspection, InspectHost, InspectOptions};
+pub use inspect::{CheckedServer, DocumentCheck, FileInspection, InspectHost, InspectOptions};
 pub use jdtls::jvm_inspect::JdtJvmInspector;
 pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
@@ -119,6 +120,8 @@ struct DocState {
     compose_detected: bool,
     /// The notebook a code cell belongs to: synced through `notebookDocument/*`, not as a file.
     notebook: Option<PathBuf>,
+    /// When the servers last got new text (open or change): diagnostics published before are stale.
+    changed: std::time::Instant,
 }
 
 impl DocState {
@@ -157,6 +160,8 @@ struct DocSnap {
     language: LanguageId,
     text: Arc<DocText>,
     servers: Vec<Arc<Server>>,
+    /// [`DocState::changed`].
+    changed: std::time::Instant,
 }
 
 impl DocSnap {
@@ -201,6 +206,10 @@ pub struct LspManager {
     me: Weak<LspManager>,
     project_root: PathBuf,
     content_roots: RwLock<Vec<PathBuf>>,
+    /// Maven projects linked from outside `project_root`. jdtls scans them as extra
+    /// workspace folders; `projectConfigurations` stays unset so the opened root is
+    /// still discovered automatically.
+    jdtls_import_roots: RwLock<Vec<PathBuf>>,
     languages: Arc<LanguageRegistry>,
     sink: SharedSink,
     launcher: Arc<dyn Launcher>,
@@ -373,15 +382,32 @@ fn read_jar_source(uri: &str, encoding: Option<&str>) -> Option<(String, ide_vfs
 /// Library classes in `jar:` targets (the official Kotlin LSP) go to their source
 /// in the artifact's sources jar when it is cached, at the declaration of the
 /// name navigated from; [`LspManager::virtual_document`] serves it.
-async fn library_sources(snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
-    if !locs.iter().any(|l| l.uri.as_deref().is_some_and(|u| u.starts_with("jar:") && u.ends_with(".class"))) {
+async fn library_sources(snap: &DocSnap, root: &Path, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
+    let jar_class = |u: &str| u.starts_with("jar:") && u.ends_with(".class");
+    // The path names the class's source file (`Db.kt`); the handle in the query, the class.
+    let jdt_class = |u: &str| u.starts_with("jdt://contents/") && u.contains(".class");
+    if !locs.iter().any(|l| l.uri.as_deref().is_some_and(|u| jar_class(u) || jdt_class(u))) {
         return locs;
     }
     let name = library_source::identifier_at(snap.text.line(pos.line as usize), pos.col).map(str::to_owned);
+    let root = root.to_owned();
     tokio::task::spawn_blocking(move || {
         locs.into_iter()
             .map(|loc| {
-                let Some(uri) = loc.uri.as_deref().filter(|u| u.starts_with("jar:") && u.ends_with(".class")) else {
+                // A class JDT finds in a project's class folder (Kotlin compiled for Java code):
+                // the project's source file, not the decompiled class.
+                if let Some(uri) = loc.uri.as_deref().filter(|u| jdt_class(u)) {
+                    let source = library_source::folder_class(uri)
+                        .and_then(|(package, class)| library_source::project_class_source(&root, &package, &class));
+                    let Some(source) = source else { return loc };
+                    let range = name
+                        .as_deref()
+                        .zip(std::fs::read_to_string(&source).ok())
+                        .map(|(n, text)| library_source::declaration_range(&text, n))
+                        .unwrap_or_default();
+                    return Location { path: source.into(), range, uri: None };
+                }
+                let Some(uri) = loc.uri.as_deref().filter(|u| jar_class(u)) else {
                     return loc;
                 };
                 let Some((source, loaded)) = library_source::class_source(uri, None) else { return loc };
@@ -444,6 +470,7 @@ impl LspManager {
             me: me.clone(),
             project_root,
             content_roots: RwLock::new(Vec::new()),
+            jdtls_import_roots: RwLock::new(Vec::new()),
             languages,
             sink: {
                 let me = me.clone();
@@ -503,6 +530,28 @@ impl LspManager {
         }
     }
 
+    /// Directories of Maven projects linked from outside the opened root. The jdtls
+    /// rooted at the opened project scans them together with that root. An empty list
+    /// leaves discovery as the single `rootUri` scan.
+    pub fn set_jdtls_import_roots(&self, mut roots: Vec<PathBuf>) {
+        roots.retain(|root| root.is_absolute() && root.is_dir() && !root.starts_with(&self.project_root));
+        roots.sort();
+        roots.dedup();
+        let changed = {
+            let mut current = self.jdtls_import_roots.write();
+            let changed = *current != roots;
+            *current = roots;
+            changed
+        };
+        if changed && let Some(me) = self.me.upgrade() {
+            me.reconfigure_soon();
+        }
+    }
+
+    pub fn jdtls_import_roots(&self) -> Vec<PathBuf> {
+        self.jdtls_import_roots.read().clone()
+    }
+
     /// Shares JDT LS within this manager; callers reconfigure after the hook's value changes.
     pub fn set_jdtls_shared_hook(&self, hook: Box<JdtlsSharedFn>) {
         *self.jdtls_shared_hook.write() = Some(Arc::from(hook));
@@ -537,8 +586,27 @@ impl LspManager {
             if state.shared {
                 return state.roots.clone();
             }
+            // The opened project's server also scans linked external Maven projects.
+            // Other in-root builds keep their own server and their own root.
+            if server.root == self.project_root {
+                return self.project_and_import_roots();
+            }
         }
         vec![server.root.clone()]
+    }
+
+    fn project_and_import_roots(&self) -> Vec<PathBuf> {
+        let mut roots = vec![self.project_root.clone()];
+        for root in self.jdtls_import_roots.read().iter() {
+            if root.is_absolute() && root.is_dir() && !roots.contains(root) {
+                roots.push(root.clone());
+            }
+        }
+        roots
+    }
+
+    fn imports_external_java(&self, config: &LanguageServerConfig, path: &Path) -> bool {
+        is_local_jdtls(config) && self.jdtls_import_roots.read().iter().any(|root| path.starts_with(root))
     }
 
     fn project_root_for(&self, path: &Path) -> PathBuf {
@@ -557,7 +625,9 @@ impl LspManager {
         let mut servers = self.servers.lock();
         let project = self.project_root_for(path);
         let sketch = (cfg.name == arduino::SERVER).then(|| arduino::sketch_root(&project, path)).flatten();
-        let root = if shared.as_ref().is_some_and(|state| state.shared) {
+        let root = if shared.as_ref().is_some_and(|state| state.shared) || self.imports_external_java(cfg, path) {
+            // One server for the opened root and a linked external Maven project, so
+            // Java completion and navigation see the import jdtls made of both.
             self.project_root.clone()
         } else {
             sketch.or_else(|| launch::find_root(&project, path, &cfg.root_markers)).unwrap_or_else(|| {
@@ -773,7 +843,7 @@ impl LspManager {
             Err(LaunchError::Missing) => {
                 let cfg = server.effective_config();
                 let message =
-                    cfg.install_hint.clone().unwrap_or_else(|| format!("`{}` was not found on PATH", cfg.command));
+                    cfg.install_hint.clone().unwrap_or_else(|| format!("{} was not found on PATH", cfg.command));
                 if server.fail_start(
                     generation,
                     Conn::Missing,
@@ -953,13 +1023,15 @@ impl LspManager {
             }
             init_options["settings"] = handler::all_settings(&cfg);
             let shared = is_local_jdtls(&server.config) && self.jdtls_workspace_state().shared;
-            if shared {
-                init_options["workspaceFolders"] = json!(
-                    self.server_workspace_roots(server)
-                        .iter()
-                        .map(|root| uri::path_to_uri_string(root))
-                        .collect::<Vec<_>>()
-                );
+            // jdtls imports `initializationOptions.workspaceFolders` by scanning each
+            // directory. It ignores the LSP workspace folder list for that first import,
+            // and a `projectConfigurations` list replaces the scan. Extra Maven projects
+            // are therefore folders here, not an explicit build-file list, so projects
+            // under the opened root are still discovered.
+            let folders: Vec<String> =
+                self.server_workspace_roots(server).iter().map(|root| uri::path_to_uri_string(root)).collect();
+            if shared || folders.len() > 1 {
+                init_options["workspaceFolders"] = json!(folders);
             }
             let triggers: Vec<_> = self
                 .docs
@@ -1102,6 +1174,7 @@ impl LspManager {
             servers: servers.iter().map(|s| Attached { server: s.clone(), opened_gen: None }).collect(),
             compose_detected,
             notebook: None,
+            changed: std::time::Instant::now(),
         };
         let compose_added = {
             let mut docs = self.docs.lock();
@@ -1149,6 +1222,7 @@ impl LspManager {
         let mut docs = self.docs.lock();
         let Some(d) = docs.get_mut(&doc) else { return };
         d.version = version as i32;
+        d.changed = std::time::Instant::now();
 
         // Servers that have this document open on their current instance.
         let targets: Vec<(Arc<Server>, Running, SyncKind, Encoding)> = d
@@ -1324,6 +1398,7 @@ impl LspManager {
             language: d.language.clone(),
             text: d.text.clone(),
             servers,
+            changed: d.changed,
         })
     }
 
@@ -1365,13 +1440,9 @@ impl LspManager {
         let params = serde_json::to_value(params).map_err(|e| IdeError::internal(e.to_string()))?;
         let stamp = self.injected_request_stamp(&params);
         let fut = async {
-            if t.server.name == "csharp-ls" {
-                let mut value = t.run.peer.request::<Value, Value>(method, params, cancel.cloned()).await?;
-                virtual_doc::normalize_csharp_uris(&mut value);
-                serde_json::from_value(value).map_err(|e| RpcError::Protocol(format!("{method}: {e}")))
-            } else {
-                t.run.peer.request::<Value, R>(method, params, cancel.cloned()).await
-            }
+            let mut value = t.run.peer.request::<Value, Value>(method, params, cancel.cloned()).await?;
+            virtual_doc::normalize_uris(&mut value);
+            serde_json::from_value(value).map_err(|e| RpcError::Protocol(format!("{method}: {e}")))
         };
         let result = match tokio::time::timeout(timeout, fut).await {
             Ok(r) => r.map_err(|e| rpc_err(&t.server.name, method, e)),
@@ -1552,6 +1623,9 @@ impl LspManager {
             {
                 return Ok(result.locations);
             }
+            if let Some(found) = self.vue_ref_navigation(doc, &snap, pos).await {
+                return Ok(found);
+            }
         }
         let (method, cap, feature) = goto_method(kind);
         let (snap, targets) = self.doc_targets(doc, feature, |c| c.has(cap)).await?;
@@ -1629,7 +1703,7 @@ impl LspManager {
             Ok(found) => {
                 let locs =
                     convert::goto_response(&self.conv(t.enc()), lsp::GotoDefinitionResponse::Array(found.locations));
-                let locs = library_sources(snap, pos, locs).await;
+                let locs = library_sources(snap, &self.project_root, pos, locs).await;
                 self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                 (locs, found.complete)
             }
@@ -1678,7 +1752,7 @@ impl LspManager {
             match r {
                 Ok(Some(r)) => {
                     let locs = convert::goto_response(&self.conv(t.enc()), r);
-                    let locs = library_sources(snap, pos, locs).await;
+                    let locs = library_sources(snap, &self.project_root, pos, locs).await;
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                     self.note_arduino_sources(&t.server, &locs);
                     let locs = merge_locations(first, locs);

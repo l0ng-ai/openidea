@@ -4,10 +4,11 @@
  * a toolbar (re-run, export / copy as CSV, JSON, SQL…), the grid and a floating row count.
  */
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { call, commands, type DbPlanNode, type DbQueryResult } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
+import { setContext } from "@/platform/context";
 import {
   Button,
   EmptyState,
@@ -36,6 +37,7 @@ import {
   type EditBlockReason,
 } from "./resultEditing";
 import { pageWindow } from "./resultView";
+import { resultTabMenu } from "./resultTabActions";
 import { analyze } from "./sql/analyze";
 import { nameMatcher } from "./sql/dialect";
 import {
@@ -198,6 +200,9 @@ function Pager({ tab }: { tab: ResultTab }) {
   );
 }
 
+/** Unsubmitted edits by the rows they were made on, kept while another result tab is shown. */
+const keptEdits = new WeakMap<DbQueryResult, PendingEdits>();
+
 function Result({ tab }: { tab: ResultTab }) {
   const [view, setView] = useState<"table" | "chart">("table");
   const [panel, setPanel] = useState<DataPanel | null>(null);
@@ -227,7 +232,7 @@ function Result({ tab }: { tab: ResultTab }) {
   const resultNames = useMemo(() => r?.columns.map((c) => c.name) ?? [], [r]);
   const eq = useMemo(
     () =>
-      driver === "postgres" || driver === "oracle" || driver === "sqlServer"
+      driver === "postgres" || driver === "oracle" || driver === "sqlServer" || driver === "snowflake"
         ? (a: string | null | undefined, b: string | null | undefined) => !!a && a === b
         : nameMatcher(driver),
     [driver],
@@ -273,14 +278,19 @@ function Result({ tab }: { tab: ResultTab }) {
     sources.some((s) => s !== null);
 
   // The pending edits belong to the result they were made on: fresh rows (a
-  // re-run, another page) start over, without an effect.
-  const [pending, setPending] = useState<{ outcome: DbQueryResult | null; edits: PendingEdits }>({
-    outcome: null,
-    edits: emptyEdits(),
-  });
+  // re-run, another page) start over, without an effect. They outlive the pane,
+  // which remounts when another result tab is selected.
+  const [pending, setPending] = useState<{ outcome: DbQueryResult | null; edits: PendingEdits }>(() => ({
+    outcome: r ?? null,
+    edits: (r && keptEdits.get(r)) ?? emptyEdits(),
+  }));
   const edits = pending.outcome === r ? pending.edits : emptyEdits();
   const setEdits = (f: (e: PendingEdits) => PendingEdits) =>
-    setPending((previous) => ({ outcome: r, edits: f(previous.outcome === r ? previous.edits : emptyEdits()) }));
+    setPending((previous) => {
+      const next = f(previous.outcome === r ? previous.edits : emptyEdits());
+      if (r) keptEdits.set(r, next);
+      return { outcome: r ?? null, edits: next };
+    });
   const loaded = r?.rows.length ?? 0;
   const rowCount = loaded + edits.inserts.length;
   const value = useCallback(
@@ -655,6 +665,23 @@ export function ResultsView() {
   const results = useDatabase((s) => s.results);
   const active = useDatabase((s) => s.activeResult);
   const hasOutput = useDatabase((s) => s.output.length > 0);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const syncFocus = () => setContext("dbResultsFocus", !!root.current?.contains(document.activeElement));
+    document.addEventListener("focusin", syncFocus);
+    syncFocus();
+    return () => {
+      document.removeEventListener("focusin", syncFocus);
+      setContext("dbResultsFocus", false);
+    };
+  }, []);
+  const tabMenu = (id: string, e: MouseEvent) => {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    showContextMenu(e.clientX || e.clientY ? e : { x: rect.left, y: rect.bottom }, resultTabMenu(Number(id)), {
+      owner: e.currentTarget,
+    });
+  };
   if (!results.length && !hasOutput)
     return (
       <EmptyState title="No results">
@@ -663,13 +690,31 @@ export function ResultsView() {
     );
   const tab = results.find((r) => r.id === active);
   return (
-    <div className={styles.view}>
+    <div
+      ref={root}
+      className={styles.view}
+      onKeyDown={(e) => {
+        if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
+        const tab = (e.target as Element).closest<HTMLElement>('[role="tab"]');
+        if (!tab?.id.startsWith("db-results-tab-")) return;
+        e.preventDefault();
+        const rect = tab.getBoundingClientRect();
+        showContextMenu(
+          { x: rect.left, y: rect.bottom },
+          resultTabMenu(Number(tab.id.slice("db-results-tab-".length))),
+          { owner: tab.parentElement },
+        );
+      }}
+    >
       <Tabs
+        className={styles.resultTabs}
         variant="compact"
         aria-label="Results"
         activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
+        panelIdPrefix="db-results"
         onSelect={(id) => useDatabase.setState({ activeResult: Number(id) })}
         onClose={(id) => closeResult(Number(id))}
+        onContextMenu={tabMenu}
         items={[
           { id: String(OUTPUT_TAB), label: "Output", icon: "db-console", closable: false },
           ...results.map((r) => ({

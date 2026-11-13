@@ -65,8 +65,22 @@ setx OPENIDEA_LOCAL_DATA_DIR "E:\OpenIDEA"
 在 macOS 和 Linux 上，需要在启动 OpenIDEA 的环境中设置这个变量。
 
 - 如果路径是相对路径或不可写，OpenIDEA 会显示错误并退出，而不会退回默认位置。
-- 配置、用户数据和日志的位置不变。即使变量设置有误，日志仍会写入，方便排查原因。
+- 配置、用户数据和日志的位置不变，除非也移动它们（见下文）。即使变量设置有误，日志仍会写入，方便排查原因。
 - 已有数据不会自动迁移。可以让 OpenIDEA 重新下载和重建；也可以先退出 OpenIDEA，只移动 `tools/`、`language-server-runtimes/`、`index/`、`cache/`、`lsp/`、`notebook-runtime/`、`server/`、`logs/`、`agents/tools/`、`agents/registry.json` 以及顶层的 `java-usages-*.jar` / `java-usages-*.tmp` 文件，并保持相对路径不变。其他内容请留在原处。
+
+## 移动配置、用户数据或日志
+
+其他几个目录各有一个变量，设置方法和 `OPENIDEA_LOCAL_DATA_DIR` 相同：设为绝对路径，OpenIDEA 启动时读取。IDE 随后会使用 `<路径>/ai.l0ng.openidea`，不存在时自动创建。
+
+| 变量                  | 移动的目录 |
+| --------------------- | ---------- |
+| `OPENIDEA_CONFIG_DIR` | 配置       |
+| `OPENIDEA_DATA_DIR`   | 用户数据   |
+| `OPENIDEA_LOG_DIR`    | 日志       |
+
+- 只设置想移动的那几个，其余仍在默认位置。几个变量指向同一路径也可以。
+- 如果配置或用户数据的路径是相对路径或不可用，OpenIDEA 会显示错误并退出，而不会退回默认位置；日志路径有误只会不写日志文件。
+- 已有文件不会自动迁移。想保留设置、插件和历史记录，先退出 OpenIDEA，把原文件夹里的内容复制到新位置。
 
 ## 日志
 
