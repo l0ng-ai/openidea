@@ -112,16 +112,17 @@ fn whole_range(text: &str) -> Range {
 /// Whether two paths name the same file (language servers report canonical paths; on a
 /// case-insensitive file system `a.txt` and `A.txt` are one file).
 fn same_file(a: &Path, b: &Path) -> bool {
-    if a == b || matches!((dunce::canonicalize(a), dunce::canonicalize(b)), (Ok(x), Ok(y)) if x == y) {
-        return true;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let (Ok(x), Ok(y)) = (std::fs::metadata(a), std::fs::metadata(b)) {
-            return x.dev() == y.dev() && x.ino() == y.ino();
-        }
-    }
+    a == b || matches!((dunce::canonicalize(a), dunce::canonicalize(b)), (Ok(x), Ok(y)) if x == y) || same_inode(a, b)
+}
+
+#[cfg(unix)]
+fn same_inode(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    matches!((std::fs::metadata(a), std::fs::metadata(b)), (Ok(x), Ok(y)) if x.dev() == y.dev() && x.ino() == y.ino())
+}
+
+#[cfg(not(unix))]
+fn same_inode(_: &Path, _: &Path) -> bool {
     false
 }
 

@@ -4294,18 +4294,22 @@ dependencies = [
 name = "ide-db"
 version = "0.1.43"
 dependencies = [
+ "base64 0.22.1",
  "bb8",
  "blake3",
  "dirs 6.0.0",
  "dunce",
+ "flate2",
  "futures",
  "ide-core",
  "ide-http",
  "ide-ssh",
  "notify",
+ "open",
  "oracledb",
  "parking_lot",
  "reqwest",
+ "rsa",
  "rustls",
  "serde",
  "serde_json",
@@ -4319,6 +4323,7 @@ dependencies = [
  "toml_edit 0.25.17+spec-1.1.0",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

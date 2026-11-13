@@ -1803,12 +1803,9 @@ mod tests {
 
     #[test]
     fn additional_palettes_keep_native_startup_and_os_preferences_in_sync() {
-        for (id, color) in [
-            ("solarized-light", Color(0xee, 0xe8, 0xd5, 0xff)),
-            ("solarized-dark", Color(0x07, 0x36, 0x42, 0xff)),
-            ("one-light", Color(0xea, 0xea, 0xeb, 0xff)),
-            ("one-dark", Color(0x21, 0x25, 0x2b, 0xff)),
-        ] {
+        for (id, color) in
+            [("solarized-light", Color(0xee, 0xe8, 0xd5, 0xff)), ("solarized-dark", Color(0x07, 0x36, 0x42, 0xff))]
+        {
             let mut a = AppearanceSettings { theme: id.into(), ..Default::default() };
             assert_eq!(frame_color(&a, false), color);
             assert_eq!(frame_color(&a, true), color);

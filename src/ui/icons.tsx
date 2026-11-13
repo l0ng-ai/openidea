@@ -264,6 +264,12 @@ const ICONS = {
   "toolwindow-maven": "toolwindows/maven",
   "toolwindow-gradle": "toolwindows/gradle",
   "toolwindow-build": "toolwindows/build",
+  // Python environment sources: virtualenv / conda / uv / Poetry, and version managers (pyenv, mise, asdf).
+  "python-venv": "openidea/python/venv",
+  "python-conda": "openidea/python/conda",
+  "python-uv": "openidea/python/uv",
+  "python-poetry": "openidea/python/poetry",
+  "python-versions": "openidea/python/versions",
   // General UI
   "chevron-right": "general/chevronRight",
   "chevron-down": "general/chevronDown",
@@ -384,6 +390,7 @@ const ICONS = {
   "db-mysql": "openidea/database/mysql",
   "db-sqlserver": "openidea/database/sqlserver",
   "db-oracle": "openidea/database/oracle",
+  "db-snowflake": "openidea/database/snowflake",
   "db-mariadb": "openidea/database/mariadb",
   "db-aurora": "openidea/database/aurora",
   "db-redshift": "openidea/database/redshift",

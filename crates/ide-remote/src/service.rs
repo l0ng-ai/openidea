@@ -87,7 +87,7 @@ impl RemoteService {
                     return Err(IdeError::invalid("the deployment server has no SSH configuration"));
                 }
                 let session = self.ssh.session(ssh).await?;
-                Ok(RemoteFs::new(session.sftp().await?))
+                Ok(RemoteFs::new(session.sftp().await?).with_shell(session))
             }
             FsConnection::Ftp { server, secure, ftp } => {
                 let password = self.ssh.password(&ide_ssh::ftp::secret_key(server));
@@ -418,7 +418,7 @@ impl RemoteService {
             return Err(IdeError::internal("container run targets start as local runs of the docker CLI"));
         }
         let session = self.ssh.session(&target.ssh_config).await?;
-        let fs = RemoteFs::new(session.sftp().await?);
+        let fs = RemoteFs::new(session.sftp().await?).with_shell(session.clone());
         let folder = if target.project_root.trim().is_empty() {
             format!(
                 "~/{}",

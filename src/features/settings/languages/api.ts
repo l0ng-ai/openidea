@@ -10,12 +10,13 @@ import {
   isTauri,
   nextRequestId,
   type PhpLanguageLevels,
+  type ProjectInterpreter,
   type PythonPackage,
   type Sdk,
   type SdkKind,
 } from "@/platform/ipc";
 
-export type { PythonPackage, Sdk, SdkKind };
+export type { ProjectInterpreter, PythonPackage, Sdk, SdkKind };
 
 interface SdkCache {
   byKind: Partial<Record<SdkKind, Sdk[]>>;
@@ -100,6 +101,11 @@ export function createVenv(
 /** Resolves an interpreter picked by hand ("Existing environment") into an SDK like the detected ones. */
 export function pythonInterpreter(path: string): Promise<Sdk | null> {
   return isTauri() ? call(commands.sdkPythonInterpreter(path)) : Promise.resolve(null);
+}
+
+/** Interpreters of the other recently opened projects, each with the project it belongs to. */
+export function pythonProjectInterpreters(): Promise<ProjectInterpreter[]> {
+  return isTauri() ? call(commands.sdkPythonProjectInterpreters()) : Promise.resolve([]);
 }
 
 export function listPackages(python: string): Promise<PythonPackage[]> {

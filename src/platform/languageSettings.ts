@@ -155,7 +155,18 @@ export interface ArtifactConfigValid {
 
 export interface LanguagesValid {
   pluginFormatters: Record<string, string>;
-  python: { interpreter: string; activateVirtualenv: boolean };
+  python: {
+    interpreter: string;
+    activateVirtualenv: boolean;
+    /** Interpreters added to the IDE-wide list (Settings › Python › All Interpreters). */
+    interpreters: string[];
+    /** Interpreters removed from that list: detection does not show them again. */
+    hiddenInterpreters: string[];
+    /** Hide interpreters that belong to another project. */
+    hideOtherProjectInterpreters: boolean;
+    /** Show each interpreter's path under its name on the interpreters page. */
+    showInterpreterPaths: boolean;
+  };
   ruby: { interpreter: string };
   node: { runTarget: string; interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
   php: {
@@ -259,7 +270,14 @@ export type FolderListKey =
 
 export const DEFAULT_LANGUAGES: LanguagesValid = {
   pluginFormatters: {},
-  python: { interpreter: "", activateVirtualenv: true },
+  python: {
+    interpreter: "",
+    activateVirtualenv: true,
+    interpreters: [],
+    hiddenInterpreters: [],
+    hideOtherProjectInterpreters: false,
+    showInterpreterPaths: true,
+  },
   ruby: { interpreter: "" },
   node: { runTarget: "", interpreter: "", packageManager: "" },
   php: { runTarget: "", interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
@@ -390,6 +408,10 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     python: {
       interpreter: text(py.interpreter, d.python.interpreter),
       activateVirtualenv: bool(py.activateVirtualenv, d.python.activateVirtualenv),
+      interpreters: strings(py.interpreters),
+      hiddenInterpreters: strings(py.hiddenInterpreters),
+      hideOtherProjectInterpreters: bool(py.hideOtherProjectInterpreters, d.python.hideOtherProjectInterpreters),
+      showInterpreterPaths: bool(py.showInterpreterPaths, d.python.showInterpreterPaths),
     },
     ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
     node: {

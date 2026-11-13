@@ -227,7 +227,7 @@ function Result({ tab }: { tab: ResultTab }) {
   const resultNames = useMemo(() => r?.columns.map((c) => c.name) ?? [], [r]);
   const eq = useMemo(
     () =>
-      driver === "postgres" || driver === "oracle" || driver === "sqlServer"
+      driver === "postgres" || driver === "oracle" || driver === "sqlServer" || driver === "snowflake"
         ? (a: string | null | undefined, b: string | null | undefined) => !!a && a === b
         : nameMatcher(driver),
     [driver],
@@ -665,6 +665,7 @@ export function ResultsView() {
   return (
     <div className={styles.view}>
       <Tabs
+        className={styles.resultTabs}
         variant="compact"
         aria-label="Results"
         activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}

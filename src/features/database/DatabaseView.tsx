@@ -34,6 +34,8 @@ import {
 } from "./model";
 import {
   nodeTarget,
+  isOtherFolder,
+  otherFolder,
   routineFolder,
   schemaObjectOf,
   tableFolder,
@@ -78,9 +80,23 @@ const FOLDER_LABELS: Record<Folder, string> = {
   functions: "functions",
   packages: "packages",
   sequences: "sequences",
+  stages: "stages",
+  streams: "streams",
+  tasks: "tasks",
+  pipes: "pipes",
+  fileFormats: "file formats",
 };
 
-const FOLDERS: readonly Folder[] = ["tables", "views", "materializedViews", "routines", "packages", "sequences"];
+const OTHERS: readonly Folder[] = ["stages", "streams", "tasks", "pipes", "fileFormats"];
+const FOLDERS: readonly Folder[] = [
+  "tables",
+  "views",
+  "materializedViews",
+  "routines",
+  "packages",
+  "sequences",
+  ...OTHERS,
+];
 const SEPARATE_FOLDERS: readonly Folder[] = [
   "tables",
   "views",
@@ -89,6 +105,7 @@ const SEPARATE_FOLDERS: readonly Folder[] = [
   "functions",
   "packages",
   "sequences",
+  ...OTHERS,
 ];
 
 function status<T>(key: string, l: Loaded<T> | undefined, map: (v: T) => Node[]): Node[] | undefined {
@@ -172,8 +189,11 @@ export function DatabaseView() {
     (st.objects[tablesKey(id, schema)]?.sequences ?? []).filter(shown(id));
   const packagesOf = (id: string, schema: string) =>
     (st.objects[tablesKey(id, schema)]?.packages ?? []).filter(shown(id));
+  const othersOf = (id: string, schema: string, folder: Folder) =>
+    (st.objects[tablesKey(id, schema)]?.others ?? []).filter((o) => otherFolder(o.kind) === folder).filter(shown(id));
   /** Members of a schema folder, after object and quick filtering. */
   const folderSize = (id: string, schema: string, folder: Folder): number => {
+    if (isOtherFolder(folder)) return othersOf(id, schema, folder).length;
     if (folder === "routines" || folder === "procedures" || folder === "functions")
       return routinesOf(id, schema).filter(
         (routine) => routineFolder(routine.kind, st.separateProceduresAndFunctions) === folder,
@@ -260,6 +280,13 @@ export function DatabaseView() {
             kind: "package" as const,
             key: `${n.key}/${pkg.name}`,
             package: pkg,
+            ...at,
+          }));
+        if (isOtherFolder(n.folder))
+          return othersOf(n.id, n.schema, n.folder).map((object) => ({
+            kind: "object",
+            key: `${n.key}/${object.name}`,
+            object,
             ...at,
           }));
         if (n.folder === "sequences")
@@ -355,6 +382,8 @@ export function DatabaseView() {
         return n.package.name;
       case "sequence":
         return n.sequence.name;
+      case "object":
+        return n.object.name;
       case "trigger":
         return n.trigger.name;
       case "table":
@@ -397,6 +426,8 @@ export function DatabaseView() {
         return `(${n.routine.arguments})${n.routine.returns ? `: ${n.routine.returns}` : ""}`;
       case "sequence":
         return n.sequence.dataType;
+      case "object":
+        return n.object.detail || undefined;
       case "trigger":
         return `${n.trigger.timing} ${n.trigger.events}`.trim();
       case "group": {
@@ -435,6 +466,8 @@ export function DatabaseView() {
         return "db-routine";
       case "sequence":
         return "db-sequence";
+      case "object":
+        return n.object.kind === "stage" ? "db-folder" : n.object.kind === "stream" ? "db-table" : "db-routine";
       case "trigger":
         return "db-trigger";
       case "column":
