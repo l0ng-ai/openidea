@@ -19,6 +19,11 @@ export const commands = {
 	mcpRespond: (id: number, allow: boolean, error: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_respond", { id, allow, error })),
 	/**  The user closed the Run tool window tab of an agent command (`run_command`). */
 	mcpAgentRunClosed: (name: string) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_agent_run_closed", { name })),
+	/**
+	 *  Settings › Agents › MCP Server › Regenerate Token: forgets the kept token, and restarts the
+	 *  server with a new one. Clients configured with the old token stop working.
+	 */
+	mcpRegenerateToken: () => typedError<null, IdeError>(__TAURI_INVOKE("mcp_regenerate_token")),
 	mcpServerStatus: () => typedError<McpServerStatus, IdeError>(__TAURI_INVOKE("mcp_server_status")),
 	mcpSetOpenEditors: (paths: IpcPath[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_open_editors", { paths })),
 	mcpSetFocusedEditor: (editor: {
@@ -5859,7 +5864,12 @@ workspaceEdit?: boolean } |
 /**  A document's dirty flag changed (saved / modified externally). */
 { type: "docDirty"; doc: DocId; dirty: boolean } | 
 /**  A complete workspace edit can be undone as one operation. */
-{ type: "workspaceEditApplied"; id: number; paths: IpcPath[] } | 
+{ type: "workspaceEditApplied"; id: number; paths: IpcPath[]; 
+/**
+ *  Made by an agent through the MCP server's tools: undoable like a refactoring, but
+ *  not announced as one.
+ */
+byAgent: boolean } | 
 /**
  *  An open document's language changed (Settings › File Types, Override File
  *  Type), or its UI mode (a framework's root marker appeared or went).
@@ -7197,6 +7207,18 @@ export type McpServerSettings = {
 	agentTabLimit?: number,
 	/**  Archived agent tabs kept; older ones are closed. */
 	agentArchiveLimit?: number,
+	/**
+	 *  Listen on [`Self::port`] in every run, rather than a free port each time, so HTTP clients and
+	 *  port forwards keep working after a restart.
+	 */
+	fixedPort?: boolean,
+	/**  The port of [`Self::fixed_port`]. */
+	port?: number,
+	/**
+	 *  Keep the bearer token across runs (in the app data, readable by this user only) rather than
+	 *  make a new one each run.
+	 */
+	fixedToken?: boolean,
 };
 
 /**  What Settings › Agents › MCP Server shows. */
@@ -7205,11 +7227,16 @@ export type McpServerStatus = {
 	/**  Why it isn't running though turned on. */
 	error: string | null,
 	port: number | null,
+	/**
+	 *  Why the fixed port (`mcpServer.port`) isn't the one listened on: it was in use or
+	 *  reserved, so a free port was taken for this run.
+	 */
+	portUnavailable: string | null,
 	/**  The window's local project, which the URL and command below are for. */
 	project: IpcPath | null,
 	/**  `http://127.0.0.1:<port>/mcp?project=<root>`. */
 	url: string | null,
-	/**  Bearer token of `url` (changes with every run). */
+	/**  Bearer token of `url` (changes with every run unless `mcpServer.fixedToken` is on). */
 	token: string | null,
 	/**  The stdio bridge: this executable and its arguments. */
 	stdioCommand: string[],

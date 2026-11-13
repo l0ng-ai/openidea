@@ -18,14 +18,17 @@ Agent tasks started inside OpenIDEA (see [Agents](/en/guide/agents)) get the sam
   </Step>
 </Steps>
 
-The server listens on `127.0.0.1` only, on a random port, and every request must carry a token that changes each time OpenIDEA starts. Requests from another origin or host are refused.
+The server listens on `127.0.0.1` only, and every request must carry a bearer token. Requests from another origin or host are refused.
+
+- **Port.** By default it listens on the same port, 26371, in every run (**Use a fixed port** and **Port**), so HTTP clients and port forwards (an SSH tunnel to another machine, say) keep working after a restart. When the port is in use or reserved, that run takes a free port and **Status** says why. Turn **Use a fixed port** off for a free port in every run.
+- **Token.** By default the token changes each time OpenIDEA starts. Turn on **Keep the token** to keep one across runs, stored in OpenIDEA's application data for your account only; **Regenerate Token** replaces it, and clients configured with the old one stop working.
 
 ## Connect a client
 
 The settings page has two buttons under **Client configuration**. Both copy an `mcpServers` entry in the JSON format most clients accept.
 
 - **Copy Stdio Config** (recommended): the client starts OpenIDEA's executable with `--mcp-stdio`, which relays to the running IDE. It holds no token and keeps working after OpenIDEA restarts.
-- **Copy HTTP Config**: the client connects to `http://127.0.0.1:<port>/mcp` with `Authorization: Bearer <token>`. It stops working when OpenIDEA restarts, because the port and token change.
+- **Copy HTTP Config**: the client connects to `http://127.0.0.1:<port>/mcp` with `Authorization: Bearer <token>`. It keeps working after OpenIDEA restarts only with a fixed port and a kept token; otherwise copy it again after each restart.
 
 The stdio configuration looks like this (the path is the one on your machine):
 

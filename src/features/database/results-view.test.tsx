@@ -6,6 +6,7 @@ import { installCellActions } from "./cellActions";
 import { getContext } from "@/platform/context";
 import { ResultsView } from "./ResultsView";
 import { executeConsole, useDatabase, type ResultTab } from "./store";
+import { registerResultTabActions } from "./resultTabActions";
 import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
 
 const backend = vi.hoisted(() => ({
@@ -155,6 +156,48 @@ describe("editable result grid", () => {
     expect(output).toContain("UPDATE public.users SET name = 'Bob' WHERE id = '1'");
     await screen.findByRole("gridcell", { name: "Ann" });
     expect(useDatabase.getState().results[0]!.id).toBe(tab.id);
+  });
+
+  it("keeps navigation focus after leaving an inline cell editor and releases it outside Results", async () => {
+    const first = show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    useDatabase.setState({ results: [first, { ...first, id: nextId++, title: "Result 2" }] });
+    const keymap = useKeymap.getState();
+    useKeymap.setState({ preset: "intellij-macos", overrides: {}, extensions: {} });
+    const dispose = registerResultTabActions();
+    const uninstall = installKeyboardDispatcher(window);
+    try {
+      await act(async () =>
+        render(
+          <>
+            <ResultsView />
+            <button>Outside results</button>
+          </>,
+        ),
+      );
+      fireEvent.doubleClick(await screen.findByRole("gridcell", { name: "Ann" }));
+      const input = screen.getByRole("textbox", { name: "Edit name" });
+      fireEvent.change(input, { target: { value: "Bob" } });
+      await act(async () => {
+        fireEvent.keyDown(input, { key: "}", code: "BracketRight", metaKey: true, shiftKey: true });
+      });
+      expect(screen.getByRole("tab", { name: "Result 2" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("tab", { name: "Result 2" })).toHaveFocus();
+      await act(async () => {
+        fireEvent.keyDown(document.activeElement!, { key: "{", code: "BracketLeft", metaKey: true, shiftKey: true });
+      });
+      expect(screen.getByRole("tab", { name: "Result 1" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("tab", { name: "Result 1" })).toHaveFocus();
+      act(() => screen.getByRole("button", { name: "Outside results" }).focus());
+      await act(async () => {
+        fireEvent.keyDown(document.activeElement!, { key: "}", code: "BracketRight", metaKey: true, shiftKey: true });
+      });
+      expect(screen.getByRole("tab", { name: "Result 1" })).toHaveAttribute("aria-selected", "true");
+      expect(backend.applyEdits).not.toHaveBeenCalled();
+    } finally {
+      uninstall();
+      dispose();
+      useKeymap.setState(keymap, true);
+    }
   });
 
   it.each(["s2", ""])("records the selected schema or connection default: %s", async (schema) => {

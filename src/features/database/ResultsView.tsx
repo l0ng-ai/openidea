@@ -23,6 +23,7 @@ import {
   tooltipAttrs,
 } from "@/ui";
 import { notifications } from "@/workbench/contributions";
+import { ToolWindowContentTabs } from "@/workbench/toolwindows/ToolWindows";
 import { ChartView } from "./ChartView";
 import { ColumnsPopup } from "./ColumnsPopup";
 import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
@@ -665,7 +666,16 @@ export function ResultsView() {
   const results = useDatabase((s) => s.results);
   const active = useDatabase((s) => s.activeResult);
   const hasOutput = useDatabase((s) => s.output.length > 0);
-  useEffect(() => () => setContext("dbResultsFocus", false), []);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const syncFocus = () => setContext("dbResultsFocus", !!root.current?.contains(document.activeElement));
+    document.addEventListener("focusin", syncFocus);
+    syncFocus();
+    return () => {
+      document.removeEventListener("focusin", syncFocus);
+      setContext("dbResultsFocus", false);
+    };
+  }, []);
   const tabMenu = (id: string, e: MouseEvent) => {
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
@@ -682,11 +692,8 @@ export function ResultsView() {
   const tab = results.find((r) => r.id === active);
   return (
     <div
+      ref={root}
       className={styles.view}
-      onFocusCapture={() => setContext("dbResultsFocus", true)}
-      onBlurCapture={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget)) setContext("dbResultsFocus", false);
-      }}
       onKeyDown={(e) => {
         if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
         const tab = (e.target as Element).closest<HTMLElement>('[role="tab"]');
@@ -700,26 +707,28 @@ export function ResultsView() {
         );
       }}
     >
-      <Tabs
-        className={styles.resultTabs}
-        variant="compact"
-        aria-label="Results"
-        activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
-        panelIdPrefix="db-results"
-        onSelect={(id) => useDatabase.setState({ activeResult: Number(id) })}
-        onClose={(id) => closeResult(Number(id))}
-        onContextMenu={tabMenu}
-        items={[
-          { id: String(OUTPUT_TAB), label: "Output", icon: "db-console", closable: false },
-          ...results.map((r) => ({
-            id: String(r.id),
-            label: r.title,
-            icon: r.plan ? "db-plan" : "database",
-            closable: true,
-            tooltip: r.outcome.statement.text,
-          })),
-        ]}
-      />
+      <ToolWindowContentTabs>
+        <Tabs
+          className={styles.resultTabs}
+          variant="compact"
+          aria-label="Results"
+          activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
+          panelIdPrefix="db-results"
+          onSelect={(id) => useDatabase.setState({ activeResult: Number(id) })}
+          onClose={(id) => closeResult(Number(id))}
+          onContextMenu={tabMenu}
+          items={[
+            { id: String(OUTPUT_TAB), label: "Output", icon: "db-console", closable: false },
+            ...results.map((r) => ({
+              id: String(r.id),
+              label: r.title,
+              icon: r.plan ? "db-plan" : "database",
+              closable: true,
+              tooltip: r.outcome.statement.text,
+            })),
+          ]}
+        />
+      </ToolWindowContentTabs>
       <div className={styles.fill}>
         {!tab ? <Output /> : tab.plan ? <PlanResult key={tab.id} tab={tab} /> : <Result key={tab.id} tab={tab} />}
       </div>

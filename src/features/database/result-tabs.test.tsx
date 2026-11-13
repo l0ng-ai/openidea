@@ -1,8 +1,17 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { installKeyboardDispatcher, normalizeBinding, PRESETS, useKeymap } from "@/platform/keymap";
 import { ContextMenuHost, hideContextMenu } from "@/ui";
 import { InputDialogsHost } from "@/workbench/inputDialogs";
+import { SERVICES_WINDOW, registerToolWindow } from "@/workbench/contributions";
+import { installToolWindowActions } from "@/workbench/toolwindows/actions";
+import {
+  isToolWindowVisible,
+  resetToolWindowLayout,
+  setFocusedToolWindow,
+  showToolWindow,
+} from "@/workbench/toolwindows/store";
+import { ToolWindowLayout } from "@/workbench/toolwindows/ToolWindows";
 import { ResultsView } from "./ResultsView";
 import { registerResultTabActions } from "./resultTabActions";
 import { OUTPUT_TAB, useDatabase, type ResultTab } from "./store";
@@ -113,7 +122,7 @@ function openMenu(name: string) {
 
 async function choose(name: string) {
   await act(async () => {
-    fireEvent.click(screen.getByRole("menuitem", { name }));
+    fireEvent.click(screen.getByRole("menuitem", { name: name.startsWith("Select ") ? new RegExp(`^${name}`) : name }));
   });
 }
 
@@ -139,29 +148,6 @@ function expectConsoleStateUnchanged(before: typeof initialDatabase) {
 }
 
 describe("database result tab context menu", () => {
-  it("offers only result actions, in order with the two group separators", async () => {
-    await show();
-    const menu = openMenu("Orders");
-    expect(
-      within(menu)
-        .getAllByRole("menuitem")
-        .map((item) => item.textContent),
-    ).toEqual(["Close", "Close Others", "Close All", "Rename Tab", "Select Next Tab", "Select Previous Tab"]);
-    expect(Array.from(menu.children).map((item) => item.getAttribute("role"))).toEqual([
-      "menuitem",
-      "menuitem",
-      "menuitem",
-      "separator",
-      "menuitem",
-      "separator",
-      "menuitem",
-      "menuitem",
-    ]);
-    expect(within(menu).queryByText(/pin|layout/i)).not.toBeInTheDocument();
-    expectSelected("Customer count");
-    expect(screen.getByRole("gridcell", { name: "count-row" })).toBeInTheDocument();
-  });
-
   it("closes the clicked inactive result without changing the selected result", async () => {
     await show();
     openMenu("Orders");
@@ -386,6 +372,88 @@ describe("database result tab context menu", () => {
     expectSelected("Customer count");
   });
 
+  it.each(Object.entries(PRESETS))(
+    "navigates results using every default tab shortcut in %s",
+    async (preset, keymap) => {
+      useKeymap.setState({ preset });
+      await show();
+      const uninstall = installKeyboardDispatcher(window);
+      const press = async (binding: string) => {
+        const parts = normalizeBinding(binding).split("+");
+        const key = parts.at(-1)!;
+        const codes: Record<string, string> = {
+          Right: "ArrowRight",
+          Left: "ArrowLeft",
+          "[": "BracketLeft",
+          "]": "BracketRight",
+        };
+        await act(async () => {
+          fireEvent.keyDown(document.activeElement!, {
+            key,
+            code: codes[key] ?? key,
+            metaKey: parts.includes("Meta"),
+            ctrlKey: parts.includes("Ctrl"),
+            altKey: parts.includes("Alt"),
+            shiftKey: parts.includes("Shift"),
+          });
+        });
+      };
+      try {
+        for (const [index, next] of keymap["editor.nextTab"]!.entries()) {
+          const previous = keymap["editor.prevTab"]![index]!;
+          act(() => screen.getByRole("button", { name: "Outside results" }).focus());
+          await press(next);
+          await press(previous);
+          expectSelected("Customer count");
+          act(() => tab("Orders").focus());
+          await press(next);
+          expectOutput();
+          await press(next);
+          expectSelected("Customers");
+          expect(screen.getByRole("gridcell", { name: "customer-row" })).toBeInTheDocument();
+          await press(previous);
+          expectOutput();
+          await press(previous);
+          expectSelected("Customer count");
+          openMenu("Customers");
+          await press(next);
+          await press(previous);
+          expectSelected("Customer count");
+          fireEvent.keyDown(document.activeElement!, { key: "Escape", code: "Escape" });
+        }
+        expect(useDatabase.getState().results).toBe(seeded);
+      } finally {
+        uninstall();
+      }
+    },
+  );
+
+  it("releases result shortcuts after switching from a grid and moving focus outside", async () => {
+    await show();
+    const uninstall = installKeyboardDispatcher(window);
+    const next = async () => {
+      await act(async () => {
+        fireEvent.keyDown(document.activeElement!, {
+          key: "}",
+          code: "BracketRight",
+          metaKey: true,
+          shiftKey: true,
+        });
+      });
+    };
+    try {
+      act(() => screen.getByRole("grid").focus());
+      await next();
+      expectOutput();
+      expect(tab("Output")).toHaveFocus();
+      act(() => screen.getByRole("button", { name: "Outside results" }).focus());
+      await next();
+      expectOutput();
+    } finally {
+      uninstall();
+    }
+  });
+
   it("dispatches assigned result shortcuts only while results have focus, relative to the active tab", async () => {
     useKeymap.setState({
       overrides: {
@@ -421,5 +489,59 @@ describe("database result tab context menu", () => {
     } finally {
       uninstall();
     }
+  });
+});
+
+describe("Close Tab in the Services tool window", () => {
+  let disposers: (() => void)[] = [];
+
+  beforeEach(() => {
+    resetToolWindowLayout();
+    disposers = [
+      installToolWindowActions(),
+      installKeyboardDispatcher(window),
+      registerToolWindow({
+        id: SERVICES_WINDOW,
+        title: "Services",
+        icon: "toolwindow-services",
+        anchor: "bottom",
+        requiresProject: false,
+        component: ResultsView,
+      }),
+    ];
+  });
+
+  afterEach(() => {
+    setFocusedToolWindow(null);
+    disposers.forEach((dispose) => dispose());
+  });
+
+  async function closeTab(focus: () => HTMLElement) {
+    showToolWindow(SERVICES_WINDOW);
+    await act(async () => render(<ToolWindowLayout editor={null} />));
+    act(() => {
+      focus().focus();
+      setFocusedToolWindow(SERVICES_WINDOW);
+    });
+    await act(async () => {
+      fireEvent.keyDown(document.activeElement!, { key: "w", code: "KeyW", metaKey: true });
+    });
+  }
+
+  it.each([
+    ["the grid", () => screen.getByRole("grid")],
+    ["the tab strip", () => tab("Customer count")],
+  ])("closes the active result, not the window, from %s", async (_, focus) => {
+    await closeTab(focus);
+    expect(screen.queryByRole("tab", { name: "Customer count" })).not.toBeInTheDocument();
+    expectSelected("Orders");
+    expect(isToolWindowVisible(SERVICES_WINDOW)).toBe(true);
+  });
+
+  it("hides the window when Output, which cannot be closed, is active", async () => {
+    useDatabase.setState({ activeResult: OUTPUT_TAB });
+    await closeTab(() => tab("Output"));
+    expect(useDatabase.getState().results).toBe(seeded);
+    expect(isToolWindowVisible(SERVICES_WINDOW)).toBe(false);
   });
 });

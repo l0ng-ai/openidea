@@ -75,6 +75,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         mcp::mcp_ui_ready,
         mcp::mcp_respond,
         mcp::mcp_agent_run_closed,
+        mcp::mcp_regenerate_token,
         mcp::mcp_server_status,
         mcp::mcp_set_open_editors,
         mcp::mcp_set_focused_editor,
