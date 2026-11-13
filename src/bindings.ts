@@ -8113,7 +8113,9 @@ export type PomGotoKind =
 /**  A `<dependencyManagement>` entry providing the dependency's version. */
 "managedDependency" | 
 /**  A `<pluginManagement>` entry providing the plugin's version. */
-"managedPlugin";
+"managedPlugin" | 
+/**  The POM of the artifact itself: a project module's, else the local repository's. */
+"artifactPom";
 
 /**  A 0-based line / UTF-16 column position. */
 export type Pos = {
