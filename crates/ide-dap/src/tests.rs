@@ -154,6 +154,7 @@ struct Script {
     /// `launch`, and a `configurationDone` sent while it runs is refused with `notStopped`.
     gdb15_starts_at_launch: bool,
     launch_after_configuration: bool,
+    empty_thread_responses: usize,
 }
 
 impl Default for Script {
@@ -186,6 +187,7 @@ impl Default for Script {
             close_during_startup: false,
             gdb15_starts_at_launch: false,
             launch_after_configuration: false,
+            empty_thread_responses: 0,
         }
     }
 }
@@ -225,6 +227,8 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
     let mut held: Vec<Value> = Vec::new();
     let mut stopped = false;
     let mut running = false;
+    let mut thread_requests = 0;
+    let mut unity = false;
     macro_rules! send {
         ($v:expr) => {{
             let mut v: Value = $v;
@@ -249,13 +253,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
         }
         match msg["command"].as_str().unwrap_or_default() {
             "initialize" => {
+                unity = msg["arguments"]["adapterID"] == "unity";
                 if let Some(delay) = script.delay_initialize {
                     tokio::time::sleep(delay).await;
                 }
                 ok!(
                     msg,
                     json!({
-                        "supportsConfigurationDoneRequest": true,
+                        "supportsConfigurationDoneRequest": !unity,
                         "supportsCompletionsRequest": true,
                         "supportsTerminateRequest": script.supports_terminate,
                         "supportsSetVariable": true,
@@ -274,8 +279,15 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     // defers it sends late).
                     send!(json!({"type": "event", "event": "initialized"}));
                 }
+                if unity {
+                    send!(json!({"type": "event", "event": "initialized"}));
+                }
             }
             "launch" | "attach" => {
+                if unity {
+                    ok!(msg, Value::Null);
+                    continue;
+                }
                 if script.gdb15_starts_at_launch {
                     // GDB 15 starts the program here and answers `launch` right away.
                     running = true;
@@ -413,7 +425,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 ok!(msg, json!({"threads": [{"id": 1, "name": "\"main\"@1"}]}));
             }
-            "threads" => ok!(msg, json!({"threads": [{"id": 1, "name": "MainThread"}]})),
+            "threads" => {
+                thread_requests += 1;
+                if thread_requests <= script.empty_thread_responses {
+                    ok!(msg, json!({"threads": []}));
+                } else {
+                    ok!(msg, json!({"threads": [{"id": 1, "name": "MainThread"}]}));
+                }
+            }
             "stackTrace" => ok!(
                 msg,
                 json!({"stackFrames": [
@@ -825,6 +844,32 @@ async fn stop_terminates_and_disconnects() {
     assert!(h.manager.sessions(None).is_empty());
     h.wait_event(|e| matches!(e, DebugEvent::Terminated)).await;
     assert!(h.manager.threads(id).await.is_err());
+}
+
+#[tokio::test]
+async fn unity_attach_waits_for_mono_and_disconnects_without_terminating_editor() {
+    let h = harness(Script { empty_thread_responses: 2, ..Script::default() });
+    h.manager.set_breakpoints(PathBuf::from("/p/a.cs"), vec![bp(4)]).await.unwrap();
+    let start = h.start(LaunchConfig {
+        adapter: "unity".into(),
+        request: "attach".into(),
+        program: None,
+        extra_json: Some(json!({ "name": "Unity Editor (42)", "__exceptionOptions": [] }).to_string()),
+        ..config()
+    });
+    let ready = async {
+        h.wait_event(|e| matches!(e, DebugEvent::Initialized)).await;
+        let commands = h.commands();
+        let before_breakpoints = commands.iter().take_while(|c| *c != "setBreakpoints");
+        assert!(before_breakpoints.filter(|c| *c == "threads").count() >= 3);
+        assert!(commands.iter().any(|c| c == "setBreakpoints"));
+    };
+    let (id, ()) = tokio::join!(start, ready);
+    let id = id.unwrap();
+    assert_eq!(h.request("attach")["arguments"]["name"], "Unity Editor (42)");
+    h.manager.stop(id).await.unwrap();
+    assert!(!h.commands().iter().any(|c| c == "launch" || c == "terminate"));
+    assert_eq!(h.request("disconnect")["arguments"]["terminateDebuggee"], false);
 }
 
 #[tokio::test]

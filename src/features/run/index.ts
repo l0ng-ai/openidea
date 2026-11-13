@@ -96,6 +96,7 @@ import {
 import { rerunFailedConfigs } from "./testing/rerun";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
+import { isUnityProject, showUnityAttach } from "./unity";
 
 function trackFailedTestSelection(): () => void {
   let signature = "";
@@ -139,6 +140,7 @@ async function ensureConfigs() {
 }
 
 async function runSelected() {
+  if (isUnityProject()) return;
   await ensureConfigs();
   if (currentFileSelected()) return runCurrentFile(false);
   const config = selectedConfig();
@@ -155,6 +157,7 @@ async function runSelected() {
 }
 
 async function debugConfig(config: RunConfig, chain: readonly string[] = [], show?: boolean) {
+  if (isUnityProject()) return showUnityAttach();
   if (config.kind === "compound") {
     if (!(await prepareLaunch(config, chain, show))) return;
     const children = compoundChildren(config, useRun.getState().configs);
@@ -216,6 +219,7 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
 }
 
 async function debugSelected() {
+  if (isUnityProject()) return showUnityAttach();
   await ensureConfigs();
   if (currentFileSelected()) return runCurrentFile(true);
   const config = selectedConfig();
@@ -227,6 +231,7 @@ async function debugSelected() {
 }
 
 async function runContext(debug: boolean, arg?: unknown) {
+  if (isUnityProject()) return debug ? showUnityAttach() : undefined;
   if (!(await runContextAction(debug, arg))) nothingToRun();
 }
 
@@ -271,12 +276,13 @@ function configFromArg(arg: unknown): RunConfig | undefined {
  */
 function stopAction(arg?: unknown) {
   const ctx = getContext();
-  if (ctx.toolWindowFocus && ctx.activeToolWindow === "debug" && getAction("debug.stop")) {
+  const fromUnityWidget = arg === "unity-widget" && isUnityProject();
+  if (!fromUnityWidget && ctx.toolWindowFocus && ctx.activeToolWindow === "debug" && getAction("debug.stop")) {
     void executeAction("debug.stop");
     return;
   }
   const running = runningSessions();
-  if (ctx.toolWindowFocus && ctx.activeToolWindow === "run") {
+  if (!fromUnityWidget && ctx.toolWindowFocus && ctx.activeToolWindow === "run") {
     const active = running.find((s) => s.id === useRun.getState().activeSession);
     if (active) {
       void stopSession(active.id);
@@ -307,7 +313,7 @@ function stopAction(arg?: unknown) {
   ].filter((i): i is MenuItem & { run: () => void } => "run" in i && !!i.run);
   // A Debug launch has no Run process: with nothing else to stop, the title-bar Stop reaches
   // the debug session itself (the Debug window need not be focused).
-  if (items.length === 0) {
+  if (items.length === 0 || (fromUnityWidget && debug.length > 0)) {
     if (debug.length === 0) return;
     if (debug.length === 1) {
       debug[0]!.stop();
@@ -358,6 +364,7 @@ function scheduleReload() {
 const useEditConfigsOpen = () => useRun((s) => s.editorOpen);
 
 export function activate(): () => void {
+  setContext("run.unityProject", isUnityProject());
   const disposers: Array<() => void> = [
     // The performance harness (`perf/`): a console streaming generated output.
     import.meta.env.DEV || import.meta.env.MODE === "perf"
@@ -461,7 +468,7 @@ export function activate(): () => void {
         title: "Run",
         category: "Run",
         icon: "run",
-        when: "projectOpen",
+        when: "projectOpen && !run.unityProject",
         run: () => runSelected(),
       },
       {
@@ -473,12 +480,20 @@ export function activate(): () => void {
         run: () => debugSelected(),
       },
       {
+        id: "run.attachUnity",
+        title: "Attach to Unity Process",
+        category: "Run",
+        icon: "debug",
+        when: "projectOpen && run.unityProject",
+        run: () => showUnityAttach(),
+      },
+      {
         id: "run.runContext",
         title: "Run Context Configuration",
         description: "Run the test or program in the active file",
         category: "Run",
         icon: "run",
-        when: "projectOpen",
+        when: "projectOpen && !run.unityProject",
         keywords: ["run file", "run test"],
         run: ({ arg }) => runContext(false, arg),
       },
@@ -524,7 +539,7 @@ export function activate(): () => void {
         title: "Rerun",
         category: "Run",
         icon: "rerun",
-        when: "projectOpen && activeToolWindow == 'run'",
+        when: "projectOpen && !run.unityProject && activeToolWindow == 'run'",
         run: () => rerunActive(),
       },
       {
@@ -533,7 +548,7 @@ export function activate(): () => void {
         description:
           'Run a configuration (hold Shift to debug); the title bar widget passes "select" to only select one',
         category: "Run",
-        when: "projectOpen",
+        when: "projectOpen && !run.unityProject",
         run: async ({ arg }) => {
           if (useRun.getState().chooserOpen || chooserJustClosed()) {
             useRun.setState({ chooserOpen: false });
@@ -551,6 +566,7 @@ export function activate(): () => void {
         keywords: ["choose and debug configuration"],
         when: "projectOpen",
         run: async () => {
+          if (isUnityProject()) return showUnityAttach();
           if (useRun.getState().chooserOpen || chooserJustClosed()) {
             useRun.setState({ chooserOpen: false });
             return;
@@ -663,7 +679,7 @@ export function activate(): () => void {
         title: "Run Configuration",
         category: "Run",
         hidden: true,
-        when: "projectOpen",
+        when: "projectOpen && !run.unityProject",
         run: async ({ arg }) => {
           await ensureConfigs();
           const config = configFromArg(arg);
@@ -737,6 +753,7 @@ export function activate(): () => void {
       setContext("run.updatableRunning", updatableSessions().length > 0);
     }),
     useProject.subscribe((s, prev) => {
+      setContext("run.unityProject", !!s.project?.unity);
       if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
       resetRuns();
       useStackTraces.setState({ tabs: [], dialog: null });
@@ -789,5 +806,6 @@ export function activate(): () => void {
     clearTimeout(reloadTimer);
     disposers.reverse().forEach((d) => d());
     resetRuns();
+    setContext("run.unityProject", false);
   };
 }

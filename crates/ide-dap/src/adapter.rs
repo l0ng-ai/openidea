@@ -119,6 +119,12 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "stdio",
             "Install GDB 14 or newer (apt install gdb, dnf install gdb, brew install gdb)",
         ),
+        "unity" => cfg(
+            "unity-debug",
+            &[],
+            "stdio",
+            "Install Unity Debugger in Settings > Language Servers, or configure the unity-debug tool path",
+        ),
         "rdbg" => cfg("rdbg", &["-O", "--port", PORT_PLACEHOLDER, "-c"], "tcp", "gem install debug"),
         // A jdtls bundle: the session is started through jdtls and reached via `debugServer`.
         "java-debug" => cfg(

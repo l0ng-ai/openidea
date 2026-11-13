@@ -15,7 +15,13 @@ interface OverlayState {
   breakpoints: { path?: string; id?: string } | null;
   chooser: { configs: RunConfig[] } | null;
   /** Attach to Process popup; `processes` is null while loading. */
-  attach: { processes: AttachableProcess[] | null; error: string | null } | null;
+  attach: {
+    processes: AttachableProcess[] | null;
+    error: string | null;
+    mode?: "all" | "unity";
+    projectRoot?: string | null;
+    installTool?: string;
+  } | null;
   /**
    * Smart Step Into: picked in the editor when `inline` is set (targets sorted
    * by position, `index` the selected one), else in the chooser dialog.

@@ -23,6 +23,7 @@ import {
   type SpecialBreakpoint,
 } from "../breakpoints/special";
 import { attachConfig, attachDetail, attachRows, type AttachRow } from "../attach";
+import { openAttachPopup, installAttachAdapter } from "../attachPopup";
 import {
   exceptionGroups,
   refreshExceptionFilters,
@@ -873,6 +874,7 @@ function AttachPopup() {
   const root = useProject((s) => s.project?.root ?? null);
   const [filter, setFilter] = useState("");
   const [active, setActive] = useState(0);
+  const [installing, setInstalling] = useState(false);
   const rows = useMemo(() => attachRows(state?.processes ?? [], filter), [state?.processes, filter]);
   const firstItem = rows.findIndex((r) => r.kind === "process");
   const activeIndex = rows[active]?.kind === "process" ? active : firstItem;
@@ -883,6 +885,7 @@ function AttachPopup() {
     useOverlays.setState({ attach: null });
   };
   const attach = async (p: AttachableProcess) => {
+    if (state.projectRoot !== undefined && state.projectRoot !== root) return close();
     close();
     if (!root) return;
     try {
@@ -906,8 +909,44 @@ function AttachPopup() {
     }
   };
   return (
-    <Dialog open onClose={close} title="Attach to Process" width={640} position="top" aria-label="Attach to process">
+    <Dialog
+      open
+      onClose={close}
+      title={state.mode === "unity" ? "Attach to Unity Process" : "Attach to Process"}
+      width={640}
+      position="top"
+      aria-label={state.mode === "unity" ? "Attach to Unity Process" : "Attach to process"}
+      buttons={[
+        {
+          label: "Refresh",
+          role: "extra",
+          disabled: state.processes === null || installing,
+          onClick: () => {
+            setActive(0);
+            void openAttachPopup(state.mode);
+          },
+        },
+        { label: "Cancel", role: "cancel", onClick: close },
+        {
+          label: "Attach",
+          role: "default",
+          disabled: rows[activeIndex]?.kind !== "process" || installing,
+          onClick: () => {
+            const row = rows[activeIndex];
+            if (row?.kind === "process") void attach(row.process);
+          },
+        },
+      ]}
+    >
       <div className={styles.evalBody}>
+        {state.mode === "unity" && (
+          <p>
+            <T>
+              Open the project in Unity Editor, enable Editor Attaching and switch to Debug Mode. Select its process
+              below. Stopping debugging disconnects without closing Unity.
+            </T>
+          </p>
+        )}
         <Input
           value={filter}
           onChange={(e) => {
@@ -933,7 +972,20 @@ function AttachPopup() {
             <T>Loading processes…</T>
           </div>
         ) : state.error ? (
-          <div className={styles.empty}>{state.error}</div>
+          <div className={styles.empty}>
+            <div>{state.error}</div>
+            {state.installTool && (
+              <Button
+                disabled={installing}
+                onClick={() => {
+                  setInstalling(true);
+                  void installAttachAdapter().finally(() => setInstalling(false));
+                }}
+              >
+                {installing ? "Installing…" : "Install Unity Debugger"}
+              </Button>
+            )}
+          </div>
         ) : (
           <List<AttachRow>
             items={rows}
@@ -954,7 +1006,11 @@ function AttachPopup() {
             className={styles.attachList}
             empty={
               <div className={styles.empty}>
-                {filter ? tx`No attachable processes match the filter.` : tx`No attachable processes.`}
+                {filter
+                  ? tx`No attachable processes match the filter.`
+                  : state.mode === "unity"
+                    ? tx`No Unity Editor processes found. Open Unity Editor, then refresh.`
+                    : tx`No attachable processes.`}
               </div>
             }
             renderItem={(r) =>

@@ -526,6 +526,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         debug::debug_data_breakpoint_info,
         debug::debug_attachable_processes,
         debug::debug_free_port,
+        debug::debug_unity_processes,
         debug::debug_listen_for_jvm,
         debug::debug_redefine_classes,
         debug::debug_jvm_memory_classes,
