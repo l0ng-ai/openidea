@@ -262,6 +262,8 @@ namespace Prettus\Repository\Eloquent {
         abstract public function model();
         /** @return mixed */
         public function find($id) { return null; }
+        /** @return mixed */
+        public function findWhere(array $where) { return null; }
         public function __call($method, $arguments) { return null; }
     }
 }
@@ -272,8 +274,14 @@ namespace App\Contracts {
 namespace App\Models {
     class Order extends \Illuminate\Database\Eloquent\Model implements \App\Contracts\Order, \App\Contracts\Shared {
         public function ship(): bool { return true; }
+        public function invoices() { return $this->hasMany(Invoice::class); }
     }
-    class Invoice extends \Illuminate\Database\Eloquent\Model implements \App\Contracts\Shared {}
+    function order(): \App\Contracts\Order { return new Order(); }
+    function shared(): \App\Contracts\Shared { return new Order(); }
+    class Invoice extends \Illuminate\Database\Eloquent\Model implements \App\Contracts\Shared {
+        /** A Concord proxy names the related model. */
+        public function order() { return $this->belongsTo(OrderProxy::modelClass()); }
+    }
 }
 namespace App\Repositories {
     class UserRepository extends \Prettus\Repository\Eloquent\BaseRepository {
@@ -289,7 +297,7 @@ namespace App\Repositories {
 "#;
 
 #[test]
-fn repositories_forward_to_their_model() {
+fn repositories_and_concord_proxies_name_their_model() {
     let libs = &[FRAMEWORK, APPLICATION, APP, REPOSITORIES];
     check(
         libs,
@@ -303,8 +311,23 @@ fn repositories_forward_to_their_model() {
             ("(new \\App\\Repositories\\OrderRepository())->where('a', 1)->first()/*|*/;", "?App\\Models\\Order"),
             // What the repository declares stays; two models implementing the
             // contract, unknown.
-            ("(new \\App\\Repositories\\UserRepository())->find(1)/*|*/;", "mixed"),
+            // Its documented-`mixed` finders give the model.
+            ("(new \\App\\Repositories\\UserRepository())->find(1)/*|*/;", "App\\Models\\User"),
+            (
+                "(new \\App\\Repositories\\OrderRepository())->findWhere([])/*|*/;",
+                "Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\Order>",
+            ),
             ("(new \\App\\Repositories\\SharedRepository())->where('a', 1)/*|*/;", "mixed"),
+            ("(new \\App\\Models\\Invoice())->order/*|*/;", "?App\\Models\\Order"),
+            ("(new \\App\\Models\\Invoice())->order->ship()/*|*/;", "bool"),
+            // A value typed with the contract is its model.
+            ("\\App\\Models\\order()->ship()/*|*/;", "bool"),
+            ("\\App\\Models\\order()->where('a', 1)->first()/*|*/;", "?App\\Models\\Order"),
+            (
+                "\\App\\Models\\order()->invoices/*|*/;",
+                "Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\Invoice>",
+            ),
+            ("\\App\\Models\\shared()->ship()/*|*/;", "mixed"),
         ],
     );
 }

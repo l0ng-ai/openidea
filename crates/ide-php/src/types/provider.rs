@@ -39,7 +39,9 @@
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-use mago_syntax::cst::{Access, Argument, ArgumentList, ArrayElement, ClassLikeConstantSelector, Expression};
+use mago_syntax::cst::{
+    Access, Argument, ArgumentList, ArrayElement, Call, ClassLikeConstantSelector, ClassLikeMemberSelector, Expression,
+};
 
 pub use self::laravel::LaravelProvider;
 pub use self::symfony::SymfonyProvider;
@@ -123,6 +125,23 @@ pub(crate) fn site_args(scope: &NameScope, list: &ArgumentList<'_>) -> Vec<SiteA
                 },
                 Expression::Array(array) => arg.strings = array_strings(array.elements.iter()),
                 Expression::LegacyArray(array) => arg.strings = array_strings(array.elements.iter()),
+                // A Concord model proxy: `ProductProxy::modelClass()` is the
+                // model `Product` beside it (by Concord's convention).
+                Expression::Call(Call::StaticMethod(call)) => {
+                    if let (ClassLikeMemberSelector::Identifier(method), Expression::Identifier(class)) =
+                        (&call.method, call.class)
+                        && method.value.eq_ignore_ascii_case(b"modelClass")
+                    {
+                        let name = String::from_utf8_lossy(class.value());
+                        let proxy = match scope.resolve(NameKind::ClassLike, &name).resolution {
+                            Resolution::Fqn(fqn) | Resolution::Fallback { namespaced: fqn, .. } => Some(fqn),
+                            Resolution::Relative(_) => None,
+                        };
+                        arg.class = proxy
+                            .and_then(|proxy| proxy.strip_suffix("Proxy").map(str::to_owned))
+                            .filter(|model| !model.is_empty() && !model.ends_with('\\'));
+                    }
+                }
                 _ => {}
             }
             arg

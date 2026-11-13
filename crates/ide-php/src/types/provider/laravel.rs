@@ -230,6 +230,23 @@ fn relation_class(method: &str) -> Option<&'static str> {
     RELATION_METHODS.iter().find(|(name, _)| name.eq_ignore_ascii_case(method)).map(|(_, class)| *class)
 }
 
+/// What a Prettus repository finder returns: `Some(true)` for a collection
+/// of the model, `Some(false)` for the model.
+fn prettus_finder(method: &str) -> Option<bool> {
+    const MODEL: &[&str] = &["find", "first", "firstOrNew", "firstOrCreate", "create", "update", "updateOrCreate"];
+    const COLLECTION: &[&str] = &[
+        "all",
+        "get",
+        "findByField",
+        "findWhere",
+        "findWhereIn",
+        "findWhereNotIn",
+        "findWhereBetween",
+        "getByCriteria",
+    ];
+    if is_one_of(MODEL, method) { Some(false) } else { is_one_of(COLLECTION, method).then_some(true) }
+}
+
 fn is_one_of(list: &[&str], method: &str) -> bool {
     list.iter().any(|name| name.eq_ignore_ascii_case(method))
 }
@@ -349,7 +366,14 @@ impl LaravelProvider {
         if class.is_subclass_of(MODEL) {
             return Some(class.fqn().to_owned());
         }
-        if class.class.kind != crate::summary::ClassKind::Interface {
+        Self::contract_model(resolver, &class)
+    }
+
+    /// The model a model contract stands for: an interface without methods
+    /// that one Eloquent model implements (Concord's contracts,
+    /// `Webkul\Checkout\Contracts\Cart`, which Bagisto types with).
+    pub(crate) fn contract_model(resolver: &Resolver<'_>, class: &ClassModel) -> Option<String> {
+        if class.class.kind != crate::summary::ClassKind::Interface || !class.methods.is_empty() {
             return None;
         }
         let mut implementing = resolver.direct_subclasses(class.fqn()).into_iter().filter(|fqn| {
@@ -359,6 +383,11 @@ impl LaravelProvider {
         });
         let model = implementing.next()?;
         implementing.next().is_none().then_some(model)
+    }
+
+    /// The model of the first model contract among the members of `ty`.
+    fn contract_of(resolver: &Resolver<'_>, ty: &Type, context: &Context) -> Option<String> {
+        resolver.class_models(ty, context).iter().find_map(|class| Self::contract_model(resolver, class))
     }
 
     /// The class behind facade `facade` (what its `getFacadeAccessor()`
@@ -514,10 +543,21 @@ impl LaravelProvider {
         if let Some(ty) = Self::eloquent_call(resolver, receiver, name, counted, args, context) {
             return Some(ty);
         }
-        // A Prettus repository: what it doesn't declare is a call on its model.
+        // Prettus's own finders, documented `mixed`: the model or a
+        // collection of it.
+        if *core == Type::Mixed
+            && let Some(collection) = prettus_finder(name)
+            && let Some(model) = Self::repository_model(resolver, receiver, context)
+        {
+            let model = Type::named(&model);
+            return Some(if collection { Type::generic(COLLECTION, vec![Type::Int, model]) } else { model });
+        }
+        // A Prettus repository: what it doesn't declare is a call on its
+        // model; so is a call on a model contract.
         if *core == Type::Mixed
             && !resolver.class_models(receiver, context).iter().any(|model| model.method(name).is_some())
             && let Some(model) = Self::repository_model(resolver, receiver, context)
+                .or_else(|| Self::contract_of(resolver, receiver, context))
         {
             let instance = Type::named(&model);
             let declared = resolver.method_return(&instance, name, context);
@@ -1244,6 +1284,15 @@ impl LaravelProvider {
                 Self::attributes(resolver, &model, &Self::counted_in(receiver, model.fqn()), &mut out);
             } else if model.is_subclass_of(FORM_REQUEST) {
                 Self::request_fields(resolver, &model, &mut out);
+            } else if let Some(target) = Self::contract_model(resolver, &model)
+                && let Some(target) = resolver.class_model(&target)
+            {
+                // A model contract: its model's members.
+                Self::forwarded_methods(resolver, target.fqn(), false, &mut out);
+                Self::scopes(resolver, target.fqn(), false, &mut out);
+                Self::forwarded_methods(resolver, ELOQUENT_BUILDER, false, &mut out);
+                Self::forwarded_methods(resolver, QUERY_BUILDER, false, &mut out);
+                Self::attributes(resolver, &target, &[], &mut out);
             } else if model.is_subclass_of(PRETTUS_REPOSITORY)
                 && let Some(target) = Self::repository_model(resolver, &Type::named(model.fqn()), context)
             {
@@ -1666,7 +1715,14 @@ impl TypeProvider for LaravelProvider {
         if !Self::installed(resolver) {
             return None;
         }
-        Self::model_property(resolver, class, name).or_else(|| Self::request_property(resolver, class, name))
+        Self::model_property(resolver, class, name).or_else(|| Self::request_property(resolver, class, name)).or_else(
+            || {
+                // A model contract's property is its model's.
+                let contract = resolver.class_model(class)?;
+                let model = Self::contract_model(resolver, &contract)?;
+                Self::model_property(resolver, &model, name)
+            },
+        )
     }
 
     fn magic_members(&self, receiver: &Type, resolver: &Resolver<'_>, context: &Context) -> Vec<MagicMember> {
