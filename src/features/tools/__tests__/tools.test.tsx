@@ -19,7 +19,17 @@ beforeEach(() => {
   provideNotificationService({ notify: (n) => void notes.push(n) });
   backend = new MemoryToolsBackend(sampleTools(), 1);
   setToolsBackend(backend);
-  useTools.setState({ tools: [], loaded: false, loading: false, error: null, jobs: {}, logs: {} });
+  useTools.setState({
+    tools: [],
+    loaded: false,
+    loading: false,
+    error: null,
+    jobs: {},
+    logs: {},
+    updates: {},
+    checkingUpdates: false,
+    updatesChecked: false,
+  });
 });
 
 afterEach(() => setToolsBackend(null));
@@ -262,6 +272,22 @@ describe("LanguageServersPage", () => {
     // The install log can be shown afterwards.
     await user.click(screen.getByRole("button", { name: "Show install log" }));
     expect(screen.getByLabelText("gopls install log")).toHaveTextContent("Installing gopls");
+  });
+
+  it("offers an update when a newer version of an installed tool is out", async () => {
+    const user = userEvent.setup();
+    backend.available = [{ name: "rust-analyzer", current: "1.85.0", latest: "1.86.0" }];
+    renderPage();
+    await waitFor(() => expect(listItem("rust-analyzer")).toHaveTextContent("Update"));
+    expect(listItem("gopls")).not.toHaveTextContent("Update");
+    await user.click(listItem("rust-analyzer"));
+    const details = screen.getByLabelText("rust-analyzer details");
+    expect(details).toHaveTextContent("Version 1.86.0 is available.");
+    await user.click(within(details).getByRole("button", { name: "Update rust-analyzer" }));
+    await waitFor(() => expect(listItem("rust-analyzer")).not.toHaveTextContent("Update"));
+    expect(
+      within(screen.getByLabelText("rust-analyzer details")).getByRole("button", { name: "Reinstall rust-analyzer" }),
+    ).toBeInTheDocument();
   });
 
   it("explains why a tool cannot be installed", async () => {

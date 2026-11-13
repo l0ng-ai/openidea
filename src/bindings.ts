@@ -966,6 +966,11 @@ export const commands = {
 	toolsInstall: (name: string, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<ToolInfo, IdeError>(__TAURI_INVOKE("tools_install", { name, request, onEvent })),
 	/**  Removes a tool the IDE installed. */
 	toolsUninstall: (name: string) => typedError<ToolInfo, IdeError>(__TAURI_INVOKE("tools_uninstall", { name })),
+	/**
+	 *  Newer versions of the tools the IDE installed (release downloads and npm packages).
+	 *  Cancel with `cancel_request(request)`.
+	 */
+	toolsUpdates: (request: RequestId) => typedError<ToolUpdate[], IdeError>(__TAURI_INVOKE("tools_updates", { request })),
 	/**  JDK distributions Download JDK offers. */
 	jdkDownloadVendors: () => __TAURI_INVOKE<JdkVendor[]>("jdk_download_vendors"),
 	/**  Java versions `vendor` publishes; cancellable with `cancel_request(request)`. */
@@ -10221,6 +10226,15 @@ export type ToolStatus =
 "onPath" | 
 /**  The executable chosen in settings. */
 "custom" | "missing";
+
+/**  A newer version of a tool the IDE installed, as its install source offers it now. */
+export type ToolUpdate = {
+	name: string,
+	/**  The installed version. */
+	current: string,
+	/**  The version installing the tool again would get. */
+	latest: string,
+};
 
 export type TransferError = {
 	path: string,
