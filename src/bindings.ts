@@ -2392,6 +2392,8 @@ export type AppearanceSettings_Deserialize = {
 	statusBarWidgets?: { [key in string]: boolean },
 	/**  Customize Main Toolbar; `None` = the default toolbar. */
 	mainToolbar?: MainToolbarSettings | null,
+	/**  Appearance › Background Image: an image shown through the IDE window. */
+	backgroundImage?: BackgroundImageSettings,
 };
 
 export type AppearanceSettings_Serialize = {
@@ -2454,6 +2456,8 @@ export type AppearanceSettings_Serialize = {
 	statusBarWidgets: { [key in string]: boolean },
 	/**  Customize Main Toolbar; `None` = the default toolbar. */
 	mainToolbar: MainToolbarSettings | null,
+	/**  Appearance › Background Image: an image shown through the IDE window. */
+	backgroundImage: BackgroundImageSettings,
 };
 
 export type ApplyOutcome = {
@@ -2532,6 +2536,20 @@ export type AutoUpload = "never" |
 "onExplicitSave" | 
 /**  Every save, including autosave and external changes. */
 "always";
+
+/**  Appearance › Background Image. An empty `path` shows no image. */
+export type BackgroundImageSettings = {
+	path?: string,
+	/**  Percent, 0–100. */
+	opacity?: number,
+	/**  `scale` (cover the window) | `plain` (original size) | `tile`. */
+	fill?: string,
+	/**
+	 *  Where the image is anchored: `center`, `top-left`, `top`, `top-right`, `left`, `right`,
+	 *  `bottom-left`, `bottom`, `bottom-right`.
+	 */
+	anchor?: string,
+};
 
 /**  A step run before a configuration launches; a failing step aborts the launch. */
 export type BeforeLaunchTask = {
