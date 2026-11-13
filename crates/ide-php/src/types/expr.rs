@@ -100,6 +100,15 @@ pub fn type_at(file: &ParsedFile, resolver: &Resolver<'_>, offset: u32) -> Optio
     Some(types.type_of(expr, &frames).widen())
 }
 
+/// Where a member of an anonymous class is declared
+/// ([`ExprTypes::anonymous_member`]).
+pub(crate) enum AnonymousMember {
+    /// In the class itself: the name's span.
+    Own(mago_span::Span),
+    /// In the class it extends (FQN), or one of its parents.
+    Parent(String),
+}
+
 /// A scope an expression is nested in, outermost first.
 #[derive(Clone, Debug)]
 pub enum Frame<'a> {
@@ -1167,6 +1176,27 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         })
     }
 
+    /// Where `$this->name` (`$this->name()` for `method`) is declared when
+    /// `frames` are in a method of an anonymous class: the name's span in
+    /// the class itself, else the class it extends.
+    pub(crate) fn anonymous_member(&self, frames: &[Frame<'a>], name: &str, method: bool) -> Option<AnonymousMember> {
+        let class = self.anonymous_class(frames)?;
+        let own = class.members.iter().find_map(|member| match member {
+            ClassLikeMember::Method(own) if method && own.name.value.eq_ignore_ascii_case(name.as_bytes()) => {
+                Some(own.name.span)
+            }
+            ClassLikeMember::Property(Property::Plain(plain)) if !method => plain.items.iter().find_map(|item| {
+                let variable = item.variable();
+                (variable.name.strip_prefix(b"$").unwrap_or(variable.name) == name.as_bytes()).then_some(variable.span)
+            }),
+            _ => None,
+        });
+        match own {
+            Some(span) => Some(AnonymousMember::Own(span)),
+            None => self.anonymous_parent(class).map(AnonymousMember::Parent),
+        }
+    }
+
     /// The class anonymous `class` extends, resolved.
     fn anonymous_parent(&self, class: &AnonymousClass<'_>) -> Option<String> {
         let parent = class.extends.as_ref()?.types.first()?;
@@ -1349,7 +1379,7 @@ fn statement_start(text: &str, start: usize) -> Option<usize> {
 /// `(...)`: the only argument is the variadic placeholder.
 /// A closure or arrow function, maybe parenthesized.
 /// `$this`, maybe parenthesized.
-fn is_this(expr: &Expression<'_>) -> bool {
+pub(crate) fn is_this(expr: &Expression<'_>) -> bool {
     match expr {
         Expression::Parenthesized(inner) => is_this(inner.expression),
         Expression::Variable(Variable::Direct(direct)) => direct.name == b"$this",

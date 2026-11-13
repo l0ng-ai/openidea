@@ -306,3 +306,21 @@ mod members;
 
 /// `$this` in Pest's test closures.
 mod pest;
+
+#[test]
+fn this_in_an_anonymous_class_reaches_its_own_and_inherited_members() {
+    let base = "<?php\nnamespace App;\n\nabstract class Migration\n{\n    protected function connection(): string { return ''; }\n}\n";
+    let own = "<?php\n\nreturn new class extends App\\Migration\n{\n    private int $moved = 0;\n\n    public function up(): void\n    {\n        $this->relo/*|*/cate('a');\n    }\n\n    private function relocate(string $from): void {}\n};\n";
+    let mut p = Project::new(&[("src/Migration.php", base), ("database/move.php", own)]);
+    assert_eq!(p.definition("database/move.php", own).expect("handled"), [target("database/move.php", 11, "relocate")]);
+    let property = own.replace("$this->relo/*|*/cate('a');", "$this->mov/*|*/ed++;");
+    assert_eq!(
+        p.definition("database/move.php", &property).expect("handled"),
+        [target("database/move.php", 4, "$moved")]
+    );
+    let inherited = own.replace("$this->relo/*|*/cate('a');", "$this->connec/*|*/tion();");
+    assert_eq!(
+        p.definition("database/move.php", &inherited).expect("handled"),
+        [target("src/Migration.php", 5, "connection")]
+    );
+}

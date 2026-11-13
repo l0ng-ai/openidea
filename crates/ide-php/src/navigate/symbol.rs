@@ -686,6 +686,9 @@ impl<'a> Lookup<'a, '_> {
         match expr {
             Expression::Call(Call::Method(call)) => {
                 if let Some((name, span)) = selector(&call.method) {
+                    if let Some(found) = self.anonymous_this(call.object, frames, &name, true, span) {
+                        return Some(found);
+                    }
                     let receiver = self.types.type_of(call.object, frames);
                     return Some(self.member(MemberKind::Method, receiver, context, &name, self.range(span), shown()));
                 }
@@ -748,6 +751,9 @@ impl<'a> Lookup<'a, '_> {
             }
             Expression::Access(Access::Property(access)) => {
                 let (name, span) = selector(&access.property)?;
+                if let Some(found) = self.anonymous_this(access.object, frames, &name, false, span) {
+                    return Some(found);
+                }
                 let receiver = self.types.type_of(access.object, frames);
                 Some(self.property_access(receiver, access.object, context, &name, self.range(span), shown()))
             }
@@ -775,6 +781,46 @@ impl<'a> Lookup<'a, '_> {
                 Some(self.member(MemberKind::Constant, class, context, &lossy(name.value), self.range(span), shown()))
             }
             _ => None,
+        }
+    }
+
+    /// `$this->name` in a method of an anonymous class (which no summary
+    /// holds): the member the class declares, in this file, else the
+    /// member of the class it extends.
+    fn anonymous_this(
+        &self,
+        object: &'a Expression<'a>,
+        frames: &[Frame<'a>],
+        name: &str,
+        method: bool,
+        span: Span,
+    ) -> Option<AtCaret> {
+        if !crate::types::expr::is_this(object) {
+            return None;
+        }
+        let range = self.range(span);
+        match self.types.anonymous_member(frames, name, method)? {
+            crate::types::expr::AnonymousMember::Own(declared) => {
+                let ty = match self.types.find(span.start.offset) {
+                    Some((expr, frames)) => self.types.type_of(expr, &frames).widen(),
+                    None => Type::Mixed,
+                };
+                let line_index = self.parsed.line_index();
+                let loc = Loc {
+                    start: declared.start.offset,
+                    end: declared.end.offset,
+                    range: line_index.span_range(declared),
+                };
+                // Shown as `$this->name()`; not a variable any scope has.
+                let name = if method { format!("this->{name}()") } else { format!("this->{name}") };
+                let subject = Subject::Variable { name, ty, declarations: vec![loc] };
+                Some(AtCaret { range, subject, context: self.types.context(frames) })
+            }
+            crate::types::expr::AnonymousMember::Parent(parent) => {
+                let kind = if method { MemberKind::Method } else { MemberKind::Property };
+                let found = self.member(kind, Type::named(&parent), Context::in_class(&parent), name, range, None);
+                matches!(&found.subject, Subject::Decls(decls) if !decls.is_empty()).then_some(found)
+            }
         }
     }
 
