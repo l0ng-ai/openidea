@@ -68,6 +68,8 @@ export function PythonInterpreterPage() {
   const [activate, setActivate] = useSetting<boolean>("languages.python.activateVirtualenv");
   const root = useProject((s) => s.project?.root ?? null);
   const [auto, setAuto] = useState<string | null>(null);
+  // Bumped when an environment is created: it may reuse the configured path, whose state changed.
+  const [created, setCreated] = useState(0);
   // Detected interpreters plus the ones added to (or hidden from) the IDE-wide list.
   const { detected, rows, hidden } = usePythonInterpreters({ withProjects: false });
   const extras = useMemo(
@@ -91,7 +93,7 @@ export function PythonInterpreterPage() {
     return () => {
       live = false;
     };
-  }, [root]);
+  }, [root, created]);
 
   // The interpreter runs resolve to: the configured one while it exists, else the fallback.
   const [resolved, setResolved] = useState<{ interpreter: string; path: string | null } | null>(null);
@@ -104,7 +106,7 @@ export function PythonInterpreterPage() {
     return () => {
       live = false;
     };
-  }, [root, interpreter]);
+  }, [root, interpreter, created]);
   // A configured interpreter whose executable is gone (PyCharm's "Invalid"): runs fall back.
   const invalid =
     !!interpreter && resolved?.interpreter === interpreter && !sameInterpreter(resolved.path, interpreter, root);
@@ -362,6 +364,8 @@ export function PythonInterpreterPage() {
           onClose={() => setAdding(false)}
           onAdded={(path) => {
             setInterpreter(path);
+            setCreated((n) => n + 1);
+            reload();
             setAdding(false);
           }}
         />

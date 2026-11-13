@@ -43,13 +43,23 @@ export function AddInterpreterDialog({
   const [error, setError] = useState<string | null>(null);
   const ids = { base: useId(), location: useId(), existing: useId() };
 
-  const baseValue = base ?? bases[0]?.path ?? null;
   const toOption = (s: { path: string; name: string }): SelectOption => ({
     value: s.path,
     label: s.name,
     detail: tildify(s.path),
   });
-  const baseOptions = bases.map(toOption);
+  // conda installs a fresh Python of the base's version: offer versions, not environments to copy.
+  const versionOptions = (() => {
+    const seen = new Map<string, SelectOption>();
+    for (const s of bases) {
+      const short = s.version?.split(".").slice(0, 2).join(".");
+      if (short && !seen.has(short)) seen.set(short, { value: s.path, label: tx`Python ${short}` });
+    }
+    return [...seen.values()].sort((a, b) => b.label.localeCompare(a.label, undefined, { numeric: true }));
+  })();
+  const baseOptions = kind === "conda" ? versionOptions : bases.map(toOption);
+  const baseValue =
+    base ?? (kind === "conda" ? (versionOptions[0]?.value as string | undefined) : bases[0]?.path) ?? null;
   const existingOptions = [...browsed, ...list.filter((s) => !browsed.some((b) => b.path === s.path))].map((s) => ({
     value: s.path,
     label: `${s.name} — ${tildify(s.path)}`,
@@ -108,7 +118,9 @@ export function AddInterpreterDialog({
   const canOk = !busy && (mode === "new" ? !!baseValue && !!location.trim() : !!existing?.trim());
   const note = {
     venv: tx("Runs “<base> -m venv <location>”; the new interpreter becomes the project interpreter."),
-    conda: tx("Runs “conda create -p <location>”; the new interpreter becomes the project interpreter."),
+    conda: tx(
+      "Runs “conda create -p <location> python=<version>”: a new environment with only Python in it; the new interpreter becomes the project interpreter.",
+    ),
     uv: tx("Runs “uv venv <location> --python <base>”; the new interpreter becomes the project interpreter."),
     poetry: tx(
       "Runs “poetry env use <base>” in the project; poetry keeps the environment under its own cache directory.",
@@ -143,6 +155,7 @@ export function AddInterpreterDialog({
                 aria-current={kind === k.tool || undefined}
                 onClick={() => {
                   setKind(k.tool);
+                  setBase(null);
                   setError(null);
                 }}
               >
@@ -199,9 +212,7 @@ export function AddInterpreterDialog({
                   }}
                 />
               </div>
-              <label htmlFor={ids.base}>
-                <T>Base interpreter:</T>
-              </label>
+              <label htmlFor={ids.base}>{kind === "conda" ? <T>Python version:</T> : <T>Base interpreter:</T>}</label>
               <div className={styles.pathRow}>
                 <Select
                   className={styles.pathInput}
@@ -209,17 +220,19 @@ export function AddInterpreterDialog({
                   options={baseOptions}
                   onChange={setBase}
                   placeholder={loading ? "Detecting…" : "No Python found"}
-                  aria-label="Base interpreter"
+                  aria-label={kind === "conda" ? "Python version" : "Base interpreter"}
                 />
-                <IconButton
-                  icon="folder-open"
-                  size="small"
-                  title="Browse…"
-                  onClick={async () => {
-                    const p = await choosePath({ directory: false, title: "Select Base Interpreter" });
-                    if (p) setBase(p);
-                  }}
-                />
+                {kind !== "conda" && (
+                  <IconButton
+                    icon="folder-open"
+                    size="small"
+                    title="Browse…"
+                    onClick={async () => {
+                      const p = await choosePath({ directory: false, title: "Select Base Interpreter" });
+                      if (p) setBase(p);
+                    }}
+                  />
+                )}
               </div>
               <div className={styles.note}>{note}</div>
             </>
