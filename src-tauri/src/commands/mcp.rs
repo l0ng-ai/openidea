@@ -140,6 +140,15 @@ pub fn mcp_ui_ready(window: Window, state: State<'_, AppState>, ready: bool) -> 
     Ok(())
 }
 
+/// The user closed the Run tool window tab of an agent command (`run_command`).
+#[tauri::command]
+#[specta::specta]
+pub fn mcp_agent_run_closed(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<()> {
+    let project = state.project(window.label())?;
+    state.host.mcp_agent_runs.closed(&project.root, &name);
+    Ok(())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn mcp_respond(

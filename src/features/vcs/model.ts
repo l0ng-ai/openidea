@@ -165,7 +165,51 @@ export function commitWebUrl(remoteUrl: string, sha: string): string | null {
   return `${base}/${/bitbucket\.org\//.test(base) ? "commits" : "commit"}/${sha}`;
 }
 
-/** "N file(s)", worded for the locale. */
+/** How a Git hosting service lays out its file pages. */
+export type HostingKind = "github" | "gitlab" | "bitbucket";
+
+/**
+ * The hosting service of a remote, by its host: GitHub (and GitHub Enterprise, Gitee, which share
+ * its URLs), Bitbucket, and GitLab for gitlab.* and any other host, as self-managed GitLab is the
+ * usual company server. Null for remotes with no web page (local paths).
+ */
+export function remoteHosting(url: string): { name: string; kind: HostingKind } | null {
+  const base = remoteWebUrl(url);
+  if (!base) return null;
+  const host = new URL(base).hostname.toLowerCase();
+  if (host === "github.com" || host.includes("github")) return { name: "GitHub", kind: "github" };
+  if (host === "gitee.com") return { name: "Gitee", kind: "github" };
+  if (host === "bitbucket.org") return { name: "Bitbucket", kind: "bitbucket" };
+  if (host.includes("gitlab")) return { name: "GitLab", kind: "gitlab" };
+  return { name: host, kind: "gitlab" };
+}
+
+/**
+ * Page of a file or directory at `revision` on the remote's web UI, with the 0-based `line`
+ * selected. `relative` is the `/`-separated path inside the repository ("" for its root).
+ */
+export function fileWebUrl(
+  remoteUrl: string,
+  revision: string,
+  relative: string,
+  opts: { dir?: boolean; line?: number } = {},
+): string | null {
+  const base = remoteWebUrl(remoteUrl);
+  const hosting = remoteHosting(remoteUrl);
+  if (!base || !hosting) return null;
+  const path = [...revision.split("/"), ...relative.split("/")].filter(Boolean).map(encodeURIComponent).join("/");
+  const line = opts.line !== undefined && !opts.dir ? opts.line + 1 : null;
+  switch (hosting.kind) {
+    case "github":
+      return `${base}/${opts.dir ? "tree" : "blob"}/${path}${line ? `#L${line}` : ""}`;
+    case "gitlab":
+      return `${base}/-/${opts.dir ? "tree" : "blob"}/${path}${line ? `#L${line}` : ""}`;
+    case "bitbucket":
+      return `${base}/src/${path}${line ? `#lines-${line}` : ""}`;
+  }
+}
+
+/** "N file(s)", worded for the locale. */ /** "N file(s)", worded for the locale. */
 export function fileCount(n: number): string {
   return n === 1 ? tx`${n} file` : tx`${n} files`;
 }

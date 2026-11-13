@@ -27,6 +27,13 @@ pub fn set_text(text: &str, owner: usize) -> std::io::Result<()> {
     imp::set_text(text, owner)
 }
 
+/// The clipboard's plain text, None when it holds none. macOS only (main thread);
+/// Linux reads it asynchronously through GTK in the app, Windows through the WebView.
+#[cfg(target_os = "macos")]
+pub fn text() -> Option<String> {
+    imp::text()
+}
+
 /// Size of `DROPFILES`: `pFiles`, `pt` (two `LONG`s), `fNC`, `fWide`.
 const HEADER: usize = 20;
 
@@ -370,6 +377,14 @@ mod imp {
                 // Finder ends a folder's URL in `/`; the project view names it without.
                 .map(|path| path.components().collect())
                 .collect())
+        })
+    }
+
+    pub fn text() -> Option<String> {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            // SAFETY: the type is an AppKit constant, valid for the process' lifetime.
+            NSPasteboard::generalPasteboard().stringForType(unsafe { NSPasteboardTypeString }).map(|s| s.to_string())
         })
     }
 

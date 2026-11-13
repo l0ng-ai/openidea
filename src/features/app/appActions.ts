@@ -11,6 +11,7 @@ import { quitApp } from "./closeGuard";
 import { guessOs } from "./host";
 import { showKeymapReference } from "./KeymapReference";
 import { checkForUpdates } from "./updates";
+import { readClipboardPlainText } from "@/platform/clipboard";
 
 function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
@@ -50,8 +51,8 @@ export function editCommand(command: "undo" | "redo" | "cut" | "copy" | "paste" 
       if (focused instanceof Element && runUndoHandlers(command, focused)) return;
     }
     if (command === "selectAll" && selectReadingPane(document.activeElement)) return;
-    if (command === "paste" && navigator.clipboard?.readText) {
-      void navigator.clipboard.readText().then((text) => document.execCommand("insertText", false, text));
+    if (command === "paste") {
+      void readClipboardPlainText().then((text) => document.execCommand("insertText", false, text));
       return;
     }
     document.execCommand(command);

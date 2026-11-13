@@ -297,6 +297,7 @@ export const intellijWindows: Record<string, string[]> = {
   "vcs.rollback": ["Ctrl+Alt+Z"],
   "vcs.addToVcs": ["Ctrl+Alt+A"],
   "vcs.showDiff": ["Ctrl+D"],
+  "vcs.log.changes.showDiff": ["Ctrl+D"],
   "vcs.showDiffInNewWindow": [],
   "vcs.nextChange": ["Ctrl+Alt+Shift+Down"],
   "vcs.prevChange": ["Ctrl+Alt+Shift+Up"],

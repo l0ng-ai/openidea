@@ -1531,6 +1531,19 @@ impl HostApi for PluginApi {
         }
         Ok(())
     }
+    fn open_diff(
+        &self,
+        client: &str,
+        diff: ide_plugin::ContentDiff,
+        file_name: Option<String>,
+    ) -> Result<(), HostError> {
+        super::execution::validate_diff(&diff)?;
+        if let Some(name) = &file_name {
+            super::execution::label(name, 256)?;
+        }
+        self.shared.sink.emit(Some(client), PluginEvent::OpenDiff { plugin_id: self.id().into(), diff, file_name });
+        Ok(())
+    }
     fn reply_content_tab(
         &self,
         client: &str,

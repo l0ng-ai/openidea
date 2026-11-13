@@ -188,6 +188,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
         PluginEvent::RunTargetsChanged
             | PluginEvent::WindowRequest { .. }
             | PluginEvent::ContentTabReply { .. }
+            | PluginEvent::OpenDiff { .. }
             | PluginEvent::DecorationsChanged { .. }
             | PluginEvent::EditorOpen { .. }
             | PluginEvent::EditorRanges { .. }

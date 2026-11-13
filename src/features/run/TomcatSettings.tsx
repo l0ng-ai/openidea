@@ -1,4 +1,4 @@
-import { writeClipboardText } from "@/platform/clipboard";
+import { readClipboardPlainText, writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { call, commands, isTauri, type RunConfig, type TomcatInstallation, type WebArtifact } from "@/platform/ipc";
@@ -899,7 +899,7 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                   iconSize={13}
                   title="Paste"
                   onClick={() => {
-                    void navigator.clipboard?.readText().then((text) => {
+                    void readClipboardPlainText().then((text) => {
                       if (!text.trim()) return;
                       const idx = text.indexOf("=");
                       const name = idx >= 0 ? text.slice(0, idx).trim() : text.trim();
