@@ -252,6 +252,19 @@ describe("server address", () => {
     expect(await findHost("/ws/api/src/main/java/a/A.java", "/ws", fs)).toBe("http://localhost:8001");
     expect(await findHost("/ws/other/A.java", "/ws", fs)).toBe("http://localhost:9000");
   });
+
+  it("reads the active profiles' files over the base ones", async () => {
+    const files: Record<string, string> = {
+      "/ws/api/src/main/resources/application.yml":
+        "server:\n  port: 8001\n  servlet:\n    context-path: /api\nspring:\n  profiles:\n    active: ${PROFILE:local}, dev\n",
+      "/ws/api/src/main/resources/application-local.properties": "server.port=7000\n",
+      "/ws/api/src/main/resources/application-dev.yml": "server:\n  port: 9100\n",
+    };
+    const fs: SourceReader = { read: async (p) => files[p] ?? null };
+    expect(await findHost("/ws/api/src/main/java/a/A.java", "/ws", fs)).toBe("http://localhost:9100/api");
+    delete files["/ws/api/src/main/resources/application-dev.yml"];
+    expect(await findHost("/ws/api/src/main/java/a/A.java", "/ws", fs)).toBe("http://localhost:7000/api");
+  });
 });
 
 describe("body types from other files", () => {
