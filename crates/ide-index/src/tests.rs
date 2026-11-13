@@ -773,6 +773,20 @@ fn persisted_symbols_do_not_load_through_escaping_symlink_ancestors() {
 }
 
 #[test]
+fn warm_start_detects_a_new_file_in_an_existing_empty_directory() {
+    let f = Fixture::new(&[("src/a.rs", "fn a() {}\n")]);
+    std::fs::create_dir(f.root.join("empty")).unwrap();
+    let idx = f.open();
+    assert_eq!(idx.status().files, 1);
+    drop(idx);
+
+    f.write("empty/new.rs", "fn new_symbol() {}\n");
+    let idx = f.open();
+    assert_eq!(idx.status().files, 2);
+    assert_eq!(symbols(&idx, "new_symbol", SymbolFilter::All), ["new_symbol"]);
+}
+
+#[test]
 fn rule_changes_refresh_only_the_affected_index_subtree() {
     for (rule, subtree) in [(".git/info/exclude", ""), ("sub/.gitignore", "sub"), ("sub/.ignore", "sub")] {
         let fx = Fixture::new(&[

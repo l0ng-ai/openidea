@@ -248,6 +248,30 @@ impl PathFilter {
         dir.is_some_and(|d| gitignore.matched_path_or_any_parents(d, true).is_ignore())
     }
 
+    /// All directories at or below `dir` that the index would walk, in walk order.
+    pub(crate) fn dirs(&self, dir: &Path) -> Vec<PathBuf> {
+        let Some((root, _, _)) = self.base_of(dir) else { return Vec::new() };
+        let root = root.to_path_buf();
+        let excludes = self.excludes.clone();
+        let walk_root = root.clone();
+        let walk_excludes = excludes.clone();
+        let walker = WalkBuilder::new(dir)
+            .hidden(false)
+            .parents(true)
+            .ignore(true)
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .require_git(ide_core::ignored::inside_git_repo(dir))
+            .follow_links(false)
+            .filter_entry(move |e| {
+                let name = e.file_name().to_string_lossy();
+                !Self::skip_name(&name) && !glob_excluded(&walk_excludes, &walk_root, e.path())
+            })
+            .build();
+        walker.flatten().filter(|e| e.file_type().is_some_and(|t| t.is_dir())).map(|e| e.into_path()).collect()
+    }
+
     /// All indexable files at or below `dir`, walked in parallel.
     /// Stops early (returning what was found so far) once `cancel` is set.
     pub(crate) fn walk(&self, dir: &Path, cancel: &AtomicBool) -> Vec<Found> {

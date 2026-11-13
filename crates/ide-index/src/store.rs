@@ -1,7 +1,7 @@
 //! Persistence of file records in redb, so a restart only re-parses changed files.
 
 use crate::data::{FileEntry, FileRecord, IndexData, Sym, char_mask};
-use crate::filter::mtime_of;
+use crate::filter::{PathFilter, mtime_of};
 use ide_core::{Range, SymbolKind};
 use parking_lot::RwLock;
 use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableDefinition, TableError};
@@ -259,11 +259,16 @@ impl Store {
     /// Writes the current index as one columnar snapshot for fast next start-up.
     /// Only records persisted below `root` are included; content roots outside it
     /// are rescanned, as they are for the per-file records.
-    pub(crate) fn save_snapshot(&self, data: &IndexData, root: &Path, filter: &str) -> Result<()> {
-        let mut snap = Snapshot::default();
-        snap.filter = filter.to_owned();
+    pub(crate) fn save_snapshot(&self, data: &IndexData, filter: &PathFilter) -> Result<()> {
+        let root = filter.root();
+        let mut snap = Snapshot { filter: filter.stamp(), ..Default::default() };
         let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         dirs.insert(String::new());
+        for dir in filter.dirs(root) {
+            if let Ok(rel) = dir.strip_prefix(root) {
+                dirs.insert(rel.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_owned());
+            }
+        }
         for e in data.files.iter().flatten().filter(|e| e.path.starts_with(root)) {
             dirs.insert(e.dir().trim_end_matches('/').to_owned());
             snap.rels.push_str(&e.rel);
@@ -428,7 +433,7 @@ mod tests {
         data.insert(FileEntry::new(std::path::PathBuf::from("/p/src/Order.rs"), "src/Order.rs".into(), record));
         // Content roots outside the project root are rescanned, not snapshotted.
         data.insert(FileEntry::new(std::path::PathBuf::from("/elsewhere/x.rs"), "x.rs".into(), FileRecord::default()));
-        store.save_snapshot(&data, Path::new("/p"), "test-filter").unwrap();
+        store.save_snapshot(&data, &PathFilter::new(Path::new("/p"), &Vec::new().into(), &[])).unwrap();
 
         let snapshot = store.load_snapshot().expect("snapshot");
         assert_eq!(snapshot.len(), 1);
