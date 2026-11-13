@@ -1325,6 +1325,40 @@ fn custom_tool_path_replaces_the_command() {
     assert_eq!(cfg.command, "zls");
 }
 
+/// A server picked from a Node.js installation (nvm's `bin/tsc`, `bin/npx`) is a
+/// `#!/usr/bin/env node` script: it runs on that installation's Node, ahead of the
+/// project's Node.js interpreter.
+#[test]
+fn a_server_chosen_from_a_node_installation_runs_on_that_node() {
+    let tmp = tempfile::tempdir().unwrap();
+    let v26 = tmp.path().join("nvm/versions/node/v26.4.0/bin");
+    let v20 = tmp.path().join("node20/bin");
+    for dir in [&v26, &v20] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(exe("node")), "").unwrap();
+    }
+    std::fs::write(v26.join("tsc"), "#!/usr/bin/env node\n").unwrap();
+    let mut s = Settings::default();
+    s.languages.node.interpreter = v20.join(exe("node")).to_string_lossy().into_owned();
+    s.tools.insert(
+        "typescript-language-server".into(),
+        ide_core::settings::ToolSettings { path: v26.join("tsc").to_string_lossy().into_owned() },
+    );
+    let mut cfg = server("typescript-language-server");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    let path: Vec<std::path::PathBuf> = std::env::split_paths(&cfg.env["PATH"]).collect();
+    assert_eq!(path[..2], [v26.clone(), v20.clone()]);
+
+    // Elsewhere, the project's Node.js interpreter comes first.
+    s.tools.insert(
+        "typescript-language-server".into(),
+        ide_core::settings::ToolSettings { path: tmp.path().join("tools/tsc").to_string_lossy().into_owned() },
+    );
+    let mut cfg = server("typescript-language-server");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(std::env::split_paths(&cfg.env["PATH"]).next(), Some(v20));
+}
+
 #[test]
 fn the_godot_setting_applies_to_server_debugger_and_run_configurations() {
     let tmp = tempfile::tempdir().unwrap();
