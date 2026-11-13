@@ -142,11 +142,26 @@ the last three are guesses only what the editor shows uses
   too: `$this->items[] = $item;` and `$this->byName[$key] = $item;` make it a
   list (an array) of what is added, and refine a property declared no more
   than `array` (the hint, or `@var array`); a documented element type wins.
+  A property declared `mixed` counts as untyped. A property a class
+  inherits untyped and assigns itself has, in that class and below, what
+  that class assigns (`ClassLike::refined`, read by
+  `Resolver::refined_property`); the parent's declaration is unchanged.
 - **A method declared a bare container** (`: array`, or a class whose name
   ends in `Collection`) without a `@return` returns what its body does, when
   that is the same container with its element types
   (`Resolver::refines_container`). The extractor stores the body's type for
   these as it does for a method without a return type.
+- **An anonymous class** is a class-like the summary holds apart from the
+  named ones (`FileSummary::anonymous`), under a name nothing can write
+  (`summary::anonymous_fqn`: a tag of the file's text and the offset). `new
+  class { … }` has that type, so its members, its traits' and its parent's
+  work on the object like a named class's; a function or method declared
+  `: object` that returns one returns it. The index finds these classes by
+  that name only: they are in no short-name, namespace or subclass table,
+  so no completion, search or hierarchy lists them. Types show them as
+  `class@anonymous`. Inside the class's own methods `$this` is still
+  handled from the syntax tree (the frame of an anonymous class has no
+  name), as described below.
 - **`$this` in a trait** is also an object of the classes using the trait
   (`Resolver::trait_hosts`: up to three, in name order), as an intersection,
   so what the trait expects of its host resolves. The index's subclass table
@@ -182,7 +197,13 @@ the last three are guesses only what the editor shows uses
   analysis: `ExprTypes::body_return`, in the file itself or, through
   `Declarations::body_return`, in the file declaring the class (parsed on
   demand, cached per modification count). A call on a receiver already
-  found unknown isn't asked again, which keeps long chains linear.
+  found unknown isn't asked again, which keeps long chains linear. Free
+  functions are covered the same way, for returns and for parameters.
+- **A member only subclasses declare:** when the receiver's class has no
+  such method or property, its subclasses and implementors are looked at
+  (`Resolver::subtype_members`: transitive, at most 32 classes, not below a
+  `final` class). Go to Declaration offers every class declaring it, and
+  the call has the union of what they return (at most four types).
 
 ## Threads and cancellation
 
