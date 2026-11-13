@@ -48,6 +48,9 @@ function HeaderButtons() {
       >
         <T>Open</T>
       </Button>
+      <Button disabled={opening} onClick={() => void executeAction("file.openFile")}>
+        <T>Open File</T>
+      </Button>
       {canClone && (
         <Button onClick={() => void executeAction("vcs.clone")}>
           <T>Clone Repository</T>
@@ -113,6 +116,12 @@ function Landing() {
             <Icon name="folder-open" size={20} />
           </span>
           <T>Open</T>
+        </button>
+        <button type="button" className={styles.landingAction} onClick={() => void executeAction("file.openFile")}>
+          <span className={styles.landingIcon}>
+            <Icon name="file" size={20} />
+          </span>
+          <T>Open File</T>
         </button>
         {canClone && (
           <button type="button" className={styles.landingAction} onClick={() => void executeAction("vcs.clone")}>
