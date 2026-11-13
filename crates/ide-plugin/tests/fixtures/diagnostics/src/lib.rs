@@ -21,6 +21,31 @@ impl Plugin for Fixture {
                 &[Diagnostic::new(Range::default(), Severity::Info, "Manual problem")],
             )
             .map(|()| None),
+            // The host-owned snapshot, one entry per producer: what `problems` reads.
+            "problems" => {
+                let files: Vec<String> = host::problems(None)?
+                    .into_iter()
+                    .map(|f| format!("{}:{}:{}", f.path, f.source, f.diagnostics.len()))
+                    .collect();
+                Ok(Some(files.join("|")))
+            }
+            // A line-end annotation in the severity styles the editor draws: the host must
+            // keep `typo` and `weak` instead of dropping them as unknown.
+            "decorate" => {
+                let path = arg.unwrap_or_default();
+                let item = |style: &str, after: &str| openidea_plugin::Decoration {
+                    range: Range::default(),
+                    style: style.into(),
+                    hover: None,
+                    after: Some(after.into()),
+                };
+                host::set_decorations(
+                    path,
+                    "fixture",
+                    &[item("typo", "typo message"), item("weak", "weak message")],
+                )
+                .map(|()| None)
+            }
             _ => Err(Error::NotFound(id.into())),
         }
     }

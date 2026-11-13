@@ -269,8 +269,15 @@ const caret = "var(--caret, var(--fg-strong))";
 
 /** Block caret and command line in theme tokens (the package's defaults are fixed colours). */
 const vimTheme = EditorView.theme({
+  // A solid block with the character under it in the editor's background colour, as IdeaVim's
+  // block caret: a translucent fill over light text on a dark theme read as a brighter letter.
   "& .cm-vimCursorLayer .cm-fat-cursor": {
-    background: `color-mix(in srgb, ${caret} 60%, transparent)`,
+    background: caret,
+  },
+  // The package sets the letter's own colour inline; a partial block (replace, operator-pending)
+  // draws no letter.
+  "&.cm-focused .cm-vimCursorLayer .cm-fat-cursor:not([style*='color: transparent'])": {
+    color: "var(--bg-editor, var(--bg-island, var(--bg-app))) !important",
   },
   "&:not(.cm-focused) .cm-vimCursorLayer .cm-fat-cursor": {
     background: "none",

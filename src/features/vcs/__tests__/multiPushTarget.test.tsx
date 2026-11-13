@@ -5,6 +5,12 @@ import type { RemoteOp } from "@/bindings";
 const mocks = vi.hoisted(() => ({
   ops: [] as Array<{ repo: string | null; op: RemoteOp }>,
   failing: new Set<string>(),
+  ask: vi.fn(),
+}));
+
+vi.mock("@/workbench/messages", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/workbench/messages")>()),
+  ask: mocks.ask,
 }));
 
 vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
@@ -50,6 +56,8 @@ let notes: Note[] = [];
 beforeEach(() => {
   mocks.ops = [];
   mocks.failing = new Set();
+  mocks.ask.mockReset();
+  mocks.ask.mockResolvedValue({ button: "force", checked: false });
   notes = [];
   useVcs.setState({ root: "/p", roots: ["/p/a", "/p/b", "/p/c"], repo: "/p/a", remoteBusy: null, available: false });
   provideNotificationService({ notify: (n) => void notes.push(n as Note), expire: () => {} });
@@ -109,4 +117,67 @@ it("pushes each repository to its own remote and target branch, reporting the on
   ]);
   await waitFor(() => expect(notes.map((n) => n.title)).toContain("Push partially failed"));
   expect(notes.find((n) => n.title === "Push partially failed")?.body).toContain("Not pushed: b.");
+});
+
+const forceOf = (ops: typeof mocks.ops) =>
+  ops.map(({ repo, op }) => [repo, "force_with_lease" in op ? op.force_with_lease : null]);
+const askedTargets = () => mocks.ask.mock.calls.map(([r]) => (r as { body: string }).body.match(/to '(.*)'/)?.[1]);
+
+async function openPushDialog() {
+  render(<VcsDialogHost />);
+  await act(() => showPushDialog());
+  await screen.findByRole("textbox", { name: "Target branch of a" });
+}
+
+it("asks to confirm each forced target and pushes nothing when one is declined", async () => {
+  mocks.ask.mockResolvedValueOnce({ button: "force", checked: false }).mockResolvedValueOnce({ button: null });
+  await openPushDialog();
+  fireEvent.change(screen.getByRole("textbox", { name: "Target branch of a" }), { target: { value: "feat-a" } });
+  fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
+
+  await waitFor(() => expect(mocks.ask).toHaveBeenCalledTimes(2));
+  expect(askedTargets()).toEqual(["origin/feat-a", "origin/feat-x"]);
+  expect(mocks.ops).toEqual([]);
+  // Declining keeps the dialog open, as in the single-repository dialog.
+  expect(screen.getByRole("button", { name: "Force Push" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+});
+
+it("force pushes with lease once every target is confirmed", async () => {
+  await openPushDialog();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
+
+  await waitFor(() => expect(mocks.ops).toHaveLength(3));
+  // The three repositories push to the same target: one confirmation.
+  expect(askedTargets()).toEqual(["origin/feat-x"]);
+  expect(forceOf(mocks.ops)).toEqual([
+    ["/p/a", true],
+    ["/p/b", true],
+    ["/p/c", true],
+  ]);
+});
+
+it("does not ask about a protected target, which is never forced", async () => {
+  await openPushDialog();
+  fireEvent.change(screen.getByRole("textbox", { name: "Target branch of a" }), { target: { value: "main" } });
+  fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
+
+  await waitFor(() => expect(mocks.ops).toHaveLength(3));
+  expect(askedTargets()).toEqual(["origin/feat-x"]);
+  expect(forceOf(mocks.ops)).toEqual([
+    ["/p/a", false],
+    ["/p/b", true],
+    ["/p/c", true],
+  ]);
+});
+
+it("does not ask without Force", async () => {
+  await openPushDialog();
+  fireEvent.click(screen.getByRole("button", { name: "Push" }));
+
+  await waitFor(() => expect(mocks.ops).toHaveLength(3));
+  expect(mocks.ask).not.toHaveBeenCalled();
 });

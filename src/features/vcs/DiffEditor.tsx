@@ -25,7 +25,7 @@ import {
   uncollapseUnchanged,
   Chunk,
 } from "@codemirror/merge";
-import { attachDocument, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
+import { attachDocument, diffSideExtensions, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
 import { setFindOpen } from "@/editor/core/cm/find";
 import { softWrapActive } from "@/editor/core/cm/prefs";
 import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
@@ -465,6 +465,8 @@ export function DiffEditor({
       lang,
       blameSlot(),
       att?.extension ?? [],
+      // The file's open document: quick docs and ⌘/Ctrl-click navigation, as in its editor.
+      att ? diffSideExtensions(att.context()) : [],
       editable ? [editableExtensions(), embeddedEditorExtensions(path)] : [],
       notes
         ? diffAnnotations(

@@ -91,15 +91,15 @@ fn the_sdk_carries_the_hosts_wit() {
 
 #[test]
 fn the_version_check_runs_compatible_components_and_explains_the_rest() {
-    let host = v("1.7.0");
-    for ok in ["1.0.0", "1.3.0", "1.4.7", "1.5.0", "1.6.0", "1.7.0", "1.0.0-rc.1"] {
+    let host = v("1.8.0");
+    for ok in ["1.0.0", "1.3.0", "1.4.7", "1.5.0", "1.6.0", "1.7.0", "1.8.0", "1.0.0-rc.1"] {
         assert_eq!(check_api(&v(ok), &host), Ok(()), "{ok}");
     }
-    let newer = check_api(&v("1.8.0"), &host).unwrap_err();
-    assert!(newer.contains("1.8") && newer.contains("update OpenIDEA"), "{newer}");
+    let newer = check_api(&v("1.9.0"), &host).unwrap_err();
+    assert!(newer.contains("1.9") && newer.contains("update OpenIDEA"), "{newer}");
     assert!(check_api(&v("2.0.0"), &host).unwrap_err().contains("update OpenIDEA"));
     let older = check_api(&v("0.2.0"), &host).unwrap_err();
-    assert!(older.contains("rebuild it with the 1.7 SDK"), "{older}");
+    assert!(older.contains("rebuild it with the 1.8 SDK"), "{older}");
     // 0.x: every minor is its own API.
     assert_eq!(check_api(&v("0.2.0"), &v("0.2.5")), Ok(()));
     assert!(check_api(&v("0.1.0"), &v("0.2.0")).is_err());

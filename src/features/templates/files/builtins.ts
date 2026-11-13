@@ -295,6 +295,27 @@ export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
     ],
   },
   {
+    id: "csharp",
+    name: "C# Class",
+    icon: "class",
+    extension: "cs",
+    nameStyle: "pascal",
+    packageStyle: "csharp",
+    kinds: (
+      [
+        ["class", "Class", "class"],
+        ["interface", "Interface", "interface"],
+        ["struct", "Struct", "struct"],
+        ["enum", "Enum", "enum"],
+        ["record", "Record", "record"],
+      ] as const
+    ).map(([id, label, keyword]) => ({
+      id,
+      label,
+      body: `namespace $PACKAGE$;\n\n#parse("File Header")\npublic ${keyword} $NAME$\n{\n    $END$\n}\n`,
+    })),
+  },
+  {
     id: "kotlin",
     name: "Kotlin Class/File",
     icon: "class",

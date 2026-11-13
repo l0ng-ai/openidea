@@ -129,6 +129,7 @@ impl PluginHost {
                 }
                 let path = match event {
                     WorkbenchEvent::FileOpened(path) | WorkbenchEvent::FileSaved(path) => Path::new(path),
+                    WorkbenchEvent::EditorFocused(Some(path)) => Path::new(path),
                     WorkbenchEvent::DocumentChanged(change) => Path::new(&change.path),
                     _ => return Some(event.clone()),
                 };
@@ -136,16 +137,25 @@ impl PluginHost {
                     return None;
                 }
                 let workspace = workspace.as_ref()?;
+                let real = ide_plugin::resolve_real(path);
+                // The file's own project, not the invoking window's: annotations follow
+                // the file, so a plugin hears about a file another window has open.
                 let root = match client {
-                    Some(client) => workspace.project_of(client),
-                    None => {
-                        let real = ide_plugin::resolve_real(path);
-                        workspace
-                            .projects()
-                            .into_iter()
-                            .filter(|r| real.starts_with(ide_plugin::resolve_real(r)))
-                            .max_by_key(|r| r.components().count())
-                    }
+                    Some(client) => workspace
+                        .project_of(client)
+                        .filter(|r| real.starts_with(ide_plugin::resolve_real(r)))
+                        .or_else(|| {
+                            workspace
+                                .projects()
+                                .into_iter()
+                                .filter(|r| real.starts_with(ide_plugin::resolve_real(r)))
+                                .max_by_key(|r| r.components().count())
+                        }),
+                    None => workspace
+                        .projects()
+                        .into_iter()
+                        .filter(|r| real.starts_with(ide_plugin::resolve_real(r)))
+                        .max_by_key(|r| r.components().count()),
                 }?;
                 if plugin.dev_root.as_deref().is_some_and(|r| r != root) {
                     return None;

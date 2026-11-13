@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  blockScopedNamespace,
   caretAfterReformat,
+  csprojFileScoped,
+  csprojRootNamespace,
+  inferCsharpNamespace,
   expandIncludes,
   fragmentResolver,
   composerPsr4,
@@ -177,6 +181,43 @@ describe("PHP namespaces", () => {
     expect(renderFileTemplate(tpl("php").kinds[0]!.body, { name: "bootstrap", fileName: "bootstrap.php" }).text).toBe(
       "<?php\n\n\n",
     );
+  });
+});
+
+describe("C# namespaces", () => {
+  it("come from the project's root namespace and the folders below the .csproj", () => {
+    expect(csprojRootNamespace('<Project Sdk="Microsoft.NET.Sdk"></Project>', "My.App.csproj")).toBe("My.App");
+    expect(csprojRootNamespace("<RootNamespace>Acme.Shop</RootNamespace>", "Web.csproj")).toBe("Acme.Shop");
+    expect(csprojRootNamespace("", "my-app.csproj")).toBe("my_app");
+    expect(inferCsharpNamespace("/Services/Billing", "Acme.Shop")).toBe("Acme.Shop.Services.Billing");
+    expect(inferCsharpNamespace("", "Acme.Shop")).toBe("Acme.Shop");
+    expect(inferCsharpNamespace("/2024-data", "App")).toBe("App._2024_data");
+  });
+
+  it("are file-scoped from C# 10 and blocks before it (.NET Framework and Unity projects)", () => {
+    const sdk = (tf: string) => `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>${tf}</PropertyGroup></Project>`;
+    expect(csprojFileScoped(sdk("<TargetFramework>net8.0</TargetFramework>"))).toBe(true);
+    expect(csprojFileScoped(sdk("<TargetFrameworks>net6.0;net8.0</TargetFrameworks>"))).toBe(true);
+    expect(csprojFileScoped(sdk("<TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>"))).toBe(false);
+    expect(csprojFileScoped(sdk("<TargetFramework>net48</TargetFramework>"))).toBe(false);
+    expect(csprojFileScoped(sdk("<TargetFramework>net5.0</TargetFramework>"))).toBe(false);
+    expect(
+      csprojFileScoped(sdk("<TargetFramework>netstandard2.1</TargetFramework><LangVersion>latest</LangVersion>")),
+    ).toBe(true);
+    expect(
+      csprojFileScoped("<TargetFrameworkVersion>v4.7.1</TargetFrameworkVersion><LangVersion>9.0</LangVersion>"),
+    ).toBe(false);
+  });
+
+  it("render C# classes with a file-scoped namespace, a block, or none", () => {
+    const cls = tpl("csharp").kinds[0]!.body;
+    const vars = { name: "OrderService", fileName: "OrderService.cs", packageName: "Acme.Shop" };
+    expect(renderFileTemplate(cls, vars).text).toBe("namespace Acme.Shop;\n\npublic class OrderService\n{\n    \n}\n");
+    expect(renderFileTemplate(blockScopedNamespace(cls), vars).text).toBe(
+      "namespace Acme.Shop\n{\n    public class OrderService\n    {\n        \n    }\n}\n",
+    );
+    expect(renderFileTemplate(cls, { name: "Foo", fileName: "Foo.cs" }).text).toBe("public class Foo\n{\n    \n}\n");
+    expect(tpl("csharp").kinds.map((k) => k.label)).toEqual(["Class", "Interface", "Struct", "Enum", "Record"]);
   });
 });
 

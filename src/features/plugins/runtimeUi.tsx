@@ -363,11 +363,17 @@ function trackWorkbenchEvents(): () => void {
   const offVcs = onIdeEvent("vcsChanged", (e) => {
     if (wanted.has("vcs-changed")) post({ kind: "vcsChanged", value: e.root });
   });
+  // Diagnostics arrive from language servers and builds without a file event; plugins
+  // that draw them (Inspection Lens) re-read the snapshot when this fires.
+  const offProblems = onIdeEvent("diagnostics", () => {
+    if (wanted.has("problems-changed")) post({ kind: "problemsChanged" });
+  });
   return () => {
     offEditor();
     offActions();
     offVcs();
     offSettings();
+    offProblems();
     if (postTimer) clearTimeout(postTimer);
     postTimer = null;
     queue = [];

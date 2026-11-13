@@ -19,19 +19,24 @@ const colors: Record<string, string> = {
   warning: "var(--warning)",
   error: "var(--danger)",
   info: "var(--info)",
+  typo: "var(--wave-typo)",
+  weak: "var(--fg-weak-warning)",
   underline: "var(--fg-editor)",
   strikethrough: "var(--fg-editor)",
   muted: "var(--fg-muted)",
 };
 
-function currentSets(sets: DecorationSet[]) {
+function currentSets(sets: DecorationSet[], tree: boolean) {
+  // Editor annotations follow the file, so a set applies wherever its file is open —
+  // including a file outside this window's project. Tree decorations are per root.
+  if (!tree) return sets;
   const root = useProject.getState().project?.root;
   return sets.filter((s) => s.root === root);
 }
 
 function updateTree(plugin: string, sets: DecorationSet[]) {
   const items = new Map<string, FileDecoration>();
-  for (const s of currentSets(sets))
+  for (const s of currentSets(sets, true))
     if (s.tree && s.file && (Object.hasOwn(colors, s.file.style) || s.file.note)) {
       items.set(s.path, {
         color: Object.hasOwn(colors, s.file.style) ? colors[s.file.style] : undefined,
@@ -60,7 +65,16 @@ function offset(doc: Text, pos: Range["start"]): number | null {
   return pos.col <= line.length ? line.from + pos.col : null;
 }
 
+/** An element's own custom property in px (its anchor offset), or 0. */
+function offsetOf(el: HTMLElement, property: string): number {
+  return Number.parseFloat(getComputedStyle(el).getPropertyValue(property)) || 0;
+}
+
 class AfterText extends WidgetType {
+  /** Last offset applied, so the observer does not rewrite the style on every keystroke. */
+  private appliedWidth = -1;
+  private observer: MutationObserver | undefined;
+
   constructor(
     readonly text: string,
     readonly style: string,
@@ -71,12 +85,61 @@ class AfterText extends WidgetType {
   override eq(other: AfterText) {
     return this.text === other.text && this.style === other.style && this.hover === other.hover;
   }
+  /**
+   * Line-end annotations stack left to right: the code-vision git hint, every plugin message on
+   * the line, then the inline blame. Each message steps past the hint and its predecessors on the
+   * inner box's offset, not the anchor's margin: a margin would shift the in-flow siblings (the
+   * blame) too, and the blame would count them a second time. Neighbours can appear (or go away)
+   * after this widget mounted, hence the observer below.
+   */
+  private stepPastLineEnd(el: HTMLElement) {
+    const line = el.closest(".cm-line");
+    const inner = el.firstElementChild as HTMLElement | null;
+    if (!line || !inner) return;
+    const own = offsetOf(el, "--openidea-message-offset");
+    const hint = line.querySelector<HTMLElement>(".cm-openidea-lensInlineInner");
+    // The hint's inner box sits `--openidea-hint-offset` past its zero-width anchor.
+    let width = hint ? Math.round(hint.getBoundingClientRect().width) + offsetOf(hint, "--openidea-hint-offset") : 0;
+    // Every message before this one adds its own width and offset.
+    for (const other of line.querySelectorAll<HTMLElement>(".cm-plugin-after")) {
+      if (other === el || other.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) continue;
+      const box = other.firstElementChild;
+      if (box) width += Math.round(box.getBoundingClientRect().width) + offsetOf(other, "--openidea-message-offset");
+    }
+    if (width === this.appliedWidth) return;
+    this.appliedWidth = width;
+    // The stylesheet parks the message `own` past the anchor; shift it past the chain too.
+    if (width) inner.style.left = `${width + own}px`;
+    else inner.style.removeProperty("left");
+  }
   override toDOM() {
+    // A zero-width anchor with the message in an absolutely positioned inner box, the way the
+    // code-vision hint is drawn: the annotation takes no part in the line's flow, so it neither
+    // stretches the line nor moves the caret at the line end.
     const span = document.createElement("span");
-    span.className = `${styles.after} ${this.style}`;
-    span.textContent = this.text;
-    if (this.hover) span.title = this.hover;
+    span.className = styles.after ?? "";
+    // A stable hook for the inline blame, which steps past this message (inlineBlame.ts).
+    span.classList.add("cm-plugin-after");
+    const text = document.createElement("span");
+    text.className = `${styles.afterInner ?? ""} ${this.style}`;
+    text.textContent = this.text;
+    if (this.hover) text.title = this.hover;
+    span.appendChild(text);
+    // The element is only measurable once CodeMirror has inserted it: defer to the next task, not a
+    // nested frame, so a widget that goes away first simply skips.
+    setTimeout(() => {
+      if (!span.isConnected) return;
+      this.stepPastLineEnd(span);
+      const line = span.closest(".cm-line");
+      if (!line) return;
+      this.observer = new MutationObserver(() => this.stepPastLineEnd(span));
+      this.observer.observe(line, { childList: true, subtree: true, characterData: true });
+    }, 0);
     return span;
+  }
+  override destroy() {
+    this.observer?.disconnect();
+    this.observer = undefined;
   }
 }
 
@@ -84,8 +147,8 @@ export function decorationExtension(ctx: EditorDocContext) {
   const build = (doc: Text): CmDecorations => {
     const ranges = [];
     for (const sets of snapshots.values())
-      for (const set of currentSets(sets))
-        if (!set.tree && set.path === ctx.path) {
+      for (const set of currentSets(sets, false))
+        if (!set.tree && String(set.path) === String(ctx.path)) {
           for (const item of set.items) {
             const className = Object.hasOwn(colors, item.style) ? styles[item.style] : undefined;
             if (!className) continue;
@@ -99,10 +162,15 @@ export function decorationExtension(ctx: EditorDocContext) {
                   to,
                 ),
               );
-            if (item.after)
+            if (item.after) {
+              // The message belongs at the line end even when the diagnostic's range ends
+              // mid-line (a typo in the middle of a long line). `side: 1` keeps it after the
+              // caret there; the inline blame steps past it, so: git hint | lens | blame.
+              const end = doc.lineAt(to);
               ranges.push(
-                Decoration.widget({ widget: new AfterText(item.after, className, item.hover), side: 1 }).range(to),
+                Decoration.widget({ widget: new AfterText(item.after, className, item.hover), side: 1 }).range(end.to),
               );
+            }
           }
         }
     return Decoration.set(ranges, true);
