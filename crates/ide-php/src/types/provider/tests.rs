@@ -281,3 +281,43 @@ fn payloads_print_and_round_trip() {
     let bytes = postcard::to_allocvec(&lazy).unwrap();
     assert_eq!(postcard::from_bytes::<LazyType>(&bytes).unwrap(), lazy);
 }
+
+#[test]
+fn properties_filled_element_by_element() {
+    const GRID: &str = r#"
+class Grid {
+    protected $columns = [];
+    /** @var array */
+    protected $actions = [];
+    protected array $byName = [];
+    /** @var array<int, Mailer> */
+    protected $documented = [];
+    protected $mixed = [];
+
+    public function add(Clock $clock, Mailer $mailer, $unknown): void {
+        $this->columns[] = $clock;
+        $this->actions[] = new Clock();
+        $this->byName['main'] = $clock;
+        $this->documented[] = $clock;
+        $this->mixed[] = $unknown;
+    }
+
+    public function read(): void {
+        BODY
+    }
+}
+"#;
+    let t = |expr: &str| GRID.replace("BODY", &format!("{expr}/*|*/;"));
+    let cases = [
+        // Appended to an untyped property, and to one declared `array`.
+        (t("$this->columns"), "list<App\\Clock>".to_owned()),
+        (t("$this->actions"), "list<App\\Clock>".to_owned()),
+        // Added under a key.
+        (t("$this->byName"), "App\\Clock[]".to_owned()),
+        // A documented element type wins; unknown elements say nothing.
+        (t("$this->documented"), "array<int, App\\Mailer>".to_owned()),
+        (t("$this->mixed"), "array".to_owned()),
+    ];
+    let cases: Vec<(&str, &str)> = cases.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    check(&[APP], TEST_HEADER, &cases);
+}

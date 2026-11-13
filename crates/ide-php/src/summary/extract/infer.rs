@@ -483,25 +483,51 @@ impl<'ast, 'arena, 'i, 's> Walker<'ast, 'arena, Returns<'i, 's>> for ReturnWalke
 
 /// The `$this->name = value` assignments in a method body (outside nested
 /// functions and classes), with the property name.
-pub(super) fn this_assignments<'ast, 'arena>(body: &'ast Block<'arena>) -> Vec<(String, &'ast Expression<'arena>)> {
+pub(super) fn this_assignments<'ast, 'arena>(body: &'ast Block<'arena>) -> Assignments<'ast, 'arena> {
     let mut found = Vec::new();
     AssignmentWalker.walk_block(body, &mut found);
     found
 }
 
-type Assignments<'ast, 'arena> = Vec<(String, &'ast Expression<'arena>)>;
+/// How a value is assigned to `$this->property`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Target {
+    /// `$this->property = value`.
+    Whole,
+    /// `$this->property[] = value`.
+    Appended,
+    /// `$this->property[$key] = value`.
+    Keyed,
+}
+
+/// The property, how it is assigned, and the value.
+type Assignments<'ast, 'arena> = Vec<(String, Target, &'ast Expression<'arena>)>;
+
+/// The property `$this->name` an assignment's left side writes, and how.
+fn this_target(lhs: &Expression<'_>) -> Option<(String, Target)> {
+    let (object, target) = match lhs {
+        Expression::ArrayAppend(append) => (append.array, Target::Appended),
+        Expression::ArrayAccess(access) => (access.array, Target::Keyed),
+        other => (other, Target::Whole),
+    };
+    if let Expression::Access(Access::Property(access)) = object
+        && let Expression::Variable(Variable::Direct(this)) = access.object
+        && this.name == b"$this"
+        && let ClassLikeMemberSelector::Identifier(name) = &access.property
+    {
+        return Some((lossy(name.value), target));
+    }
+    None
+}
 
 struct AssignmentWalker;
 
 impl<'ast, 'arena> Walker<'ast, 'arena, Assignments<'ast, 'arena>> for AssignmentWalker {
     fn walk_in_assignment(&self, node: &'ast Assignment<'arena>, cx: &mut Assignments<'ast, 'arena>) {
         if let AssignmentOperator::Assign(_) = node.operator
-            && let Expression::Access(Access::Property(access)) = node.lhs
-            && let Expression::Variable(Variable::Direct(object)) = access.object
-            && object.name == b"$this"
-            && let ClassLikeMemberSelector::Identifier(name) = &access.property
+            && let Some((name, target)) = this_target(node.lhs)
         {
-            cx.push((lossy(name.value), node.rhs));
+            cx.push((name, target, node.rhs));
         }
     }
 

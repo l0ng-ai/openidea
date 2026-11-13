@@ -459,7 +459,23 @@ impl Extractor<'_> {
                 && property.type_hint.is_none()
                 && property.doc.as_ref().is_none_or(|doc| doc.var_type(&property.name).is_none())
         };
-        if !class.properties.iter().any(untyped) {
+        // Declared `array` and no more (the hint, `@var array`): the
+        // elements the methods add say what is in it.
+        let bare_array = |property: &Property| {
+            let hint = match &property.type_hint {
+                None => None,
+                Some(TypeHint::Builtin(name)) if name == "array" => Some(()),
+                Some(_) => return false,
+            };
+            let doc = property.doc.as_ref().and_then(|doc| doc.var_type(&property.name));
+            let documented = match doc {
+                None => None,
+                Some(doc) if doc.0.trim().eq_ignore_ascii_case("array") => Some(()),
+                Some(_) => return false,
+            };
+            !property.is_promoted && !property.is_static && (hint.is_some() || documented.is_some())
+        };
+        if !class.properties.iter().any(|property| untyped(property) || bare_array(property)) {
             return;
         }
         let mut assigned: Vec<(String, Assigned)> = Vec::new();
@@ -475,17 +491,27 @@ impl Extractor<'_> {
             let names: Vec<String> =
                 class.doc.iter().flat_map(|doc| doc.local_type_names()).map(str::to_owned).collect();
             let infer = self.infer(&method.params, &method.doc, &names);
-            for (property, value) in found {
-                assigned.push((property, Assigned { method: method.name.clone(), ty: infer.expr(value) }));
+            for (property, target, value) in found {
+                let element = match target {
+                    infer::Target::Whole => None,
+                    infer::Target::Appended => Some(false),
+                    infer::Target::Keyed => Some(true),
+                };
+                assigned.push((property, Assigned { method: method.name.clone(), ty: infer.expr(value), element }));
             }
         }
         for i in 0..class.properties.len() {
             let property = &class.properties[i];
-            if !untyped(property) {
+            let bare = bare_array(property);
+            if !untyped(property) && !bare {
                 continue;
             }
-            let own: Vec<Assigned> =
-                assigned.iter().filter(|(name, _)| *name == property.name).map(|(_, a)| a.clone()).collect();
+            // A declared `array` is only refined by its elements.
+            let own: Vec<Assigned> = assigned
+                .iter()
+                .filter(|(name, assigned)| *name == property.name && (!bare || assigned.element.is_some()))
+                .map(|(_, a)| a.clone())
+                .collect();
             if own.is_empty() {
                 continue;
             }

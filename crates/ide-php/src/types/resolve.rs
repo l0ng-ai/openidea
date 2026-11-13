@@ -1222,9 +1222,15 @@ impl<'a> Resolver<'a> {
             let context = Context::in_class(&property.self_class);
             let templates = templates(&property.declaring, []);
             let ty = if let Some(declared) = property.declared() {
+                // Declared `array` and no more: the elements its class adds.
+                let elements = declared.default_type.as_ref().filter(|lazy| super::provider::has_elements(lazy));
+                let bare = |ty: Type| match elements {
+                    Some(lazy) if ty == Type::array() => self.lazy(lazy, &context, depth).widen(),
+                    _ => ty,
+                };
                 match (declared.doc.as_ref().and_then(|doc| doc.var_type(name)), &declared.type_hint) {
-                    (Some(ty), _) => Type::from_doc(ty, &templates),
-                    (None, Some(hint)) => Type::from_hint(hint),
+                    (Some(ty), _) => bare(Type::from_doc(ty, &templates)),
+                    (None, Some(hint)) => bare(Type::from_hint(hint)),
                     (None, None) => match &declared.default_type {
                         Some(lazy) => self.lazy(lazy, &context, depth).widen(),
                         None => Type::Mixed,

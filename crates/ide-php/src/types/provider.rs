@@ -229,6 +229,10 @@ pub struct Assigned {
     /// The method the assignment is in.
     pub method: String,
     pub ty: LazyType,
+    /// `$this->property[] = value` (`Some(false)`) or
+    /// `$this->property[$key] = value` (`Some(true)`): the value is an
+    /// element; `None` for `$this->property = value`.
+    pub element: Option<bool>,
 }
 
 /// A property with neither a type hint nor `@var`, for the local step.
@@ -649,16 +653,56 @@ impl TypeProvider for CoreProvider {
     /// few different things.
     fn property(&self, site: &PropertySite<'_>) -> Option<LazyType> {
         let mut assigned: Vec<LazyType> = Vec::new();
+        let mut elements: Vec<LazyType> = Vec::new();
+        let mut keyed = false;
         for value in site.assigned {
-            if !assigned.contains(&value.ty) {
-                assigned.push(value.ty.clone());
+            let into = match value.element {
+                None => &mut assigned,
+                Some(with_key) => {
+                    keyed |= with_key;
+                    &mut elements
+                }
+            };
+            if !into.contains(&value.ty) {
+                into.push(value.ty.clone());
             }
         }
         // Nothing known, or too many to mean one thing.
-        if assigned.is_empty() || assigned.len() > MAX_ASSIGNED || assigned.contains(&LazyType::mixed()) {
+        let unusable = |types: &[LazyType]| types.len() > MAX_ASSIGNED || types.contains(&LazyType::mixed());
+        if unusable(&assigned) || unusable(&elements) {
             return None;
         }
-        Some(LazyType::union(assigned))
+        // `$this->items[] = $item;`: a list of what is added (an array
+        // when some are added under a key).
+        if !elements.is_empty() {
+            let payload = if keyed { ENTRIES } else { ELEMENTS };
+            let fallback = LazyType::Known(Type::array());
+            assigned.push(provided(self.key(), payload, vec![LazyType::union(elements)], fallback));
+        }
+        (!assigned.is_empty()).then(|| LazyType::union(assigned))
+    }
+
+    fn resolve(&self, payload: &str, args: &[Type], _resolver: &Resolver<'_>, _context: &Context) -> Option<Type> {
+        let element = args.first().filter(|element| **element != Type::Mixed)?.widen();
+        match payload {
+            ELEMENTS => Some(Type::list_of(element)),
+            ENTRIES => Some(Type::array_of(Type::ArrayKey, element)),
+            _ => None,
+        }
+    }
+}
+
+/// The core's payloads for a property filled element by element.
+const ELEMENTS: &str = "elements";
+const ENTRIES: &str = "entries";
+
+/// Whether `lazy` is (or has among its members) the elements added to a
+/// property ([`CoreProvider::property`]).
+pub(crate) fn has_elements(lazy: &LazyType) -> bool {
+    match lazy {
+        LazyType::Provided { key, payload, .. } => key == "core" && (payload == ELEMENTS || payload == ENTRIES),
+        LazyType::Union(members) => members.iter().any(has_elements),
+        _ => false,
     }
 }
 
@@ -754,7 +798,7 @@ impl TypeProvider for PhpUnitProvider {
         let assigned: Vec<LazyType> = site
             .assigned
             .iter()
-            .filter(|assigned| assigned.method.eq_ignore_ascii_case("setUp"))
+            .filter(|assigned| assigned.element.is_none() && assigned.method.eq_ignore_ascii_case("setUp"))
             .map(|assigned| assigned.ty.clone())
             .collect();
         if assigned.is_empty() || site.extends.is_empty() {
