@@ -27,8 +27,10 @@ const colors: Record<string, string> = {
 };
 
 function currentSets(sets: DecorationSet[]) {
+  // Editor annotations follow the file, so a set applies wherever its file is open —
+  // including a file outside this window's project. Tree decorations are per root.
   const root = useProject.getState().project?.root;
-  return sets.filter((s) => s.root === root);
+  return sets.filter((s) => s.tree || s.root === root);
 }
 
 function updateTree(plugin: string, sets: DecorationSet[]) {
@@ -94,7 +96,7 @@ export function decorationExtension(ctx: EditorDocContext) {
     const ranges = [];
     for (const sets of snapshots.values())
       for (const set of currentSets(sets))
-        if (!set.tree && set.path === ctx.path) {
+        if (!set.tree && String(set.path) === String(ctx.path)) {
           for (const item of set.items) {
             const className = Object.hasOwn(colors, item.style) ? styles[item.style] : undefined;
             if (!className) continue;
@@ -108,13 +110,14 @@ export function decorationExtension(ctx: EditorDocContext) {
                   to,
                 ),
               );
-            if (item.after)
+            if (item.after) {
               // `side: 0` keeps the annotation before other line-end widgets (Code Vision's
               // author hint and usages lens are `side: 1`): the message hugs the code and the
               // blame label follows it, as in Inspection Lens.
               ranges.push(
                 Decoration.widget({ widget: new AfterText(item.after, className, item.hover), side: 0 }).range(to),
               );
+            }
           }
         }
     return Decoration.set(ranges, true);

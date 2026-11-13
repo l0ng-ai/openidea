@@ -3176,26 +3176,17 @@ impl PluginWorkspace for HostWorkspace {
         Ok(out)
     }
     fn problems(&self, client: &str, path: Option<&Path>) -> Result<Vec<ide_plugin::FileProblems>, HostError> {
+        // The host records every `Diagnostics` event it emits (language servers,
+        // builds, spelling, plugin providers), so this sees a file's problems
+        // whatever window opened it — not just the ones its UI reported.
         let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
-        let root = host.project(client).map_err(failed)?.root.clone();
-        let windows = host.windows_for_root(&root);
+        host.project(client).map_err(failed)?;
         let mut out = Vec::new();
-        for file in host.mcp_reports.problems(&windows) {
-            if path.is_some_and(|p| p != file.path.0) {
+        for (file, source, diagnostics) in host.diagnostics.problems() {
+            if path.is_some_and(|p| p != file) {
                 continue;
             }
-            if ide_plugin::resolve_new_in_root(&root, &to_ipc(&file.path.0)).is_err() {
-                continue;
-            }
-            let mut sources: BTreeMap<String, Vec<ide_core::Diagnostic>> = BTreeMap::new();
-            for d in file.items {
-                sources.entry(d.server.clone().or_else(|| d.source.clone()).unwrap_or_default()).or_default().push(d);
-            }
-            out.extend(sources.into_iter().map(|(source, diagnostics)| ide_plugin::FileProblems {
-                path: to_ipc(&file.path.0),
-                source,
-                diagnostics,
-            }));
+            out.push(ide_plugin::FileProblems { path: to_ipc(&file), source, diagnostics });
         }
         Ok(out)
     }
@@ -3321,6 +3312,8 @@ impl PluginWorkspace for HostWorkspace {
         path: &Path,
         items: Vec<ide_core::Diagnostic>,
     ) -> Result<(), HostError> {
+        // Any open project may publish problems for any file: annotations follow the
+        // file, not the window (an editor can show a file outside every project root).
         let projects = HostWorkspace::projects(self);
         let project = projects
             .iter()
@@ -3332,7 +3325,8 @@ impl PluginWorkspace for HostWorkspace {
                     .iter()
                     .find(|p| crate::project::workspace_member_roots(&p.root).iter().any(|m| path.starts_with(m)))
             })
-            .ok_or_else(|| HostError::Invalid(format!("{} is not in an open project", path.display())))?;
+            .or_else(|| projects.first())
+            .ok_or_else(|| HostError::NotFound("no project is open".into()))?;
         project.sink.emit(ide_core::IdeEvent::Diagnostics {
             path: path.to_path_buf().into(),
             source: format!("plugin:{source}"),
@@ -4135,16 +4129,23 @@ impl PluginApi {
             return Err(HostError::Invalid("reversed decoration range".into()));
         }
         let replacement = if let Some(path) = path {
-            let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("no project open".into()))?;
-            let (root, real) = workspace
-                .projects()
-                .into_iter()
-                .filter_map(|root| ide_plugin::resolve_new_in_root(&root, &to_ipc(path)).ok().map(|real| (root, real)))
-                .max_by_key(|(root, _)| root.components().count())
-                .ok_or_else(|| HostError::Invalid("path outside open projects".into()))?;
+            // The decoration follows the file, not the window's project: editors render
+            // whatever they have open, including files outside every project root. The
+            // set's root stays the path's own (deepest open) project for tree filtering.
+            let root = self
+                .shared
+                .workspace()
+                .map(|w| {
+                    w.projects()
+                        .into_iter()
+                        .filter(|root| path.starts_with(root))
+                        .max_by_key(|root| root.components().count())
+                })
+                .unwrap_or_default()
+                .unwrap_or_else(|| path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.to_path_buf()));
             Some(super::DecorationSet {
                 root: root.into(),
-                path: real.into(),
+                path: ide_core::IpcPath(path.to_path_buf()),
                 set_id: set.into(),
                 tree,
                 items,
@@ -4308,8 +4309,11 @@ mod workbench_tests {
         };
         api.decorations(Some(&path), "set", vec![item("highlight"), item("unknown")]).unwrap();
         assert_eq!(api.shared.decoration_sets()["test"][0].items.len(), 1);
-        assert!(api.decorations(Some(&root.join("../outside.txt")), "set", vec![]).is_err());
+        // Decorations follow the file: a path outside the open project is accepted too.
+        api.decorations(Some(&root.join("../outside.txt")), "set", vec![]).unwrap();
+        assert_eq!(api.shared.decoration_sets()["test"].len(), 2);
         api.decorations(None, "set", vec![]).unwrap();
+        assert!(api.shared.decoration_sets()["test"].is_empty());
         for i in 0..50 {
             api.decorations(Some(&path), &format!("s{i}"), vec![]).unwrap();
         }
