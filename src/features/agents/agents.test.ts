@@ -86,9 +86,21 @@ describe("mergeMatches", () => {
       3,
     );
     expect(merged).toEqual([
-      { path: "/p/docs", rel: "docs", dir: true, score: 70 },
-      { path: "/p/src/agents.ts", rel: "src/agents.ts", dir: false, score: 50 },
-      { path: "/p/src/agents", rel: "src/agents", dir: true, score: 50 },
+      { path: "/p/docs", rel: "docs", dir: true, score: 70, indices: [] },
+      {
+        path: "/p/src/agents.ts",
+        rel: "src/agents.ts",
+        dir: false,
+        score: 50,
+        indices: [],
+      },
+      {
+        path: "/p/src/agents",
+        rel: "src/agents",
+        dir: true,
+        score: 50,
+        indices: [],
+      },
     ]);
   });
 });
@@ -186,7 +198,11 @@ describe("agent composer", () => {
     expect(toPrompt({ text: "explain @src/", files: [folder], images: [] }).files).toEqual(["/w/src"]);
     expect(toPrompt({ text: "explain @src/a.rs", files: [folder], images: [] }).files).toEqual([]);
     expect(canSend({ text: " ", files: [], images: [] })).toBe(false);
-    const video = { path: "/home/me/clip.mov", rel: "clip.mov", attached: true };
+    const video = {
+      path: "/home/me/clip.mov",
+      rel: "clip.mov",
+      attached: true,
+    };
     expect(toPrompt({ text: "what happens here?", files: [video], images: [] }).files).toEqual(["/home/me/clip.mov"]);
     expect(canSend({ text: " ", files: [video], images: [] })).toBe(true);
   });
@@ -487,16 +503,23 @@ describe("new task defaults", () => {
         description: null,
         category: id,
         current,
-        values: values.map((value) => ({ value, name: value, description: null })),
+        values: values.map((value) => ({
+          value,
+          name: value,
+          description: null,
+        })),
         via: "option",
       }) as AgentConfigOption;
     const provider = {
       id: "claude",
       config: [option("model", "sonnet", ["sonnet", "opus"]), option("mode", "default", ["default", "plan"])],
     } as unknown as Parameters<typeof draftConfig>[0];
-    const draft = { provider: "claude", config: {}, isolation: "local", base: null } as unknown as Parameters<
-      typeof draftConfig
-    >[1];
+    const draft = {
+      provider: "claude",
+      config: {},
+      isolation: "local",
+      base: null,
+    } as unknown as Parameters<typeof draftConfig>[1];
     const current = (d: typeof draft, defaults: Record<string, string>) =>
       draftConfig(provider, d, defaults).map((o) => o.current);
     expect(current(draft, { model: "opus", mode: "nope" })).toEqual(["opus", "default"]);

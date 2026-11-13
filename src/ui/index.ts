@@ -42,5 +42,4 @@ export { lockDragCursor, type DragCursor } from "./dragCursor";
 export { useSanitizedField } from "./useSanitizedField";
 export * from "./rowSelection";
 export * from "./LogPane";
-export * from "./InlineTag";
 export * from "./Chip";

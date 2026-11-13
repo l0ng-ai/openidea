@@ -22,58 +22,57 @@
     inset 0 0 0 1px var(--focus-ring),
     0 0 0 1px var(--focus-ring);
 }
+/* The CodeMirror text field: the UI font, wrapping, growing with the text up to a limit. */
 .field {
   position: relative;
+  min-width: 0;
 }
-/* Tags under the transparent textarea: same font, metrics and padding, so the caret
-   and selection of the real textarea line up with the painted text. */
-.mirror {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  padding: 10px 12px 2px;
-  font: inherit;
+.field :global(.cm-editor) {
+  background: transparent;
+  color: var(--fg-strong);
   font-size: var(--fs-ui);
+}
+.field :global(.cm-editor.cm-focused) {
+  outline: none;
+}
+.field :global(.cm-scroller) {
+  min-height: 44px;
+  max-height: 280px;
+  overflow-y: auto;
+  font-family: inherit;
   line-height: 1.5;
+}
+.field :global(.cm-content) {
+  padding: 10px 12px 2px;
+  caret-color: var(--fg-strong);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: var(--fg-strong);
-  pointer-events: none;
-  -webkit-user-select: none;
-  user-select: none;
 }
-.textarea {
-  position: relative;
-  z-index: 1;
-  display: block;
-  width: 100%;
-  min-height: 44px;
-  resize: none;
-  border: 0;
-  outline: none;
-  background: transparent;
-  color: transparent;
-  caret-color: var(--fg-strong);
-  font: inherit;
-  font-size: var(--fs-ui);
-  line-height: 1.5;
-  padding: 10px 12px 2px;
-  overflow-wrap: anywhere;
-  -webkit-user-select: text;
-  user-select: text;
+.field :global(.cm-line) {
+  padding: 0;
 }
-.textarea:focus-visible {
-  outline: none;
-}
-.textarea::placeholder {
+.field :global(.cm-placeholder) {
   color: var(--fg-faint);
 }
-/* The textarea's own glyphs are transparent so the mirror above shows the tags; the
-   selection would then paint an empty highlight. Paint the selected glyphs here instead —
-   the opaque selection background covers the mirror underneath. */
-.textarea::selection {
+.field :global(.cm-cursor) {
+  border-left-color: var(--fg-strong);
+}
+.field ::selection {
   background: var(--bg-editor-selection);
+}
+/* A dragged file over the box: what dropping does. */
+.dropOverlay {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--bg-popup) 82%, transparent);
   color: var(--fg-strong);
+  pointer-events: none;
 }
 .bar {
   display: flex;
@@ -347,17 +346,19 @@
   color: var(--fg-subtle);
 }
 
-.images {
+/* Above the text: the current file to reference, attached files and images. */
+.context {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   padding: 8px 10px 0;
   cursor: default;
 }
 .image {
   position: relative;
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border);
   overflow: hidden;
@@ -393,21 +394,63 @@
   opacity: 0;
 }
 .image:hover .removeImage,
-.attachment:hover .removeImage,
 .removeImage:focus-visible {
   opacity: 1;
 }
 
-.attachment {
+/* Attached files and the current-file suggestion: one height, like the chips in the text. */
+.attachment,
+.suggestion {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   max-width: 240px;
-  height: 44px;
-  padding: 0 10px;
-  border-radius: var(--radius-small);
+  height: 24px;
+  padding: 0 4px 0 7px;
+  border-radius: var(--radius-control);
   box-shadow: inset 0 0 0 1px var(--border);
+  font-size: var(--fs-small);
+  color: var(--fg-strong);
+}
+.suggestion {
+  padding-right: 8px;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  outline: 1px dashed var(--border-strong);
+  outline-offset: -1px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+.suggestion:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+.suggestion:focus-visible {
+  outline: 2px solid var(--focus-ring);
+}
+.suggestionHint {
+  color: var(--fg-faint);
+}
+.removeChip {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.removeChip:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
 }
 .attachmentName {
   overflow: hidden;
@@ -416,16 +459,6 @@
 }
 
 /* `@` / `/` completion; Popup keeps the list within the viewport. */
-.caretMirror {
-  position: fixed;
-  top: 0;
-  left: 0;
-  box-sizing: border-box;
-  visibility: hidden;
-  pointer-events: none;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-}
 .popup {
   display: flex;
   flex-direction: column;
@@ -452,4 +485,31 @@
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg-subtle);
+}
+.match {
+  background: none;
+  color: var(--fg-completion-match, var(--accent));
+  font-weight: 600;
+}
+.popupFooter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 5px 12px 6px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.popupFooter kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  margin-right: 2px;
+  padding: 0 3px;
+  border-radius: var(--radius-small);
+  background: var(--bg-hover);
+  color: var(--fg-muted);
+  font-family: var(--font-keys, inherit);
+  font-size: var(--fs-tiny, 11px);
 }

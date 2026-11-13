@@ -27,7 +27,11 @@ export interface ComposerDraft {
   images: AgentImage[];
 }
 
-export const emptyDraft = (): ComposerDraft => ({ text: "", files: [], images: [] });
+export const emptyDraft = (): ComposerDraft => ({
+  text: "",
+  files: [],
+  images: [],
+});
 
 export type MessageToken = { kind: "text" | "file" | "command"; value: string };
 
@@ -61,7 +65,12 @@ export function completionAt(text: string, caret: number): Completion | null {
   const word = /(^|\s)([@/])([^\s@]*)$/.exec(before);
   if (!word) return null;
   const from = caret - word[3]!.length - 1;
-  return { kind: word[2] === "/" ? "command" : "file", query: word[3]!, from, to: caret };
+  return {
+    kind: word[2] === "/" ? "command" : "file",
+    query: word[3]!,
+    from,
+    to: caret,
+  };
 }
 
 /** Replaces the completion with `insert` plus a space; returns the text and the caret after it. */
@@ -119,6 +128,8 @@ interface IndexMatch {
   path: string;
   relPath: string;
   score: number;
+  /** Matched characters of `relPath`. */
+  indices?: number[];
 }
 
 /**
@@ -129,14 +140,57 @@ export function mergeMatches(
   files: readonly IndexMatch[],
   dirs: readonly IndexMatch[],
   limit: number,
-): { path: string; rel: string; dir: boolean; score: number }[] {
+): {
+  path: string;
+  rel: string;
+  dir: boolean;
+  score: number;
+  indices: number[];
+}[] {
   return [
-    ...files.map((f) => ({ path: f.path, rel: f.relPath, dir: false, score: f.score })),
-    ...dirs.map((d) => ({ path: d.path, rel: d.relPath.replace(/\/$/, ""), dir: true, score: d.score })),
+    ...files.map((f) => ({
+      path: f.path,
+      rel: f.relPath,
+      dir: false,
+      score: f.score,
+      indices: f.indices ?? [],
+    })),
+    ...dirs.map((d) => ({
+      path: d.path,
+      rel: d.relPath.replace(/\/$/, ""),
+      dir: true,
+      score: d.score,
+      indices: d.indices ?? [],
+    })),
   ]
     .sort((a, b) => b.score - a.score || Number(a.dir) - Number(b.dir))
     .slice(0, limit);
 }
+
+export interface Mention {
+  /** As written after `@`; a folder keeps its trailing `/`. */
+  rel: string;
+  dir: boolean;
+  /** 1-based lines, when the mention names a range. */
+  lines?: { from: number; to: number };
+}
+
+/** `@src/a.rs:10-20` → its path and lines; `null` for an empty `@`. */
+export function parseMention(token: string): Mention | null {
+  const m = /^@(.+?)(?::(\d+)(?:-(\d+))?)?$/.exec(token);
+  if (!m) return null;
+  const rel = m[1]!;
+  const from = m[2] ? Number(m[2]) : undefined;
+  const lines = from === undefined ? undefined : { from, to: m[3] ? Math.max(from, Number(m[3])) : from };
+  return { rel, dir: rel.endsWith("/"), ...(lines && { lines }) };
+}
+
+/** "10" or "10–20". */
+export const linesLabel = (lines: { from: number; to: number }) =>
+  lines.from === lines.to ? String(lines.from) : `${lines.from}–${lines.to}`;
+
+/** Lines of `text` that start with `>`: a quoted reply or selection, drawn as a block. */
+export const isQuoteLine = (line: string) => /^>( |$)/.test(line);
 
 /** `@rel` with a line range suffix when given ("@src/a.rs:10-20"). */
 export function mentionOf(rel: string, lines?: { from: number; to: number }): string {
@@ -156,7 +210,11 @@ export function toPrompt(draft: ComposerDraft): AgentPrompt {
     seen.add(f.path);
     return true;
   });
-  return { text: draft.text.trim(), files: files.map((f) => f.path), images: draft.images };
+  return {
+    text: draft.text.trim(),
+    files: files.map((f) => f.path),
+    images: draft.images,
+  };
 }
 
 export const canSend = (d: ComposerDraft) => !!d.text.trim() || d.images.length > 0 || d.files.some((f) => f.attached);
@@ -255,7 +313,11 @@ export function retryParts(r: AgentRetry, now: number): { attempt: string; wait:
 }
 
 /** "167k/1M (17%)" of the context window and a tooltip with the exact counts. */
-export function usageLabel(u: AgentUsage): { short: string; percent: number; detail: string } {
+export function usageLabel(u: AgentUsage): {
+  short: string;
+  percent: number;
+  detail: string;
+} {
   const percent = Math.min(100, Math.round((u.used / u.size) * 100));
   return {
     short: `${tokens(u.used)}/${tokens(u.size)} (${percent}%)`,
@@ -278,9 +340,18 @@ export function limitLabel(l: AgentLimit, now: number): { short: string; percent
   const percent = Math.min(100, Math.round(l.usedPercent ?? 0));
   const name = known ? tx(known.name) : l.window;
   const used = tx`${name}: ${percent}% used`;
-  if (l.resetsMs == null) return { short: `${known?.short ?? l.window} ${percent}%`, percent, detail: used };
+  if (l.resetsMs == null)
+    return {
+      short: `${known?.short ?? l.window} ${percent}%`,
+      percent,
+      detail: used,
+    };
   const reset = untilReset(Math.max(0, l.resetsMs - now));
-  return { short: `${known?.short ?? l.window} ${percent}%`, percent, detail: tx`${used}, resets in ${reset}` };
+  return {
+    short: `${known?.short ?? l.window} ${percent}%`,
+    percent,
+    detail: tx`${used}, resets in ${reset}`,
+  };
 }
 
 /** `45m`, `2h 51m`, `5d 3h`. */
@@ -295,7 +366,10 @@ function untilReset(ms: number): string {
 /** "$0.42": what the session has cost so far. */
 export function costLabel(c: AgentCost): string {
   try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency: c.currency }).format(c.amount ?? 0);
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: c.currency,
+    }).format(c.amount ?? 0);
   } catch {
     // Not an ISO 4217 code.
     return `${(c.amount ?? 0).toFixed(2)} ${c.currency}`;

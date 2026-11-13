@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { caretOf, setCaret, textOf, typeChars, typeIn } from "./composerTesting";
+import chipStyles from "./ReferenceChip.module.css";
 import { FILES_DRAG, dragSession } from "@/ui";
 
 const findFiles = vi.fn();
 const findDirs = vi.fn();
 const pathCompletions = vi.fn();
+const fsProbe = vi.fn();
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -17,11 +20,13 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       findFiles: (query: string, limit: number) => findFiles(query, limit),
       findDirs: (query: string, limit: number) => findDirs(query, limit),
       pathCompletions: (base: string, typed: string) => pathCompletions(base, typed),
+      fsProbe: (path: string) => fsProbe(path),
     },
   };
 });
 
 import { Composer } from "./Composer";
+import { useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { composerDraft, updateComposer } from "./store";
 import { emptyDraft, toPrompt } from "./composerModel";
 
@@ -41,15 +46,26 @@ function renderComposer(root = "/p") {
       onSubmit={() => {}}
     />,
   );
-  return screen.getByPlaceholderText("Ask") as HTMLTextAreaElement;
+  return screen.getByRole("textbox", { name: "Message" });
 }
 
 beforeEach(() => {
   updateComposer(ID, emptyDraft());
-  const match = (path: string, relPath: string, score: number) => ({ path, relPath, score, indices: [] });
+  const match = (path: string, relPath: string, score: number) => ({
+    path,
+    relPath,
+    score,
+    indices: [],
+  });
   findFiles.mockReset().mockReturnValue(ok([match("/p/src/agents.ts", "src/agents.ts", 40)]));
   findDirs.mockReset().mockReturnValue(ok([match("/p/src/agents", "src/agents/", 90)]));
   pathCompletions.mockReset().mockReturnValue(ok([{ name: "lib", dir: true }]));
+  fsProbe.mockReset().mockReturnValue(
+    Promise.resolve({
+      status: "error",
+      error: { kind: "notFound", message: "" },
+    }),
+  );
 });
 
 describe("Composer dropped paths", () => {
@@ -73,7 +89,10 @@ describe("Composer dropped paths", () => {
     try {
       act(() => {
         // Folders carry a trailing slash, as the Project view marks them.
-        const drag = dragSession({ type: FILES_DRAG, payload: "/p/src/a.ts\n/p/src/dir/" });
+        const drag = dragSession({
+          type: FILES_DRAG,
+          payload: "/p/src/a.ts\n/p/src/dir/",
+        });
         expect(drag.drop(0, 0)).toBe(true);
       });
     } finally {
@@ -83,24 +102,24 @@ describe("Composer dropped paths", () => {
       { path: "/p/src/a.ts", rel: "src/a.ts" },
       { path: "/p/src/dir", rel: "src/dir" },
     ]);
-    expect(box.value).toBe("@src/a.ts @src/dir ");
+    expect(textOf(box)).toBe("@src/a.ts @src/dir ");
   });
 
   it("deduplicates live references and allows a deleted reference to be dropped again", () => {
     const box = renderComposer();
     drop(box, "/p/src/a.ts\n/p/src/a.ts\n/p/src/dir/");
     drop(box, "/p/src/a.ts\n/p/src/dir/");
-    expect(box.value).toBe("@src/a.ts @src/dir ");
-    fireEvent.change(box, { target: { value: "@src/dir " } });
+    expect(textOf(box)).toBe("@src/a.ts @src/dir ");
+    typeIn(box, "@src/dir ");
     drop(box, "/p/src/a.ts");
-    expect(box.value).toBe("@src/dir @src/a.ts ");
+    expect(textOf(box)).toBe("@src/dir @src/a.ts ");
     expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/dir", "/p/src/a.ts"]);
   });
 
   it("maps project files and folders into the task worktree, rejecting external paths", () => {
     const box = renderComposer("/worktree");
     drop(box, "/p/src/a.ts\n/p/src/dir/\n/external/a.ts\n/p-other/a.ts\n/p/../external/b.ts\nrelative.ts");
-    expect(box.value).toBe("@src/a.ts @src/dir ");
+    expect(textOf(box)).toBe("@src/a.ts @src/dir ");
     expect(toPrompt(composerDraft(ID)).files).toEqual(["/worktree/src/a.ts", "/worktree/src/dir"]);
   });
 });
@@ -110,139 +129,175 @@ describe("Composer @ folders", () => {
     findFiles.mockReturnValue(ok([]));
     findDirs.mockReturnValue(ok([]));
     const box = renderComposer();
-    await userEvent.type(box, "@");
+    typeChars(box, "@");
     expect(await screen.findByRole("option")).toHaveTextContent("lib/");
     expect(pathCompletions).toHaveBeenCalledWith("/p/_", "");
-    await userEvent.keyboard("{Enter}");
-    expect(box.value).toBe("@lib/ ");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(textOf(box)).toBe("@lib/ ");
     expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/lib"]);
   });
 
   it("lists index folders among files and references one on Enter", async () => {
     const box = renderComposer();
-    await userEvent.type(box, "see @agen");
+    typeChars(box, "see @agen");
     const options = await screen.findAllByRole("option");
-    expect(options.map((o) => o.textContent)).toEqual(["agents/src/agents", "agents.tssrc/agents.ts"]);
-    await userEvent.keyboard("{Enter}");
-    expect(box.value).toBe("see @src/agents/ ");
+    expect(options.map((o) => o.textContent)).toEqual(["agents/src", "agents.tssrc"]);
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(textOf(box)).toBe("see @src/agents/ ");
     expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/agents"]);
+  });
+
+  it("highlights the matched characters of a file name", async () => {
+    findFiles.mockReturnValue(
+      ok([
+        {
+          path: "/p/src/agents.ts",
+          relPath: "src/agents.ts",
+          score: 40,
+          indices: [4, 5, 6],
+        },
+      ]),
+    );
+    findDirs.mockReturnValue(ok([]));
+    const box = renderComposer();
+    typeChars(box, "@age");
+    const option = await screen.findByRole("option");
+    expect([...option.querySelectorAll("mark")].map((m) => m.textContent)).toEqual(["age"]);
   });
 
   it("keeps completing inside a folder on Tab, which drops the folder once a file is picked", async () => {
     const box = renderComposer();
-    await userEvent.type(box, "@agen");
+    typeChars(box, "@agen");
     await screen.findAllByRole("option");
-    await userEvent.keyboard("{Tab}");
-    expect(box.value).toBe("@src/agents/");
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect(textOf(box)).toBe("@src/agents/");
     expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/agents"]);
-    await userEvent.type(box, "x.ts ");
+    typeChars(box, "x.ts ");
     expect(toPrompt(composerDraft(ID)).files).toEqual([]);
   });
 
   it("references a folder of a typed path", async () => {
     const box = renderComposer();
-    await userEvent.type(box, "@./");
+    typeChars(box, "@./");
     await screen.findByRole("option");
-    await userEvent.keyboard("{Enter}");
-    expect(box.value).toBe("@./lib/ ");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(textOf(box)).toBe("@./lib/ ");
     expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/lib"]);
   });
 });
 
-describe("Composer tag editing", () => {
-  it.each(["@src/ag", "/rev"])("deletes %s character by character while it is typed", async (tag) => {
+describe("Composer reference chips", () => {
+  const chips = () => [...document.querySelectorAll<HTMLElement>("[data-ref-path]")];
+
+  it("shows a referenced file as a chip with its name and lines, and leaves the text as written", () => {
     const box = renderComposer();
-    const user = userEvent.setup();
-    await user.type(box, `see ${tag}`);
-    await user.keyboard("{Backspace}");
-    expect(box.value).toBe(`see ${tag.slice(0, -1)}`);
-    await user.keyboard("{Backspace}");
-    expect(box.value).toBe(`see ${tag.slice(0, -2)}`);
+    act(() => updateComposer(ID, { files: [{ path: "/p/src/a.ts", rel: "src/a.ts" }] }));
+    typeIn(box, "see @src/a.ts:10-20 and @other.ts ");
+    expect(chips().map((c) => [c.dataset.refPath, c.textContent])).toEqual([["/p/src/a.ts", "a.ts10–20"]]);
+    expect(chips()[0]).toHaveAccessibleName("File reference a.ts, lines 10–20");
+    // Not referenced: marked as typed.
+    expect(screen.getByText("@other.ts")).toHaveClass(chipStyles.pending!);
+    expect(textOf(box)).toBe("see @src/a.ts:10-20 and @other.ts ");
   });
 
-  it("deletes inside a folder entered with Tab character by character", async () => {
+  it("turns a chip back into its text on Backspace, and folds it again when the caret leaves", async () => {
     const box = renderComposer();
-    const user = userEvent.setup();
-    await user.type(box, "@agen");
+    typeChars(box, "see @agen");
     await screen.findAllByRole("option");
-    await user.keyboard("{Tab}");
-    expect(box.value).toBe("@src/agents/");
-    await user.keyboard("{Backspace}");
-    expect(box.value).toBe("@src/agents");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(textOf(box)).toBe("see @src/agents/ ");
+    expect(chips()).toHaveLength(1);
+    fireEvent.keyDown(box, { key: "Backspace" });
+    expect(textOf(box)).toBe("see @src/agents/");
+    expect(chips()).toHaveLength(1);
+    // Right after the chip: it opens as text, and the completion offers it again.
+    fireEvent.keyDown(box, { key: "Backspace" });
+    expect(textOf(box)).toBe("see @src/agents/");
+    expect(chips()).toHaveLength(0);
+    fireEvent.keyDown(box, { key: "Backspace" });
+    expect(textOf(box)).toBe("see @src/agents");
+    expect(chips()).toHaveLength(0);
+    typeChars(box, "/");
+    setCaret(box, 0);
+    expect(chips()).toHaveLength(1);
   });
 
-  it("edits a completed reference character by character after its space", async () => {
+  it("moves over and deletes a chip as one piece", () => {
     const box = renderComposer();
-    const user = userEvent.setup();
-    await user.type(box, "see @agen");
-    await screen.findAllByRole("option");
-    await user.keyboard("{Enter}");
-    expect(box.value).toBe("see @src/agents/ ");
-    await user.keyboard("{Backspace}{Backspace}");
-    expect(box.value).toBe("see @src/agents");
+    act(() => updateComposer(ID, { files: [{ path: "/p/src/a.ts", rel: "src/a.ts" }] }));
+    typeIn(box, "see @src/a.ts next", 4);
+    fireEvent.keyDown(box, { key: "Delete" });
+    expect(textOf(box)).toBe("see  next");
   });
 
-  it.each(["@src/a.ts", "/review"])("edits %s after moving away and returning", async (tag) => {
+  it("deletes a reference that names no file character by character", () => {
     const box = renderComposer();
-    const user = userEvent.setup();
-    fireEvent.change(box, { target: { value: `see ${tag} next` } });
-    box.focus();
-    box.setSelectionRange(0, 0);
-    fireEvent.select(box);
-    box.blur();
-    box.focus();
-    box.setSelectionRange(4 + tag.length, 4 + tag.length);
-    fireEvent.select(box);
-    await user.keyboard("{Backspace}");
-    expect(box.value).toBe(`see ${tag.slice(0, -1)} next`);
-    expect(box.selectionStart).toBe(3 + tag.length);
+    typeIn(box, "see @src/a.ts next", 13);
+    fireEvent.keyDown(box, { key: "Backspace" });
+    expect(textOf(box)).toBe("see @src/a.t next");
+    expect(caretOf(box)).toBe(12);
   });
+});
 
-  it.each(["@src/a.ts", "/review"])("moves within %s with the arrow keys", async (tag) => {
+describe("Composer quotes", () => {
+  it("draws quote lines as a block without their marker", () => {
     const box = renderComposer();
-    const user = userEvent.setup();
-    fireEvent.change(box, { target: { value: `see ${tag} next` } });
-    box.focus();
-    box.setSelectionRange(4, 4);
-    await user.keyboard("{ArrowRight}");
-    expect(box.selectionStart).toBe(5);
-    await user.keyboard("{ArrowLeft}");
-    expect(box.selectionStart).toBe(4);
-    await user.keyboard("{Delete}");
-    expect(box.value).toBe(`see ${tag.slice(1)} next`);
+    typeIn(box, "> first\n> second\n\nreply");
+    const lines = [...box.querySelectorAll(".cm-line")];
+    expect(lines.map((l) => l.textContent)).toEqual(["first", "second", "", "reply"]);
+    expect(lines.map((l) => l.classList.contains(chipStyles.quoteLine!))).toEqual([true, true, false, false]);
+    expect(textOf(box)).toBe("> first\n> second\n\nreply");
   });
+});
 
-  it.each(["@src/a.ts", "/review"])("selects and deletes only part of %s", async (tag) => {
+describe("Composer editing", () => {
+  it("offers no completion while the input method composes", () => {
     const box = renderComposer();
-    const user = userEvent.setup();
-    fireEvent.change(box, { target: { value: `see ${tag} next` } });
-    box.focus();
-    box.setSelectionRange(5, 7);
-    fireEvent.select(box);
-    await user.keyboard("{Backspace}");
-    expect(box.value).toBe(`see ${tag.slice(0, 1)}${tag.slice(3)} next`);
-  });
-
-  it("leaves IME keys and composition text to the input method", () => {
-    const box = renderComposer();
-    fireEvent.change(box, { target: { value: "@src/a.ts" } });
-    const before = box.value;
-    box.setSelectionRange(before.length, before.length);
-    expect(fireEvent.keyDown(box, { key: "Backspace", isComposing: true })).toBe(true);
-    expect(fireEvent.keyDown(box, { key: "Backspace", keyCode: 229 })).toBe(true);
     fireEvent.compositionStart(box);
-    fireEvent.change(box, { target: { value: "@中文" } });
+    typeIn(box, "@中文");
     expect(screen.queryByRole("listbox")).toBeNull();
-    expect(fireEvent.keyDown(box, { key: "Enter" })).toBe(true);
     fireEvent.compositionEnd(box);
-    expect(box.value).toBe("@中文");
+    expect(textOf(box)).toBe("@中文");
   });
 
-  it("pastes plain text through the native textarea", async () => {
+  it("pastes plain text as text", async () => {
     const box = renderComposer();
     const user = userEvent.setup();
-    box.focus();
+    act(() => box.focus());
     await user.paste("look @src/a.ts\nthen /review please");
-    expect(box.value).toBe("look @src/a.ts\nthen /review please");
+    expect(textOf(box)).toBe("look @src/a.ts\nthen /review please");
+  });
+
+  it("references a pasted path of a project file, with its lines", async () => {
+    fsProbe.mockReturnValue(ok({ size: 10, binary: false, tooLarge: false }));
+    const box = renderComposer();
+    const user = userEvent.setup();
+    act(() => box.focus());
+    await user.paste("/p/src/a.ts:3-5");
+    await vi.waitFor(() => expect(textOf(box)).toBe("@src/a.ts:3-5 "));
+    expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/a.ts"]);
+    await user.paste("/elsewhere/b.ts");
+    expect(textOf(box)).toBe("@src/a.ts:3-5 /elsewhere/b.ts");
+  });
+});
+
+describe("Composer current file", () => {
+  it("offers the focused editor's file until the draft references it", () => {
+    const view = {} as TextEditorHandle["view"];
+    act(() =>
+      useEditorRegistry.setState({ active: { view, ctx: { path: "/p/src/main.ts" } as TextEditorHandle["ctx"] } }),
+    );
+    try {
+      renderComposer();
+      const offer = screen.getByRole("button", { name: /main\.ts/ });
+      expect(offer).toHaveTextContent("Current File");
+      fireEvent.click(offer);
+      expect(composerDraft(ID).text).toBe("@src/main.ts ");
+      expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/main.ts"]);
+      expect(screen.queryByRole("button", { name: /main\.ts/ })).toBeNull();
+      expect(document.querySelector("[data-ref-path]")).toHaveAttribute("data-ref-path", "/p/src/main.ts");
+    } finally {
+      act(() => useEditorRegistry.setState({ active: null }));
+    }
   });
 });

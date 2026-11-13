@@ -71,7 +71,14 @@ async function openReply(page: Page, text: string, imageData?: string, theme?: "
           [
             task.id,
             [
-              { type: "user", text: "Show Markdown", attachments: [], sentMs: 0, doneMs: 1, steered: false },
+              {
+                type: "user",
+                text: "Show Markdown",
+                attachments: [],
+                sentMs: 0,
+                doneMs: 1,
+                steered: false,
+              },
               { type: "agent", text },
             ],
           ],
@@ -111,7 +118,11 @@ test("scrolls a wide table inside the reply", async ({ page }) => {
   const reply = await openReply(page, REPLY);
   const sizes = await reply.evaluate((el) => {
     const table = el.querySelector("table")!;
-    return { reply: el.clientWidth, table: table.clientWidth, content: table.scrollWidth };
+    return {
+      reply: el.clientWidth,
+      table: table.clientWidth,
+      content: table.scrollWidth,
+    };
   });
   expect(sizes.table).toBeLessThanOrEqual(sizes.reply);
   expect(sizes.content).toBeGreaterThan(sizes.table);
@@ -148,7 +159,10 @@ test("loads local reply images, and web ones when asked", async ({ page }) => {
   let fetched = 0;
   await page.route("https://images.example.com/code.gif", (route) => {
     fetched++;
-    return route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") });
+    return route.fulfill({
+      contentType: "image/gif",
+      body: Buffer.from(PIXEL.split(",")[1]!, "base64"),
+    });
   });
   const reply = await openReply(
     page,
@@ -158,7 +172,9 @@ test("loads local reply images, and web ones when asked", async ({ page }) => {
   const width = (name: string) =>
     reply.getByRole("img", { name, includeHidden: true }).evaluate((img: HTMLImageElement) => img.naturalWidth);
   await expect.poll(() => width("Local QR")).toBe(1);
-  const load = reply.getByRole("button", { name: "Load image from images.example.com" });
+  const load = reply.getByRole("button", {
+    name: "Load image from images.example.com",
+  });
   await expect(load).toBeVisible();
   expect(fetched).toBe(0);
   await load.click();
@@ -203,12 +219,10 @@ test("keeps latest reply actions visible and quotes into the draft without shift
   await page.getByRole("button", { name: "Quote Reply", exact: true }).click();
   const draft = page.getByRole("textbox", { name: "Message", exact: true });
   await expect(draft).toBeFocused();
-  await expect(draft).toHaveValue(
-    REPLY.trimEnd()
-      .split("\n")
-      .map((line) => (line ? `> ${line}` : ">"))
-      .join("\n") + "\n\n",
-  );
+  // Quoted as `> ` lines, drawn as a block without their markers, an empty line to type in after it.
+  const quoted = REPLY.trimEnd().split("\n");
+  await expect(draft.locator(".cm-line")).toHaveText([...quoted, "", ""]);
+  await expect(draft.locator(".cm-line[class*='_quoteLine_']")).toHaveCount(quoted.length);
 });
 
 test("copies a mouse selection with Ctrl+C and pops up no Quote button", async ({ page, context }) => {
@@ -231,7 +245,14 @@ test("keeps chat history readable and selections free of timestamps and status l
   await page.evaluate(async (task) => {
     const path = "/src/features/agents/store.ts";
     const store = await import(path);
-    const user = (text: string) => ({ type: "user", text, attachments: [], sentMs: 1, doneMs: 5001, steered: false });
+    const user = (text: string) => ({
+      type: "user",
+      text,
+      attachments: [],
+      sentMs: 1,
+      doneMs: 5001,
+      steered: false,
+    });
     store.useAgents.setState({
       entries: new Map([
         [
@@ -326,7 +347,9 @@ test("keeps hover actions reachable when the pointer leaves the message body", a
   const copy = page.getByRole("button", { name: "Copy Markdown", exact: true });
   await reply.hover();
   const box = await copy.boundingBox();
-  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2, { steps: 20 });
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2, {
+    steps: 20,
+  });
   await expect(copy.locator("..")).toHaveCSS("opacity", "1");
   await copy.click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("A short answer.");
@@ -468,7 +491,10 @@ for (const theme of ["dark", "light"] as const) {
           const bar = document.getElementById(el.id.replace(/-text$/, ""))!;
           const fg = luminance(getComputedStyle(el).fill);
           const bg = luminance(getComputedStyle(bar).fill);
-          return { text: el.textContent, ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05) };
+          return {
+            text: el.textContent,
+            ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05),
+          };
         });
       });
     expect(contrasts).toHaveLength(4);
@@ -480,7 +506,10 @@ test("draws a diagram without reaching the hosts its configuration names", async
   const asked: string[] = [];
   await page.route(/^https:\/\/([a-z\d-]+\.)*example\.com\//, (route) => {
     asked.push(new URL(route.request().url()).pathname);
-    return route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") });
+    return route.fulfill({
+      contentType: "image/gif",
+      body: Buffer.from(PIXEL.split(",")[1]!, "base64"),
+    });
   });
   const at = (name: string) => `https://images.example.com/${name}`;
   const fence = (...lines: string[]) => ["```mermaid", ...lines, "```"].join("\n");
