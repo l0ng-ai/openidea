@@ -22,6 +22,7 @@ const backend = vi.hoisted(() => ({
   changes: [] as AgentChange[],
   changesCalls: 0,
   grouped: { uncommitted: [] as AgentChange[], commits: [] as AgentCommit[] },
+  groupedCalls: 0,
   rolledBack: [] as Array<[string, string[] | null, string | null]>,
   answers: [] as Array<[string, number, string | null]>,
   fetched: [] as string[],
@@ -59,7 +60,10 @@ vi.mock("@/platform/ipc", async (original) => ({
       backend.changesCalls += 1;
       return { status: "ok", data: backend.changes };
     },
-    agentGroupedChanges: async () => ({ status: "ok", data: backend.grouped }),
+    agentGroupedChanges: async () => {
+      backend.groupedCalls += 1;
+      return { status: "ok", data: backend.grouped };
+    },
     agentRollbackChanges: async (task: string, paths: string[] | null, view: string | null) => {
       backend.rolledBack.push([task, paths, view]);
       return { status: "ok", data: null };
@@ -170,6 +174,7 @@ beforeEach(() => {
   backend.changes = [];
   backend.changesCalls = 0;
   backend.grouped = { uncommitted: [], commits: [] };
+  backend.groupedCalls = 0;
   backend.rolledBack = [];
   backend.external = [];
   // The flat list unless a test asks for the grouped view, so counts and selections stay as before.
@@ -1406,6 +1411,26 @@ describe("changes refresh", () => {
     act(() => emitLocalIdeEvent({ type: "vcsChanged", root: "/project" }));
     await act(() => vi.advanceTimersByTimeAsync(600));
     expect(backend.changesCalls).toBe(1);
+  });
+
+  it("re-reads a worktree task's changes on the project's events, where its gitdir lives", async () => {
+    vi.useFakeTimers();
+    useChangesOptions.setState({ groupByCommit: true });
+    useAgents.setState({
+      tasks: new Map([["A", { ...task("A"), isolation: "worktree", cwd: "/worktrees/a", projectRoot: "/project" }]]),
+    });
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    backend.groupedCalls = 0;
+
+    act(() => emitLocalIdeEvent({ type: "vcsChanged", root: "/elsewhere" }));
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    expect(backend.groupedCalls).toBe(0);
+
+    // A commit in the worktree writes <project>/.git/worktrees/<slug>, so the event is rooted at the project.
+    act(() => emitLocalIdeEvent({ type: "vcsChanged", root: "/project" }));
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    expect(backend.groupedCalls).toBe(1);
   });
 });
 
