@@ -263,6 +263,7 @@ fn parsed_structure() {
                 by_ref: false,
                 optional: true,
                 variadic: false,
+                default: None,
             }],
             return_type: Some(Type::Void),
         })))

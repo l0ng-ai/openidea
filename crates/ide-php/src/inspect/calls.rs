@@ -1161,6 +1161,7 @@ fn native_params(params: &[Param], classes: &Classes) -> Vec<SignatureParam> {
                 by_ref: param.by_ref,
                 optional: param.default.is_some(),
                 variadic: param.variadic,
+                default: param.default.as_deref().and_then(crate::types::default_type),
             }
         })
         .collect()

@@ -178,6 +178,7 @@ pub fn declared_params(params: &[Param], doc: Option<&DocBlock>, templates: &[&s
             by_ref: param.by_ref,
             optional: param.default.is_some(),
             variadic: param.variadic,
+            default: param.default.as_deref().and_then(super::super::default_type),
         })
         .collect()
 }
@@ -354,6 +355,7 @@ impl Resolver<'_> {
                     by_ref: param.by_ref,
                     optional: param.default.is_some(),
                     variadic: param.variadic,
+                    default: param.default.as_deref().and_then(super::super::default_type),
                 })
                 .collect()
         } else {

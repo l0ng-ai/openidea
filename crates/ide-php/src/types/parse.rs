@@ -387,6 +387,7 @@ impl Converter<'_> {
                         by_ref: param.ampersand.is_some(),
                         optional: param.equals.is_some(),
                         variadic: param.ellipsis.is_some(),
+                        default: None,
                     })
                     .collect(),
                 return_type: specification.return_type.as_ref().map(|ret| self.convert(ret.return_type)),

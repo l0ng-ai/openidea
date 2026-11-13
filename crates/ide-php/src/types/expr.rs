@@ -842,6 +842,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                     by_ref: parameter.ampersand.is_some(),
                     optional: parameter.default_value.is_some(),
                     variadic: parameter.ellipsis.is_some(),
+                    default: None,
                 }
             })
             .collect();

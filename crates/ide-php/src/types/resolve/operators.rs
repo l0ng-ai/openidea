@@ -141,7 +141,7 @@ impl Resolver<'_> {
             let Type::Operator(operator) = ty else { return None };
             let Operator::Conditional(conditional) = operator.as_ref() else { return None };
             let Subject::Param(name) = &conditional.subject else { return None };
-            let arg = argument_for(params, args, name)?;
+            let arg = argument_for(params, args, name).or_else(|| default_for(params, args, name))?;
             let target = self.evaluate(&conditional.target, &Context::default());
             let decided = crate::types::Conditional { target, ..(**conditional).clone() }.decide(&arg, Some(self))?;
             Some(self.apply_arg_list(&decided, params, args, depth + 1))
@@ -264,6 +264,20 @@ fn argument_for(params: &[SignatureParam], args: &[CallArg], name: &str) -> Opti
         return None;
     }
     positional.get(position).map(|arg| arg.ty.clone())
+}
+
+/// The default value of parameter `name` when `args` leave it out (not
+/// passed by name, and fewer positional arguments without a spread).
+fn default_for(params: &[SignatureParam], args: &[CallArg], name: &str) -> Option<Type> {
+    if args.iter().any(|arg| arg.name.as_deref() == Some(name)) {
+        return None;
+    }
+    let position = params.iter().position(|param| param.name.as_deref() == Some(name))?;
+    let positional: Vec<&CallArg> = args.iter().take_while(|arg| arg.name.is_none()).collect();
+    if positional.len() > position || positional.iter().any(|arg| arg.spread) {
+        return None;
+    }
+    params[position].default.clone()
 }
 
 /// True when two class names are the same class.

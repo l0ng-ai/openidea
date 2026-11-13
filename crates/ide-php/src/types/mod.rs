@@ -297,6 +297,9 @@ pub struct SignatureParam {
     /// `T=`.
     pub optional: bool,
     pub variadic: bool,
+    /// The type of a literal default value (`null`, `''`, `[]`, `true`, an
+    /// integer): what a call leaving the parameter out passes.
+    pub default: Option<Type>,
 }
 
 impl Signature {
@@ -305,6 +308,28 @@ impl Signature {
     fn widen_return(&self) -> Self {
         Self { params: self.params.clone(), return_type: self.return_type.as_ref().map(Type::widen) }
     }
+}
+
+/// The type of a parameter's default value written `source`, when it is a
+/// literal (`null`, `true`, `false`, an integer, a quoted string without
+/// escapes or interpolation, `[]`).
+pub fn default_type(source: &str) -> Option<Type> {
+    let source = source.trim();
+    match source.to_ascii_lowercase().as_str() {
+        "null" => return Some(Type::Null),
+        "true" => return Some(Type::LiteralBool(true)),
+        "false" => return Some(Type::LiteralBool(false)),
+        "[]" | "array()" => return Some(Type::array()),
+        _ => {}
+    }
+    if let Ok(value) = source.parse::<i64>() {
+        return Some(Type::LiteralInt(value));
+    }
+    let quoted = source
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+        .filter(|inner| !inner.contains(['\\', '\'']));
+    quoted.map(|inner| Type::LiteralString(inner.to_owned()))
 }
 
 impl SignatureParam {

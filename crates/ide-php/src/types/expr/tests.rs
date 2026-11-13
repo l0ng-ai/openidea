@@ -332,6 +332,10 @@ class Repo {
 }
 /** @return ($many is true ? list<Book> : Book) */
 function load(bool $many = false) {}
+/** @return ($key is null ? Book : ($key is string ? Author : null)) */
+function pick($key = null) {}
+/** @return ($many is true ? list<Book> : Book) */
+function computed(bool $many = PHP_INT_SIZE > 4) {}
 /** @return object{id: int, book?: Book} */
 function obj() {}
 /**
@@ -412,10 +416,14 @@ fn conditional_return_types_follow_the_arguments() {
         ("(new Repo)->get('k')/*|*/;", r"Lib\Author"),
         ("(new Repo)->negated('k')/*|*/;", r"Lib\Author"),
         ("(new Repo)->negated(3)/*|*/;", r"Lib\Book"),
-        // A function's; a left-out argument leaves both branches.
+        // A function's; a left-out argument is its literal default (Laravel's
+        // `request()`, `session()`), else leaves both branches.
         ("load(true)/*|*/;", r"list<Lib\Book>"),
         ("load(false)/*|*/;", r"Lib\Book"),
-        ("load()/*|*/;", r"list<Lib\Book>|Lib\Book"),
+        ("load()/*|*/;", r"Lib\Book"),
+        ("pick()/*|*/;", r"Lib\Book"),
+        ("pick('k')/*|*/;", r"Lib\Author"),
+        ("computed()/*|*/;", r"list<Lib\Book>|Lib\Book"),
     ]);
 }
 
