@@ -7867,5 +7867,8 @@
   "Commands agents run appear in the Run tool window as _agent_ tabs. Beyond this many finished ones, the oldest move to the archive at the end of the tab strip. Running commands are never archived.": "智能体运行的命令以 _agent_ 标签显示在运行工具窗口中。已结束的标签超过这个数量时，最旧的会移入标签栏末尾的归档。正在运行的命令永远不会被归档。",
   "Archived agent tabs to keep": "保留的已归档智能体标签数",
   "Beyond this many archived agent tabs, the oldest are closed.": "已归档的智能体标签超过这个数量时，最旧的会被关闭。",
-  "Archived ({count})": "归档({count})"
+  "Archived ({count})": "归档({count})",
+  "no usages": "无用法",
+  "1 usage": "1 个用法",
+  "{n} usages": "{n} 个用法"
 }
