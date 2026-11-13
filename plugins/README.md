@@ -430,6 +430,11 @@ matching SDK. Released 1.7 plugins keep working. New in 1.8:
   annotations follow the file instead of the window that published them.
   `set_decorations` accepts files outside the open project for the same reason,
   and the `typo` / `weak` styles are no longer dropped.
+- `decorations.set-file-icon` / `set-file-icons` (`host::set_file_icon`,
+  `set_file_icons`): give a file or plain folder one of the plugin's
+  `[[contributes.fileIcons]]` icons by path, for icons that depend on where a
+  file is or what it holds (a Helm chart folder, a Kustomize overlay). Such
+  icons may omit `patterns`. Requires `project.read`.
 
 ### API 1.7
 
