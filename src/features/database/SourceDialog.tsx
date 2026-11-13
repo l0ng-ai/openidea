@@ -512,6 +512,7 @@ export function SourceDialog({
   };
 
   const save = async () => {
+    const dialog = useDatabase.getState().dialog;
     setBusy(true);
     try {
       await saveSource(
@@ -519,7 +520,7 @@ export function SourceDialog({
         sqlite ? undefined : password === undefined ? undefined : password || null,
         !sshOn || sshSecret === undefined || sshUsed.auth === "openSsh" ? undefined : sshSecret || null,
       );
-      closeDialog();
+      if (useDatabase.getState().dialog === dialog) closeDialog();
     } catch (e) {
       setTest({ ok: false, text: e instanceof Error ? e.message : String(e) });
     } finally {

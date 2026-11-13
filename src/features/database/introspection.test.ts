@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DataSource, DbSourceCatalog } from "@/platform/ipc";
+import type { DataSource, DbSourceCatalog, ProjectInfo } from "@/platform/ipc";
 
 const backend = vi.hoisted(() => ({
   saved: vi.fn(),
   database: vi.fn(),
   retain: vi.fn(),
+  disconnect: vi.fn(),
 }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -16,6 +17,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       dbSavedCatalog: backend.saved,
       dbDatabaseCatalog: backend.database,
       dbRetainCatalog: backend.retain,
+      dbDisconnect: backend.disconnect,
     },
   };
 });
@@ -27,7 +29,9 @@ const HOUR = 60 * 60 * 1000;
 /** A fresh copy of the module (its "asked this run" memory starts empty) over a seeded store. */
 async function setup(id: string, saved: DbSourceCatalog | null, introspection?: Partial<DataSource["introspection"]>) {
   vi.resetModules();
-  const { useDatabase } = await import("./store");
+  const store = await import("./store");
+  const { useDatabase } = store;
+  const { useProject } = await import("@/platform/project");
   const source = {
     id,
     name: "warehouse",
@@ -43,7 +47,18 @@ async function setup(id: string, saved: DbSourceCatalog | null, introspection?: 
   backend.saved.mockResolvedValue(ok(saved));
   backend.database.mockImplementation((_id: string, database: string) => Promise.resolve(ok(schemas(`${database}_T`))));
   backend.retain.mockResolvedValue(ok(null));
-  return { useDatabase, ...(await import("./introspection")) };
+  backend.disconnect.mockResolvedValue(ok(null));
+  return { ...store, useProject, ...(await import("./introspection")) };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 // Each test loads a fresh copy of the store module, which takes a while in a busy run.
@@ -115,5 +130,69 @@ describe("Snowflake introspection", () => {
     await introspectSource("pg");
     expect(backend.saved).not.toHaveBeenCalled();
     expect(backend.database).not.toHaveBeenCalled();
+  });
+
+  for (const boundary of ["disconnect", "project switch"] as const) {
+    it(`ignores a saved catalog returned after ${boundary}`, async () => {
+      const run = await setup("sf", null);
+      const response = deferred<ReturnType<typeof ok<DbSourceCatalog>>>();
+      backend.saved.mockReturnValueOnce(response.promise);
+      const pending = run.loadSavedCatalog("sf");
+      if (boundary === "disconnect") await run.disconnect("sf");
+      else run.useProject.setState({ project: { root: "/new-project" } as ProjectInfo });
+      run.useDatabase.setState({ catalogs: {} });
+      response.resolve(ok({ databases: [{ name: "OLD", readAt: 1, schemas: schemas("OLD_T") }] }));
+      await pending;
+      expect(run.useDatabase.getState().catalogs).toEqual({});
+    });
+
+    for (const outcome of ["success", "failure"] as const) {
+      it(`stops live introspection after ${boundary} and a late ${outcome}`, async () => {
+        const run = await setup("sf", null);
+        const response = deferred<ReturnType<typeof ok<ReturnType<typeof schemas>>>>();
+        backend.database.mockReturnValueOnce(response.promise);
+        const pending = run.introspectSource("sf");
+        await vi.waitFor(() => expect(backend.database).toHaveBeenCalledOnce());
+        if (boundary === "disconnect") await run.disconnect("sf");
+        else run.useProject.setState({ project: { root: "/new-project" } as ProjectInfo });
+        run.useDatabase.setState({ catalogs: {} });
+        if (outcome === "success") response.resolve(ok(schemas("OLD_T")));
+        else response.reject(new Error("old catalog failed"));
+        await pending;
+        expect(run.useDatabase.getState().catalogs).toEqual({});
+        expect(backend.database).toHaveBeenCalledOnce();
+        expect(backend.retain).not.toHaveBeenCalled();
+      });
+    }
+  }
+
+  it("loads a new saved catalog without reusing the previous project's request", async () => {
+    const run = await setup("sf", null);
+    const old = deferred<ReturnType<typeof ok<DbSourceCatalog>>>();
+    backend.saved.mockReturnValueOnce(old.promise);
+    const previous = run.loadSavedCatalog("sf");
+    run.useProject.setState({ project: { root: "/new-project" } as ProjectInfo });
+    backend.saved.mockResolvedValueOnce(ok({ databases: [{ name: "NEW", readAt: 2, schemas: schemas("NEW_T") }] }));
+    await run.loadSavedCatalog("sf");
+    old.resolve(ok({ databases: [{ name: "OLD", readAt: 1, schemas: schemas("OLD_T") }] }));
+    await previous;
+    expect(Object.keys(run.useDatabase.getState().catalogs.sf!.databases)).toEqual(["NEW"]);
+    expect(backend.saved).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a new introspection intact when an older run finishes", async () => {
+    const run = await setup("sf", null);
+    const old = deferred<ReturnType<typeof ok<ReturnType<typeof schemas>>>>();
+    backend.database.mockReturnValueOnce(old.promise);
+    const previous = run.introspectSource("sf");
+    await vi.waitFor(() => expect(backend.database).toHaveBeenCalledOnce());
+    run.useProject.setState({ project: { root: "/new-project" } as ProjectInfo });
+    run.useDatabase.setState({ catalogs: {} });
+    await run.introspectSource("sf");
+    old.resolve(ok(schemas("OLD_T")));
+    await previous;
+    expect(run.useDatabase.getState().catalogs.sf?.status).toBe("done");
+    expect(run.useDatabase.getState().catalogs.sf?.databases.ANALYTICS).toEqual(schemas("ANALYTICS_T"));
+    expect(backend.retain).toHaveBeenCalledOnce();
   });
 });

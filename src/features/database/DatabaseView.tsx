@@ -61,6 +61,7 @@ import { DB_VIEW_FOCUS, databaseTree, openTableData } from "./treeActions";
 import { newMenu, nodeMenu } from "./treeMenu";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
+import { databaseRequest } from "./requests";
 
 const ROW_TINTS: Record<DbColor, string | undefined> = {
   red: styles.tintRed,
@@ -354,7 +355,10 @@ export function DatabaseView() {
   const load = async (n: Node) => {
     if (n.kind === "source") {
       const id = n.source.id ?? "";
-      if (!(await connect(id))) {
+      const current = databaseRequest(id);
+      const connected = await connect(id);
+      if (!current()) return;
+      if (!connected) {
         const err = { status: "error" as const, message: tx("Cannot connect") };
         if (listsDatabases(n.source)) useDatabase.setState((s) => ({ databases: { ...s.databases, [id]: err } }));
         else useDatabase.setState((s) => ({ schemas: { ...s.schemas, [id]: err } }));
@@ -363,7 +367,10 @@ export function DatabaseView() {
       if (listsDatabases(n.source)) await loadDatabases(id);
       else await loadSchemas(id);
     } else if (n.kind === "database") {
-      if (!(await connect(n.id))) {
+      const current = databaseRequest(n.id);
+      const connected = await connect(n.id);
+      if (!current()) return;
+      if (!connected) {
         useDatabase.setState((s) => ({
           schemas: { ...s.schemas, [n.id]: { status: "error", message: tx("Cannot connect") } },
         }));
