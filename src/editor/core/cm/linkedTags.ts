@@ -41,8 +41,8 @@ const NOT_NAME_CHARS = /[\s/>"'<=]/;
 
 /**
  * Editing the name of an opening (or closing) HTML tag renames its matching
- * tag, from the syntax tree — no language server, no option (IDEA's
- * simultaneous `<tag></tag>` editing is on by default).
+ * tag, from the syntax tree — no language server. Installed while Smart Keys ›
+ * Simultaneous `<tag></tag>` editing is on (the default).
  */
 export const linkedTags: Extension = EditorState.transactionFilter.of((tr: Transaction) => {
   const state = tr.startState;
