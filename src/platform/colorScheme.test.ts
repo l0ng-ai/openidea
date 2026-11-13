@@ -65,6 +65,25 @@ describe("color schemes", () => {
     expect(css).toContain("--syn-keyword: #224466 !important");
   });
 
+  it("gives C# its own palette, as Visual Studio (#2708)", () => {
+    expect(schemeTokens("dark").get("--syn-csharp-keyword")).toBe("#569cd6");
+    expect(schemeTokens("dark").get("--syn-csharp-type")).toBe("#4ec9b0");
+    expect(schemeTokens("dark").get("--syn-csharp-string")).toBe("#ce9178");
+    expect(schemeTokens("light").get("--syn-csharp-keyword")).toBe("#0000ff");
+    expect(schemeTokens("light").get("--syn-csharp-comment")).toBe("#008000");
+    // Plugin themes keep their own palette: the C# tokens follow the scheme's language defaults.
+    expect(schemeTokens("solarized-dark").get("--syn-csharp-keyword")).toBe("#859900");
+    const css = readFileSync("src/styles/tokens.css", "utf8");
+    expect(css).toMatch(/\.cm-editor\[data-language="C#"\] \{\s*--syn-keyword: var\(--syn-csharp-keyword\);/);
+    // An imported C#_KEYWORD still wins: language overrides are emitted for the same element, !important.
+    const imported = schemeCss(
+      "theme-default",
+      { dark: { "csharp.keyword": { foreground: "#48d8ee" } } },
+      document.documentElement,
+    );
+    expect(imported).toMatch(/\.cm-editor\[data-language="C#"\] \{\n {2}--syn-keyword: #48d8ee !important;/);
+  });
+
   it("groups Python attributes as PyCharm's color settings page does", () => {
     const python = (name: string) => ATTRIBUTES.find((a) => a.id === `py${name}`)!;
     expect(python("Number").name).toBe("Number");

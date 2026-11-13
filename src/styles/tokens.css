@@ -158,6 +158,12 @@ html {
   /* PhpStorm colours PHP variables and function calls on their own */
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
+  /* Visual Studio's C# palette: blue keywords, teal types, salmon strings, green comments */
+  --syn-csharp-keyword: #569cd6;
+  --syn-csharp-type: #4ec9b0;
+  --syn-csharp-string: #ce9178;
+  --syn-csharp-number: #b5cea8;
+  --syn-csharp-comment: #6a9955;
   --syn-builtin: #8888c6;
   --syn-self: #94558d;
   --syn-keyword-arg: #aa4926;
@@ -597,6 +603,11 @@ html {
   --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
+  --syn-csharp-keyword: #0000ff;
+  --syn-csharp-type: #267f99;
+  --syn-csharp-string: #a31515;
+  --syn-csharp-number: #098658;
+  --syn-csharp-comment: #008000;
   --syn-builtin: #000080;
   --syn-self: #94558d;
   --syn-keyword-arg: #660099;
@@ -892,6 +903,11 @@ html {
   --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
+  --syn-csharp-keyword: #7ab5e0;
+  --syn-csharp-type: #72d9c4;
+  --syn-csharp-string: #dfa88e;
+  --syn-csharp-number: #cbdfbe;
+  --syn-csharp-comment: #8db76e;
   --syn-builtin: #b0b0f0;
   --syn-self: #d08ac8;
   --syn-keyword-arg: #e0805c;
@@ -1276,6 +1292,11 @@ html {
   --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
+  --syn-csharp-keyword: var(--syn-keyword);
+  --syn-csharp-type: var(--syn-type);
+  --syn-csharp-string: var(--syn-string);
+  --syn-csharp-number: var(--syn-number);
+  --syn-csharp-comment: var(--syn-comment);
   --syn-builtin: var(--palette-cyan);
   --syn-self: var(--palette-red);
   --syn-keyword-arg: var(--palette-red);
@@ -1491,4 +1512,12 @@ html {
 .cm-editor[data-language="PHP"] {
   --syn-variable: var(--syn-php-variable);
   --syn-function-call: var(--syn-php-function-call);
+}
+/* C# editors: keywords, types, strings, numbers and comments use the C# palette (Visual Studio). */
+.cm-editor[data-language="C#"] {
+  --syn-keyword: var(--syn-csharp-keyword);
+  --syn-type: var(--syn-csharp-type);
+  --syn-string: var(--syn-csharp-string);
+  --syn-number: var(--syn-csharp-number);
+  --syn-comment: var(--syn-csharp-comment);
 }
