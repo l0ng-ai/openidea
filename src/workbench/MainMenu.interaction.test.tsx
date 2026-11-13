@@ -4,7 +4,11 @@ import { commands, type Settings } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { registerActions } from "@/platform/actions";
 import { usePlatform } from "@/platform/platformInfo";
+import { writeClipboardText } from "@/platform/clipboard";
+import { ContextMenuHost } from "@/ui";
 import { MainMenu } from "./MainMenu";
+
+vi.mock("@/platform/clipboard", () => ({ writeClipboardText: vi.fn(() => Promise.resolve()) }));
 
 let available = 500;
 let resize: () => void;
@@ -322,4 +326,44 @@ it.each(["windows", "linux"] as const)("renders toggle and widget checks in the 
     off();
     usePlatform.setState(platform);
   }
+});
+
+describe("Copy Path under File › Open Recent (#3122)", () => {
+  it("right-clicking a recent project offers Copy Path and copies its path", async () => {
+    const off = registerActions([
+      { id: "file.openRecentProject", title: "Open Recent Project", hidden: true, run: () => {} },
+    ]);
+    vi.mocked(commands.menuModel).mockResolvedValue([
+      {
+        kind: "submenu",
+        id: "openRecent",
+        label: "Open Recent",
+        children: [
+          {
+            kind: "action",
+            id: "file.openRecentProject",
+            label: "openidea  —  ~/openidea",
+            hint: null,
+            arg: "/p/openidea",
+            checked: null,
+          },
+        ],
+      },
+    ]);
+    try {
+      render(
+        <>
+          <MainMenu />
+          <ContextMenuHost />
+        </>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Main Menu" }));
+      fireEvent.contextMenu(await screen.findByRole("menuitem", { name: /openidea\s+—\s+~\/openidea/ }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Copy Path" }));
+      expect(writeClipboardText).toHaveBeenCalledWith("/p/openidea");
+      expect(screen.queryByRole("menu")).toBeNull();
+    } finally {
+      off();
+    }
+  });
 });

@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { registerAction } from "@/platform/actions";
 import { resolveMenuItems } from "@/ui/Menu";
 import { menuItems, onLoneAlt } from "./MainMenu";
+
+const writeClipboardText = vi.fn((_path: string) => Promise.resolve());
+vi.mock("@/platform/clipboard", () => ({ writeClipboardText: (text: string) => writeClipboardText(text) }));
 
 describe("lone Alt opens the main menu", () => {
   const key = (type: string, k: string, init: KeyboardEventInit = {}) =>
@@ -85,8 +88,34 @@ describe("main menu model", () => {
       action: "file.openRecentProject",
       arg: "/p/openidea",
       label: "openidea  —  ~/openidea",
+      contextMenu: [{ label: "Copy Path", icon: "copy", run: expect.any(Function) }],
     });
     expect(sub[1]).toMatchObject({ label: "No Recent Projects", disabled: true });
+  });
+
+  it("a recent project row right-click offers Copy Path with the row's path", async () => {
+    const [row] = menuItems([
+      {
+        kind: "action",
+        id: "file.openRecentProject",
+        label: "openidea  —  ~/openidea",
+        hint: null,
+        arg: "/p/openidea",
+        checked: null,
+      },
+    ]);
+    const contextMenu = (row as { contextMenu?: { label: string; run: () => void }[] }).contextMenu;
+    expect(contextMenu?.[0]?.label).toBe("Copy Path");
+    contextMenu?.[0]?.run();
+    expect(writeClipboardText).toHaveBeenCalledWith("/p/openidea");
+  });
+
+  it("a menu action that is not a recent project carries no context menu", () => {
+    const items = menuItems([
+      { kind: "action", id: "file.openRecentProject", label: "Open Recent", hint: null, arg: null, checked: null },
+      { kind: "action", id: "file.save", label: "Save All", hint: null, arg: null, checked: null },
+    ]);
+    expect(items.map((i) => (i as { contextMenu?: unknown }).contextMenu)).toEqual([undefined, undefined]);
   });
 });
 

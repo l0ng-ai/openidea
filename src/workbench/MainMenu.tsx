@@ -5,6 +5,7 @@ import { useProject } from "@/platform/project";
 import { lookup, t, useI18n } from "@/platform/i18n";
 import { commands, type MenuNode } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
+import { writeClipboardText } from "@/platform/clipboard";
 import { Icon, MenuList, Popup, type MenuItem } from "@/ui";
 import menuStyles from "@/ui/Menu.module.css";
 import { isDistractionFree } from "./distractionFree";
@@ -18,6 +19,12 @@ function label(id: string, fallback: string): string {
 
 type Submenu = Extract<MenuNode, { kind: "submenu" }>;
 const isSubmenu = (n: MenuNode): n is Submenu => n.kind === "submenu";
+
+/** Right-clicking a recent project under File › Open Recent offers its path (#3122). */
+function recentContextMenu(arg: unknown): MenuItem[] | undefined {
+  if (typeof arg !== "string") return undefined;
+  return [{ label: "Copy Path", icon: "copy", run: () => void writeClipboardText(arg).catch(() => undefined) }];
+}
 
 export function menuItems(nodes: MenuNode[]): MenuItem[] {
   return nodes.map((n): MenuItem => {
@@ -35,6 +42,7 @@ export function menuItems(nodes: MenuNode[]): MenuItem[] {
           arg: n.arg ?? undefined,
           label: n.arg ? n.label : label(n.id, n.label),
           ...(n.checked != null && { checked: n.checked }),
+          ...(n.id === "file.openRecentProject" && { contextMenu: recentContextMenu(n.arg) }),
         };
     }
   });

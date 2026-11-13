@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
@@ -35,6 +36,8 @@ export type MenuItem =
       checked?: boolean;
       icon?: IconName | (string & {});
       disabled?: boolean;
+      /** Shown when the row is right-clicked (e.g. Copy Path under File › Open Recent). */
+      contextMenu?: MenuItem[];
     }
   | {
       kind?: "item";
@@ -51,6 +54,8 @@ export type MenuItem =
       /** The pointer or the keyboard made it the active item (not on opening the menu). */
       onActive?: () => void;
       submenu?: MenuItem[];
+      /** Shown when the row is right-clicked (e.g. Copy Path under File › Open Recent). */
+      contextMenu?: MenuItem[];
     };
 
 interface Resolved {
@@ -65,6 +70,7 @@ interface Resolved {
   run?: () => void;
   onActive?: () => void;
   submenu?: MenuItem[];
+  contextMenu?: MenuItem[];
 }
 
 export function resolveMenuItems(items: MenuItem[]): Resolved[] {
@@ -91,6 +97,7 @@ export function resolveMenuItems(items: MenuItem[]): Resolved[] {
         disabled: !!item.disabled || !isActionEnabled(a, undefined, item.arg),
         checked: item.checked ?? actionToggled(a),
         run: () => void executeActionFrom("menu", item.action, item.arg),
+        contextMenu: item.contextMenu,
       });
       return;
     }
@@ -285,6 +292,16 @@ export function MenuList({
     cancelHover();
     pointer.current = previousPointer.current = null;
     switch (e.key) {
+      case "ContextMenu": {
+        const row = itemRefs.current[active];
+        const contextMenu = resolved[active]?.contextMenu;
+        if (!row || !contextMenu) return;
+        const r = row.getBoundingClientRect();
+        onDone();
+        showContextMenu({ x: r.left + 20, y: r.bottom + 4 }, contextMenu);
+        e.preventDefault();
+        break;
+      }
       case "ArrowDown":
         move(1);
         break;
@@ -346,7 +363,16 @@ export function MenuList({
       onKeyDown={onKeyDown}
       // A right-click in an open menu does nothing; without this it reaches whatever is under the
       // menu in the component tree, e.g. the title bar's toolbar menu behind File › Open Recent.
-      onContextMenu={(e) => e.preventDefault()}
+      // A row with its own context menu (a recent project's Copy Path) opens it instead, closing
+      // the menu first so the context menu is not stacked over a live dropdown.
+      onContextMenu={(e: ReactMouseEvent) => {
+        e.preventDefault();
+        const row = (e.target as Element | null)?.closest("button");
+        const contextMenu = row ? resolved[itemRefs.current.indexOf(row as HTMLButtonElement)]?.contextMenu : undefined;
+        if (!contextMenu) return;
+        onDone();
+        showContextMenu(e, contextMenu);
+      }}
       onPointerMove={(e) => {
         if (e.currentTarget.contains(e.target as Node)) pointerMove({ x: e.clientX, y: e.clientY });
       }}

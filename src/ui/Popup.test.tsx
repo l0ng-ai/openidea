@@ -294,6 +294,57 @@ describe("Menu action enablement", () => {
     expect(behind).toHaveReturnedWith(true);
   });
 
+  it("opens a row's context menu on right-click and closes the menu first", () => {
+    const onDone = vi.fn();
+    const copy = vi.fn();
+    render(
+      <MenuList items={[{ label: "openidea", contextMenu: [{ label: "Copy Path", run: copy }] }]} onDone={onDone} />,
+    );
+    try {
+      fireEvent.contextMenu(screen.getByRole("menuitem", { name: "openidea" }));
+      expect(onDone).toHaveBeenCalledOnce();
+      const menu = useContextMenuStore.getState().menu;
+      expect(menu?.items.map((i) => ("label" in i ? i.label : ""))).toEqual(["Copy Path"]);
+      const item = menu?.items[0];
+      if (!item || !("run" in item)) throw new Error("expected an action item");
+      act(() => item.run?.());
+      expect(copy).toHaveBeenCalledOnce();
+    } finally {
+      act(() => hideContextMenu());
+    }
+  });
+
+  it("a row without a context menu still only swallows the right-click", () => {
+    const behind = vi.fn((e: { defaultPrevented: boolean }) => e.defaultPrevented);
+    render(
+      <div onContextMenu={(e) => behind(e)}>
+        <MenuList items={[{ label: "Plain", run: () => undefined }]} onDone={() => {}} />
+      </div>,
+    );
+    fireEvent.contextMenu(screen.getByRole("menuitem", { name: "Plain" }));
+    expect(behind).toHaveReturnedWith(true);
+    expect(useContextMenuStore.getState().menu).toBeNull();
+  });
+
+  it("the keyboard's Context Menu key opens the active row's context menu", () => {
+    const onDone = vi.fn();
+    render(
+      <MenuList
+        items={[
+          { label: "Open", run: () => undefined },
+          { label: "openidea", contextMenu: [{ label: "Copy Path", run: () => undefined }] },
+        ]}
+        onDone={onDone}
+      />,
+    );
+    const row = screen.getByRole("menuitem", { name: "openidea" });
+    fireEvent.keyDown(row, { key: "ArrowDown" });
+    fireEvent.keyDown(screen.getByRole("menuitem", { name: "openidea" }), { key: "ContextMenu" });
+    expect(onDone).toHaveBeenCalledOnce();
+    expect(useContextMenuStore.getState().menu?.items.map((i) => ("label" in i ? i.label : ""))).toEqual(["Copy Path"]);
+    act(() => hideContextMenu());
+  });
+
   it("reports a hovered row once and lets the keyboard continue from it", () => {
     const active: string[] = [];
     const item = (label: string) => ({ label, onActive: () => active.push(label), run: () => undefined });
