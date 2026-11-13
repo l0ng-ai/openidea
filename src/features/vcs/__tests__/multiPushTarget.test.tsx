@@ -129,27 +129,29 @@ async function openPushDialog() {
   await screen.findByRole("textbox", { name: "Target branch of a" });
 }
 
-it("asks to confirm a force push for every repository and pushes nothing when one is declined", async () => {
+it("asks to confirm each forced target and pushes nothing when one is declined", async () => {
   mocks.ask.mockResolvedValueOnce({ button: "force", checked: false }).mockResolvedValueOnce({ button: null });
   await openPushDialog();
+  fireEvent.change(screen.getByRole("textbox", { name: "Target branch of a" }), { target: { value: "feat-a" } });
   fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
   fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
 
   await waitFor(() => expect(mocks.ask).toHaveBeenCalledTimes(2));
-  expect(askedTargets()).toEqual(["origin/feat-x", "origin/feat-x"]);
+  expect(askedTargets()).toEqual(["origin/feat-a", "origin/feat-x"]);
   expect(mocks.ops).toEqual([]);
   // Declining keeps the dialog open, as in the single-repository dialog.
   expect(screen.getByRole("button", { name: "Force Push" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 });
 
-it("force pushes with lease once every repository is confirmed", async () => {
+it("force pushes with lease once every target is confirmed", async () => {
   await openPushDialog();
   fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
   fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
 
   await waitFor(() => expect(mocks.ops).toHaveLength(3));
-  expect(mocks.ask).toHaveBeenCalledTimes(3);
+  // The three repositories push to the same target: one confirmation.
+  expect(askedTargets()).toEqual(["origin/feat-x"]);
   expect(forceOf(mocks.ops)).toEqual([
     ["/p/a", true],
     ["/p/b", true],
@@ -164,7 +166,7 @@ it("does not ask about a protected target, which is never forced", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
 
   await waitFor(() => expect(mocks.ops).toHaveLength(3));
-  expect(askedTargets()).toEqual(["origin/feat-x", "origin/feat-x"]);
+  expect(askedTargets()).toEqual(["origin/feat-x"]);
   expect(forceOf(mocks.ops)).toEqual([
     ["/p/a", false],
     ["/p/b", true],
