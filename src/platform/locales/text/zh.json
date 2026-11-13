@@ -1,4 +1,5 @@
 {
+  "Favorites": "收藏夹",
   "Fix ESLint Problems": "修复 ESLint 问题",
   "No ESLint problems to fix": "没有可修复的 ESLint 问题",
   "Pin ({count})": "固定（{count}）",
@@ -7962,5 +7963,10 @@
   "Top right": "右上",
   "Bottom left": "左下",
   "Bottom right": "右下",
-  "Image files": "图像文件"
+  "Image files": "图像文件",
+  "{display} has expired": "{display} 已过期",
+  "This build of {display} no longer starts. Choose a newer build in Language Servers.": "此版本的 {display} 已无法启动。请在“语言服务器”中选择更新的版本。",
+  "This build of {display} no longer starts. Update it to the latest release?": "此版本的 {display} 已无法启动。要更新到最新版本吗？",
+  "This build of {display} no longer starts. Install the latest release for the IDE? It is used instead of {path}.": "此版本的 {display} 已无法启动。要为 IDE 安装最新版本吗？安装后将代替 {path} 使用。",
+  "Install Latest": "安装最新版本"
 }

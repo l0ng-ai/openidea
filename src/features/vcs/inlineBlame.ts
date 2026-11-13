@@ -84,6 +84,12 @@ class BlameCache {
   }
 }
 
+/** An element's own custom property in px (its anchor offset), or 0. Inherited custom
+    properties resolve through the cascade, so reading the inner box finds the anchor's. */
+function offsetOf(el: HTMLElement, property: string): number {
+  return Number.parseFloat(getComputedStyle(el).getPropertyValue(property)) || 0;
+}
+
 class BlameWidget extends WidgetType {
   /** Last offset applied, so the observer does not rewrite the style on every keystroke. */
   private appliedWidth = -1;
@@ -106,16 +112,25 @@ class BlameWidget extends WidgetType {
   }
 
   /**
-   * A code-vision hint drawn at the line end is out of flow (see codeLens.ts), so it does not
-   * make room for itself: step the label past its measured width, as IDEA lays its line-end
-   * inlays out. The hint can also appear (or go away) after this widget mounted, hence the
+   * Line-end annotations stack left to right: the code-vision hint, every plugin's line-end
+   * message, then this label. The hint is out of flow (see codeLens.ts) and each message steps
+   * past its predecessors itself, so this one steps past the whole chain, as IDEA lays its
+   * line-end inlays out. They can also appear (or go away) after this widget mounted, hence the
    * observer below.
    */
   private stepPastLineEnd(el: HTMLElement) {
     const line = el.closest(".cm-line");
     if (!line) return;
+    let width = 0;
     const hint = line.querySelector<HTMLElement>(".cm-openidea-lensInlineInner");
-    const width = hint ? Math.round(hint.getBoundingClientRect().width) : 0;
+    // The hint's inner box sits its anchor's `--openidea-hint-offset` past that anchor.
+    if (hint) width += Math.round(hint.getBoundingClientRect().width) + offsetOf(hint, "--openidea-hint-offset");
+    // Plugin messages are zero-width anchors; their inner boxes carry the visible width and
+    // inherit the anchor's `--openidea-message-offset`.
+    for (const anchor of line.querySelectorAll<HTMLElement>(".cm-plugin-after")) {
+      const box = anchor.firstElementChild as HTMLElement | null;
+      if (box) width += Math.round(box.getBoundingClientRect().width) + offsetOf(box, "--openidea-message-offset");
+    }
     if (width === this.appliedWidth) return;
     this.appliedWidth = width;
     // Padding, not margin: the gap is virtual (it only moves the label), so the caret at the

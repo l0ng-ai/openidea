@@ -119,11 +119,13 @@ pub enum EventKind {
     EditorFocused,
     ActionPerformed,
     VcsChanged,
+    /// Problems of the window's files changed (a language server or a report).
+    ProblemsChanged,
     Scheduled,
 }
 
 impl EventKind {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::DocumentChanged,
         Self::WebsocketReady,
         Self::FileClosed,
@@ -139,6 +141,7 @@ impl EventKind {
         Self::EditorFocused,
         Self::ActionPerformed,
         Self::VcsChanged,
+        Self::ProblemsChanged,
         Self::Scheduled,
     ];
 
@@ -159,6 +162,7 @@ impl EventKind {
             Self::EditorFocused => "editor-focused",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
+            Self::ProblemsChanged => "problems-changed",
             Self::Scheduled => "scheduled",
         }
     }
@@ -294,6 +298,8 @@ pub enum WorkbenchEvent {
     EditorFocused(Option<String>),
     ActionPerformed(ActionPerformed),
     VcsChanged(String),
+    /// Problems of the window's files changed; plugins re-read `problems`.
+    ProblemsChanged,
     Scheduled,
 }
 
@@ -315,6 +321,7 @@ impl WorkbenchEvent {
             Self::EditorFocused(_) => EventKind::EditorFocused,
             Self::ActionPerformed(_) => EventKind::ActionPerformed,
             Self::VcsChanged(_) => EventKind::VcsChanged,
+            Self::ProblemsChanged => EventKind::ProblemsChanged,
             Self::Scheduled => EventKind::Scheduled,
         }
     }

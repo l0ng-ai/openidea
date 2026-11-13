@@ -1,4 +1,5 @@
 {
+  "Favorites": "Favorites",
   "Add": "Add",
   "Cancel": "Cancel",
   "Command": "Command",
@@ -1571,5 +1572,10 @@
   "Top right": "Top right",
   "Bottom left": "Bottom left",
   "Bottom right": "Bottom right",
-  "Image files": "Image files"
+  "Image files": "Image files",
+  "{display} has expired": "{display} has expired",
+  "This build of {display} no longer starts. Choose a newer build in Language Servers.": "This build of {display} no longer starts. Choose a newer build in Language Servers.",
+  "This build of {display} no longer starts. Update it to the latest release?": "This build of {display} no longer starts. Update it to the latest release?",
+  "This build of {display} no longer starts. Install the latest release for the IDE? It is used instead of {path}.": "This build of {display} no longer starts. Install the latest release for the IDE? It is used instead of {path}.",
+  "Install Latest": "Install Latest"
 }
