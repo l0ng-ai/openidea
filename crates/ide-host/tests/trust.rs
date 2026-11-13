@@ -183,7 +183,7 @@ async fn welcome_window_browses_selected_ssh_host_without_executing_commands() {
     host.remote.test_connection(&connection, "/projects").await.unwrap();
     let local = tmp.path().join("local-deployment");
     std::fs::create_dir(&local).unwrap();
-    ide_host::ops::deploy::deploy_test_connection(&host, FsConnection::Local, local.to_str().unwrap().into())
+    ide_host::ops::deploy::deploy_test_connection(&host, FsConnection::Local, local.to_str().unwrap().into(), None)
         .await
         .unwrap();
     assert_eq!(std::fs::read_dir(local).unwrap().count(), 0, "write probe is cleaned up");

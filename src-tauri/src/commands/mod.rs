@@ -676,6 +676,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         wsl::wsl_resolve,
         ssh::ssh_set_secret,
         ssh::ssh_needs_secret,
+        ssh::ssh_password_saved,
         ssh::ssh_trust_host,
         ssh::ssh_connected,
         ssh::ssh_disconnect,
