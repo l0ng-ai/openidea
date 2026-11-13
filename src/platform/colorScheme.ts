@@ -31,8 +31,8 @@ export interface AttributeDef {
   token?: string;
   /** A semantic modifier whose only configurable attribute is italic. */
   italicOnly?: boolean;
-  /** Pure colour surfaces (caret, search match, ANSI palette): no font style or effect applies. */
-  noFontStyle?: true;
+  /** The attribute's renderer applies font style and effects (tokens, the Git surfaces). */
+  fontStyle?: true;
   defaultBold?: boolean;
   defaultItalic?: boolean;
   defaultEffect?: TextAttributesOverride["effect"];
@@ -51,6 +51,7 @@ const syn = (
   name,
   path,
   token,
+  fontStyle: true,
   fg: `--syn-${token}`,
   ...defaults,
 });
@@ -68,28 +69,25 @@ const py = (
 /** IDEA-style attribute tree: General, Language Defaults, then languages. */
 const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "text", name: "Default text", path: ["General", "Text"], fg: "--fg-editor", bg: "--bg-editor" },
-  { id: "caret", name: "Caret", path: ["General", "Editor"], fg: "--caret", noFontStyle: true },
-  { id: "caretRow", name: "Caret row", path: ["General", "Editor"], bg: "--bg-current-line", noFontStyle: true },
+  { id: "caret", name: "Caret", path: ["General", "Editor"], fg: "--caret" },
+  { id: "caretRow", name: "Caret row", path: ["General", "Editor"], bg: "--bg-current-line" },
   {
     id: "selection",
     name: "Selection background",
     path: ["General", "Editor"],
     bg: "--bg-editor-selection",
-    noFontStyle: true,
   },
   {
     id: "selectionForeground",
     name: "Selection foreground",
     path: ["General", "Editor"],
     fg: "--fg-editor-selection",
-    noFontStyle: true,
   },
   {
     id: "selectionInactive",
     name: "Selection background (inactive)",
     path: ["General", "Editor"],
     bg: "--bg-editor-selection-inactive",
-    noFontStyle: true,
   },
   { id: "whitespaces", name: "Whitespaces", path: ["General", "Editor"], fg: "--fg-whitespace" },
   { id: "indentGuide", name: "Indent guide", path: ["General", "Editor"], fg: "--border-indent-guide" },
@@ -134,14 +132,12 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     name: "Search result",
     path: ["General", "Search Results"],
     bg: "--bg-search-match",
-    noFontStyle: true,
   },
   {
     id: "searchResultCurrent",
     name: "Current search result",
     path: ["General", "Search Results"],
     bg: "--bg-search-match-current",
-    noFontStyle: true,
   },
   { id: "error", name: "Error", path: ["General", "Errors and Warnings"], effect: "--wave-error" },
   { id: "warning", name: "Warning", path: ["General", "Errors and Warnings"], effect: "--wave-warning" },
@@ -150,7 +146,7 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("invalid", "Bad character", ["General", "Errors and Warnings"], "invalid"),
   syn("todo", "TODO defaults", ["General", "Code"], "todo"),
   { id: "inlineValue", name: "Inline debugger values", path: ["Debugger"], fg: "--syn-inline-value" },
-  { id: "breakpointLine", name: "Breakpoint line", path: ["Debugger"], bg: "--bg-breakpoint-line", noFontStyle: true },
+  { id: "breakpointLine", name: "Breakpoint line", path: ["Debugger"], bg: "--bg-breakpoint-line" },
 
   // Console / terminal: IDEA's Console Colors (background + 16 ANSI). `--ansi-*` is mirrored
   // to `--terminal-ansi-*` in overrideDeclarations so the terminal picks up edits.
@@ -159,55 +155,59 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     name: "Console background",
     path: ["Console Colors"],
     bg: "--bg-console",
-    noFontStyle: true,
   },
-  { id: "ansiBlack", name: "Black", path: ["Console Colors"], fg: "--ansi-black", noFontStyle: true },
-  { id: "ansiRed", name: "Red", path: ["Console Colors"], fg: "--ansi-red", noFontStyle: true },
-  { id: "ansiGreen", name: "Green", path: ["Console Colors"], fg: "--ansi-green", noFontStyle: true },
-  { id: "ansiYellow", name: "Yellow", path: ["Console Colors"], fg: "--ansi-yellow", noFontStyle: true },
-  { id: "ansiBlue", name: "Blue", path: ["Console Colors"], fg: "--ansi-blue", noFontStyle: true },
-  { id: "ansiMagenta", name: "Magenta", path: ["Console Colors"], fg: "--ansi-magenta", noFontStyle: true },
-  { id: "ansiCyan", name: "Cyan", path: ["Console Colors"], fg: "--ansi-cyan", noFontStyle: true },
-  { id: "ansiWhite", name: "White", path: ["Console Colors"], fg: "--ansi-white", noFontStyle: true },
-  { id: "ansiBrightBlack", name: "Dark gray", path: ["Console Colors"], fg: "--ansi-bright-black", noFontStyle: true },
-  { id: "ansiBrightRed", name: "Bright red", path: ["Console Colors"], fg: "--ansi-bright-red", noFontStyle: true },
-  {
-    id: "ansiBrightGreen",
-    name: "Bright green",
-    path: ["Console Colors"],
-    fg: "--ansi-bright-green",
-    noFontStyle: true,
-  },
-  {
-    id: "ansiBrightYellow",
-    name: "Bright yellow",
-    path: ["Console Colors"],
-    fg: "--ansi-bright-yellow",
-    noFontStyle: true,
-  },
-  { id: "ansiBrightBlue", name: "Bright blue", path: ["Console Colors"], fg: "--ansi-bright-blue", noFontStyle: true },
-  {
-    id: "ansiBrightMagenta",
-    name: "Bright magenta",
-    path: ["Console Colors"],
-    fg: "--ansi-bright-magenta",
-    noFontStyle: true,
-  },
-  { id: "ansiBrightCyan", name: "Bright cyan", path: ["Console Colors"], fg: "--ansi-bright-cyan", noFontStyle: true },
-  {
-    id: "ansiBrightWhite",
-    name: "Bright white",
-    path: ["Console Colors"],
-    fg: "--ansi-bright-white",
-    noFontStyle: true,
-  },
+  { id: "ansiBlack", name: "Black", path: ["Console Colors"], fg: "--ansi-black" },
+  { id: "ansiRed", name: "Red", path: ["Console Colors"], fg: "--ansi-red" },
+  { id: "ansiGreen", name: "Green", path: ["Console Colors"], fg: "--ansi-green" },
+  { id: "ansiYellow", name: "Yellow", path: ["Console Colors"], fg: "--ansi-yellow" },
+  { id: "ansiBlue", name: "Blue", path: ["Console Colors"], fg: "--ansi-blue" },
+  { id: "ansiMagenta", name: "Magenta", path: ["Console Colors"], fg: "--ansi-magenta" },
+  { id: "ansiCyan", name: "Cyan", path: ["Console Colors"], fg: "--ansi-cyan" },
+  { id: "ansiWhite", name: "White", path: ["Console Colors"], fg: "--ansi-white" },
+  { id: "ansiBrightBlack", name: "Dark gray", path: ["Console Colors"], fg: "--ansi-bright-black" },
+  { id: "ansiBrightRed", name: "Bright red", path: ["Console Colors"], fg: "--ansi-bright-red" },
+  { id: "ansiBrightGreen", name: "Bright green", path: ["Console Colors"], fg: "--ansi-bright-green" },
+  { id: "ansiBrightYellow", name: "Bright yellow", path: ["Console Colors"], fg: "--ansi-bright-yellow" },
+  { id: "ansiBrightBlue", name: "Bright blue", path: ["Console Colors"], fg: "--ansi-bright-blue" },
+  { id: "ansiBrightMagenta", name: "Bright magenta", path: ["Console Colors"], fg: "--ansi-bright-magenta" },
+  { id: "ansiBrightCyan", name: "Bright cyan", path: ["Console Colors"], fg: "--ansi-bright-cyan" },
+  { id: "ansiBrightWhite", name: "Bright white", path: ["Console Colors"], fg: "--ansi-bright-white" },
 
   // Color Scheme › Git: inline blame segments and project view branch decorations.
-  // The inline blame widget and the project root suffix read these variables directly.
-  { id: "gitBlameAuthor", name: "Editor inline blame › Author", path: ["Git"], fg: "--git-blame-author" },
-  { id: "gitBlameDate", name: "Editor inline blame › Date time", path: ["Git"], fg: "--git-blame-date" },
-  { id: "gitBlameIssue", name: "Editor inline blame › Issue link", path: ["Git"], fg: "--git-blame-issue" },
-  { id: "gitBlameSubject", name: "Editor inline blame › Subject", path: ["Git"], fg: "--git-blame-subject" },
+  // The inline blame widget and the project root suffix read these variables directly;
+  // only the blame segments render font style, so the branch decorations opt out.
+  {
+    id: "gitBlameAuthor",
+    name: "Editor inline blame › Author",
+    path: ["Git"],
+    fg: "--git-blame-author",
+    bg: "--git-blame-author-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameDate",
+    name: "Editor inline blame › Date time",
+    path: ["Git"],
+    fg: "--git-blame-date",
+    bg: "--git-blame-date-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameIssue",
+    name: "Editor inline blame › Issue link",
+    path: ["Git"],
+    fg: "--git-blame-issue",
+    bg: "--git-blame-issue-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameSubject",
+    name: "Editor inline blame › Subject",
+    path: ["Git"],
+    fg: "--git-blame-subject",
+    bg: "--git-blame-subject-bg",
+    fontStyle: true,
+  },
   { id: "gitBranchChanged", name: "Project View › Changed decoration", path: ["Git"], fg: "--git-branch-changed" },
   { id: "gitHeadTags", name: "Project View › HEAD tags decoration", path: ["Git"], fg: "--git-head-tags" },
   { id: "gitLocalBranch", name: "Project View › Local branch decoration", path: ["Git"], fg: "--git-local-branch" },
@@ -506,8 +506,6 @@ export function overrideDeclarations(
       if (attr.fg.startsWith("--ansi-")) out.push([`--terminal-ansi-${attr.fg.slice("--ansi-".length)}`, o.foreground]);
     }
     if (setOrCleared(o.background) && attr.bg) out.push([attr.bg, o.background]);
-    if (!attr.token && !attr.bg && setOrCleared(o.background) && (attr.fg ?? attr.effect))
-      out.push([`${attr.fg ?? attr.effect}-bg`, o.background]);
     if (setOrCleared(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
     if (attr.effect && setOrCleared(o.effectColor)) {
       if (attr.id === "error") out.push(["--editor-error-decoration", `underline wavy ${o.effectColor}`]);
@@ -526,9 +524,9 @@ export function overrideDeclarations(
           `--syn-${t}-effect`,
           EFFECT_CSS[o.effect]?.(setOrCleared(o.effectColor) ? o.effectColor! : "currentColor") ?? "none",
         ]);
-    } else if (!attr.noFontStyle) {
-      // Token-less attributes carry their font style / effect on `--<fg>-*` or `--<effect>-*`
-      // (e.g. `--git-blame-author-bold`), so the fixed attribute panel can style them too.
+    } else if (attr.fontStyle) {
+      // Token-less attributes whose renderer applies font style (the Git blame segments)
+      // carry it on `--<fg>-*`, mirroring the token scheme's `--syn-<token>-*` family.
       const base = attr.fg ?? attr.effect;
       if (base) {
         if (o.bold !== undefined) out.push([`${base}-bold`, boldWeight(o.bold)]);
@@ -648,7 +646,7 @@ export function resolvedAttribute(
     const italicCss =
       vars.get(`--syn-${token}-italic`) ?? (token === "comment" ? vars.get("--syn-comment-style") : undefined);
     out.italic = own?.italic ?? italicFromCss(italicCss) ?? attr.defaultItalic ?? false;
-  } else if (!attr.noFontStyle) {
+  } else if (attr.fontStyle) {
     const base = attr.fg ?? attr.effect;
     const bold = base ? vars.get(`${base}-bold`) : undefined;
     const italic = base ? vars.get(`${base}-italic`) : undefined;

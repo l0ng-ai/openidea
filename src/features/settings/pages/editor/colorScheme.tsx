@@ -140,14 +140,10 @@ function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
   if (!attr?.token)
     return {
       ...(attr?.fg ? { color: `var(${attr.fg})` } : null),
-      ...(attr?.bg
-        ? { backgroundColor: `var(${attr.bg})` }
-        : attr && !attr.noFontStyle && (attr.fg ?? attr.effect)
-          ? { backgroundColor: `var(${attr.fg ?? attr.effect}-bg, transparent)` }
-          : null),
-      // Token-less attributes carry font style / effect on `--<fg|effect>-*` (same
-      // declarations `overrideDeclarations` emits for their overrides).
-      ...(attr && !attr.noFontStyle && (attr.fg || attr.effect)
+      ...(attr?.bg ? { backgroundColor: `var(${attr.bg})` } : null),
+      // Token-less attributes with a font-style renderer carry it on `--<fg>-*`, the same
+      // declarations `overrideDeclarations` emits for their overrides.
+      ...(attr?.fontStyle && (attr.fg ?? attr.effect)
         ? {
             fontWeight: `var(${attr.fg ?? attr.effect}-bold, inherit)`,
             fontStyle: `var(${attr.fg ?? attr.effect}-italic, inherit)`,
@@ -1001,23 +997,21 @@ function AttributeEditor({
     onChange(Object.keys(next).length ? next : undefined);
   };
   // IDEA's panel is fixed: every channel renders for every attribute, disabled when the
-  // attribute cannot carry it (ColorAndFontDescriptionPanel.kt). Only the italic-only
-  // semantic modifiers (static symbol etc.) collapse to their single channel.
-  const font = !attr.noFontStyle;
-  const boldItalic = !attr.italicOnly;
+  // attribute cannot carry it (ColorAndFontDescriptionPanel.kt). Capability is declared,
+  // not inferred: `fontStyle` marks attributes whose renderer applies font style/effects.
   return (
     <div className={styles.attrEditor} aria-label={`${attr.name} attributes`}>
-      {boldItalic && (
+      {!attr.italicOnly && (
         <div className={styles.attrRow}>
           <Checkbox
             checked={v.bold ?? inherited.bold ?? false}
-            disabled={!font}
+            disabled={!attr.fontStyle}
             onChange={(b) => set({ bold: b === (inherited.bold ?? false) ? undefined : b })}
             label="Bold"
           />
           <Checkbox
             checked={v.italic ?? inherited.italic ?? false}
-            disabled={!font}
+            disabled={!attr.fontStyle}
             onChange={(b) => set({ italic: b === (inherited.italic ?? false) ? undefined : b })}
             label="Italic"
           />
@@ -1042,11 +1036,7 @@ function AttributeEditor({
         label="Background"
         value={v.background}
         inherited={inherited.background}
-        onChange={
-          attr.bg || (attr.token && !attr.italicOnly) || (font && !attr.noFontStyle)
-            ? (c) => set({ background: c })
-            : undefined
-        }
+        onChange={attr.bg || (attr.token && !attr.italicOnly) ? (c) => set({ background: c }) : undefined}
       />
       {!attr.italicOnly && (
         <>
@@ -1054,10 +1044,11 @@ function AttributeEditor({
             label="Effects"
             value={v.effectColor}
             inherited={inherited.effectColor}
-            onChange={attr.effect || font ? (c) => set({ effectColor: c }) : undefined}
+            onChange={attr.effect || attr.fontStyle ? (c) => set({ effectColor: c }) : undefined}
           />
           <div className={styles.attrRow}>
             <Checkbox
+              disabled={!attr.effect && !attr.fontStyle}
               checked={!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none"}
               onChange={(b) =>
                 set({
