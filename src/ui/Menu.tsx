@@ -441,7 +441,16 @@ export interface MenuProps {
 }
 
 /** A dropdown menu anchored to an element or point. */
-export function Menu({ open, onClose, anchor, items, placement = "bottom-start", iconColumn, numbers, ...aria }: MenuProps) {
+export function Menu({
+  open,
+  onClose,
+  anchor,
+  items,
+  placement = "bottom-start",
+  iconColumn,
+  numbers,
+  ...aria
+}: MenuProps) {
   return (
     <Popup
       open={open}
@@ -452,7 +461,13 @@ export function Menu({ open, onClose, anchor, items, placement = "bottom-start",
       autoFocus={false}
       className={styles.popup}
     >
-      <MenuList items={items} onDone={onClose} iconColumn={iconColumn} numbers={numbers} aria-label={aria["aria-label"]} />
+      <MenuList
+        items={items}
+        onDone={onClose}
+        iconColumn={iconColumn}
+        numbers={numbers}
+        aria-label={aria["aria-label"]}
+      />
     </Popup>
   );
 }
