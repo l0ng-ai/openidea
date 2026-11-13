@@ -280,6 +280,12 @@ export const commands = {
 	fsOpenWithSystem: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_open_with_system", { path })),
 	/**  Writes text locally, without WebView user-activation requirements. */
 	clipboardWriteText: (text: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_text", { text })),
+	/**
+	 *  The clipboard's plain text, read natively as [`clipboard_write_text`] writes it: a Paste
+	 *  from a menu has no paste event, and WebKitGTK gives `navigator.clipboard.readText()` no
+	 *  text there (#3041). None on Windows, where the WebView's clipboard is used.
+	 */
+	clipboardText: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_text")),
 	/**  Absolute paths on the clipboard, empty when it holds no file list. */
 	clipboardFileList: () => typedError<string[], IdeError>(__TAURI_INVOKE("clipboard_file_list")),
 	/**  Whether the clipboard holds files: cheap, for the Paste item's enabled state. */

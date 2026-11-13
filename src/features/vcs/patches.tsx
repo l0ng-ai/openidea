@@ -1,4 +1,4 @@
-import { writeClipboardText } from "@/platform/clipboard";
+import { readClipboardPlainText, writeClipboardText } from "@/platform/clipboard";
 import { commitRepo } from "./multiRoot";
 /** Create Patch… (from local changes or commits) and Apply Patch… (file or clipboard, with a preview). */
 import { useEffect, useState } from "react";
@@ -224,7 +224,7 @@ export async function showApplyPatch(from: "file" | "clipboard", path?: string) 
   let source = "Clipboard";
   try {
     if (from === "clipboard") {
-      text = await navigator.clipboard.readText();
+      text = await readClipboardPlainText();
     } else {
       let file = path ?? null;
       if (!file) {
