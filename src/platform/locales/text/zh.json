@@ -7907,5 +7907,9 @@
   "Listen on the same port in every run, so HTTP clients and port forwards keep working after OpenIDEA restarts. When the port is in use, this run takes a free one and Status says so. Off: a free port in every run.": "每次运行都监听同一个端口，这样 OpenIDEA 重启后 HTTP 客户端和端口转发仍然有效。端口被占用时，本次运行改用一个空闲端口，并在状态中说明。关闭时：每次运行使用一个空闲端口。",
   "The fixed port on 127.0.0.1, used while Use a fixed port is on.": "127.0.0.1 上的固定端口，在开启“使用固定端口”时使用。",
   "Keep the token": "保留令牌",
-  "Keep the same bearer token in every run, stored for your account only. Off: a new token in every run. Anyone with the token can use the tools while OpenIDEA runs, so regenerate it if it leaks.": "每次运行都使用同一个访问令牌，只为你的账户保存。关闭时：每次运行生成新令牌。任何拿到令牌的人都能在 OpenIDEA 运行时使用这些工具，令牌泄露时请重新生成。"
+  "Keep the same bearer token in every run, stored for your account only. Off: a new token in every run. Anyone with the token can use the tools while OpenIDEA runs, so regenerate it if it leaks.": "每次运行都使用同一个访问令牌，只为你的账户保存。关闭时：每次运行生成新令牌。任何拿到令牌的人都能在 OpenIDEA 运行时使用这些工具，令牌泄露时请重新生成。",
+  "{name} (group)": "{name}（分组）",
+  "Servers in group": "组内服务器",
+  "Upload to… on this group uploads the files to each of its servers in turn.": "对此分组执行“上传到…”时，会依次上传到组内的每台服务器。",
+  "Server Group": "服务器分组"
 }

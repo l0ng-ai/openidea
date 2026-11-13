@@ -194,3 +194,13 @@
   padding: 16px;
   color: var(--fg-subtle);
 }
+.groupMembers {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+}
+.groupTitle {
+  color: var(--fg-subtle);
+  padding-bottom: 2px;
+}
