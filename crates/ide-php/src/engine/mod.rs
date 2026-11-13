@@ -1263,6 +1263,11 @@ impl PhpEngine {
         self.shared.parses.get_or_parse(document.doc, document.version, || document.text.clone())
     }
 
+    /// The path of the open document `parsed` is the current parse of.
+    pub(crate) fn parsed_path(&self, parsed: &ParsedFile) -> Option<PathBuf> {
+        self.document_path(self.shared.parses.doc_of(parsed)?)
+    }
+
     /// The path of an open document (normalized).
     pub fn document_path(&self, doc: DocId) -> Option<PathBuf> {
         self.shared.documents.lock().get(&doc).map(|d| d.path.clone())

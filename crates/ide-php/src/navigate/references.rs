@@ -492,7 +492,7 @@ impl PhpEngine {
         let resolver = self.resolver();
         let names = FileNames::resolve(parsed);
         let here = FileSummary::extract(parsed);
-        let types = ExprTypes::new(parsed, &names, &here, &resolver);
+        let types = ExprTypes::new(parsed, &names, &here, &resolver).at_path(Some(&crate::index::key_path(file)));
         let lookup = Lookup { parsed, names: &names, here: &here, resolver: &resolver, types: &types };
         let probe = match mode {
             ScanMode::Probe(name) => Some(name),

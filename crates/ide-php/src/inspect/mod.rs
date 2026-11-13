@@ -610,7 +610,7 @@ impl PhpEngine {
         let names = FileNames::resolve(parsed);
         let summary = FileSummary::extract(parsed);
         let resolver = self.resolver();
-        let types = ExprTypes::new(parsed, &names, &summary, &resolver);
+        let types = ExprTypes::new(parsed, &names, &summary, &resolver).at_path(Some(path));
         let cx = InspectionContext::new(self, parsed, path, cancel, &types);
         let mut problems = Problems::new(parsed);
         for inspection in inspections.iter() {

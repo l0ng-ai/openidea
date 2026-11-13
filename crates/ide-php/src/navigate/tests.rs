@@ -303,3 +303,6 @@ fn ranking_prefers_exact_then_prefix_then_shorter() {
 
 /// Members, variables, named arguments, type definition and hover.
 mod members;
+
+/// `$this` in Pest's test closures.
+mod pest;

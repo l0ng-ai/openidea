@@ -471,6 +471,43 @@ impl<'a> Resolver<'a> {
         macros
     }
 
+    /// The class Pest binds the test closures of the file at `path` to: the
+    /// first class (not trait) the file's own `uses(…)` names, else that of
+    /// the `uses(…)->in(…)` (or `pest()->extend(…)->in(…)`) whose folder
+    /// holds the file most closely, else PHPUnit's `TestCase`.
+    pub fn pest_test_case(&self, path: &std::path::Path) -> Option<String> {
+        let facts = self.laravel();
+        let mut candidates: Vec<(usize, &crate::summary::PestUses)> = Vec::new();
+        for uses in &facts.pest {
+            let Some(file) = uses.file.as_deref() else { continue };
+            if uses.dirs.is_empty() {
+                if file == path {
+                    candidates.push((usize::MAX, uses));
+                }
+                continue;
+            }
+            let Some(base) = file.parent() else { continue };
+            let depth = uses
+                .dirs
+                .iter()
+                .map(|dir| lexical(&base.join(dir)))
+                .filter(|dir| path.starts_with(dir))
+                .map(|dir| dir.components().count())
+                .max();
+            if let Some(depth) = depth {
+                candidates.push((depth, uses));
+            }
+        }
+        candidates.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
+        let is_class = |fqn: &&String| {
+            self.class_model(fqn).is_some_and(|model| model.class.kind == crate::summary::ClassKind::Class)
+        };
+        candidates
+            .iter()
+            .find_map(|(_, uses)| uses.classes.iter().find(is_class).cloned())
+            .or_else(|| self.class_model(PHPUNIT_TEST_CASE).map(|model| model.fqn().to_owned()))
+    }
+
     /// The user model of each guard of the Laravel project, cached for the
     /// modification counter.
     pub fn user_models(&self) -> Arc<UserModels> {
@@ -1334,3 +1371,21 @@ const FACADE_ROOTS: &[(&str, &str)] = &[
     ("Illuminate\\Support\\Facades\\View", "Illuminate\\View\\Factory"),
     ("Illuminate\\Support\\Facades\\Vite", "Illuminate\\Foundation\\Vite"),
 ];
+
+/// PHPUnit's test case: what Pest binds test closures to by default.
+const PHPUNIT_TEST_CASE: &str = "PHPUnit\\Framework\\TestCase";
+
+/// `path` with its `.` and `..` segments applied, without touching the disk.
+fn lexical(path: &std::path::Path) -> std::path::PathBuf {
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}

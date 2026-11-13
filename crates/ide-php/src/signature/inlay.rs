@@ -65,7 +65,8 @@ impl PhpEngine {
         let resolver = self.resolver();
         let names = FileNames::resolve(&parsed);
         let here = FileSummary::extract(&parsed);
-        let types = ExprTypes::new(&parsed, &names, &here, &resolver);
+        let path = self.document_path(doc);
+        let types = ExprTypes::new(&parsed, &names, &here, &resolver).at_path(path.as_deref());
         let lines = parsed.line_index();
         let mut hints = Hints {
             parsed: &parsed,

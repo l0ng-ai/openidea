@@ -657,7 +657,8 @@ impl<'e, 'r> Collector<'e, 'r> {
         let probe = self.probe(start, end, &replacement);
         let names = FileNames::resolve(&probe);
         let summary = FileSummary::extract(&probe);
-        let types = ExprTypes::new(&probe, &names, &summary, self.resolver);
+        let types = ExprTypes::new(&probe, &names, &summary, self.resolver)
+            .at_path(self.engine.parsed_path(self.parsed).as_deref());
         let Some((expr, frames)) = types.locate(start as u32).expression else { return };
         let context = types.context(&frames);
         let relative = |class: &Expression<'_>| {
@@ -874,7 +875,8 @@ impl<'e, 'r> Collector<'e, 'r> {
         let probe = self.probe(dollar, end, &format!("${PROBE}"));
         let names = FileNames::resolve(&probe);
         let summary = FileSummary::extract(&probe);
-        let types = ExprTypes::new(&probe, &names, &summary, self.resolver);
+        let types = ExprTypes::new(&probe, &names, &summary, self.resolver)
+            .at_path(self.engine.parsed_path(self.parsed).as_deref());
         let located = types.locate(dollar as u32);
         let Some((_, frames)) = located.variable.filter(|(v, _)| v.span.start.offset == dollar as u32) else {
             return;
@@ -946,7 +948,8 @@ impl<'e, 'r> Collector<'e, 'r> {
         let probe = self.probe(start, end, &replacement);
         let names = FileNames::resolve(&probe);
         let summary = FileSummary::extract(&probe);
-        let types = ExprTypes::new(&probe, &names, &summary, self.resolver);
+        let types = ExprTypes::new(&probe, &names, &summary, self.resolver)
+            .at_path(self.engine.parsed_path(self.parsed).as_deref());
         let mut sites = Sites { probe: start as u32, ..Sites::default() };
         SiteWalker.walk_program(probe.program(), &mut sites);
         let Some(Expression::ArrayAccess(access)) = sites.key else { return };
@@ -1090,7 +1093,8 @@ impl<'e, 'r> Collector<'e, 'r> {
     fn arguments_in(&mut self, probe: &ParsedFile, start: usize, in_string: bool) -> bool {
         let names = FileNames::resolve(probe);
         let summary = FileSummary::extract(probe);
-        let types = ExprTypes::new(probe, &names, &summary, self.resolver);
+        let types = ExprTypes::new(probe, &names, &summary, self.resolver)
+            .at_path(self.engine.parsed_path(self.parsed).as_deref());
         let mut sites = Sites { probe: start as u32, ..Sites::default() };
         SiteWalker.walk_program(probe.program(), &mut sites);
         let frames_at = |expr: &Expression<'_>| {

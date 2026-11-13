@@ -100,6 +100,9 @@ fn laravel(out: &mut String, facts: &LaravelFacts) {
     for counted in &facts.counted {
         let _ = writeln!(out, "laravel {} counts {} as {}", counted.class, counted.relation, counted.property);
     }
+    for found in &facts.pest {
+        let _ = writeln!(out, "pest uses {} in [{}]", found.classes.join(", "), found.dirs.join(", "));
+    }
     for found in &facts.macros {
         let params: Vec<String> = found.method.params.iter().map(|param| format!("${}", param.name)).collect();
         let _ = writeln!(

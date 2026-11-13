@@ -108,7 +108,8 @@ impl PhpEngine {
         let names = FileNames::resolve(&parsed);
         let here = FileSummary::extract(&parsed);
         let resolver = self.resolver();
-        let types = ExprTypes::new(&parsed, &names, &here, &resolver);
+        let path = self.document_path(doc);
+        let types = ExprTypes::new(&parsed, &names, &here, &resolver).at_path(path.as_deref());
         Some(finish(&parsed, self.semantic_spans(&parsed, &types)))
     }
 

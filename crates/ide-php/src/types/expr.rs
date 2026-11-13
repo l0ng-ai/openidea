@@ -143,6 +143,12 @@ pub struct ExprTypes<'a, 'r> {
     /// the parameter types of the callable the parameter it is passed to
     /// expects (recorded by the enclosing scope's flow).
     expected: RefCell<HashMap<u32, Vec<Type>>>,
+    /// The file's path, when known ([`Self::at_path`]): for what Pest binds
+    /// its test closures to.
+    path: Option<std::path::PathBuf>,
+    /// The starts of the file's Pest test closures, and the class they are
+    /// bound to; computed on first use.
+    pest: std::cell::OnceCell<(Vec<u32>, Option<String>)>,
 }
 
 const TOP_LEVEL: u32 = u32::MAX - 1;
@@ -162,7 +168,40 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             flows: RefCell::new(HashMap::new()),
             depth: Cell::new(0),
             expected: RefCell::new(HashMap::new()),
+            path: None,
+            pest: std::cell::OnceCell::new(),
         }
+    }
+
+    /// The same, for the file at `path`: the closures of a Pest test file
+    /// (`test('…', function () { $this->… })`) are bound to its test case.
+    pub fn at_path(mut self, path: Option<&std::path::Path>) -> Self {
+        self.path = path.map(std::path::Path::to_path_buf);
+        self
+    }
+
+    /// The class `$this` is in the closures of `frames` when the outermost
+    /// function-like is a Pest test closure (`test()`, `it()`,
+    /// `beforeEach()`, `afterEach()`, `todo()`, and the closures of
+    /// `describe()` blocks), outside any class.
+    fn pest_class(&self, frames: &[Frame<'a>]) -> Option<&str> {
+        let path = self.path.as_deref()?;
+        let outer = frames.iter().find(|frame| frame.is_function_like())?;
+        let start = match outer {
+            Frame::Closure(closure) => closure.span().start.offset,
+            Frame::Arrow(arrow) => arrow.span().start.offset,
+            _ => return None,
+        };
+        if frames.iter().any(|frame| matches!(frame, Frame::Class(_))) {
+            return None;
+        }
+        let (closures, class) = self.pest.get_or_init(|| {
+            let mut closures = Vec::new();
+            pest_closures(self.file.program().statements.iter(), &mut closures);
+            let class = if closures.is_empty() { None } else { self.resolver.pest_test_case(path) };
+            (closures, class)
+        });
+        closures.contains(&start).then_some(class.as_deref()?)
     }
 
     /// The flow of the scope `frames` end in: their innermost function-like,
@@ -236,7 +275,8 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             _ => None,
         }) {
             Some(Some(fqn)) => Context::in_class(fqn),
-            _ => Context::default(),
+            Some(None) => Context::default(),
+            None => self.pest_class(frames).map_or_else(Context::default, Context::in_class),
         }
     }
 
@@ -360,7 +400,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
     /// left side starts at `at` (the read is the assigned variable itself).
     fn lookup(&self, name: &[u8], at: u32, frames: &[Frame<'a>], here: bool) -> Type {
         if name == b"this" {
-            return if frames.iter().any(|frame| matches!(frame, Frame::Class(_))) {
+            return if frames.iter().any(|frame| matches!(frame, Frame::Class(_))) || self.pest_class(frames).is_some() {
                 Type::Relative(Relative::This)
             } else {
                 Type::Mixed
@@ -1471,3 +1511,48 @@ impl<'a> Walker<'a, 'a, Returns<'a>> for ReturnWalker {
 
 #[cfg(test)]
 mod tests;
+
+/// Pest's functions taking a test closure bound to the test case.
+const PEST_FUNCTIONS: &[&str] = &["test", "it", "todo", "beforeeach", "aftereach", "describe"];
+
+/// The starts of the closures passed to Pest's functions in `statements`
+/// (the file's top level, namespaces, and `describe()` closures), through
+/// chained calls (`test(…)->with([…])`).
+fn pest_closures<'s>(statements: impl Iterator<Item = &'s mago_syntax::cst::Statement<'s>>, out: &mut Vec<u32>) {
+    use mago_syntax::cst::{Argument, Statement};
+    for statement in statements {
+        match statement {
+            Statement::Expression(statement) => {
+                let mut expr = statement.expression;
+                while let Expression::Call(Call::Method(call)) = expr {
+                    expr = call.object;
+                }
+                let Expression::Call(Call::Function(call)) = expr else { continue };
+                let Expression::Identifier(function) = call.function else { continue };
+                let name = String::from_utf8_lossy(function.value()).to_ascii_lowercase();
+                let name = name.rsplit('\\').next().unwrap_or_default();
+                if !PEST_FUNCTIONS.contains(&name) {
+                    continue;
+                }
+                for argument in call.argument_list.arguments.iter() {
+                    let value = match argument {
+                        Argument::Positional(argument) => argument.value,
+                        Argument::Named(argument) => argument.value,
+                    };
+                    match value {
+                        Expression::Closure(closure) => {
+                            out.push(closure.span().start.offset);
+                            if name == "describe" {
+                                pest_closures(closure.body.statements.iter(), out);
+                            }
+                        }
+                        Expression::ArrowFunction(arrow) => out.push(arrow.span().start.offset),
+                        _ => {}
+                    }
+                }
+            }
+            Statement::Namespace(namespace) => pest_closures(namespace.statements().iter(), out),
+            _ => {}
+        }
+    }
+}

@@ -29,6 +29,11 @@ impl ParseCache {
         self.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// The document `parsed` is the cached parse of, if any.
+    pub fn doc_of(&self, parsed: &ParsedFile) -> Option<DocId> {
+        self.lock().iter().find(|(_, (_, file))| std::ptr::eq(Arc::as_ptr(file), parsed)).map(|(doc, _)| *doc)
+    }
+
     /// The cached parse of exactly `version`, if any.
     pub fn get(&self, doc: DocId, version: u32) -> Option<Arc<ParsedFile>> {
         self.lock().get(&doc).filter(|(v, _)| *v == version).map(|(_, file)| file.clone())

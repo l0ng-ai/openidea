@@ -102,6 +102,20 @@ core: a key, local steps for a call site or an untyped property (`call`,
 `.phpstorm.meta.php` are built in; Laravel and Symfony are next on the roadmap
 (plan 7). Register a new provider in `TypeProviders::default`.
 
+### Pest
+
+`$this` in the closures of a Pest test file (`test()`, `it()`, `todo()`,
+`beforeEach()`, `afterEach()`, and the closures of `describe()` blocks, through
+chained calls) is the test case Pest binds them to, with that class's member
+access: the first class (not trait) of the file's own `uses(…)`, else of the
+`uses(…)->in(…)` or `pest()->extend(…)->use(…)->in(…)` whose folder (relative
+to the configuring file, usually `tests/Pest.php`) holds the file most
+closely, else PHPUnit's `TestCase`. The calls are indexed as Laravel facts
+(`PestUses`); `ExprTypes::at_path` gives the analysis the file's path, which
+the editor features, Inspect Code and Find Usages pass. Not done: Pest's
+custom expectations (`expect()->extend('toBeX', …)`), and members the
+`uses()` traits add beyond the test case class.
+
 ## Threads and cancellation
 
 - Indexing runs on the engine's worker thread and rayon. It can be cancelled

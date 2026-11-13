@@ -41,6 +41,9 @@ pub struct LaravelFacts {
     /// `Collection::macro('name', function (…) { … })` calls, in source
     /// order.
     pub macros: Vec<Macro>,
+    /// Pest's `uses(…)->in(…)` and `pest()->extend(…)->in(…)`, and a test
+    /// file's own `uses(…)`, in source order.
+    pub pest: Vec<PestUses>,
 }
 
 impl LaravelFacts {
@@ -53,6 +56,7 @@ impl LaravelFacts {
             && self.rule_methods.is_empty()
             && self.counted.is_empty()
             && self.macros.is_empty()
+            && self.pest.is_empty()
     }
 
     /// The facts of several files, in order.
@@ -74,6 +78,7 @@ impl LaravelFacts {
             out.rules.extend(facts.rules.iter().map(|rules| RequestRules { file: file.clone(), ..rules.clone() }));
             out.rule_methods.extend(facts.rule_methods.iter().cloned());
             out.macros.extend(facts.macros.iter().map(|found| Macro { file: file.clone(), ..found.clone() }));
+            out.pest.extend(facts.pest.iter().map(|found| PestUses { file: file.clone(), ..found.clone() }));
             for counted in &facts.counted {
                 if !out.counted.contains(counted) {
                     out.counted.push(counted.clone());
@@ -464,6 +469,22 @@ pub struct Macro {
     pub method: Method,
     /// The file registering the macro, when the facts were merged with their
     /// files ([`LaravelFacts::merge_located`]); not stored in summaries.
+    #[serde(skip)]
+    pub file: Option<PathBuf>,
+}
+
+/// Pest's `uses(TestCase::class, RefreshDatabase::class)->in('Feature')`, or
+/// `pest()->extend(TestCase::class)->use(RefreshDatabase::class)->in(…)`:
+/// the test case class (and traits) the test closures of the files below
+/// `dirs` are bound to; without `in()`, those of the file itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PestUses {
+    /// Fully qualified, without the leading `\`.
+    pub classes: Vec<String>,
+    /// As written: relative to the folder of the file (`tests/Pest.php`).
+    pub dirs: Vec<String>,
+    /// The file the call is in, when the facts were merged with their files
+    /// ([`LaravelFacts::merge_located`]); not stored in summaries.
     #[serde(skip)]
     pub file: Option<PathBuf>,
 }

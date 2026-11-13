@@ -46,6 +46,8 @@ pub(super) fn extract(file: &ParsedFile) -> FileSummary {
         in_down: false,
     };
     SummaryWalker.walk_program(file.program(), &mut cx);
+    // With every import of the file in scope.
+    cx.pest_uses(file.program().statements.iter());
     cx.summary
 }
 

@@ -43,8 +43,8 @@ use mago_syntax::cst::{
 use super::Extractor;
 use crate::names::{NameKind, Resolution};
 use crate::summary::{
-    Binding, Cast, Column, CountedRelation, DocType, Loc, Macro, Method, ModelCasts, RenamedColumn, RequestRules,
-    RouteFileKind, RoutePath, RouteRegistration, RuleEntry, RuleMethod, Table, Visibility, counted_spec,
+    Binding, Cast, Column, CountedRelation, DocType, Loc, Macro, Method, ModelCasts, PestUses, RenamedColumn,
+    RequestRules, RouteFileKind, RoutePath, RouteRegistration, RuleEntry, RuleMethod, Table, Visibility, counted_spec,
 };
 use crate::types::ops::literal_type;
 use crate::types::{LazyType, Type};
@@ -293,6 +293,60 @@ impl Extractor<'_> {
             Expression::Literal(_) => LazyType::mixed(),
             other => self.value_type(other, false),
         }
+    }
+
+    // ---------------------------------------------------------------- pest
+
+    /// The top-level `uses(…)->in(…)`, `pest()->extend(…)->use(…)->in(…)`
+    /// and `uses(…)` statements (inside namespaces too).
+    pub(super) fn pest_uses<'s>(&mut self, statements: impl Iterator<Item = &'s Statement<'s>>) {
+        for statement in statements {
+            match statement {
+                Statement::Expression(statement) => {
+                    if let Some(found) = self.pest_chain(statement.expression) {
+                        self.summary.laravel.pest.push(found);
+                    }
+                }
+                Statement::Namespace(namespace) => self.pest_uses(namespace.statements().iter()),
+                _ => {}
+            }
+        }
+    }
+
+    /// One `uses(A::class)->in('dir')` chain, from its outermost call.
+    fn pest_chain(&self, expr: &Expression<'_>) -> Option<PestUses> {
+        let mut classes = Vec::new();
+        let mut dirs = Vec::new();
+        let mut expr = expr;
+        while let Expression::Call(Call::Method(call)) = expr {
+            let name = method_name(&call.method)?;
+            let args = args(&call.argument_list);
+            match name.to_ascii_lowercase().as_str() {
+                "in" => dirs.extend(args.iter().filter_map(|arg| string(arg))),
+                "extend" | "extends" | "use" | "uses" => {
+                    classes.extend(args.iter().filter_map(|arg| self.class_constant_name(arg)));
+                }
+                // `->group('slow')` and the like configure other things.
+                _ => {}
+            }
+            expr = call.object;
+        }
+        let Expression::Call(Call::Function(root)) = expr else { return None };
+        let Expression::Identifier(function) = root.function else { return None };
+        let function = lossy(function.value());
+        let function = function.rsplit('\\').next().unwrap_or_default().to_ascii_lowercase();
+        match function.as_str() {
+            "uses" => classes.extend(args(&root.argument_list).iter().filter_map(|arg| self.class_constant_name(arg))),
+            "pest" => {}
+            _ => return None,
+        }
+        if classes.is_empty() {
+            return None;
+        }
+        // Earlier calls of the chain first.
+        classes.reverse();
+        let classes = classes.into_iter().map(|class| class.trim_start_matches('\\').to_owned()).collect();
+        Some(PestUses { classes, dirs, file: None })
     }
 
     // -------------------------------------------------------------- macros

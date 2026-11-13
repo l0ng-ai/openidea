@@ -201,7 +201,8 @@ impl PhpEngine {
         offset: u32,
     ) -> Option<AtCaret> {
         let names = FileNames::resolve(parsed);
-        let types = ExprTypes::new(parsed, &names, here, resolver);
+        let path = self.parsed_path(parsed);
+        let types = ExprTypes::new(parsed, &names, here, resolver).at_path(path.as_deref());
         let lookup = Lookup { parsed, names: &names, here, resolver, types: &types };
         let name_at = |offset: u32| names.at_offset(offset).filter(|name| name.kind != NameKind::Namespace);
         if let Some(name) = name_at(offset) {
