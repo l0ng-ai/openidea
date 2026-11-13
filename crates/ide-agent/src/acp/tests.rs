@@ -154,6 +154,7 @@ async fn discovery_reads_effort_and_fast_from_session_new_then_stops_the_agent()
             models_file: tmp.path().join("models.json"),
             custom_agents_dir: None,
             home_dir: None,
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
         connector,

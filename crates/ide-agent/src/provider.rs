@@ -2,7 +2,7 @@
 //! `<config>/agents/<id>.toml` (written by hand, or by installing one from the ACP
 //! Registry, see `registry`).
 
-use crate::{AcpImportOutcome, AgentCommandReadOnlyReason, AgentProvider, AgentSource, CustomAgentInput};
+use crate::{AcpImportOutcome, AgentCommandReadOnlyReason, AgentProvider, AgentSource, CustomAgentInput, EnvSecrets};
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -231,23 +231,40 @@ pub(crate) fn describe(spec: &ProviderSpec) -> AgentProvider {
 
 /// Overrides built-in `id`'s command through its agent file, preserving other
 /// customizations. `None` restores the built-in command and removes a redundant file.
-pub(crate) fn set_builtin_command(custom_dir: &Path, id: &str, command: Option<&str>) -> IdeResult<()> {
-    update_builtin(custom_dir, id, |agent, builtin| agent.command = command.unwrap_or(&builtin.command).to_owned())
+pub(crate) fn set_builtin_command(
+    custom_dir: &Path,
+    secrets: Option<&dyn EnvSecrets>,
+    id: &str,
+    command: Option<&str>,
+) -> IdeResult<()> {
+    update_builtin(custom_dir, secrets, id, |agent, builtin| {
+        agent.command = command.unwrap_or(&builtin.command).to_owned()
+    })
 }
 
 /// The environment built-in `id` starts with, through its agent file (empty clears it).
-pub(crate) fn set_builtin_env(custom_dir: &Path, id: &str, env: BTreeMap<String, String>) -> IdeResult<()> {
-    update_builtin(custom_dir, id, |agent, _| agent.env = env)
+pub(crate) fn set_builtin_env(
+    custom_dir: &Path,
+    secrets: Option<&dyn EnvSecrets>,
+    id: &str,
+    env: BTreeMap<String, String>,
+) -> IdeResult<()> {
+    update_builtin(custom_dir, secrets, id, |agent, _| agent.env = env)
 }
 
 /// Changes built-in `id`'s agent file; a file left with only the built-in's values is removed.
-fn update_builtin(custom_dir: &Path, id: &str, change: impl FnOnce(&mut CustomAgent, &ProviderSpec)) -> IdeResult<()> {
+fn update_builtin(
+    custom_dir: &Path,
+    secrets: Option<&dyn EnvSecrets>,
+    id: &str,
+    change: impl FnOnce(&mut CustomAgent, &ProviderSpec),
+) -> IdeResult<()> {
     let Some(builtin) = builtin_spec(id) else {
         return Err(IdeError::invalid(format!("{id} is not a built-in agent")));
     };
     let file = custom_dir.join(format!("{id}.toml"));
     let mut agent = if file.try_exists()? {
-        CustomAgent::read(&file).map_err(IdeError::invalid)?
+        CustomAgent::read_with(&file, id, secrets).map_err(IdeError::invalid)?
     } else {
         CustomAgent {
             name: Some(builtin.name.clone()),
@@ -272,16 +289,20 @@ fn update_builtin(custom_dir: &Path, id: &str, change: impl FnOnce(&mut CustomAg
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
             _ => {}
         }
+        forget_env(secrets, id, &[]);
         return Ok(());
     }
-    agent.write(&file)?;
-    Ok(())
+    agent.write_with(&file, id, secrets)
 }
 
 /// Saves a new custom agent; refuses built-in and ACP Registry ids, taken ids
 /// and an empty command. The id is also the agent file's name, so it must be
 /// a safe file stem.
-pub(crate) fn save_custom(custom_dir: &Path, input: &CustomAgentInput) -> IdeResult<()> {
+pub(crate) fn save_custom(
+    custom_dir: &Path,
+    secrets: Option<&dyn EnvSecrets>,
+    input: &CustomAgentInput,
+) -> IdeResult<()> {
     let id = validated_custom_id(&input.id)?;
     if builtin_spec(&id).is_some() {
         return Err(IdeError::invalid(format!("{id} is a built-in agent; change its command instead")));
@@ -306,12 +327,11 @@ pub(crate) fn save_custom(custom_dir: &Path, input: &CustomAgentInput) -> IdeRes
         env: input.env.clone(),
         registry: None,
     }
-    .write(&file)?;
-    Ok(())
+    .write_with(&file, &id, secrets)
 }
 
 /// Removes a custom agent's file; refuses built-in, ACP Registry and missing ids.
-pub(crate) fn remove_custom(custom_dir: &Path, id: &str) -> IdeResult<()> {
+pub(crate) fn remove_custom(custom_dir: &Path, secrets: Option<&dyn EnvSecrets>, id: &str) -> IdeResult<()> {
     let id = validated_custom_id(id)?;
     let id = id.as_str();
     if builtin_spec(id).is_some() {
@@ -325,14 +345,21 @@ pub(crate) fn remove_custom(custom_dir: &Path, id: &str) -> IdeResult<()> {
     }
     match std::fs::remove_file(&file) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
-        _ => Ok(()),
+        _ => {
+            forget_env(secrets, id, &[]);
+            Ok(())
+        }
     }
 }
 
 /// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom
 /// agents, one outcome per entry; entries that collide, lack a command or
 /// have no usable name are skipped with a reason.
-pub(crate) fn import_acp(custom_dir: &Path, text: &str) -> IdeResult<Vec<AcpImportOutcome>> {
+pub(crate) fn import_acp(
+    custom_dir: &Path,
+    secrets: Option<&dyn EnvSecrets>,
+    text: &str,
+) -> IdeResult<Vec<AcpImportOutcome>> {
     #[derive(Deserialize)]
     struct AcpJson {
         #[serde(default)]
@@ -370,7 +397,7 @@ pub(crate) fn import_acp(custom_dir: &Path, text: &str) -> IdeResult<Vec<AcpImpo
                 env: server.env,
                 registry: None,
             }
-            .write(&custom_dir.join(format!("{id}.toml")))?;
+            .write_with(&custom_dir.join(format!("{id}.toml")), &id, secrets)?;
             outcome.saved = true;
         }
         outcomes.push(outcome);
@@ -400,7 +427,7 @@ fn slugify_id(name: &str) -> String {
 }
 
 /// An agent file, `<config>/agents/<id>.toml`.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CustomAgent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -447,11 +474,67 @@ impl CustomAgent {
         std::fs::write(&tmp, text)?;
         std::fs::rename(&tmp, path)
     }
+
+    /// Reads agent `id`'s file with its environment values filled in from `secrets`; values
+    /// still written in the file (by hand, by an older version) move there first. A registry
+    /// install keeps the environment its registry entry gives it in the file.
+    pub(crate) fn read_with(path: &Path, id: &str, secrets: Option<&dyn EnvSecrets>) -> Result<Self, String> {
+        let mut agent = Self::read(path)?;
+        let Some(secrets) = secrets.filter(|_| agent.registry.is_none()) else {
+            return Ok(agent);
+        };
+        let written = agent.env.values().any(|v| !v.is_empty());
+        for (name, value) in agent.env.iter_mut() {
+            if value.is_empty()
+                && let Some(saved) = secrets.get(&env_key(id, name))
+            {
+                *value = saved;
+            }
+        }
+        if written && let Err(e) = agent.write_with(path, id, Some(secrets)) {
+            tracing::warn!("agent {id}: could not move environment values out of {}: {}", path.display(), e.message);
+        }
+        Ok(agent)
+    }
+
+    /// Writes agent `id`'s file with the environment's names only, its values saved in `secrets`.
+    pub(crate) fn write_with(&self, path: &Path, id: &str, secrets: Option<&dyn EnvSecrets>) -> IdeResult<()> {
+        let Some(secrets) = secrets.filter(|_| self.registry.is_none()) else {
+            return Ok(self.write(path)?);
+        };
+        let mut keys = Vec::with_capacity(self.env.len());
+        for (name, value) in &self.env {
+            let key = env_key(id, name);
+            if value.is_empty() {
+                secrets.delete(&key);
+            } else if secrets.get(&key).as_deref() != Some(value.as_str()) {
+                secrets.set(&key, value)?;
+            }
+            keys.push(key);
+        }
+        forget_env(Some(secrets), id, &keys);
+        let names = self.env.keys().map(|name| (name.clone(), String::new())).collect();
+        Ok(Self { env: names, ..self.clone() }.write(path)?)
+    }
+}
+
+fn env_key(id: &str, name: &str) -> String {
+    format!("agent/{id}/env/{}", name.replace('%', "%25").replace('/', "%2F"))
+}
+
+/// Forgets agent `id`'s saved environment values, except `keep`.
+fn forget_env(secrets: Option<&dyn EnvSecrets>, id: &str, keep: &[String]) {
+    let Some(secrets) = secrets else { return };
+    for key in secrets.keys(&format!("agent/{id}/env/")) {
+        if !keep.contains(&key) {
+            secrets.delete(&key);
+        }
+    }
 }
 
 /// Built-in agents, then the `*.toml` agents of `custom_dir`; a custom agent with a
 /// built-in id replaces it.
-pub(crate) fn load(custom_dir: Option<&Path>) -> Vec<ProviderSpec> {
+pub(crate) fn load(custom_dir: Option<&Path>, secrets: Option<&dyn EnvSecrets>) -> Vec<ProviderSpec> {
     let mut specs = builtins();
     let mut files: Vec<PathBuf> = custom_dir
         .and_then(|d| std::fs::read_dir(d).ok())
@@ -464,7 +547,7 @@ pub(crate) fn load(custom_dir: Option<&Path>) -> Vec<ProviderSpec> {
     files.sort();
     for path in files {
         let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else { continue };
-        let agent = match CustomAgent::read(&path) {
+        let agent = match CustomAgent::read_with(&path, &id, secrets) {
             Ok(a) => a,
             Err(e) => {
                 tracing::warn!("skipping agent {}: {e}", path.display());
@@ -534,7 +617,7 @@ mod tests {
 
     #[test]
     fn qoder_global_and_cn_editions_are_both_built_in() {
-        let info = |id: &str| describe(&load(None).into_iter().find(|s| s.id == id).unwrap());
+        let info = |id: &str| describe(&load(None, None).into_iter().find(|s| s.id == id).unwrap());
         let (global, cn) = (info("qoder"), info("qodercn"));
         assert_eq!((global.name.as_str(), global.command.as_str()), ("Qoder", "qodercli --acp"));
         assert_eq!((cn.name.as_str(), cn.command.as_str()), ("Qoder CN", "qoderclicn --acp"));
@@ -544,7 +627,7 @@ mod tests {
     #[test]
     fn qodercn_is_available_without_a_file_and_preserves_existing_customizations() {
         let dir = tempfile::tempdir().unwrap();
-        let qodercn = load(None).into_iter().find(|s| s.id == "qodercn").unwrap();
+        let qodercn = load(None, None).into_iter().find(|s| s.id == "qodercn").unwrap();
         assert_eq!(qodercn.driver, Driver::Acp);
         assert!(!is_unlisted(&qodercn));
         let info = describe(&qodercn);
@@ -559,13 +642,13 @@ mod tests {
             "command = \"/custom/qoderclicn\"\nargs = [\"--acp\"]\n[env]\nK = \"v\"\n",
         )
         .unwrap();
-        let specs = load(Some(dir.path()));
+        let specs = load(Some(dir.path()), None);
         assert_eq!(specs.iter().filter(|s| s.id == "qodercn").count(), 1);
         let custom = specs.iter().find(|s| s.id == "qodercn").unwrap();
         assert_eq!(custom.command, "/custom/qoderclicn");
         assert_eq!(custom.env, [("K".into(), "v".into())]);
-        set_builtin_command(dir.path(), "qodercn", None).unwrap();
-        let reset = load(Some(dir.path())).into_iter().find(|s| s.id == "qodercn").unwrap();
+        set_builtin_command(dir.path(), None, "qodercn", None).unwrap();
+        let reset = load(Some(dir.path()), None).into_iter().find(|s| s.id == "qodercn").unwrap();
         assert_eq!(reset.command, "qoderclicn");
         assert_eq!(reset.args, ["--acp"]);
         assert_eq!(reset.env, custom.env);
@@ -680,7 +763,7 @@ mod tests {
     #[test]
     fn launch_metadata_distinguishes_defaults_overrides_and_read_only_agents() {
         let dir = tempfile::tempdir().unwrap();
-        let list = || load(Some(dir.path())).iter().map(describe).collect::<Vec<_>>();
+        let list = || load(Some(dir.path()), None).iter().map(describe).collect::<Vec<_>>();
         let defaults = list();
         let codex = defaults.iter().find(|p| p.id == "codex").unwrap();
         assert_eq!(codex.program, "codex");
@@ -700,14 +783,14 @@ mod tests {
                 p.id.ends_with("-acp").then_some(AgentCommandReadOnlyReason::PackageRunner)
             );
         }
-        set_builtin_command(dir.path(), "codex", Some("/path with spaces/codex")).unwrap();
+        set_builtin_command(dir.path(), None, "codex", Some("/path with spaces/codex")).unwrap();
         let overridden = list().into_iter().find(|p| p.id == "codex").unwrap();
         assert_eq!(overridden.program, "/path with spaces/codex");
         assert_eq!(overridden.args, codex.args);
         assert_eq!(overridden.default_program, codex.default_program);
         assert!(overridden.command_overridden && overridden.command_editable);
         assert_eq!(overridden.source, AgentSource::Builtin);
-        set_builtin_command(dir.path(), "codex", Some("codex")).unwrap();
+        set_builtin_command(dir.path(), None, "codex", Some("codex")).unwrap();
         assert!(!list().iter().find(|p| p.id == "codex").unwrap().command_overridden);
         std::fs::write(
             dir.path().join("gemini.toml"),
@@ -732,7 +815,7 @@ mod tests {
         write("mine.toml", "name = \"Mine\"\ncommand = \"/opt/mine\"\nargs = [\"acp\"]\n[env]\nK = \"v\"\n");
         write("gemini.toml", "command = \"gemini\"\nargs = [\"--acp\"]\n");
         write("broken.toml", "nope = 1\n");
-        let specs = load(Some(dir.path()));
+        let specs = load(Some(dir.path()), None);
         let mine = specs.iter().find(|s| s.id == "mine").unwrap();
         assert_eq!((mine.name.as_str(), mine.command.as_str()), ("Mine", "/opt/mine"));
         assert_eq!(mine.env, vec![("K".to_owned(), "v".to_owned())]);
@@ -748,34 +831,35 @@ mod tests {
     fn set_builtin_env_writes_and_clears_the_environment() {
         let dir = tempfile::tempdir().unwrap();
         let env = BTreeMap::from([("CLAUDE_CODE_ENTRYPOINT".to_owned(), "openidea".to_owned())]);
-        set_builtin_env(dir.path(), "claude", env.clone()).unwrap();
-        let claude = load(Some(dir.path())).into_iter().find(|s| s.id == "claude").unwrap();
+        set_builtin_env(dir.path(), None, "claude", env.clone()).unwrap();
+        let claude = load(Some(dir.path()), None).into_iter().find(|s| s.id == "claude").unwrap();
         assert_eq!(claude.env, vec![("CLAUDE_CODE_ENTRYPOINT".to_owned(), "openidea".to_owned())]);
         assert_eq!(describe(&claude).env, env);
         // The command override and the environment are kept independently.
-        set_builtin_command(dir.path(), "claude", Some("/opt/claude")).unwrap();
-        set_builtin_command(dir.path(), "claude", None).unwrap();
+        set_builtin_command(dir.path(), None, "claude", Some("/opt/claude")).unwrap();
+        set_builtin_command(dir.path(), None, "claude", None).unwrap();
         assert!(dir.path().join("claude.toml").is_file());
-        set_builtin_env(dir.path(), "claude", BTreeMap::new()).unwrap();
+        set_builtin_env(dir.path(), None, "claude", BTreeMap::new()).unwrap();
         assert!(!dir.path().join("claude.toml").exists());
-        set_builtin_env(dir.path(), "not-a-builtin", env).unwrap_err();
+        set_builtin_env(dir.path(), None, "not-a-builtin", env).unwrap_err();
     }
 
     #[test]
     fn acp_adapters_of_native_agents_are_unlisted_until_customized() {
         let dir = tempfile::tempdir().unwrap();
-        let unlisted = |dir: &Path| load(Some(dir)).into_iter().filter(is_unlisted).map(|s| s.id).collect::<Vec<_>>();
+        let unlisted =
+            |dir: &Path| load(Some(dir), None).into_iter().filter(is_unlisted).map(|s| s.id).collect::<Vec<_>>();
         assert_eq!(unlisted(dir.path()), ["claude-acp", "codex-acp"]);
-        set_builtin_env(dir.path(), "codex-acp", BTreeMap::from([("A".to_owned(), "1".to_owned())])).unwrap();
+        set_builtin_env(dir.path(), None, "codex-acp", BTreeMap::from([("A".to_owned(), "1".to_owned())])).unwrap();
         assert_eq!(unlisted(dir.path()), ["claude-acp"]);
     }
 
     #[test]
     fn set_builtin_command_overrides_and_clears_a_builtin() {
         let dir = tempfile::tempdir().unwrap();
-        set_builtin_command(dir.path(), "not-a-builtin", Some("/x")).unwrap_err();
-        set_builtin_command(dir.path(), "claude", Some("/opt/claude")).unwrap();
-        let claude = load(Some(dir.path())).into_iter().find(|s| s.id == "claude").unwrap();
+        set_builtin_command(dir.path(), None, "not-a-builtin", Some("/x")).unwrap_err();
+        set_builtin_command(dir.path(), None, "claude", Some("/opt/claude")).unwrap();
+        let claude = load(Some(dir.path()), None).into_iter().find(|s| s.id == "claude").unwrap();
         assert_eq!((claude.command.as_str(), claude.driver), ("/opt/claude", Driver::Claude));
         assert!(claude.args.is_empty());
         // A registry install is neither overwritten nor removed by a command override.
@@ -790,14 +874,14 @@ mod tests {
         }
         .write(&path)
         .unwrap();
-        set_builtin_command(dir.path(), "codex", Some("/x")).unwrap_err();
-        set_builtin_command(dir.path(), "codex", None).unwrap_err();
+        set_builtin_command(dir.path(), None, "codex", Some("/x")).unwrap_err();
+        set_builtin_command(dir.path(), None, "codex", None).unwrap_err();
         assert!(path.exists());
         // Clearing (twice) returns the built-in to auto-detection.
-        set_builtin_command(dir.path(), "claude", None).unwrap();
-        set_builtin_command(dir.path(), "claude", None).unwrap();
+        set_builtin_command(dir.path(), None, "claude", None).unwrap();
+        set_builtin_command(dir.path(), None, "claude", None).unwrap();
         assert!(!dir.path().join("claude.toml").exists());
-        assert_eq!(load(Some(dir.path())).iter().find(|s| s.id == "claude").unwrap().command, "claude");
+        assert_eq!(load(Some(dir.path()), None).iter().find(|s| s.id == "claude").unwrap().command, "claude");
     }
 
     #[test]
@@ -825,11 +909,11 @@ mod tests {
             }
             agent.write(&path).unwrap();
 
-            set_builtin_command(dir.path(), "claude", Some("/new/claude")).unwrap();
+            set_builtin_command(dir.path(), None, "claude", Some("/new/claude")).unwrap();
             agent.command = "/new/claude".into();
             assert_eq!(CustomAgent::read(&path).unwrap(), agent, "{field}");
 
-            set_builtin_command(dir.path(), "claude", None).unwrap();
+            set_builtin_command(dir.path(), None, "claude", None).unwrap();
             agent.command = "claude".into();
             assert_eq!(CustomAgent::read(&path).unwrap(), agent, "{field}");
         }
@@ -845,11 +929,11 @@ mod tests {
         )
         .unwrap();
 
-        set_builtin_command(dir.path(), "codex", None).unwrap();
+        set_builtin_command(dir.path(), None, "codex", None).unwrap();
 
         assert!(!path.exists());
         assert_eq!(
-            load(Some(dir.path())).into_iter().find(|s| s.id == "codex").unwrap(),
+            load(Some(dir.path()), None).into_iter().find(|s| s.id == "codex").unwrap(),
             builtin_spec("codex").unwrap()
         );
     }
@@ -870,7 +954,7 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("[registry]") && !text.contains("driver"), "{text}");
         assert_eq!(CustomAgent::read(&path).unwrap(), agent);
-        let spec = load(Some(path.parent().unwrap())).into_iter().find(|s| s.id == "amp-acp").unwrap();
+        let spec = load(Some(path.parent().unwrap()), None).into_iter().find(|s| s.id == "amp-acp").unwrap();
         assert_eq!(spec.source, AgentSource::Registry { version: "0.10.0".into(), update: None });
         assert!(toml::from_str::<CustomAgent>("command = \"x\"\n[registry]\nid = \"x\"\n").is_err());
     }
@@ -888,50 +972,117 @@ mod tests {
     #[test]
     fn custom_agents_save_list_and_remove() {
         let dir = tempfile::tempdir().unwrap();
-        save_custom(dir.path(), &custom_input("mine")).unwrap();
-        let mine = load(Some(dir.path())).into_iter().find(|s| s.id == "mine").unwrap();
+        save_custom(dir.path(), None, &custom_input("mine")).unwrap();
+        let mine = load(Some(dir.path()), None).into_iter().find(|s| s.id == "mine").unwrap();
         assert_eq!((mine.name.as_str(), mine.command.as_str()), ("Mine", "/opt/mine"));
         assert_eq!(mine.env, vec![("K".to_owned(), "v".to_owned())]);
         assert_eq!(mine.source, AgentSource::Custom);
-        remove_custom(dir.path(), "mine").unwrap();
-        assert!(!load(Some(dir.path())).iter().any(|s| s.id == "mine"));
-        remove_custom(dir.path(), "mine").unwrap_err();
+        remove_custom(dir.path(), None, "mine").unwrap();
+        assert!(!load(Some(dir.path()), None).iter().any(|s| s.id == "mine"));
+        remove_custom(dir.path(), None, "mine").unwrap_err();
     }
 
     #[test]
     fn custom_agents_refuse_builtin_registry_and_bad_ids() {
         let dir = tempfile::tempdir().unwrap();
-        save_custom(dir.path(), &custom_input("claude")).unwrap_err();
-        save_custom(dir.path(), &custom_input("../evil")).unwrap_err();
-        save_custom(dir.path(), &custom_input("")).unwrap_err();
+        save_custom(dir.path(), None, &custom_input("claude")).unwrap_err();
+        save_custom(dir.path(), None, &custom_input("../evil")).unwrap_err();
+        save_custom(dir.path(), None, &custom_input("")).unwrap_err();
         let mut empty_command = custom_input("mine");
         empty_command.command = "  ".into();
-        save_custom(dir.path(), &empty_command).unwrap_err();
-        save_custom(dir.path(), &custom_input("mine")).unwrap();
-        save_custom(dir.path(), &custom_input("mine")).unwrap_err();
-        remove_custom(dir.path(), "claude").unwrap_err();
+        save_custom(dir.path(), None, &empty_command).unwrap_err();
+        save_custom(dir.path(), None, &custom_input("mine")).unwrap();
+        save_custom(dir.path(), None, &custom_input("mine")).unwrap_err();
+        remove_custom(dir.path(), None, "claude").unwrap_err();
         // An id that isn't a plain file stem never reaches outside the agents directory.
         let outside = dir.path().join("outside.toml");
         std::fs::write(&outside, "command = \"/bin/sh\"\n").unwrap();
         let agents = dir.path().join("agents");
         std::fs::create_dir(&agents).unwrap();
-        remove_custom(&agents, "../outside").unwrap_err();
+        remove_custom(&agents, None, "../outside").unwrap_err();
         assert!(outside.exists());
         std::fs::write(
             dir.path().join("amp-acp.toml"),
             "command = \"/registry/amp\"\n[registry]\nid = \"amp-acp\"\nversion = \"1.0\"\n",
         )
         .unwrap();
-        save_custom(dir.path(), &custom_input("amp-acp")).unwrap_err();
-        remove_custom(dir.path(), "amp-acp").unwrap_err();
+        save_custom(dir.path(), None, &custom_input("amp-acp")).unwrap_err();
+        remove_custom(dir.path(), None, "amp-acp").unwrap_err();
+    }
+
+    #[derive(Default)]
+    struct MemorySecrets(parking_lot::Mutex<BTreeMap<String, String>>);
+
+    impl EnvSecrets for MemorySecrets {
+        fn get(&self, key: &str) -> Option<String> {
+            self.0.lock().get(key).cloned()
+        }
+        fn set(&self, key: &str, value: &str) -> IdeResult<()> {
+            self.0.lock().insert(key.to_owned(), value.to_owned());
+            Ok(())
+        }
+        fn delete(&self, key: &str) {
+            self.0.lock().remove(key);
+        }
+        fn keys(&self, prefix: &str) -> Vec<String> {
+            self.0.lock().keys().filter(|k| k.starts_with(prefix)).cloned().collect()
+        }
+    }
+
+    #[test]
+    fn environment_values_go_to_the_secrets_and_the_files_keep_the_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = MemorySecrets::default();
+        let s = Some(&secrets as &dyn EnvSecrets);
+        let env = BTreeMap::from([("API_KEY".to_owned(), "v-91f".to_owned()), ("A/B".to_owned(), String::new())]);
+        set_builtin_env(dir.path(), s, "claude", env.clone()).unwrap();
+        save_custom(dir.path(), s, &CustomAgentInput { env: env.clone(), ..custom_input("mine") }).unwrap();
+        for id in ["claude", "mine"] {
+            let text = std::fs::read_to_string(dir.path().join(format!("{id}.toml"))).unwrap();
+            assert!(text.contains("API_KEY") && !text.contains("v-91f"), "{text}");
+            let spec = load(Some(dir.path()), s).into_iter().find(|p| p.id == id).unwrap();
+            assert_eq!(describe(&spec).env, env);
+        }
+        assert_eq!(secrets.keys("agent/"), ["agent/claude/env/API_KEY", "agent/mine/env/API_KEY"]);
+
+        set_builtin_command(dir.path(), s, "claude", Some("/opt/claude")).unwrap();
+        assert_eq!(secrets.get("agent/claude/env/API_KEY").as_deref(), Some("v-91f"));
+        set_builtin_env(dir.path(), s, "claude", BTreeMap::from([("OTHER".to_owned(), "x".to_owned())])).unwrap();
+        assert_eq!(secrets.keys("agent/claude/"), ["agent/claude/env/OTHER"]);
+        set_builtin_command(dir.path(), s, "claude", None).unwrap();
+        set_builtin_env(dir.path(), s, "claude", BTreeMap::new()).unwrap();
+        remove_custom(dir.path(), s, "mine").unwrap();
+        assert_eq!(secrets.keys("agent/"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn values_written_in_agent_files_move_to_the_secrets_unless_installed_from_the_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = MemorySecrets::default();
+        let s = Some(&secrets as &dyn EnvSecrets);
+        std::fs::write(dir.path().join("mine.toml"), "command = \"/opt/mine\"\n[env]\nK = \"v-91f\"\nS = \"\"\n")
+            .unwrap();
+        secrets.set("agent/mine/env/S", "saved").unwrap();
+        let registry =
+            "command = \"/registry/amp\"\n[env]\nR = \"1\"\n[registry]\nid = \"amp-acp\"\nversion = \"1.0\"\n";
+        std::fs::write(dir.path().join("amp-acp.toml"), registry).unwrap();
+        let specs = load(Some(dir.path()), s);
+        assert_eq!(
+            specs.iter().find(|p| p.id == "mine").unwrap().env,
+            [("K".to_owned(), "v-91f".to_owned()), ("S".to_owned(), "saved".to_owned())]
+        );
+        assert!(!std::fs::read_to_string(dir.path().join("mine.toml")).unwrap().contains("v-91f"));
+        assert_eq!(secrets.keys("agent/"), ["agent/mine/env/K", "agent/mine/env/S"]);
+        assert_eq!(std::fs::read_to_string(dir.path().join("amp-acp.toml")).unwrap(), registry);
     }
 
     #[test]
     fn acp_json_imports_servers_and_skips_collisions() {
         let dir = tempfile::tempdir().unwrap();
-        save_custom(dir.path(), &custom_input("taken")).unwrap();
+        save_custom(dir.path(), None, &custom_input("taken")).unwrap();
         let outcomes = import_acp(
             dir.path(),
+            None,
             r#"{"agent_servers": {
                 "My Agent!": {"command": "/opt/agent", "args": ["--acp"], "env": {"K": "v"}},
                 "taken": {"command": "/opt/taken"},
@@ -944,10 +1095,10 @@ mod tests {
         let saved: Vec<&str> = outcomes.iter().filter(|o| o.saved).map(|o| o.id.as_str()).collect();
         assert_eq!(saved, ["my-agent"]);
         assert!(outcomes.iter().filter(|o| !o.saved).all(|o| !o.reason.is_empty()));
-        let mine = load(Some(dir.path())).into_iter().find(|s| s.id == "my-agent").unwrap();
+        let mine = load(Some(dir.path()), None).into_iter().find(|s| s.id == "my-agent").unwrap();
         assert_eq!((mine.name.as_str(), mine.command.as_str()), ("My Agent!", "/opt/agent"));
         assert_eq!(mine.source, AgentSource::Custom);
-        import_acp(dir.path(), "not json").unwrap_err();
-        assert!(import_acp(dir.path(), "{}").unwrap().is_empty());
+        import_acp(dir.path(), None, "not json").unwrap_err();
+        assert!(import_acp(dir.path(), None, "{}").unwrap().is_empty());
     }
 }

@@ -2,9 +2,16 @@
 @import "@fontsource-variable/jetbrains-mono";
 @import "./tokens.css";
 
-/* Monochrome icons default to the theme icon grey; callers override for selected / disabled. */
+/* Monochrome icons default to the theme icon grey; callers override for selected / disabled.
+   Programming ligatures follow `editor.ligatures` (`data-ligatures`), inherited by every mono
+   preview (Find results, Usages, …). */
 :root {
   --icon-color: var(--fg-icon);
+  font-variant-ligatures: none;
+}
+
+:root[data-ligatures] {
+  font-variant-ligatures: normal;
 }
 
 *,
