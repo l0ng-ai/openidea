@@ -89,30 +89,47 @@ class BlameWidget extends WidgetType {
   private appliedWidth = -1;
   private observer: MutationObserver | undefined;
 
-  constructor(readonly line: BlameLine) {
+  constructor(
+    readonly line: BlameLine,
+    /** The annotated line has no text: no gap before the label, or the caret would look indented. */
+    readonly blank: boolean,
+  ) {
     super();
   }
 
   eq(other: BlameWidget) {
-    return formatInlineBlame(other.line) === formatInlineBlame(this.line) && other.line.commit === this.line.commit;
+    return (
+      this.blank === other.blank &&
+      formatInlineBlame(other.line) === formatInlineBlame(this.line) &&
+      other.line.commit === this.line.commit
+    );
   }
 
   /**
-   * A code-vision hint drawn at the line end is out of flow (see codeLens.ts), so it does not make
-   * room for itself: step the blame past its measured width, as IDEA lays its line-end inlays out.
-   * The hint can also appear (or go away) after this widget mounted, hence the observer below.
+   * A code-vision hint drawn at the line end is out of flow (see codeLens.ts), so it does not
+   * make room for itself: step the label past its measured width, as IDEA lays its line-end
+   * inlays out. The hint can also appear (or go away) after this widget mounted, hence the
+   * observer below.
    */
-  private stepPastHint(el: HTMLElement) {
-    const hint = el.closest(".cm-line")?.querySelector<HTMLElement>(".cm-openidea-lensInlineInner");
+  private stepPastLineEnd(el: HTMLElement) {
+    const line = el.closest(".cm-line");
+    if (!line) return;
+    const hint = line.querySelector<HTMLElement>(".cm-openidea-lensInlineInner");
     const width = hint ? Math.round(hint.getBoundingClientRect().width) : 0;
     if (width === this.appliedWidth) return;
     this.appliedWidth = width;
-    el.style.marginLeft = width ? `calc(3ch + ${width}px)` : "";
+    // Padding, not margin: the gap is virtual (it only moves the label), so the caret at the
+    // line end stays next to the code. A blank line has no code to separate from: no gap.
+    el.style.paddingLeft = this.blank ? "0" : width ? `calc(3ch + ${width}px)` : "";
+    // The label's box spans the virtual gap, but only its text is the blame: clip the hover and
+    // click region to the text so a pointer over the gap (where the lens message sits) does not
+    // open the commit tooltip.
+    el.style.clipPath = width ? `inset(0 0 0 ${width}px)` : "";
   }
 
   toDOM() {
     const el = document.createElement("span");
-    el.className = "cm-vcs-inline-blame";
+    el.className = this.blank ? "cm-vcs-inline-blame cm-vcs-inline-blame-blank" : "cm-vcs-inline-blame";
     for (const segment of inlineBlameSegments(this.line)) {
       const part = document.createElement("span");
       part.className = `cm-vcs-inline-blame-${segment.key}`;
@@ -124,11 +141,11 @@ class BlameWidget extends WidgetType {
     // nested frame, so a widget that goes away first simply skips.
     setTimeout(() => {
       if (!el.isConnected) return;
-      this.stepPastHint(el);
+      this.stepPastLineEnd(el);
       const line = el.closest(".cm-line");
       if (!line) return;
-      this.observer = new MutationObserver(() => this.stepPastHint(el));
-      this.observer.observe(line, { childList: true, subtree: true });
+      this.observer = new MutationObserver(() => this.stepPastLineEnd(el));
+      this.observer.observe(line, { childList: true, subtree: true, characterData: true });
     }, 0);
     if (!isUncommitted(this.line)) {
       el.setAttribute("role", "button");
@@ -173,10 +190,20 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
       private readonly off: (() => void)[];
       private generation = 0;
       private destroyed = false;
+      /** The element the pointer last moved over; the hover belongs to the label alone. */
+      hoverTarget: EventTarget | null = null;
       line: BlameLine | undefined;
 
       constructor(readonly view: EditorView) {
+        // Record the real pointer target: CodeMirror resolves a hover over any line-end
+        // widget (a plugin lens, a code-vision hint) to the same offset as the blame, so
+        // position alone cannot tell the label apart from its neighbours.
+        const onMove = (e: MouseEvent) => {
+          this.hoverTarget = e.target;
+        };
+        view.dom.addEventListener("mousemove", onMove);
         this.off = [
+          () => view.dom.removeEventListener("mousemove", onMove),
           useVcs.subscribe((s, prev) => {
             if (s.version !== prev.version) this.invalidate();
           }),
@@ -249,7 +276,11 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
             return;
           this.line = lines[caret.number - 1];
           if (this.line) {
-            const widget = Decoration.widget({ widget: new BlameWidget(this.line), side: 1 }).range(caret.to);
+            const widget = Decoration.widget({
+              widget: new BlameWidget(this.line, caret.text.trim().length === 0),
+              // After a plugin's line-end message (side 1): git hint | lens | blame.
+              side: 2,
+            }).range(caret.to);
             this.view.dispatch({ effects: setInlineBlame.of(Decoration.set([widget])) });
           }
         } catch {
@@ -297,6 +328,10 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
         const line = instance?.line;
         const end = view.state.doc.lineAt(view.state.selection.main.head).to;
         if (!instance || !line || pos !== end || side < 0) return null;
+        // The lens and other line-end widgets share the blame's offset, so a hover over
+        // them resolves here too; only the label itself opens the commit tooltip.
+        const target = instance.hoverTarget;
+        if (!(target instanceof Element) || !target.closest(".cm-vcs-inline-blame")) return null;
         const message = await instance.message(line);
         if (view.plugin(plugin)?.line !== line) return null;
         return {
@@ -319,11 +354,8 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
     ),
     EditorView.baseTheme({
       ".cm-vcs-inline-blame": {
-        marginLeft: "3ch",
+        paddingLeft: "3ch",
         display: "inline-block",
-        maxWidth: "min(60ch, 50vw)",
-        overflow: "hidden",
-        textOverflow: "ellipsis",
         whiteSpace: "nowrap",
         verticalAlign: "bottom",
         userSelect: "none",
@@ -356,6 +388,9 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
         fontStyle: "var(--git-blame-issue-italic, inherit)",
         textDecoration: "var(--git-blame-issue-effect, none)",
       },
+      // An empty line has no code to separate from: the label sits at the line start, so the
+      // caret stays at column 0 instead of jumping past the gap.
+      ".cm-vcs-inline-blame-blank": { paddingLeft: "0" },
       '.cm-vcs-inline-blame[role="button"]': { cursor: "pointer" },
       ".cm-vcs-inline-blame-tooltip": {
         padding: "8px 12px",
