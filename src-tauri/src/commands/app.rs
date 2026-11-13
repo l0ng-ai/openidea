@@ -227,6 +227,7 @@ pub async fn settings_export(
     path: PathBuf,
     storage: std::collections::BTreeMap<String, String>,
 ) -> IdeResult<()> {
+    ide_host::ops::agent::move_user_mcp_values(&state.host);
     state.global_settings.export_bundle(&path, storage)
 }
 
@@ -244,6 +245,7 @@ pub struct SettingsImport {
 #[specta::specta]
 pub async fn settings_import(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<SettingsImport> {
     let (_, storage) = state.global_settings.import_bundle(&path)?;
+    ide_host::ops::agent::move_user_mcp_values(&state.host);
     for project in state.projects() {
         let effective = project.settings.reload();
         project
