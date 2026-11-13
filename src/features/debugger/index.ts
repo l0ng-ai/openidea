@@ -57,7 +57,7 @@ export function activate(): () => void {
   useDebugRunSessions.setState({
     Console: lazyComponent(() => import("./ui/DebugConsole").then((m) => m.DebugServiceConsole)),
   });
-  loadWatches();
+  loadWatches(useProject.getState().project?.root ?? null);
   publishContext();
   loadBreakpoints(useProject.getState().project?.root ?? null);
   loadExceptionBreakpoints(useProject.getState().project?.root ?? null);
@@ -136,6 +136,7 @@ export function activate(): () => void {
       const root = s.project?.root ?? null;
       if (root !== (prev.project?.root ?? null) || s.project?.trusted !== prev.project?.trusted) {
         resetSessions();
+        loadWatches(root);
         loadBreakpoints(root);
         loadExceptionBreakpoints(root);
         loadSpecialBreakpoints(root);
