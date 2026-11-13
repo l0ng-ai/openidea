@@ -4189,6 +4189,8 @@ fn decoration_style(style: &str) -> bool {
             | "warning"
             | "error"
             | "info"
+            | "typo"
+            | "weak"
             | "underline"
             | "strikethrough"
             | "muted"
@@ -4353,6 +4355,29 @@ mod workbench_tests {
         }
         api.shared.clear_plugin("test", true);
         assert!(api.shared.decoration_sets().is_empty());
+    }
+    #[test]
+    fn decoration_styles_keep_the_severity_palette_the_editor_renders() {
+        // Inspection Lens colours typos and weak warnings with their own styles; the
+        // host must keep them, not silently drop them the way an unknown style is dropped.
+        for style in [
+            "highlight",
+            "search",
+            "added",
+            "modified",
+            "removed",
+            "warning",
+            "error",
+            "info",
+            "typo",
+            "weak",
+            "underline",
+            "strikethrough",
+            "muted",
+        ] {
+            assert!(decoration_style(style), "{style} should be a known style");
+        }
+        assert!(!decoration_style("unknown"));
     }
     fn git(root: &Path, args: &[&str]) {
         let out = StdCommand::new("git").current_dir(root).args(args).output().unwrap();
