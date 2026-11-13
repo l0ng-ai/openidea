@@ -1412,6 +1412,9 @@ impl PhpEngine {
     }
 }
 
+/// How many files a call-site lookup reads for one parameter.
+const CALL_SITE_FILES: usize = 16;
+
 /// Project declarations from the open buffers and the indexes, then the
 /// bundled stubs.
 impl Declarations for PhpEngine {
@@ -1515,6 +1518,65 @@ impl Declarations for PhpEngine {
             Some(config) => crate::frameworks::laravel::auth::user_models(&config, &|path| self.text_of(path)),
             None => Default::default(),
         }
+    }
+
+    /// Reads the files of the class and of its subclasses (at most
+    /// [`CALL_SITE_FILES`]), and for a public method the indexed files
+    /// naming it when they are no more than that.
+    fn call_site_types(&self, site: &crate::types::expr::CallSiteParam<'_>, public: bool, depth: u8) -> Vec<Type> {
+        let Some(index) = self.index() else { return Vec::new() };
+        let mut files: Vec<PathBuf> = Vec::new();
+        let add = |path: PathBuf, files: &mut Vec<PathBuf>| {
+            if !files.contains(&path) {
+                files.push(path);
+            }
+        };
+        let mut classes = vec![site.class.to_owned()];
+        let mut next = 0;
+        while next < classes.len() && classes.len() <= CALL_SITE_FILES {
+            let class = classes[next].clone();
+            next += 1;
+            for decl in index.declarations(NameKind::ClassLike, &class).unwrap_or_default() {
+                add(decl.path(), &mut files);
+            }
+            for decl in index.direct_subclasses(&class).unwrap_or_default() {
+                if !classes.contains(&decl.fqn) {
+                    classes.push(decl.fqn);
+                }
+            }
+        }
+        if public {
+            let naming = index.files_with_word(site.method).unwrap_or_default();
+            if naming.len() <= CALL_SITE_FILES {
+                for path in naming {
+                    add(path, &mut files);
+                }
+            }
+        }
+        files.truncate(CALL_SITE_FILES);
+        let documents = self.open_documents();
+        let resolver = self.resolver();
+        let mut out = Vec::new();
+        for path in files {
+            if crate::frameworks::laravel::views::is_blade(&path) {
+                continue;
+            }
+            let open = documents.iter().find(|document| document.path == path);
+            let parsed = match open {
+                Some(document) => self.parse_open(document),
+                None => {
+                    let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                    Arc::new(ParsedFile::parse(&crate::index::path_key(&path), text.as_str()))
+                }
+            };
+            let names = crate::names::FileNames::resolve(&parsed);
+            let summary = FileSummary::extract(&parsed);
+            let types = crate::types::ExprTypes::new(&parsed, &names, &summary, &resolver)
+                .at_path(Some(&path))
+                .with_call_site_depth(depth);
+            crate::types::expr::call_site_arguments(&types, site, &mut out);
+        }
+        out
     }
 
     /// From the index (open buffers not saved yet aren't looked at).

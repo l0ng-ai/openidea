@@ -55,7 +55,9 @@ up from the file watcher. A changed `composer.json` reloads the layout.
   narrowing with `@phpstan-assert`), `@property`, `@method` and `@mixin`,
   `.phpstorm.meta.php` overrides, and PHPUnit test doubles. Variable types follow
   the code: assignments, `instanceof` and `is_*` checks, null checks, `assert()`,
-  `match (true)` and inline `/** @var */`.
+  `match (true)` and inline `/** @var */`. A parameter that has no type and no
+  `@param` is shown with the types its callers pass (hover says so); this is a
+  guess for completion and navigation, and inspections don't rely on it.
 - **Inspections:** syntax errors; undefined classes, functions, constants,
   methods, properties and variables; wrong argument counts and type mismatches;
   unused imports, variables, parameters and private members; unreachable code

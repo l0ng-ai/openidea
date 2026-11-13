@@ -177,7 +177,9 @@ pub(crate) enum Subject {
     Decls(Vec<Decl>),
     /// A local variable, its type at the caret, and where it is declared in
     /// this file.
-    Variable { name: String, ty: Type, declarations: Vec<Loc> },
+    /// `from_callers`: a parameter nothing types, with the types its callers
+    /// pass.
+    Variable { name: String, ty: Type, declarations: Vec<Loc>, from_callers: bool },
 }
 
 /// What [`PhpEngine::at_caret`] finds.
@@ -202,7 +204,7 @@ impl PhpEngine {
     ) -> Option<AtCaret> {
         let names = FileNames::resolve(parsed);
         let path = self.parsed_path(parsed);
-        let types = ExprTypes::new(parsed, &names, here, resolver).at_path(path.as_deref());
+        let types = ExprTypes::new(parsed, &names, here, resolver).at_path(path.as_deref()).with_call_sites();
         let lookup = Lookup { parsed, names: &names, here, resolver, types: &types };
         let name_at = |offset: u32| names.at_offset(offset).filter(|name| name.kind != NameKind::Namespace);
         if let Some(name) = name_at(offset) {
@@ -813,7 +815,7 @@ impl<'a> Lookup<'a, '_> {
                 };
                 // Shown as `$this->name()`; not a variable any scope has.
                 let name = if method { format!("this->{name}()") } else { format!("this->{name}") };
-                let subject = Subject::Variable { name, ty, declarations: vec![loc] };
+                let subject = Subject::Variable { name, ty, declarations: vec![loc], from_callers: false };
                 Some(AtCaret { range, subject, context: self.types.context(frames) })
             }
             crate::types::expr::AnonymousMember::Parent(parent) => {
@@ -877,7 +879,9 @@ impl<'a> Lookup<'a, '_> {
             })
             .into_iter()
             .collect();
-        Some(AtCaret { range, subject: Subject::Variable { name: lossy(name), ty, declarations }, context })
+        let name = lossy(name);
+        let from_callers = self.types.typed_by_callers(&name);
+        Some(AtCaret { range, subject: Subject::Variable { name, ty, declarations, from_callers }, context })
     }
 
     /// Where `$name` is declared in the scope `frames` end in.

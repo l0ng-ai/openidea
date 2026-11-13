@@ -352,3 +352,66 @@ namespace App {
     let mut p = Project::new(&[("src/lib.php", lib), ("src/clear.php", source)]);
     assert_eq!(p.definition("src/clear.php", source).expect("handled"), [target("src/lib.php", 12, "delete")]);
 }
+
+const CALL_SITE_LIB: &str = "<?php\n\nclass Item\n{\n    public function title(): string { return ''; }\n}\n\nclass Other\n{\n    public function label(): string { return ''; }\n}\n";
+
+#[test]
+fn an_untyped_parameter_takes_what_its_callers_pass() {
+    // A private method: the callers in the file.
+    let private = "<?php\n\nclass Printer\n{\n    public function run(): void\n    {\n        $this->show(new Item());\n        $this->show(null);\n    }\n\n    private function show($item): void\n    {\n        $item->tit/*|*/le();\n    }\n}\n";
+    let mut p = Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/Printer.php", private)]);
+    assert_eq!(p.definition("src/Printer.php", private).expect("handled"), [target("src/lib.php", 4, "title")]);
+    // A declared type, or a `@param`, is never overridden.
+    let hinted = private.replace("private function show($item)", "private function show(Other $item)");
+    assert_eq!(p.definition("src/Printer.php", &hinted).expect("handled"), []);
+    // Two classes: both; more than four different types: none.
+    let two = private.replace("$this->show(null);", "$this->show(new Other());").replace("tit/*|*/le", "la/*|*/bel");
+    assert_eq!(p.definition("src/Printer.php", &two).expect("handled"), [target("src/lib.php", 9, "label")]);
+    let many = private.replace(
+        "$this->show(null);",
+        "$this->show(new Other()); $this->show(1); $this->show('a'); $this->show(1.5); $this->show([]);",
+    );
+    assert_eq!(p.definition("src/Printer.php", &many).expect("handled"), []);
+    // A spread argument says nothing.
+    let spread = private.replace("$this->show(new Item());", "$this->show(...[new Item()]);");
+    assert_eq!(p.definition("src/Printer.php", &spread).expect("handled"), []);
+}
+
+#[test]
+fn callers_in_the_hierarchy_and_in_the_project_type_a_parameter() {
+    // A protected method called from a subclass in another file.
+    let base = "<?php\n\nabstract class Report\n{\n    protected function line($item): string\n    {\n        return $item->tit/*|*/le();\n    }\n}\n";
+    let child = "<?php\n\nclass ItemReport extends Report\n{\n    public function build(): string\n    {\n        return $this->line(new Item());\n    }\n}\n";
+    let mut p =
+        Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/Report.php", base), ("src/ItemReport.php", child)]);
+    assert_eq!(p.definition("src/Report.php", base).expect("handled"), [target("src/lib.php", 4, "title")]);
+    // A public method called on a typed receiver anywhere in the project.
+    let service = "<?php\n\nclass Renderer\n{\n    public function render($item): string\n    {\n        return $item->tit/*|*/le();\n    }\n}\n";
+    let caller =
+        "<?php\n\nfunction show(Renderer $renderer): string\n{\n    return $renderer->render(new Item());\n}\n";
+    let mut p =
+        Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/Renderer.php", service), ("src/show.php", caller)]);
+    assert_eq!(p.definition("src/Renderer.php", service).expect("handled"), [target("src/lib.php", 4, "title")]);
+    // A caller of another class's method of the same name doesn't count.
+    let unrelated = caller.replace("Renderer $renderer", "Other $renderer");
+    let mut p =
+        Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/Renderer.php", service), ("src/show.php", &unrelated)]);
+    assert_eq!(p.definition("src/Renderer.php", service).expect("handled"), []);
+}
+
+#[test]
+fn hover_says_a_parameters_type_comes_from_its_callers() {
+    let source = "<?php\n\nclass Printer\n{\n    public function run(): void\n    {\n        $this->show(new Item());\n    }\n\n    private function show($item): void\n    {\n        echo $it/*|*/em->title();\n    }\n}\n";
+    let mut p = Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/Printer.php", source)]);
+    let (text, pos) = caret(source);
+    let doc = p.open("src/Printer.php", &text);
+    let hover = p.engine.hover(doc, pos).expect("a hover").markdown;
+    assert!(hover.contains("Item $item"), "{hover}");
+    assert!(hover.contains("inferred from the arguments its callers pass"), "{hover}");
+    // A declared parameter says nothing of the kind.
+    let declared = source.replace("show($item)", "show(Item $item)");
+    let (text, pos) = caret(&declared);
+    let doc = p.open("src/Printer.php", &text);
+    let hover = p.engine.hover(doc, pos).expect("a hover").markdown;
+    assert!(hover.contains("Item $item") && !hover.contains("inferred"), "{hover}");
+}

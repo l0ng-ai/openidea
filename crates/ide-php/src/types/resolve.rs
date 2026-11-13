@@ -130,6 +130,13 @@ pub trait Declarations {
     fn user_models(&self) -> UserModels {
         UserModels::default()
     }
+    /// The types callers outside the asking file pass for parameter `site`
+    /// (see [`crate::types::expr::call_site_arguments`]): in the hierarchy of
+    /// its class, and for a `public` method in the files naming it. `depth`
+    /// is how deep the lookup is already.
+    fn call_site_types(&self, _site: &crate::types::expr::CallSiteParam<'_>, _public: bool, _depth: u8) -> Vec<Type> {
+        Vec::new()
+    }
     /// The class-likes with short name `name` (any case), by FQN.
     fn classes_named(&self, _name: &str) -> Vec<String> {
         Vec::new()
@@ -226,6 +233,9 @@ enum Key {
     MagicProperty(String, String),
     /// Lower-case class, constant name as declared.
     ClassConstant(String, String),
+    /// What callers pass for a parameter: lower-case class and method, the
+    /// parameter's position.
+    CallSite(String, String, usize),
     /// Not a declaration: marks a chain cut by [`MAX_DEPTH`], so nothing
     /// above it is cached.
     Depth,
@@ -492,6 +502,18 @@ impl<'a> Resolver<'a> {
     /// The class-likes that directly extend or implement `fqn`, by FQN.
     pub fn direct_subclasses(&self, fqn: &str) -> Vec<String> {
         self.decls.direct_subclasses(fqn)
+    }
+
+    /// What callers in other files pass for parameter `site`
+    /// ([`Declarations::call_site_types`]), cached for the modification
+    /// counter.
+    pub fn call_site_types(&self, site: &crate::types::expr::CallSiteParam<'_>, public: bool, depth: u8) -> Vec<Type> {
+        let key = Key::CallSite(site.class.to_ascii_lowercase(), site.method.to_ascii_lowercase(), site.index);
+        let found = self.cached(key, || Some(Type::union(self.decls.call_site_types(site, public, depth))));
+        match found {
+            Some(ty) if ty != Type::Mixed => ty.members().to_vec(),
+            _ => Vec::new(),
+        }
     }
 
     /// The class-likes with short name `name` (any case), by FQN.

@@ -658,6 +658,7 @@ impl<'e, 'r> Collector<'e, 'r> {
         let names = FileNames::resolve(&probe);
         let summary = FileSummary::extract(&probe);
         let types = ExprTypes::new(&probe, &names, &summary, self.resolver)
+            .with_call_sites()
             .at_path(self.engine.parsed_path(self.parsed).as_deref());
         let Some((expr, frames)) = types.locate(start as u32).expression else { return };
         let context = types.context(&frames);
@@ -876,6 +877,7 @@ impl<'e, 'r> Collector<'e, 'r> {
         let names = FileNames::resolve(&probe);
         let summary = FileSummary::extract(&probe);
         let types = ExprTypes::new(&probe, &names, &summary, self.resolver)
+            .with_call_sites()
             .at_path(self.engine.parsed_path(self.parsed).as_deref());
         let located = types.locate(dollar as u32);
         let Some((_, frames)) = located.variable.filter(|(v, _)| v.span.start.offset == dollar as u32) else {
@@ -949,6 +951,7 @@ impl<'e, 'r> Collector<'e, 'r> {
         let names = FileNames::resolve(&probe);
         let summary = FileSummary::extract(&probe);
         let types = ExprTypes::new(&probe, &names, &summary, self.resolver)
+            .with_call_sites()
             .at_path(self.engine.parsed_path(self.parsed).as_deref());
         let mut sites = Sites { probe: start as u32, ..Sites::default() };
         SiteWalker.walk_program(probe.program(), &mut sites);
@@ -1094,6 +1097,7 @@ impl<'e, 'r> Collector<'e, 'r> {
         let names = FileNames::resolve(probe);
         let summary = FileSummary::extract(probe);
         let types = ExprTypes::new(probe, &names, &summary, self.resolver)
+            .with_call_sites()
             .at_path(self.engine.parsed_path(self.parsed).as_deref());
         let mut sites = Sites { probe: start as u32, ..Sites::default() };
         SiteWalker.walk_program(probe.program(), &mut sites);

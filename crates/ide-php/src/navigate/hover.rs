@@ -357,7 +357,11 @@ impl PhpEngine {
         }
         let found = self.at_caret(&parsed, &here, &resolver, offset)?;
         let markdown = match &found.subject {
-            Subject::Variable { name, ty, .. } => render(None, &format!("{ty} ${name}"), None),
+            Subject::Variable { name, ty, from_callers, .. } => {
+                // A guess the declaration doesn't make: say where it is from.
+                let note = from_callers.then(|| "Type inferred from the arguments its callers pass.".to_owned());
+                render(None, &format!("{ty} ${name}"), note)
+            }
             Subject::Decls(decls) => self.describe(decls.first()?, &resolver, &path, &here)?,
         };
         Some(HoverInfo { markdown, range: found.range })

@@ -164,6 +164,15 @@ pub struct ExprTypes<'a, 'r> {
     pest_properties: RefCell<HashMap<String, Option<Type>>>,
     /// The classes using each trait of the file asked about so far.
     trait_hosts: RefCell<HashMap<String, Vec<String>>>,
+    /// Set ([`Self::with_call_sites`]) when untyped parameters take the
+    /// types their callers pass: how deep this analysis is in such a
+    /// lookup already.
+    call_sites: Option<u8>,
+    /// The parameters whose callers are being looked at (class, method and
+    /// position), against cycles.
+    call_site_busy: RefCell<Vec<(String, String, usize)>>,
+    /// The names of the parameters typed from their callers so far.
+    call_site_typed: RefCell<Vec<String>>,
 }
 
 const TOP_LEVEL: u32 = u32::MAX - 1;
@@ -191,6 +200,9 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             pest: std::cell::OnceCell::new(),
             pest_properties: RefCell::new(HashMap::new()),
             trait_hosts: RefCell::new(HashMap::new()),
+            call_sites: None,
+            call_site_busy: RefCell::new(Vec::new()),
+            call_site_typed: RefCell::new(Vec::new()),
         }
     }
 
@@ -199,6 +211,62 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
     pub fn at_path(mut self, path: Option<&std::path::Path>) -> Self {
         self.path = path.map(std::path::Path::to_path_buf);
         self
+    }
+
+    /// Whether a parameter named `name` (without `$`) got its type from its
+    /// callers in what was asked so far.
+    pub(crate) fn typed_by_callers(&self, name: &str) -> bool {
+        self.call_site_typed.borrow().iter().any(|typed| typed == name)
+    }
+
+    /// The same, with a parameter that has no type, no `@param` and nothing
+    /// from the method it overrides taking the types its callers pass
+    /// ([`Self::call_site_parameter`]). A guess: for what the editor shows
+    /// (completion, hover, navigation), never for inspections.
+    pub fn with_call_sites(self) -> Self {
+        self.with_call_site_depth(0)
+    }
+
+    /// [`Self::with_call_sites`] for an analysis that is itself part of
+    /// such a lookup, `depth` levels down.
+    pub(crate) fn with_call_site_depth(mut self, depth: u8) -> Self {
+        self.call_sites = Some(depth);
+        self
+    }
+
+    /// The type of parameter `index` of `method` of `class` from the
+    /// arguments its callers pass: those in this file, and (not for a
+    /// private method) those the declarations find in the class's
+    /// hierarchy and, for a public method, in the files naming it. The
+    /// union of the known ones when they are at most
+    /// [`MAX_CALL_SITE_TYPES`] different types (`null` aside).
+    fn call_site_parameter(&self, class: &ClassLike, method: &crate::summary::Method, index: usize) -> Option<Type> {
+        let depth = self.call_sites?;
+        if depth >= MAX_CALL_SITE_DEPTH {
+            return None;
+        }
+        let param = method.params.get(index)?;
+        let key = (class.fqn.to_ascii_lowercase(), method.name.to_ascii_lowercase(), index);
+        if self.call_site_busy.borrow().contains(&key) {
+            return None;
+        }
+        self.call_site_busy.borrow_mut().push(key);
+        let site = CallSiteParam { class: &class.fqn, method: &method.name, index, name: &param.name };
+        let mut found = Vec::new();
+        call_site_arguments(self, &site, &mut found);
+        if method.visibility != crate::summary::Visibility::Private {
+            let public = method.visibility == crate::summary::Visibility::Public;
+            found.extend(self.resolver.call_site_types(&site, public, depth + 1));
+        }
+        self.call_site_busy.borrow_mut().pop();
+        let mut types: Vec<Type> = Vec::new();
+        for ty in found.iter().flat_map(|ty| ty.members()) {
+            if *ty != Type::Mixed && !types.contains(ty) {
+                types.push(ty.clone());
+            }
+        }
+        let known = types.iter().filter(|ty| **ty != Type::Null).count();
+        (1..=MAX_CALL_SITE_TYPES).contains(&known).then(|| Type::union(types))
     }
 
     /// The class `$this` is in the closures of `frames` when the outermost
@@ -648,7 +716,18 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 let ty = self.resolver.finish(&ty, &Context::in_class(&class.fqn));
                 let index = decl.params.iter().position(|param| param.name == name)?;
                 let site = ParameterSite { class: &class.fqn, method: decl, index, declared: &ty };
-                Some(self.resolver.providers().parameter(&site, self.resolver).unwrap_or(ty))
+                let ty = self.resolver.providers().parameter(&site, self.resolver).unwrap_or(ty);
+                // Nothing says: what the callers pass, when asked for.
+                let param = &decl.params[index];
+                let undeclared = param.type_hint.is_none() && doc.and_then(|doc| doc.param_type(&name)).is_none();
+                if undeclared
+                    && ty == Type::Mixed
+                    && let Some(passed) = self.call_site_parameter(class, decl, index)
+                {
+                    self.call_site_typed.borrow_mut().push(param.name.clone());
+                    return Some(if param.variadic { Type::list_of(passed) } else { passed });
+                }
+                Some(ty)
             }
             Frame::Closure(closure) => self.function_parameter(&closure.parameter_list, frames, &name),
             Frame::Arrow(arrow) => self.function_parameter(&arrow.parameter_list, frames, &name),
@@ -1652,6 +1731,83 @@ fn pest_setups<'s>(
             }
             Statement::Namespace(namespace) => pest_setups(namespace.statements().iter(), out),
             _ => {}
+        }
+    }
+}
+
+/// How many different types callers may pass for a parameter to take them.
+const MAX_CALL_SITE_TYPES: usize = 4;
+
+/// How deep a call-site lookup follows callers whose arguments are untyped
+/// parameters themselves.
+const MAX_CALL_SITE_DEPTH: u8 = 3;
+
+/// A parameter whose callers are looked for.
+#[derive(Clone, Copy, Debug)]
+pub struct CallSiteParam<'s> {
+    /// The class declaring the method (FQN).
+    pub class: &'s str,
+    pub method: &'s str,
+    /// The parameter's position and name (without `$`).
+    pub index: usize,
+    pub name: &'s str,
+}
+
+/// The types of the arguments the calls of `site`'s method in the file of
+/// `types` pass for its parameter: calls on `$this`, `self::`, `static::`,
+/// `parent::` or a receiver typed with the class or a subclass. A call with
+/// a spread argument before the parameter says nothing; unknown arguments
+/// are left out.
+pub(crate) fn call_site_arguments(types: &ExprTypes<'_, '_>, site: &CallSiteParam<'_>, out: &mut Vec<Type>) {
+    let text = types.file.text();
+    let needle = format!("{}(", site.method);
+    let mut from = 0;
+    while let Some(found) = text[from..].find(&needle) {
+        let at = from + found;
+        from = at + needle.len();
+        // A member call: `->name(` or `::name(`.
+        let before = &text[..at];
+        if !(before.ends_with("->") || before.ends_with("::")) {
+            continue;
+        }
+        let Some((expr, frames)) = types.find(at as u32) else { continue };
+        let named = |selector: &ClassLikeMemberSelector<'_>| {
+            matches!(selector, ClassLikeMemberSelector::Identifier(name)
+                if name.value.eq_ignore_ascii_case(site.method.as_bytes()))
+        };
+        let (receiver, list) = match expr {
+            Expression::Call(Call::Method(call)) if named(&call.method) => {
+                (types.type_of(call.object, &frames), &call.argument_list)
+            }
+            Expression::Call(Call::NullSafeMethod(call)) if named(&call.method) => {
+                (types.type_of(call.object, &frames).without_null(), &call.argument_list)
+            }
+            Expression::Call(Call::StaticMethod(call)) if named(&call.method) => {
+                (types.class_ref(call.class, &frames), &call.argument_list)
+            }
+            _ => continue,
+        };
+        let context = types.context(&frames);
+        let on_class = types.resolver.class_models(&receiver, &context).iter().any(|model| {
+            crate::names::fqn_eq(NameKind::ClassLike, model.fqn(), site.class) || model.is_subclass_of(site.class)
+        });
+        if !on_class {
+            continue;
+        }
+        let args = types.call_args(list, &frames);
+        let passed = match args.iter().find(|arg| arg.name.as_deref() == Some(site.name)) {
+            Some(named) => Some(named),
+            None => {
+                let positional: Vec<&CallArg> = args.iter().take_while(|arg| arg.name.is_none()).collect();
+                let spread = positional.iter().take(site.index + 1).any(|arg| arg.spread);
+                if spread { None } else { positional.get(site.index).copied() }
+            }
+        };
+        if let Some(arg) = passed {
+            let ty = arg.ty.widen();
+            if ty != Type::Mixed {
+                out.push(ty);
+            }
         }
     }
 }

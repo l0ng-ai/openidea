@@ -129,7 +129,7 @@ then on). `test()` without arguments is the test case of the file
 
 ### What nothing declares
 
-Three rules type code that carries no declaration, each from the code around
+Four rules type code that carries no declaration, each from the code around
 it:
 
 - **An untyped property** (no hint, no `@var`) has the union of what the
@@ -145,6 +145,25 @@ it:
   members the class declares (read from the syntax tree, in the file) and
   those of the class it extends, for Go to Declaration and hover; not for
   completion, Find Usages or Rename.
+- **An untyped parameter** (no hint, no `@param`, nothing from the method it
+  overrides or from a provider) takes the types its callers pass, when
+  the analysis asks for it: `ExprTypes::with_call_sites`, which completion,
+  `at_caret` (hover, Go to Declaration, the subject of Find Usages) and
+  signature help turn on. **Inspections, semantic tokens, inlay hints and
+  the references scan never do:** the type is a guess (a caller may be
+  missing or wrong), and the whole-file passes would read other files on
+  every edit. The callers are the calls of the method on `$this`, `self::`,
+  `static::`, `parent::` or a receiver typed with the class or a subclass
+  (`types::expr::call_site_arguments`, which finds them by the method's name
+  in the text and types them with the file's own `ExprTypes`): in the file
+  itself; for a method that isn't private, in the files of the class and
+  its subclasses; for a public one, also in the indexed files containing the
+  method's name when they are few (`Declarations::call_site_types`, at most
+  16 files in all, cached per modification count). Unknown arguments are
+  left out; one to four different types make the union, more make nothing;
+  a caller whose argument is itself an untyped parameter is followed three
+  levels deep. Hover adds where the type comes from. Not done: free
+  functions, and methods called from more files than the cap.
 
 ## Threads and cancellation
 

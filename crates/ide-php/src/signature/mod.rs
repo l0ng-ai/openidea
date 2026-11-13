@@ -174,7 +174,7 @@ impl PhpEngine {
         let names = FileNames::resolve(&probe);
         let here = FileSummary::extract(&probe);
         let resolver = self.resolver();
-        let types = ExprTypes::new(&probe, &names, &here, &resolver).at_path(Some(&path));
+        let types = ExprTypes::new(&probe, &names, &here, &resolver).at_path(Some(&path)).with_call_sites();
         let mut finder = CallFinder { paren: open.paren as u32, call: None };
         CallWalker.walk_program(probe.program(), &mut finder);
         let call = finder.call?;

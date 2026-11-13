@@ -372,3 +372,13 @@ fn long_chains() {
     let found = p.inspect(&text);
     assert_eq!(messages(&found), [("PhpUndefinedMethod", r"Undefined method 'nope' in 'App\Node'".to_owned())]);
 }
+
+#[test]
+fn a_parameter_typed_by_its_callers_is_not_inspected() {
+    // The editor would show `$p` as `Plain` (its only caller passes one):
+    // a guess, so the missing method is not reported.
+    let mut p = project();
+    let text = "<?php\nnamespace App;\n\nclass Caller\n{\n    public function run(): void\n    {\n        $this->use(new Model\\Plain());\n    }\n\n    private function use($p): void\n    {\n        $p->missing();\n    }\n}\n";
+    let found = p.inspect(text);
+    assert!(found.problems.is_empty(), "{:?}", messages(&found));
+}
