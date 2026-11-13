@@ -455,7 +455,8 @@ pub async fn maven_dependency_declaration(
 /// absolute for a parent POM opened from the local repository): the definition of the
 /// `${property}` at the caret, or the `<dependencyManagement>` / `<pluginManagement>`
 /// entry providing the dependency's / plugin's version, along the parent chain (into
-/// the local repository when a parent is not in the project). `None` when nothing
+/// the local repository when a parent is not in the project), else the artifact's own
+/// POM (a project module's, or the local repository's). `None` when nothing
 /// resolvable is under the caret.
 pub async fn maven_goto_declaration(host: &Host, window: &str, pom: String, pos: Pos) -> IdeResult<Option<PomGoto>> {
     let project = host.project(window)?;
@@ -466,7 +467,19 @@ pub async fn maven_goto_declaration(host: &Host, window: &str, pom: String, pos:
         let settings = project.settings.effective();
         let repo = ide_sdk::apply::maven_local_repository(&project.root, &settings)
             .or_else(ide_build::maven::default_local_repo);
-        Ok(ide_build::maven::goto_declaration(&text, &path, pos, repo))
+        let modules = || {
+            let model = load(&project.root, &project.build_cache_dir(), &settings).maven.unwrap_or_default();
+            model
+                .projects
+                .into_iter()
+                .map(|p| ide_build::maven::ModulePom {
+                    group_id: p.group_id,
+                    artifact_id: p.artifact_id,
+                    pom: project.root.join(&p.pom),
+                })
+                .collect()
+        };
+        Ok(ide_build::maven::goto_declaration_in(&text, &path, pos, repo, modules))
     })
     .await
     .map_err(join_err)?

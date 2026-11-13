@@ -108,9 +108,11 @@ describe("POM artifact elements", () => {
     expect(inArtifactElement(pom, pom.indexOf("example-lib</artifactId>"))).toBe(true);
     expect(inArtifactElement(pom, pom.indexOf("<artifactId>maven-compiler-plugin"))).toBe(true);
     expect(inArtifactElement(pom, pom.indexOf("${example.version}"))).toBe(true);
+    // Inside `<parent>`: its artifact is the parent POM.
+    expect(inArtifactElement(pom, pom.indexOf("<parent>") + "<parent>".length + 1)).toBe(true);
   });
 
-  it("sees no artifact element outside dependencies and plugins", () => {
+  it("sees no artifact element outside dependencies, plugins and the parent", () => {
     expect(inArtifactElement(pom, pom.indexOf("<properties>"))).toBe(false);
     expect(inArtifactElement(pom, pom.indexOf("<parent>"))).toBe(false);
     // `<plugins>` and `<dependencyManagement>` are not a `<plugin>` / `<dependency>`.
