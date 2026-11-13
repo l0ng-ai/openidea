@@ -92,6 +92,8 @@ test("result context menu fits the viewport, responds to hover and keyboard, and
     "Close",
     "Close Others",
     "Close All",
+    "Close All but Pinned",
+    "Pin Tab",
     "Rename Tab",
     "Select Next Tab⇧⌘]",
     "Select Previous Tab⇧⌘[",
@@ -412,4 +414,101 @@ test("closes clicked results, other results and all results without removing Out
   });
   await expect(page.getByRole("treeitem", { name: "Alpha database", exact: true })).toBeVisible();
   await expect(page.getByRole("treeitem", { name: "Beta database", exact: true })).toBeVisible();
+});
+
+/** Runs `text` in console `path` through the production store, with the backend's answers stubbed. */
+async function runConsole(page: Page, path: string, text: string) {
+  await page.evaluate(
+    async ({ path, text }) => {
+      const bindingsPath = "/src/bindings.ts";
+      const storePath = "/src/features/database/store.ts";
+      const { commands } = await import(bindingsPath);
+      const { executeConsole } = await import(storePath);
+      commands.dbStatements = async (_id: string, sql: string) => {
+        let from = 0;
+        const data = sql.split(";").flatMap((part) => {
+          const start = from + part.length - part.trimStart().length;
+          from += part.length + 1;
+          const st = part.trim();
+          return st ? [{ from: start, to: start + st.length, text: st }] : [];
+        });
+        return { status: "ok", data };
+      };
+      commands.dbExecute = async (_r: unknown, _id: string, statements: { text: string }[]) => ({
+        status: "ok",
+        data: statements.map((statement) => ({
+          statement,
+          error: null,
+          result: {
+            statement: statement.text,
+            columns: [{ name: "payload", typeName: "text" }],
+            rows: [[/'(.*)'/.exec(statement.text)![1]]],
+            affected: null,
+            hasMore: false,
+            elapsedMs: 1,
+            executionMs: 1,
+          },
+        })),
+      });
+      await executeConsole(path, text, 0, text.length);
+    },
+    { path, text },
+  );
+}
+
+test("console runs replace their unpinned results; pinned results stay until Close All but Pinned", async ({
+  workbench: page,
+}) => {
+  await seedResults(page);
+  const strip = page.getByRole("tablist", { name: "Results", exact: true }).getByRole("tab");
+  await choose(page, "Result 1", "Close All");
+  // The seeded Output line's id would collide with the ids of the lines the runs log.
+  await page.evaluate(async () => {
+    const storePath = "/src/features/database/store.ts";
+    const { useDatabase } = await import(storePath);
+    useDatabase.setState({ output: [] });
+  });
+  await runConsole(page, "alpha-console.sql", "SELECT 'one'");
+  const n = Number(/\d+/.exec((await strip.nth(1).textContent())!)![0]);
+  const result = (run: number, index = 1) => `Result ${n + run}${index > 1 ? `-${index}` : ""}`;
+  await runConsole(page, "alpha-console.sql", "SELECT 'two'");
+  await expect(strip).toHaveText(["Output", result(1)]);
+  await selected(page, result(1), "two");
+
+  const pin = page.getByRole("button", { name: "Pin Tab", exact: true });
+  await pin.click();
+  await expect(pin).toHaveAttribute("aria-pressed", "true");
+  await runConsole(page, "alpha-console.sql", "SELECT 'three'; SELECT 'four'");
+  await runConsole(page, "beta-console.sql", "SELECT 'beta'");
+  await expect(strip).toHaveText(["Output", result(1), result(2), result(2, 2), result(3)]);
+  await selected(page, result(3), "beta");
+
+  await tab(page, result(2)).click({ button: "right" });
+  await expect(menu(page).getByRole("menuitem", { name: "Close All but Pinned", exact: true })).toBeEnabled();
+  await menu(page).getByRole("menuitem", { name: "Pin Tab", exact: true }).click();
+  await expect(menu(page)).toHaveCount(0);
+  await runConsole(page, "alpha-console.sql", "SELECT 'five'");
+  await expect(strip).toHaveText(["Output", result(1), result(2), result(4), result(3)]);
+  await selected(page, result(4), "five");
+  await expect(pin).toHaveAttribute("aria-pressed", "false");
+
+  await tab(page, result(2)).click();
+  await expect(pin).toHaveAttribute("aria-pressed", "true");
+  await choose(page, result(3), "Close All but Pinned");
+  await expect(strip).toHaveText(["Output", result(1), result(2)]);
+  await selected(page, result(2), "three");
+  await tab(page, result(1)).click({ button: "right" });
+  await expect(menu(page).getByRole("menuitem", { name: "Unpin Tab", exact: true })).toBeVisible();
+  await expect(menu(page).getByRole("menuitem", { name: "Close All but Pinned", exact: true })).toBeDisabled();
+  await page.keyboard.press("Escape");
+
+  // A pinned tab's close button is its Unpin button; middle-click leaves it open.
+  const slot = tab(page, result(1)).locator("..");
+  await expect(slot.getByRole("button", { name: "Close Tab", exact: true })).toHaveCount(0);
+  await tab(page, result(1)).click({ button: "middle" });
+  await expect(strip).toHaveText(["Output", result(1), result(2)]);
+  await slot.getByRole("button", { name: "Unpin Tab", exact: true }).click();
+  await selected(page, result(2), "three");
+  await slot.getByRole("button", { name: "Close Tab", exact: true }).click();
+  await expect(strip).toHaveText(["Output", result(2)]);
 });

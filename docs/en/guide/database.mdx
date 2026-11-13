@@ -118,9 +118,18 @@ SQL completion knows the connected schema: tables after `FROM`/`JOIN` (with join
 
 ## Results and data editing
 
-Results appear in the **Services** tool window under the **Database** tab: an **Output** tab logs every statement, and each result set gets a **Result N** tab (up to 12).
+Results appear in the **Services** tool window under the **Database** tab: an **Output** tab logs every statement, and each result set gets a **Result N** tab (up to 12, pinned tabs excepted).
 
-Right-click a result tab (or focus it and press `Shift+F10`) for **Close**, **Close Others**, **Close All**, **Rename Tab**, **Select Next Tab** and **Select Previous Tab**. They act on the result tabs only; **Output** stays. Renamed titles last while the result is open.
+Running a console again replaces its previous results: its unpinned result tabs make way for the new run, which gets one tab per result set (**Result N**, or **Result N**, **Result N-2**, … when several selected statements return rows). A run with no result sets, such as an `UPDATE`, keeps the previous results. Results from other consoles stay.
+
+To keep a result, pin it with **Pin Tab** in the result tab's context menu or the pin button on the result toolbar; the tab's close button becomes a pin button that unpins it, so a stray click or middle-click can't close it, and later runs open new tabs instead. Rerunning or paging a pinned result updates it in place.
+
+<Warning>
+  Replacing a result discards changes you have not submitted in it. **Submit** or **Revert** them, or pin the tab,
+  before running the console again.
+</Warning>
+
+Right-click a result tab (or focus it and press `Shift+F10`) for **Close**, **Close Others**, **Close All**, **Close All but Pinned**, **Pin Tab** / **Unpin Tab**, **Rename Tab**, **Select Next Tab** and **Select Previous Tab**. They act on the result tabs only; **Output** stays. Renamed titles last until the result is closed or replaced.
 
 With focus on a result tab or inside a result, use `⇧⌘]` / `⇧⌘[` in the IntelliJ macOS keymap (`⌃→` / `⌃←` also work), or `Alt+→` / `Alt+←` in IntelliJ Windows/Linux. VS Code and Eclipse presets use their respective editor-tab navigation defaults. Switching focuses the destination result tab. Result navigation stays scoped to Results and is blocked while a menu or dialog is open. Customize database result shortcuts independently of editor shortcuts in **Settings › Keymap**.
 

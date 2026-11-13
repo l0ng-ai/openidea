@@ -19,6 +19,8 @@ const actions = [
   ["db.closeResultTab", "Close"],
   ["db.closeOtherResultTabs", "Close Others"],
   ["db.closeAllResultTabs", "Close All"],
+  ["db.closeAllButPinnedResultTabs", "Close All but Pinned"],
+  ["db.pinResultTab", "Pin Tab"],
   ["db.renameResultTab", "Rename Tab"],
   ["db.nextResultTab", "Select Next Tab"],
   ["db.previousResultTab", "Select Previous Tab"],
@@ -139,6 +141,31 @@ function expectConsoleStateUnchanged(before: typeof initialDatabase) {
 }
 
 describe("database result tab context menu", () => {
+  it("offers only result actions, in order with the two group separators", async () => {
+    await show();
+    const menu = openMenu("Orders");
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent),
+    ).toEqual(actions.map(([, label]) => expect.stringMatching(new RegExp(`^${label}(?![A-Za-z ])`))));
+    expect(Array.from(menu.children).map((item) => item.getAttribute("role"))).toEqual([
+      "menuitem",
+      "menuitem",
+      "menuitem",
+      "menuitem",
+      "separator",
+      "menuitem",
+      "menuitem",
+      "separator",
+      "menuitem",
+      "menuitem",
+    ]);
+    expect(within(menu).queryByText(/layout/i)).not.toBeInTheDocument();
+    expectSelected("Customer count");
+    expect(screen.getByRole("gridcell", { name: "count-row" })).toBeInTheDocument();
+  });
+
   it("closes the clicked inactive result without changing the selected result", async () => {
     await show();
     openMenu("Orders");
@@ -201,11 +228,11 @@ describe("database result tab context menu", () => {
     expectConsoleStateUnchanged(before);
   });
 
-  it("disables Close and Rename Tab on Output and does not perform either operation", async () => {
+  it("disables Close, Pin Tab and Rename Tab on Output and does not perform any of them", async () => {
     await show();
     const before = useDatabase.getState();
     const menu = openMenu("Output");
-    for (const name of ["Close", "Rename Tab"]) {
+    for (const name of ["Close", "Pin Tab", "Rename Tab"]) {
       const item = within(menu).getByRole("menuitem", { name });
       expect(item).toHaveAttribute("aria-disabled", "true");
       fireEvent.click(item);
@@ -331,12 +358,7 @@ describe("database result tab context menu", () => {
     useKeymap.setState({
       overrides: {
         "editor.closeTab": ["Meta+W"],
-        "db.closeResultTab": ["F1"],
-        "db.closeOtherResultTabs": ["F2"],
-        "db.closeAllResultTabs": ["F3"],
-        "db.renameResultTab": ["F4"],
-        "db.nextResultTab": ["F5"],
-        "db.previousResultTab": ["F6"],
+        ...Object.fromEntries(actions.map(([id], index) => [id, [`F${index + 1}`]])),
       },
     });
     await show();
@@ -480,5 +502,70 @@ describe("database result tab context menu", () => {
     } finally {
       uninstall();
     }
+  });
+});
+
+describe("pinned result tabs", () => {
+  const pinButton = () => screen.getByRole("button", { name: "Pin Tab" });
+  const pinnedIds = () => useDatabase.getState().results.flatMap((r) => (r.pinned ? [r.id] : []));
+
+  it("pins an inactive result from its menu: Unpin replaces Close, close gestures spare it, selection kept", async () => {
+    await show();
+    const slot = (name: string) => within(tab(name).parentElement!);
+    const typeGlyph = tab("Orders").querySelector("svg")!.innerHTML;
+    openMenu("Orders");
+    await choose("Pin Tab");
+    expect(pinnedIds()).toEqual([22]);
+    expectSelected("Customer count");
+    expect(pinButton()).toHaveAttribute("aria-pressed", "false");
+    expect(tab("Orders").querySelector("svg")!.innerHTML).toBe(typeGlyph);
+    expect(slot("Orders").queryByRole("button", { name: "Close Tab" })).not.toBeInTheDocument();
+    const unpin = slot("Orders").getByRole("button", { name: "Unpin Tab" });
+    expect(unpin.querySelector("svg")!.innerHTML).toBe(pinButton().querySelector("svg")!.innerHTML);
+    fireEvent.mouseDown(tab("Orders").parentElement!, { button: 1 });
+    fireEvent.keyDown(tab("Orders"), { key: "Delete" });
+    expect(useDatabase.getState().results.map((r) => r.id)).toEqual([11, 22, 33]);
+    const menu = openMenu("Orders");
+    expect(within(menu).queryByRole("menuitem", { name: "Pin Tab" })).not.toBeInTheDocument();
+    within(menu).getByRole("menuitem", { name: "Unpin Tab" });
+    await act(async () => fireEvent.keyDown(document.activeElement!, { key: "Escape" }));
+    fireEvent.click(unpin);
+    expect(pinnedIds()).toEqual([]);
+    expectSelected("Customer count");
+    expect(slot("Orders").queryByRole("button", { name: "Unpin Tab" })).not.toBeInTheDocument();
+    slot("Orders").getByRole("button", { name: "Close Tab" });
+  });
+
+  it("keeps the toolbar toggle and the menu in step for the active result", async () => {
+    await show();
+    fireEvent.click(pinButton());
+    expect(pinButton()).toHaveAttribute("aria-pressed", "true");
+    expect(pinnedIds()).toEqual([33]);
+    openMenu("Customer count");
+    await choose("Unpin Tab");
+    expect(pinButton()).toHaveAttribute("aria-pressed", "false");
+    expect(pinnedIds()).toEqual([]);
+  });
+
+  it("enables Close All but Pinned only with pinned and unpinned results, and keeps just the pinned ones", async () => {
+    await show();
+    let menu = openMenu("Orders");
+    expect(within(menu).getByRole("menuitem", { name: "Close All but Pinned" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await choose("Pin Tab");
+    openMenu("Customers");
+    await choose("Close All but Pinned");
+    expect(useDatabase.getState().results.map((r) => r.id)).toEqual([22]);
+    expectSelected("Orders");
+    menu = openMenu("Orders");
+    expect(within(menu).getByRole("menuitem", { name: "Close All but Pinned" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await choose("Close All");
+    expect(useDatabase.getState().results).toEqual([]);
+    expectOutput();
   });
 });
