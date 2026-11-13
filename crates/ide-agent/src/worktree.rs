@@ -411,25 +411,30 @@ pub(crate) fn accept(
     let copyable = |rel: &str| task_side.allows(rel) && checkout_side.allows(rel);
     let renamed_from: BTreeMap<String, String> =
         repo.diff_with_worktree(base)?.into_iter().filter_map(|f| Some((f.path, f.old_path?))).collect();
-    // Brings one path of the checkout to the task's version, unless the checkout changed it itself.
-    let apply = |rel: &str| -> IdeResult<bool> {
-        let local = local_root.join(rel);
+    // The task's version of one path of the checkout (`Some(None)`: absent there), or `None` when
+    // the checkout changed it itself.
+    let target = |rel: &str| -> IdeResult<Option<Option<Vec<u8>>>> {
         let in_task = repo.root().join(rel);
-        let base_bytes = repo.file_bytes_at(&in_task, Some(base))?;
         let current = std::fs::read(&in_task).ok();
-        let local_bytes = std::fs::read(&local).ok();
+        let local_bytes = std::fs::read(local_root.join(rel)).ok();
         if local_bytes == current {
-            return Ok(true);
+            return Ok(Some(current));
         }
+        let base_bytes = repo.file_bytes_at(&in_task, Some(base))?;
         // The checkout may hold the committed LF text with CRLF line ends (`core.autocrlf`).
         let unchanged = match (&local_bytes, &base_bytes) {
             (Some(now), Some(at_base)) => now == at_base || crlf_to_lf(now) == *at_base,
             (now, at_base) => now == at_base,
         };
-        if !unchanged {
-            return Ok(false);
+        Ok(unchanged.then_some(current))
+    };
+    // Puts `bytes` (`None`: nothing) at `rel` of the checkout.
+    let write = |rel: &str, bytes: Option<Vec<u8>>| -> IdeResult<()> {
+        let local = local_root.join(rel);
+        if std::fs::read(&local).ok() == bytes {
+            return Ok(());
         }
-        match current {
+        match bytes {
             Some(bytes) => {
                 if let Some(parent) = local.parent() {
                     std::fs::create_dir_all(parent)?;
@@ -441,6 +446,12 @@ pub(crate) fn accept(
                 _ => {}
             },
         }
+        Ok(())
+    };
+    // Brings one path of the checkout to the task's version, unless the checkout changed it itself.
+    let apply = |rel: &str| -> IdeResult<bool> {
+        let Some(bytes) = target(rel)? else { return Ok(false) };
+        write(rel, bytes)?;
         Ok(true)
     };
     let mut accepted = Vec::with_capacity(changes.len());
@@ -466,8 +477,9 @@ pub(crate) fn accept(
         // A case-only rename (`a.txt` → `A.txt`). Where the disk resolves both
         // spellings to one file it is renamed in place and `apply` then refreshes
         // the content. On a case-sensitive disk the two names are different files:
-        // the old one's unchanged-ness (it is the file the checkout had) decides —
-        // then the task's version lands at the new name and the old one goes.
+        // both are checked before either changes — the old one must be the file the
+        // checkout had, the new one absent or already the task's — then the task's
+        // version lands at the new name before the old one goes.
         let case_only =
             old.is_some_and(|o| o != &change.rel_path && o.to_lowercase() == change.rel_path.to_lowercase());
         if case_only {
@@ -476,20 +488,18 @@ pub(crate) fn accept(
             if same_file(&old_path, &new_path) {
                 std::fs::rename(&old_path, &new_path)?;
             } else {
-                if !apply(old)? {
+                let Some(old_target) = target(old)? else {
                     skipped.push(skip(old));
                     continue;
+                };
+                let task_bytes = std::fs::read(repo.root().join(&change.rel_path)).ok();
+                let at_new = std::fs::read(&new_path).ok();
+                if at_new.is_some() && at_new != task_bytes {
+                    skipped.push(skip(&change.rel_path));
+                    continue;
                 }
-                // `apply(old)` removed the old file (the task's tree has it only at
-                // the new name); now write that version under the new name. `apply`
-                // can't do it — it reads the new name's own base/absence — so the
-                // write is open-coded from the same task bytes `apply` would use.
-                if let Ok(bytes) = std::fs::read(repo.root().join(&change.rel_path)) {
-                    if let Some(parent) = new_path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&new_path, bytes)?;
-                }
+                write(&change.rel_path, task_bytes)?;
+                write(old, old_target)?;
                 accepted.push(change.rel_path.clone());
                 continue;
             }
@@ -958,6 +968,22 @@ mod tests {
             .filter(|n| n.eq_ignore_ascii_case("a.txt"))
             .collect();
         assert_eq!(names, ["A.txt"]);
+    }
+
+    #[test]
+    fn a_case_only_rename_keeps_a_file_the_checkout_has_at_the_new_name() {
+        let (_tmp, repo, created) = accept_repo();
+        std::fs::write(repo.join("A.txt"), "mine\n").unwrap();
+        if std::fs::read_to_string(repo.join("a.txt")).unwrap() == "mine\n" {
+            eprintln!("this disk doesn't tell a.txt from A.txt; nothing to check");
+            return;
+        }
+        git(&created.path, &["mv", "a.txt", "A.txt"]);
+        let changes = listed(&created.path, &created.base_commit);
+        let outcome = accept(&repo, &created.path, &created.base_commit, &changes).unwrap();
+        assert_eq!(outcome.skipped.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(), ["A.txt"]);
+        assert_eq!(std::fs::read_to_string(repo.join("A.txt")).unwrap(), "mine\n");
+        assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "one\ntwo\n");
     }
 
     #[cfg(windows)]
