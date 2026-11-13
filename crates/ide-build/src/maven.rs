@@ -16,6 +16,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+pub mod completion;
 pub mod sources;
 
 /// Lets the IDE's own Maven runs (Reload, Build) use what the local repository already
@@ -299,7 +300,7 @@ fn read_plugin(e: &Element) -> Option<RawPlugin> {
     })
 }
 
-fn read_properties(e: Option<&Element>) -> Vec<(String, String)> {
+pub(crate) fn read_properties(e: Option<&Element>) -> Vec<(String, String)> {
     e.map(|p| p.children.iter().map(|c| (c.name.clone(), c.text.trim().to_owned())).collect()).unwrap_or_default()
 }
 
@@ -1729,7 +1730,7 @@ fn property_ref_at(text: &str, at: usize) -> Option<(&str, usize, usize)> {
 }
 
 /// The elements containing `at`, from the root down to the innermost one.
-fn element_path(root: &Element, at: usize) -> Vec<&Element> {
+pub(crate) fn element_path(root: &Element, at: usize) -> Vec<&Element> {
     let mut path = vec![root];
     loop {
         let Some(next) = path.last().unwrap().children.iter().find(|c| c.start <= at && at < c.end) else {

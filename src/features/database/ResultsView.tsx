@@ -693,6 +693,7 @@ export function ResultsView() {
       }}
     >
       <Tabs
+        className={styles.resultTabs}
         variant="compact"
         aria-label="Results"
         activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
