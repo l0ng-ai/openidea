@@ -288,11 +288,18 @@ export const lspTheme = EditorView.theme({
     textUnderlineOffset: "2px",
     cursor: "pointer",
   },
-  ".cm-lsp-occurrence": {
-    backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
+  ".cm-lsp-occurrence, .cm-lsp-occurrence-tail": {
+    "--lsp-occurrence-bg": "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
   },
-  ".cm-lsp-occurrence-write": {
-    backgroundColor: "var(--bg-identifier-under-caret-write, color-mix(in srgb, var(--danger) 12%, transparent))",
+  ".cm-lsp-occurrence-write, .cm-lsp-occurrence-tail-write": {
+    "--lsp-occurrence-bg": "var(--bg-identifier-under-caret-write, color-mix(in srgb, var(--danger) 12%, transparent))",
+  },
+  ".cm-lsp-occurrence": { backgroundColor: "var(--lsp-occurrence-bg)" },
+  // First line of a highlight over several lines: from its start column to the right edge,
+  // over the line's own background (the caret row's).
+  ".cm-lsp-occurrence-tail": {
+    backgroundImage:
+      "linear-gradient(to right, transparent var(--lsp-occurrence-from), var(--lsp-occurrence-bg) var(--lsp-occurrence-from))",
   },
   ".cm-lsp-nav-info": { padding: "4px 8px" },
   // Chooser highlight (tempHighlight.ts): the expression / occurrences a choice would take.
