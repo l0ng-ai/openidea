@@ -71,8 +71,7 @@
   display: inline-flex;
   flex: 0 1 auto;
   align-items: center;
-  /* The chips' own padding spaces them. */
-  gap: 2px;
+  gap: 6px;
   min-width: 0;
   overflow: hidden;
 }
@@ -141,7 +140,7 @@
 }
 .statusChip:hover,
 .statusChip[aria-expanded="true"] {
-  background: var(--bg-toolbar-hover);
+  background: color-mix(in srgb, var(--fg) 13%, transparent);
   color: var(--fg-strong);
 }
 /* In a narrow docked session the chip is narrower than its text: the label ends in an ellipsis. */

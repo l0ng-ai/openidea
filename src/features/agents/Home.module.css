@@ -31,8 +31,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  /* The chips' own padding spaces them. */
-  gap: 2px;
+  gap: 6px;
   padding: 0 2px;
   font-size: var(--fs-small);
 }
