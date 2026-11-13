@@ -272,6 +272,7 @@ export function AgentsView() {
       {tasks.size > 0 && (
         <SearchField
           className={styles.taskSearch}
+          variant="bare"
           value={query}
           onChange={setQuery}
           clearable
