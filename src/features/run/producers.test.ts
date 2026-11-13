@@ -71,6 +71,7 @@ const ALL = env({
   "clang++": null,
   dart: null,
   elixir: null,
+  escript: null,
   "scala-cli": null,
   deno: "2.1.0",
   bun: "1.1.0",
@@ -245,6 +246,10 @@ describe("single-file producers (scratches)", () => {
     expect(run(scratch("a.swift"))).toMatchObject({ command: "/bin/swift", args: ["a.swift"] });
     expect(run(scratch("a.dart"))).toMatchObject({ command: "/bin/dart", args: ["run", "a.dart"] });
     expect(run(scratch("a.exs"))).toMatchObject({ command: "/bin/elixir", args: ["a.exs"] });
+    expect(run(scratch("tool.escript"))).toMatchObject({
+      command: "/bin/escript",
+      args: ["tool.escript"],
+    });
     expect(run(scratch("a.sc"))).toMatchObject({ command: "/bin/scala-cli", args: ["run", "a.sc"] });
     expect(run(scratch("a.kts"))).toMatchObject({ command: "/bin/kotlin", args: ["a.kts"] });
     expect(run(scratch("a.kts"), env({ kotlinc: null }))).toMatchObject({

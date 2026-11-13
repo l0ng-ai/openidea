@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { OutlineItem, References } from "@/platform/ipc";
-import { _addEditor, _removeEditor, codeLenses, documentSynced } from "@/editor/api";
+import { _addEditor, _emitEditorEvent, _removeEditor, codeLenses, documentSynced, viewShown } from "@/editor/api";
 
 const ipc = vi.hoisted(() => ({
   docOutline: vi.fn(),
@@ -262,5 +262,80 @@ describe("background usage counts", () => {
     } finally {
       _removeEditor(handle);
     }
+  });
+});
+
+describe("recounting when the project's documents change", () => {
+  it("recounts when another document is edited (the call sites)", async () => {
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    _emitEditorEvent({ type: "docChanged", doc: 9, path: "/p/b.rs", baseVersion: 1, version: 2, changes: [] });
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2);
+    ipc.lspReferences.mockResolvedValue(refs(5));
+    _emitEditorEvent({ type: "docChanged", doc: 9, path: "/p/b.rs", baseVersion: 2, version: 3, changes: [] });
+    await settle();
+    expect(titles(view)).toEqual(["5 usages"]);
+  });
+
+  it("recounts when a kept tab is shown again after another document changed while hidden", async () => {
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    ipc.lspReferences.mockResolvedValue(refs(5));
+    // A recently used tab keeps its view, detached from the document, while hidden.
+    view.dom.remove();
+    _emitEditorEvent({ type: "docChanged", doc: 9, path: "/p/b.rs", baseVersion: 1, version: 2, changes: [] });
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(1);
+    document.body.append(view.dom);
+    view.dispatch({ effects: viewShown.of(null) });
+    await settle();
+    expect(titles(view)).toEqual(["5 usages"]);
+  });
+
+  it("recounts when the backend patches another document (a refactoring)", async () => {
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    ipc.lspReferences.mockResolvedValue(refs(3));
+    emitLocalIdeEvent({ type: "docPatched", doc: 9, baseVersion: 1, version: 2, changes: [] });
+    await settle();
+    expect(titles(view)).toEqual(["3 usages"]);
+  });
+
+  it("leaves a backend patch of this document to the document change itself", async () => {
+    editor();
+    await settle();
+    const calls = ipc.lspReferences.mock.calls.length;
+    emitLocalIdeEvent({ type: "docPatched", doc: 7, baseVersion: 1, version: 2, changes: [] });
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(calls);
+  });
+
+  it("recounts when the plugin document indexes change (an XML statement indexed after its declaration)", async () => {
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    ipc.lspReferences.mockResolvedValue(refs(5));
+    const { invalidateNavigationProviders } = await import("@/editor/navigationProviders");
+    invalidateNavigationProviders();
+    await settle();
+    expect(titles(view)).toEqual(["5 usages"]);
+  });
+
+  it("recounts when files change on disk or another document closes", async () => {
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    ipc.lspReferences.mockResolvedValue(refs(3));
+    emitLocalIdeEvent({ type: "fsChanged", created: [], modified: ["/p/b.rs"], removed: [] });
+    await settle();
+    expect(titles(view)).toEqual(["3 usages"]);
+    ipc.lspReferences.mockResolvedValue(refs(4));
+    _emitEditorEvent({ type: "docClosed", doc: 9, path: "/p/b.rs" });
+    await settle();
+    expect(titles(view)).toEqual(["4 usages"]);
   });
 });
