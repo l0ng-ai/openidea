@@ -78,7 +78,8 @@ pub(crate) fn sso_seed(key: &str, token: &str) {
     }
 }
 
-/// Live sessions by their connection settings, so targets opened with the same settings share one.
+/// Live sessions by data source and connection settings, so the targets of one data source (its
+/// databases, the tree, consoles) opened with the same settings share one.
 static SESSIONS: LazyLock<parking_lot::Mutex<HashMap<String, Weak<State>>>> =
     LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
@@ -302,9 +303,13 @@ impl SnowflakePool {
             lane: CONSOLE,
         };
         // Everything that makes a session what it is, the secret included (hashed: the key is only compared).
+        // The data source too: its databases share a session, but another data source with the same
+        // settings gets its own (its statements and transactions are not this one's). A browser sign-in
+        // is still shared through the cached ID token.
         let key = blake3::hash(
             format!(
-                "{}\0{user}\0{:?}\0{}\0{}\0{}\0{}\0{:?}\0{:?}",
+                "{}\0{}\0{user}\0{:?}\0{}\0{}\0{}\0{}\0{:?}\0{:?}",
+                source.id,
                 api.address(),
                 settings.auth,
                 secret.unwrap_or_default(),
@@ -655,16 +660,14 @@ impl SnowflakePool {
             && self.lane().context.lock().as_deref() != Some(wanted.as_str())
         {
             *self.lane().context.lock() = None;
-            match self.statement(&wanted, 0, 0, cancel).await {
-                Ok(_) => {}
-                // The session's role may not use this database or schema (after `USE ROLE`, or a
-                // schema that is gone). The statement still runs, in the session's own context:
-                // it may be the `USE` that leads back, or name its objects in full. Asked again
-                // once a statement moves the session.
-                Err(refused) if refused.kind == ErrorKind::InvalidInput => {
-                    tracing::warn!("Snowflake: the session did not enter its database and schema");
-                }
-                Err(error) => return Err(error),
+            // Refused (the session's role may not use this database or schema): the statement
+            // does not run, since the session is still wherever it was, which may be another
+            // target's database. Tried again with the next statement.
+            if let Err(error) = self.statement(&wanted, 0, 0, cancel).await {
+                return Err(IdeError {
+                    message: format!("{wanted} failed, so the statement was not run: {}", error.message),
+                    ..error
+                });
             }
             *self.lane().context.lock() = Some(wanted);
         }
