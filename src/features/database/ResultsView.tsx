@@ -704,6 +704,7 @@ export function ResultsView() {
     <div
       ref={root}
       className={styles.view}
+      data-focus-scope=""
       onKeyDown={(e) => {
         if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
         const tab = (e.target as Element).closest<HTMLElement>('[role="tab"]');

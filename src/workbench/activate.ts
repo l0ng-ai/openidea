@@ -17,6 +17,7 @@ import { installBrowserGuards } from "./browserGuards";
 import { installDistractionFree } from "./distractionFree";
 import { installFileDrop } from "./fileDrop";
 import { installFocusTracking } from "./focus";
+import { installFocusScopeTracking } from "@/ui/focusScope";
 import { clearProjectNotifications, installNotifyEvents, notificationServiceImpl } from "./notificationStore";
 import {
   NOTIFICATIONS_TOOL_WINDOW,
@@ -74,6 +75,7 @@ export function activateWorkbench(): () => void {
     installToolWindowLayoutSync(),
     installDistractionFree(),
     installFocusTracking(setFocusedToolWindow),
+    installFocusScopeTracking(),
     installTaskEvents(),
     installNotifyEvents(),
     installBrowserGuards(),
