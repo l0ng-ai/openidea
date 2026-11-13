@@ -65,8 +65,22 @@ setx OPENIDEA_LOCAL_DATA_DIR "E:\OpenIDEA"
 On macOS and Linux, set it in the environment OpenIDEA starts from.
 
 - If the path is relative or can't be written to, OpenIDEA shows an error and exits instead of falling back to the default location.
-- Configuration, user data and logs stay where they are. Logs are still written when the variable is wrong, so you can find out why.
+- Configuration, user data and logs stay where they are unless you move them too (see below). Logs are still written when the variable is wrong, so you can find out why.
 - Existing data is not moved. Either let OpenIDEA download and rebuild it, or quit OpenIDEA and move only `tools/`, `language-server-runtimes/`, `index/`, `cache/`, `lsp/`, `notebook-runtime/`, `server/`, `logs/`, `agents/tools/`, `agents/registry.json` and the top-level `java-usages-*.jar` / `java-usages-*.tmp` files, keeping their relative paths. Leave everything else in place.
+
+## Move configuration, user data or logs
+
+Each of the other directories has its own variable, set the same way as `OPENIDEA_LOCAL_DATA_DIR`: an absolute path, read when OpenIDEA starts. OpenIDEA then uses `<path>/ai.l0ng.openidea` and creates it if missing.
+
+| Variable              | Moves         |
+| --------------------- | ------------- |
+| `OPENIDEA_CONFIG_DIR` | Configuration |
+| `OPENIDEA_DATA_DIR`   | User data     |
+| `OPENIDEA_LOG_DIR`    | Logs          |
+
+- Set only the ones you want to move; the rest keep their default locations. Pointing several variables at the same path is fine.
+- If the configuration or user data path is relative or can't be used, OpenIDEA shows an error and exits instead of falling back to the default location. A wrong log path only turns off the log file.
+- Existing files are not moved. To keep your settings, plugins and history, quit OpenIDEA and copy the old folder's contents to the new location first.
 
 ## Logs
 

@@ -426,9 +426,9 @@ fn plugins_dir() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("OPENIDEA_PLUGINS_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    dirs::data_dir()
-        .map(|d| d.join("ai.l0ng.openidea").join("plugins"))
-        .ok_or_else(|| "cannot find the app data directory; set OPENIDEA_PLUGINS_DIR".into())
+    ide_host::data_dirs::data_dir("ai.l0ng.openidea")
+        .map(|d| d.join("plugins"))
+        .map_err(|error| format!("{error}; set OPENIDEA_PLUGINS_DIR"))
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]

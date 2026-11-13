@@ -16,6 +16,8 @@ pub struct AppInfo {
     pub platform: String,
     pub windows_build_number: Option<u32>,
     pub config_dir: ide_core::IpcPath,
+    /// User data (plugins, scratches, Local History); follows `OPENIDEA_DATA_DIR`.
+    pub data_dir: ide_core::IpcPath,
     /// Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges.
     pub wayland: bool,
 }
@@ -31,6 +33,7 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
         platform: std::env::consts::OS.into(),
         windows_build_number: ide_core::platform::windows_build_number(),
         config_dir: state.config_dir.clone().into(),
+        data_dir: state.data_dir.clone().into(),
         #[cfg(target_os = "linux")]
         wayland: crate::linux_window_state::is_wayland(),
         #[cfg(not(target_os = "linux"))]
