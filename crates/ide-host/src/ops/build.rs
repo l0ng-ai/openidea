@@ -15,6 +15,7 @@ use ide_build::{BuildModel, BuildTool, SyncOptions, SyncProgress};
 use ide_core::settings::Settings;
 use ide_core::{DocId, FileEdit, IdeError, IdeEvent, IdeResult, Location, Pos, Range, RequestId, WorkspaceEdit};
 use std::path::Path;
+use std::sync::Arc;
 
 fn join_err(e: tokio::task::JoinError) -> IdeError {
     IdeError::internal(e.to_string())
@@ -330,19 +331,59 @@ pub async fn build_sync(
     // holds for Gradle: it reuses its cached classpath on restart, so a
     // dependency added to `build.gradle` stays unresolved until told to sync.
     let lsp = project.lsp.clone();
+    let documents = project.documents.clone();
     tokio::spawn(async move {
         if profiles_changed {
             // jdtls takes the profiles from its Maven settings (see `ide_sdk::maven_profiles`).
             lsp.reconfigure().await;
         }
+        let first = updates.first().cloned();
         for file in updates {
             let uri = ide_lsp::path_to_uri_string(&file);
             if let Err(e) = lsp.java_update_project_configs(&file, vec![uri]).await {
                 tracing::debug!("java/projectConfigurationsUpdate: {e}");
             }
         }
+        let changed = {
+            let lsp = lsp.clone();
+            tokio::task::spawn_blocking(move || lsp.changed_library_archives()).await.unwrap_or_default()
+        };
+        if let Some(file) = first
+            && let Err(e) = lsp.java_refresh_archives(&file, &changed).await
+        {
+            tracing::debug!("openidea.java.refreshArchives: {e}");
+        }
+        refresh_library_classes(&lsp, &documents).await;
     });
     Ok(model)
+}
+
+/// Open library classes whose jar was replaced in place (a SNAPSHOT installed
+/// again keeps its path) show the new contents, like a reopened one.
+async fn refresh_library_classes(lsp: &Arc<ide_lsp::LspManager>, documents: &Arc<ide_workspace::Documents>) {
+    let changed = {
+        let (lsp, documents) = (lsp.clone(), documents.clone());
+        tokio::task::spawn_blocking(move || {
+            documents
+                .open_documents()
+                .into_iter()
+                .filter_map(|doc| Some((doc, documents.virtual_uri(doc).ok().flatten()?)))
+                .filter(|(_, uri)| lsp.library_class_changed(uri))
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default()
+    };
+    for (doc, uri) in changed {
+        match lsp.virtual_document(&uri).await {
+            Ok(vd) => {
+                if let Err(e) = documents.replace_virtual(doc, &vd.text, &vd.encoding, vd.has_bom) {
+                    tracing::debug!("refreshing {uri}: {e}");
+                }
+            }
+            Err(e) => tracing::debug!("refreshing {uri}: {e}"),
+        }
+    }
 }
 
 /// The POM declaring `dependency` for the Maven module `pom` (project-relative): the
@@ -985,6 +1026,38 @@ mod build_tool_settings_tests {
         }
     }
 
+    /// Changing Project JDK updates the next Maven build without reopening the project.
+    #[test]
+    fn changing_project_jdk_updates_the_next_maven_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(
+            root.join("pom.xml"),
+            r#"<project><modelVersion>4.0.0</modelVersion><groupId>test</groupId><artifactId>app</artifactId><version>1</version></project>"#,
+        )
+        .unwrap();
+        for (name, version) in [("jdk8", "1.8"), ("jdk21", "21")] {
+            let home = root.join(name);
+            std::fs::create_dir_all(home.join("bin")).unwrap();
+            std::fs::write(home.join("bin").join(if cfg!(windows) { "java.exe" } else { "java" }), "").unwrap();
+            std::fs::write(home.join("release"), format!("JAVA_VERSION=\"{version}\"\n")).unwrap();
+        }
+
+        let mut settings = Settings::default();
+        settings.languages.java.maven.runner_jre.clear();
+        for name in ["jdk8", "jdk21"] {
+            settings.languages.java.jdk = name.into();
+            let expected = root.join(name);
+            let model = load(&root, &root.join("cache"), &settings);
+            assert_eq!(model.maven.as_ref().unwrap().projects[0].env["JAVA_HOME"], expected.to_string_lossy());
+            let plan = compile::plan(&root, &model, BuildKind::Build, None, None).unwrap();
+            assert!(!plan.steps.is_empty());
+            for step in plan.steps {
+                assert_eq!(step.env["JAVA_HOME"], expected.to_string_lossy());
+            }
+        }
+    }
+
     #[test]
     fn model_for_sync_tasks_and_compile_uses_gradle_settings() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1019,7 +1092,6 @@ mod maven_completion_tests {
     use ide_build::maven::completion::PomCompletionKind;
     use ide_core::CancellationToken;
     use ide_workspace::dependencies::DependencyVersionSource;
-    use std::sync::Arc;
 
     /// Cache answers the test plants before completing, so the op's Central
     /// lookups hit the session cache and the network is never reached.

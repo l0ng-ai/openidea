@@ -206,6 +206,29 @@ describe("tool window persistence", () => {
     expect(useToolWindowLayout.getState().sizes.bottom).toBe(333);
   });
 
+  it("doesn't reopen windows whose content ends with the session (Debug)", () => {
+    disposers.push(
+      registerToolWindow({
+        id: "debug",
+        title: "Debug",
+        icon: "debug",
+        anchor: "bottom",
+        sessionContent: true,
+        component: Empty,
+      }),
+    );
+    showToolWindow("structure");
+    showToolWindow("debug");
+    expect(isToolWindowVisible("debug")).toBe(true);
+    loadToolWindowLayout("/work/a");
+    expect(isToolWindowVisible("debug")).toBe(false);
+    expect(isToolWindowVisible("structure")).toBe(true);
+    // A layout saved before the window was marked.
+    localStorage.setItem("openidea.layout.v1:/work/d", JSON.stringify({ v: 2, visible: { bottom: "debug" } }));
+    loadToolWindowLayout("/work/d");
+    expect(isToolWindowVisible("debug")).toBe(false);
+  });
+
   it("survives corrupt storage", () => {
     localStorage.setItem("openidea.layout.v1:/work/c", "{not json");
     loadToolWindowLayout("/work/c");

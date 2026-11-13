@@ -12,7 +12,8 @@ mod up_to_date;
 pub use fingerprint::{LaunchFingerprint, launch_fingerprint, menu_fingerprint};
 pub use launch_resources::process_launch_resources;
 pub use single::{
-    SingleFileTarget, compile_file_plan, find_javac, javac_step, single_file_classpath, single_file_target,
+    SingleFileTarget, compile_file_plan, find_javac, javac_step, module_classpath, single_file_classpath,
+    single_file_target,
 };
 pub use up_to_date::{menu_up_to_date, record_menu_build};
 

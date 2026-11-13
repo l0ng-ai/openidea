@@ -344,6 +344,9 @@ export function MenuList({
       aria-label={aria["aria-label"]}
       className={styles.menu}
       onKeyDown={onKeyDown}
+      // A right-click in an open menu does nothing; without this it reaches whatever is under the
+      // menu in the component tree, e.g. the title bar's toolbar menu behind File › Open Recent.
+      onContextMenu={(e) => e.preventDefault()}
       onPointerMove={(e) => {
         if (e.currentTarget.contains(e.target as Node)) pointerMove({ x: e.clientX, y: e.clientY });
       }}

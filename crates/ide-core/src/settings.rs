@@ -300,11 +300,30 @@ pub struct McpServerSettings {
     pub agent_tab_limit: u32,
     /// Archived agent tabs kept; older ones are closed.
     pub agent_archive_limit: u32,
+    /// Listen on [`Self::port`] in every run, rather than a free port each time, so HTTP clients and
+    /// port forwards keep working after a restart.
+    pub fixed_port: bool,
+    /// The port of [`Self::fixed_port`].
+    pub port: u16,
+    /// Keep the bearer token across runs (in the app data, readable by this user only) rather than
+    /// make a new one each run.
+    pub fixed_token: bool,
 }
+
+/// The default of [`McpServerSettings::port`].
+pub const DEFAULT_MCP_PORT: u16 = 26371;
 
 impl Default for McpServerSettings {
     fn default() -> Self {
-        Self { enabled: false, run_without_confirmation: false, agent_tab_limit: 1, agent_archive_limit: 999 }
+        Self {
+            enabled: false,
+            run_without_confirmation: false,
+            agent_tab_limit: 1,
+            agent_archive_limit: 999,
+            fixed_port: true,
+            port: DEFAULT_MCP_PORT,
+            fixed_token: false,
+        }
     }
 }
 

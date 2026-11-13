@@ -89,13 +89,13 @@ function notifyNoCoverage(server?: DeploymentServerValid, skipped?: TransferRepo
       : "No deployment server covers the selected paths",
     body: skipped?.length ? <ReportBody report={{ files: 0, skipped: skipped.length, errors: skipped }} /> : undefined,
     group: GROUP,
-    key: "deployment.noCoverage",
+    key: server ? `deployment.noCoverage.${server.id}` : "deployment.noCoverage",
     actions: [{ label: "Configure…", run: () => void executeAction("deployment.configure") }],
   });
 }
 
-/** Keep the chooser visible even when only one server covers the selection. */
-async function pickServer(title: string, paths: string[]): Promise<DeploymentServerValid | null> {
+/** The servers covering `paths`, or null (after saying why) when none does. */
+async function coveringServers(paths: string[]): Promise<DeploymentServerValid[] | null> {
   const configured = deployment().servers;
   if (!configured.length) {
     notifyNoServers();
@@ -119,9 +119,34 @@ async function pickServer(title: string, paths: string[]): Promise<DeploymentSer
     }
     return null;
   }
+  return servers;
+}
+
+/** Keep the chooser visible even when only one server covers the selection. */
+async function pickServer(title: string, paths: string[]): Promise<DeploymentServerValid | null> {
+  const servers = await coveringServers(paths);
+  if (!servers) return null;
   const labels = servers.map(serverLabel);
   const picked = await chooseItem({ title, items: labels });
   return picked === null ? null : (servers[labels.indexOf(picked)] ?? null);
+}
+
+/** Upload to…: a server covering the selection, or a group with such a server (all its servers). */
+async function pickUploadTargets(paths: string[]): Promise<DeploymentServerValid[] | null> {
+  const servers = await coveringServers(paths);
+  if (!servers) return null;
+  const { servers: configured, groups } = deployment();
+  const choices = new Map<string, DeploymentServerValid[]>();
+  for (const server of servers) if (!choices.has(serverLabel(server))) choices.set(serverLabel(server), [server]);
+  for (const group of groups) {
+    const members = group.servers.flatMap((id) => configured.find((s) => s.id === id) ?? []);
+    if (!members.some((m) => servers.includes(m))) continue;
+    const name = group.name.trim() || group.id;
+    const label = tx`${name} (group)`;
+    if (!choices.has(label)) choices.set(label, members);
+  }
+  const picked = await chooseItem({ title: "Upload to", items: [...choices.keys()] });
+  return picked === null ? null : (choices.get(picked) ?? null);
 }
 
 async function defaultServer(title: string, paths: string[]): Promise<DeploymentServerValid | null> {
@@ -160,7 +185,8 @@ export function showReport(
     title: s.title.replace("{n}", String(s.params.n)).replace("{server}", s.params.server),
     body: report.errors.length || report.skipped ? <ReportBody report={report} /> : undefined,
     group: GROUP,
-    key: `deployment.${verb}`,
+    // One per server, so each server of a group reports on its own.
+    key: `deployment.${verb}.${server.id}`,
   });
 }
 
@@ -171,7 +197,7 @@ function showFailure(title: string, server: DeploymentServerValid, e: unknown) {
     title: title.replace("{server}", serverLabel(server)),
     body: errorText(e),
     group: GROUP,
-    key: "deployment.failure",
+    key: `deployment.failure.${server.id}`,
   });
 }
 
@@ -451,7 +477,10 @@ export function registerDeploymentActions(): () => void {
       category: CATEGORY,
       when,
       keywords: ["deploy", "sftp", "upload", "remote"],
-      run: withTargets(async (paths) => transfer("upload", await pickServer("Upload to", paths), paths)),
+      run: withTargets(async (paths) => {
+        // A group uploads to each server in turn; each reports on its own, and a failure doesn't stop the rest.
+        for (const server of (await pickUploadTargets(paths)) ?? []) await transfer("upload", server, paths);
+      }),
     },
     {
       id: "deployment.downloadRemoteInto",

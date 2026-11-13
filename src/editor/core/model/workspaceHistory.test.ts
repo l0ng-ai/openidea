@@ -57,7 +57,12 @@ async function replace(text: string) {
 }
 async function rename() {
   await replace("new");
-  emitLocalIdeEvent({ type: "workspaceEditApplied", id: 9, paths: ["/p/A.java", "/p/B.java", "/p/closed.java"] });
+  emitLocalIdeEvent({
+    type: "workspaceEditApplied",
+    id: 9,
+    paths: ["/p/A.java", "/p/B.java", "/p/closed.java"],
+    byAgent: false,
+  });
 }
 function historyStep(slot: EditorSlot, forward = false) {
   return (forward ? redo : undo)({
@@ -183,7 +188,7 @@ it("rebuilds multiple redo markers in order when a closed file opens", async () 
   const a = await open("/p/A.java");
   await rename();
   await replace("alt");
-  emitLocalIdeEvent({ type: "workspaceEditApplied", id: 10, paths: ["/p/A.java", "/p/B.java"] });
+  emitLocalIdeEvent({ type: "workspaceEditApplied", id: 10, paths: ["/p/A.java", "/p/B.java"], byAgent: true });
   commands.undoWorkspaceEdit.mockImplementation(async (id: number) => {
     await replace(id === 10 ? "new" : "old");
     return { status: "ok", data: null };

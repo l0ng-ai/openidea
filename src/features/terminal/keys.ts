@@ -151,7 +151,9 @@ export function installTerminalKeys(target: Window = window): () => void {
       e.stopImmediatePropagation();
       return;
     }
-    const session = rt.sessionFromElement(e.target as Element | null);
+    // CLI editor tabs (#2202) are sessions of their own: the same strokes reach their shell.
+    const session =
+      rt.sessionFromElement(e.target as Element | null) ?? rt.cliSessionFromElement(e.target as Element | null);
     if (!session) return;
     const action = terminalKeyAction(e, session.hasSelection);
     // "Override IDE shortcuts" off: Ctrl+key and Escape reach the IDE keymap first;
@@ -164,6 +166,8 @@ export function installTerminalKeys(target: Window = window): () => void {
     }
     // "Move focus to the Editor with Escape": the IDE keymap's Escape (Focus Editor) runs instead.
     if (action.kind === "send" && e.key === "Escape" && t.escapeToEditor) return;
+    // A CLI tab is an editor tab: its Close and Find go back to the IDE keymap.
+    const inEditorTab = rt.cliSession(session.key) === session;
     switch (action.kind) {
       case "pass":
         return;
@@ -184,9 +188,11 @@ export function installTerminalKeys(target: Window = window): () => void {
         session.clear();
         break;
       case "close":
+        if (inEditorTab) return;
         void executeAction("terminal.closeSession");
         break;
       case "find":
+        if (inEditorTab) return;
         void executeAction("terminal.find");
         break;
     }

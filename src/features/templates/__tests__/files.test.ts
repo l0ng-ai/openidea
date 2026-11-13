@@ -92,6 +92,40 @@ describe("file naming", () => {
       expect(ids).toContain(id);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  it("ships a Jupyter Notebook template that the notebook editor accepts", () => {
+    const jupyter = tpl("jupyter");
+    expect(jupyter).toMatchObject({ extension: "ipynb", icon: "file-jupyter", nameStyle: "asis" });
+    expect(jupyter.enabled).not.toBe(false);
+    for (const kind of jupyter.kinds) {
+      const { text } = renderFileTemplate(kind.body, { name: "analysis", fileName: "analysis.ipynb" });
+      const notebook = JSON.parse(text);
+      // The rules of the backend's validate_notebook.
+      expect(notebook.nbformat).toBe(4);
+      expect(Number.isInteger(notebook.nbformat_minor)).toBe(true);
+      expect(notebook.metadata).toEqual(expect.any(Object));
+      expect(Array.isArray(notebook.cells)).toBe(true);
+      for (const cell of notebook.cells as Array<Record<string, unknown>>) {
+        expect(typeof cell.cell_type).toBe("string");
+        expect(cell.metadata).toEqual(expect.any(Object));
+        expect(cell.source).toEqual(expect.any(Array));
+      }
+    }
+  });
+
+  it("names the titled notebook after the file", () => {
+    const titled = tpl("jupyter").kinds.find((k) => k.id === "titled")!;
+    const { text } = renderFileTemplate(titled.body, { name: "report", fileName: "report.ipynb" });
+    expect(JSON.parse(text).cells[0]).toMatchObject({
+      cell_type: "markdown",
+      source: ["# report"],
+    });
+  });
+
+  it("plans the notebook file name from the entered name", () => {
+    expect(planFile(tpl("jupyter"), "/p/notebooks", "analysis")?.path).toBe("/p/notebooks/analysis.ipynb");
+    expect(planFile(tpl("jupyter"), "/p", "analysis.ipynb")?.path).toBe("/p/analysis.ipynb");
+  });
 });
 
 describe("PHP namespaces", () => {

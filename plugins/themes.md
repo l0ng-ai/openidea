@@ -199,6 +199,8 @@ ship no `.icls` at all keep the built-in syntax colours.
 | `--bg-button`, `--border-button` | `Button.startBackground`, `Button.startBorderColor` |
 | `--bg-tab-selected` | `EditorTabs.underlinedTabBackground` |
 | `--border-tab-selected` | `EditorTabs.underlinedBorderColor` (Islands), `EditorTabs.underlineColor` |
+| `--bg-tab-selected-inactive` | `EditorTabs.inactiveUnderlinedTabBackground` |
+| `--border-tab-selected-inactive` | `EditorTabs.inactiveUnderlinedTabBorderColor`, `.inactiveUnderlineColor` |
 | `--fg-completion-match` | `CompletionPopup.matchForeground` |
 | `--bg-toolbar-hover`, `--bg-toolbar-pressed` | `ActionButton.hoverBackground`, `ActionButton.pressedBackground` |
 | `--bg-stripe-hover`, `--bg-stripe-selected` | `ToolWindow.Button.hoverBackground`, `.selectedBackground` |
@@ -262,6 +264,7 @@ from `type`, then map:
 | `--link` | `textLink.foreground` |
 | `--bg-input`, `--bg-field` | `input.background` |
 | `--bg-tab-selected`, `--border-tab-selected` | `tab.activeBackground`, `tab.activeBorderTop` |
+| `--bg-tab-selected-inactive`, `--border-tab-selected-inactive` | `tab.unfocusedActiveBackground`, `tab.unfocusedActiveBorderTop` |
 | `--scrollbar-thumb`, `--scrollbar-thumb-hover` | `scrollbarSlider.background`, `scrollbarSlider.hoverBackground` |
 | `--danger`, `--warning`, `--info` | `errorForeground`, `editorWarning.foreground`, `editorInfo.foreground` |
 | `--vcs-modified`, `--vcs-added`, `--vcs-deleted`, `--vcs-untracked`, `--vcs-ignored`, `--vcs-conflict` | `gitDecoration.modifiedResourceForeground`, `.addedResourceForeground`, `.deletedResourceForeground`, `.untrackedResourceForeground`, `.ignoredResourceForeground`, `.conflictingResourceForeground` |

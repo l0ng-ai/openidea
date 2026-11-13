@@ -307,7 +307,7 @@ describe("variables the adapter computes after the stop", () => {
     expect(await screen.findByText("Collecting data…")).toBeTruthy();
     adapterData.library = "com.example.library.Library@1";
     act(() => handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] }));
-    const value = await screen.findByText("com.example.library.Library@1");
+    const value = await screen.findByText("{Library@1}");
     expect(screen.queryByText("Collecting data…")).toBeNull();
     expect(value.closest("[role=treeitem]")?.querySelector("[class*=changed]")).toBeNull();
   });
@@ -348,7 +348,7 @@ describe("variables the adapter computes after the stop", () => {
     await screen.findByText("Collecting data…");
     adapterData.library = "Library@2";
     await act(() => setVariableValue({ container: 1, name: "count", evaluateName: "count" }, "4", session));
-    expect(await screen.findByText("Library@2")).toBeTruthy();
+    expect(await screen.findByText("{Library@2}")).toBeTruthy();
   });
 
   it("does nothing for an invalidation while the program runs", async () => {

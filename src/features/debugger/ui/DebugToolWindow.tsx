@@ -176,30 +176,7 @@ export function DebugToolWindow() {
   return (
     <div className={styles.root}>
       <div className={styles.toolbar} role="toolbar" aria-label={tx("Debugger actions")}>
-        <div role="tablist" aria-label={tx("Debug views")} className={styles.tabs}>
-          {(
-            [
-              ["variables", "Threads & Variables"],
-              ["console", "Console"],
-              ...(hasMemory ? [["memory", "Memory"] as const] : []),
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              id={`debug-tab-${id}`}
-              aria-selected={tab === id}
-              aria-controls={`debug-panel-${id}`}
-              className={clsx(styles.tab, tab === id && styles.tabActive)}
-              onClick={() => setView({ session: active.startedAt, status: active.status, tab: id })}
-            >
-              {tx(label)}
-            </button>
-          ))}
-        </div>
-        {/* IDEA's XDebugger.ToolWindow.TopToolbar3 (+ its "More" group). */}
-        <span className={styles.sep} aria-hidden />
+        {/* IDEA's XDebugger.ToolWindow.TopToolbar3 (+ its "More" group), then the views. */}
         <ToolButton action="debug.rerun" icon="rerun" />
         <ToolButton action="debug.stop" icon="stop" tone="danger" />
         <span className={styles.sep} aria-hidden />
@@ -233,6 +210,29 @@ export function DebugToolWindow() {
           onClick={() => setMuted(!muted)}
         />
         <MoreActions />
+        <span className={styles.sep} aria-hidden />
+        <div role="tablist" aria-label={tx("Debug views")} className={styles.tabs}>
+          {(
+            [
+              ["variables", "Threads & Variables"],
+              ["console", "Console"],
+              ...(hasMemory ? [["memory", "Memory"] as const] : []),
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              id={`debug-tab-${id}`}
+              aria-selected={tab === id}
+              aria-controls={`debug-panel-${id}`}
+              className={clsx(styles.tab, tab === id && styles.tabActive)}
+              onClick={() => setView({ session: active.startedAt, status: active.status, tab: id })}
+            >
+              {tx(label)}
+            </button>
+          ))}
+        </div>
       </div>
       <div role="tabpanel" id={`debug-panel-${tab}`} aria-labelledby={`debug-tab-${tab}`} className={styles.panel}>
         {tab === "variables" ? (
@@ -251,7 +251,12 @@ export function DebugToolWindow() {
 
 function ThreadsAndVariables({ session }: { session: DebugSession }) {
   return (
-    <SplitGroup orientation="horizontal" id="debug-threads-variables" className={styles.split}>
+    <SplitGroup
+      orientation="horizontal"
+      id="debug-threads-variables"
+      storageKey="openidea.debug.threadsVariables"
+      className={styles.split}
+    >
       <SplitPanel id="frames" defaultSize="34%" minSize="160px">
         <FramesPane session={session} />
       </SplitPanel>

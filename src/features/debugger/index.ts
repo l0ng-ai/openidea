@@ -48,6 +48,11 @@ import { forgetMemory } from "./memory/memoryState";
 const useAnyOverlay = () =>
   useOverlays((s) => !!(s.popover || s.evaluate || s.breakpoints || s.chooser || s.attach || s.smartStep));
 
+/** The Debug stripe button's badge, like Run's: how many debug sessions (child sessions aside) are live. */
+function useLiveSessionCount(): number | null {
+  return useDebug((s) => Object.values(s.sessions).filter((x) => x.parent === null && isLive(x)).length || null);
+}
+
 export function activate(): () => void {
   useDebugRunSessions.setState({
     Console: lazyComponent(() => import("./ui/DebugConsole").then((m) => m.DebugServiceConsole)),
@@ -68,9 +73,11 @@ export function activate(): () => void {
       icon: "toolwindow-debug",
       anchor: "bottom",
       stripe: "onUse",
+      sessionContent: true,
       order: 20,
       component: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugToolWindow)),
       headerContent: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugTabs)),
+      useBadge: useLiveSessionCount,
     }),
     registerEditorKind(heapEditorKind),
     installHeapContext(),

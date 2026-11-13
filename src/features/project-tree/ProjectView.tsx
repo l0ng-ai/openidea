@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
   type ClipboardEvent as ReactClipboardEvent,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -365,6 +366,15 @@ function DecorationSuffix({ segments, color }: DecorationSuffixProps) {
     <span className={styles.suffix} style={color ? { color } : undefined}>
       {segments.map((s, i) => {
         const text = s.strike ? <s>{s.text}</s> : s.text;
+        const style: CSSProperties | undefined =
+          s.color || s.fontWeight || s.fontStyle || s.textDecoration
+            ? {
+                ...(s.color ? { color: s.color } : null),
+                ...(s.fontWeight ? { fontWeight: s.fontWeight } : null),
+                ...(s.fontStyle ? { fontStyle: s.fontStyle } : null),
+                ...(s.textDecoration ? { textDecoration: s.textDecoration } : null),
+              }
+            : undefined;
         return (
           <span
             key={i}
@@ -372,6 +382,7 @@ function DecorationSuffix({ segments, color }: DecorationSuffixProps) {
             role={s.label ? "img" : undefined}
             aria-label={s.label}
             title={s.label}
+            style={style}
           >
             {text}
             {s.icon && <Icon name={s.icon} size={12} />}

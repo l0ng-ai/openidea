@@ -3,7 +3,8 @@
  * new comment closes it, the caret on the summary line. In PHP the stub of a function lists its
  * parameters (`@param`) and return type (`@return`), as PhpStorm does.
  */
-import { EditorSelection } from "@codemirror/state";
+import { syntaxTree } from "@codemirror/language";
+import { EditorSelection, type EditorState } from "@codemirror/state";
 import type { Command } from "@codemirror/view";
 
 /** `@param` / `@return` lines for the PHP function declared in `text` (the code below the `/**`). */
@@ -86,3 +87,60 @@ export function enterInDocComment(language: string | undefined): Command {
     return true;
   };
 }
+
+/** How far back the opening `/*` of the comment around the caret is looked for. */
+const OPENER_SCAN = 20_000;
+
+/** Whether `pos` is inside a `/* *\/` comment opened at `open` (by the syntax tree, when it has one there). */
+function inBlockComment(state: EditorState, pos: number): number | null {
+  const from = Math.max(0, pos - OPENER_SCAN);
+  const before = state.sliceDoc(from, pos);
+  const open = before.lastIndexOf("/*");
+  if (open < 0 || before.indexOf("*/", open + 2) >= 0) return null;
+  const node = syntaxTree(state).resolveInner(pos, -1);
+  // A parsed document says whether this `/*` opens the comment (not text in a string or a `//`).
+  if (node.parent && !(/comment/i.test(node.name) && node.from === from + open)) return null;
+  return from + open;
+}
+
+/**
+ * Enter inside a `/* *\/` comment, on its first line or on a line that starts with `*`: the new
+ * line starts with `* ` aligned under the comment's asterisks, as IDEA's leading asterisks do.
+ */
+export const enterInBlockComment: Command = (view) => {
+  const { state } = view;
+  if (state.readOnly || state.selection.ranges.length !== 1) return false;
+  const r = state.selection.main;
+  if (!r.empty) return false;
+  const block = state.languageDataAt<{ block?: { open: string; close: string } }>("commentTokens", r.head)[0]?.block;
+  if (block?.open !== "/*" || block.close !== "*/") return false;
+  const open = inBlockComment(state, r.head);
+  if (open === null) return false;
+  const line = state.doc.lineAt(r.head);
+  const before = line.text.slice(0, r.head - line.from);
+  const after = line.text.slice(r.head - line.from);
+  let prefix: string;
+  if (open >= line.from) {
+    // The opening line: the asterisks go one column right of the `/`.
+    prefix = line.text.slice(0, open - line.from).replace(/[^\t]/g, " ") + " ";
+  } else {
+    const star = /^([ \t]*)\*(?!\/)/.exec(line.text);
+    if (!star || star[0].length > before.length) return false;
+    prefix = star[1]!;
+  }
+  const br = state.lineBreak;
+  const rest = after.trimStart();
+  const insert = rest.startsWith("*/") ? `${br}${prefix}* ${br}${prefix}` : `${br}${prefix}* `;
+  // Spaces around the break go, as a plain Enter drops them.
+  const from = r.head - (before.length - before.trimEnd().length);
+  const caret = from + br.length + prefix.length + 2;
+  view.dispatch(
+    state.update({
+      changes: { from, to: r.head + (after.length - rest.length), insert },
+      selection: EditorSelection.cursor(caret),
+      scrollIntoView: true,
+      userEvent: "input",
+    }),
+  );
+  return true;
+};

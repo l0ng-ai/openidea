@@ -41,7 +41,7 @@ import {
 } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { restoreMaximizedToolWindow } from "@/workbench/toolwindows/store";
-import { ask } from "@/workbench/messages";
+import { ask, confirm } from "@/workbench/messages";
 import { t } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
@@ -92,6 +92,7 @@ import {
   documentDirty,
   documentLifecycle,
   failures,
+  inputBusy,
   inputDirty,
   type CustomDocument,
 } from "./model/customDocuments";
@@ -1226,27 +1227,40 @@ export class EditorController implements SlotHost {
     }
   }
 
+  /**
+   * Tabs of kinds with an `isBusy` answer are never evicted (that would end a
+   * running process unasked): their answers are resolved first, so the sync
+   * and the async ones are protected alike.
+   */
   private enforcePaneTabLimit(paneId: string, keep?: string, liveKeys?: ReadonlySet<string>) {
-    const prefs = editorPrefs().tabs;
-    const protect = (tab: Tab) =>
-      !!liveKeys?.has(tab.input.key) || inputDirty(tab.input, useContributions.getState().editorKinds) === true;
-    return this.removeGuarded(
-      (current) =>
-        current.panes[paneId]
-          ? enforceTabLimit(
-              current,
-              paneId,
-              prefs.tabLimit,
-              prefs.closingPolicy,
-              (tab) =>
-                inputDirty(tab.input, useContributions.getState().editorKinds) ??
-                !!(tab.input.path && useDocMeta.getState()[tab.input.path]?.dirty),
-              keep ?? current.panes[paneId]?.active ?? undefined,
-              protect,
-            )
-          : current,
-      { protect },
-    );
+    const kinds = useContributions.getState().editorKinds;
+    const busyCapable = (useTabs.getState().panes[paneId]?.tabs ?? []).filter((t) => kinds.get(t.input.kind)?.isBusy);
+    const evict = (busy: ReadonlySet<string>) => {
+      const prefs = editorPrefs().tabs;
+      // A tab whose kind reports a running process is never evicted: that would end it unasked.
+      const protect = (tab: Tab) =>
+        busy.has(tab.input.key) || inputDirty(tab.input, kinds) === true || !!liveKeys?.has(tab.input.key);
+      return this.removeGuarded(
+        (current) =>
+          current.panes[paneId]
+            ? enforceTabLimit(
+                current,
+                paneId,
+                prefs.tabLimit,
+                prefs.closingPolicy,
+                (tab) =>
+                  inputDirty(tab.input, kinds) ?? !!(tab.input.path && useDocMeta.getState()[tab.input.path]?.dirty),
+                keep ?? current.panes[paneId]?.active ?? undefined,
+                protect,
+              )
+            : current,
+        { protect },
+      );
+    };
+    if (!busyCapable.length) return evict(new Set());
+    return Promise.all(
+      busyCapable.map(async (tab) => ((await inputBusy(tab.input, kinds)) ? tab.input.key : null)),
+    ).then((keys) => evict(new Set(keys.filter((key): key is string => key !== null))));
   }
 
   activate(paneId: string, tabId: string, focus = true) {
@@ -1313,6 +1327,30 @@ export class EditorController implements SlotHost {
     return Promise.allSettled(pending).then((results) => {
       const errors = failures(results);
       if (errors.length) throw combinedError(errors);
+    });
+  }
+
+  /**
+   * Inputs about to lose their last tab whose kind reports them busy
+   * (`EditorKindContribution.isBusy`): asks before ending what runs in them,
+   * like closing a busy terminal session. Resolves false to keep the tabs.
+   */
+  private async confirmBusyClose(removal: (s: TabsState) => TabsState): Promise<boolean> {
+    const kinds = useContributions.getState().editorKinds;
+    const current = useTabs.getState();
+    const remaining = openKeys(removal(current));
+    const closing = new Map<string, EditorInput>();
+    for (const pane of Object.values(current.panes))
+      for (const tab of pane.tabs)
+        if (!remaining.has(tab.input.key) && kinds.get(tab.input.kind)?.isBusy) closing.set(tab.input.key, tab.input);
+    const busy: string[] = [];
+    for (const input of closing.values()) if (await inputBusy(input, kinds)) busy.push(tabTitle(input, kinds));
+    if (!busy.length) return true;
+    const name = busy.join(", ");
+    return confirm({
+      title: t("editor.closeBusy.title", { name }),
+      message: t("editor.closeBusy.message", { name }),
+      ok: t("editor.closeBusy.terminate"),
     });
   }
 
@@ -1389,6 +1427,8 @@ export class EditorController implements SlotHost {
           }
           authorized.add(d.input.key);
         }
+        if (!(await this.confirmBusyClose(currentRemoval))) return false;
+        if (generation !== this.projectGeneration) return false;
         if (options.beforeRemove && !(await options.beforeRemove())) return false;
         // Commit only the original target ids against the latest tab state.
         if (generation !== this.projectGeneration) return false;

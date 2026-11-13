@@ -367,6 +367,7 @@ function PaneView({ paneId }: { paneId: string }) {
         tabPrefs.placement === "right" && styles.tabsRight,
       )}
       data-pane-id={paneId}
+      data-focus-scope=""
       aria-label={tx("Editor")}
       onFocus={onFocus}
       onBlur={onBlur}

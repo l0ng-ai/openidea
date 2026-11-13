@@ -21,8 +21,10 @@ import {
   showContextMenu,
   T,
   tooltipAttrs,
+  Toolbar,
 } from "@/ui";
 import { notifications } from "@/workbench/contributions";
+import { ToolWindowContentTabs } from "@/workbench/toolwindows/ToolWindows";
 import { ChartView } from "./ChartView";
 import { ColumnsPopup } from "./ColumnsPopup";
 import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
@@ -52,6 +54,7 @@ import {
   log,
   outcomeSummary,
   pageable,
+  pinResult,
   rerunResult,
   targetLabel,
   useDatabase,
@@ -78,10 +81,10 @@ function Output() {
   }, [lines.length]);
   return (
     <div className={styles.view}>
-      <div className={styles.toolbar}>
+      <Toolbar className={styles.toolbar} aria-label="Output actions">
         <span className={styles.spacer} />
         <IconButton icon="trash" title="Clear All" disabled={!lines.length} onClick={clearOutput} />
-      </div>
+      </Toolbar>
       <div
         ref={ref}
         className={styles.output}
@@ -146,12 +149,7 @@ function Pager({ tab }: { tab: ResultTab }) {
   const total = w.total === null ? `${w.last + 1}+` : String(w.total);
   const sizes = PAGE_SIZES.includes(pageSize) ? PAGE_SIZES : [...PAGE_SIZES, pageSize].sort((a, b) => a - b);
   return (
-    <div
-      className={styles.resultPager}
-      role="toolbar"
-      aria-label={tx("Result pages")}
-      title={outcomeSummary(tab.outcome)}
-    >
+    <Toolbar className={styles.resultPager} aria-label="Result pages" title={outcomeSummary(tab.outcome)}>
       <IconButton
         icon="page-first"
         title="First Page"
@@ -196,9 +194,12 @@ function Pager({ tab }: { tab: ResultTab }) {
         onChange={(v) => go(0, Number(v))}
         disabled={!canPage}
       />
-    </div>
+    </Toolbar>
   );
 }
+
+/** Unsubmitted edits by the rows they were made on, kept while another result tab is shown. */
+const keptEdits = new WeakMap<DbQueryResult, PendingEdits>();
 
 function Result({ tab }: { tab: ResultTab }) {
   const [view, setView] = useState<"table" | "chart">("table");
@@ -275,14 +276,19 @@ function Result({ tab }: { tab: ResultTab }) {
     sources.some((s) => s !== null);
 
   // The pending edits belong to the result they were made on: fresh rows (a
-  // re-run, another page) start over, without an effect.
-  const [pending, setPending] = useState<{ outcome: DbQueryResult | null; edits: PendingEdits }>({
-    outcome: null,
-    edits: emptyEdits(),
-  });
+  // re-run, another page) start over, without an effect. They outlive the pane,
+  // which remounts when another result tab is selected.
+  const [pending, setPending] = useState<{ outcome: DbQueryResult | null; edits: PendingEdits }>(() => ({
+    outcome: r ?? null,
+    edits: (r && keptEdits.get(r)) ?? emptyEdits(),
+  }));
   const edits = pending.outcome === r ? pending.edits : emptyEdits();
   const setEdits = (f: (e: PendingEdits) => PendingEdits) =>
-    setPending((previous) => ({ outcome: r, edits: f(previous.outcome === r ? previous.edits : emptyEdits()) }));
+    setPending((previous) => {
+      const next = f(previous.outcome === r ? previous.edits : emptyEdits());
+      if (r) keptEdits.set(r, next);
+      return { outcome: r ?? null, edits: next };
+    });
   const loaded = r?.rows.length ?? 0;
   const rowCount = loaded + edits.inserts.length;
   const value = useCallback(
@@ -423,11 +429,12 @@ function Result({ tab }: { tab: ResultTab }) {
   }
   return (
     <div className={styles.view} ref={viewRef} data-db-table-editor="">
-      <div className={styles.toolbar}>
-        <IconButton icon="db-table" title="Table" aria-pressed={view === "table"} onClick={() => setView("table")} />
+      <Toolbar className={styles.toolbar} aria-label="Result actions">
+        <IconButton icon="database" title="Table" aria-pressed={view === "table"} onClick={() => setView("table")} />
         <IconButton icon="db-chart" title="Chart" aria-pressed={view === "chart"} onClick={() => setView("chart")} />
         <span className={styles.toolbarSeparator} />
         <IconButton icon="refresh" title="Rerun Query" disabled={busy} onClick={() => void rerunResult(tab.id)} />
+        <PinButton tab={tab} />
         {view === "table" && (
           <IconButton
             icon="search"
@@ -476,7 +483,7 @@ function Result({ tab }: { tab: ResultTab }) {
           onClick={(e) => showContextMenu(e, exportMenu(data(), queryTable(text, { driver }), extractor))}
         />
         {view === "table" && <PanelToggle panel={panel} onChange={setPanel} />}
-      </div>
+      </Toolbar>
       {view === "chart" ? (
         <div className={styles.fill}>
           <ChartView columns={columns} rows={r.rows} />
@@ -584,14 +591,15 @@ function PlanResult({ tab }: { tab: ResultTab }) {
   const selectedKey = selected < 0 ? statement.key : String(selected);
   return (
     <div className={styles.view}>
-      <div className={styles.toolbar}>
+      <Toolbar className={styles.toolbar} aria-label="Result actions">
         <IconButton icon="refresh" title="Explain Again" disabled={tab.busy} onClick={() => void rerunResult(tab.id)} />
+        <PinButton tab={tab} />
         {tab.busy && <Spinner size={12} />}
         <span className={styles.spacer} />
         <span className={styles.resultSource} title={tab.outcome.statement.text}>
           {targetLabel(tab.sourceId)}
         </span>
-      </div>
+      </Toolbar>
       <div className={clsx(styles.fill, styles.planView)}>
         <div className={styles.planTree}>
           <div className={styles.planHeader}>
@@ -653,11 +661,34 @@ function PlanResult({ tab }: { tab: ResultTab }) {
   );
 }
 
+/** IDEA's Pin Tab: the console's next runs leave this result alone. */
+function PinButton({ tab }: { tab: ResultTab }) {
+  return (
+    <IconButton icon="pin" title="Pin Tab" aria-pressed={!!tab.pinned} onClick={() => pinResult(tab.id, !tab.pinned)} />
+  );
+}
+
 export function ResultsView() {
   const results = useDatabase((s) => s.results);
   const active = useDatabase((s) => s.activeResult);
   const hasOutput = useDatabase((s) => s.output.length > 0);
-  useEffect(() => () => setContext("dbResultsFocus", false), []);
+  const root = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  /** Tab from a result tab: its table, plan tree or output log (IDEA focuses the tab's content). */
+  const focusContent = () => {
+    const target = panel.current?.querySelector<HTMLElement>('[role="grid"], [role="tree"], [role="log"]');
+    target?.focus();
+    return !!target && document.activeElement === target;
+  };
+  useEffect(() => {
+    const syncFocus = () => setContext("dbResultsFocus", !!root.current?.contains(document.activeElement));
+    document.addEventListener("focusin", syncFocus);
+    syncFocus();
+    return () => {
+      document.removeEventListener("focusin", syncFocus);
+      setContext("dbResultsFocus", false);
+    };
+  }, []);
   const tabMenu = (id: string, e: MouseEvent) => {
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
@@ -674,11 +705,9 @@ export function ResultsView() {
   const tab = results.find((r) => r.id === active);
   return (
     <div
+      ref={root}
       className={styles.view}
-      onFocusCapture={() => setContext("dbResultsFocus", true)}
-      onBlurCapture={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget)) setContext("dbResultsFocus", false);
-      }}
+      data-focus-scope=""
       onKeyDown={(e) => {
         if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
         const tab = (e.target as Element).closest<HTMLElement>('[role="tab"]');
@@ -692,27 +721,41 @@ export function ResultsView() {
         );
       }}
     >
-      <Tabs
-        className={styles.resultTabs}
-        variant="compact"
-        aria-label="Results"
-        activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
-        panelIdPrefix="db-results"
-        onSelect={(id) => useDatabase.setState({ activeResult: Number(id) })}
-        onClose={(id) => closeResult(Number(id))}
-        onContextMenu={tabMenu}
-        items={[
-          { id: String(OUTPUT_TAB), label: "Output", icon: "db-console", closable: false },
-          ...results.map((r) => ({
-            id: String(r.id),
-            label: r.title,
-            icon: r.plan ? "db-plan" : "db-table",
-            closable: true,
-            tooltip: r.outcome.statement.text,
-          })),
-        ]}
-      />
-      <div className={styles.fill}>
+      <ToolWindowContentTabs>
+        <Tabs
+          className={styles.resultTabs}
+          variant="compact"
+          aria-label="Results"
+          activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
+          panelIdPrefix="db-results"
+          focusContent={focusContent}
+          onSelect={(id) => useDatabase.setState({ activeResult: Number(id) })}
+          onClose={(id) => closeResult(Number(id))}
+          onTogglePin={(id) => {
+            const r = results.find((r) => r.id === Number(id));
+            if (r) pinResult(r.id, !r.pinned);
+          }}
+          onContextMenu={tabMenu}
+          items={[
+            { id: String(OUTPUT_TAB), label: "Output", icon: "db-console", closable: false },
+            ...results.map((r) => ({
+              id: String(r.id),
+              label: r.title,
+              icon: r.plan ? "db-plan" : "database",
+              closable: true,
+              pinned: r.pinned,
+              tooltip: r.outcome.statement.text,
+            })),
+          ]}
+        />
+      </ToolWindowContentTabs>
+      <div
+        ref={panel}
+        className={styles.fill}
+        role="tabpanel"
+        id={`db-results-panel-${tab ? tab.id : OUTPUT_TAB}`}
+        aria-labelledby={`db-results-tab-${tab ? tab.id : OUTPUT_TAB}`}
+      >
         {!tab ? <Output /> : tab.plan ? <PlanResult key={tab.id} tab={tab} /> : <Result key={tab.id} tab={tab} />}
       </div>
     </div>

@@ -112,7 +112,8 @@ export function occurrenceVariants(actions: readonly CodeAction[]): { one: CodeA
 }
 
 /**
- * IDEA's "Multiple occurrences found" for a server that offers both variants;
+ * IDEA's "Multiple occurrences found" for a server that offers both variants,
+ * applying the single-occurrence one directly when the selected text occurs only once;
  * false when it does not (the caller applies / lists the actions as before).
  */
 export function chooseOccurrences(view: EditorView, actions: readonly CodeAction[], id: RefactoringId): boolean {
@@ -123,6 +124,10 @@ export function chooseOccurrences(view: EditorView, actions: readonly CodeAction
   const text = state.sliceDoc(sel.from, sel.to);
   const occurrences = text.trim() ? findTextOccurrences(state.doc.toString(), 0, state.doc.length, text, 200) : [];
   const n = occurrences.length;
+  if (n === 1) {
+    void applyIntroduceAction(view, variants.one, id);
+    return true;
+  }
   openPopup({
     kind: "list",
     anchor: caretAnchor(view, sel.head),

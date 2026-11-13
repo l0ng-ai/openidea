@@ -204,6 +204,8 @@ html {
   --fg-fold-marker: #6f737a;
   --fg-whitespace: #6f737a;
   --fg-unused: #6f737a;
+  --wave-typo: #59a869;
+  --fg-deprecated: #8c8f95;
   --bg-identifier-under-caret: #373b39;
   --bg-identifier-under-caret-write: #402f33;
   --fg-inlay: #868a91;
@@ -222,6 +224,18 @@ html {
 
   /* console / terminal surfaces (Color Scheme › Console Colors) */
   --bg-console: var(--bg-island);
+
+  /* Git colors (Color Scheme › Git): editor inline blame and project view branch decorations */
+  --git-blame-author: var(--fg-inlay);
+  --git-blame-date: var(--fg-inlay);
+  --git-blame-issue: var(--fg-inlay);
+  --git-blame-subject: var(--fg-inlay);
+  --git-branch-changed: var(--accent);
+  --git-head-tags: var(--accent);
+  --git-local-branch: var(--accent);
+  --git-master-with-remote: var(--accent);
+  --git-master-without-remote: var(--accent);
+  --git-tracking-branch: var(--accent);
 
   /* terminal / console ANSI palette */
   --ansi-black: #000000;
@@ -631,6 +645,8 @@ html {
   --fg-fold-marker: #8b8e94;
   --fg-whitespace: #b5b7bd;
   --fg-unused: #8c8c8c;
+  --wave-typo: #3d9950;
+  --fg-deprecated: #6c707e;
   --bg-identifier-under-caret: #edebfc;
   --bg-identifier-under-caret-write: #fce8f4;
   --fg-inlay: #73767c;
@@ -923,6 +939,8 @@ html {
   --fg-fold-marker: #9fa2a9;
   --fg-whitespace: #8b8e95;
   --fg-unused: #8b8e95;
+  --wave-typo: #6cbb7d;
+  --fg-deprecated: #b6b8be;
   --bg-identifier-under-caret: #3f4a44;
   --bg-identifier-under-caret-write: #553840;
   --fg-inlay: #ccced3;
@@ -1135,6 +1153,8 @@ html {
   --fg-fold-marker: var(--palette-muted);
   --fg-whitespace: var(--palette-muted);
   --fg-unused: var(--palette-muted);
+  --wave-typo: var(--palette-green);
+  --fg-deprecated: var(--palette-muted);
   --fg-inlay: var(--palette-muted);
   --fg-weak-warning: var(--palette-muted);
   --syn-inline-value: var(--palette-muted);

@@ -17,6 +17,18 @@ export {
   unsplit,
   useTerminals,
 } from "./store";
+export {
+  applySettingsToClis,
+  applyThemeToClis,
+  cliBusy,
+  cliSession,
+  cliSessionForTerminalId,
+  cliSessionFromElement,
+  disposeAllClis,
+  disposeCli,
+  startCli,
+} from "./cliSessions";
+export { CliEditor } from "./CliEditor";
 export { TerminalTabs, TerminalView } from "./TerminalView";
 export { applyThemeToEmbedded, createEmbeddedTerminal } from "./embedded";
 export { closeTerminalFind, openTerminalFind, useTerminalFind } from "./FindBar";

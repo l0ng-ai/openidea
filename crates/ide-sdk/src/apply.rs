@@ -323,11 +323,38 @@ fn resolve_gradle_command(root: &Path, build_dir: &Path, s: &Settings, use_wrapp
     }
     let wrapper = build_dir.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
     if use_wrapper && wrapper.is_file() {
+        // `gradlew` can't start without its jar, which `.gitignore`s with `*.jar` often leave
+        // out: run the distribution the wrapper already unpacked instead.
+        if build_dir.join("gradle/wrapper/gradle-wrapper.jar").is_file() {
+            return wrapper;
+        }
+        let home = setting_path(root, &g.user_home)
+            .or_else(|| std::env::var_os("GRADLE_USER_HOME").map(PathBuf::from))
+            .or_else(|| Some(crate::home_dir()?.join(".gradle")));
+        if let Some(gradle) = home.and_then(|home| unpacked_wrapper_distribution(build_dir, &home)) {
+            return gradle;
+        }
+        // Nothing to run instead: the wrapper's failure explains what is missing.
         return wrapper;
     }
     pinned::pinned_install(build_dir, Tool::Gradle)
         .map(|(home, _)| home.join("bin").join(name))
         .unwrap_or_else(|| name.into())
+}
+
+/// `bin/gradle` of the distribution `gradle/wrapper/gradle-wrapper.properties` names, once the
+/// wrapper has unpacked it in `<gradle_user_home>/wrapper/dists` (and marked it complete).
+fn unpacked_wrapper_distribution(build_dir: &Path, gradle_user_home: &Path) -> Option<PathBuf> {
+    let properties = std::fs::read_to_string(build_dir.join("gradle/wrapper/gradle-wrapper.properties")).ok()?;
+    let url = properties.lines().find_map(|line| line.trim().strip_prefix("distributionUrl="))?;
+    let zip = url.trim().replace("\\:", ":").rsplit('/').next()?.to_owned();
+    let name = zip.strip_suffix(".zip")?;
+    let gradle = if cfg!(windows) { "gradle.bat" } else { "gradle" };
+    // One directory per distribution URL hash, each holding the unpacked `gradle-<version>`.
+    let hashes = std::fs::read_dir(gradle_user_home.join("wrapper/dists").join(name)).ok()?;
+    hashes.flatten().map(|e| e.path()).filter(|dir| dir.join(format!("{zip}.ok")).is_file()).find_map(|dir| {
+        std::fs::read_dir(&dir).ok()?.flatten().map(|e| e.path().join("bin").join(gradle)).find(|p| p.is_file())
+    })
 }
 
 fn gradle_run_jdk<'a>(
@@ -348,6 +375,11 @@ fn gradle_run_jdk<'a>(
             .or_else(|| compatible.iter().copied().filter(|jdk| jdk.major > release).min_by_key(|jdk| jdk.major))
             .or_else(|| compatible.iter().copied().max_by_key(|jdk| jdk.major))
     })
+}
+
+/// The newest installed JDK that Gradle `gradle` runs on.
+fn newest_gradle_jdk(gradle: (u32, u32), installed: &[crate::java::Jdk]) -> Option<&crate::java::Jdk> {
+    installed.iter().filter(|jdk| gradle_supports_java(gradle, jdk.major)).max_by_key(|jdk| jdk.major)
 }
 
 /// Default environment shared by Gradle model builds and Run configurations.
@@ -466,7 +498,17 @@ pub fn configure_gradle_runtime(cfg: &mut LanguageServerConfig, root: &Path, bui
         .any(|f| build_dir.join(f).is_file());
     let env = if gradle_build {
         let command = gradle_command(root, build_dir, s);
-        gradle_build_env(root, build_dir, &command.to_string_lossy(), s, None)
+        let command = command.to_string_lossy();
+        let mut env = gradle_build_env(root, build_dir, &command, s, None);
+        // No Project JDK and no Java version the build declares: jdtls would import on its own
+        // runtime, which an older Gradle cannot run on. Use an installed JDK this Gradle supports.
+        if !env.contains_key("JAVA_HOME")
+            && let Some(gradle) = gradle_distribution_version(build_dir, &command)
+            && let Some(jdk) = newest_gradle_jdk(gradle, &crate::java::installed_jdks())
+        {
+            env.insert("JAVA_HOME".into(), jdk.home.to_string_lossy().into_owned());
+        }
+        env
     } else {
         gradle_env(root, s, Default::default())
     };
@@ -2001,6 +2043,11 @@ mod gradle_runtime_tests {
         assert_eq!(gradle_run_jdk(Some(21), None, &installed, None).unwrap().major, 21);
         assert_eq!(gradle_run_jdk(Some(19), None, &installed, None).unwrap().major, 21);
         assert!(gradle_run_jdk(None, None, &installed, None).is_none());
+        // The Java import of a build that declares no Java version still needs a JVM its Gradle runs on.
+        assert_eq!(newest_gradle_jdk((8, 4), &installed).unwrap().major, 17);
+        assert_eq!(newest_gradle_jdk((7, 2), &installed).unwrap().major, 11);
+        assert_eq!(newest_gradle_jdk((9, 1), &installed).unwrap().major, 25);
+        assert!(newest_gradle_jdk((9, 0), &installed[4..]).is_none());
     }
 
     #[test]

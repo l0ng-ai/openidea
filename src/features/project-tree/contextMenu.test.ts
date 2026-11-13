@@ -301,6 +301,32 @@ it("offers workspace removal for every member root", () => {
   );
 });
 
+it("offers Git and Find Usages in workspace members outside the workspace folder", () => {
+  useProject.setState({
+    project: {
+      root: "/work/workspaces/demo",
+      name: "demo",
+      settings: {},
+      trusted: true,
+      isGit: false,
+      workspace: { version: 1, name: "demo", projects: ["/work/repos/a", "/work/repos/b"] },
+    },
+  });
+  setContext("vcsAvailable", true);
+  try {
+    for (const target of [node("/work/repos/a", true, true), node("/work/repos/a/src", true)])
+      expect(sub(contextMenuItems([target]), "Git")).toContain("Commit…");
+    expect(sub(contextMenuItems([node("/work/repos/a/x.py")]), "Git")).toContain("Annotate with Git Blame");
+    expect(labels(contextMenuItems([node("/work/repos/a/x.py")]))).toContain("Find Usages");
+    // Project structure is the workspace folder's: its roots can't name a folder outside it.
+    expect(labels(contextMenuItems([node("/work/repos/a/src", true)]))).not.toContain("Mark Directory as");
+    // Scratches stay outside.
+    expect(sub(contextMenuItems([node("/config/scratches/s.py")]), "Git")).toBeUndefined();
+  } finally {
+    clearContext("vcsAvailable");
+  }
+});
+
 it("does not offer removal on the attached primary", () => {
   useProject.setState({
     project: {
