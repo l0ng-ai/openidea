@@ -2554,7 +2554,8 @@ fn official_git_toolbox_fetches_on_schedule_after_idle_reclaim() {
     f.install(&official("git-toolbox"));
     // Focusing an editor wakes it to show the branch (nothing fetched yet).
     let now = Instant::now();
-    f.host.post_events(Some("main"), vec![WorkbenchEvent::EditorFocused(Some("src/notes.txt".into()))]);
+    let focused = f.project.join("src/notes.txt").to_string_lossy().into_owned();
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::EditorFocused(Some(focused))]);
     f.host.flush_events_at(now + Duration::from_secs(3));
     assert!(f.host.wait_events(Duration::from_secs(10)));
     let item = |host: &PluginHost| {
