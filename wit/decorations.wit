@@ -19,4 +19,7 @@ interface decorations {
     set-file: func(path: string, set-id: string, item: file-decoration) -> result<_, error>;
     /// Remove this tree set from every file/project.
     clear-file: func(set-id: string) -> result<_, error>;
+    /// Replace this set's tree annotation for a file with a note shown after its name (API 1.7):
+    /// one line of at most 200 characters, with an optional tooltip.
+    set-file-note: func(path: string, set-id: string, note: string, tooltip: option<string>) -> result<_, error>;
 }

@@ -156,6 +156,7 @@ struct State {
     restricted: bool,
     decorations: BTreeMap<(String, String), Vec<Decoration>>,
     file_decorations: BTreeMap<(String, String), FileDecoration>,
+    file_notes: BTreeMap<(String, String), (String, Option<String>)>,
     revealed_ranges: Vec<Range>,
     loopback_queries: VecDeque<Option<String>>,
     net: Option<NetHandler>,
@@ -299,6 +300,10 @@ impl MockHost {
     /// Tree decoration snapshots keyed by (set id, absolute path).
     pub fn file_decorations(&self) -> BTreeMap<(String, String), FileDecoration> {
         self.state.borrow().file_decorations.clone()
+    }
+    /// `(set, path)` → `(note, tooltip)` set with `set_file_note`.
+    pub fn file_notes(&self) -> BTreeMap<(String, String), (String, Option<String>)> {
+        self.state.borrow().file_notes.clone()
     }
     /// Ranges requested to scroll into view.
     pub fn revealed_ranges(&self) -> Vec<Range> {
@@ -1655,9 +1660,9 @@ pub mod current {
             let mut next = s.file_decorations.clone();
             next.remove(&(set.into(), path.clone()));
             if style(&item.style) {
-                next.insert((set.into(), path), item.clone());
+                next.insert((set.into(), path.clone()), item.clone());
             }
-            let names: BTreeSet<_> = next.keys().map(|(set, _)| set).collect();
+            let names: BTreeSet<_> = next.keys().chain(s.file_notes.keys()).map(|(set, _)| set).collect();
             if set.is_empty()
                 || set.len() > 128
                 || names.len() > 50
@@ -1666,6 +1671,7 @@ pub mod current {
                 return Err(Error::Invalid("file decoration limit".into()));
             }
             s.file_decorations = next;
+            s.file_notes.remove(&(set.into(), path));
             Ok(())
         })
     }
@@ -1673,6 +1679,28 @@ pub mod current {
         with(|s| {
             require(s, "project.read")?;
             s.file_decorations.retain(|(id, _), _| id != set);
+            s.file_notes.retain(|(id, _), _| id != set);
+            Ok(())
+        })
+    }
+    pub fn set_file_note(path: &str, set: &str, note: &str, tooltip: Option<&str>) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let path = decoration_path(s, path)?;
+            let key = (set.to_string(), path);
+            let names: BTreeSet<_> =
+                s.file_decorations.keys().chain(s.file_notes.keys()).chain([&key]).map(|(set, _)| set).collect();
+            if set.is_empty()
+                || set.len() > 128
+                || names.len() > 50
+                || note.trim().is_empty()
+                || note.chars().count() > 200
+                || note.contains(['\n', '\r'])
+            {
+                return Err(Error::Invalid("a file note is one non-empty line of at most 200 characters".into()));
+            }
+            s.file_decorations.remove(&key);
+            s.file_notes.insert(key, (note.into(), tooltip.map(Into::into)));
             Ok(())
         })
     }

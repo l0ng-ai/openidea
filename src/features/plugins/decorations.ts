@@ -32,13 +32,15 @@ function currentSets(sets: DecorationSet[]) {
 function updateTree(plugin: string, sets: DecorationSet[]) {
   const items = new Map<string, FileDecoration>();
   for (const s of currentSets(sets))
-    if (s.tree && s.file && Object.hasOwn(colors, s.file.style)) {
+    if (s.tree && s.file && (Object.hasOwn(colors, s.file.style) || s.file.note)) {
       items.set(s.path, {
-        color: colors[s.file.style],
+        color: Object.hasOwn(colors, s.file.style) ? colors[s.file.style] : undefined,
         badge: s.file.badge ?? undefined,
         tooltip: s.file.tooltip ?? undefined,
         faded: s.file.style === "muted",
         error: s.file.style === "error",
+        // A note: muted text after the name, like the VCS branch of a root.
+        suffix: s.file.note ? [{ text: s.file.note }] : undefined,
       });
     }
   setFileDecorations(`plugin:${plugin}`, items);

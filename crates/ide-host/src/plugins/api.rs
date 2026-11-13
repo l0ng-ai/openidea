@@ -4125,6 +4125,11 @@ impl PluginApi {
         if items.len() > 10_000 || file.as_ref().and_then(|f| f.badge.as_ref()).is_some_and(|b| b.chars().count() > 2) {
             return Err(HostError::Invalid("decoration limit exceeded".into()));
         }
+        if let Some(note) = file.as_ref().and_then(|f| f.note.as_ref())
+            && (note.trim().is_empty() || note.chars().count() > 200 || note.contains(['\n', '\r']))
+        {
+            return Err(HostError::Invalid("a file note is one non-empty line of at most 200 characters".into()));
+        }
         items.retain(|d| decoration_style(&d.style));
         if items.iter().any(|d| d.range.start > d.range.end) {
             return Err(HostError::Invalid("reversed decoration range".into()));
@@ -4143,7 +4148,7 @@ impl PluginApi {
                 set_id: set.into(),
                 tree,
                 items,
-                file: file.filter(|f| decoration_style(&f.style)),
+                file: file.filter(|f| f.note.is_some() || decoration_style(&f.style)),
             })
         } else {
             None
@@ -4315,10 +4320,33 @@ mod workbench_tests {
             api.file_decorations(
                 Some(&path),
                 "tree",
-                Some(ide_plugin::FileDecoration { badge: Some("abc".into()), style: "info".into(), tooltip: None })
+                Some(ide_plugin::FileDecoration {
+                    badge: Some("abc".into()),
+                    style: "info".into(),
+                    tooltip: None,
+                    note: None
+                })
             )
             .is_err()
         );
+        let note = |text: &str| ide_plugin::FileDecoration {
+            badge: None,
+            style: String::new(),
+            tooltip: Some("why".into()),
+            note: Some(text.into()),
+        };
+        api.file_decorations(Some(&path), "notes", Some(note("entry point"))).unwrap();
+        let notes = |api: &PluginApi| {
+            api.shared.decoration_sets()["test"]
+                .iter()
+                .filter(|s| s.tree && s.set_id == "notes")
+                .map(|s| s.file.as_ref().and_then(|f| f.note.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(notes(&api), [Some("entry point".to_string())], "kept without a style");
+        for bad in ["", "two\nlines", &"x".repeat(201)] {
+            assert!(api.file_decorations(Some(&path), "notes", Some(note(bad))).is_err(), "{bad:?}");
+        }
         api.shared.clear_plugin("test", true);
         assert!(api.shared.decoration_sets().is_empty());
     }
