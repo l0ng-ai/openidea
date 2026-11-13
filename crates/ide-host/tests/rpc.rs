@@ -223,6 +223,40 @@ async fn serves_projects_files_documents_search_and_runs() {
     assert!(std::fs::read_to_string(project.join(".openidea/settings.toml")).unwrap().contains("autoUpload"));
     invoke(&peer, "vcs_init", json!({ "dir": project })).await.unwrap();
     until("git repository", || project.join(".git").is_dir()).await;
+    // Re-open so the project picks up the repository created after it was opened.
+    invoke(&peer, "open_project", json!({ "path": project })).await.unwrap();
+
+    // A branch rename over the remote dispatcher takes camelCase arguments, as the
+    // desktop shell sends them. The snake_case spelling left `unsetUpstream` unread,
+    // which surfaced as "invalid type: null, expected a boolean" (#3231).
+    {
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git").arg("-C").arg(&project).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "test"]);
+        git(&["commit", "--allow-empty", "-m", "init"]);
+        git(&["branch", "rename-source"]);
+        let mut adopted = false;
+        for _ in 0..100 {
+            if invoke(&peer, "vcs_branches", json!({ "repo": null })).await.is_ok() {
+                adopted = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(adopted, "project did not adopt the repository created after it was opened");
+        invoke(
+            &peer,
+            "vcs_rename_branch",
+            json!({ "repo": null, "from": "rename-source", "to": "rename-target", "unsetUpstream": false }),
+        )
+        .await
+        .unwrap();
+        let branches = invoke(&peer, "vcs_branches", json!({ "repo": null })).await.unwrap();
+        assert!(branches.to_string().contains("rename-target"), "rename not applied: {branches}");
+    }
 
     // A Docker run configuration's environment comes from the host its command runs on.
     let env =
