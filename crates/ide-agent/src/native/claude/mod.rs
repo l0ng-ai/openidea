@@ -583,11 +583,12 @@ impl Shim {
 impl super::Shim for Shim {
     fn attach(&self, client: Peer) {
         let _ = self.client.set(client.clone());
-        // The client went away: so do the processes.
-        let weak = self.me.clone();
+        // The client went away: so do the processes. Held until then: the connection drops
+        // its handler (this shim) as it closes, and the sessions would go without stopping.
+        let me = self.me.upgrade();
         tokio::spawn(async move {
             client.closed().await;
-            if let Some(me) = weak.upgrade() {
+            if let Some(me) = me {
                 me.closed.store(true, Ordering::Release);
                 let sessions: Vec<Arc<Session>> = me.sessions.lock().drain().map(|(_, s)| s).collect();
                 for s in sessions {
@@ -595,6 +596,15 @@ impl super::Shim for Shim {
                 }
             }
         });
+    }
+}
+
+impl Drop for Session {
+    /// A session dropped without being stopped (the shim went away) takes its process along.
+    fn drop(&mut self) {
+        if let Some(p) = self.st.get_mut().proc.take() {
+            p.kill.cancel();
+        }
     }
 }
 

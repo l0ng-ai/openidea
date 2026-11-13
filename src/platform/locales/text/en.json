@@ -1511,6 +1511,13 @@
   "Servers in group": "Servers in group",
   "Upload to… on this group uploads the files to each of its servers in turn.": "Upload to… on this group uploads the files to each of its servers in turn.",
   "Server Group": "Server Group",
+  "Create Git Repository…": "Create Git Repository…",
+  "Select Directory for Git Init": "Select Directory for Git Init",
+  "Couldn't create Git repository": "Couldn't create Git repository",
+  "Created Git repository in {dir}": "Created Git repository in {dir}",
+  "Check the JVM Debugger": "Check the JVM Debugger",
+  "Whether the debugger for a build tool's JVMs is installed, offering the install when not (arg: { module, retry, done(ready) })": "Whether the debugger for a build tool's JVMs is installed, offering the install when not (arg: { module, retry, done(ready) })",
+  "This module has Kotlin sources, so debugging it needs the Kotlin debugger (kotlin-debug-adapter).": "This module has Kotlin sources, so debugging it needs the Kotlin debugger (kotlin-debug-adapter).",
   "Search agent tasks": "Search agent tasks",
   "No agent tasks match": "No agent tasks match"
 }

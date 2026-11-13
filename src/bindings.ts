@@ -2504,7 +2504,7 @@ export type AskpassKind =
 /**  Yes / no (an unknown host key); answered with `yes` or `no`. */
 "confirm";
 
-export type AttachKind = "java" | "node" | "python" | "go" | "native";
+export type AttachKind = "java" | "node" | "python" | "dotnet" | "go" | "native";
 
 export type AttachableProcess = {
 	pid: number,

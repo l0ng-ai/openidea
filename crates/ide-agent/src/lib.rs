@@ -1100,6 +1100,8 @@ impl AgentManager {
                 title_renamed: s.title_renamed,
             }
         };
+        // Copying may have started the source's agent: it stops again once idle.
+        source.release_when_idle();
         let task = Task::restore(file, self.shared.clone());
         self.tasks.write().insert(task.id.clone(), task.clone());
         task.persist();
@@ -1169,6 +1171,8 @@ impl AgentManager {
         task.persist();
         self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: cut as u32 });
         task.emit_task();
+        // Undoing may have started the agent: it stops again once idle.
+        task.release_when_idle();
         Ok(first)
     }
 
