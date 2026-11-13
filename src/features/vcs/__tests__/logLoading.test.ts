@@ -32,7 +32,9 @@ import {
   goToRef,
   logState,
   openLogTab,
+  pageUntil,
   selectGitTab,
+  MAX_PAGE_UNTIL_PAGES,
   PAGE,
   reloadLog,
   revealCommit,
@@ -294,5 +296,43 @@ describe("commit navigation", () => {
     expect(useGitLog.getState().selected).toBe(commitKey({ ...target, repo: "/repo" }));
     expect(api.log).toHaveBeenCalledTimes(1);
     expect(api.log.mock.calls[0]?.[1]).toMatchObject({ seek: target.id, branches: ["HEAD"] });
+  });
+
+  it("stops pageUntil after maxPages to prevent unbounded paging and memory exhaustion", async () => {
+    let requestedPages = 0;
+    api.log.mockImplementation(async (_repo: string, q: LogQuery) => {
+      requestedPages++;
+      const skip = q.skip ?? 0;
+      return ok(
+        Array.from({ length: q.limit }, (_, i) => ({
+          ...c(`commit-${skip + i}`),
+          logPosition: skip + i,
+          repo: "/repo",
+        })),
+      );
+    });
+
+    useGitLog.setState({ commits: [{ ...c("tip"), logPosition: 0, repo: "/repo" }], done: false });
+    await pageUntil(() => false, 3);
+    expect(requestedPages).toBe(3);
+  });
+
+  it("stops pageUntil after MAX_PAGE_UNTIL_PAGES by default when searching for an unreachable commit", async () => {
+    let requestedPages = 0;
+    api.log.mockImplementation(async (_repo: string, q: LogQuery) => {
+      requestedPages++;
+      const skip = q.skip ?? 0;
+      return ok(
+        Array.from({ length: q.limit }, (_, i) => ({
+          ...c(`commit-${skip + i}`),
+          logPosition: skip + i,
+          repo: "/repo",
+        })),
+      );
+    });
+
+    useGitLog.setState({ commits: [{ ...c("tip"), logPosition: 0, repo: "/repo" }], done: false });
+    await pageUntil(() => false);
+    expect(requestedPages).toBe(MAX_PAGE_UNTIL_PAGES);
   });
 });

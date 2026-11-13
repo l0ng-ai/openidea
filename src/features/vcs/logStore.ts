@@ -1113,12 +1113,20 @@ export function selectedCommits(): Commit[] {
   return commits.filter((c) => ids.has(commitKey(c)));
 }
 
-/** Stop on completion, failure, or a superseding view; depth is never a limit. */
-async function pageUntil(find: () => boolean) {
+/**
+ * Maximum sequential page fetches allowed while searching history for a commit (e.g. in revealCommit or goToParent)
+ * before stopping, preventing unbounded V8 heap growth / Out of Memory on large repositories.
+ */
+export const MAX_PAGE_UNTIL_PAGES = 30;
+
+/** Stop on completion, failure, reaching the page limit, or a superseding view. */
+export async function pageUntil(find: () => boolean, maxPages = MAX_PAGE_UNTIL_PAGES) {
   const generation = useGitLog.getState().generation;
-  while (!find() && !useGitLog.getState().done && useGitLog.getState().generation === generation) {
+  let pages = 0;
+  while (!find() && !useGitLog.getState().done && useGitLog.getState().generation === generation && pages < maxPages) {
     const before = useGitLog.getState().commits.length;
     await loadMore();
+    pages++;
     if (useGitLog.getState().commits.length <= before) break;
   }
 }
