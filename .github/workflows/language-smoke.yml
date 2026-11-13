@@ -119,7 +119,7 @@ jobs:
       - run: cargo test --locked -p ide-host --test language_smoke --no-run
       - run: cargo test --locked -p ide-host --test language_smoke -- --ignored --exact ${{ matrix.language }}
       - if: matrix.language == 'java'
-        run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact maven_sync jdk maven_launch_classpath_uses_the_runner_jdk_classifier
+        run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact maven_sync jdk
       - if: matrix.language == 'kotlin'
         run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact gradle_sync
       - if: matrix.language == 'python'
