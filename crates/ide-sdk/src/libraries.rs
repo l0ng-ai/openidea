@@ -108,6 +108,7 @@ pub fn project_libraries_stream(
             })
             .collect();
         let rust = s.spawn(|| {
+            let project = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
             let mut seen = std::collections::HashSet::new();
             let mut groups = Vec::new();
             for dir in &roots {
@@ -136,7 +137,11 @@ pub fn project_libraries_stream(
                 if !seen.insert(workspace.clone()) {
                     continue;
                 }
-                let batch = rust_groups(&workspace, &settings, cancel);
+                // Resolving writes a Cargo.lock. A crate outside the project's workspace (one in its
+                // `exclude`) without its own keeps none, as RustRover leaves crates it doesn't attach.
+                let locked = workspace.canonicalize().unwrap_or_else(|_| workspace.clone()) != project
+                    && !workspace.join("Cargo.lock").is_file();
+                let batch = rust_groups(&workspace, &settings, locked, cancel);
                 if !cancel.is_cancelled() && !batch.is_empty() {
                     on_groups(batch.clone());
                     groups.extend(batch);
@@ -768,7 +773,8 @@ pub(crate) fn package_dependencies(package_json: &str) -> Vec<String> {
 
 // ------------------------------------------------------------------ rust
 
-fn rust_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
+/// `locked`: `cargo metadata --locked`, which fails instead of writing a Cargo.lock.
+fn rust_groups(root: &Path, s: &Settings, locked: bool, cancel: &CancellationToken) -> Vec<LibraryGroup> {
     let Some(files) = manifests(root, CARGO_MANIFESTS) else { return Vec::new() };
     if !root.join("Cargo.toml").is_file() {
         return Vec::new();
@@ -793,14 +799,11 @@ fn rust_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<Lib
     });
     if let Some(cargo) = tool(bin, "cargo") {
         let graph = cached_optional(root, "cargo", r.toolchain.clone(), &files, || {
-            let json = query_in_cancellable(
-                &cargo,
-                &["metadata", "--format-version", "1", "--offline"],
-                root,
-                &[],
-                GRAPH_TIMEOUT,
-                cancel,
-            )?;
+            let mut args = vec!["metadata", "--format-version", "1", "--offline"];
+            if locked {
+                args.push("--locked");
+            }
+            let json = query_in_cancellable(&cargo, &args, root, &[], GRAPH_TIMEOUT, cancel)?;
             let roots = parse_cargo_metadata(&json)?;
             Some(group("Cargo dependencies", "cargo", named_roots(roots)).into_iter().collect())
         });
@@ -1104,6 +1107,50 @@ mod go_cache_tests {
         assert_eq!(groups[0].kind, "cargo");
         assert_eq!(groups[0].roots[0].path, source);
         assert_eq!(std::fs::read_to_string(calls).unwrap().lines().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_metadata_writes_no_lock_file_for_a_crate_outside_the_workspace() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['app']\nexclude=['vendored']\n").unwrap();
+        for name in ["app", "vendored"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+            std::fs::write(root.join(name).join("Cargo.toml"), format!("[package]\nname='{name}'\nversion='0.1.0'\n"))
+                .unwrap();
+        }
+        let bin = root.join("tools");
+        std::fs::create_dir(&bin).unwrap();
+        let calls = root.join("metadata-calls");
+        // Like cargo: an excluded crate is its own workspace.
+        let cargo = format!(
+            "#!/bin/sh\nif [ \"$1\" = locate-project ]; then case \"$(pwd -P)\" in */vendored) echo \"$(pwd -P)/Cargo.toml\";; *) echo '{}';; esac; exit; fi\necho \"$(pwd -P) $*\" >> '{}'\nexit 1\n",
+            root.join("Cargo.toml").display(),
+            calls.display()
+        );
+        for (name, script) in [("cargo", cargo.as_str()), ("rustc", "#!/bin/sh\nexit 1\n")] {
+            std::fs::write(bin.join(name), script).unwrap();
+            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut settings = Settings::default();
+        settings.languages.rust.toolchain = "tools".into();
+        let metadata = |dir: &Path| {
+            let prefix = format!("{} metadata ", dir.display());
+            let calls = std::fs::read_to_string(&calls).unwrap();
+            calls.lines().rev().find_map(|l| l.strip_prefix(&prefix).map(str::to_owned))
+        };
+
+        project_libraries(&root, &settings, &[]);
+        // The project's own workspace resolves as before, writing its Cargo.lock if it has none.
+        assert_eq!(metadata(&root).as_deref(), Some("--format-version 1 --offline"));
+        assert_eq!(metadata(&root.join("vendored")).as_deref(), Some("--format-version 1 --offline --locked"));
+
+        // A crate with its own Cargo.lock keeps resolving with it.
+        std::fs::write(root.join("vendored/Cargo.lock"), "version = 4\n").unwrap();
+        project_libraries(&root, &settings, &[]);
+        assert_eq!(metadata(&root.join("vendored")).as_deref(), Some("--format-version 1 --offline"));
     }
 
     #[cfg(unix)]

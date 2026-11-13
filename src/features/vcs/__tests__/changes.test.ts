@@ -151,6 +151,75 @@ describe("several repositories", () => {
     expect(commitRepos([], repos, "/r/libs/core")).toEqual(["/r/libs/core"]);
   });
 
+  it("shows each repository's branch, or its HEAD commit when detached, beside its name", () => {
+    const repoDetails = (tree: ChangeNode[]) =>
+      tree.map((g) => [g.label, ...(g.children ?? []).map((n) => `${n.label} ${n.detail ?? "-"}`)]);
+    const heads = {
+      "/r": { head: "feature/ABC-123", headCommit: "0123456789abcdef0123456789abcdef01234567" },
+      "/r/libs/core": { head: null, headCommit: "89abcdef0123456789abcdef0123456789abcdef" },
+    };
+    expect(repoDetails(buildChangeTree(nested, "/r", false, undefined, repos, false, heads))).toEqual([
+      ["Merge Conflicts", "r feature/ABC-123"],
+      ["Changes", "r feature/ABC-123", "libs/core 89abcdef"],
+      ["Unversioned Files", "r feature/ABC-123", "libs/core 89abcdef"],
+    ]);
+    const staging = buildChangeTree(nested, "/r", false, undefined, repos, true, heads);
+    expect(repoDetails(staging)[2]).toEqual(["Unstaged Changes", "r feature/ABC-123", "libs/core 89abcdef"]);
+    const lists = { lists: [{ id: "d", name: "Changes", comment: "" }], active: "d", files: {} } as never;
+    expect(repoDetails(buildChangeTree(nested, "/r", false, lists, repos, false, heads))[1]).toEqual([
+      "Changes",
+      "r feature/ABC-123",
+      "libs/core 89abcdef",
+    ]);
+    // Not loaded yet, or HEAD unreadable: no hint.
+    const partial = { "/r/libs/core": { head: null, headCommit: null } };
+    expect(repoDetails(buildChangeTree(nested, "/r", false, undefined, repos, false, partial))[1]).toEqual([
+      "Changes",
+      "r -",
+      "libs/core -",
+    ]);
+    // A repository without commits is on its unborn branch.
+    const unborn = { "/r/libs/core": { head: "main", headCommit: null } };
+    expect(repoDetails(buildChangeTree(nested, "/r", false, undefined, repos, false, unborn))[1]).toEqual([
+      "Changes",
+      "r -",
+      "libs/core main",
+    ]);
+    expect(repoDetails(buildChangeTree(nested, "/r", false, undefined, repos))[1]).toEqual([
+      "Changes",
+      "r -",
+      "libs/core -",
+    ]);
+    // One repository: no repository level, files keep their own details.
+    const single = buildChangeTree(status, "/r", false, undefined, ["/r"], false, { "/r": heads["/r"] });
+    expect(single).toEqual(buildChangeTree(status, "/r", false));
+  });
+
+  it("marks the hint with a branch icon, or a commit icon when detached, on repository nodes only", () => {
+    const heads = {
+      "/r": { head: "main", headCommit: "0123456789" },
+      "/r/libs/core": { head: null, headCommit: "89abcdef01" },
+    };
+    const icons = (nodes: ChangeNode[]): string[] =>
+      nodes.flatMap((n) => [`${n.label}:${n.detailIcon ?? "-"}`, ...icons(n.children ?? [])]);
+    const changes = buildChangeTree(nested, "/r", true, undefined, repos, false, heads)[1]!;
+    expect(icons([changes])).toEqual([
+      "Changes:-",
+      "r:branch",
+      "src:-",
+      "main/kotlin:-",
+      "App.kt:-",
+      "Partial.kt:-",
+      "test:-",
+      "AppTest.kt:-",
+      "README.md:-",
+      "libs/core:commit",
+      "Lib.kt:-",
+    ]);
+    const unloaded = buildChangeTree(nested, "/r", true, undefined, repos)[1]!;
+    expect(unloaded.children!.map((n) => n.detailIcon)).toEqual([undefined, undefined]);
+  });
+
   it("routes a nested repository's own entry (submodule) to the enclosing repository", () => {
     expect(rootOf("/r/libs/core/Lib.kt", repos)).toBe("/r/libs/core");
     expect(rootOf("/r/libs/core", repos)).toBe("/r");
@@ -212,6 +281,19 @@ describe("commit inclusion", () => {
       "src/main/kotlin/Partial.kt",
       "src/test/AppTest.kt",
     ]);
+  });
+
+  it("leaves out a file added to the index and then deleted, which no group lists", () => {
+    const files = [fs("src/A.java", null, "modified"), fs("src/Gone.java", "added", "deleted")];
+    expect(
+      buildChangeTree(files, "/r", false)
+        .flatMap((g) => g.children ?? [])
+        .map((n) => n.label),
+    ).toEqual(["A.java"]);
+    const plan = planCommit(files, new Map());
+    expect(plan.stage).toEqual(["/r/src/A.java"]);
+    expect(plan.exclude).toEqual(["/r/src/Gone.java"]);
+    expect(plan.included.map((f) => f.relPath)).toEqual(["src/A.java"]);
   });
 
   it("aggregates checkbox state for groups", () => {

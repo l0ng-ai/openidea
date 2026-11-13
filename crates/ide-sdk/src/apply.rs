@@ -66,16 +66,19 @@ pub fn ruff_configuration(root: &Path, configured: &str) -> IdeResult<Option<Pat
 
 /// The project interpreter: the configured one, else a project virtualenv
 /// (`.venv`, `venv`, …) or pixi environment (`.pixi/envs/<env>`) in the project
-/// root, else the Python the project pins for mise / asdf.
+/// root, else the Python the project pins for mise / asdf. A configured
+/// interpreter whose executable is gone (uninstalled, moved) is skipped like
+/// PyCharm's "Invalid" SDKs, so runs fall back instead of failing on a dead path.
 pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
     setting_path(root, &s.languages.python.interpreter)
+        .filter(|p| p.is_file())
         .or_else(|| project_venv_python(root))
         .or_else(|| pinned::pinned_python(root))
 }
 
 /// An explicit project interpreter wins; otherwise use the closest virtualenv to the file.
 pub fn python_interpreter_near(root: &Path, near: Option<&Path>, s: &Settings) -> Option<PathBuf> {
-    if let Some(python) = setting_path(root, &s.languages.python.interpreter) {
+    if let Some(python) = setting_path(root, &s.languages.python.interpreter).filter(|p| p.is_file()) {
         return Some(python);
     }
     let near = near.filter(|dir| dir.starts_with(root)).unwrap_or(root);
@@ -1446,7 +1449,22 @@ pub fn apply_maven_env(c: &mut RunConfig, root: &Path, s: &Settings) {
 /// cargo / go configs the selected toolchain, Maven / Gradle their runner JDK
 /// (and Maven the configured home and options).
 pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings) {
-    let explicit_python = setting_path(root, &s.languages.python.interpreter);
+    apply_to_run_configs_in(configs, root, None, s)
+}
+
+/// [`apply_to_run_configs`] with an inherited fallback project: a workspace member
+/// (`root`) with no Python of its own (no interpreter setting, virtualenv or pin)
+/// runs on the primary project's (`fallback`) — the module SDK a member without its
+/// own inherits in IDEA. `None` keeps the configuration's own project.
+pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback: Option<&Path>, s: &Settings) {
+    let inherited = fallback.filter(|f| *f != root);
+    // An interpreter whose executable is gone is skipped (like PyCharm's "Invalid"
+    // SDKs): the run configuration uses the venv / fallback instead of a dead path.
+    let explicit_python = setting_path(root, &s.languages.python.interpreter).filter(|p| p.is_file());
+    let inherited_python = inherited
+        .and_then(|f| setting_path(f, &s.languages.python.interpreter))
+        .filter(|p| p.is_file())
+        .filter(|_| explicit_python.is_none());
     let pm = non_empty(&s.languages.node.package_manager);
     let php = setting_path(root, &s.languages.php.interpreter);
     let rust = rust_bin(root, s);
@@ -1464,7 +1482,9 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 // A module outside the project (an external linked build) keeps the project's choices.
                 let near = if owner.starts_with(root) { owner } else { root };
                 match tool {
-                    "python" => python_interpreter_near(root, Some(near), s),
+                    // A member with no Python of its own runs on the primary project's.
+                    "python" => python_interpreter_near(root, Some(near), s)
+                        .or_else(|| inherited.and_then(|f| python_interpreter_near(f, Some(f), s))),
                     "node" if non_empty(&s.languages.node.interpreter).is_none() => {
                         node_dir(near, s).or_else(|| node_dir(root, s))
                     }
@@ -1496,7 +1516,10 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
             "python" | "pytest" | "django-test" => {
-                if let Some(py) = &explicit_python {
+                let python = toolchain("python", &owner);
+                // The member's explicit interpreter, else the inherited one, else the
+                // member's own venv / pin.
+                if let Some(py) = explicit_python.as_ref().or(inherited_python.as_ref()).or(python.as_ref()) {
                     let runner = PY_RUNNERS.contains(&c.command.as_str());
                     if (c.kind == "python" || c.kind == "django-test") && (runner || is_python_command(&c.command)) {
                         if runner && c.args.first().map(String::as_str) == Some("run") {
@@ -1515,7 +1538,6 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                         c.args = ["-m".to_owned(), "pytest".to_owned()].into_iter().chain(rest).collect();
                     }
                 }
-                let python = toolchain("python", &owner);
                 if let Some(venv) = python.as_deref().and_then(venv_of)
                     && !c.env.contains_key("VIRTUAL_ENV")
                 {
@@ -1598,6 +1620,17 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     path_dirs.push(bin);
                 }
             }
+            // JAR Application's default JRE is the project JDK; a chosen JRE is an absolute `java`.
+            "jar-application" => {
+                if let Some(jdk) = &jdk
+                    && c.command == "java"
+                {
+                    let java = crate::java::java_executable(&jdk.home);
+                    if java.is_file() {
+                        c.command = java.to_string_lossy().into_owned();
+                    }
+                }
+            }
             "tomcat" => {
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
@@ -1653,9 +1686,16 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
 /// `VIRTUAL_ENV`, `JAVA_HOME`, `GOROOT`, …) or an absolute command its bare name
 /// resolves to (the project interpreter, a toolchain's `cargo` / `go`, Maven's `mvn`).
 pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConfig {
+    without_derived_in(config, root, None, s)
+}
+
+/// [`without_derived`] with the inherited fallback project the configuration runs with
+/// (see [`apply_to_run_configs_in`]): a derived command or environment entry is derived
+/// only when re-applying settings with the same fallback reproduces it.
+pub fn without_derived_in(config: &RunConfig, root: &Path, fallback: Option<&Path>, s: &Settings) -> RunConfig {
     let applied = |c: &RunConfig| {
         let mut c = c.clone();
-        apply_to_run_configs(std::slice::from_mut(&mut c), root, s);
+        apply_to_run_configs_in(std::slice::from_mut(&mut c), root, fallback, s);
         c
     };
     let mut out = config.clone();

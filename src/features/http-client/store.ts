@@ -29,6 +29,9 @@ interface Running {
   path: string | null;
   index: number;
   request: RequestId;
+  /** The request line as written, once parsed. */
+  method?: string;
+  url?: string;
 }
 
 interface HttpClientState {
@@ -135,6 +138,16 @@ export async function runRequest(path: string | null, text: string, index: numbe
   if (busy) void commands.cancelRequest(busy.request);
   const request = nextRequestId();
   useHttpClient.setState({ running: { path, index, request } });
+  // The tool window shows the request as it is sent, not only once it has answered.
+  showServiceView(SERVICE_VIEW, false);
+  void parseRequests(text)
+    .then((blocks) => {
+      const block = blocks.find((b) => b.index === index);
+      const running = useHttpClient.getState().running;
+      if (block && running?.request === request)
+        useHttpClient.setState({ running: { ...running, method: block.method, url: block.url } });
+    })
+    .catch(() => {});
   try {
     if (path && !useHttpClient.getState().environments[path]) await loadEnvironments(path);
     const ex = await call(commands.httpExecute(request, path, text, index, effectiveEnvironment(path)));
@@ -143,7 +156,6 @@ export async function runRequest(path: string | null, text: string, index: numbe
       exchanges: { ...s.exchanges, [ex.entry.id]: ex },
       selected: ex.entry.id,
     }));
-    showServiceView(SERVICE_VIEW, false);
     return true;
   } catch (e) {
     if (!isCancelled(e))

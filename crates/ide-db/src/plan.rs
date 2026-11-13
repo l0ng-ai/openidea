@@ -39,6 +39,7 @@ pub fn explain_statement(driver: DbDriver, statement: &str) -> String {
         DbDriver::Mysql => format!("EXPLAIN {s}"),
         DbDriver::SqlServer => format!("SET SHOWPLAN_TEXT ON; {s}"),
         DbDriver::Oracle => format!("EXPLAIN PLAN FOR {s}"),
+        DbDriver::Snowflake => format!("EXPLAIN USING TABULAR {s}"),
     }
 }
 
@@ -77,6 +78,10 @@ pub fn parse(driver: DbDriver, result: &QueryResult) -> IdeResult<Vec<PlanNode>>
             Ok(mysql(&names, &result.rows))
         }
         DbDriver::SqlServer => Ok(Vec::new()),
+        DbDriver::Snowflake => {
+            let names: Vec<&str> = result.columns.iter().map(|c| c.name.as_str()).collect();
+            Ok(snowflake(&names, &result.rows))
+        }
     }
 }
 
@@ -189,6 +194,42 @@ fn oracle(rows: &[Vec<Option<String>>]) -> Vec<PlanNode> {
         for (name, value) in [("Cost", 5), ("Rows", 6), ("Bytes", 7)] {
             if let Some(v) = r.get(value).cloned().flatten() {
                 properties.push(prop(name, v));
+            }
+        }
+        out.push(PlanNode { parent, operation, params, properties });
+        ids.push(id);
+    }
+    out
+}
+
+/// Snowflake's `EXPLAIN USING TABULAR`: one row per operation with its parents' ids; the
+/// first row totals the partitions and bytes the statement would scan.
+fn snowflake(names: &[&str], rows: &[Vec<Option<String>>]) -> Vec<PlanNode> {
+    let column = |name: &str| names.iter().position(|n| n.eq_ignore_ascii_case(name));
+    let cell = |r: &[Option<String>], name: &str| column(name).and_then(|i| r.get(i).cloned().flatten());
+    let mut ids: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for r in rows {
+        let operation = cell(r, "operation").unwrap_or_default();
+        let id = cell(r, "id").unwrap_or_default();
+        // `[0]`, `[1, 2]`: the first is the operation this one feeds.
+        let parent = cell(r, "parentOperators")
+            .and_then(|p| p.trim_matches(['[', ']']).split(',').next().map(|p| p.trim().to_owned()))
+            .and_then(|p| ids.iter().position(|x| *x == p))
+            .map(|i| i as u32);
+        let mut params = cell(r, "objects").unwrap_or_default();
+        if let Some(alias) = cell(r, "alias").filter(|a| !a.is_empty()) {
+            params = format!("{params} {alias}").trim().to_owned();
+        }
+        let mut properties = Vec::new();
+        for (label, name) in [
+            ("Expressions", "expressions"),
+            ("Partitions scanned", "partitionsAssigned"),
+            ("Partitions total", "partitionsTotal"),
+            ("Bytes scanned", "bytesAssigned"),
+        ] {
+            if let Some(value) = cell(r, name).filter(|v| !v.is_empty()) {
+                properties.push(prop(label, value));
             }
         }
         out.push(PlanNode { parent, operation, params, properties });
@@ -376,5 +417,62 @@ mod tests {
         assert_eq!((plan[0].operation.as_str(), plan[0].params.as_str()), ("Full Scan", "table: o;"));
         assert_eq!((plan[1].operation.as_str(), plan[1].params.as_str()), ("Index Lookup", "table: c; key: PRIMARY;"));
         assert!(plan[0].properties.iter().any(|p| p.name == "rows" && p.value == "20"));
+    }
+
+    #[test]
+    fn reads_snowflake_tabular_plans() {
+        let names = [
+            "step",
+            "id",
+            "parentOperators",
+            "operation",
+            "objects",
+            "alias",
+            "expressions",
+            "partitionsTotal",
+            "partitionsAssigned",
+            "bytesAssigned",
+        ];
+        let row = |cells: [Option<&'static str>; 10]| cells.to_vec();
+        let r = result(
+            &names,
+            vec![
+                row([None, None, None, Some("GlobalStats"), None, None, None, Some("12"), Some("3"), Some("4096")]),
+                row([Some("1"), Some("0"), None, Some("Result"), None, None, Some("O.ID"), None, None, None]),
+                row([
+                    Some("1"),
+                    Some("1"),
+                    Some("[0]"),
+                    Some("Filter"),
+                    None,
+                    None,
+                    Some("O.ID > 3"),
+                    None,
+                    None,
+                    None,
+                ]),
+                row([
+                    Some("1"),
+                    Some("2"),
+                    Some("[1]"),
+                    Some("TableScan"),
+                    Some("DB.PUBLIC.ORDERS"),
+                    Some("O"),
+                    Some("ID"),
+                    Some("12"),
+                    Some("3"),
+                    Some("4096"),
+                ]),
+            ],
+        );
+        let plan = parse(DbDriver::Snowflake, &r).unwrap();
+        assert_eq!(
+            plan.iter().map(|n| n.operation.as_str()).collect::<Vec<_>>(),
+            ["GlobalStats", "Result", "Filter", "TableScan"]
+        );
+        assert_eq!(plan.iter().map(|n| n.parent).collect::<Vec<_>>(), [None, None, Some(1), Some(2)]);
+        assert_eq!(plan[3].params, "DB.PUBLIC.ORDERS O");
+        assert!(plan[3].properties.contains(&PlanProperty { name: "Partitions scanned".into(), value: "3".into() }));
+        assert!(plan[0].properties.contains(&PlanProperty { name: "Bytes scanned".into(), value: "4096".into() }));
     }
 }

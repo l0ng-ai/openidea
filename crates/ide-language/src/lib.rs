@@ -24,8 +24,9 @@ pub use registry::{FileTypes, LanguageRegistry};
 pub use syntax::{
     CSS_CLASS, CSS_ID, CSS_VARIABLE, ConfigurationKey, ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken,
     FileReference, Literal, LiteralKind, MAX_CACHED_TREES, MAX_PARSE_BYTES, ParsedTree, SpellingKind, SpellingRegion,
-    Syntax, SyntaxCache, SyntaxCacheStats, SyntaxHighlightKind, SyntaxHighlights, TreeError, WebReference,
-    WebReferenceKind, merge_visibility, set_external_syntax, shift_pos, shift_range,
+    Syntax, SyntaxCache, SyntaxCacheStats, SyntaxHighlightKind, SyntaxHighlights, TreeError, VueComponentImport,
+    VueRefAccess, VueRefElement, WebReference, WebReferenceKind, merge_visibility, set_external_syntax, shift_pos,
+    shift_range,
 };
 
 /// Parsed form of `languages/<id>.toml`. Backend-only; the UI gets [`LanguageInfo`].

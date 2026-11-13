@@ -89,6 +89,7 @@
     "--fg-editor-selection": "inherit",
     "--bg-text-search-result": "#114957",
     "--bg-text-search-result-current": "#165e70",
+    "--bg-search-result": "#2d543f",
     "--bg-matched-brace": "#38424f",
     "--matched-brace-weight": "700",
     "--bg-matched-tag": "#353e4a",

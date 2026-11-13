@@ -142,6 +142,10 @@ impl Host {
         crate::plugins::injections::configure_lsp(&lsp);
         lsp.set_execution_allowed(trusted.load(Ordering::Acquire));
         lsp.set_content_roots(extra_roots.clone());
+        lsp.set_jdtls_import_roots(ide_build::maven_external_roots(
+            &root,
+            &settings.effective().languages.java.maven.linked_projects,
+        ));
         let settings = Arc::new(settings);
         {
             let settings = settings.clone();
@@ -537,7 +541,7 @@ impl Host {
         mark("git");
         tracing::info!("opened {} in window {window} in {} ms {laps:?}", root.display(), started.elapsed().as_millis());
 
-        let (db, http_history, agents) = self.project_services(&root, &project_key, &settings);
+        let (db, http_history, agents) = self.project_services(&root, &project_key, &settings, &sink);
         let db_sources_watch = db_sources_watch(&db, &sink, &self.runtime);
         let notebooks = crate::notebook::NotebookService::new(
             self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
@@ -630,6 +634,7 @@ impl Host {
         root: &Path,
         project_key: &str,
         settings: &Arc<SettingsStore>,
+        sink: &SharedSink,
     ) -> (Arc<ide_db::DbManager>, Arc<ide_http::History>, Arc<ide_agent::AgentManager>) {
         let db = Arc::new(
             ide_db::DbManager::new(
@@ -656,12 +661,23 @@ impl Host {
                 models_file: self.data_dir.join("agents").join("models.json"),
                 custom_agents_dir: Some(self.config_dir.join("agents")),
                 home_dir: dirs::home_dir(),
+                env_secrets: Some(Arc::new(AgentEnvSecrets {
+                    secrets: self.agent_secrets.clone(),
+                    sink: sink.clone(),
+                    told: AtomicBool::new(false),
+                })),
             },
             self.runtime.clone(),
         ));
         let settings = settings.clone();
+        {
+            let settings = settings.clone();
+            agents.set_new_task_approvals_hook(Arc::new(move || settings.effective().agents.new_task_approvals));
+        }
+        let approvals = self.mcp_approvals.clone();
+        let root = root.to_path_buf();
         agents.set_mcp_servers_hook(Box::new(move || {
-            ide_agent::mcp::servers_from_settings(&Default::default(), &settings.effective().agents.mcp_servers)
+            crate::ops::agent::session_mcp_servers(&settings, &approvals, &root)
         }));
         (db, http_history, agents)
     }
@@ -704,7 +720,7 @@ impl Host {
         documents.add_observer(Arc::new(HistoryObserver(history.clone())));
         let watcher = light_watcher(&dir, &sink, &documents, &history)?;
         let project_key = project_key(&dir);
-        let (db, http_history, agents) = self.project_services(&dir, &project_key, &settings);
+        let (db, http_history, agents) = self.project_services(&dir, &project_key, &settings, &sink);
         let notebooks = crate::notebook::NotebookService::new(
             self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
             sink.clone(),
@@ -1120,6 +1136,10 @@ impl Project {
         }
         let (roots, excludes) = (self.content_roots(), self.exclude_globs());
         self.lsp.set_content_roots(roots.clone());
+        self.lsp.set_jdtls_import_roots(ide_build::maven_external_roots(
+            &self.root,
+            &self.settings.effective().languages.java.maven.linked_projects,
+        ));
         self.index.set_scope(index_roots(&self.root, roots.clone()), excludes.clone());
         self.watcher.set_excludes(&excludes);
         let mut watchers = self.content_watchers.lock();
@@ -1239,8 +1259,9 @@ pub(crate) fn workspace_member_roots(root: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// Workspace members in manifest order, or extra Project Structure directories and the
-/// Gradle project folders outside the project as of the last sync (`build_cache`).
+/// Workspace members in manifest order, or extra Project Structure directories, Gradle
+/// project folders outside the project, and directories of Maven POMs linked from
+/// outside it (`build_cache` is the Gradle sync cache).
 fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
     if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
         if workspace.is_container(root) {
@@ -1332,7 +1353,10 @@ fn extra_content_roots(settings: &ide_core::settings::Settings, root: &Path, bui
         .iter()
         .chain(settings.project_structure.dependencies.iter())
         .map(|r| PathBuf::from(r.trim()));
-    for p in user.chain(ide_build::gradle_external_roots(root, build_cache, &settings.languages.java.gradle)) {
+    for p in user
+        .chain(ide_build::gradle_external_roots(root, build_cache, &settings.languages.java.gradle))
+        .chain(ide_build::maven_external_roots(root, &settings.languages.java.maven.linked_projects))
+    {
         if p.is_absolute() && p.is_dir() && !p.starts_with(root) && !out.contains(&p) {
             out.push(p);
         }
@@ -1574,6 +1598,37 @@ pub(crate) fn project_key(root: &Path) -> String {
     format!("{h:016x}")
 }
 
+/// The environment values of agent files in [`crate::agent_secrets::AgentSecrets`]; the
+/// window is told (once) when they had to go to the owner-only file instead.
+struct AgentEnvSecrets {
+    secrets: Arc<crate::agent_secrets::AgentSecrets>,
+    sink: SharedSink,
+    told: AtomicBool,
+}
+
+impl ide_agent::EnvSecrets for AgentEnvSecrets {
+    fn get(&self, key: &str) -> Option<String> {
+        self.secrets.get(key)
+    }
+
+    fn set(&self, key: &str, value: &str) -> IdeResult<()> {
+        if self.secrets.set(key, value)? == crate::agent_secrets::Kept::LocalFile
+            && !self.told.swap(true, Ordering::Relaxed)
+        {
+            self.secrets.notify_kept_locally(&self.sink);
+        }
+        Ok(())
+    }
+
+    fn delete(&self, key: &str) {
+        self.secrets.delete(key);
+    }
+
+    fn keys(&self, prefix: &str) -> Vec<String> {
+        self.secrets.keys(prefix)
+    }
+}
+
 struct LspObserver(Arc<LspManager>);
 
 impl DocumentObserver for LspObserver {
@@ -1766,6 +1821,26 @@ mod maven_linkage_tests {
         // The whole reactor unlinked: the import exclusions are enough.
         settings.languages.java.maven.unlinked_projects = vec!["pom.xml".into()];
         assert_eq!(super::jdtls_maven_import(root, &settings).1, None);
+    }
+
+    #[test]
+    fn external_maven_link_is_a_content_root_and_not_its_sibling_module() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let a = base.join("A");
+        let b = base.join("B");
+        let c = base.join("C");
+        for dir in [&a, &b, &c] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("pom.xml"), "<project/>").unwrap();
+        }
+        let mut settings = ide_core::settings::Settings::default();
+        settings.languages.java.maven.linked_projects = vec!["../B/pom.xml".into()];
+        assert_eq!(super::content_roots(&settings, &a, &base.join("cache")), vec![b]);
+        // External links must not replace jdtls's scan of the opened root with a build-file list.
+        assert_eq!(super::jdtls_maven_import(&a, &settings), (Vec::new(), None));
+        settings.languages.java.maven.linked_projects.clear();
+        assert!(super::content_roots(&settings, &a, &base.join("cache")).is_empty());
     }
 
     #[test]

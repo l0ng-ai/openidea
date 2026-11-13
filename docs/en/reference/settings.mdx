@@ -18,7 +18,9 @@ Settings are combined from three layers, each overriding the one before:
 
 A file holds only the values that differ from the layer below. Tables merge key by key; a value or array in a higher layer replaces the lower one entirely (for example, setting `files.exclude` in a project replaces the global list).
 
-Some settings are ignored in the project file: `mcpServer` and imported color schemes (`editor.customSchemes`) are global only. Project trust is never read from settings.
+Some settings are ignored in the project file: `mcpServer`, imported color schemes (`editor.customSchemes`) and `agents.newTaskApprovals` are global only. Project trust is never read from settings.
+
+A project file can't loosen what coding agents may do: `agentSecurity.allowedCommands` and `agents.defaults` are global only, and `agentSecurity.blockedCommands` in a project adds to the global list rather than replacing it. An MCP server in the project's `agents.mcpServers` stays off until you turn it on in **Settings › Agents › External MCP Servers**, and again after its definition changes.
 
 ## File format
 
@@ -94,25 +96,25 @@ Settings › Appearance & Behavior › System Settings, unless noted.
 
 Settings › Appearance & Behavior › Appearance, unless noted.
 
-| Key                                          | Default              | Description                                                                                                                                                                                    |
-| -------------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `theme`                                      | `"light"`            | `light` (Islands Light), `dark` (Islands Dark), `dark-hc` (High Contrast), `solarized-light`, `solarized-dark`, `one-light`, `one-dark`, or a plugin theme as `plugin:<plugin-id>/<theme-id>`. |
-| `syncWithOs`                                 | `false`              | **Sync with OS**.                                                                                                                                                                              |
-| `preferredLightTheme` / `preferredDarkTheme` | `"light"` / `"dark"` | Themes used with **Sync with OS**.                                                                                                                                                             |
-| `accent`                                     | `"#3871e1"`          | **Accent color**.                                                                                                                                                                              |
-| `fileIconTheme`                              | `""`                 | A plugin's file icon theme as `<plugin-id>/<theme-id>`; empty uses the built-in icons.                                                                                                         |
-| `zoom`                                       | `100`                | **Zoom**, in percent (50 to 300).                                                                                                                                                              |
-| `useCustomFont`                              | `false`              | **Use custom font:** apply `uiFontFamily` and `uiFontSize`.                                                                                                                                    |
-| `uiFontFamily` / `uiFontSize`                | `"Inter"` / `13`     | UI font.                                                                                                                                                                                       |
-| `uiFontFallback`                             | `""`                 | **UI fallback font**.                                                                                                                                                                          |
-| `contrastScrollbars`                         | `false`              | **Use contrast scrollbars**.                                                                                                                                                                   |
-| `redGreenVision`                             | `false`              | **Adjust colors for red-green vision deficiency**.                                                                                                                                             |
-| `compactMode`                                | `false`              | **Compact mode**.                                                                                                                                                                              |
-| `showMainToolbar` / `showStatusBar`          | `true` / `true`      | **Show main toolbar**, **Show status bar**.                                                                                                                                                    |
-| `navigationBar`                              | `"statusBar"`        | **Navigation bar**: `top`, `statusBar` or `hidden`.                                                                                                                                            |
-| `mainMenuStyle`                              | `"hamburger"`        | **Main menu**: `hamburger` or `merged` (with the main toolbar).                                                                                                                                |
-| `ideAntialiasing` / `editorAntialiasing`     | `"greyscale"`        | `subpixel`, `greyscale` or `none`.                                                                                                                                                             |
-| `locale`                                     | `"en"`               | **Language** (Language and Region page): `en`, `zh`, `ko`, `fr`, `pl`, `pt`, `es`.                                                                                                             |
+| Key                                          | Default              | Description                                                                                                                                                           |
+| -------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `theme`                                      | `"light"`            | `light` (Islands Light), `dark` (Islands Dark), `dark-hc` (High Contrast), `solarized-light`, `solarized-dark`, or a plugin theme as `plugin:<plugin-id>/<theme-id>`. |
+| `syncWithOs`                                 | `false`              | **Sync with OS**.                                                                                                                                                     |
+| `preferredLightTheme` / `preferredDarkTheme` | `"light"` / `"dark"` | Themes used with **Sync with OS**.                                                                                                                                    |
+| `accent`                                     | `"#3871e1"`          | **Accent color**.                                                                                                                                                     |
+| `fileIconTheme`                              | `""`                 | A plugin's file icon theme as `<plugin-id>/<theme-id>`; empty uses the built-in icons.                                                                                |
+| `zoom`                                       | `100`                | **Zoom**, in percent (50 to 300).                                                                                                                                     |
+| `useCustomFont`                              | `false`              | **Use custom font:** apply `uiFontFamily` and `uiFontSize`.                                                                                                           |
+| `uiFontFamily` / `uiFontSize`                | `"Inter"` / `13`     | UI font.                                                                                                                                                              |
+| `uiFontFallback`                             | `""`                 | **UI fallback font**.                                                                                                                                                 |
+| `contrastScrollbars`                         | `false`              | **Use contrast scrollbars**.                                                                                                                                          |
+| `redGreenVision`                             | `false`              | **Adjust colors for red-green vision deficiency**.                                                                                                                    |
+| `compactMode`                                | `false`              | **Compact mode**.                                                                                                                                                     |
+| `showMainToolbar` / `showStatusBar`          | `true` / `true`      | **Show main toolbar**, **Show status bar**.                                                                                                                           |
+| `navigationBar`                              | `"statusBar"`        | **Navigation bar**: `top`, `statusBar` or `hidden`.                                                                                                                   |
+| `mainMenuStyle`                              | `"hamburger"`        | **Main menu**: `hamburger` or `merged` (with the main toolbar).                                                                                                       |
+| `ideAntialiasing` / `editorAntialiasing`     | `"greyscale"`        | `subpixel`, `greyscale` or `none`.                                                                                                                                    |
+| `locale`                                     | `"en"`               | **Language** (Language and Region page): `en`, `zh`, `ko`, `fr`, `pl`, `pt`, `es`.                                                                                    |
 
 ### `[editor]`
 

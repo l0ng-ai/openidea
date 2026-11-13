@@ -1,9 +1,6 @@
 use crate::state::AppState;
 use ide_core::remote_settings::SshConfiguration;
-use ide_core::{IdeError, IdeEvent, IdeResult};
-use ide_ssh::SshTarget;
-use serde::{Deserialize, Serialize};
-use specta::Type;
+use ide_core::{IdeEvent, IdeResult};
 use tauri::State;
 
 /// Settings › SSH Configurations: the configurations in effect.
@@ -84,29 +81,28 @@ pub fn git_credential_forget(_state: State<'_, AppState>, key: String) {
     }
 }
 
-#[derive(Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct SshTerminalCommand {
-    pub shell: String,
-    pub args: Vec<String>,
-    pub title: String,
-}
-
-/// Tools › Start SSH Session: the system `ssh` command line for configuration `id`
-/// (run in a terminal tab, so prompts and host-key questions are answered there).
+/// Tools › Start SSH Session: a shell on configuration `id` in a terminal tab, through the
+/// built-in client with the configuration's saved credentials.
 #[tauri::command]
 #[specta::specta]
-pub fn ssh_terminal_command(state: State<'_, AppState>, id: String) -> IdeResult<SshTerminalCommand> {
-    let config = state.ssh.config(&id)?;
-    if config.host.trim().is_empty() {
-        return Err(IdeError::invalid(format!("SSH configuration {} has no host", config.name)));
-    }
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let shell = ide_run::which::find_executable("ssh", &path)
-        .map(|p| p.to_string_lossy().into_owned())
-        .ok_or_else(|| IdeError::unavailable("ssh is not installed (OpenSSH client not found on PATH)"))?;
-    let mut args = vec!["-t".to_owned()];
-    args.extend(ide_ssh::openssh_args(&SshTarget::from(&config)));
-    let title = if config.name.trim().is_empty() { config.label() } else { config.name.clone() };
-    Ok(SshTerminalCommand { shell, args, title })
+pub async fn ssh_open_terminal(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+    id: String,
+    cols: u16,
+    rows: u16,
+    on_output: tauri::ipc::Channel<String>,
+) -> IdeResult<ide_terminal::TerminalInfo> {
+    let host = state.host.clone();
+    ide_host::ops::term::spawn_ssh(
+        &host,
+        window.label(),
+        &id,
+        cols,
+        rows,
+        std::sync::Arc::new(move |chunk| {
+            let _ = on_output.send(chunk);
+        }),
+    )
+    .await
 }

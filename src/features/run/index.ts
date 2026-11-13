@@ -44,7 +44,12 @@ import { invalidateGoModules } from "./goModules";
 import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
-import { cleanupRemovedProject, registerRunServiceActions, runServiceProvider } from "./services";
+import {
+  cleanupRemovedProject,
+  registerRunServiceActions,
+  runServiceProvider,
+  watchServiceRunningCount,
+} from "./services";
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
 import { ServiceImportHost } from "./serviceImport";
 import { cmakeBuildId } from "./cmake";
@@ -396,6 +401,7 @@ export function activate(): () => void {
     registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
     registerServiceProvider(runServiceProvider),
     registerRunServiceActions(),
+    watchServiceRunningCount(),
     registerRunningProcessesProvider({
       id: "run",
       running: () =>

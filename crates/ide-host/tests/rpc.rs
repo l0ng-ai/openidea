@@ -126,6 +126,12 @@ async fn serves_projects_files_documents_search_and_runs() {
     let current = invoke(&peer, "project_current", json!({})).await.unwrap();
     assert_eq!(current["name"], "demo");
 
+    // The built-in web server runs where the project is; the client forwards its port.
+    let root = std::path::PathBuf::from(opened["root"].as_str().unwrap());
+    let url = invoke(&peer, "web_url", json!({ "path": root.join("src/main.py") })).await.unwrap();
+    let url = url.as_str().unwrap();
+    assert!(url.starts_with("http://127.0.0.1:") && url.ends_with("/demo/src/main.py"), "{url}");
+
     let entries = invoke(&peer, "fs_read_dir", json!({ "path": project })).await.unwrap();
     assert!(entries.as_array().unwrap().iter().any(|e| e["name"] == "src"), "{entries}");
 

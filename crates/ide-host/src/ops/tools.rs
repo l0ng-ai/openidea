@@ -161,6 +161,23 @@ pub async fn jdk_download(
     Ok(sdk)
 }
 
+/// The Java version the jdtls this window launches needs; `None` while it isn't
+/// installed or doesn't tell.
+pub async fn jdtls_required_java(host: &Host, window: &str) -> IdeResult<Option<u32>> {
+    let settings = match host.project(window) {
+        Ok(project) => project.settings.effective(),
+        Err(_) => host.global_settings.effective(),
+    };
+    let Some(mut cfg) =
+        languages(host, window).into_iter().flat_map(|l| l.language_servers).find(|s| s.name == "jdtls")
+    else {
+        return Ok(None);
+    };
+    ide_sdk::apply::server_launch_overrides(&mut cfg, &settings);
+    ide_sdk::apply::server_protocol_overrides(&mut cfg, &settings);
+    tokio::task::spawn_blocking(move || ide_sdk::java::jdtls_required_java(&cfg)).await.map_err(join_err)
+}
+
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("tools_list", |c| async move { tools_list(&c.host, &c.window).await });
@@ -173,6 +190,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         jdk_download_releases(&c.host, &c.window, c.arg("vendor")?, c.arg("request")?).await
     });
     d.add("jdk_download_location", |c| async move { jdk_download_location(&c.host, &c.window) });
+    d.add("jdtls_required_java", |c| async move { jdtls_required_java(&c.host, &c.window).await });
     d.add("jdk_download", |c| async move {
         jdk_download(
             &c.host,
