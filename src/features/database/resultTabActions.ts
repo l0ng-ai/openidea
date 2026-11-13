@@ -1,7 +1,7 @@
 import { registerActions, type ActionContext } from "@/platform/actions";
 import { promptInput } from "@/workbench/inputDialogs";
 import type { MenuItem } from "@/ui";
-import { OUTPUT_TAB, closeResult, useDatabase } from "./store";
+import { OUTPUT_TAB, closeResult, pinResult, useDatabase } from "./store";
 
 function target({ arg, ctx }: ActionContext): number | null {
   const id = typeof arg === "number" ? arg : ctx.dbResultsFocus ? useDatabase.getState().activeResult : null;
@@ -15,6 +15,10 @@ function closable(c: ActionContext): boolean {
 
 function closeOthers(id: number) {
   for (const tab of useDatabase.getState().results) if (tab.id !== id) closeResult(tab.id);
+}
+
+function pinned(id: number | null): boolean {
+  return !!useDatabase.getState().results.find((r) => r.id === id)?.pinned;
 }
 
 function cycle(direction: 1 | -1, focus: boolean) {
@@ -60,6 +64,31 @@ export function registerResultTabActions(): () => void {
       run: () => closeOthers(OUTPUT_TAB),
     },
     {
+      id: "db.closeAllButPinnedResultTabs",
+      title: "Close All but Pinned",
+      category: "Database",
+      keyWhen: "dbResultsFocus && !popupOpen",
+      enabled: (c) => {
+        const { results } = useDatabase.getState();
+        return target(c) !== null && results.some((r) => r.pinned) && results.some((r) => !r.pinned);
+      },
+      run: () => {
+        for (const tab of useDatabase.getState().results) if (!tab.pinned) closeResult(tab.id);
+      },
+    },
+    {
+      id: "db.pinResultTab",
+      title: "Pin / Unpin Tab",
+      category: "Database",
+      icon: "pin",
+      keyWhen: "dbResultsFocus && !popupOpen",
+      enabled: closable,
+      run: (c) => {
+        const id = target(c)!;
+        pinResult(id, !pinned(id));
+      },
+    },
+    {
       id: "db.renameResultTab",
       title: "Rename Tab",
       category: "Database",
@@ -91,7 +120,9 @@ export function resultTabMenu(id: number): MenuItem[] {
     { kind: "action", action: "db.closeResultTab", arg: id },
     { kind: "action", action: "db.closeOtherResultTabs", arg: id },
     { kind: "action", action: "db.closeAllResultTabs", arg: id },
+    { kind: "action", action: "db.closeAllButPinnedResultTabs", arg: id },
     { kind: "separator" },
+    { kind: "action", action: "db.pinResultTab", arg: id, label: pinned(id) ? "Unpin Tab" : "Pin Tab" },
     { kind: "action", action: "db.renameResultTab", arg: id },
     { kind: "separator" },
     { kind: "action", action: "db.nextResultTab", arg: id },

@@ -894,6 +894,12 @@ export interface DecorationSegment {
   icon?: string;
   strike?: boolean;
   label?: string;
+  /** CSS colour of this segment; falls back to the suffix colour. */
+  color?: string;
+  /** CSS values for the segment's font style / effect, e.g. scheme-driven bold or wavy underline. */
+  fontWeight?: string;
+  fontStyle?: string;
+  textDecoration?: string;
 }
 
 export interface FileDecoration {

@@ -22,31 +22,78 @@ const info = (head: string | null, upstream: string | null, ahead = 0, behind = 
   operation: null,
 });
 
+const COLORS = {
+  withRemote: "var(--git-master-with-remote, var(--accent))",
+  withoutRemote: "var(--git-master-without-remote, var(--accent))",
+  tracking: "var(--git-tracking-branch, var(--accent))",
+  local: "var(--git-local-branch, var(--accent))",
+  changed: "var(--git-branch-changed, var(--accent))",
+  headTags: "var(--git-head-tags, var(--accent))",
+};
+
+/** The font style / effect channels every suffix segment now carries. */
+const styleOf = (attr: string) => ({
+  fontWeight: `var(--git-${attr}-bold, inherit)`,
+  fontStyle: `var(--git-${attr}-italic, inherit)`,
+  textDecoration: `var(--git-${attr}-effect, none)`,
+});
+
 describe("rootSyncSuffix", () => {
   it("strikes out zero when the branch matches its upstream", () => {
     expect(rootSyncSuffix(info("main", "origin/main"))).toEqual([
-      { text: "main" },
-      { text: "/" },
-      { text: "0", strike: true, label: "Up to date with origin/main" },
+      { text: "main", color: COLORS.withRemote, ...styleOf("master-with-remote") },
+      { text: "/", color: COLORS.headTags, ...styleOf("head-tags") },
+      {
+        text: "0",
+        strike: true,
+        label: "Up to date with origin/main",
+        color: COLORS.headTags,
+        ...styleOf("head-tags"),
+      },
     ]);
   });
 
   it("shows outgoing then incoming commits with their icons", () => {
     expect(rootSyncSuffix(info("main", "origin/main", 1, 3))).toEqual([
-      { text: "main" },
-      { text: "/" },
-      { text: "1", icon: "vcs-outgoing", label: "1 outgoing commits" },
-      { text: "3", icon: "vcs-incoming", label: "3 incoming commits" },
+      { text: "main", color: COLORS.withRemote, ...styleOf("master-with-remote") },
+      { text: "/", color: COLORS.headTags, ...styleOf("head-tags") },
+      {
+        text: "1",
+        icon: "vcs-outgoing",
+        label: "1 outgoing commits",
+        color: COLORS.changed,
+        ...styleOf("branch-changed"),
+      },
+      {
+        text: "3",
+        icon: "vcs-incoming",
+        label: "3 incoming commits",
+        color: COLORS.changed,
+        ...styleOf("branch-changed"),
+      },
     ]);
     expect(rootSyncSuffix(info("main", "origin/main", 0, 2))).toEqual([
-      { text: "main" },
-      { text: "/" },
-      { text: "2", icon: "vcs-incoming", label: "2 incoming commits" },
+      { text: "main", color: COLORS.withRemote, ...styleOf("master-with-remote") },
+      { text: "/", color: COLORS.headTags, ...styleOf("head-tags") },
+      {
+        text: "2",
+        icon: "vcs-incoming",
+        label: "2 incoming commits",
+        color: COLORS.changed,
+        ...styleOf("branch-changed"),
+      },
     ]);
   });
 
   it("shows only the branch without an upstream", () => {
-    expect(rootSyncSuffix(info("feature", null))).toEqual([{ text: "feature" }]);
+    expect(rootSyncSuffix(info("feature", null))).toEqual([
+      { text: "feature", color: COLORS.local, ...styleOf("local-branch") },
+    ]);
+  });
+
+  it("uses the tracking and master-without-remote colours", () => {
+    expect(rootSyncSuffix(info("dev", "origin/dev"))![0]?.color).toBe(COLORS.tracking);
+    expect(rootSyncSuffix(info("master", null))![0]?.color).toBe(COLORS.withoutRemote);
   });
 
   it("shows nothing for a detached HEAD", () => {
@@ -78,8 +125,10 @@ describe("installRootSync", () => {
     enable(true);
     dispose = installRootSync();
     await vi.waitFor(() => expect(getFileDecoration("/p")?.suffix?.[2]?.text).toBe("1"));
-    expect(getFileDecoration("/p/lib")?.suffix).toEqual([{ text: "dev" }]);
-    expect(getFileDecoration("/p")?.suffixColor).toBe("var(--accent)");
+    expect(getFileDecoration("/p/lib")?.suffix).toEqual([
+      { text: "dev", color: COLORS.local, ...styleOf("local-branch") },
+    ]);
+    expect(getFileDecoration("/p")?.suffixColor).toBe("var(--git-local-branch, var(--accent))");
     expect(ipc.branchInfo).toHaveBeenCalledWith("/p");
     expect(ipc.branchInfo).toHaveBeenCalledWith("/p/lib");
   });
@@ -137,7 +186,11 @@ describe("installRootSync", () => {
     );
     enable(true);
     dispose = installRootSync();
-    await vi.waitFor(() => expect(getFileDecoration("/p/lib")?.suffix).toEqual([{ text: "dev" }]));
+    await vi.waitFor(() =>
+      expect(getFileDecoration("/p/lib")?.suffix).toEqual([
+        { text: "dev", color: COLORS.local, ...styleOf("local-branch") },
+      ]),
+    );
     expect(getFileDecoration("/p")?.suffix).toBeUndefined();
   });
 
@@ -172,7 +225,11 @@ describe("installRootSync", () => {
     pending.splice(0).forEach((done) => done());
     await vi.waitFor(() => expect(ipc.branchInfo).toHaveBeenCalledTimes(4));
     pending.splice(0).forEach((done) => done());
-    await vi.waitFor(() => expect(getFileDecoration("/p")?.suffix).toEqual([{ text: "main" }]));
+    await vi.waitFor(() =>
+      expect(getFileDecoration("/p")?.suffix).toEqual([
+        { text: "main", color: COLORS.withoutRemote, ...styleOf("master-without-remote") },
+      ]),
+    );
     await settle();
     expect(ipc.branchInfo).toHaveBeenCalledTimes(4);
   });

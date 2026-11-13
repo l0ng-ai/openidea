@@ -105,6 +105,9 @@
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease);
 }
+.unpin {
+  color: var(--fg-muted);
+}
 .tab:hover .close,
 .tab:where([data-context-menu-open]) .close,
 .selected .close,

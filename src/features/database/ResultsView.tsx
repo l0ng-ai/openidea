@@ -23,6 +23,7 @@ import {
   tooltipAttrs,
 } from "@/ui";
 import { notifications } from "@/workbench/contributions";
+import { ToolWindowContentTabs } from "@/workbench/toolwindows/ToolWindows";
 import { ChartView } from "./ChartView";
 import { ColumnsPopup } from "./ColumnsPopup";
 import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
@@ -52,6 +53,7 @@ import {
   log,
   outcomeSummary,
   pageable,
+  pinResult,
   rerunResult,
   targetLabel,
   useDatabase,
@@ -432,10 +434,11 @@ function Result({ tab }: { tab: ResultTab }) {
   return (
     <div className={styles.view} ref={viewRef} data-db-table-editor="">
       <div className={styles.toolbar}>
-        <IconButton icon="db-table" title="Table" aria-pressed={view === "table"} onClick={() => setView("table")} />
+        <IconButton icon="database" title="Table" aria-pressed={view === "table"} onClick={() => setView("table")} />
         <IconButton icon="db-chart" title="Chart" aria-pressed={view === "chart"} onClick={() => setView("chart")} />
         <span className={styles.toolbarSeparator} />
         <IconButton icon="refresh" title="Rerun Query" disabled={busy} onClick={() => void rerunResult(tab.id)} />
+        <PinButton tab={tab} />
         {view === "table" && (
           <IconButton
             icon="search"
@@ -594,6 +597,7 @@ function PlanResult({ tab }: { tab: ResultTab }) {
     <div className={styles.view}>
       <div className={styles.toolbar}>
         <IconButton icon="refresh" title="Explain Again" disabled={tab.busy} onClick={() => void rerunResult(tab.id)} />
+        <PinButton tab={tab} />
         {tab.busy && <Spinner size={12} />}
         <span className={styles.spacer} />
         <span className={styles.resultSource} title={tab.outcome.statement.text}>
@@ -661,6 +665,13 @@ function PlanResult({ tab }: { tab: ResultTab }) {
   );
 }
 
+/** IDEA's Pin Tab: the console's next runs leave this result alone. */
+function PinButton({ tab }: { tab: ResultTab }) {
+  return (
+    <IconButton icon="pin" title="Pin Tab" aria-pressed={!!tab.pinned} onClick={() => pinResult(tab.id, !tab.pinned)} />
+  );
+}
+
 export function ResultsView() {
   const results = useDatabase((s) => s.results);
   const active = useDatabase((s) => s.activeResult);
@@ -706,26 +717,33 @@ export function ResultsView() {
         );
       }}
     >
-      <Tabs
-        className={styles.resultTabs}
-        variant="compact"
-        aria-label="Results"
-        activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
-        panelIdPrefix="db-results"
-        onSelect={(id) => useDatabase.setState({ activeResult: Number(id) })}
-        onClose={(id) => closeResult(Number(id))}
-        onContextMenu={tabMenu}
-        items={[
-          { id: String(OUTPUT_TAB), label: "Output", icon: "db-console", closable: false },
-          ...results.map((r) => ({
-            id: String(r.id),
-            label: r.title,
-            icon: r.plan ? "db-plan" : "db-table",
-            closable: true,
-            tooltip: r.outcome.statement.text,
-          })),
-        ]}
-      />
+      <ToolWindowContentTabs>
+        <Tabs
+          className={styles.resultTabs}
+          variant="compact"
+          aria-label="Results"
+          activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
+          panelIdPrefix="db-results"
+          onSelect={(id) => useDatabase.setState({ activeResult: Number(id) })}
+          onClose={(id) => closeResult(Number(id))}
+          onTogglePin={(id) => {
+            const r = results.find((r) => r.id === Number(id));
+            if (r) pinResult(r.id, !r.pinned);
+          }}
+          onContextMenu={tabMenu}
+          items={[
+            { id: String(OUTPUT_TAB), label: "Output", icon: "db-console", closable: false },
+            ...results.map((r) => ({
+              id: String(r.id),
+              label: r.title,
+              icon: r.plan ? "db-plan" : "database",
+              closable: true,
+              pinned: r.pinned,
+              tooltip: r.outcome.statement.text,
+            })),
+          ]}
+        />
+      </ToolWindowContentTabs>
       <div className={styles.fill}>
         {!tab ? <Output /> : tab.plan ? <PlanResult key={tab.id} tab={tab} /> : <Result key={tab.id} tab={tab} />}
       </div>
