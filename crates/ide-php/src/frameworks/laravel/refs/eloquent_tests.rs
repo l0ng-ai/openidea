@@ -708,3 +708,51 @@ fn the_query_builder_knows_its_table() {
         .column_problems(PROBE, &controller(&format!("{db}::table('audits')->where('evnt', 1)->where('event', 'x');")));
     assert_eq!(found, [(11, "Unknown column 'evnt' of table 'audits'".to_owned())]);
 }
+
+#[test]
+fn a_models_new_factory_names_its_factory() {
+    let model = r#"<?php
+namespace Shop\Models;
+
+use Illuminate\Database\Eloquent\Factories\Factory;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Shop\Factories\CartFactory;
+
+class Cart extends Model
+{
+    use HasFactory;
+
+    protected static function newFactory(): Factory
+    {
+        return CartFactory::new();
+    }
+}
+"#;
+    let factory = r#"<?php
+namespace Shop\Factories;
+
+use Illuminate\Database\Eloquent\Factories\Factory;
+use Shop\Models\Cart;
+
+class CartFactory extends Factory
+{
+    protected $model = Cart::class;
+
+    public function definition(): array { return []; }
+
+    public function abandoned(): static { return $this; }
+}
+"#;
+    let mut project = Project::app_with(&[
+        ("packages/Shop/Models/Cart.php", model),
+        ("packages/Shop/Factories/CartFactory.php", factory),
+    ]);
+    let cases = [
+        ("\\Shop\\Models\\Cart::factory()->abandoned()/*|*/;", "Shop\\Factories\\CartFactory<Shop\\Models\\Cart>"),
+        ("\\Shop\\Models\\Cart::factory()->abandoned()->create()/*|*/;", "Shop\\Models\\Cart"),
+    ];
+    for (body, expected) in cases {
+        assert_eq!(project.eloquent_type(body), expected, "{body}");
+    }
+}

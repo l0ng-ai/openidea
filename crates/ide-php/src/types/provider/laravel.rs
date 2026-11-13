@@ -95,6 +95,26 @@ const ATTRIBUTE: &str = "Illuminate\\Database\\Eloquent\\Casts\\Attribute";
 const RELATIONS: &str = "Illuminate\\Database\\Eloquent\\Relations\\";
 const RELATION: &str = "Illuminate\\Database\\Eloquent\\Relations\\Relation";
 const JOIN_CLAUSE: &str = "Illuminate\\Database\\Query\\JoinClause";
+/// What `$collection->each`, `->map`, `->filter`… are: `<TKey, TValue, …>`.
+const HIGHER_ORDER_PROXY: &str = "Illuminate\\Support\\HigherOrderCollectionProxy";
+/// Validation rules whose `where()` closure gets the query builder.
+const DATABASE_RULES: &[&str] = &["Illuminate\\Validation\\Rules\\Exists", "Illuminate\\Validation\\Rules\\Unique"];
+/// Query methods whose closure is a nested query of the same kind.
+const NESTED_QUERIES: &[&str] = &[
+    "where",
+    "orWhere",
+    "whereNot",
+    "orWhereNot",
+    "whereNested",
+    "whereExists",
+    "orWhereExists",
+    "whereNotExists",
+    "having",
+    "orHaving",
+    "havingNested",
+];
+/// `Conditionable` methods, whose closure gets the object itself.
+const CONDITIONAL_CLOSURES: &[&str] = &["when", "unless", "tap"];
 const SUPPORT_COLLECTION: &str = "Illuminate\\Support\\Collection";
 const FACTORY: &str = "Illuminate\\Database\\Eloquent\\Factories\\Factory";
 const CARBON: &str = "Illuminate\\Support\\Carbon";
@@ -378,6 +398,18 @@ impl LaravelProvider {
     fn repository_model(resolver: &Resolver<'_>, ty: &Type, context: &Context) -> Option<String> {
         let models = resolver.class_models(ty, context);
         let repository = models.iter().find(|model| model.is_subclass_of(PRETTUS_REPOSITORY))?;
+        Self::model_of_repository(resolver, repository).or_else(|| {
+            // `parent::create()` in a repository: the abstract parent names
+            // no model, the class the call is in does.
+            let own = resolver.class_model(context.self_class.as_deref()?)?;
+            (own.fqn() != repository.fqn() && own.is_subclass_of(repository.fqn()))
+                .then(|| Self::model_of_repository(resolver, &own))
+                .flatten()
+        })
+    }
+
+    /// The model `repository`'s `model()` names.
+    fn model_of_repository(resolver: &Resolver<'_>, repository: &ClassModel) -> Option<String> {
         let method = repository.method("model")?;
         let lazy = method.declared()?.inferred_return.as_ref()?;
         let value = resolver.resolve(lazy, &Context::in_class(&method.self_class));
@@ -774,6 +806,20 @@ impl LaravelProvider {
     /// (`Factory::resolveFactoryName`): `Database\Factories\` and the
     /// model's name below the app's `Models\` namespace, plus `Factory`.
     pub(crate) fn factory_of(resolver: &Resolver<'_>, model: &str) -> Option<String> {
+        // What the model's own `newFactory()` returns comes first.
+        let named = resolver.class_model(model).and_then(|class| {
+            let method = class.method("newFactory")?;
+            let lazy = method.declared()?.inferred_return.as_ref()?;
+            let made = resolver.resolve(lazy, &Context::in_class(&method.self_class));
+            resolver
+                .class_models(&made, &Context::default())
+                .iter()
+                .find(|found| found.fqn() != FACTORY && found.is_subclass_of(FACTORY))
+                .map(|found| found.fqn().to_owned())
+        });
+        if named.is_some() {
+            return named;
+        }
         let relative = match model.split_once("\\Models\\") {
             Some((_, rest)) => rest,
             None => model.rsplit('\\').next().unwrap_or(model),
@@ -786,6 +832,20 @@ impl LaravelProvider {
     /// (`Database\Factories\PostFactory` makes `App\Models\Post`, or
     /// `App\Post`).
     fn factory_model(resolver: &Resolver<'_>, factory: &str) -> Option<String> {
+        // Its `$model` property (`protected $model = Post::class;`).
+        let model = Type::named(factory);
+        let named = resolver.property_type(&model, "model", &Context::in_class(factory));
+        let named = named.members().iter().find_map(|member| match member {
+            Type::ClassString(Some(class)) => match class.as_ref() {
+                Type::Named { fqn, .. } => Some(fqn.clone()),
+                _ => None,
+            },
+            Type::LiteralString(class) => Some(class.clone()),
+            _ => None,
+        });
+        if let Some(found) = named.and_then(|class| resolver.class_model(&class)).filter(|m| m.is_subclass_of(MODEL)) {
+            return Some(found.fqn().to_owned());
+        }
         let relative = factory.strip_prefix("Database\\Factories\\")?.strip_suffix("Factory")?;
         [format!("App\\Models\\{relative}"), format!("App\\{relative}")].into_iter().find_map(|class| {
             resolver.class_model(&class).filter(|m| m.is_subclass_of(MODEL)).map(|m| m.fqn().to_owned())
@@ -874,6 +934,31 @@ impl LaravelProvider {
             || Self::is_a(resolver, receiver, context, &[ELOQUENT_BUILDER, QUERY_BUILDER, RELATION, MODEL]);
         let clause = resolver.class_model(JOIN_CLAUSE)?;
         queries.then(|| vec![Type::named(clause.fqn())])
+    }
+
+    /// `$query->where(function ($q) { … })` and the like: the nested query
+    /// is the receiver's own builder (a model's or relation's Eloquent
+    /// builder); on a validation rule (`Rule::exists(…)->where(…)`) or a
+    /// receiver of unknown type, the query builder.
+    fn query_closure(resolver: &Resolver<'_>, receiver: &Type, method: &str, context: &Context) -> Option<Vec<Type>> {
+        let conditional = is_one_of(CONDITIONAL_CLOSURES, method);
+        if !conditional && !is_one_of(NESTED_QUERIES, method) {
+            return None;
+        }
+        if Self::is_a(resolver, receiver, context, &[ELOQUENT_BUILDER, QUERY_BUILDER]) {
+            return Some(vec![receiver.clone()]);
+        }
+        if Self::is_a(resolver, receiver, context, &[RELATION, MODEL]) {
+            let model = Self::about_model(resolver, receiver, context)?;
+            return Some(vec![Type::generic(ELOQUENT_BUILDER, vec![Type::named(&model)])]);
+        }
+        // `when()` is many classes' method: only on a known query.
+        let rule = Self::is_a(resolver, receiver, context, DATABASE_RULES);
+        if conditional || !(rule || *receiver == Type::Mixed) {
+            return None;
+        }
+        let builder = resolver.class_model(QUERY_BUILDER)?;
+        Some(vec![Type::named(builder.fqn())])
     }
 
     /// A raw Eloquent or query builder (what a `@mixin` without arguments
@@ -1360,6 +1445,15 @@ impl LaravelProvider {
         // forwards to.
         for member in receiver.members() {
             let Type::Named { fqn, args } = member else { continue };
+            // `$posts->each->delete()`: the proxy calls the items' method.
+            if fqn.trim_start_matches('\\').eq_ignore_ascii_case(HIGHER_ORDER_PROXY) {
+                if let Some(item) = args.get(1) {
+                    for item in resolver.class_models(item, context) {
+                        Self::forwarded_methods(resolver, item.fqn(), false, &mut out);
+                    }
+                }
+                continue;
+            }
             let Some(model) = resolver.class_model(fqn) else { continue };
             let relation = model.is_subclass_of(RELATION);
             if !relation && !model.is_subclass_of(ELOQUENT_BUILDER) {
@@ -1812,6 +1906,7 @@ impl TypeProvider for LaravelProvider {
         }
         Self::relation_closure(resolver, receiver, method, key, context)
             .or_else(|| Self::join_closure(resolver, receiver, method, context))
+            .or_else(|| Self::query_closure(resolver, receiver, method, context))
             .or_else(|| {
                 // `$repository->scopeQuery(fn ($query) => …)`: its model's query.
                 if !method.eq_ignore_ascii_case("scopeQuery") {

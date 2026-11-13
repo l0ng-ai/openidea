@@ -685,6 +685,7 @@ const LEGACY_TEST_CASE: &str = "PHPUnit_Framework_TestCase";
 const MOCK_OBJECT: &str = "PHPUnit\\Framework\\MockObject\\MockObject";
 const STUB: &str = "PHPUnit\\Framework\\MockObject\\Stub";
 const PEST_MIXIN: &str = "Pest\\Mixins\\Expectation";
+const MOCKERY_MOCK: &str = "Mockery\\MockInterface";
 const MOCK_BUILDER: &str = "PHPUnit\\Framework\\MockObject\\MockBuilder";
 
 /// Test-case methods creating a double of the class named by their first
@@ -795,6 +796,23 @@ impl TypeProvider for PhpUnitProvider {
         }
         let (adds, class) = payload.strip_prefix("double:")?.split_once(':')?;
         Some(Type::intersection([Type::named(class), Type::named(adds)]))
+    }
+
+    /// `$this->mock(Foo::class, function ($mock) { … })` (Laravel's
+    /// `mock()`, `partialMock()` and `spy()`): the closure gets the mock.
+    fn closure_parameters(
+        &self,
+        _receiver: &Type,
+        method: &str,
+        _key: &str,
+        resolver: &Resolver<'_>,
+        _context: &Context,
+    ) -> Option<Vec<Type>> {
+        if !["mock", "partialMock", "spy"].iter().any(|name| name.eq_ignore_ascii_case(method)) {
+            return None;
+        }
+        let mock = resolver.class_model(MOCKERY_MOCK)?;
+        Some(vec![Type::named(mock.fqn())])
     }
 
     /// Pest's higher-order expectations: a property of the expected value

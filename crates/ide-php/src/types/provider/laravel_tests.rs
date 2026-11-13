@@ -324,6 +324,11 @@ fn repositories_and_concord_proxies_name_their_model() {
             ("(new \\App\\Repositories\\UserRepository())->active()/*|*/;", BUILDER),
             ("(new \\App\\Repositories\\UserRepository())->plain()/*|*/;", "int"),
             ("(new \\App\\Repositories\\UserRepository())->where('a', 1)->first()/*|*/;", "?App\\Models\\User"),
+            // `parent::find()` under an abstract repository naming no model.
+            (
+                "abstract class Base extends \\Prettus\\Repository\\Eloquent\\BaseRepository {}\nclass Mine extends Base {\n    function model(): string { return \\App\\Models\\User::class; }\n    function one() { return parent::find(1)/*|*/; }\n}",
+                "App\\Models\\User",
+            ),
             // The query of its `scopeQuery()` closure.
             ("(new \\App\\Repositories\\UserRepository())->scopeQuery(fn ($query) => $query/*|*/);", BUILDER),
             // A contract: the model implementing it.
@@ -360,6 +365,18 @@ fn repositories_and_concord_proxies_name_their_model() {
 }
 
 #[test]
+fn mock_closures_get_the_mock() {
+    const MOCKERY: &str = "<?php\nnamespace Mockery;\ninterface MockInterface {}\n";
+    check(
+        &[FRAMEWORK, APPLICATION, APP, MOCKERY],
+        &[
+            ("$test->mock(PaymentGateway::class, function ($mock) { $mock/*|*/; });", "Mockery\\MockInterface"),
+            ("$test->partialMock(PaymentGateway::class, fn ($mock) => $mock/*|*/);", "Mockery\\MockInterface"),
+        ],
+    );
+}
+
+#[test]
 fn join_closures_get_the_join_clause() {
     const JOIN: &str = r#"<?php
 namespace Illuminate\Database\Query;
@@ -377,6 +394,12 @@ class JoinClause extends Builder {
             ("$query->leftJoin('posts', function ($join) { $join/*|*/; });", clause),
             // A table that isn't a string literal.
             ("$query->leftJoin($table, function ($join) { $join/*|*/; });", clause),
+            // A nested query is the receiver's builder; the query builder on
+            // an unknown receiver.
+            ("User::where('a', 1)->where(function ($q) { $q/*|*/; });", BUILDER),
+            ("User::where('a', 1)->when(true, fn ($q) => $q/*|*/);", BUILDER),
+            ("$query->orWhere(function ($q) { $q/*|*/; });", "Illuminate\\Database\\Query\\Builder"),
+            ("$unknown->when(true, fn ($q) => $q/*|*/);", "mixed"),
             // Not a query.
             ("(new PaymentGateway())->join('posts', function ($join) { $join/*|*/; });", "mixed"),
         ],

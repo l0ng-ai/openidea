@@ -583,6 +583,8 @@ namespace Illuminate\Database\Eloquent\Factories {
         protected $model;
         /** @return array<string, mixed> */
         abstract public function definition(): array;
+        /** @return static */
+        public static function new($attributes = []) { return new static(); }
         public function count(?int $count): static { return $this; }
         public function state($state): static { return $this; }
         /** @return \Illuminate\Database\Eloquent\Collection<int, TModel>|TModel */

@@ -324,3 +324,31 @@ fn this_in_an_anonymous_class_reaches_its_own_and_inherited_members() {
         [target("src/Migration.php", 5, "connection")]
     );
 }
+
+#[test]
+fn a_higher_order_collection_proxy_reaches_the_items_methods() {
+    let lib = r#"<?php
+namespace Illuminate\Foundation { class Application {} }
+namespace Illuminate\Support {
+    /**
+     * @template TKey
+     * @template TValue
+     */
+    class HigherOrderCollectionProxy {}
+}
+namespace App {
+    class Item
+    {
+        public function delete(): bool { return true; }
+    }
+    class Bag
+    {
+        /** @var \Illuminate\Support\HigherOrderCollectionProxy<int, Item> */
+        public $each;
+    }
+}
+"#;
+    let source = "<?php\nnamespace App;\n\nfunction clear(Bag $bag): void\n{\n    $bag->each->del/*|*/ete();\n}\n";
+    let mut p = Project::new(&[("src/lib.php", lib), ("src/clear.php", source)]);
+    assert_eq!(p.definition("src/clear.php", source).expect("handled"), [target("src/lib.php", 12, "delete")]);
+}
