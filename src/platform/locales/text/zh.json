@@ -7805,5 +7805,7 @@
   "Reads the names of schemas, tables and views of every database, so completion works for all of them.": "读取每个数据库的架构、表和视图名称，使补全对所有数据库都可用。",
   "Introspect": "内省",
   "Not Now": "暂不",
-  "Introspect All Databases": "内省所有数据库"
+  "Introspect All Databases": "内省所有数据库",
+  "No credential store": "没有凭据存储",
+  "Values of agent and MCP server settings are kept in {path}, readable only by you.": "智能体和 MCP 服务器设置中的值保存在 {path} 中，仅你本人可读取。"
 }

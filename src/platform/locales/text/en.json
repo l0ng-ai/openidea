@@ -1402,5 +1402,7 @@
   "Reads the names of schemas, tables and views of every database, so completion works for all of them.": "Reads the names of schemas, tables and views of every database, so completion works for all of them.",
   "Introspect": "Introspect",
   "Not Now": "Not Now",
-  "Introspect All Databases": "Introspect All Databases"
+  "Introspect All Databases": "Introspect All Databases",
+  "No credential store": "No credential store",
+  "Values of agent and MCP server settings are kept in {path}, readable only by you.": "Values of agent and MCP server settings are kept in {path}, readable only by you."
 }

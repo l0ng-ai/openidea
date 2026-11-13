@@ -3,6 +3,7 @@
 //! wraps one [`Host`] and adds windows and menus; `openidea-server`
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
+pub mod agent_secrets;
 pub mod data_dirs;
 pub mod environment;
 mod formatter;
@@ -91,6 +92,8 @@ pub struct Host {
     proxy_password: ide_ssh::secrets::SecretFile,
     /// The proxy password when it could not be saved (no credential store).
     proxy_session_password: Mutex<Option<String>>,
+    /// Values of agents' and MCP servers' environment variables and headers (see `agent_secrets.rs`).
+    pub agent_secrets: Arc<agent_secrets::AgentSecrets>,
     pub(crate) sink_for: SinkFactory,
     owner: fn(&str) -> &str,
     pub runtime: tokio::runtime::Handle,
@@ -140,6 +143,7 @@ impl Host {
             trust: trust::TrustStore::load(&config_dir, &data_dir),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
             proxy_session_password: Mutex::default(),
+            agent_secrets: Arc::new(agent_secrets::AgentSecrets::new(&data_dir)),
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
             environment: environment::Environment::new(project_environment, local_data_dir.clone()),
