@@ -391,6 +391,10 @@ fn tsserver_ran_out_of_memory(text: &str) -> bool {
 }
 
 impl Handler for ClientHandler {
+    fn normalize_incoming(&self, message: &mut Value) {
+        crate::uri::encode_loose_file_uris(message);
+    }
+
     fn on_notification(&self, method: &str, params: Value) {
         let Some(mgr) = self.mgr.upgrade() else { return };
         match method {
