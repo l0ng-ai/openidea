@@ -24,7 +24,7 @@ import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { editorService, notifications, notifyTabTitlesChanged, toolWindowService } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
-import { confirm } from "@/workbench/messages";
+import { confirm, showError } from "@/workbench/messages";
 import {
   bypassDefaults,
   canSend,
@@ -109,6 +109,10 @@ interface AgentsState {
   external: ExternalSession[];
   /** Why the external sessions could not be listed. */
   externalError: string | null;
+  /** The Import Sessions from Other Apps dialog is open. */
+  importOpen: boolean;
+  /** External sessions being imported (`provider:sessionId`), so none is imported twice. */
+  importing: ReadonlySet<string>;
   /** The composer asked to take focus (`seq` tells repeated requests apart). */
   focus: { key: string; seq: number } | null;
   /** Task shown inside the Agents tool window instead of an editor tab. */
@@ -175,6 +179,8 @@ export const useAgents = create<AgentsState>(() => ({
   organizeRoot: null,
   external: [],
   externalError: null,
+  importOpen: false,
+  importing: new Set(),
   focus: null,
   docked: null,
   sessionLocation: load<unknown>(SESSION_LOCATION_KEY, null) === "toolWindow" ? "toolWindow" : "editor",
@@ -402,6 +408,10 @@ export function disconnect() {
     docked: null,
     lastTask: null,
     homeOpen: false,
+    external: [],
+    externalError: null,
+    importOpen: false,
+    importing: new Set(),
     scrollPositions: new Map(),
   });
 }
@@ -817,22 +827,93 @@ export async function startTask(
 
 /** Sessions on this machine that no task holds yet (a terminal, another editor: #312). */
 export async function refreshExternalSessions() {
+  const started = generation;
   try {
     const external = await call(commands.agentExternalSessions());
-    useAgents.setState({ external, externalError: null });
+    if (generation === started) useAgents.setState({ external, externalError: null });
   } catch (e) {
-    useAgents.setState({ externalError: e instanceof Error ? e.message : String(e) });
+    if (generation === started) useAgents.setState({ externalError: e instanceof Error ? e.message : String(e) });
   }
 }
 
-/** Imports an external session as a task and opens it: its first turn loads it (#312). */
-export async function importExternalSession(provider: string, sessionId: string) {
+export const showImportSessions = () => useAgents.setState({ importOpen: true });
+export const hideImportSessions = () => useAgents.setState({ importOpen: false });
+
+export const externalKey = (provider: string, sessionId: string) => `${provider}:${sessionId}`;
+
+function markImporting(keys: readonly string[], on: boolean) {
+  useAgents.setState((s) => {
+    const importing = new Set(s.importing);
+    for (const key of keys) {
+      if (on) importing.add(key);
+      else importing.delete(key);
+    }
+    return { importing };
+  });
+}
+
+async function importOne(provider: string, sessionId: string, open: boolean) {
+  const started = generation;
   const task = await call(commands.agentImportSession(provider, sessionId));
+  if (generation !== started) return task;
   useAgents.setState((s) => ({
     tasks: s.tasks.has(task.id) ? s.tasks : new Map(s.tasks).set(task.id, task),
     external: s.external.filter((e) => !(e.provider === provider && e.sessionId === sessionId)),
   }));
-  openTask(task.id);
+  if (open) openTask(task.id);
+  return task;
+}
+
+/** Imports an external session as a task and opens it: its first turn loads it (#312). */
+export async function importExternalSession(provider: string, sessionId: string) {
+  const key = externalKey(provider, sessionId);
+  if (useAgents.getState().importing.has(key)) throw new Error(tx("Already importing"));
+  markImporting([key], true);
+  try {
+    return await importOne(provider, sessionId, true);
+  } finally {
+    markImporting([key], false);
+  }
+}
+
+/**
+ * Imports sessions one after another, all marked pending from the start; only a single one opens.
+ * Sessions already being imported are skipped. Failures don't stop the rest and are reported
+ * together at the end. A project switch ends the batch; an abort ends it after the import in
+ * flight and frees the sessions it didn't reach.
+ */
+export async function importExternalSessions(
+  sessions: readonly { provider: string; sessionId: string; title: string }[],
+  onProgress?: (done: number) => void,
+  signal?: AbortSignal,
+) {
+  const pending = useAgents.getState().importing;
+  const batch = sessions.filter((s) => !pending.has(externalKey(s.provider, s.sessionId)));
+  const keys = batch.map((s) => externalKey(s.provider, s.sessionId));
+  markImporting(keys, true);
+  const started = generation;
+  const failures: string[] = [];
+  let done = 0;
+  for (const s of batch) {
+    if (generation !== started) return;
+    if (signal?.aborted) {
+      markImporting(keys.slice(done), false);
+      break;
+    }
+    try {
+      await importOne(s.provider, s.sessionId, batch.length === 1);
+    } catch (e) {
+      failures.push(`${s.title}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      if (generation === started) markImporting([externalKey(s.provider, s.sessionId)], false);
+    }
+    onProgress?.(++done);
+  }
+  if (generation !== started || !failures.length) return;
+  // Not awaited, so the caller's dialog closes instead of waiting behind the message.
+  const title =
+    failures.length === 1 ? tx("A session could not be imported") : tx("Some sessions could not be imported");
+  void showError(title, failures.join("\n"));
 }
 
 function remember(text: string) {

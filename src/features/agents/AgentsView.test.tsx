@@ -230,7 +230,17 @@ describe("Agents docked view", () => {
       { kind: "action", action: "agents.useEditor", icon: "", checked: false },
       { kind: "separator" },
       { kind: "action", action: "agents.newTaskGroup", label: "New Group…", icon: "plus" },
+      { kind: "action", action: "agents.importSessions", icon: "download" },
     ]);
+  });
+
+  it("lists Import Sessions from Other Apps in Find Action", () => {
+    const action = taskActions.find((a) => a.id === "agents.importSessions");
+    expect(action?.hidden).toBeFalsy();
+    expect(action?.when).toBe("projectOpen");
+    act(() => void action?.run({} as never));
+    expect(useAgents.getState().importOpen).toBe(true);
+    act(() => useAgents.setState({ importOpen: false }));
   });
 
   it("opens tabs as usual without a docked conversation", () => {
