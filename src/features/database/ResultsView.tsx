@@ -665,7 +665,16 @@ export function ResultsView() {
   const results = useDatabase((s) => s.results);
   const active = useDatabase((s) => s.activeResult);
   const hasOutput = useDatabase((s) => s.output.length > 0);
-  useEffect(() => () => setContext("dbResultsFocus", false), []);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const syncFocus = () => setContext("dbResultsFocus", !!root.current?.contains(document.activeElement));
+    document.addEventListener("focusin", syncFocus);
+    syncFocus();
+    return () => {
+      document.removeEventListener("focusin", syncFocus);
+      setContext("dbResultsFocus", false);
+    };
+  }, []);
   const tabMenu = (id: string, e: MouseEvent) => {
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
@@ -682,11 +691,8 @@ export function ResultsView() {
   const tab = results.find((r) => r.id === active);
   return (
     <div
+      ref={root}
       className={styles.view}
-      onFocusCapture={() => setContext("dbResultsFocus", true)}
-      onBlurCapture={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget)) setContext("dbResultsFocus", false);
-      }}
       onKeyDown={(e) => {
         if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
         const tab = (e.target as Element).closest<HTMLElement>('[role="tab"]');

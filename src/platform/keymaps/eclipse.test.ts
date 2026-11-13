@@ -57,6 +57,8 @@ const shared = [
   ["refactor.changeSignature", "db.modifyTable"],
   ["refactor.move", "project.move"],
   ["editor.closeTab", "toolwindow.closeContent"],
+  ["editor.nextTab", "db.nextResultTab"],
+  ["editor.prevTab", "db.previousResultTab"],
   ["run.rerun", "debug.rerun", "find.rerun", "usages.rerun"],
   [
     "debug.smartStepInto",

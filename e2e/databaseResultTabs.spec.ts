@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, openFromTree, test } from "./fixtures";
 
 const edgeTitle = "Result 3 — a long query result at the edge of the Services pane";
 const bindings = { "alpha-console.sql": "alpha", "beta-console.sql": "beta" };
@@ -64,7 +64,9 @@ function menu(page: Page) {
 
 async function choose(page: Page, title: string, command: string) {
   await tab(page, title).click({ button: "right" });
-  await menu(page).getByRole("menuitem", { name: command, exact: true }).click();
+  await menu(page)
+    .getByRole("menuitem", { name: command.startsWith("Select ") ? new RegExp(`^${command}`) : command, exact: true })
+    .click();
   await expect(menu(page)).toHaveCount(0);
 }
 
@@ -91,8 +93,8 @@ test("result context menu fits the viewport, responds to hover and keyboard, and
     "Close Others",
     "Close All",
     "Rename Tab",
-    "Select Next Tab",
-    "Select Previous Tab",
+    "Select Next Tab⇧⌘]",
+    "Select Previous Tab⇧⌘[",
   ]);
   await expect(popup.getByRole("separator")).toHaveCount(2);
   await selected(page, "Result 2", "beta rows");
@@ -140,7 +142,7 @@ test("result context menu fits the viewport, responds to hover and keyboard, and
   await page.keyboard.press("ArrowUp");
   await expect(popup.getByRole("menuitem", { name: "Close", exact: true })).toBeFocused();
   await page.keyboard.press("ArrowUp");
-  await expect(popup.getByRole("menuitem", { name: "Select Previous Tab", exact: true })).toBeFocused();
+  await expect(popup.getByRole("menuitem", { name: /^Select Previous Tab/ })).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(popup).toHaveCount(0);
   await selected(page, "Result 1", "alpha rows");
@@ -207,7 +209,9 @@ for (const [theme, label] of [
     await expect(surface).toHaveCSS("background-color", idle);
     await expect(otherSurface).toHaveCSS("background-color", hovered);
     await selected(page, "Result 2", "beta rows");
-    await menu(page).getByRole("menuitem", { name: "Select Previous Tab", exact: true }).click();
+    await menu(page)
+      .getByRole("menuitem", { name: /^Select Previous Tab/ })
+      .click();
     await expect(menu(page)).toHaveCount(0);
     await page.mouse.move(0, 0);
     await expect(otherSurface).toHaveCSS("background-color", idle);
@@ -264,6 +268,59 @@ test("renames the clicked inactive result without changing its rows and navigate
   await selected(page, "Output");
   await choose(page, "Result 2", "Select Previous Tab");
   await selected(page, "Result 3", "third rows");
+});
+
+test("default tab shortcuts stay in results across repeated tab and grid switches, and remain editor shortcuts elsewhere", async ({
+  workbench: page,
+}) => {
+  await openFromTree(page, "build.gradle.kts");
+  await openFromTree(page, "settings.gradle.kts");
+  const editors = page.getByRole("tablist", { name: "Editor tabs", exact: true });
+  const build = editors.getByRole("tab", { name: "build.gradle.kts", exact: true });
+  const settings = editors.getByRole("tab", { name: "settings.gradle.kts", exact: true });
+  await seedResults(page);
+
+  await tab(page, "Result 1").focus();
+  for (const [shortcut, title, value] of [
+    ["Meta+Shift+BracketRight", "Result 3", "third rows"],
+    ["Meta+Shift+BracketRight", "Output"],
+    ["Meta+Shift+BracketRight", "Result 1", "alpha rows"],
+    ["Meta+Shift+BracketLeft", "Output"],
+    ["Meta+Shift+BracketLeft", "Result 3", "third rows"],
+  ]) {
+    await page.keyboard.press(shortcut!);
+    await selected(page, title!, value);
+    await expect(settings).toHaveAttribute("aria-selected", "true");
+  }
+
+  // The grid is replaced on a tab switch; the second press must still belong to results.
+  await page.getByRole("gridcell", { name: "third rows", exact: true }).click();
+  await page.keyboard.press("Meta+Shift+BracketRight");
+  await selected(page, "Output");
+  await page.keyboard.press("Meta+Shift+BracketRight");
+  await selected(page, "Result 1", "alpha rows");
+  await page.getByRole("gridcell", { name: "alpha rows", exact: true }).click();
+  await page.keyboard.press("Meta+Shift+BracketRight");
+  await selected(page, "Result 2", "beta rows");
+  await page.keyboard.press("Meta+Shift+BracketRight");
+  await selected(page, "Result 3", "third rows");
+  await expect(settings).toHaveAttribute("aria-selected", "true");
+
+  await settings.click();
+  await page.locator(".cm-content[contenteditable=true]").first().click();
+  await page.keyboard.press("Meta+Shift+BracketRight");
+  await expect(build).toHaveAttribute("aria-selected", "true");
+  await selected(page, "Result 3", "third rows");
+  await page.keyboard.press("Meta+Shift+BracketLeft");
+  await expect(settings).toHaveAttribute("aria-selected", "true");
+  await selected(page, "Result 3", "third rows");
+
+  await tab(page, "Result 1").click({ button: "right" });
+  await page.keyboard.press("Meta+Shift+BracketRight");
+  await page.keyboard.press("Meta+Shift+BracketLeft");
+  await selected(page, "Result 3", "third rows");
+  await expect(menu(page)).toBeVisible();
+  await page.keyboard.press("Escape");
 });
 
 test("rename owns deletion and Cmd+Enter without editing the previously focused query", async ({ workbench: page }) => {

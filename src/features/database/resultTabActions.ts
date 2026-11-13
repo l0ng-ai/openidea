@@ -17,11 +17,19 @@ function closeOthers(id: number) {
   for (const tab of useDatabase.getState().results) if (tab.id !== id) closeResult(tab.id);
 }
 
-function cycle(direction: 1 | -1) {
+function cycle(direction: 1 | -1, focus: boolean) {
   const { results, activeResult } = useDatabase.getState();
   const ids = [OUTPUT_TAB, ...results.map((r) => r.id)];
   const index = ids.indexOf(activeResult ?? OUTPUT_TAB);
-  if (index >= 0) useDatabase.setState({ activeResult: ids[(index + direction + ids.length) % ids.length]! });
+  if (index < 0) return;
+  const next = ids[(index + direction + ids.length) % ids.length]!;
+  if (focus) {
+    const button = document.getElementById(`db-results-tab-${next}`);
+    button?.focus();
+    // An inline editor can hand focus back to its grid when it blurs.
+    if (document.activeElement !== button) button?.focus();
+  }
+  useDatabase.setState({ activeResult: next });
 }
 
 export function registerResultTabActions(): () => void {
@@ -73,7 +81,7 @@ export function registerResultTabActions(): () => void {
       category: "Database",
       keyWhen: "dbResultsFocus && !popupOpen",
       enabled: (c: ActionContext) => target(c) !== null && useDatabase.getState().results.length > 0,
-      run: () => cycle(direction),
+      run: ({ ctx }: ActionContext) => cycle(direction, !!ctx.dbResultsFocus),
     })),
   ]);
 }
