@@ -61,6 +61,7 @@ pub struct Host {
     pub mcp_reports: mcp::Reports,
     pub mcp_requests: mcp::Requests,
     pub trust: trust::TrustStore,
+    pub(crate) mcp_approvals: Arc<trust::McpServerApprovals>,
     pub config_dir: PathBuf,
     /// Persistent user state, including credentials and recovery history.
     pub data_dir: PathBuf,
@@ -141,6 +142,7 @@ impl Host {
             mcp_reports: Default::default(),
             mcp_requests: Default::default(),
             trust: trust::TrustStore::load(&config_dir, &data_dir),
+            mcp_approvals: Arc::new(trust::McpServerApprovals::load(&data_dir)),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
             proxy_session_password: Mutex::default(),
             agent_secrets: Arc::new(agent_secrets::AgentSecrets::new(&data_dir)),
