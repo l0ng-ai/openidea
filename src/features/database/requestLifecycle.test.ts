@@ -334,6 +334,17 @@ describe("database metadata request lifetimes", () => {
 });
 
 describe("connection and metadata continuations", () => {
+  it("reloads every level the tree had expanded after a data source is edited", async () => {
+    await loadSchemas("pg");
+    await loadTables("pg", "public");
+    await loadDetails("pg", "public", "users");
+    await saveSource({ ...pg, host: "new-host" }, undefined);
+    const st = useDatabase.getState();
+    expect(st.schemas.pg).toEqual({ status: "ok", value: ["public"] });
+    expect(st.tables["pg\u0000public"]?.status).toBe("ok");
+    expect(st.details["pg\u0000public\u0000users"]?.status).toBe("ok");
+  });
+
   it("stores credentials when the save emits a source-change event before returning", async () => {
     backend.save.mockImplementationOnce(async (sources: DataSource[]) => {
       savedSources = sources;

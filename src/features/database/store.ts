@@ -363,6 +363,8 @@ export async function saveSource(
   const id = source.id ?? "";
   const st = useDatabase.getState();
   const loaded = id in st.databases || Object.keys(st.schemas).some((t) => splitTarget(t).id === id);
+  // Taken before anything is forgotten: what the tree had expanded under this source.
+  const levels = loadedLevels(id);
   const connection = connectionIntents.get(id);
   forget(id);
   const current = sourceMutation(id);
@@ -381,7 +383,7 @@ export async function saveSource(
   // expanded nodes don't stay on Loading.
   await loadSources();
   if (!current() || !sourceById(id)) return;
-  if (loaded && connectionIntents.get(id) === connection) await refresh(id);
+  if (loaded && connectionIntents.get(id) === connection) await refresh(id, levels);
 }
 
 /** Copy/Paste › Duplicate: a copy of data source `id` named `<name> [2]` (its password is not copied). */
@@ -588,11 +590,14 @@ export function listsDatabases(source: DataSource | undefined): boolean {
   );
 }
 
-/**
- * Re-reads the metadata of target `id` (a data source id: all its databases),
- * reloading the levels that were loaded so the tree keeps its expanded nodes.
- */
-export async function refresh(id: string): Promise<void> {
+interface LoadedLevels {
+  schemas: string[];
+  tables: [string, string][];
+  details: [string, string, string][];
+}
+
+/** The metadata of target `id` (a data source id: all its databases) the tree has loaded. */
+function loadedLevels(id: string): LoadedLevels {
   const whole = !splitTarget(id).database;
   const ofTarget = (k: string) => {
     const t = k.split("\u0000")[0]!;
@@ -601,9 +606,21 @@ export async function refresh(id: string): Promise<void> {
   const st = useDatabase.getState();
   const loaded = (m: Record<string, Loaded<unknown>>) =>
     Object.keys(m).filter((k) => ofTarget(k) && m[k]!.status === "ok");
-  const schemas = loaded(st.schemas);
-  const tables = loaded(st.tables).map((k) => k.split("\u0000") as [string, string]);
-  const details = loaded(st.details).map((k) => k.split("\u0000") as [string, string, string]);
+  return {
+    schemas: loaded(st.schemas),
+    tables: loaded(st.tables).map((k) => k.split("\u0000") as [string, string]),
+    details: loaded(st.details).map((k) => k.split("\u0000") as [string, string, string]),
+  };
+}
+
+/**
+ * Re-reads the metadata of target `id` (a data source id: all its databases),
+ * reloading the levels that were loaded (`levels`) so the tree keeps its expanded nodes.
+ */
+export async function refresh(id: string, levels = loadedLevels(id)): Promise<void> {
+  const whole = !splitTarget(id).database;
+  const { tables, details } = levels;
+  const schemas = [...levels.schemas];
   forget(id);
   const current = databaseRequest(id);
   const targets = new Map(
