@@ -195,6 +195,22 @@ impl IndexData {
         self.dirs.reserve(files / 8 + 8);
     }
 
+    /// Hydrates a validated warm-start snapshot in one pass, without per-file
+    /// duplicate checks and ancestor walks.
+    pub(crate) fn load_bulk(&mut self, entries: Vec<FileEntry>, dirs: Vec<(Box<str>, PathBuf, u32)>) {
+        self.files = Vec::with_capacity(entries.len());
+        self.by_path = HashMap::with_capacity(entries.len());
+        self.symbol_count = 0;
+        for (slot, entry) in entries.into_iter().enumerate() {
+            self.symbol_count += entry.symbols.len() as u32;
+            self.by_path.insert(entry.path.clone(), slot as u32);
+            self.files.push(Some(entry));
+        }
+        self.file_count = self.files.len() as u32;
+        self.dirs = dirs.into_iter().map(|(rel, path, count)| (rel, (path, count))).collect();
+        self.free.clear();
+    }
+
     pub(crate) fn insert(&mut self, entry: FileEntry) {
         let symbols = entry.symbols.len() as u32;
         if let Some(&slot) = self.by_path.get(&entry.path) {

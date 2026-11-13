@@ -1,6 +1,7 @@
 //! Persistence of file records in redb, so a restart only re-parses changed files.
 
 use crate::data::{FileEntry, FileRecord, IndexData, Sym, char_mask};
+use crate::filter::mtime_of;
 use ide_core::{Range, SymbolKind};
 use parking_lot::RwLock;
 use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableDefinition, TableError};
@@ -43,11 +44,45 @@ pub(crate) struct Snapshot {
     meta: Vec<FileMeta>,
     symbols: Vec<FlatSymbol>,
     text: String,
+    dirs: String,
+    dir_ends: Vec<u32>,
+    dir_mtimes: Vec<u64>,
+    dir_counts: Vec<u32>,
+    filter: String,
 }
 
 impl Snapshot {
     pub(crate) fn len(&self) -> usize {
         self.meta.len()
+    }
+
+    pub(crate) fn filter(&self) -> &str {
+        &self.filter
+    }
+
+    pub(crate) fn dirs_len(&self) -> usize {
+        self.dir_mtimes.len()
+    }
+
+    pub(crate) fn dir(&self, dir: usize) -> &str {
+        let start = if dir == 0 { 0 } else { self.dir_ends[dir - 1] as usize };
+        &self.dirs[start..self.dir_ends[dir] as usize]
+    }
+
+    pub(crate) fn dir_mtime(&self, dir: usize) -> u64 {
+        self.dir_mtimes[dir]
+    }
+
+    pub(crate) fn dir_count(&self, dir: usize) -> u32 {
+        self.dir_counts[dir]
+    }
+
+    pub(crate) fn mtime(&self, file: usize) -> u64 {
+        self.meta[file].mtime
+    }
+
+    pub(crate) fn size(&self, file: usize) -> u64 {
+        self.meta[file].size
     }
 
     /// Rejects a corrupt snapshot before any offsets are used for slicing.
@@ -73,6 +108,22 @@ impl Snapshot {
             sym_end = meta.sym_end;
         }
         if sym_end as usize != self.symbols.len() {
+            return false;
+        }
+        if self.dir_ends.len() != self.dir_mtimes.len() {
+            return false;
+        }
+        if self.dir_counts.len() != self.dir_mtimes.len() {
+            return false;
+        }
+        let mut dir_end = 0;
+        for end in &self.dir_ends {
+            if *end < dir_end || *end as usize > self.dirs.len() {
+                return false;
+            }
+            dir_end = *end;
+        }
+        if dir_end as usize != self.dirs.len() {
             return false;
         }
         self.symbols.iter().all(|s| {
@@ -208,9 +259,13 @@ impl Store {
     /// Writes the current index as one columnar snapshot for fast next start-up.
     /// Only records persisted below `root` are included; content roots outside it
     /// are rescanned, as they are for the per-file records.
-    pub(crate) fn save_snapshot(&self, data: &IndexData, root: &Path) -> Result<()> {
+    pub(crate) fn save_snapshot(&self, data: &IndexData, root: &Path, filter: &str) -> Result<()> {
         let mut snap = Snapshot::default();
+        snap.filter = filter.to_owned();
+        let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        dirs.insert(String::new());
         for e in data.files.iter().flatten().filter(|e| e.path.starts_with(root)) {
+            dirs.insert(e.dir().trim_end_matches('/').to_owned());
             snap.rels.push_str(&e.rel);
             snap.rel_ends.push(snap.rels.len() as u32);
             for s in e.symbols.iter() {
@@ -240,6 +295,20 @@ impl Store {
                 ignored: e.ignored,
                 sym_end: snap.symbols.len() as u32,
             });
+        }
+        for rel in dirs {
+            let path = if rel.is_empty() { root.to_owned() } else { root.join(&rel) };
+            let mtime = std::fs::symlink_metadata(&path).ok().map(|m| mtime_of(&m)).unwrap_or(0);
+            let count = if rel.is_empty() {
+                0
+            } else {
+                let key = format!("{rel}/");
+                data.dirs.get(key.as_str()).map_or(0, |d| d.1)
+            };
+            snap.dirs.push_str(&rel);
+            snap.dir_ends.push(snap.dirs.len() as u32);
+            snap.dir_mtimes.push(mtime);
+            snap.dir_counts.push(count);
         }
         let bytes = postcard::to_allocvec(&snap).map_err(err)?;
         self.set_meta("snapshot", &bytes)
@@ -359,7 +428,7 @@ mod tests {
         data.insert(FileEntry::new(std::path::PathBuf::from("/p/src/Order.rs"), "src/Order.rs".into(), record));
         // Content roots outside the project root are rescanned, not snapshotted.
         data.insert(FileEntry::new(std::path::PathBuf::from("/elsewhere/x.rs"), "x.rs".into(), FileRecord::default()));
-        store.save_snapshot(&data, Path::new("/p")).unwrap();
+        store.save_snapshot(&data, Path::new("/p"), "test-filter").unwrap();
 
         let snapshot = store.load_snapshot().expect("snapshot");
         assert_eq!(snapshot.len(), 1);

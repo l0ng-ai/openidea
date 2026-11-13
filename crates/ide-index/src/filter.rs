@@ -138,12 +138,33 @@ impl PathFilter {
         &self.config.0 == extra_roots && self.config.1 == excludes
     }
 
+    /// Stable fingerprint of the persisted-scope configuration; a start-up
+    /// snapshot is only trusted when this still matches.
+    pub(crate) fn stamp(&self) -> String {
+        let mut stamp = format!("include_root={}\n", self.config.0.include_root);
+        for folder in &self.config.0.folders {
+            stamp.push_str(&folder.to_string_lossy());
+            stamp.push('\n');
+        }
+        stamp.push_str("--\n");
+        for exclude in &self.config.1 {
+            stamp.push_str(exclude);
+            stamp.push('\n');
+        }
+        stamp
+    }
+
     pub(crate) fn reload(&self) -> Self {
         Self::new(&self.root, &self.config.0, &self.config.1)
     }
 
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Whether content roots outside the project root are indexed with it.
+    pub(crate) fn has_extra_roots(&self) -> bool {
+        !self.extra.is_empty()
     }
 
     /// The project root, then the extra content roots.

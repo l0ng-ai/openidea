@@ -2,7 +2,7 @@
 //! updates queued by the watcher.
 
 use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol};
-use crate::filter::{Found, PathFilter};
+use crate::filter::{Found, PathFilter, mtime_of};
 use crate::store::Store;
 use ide_core::{IdeEvent, SharedSink, TaskId};
 use ide_language::{LanguageRegistry, Syntax};
@@ -148,12 +148,14 @@ impl Shared {
             q.busy = true;
         }
         if scan {
-            // Walk once: it resolves symlink ancestors and current excludes, so the
-            // cache hydration can trust its file set instead of canonicalizing every
-            // persisted record again.
-            let found = self.walk_roots(None);
-            self.load_persisted(&found);
-            self.full_scan(Some(found));
+            // A warm start can trust the snapshot when neither the scope nor any
+            // directory/file metadata changed. Rebuilding the walk's file list is
+            // the expensive part; validate the flat manifest first.
+            if !self.try_fast_start() {
+                let found = self.walk_roots(None);
+                self.load_persisted(&found);
+                self.full_scan(Some(found));
+            }
         } else {
             self.indexing.store(false, Ordering::SeqCst);
         }
@@ -182,6 +184,90 @@ impl Shared {
                 self.idle.notify_all();
             }
         }
+    }
+
+    /// Warm start: validate the snapshot's flat directory/file manifest and hydrate
+    /// without walking the tree. A changed scope, symlink, directory mtime, file
+    /// mtime or file size falls back to the full walk.
+    fn try_fast_start(&self) -> bool {
+        let started = Instant::now();
+        let Some(store) = &self.store else { return false };
+        let load_started = Instant::now();
+        let Some(snapshot) = store.load_snapshot() else { return false };
+        let loaded = load_started.elapsed();
+        let filter = self.filter();
+        if filter.has_extra_roots() || snapshot.filter() != filter.stamp() {
+            return false;
+        }
+        let root = filter.root();
+        for i in 0..snapshot.dirs_len() {
+            let rel = snapshot.dir(i);
+            let path = if rel.is_empty() { root.to_owned() } else { root.join(rel) };
+            let Ok(meta) = std::fs::symlink_metadata(&path) else { return false };
+            if !meta.is_dir() || mtime_of(&meta) != snapshot.dir_mtime(i) {
+                return false;
+            }
+        }
+        let build_started = Instant::now();
+        let entries: Vec<Option<FileEntry>> = (0..snapshot.len())
+            .into_par_iter()
+            .map(|i| {
+                let path = root.join(snapshot.rel(i));
+                let meta = std::fs::symlink_metadata(&path).ok()?;
+                if !meta.is_file() || mtime_of(&meta) != snapshot.mtime(i) || meta.len() != snapshot.size(i) {
+                    return None;
+                }
+                Some(snapshot.entry(i, root))
+            })
+            .collect();
+        let built = build_started.elapsed();
+        if entries.iter().any(Option::is_none) {
+            return false;
+        }
+        let validated = entries;
+        let mut entries = Vec::with_capacity(validated.len());
+        for entry in validated {
+            entries.push(entry.expect("validated above"));
+        }
+        let dirs: Vec<(Box<str>, PathBuf, u32)> = (0..snapshot.dirs_len())
+            .filter_map(|i| {
+                let rel = snapshot.dir(i);
+                (!rel.is_empty()).then(|| {
+                    let key = format!("{rel}/");
+                    (key.into_boxed_str(), root.join(rel), snapshot.dir_count(i))
+                })
+            })
+            .collect();
+        let insert_started = Instant::now();
+        let mut d = self.data.write();
+        d.load_bulk(entries, dirs);
+        drop(d);
+        tracing::info!(
+            "index snapshot: warm start in {:?} (load {loaded:?}, validate/build {built:?}, insert {:?})",
+            started.elapsed(),
+            insert_started.elapsed()
+        );
+        #[cfg(test)]
+        eprintln!(
+            "index snapshot: warm start load {loaded:?}, validate/build {built:?}, insert {:?}, total {:?}",
+            insert_started.elapsed(),
+            started.elapsed()
+        );
+        self.indexing.store(false, Ordering::SeqCst);
+        self.emit_state();
+        self.load_recent(store, root);
+        true
+    }
+
+    fn load_recent(&self, store: &Store, root: &Path) {
+        let recent: Vec<PathBuf> = store.load_recent().into_iter().map(|rel| root.join(rel)).collect();
+        let mut r = self.recent.lock();
+        for p in recent {
+            if !r.contains(&p) {
+                r.push(p);
+            }
+        }
+        r.truncate(MAX_RECENT);
     }
 
     fn load_persisted(&self, found: &[Found]) {
@@ -245,14 +331,7 @@ impl Shared {
                 Err(e) => tracing::warn!("index cache load failed: {e}"),
             },
         }
-        let recent: Vec<PathBuf> = store.load_recent().into_iter().map(|rel| root.join(rel)).collect();
-        let mut r = self.recent.lock();
-        for p in recent {
-            if !r.contains(&p) {
-                r.push(p);
-            }
-        }
-        r.truncate(MAX_RECENT);
+        self.load_recent(store, &root);
     }
 
     /// A cancelled scan (project closed) still ends its progress task and the indexing state.
@@ -350,7 +429,7 @@ impl Shared {
         self.persist(&[], &[], true);
         if let Some(store) = &self.store {
             let d = self.data.read();
-            if let Err(e) = store.save_snapshot(&d, filter.root()) {
+            if let Err(e) = store.save_snapshot(&d, filter.root(), &filter.stamp()) {
                 tracing::warn!("index snapshot: {e}");
             }
         }
