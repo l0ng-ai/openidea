@@ -682,6 +682,7 @@ function AggregatesView({ range, value }: { range: GridRange; value: (row: numbe
   for (let r = range.top; r <= range.bottom; r++)
     for (let c = range.left; c <= range.right; c++) cells.push(value(r, c));
   const a = aggregates(cells);
+  // `sum`, `avg` and `median` come back as exact decimal text; the rest are counts or cells.
   const show = (v: number | string | null) => (v === null ? "—" : typeof v === "number" ? formatNumber(v) : v);
   return (
     <table className={styles.aggregates}>

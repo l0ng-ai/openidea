@@ -44,6 +44,8 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
   const [aggregate, setAgg] = useState<ChartAggregate>("avg");
   const [settings, setSettings] = useState(false);
   const points = useMemo(() => chartSeries(rows, x, y, aggregate), [rows, x, y, aggregate]);
+  // The tooltip shows the exact combined value; the plot coordinate is a double.
+  const valueLabel = (p: { value: number; exact: string | null }) => p.exact ?? formatNumber(p.value);
 
   const host = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 600, h: 300 });
@@ -151,7 +153,7 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
                     y={Math.min(yAt(p.value), yAt(0))}
                     height={Math.abs(yAt(0) - yAt(p.value))}
                   >
-                    <title>{`${p.label}: ${formatNumber(p.value)}`}</title>
+                    <title>{`${p.label}: ${valueLabel(p)}`}</title>
                   </rect>
                 ))
               : [
@@ -162,7 +164,7 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
                   />,
                   ...points.map((p, i) => (
                     <circle key={i} className={styles.chartDot} cx={xAt(i)} cy={yAt(p.value)} r={3}>
-                      <title>{`${p.label}: ${formatNumber(p.value)}`}</title>
+                      <title>{`${p.label}: ${valueLabel(p)}`}</title>
                     </circle>
                   )),
                 ]}

@@ -101,3 +101,75 @@ test("selection aggregates preserve exact minimum and maximum values", async ({ 
   await expect(panel.getByRole("row", { name: `Min ${decimals[2]}`, exact: true })).toBeVisible();
   await expect(panel.getByRole("row", { name: `Max ${decimals[0]}`, exact: true })).toBeVisible();
 });
+
+test("selection aggregates compute the exact sum, average and median", async ({ workbench: page }) => {
+  // 9007199254740993 + 1 rounds to 9007199254740992 as a double.
+  await seedResult(page, ["9007199254740993", "1"], "BIGINT");
+  const grid = page.getByRole("grid", { name: "Result 1", exact: true });
+  await grid.getByRole("gridcell").first().click();
+  await grid
+    .getByRole("gridcell")
+    .last()
+    .click({ modifiers: ["Shift"] });
+  await page.getByRole("button", { name: "Show Record / Value / Aggregates", exact: true }).click();
+  const panel = page.getByRole("complementary", { name: "Value panel", exact: true });
+  await panel.getByRole("tab", { name: "Aggregates", exact: true }).click();
+  await expect(panel.getByRole("row", { name: "Sum 9007199254740994", exact: true })).toBeVisible();
+  await expect(panel.getByRole("row", { name: "Avg 4503599627370497", exact: true })).toBeVisible();
+  await expect(panel.getByRole("row", { name: "Median 4503599627370497", exact: true })).toBeVisible();
+});
+
+test("chart tooltips show the exact combined value", async ({ workbench: page }) => {
+  // One X label with two Y values: their exact sum keeps the digit a double drops.
+  await page.evaluate(async () => {
+    const storePath = "/src/features/database/store.ts";
+    const contributionsPath = "/src/workbench/contributions.ts";
+    const { useDatabase, RESULTS_VIEW } = await import(storePath);
+    const { showServiceView } = await import(contributionsPath);
+    const text = "SELECT label, amount FROM exact_numbers";
+    useDatabase.setState({
+      loaded: true,
+      sources: [{ id: "exact", name: "Exact numbers", driver: "postgres", readOnly: true }],
+      consoles: { "exact-console.sql": "exact" },
+      results: [
+        {
+          id: 1,
+          title: "Result 1",
+          path: "exact-console.sql",
+          sourceId: "exact",
+          outcome: {
+            statement: { text, from: 0, to: text.length },
+            error: null,
+            result: {
+              statement: text,
+              columns: [
+                { name: "label", typeName: "TEXT" },
+                { name: "amount", typeName: "BIGINT" },
+              ],
+              rows: [
+                ["a", "9007199254740993"],
+                ["a", "1"],
+              ],
+              affected: null,
+              hasMore: false,
+              elapsedMs: 1,
+              executionMs: 1,
+            },
+          },
+          page: 0,
+          pageSize: 500,
+        },
+      ],
+      activeResult: 1,
+    });
+    showServiceView(RESULTS_VIEW);
+  });
+  await expect(page.getByRole("grid", { name: "Result 1", exact: true }).getByRole("gridcell")).toHaveCount(4);
+  await page.getByRole("button", { name: "Chart", exact: true }).click();
+  await page.getByRole("button", { name: "Chart Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Aggregation", exact: true }).click();
+  await page.getByRole("option", { name: "Sum", exact: true }).click();
+  const chart = page.getByRole("img", { name: /by label/ });
+  await expect(chart).toBeVisible();
+  await expect(chart.locator("title")).toHaveText(["a: 9007199254740994"]);
+});

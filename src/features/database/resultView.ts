@@ -15,6 +15,9 @@ export interface LocalSort {
 
 const NUMBER = /^(-?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i;
 
+// Beyond this many unscaled digits an exact sum would cost more than it is worth.
+const MAX_SCALE_DIGITS = 4096n;
+
 function decimalKey(value: string) {
   const parts = NUMBER.exec(value)!;
   const fraction = parts[3] ?? "";
@@ -124,37 +127,143 @@ export interface Aggregates {
   count: number;
   distinct: number;
   nulls: number;
-  /** When every non-NULL value is a number; null otherwise. */
-  sum: number | null;
-  avg: number | null;
+  /** When every non-NULL value is a number: the exact total as decimal text; null otherwise. */
+  sum: string | null;
+  avg: string | null;
   min: Cell;
   max: Cell;
-  median: number | null;
+  median: string | null;
 }
 
 /** IDEA's Aggregates view of the selected cells. */
 export function aggregates(cells: readonly Cell[]): Aggregates {
   const present = cells.filter((c): c is string => c !== null);
-  const numbers = present.filter((c) => NUMBER.test(c)).map(Number);
-  const numeric = numbers.length > 0 && numbers.length === present.length;
+  const numeric = present.length > 0 && present.every((c) => NUMBER.test(c));
   const sorted = [...present].sort(compareCells);
-  let median: number | null = null;
+  let median: string | null = null;
+  let sum: string | null = null;
   if (numeric) {
-    const n = [...numbers].sort((a, b) => a - b);
-    const mid = Math.floor(n.length / 2);
-    median = n.length % 2 ? n[mid]! : (n[mid - 1]! + n[mid]!) / 2;
+    sum = exactSum(present);
+    const mid = Math.floor(sorted.length / 2);
+    median = sorted.length % 2 ? exactText(sorted[mid]!) : exactAverage(exactSum(sorted.slice(mid - 1, mid + 1)), 2);
   }
-  const sum = numeric ? numbers.reduce((a, b) => a + b, 0) : null;
   return {
     count: cells.length,
     distinct: new Set(cells).size,
     nulls: cells.length - present.length,
     sum,
-    avg: sum === null ? null : sum / numbers.length,
+    avg: sum === null ? null : exactAverage(sum, present.length),
     min: sorted[0] ?? null,
     max: sorted.at(-1) ?? null,
     median,
   };
+}
+
+/** A decimal's digits and power of ten: `digits × 10^scale`, sign included in `digits`. */
+interface Decimal {
+  digits: bigint;
+  scale: bigint;
+}
+
+/** The exact decimal of a numeric cell; `null` when it is not a number. */
+function decimalOf(value: string): Decimal | null {
+  const parts = NUMBER.exec(value);
+  if (!parts) return null;
+  const fraction = parts[3] ?? "";
+  let digits = (parts[2]! + fraction).replace(/^0+/, "");
+  let scale = BigInt(parts[4] ?? "0") - BigInt(fraction.length);
+  if (!digits) return { digits: 0n, scale: 0n };
+  // Normalize: the trailing zeroes of the digits belong to the scale.
+  let end = digits.length;
+  while (digits[end - 1] === "0") end--;
+  scale += BigInt(digits.length - end);
+  digits = digits.slice(0, end);
+  return { digits: (parts[1] === "-" ? -1n : 1n) * BigInt(digits), scale };
+}
+
+/** `digits × 10^scale` as a plain decimal string, or `null` when that would be enormous. */
+function decimalText(digits: bigint, scale: bigint): string | null {
+  if (digits === 0n) return "0";
+  let normalized = digits;
+  let exponent = scale;
+  // Trailing zeroes belong to the exponent: 650×10⁻¹⁸ is 6.5.
+  while (normalized % 10n === 0n) {
+    normalized /= 10n;
+    exponent += 1n;
+  }
+  const negative = normalized < 0n;
+  const text = (negative ? -normalized : normalized).toString();
+  let body: string;
+  if (exponent >= 0n) {
+    if (BigInt(text.length) + exponent > MAX_SCALE_DIGITS) return null;
+    body = text + "0".repeat(Number(exponent));
+  } else {
+    const point = BigInt(text.length) + exponent;
+    if (point > 0n) {
+      body = `${text.slice(0, Number(point))}.${text.slice(Number(point))}`;
+    } else {
+      if (-point > MAX_SCALE_DIGITS) return null;
+      body = `0.${"0".repeat(Number(-point))}${text}`;
+    }
+  }
+  return negative ? `-${body}` : body;
+}
+
+/** The exact sum of numeric cells; `null` when one is not a number or too large to expand. */
+function exactSum(values: readonly string[]): string | null {
+  const decimals = values.map(decimalOf);
+  if (decimals.some((d) => d === null)) return null;
+  const scale = decimals.reduce((low, d) => (d!.scale < low ? d!.scale : low), decimals[0]!.scale);
+  let total = 0n;
+  for (const d of decimals) {
+    const shift = d!.scale - scale;
+    if (shift > MAX_SCALE_DIGITS) return null;
+    total += d!.digits * 10n ** shift;
+  }
+  return decimalText(total, scale);
+}
+
+/**
+ * `sum / count`: the exact decimal when the division terminates (every median of an
+ * even count does), else 17 significant digits, the precision a double carries.
+ */
+function exactAverage(sum: string | null, count: number): string | null {
+  if (sum === null || count === 0) return null;
+  const decimal = decimalOf(sum);
+  if (!decimal) return null;
+  const abs = (n: bigint) => (n < 0n ? -n : n);
+  const gcd = (a: bigint, b: bigint): bigint => (b === 0n ? a : gcd(b, a % b));
+  const den = BigInt(count);
+  let reduced = den / gcd(abs(decimal.digits), den);
+  // A reduced denominator made only of 2s and 5s gives a terminating decimal.
+  let twos = 0;
+  while (reduced % 2n === 0n) {
+    reduced /= 2n;
+    twos++;
+  }
+  let fives = 0;
+  while (reduced % 5n === 0n) {
+    reduced /= 5n;
+    fives++;
+  }
+  if (reduced === 1n) {
+    const places = Math.max(twos, fives);
+    return decimalText((decimal.digits * 10n ** BigInt(places)) / den, decimal.scale - BigInt(places));
+  }
+  // Repeating: scale so the quotient keeps 17 significant digits, rounding half up.
+  const size = (n: bigint) => abs(n).toString().length;
+  const pow = BigInt(Math.max(0, 17 + size(den) - size(decimal.digits)));
+  const numerator = decimal.digits * 10n ** pow;
+  let quotient = numerator / den;
+  const remainder = numerator % den;
+  if (remainder !== 0n && 2n * abs(remainder) >= den) quotient += numerator < 0n ? -1n : 1n;
+  return decimalText(quotient, decimal.scale - pow);
+}
+
+/** The exact text of a numeric cell, for a point label that keeps every digit. */
+function exactText(value: string): string | null {
+  const decimal = decimalOf(value);
+  return decimal ? decimalText(decimal.digits, decimal.scale) : null;
 }
 
 /** A number for display: integers as is, others to at most 6 significant decimals. */
@@ -167,7 +276,10 @@ export type ChartAggregate = "sum" | "avg" | "count" | "min" | "max" | "none";
 
 export interface ChartPoint {
   label: string;
+  /** The plot coordinate: an approximation of `exact` once it can't be a double. */
   value: number;
+  /** The exact combined value, for the label and tooltip; `null` for `count` groups. */
+  exact: string | null;
 }
 
 /**
@@ -184,30 +296,43 @@ export function chartSeries(
   if (agg === "none")
     return rows
       .filter((r) => r[y] !== null && NUMBER.test(r[y]!))
-      .map((r) => ({ label: r[x] ?? "<null>", value: Number(r[y]) }));
-  const groups = new Map<string, number[]>();
+      .map((r) => {
+        const exact = exactText(r[y]!);
+        return { label: r[x] ?? "<null>", value: Number(r[y]), exact };
+      });
+  const groups = new Map<string, string[]>();
   for (const r of rows) {
     const label = r[x] ?? "<null>";
     const v = r[y] ?? null;
     if (!groups.has(label)) groups.set(label, []);
-    if (agg === "count") groups.get(label)!.push(1);
-    else if (v !== null && NUMBER.test(v)) groups.get(label)!.push(Number(v));
+    if (agg === "count") groups.get(label)!.push("1");
+    else if (v !== null && NUMBER.test(v)) groups.get(label)!.push(v);
   }
-  const combine = (v: number[]): number => {
-    if (!v.length) return 0;
+  const combine = (v: string[]): { value: number; exact: string | null } => {
+    if (!v.length) return { value: 0, exact: null };
+    // Too large to expand exactly: the plot still needs a coordinate.
+    const approximate = (f: (n: number[]) => number) => f(v.map(Number));
     switch (agg) {
-      case "sum":
-      case "count":
-        return v.reduce((a, b) => a + b, 0);
-      case "avg":
-        return v.reduce((a, b) => a + b, 0) / v.length;
+      case "sum": {
+        const exact = exactSum(v);
+        return { value: exact === null ? approximate((n) => n.reduce((a, b) => a + b, 0)) : Number(exact), exact };
+      }
+      case "avg": {
+        const exact = exactAverage(exactSum(v), v.length);
+        const value = exact === null ? approximate((n) => n.reduce((a, b) => a + b, 0) / n.length) : Number(exact);
+        return { value, exact };
+      }
       case "min":
-        return Math.min(...v);
       case "max":
-        return Math.max(...v);
+      case "count": {
+        const sorted = agg === "count" ? v : [...v].sort(compareCells);
+        const picked = agg === "max" ? sorted.at(-1)! : sorted[0]!;
+        if (agg === "count") return { value: v.length, exact: null };
+        return { value: Number(picked), exact: exactText(picked) };
+      }
     }
   };
-  return [...groups].map(([label, v]) => ({ label, value: combine(v) }));
+  return [...groups].map(([label, v]) => ({ label, ...combine(v) }));
 }
 
 /** Round axis ticks from 0 (or the minimum, when negative) to `max`. */

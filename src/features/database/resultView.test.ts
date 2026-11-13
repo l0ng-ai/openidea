@@ -181,13 +181,47 @@ describe("aggregates", () => {
       count: 4,
       distinct: 4,
       nulls: 1,
-      sum: 19.5,
-      avg: 6.5,
-      median: 7,
+      sum: "19.5",
+      avg: "6.5",
+      median: "7",
       min: "2.5",
       max: "10",
     });
     expect(aggregates(["b", "a", "b"])).toMatchObject({ distinct: 2, sum: null, avg: null, min: "a", max: "b" });
+  });
+
+  it("sums and averages values a double cannot hold", () => {
+    // 9007199254740993 + 1 rounds to 9007199254740992 as a double.
+    expect(aggregates(["9007199254740993", "1"])).toMatchObject({ sum: "9007199254740994", avg: "4503599627370497" });
+    expect(aggregates(["1.0000000000000000002"])).toMatchObject({ sum: "1.0000000000000000002" });
+    expect(aggregates(["-9007199254740992", "9007199254740993"])).toMatchObject({ sum: "1" });
+    expect(aggregates(["0.1", "0.2"])).toMatchObject({ sum: "0.3" });
+  });
+
+  it("takes the exact median without rounding it", () => {
+    // The middle value alone is returned, so no division happens at all.
+    expect(aggregates(["9007199254740993", "1", "5"])).toMatchObject({ median: "5" });
+    // An even count averages the two middle values exactly: 1.0000000000000000001 and 1.0000000000000000002.
+    expect(aggregates(["1.0000000000000000002", "1.0000000000000000001"])).toMatchObject({
+      median: "1.00000000000000000015",
+    });
+    // Order is decimal, not float: 9007199254740993 sorts above 9007199254740992.
+    expect(aggregates(["1", "9007199254740993", "9007199254740992"])).toMatchObject({ median: "9007199254740992" });
+  });
+
+  it("keeps exponent notation and signs exact", () => {
+    expect(aggregates(["1e3", "2.5e-3"])).toMatchObject({ sum: "1000.0025" });
+    expect(aggregates(["-1e-3", "1e-3"])).toMatchObject({ sum: "0" });
+    expect(aggregates(["1e400", "2e400"])).toMatchObject({ sum: "3" + "0".repeat(400) });
+  });
+
+  it("averages exactly when the division terminates and rounds a repeating one", () => {
+    expect(aggregates(["1", "1", "1"])).toMatchObject({ sum: "3", avg: "1" });
+    expect(aggregates(["1", "0"])).toMatchObject({ avg: "0.5" });
+    // 2 / 3: 17 significant digits, the precision a double carries, no trailing noise.
+    expect(aggregates(["2", "0", "0"])).toMatchObject({ avg: "0.66666666666666667" });
+    // 0.1 + 0.2 is 0.30000000000000004 as a double.
+    expect(aggregates(["0.1", "0.2", "0.3"])).toMatchObject({ sum: "0.6", avg: "0.2" });
   });
 
   it.each([
@@ -204,12 +238,25 @@ describe("aggregates", () => {
 describe("chart series", () => {
   it("combines Y per X", () => {
     expect(chartSeries(rows, 1, 2, "sum")).toEqual([
-      { label: "Shanghai", value: 12.5 },
-      { label: "Beijing", value: 0 },
-      { label: "<null>", value: 7 },
+      { label: "Shanghai", value: 12.5, exact: "12.5" },
+      { label: "Beijing", value: 0, exact: null },
+      { label: "<null>", value: 7, exact: "7" },
     ]);
     expect(chartSeries(rows, 1, 2, "count").map((p) => p.value)).toEqual([2, 1, 1]);
     expect(chartSeries(rows, 0, 2, "none").map((p) => p.label)).toEqual(["1", "3", "4"]);
+  });
+
+  it("combines exact values before the plot coordinate", () => {
+    const exact = [
+      ["a", "9007199254740993"],
+      ["a", "1"],
+      ["b", "-9007199254740992"],
+      ["b", "9007199254740993"],
+    ];
+    expect(chartSeries(exact, 0, 1, "sum").map((p) => p.exact)).toEqual(["9007199254740994", "1"]);
+    expect(chartSeries(exact, 0, 1, "avg").map((p) => p.exact)).toEqual(["4503599627370497", "0.5"]);
+    expect(chartSeries(exact, 0, 1, "min").map((p) => p.exact)).toEqual(["1", "-9007199254740992"]);
+    expect(chartSeries(exact, 0, 1, "max").map((p) => p.exact)).toEqual(["9007199254740993", "9007199254740993"]);
   });
 
   it("picks round ticks from zero", () => {
