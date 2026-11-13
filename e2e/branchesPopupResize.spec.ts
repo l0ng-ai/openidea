@@ -14,6 +14,8 @@ async function openBranches(page: Page) {
   });
   const popup = page.getByRole("dialog", { name: "Git Branches" });
   await expect(popup.getByRole("listbox", { name: "Branches" })).toBeVisible();
+  // Measure after the open animation: it slides the popup by a couple of pixels.
+  await popup.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
   return popup;
 }
 
