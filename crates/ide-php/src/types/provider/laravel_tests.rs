@@ -254,6 +254,61 @@ fn eloquent_builder_forwarding() {
     );
 }
 
+/// prettus/l5-repository, and repositories naming a model and a contract
+/// one model implements (Bagisto's Concord models).
+const REPOSITORIES: &str = r#"<?php
+namespace Prettus\Repository\Eloquent {
+    abstract class BaseRepository {
+        abstract public function model();
+        /** @return mixed */
+        public function find($id) { return null; }
+        public function __call($method, $arguments) { return null; }
+    }
+}
+namespace App\Contracts {
+    interface Order {}
+    interface Shared {}
+}
+namespace App\Models {
+    class Order extends \Illuminate\Database\Eloquent\Model implements \App\Contracts\Order, \App\Contracts\Shared {
+        public function ship(): bool { return true; }
+    }
+    class Invoice extends \Illuminate\Database\Eloquent\Model implements \App\Contracts\Shared {}
+}
+namespace App\Repositories {
+    class UserRepository extends \Prettus\Repository\Eloquent\BaseRepository {
+        public function model(): string { return \App\Models\User::class; }
+    }
+    class OrderRepository extends \Prettus\Repository\Eloquent\BaseRepository {
+        public function model(): string { return 'App\Contracts\Order'; }
+    }
+    class SharedRepository extends \Prettus\Repository\Eloquent\BaseRepository {
+        public function model(): string { return 'App\Contracts\Shared'; }
+    }
+}
+"#;
+
+#[test]
+fn repositories_forward_to_their_model() {
+    let libs = &[FRAMEWORK, APPLICATION, APP, REPOSITORIES];
+    check(
+        libs,
+        &[
+            ("(new \\App\\Repositories\\UserRepository())->where('a', 1)/*|*/;", BUILDER),
+            ("(new \\App\\Repositories\\UserRepository())->active()/*|*/;", BUILDER),
+            ("(new \\App\\Repositories\\UserRepository())->plain()/*|*/;", "int"),
+            ("(new \\App\\Repositories\\UserRepository())->where('a', 1)->first()/*|*/;", "?App\\Models\\User"),
+            // A contract: the model implementing it.
+            ("(new \\App\\Repositories\\OrderRepository())->ship()/*|*/;", "bool"),
+            ("(new \\App\\Repositories\\OrderRepository())->where('a', 1)->first()/*|*/;", "?App\\Models\\Order"),
+            // What the repository declares stays; two models implementing the
+            // contract, unknown.
+            ("(new \\App\\Repositories\\UserRepository())->find(1)/*|*/;", "mixed"),
+            ("(new \\App\\Repositories\\SharedRepository())->where('a', 1)/*|*/;", "mixed"),
+        ],
+    );
+}
+
 #[test]
 fn eloquent_relations_and_accessors() {
     let has_many = "Illuminate\\Database\\Eloquent\\Relations\\HasMany<App\\Models\\Post, App\\Models\\User>";

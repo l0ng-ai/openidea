@@ -382,6 +382,21 @@ fn names_select_alias(cx: &RefContext<'_>) -> bool {
         Some((CallTarget::Method { name, .. }, _)) if ALIAS_METHODS.iter().any(|known| known.eq_ignore_ascii_case(name)))
 }
 
+/// Whether the call chain before the site's string names `name` as a select
+/// alias (`->selectRaw('SUM(quantity) as total')->pluck('total')`).
+fn aliased_in_chain(cx: &RefContext<'_>, name: &str) -> bool {
+    let Some(site) = cx.site.as_ref() else { return false };
+    let Some((_, call)) = site.call.as_ref() else { return false };
+    let Some(text) = cx.engine.text_of(&site.path) else { return false };
+    let Some(chain) = text.get(*call as usize..site.start as usize) else { return false };
+    let chain = chain.to_ascii_lowercase();
+    let alias = format!(" as {}", name.to_ascii_lowercase());
+    chain.match_indices(&alias).any(|(at, _)| {
+        let after = chain.as_bytes().get(at + alias.len()).copied();
+        !after.is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    })
+}
+
 /// Relations whose queries join a pivot table.
 const PIVOTED: &[&str] = &["BelongsToMany", "MorphToMany", "HasManyThrough", "HasOneThrough"];
 
@@ -662,6 +677,9 @@ impl ReferenceKind for EloquentField {
         // A many-to-many relation's query joins its pivot table
         // (`withPivot('active')`), whose columns may be named unqualified.
         if qualifier.is_none() && on_pivot(cx) {
+            return None;
+        }
+        if qualifier.is_none() && aliased_in_chain(cx, name) {
             return None;
         }
         let what = if in_appends(cx) { "accessor" } else { "column" };

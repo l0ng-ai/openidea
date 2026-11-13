@@ -627,7 +627,13 @@ impl Extractor<'_> {
         let doc = self.doc_at(node.span().start.offset, names);
         // Laravel's `getFacadeAccessor()` names the facade's service by its
         // value (kept literal), which a `: string` hint doesn't give.
-        let accessor = node.name.value.eq_ignore_ascii_case(b"getFacadeAccessor");
+        // So does a Prettus repository's `model(): string` name its model.
+        let accessor = node.name.value.eq_ignore_ascii_case(b"getFacadeAccessor")
+            || (node.name.value.eq_ignore_ascii_case(b"model")
+                && params.is_empty()
+                && (return_type.is_none()
+                    || matches!(&return_type, Some(TypeHint::Builtin(hint)) if hint == "string"))
+                && doc.as_ref().is_none_or(|doc| doc.return_type.is_none()));
         // An Eloquent relation declared raw (`comments(): HasMany`): the
         // body (`$this->hasMany(Comment::class)`) names the related model.
         // So is a raw accessor (`title(): Attribute`): `Attribute::make(get:

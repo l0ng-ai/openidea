@@ -1517,6 +1517,12 @@ impl Declarations for PhpEngine {
         }
     }
 
+    /// From the index (open buffers not saved yet aren't looked at).
+    fn direct_subclasses(&self, fqn: &str) -> Vec<String> {
+        let found = self.index().and_then(|index| index.direct_subclasses(fqn).ok()).unwrap_or_default();
+        found.into_iter().map(|decl| decl.fqn).collect()
+    }
+
     /// The macros of the indexed files registering some (their open
     /// buffers first) and of open buffers not indexed as such, in path
     /// order.

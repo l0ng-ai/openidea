@@ -520,6 +520,13 @@ fn joins_and_table_aliases() {
         &controller("Post::select(\\DB::raw('year(published_at) as year'))->orderBy('year')->groupBy('year');"),
     );
     assert!(found.is_empty(), "{found:?}");
+    // So may any call after the alias in the same chain; another name is
+    // still checked.
+    let found = project.column_problems(
+        PROBE,
+        &controller("Post::select(\\DB::raw('COUNT(*) AS total'))->where('totals', 1)->where('total', 1);"),
+    );
+    assert_eq!(found, [(11, "Unknown column 'totals' of model 'Post' (table 'posts')".to_owned())]);
     // A many-to-many relation's query joins its pivot table.
     let found =
         project.column_problems(PROBE, &controller("$post->tags()->where('tag_id', 1)->where('tags.nope', 2);"));

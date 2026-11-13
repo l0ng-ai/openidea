@@ -82,6 +82,9 @@ const CONTAINER: &str = "Illuminate\\Contracts\\Container\\Container";
 const CONTAINER_CLASS: &str = "Illuminate\\Container\\Container";
 const FACADE: &str = "Illuminate\\Support\\Facades\\Facade";
 const MODEL: &str = "Illuminate\\Database\\Eloquent\\Model";
+/// prettus/l5-repository's repository: calls it doesn't declare go to its
+/// model (`__call`).
+const PRETTUS_REPOSITORY: &str = "Prettus\\Repository\\Eloquent\\BaseRepository";
 const FORM_REQUEST: &str = "Illuminate\\Foundation\\Http\\FormRequest";
 const ELOQUENT_BUILDER: &str = "Illuminate\\Database\\Eloquent\\Builder";
 const QUERY_BUILDER: &str = "Illuminate\\Database\\Query\\Builder";
@@ -325,6 +328,39 @@ impl LaravelProvider {
         })
     }
 
+    /// The model of a Prettus repository among the members of `ty`: the
+    /// class its `model()` names, or the one model implementing that
+    /// interface (a Concord contract, `Webkul\Product\Contracts\Product`).
+    fn repository_model(resolver: &Resolver<'_>, ty: &Type, context: &Context) -> Option<String> {
+        let models = resolver.class_models(ty, context);
+        let repository = models.iter().find(|model| model.is_subclass_of(PRETTUS_REPOSITORY))?;
+        let method = repository.method("model")?;
+        let lazy = method.declared()?.inferred_return.as_ref()?;
+        let value = resolver.resolve(lazy, &Context::in_class(&method.self_class));
+        let named = value.members().iter().find_map(|member| match member {
+            Type::LiteralString(class) => Some(class.clone()),
+            Type::ClassString(Some(class)) => match class.as_ref() {
+                Type::Named { fqn, .. } => Some(fqn.clone()),
+                _ => None,
+            },
+            _ => None,
+        })?;
+        let class = resolver.class_model(&named)?;
+        if class.is_subclass_of(MODEL) {
+            return Some(class.fqn().to_owned());
+        }
+        if class.class.kind != crate::summary::ClassKind::Interface {
+            return None;
+        }
+        let mut implementing = resolver.direct_subclasses(class.fqn()).into_iter().filter(|fqn| {
+            resolver.class_model(fqn).is_some_and(|model| {
+                model.class.kind == crate::summary::ClassKind::Class && model.is_subclass_of(MODEL)
+            })
+        });
+        let model = implementing.next()?;
+        implementing.next().is_none().then_some(model)
+    }
+
     /// The class behind facade `facade` (what its `getFacadeAccessor()`
     /// names), when it is one class.
     pub(crate) fn facade_class(resolver: &Resolver<'_>, facade: &str) -> Option<String> {
@@ -477,6 +513,18 @@ impl LaravelProvider {
         }
         if let Some(ty) = Self::eloquent_call(resolver, receiver, name, counted, args, context) {
             return Some(ty);
+        }
+        // A Prettus repository: what it doesn't declare is a call on its model.
+        if *core == Type::Mixed
+            && !resolver.class_models(receiver, context).iter().any(|model| model.method(name).is_some())
+            && let Some(model) = Self::repository_model(resolver, receiver, context)
+        {
+            let instance = Type::named(&model);
+            let declared = resolver.method_return(&instance, name, context);
+            let args = [instance, declared.clone()];
+            return self
+                .resolve_call(name, (class, counted), string, &args, resolver, context)
+                .or_else(|| (declared != Type::Mixed).then_some(declared));
         }
         if *core != Type::Mixed && !Self::raw_builder(resolver, core, context) {
             return None;
@@ -1196,6 +1244,14 @@ impl LaravelProvider {
                 Self::attributes(resolver, &model, &Self::counted_in(receiver, model.fqn()), &mut out);
             } else if model.is_subclass_of(FORM_REQUEST) {
                 Self::request_fields(resolver, &model, &mut out);
+            } else if model.is_subclass_of(PRETTUS_REPOSITORY)
+                && let Some(target) = Self::repository_model(resolver, &Type::named(model.fqn()), context)
+            {
+                // Its model's methods and scopes, and what the model forwards to.
+                Self::forwarded_methods(resolver, &target, false, &mut out);
+                Self::scopes(resolver, &target, false, &mut out);
+                Self::forwarded_methods(resolver, ELOQUENT_BUILDER, false, &mut out);
+                Self::forwarded_methods(resolver, QUERY_BUILDER, false, &mut out);
             }
         }
         // A builder or relation: the related model's scopes, then what it

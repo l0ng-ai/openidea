@@ -130,6 +130,10 @@ pub trait Declarations {
     fn user_models(&self) -> UserModels {
         UserModels::default()
     }
+    /// The class-likes that directly extend or implement `fqn`, by FQN.
+    fn direct_subclasses(&self, _fqn: &str) -> Vec<String> {
+        Vec::new()
+    }
     /// The Symfony configuration and the `#[Route]` names and repository
     /// entities of the project. The [`Resolver`] caches them per
     /// modification counter.
@@ -177,6 +181,14 @@ impl Declarations for SummarySet {
 
     fn laravel(&self) -> LaravelFacts {
         LaravelFacts::merge(self.summaries.iter().map(|summary| &summary.laravel))
+    }
+
+    fn direct_subclasses(&self, fqn: &str) -> Vec<String> {
+        let names = |class: &&ClassLike| {
+            class.extends.iter().chain(&class.implements).any(|parent| fqn_eq(NameKind::ClassLike, parent, fqn))
+        };
+        let classes = self.summaries.iter().flat_map(|summary| &summary.class_likes);
+        classes.filter(names).map(|class| class.fqn.clone()).collect()
     }
 
     fn symfony(&self) -> SymfonyProject {
@@ -459,6 +471,11 @@ impl<'a> Resolver<'a> {
         let facts = Arc::new(self.decls.laravel());
         self.cache.insert_laravel(self.generation, facts.clone());
         facts
+    }
+
+    /// The class-likes that directly extend or implement `fqn`, by FQN.
+    pub fn direct_subclasses(&self, fqn: &str) -> Vec<String> {
+        self.decls.direct_subclasses(fqn)
     }
 
     /// The project's Laravel macros, cached for the modification counter.
