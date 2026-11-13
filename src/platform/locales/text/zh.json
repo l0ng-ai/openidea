@@ -783,6 +783,7 @@
   "Cannot generate the DDL": "无法生成 DDL",
   "Cannot generate the SQL script": "无法生成 SQL 脚本",
   "Cannot get the DDL of {name}": "无法获取 {name} 的 DDL",
+  "Cannot save file": "无法保存文件",
   "Cannot open file": "无法打开文件",
   "Cannot open library class": "无法打开库类",
   "Cannot open link": "无法打开链接",

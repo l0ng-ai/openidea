@@ -42,6 +42,7 @@ export function activate(): void | (() => void) {
   provideEditorService({
     openFile: (path, options) => ctrl.openFile(path, options),
     openInput: (input, options) => ctrl.openInput(input, options),
+    openUntitled: (options) => ctrl.openUntitled(options),
     activePath: () => ctrl.activePath(),
     activeCursor: () => ctrl.activeCursor(),
     saveAll: () => ctrl.saveAll(),

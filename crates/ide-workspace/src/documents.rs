@@ -1105,6 +1105,36 @@ impl Documents {
         self.with_doc(doc, |st| Ok(is_untitled(&st.path)))
     }
 
+    /// The open untitled buffers: `(key, text, dirty)` — they belong to the
+    /// window rather than a project, and [`Documents::restore_untitled_buffer`]
+    /// carries them into a project's fresh document registry.
+    pub fn untitled_buffers(&self) -> Vec<(String, String, bool)> {
+        let slots: Vec<Slot> = self.registry.lock().docs.values().map(|e| e.slot.clone()).collect();
+        let mut out = Vec::new();
+        for slot in slots {
+            let st = slot.lock();
+            if !st.closed && is_untitled(&st.path) {
+                out.push((st.path.to_string_lossy().into_owned(), st.doc.text(), st.dirty));
+            }
+        }
+        out
+    }
+
+    /// Recreates an untitled buffer carried over from the window's previous
+    /// project: same key, same text, same dirty flag.
+    pub fn restore_untitled_buffer(&self, key: &str, text: &str, dirty: bool) -> IdeResult<()> {
+        let info = self.open_untitled(Some(key))?;
+        if info.text != text {
+            self.replace_all(info.id, text)?;
+        }
+        // `replace_all` marks the buffer dirty; the carried flag is authoritative.
+        self.with_doc(info.id, |st| {
+            self.set_dirty(info.id, st, dirty);
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     /// Re-decoded content of a virtual document ("Reload with Encoding"):
     /// replaces the text and the encoding label, keeping the document
     /// read-only and clean. The caller re-reads the origin (archive entry,

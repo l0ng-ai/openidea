@@ -13,6 +13,18 @@ export function isVirtualUri(s: string | null | undefined): boolean {
   return !!m && (m[1]!.toLowerCase() !== "file" || isClassFile(s!));
 }
 
+/** Scheme of an unsaved new-file buffer (File › New File), keyed like a virtual document. */
+export const UNTITLED_SCHEME = "untitled:";
+
+export function isUntitledUri(s: string | null | undefined): boolean {
+  return !!s && s.startsWith(UNTITLED_SCHEME);
+}
+
+/** Display name of an untitled buffer's URI (`untitled:Untitled-1` → `Untitled-1`); passthrough otherwise. */
+export function untitledTitle(uri: string): string {
+  return isUntitledUri(uri) ? uri.slice(UNTITLED_SCHEME.length) : uri;
+}
+
 /** Last path segment of a URI (without query / fragment), e.g. `SpringApplication.class`. */
 export function virtualName(uri: string): string {
   const rest = uri.replace(/^[^:]+:(\/\/)?/, "").split(/[?#]/)[0]!;

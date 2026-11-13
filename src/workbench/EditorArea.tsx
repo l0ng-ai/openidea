@@ -16,8 +16,9 @@ const HINTS: Hint[] = [
   { label: "Drop files here to open them" },
 ];
 
-/** LightEdit has no project to navigate: only opening files works there. */
+/** LightEdit has no project to navigate: only opening and creating files works there. */
 const LIGHT_EDIT_HINTS: Hint[] = [
+  { label: "New File", action: "file.newUntitled" },
   { label: "Open File", action: "file.openFile" },
   { label: "Drop files here to open them" },
 ];

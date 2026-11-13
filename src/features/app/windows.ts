@@ -15,6 +15,7 @@ import {
   confirmLeaveProject,
   dirname,
   openLightEdit,
+  openLightEditUntitled,
   openProject,
   provideStartupLaunch,
   useProject,
@@ -478,6 +479,20 @@ export function windowActions(): Action[] {
       run: async () => {
         if (desktopOnly()) return;
         await openFiles(await pickFiles(t("app.window.pickFileTitle")));
+      },
+    },
+    {
+      id: "file.newUntitled",
+      title: t("app.action.newFile"),
+      category: t("app.category.file"),
+      icon: "plus",
+      keywords: ["new", "create", "untitled", "file", "light edit"],
+      run: async () => {
+        if (desktopOnly()) return;
+        const s = useProject.getState();
+        // A welcome window becomes a LightEdit one first (its buffers need a backend project).
+        if (!s.project && !s.lightEdit) await openLightEditUntitled();
+        await editorService().openUntitled?.({ focus: true });
       },
     },
     {
