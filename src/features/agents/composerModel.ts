@@ -46,7 +46,7 @@ export function messageTokens(text: string): MessageToken[] {
   // Full-width punctuation ends one too, as Chinese text runs on without a space after it.
   for (const match of text.matchAll(/(^|\s)([@/][^\s@，。；：！？、（）【】《》「」『』]+)/g)) {
     // Punctuation after it ends the sentence, not the path: "see @a.ts, then /review."
-    const token = match[2]!.replace(/(?<=.)[,.;:!?)\]}>'"，。；：！？、）】》」』]+$/, "");
+    const token = match[2]!.replace(/^(.+?)[,.;:!?)\]}>'"，。；：！？、）】》」』]+$/, "$1");
     const start = match.index! + match[1]!.length;
     const command = /^\/[A-Za-z][\w:.-]*$/.test(token);
     if (token.startsWith("/") && !command) continue;
