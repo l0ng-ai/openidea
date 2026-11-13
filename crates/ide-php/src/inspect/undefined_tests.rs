@@ -66,7 +66,9 @@ const LOCAL = 1;
     assert_eq!(
         messages(&found),
         [
-            ("PhpUndefinedClass", "Undefined interface 'Gone'".to_owned()),
+            // The import itself, and (below) where it is used.
+            ("PhpUndefinedClass", "Undefined class 'Lib\\Missing'".to_owned()),
+            ("PhpUndefinedClass", "Undefined interface 'Gone'".into()),
             ("PhpUndefinedClass", "Undefined class 'Nope'".into()),
             ("PhpUndefinedClass", "Undefined interface 'Absent'".into()),
             ("PhpUndefinedClass", "Undefined trait 'NoTrait'".into()),
@@ -239,4 +241,38 @@ fn php_files(dir: &std::path::Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+#[test]
+fn imports_of_what_does_not_exist() {
+    let mut p = project();
+    let text = r#"<?php
+namespace Shop;
+
+use App\Model;
+use App\Model\Book;
+use App\Model\{Book as Volume, Lost};
+use App\Nowhere;
+use function App\helper;
+use function App\vanished;
+use const App\LIMIT;
+use const App\GONE;
+use Optional\Package\Thing;
+
+if (class_exists(Thing::class)) {
+    new Thing();
+}
+echo new Model\Book(), new Book(), new Volume(), helper(), LIMIT;
+"#;
+    let found = p.inspect(text);
+    assert_eq!(
+        messages(&found),
+        [
+            // A namespace (`App\Model`) is a fine import; a guarded class too.
+            ("PhpUndefinedClass", "Undefined class 'Lost'".to_owned()),
+            ("PhpUndefinedClass", "Undefined class 'App\\Nowhere'".into()),
+            ("PhpUndefinedFunction", "Undefined function 'App\\vanished'".into()),
+            ("PhpUndefinedConstant", "Undefined constant 'App\\GONE'".into()),
+        ]
+    );
 }

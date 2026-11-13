@@ -112,18 +112,27 @@ fn check(cx: &InspectionContext<'_>, kind: NameKind, out: &mut Problems) {
         return;
     }
     let names = cx.names();
-    if !names.names().iter().any(|name| is_checked(name, kind)) {
+    if !names.names().iter().any(|name| is_checked(name, kind) || is_import(name, kind)) {
         return;
     }
     let scan = Scan::of(cx.parsed, names);
     let summary = cx.summary();
     let mut known: HashMap<String, bool> = HashMap::new();
     for name in names.names() {
-        if !is_checked(name, kind) {
+        let import = is_import(name, kind);
+        if !import && !is_checked(name, kind) {
             continue;
         }
         if cx.is_cancelled() {
             return;
+        }
+        // A `use` line may import a namespace (`use App\Models;`, then
+        // `Models\User`).
+        if import
+            && kind == NameKind::ClassLike
+            && name.resolution.primary().is_some_and(|fqn| namespace_exists(cx, fqn))
+        {
+            continue;
         }
         let defined = name.resolution.candidates().any(|fqn| {
             let key = match kind {
@@ -136,7 +145,7 @@ fn check(cx: &InspectionContext<'_>, kind: NameKind, out: &mut Problems) {
                     || (kind == NameKind::ClassLike && cx.engine.laravel_class_alias(fqn).is_some())
             })
         });
-        if defined || scan.guarded(kind, name) {
+        if defined || scan.guarded(kind, name) || (import && scan.guarded_anywhere(kind, name)) {
             continue;
         }
         if kind == NameKind::ClassLike
@@ -159,6 +168,26 @@ fn check(cx: &InspectionContext<'_>, kind: NameKind, out: &mut Problems) {
             problem.with_fix(fix);
         }
     }
+}
+
+/// An imported name of `kind`: the item of a `use` line.
+fn is_import(name: &ResolvedName, kind: NameKind) -> bool {
+    name.kind == kind && name.role == NameRole::Import && name.resolution.primary().is_some()
+}
+
+/// Whether some declaration lives in namespace `fqn` (or below it): in the
+/// file itself or in the index.
+fn namespace_exists(cx: &InspectionContext<'_>, fqn: &str) -> bool {
+    let fqn = fqn.trim_start_matches('\\');
+    let prefix = format!("{}\\", fqn.to_ascii_lowercase());
+    let summary = cx.summary();
+    let here = summary
+        .class_likes
+        .iter()
+        .map(|class| &class.fqn)
+        .chain(summary.functions.iter().map(|function| &function.fqn))
+        .any(|declared| declared.to_ascii_lowercase().starts_with(&prefix));
+    here || cx.engine.index().is_some_and(|index| index.namespace_children(fqn).is_ok_and(|found| !found.is_empty()))
 }
 
 /// A reference of `kind` that names something (not a relative class or a
@@ -204,6 +233,14 @@ impl Scan {
                 && name.end <= guard.end
                 && name.resolution.candidates().any(|fqn| fqn_eq(kind, fqn, &guard.fqn))
         })
+    }
+
+    /// Whether some guard of the file names `name`: an import comes before
+    /// the check that makes using it safe.
+    fn guarded_anywhere(&self, kind: NameKind, name: &ResolvedName) -> bool {
+        self.guards
+            .iter()
+            .any(|guard| guard.kind == kind && name.resolution.candidates().any(|fqn| fqn_eq(kind, fqn, &guard.fqn)))
     }
 
     fn class_word(&self, start: u32) -> &'static str {
