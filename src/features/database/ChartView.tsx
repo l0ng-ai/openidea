@@ -6,7 +6,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { IconButton, Select, T } from "@/ui";
 import { isNumericColumn, type GridColumn } from "./Grid";
 import type { Cell } from "./model";
-import { chartSeries, formatNumber, niceTicks, type ChartAggregate } from "./resultView";
+import { chartSeries, formatNumber, niceTicks, type ChartAggregate, type ChartPoint } from "./resultView";
 import styles from "./Database.module.css";
 
 const AGGREGATES: ReadonlyArray<{ value: ChartAggregate; label: string }> = [
@@ -45,7 +45,7 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
   const [settings, setSettings] = useState(false);
   const points = useMemo(() => chartSeries(rows, x, y, aggregate), [rows, x, y, aggregate]);
   // The tooltip shows the exact combined value; the plot coordinate is a double.
-  const valueLabel = (p: { value: number; exact: string | null }) => p.exact ?? formatNumber(p.value);
+  const valueLabel = (p: ChartPoint) => p.exact ?? formatNumber(p.value);
 
   const host = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 600, h: 300 });

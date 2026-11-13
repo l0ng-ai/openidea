@@ -218,10 +218,47 @@ describe("aggregates", () => {
   it("averages exactly when the division terminates and rounds a repeating one", () => {
     expect(aggregates(["1", "1", "1"])).toMatchObject({ sum: "3", avg: "1" });
     expect(aggregates(["1", "0"])).toMatchObject({ avg: "0.5" });
-    // 2 / 3: 17 significant digits, the precision a double carries, no trailing noise.
+    // 2 / 3 and 8 / 3 both keep exactly 17 significant digits.
     expect(aggregates(["2", "0", "0"])).toMatchObject({ avg: "0.66666666666666667" });
+    expect(aggregates(["8", "0", "0"])).toMatchObject({ avg: "2.6666666666666667" });
     // 0.1 + 0.2 is 0.30000000000000004 as a double.
     expect(aggregates(["0.1", "0.2", "0.3"])).toMatchObject({ sum: "0.6", avg: "0.2" });
+  });
+
+  it("averages negatives and a zero total", () => {
+    expect(aggregates(["-1", "-2"])).toMatchObject({ sum: "-3", avg: "-1.5", median: "-1.5" });
+    expect(aggregates(["-5", "5"])).toMatchObject({ sum: "0", avg: "0", median: "0" });
+    expect(aggregates(["-1", "-1", "-1"])).toMatchObject({ avg: "-1" });
+  });
+
+  it("reports exact totals up to the display limit and min/max beyond it", () => {
+    const huge = `1${"0".repeat(4999)}`;
+    // Print a 5000-digit total? No: past the limit the computed values are omitted...
+    expect(aggregates([huge])).toMatchObject({ sum: null, avg: null, median: null });
+    // ...while the cells themselves are still reported.
+    expect(aggregates([huge])).toMatchObject({ min: huge, max: huge });
+  });
+
+  it("computes totals that fit the limit", () => {
+    // 4095 nines plus one is a 4096-digit total: the widest exact sum that is shown.
+    const nines = "9".repeat(4095);
+    expect(aggregates([nines, "1"])).toMatchObject({
+      sum: `1${"0".repeat(4095)}`,
+      avg: `5${"0".repeat(4094)}`,
+    });
+  });
+
+  it("reports nothing numeric for an all-NULL selection", () => {
+    expect(aggregates([null, null])).toMatchObject({
+      count: 2,
+      distinct: 1,
+      nulls: 2,
+      sum: null,
+      avg: null,
+      median: null,
+      min: null,
+      max: null,
+    });
   });
 
   it.each([

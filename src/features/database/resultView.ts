@@ -127,7 +127,10 @@ export interface Aggregates {
   count: number;
   distinct: number;
   nulls: number;
-  /** When every non-NULL value is a number: the exact total as decimal text; null otherwise. */
+  /**
+   * When every non-NULL value is a number: the exact total as decimal text; null otherwise,
+   * and also when expanding it would take more than a few thousand digits.
+   */
   sum: string | null;
   avg: string | null;
   min: Cell;
@@ -142,8 +145,12 @@ export function aggregates(cells: readonly Cell[]): Aggregates {
   const sorted = [...present].sort(compareCells);
   let median: string | null = null;
   let sum: string | null = null;
+  let avg: string | null = null;
   if (numeric) {
     sum = exactSum(present);
+    // The average divides the exact total, so a sum too large to print still averages.
+    const total = exactTotal(present);
+    avg = total ? exactAverageOf(total, present.length) : null;
     const mid = Math.floor(sorted.length / 2);
     median = sorted.length % 2 ? exactText(sorted[mid]!) : exactAverage(exactSum(sorted.slice(mid - 1, mid + 1)), 2);
   }
@@ -152,7 +159,7 @@ export function aggregates(cells: readonly Cell[]): Aggregates {
     distinct: new Set(cells).size,
     nulls: cells.length - present.length,
     sum,
-    avg: sum === null ? null : exactAverage(sum, present.length),
+    avg,
     min: sorted[0] ?? null,
     max: sorted.at(-1) ?? null,
     median,
@@ -184,53 +191,65 @@ function decimalOf(value: string): Decimal | null {
 /** `digits × 10^scale` as a plain decimal string, or `null` when that would be enormous. */
 function decimalText(digits: bigint, scale: bigint): string | null {
   if (digits === 0n) return "0";
-  let normalized = digits;
-  let exponent = scale;
-  // Trailing zeroes belong to the exponent: 650×10⁻¹⁸ is 6.5.
-  while (normalized % 10n === 0n) {
-    normalized /= 10n;
-    exponent += 1n;
-  }
-  const negative = normalized < 0n;
-  const text = (negative ? -normalized : normalized).toString();
+  const negative = digits < 0n;
+  // Strip trailing zeroes on the text: dividing a many-thousand-digit bigint one digit at
+  // a time is quadratic, and a big sum has plenty of them.
+  const raw = (negative ? -digits : digits).toString();
+  const trimmed = raw.replace(/0+$/, "");
+  const exponent = scale + BigInt(raw.length - trimmed.length);
   let body: string;
   if (exponent >= 0n) {
-    if (BigInt(text.length) + exponent > MAX_SCALE_DIGITS) return null;
-    body = text + "0".repeat(Number(exponent));
+    if (BigInt(trimmed.length) + exponent > MAX_SCALE_DIGITS) return null;
+    body = trimmed + "0".repeat(Number(exponent));
   } else {
-    const point = BigInt(text.length) + exponent;
+    const point = BigInt(trimmed.length) + exponent;
     if (point > 0n) {
-      body = `${text.slice(0, Number(point))}.${text.slice(Number(point))}`;
+      body = `${trimmed.slice(0, Number(point))}.${trimmed.slice(Number(point))}`;
     } else {
       if (-point > MAX_SCALE_DIGITS) return null;
-      body = `0.${"0".repeat(Number(-point))}${text}`;
+      body = `0.${"0".repeat(Number(-point))}${trimmed}`;
     }
   }
   return negative ? `-${body}` : body;
 }
 
-/** The exact sum of numeric cells; `null` when one is not a number or too large to expand. */
-function exactSum(values: readonly string[]): string | null {
+/** The exact total of numeric cells as digits and scale; `null` when one is not a number. */
+function exactTotal(values: readonly string[]): Decimal | null {
+  if (!values.length) return { digits: 0n, scale: 0n };
   const decimals = values.map(decimalOf);
   if (decimals.some((d) => d === null)) return null;
   const scale = decimals.reduce((low, d) => (d!.scale < low ? d!.scale : low), decimals[0]!.scale);
+  if (decimals.some((d) => d!.scale - scale > MAX_SCALE_DIGITS)) return null;
   let total = 0n;
-  for (const d of decimals) {
-    const shift = d!.scale - scale;
-    if (shift > MAX_SCALE_DIGITS) return null;
-    total += d!.digits * 10n ** shift;
-  }
-  return decimalText(total, scale);
+  for (const d of decimals) total += d!.digits * 10n ** (d!.scale - scale);
+  return { digits: total, scale };
 }
 
-/**
- * `sum / count`: the exact decimal when the division terminates (every median of an
- * even count does), else 17 significant digits, the precision a double carries.
- */
-function exactAverage(sum: string | null, count: number): string | null {
-  if (sum === null || count === 0) return null;
-  const decimal = decimalOf(sum);
-  if (!decimal) return null;
+/** The exact sum of numeric cells; `null` when one is not a number or too large to expand. */
+function exactSum(values: readonly string[]): string | null {
+  const total = exactTotal(values);
+  return total ? decimalText(total.digits, total.scale) : null;
+}
+
+/** Rounds `digits × 10^scale` to `places` significant digits, half away from zero. */
+function roundSignificant(digits: bigint, scale: bigint, places: number): Decimal {
+  const magnitude = digits < 0n ? -digits : digits;
+  const text = magnitude.toString();
+  if (text.length <= places || magnitude === 0n) return { digits, scale };
+  const drop = BigInt(text.length - places);
+  const factor = 10n ** drop;
+  let rounded = magnitude / factor;
+  if (2n * (magnitude % factor) >= factor) rounded += 1n;
+  // 999… rounding up to 1000… gains a digit that has to be given back to the exponent.
+  const bumped = rounded.toString().length > places;
+  if (bumped) rounded /= 10n;
+  return { digits: digits < 0n ? -rounded : rounded, scale: scale + (bumped ? drop + 1n : drop) };
+}
+
+/** `decimal / count`: exact when the division terminates, else 17 significant digits. */
+function exactAverageOf(decimal: Decimal, count: number): string | null {
+  if (count === 0) return null;
+  if (decimal.digits === 0n) return "0";
   const abs = (n: bigint) => (n < 0n ? -n : n);
   const gcd = (a: bigint, b: bigint): bigint => (b === 0n ? a : gcd(b, a % b));
   const den = BigInt(count);
@@ -250,14 +269,22 @@ function exactAverage(sum: string | null, count: number): string | null {
     const places = Math.max(twos, fives);
     return decimalText((decimal.digits * 10n ** BigInt(places)) / den, decimal.scale - BigInt(places));
   }
-  // Repeating: scale so the quotient keeps 17 significant digits, rounding half up.
-  const size = (n: bigint) => abs(n).toString().length;
-  const pow = BigInt(Math.max(0, 17 + size(den) - size(decimal.digits)));
-  const numerator = decimal.digits * 10n ** pow;
-  let quotient = numerator / den;
-  const remainder = numerator % den;
-  if (remainder !== 0n && 2n * abs(remainder) >= den) quotient += numerator < 0n ? -1n : 1n;
-  return decimalText(quotient, decimal.scale - pow);
+  // Repeating: compute with guard digits, then round to the 17 a double carries.
+  const guard = 2;
+  const pow = BigInt(17 + guard);
+  const quotient = (decimal.digits * 10n ** pow) / den;
+  const rounded = roundSignificant(quotient, decimal.scale - pow, 17);
+  return decimalText(rounded.digits, rounded.scale);
+}
+
+/**
+ * `sum / count`: the exact decimal when the division terminates (every median of an
+ * even count does), else 17 significant digits, the precision a double carries.
+ */
+function exactAverage(sum: string | null, count: number): string | null {
+  if (sum === null) return null;
+  const decimal = decimalOf(sum);
+  return decimal ? exactAverageOf(decimal, count) : null;
 }
 
 /** The exact text of a numeric cell, for a point label that keeps every digit. */

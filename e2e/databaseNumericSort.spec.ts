@@ -4,14 +4,15 @@ import { expect, test } from "./fixtures";
 const integers = ["9007199254740993", "9007199254740992", "-9007199254740992", "-9007199254740993"];
 const decimals = ["1.0000000000000000002", "1.0000000000000000001", "-0.0000000000000000001", "0"];
 
-async function seedResult(page: Page, values: string[], type: string) {
+/** Seeds one result of `rows` with `columns`; a plain SQL text when the statement matters. */
+async function seedRows(page: Page, columns: { name: string; typeName: string }[], rows: string[][]) {
   await page.evaluate(
-    async ({ values, type }) => {
+    async ({ columns, rows }) => {
       const storePath = "/src/features/database/store.ts";
       const contributionsPath = "/src/workbench/contributions.ts";
       const { useDatabase, RESULTS_VIEW } = await import(storePath);
       const { showServiceView } = await import(contributionsPath);
-      const text = "SELECT value FROM exact_numbers";
+      const text = `SELECT ${columns.map((c) => c.name).join(", ")} FROM exact_numbers`;
       useDatabase.setState({
         loaded: true,
         sources: [{ id: "exact", name: "Exact numbers", driver: "postgres", readOnly: true }],
@@ -27,8 +28,8 @@ async function seedResult(page: Page, values: string[], type: string) {
               error: null,
               result: {
                 statement: text,
-                columns: [{ name: "value", typeName: type }],
-                rows: values.map((value) => [value]),
+                columns,
+                rows,
                 affected: null,
                 hasMore: false,
                 elapsedMs: 1,
@@ -43,10 +44,19 @@ async function seedResult(page: Page, values: string[], type: string) {
       });
       showServiceView(RESULTS_VIEW);
     },
-    { values, type },
+    { columns, rows },
   );
   await expect(page.getByRole("grid", { name: "Result 1", exact: true }).getByRole("gridcell")).toHaveCount(
-    values.length,
+    rows.length * columns.length,
+  );
+}
+
+/** One numeric column, the shape most of these checks select over. */
+async function seedResult(page: Page, values: string[], type: string) {
+  await seedRows(
+    page,
+    [{ name: "value", typeName: type }],
+    values.map((value) => [value]),
   );
 }
 
@@ -121,50 +131,17 @@ test("selection aggregates compute the exact sum, average and median", async ({ 
 
 test("chart tooltips show the exact combined value", async ({ workbench: page }) => {
   // One X label with two Y values: their exact sum keeps the digit a double drops.
-  await page.evaluate(async () => {
-    const storePath = "/src/features/database/store.ts";
-    const contributionsPath = "/src/workbench/contributions.ts";
-    const { useDatabase, RESULTS_VIEW } = await import(storePath);
-    const { showServiceView } = await import(contributionsPath);
-    const text = "SELECT label, amount FROM exact_numbers";
-    useDatabase.setState({
-      loaded: true,
-      sources: [{ id: "exact", name: "Exact numbers", driver: "postgres", readOnly: true }],
-      consoles: { "exact-console.sql": "exact" },
-      results: [
-        {
-          id: 1,
-          title: "Result 1",
-          path: "exact-console.sql",
-          sourceId: "exact",
-          outcome: {
-            statement: { text, from: 0, to: text.length },
-            error: null,
-            result: {
-              statement: text,
-              columns: [
-                { name: "label", typeName: "TEXT" },
-                { name: "amount", typeName: "BIGINT" },
-              ],
-              rows: [
-                ["a", "9007199254740993"],
-                ["a", "1"],
-              ],
-              affected: null,
-              hasMore: false,
-              elapsedMs: 1,
-              executionMs: 1,
-            },
-          },
-          page: 0,
-          pageSize: 500,
-        },
-      ],
-      activeResult: 1,
-    });
-    showServiceView(RESULTS_VIEW);
-  });
-  await expect(page.getByRole("grid", { name: "Result 1", exact: true }).getByRole("gridcell")).toHaveCount(4);
+  await seedRows(
+    page,
+    [
+      { name: "label", typeName: "TEXT" },
+      { name: "amount", typeName: "BIGINT" },
+    ],
+    [
+      ["a", "9007199254740993"],
+      ["a", "1"],
+    ],
+  );
   await page.getByRole("button", { name: "Chart", exact: true }).click();
   await page.getByRole("button", { name: "Chart Settings", exact: true }).click();
   await page.getByRole("button", { name: "Aggregation", exact: true }).click();
