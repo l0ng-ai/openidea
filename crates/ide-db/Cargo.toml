@@ -37,6 +37,6 @@ zeroize = "1"
 open = "5"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
 tempfile.workspace = true
 ide-ssh = { workspace = true, features = ["testing"] }
