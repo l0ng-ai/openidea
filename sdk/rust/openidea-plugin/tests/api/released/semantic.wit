@@ -1,4 +1,4 @@
-package openidea:plugin@1.6.0;
+package openidea:plugin@1.7.0;
 
 /// Optional export (world `plugin-semantic-tokens`): semantic colouring of
 /// documents of the languages declared with the `semantic-tokens` provider
