@@ -1506,5 +1506,9 @@
   "Port": "Port",
   "The fixed port on 127.0.0.1, used while Use a fixed port is on.": "The fixed port on 127.0.0.1, used while Use a fixed port is on.",
   "Keep the token": "Keep the token",
-  "Keep the same bearer token in every run, stored for your account only. Off: a new token in every run. Anyone with the token can use the tools while OpenIDEA runs, so regenerate it if it leaks.": "Keep the same bearer token in every run, stored for your account only. Off: a new token in every run. Anyone with the token can use the tools while OpenIDEA runs, so regenerate it if it leaks."
+  "Keep the same bearer token in every run, stored for your account only. Off: a new token in every run. Anyone with the token can use the tools while OpenIDEA runs, so regenerate it if it leaks.": "Keep the same bearer token in every run, stored for your account only. Off: a new token in every run. Anyone with the token can use the tools while OpenIDEA runs, so regenerate it if it leaks.",
+  "{name} (group)": "{name} (group)",
+  "Servers in group": "Servers in group",
+  "Upload to… on this group uploads the files to each of its servers in turn.": "Upload to… on this group uploads the files to each of its servers in turn.",
+  "Server Group": "Server Group"
 }

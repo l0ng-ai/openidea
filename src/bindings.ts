@@ -4090,6 +4090,14 @@ export type DeploymentCoverage = {
 	skipped: TransferError[],
 };
 
+/**  Named set of deployment servers that files are uploaded to together. */
+export type DeploymentGroup = {
+	id?: string,
+	name?: string,
+	/**  [`DeploymentServer::id`]s, in upload order. */
+	servers?: string[],
+};
+
 /**  Local files to compare with a deployment server (Sync with Deployed). */
 export type DeploymentLaunch = {
 	/**  Deployment server id. */
@@ -4133,6 +4141,8 @@ export type DeploymentServer = {
 /**  Build, Execution, Deployment › Deployment (and its Options page). */
 export type DeploymentSettings = {
 	servers?: DeploymentServer[],
+	/**  Server groups: Upload to… on a group uploads to each of its servers. */
+	groups?: DeploymentGroup[],
 	/**  Server used by Upload / Download / Sync and automatic upload; empty = none. */
 	defaultServer?: string,
 	autoUpload?: AutoUpload,
