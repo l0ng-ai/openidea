@@ -776,6 +776,9 @@
   "Run configurations, terminal commands and other tools that change a project start without asking, for unattended agents. Only the IDE's own settings can turn this on, not a project's.": "Run configurations, terminal commands and other tools that change a project start without asking, for unattended agents. Only the IDE's own settings can turn this on, not a project's.",
   "Status": "Status",
   "Running on port {port}": "Running on port {port}",
+  "Running on {at}, port {port}": "Running on {at}, port {port}",
+  "Listen address": "Listen address",
+  "The IP address the server listens on: 127.0.0.1 for this computer only (the default); another address of this computer, such as a LAN or VPN one, or 0.0.0.0 for every address, so that agents on other computers can connect. Anyone who can reach the address and has the token can use the tools.": "The IP address the server listens on: 127.0.0.1 for this computer only (the default); another address of this computer, such as a LAN or VPN one, or 0.0.0.0 for every address, so that agents on other computers can connect. Anyone who can reach the address and has the token can use the tools.",
   "Failed to start: {error}": "Failed to start: {error}",
   "Not running": "Not running",
   "Endpoint": "Endpoint",
@@ -794,7 +797,7 @@
   "Could not send the answer: {0}": "Could not send the answer: {0}",
   "Allow": "Allow",
   "Deny": "Deny",
-  "Agents can read, edit, and run projects open in OpenIDEA through its built-in tools. Run tools ask for confirmation. The server listens on 127.0.0.1 only and requires a token.": "Agents can read, edit, and run projects open in OpenIDEA through its built-in tools. Run tools ask for confirmation. The server listens on 127.0.0.1 only and requires a token.",
+  "Agents can read, edit, and run projects open in OpenIDEA through its built-in tools. Run tools ask for confirmation. The server listens on 127.0.0.1 unless Listen address says otherwise, and requires a token.": "Agents can read, edit, and run projects open in OpenIDEA through its built-in tools. Run tools ask for confirmation. The server listens on 127.0.0.1 unless Listen address says otherwise, and requires a token.",
   "OpenIDEA could not start": "OpenIDEA could not start",
   "Copy the details below and include them in a GitHub issue.": "Copy the details below and include them in a GitHub issue.",
   "Report an issue": "Report an issue",
@@ -1503,7 +1506,7 @@
   "Use a fixed port": "Use a fixed port",
   "Listen on the same port in every run, so HTTP clients and port forwards keep working after OpenIDEA restarts. When the port is in use, this run takes a free one and Status says so. Off: a free port in every run.": "Listen on the same port in every run, so HTTP clients and port forwards keep working after OpenIDEA restarts. When the port is in use, this run takes a free one and Status says so. Off: a free port in every run.",
   "Port": "Port",
-  "The fixed port on 127.0.0.1, used while Use a fixed port is on.": "The fixed port on 127.0.0.1, used while Use a fixed port is on.",
+  "The fixed port, used while Use a fixed port is on.": "The fixed port, used while Use a fixed port is on.",
   "Keep the token": "Keep the token",
   "Keep the same bearer token in every run, stored for your account only. Off: a new token in every run. Anyone with the token can use the tools while OpenIDEA runs, so regenerate it if it leaks.": "Keep the same bearer token in every run, stored for your account only. Off: a new token in every run. Anyone with the token can use the tools while OpenIDEA runs, so regenerate it if it leaks."
 }
