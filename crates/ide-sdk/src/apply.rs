@@ -957,10 +957,15 @@ pub fn resolve_run_command(config: &mut RunConfig, root: &Path, s: &Settings) {
 }
 
 pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
+    let mut path_dirs: Vec<PathBuf> = Vec::new();
     if let Some(custom) = tool_command(root, s, &cfg.command) {
+        // An executable chosen from a Node.js installation (`~/.nvm/versions/node/v26/bin/tsc`,
+        // its `npx`) runs on that Node: its `#!/usr/bin/env node` finds the `node` beside it.
+        if let Some(bin) = custom.parent().filter(|bin| bin.join(exe("node")).is_file()) {
+            path_dirs.push(bin.to_path_buf());
+        }
         cfg.command = custom.to_string_lossy().into_owned();
     }
-    let mut path_dirs: Vec<PathBuf> = Vec::new();
     let name = cfg.name.clone();
     let name = name.as_str();
 
