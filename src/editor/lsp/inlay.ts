@@ -159,7 +159,8 @@ function shownKind(kind: InlayHint["kind"]): boolean {
 
 const inlayPlugin = ViewPlugin.fromClass(
   class {
-    private refresh = debounce(() => void this.run(), 400);
+    private generation = 0;
+    private schedule = debounce(() => void this.run(), 400);
     private unsubscribe: () => void;
     private offReady: () => void;
     private offModifier: () => void;
@@ -182,6 +183,10 @@ const inlayPlugin = ViewPlugin.fromClass(
     update(u: ViewUpdate) {
       if (u.docChanged || u.viewportChanged || (this.skipped && shownAgain(u))) this.refresh();
     }
+    private refresh() {
+      this.generation++;
+      this.schedule();
+    }
     async run() {
       const view = this.view;
       this.skipped = !view.dom.isConnected;
@@ -193,12 +198,17 @@ const inlayPlugin = ViewPlugin.fromClass(
         return;
       }
       const state = view.state;
+      const generation = this.generation;
+      const wanted = () => generation === this.generation && view.state.doc === state.doc;
       const { from, to } = view.viewport;
       const first = state.doc.lineAt(from).from;
       const last = state.doc.lineAt(to).to;
       try {
-        const hints = await lspRequest(() => commands.lspInlayHints(doc.doc, offsetsToRange(state.doc, first, last)));
-        if (view.state.doc !== state.doc) return this.refresh();
+        const hints = await lspRequest(
+          () => commands.lspInlayHints(doc.doc, offsetsToRange(state.doc, first, last)),
+          wanted,
+        );
+        if (!wanted()) return;
         view.dispatch({
           effects: setInlays.of(
             inlayDecorations(
@@ -208,11 +218,12 @@ const inlayPlugin = ViewPlugin.fromClass(
           ),
         });
       } catch (e) {
-        if (isUnavailable(e)) inlayBackoff.mark(doc.doc);
+        if (wanted() && isUnavailable(e)) inlayBackoff.mark(doc.doc);
       }
     }
     destroy() {
-      this.refresh.cancel();
+      this.generation++;
+      this.schedule.cancel();
       this.unsubscribe();
       this.offReady();
       this.offModifier();
