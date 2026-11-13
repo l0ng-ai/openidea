@@ -20,6 +20,19 @@ const CHUNK: usize = 512;
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 pub(crate) const MAX_RECENT: usize = 50;
 
+/// A cache key must stay below the project root: relative, normal components only.
+fn safe_rel(rel: &str) -> bool {
+    let mut any = false;
+    for component in Path::new(rel).components() {
+        if matches!(component, std::path::Component::Normal(_)) {
+            any = true;
+        } else {
+            return false;
+        }
+    }
+    any
+}
+
 pub(crate) enum Job {
     Changed(Vec<PathBuf>),
     Removed(Vec<PathBuf>),
@@ -135,8 +148,12 @@ impl Shared {
             q.busy = true;
         }
         if scan {
-            self.load_persisted();
-            self.full_scan();
+            // Walk once: it resolves symlink ancestors and current excludes, so the
+            // cache hydration can trust its file set instead of canonicalizing every
+            // persisted record again.
+            let found = self.walk_roots(None);
+            self.load_persisted(&found);
+            self.full_scan(Some(found));
         } else {
             self.indexing.store(false, Ordering::SeqCst);
         }
@@ -167,24 +184,41 @@ impl Shared {
         }
     }
 
-    fn load_persisted(&self) {
+    fn load_persisted(&self, found: &[Found]) {
         let Some(store) = &self.store else { return };
-        let filter = self.filter();
-        let root = filter.root().to_owned();
+        let root = self.filter().root().to_owned();
+        let seen: HashSet<&Path> = found.iter().map(|f| f.path.as_path()).collect();
+        let started = Instant::now();
         match store.load() {
             Ok(records) => {
+                // Hydrate the flat in-memory tables straight from the cache. The walk
+                // that just ran already applied excludes and resolved symlinks, so a
+                // second per-record `canonicalize` (one syscall per file) would only
+                // repeat that work and used to dominate start-up. Keep a lexical guard
+                // so a corrupt cache cannot escape the project root.
                 let entries: Vec<FileEntry> = records
                     .into_par_iter()
                     .filter(|(rel, _)| {
-                        let path = root.join(rel);
-                        !filter.is_excluded(&path, false) && dunce::canonicalize(&path).is_ok_and(|real| real == path)
+                        safe_rel(rel) && {
+                            let path = root.join(rel);
+                            seen.contains(path.as_path())
+                        }
                     })
                     .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
                     .collect();
                 let mut d = self.data.write();
+                d.reserve(entries.len());
                 for e in entries {
                     d.insert(e);
                 }
+                tracing::info!(
+                    "index cache: hydrated {} files, {} symbols in {:?}",
+                    d.file_count,
+                    d.symbol_count,
+                    started.elapsed()
+                );
+                #[cfg(test)]
+                eprintln!("index cache: hydrated {} files in {:?}", d.file_count, started.elapsed());
             }
             Err(e) => tracing::warn!("index cache load failed: {e}"),
         }
@@ -212,11 +246,24 @@ impl Shared {
         self.emit_state();
     }
 
-    fn full_scan(&self) {
-        self.scan(None);
+    fn walk_roots(&self, dirs: Option<&[PathBuf]>) -> Vec<Found> {
+        let filter = self.filter();
+        let roots: Vec<&Path> = match dirs {
+            Some(dirs) => dirs.iter().map(PathBuf::as_path).collect(),
+            None => filter.roots().collect(),
+        };
+        let mut found = Vec::new();
+        for root in roots {
+            found.extend(filter.walk(root, &self.cancelled));
+        }
+        found
     }
 
-    fn scan(&self, dirs: Option<&[PathBuf]>) {
+    fn full_scan(&self, found: Option<Vec<Found>>) {
+        self.scan(None, found);
+    }
+
+    fn scan(&self, dirs: Option<&[PathBuf]>, prewalked: Option<Vec<Found>>) {
         let started = Instant::now();
         self.indexing.store(true, Ordering::SeqCst);
         self.emit_state();
@@ -231,14 +278,7 @@ impl Shared {
         });
 
         let filter = self.filter();
-        let mut found = Vec::new();
-        let roots: Vec<&Path> = match dirs {
-            Some(dirs) => dirs.iter().map(PathBuf::as_path).collect(),
-            None => filter.roots().collect(),
-        };
-        for root in roots {
-            found.extend(filter.walk(root, &self.cancelled));
-        }
+        let found = prewalked.unwrap_or_else(|| self.walk_roots(dirs));
         if self.is_cancelled() {
             return self.end_scan(task);
         }
@@ -421,14 +461,14 @@ impl Shared {
                 }
             }
             if !rescan {
-                self.scan(Some(&roots));
+                self.scan(Some(&roots), None);
                 changed.retain(|p| !roots.iter().any(|root| p.starts_with(root)));
                 removed.retain(|p| !roots.iter().any(|root| p.starts_with(root)));
             }
         }
         if rescan {
             // The scan also picks up whatever `changed` / `removed` reported.
-            self.full_scan();
+            self.full_scan(None);
             changed.clear();
             removed.clear();
         }
@@ -541,4 +581,18 @@ enum Extracted {
     /// Content hash matches the indexed version.
     Unchanged,
     New(FileRecord),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_rel;
+
+    #[test]
+    fn cache_keys_stay_below_the_root() {
+        assert!(safe_rel("src/main.rs"));
+        assert!(safe_rel("a/b/c.rs"));
+        for bad in ["", "/etc/passwd", "../out.rs", "a/../../b.rs", "./a.rs"] {
+            assert!(!safe_rel(bad), "{bad:?}");
+        }
+    }
 }

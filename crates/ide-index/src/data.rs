@@ -161,6 +161,13 @@ impl IndexData {
         self.by_path.get(path).copied()
     }
 
+    /// Reserves the flat file table and path/dir maps for a bulk cache load.
+    pub(crate) fn reserve(&mut self, files: usize) {
+        self.files.reserve(files);
+        self.by_path.reserve(files);
+        self.dirs.reserve(files / 8 + 8);
+    }
+
     pub(crate) fn insert(&mut self, entry: FileEntry) {
         let symbols = entry.symbols.len() as u32;
         if let Some(&slot) = self.by_path.get(&entry.path) {

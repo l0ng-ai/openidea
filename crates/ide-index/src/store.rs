@@ -90,8 +90,9 @@ impl Store {
             Err(TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
             Err(e) => return Err(err(e)),
         };
-        let mut out = Vec::new();
-        for item in table.iter().map_err(err)? {
+        let iter = table.iter().map_err(err)?;
+        let mut out = Vec::with_capacity(iter.size_hint().0);
+        for item in iter {
             let (k, v) = item.map_err(err)?;
             if let Ok(rec) = postcard::from_bytes::<FileRecord>(v.value()) {
                 out.push((k.value().to_owned(), rec));
