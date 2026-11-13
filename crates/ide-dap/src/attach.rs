@@ -1,6 +1,7 @@
 //! Attach to Process: the current user's processes, grouped by the debugger that can
 //! attach to them (IDEA's `XAttachDebuggerProvider`s): JVMs with a JDWP agent, Node,
-//! Python (debugpy injection), Go binaries (Delve) and anything else natively (LLDB).
+//! Python (debugpy injection), .NET (netcoredbg), Go binaries (Delve) and anything else
+//! natively (LLDB).
 
 use crate::adapter;
 use ide_core::{IdeError, IdeResult};
@@ -14,6 +15,7 @@ pub enum AttachKind {
     Java,
     Node,
     Python,
+    Dotnet,
     Go,
     Native,
 }
@@ -95,13 +97,29 @@ fn file_name(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
+/// A .NET app: the `dotnet` host, or an apphost next to its `<name>.runtimeconfig.json`.
+pub fn is_dotnet(exe: &str) -> bool {
+    let path = Path::new(exe);
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { return false };
+    if stem == "dotnet" {
+        return true;
+    }
+    path.is_absolute() && path.with_file_name(format!("{stem}.runtimeconfig.json")).is_file()
+}
+
 fn is_python(name: &str) -> bool {
     let n = name.strip_suffix(".exe").unwrap_or(name);
     n == "Python" || n.strip_prefix("python").is_some_and(|v| v.chars().all(|c| c.is_ascii_digit() || c == '.'))
 }
 
-/// Classifies a process; `is_go` is asked only for processes no interpreter claims.
-pub fn classify(p: &RawProcess, is_go: impl Fn(&str) -> bool, native_adapter: &str) -> Option<AttachableProcess> {
+/// Classifies a process; `is_dotnet` and `is_go` are asked only for processes no
+/// interpreter claims.
+pub fn classify(
+    p: &RawProcess,
+    is_dotnet: impl Fn(&str) -> bool,
+    is_go: impl Fn(&str) -> bool,
+    native_adapter: &str,
+) -> Option<AttachableProcess> {
     let name = file_name(&p.exe).to_owned();
     let make = |kind, adapter: &str, addr: Option<(Option<String>, u16)>| {
         let (host, port) = match addr {
@@ -129,6 +147,9 @@ pub fn classify(p: &RawProcess, is_go: impl Fn(&str) -> bool, native_adapter: &s
     if is_python(&name) {
         return make(AttachKind::Python, "debugpy", debugpy_listen(&p.args));
     }
+    if is_dotnet(&p.exe) {
+        return make(AttachKind::Dotnet, "netcoredbg", None);
+    }
     if is_go(&p.exe) {
         return make(AttachKind::Go, "delve", None);
     }
@@ -143,7 +164,7 @@ const GO_SCAN_LIMIT: u64 = 96 << 20;
 pub fn is_go_binary(exe: &str) -> bool {
     use std::io::Read;
     let skip = ["/System/", "/usr/", "/bin/", "/sbin/", "/Library/Apple/", "/Applications/"];
-    if skip.iter().any(|p| exe.starts_with(p)) || !Path::new(exe).is_absolute() {
+    if skip.iter().any(|p| exe.starts_with(p)) || is_windows_system(exe) || !Path::new(exe).is_absolute() {
         return false;
     }
     let Ok(file) = std::fs::File::open(exe) else { return false };
@@ -165,6 +186,17 @@ pub fn is_go_binary(exe: &str) -> bool {
     }
 }
 
+/// Windows' own and installed programs (`C:\Windows\…`, `C:\Program Files…`), like the
+/// system locations skipped on Unix.
+fn is_windows_system(exe: &str) -> bool {
+    let lower = exe.to_ascii_lowercase();
+    lower.get(1..).is_some_and(|rest| {
+        rest.starts_with(":\\windows\\")
+            || rest.starts_with(":\\program files\\")
+            || rest.starts_with(":\\program files (x86)\\")
+    })
+}
+
 /// The current user's processes (without this one).
 #[cfg(unix)]
 pub fn list_processes() -> IdeResult<Vec<RawProcess>> {
@@ -181,7 +213,7 @@ pub fn list_processes() -> IdeResult<Vec<RawProcess>> {
         let (pid, rest) = line.split_once(char::is_whitespace)?;
         Some((pid.parse().ok()?, rest.trim().to_owned()))
     };
-    // `comm` is the executable path on macOS; on Linux it is truncated, so read /proc.
+    // `comm` is the executable path as started on macOS; on Linux it is truncated, so read /proc.
     let exes: HashMap<u32, String> =
         if cfg!(target_os = "linux") { HashMap::new() } else { ps("pid=,comm=")?.lines().filter_map(split).collect() };
     let me = std::process::id();
@@ -190,9 +222,8 @@ pub fn list_processes() -> IdeResult<Vec<RawProcess>> {
         .filter_map(split)
         .filter(|(pid, _)| *pid != me)
         .map(|(pid, args)| {
-            let exe = exes
-                .get(&pid)
-                .cloned()
+            let exe = exe_path(pid)
+                .or_else(|| exes.get(&pid).cloned())
                 .or_else(|| std::fs::read_link(format!("/proc/{pid}/exe")).ok().map(|p| p.display().to_string()))
                 .unwrap_or_else(|| args.split_whitespace().next().unwrap_or_default().to_owned());
             RawProcess { pid, exe, args }
@@ -200,9 +231,134 @@ pub fn list_processes() -> IdeResult<Vec<RawProcess>> {
         .collect())
 }
 
-#[cfg(not(unix))]
+/// The processes this user may open (without this one): system and other users'
+/// processes refuse `PROCESS_QUERY_LIMITED_INFORMATION` and are left out.
+#[cfg(windows)]
 pub fn list_processes() -> IdeResult<Vec<RawProcess>> {
-    Err(IdeError::unavailable("Attach to Process is not supported on this platform yet"))
+    windows_processes::list()
+}
+
+#[cfg(windows)]
+mod windows_processes {
+    use super::RawProcess;
+    use ide_core::{IdeError, IdeResult};
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
+    use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, UNICODE_STRING};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    };
+
+    pub fn list() -> IdeResult<Vec<RawProcess>> {
+        let me = std::process::id();
+        Ok(pids()?
+            .into_iter()
+            .filter(|&pid| pid != 0 && pid != me)
+            .filter_map(|pid| {
+                // SAFETY: plain call; a non-null result is a process handle owned here.
+                let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+                if handle.is_null() {
+                    return None;
+                }
+                // SAFETY: as above.
+                let process = unsafe { OwnedHandle::from_raw_handle(handle) };
+                let exe = image_path(&process)?;
+                let args = command_line(&process).unwrap_or_else(|| exe.clone());
+                Some(RawProcess { pid, exe, args })
+            })
+            .collect())
+    }
+
+    fn pids() -> IdeResult<Vec<u32>> {
+        let mut out = Vec::new();
+        // SAFETY: a snapshot handle owned here and an entry sized as the API requires.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot.is_null() || snapshot == INVALID_HANDLE_VALUE {
+                return Err(IdeError::unavailable(format!(
+                    "cannot list processes: {}",
+                    std::io::Error::last_os_error()
+                )));
+            }
+            let snapshot = OwnedHandle::from_raw_handle(snapshot);
+            let mut entry = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+            let mut more = Process32FirstW(snapshot.as_raw_handle(), &mut entry);
+            while more != 0 {
+                out.push(entry.th32ProcessID);
+                more = Process32NextW(snapshot.as_raw_handle(), &mut entry);
+            }
+        }
+        Ok(out)
+    }
+
+    fn image_path(process: &OwnedHandle) -> Option<String> {
+        let mut buf = vec![0u16; 32 * 1024];
+        let mut len = buf.len() as u32;
+        // SAFETY: a live process handle with query access; `len` is the buffer's capacity.
+        let ok = unsafe {
+            QueryFullProcessImageNameW(process.as_raw_handle(), PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len)
+        };
+        (ok != 0).then(|| String::from_utf16_lossy(&buf[..len as usize]))
+    }
+
+    /// The command line (Windows 8.1+), read with the same limited query access.
+    fn command_line(process: &OwnedHandle) -> Option<String> {
+        let mut size = 0u32;
+        // SAFETY: a size query with no buffer; it fails and reports the size it needs.
+        unsafe {
+            NtQueryInformationProcess(
+                process.as_raw_handle(),
+                ProcessCommandLineInformation,
+                std::ptr::null_mut(),
+                0,
+                &mut size,
+            )
+        };
+        if (size as usize) < size_of::<UNICODE_STRING>() {
+            return None;
+        }
+        // u64 elements keep the UNICODE_STRING header aligned.
+        let mut buf = vec![0u64; (size as usize).div_ceil(8)];
+        // SAFETY: a buffer of at least `size` bytes.
+        let status = unsafe {
+            NtQueryInformationProcess(
+                process.as_raw_handle(),
+                ProcessCommandLineInformation,
+                buf.as_mut_ptr().cast(),
+                size,
+                &mut size,
+            )
+        };
+        if status < 0 {
+            return None;
+        }
+        // SAFETY: on success the buffer starts with a UNICODE_STRING whose text lies inside it.
+        let text = unsafe {
+            let s = &*buf.as_ptr().cast::<UNICODE_STRING>();
+            if s.Buffer.is_null() {
+                return None;
+            }
+            std::slice::from_raw_parts(s.Buffer, usize::from(s.Length) / 2)
+        };
+        Some(String::from_utf16_lossy(text))
+    }
+}
+
+/// The full executable path: `comm` keeps a relative path a process was started with.
+#[cfg(target_os = "macos")]
+fn exe_path(pid: u32) -> Option<String> {
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: the buffer holds `PROC_PIDPATHINFO_MAXSIZE` bytes, as the call requires.
+    let n = unsafe { libc::proc_pidpath(i32::try_from(pid).ok()?, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn exe_path(_pid: u32) -> Option<String> {
+    None
 }
 
 /// Node's default inspector port, which `SIGUSR1` opens.
@@ -244,7 +400,7 @@ pub fn attachable_processes() -> IdeResult<Vec<AttachableProcess>> {
     let cwd = std::env::temp_dir();
     let native = if adapter::resolve_binary("codelldb", &cwd).is_some() { "codelldb" } else { "lldb-dap" };
     let mut out: Vec<AttachableProcess> =
-        list_processes()?.iter().filter_map(|p| classify(p, is_go_binary, native)).collect();
+        list_processes()?.iter().filter_map(|p| classify(p, is_dotnet, is_go_binary, native)).collect();
     out.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
     Ok(out)
 }
@@ -258,7 +414,8 @@ mod tests {
     }
 
     fn kind(exe: &str, args: &str) -> Option<(AttachKind, Option<u16>)> {
-        classify(&raw(exe, args), |e| e.ends_with("/gosrv"), "codelldb").map(|p| (p.kind, p.port))
+        classify(&raw(exe, args), |e| e.ends_with("/Api"), |e| e.ends_with("/gosrv"), "codelldb")
+            .map(|p| (p.kind, p.port))
     }
 
     #[test]
@@ -292,9 +449,35 @@ mod tests {
             kind("/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python", "x"),
             Some((AttachKind::Python, None))
         );
+        assert_eq!(kind("/home/me/Api", "./Api"), Some((AttachKind::Dotnet, None)));
         assert_eq!(kind("/home/me/gosrv", "./gosrv"), Some((AttachKind::Go, None)));
         assert_eq!(kind("/home/me/a.out", "./a.out"), Some((AttachKind::Native, None)));
         assert!(!is_python("pythonista"));
+    }
+
+    #[test]
+    fn detects_dotnet_hosts_and_apphosts() {
+        let dir = std::env::temp_dir().join(format!("openidea-attach-dotnet-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = dir.join("Api");
+        std::fs::write(&app, b"").unwrap();
+        std::fs::write(dir.join("Api.runtimeconfig.json"), b"{}").unwrap();
+        let tool = dir.join("tool");
+        std::fs::write(&tool, b"").unwrap();
+        assert!(is_dotnet(app.to_str().unwrap()));
+        assert!(!is_dotnet(tool.to_str().unwrap()));
+        assert!(is_dotnet("/usr/local/share/dotnet/dotnet"));
+        assert!(is_dotnet("dotnet"));
+        assert!(!is_dotnet("Api"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn skips_windows_system_programs() {
+        assert!(is_windows_system(r"C:\Windows\System32\svchost.exe"));
+        assert!(is_windows_system(r"c:\program files (x86)\App\app.exe"));
+        assert!(!is_windows_system(r"D:\src\srv\srv.exe"));
+        assert!(!is_windows_system("/usr/bin/true"));
     }
 
     #[test]
