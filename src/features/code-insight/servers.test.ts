@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ServerId, ServerInfo } from "@/bindings";
+import type { ServerEntry } from "./servers";
 
 const pending = vi.hoisted(() => [] as ((data: ServerInfo[]) => void)[]);
 
@@ -31,7 +32,7 @@ describe("server status", () => {
 
   it("says a missing server is still not installed when checking again finds nothing", async () => {
     const id = 7 as ServerId;
-    const entry = { id, name: "sqls", status: "missing", languages: ["sql"], root: null, message: null } as const;
+    const entry: ServerEntry = { id, name: "sqls", status: "missing", languages: ["sql"], root: null, message: null };
     useServers.setState({ servers: new Map([[id, entry]]) });
     const notify = vi.fn();
     provideNotificationService({ notify } as never);
