@@ -313,10 +313,11 @@ pub async fn build_sync(
     if tool == BuildTool::Gradle {
         // The sync may report project folders outside the project (`includeFlat`): index and list them.
         project.refresh_index_scope();
-        project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
         let p = project.clone();
         tokio::task::spawn_blocking(move || p.refresh_repositories());
     }
+    // New source folders and dependency versions: the Project view and External Libraries reload.
+    project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
     if tool == BuildTool::Maven
         && model.maven.is_some()
         && let Some(bridge) = &project.kotlin_bridge
