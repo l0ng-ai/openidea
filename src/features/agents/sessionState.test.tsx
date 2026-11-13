@@ -245,7 +245,7 @@ describe("conversation rows", () => {
       tool("two"),
       { type: "agent", text: "More detail" },
       tool("List .", { status: "running" }),
-      { type: "permission", id: 1, title: "Run python3", options: [], chosen },
+      { type: "permission", id: 1, title: "Run python3", command: "python3", options: [], chosen },
       { type: "plan", items: [{ content: "Check files", status: "in_progress" }] },
       { type: "thought", text: "Consider the result" },
       { type: "agent", text: "Done" },
@@ -955,7 +955,7 @@ describe("a pending permission request above the composer", () => {
         diffs: [],
         locations: [],
       },
-      { type: "permission", id: 12, title: `Run ${command}`, options, chosen: null },
+      { type: "permission", id: 12, title: `Run ${command}`, command, options, chosen: null },
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
@@ -978,7 +978,7 @@ describe("a pending permission request above the composer", () => {
   });
 
   it.each(options)("sends the original $kind option id, then records it in the conversation", async (option) => {
-    const pending: AgentEntry = { type: "permission", id: 12, title: `Run ${command}`, options, chosen: null };
+    const pending: AgentEntry = { type: "permission", id: 12, title: `Run ${command}`, command, options, chosen: null };
     backend.answers = [];
     backend.entries.set("A", [pending]);
     useAgents.setState({ entries: new Map(backend.entries) });
@@ -1001,7 +1001,7 @@ describe("a pending permission request above the composer", () => {
   });
 
   it("is answered with a number key when the focus isn't in a text field", async () => {
-    const pending: AgentEntry = { type: "permission", id: 12, title: `Run ${command}`, options, chosen: null };
+    const pending: AgentEntry = { type: "permission", id: 12, title: `Run ${command}`, command, options, chosen: null };
     backend.answers = [];
     backend.entries.set("A", [pending]);
     useAgents.setState({ entries: new Map(backend.entries) });
@@ -1024,6 +1024,7 @@ describe("a pending permission request above the composer", () => {
         type: "permission",
         id: 3,
         title: "Run ls d:/project",
+        command: "ls d:/project",
         options: [
           { id: "once", name: "Allow Once", kind: "allow_once" },
           { id: "reject", name: "Reject", kind: "reject_once" },
