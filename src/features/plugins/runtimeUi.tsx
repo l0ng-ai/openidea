@@ -10,6 +10,7 @@ import {
   contentTabData,
   contentTabKey,
   handleContentTabReplyText,
+  openPluginDiffRequest,
   PLUGIN_CONTENT_EDITOR_KIND,
   WASM_CONTENT_VIEW,
 } from "./views/contentTab";
@@ -562,6 +563,23 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
           ...JSON.parse(JSON.stringify(e.reply), (_k, v: unknown) => (v === null ? undefined : v)),
         }),
       );
+      return true;
+    case "openDiff":
+      try {
+        const { diff, fileName } = e;
+        openPluginDiffRequest(
+          {
+            ...diff,
+            leftLabel: diff.leftLabel ?? undefined,
+            rightLabel: diff.rightLabel ?? undefined,
+            title: diff.title ?? undefined,
+            fileName: fileName ?? undefined,
+          },
+          diff.left.length + diff.right.length,
+        );
+      } catch (err) {
+        console.warn(`plugin ${e.pluginId} diff:`, err);
+      }
       return true;
     case "openTerminal":
       // The program was approved (`process:`) and verified by the host.

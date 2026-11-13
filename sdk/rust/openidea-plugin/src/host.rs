@@ -866,6 +866,9 @@ mod imp {
     pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Result<(), Error> {
         wit::views::reply_content_tab(request, &content_tab_reply_to(reply)).map_err(error)
     }
+    pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
+        wit::views::open_diff(&content_diff_to(diff), file_name).map_err(error)
+    }
 
     pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {
         wit::views::open_terminal(title, program, args).map_err(error)
@@ -1859,6 +1862,11 @@ pub fn open_content_tab(tab: &crate::ContentTab) -> Result<(), Error> {
 /// Replies to a content-tab-action event in its originating window.
 pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Result<(), Error> {
     imp::reply_content_tab(request, reply)
+}
+/// API 1.7: opens two texts in the invoking window's diff viewer; `file_name` picks the
+/// syntax highlighting.
+pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
+    imp::open_diff(diff, file_name)
 }
 
 /// Registers/replaces a read-only project target. Requires the program's process grant.

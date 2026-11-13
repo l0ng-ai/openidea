@@ -218,6 +218,9 @@ pub enum PluginEvent {
     /// Reply to a content action in this window.
     #[serde(rename_all = "camelCase")]
     ContentTabReply { plugin_id: String, request_id: String, reply: ide_plugin::ContentTabReply },
+    /// Open two texts in this window's diff viewer.
+    #[serde(rename_all = "camelCase")]
+    OpenDiff { plugin_id: String, diff: ide_plugin::ContentDiff, file_name: Option<String> },
 
     /// Plugins, their status or their contributions changed: re-fetch `plugin_list`.
     CommandsChanged,
