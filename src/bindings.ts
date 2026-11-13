@@ -4932,6 +4932,8 @@ export type FileDecoration = {
 	badge: string | null,
 	style: string,
 	tooltip: string | null,
+	/**  Text shown after the name (API 1.7 `set-file-note`). */
+	note?: string | null,
 };
 
 export type FileEdit = { kind: "edit"; path: IpcPath; edits: TextEdit[]; 

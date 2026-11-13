@@ -2497,7 +2497,7 @@ impl bindings::openidea::plugin::decorations::Host for StoreData {
             .file_decorations(
                 Some(&real),
                 &set_id,
-                Some(crate::FileDecoration { badge: item.badge, style: item.style, tooltip: item.tooltip }),
+                Some(crate::FileDecoration { badge: item.badge, style: item.style, tooltip: item.tooltip, note: None }),
             )
             .map_err(to_wit))
     }
@@ -2506,6 +2506,17 @@ impl bindings::openidea::plugin::decorations::Host for StoreData {
             return Ok(Err(e));
         }
         Ok(self.host.file_decorations(None, &set_id, None).map_err(to_wit))
+    }
+    fn set_file_note(&mut self, path: String, set_id: String, note: String, tooltip: Option<String>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let real = match self.decoration_path(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        let item = crate::FileDecoration { badge: None, style: String::new(), tooltip, note: Some(note) };
+        Ok(self.host.file_decorations(Some(&real), &set_id, Some(item)).map_err(to_wit))
     }
 }
 
