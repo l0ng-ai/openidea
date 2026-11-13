@@ -5,6 +5,7 @@
  * distinguishes them.
  */
 import type { DbDriver } from "@/platform/ipc";
+import { jsonNumber } from "@/platform/losslessJson";
 import { isNumericColumn } from "./Grid";
 import { toCsv, toOneRow, toTsv, type Cell } from "./model";
 import { quoteIdent } from "./sql/complete";
@@ -49,17 +50,14 @@ function laidOut(d: ExportData, o: ExportOptions): { head: string[] | null; rows
   return { head: null, rows: head.map((h, c) => [...(o.columnHeader ? [h] : []), ...rows.map((r) => r[c] ?? null)]) };
 }
 
-/** Normalize decimal text to JSON syntax without rounding its digits. */
+/** A cell as JSON: numeric columns keep their exact digits, everything else is a string. */
 function jsonCell(v: Cell, numeric: boolean): string {
   if (v === null) return "null";
-  const number = numeric ? Number(v) : NaN;
-  if (!Number.isFinite(number)) return JSON.stringify(v);
-  const parts = /^([+-]?)(\d*)(?:\.(\d*))?([eE][+-]?\d+)?$/.exec(v.trim());
-  if (!parts) return JSON.stringify(number);
-  const whole = parts[2]!.replace(/^0+/, "") || "0";
-  const fraction = parts[3] ?? "";
-  if (!/[1-9]/.test(whole + fraction)) return "0";
-  return `${parts[1] === "-" ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}${parts[4] ?? ""}`;
+  if (!numeric) return JSON.stringify(v);
+  const literal = jsonNumber(v);
+  if (literal !== null) return literal;
+  const number = Number(v);
+  return Number.isFinite(number) ? JSON.stringify(number) : JSON.stringify(v);
 }
 
 export function exportData(
