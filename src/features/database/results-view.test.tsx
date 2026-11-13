@@ -278,6 +278,29 @@ describe("editable result grid", () => {
     expect(backend.applyEdits).not.toHaveBeenCalled();
   });
 
+  it("keeps unsubmitted edits while another result tab is shown", async () => {
+    const first = show("SELECT * FROM users WHERE id < 10", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    const second: ResultTab = {
+      ...first,
+      id: nextId++,
+      title: "Result 2",
+      outcome: { ...first.outcome, result: { ...first.outcome.result! } },
+    };
+    useDatabase.setState((s) => ({ results: [...s.results, second] }));
+    await act(async () => render(<ResultsView />));
+    fireEvent.doubleClick(await screen.findByRole("gridcell", { name: "Ann" }));
+    const input = screen.getByRole("textbox", { name: "Edit name" });
+    fireEvent.change(input, { target: { value: "Bob" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await act(async () => useDatabase.setState({ activeResult: second.id }));
+    expect(screen.getByRole("button", { name: "Submit" }).hasAttribute("disabled")).toBe(true);
+    await act(async () => useDatabase.setState({ activeResult: first.id }));
+
+    expect(screen.getByRole("gridcell", { name: "Bob" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Submit" }).hasAttribute("disabled")).toBe(false);
+  });
+
   it("keeps an aliased column read-only while the plain ones stay editable", async () => {
     show("SELECT id, name AS n FROM users", [{ name: "id" }, { name: "n" }], [["1", "Ann"]]);
     await act(async () => render(<ResultsView />));
