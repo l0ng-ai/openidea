@@ -5,6 +5,7 @@ import type { ServerId, ServerInfo, ServerStatus } from "@/bindings";
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
+import { tx } from "@/platform/i18n";
 
 export interface ServerEntry {
   id: ServerId;
@@ -94,9 +95,15 @@ export async function refreshServers() {
 }
 
 export async function restartServer(id: ServerId) {
+  const missing = useServers.getState().servers.get(id)?.status === "missing";
   try {
     await call(commands.lspRestart(id));
   } catch (e) {
+    const entry = useServers.getState().servers.get(id);
+    if (missing && entry?.status === "missing") {
+      notifications().notify({ group: "lsp", level: "warning", title: tx`${entry.name} is still not installed` });
+      return;
+    }
     notifications().notify({
       group: "lsp",
       level: "error",

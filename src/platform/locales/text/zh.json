@@ -4632,6 +4632,7 @@
   "Install {name}": "安装 {name}",
   "Restart {name}": "重启 {name}",
   "Check for {name} again": "重新检测 {name}",
+  "{name} is still not installed": "{name} 仍未安装",
   "{count} error": "{count} 个错误",
   "{count} errors": "{count} 个错误",
   "{count} warning": "{count} 个警告",

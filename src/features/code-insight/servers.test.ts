@@ -14,17 +14,31 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
         new Promise((resolve) => {
           pending.push((data) => resolve({ status: "ok", data }));
         }),
+      lspRestart: () => Promise.resolve({ status: "error", error: { kind: "unavailable", message: "not found" } }),
     },
   };
 });
 
 const { emitLocalIdeEvent } = await import("@/platform/ipc");
 const { useProject } = await import("@/platform/project");
-const { BUSY_SHOW_DELAY_MS, eslintCovers, installServerEvents, serversSummary, useServers } = await import("./servers");
+const { provideNotificationService } = await import("@/workbench/contributions");
+const { BUSY_SHOW_DELAY_MS, eslintCovers, installServerEvents, restartServer, serversSummary, useServers } =
+  await import("./servers");
 
 describe("server status", () => {
   let dispose = () => {};
   afterEach(() => dispose());
+
+  it("says a missing server is still not installed when checking again finds nothing", async () => {
+    const id = 7 as ServerId;
+    const entry = { id, name: "sqls", status: "missing", languages: ["sql"], root: null, message: null } as const;
+    useServers.setState({ servers: new Map([[id, entry]]) });
+    const notify = vi.fn();
+    provideNotificationService({ notify } as never);
+    await restartServer(id);
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "sqls is still not installed" }));
+    useServers.setState({ servers: new Map() });
+  });
 
   it("keeps a status that arrived after the snapshot was requested", async () => {
     useProject.setState({ project: { name: "p", root: "/p", trusted: true, isGit: false, settings: {} } as never });
