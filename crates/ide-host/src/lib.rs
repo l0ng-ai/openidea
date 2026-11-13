@@ -180,6 +180,7 @@ impl Host {
             open_locks: Default::default(),
         };
         host.apply_proxy();
+        ops::agent::move_user_mcp_values(&host);
         host
     }
 
