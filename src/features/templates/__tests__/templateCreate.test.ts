@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFromTemplate } from "../files/create";
 import { renderFileTemplate, type FileTemplate } from "../files/model";
+import { BUILTIN_FILE_TEMPLATES } from "../files/builtins";
+import { activate as activateTemplates } from "../index";
+import { menuGroupItems } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 
 const files = vi.hoisted(() => new Map<string, string>());
@@ -152,5 +155,35 @@ describe("createFromTemplate", () => {
       nbformat: 4,
       cells: [{ cell_type: "markdown", source: ["# report"] }],
     });
+  });
+});
+
+describe("built-in Jupyter Notebook", () => {
+  const builtin = BUILTIN_FILE_TEMPLATES.find((t) => t.id === "jupyter")!;
+
+  it("writes the titled notebook body before the notebook editor takes the file", async () => {
+    const titled = builtin.kinds.find((k) => k.id === "titled")!;
+    const path = await createFromTemplate(builtin, titled, "/p", "analysis");
+
+    expect(path).toBe("/p/analysis.ipynb");
+    expect(JSON.parse(files.get(path)!)).toMatchObject({
+      nbformat: 4,
+      cells: [{ cell_type: "markdown", source: ["# analysis"] }],
+    });
+    expect(calls.notify).not.toHaveBeenCalled();
+  });
+
+  it("is listed in the New menu with its icon, without duplicating entries", () => {
+    const dispose = activateTemplates();
+    try {
+      const items = menuGroupItems("new", { paths: ["/p"] });
+      const actions = items.filter((i) => i.kind === "action");
+      const row = actions.find((i) => i.kind === "action" && i.action === "templates.new.jupyter");
+      expect(row).toMatchObject({ label: "Jupyter Notebook", icon: "file-jupyter" });
+      const ids = actions.map((i) => i.action);
+      expect(new Set(ids).size).toBe(ids.length);
+    } finally {
+      dispose();
+    }
   });
 });
