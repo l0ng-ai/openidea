@@ -150,6 +150,9 @@ pub struct ExprTypes<'a, 'r> {
     /// custom expectation's), and the class the tests are bound to; computed
     /// on first use.
     pest: std::cell::OnceCell<PestClosures>,
+    /// The properties a Pest file's `beforeEach()` closures assign to
+    /// `$this`, by name; `None` while one is being typed.
+    pest_properties: RefCell<HashMap<String, Option<Type>>>,
 }
 
 const TOP_LEVEL: u32 = u32::MAX - 1;
@@ -175,6 +178,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             expected: RefCell::new(HashMap::new()),
             path: None,
             pest: std::cell::OnceCell::new(),
+            pest_properties: RefCell::new(HashMap::new()),
         }
     }
 
@@ -211,6 +215,36 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             (_, true) => Some(crate::types::resolve::PEST_EXPECTATION),
             (_, false) => class.as_deref(),
         }
+    }
+
+    /// The type of `$this->name` in a Pest test closure when the test case
+    /// has no such property: what the file's `beforeEach()` closures assign
+    /// to it (`$this->manager = app(Manager::class);`).
+    fn pest_property(&self, name: &str) -> Type {
+        if let Some(known) = self.pest_properties.borrow().get(name) {
+            return known.clone().unwrap_or(Type::Mixed);
+        }
+        self.pest_properties.borrow_mut().insert(name.to_owned(), None);
+        let mut setups = Vec::new();
+        pest_setups(self.file.program().statements.iter(), &mut setups);
+        let mut assigned = Vec::new();
+        for closure in setups {
+            let frames = [Frame::Closure(closure)];
+            for statement in closure.body.statements.iter() {
+                if let mago_syntax::cst::Statement::Expression(statement) = statement
+                    && let Expression::Assignment(assignment) = statement.expression
+                    && let Expression::Access(Access::Property(access)) = assignment.lhs
+                    && is_this(access.object)
+                    && let ClassLikeMemberSelector::Identifier(property) = &access.property
+                    && property.value == name.as_bytes()
+                {
+                    assigned.push(self.expr(assignment.rhs, &frames).widen());
+                }
+            }
+        }
+        let ty = if assigned.is_empty() { Type::Mixed } else { Type::union(assigned) };
+        self.pest_properties.borrow_mut().insert(name.to_owned(), Some(ty.clone()));
+        ty
     }
 
     /// The flow of the scope `frames` end in: their innermost function-like,
@@ -1214,7 +1248,11 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                         return self.anonymous_property(class, &lossy(name.value));
                     }
                     let receiver = self.expr(access.object, frames);
-                    self.resolver.property_type(&receiver, &lossy(name.value), &context)
+                    let ty = self.resolver.property_type(&receiver, &lossy(name.value), &context);
+                    if ty == Type::Mixed && is_this(access.object) && self.pest_class(frames).is_some() {
+                        return self.pest_property(&lossy(name.value));
+                    }
+                    ty
                 }
                 _ => Type::Mixed,
             },
@@ -1521,6 +1559,44 @@ impl<'a> Walker<'a, 'a, Returns<'a>> for ReturnWalker {
 
 #[cfg(test)]
 mod tests;
+
+/// The closures of the `beforeEach()` calls in `statements` (the file's top
+/// level, namespaces, and `describe()` closures).
+fn pest_setups<'s>(
+    statements: impl Iterator<Item = &'s mago_syntax::cst::Statement<'s>>,
+    out: &mut Vec<&'s Closure<'s>>,
+) {
+    use mago_syntax::cst::{Argument, Statement};
+    for statement in statements {
+        match statement {
+            Statement::Expression(statement) => {
+                let mut expr = statement.expression;
+                while let Expression::Call(Call::Method(call)) = expr {
+                    expr = call.object;
+                }
+                let Expression::Call(Call::Function(call)) = expr else { continue };
+                let Expression::Identifier(function) = call.function else { continue };
+                let name = String::from_utf8_lossy(function.value()).to_ascii_lowercase();
+                let name = name.rsplit('\\').next().unwrap_or_default();
+                for argument in call.argument_list.arguments.iter() {
+                    let value = match argument {
+                        Argument::Positional(argument) => argument.value,
+                        Argument::Named(argument) => argument.value,
+                    };
+                    if let Expression::Closure(closure) = value {
+                        match name {
+                            "beforeeach" => out.push(closure),
+                            "describe" => pest_setups(closure.body.statements.iter(), out),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Statement::Namespace(namespace) => pest_setups(namespace.statements().iter(), out),
+            _ => {}
+        }
+    }
+}
 
 /// Pest's functions taking a test closure bound to the test case.
 const PEST_FUNCTIONS: &[&str] = &["test", "it", "todo", "beforeeach", "aftereach", "describe"];

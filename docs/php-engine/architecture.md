@@ -116,7 +116,10 @@ the editor features, Inspect Code and Find Usages pass.
 
 Custom expectations (`expect()->extend('toBeX', function (…) { … })`) are
 indexed as macros of `Pest\Expectation` returning the expectation, and `$this`
-in their closure is the expectation. Not done: higher-order expectations
+in their closure is the expectation. A property of `$this` the test case
+doesn't declare has the type the file's `beforeEach()` closures assign to it
+(`$this->manager = app(Manager::class);`, also inside `describe()` blocks).
+Not done: higher-order expectations
 (`expect($x)->name->toBe(…)`), and members the `uses()` traits add beyond the
 test case class.
 

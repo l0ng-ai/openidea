@@ -163,3 +163,17 @@ fn custom_expectations_are_methods_of_the_expectation() {
         [target("lib/pest/Expectation.php", 9, "toBe")]
     );
 }
+
+#[test]
+fn properties_set_up_before_each_test_are_typed() {
+    let test = "<?php\n\nbeforeEach(function () {\n    $this->user = new Tests\\AdminTestCase('x');\n});\n\ndescribe('panel', function () {\n    beforeEach(function () {\n        $this->inner = $this->user;\n    });\n\n    it('opens', function () {\n        $this->inner->admin/*|*/Panel();\n    });\n});\n";
+    let mut p = project("tests/Feature/PanelTest.php", test);
+    assert_eq!(
+        p.definition("tests/Feature/PanelTest.php", test).expect("handled"),
+        [target("tests/TestCase.php", 15, "adminPanel")]
+    );
+    // A property nothing assigns stays unknown.
+    let test = "<?php\n\ntest('x', function () {\n    $this->nothing->admin/*|*/Panel();\n});\n";
+    let mut p = project("tests/Feature/PanelTest.php", test);
+    assert_eq!(p.definition("tests/Feature/PanelTest.php", test).expect("handled"), []);
+}
