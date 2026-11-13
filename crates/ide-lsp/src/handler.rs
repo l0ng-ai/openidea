@@ -223,6 +223,8 @@ impl ClientHandler {
         if self.server.running_gen(self.generation).is_some_and(|run| !run.caps.read().restriction.diagnostics()) {
             return;
         }
+        let mut params = params;
+        crate::virtual_doc::normalize_uris(&mut params);
         let params: lsp::PublishDiagnosticsParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => {
@@ -322,11 +324,13 @@ impl ClientHandler {
     }
 
     fn apply_edit(&self, mgr: &LspManager, params: Value) -> Result<Value, (i64, String)> {
-        let edit: lsp::WorkspaceEdit = params
-            .get("edit")
-            .cloned()
-            .ok_or_else(|| (codes::INVALID_PARAMS, "missing edit".to_owned()))
-            .and_then(|e| serde_json::from_value(e).map_err(|e| (codes::INVALID_PARAMS, e.to_string())))?;
+        let edit: lsp::WorkspaceEdit =
+            params.get("edit").cloned().ok_or_else(|| (codes::INVALID_PARAMS, "missing edit".to_owned())).and_then(
+                |mut e| {
+                    crate::virtual_doc::normalize_uris(&mut e);
+                    serde_json::from_value(e).map_err(|e| (codes::INVALID_PARAMS, e.to_string()))
+                },
+            )?;
         // Convert before calling the hook: it re-enters document sync.
         let edit = convert::workspace_edit(&mgr.conv(self.encoding()), edit);
         let applied = match mgr.apply_edit_hook() {
