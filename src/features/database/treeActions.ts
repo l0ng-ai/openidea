@@ -44,6 +44,10 @@ import { tx } from "@/platform/i18n";
 
 /** Context key: the Database tree has focus. */
 export const DB_VIEW_FOCUS = "databaseViewFocus";
+
+/** Set while the Database view is mounted: Expand All walks its tree's loaded nodes. */
+export const databaseTree: { expandAll: (() => void) | null } = { expandAll: null };
+
 const OPEN = "projectOpen";
 
 const isNode = (v: unknown): v is DbNode => !!v && typeof v === "object" && "kind" in v && "key" in v;
@@ -480,6 +484,12 @@ export function registerDatabaseTreeActions(): () => void {
       id: "db.separateProceduresAndFunctions",
       title: "Separate Procedures and Functions",
       run: toggleSeparateProceduresAndFunctions,
+    }),
+    tree({
+      id: "db.expandAll",
+      title: "Expand All",
+      icon: "expand-all",
+      run: () => databaseTree.expandAll?.(),
     }),
     tree({
       id: "db.collapseAll",
