@@ -78,7 +78,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
       - uses: Swatinem/rust-cache@v2
-        with: { key: "${{ matrix.target }}" }
+        with: { key: "${{ matrix.target }}", cache-on-failure: true }
       - name: Linux deps
         if: runner.os == 'Linux'
         run: |
@@ -181,7 +181,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
       - uses: Swatinem/rust-cache@v2
-        with: { key: "server-${{ matrix.target }}" }
+        with: { key: "server-${{ matrix.target }}", cache-on-failure: true }
       - name: musl toolchain
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
