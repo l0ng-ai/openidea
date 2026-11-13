@@ -9,6 +9,7 @@ import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import {
   provideEmbeddedTerminal,
+  registerAgentContextSource,
   registerEditorKind,
   registerToolWindow,
   toolWindowService,
@@ -102,6 +103,16 @@ export function activate(): () => void {
           },
         ])
       : () => {},
+    registerAgentContextSource({
+      id: "terminal",
+      title: "Terminal",
+      description: "The active terminal's recent output",
+      icon: "terminal",
+      resolve: async () => {
+        const output = terminalRuntime()?.activeSession()?.recentOutput();
+        return output?.text ? { kind: "block", info: `terminal ${output.title}`.trim(), text: output.text } : null;
+      },
+    }),
     registerToolWindow({
       id: WINDOW,
       title: "Terminal",
