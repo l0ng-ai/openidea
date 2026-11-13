@@ -20,6 +20,7 @@ import {
   contentTabData,
   contentTabKey,
   handleContentTabReplyText,
+  openPluginDiffRequest,
   registerContentTabSender,
 } from "../views/contentTab";
 
@@ -224,6 +225,37 @@ describe("plugin-backed content editor tabs", () => {
       });
     } finally {
       f.offSender();
+      unregisterDiff();
+    }
+  });
+
+  it("opens a plugin's open-diff request in the IDE diff viewer and rejects invalid ones", () => {
+    const diffs: unknown[] = [];
+    const unregisterDiff = registerActions([
+      { id: "vcs.openDiff", title: "Open Diff", run: ({ arg }) => void diffs.push(arg) },
+    ]);
+    try {
+      openPluginDiffRequest({ left: "a\n", right: "b\n", fileName: "src/review.ts", leftLabel: "Target" }, 10);
+      openPluginDiffRequest({ left: "", right: "b\n", title: "MR !12" }, 10);
+      expect(diffs).toEqual([
+        {
+          path: "src/review.ts",
+          title: "src/review.ts",
+          left: { type: "text", text: "a\n", label: "Target" },
+          right: { type: "text", text: "b\n", label: "After" },
+        },
+        {
+          path: "MR !12",
+          title: "MR !12",
+          left: { type: "text", text: "", label: "Before" },
+          right: { type: "text", text: "b\n", label: "After" },
+        },
+      ]);
+      expect(() => openPluginDiffRequest({ left: "a", right: 1 }, 10)).toThrow();
+      expect(() => openPluginDiffRequest({ left: "a", right: "b", fileName: "x\ny" }, 10)).toThrow();
+      expect(() => openPluginDiffRequest({ left: "a", right: "b" }, 4 << 20)).toThrow();
+      expect(diffs).toHaveLength(2);
+    } finally {
       unregisterDiff();
     }
   });

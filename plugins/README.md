@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.6.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.7.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -418,9 +418,20 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.7
+
+API 1.7.0 is in development on `main`. Use `engines.openidea = "^1.7"` and the
+matching SDK. Released 1.6 plugins keep working. New in 1.7:
+
+- `host::open_diff(&ContentDiff { .. }, file_name)` (`views.open-diff`) opens
+  two texts in the invoking window's diff viewer, for example a merge request's
+  file before and after; `file_name` picks the syntax highlighting. Web views
+  send `{ op: "open-diff", left, right, leftLabel?, rightLabel?, title?, fileName? }`.
+  Commands and events only; each side at most 1 MiB.
+
 ### API 1.5
 
-API 1.5.0 is planned for the next OpenIDEA release. Use
+API 1.5.0 shipped with OpenIDEA 0.1.41. Use
 `engines.openidea = "^1.5"` and the matching SDK. Released 1.4 plugins keep
 working. New in 1.5:
 
@@ -638,6 +649,7 @@ then run `openidea-plugin check`.
 | `host::write_terminal(key, text)`                                                                              | `views.write-terminal`                     | API 1.4: write only to this plugin's still-running terminal in this window; trusted project, commands/events only.                                                                                                                                                                                                                                        |
 | `host::open_content_tab(tab)`                                                                                  | `views.open-content-tab`                   | API 1.4: the shared content editor protocol, without a web view; actions arrive as `content-tab-action`.                                                                                                                                                                                                                                                  |
 | `host::reply_content_tab(request_id, reply)`                                                                   | `views.reply-content-tab`                  | API 1.4: reply to an owned action in the originating window. No capability; commands/events only.                                                                                                                                                                                                                                                         |
+| `host::open_diff(diff, file_name)`                                                                             | `views.open-diff`                          | API 1.7: two texts in the invoking window's diff viewer; `file_name` (at most 256 characters) picks the highlighting. Commands/events only; each side at most 1 MiB.                                                                                                                                                                                      |
 | `RunConfigurations::configurations(root)`                                                                      | export `run-configurations.configurations` | API 1.4: optional `plugin-run-configurations` world; SDK registration `run_configurations`. Full project list, refreshed on configuration listing.                                                                                                                                                                                                        |
 | `TestResults::parse(config, chunk)`                                                                            | export `test-results.parse`                | API 1.4: optional `plugin-test-results` world; SDK registration `test_results`. Bounded output batches for `framework = "plugin"`; failures use built-in parsers.                                                                                                                                                                                         |
 | `TestResults::select_tests(config, tests)`                                                                     | export `test-results.select-tests`         | API 1.4: full replacement argv for test-tree name paths, or `None` when unsupported (the SDK default). Enables rerunning failed tests and running tree selections.                                                                                                                                                                                        |
@@ -2417,7 +2429,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 is planned with the next release; API 1.6.0 is in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41 and 1.6.0 with 0.1.43; API 1.7.0 is in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a

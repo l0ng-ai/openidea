@@ -281,6 +281,7 @@ With `engines.openidea = "^1.3"`, a page can send JSON messages through
 | `pty-spawn`, `pty-input`, `pty-resize`, `pty-kill`, `pty-ack` | An interactive PTY owned by the frame; output arrives as `pty-data`, `pty-exit`, `pty-error`. At most 8 sessions per plugin. |
 | `open-log-tab`                                                | A read-only editor tab following a program's output, with argument toggles.                                                  |
 | `open-content-tab`                                            | An editor tab on content the plugin supplies, with toolbar actions answered by `content-tab-reply`.                          |
+| `open-diff`                                                   | API 1.7: the diff viewer on two texts (`left`, `right`, optional labels, `title` and `fileName` for highlighting).           |
 
 The message fields and limits are in the
 [plugin guide](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#web-frame-ptys-api-13);
@@ -338,15 +339,16 @@ divider. The host asks after the item's `select` event and again after `refresh_
 
 These are called from a command or event of a window:
 
-| Function                                        | Opens                                                                                                                                                       |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `host::open_location(path, line, column)`       | A project file in an editor, caret at the position (`project.read`; a file in the plugin's private directory also works).                                   |
-| `host::open_editor(path, selection)`            | API 1.4: open a project file and select a range.                                                                                                            |
-| `host::open_terminal(title, program, args)`     | A Terminal tab running an approved `process:<program>` in the project root.                                                                                 |
-| `host::open_terminal_session(key, title, &cmd)` | API 1.4: a keyed terminal; reopening the key focuses it. Write to it with `host::write_terminal(key, text)`; its exit arrives as a `terminal-exited` event. |
-| `host::open_log_tab(key, title, &log)`          | API 1.3: the read-only log tab, from a `ProcessLog`. At most 32 per window; not yet in remote projects.                                                     |
-| `host::open_content_tab(&ContentTab { .. })`    | API 1.4: a content editor tab without a web view; actions arrive as `content-tab-action` events, answered with `host::reply_content_tab`.                   |
-| `host::output_append(channel, text)`            | API 1.4: a read-only **Output** tab per channel (32 channels, 1 MiB each); `output_clear`, `output_reveal`.                                                 |
+| Function                                          | Opens                                                                                                                                                       |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `host::open_location(path, line, column)`         | A project file in an editor, caret at the position (`project.read`; a file in the plugin's private directory also works).                                   |
+| `host::open_editor(path, selection)`              | API 1.4: open a project file and select a range.                                                                                                            |
+| `host::open_terminal(title, program, args)`       | A Terminal tab running an approved `process:<program>` in the project root.                                                                                 |
+| `host::open_terminal_session(key, title, &cmd)`   | API 1.4: a keyed terminal; reopening the key focuses it. Write to it with `host::write_terminal(key, text)`; its exit arrives as a `terminal-exited` event. |
+| `host::open_log_tab(key, title, &log)`            | API 1.3: the read-only log tab, from a `ProcessLog`. At most 32 per window; not yet in remote projects.                                                     |
+| `host::open_content_tab(&ContentTab { .. })`      | API 1.4: a content editor tab without a web view; actions arrive as `content-tab-action` events, answered with `host::reply_content_tab`.                   |
+| `host::open_diff(&ContentDiff { .. }, file_name)` | API 1.7: the diff viewer on two texts, such as a review's file before and after; `file_name` picks the syntax highlighting.                                 |
+| `host::output_append(channel, text)`              | API 1.4: a read-only **Output** tab per channel (32 channels, 1 MiB each); `output_clear`, `output_reveal`.                                                 |
 
 ```rust
 use openidea_plugin::{ContentAction, ContentTab, host};
