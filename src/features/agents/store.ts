@@ -37,6 +37,14 @@ import {
 } from "./composerModel";
 import { withQuote } from "./conversation";
 import {
+  EMPTY_ORGANIZE,
+  loadOrganize,
+  pruneOrganize,
+  saveOrganize,
+  type OrganizeGroup,
+  type TaskOrganize,
+} from "./organize";
+import {
   HOME_KEY,
   HOME_KIND,
   SESSION_KIND,
@@ -93,6 +101,10 @@ interface AgentsState {
   lastComposer: string;
   /** First messages of past tasks, newest first (New Task page ↑). */
   history: string[];
+  /** The user's groups and pins of the tool window's list. */
+  organize: TaskOrganize;
+  /** Project the organize state belongs to (its storage key); null until the tasks load. */
+  organizeRoot: string | null;
   /** Sessions on this machine that no task holds yet (#312). */
   external: ExternalSession[];
   /** Why the external sessions could not be listed. */
@@ -159,6 +171,8 @@ export const useAgents = create<AgentsState>(() => ({
   composers: new Map(),
   lastComposer: HOME,
   history: load<string[]>(HISTORY_KEY, []),
+  organize: EMPTY_ORGANIZE,
+  organizeRoot: null,
   external: [],
   externalError: null,
   focus: null,
@@ -311,6 +325,7 @@ export async function connect(): Promise<void> {
     return;
   }
   if (gen !== generation) return;
+  const organizeRoot = useProject.getState().project?.root ?? null;
   useAgents.setState({
     loaded: true,
     error: null,
@@ -320,6 +335,8 @@ export async function connect(): Promise<void> {
     changes: new Map(),
     groupedChanges: new Map(),
     providers,
+    organizeRoot,
+    organize: pruneOrganize(loadOrganize(organizeRoot), tasks),
   });
   notifyTabTitlesChanged();
   // Restored tabs of tasks deleted meanwhile close, like editors of deleted files.
@@ -380,6 +397,8 @@ export function disconnect() {
     entryLoads: new Map(),
     changes: new Map(),
     groupedChanges: new Map(),
+    organize: EMPTY_ORGANIZE,
+    organizeRoot: null,
     docked: null,
     lastTask: null,
     homeOpen: false,
@@ -410,10 +429,14 @@ function onEvent(e: AgentEvent) {
       composers.delete(e.id);
       const unread = new Set(s.unread);
       unread.delete(e.id);
+      // A deleted task leaves its group and the pinned area.
+      const organize = pruneOrganize(s.organize, tasks.values());
+      if (organize !== s.organize) saveOrganize(s.organizeRoot, organize);
       useAgents.setState({
         tasks,
         composers,
         unread,
+        organize,
         ...(s.docked === e.id ? { docked: null } : {}),
       });
       void editorService().closeInput?.(sessionKey(e.id));
@@ -1005,3 +1028,71 @@ export const unarchiveTask = (task: string) => call(commands.agentUnarchive(task
 export const renameTask = (task: string, title: string) => call(commands.agentRename(task, title));
 export const archiveTask = (task: string) => call(commands.agentArchive(task));
 export const deleteTask = (task: string, removeWorktree: boolean) => call(commands.agentDelete(task, removeWorktree));
+
+/** Applies `change` to the saved arrange state of the project the tasks belong to. */
+function changeOrganize(change: (organize: TaskOrganize) => TaskOrganize) {
+  const s = useAgents.getState();
+  const organize = change(s.organize);
+  useAgents.setState({ organize });
+  saveOrganize(s.organizeRoot, organize);
+}
+
+/** Pins or unpins the tasks: pinned ones sit above every group, and keep their group meanwhile. */
+export function pinTasks(tasks: readonly string[], pinned: boolean) {
+  changeOrganize((organize) => {
+    const next = new Set(organize.pinned);
+    for (const task of tasks) {
+      if (pinned) next.add(task);
+      else next.delete(task);
+    }
+    return { ...organize, pinned: [...next] };
+  });
+}
+
+/** The user's groups, in the order the tool window shows them. */
+export const taskGroups = (): OrganizeGroup[] => useAgents.getState().organize.groups;
+
+/** Adds a group and puts `tasks` in it; returns the new group. */
+export function newTaskGroup(name: string, tasks: readonly string[] = []): OrganizeGroup {
+  const group: OrganizeGroup = {
+    id: `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    name: name.trim(),
+  };
+  changeOrganize((organize) => ({
+    ...organize,
+    groups: [...organize.groups, group],
+    groupOf: tasks.length
+      ? { ...organize.groupOf, ...Object.fromEntries(tasks.map((task) => [task, group.id])) }
+      : organize.groupOf,
+  }));
+  return group;
+}
+
+export function renameTaskGroup(group: string, name: string) {
+  changeOrganize((organize) => ({
+    ...organize,
+    groups: organize.groups.map((g) => (g.id === group ? { ...g, name: name.trim() } : g)),
+  }));
+}
+
+/** Removes a group; its tasks go back to the status groups. */
+export function deleteTaskGroup(group: string) {
+  changeOrganize((organize) => ({
+    ...organize,
+    groups: organize.groups.filter((g) => g.id !== group),
+    groupOf: Object.fromEntries(Object.entries(organize.groupOf).filter(([, g]) => g !== group)),
+  }));
+}
+
+/** Moves the tasks into `group`, out of the pinned section; `null` puts them back among the status groups. */
+export function moveTasksToGroup(tasks: readonly string[], group: string | null) {
+  changeOrganize((organize) => {
+    const groupOf = { ...organize.groupOf };
+    for (const task of tasks) {
+      if (group) groupOf[task] = group;
+      else delete groupOf[task];
+    }
+    const moved = new Set(tasks);
+    return { ...organize, groupOf, pinned: group ? organize.pinned.filter((id) => !moved.has(id)) : organize.pinned };
+  });
+}

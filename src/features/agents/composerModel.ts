@@ -246,7 +246,6 @@ export function nextValue(option: AgentConfigOption, current = option.current): 
   return option.values[(i + 1) % option.values.length]!.value;
 }
 
-/** "12%" of the context window and a tooltip with the numbers. */
 /** A pending API retry: "3/10" (or "3" when the agent gives no limit) and the seconds left. */
 export function retryParts(r: AgentRetry, now: number): { attempt: string; wait: number } {
   return {
@@ -255,9 +254,14 @@ export function retryParts(r: AgentRetry, now: number): { attempt: string; wait:
   };
 }
 
-export function usageLabel(u: AgentUsage): { short: string; detail: string } {
-  const pct = Math.min(100, Math.round((u.used / u.size) * 100));
-  return { short: `${pct}%`, detail: tx`${tokens(u.used)} / ${tokens(u.size)} tokens` };
+/** "167k/1M (17%)" of the context window and a tooltip with the exact counts. */
+export function usageLabel(u: AgentUsage): { short: string; percent: number; detail: string } {
+  const percent = Math.min(100, Math.round((u.used / u.size) * 100));
+  return {
+    short: `${tokens(u.used)}/${tokens(u.size)} (${percent}%)`,
+    percent,
+    detail: tx`${tokens(u.used)} / ${tokens(u.size)} tokens`,
+  };
 }
 
 /** The usage-limit windows agents report, by the name they give them; others show that name. */

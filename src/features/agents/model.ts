@@ -85,6 +85,17 @@ const GROUPS: Array<[TaskGroup["status"], string, AgentStatus[]]> = [
   ["archived", "Archived", ["archived"]],
 ];
 
+const ATTENTION_RANK = new Map<AgentStatus, number>(
+  GROUPS.flatMap(([, , members], rank) => members.map((status): [AgentStatus, number] => [status, rank])),
+);
+
+/** Where a task sits in the panel by status: what waits for the user comes first. */
+export const attentionRank = (status: AgentStatus) => ATTENTION_RANK.get(status) ?? GROUPS.length;
+
+/** The group a status is shown in (`starting` runs). */
+export const groupStatus = (status: AgentStatus): TaskGroup["status"] =>
+  GROUPS.find(([, , members]) => members.includes(status))?.[0] ?? "ready";
+
 export function groupTasks(tasks: Iterable<AgentTask>): TaskGroup[] {
   const sorted = [...tasks].sort((a, b) => (b.updatedMs ?? 0) - (a.updatedMs ?? 0));
   return GROUPS.map(([status, label, members]) => ({

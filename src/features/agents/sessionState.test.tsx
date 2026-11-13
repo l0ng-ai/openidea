@@ -1348,7 +1348,9 @@ describe("meters in the task header", () => {
     useAgents.setState({ tasks: new Map([["A", reported]]), limits: new Map([["codex", limits]]) });
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Answer A");
-    expect(screen.getByText("12%")).toBeInTheDocument();
+    const usage = screen.getByLabelText(/^Context /);
+    expect(usage).toHaveTextContent("24k/200k (12%)");
+    expect(usage.querySelector(`.${styles.usageBar} span`)).toHaveStyle({ width: "12%" });
     expect(screen.getByText("5h 19%")).toBeInTheDocument();
     expect(screen.getByText("7d 9%")).toBeInTheDocument();
     expect(screen.queryByText("$0.42")).toBeNull();
@@ -1357,7 +1359,7 @@ describe("meters in the task header", () => {
         settings: { agents: { showContextUsage: false, showUsageLimits: false, showCost: true } },
       }),
     );
-    expect(screen.queryByText("12%")).toBeNull();
+    expect(screen.queryByText("24k/200k (12%)")).toBeNull();
     expect(screen.queryByText("5h 19%")).toBeNull();
     expect(screen.getByText("$0.42")).toBeInTheDocument();
   });
