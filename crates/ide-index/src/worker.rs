@@ -255,7 +255,15 @@ impl Shared {
         );
         self.indexing.store(false, Ordering::SeqCst);
         self.emit_state();
-        self.load_recent(store, root);
+        if let Some(recent) = store.load_recent_file() {
+            let mut r = self.recent.lock();
+            for p in recent.into_iter().map(|rel| root.join(rel)) {
+                if !r.contains(&p) {
+                    r.push(p);
+                }
+            }
+            r.truncate(MAX_RECENT);
+        }
         true
     }
 

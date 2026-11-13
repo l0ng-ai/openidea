@@ -49,6 +49,7 @@ pub(crate) struct Snapshot {
     dir_mtimes: Vec<u64>,
     dir_counts: Vec<u32>,
     filter: String,
+    stamp: String,
 }
 
 impl Snapshot {
@@ -171,49 +172,94 @@ fn err(e: impl std::fmt::Display) -> String {
 }
 
 pub(crate) struct Store {
-    /// Write-locked only for [`Store::compact`].
-    db: RwLock<Database>,
+    /// Opened lazily: a valid warm-start snapshot serves start-up without
+    /// touching redb. Write-locked only for [`Store::compact`].
+    db: RwLock<Option<Database>>,
+    /// Columnar warm-start snapshot, kept beside the database.
+    snapshot: std::path::PathBuf,
+    /// Recent-file list, readable without opening redb.
+    recent_file: std::path::PathBuf,
+    stamp: String,
 }
 
 impl Store {
-    /// Opens (or creates) `cache_dir/index.redb`. Records written by another
-    /// schema / extractor version or for another root are discarded. Returns
-    /// `None` when the database cannot be used (e.g. locked by another window);
-    /// the index then runs in memory only.
+    /// Opens (or creates) the cache directory. The redb database itself is opened
+    /// lazily so a valid columnar snapshot can serve start-up without touching it.
+    /// Returns `None` only when the cache directory cannot be created; the index
+    /// then runs in memory only.
     pub(crate) fn open(cache_dir: &Path, root: &Path, fingerprint: &str) -> Option<Self> {
         if let Err(e) = std::fs::create_dir_all(cache_dir) {
             tracing::warn!("index cache {}: {e}", cache_dir.display());
             return None;
         }
-        let file = cache_dir.join("index.redb");
+        let stamp = format!("{SCHEMA}\n{}\n{fingerprint}\n{}", env!("INDEX_SOURCE_HASH"), root.display());
+        Some(Self {
+            db: RwLock::new(None),
+            snapshot: cache_dir.join("index.snapshot"),
+            recent_file: cache_dir.join("recent.snapshot"),
+            stamp,
+        })
+    }
+
+    fn open_db(&self) -> Result<Database> {
+        let file = self.snapshot.with_file_name("index.redb");
         let db = match Database::create(&file) {
             Ok(db) => db,
             Err(redb::DatabaseError::DatabaseAlreadyOpen) => {
-                tracing::warn!("index cache {} is in use; indexing in memory only", file.display());
-                return None;
+                return Err(format!("{} is in use", file.display()));
             }
             Err(e) => {
                 tracing::warn!("index cache {} unreadable ({e}); rebuilding", file.display());
                 let _ = std::fs::remove_file(&file);
-                Database::create(&file).map_err(|e| tracing::warn!("index cache: {e}")).ok()?
+                let _ = std::fs::remove_file(&self.snapshot);
+                Database::create(&file).map_err(err)?
             }
         };
-        let store = Self { db: RwLock::new(db) };
-        let stamp = format!("{SCHEMA}\n{}\n{fingerprint}\n{}", env!("INDEX_SOURCE_HASH"), root.display());
-        match store.meta("stamp") {
-            Ok(Some(v)) if v == stamp.as_bytes() => {}
-            _ => {
-                if let Err(e) = store.reset(&stamp) {
-                    tracing::warn!("index cache reset failed: {e}");
-                    return None;
-                }
+        let valid = {
+            let txn = db.begin_read().map_err(err)?;
+            match txn.open_table(META) {
+                Ok(table) => table.get("stamp").map_err(err)?.is_some_and(|v| v.value() == self.stamp.as_bytes()),
+                Err(TableError::TableDoesNotExist(_)) => false,
+                Err(e) => return Err(err(e)),
             }
+        };
+        if !valid {
+            let _ = std::fs::remove_file(&self.snapshot);
+            let _ = std::fs::remove_file(&self.recent_file);
+            Self::reset_db(&db, &self.stamp)?;
         }
-        Some(store)
+        Ok(db)
+    }
+
+    fn ensure_db(&self) -> Result<()> {
+        if self.db.read().is_some() {
+            return Ok(());
+        }
+        let mut slot = self.db.write();
+        if slot.is_none() {
+            *slot = Some(self.open_db()?);
+        }
+        Ok(())
+    }
+
+    fn reset_db(db: &Database, stamp: &str) -> Result<()> {
+        let txn = db.begin_write().map_err(err)?;
+        match txn.delete_table(FILES) {
+            Ok(_) | Err(TableError::TableDoesNotExist(_)) => {}
+            Err(e) => return Err(err(e)),
+        }
+        {
+            let mut meta = txn.open_table(META).map_err(err)?;
+            meta.insert("stamp", stamp.as_bytes()).map_err(err)?;
+            txn.open_table(FILES).map_err(err)?;
+        }
+        txn.commit().map_err(err)
     }
 
     fn meta(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        let txn = self.db.read().begin_read().map_err(err)?;
+        self.ensure_db()?;
+        let db = self.db.read();
+        let txn = db.as_ref().expect("ensured").begin_read().map_err(err)?;
         let table = match txn.open_table(META) {
             Ok(t) => t,
             Err(TableError::TableDoesNotExist(_)) => return Ok(None),
@@ -222,24 +268,11 @@ impl Store {
         Ok(table.get(key).map_err(err)?.map(|v| v.value().to_vec()))
     }
 
-    fn reset(&self, stamp: &str) -> Result<()> {
-        let txn = self.db.read().begin_write().map_err(err)?;
-        match txn.delete_table(FILES) {
-            Ok(_) | Err(TableError::TableDoesNotExist(_)) => {}
-            Err(e) => return Err(err(e)),
-        }
-        {
-            let mut meta = txn.open_table(META).map_err(err)?;
-            meta.insert("stamp", stamp.as_bytes()).map_err(err)?;
-            meta.remove("snapshot").map_err(err)?;
-            txn.open_table(FILES).map_err(err)?;
-        }
-        txn.commit().map_err(err)
-    }
-
     /// All persisted records; undecodable entries are skipped (and re-indexed).
     pub(crate) fn load(&self) -> Result<Vec<(String, FileRecord)>> {
-        let txn = self.db.read().begin_read().map_err(err)?;
+        self.ensure_db()?;
+        let db = self.db.read();
+        let txn = db.as_ref().expect("ensured").begin_read().map_err(err)?;
         let table = match txn.open_table(FILES) {
             Ok(t) => t,
             Err(TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
@@ -261,7 +294,7 @@ impl Store {
     /// are rescanned, as they are for the per-file records.
     pub(crate) fn save_snapshot(&self, data: &IndexData, filter: &PathFilter) -> Result<()> {
         let root = filter.root();
-        let mut snap = Snapshot { filter: filter.stamp(), ..Default::default() };
+        let mut snap = Snapshot { filter: filter.stamp(), stamp: self.stamp.clone(), ..Default::default() };
         let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         dirs.insert(String::new());
         for dir in filter.dirs(root) {
@@ -316,19 +349,25 @@ impl Store {
             snap.dir_counts.push(count);
         }
         let bytes = postcard::to_allocvec(&snap).map_err(err)?;
-        self.set_meta("snapshot", &bytes)
+        let tmp = self.snapshot.with_extension("snapshot.tmp");
+        std::fs::write(&tmp, &bytes).map_err(err)?;
+        let _ = std::fs::remove_file(&self.snapshot);
+        std::fs::rename(&tmp, &self.snapshot).map_err(err)
     }
 
     /// The columnar start-up snapshot, if it was written and still decodes.
     pub(crate) fn load_snapshot(&self) -> Option<Snapshot> {
-        let snapshot: Snapshot = self.meta("snapshot").ok().flatten().and_then(|v| postcard::from_bytes(&v).ok())?;
-        snapshot.valid().then_some(snapshot)
+        let bytes = std::fs::read(&self.snapshot).ok()?;
+        let snapshot: Snapshot = postcard::from_bytes(&bytes).ok()?;
+        (snapshot.stamp == self.stamp && snapshot.valid()).then_some(snapshot)
     }
 
     /// Applies upserts and deletions in one transaction. Non-durable commits
     /// are cheap (no fsync) and become durable with the next durable one.
     pub(crate) fn apply(&self, puts: &[(String, FileRecord)], deletes: &[String], durable: bool) -> Result<()> {
-        let mut txn = self.db.read().begin_write().map_err(err)?;
+        self.ensure_db()?;
+        let db = self.db.read();
+        let mut txn = db.as_ref().expect("ensured").begin_write().map_err(err)?;
         if !durable {
             txn.set_durability(Durability::None).map_err(err)?;
         }
@@ -346,26 +385,42 @@ impl Store {
             }
         }
         // Any file change makes the columnar start-up snapshot stale.
-        txn.open_table(META).map_err(err)?.remove("snapshot").map_err(err)?;
+        let _ = std::fs::remove_file(&self.snapshot);
         txn.commit().map_err(err)
     }
 
     /// Reclaims free pages in the database file; `true` if anything was compacted.
     pub(crate) fn compact(&self) -> Result<bool> {
-        self.db.write().compact().map_err(err)
+        self.ensure_db()?;
+        let mut db = self.db.write();
+        db.as_mut().expect("ensured").compact().map_err(err)
     }
 
     pub(crate) fn load_recent(&self) -> Vec<String> {
+        if let Some(recent) = self.load_recent_file() {
+            return recent;
+        }
         self.meta("recent").ok().flatten().and_then(|v| postcard::from_bytes(&v).ok()).unwrap_or_default()
+    }
+
+    /// Recent files without opening redb (the warm-start path).
+    pub(crate) fn load_recent_file(&self) -> Option<Vec<String>> {
+        let bytes = std::fs::read(&self.recent_file).ok()?;
+        postcard::from_bytes(&bytes).ok()
     }
 
     pub(crate) fn save_recent(&self, recent: &[String]) -> Result<()> {
         let bytes = postcard::to_allocvec(recent).map_err(err)?;
+        if let Err(e) = std::fs::write(&self.recent_file, &bytes) {
+            tracing::warn!("index recent cache: {e}");
+        }
         self.set_meta("recent", &bytes)
     }
 
     fn set_meta(&self, key: &str, value: &[u8]) -> Result<()> {
-        let txn = self.db.read().begin_write().map_err(err)?;
+        self.ensure_db()?;
+        let db = self.db.read();
+        let txn = db.as_ref().expect("ensured").begin_write().map_err(err)?;
         txn.open_table(META).map_err(err)?.insert(key, value).map_err(err)?;
         txn.commit().map_err(err)
     }
