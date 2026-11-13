@@ -223,6 +223,18 @@ html {
   /* console / terminal surfaces (Color Scheme › Console Colors) */
   --bg-console: var(--bg-island);
 
+  /* Git colors (Color Scheme › Git): editor inline blame and project view branch decorations */
+  --git-blame-author: var(--fg-inlay);
+  --git-blame-date: var(--fg-inlay);
+  --git-blame-issue: var(--fg-inlay);
+  --git-blame-subject: var(--fg-inlay);
+  --git-branch-changed: var(--accent);
+  --git-head-tags: var(--accent);
+  --git-local-branch: var(--accent);
+  --git-master-with-remote: var(--accent);
+  --git-master-without-remote: var(--accent);
+  --git-tracking-branch: var(--accent);
+
   /* terminal / console ANSI palette */
   --ansi-black: #000000;
   --ansi-red: #f0524f;

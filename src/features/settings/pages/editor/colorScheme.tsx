@@ -5,7 +5,7 @@
  * `editor.colorOverrides[scheme][attribute]`; `editor/core` injects them.
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Button, Checkbox, Input, Tree, type SelectOption, type TreeHandle, T } from "@/ui";
+import { Button, Checkbox, Icon, Input, Tree, type SelectOption, type TreeHandle, T } from "@/ui";
 import { fontWeightVars, type CustomColorSchemes, type TextAttributesOverride } from "@/platform/editorSettings";
 import {
   ATTRIBUTES,
@@ -122,6 +122,7 @@ function previewVars(
       k.startsWith("--bg-") ||
       k.startsWith("--border-") ||
       k.startsWith("--ansi-") ||
+      k.startsWith("--git-") ||
       k === "--caret"
     )
       vars[k] = v;
@@ -140,6 +141,15 @@ function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
     return {
       ...(attr?.fg ? { color: `var(${attr.fg})` } : null),
       ...(attr?.bg ? { backgroundColor: `var(${attr.bg})` } : null),
+      // Token-less attributes with a font-style renderer carry it on `--<fg>-*`, the same
+      // declarations `overrideDeclarations` emits for their overrides.
+      ...(attr?.fontStyle && (attr.fg ?? attr.effect)
+        ? {
+            fontWeight: `var(${attr.fg ?? attr.effect}-bold, inherit)`,
+            fontStyle: `var(${attr.fg ?? attr.effect}-italic, inherit)`,
+            textDecoration: `var(${attr.effect ?? attr.fg}-effect, none)`,
+          }
+        : null),
     };
   if (attr.italicOnly)
     return { fontStyle: `var(--syn-${attr.token}-italic, ${attr.defaultItalic === false ? "normal" : "italic"})` };
@@ -159,6 +169,17 @@ function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
 }
 
 const A = (id: string) => ATTRIBUTES.find((a) => a.id === id);
+
+/** Preview click: reveal in this page, or switch to the attribute's own page. */
+function revealPreviewAttr(attrId: string, ids: Set<string>, reveal: (id: string) => void): void {
+  const attr = A(attrId);
+  if (!attr) return;
+  if (ids.has(attrId)) reveal(attrId);
+  else {
+    crossPageReveal = attrId;
+    selectPage(attrPageId(attr));
+  }
+}
 
 type Seg = [string, string?];
 interface CodeSample {
@@ -975,8 +996,27 @@ function AttributeEditor({
       if (next[k] === undefined || next[k] === inherited[k]) delete next[k];
     onChange(Object.keys(next).length ? next : undefined);
   };
+  // IDEA's panel is fixed: every channel renders for every attribute, disabled when the
+  // attribute cannot carry it (ColorAndFontDescriptionPanel.kt). Capability is declared,
+  // not inferred: `fontStyle` marks attributes whose renderer applies font style/effects.
   return (
     <div className={styles.attrEditor} aria-label={`${attr.name} attributes`}>
+      {!attr.italicOnly && (
+        <div className={styles.attrRow}>
+          <Checkbox
+            checked={v.bold ?? inherited.bold ?? false}
+            disabled={!attr.fontStyle}
+            onChange={(b) => set({ bold: b === (inherited.bold ?? false) ? undefined : b })}
+            label="Bold"
+          />
+          <Checkbox
+            checked={v.italic ?? inherited.italic ?? false}
+            disabled={!attr.fontStyle}
+            onChange={(b) => set({ italic: b === (inherited.italic ?? false) ? undefined : b })}
+            label="Italic"
+          />
+        </div>
+      )}
       {attr.italicOnly && (
         <div className={styles.attrRow}>
           <Checkbox
@@ -986,50 +1026,29 @@ function AttributeEditor({
           />
         </div>
       )}
-      {attr.token && !attr.italicOnly && (
+      <ColorRow
+        label="Foreground"
+        value={v.foreground}
+        inherited={inherited.foreground}
+        onChange={attr.fg ? (c) => set({ foreground: c }) : undefined}
+      />
+      <ColorRow
+        label="Background"
+        value={v.background}
+        inherited={inherited.background}
+        onChange={attr.bg || (attr.token && !attr.italicOnly) ? (c) => set({ background: c }) : undefined}
+      />
+      {!attr.italicOnly && (
         <>
+          <ColorRow
+            label="Effects"
+            value={v.effectColor}
+            inherited={inherited.effectColor}
+            onChange={attr.effect || attr.fontStyle ? (c) => set({ effectColor: c }) : undefined}
+          />
           <div className={styles.attrRow}>
             <Checkbox
-              checked={v.bold ?? inherited.bold ?? false}
-              onChange={(b) => set({ bold: b === (inherited.bold ?? false) ? undefined : b })}
-              label="Bold"
-            />
-            <Checkbox
-              checked={v.italic ?? inherited.italic ?? false}
-              onChange={(b) => set({ italic: b === (inherited.italic ?? false) ? undefined : b })}
-              label="Italic"
-            />
-          </div>
-        </>
-      )}
-      {attr.fg && (
-        <ColorRow
-          label="Foreground"
-          value={v.foreground}
-          inherited={inherited.foreground}
-          onChange={(c) => set({ foreground: c })}
-        />
-      )}
-      {(attr.bg || (attr.token && !attr.italicOnly)) && (
-        <ColorRow
-          label="Background"
-          value={v.background}
-          inherited={inherited.background}
-          onChange={(c) => set({ background: c })}
-        />
-      )}
-      {attr.effect && (
-        <ColorRow
-          label="Effects"
-          value={v.effectColor}
-          inherited={inherited.effectColor}
-          onChange={(c) => set({ effectColor: c })}
-        />
-      )}
-      {attr.token && !attr.italicOnly && (
-        <>
-          <div className={styles.attrRow}>
-            <Checkbox
+              disabled={!attr.effect && !attr.fontStyle}
               checked={!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none"}
               onChange={(b) =>
                 set({
@@ -1043,36 +1062,27 @@ function AttributeEditor({
                   effectColor: b ? v.effectColor : undefined,
                 })
               }
-              label="Effects"
+              label="Effect style"
             />
             {!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none" && (
-              <ColorInput
-                value={v.effectColor ?? inherited.effectColor ?? "#808080"}
-                onChange={(c) => set({ effectColor: c ?? "#808080" })}
-                label="Effect color"
+              <Select
+                value={(v.effect ?? inherited.effect)!}
+                options={[
+                  { value: "underline", label: "Underscored" },
+                  { value: "wave", label: "Underwaved" },
+                  { value: "strikeout", label: "Strikeout" },
+                ]}
+                onChange={(e) => set({ effect: e as TextAttributesOverride["effect"] })}
+                className={styles.effectSelect}
+                aria-label="Effect"
               />
             )}
           </div>
-          {!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none" && (
-            <Select
-              value={(v.effect ?? inherited.effect)!}
-              options={[
-                { value: "underline", label: "Underscored" },
-                { value: "wave", label: "Underwaved" },
-                { value: "strikeout", label: "Strikeout" },
-              ]}
-              onChange={(e) => set({ effect: e as TextAttributesOverride["effect"] })}
-              className={styles.effectSelect}
-              aria-label="Effect"
-            />
-          )}
         </>
       )}
-      {!attr.italicOnly && (
-        <div className={styles.inherited}>
-          <T>The controls show the scheme's actual appearance; changes override it.</T>
-        </div>
-      )}
+      <div className={styles.inherited}>
+        <T>The controls show the scheme's actual appearance; changes override it.</T>
+      </div>
     </div>
   );
 }
@@ -1122,7 +1132,8 @@ function ColorRow({
   label: string;
   value: string | undefined;
   inherited: string | undefined;
-  onChange: (c: string | undefined) => void;
+  /** Undefined disables the row for attributes that cannot carry this channel. */
+  onChange: ((c: string | undefined) => void) | undefined;
 }) {
   const cleared = value === CLEAR_COLOR;
   const shown = cleared ? undefined : (value ?? inherited);
@@ -1130,8 +1141,9 @@ function ColorRow({
     <div className={styles.attrRow}>
       <Checkbox
         checked={shown !== undefined}
+        disabled={!onChange}
         onChange={(on) =>
-          onChange(
+          onChange?.(
             on
               ? cleared
                 ? (inherited ?? "#808080")
@@ -1143,7 +1155,162 @@ function ColorRow({
         }
         label={label}
       />
-      {shown !== undefined && <ColorInput value={shown} onChange={onChange} label={label} />}
+      {shown !== undefined && <ColorInput value={shown} onChange={onChange ?? (() => undefined)} label={label} />}
+    </div>
+  );
+}
+
+/** Git preview sample: an editor caret line carrying the inline blame widget. */
+const GIT_EDITOR_LINES: { segs: Seg[]; blame?: boolean }[] = [
+  { segs: [["function", "keyword"], [" "], ["syncRoot", "functionCall"], ["("], ["info", "parameter"], [") {"]] },
+  {
+    segs: [
+      ["  "],
+      ["const", "keyword"],
+      [" "],
+      ["branch", "identifier"],
+      [" = "],
+      ["info", "parameter"],
+      ["."],
+      ["head", "identifier"],
+      [";"],
+    ],
+    blame: true,
+  },
+  { segs: [["}"]] },
+];
+
+/** A project tree root in the Git preview; its suffix mirrors rootSyncSuffix. */
+interface GitPreviewRoot {
+  name: string;
+  branch: string;
+  branchAttr: string;
+  upstream?: string;
+  ahead?: number;
+  behind?: number;
+}
+const GIT_PREVIEW_ROOTS: GitPreviewRoot[] = [
+  { name: "openidea", branch: "main", branchAttr: "gitMasterWithRemote", upstream: "origin/main", ahead: 2, behind: 1 },
+  { name: "legacy-app", branch: "master", branchAttr: "gitMasterWithoutRemote" },
+  { name: "web-client", branch: "feature/login", branchAttr: "gitLocalBranch" },
+  { name: "api-server", branch: "release/2.0", branchAttr: "gitTrackingBranch", upstream: "origin/release/2.0" },
+];
+interface GitPreviewSuffixSeg {
+  text: string;
+  attr: string;
+  icon?: "vcs-outgoing" | "vcs-incoming";
+  label?: string;
+  strike?: boolean;
+}
+
+/** The Git page shows the two real surfaces instead of a code sample: the editor
+ *  inline blame widget and the project tree root branch suffix. Each coloured
+ *  segment selects its attribute, as the shared preview does. */
+function GitPreview({
+  vars,
+  ids,
+  reveal,
+}: {
+  vars: CSSProperties;
+  ids: Set<string>;
+  reveal: (attrId: string) => void;
+}) {
+  const click = (attrId: string) => revealPreviewAttr(attrId, ids, reveal);
+  const blameSeg = (text: string, attrId: string, key: string) => (
+    <span key={key} style={tokenStyle(A(attrId))} className={styles.clickable} onClick={() => click(attrId)}>
+      {text}
+    </span>
+  );
+  // Mirrors rootSyncSuffix: branch, "/" separator, then ahead/behind counts or a struck zero.
+  const suffixOf = (root: GitPreviewRoot): GitPreviewSuffixSeg[] => {
+    const { branch, branchAttr, upstream, ahead, behind } = root;
+    const head: GitPreviewSuffixSeg = { text: branch, attr: branchAttr };
+    if (!upstream) return [head];
+    const counts: GitPreviewSuffixSeg[] = [];
+    if (ahead)
+      counts.push({
+        text: String(ahead),
+        attr: "gitBranchChanged",
+        icon: "vcs-outgoing",
+        label: tx`${ahead} outgoing commits`,
+      });
+    if (behind)
+      counts.push({
+        text: String(behind),
+        attr: "gitBranchChanged",
+        icon: "vcs-incoming",
+        label: tx`${behind} incoming commits`,
+      });
+    if (!counts.length)
+      counts.push({ text: "0", attr: "gitHeadTags", strike: true, label: tx`Up to date with ${upstream}` });
+    return [head, { text: "/", attr: "gitHeadTags" }, ...counts];
+  };
+  return (
+    <div className={styles.gitPreview} style={vars} aria-label={tx("Color scheme preview")}>
+      <div className={styles.gitSection}>
+        <div className={styles.gitSectionTitle}>{tx("Editor inline blame")}</div>
+        <div className={styles.gitEditor}>
+          {GIT_EDITOR_LINES.map((line, i) => (
+            <div key={i} className={`${styles.previewLine} ${line.blame ? styles.previewCaretLine : ""}`}>
+              <span className={styles.previewGutter}>{i + 1}</span>
+              <code>
+                {line.segs.map(([text, attrId], j) => (
+                  <span
+                    key={j}
+                    style={tokenStyle(attrId ? A(attrId) : undefined)}
+                    className={attrId ? styles.clickable : undefined}
+                    onClick={attrId ? () => click(attrId) : undefined}
+                  >
+                    {text}
+                  </span>
+                ))}
+                {line.blame && (
+                  <span className={styles.gitBlame}>
+                    {blameSeg("Kitov, ", "gitBlameAuthor", "author")}
+                    {blameSeg("3 days ago · ", "gitBlameDate", "date")}
+                    {blameSeg("Add branch colours", "gitBlameSubject", "subject")}
+                    {blameSeg(" (#123)", "gitBlameIssue", "issue")}
+                  </span>
+                )}
+              </code>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className={styles.gitSection}>
+        <div className={styles.gitSectionTitle}>{tx("Project View")}</div>
+        <div className={styles.gitTree}>
+          {GIT_PREVIEW_ROOTS.map((root) => (
+            <div key={root.name} className={styles.gitRow}>
+              <span className={styles.gitChevron}>
+                <Icon name="chevron-down" size={16} />
+              </span>
+              <span className={styles.gitContent}>
+                <span className={styles.gitIconStack}>
+                  <Icon name="folder" size={16} className={styles.gitFolderIcon} />
+                </span>
+                <span className={styles.gitRootLabel}>{root.name}</span>
+                <span className={styles.gitSuffix}>
+                  {suffixOf(root).map((s, j) => (
+                    <span
+                      key={j}
+                      className={`${styles.gitSuffixSegment} ${styles.clickable}`}
+                      style={tokenStyle(A(s.attr))}
+                      role={s.label ? "img" : undefined}
+                      aria-label={s.label}
+                      title={s.label}
+                      onClick={() => click(s.attr)}
+                    >
+                      {s.strike ? <s>{s.text}</s> : s.text}
+                      {s.icon && <Icon name={s.icon} size={12} />}
+                    </span>
+                  ))}
+                </span>
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1435,39 +1602,43 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
               <div />
             )}
           </div>
-          <pre className={styles.schemePreview} style={vars} aria-label={tx("Color scheme preview")}>
-            {sample.code.map((line, i) => (
-              <div key={i} className={`${styles.previewLine} ${i === sample.caret ? styles.previewCaretLine : ""}`}>
-                <span className={styles.previewGutter}>{i + 1}</span>
-                <code>
-                  {line.map(([text, attrId], j) => {
-                    const attr = attrId !== undefined ? A(attrId) : undefined;
-                    const inPage = attr !== undefined && ids.has(attrId!);
-                    return (
-                      <span
-                        key={j}
-                        style={tokenStyle(attr)}
-                        className={attr ? styles.clickable : undefined}
-                        onClick={
-                          attr
-                            ? () => {
-                                if (inPage) reveal(attrId!);
-                                else {
-                                  crossPageReveal = attrId!;
-                                  selectPage(attrPageId(attr));
+          {scopes[0] === "Git" ? (
+            <GitPreview vars={vars} ids={ids} reveal={reveal} />
+          ) : (
+            <pre className={styles.schemePreview} style={vars} aria-label={tx("Color scheme preview")}>
+              {sample.code.map((line, i) => (
+                <div key={i} className={`${styles.previewLine} ${i === sample.caret ? styles.previewCaretLine : ""}`}>
+                  <span className={styles.previewGutter}>{i + 1}</span>
+                  <code>
+                    {line.map(([text, attrId], j) => {
+                      const attr = attrId !== undefined ? A(attrId) : undefined;
+                      const inPage = attr !== undefined && ids.has(attrId!);
+                      return (
+                        <span
+                          key={j}
+                          style={tokenStyle(attr)}
+                          className={attr ? styles.clickable : undefined}
+                          onClick={
+                            attr
+                              ? () => {
+                                  if (inPage) reveal(attrId!);
+                                  else {
+                                    crossPageReveal = attrId!;
+                                    selectPage(attrPageId(attr));
+                                  }
                                 }
-                              }
-                            : undefined
-                        }
-                      >
-                        {text}
-                      </span>
-                    );
-                  })}
-                </code>
-              </div>
-            ))}
-          </pre>
+                              : undefined
+                          }
+                        >
+                          {text}
+                        </span>
+                      );
+                    })}
+                  </code>
+                </div>
+              ))}
+            </pre>
+          )}
         </>
       )}
     </div>
@@ -1475,7 +1646,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
 }
 
 const LANGUAGES = [...new Set(ATTRIBUTES.map((a) => a.path[0]!))].filter(
-  (s) => !["General", "Debugger", "Language Defaults", "Console Colors"].includes(s),
+  (s) => !["General", "Debugger", "Language Defaults", "Console Colors", "Git"].includes(s),
 );
 /** A sub-page id: `C#` → `csharp`, `Console Colors` → `console-colors` (`#` would end a settings link). */
 const languagePageId = (language: string) =>
@@ -1487,6 +1658,7 @@ const SCHEME_SUBPAGES = [
   { id: "editor.colorScheme.language-defaults", title: "Language Defaults" },
   { id: "editor.colorScheme.debugger", title: "Debugger" },
   { id: "editor.colorScheme.console-colors", title: "Console Colors" },
+  { id: "editor.colorScheme.git", title: "Git" },
   ...LANGUAGES.map((l) => ({ id: languagePageId(l), title: l })),
 ];
 
@@ -1587,11 +1759,19 @@ export const COLOR_SCHEME_PAGES: PageSpec[] = [
     keywords: ["terminal", "ansi", "console", "background"],
     sections: [colorSchemeSection(["Console Colors"])],
   }),
+  editorPage({
+    id: "editor.colorScheme.git",
+    title: "Git",
+    order: 5,
+    projectScope: false,
+    keywords: ["git", "blame", "branch", "inline blame", "project view", "decoration"],
+    sections: [colorSchemeSection(["Git"])],
+  }),
   ...LANGUAGES.map((language, i) =>
     editorPage({
       id: languagePageId(language),
       title: language,
-      order: 5 + i,
+      order: 6 + i,
       projectScope: false,
       keywords: ATTRIBUTES.filter((a) => a.path[0] === language).map((a) => a.name),
       sections: [colorSchemeSection([language])],

@@ -12,7 +12,7 @@ import type { BlameLine, Settings } from "@/bindings";
 import { HEAVY_LIMIT, _emitEditorEvent } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { useI18n } from "@/platform/i18n";
-import { formatInlineBlame, inlineBlame, relativeBlameDate } from "../inlineBlame";
+import { formatInlineBlame, inlineBlame, inlineBlameSegments, relativeBlameDate } from "../inlineBlame";
 import { useVcs } from "../store";
 
 const mocks = vi.hoisted(() => ({ blame: vi.fn(), file: vi.fn(), log: vi.fn(), action: vi.fn() }));
@@ -83,6 +83,27 @@ describe("inline blame formatting", () => {
     expect(relativeBlameDate(now - 120_000, now)).toBe("2 minutes ago");
     expect(relativeBlameDate(now - 400 * 86400_000, now)).toBe("1 year ago");
   });
+
+  it("splits into colourable segments that join back into the original text", () => {
+    const joined = (line: Parameters<typeof inlineBlameSegments>[0]) =>
+      inlineBlameSegments(line, now)
+        .map((s) => s.text)
+        .join("");
+    expect(joined(alice)).toBe(formatInlineBlame(alice, now));
+    expect(joined({ ...bob, timeMs: null, summary: "Long\nmessage" })).toBe("Bob Jones · Long message");
+    expect(joined(uncommitted)).toBe("You, now · Uncommitted changes");
+    expect(inlineBlameSegments(alice, now)).toEqual([
+      { text: "Alice Smith, ", key: "author" },
+      { text: "1 day ago · ", key: "date" },
+      { text: "First line", key: "subject" },
+    ]);
+    expect(inlineBlameSegments({ ...bob, summary: "Change subject (#feature-12)" }, now)).toEqual([
+      { text: "Bob Jones, ", key: "author" },
+      { text: "1 hour ago · ", key: "date" },
+      { text: "Change subject", key: "subject" },
+      { text: " (#feature-12)", key: "issue" },
+    ]);
+  });
 });
 
 describe("current line decoration", () => {
@@ -102,6 +123,11 @@ describe("current line decoration", () => {
     expect(mocks.blame).toHaveBeenCalledTimes(1);
     expect(mocks.file).toHaveBeenCalledTimes(1);
     expect(hint()?.contentEditable).toBe("false");
+    expect([...hint()!.querySelectorAll("span")].map((s) => s.className)).toEqual([
+      "cm-vcs-inline-blame-author",
+      "cm-vcs-inline-blame-date",
+      "cm-vcs-inline-blame-subject",
+    ]);
     hint()?.click();
     expect(mocks.action).toHaveBeenCalledWith("vcs.showCommit", alice.commit);
   });

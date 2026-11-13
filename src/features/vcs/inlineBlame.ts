@@ -42,6 +42,29 @@ export function formatInlineBlame(line: BlameLine, now = Date.now()): string {
   return `${line.author}${date ? `, ${date}` : ""} · ${line.summary.replace(/\s+/g, " ")}`;
 }
 
+/** The four segments Color Scheme › Git › Editor inline blame styles. */
+interface BlameSegment {
+  text: string;
+  key: "author" | "date" | "subject" | "issue";
+}
+
+/** Splits the blame text so each part can use its own Git scheme colour. */
+export function inlineBlameSegments(line: BlameLine, now = Date.now()): BlameSegment[] {
+  if (isUncommitted(line)) return [{ text: formatInlineBlame(line, now), key: "subject" }];
+  const date = relativeBlameDate(line.timeMs, now);
+  const summary = line.summary.replace(/\s+/g, " ");
+  const author = line.author;
+  // A trailing (#123) / #ISSUE-1 reference is the issue link, coloured separately.
+  const issue = /\s(\(#[^)]+\)|#[\w-]+)\s*$/.exec(summary);
+  const subject = issue ? summary.slice(0, issue.index) : summary;
+  return [
+    { text: date ? `${author}, ` : `${author} · `, key: "author" },
+    ...(date ? [{ text: `${date} · `, key: "date" } as BlameSegment] : []),
+    { text: subject, key: "subject" },
+    ...(issue ? [{ text: summary.slice(issue.index), key: "issue" } as BlameSegment] : []),
+  ];
+}
+
 /** Only the current document version is retained, including its in-flight request. */
 class BlameCache {
   private doc: Text | undefined;
@@ -90,7 +113,12 @@ class BlameWidget extends WidgetType {
   toDOM() {
     const el = document.createElement("span");
     el.className = "cm-vcs-inline-blame";
-    el.textContent = formatInlineBlame(this.line);
+    for (const segment of inlineBlameSegments(this.line)) {
+      const part = document.createElement("span");
+      part.className = `cm-vcs-inline-blame-${segment.key}`;
+      part.textContent = segment.text;
+      el.append(part);
+    }
     el.contentEditable = "false";
     // The element is only measurable once CodeMirror has inserted it: defer to the next task, not a
     // nested frame, so a widget that goes away first simply skips.
@@ -291,7 +319,6 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
     ),
     EditorView.baseTheme({
       ".cm-vcs-inline-blame": {
-        color: "var(--fg-inlay)",
         marginLeft: "3ch",
         display: "inline-block",
         maxWidth: "min(60ch, 50vw)",
@@ -300,6 +327,34 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
         whiteSpace: "nowrap",
         verticalAlign: "bottom",
         userSelect: "none",
+      },
+      ".cm-vcs-inline-blame-author": {
+        color: "var(--git-blame-author, var(--fg-inlay))",
+        backgroundColor: "var(--git-blame-author-bg, transparent)",
+        fontWeight: "var(--git-blame-author-bold, inherit)",
+        fontStyle: "var(--git-blame-author-italic, inherit)",
+        textDecoration: "var(--git-blame-author-effect, none)",
+      },
+      ".cm-vcs-inline-blame-date": {
+        color: "var(--git-blame-date, var(--fg-inlay))",
+        backgroundColor: "var(--git-blame-date-bg, transparent)",
+        fontWeight: "var(--git-blame-date-bold, inherit)",
+        fontStyle: "var(--git-blame-date-italic, inherit)",
+        textDecoration: "var(--git-blame-date-effect, none)",
+      },
+      ".cm-vcs-inline-blame-subject": {
+        color: "var(--git-blame-subject, var(--fg-inlay))",
+        backgroundColor: "var(--git-blame-subject-bg, transparent)",
+        fontWeight: "var(--git-blame-subject-bold, inherit)",
+        fontStyle: "var(--git-blame-subject-italic, inherit)",
+        textDecoration: "var(--git-blame-subject-effect, none)",
+      },
+      ".cm-vcs-inline-blame-issue": {
+        color: "var(--git-blame-issue, var(--fg-inlay))",
+        backgroundColor: "var(--git-blame-issue-bg, transparent)",
+        fontWeight: "var(--git-blame-issue-bold, inherit)",
+        fontStyle: "var(--git-blame-issue-italic, inherit)",
+        textDecoration: "var(--git-blame-issue-effect, none)",
       },
       '.cm-vcs-inline-blame[role="button"]': { cursor: "pointer" },
       ".cm-vcs-inline-blame-tooltip": {

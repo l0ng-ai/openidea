@@ -31,6 +31,8 @@ export interface AttributeDef {
   token?: string;
   /** A semantic modifier whose only configurable attribute is italic. */
   italicOnly?: boolean;
+  /** The attribute's renderer applies font style and effects (tokens, the Git surfaces). */
+  fontStyle?: true;
   defaultBold?: boolean;
   defaultItalic?: boolean;
   defaultEffect?: TextAttributesOverride["effect"];
@@ -49,6 +51,7 @@ const syn = (
   name,
   path,
   token,
+  fontStyle: true,
   fg: `--syn-${token}`,
   ...defaults,
 });
@@ -68,7 +71,12 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "text", name: "Default text", path: ["General", "Text"], fg: "--fg-editor", bg: "--bg-editor" },
   { id: "caret", name: "Caret", path: ["General", "Editor"], fg: "--caret" },
   { id: "caretRow", name: "Caret row", path: ["General", "Editor"], bg: "--bg-current-line" },
-  { id: "selection", name: "Selection background", path: ["General", "Editor"], bg: "--bg-editor-selection" },
+  {
+    id: "selection",
+    name: "Selection background",
+    path: ["General", "Editor"],
+    bg: "--bg-editor-selection",
+  },
   {
     id: "selectionForeground",
     name: "Selection foreground",
@@ -119,7 +127,12 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     fg: "--fg-fold-placeholder",
     bg: "--bg-fold-placeholder",
   },
-  { id: "searchResult", name: "Search result", path: ["General", "Search Results"], bg: "--bg-search-match" },
+  {
+    id: "searchResult",
+    name: "Search result",
+    path: ["General", "Search Results"],
+    bg: "--bg-search-match",
+  },
   {
     id: "searchResultCurrent",
     name: "Current search result",
@@ -137,7 +150,12 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
 
   // Console / terminal: IDEA's Console Colors (background + 16 ANSI). `--ansi-*` is mirrored
   // to `--terminal-ansi-*` in overrideDeclarations so the terminal picks up edits.
-  { id: "consoleBackground", name: "Console background", path: ["Console Colors"], bg: "--bg-console" },
+  {
+    id: "consoleBackground",
+    name: "Console background",
+    path: ["Console Colors"],
+    bg: "--bg-console",
+  },
   { id: "ansiBlack", name: "Black", path: ["Console Colors"], fg: "--ansi-black" },
   { id: "ansiRed", name: "Red", path: ["Console Colors"], fg: "--ansi-red" },
   { id: "ansiGreen", name: "Green", path: ["Console Colors"], fg: "--ansi-green" },
@@ -154,6 +172,63 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "ansiBrightMagenta", name: "Bright magenta", path: ["Console Colors"], fg: "--ansi-bright-magenta" },
   { id: "ansiBrightCyan", name: "Bright cyan", path: ["Console Colors"], fg: "--ansi-bright-cyan" },
   { id: "ansiBrightWhite", name: "Bright white", path: ["Console Colors"], fg: "--ansi-bright-white" },
+
+  // Color Scheme › Git: inline blame segments and project view branch decorations.
+  // The inline blame widget and the project root suffix read these variables directly;
+  // only the blame segments render font style, so the branch decorations opt out.
+  {
+    id: "gitBlameAuthor",
+    name: "Editor inline blame › Author",
+    path: ["Git"],
+    fg: "--git-blame-author",
+    bg: "--git-blame-author-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameDate",
+    name: "Editor inline blame › Date time",
+    path: ["Git"],
+    fg: "--git-blame-date",
+    bg: "--git-blame-date-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameIssue",
+    name: "Editor inline blame › Issue link",
+    path: ["Git"],
+    fg: "--git-blame-issue",
+    bg: "--git-blame-issue-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameSubject",
+    name: "Editor inline blame › Subject",
+    path: ["Git"],
+    fg: "--git-blame-subject",
+    bg: "--git-blame-subject-bg",
+    fontStyle: true,
+  },
+  { id: "gitBranchChanged", name: "Project View › Changed decoration", path: ["Git"], fg: "--git-branch-changed" },
+  { id: "gitHeadTags", name: "Project View › HEAD tags decoration", path: ["Git"], fg: "--git-head-tags" },
+  { id: "gitLocalBranch", name: "Project View › Local branch decoration", path: ["Git"], fg: "--git-local-branch" },
+  {
+    id: "gitMasterWithRemote",
+    name: "Project View › master/main with remote",
+    path: ["Git"],
+    fg: "--git-master-with-remote",
+  },
+  {
+    id: "gitMasterWithoutRemote",
+    name: "Project View › master/main without remote",
+    path: ["Git"],
+    fg: "--git-master-without-remote",
+  },
+  {
+    id: "gitTrackingBranch",
+    name: "Project View › Tracking branch decoration",
+    path: ["Git"],
+    fg: "--git-tracking-branch",
+  },
 
   syn("keyword", "Keyword", [LD], "keyword"),
   syn("identifier", "Identifiers › Local variable", [LD], "variable"),
@@ -449,6 +524,19 @@ export function overrideDeclarations(
           `--syn-${t}-effect`,
           EFFECT_CSS[o.effect]?.(setOrCleared(o.effectColor) ? o.effectColor! : "currentColor") ?? "none",
         ]);
+    } else if (attr.fontStyle) {
+      // Token-less attributes whose renderer applies font style (the Git blame segments)
+      // carry it on `--<fg>-*`, mirroring the token scheme's `--syn-<token>-*` family.
+      const base = attr.fg ?? attr.effect;
+      if (base) {
+        if (o.bold !== undefined) out.push([`${base}-bold`, boldWeight(o.bold)]);
+        if (o.italic !== undefined) out.push([`${base}-italic`, o.italic ? "italic" : "normal"]);
+        if (o.effect)
+          out.push([
+            `${attr.effect ?? base}-effect`,
+            EFFECT_CSS[o.effect]?.(setOrCleared(o.effectColor) ? o.effectColor! : "currentColor") ?? "none",
+          ]);
+      }
     }
   }
   return out;
@@ -558,6 +646,12 @@ export function resolvedAttribute(
     const italicCss =
       vars.get(`--syn-${token}-italic`) ?? (token === "comment" ? vars.get("--syn-comment-style") : undefined);
     out.italic = own?.italic ?? italicFromCss(italicCss) ?? attr.defaultItalic ?? false;
+  } else if (attr.fontStyle) {
+    const base = attr.fg ?? attr.effect;
+    const bold = base ? vars.get(`${base}-bold`) : undefined;
+    const italic = base ? vars.get(`${base}-italic`) : undefined;
+    if (bold !== undefined) out.bold = boldFromCss(bold) ?? false;
+    if (italic !== undefined) out.italic = italicFromCss(italic) ?? false;
   } else if (effect) out.effect = effect;
   if (token && effect) out.effect = effect;
   return out;
