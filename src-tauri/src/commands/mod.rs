@@ -187,6 +187,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         fs::fs_read_text,
         fs::fs_open_with_system,
         clipboard::clipboard_write_text,
+        clipboard::clipboard_text,
         clipboard::clipboard_file_list,
         clipboard::clipboard_has_files,
         clipboard::clipboard_image,
