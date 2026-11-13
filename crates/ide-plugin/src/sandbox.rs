@@ -1,5 +1,7 @@
 //! Capability checks for host functions that touch the file system.
 
+use ide_core::real_path::reaches_git_dir;
+pub use ide_core::real_path::resolve_real;
 use ide_extension::Capability;
 use std::path::{Path, PathBuf};
 
@@ -21,37 +23,6 @@ fn joined_path(root: &Path, path: &str) -> Result<(PathBuf, PathBuf), String> {
     let requested = Path::new(path);
     let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
     Ok((root, joined))
-}
-
-/// `joined` after `..`/symlink resolution as far as the file system allows:
-/// the canonical path when it exists, else the canonicalized deepest existing
-/// ancestor with the still-missing tail resolved textually — so the location
-/// of a missing path is still judged where it would really land.
-pub fn resolve_real(joined: &Path) -> PathBuf {
-    let mut tail = Vec::new();
-    let mut candidate = joined.to_path_buf();
-    let mut real = loop {
-        match dunce::canonicalize(&candidate) {
-            Ok(real) => break real,
-            Err(_) => {
-                let Some(last) = candidate.components().next_back() else {
-                    return joined.to_path_buf();
-                };
-                tail.push(last.as_os_str().to_owned());
-                if !candidate.pop() {
-                    return joined.to_path_buf();
-                }
-            }
-        }
-    };
-    for part in tail.iter().rev() {
-        if part == ".." {
-            real.pop();
-        } else if part != "." {
-            real.push(part);
-        }
-    }
-    real
 }
 
 /// Resolves `path` (absolute, or relative to `root`) and checks that the real
@@ -118,24 +89,6 @@ pub fn inside_roots(roots: &[PathBuf], path: &str) -> Result<bool, String> {
 /// be created) or that names a symlink itself (to delete or rename it): the
 /// directory part is resolved through symlinks, the final name is kept as is,
 /// and the result must stay inside `root`.
-/// Whether a path (relative to the project root) goes through git's own `.git` folder or file.
-/// git runs what it finds in `.git` (hooks, `gpg.program`, filters), so a content write must
-/// never reach it. Names are normalized for trailing dots and spaces and NTFS stream suffixes;
-/// the caller also checks the short-name-resolved path via [`resolve_real`].
-pub fn names_git_dir(rel: &Path) -> bool {
-    rel.components().any(|part| {
-        let name = part.as_os_str().to_string_lossy();
-        let name = name.split(':').next().unwrap_or_default().trim_end_matches(['.', ' ']);
-        name.eq_ignore_ascii_case(".git")
-    })
-}
-
-/// A resolved write destination that reaches git's own `.git` metadata, judged by the name
-/// given and by the name the file system resolves it to.
-fn reaches_git_dir(root: &Path, real: &Path) -> bool {
-    real.strip_prefix(root).is_ok_and(names_git_dir) || resolve_real(real).strip_prefix(root).is_ok_and(names_git_dir)
-}
-
 pub fn resolve_new_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
     let outside = || format!("{path}: access outside the project root is not allowed");
     if path.is_empty() {
@@ -399,6 +352,7 @@ fn strip_verbatim(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ide_core::real_path::names_git_dir;
 
     #[cfg(windows)]
     #[test]
