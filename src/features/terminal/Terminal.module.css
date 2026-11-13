@@ -110,6 +110,11 @@
   line-height: normal;
   transform: translateY(-50%);
 }
+/* An icon wider than its cell stays over the next cell's background (domRowCache). */
+.pane :global(.xterm-rows .openidea-terminal-icon) {
+  position: relative;
+  z-index: 1;
+}
 .pane :global(.xterm-viewport) {
   background-color: var(--bg-island, var(--bg-app)) !important;
 }
