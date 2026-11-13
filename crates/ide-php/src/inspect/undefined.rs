@@ -13,7 +13,14 @@
 //! - [`UndefinedConstant`] (`PhpUndefinedConstant`): global and namespaced
 //!   constants (`const` and `define()`), with the same fallback.
 //!
-//! Imports (`use` lines) and names in docblocks aren't checked; `self`,
+//! - [`UndefinedDocClass`] (`PhpUndefinedDocClass`, information): the
+//!   classes named in the types of PHPDoc tags, read from the docblocks the
+//!   summary parsed ([`check_docs`]). Inline `@var` comments inside bodies
+//!   aren't in the summary and aren't checked.
+//!
+//! Imports (`use` lines) are checked too, by the three inspections above: a
+//! class import is fine when a class-like or a namespace of that name
+//! exists, and when a guard anywhere in the file names it. `self`,
 //! `static`, `parent`, `true`, `false` and `null` never are. A name is left
 //! alone after a guard naming it in the same function (or the rest of the
 //! file at the top level): `class_exists`, `interface_exists`,

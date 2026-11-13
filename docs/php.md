@@ -58,7 +58,8 @@ up from the file watcher. A changed `composer.json` reloads the layout.
   `match (true)` and inline `/** @var */`. A parameter that has no type and no
   `@param` is shown with the types its callers pass (hover says so); this is a
   guess for completion and navigation, and inspections don't rely on it.
-- **Inspections:** syntax errors; undefined classes, functions, constants,
+- **Inspections:** syntax errors; undefined classes, functions, constants
+  (also where a `use` line imports them, and classes named in PHPDoc types),
   methods, properties and variables; wrong argument counts and type mismatches;
   unused imports, variables, parameters and private members; unreachable code
   and missing returns; deprecated symbols (struck through) and features newer
