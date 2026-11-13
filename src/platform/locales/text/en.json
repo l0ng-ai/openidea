@@ -1554,5 +1554,20 @@
   "No matching tasks": "No matching tasks",
   "Move to Editor": "Move to Editor",
   "Moves a terminal tab, with its running session, into the editor area (arg: tab id).": "Moves a terminal tab, with its running session, into the editor area (arg: tab id).",
-  "Starts a login shell where the session was.": "Starts a login shell where the session was."
+  "Starts a login shell where the session was.": "Starts a login shell where the session was.",
+  "Background Image": "Background Image",
+  "Background image": "Background image",
+  "Cannot load the image: {error}": "Cannot load the image: {error}",
+  "Opacity": "Opacity",
+  "Fill": "Fill",
+  "Anchor": "Anchor",
+  "Scale": "Scale",
+  "Original size": "Original size",
+  "Tile": "Tile",
+  "Center": "Center",
+  "Top left": "Top left",
+  "Top right": "Top right",
+  "Bottom left": "Bottom left",
+  "Bottom right": "Bottom right",
+  "Image files": "Image files"
 }

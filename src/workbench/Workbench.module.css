@@ -115,6 +115,20 @@
     var(--bg-frame);
 }
 
+/* Settings › Appearance › Background Image (variables from the settings runtime). */
+.framed::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-background-image);
+  pointer-events: none;
+  background-image: var(--background-image, none);
+  background-size: var(--background-image-size, cover);
+  background-repeat: var(--background-image-repeat, no-repeat);
+  background-position: var(--background-image-position, center);
+  opacity: var(--background-image-opacity, 0);
+}
+
 /* LightEdit: the editor as the only island, inset like the project frame's. */
 .lightEditFrame {
   background: var(--bg-frame);

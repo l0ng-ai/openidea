@@ -128,6 +128,7 @@ export interface NumberInputProps {
   /** Integer-only input. */
   integer?: boolean;
   unit?: string;
+  disabled?: boolean;
   "aria-label"?: string;
 }
 
@@ -143,7 +144,18 @@ export function parseNumberInput(
 }
 
 /** Number field: edits commit while valid; invalid text is flagged and reverted on blur. */
-export function NumberInput({ id, value, onChange, min, max, step = 1, integer, unit, ...aria }: NumberInputProps) {
+export function NumberInput({
+  id,
+  value,
+  onChange,
+  min,
+  max,
+  step = 1,
+  integer,
+  unit,
+  disabled,
+  ...aria
+}: NumberInputProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const text = draft ?? String(value);
   const invalid = draft !== null && parseNumberInput(draft, { min, max, integer }) === null;
@@ -155,6 +167,7 @@ export function NumberInput({ id, value, onChange, min, max, step = 1, integer, 
         inputMode={integer ? "numeric" : "decimal"}
         value={text}
         invalid={invalid}
+        disabled={disabled}
         aria-label={aria["aria-label"]}
         aria-valuemin={min}
         aria-valuemax={max}
