@@ -76,6 +76,11 @@ export interface ToolWindowContribution {
    * or "onUse" — listed under the stripe's "…" until first opened (Find, Run…).
    */
   stripe?: "shown" | "onUse";
+  /**
+   * Its content lasts only while the project is open (run and debug sessions, search results),
+   * so it isn't reopened with the project.
+   */
+  sessionContent?: boolean;
 }
 
 export type StatusAlign = "left" | "right";
