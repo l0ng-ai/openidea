@@ -1,4 +1,7 @@
 {
+  "Absolute": "绝对",
+  "Relative": "相对",
+  "Hybrid": "混合",
   "Debugging Kotlin with kotlin-debug-adapter": "使用 kotlin-debug-adapter 调试 Kotlin",
   "Waiting for kotlin-lsp to import the project": "正在等待 kotlin-lsp 导入项目",
   "kotlin-lsp is not the Kotlin language server of this project.": "kotlin-lsp 不是此项目的 Kotlin 语言服务器。",
