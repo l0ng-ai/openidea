@@ -7827,7 +7827,7 @@
   "Interpreters added here are shared by every project; removing one only hides it from this list.": "此处添加的解释器由所有项目共享；删除一个只会将其从本列表中隐藏。",
   "Double-click an interpreter to use it for this project.": "双击解释器可将其用于当前项目。",
   "All Interpreters": "所有解释器",
-  "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff.": "配置项目解释器及其软件包、IDE 已知的所有解释器，以及 Ruff。"
+  "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff.": "配置项目解释器及其软件包、IDE 已知的所有解释器，以及 Ruff。",
   "No credential store": "没有凭据存储",
   "Values of agent and MCP server settings are kept in {path}, readable only by you.": "智能体和 MCP 服务器设置中的值保存在 {path} 中，仅你本人可读取。"
 }
