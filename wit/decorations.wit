@@ -1,7 +1,8 @@
-package openidea:plugin@1.7.0;
+package openidea:plugin@1.8.0;
 
-/// Project-scoped decorations (API 1.4). Requires project.read; paths must be inside
-/// an open project. Sets belong to the plugin and disappear when it stops.
+/// Editor and project-tree decorations (API 1.4). Requires project.read. An editor set
+/// follows its file: the file's own project, or the nearest one when it is outside them all.
+/// Tree sets are rooted in an open project. Sets belong to the plugin and disappear when it stops.
 /// Styles: highlight, search, added, modified, removed, warning, error, info,
 /// typo, weak, underline, strikethrough, muted. Unknown styles are ignored. Theme tokens only.
 interface decorations {
