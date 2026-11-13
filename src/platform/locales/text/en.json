@@ -1011,6 +1011,7 @@
   "Decompiled .class file: sources are not available.": "Decompiled .class file: sources are not available.",
   "Set DEFAULT": "Set DEFAULT",
   "Toggle Boolean Cell": "Toggle Boolean Cell",
+  "Local Filter": "Local Filter",
   "Toggle {name}": "Toggle {name}",
   "true": "true",
   "false": "false",

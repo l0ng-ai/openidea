@@ -539,4 +539,24 @@ test("Tab goes from a result tab to its first cell, and the result toolbar is on
   await expect(grid).toBeFocused();
   await page.keyboard.press("Shift+Tab");
   await expect(toolbar.getByRole("button", { name: "Chart", exact: true })).toBeFocused();
+
+  // Past the last cell, Tab leaves the grid instead of landing on its header's filter button.
+  await page.keyboard.press("Tab");
+  await expect(grid).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(grid).not.toBeFocused();
+  expect(await page.evaluate(() => !!document.activeElement?.closest("[role=grid]"))).toBe(false);
+
+  // The keyboard path to the header's local filter is the Local Filter action.
+  await grid.focus();
+  await page.evaluate(async () => {
+    const actionsModule = "/src/platform/actions.ts";
+    const { executeAction } = await import(/* @vite-ignore */ actionsModule);
+    await executeAction("db.localFilter");
+  });
+  const filter = page.getByRole("dialog", { name: "Local filter of payload", exact: true });
+  await expect(filter.getByRole("textbox", { name: "Search values", exact: true })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(filter).toBeHidden();
+  await expect(grid).toBeFocused();
 });

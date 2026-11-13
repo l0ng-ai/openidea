@@ -393,6 +393,7 @@ export function Grid(props: GridProps) {
       canToggle: () => canEdit() && !!bools[sel!.c1] && props.rowState?.(sel!.r1) !== "deleted",
       canSetNull: () => canEdit() && nullOk(norm(sel!)),
       canSetDefault: () => canEdit() && defaultable(norm(sel!)),
+      canFilter: () => !!props.onFilter && !!sel && !editing,
       toggle: () => {
         if (actions.canToggle()) toggleBoolean(sel!.r1, sel!.c1, booleanLiterals(props.driver));
       },
@@ -401,6 +402,12 @@ export function Grid(props: GridProps) {
       },
       setDefault: () => {
         if (actions.canSetDefault()) setDefaults(norm(sel!));
+      },
+      filter: () => {
+        if (!actions.canFilter()) return;
+        scrollColumnIntoView(sel!.c1);
+        const anchor = scrollRef.current?.querySelectorAll<HTMLElement>("[data-column-filter]")[sel!.c1];
+        if (anchor) props.onFilter!(sel!.c1, anchor);
       },
     };
     Object.assign((cellActions.current ??= {} as CellActions), actions);
@@ -540,6 +547,9 @@ export function Grid(props: GridProps) {
         { kind: "action", action: "db.setCellDefault", arg: cellActions.current },
       );
     }
+    if (props.onFilter) {
+      items.push({ kind: "separator" }, { kind: "action", action: "db.localFilter", arg: cellActions.current });
+    }
     const extra = rowMenu?.(selectedRows()) ?? [];
     if (extra.length) items.push({ kind: "separator" }, ...extra);
     showContextMenu(e, items);
@@ -648,6 +658,10 @@ export function Grid(props: GridProps) {
                 {props.onFilter && (
                   <button
                     type="button"
+                    data-column-filter=""
+                    // Not a Tab stop, like IDEA's table header: Tab past the last cell leaves the grid.
+                    // The keyboard opens it with the Local Filter action.
+                    tabIndex={-1}
                     className={clsx(styles.headerFilter, props.filtered?.(ci) && styles.headerFilterOn)}
                     aria-label={`Filter ${c.name}`}
                     title={tx("Local filter")}
