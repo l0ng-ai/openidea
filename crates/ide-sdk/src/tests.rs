@@ -1866,6 +1866,37 @@ fn max_java_picks_an_older_jdk() {
     assert_eq!(free.env["JAVA_HOME"], j25.home.to_string_lossy());
 }
 
+/// #3086: `gradle-wrapper.jar` excluded by a `*.jar` rule in `.gitignore`: `gradlew` can't
+/// start, so the distribution the wrapper already unpacked runs instead.
+#[test]
+fn gradle_wrapper_without_its_jar_runs_the_unpacked_distribution() {
+    use crate::apply::gradle_command;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let plain = if cfg!(windows) { "gradle.bat" } else { "gradle" };
+    let wrapper = root.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
+    std::fs::write(&wrapper, "").unwrap();
+    std::fs::create_dir_all(root.join("gradle/wrapper")).unwrap();
+    std::fs::write(
+        root.join("gradle/wrapper/gradle-wrapper.properties"),
+        "distributionUrl=https\\://services.gradle.org/distributions/gradle-4.10-bin.zip\n",
+    )
+    .unwrap();
+    let mut settings = Settings::default();
+    settings.languages.java.gradle.user_home = "user-home".into();
+    let hash = root.join("user-home/wrapper/dists/gradle-4.10-bin/7ddd1b3f");
+    let gradle = hash.join("gradle-4.10/bin").join(plain);
+    std::fs::create_dir_all(gradle.parent().unwrap()).unwrap();
+    std::fs::write(&gradle, "").unwrap();
+    // Not marked complete: possibly half unpacked.
+    assert_eq!(gradle_command(root, root, &settings), wrapper);
+    std::fs::write(hash.join("gradle-4.10-bin.zip.ok"), "").unwrap();
+    assert_eq!(gradle_command(root, root, &settings), gradle);
+    // With its jar the wrapper runs as usual.
+    std::fs::write(root.join("gradle/wrapper/gradle-wrapper.jar"), "").unwrap();
+    assert_eq!(gradle_command(root, root, &settings), wrapper);
+}
+
 #[test]
 fn gradle_settings_precedence() {
     use crate::apply::{gradle_command, gradle_env};
