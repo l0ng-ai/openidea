@@ -20,6 +20,7 @@ import {
 import { lazyComponent } from "@/ui";
 import { GradleView, MavenView } from "./BuildToolView";
 import { ExecutePopupHost } from "./ExecutePopup";
+import { pomCompletionExtension } from "./pomCompletion";
 import { pomNavigationExtension } from "./pomNavigation";
 import { buildToolsRunAnything } from "./runAnything";
 import { versionCatalogExtension } from "./versionCatalog";
@@ -35,6 +36,7 @@ import {
 import {
   ANALYZER_KIND,
   addProjects,
+  importModuleFromExistingSources,
   linkGradleProjects,
   unlinkGradleProjects,
   requestSync,
@@ -192,6 +194,7 @@ export function activate(): () => void {
     registerOverlay({ id: "build-tools.execute", component: ExecutePopupHost }),
     registerEditorContribution({ id: "build-tools.versionCatalog", extensions: versionCatalogExtension }),
     registerEditorContribution({ id: "build-tools.pomNavigation", extensions: pomNavigationExtension }),
+    registerEditorContribution({ id: "build-tools.pomCompletion", extensions: pomCompletionExtension }),
     registerRunAnythingProvider(buildToolsRunAnything),
     registerEditorKind({
       kind: ANALYZER_KIND,
@@ -280,10 +283,23 @@ export function activate(): () => void {
       {
         id: "maven.addProjects",
         title: "Add Maven Projects",
+        description:
+          "Choose one or more pom.xml files inside or outside the opened project. The opened folder stays the project root.",
         category: "Maven",
         icon: "plus",
         when: "projectOpen && !workspaceOpen",
         run: () => addProjects(),
+      },
+      {
+        id: "maven.importExternal",
+        title: "Import Module from Existing Sources",
+        description:
+          "Choose a module directory outside the opened project. If it contains pom.xml, that Maven project is attached. The opened folder stays the project root, and neither POM is edited.",
+        category: "Maven",
+        icon: "plus",
+        when: "projectOpen && !workspaceOpen",
+        keywords: ["import", "module", "existing", "sources", "external", "maven", "pom"],
+        run: () => importModuleFromExistingSources(),
       },
       {
         id: "maven.unlinkProjects",

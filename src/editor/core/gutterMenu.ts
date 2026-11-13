@@ -44,6 +44,7 @@ export function gutterMenuItems(slot: EditorSlot, line: number): MenuItem[] {
     ...menuGroupItems("editorGutter", { paths: [model.path], text: slot.currentState().doc.toString(), line }),
     { label: "Soft-Wrap", checked: model.softWrapOn(), run: () => model.toggleSoftWrap() },
     { label: "Configure Soft Wraps…", run: openSettings("editor.general") },
+    { label: "Render Documentation Comments", checked: model.renderedDocsOn(), run: () => model.toggleRenderedDocs() },
     { kind: "separator" },
     { label: "Appearance", submenu: appearanceItems() },
     { label: "Configure Gutter Icons…", run: openSettings("editor.general.gutterIcons") },

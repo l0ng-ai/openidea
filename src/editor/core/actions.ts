@@ -49,6 +49,7 @@ import {
 } from "./cm/folding";
 import { reverseLines, sortLines } from "./cm/lines";
 import { customRegions } from "./cm/regions";
+import { toggleRenderedViewAtCaret } from "./cm/renderedDocs";
 import { enclosingHeaders } from "./cm/stickyScroll";
 import { moveElementLeft, moveElementRight } from "./cm/moveElement";
 import { caretAnchor, openPopup, updatePopup, useLspPopup, type LspPopup } from "@/editor/lsp/popupStore";
@@ -748,6 +749,19 @@ export function registerEditorActions(): () => void {
         else activeSlot()?.model.toggleSoftWrap();
       },
     },
+    {
+      id: "editor.toggleRenderedDocs",
+      title: "Render Documentation Comments",
+      category: "View",
+      keywords: ["render documentation comments", "javadoc", "rendered doc", "comments"],
+      when: "textEditorActive",
+      toggled: () => activeSlot()?.model.renderedDocsOn() ?? false,
+      run: () => activeSlot()?.model.toggleRenderedDocs(),
+    },
+    text("editor.toggleRenderedView", "Toggle Rendered View", (v) => toggleRenderedViewAtCaret(v), {
+      category: "View",
+      keywords: ["reader mode", "render documentation comment", "javadoc", "edit comment"],
+    }),
     text("code.foldAll", "Collapse All", (v) => collapseAll(v), { category: "Folding", icon: "collapse-all" }),
     text("code.unfoldAll", "Expand All", (v) => expandAll(v), { category: "Folding", icon: "expand-all" }),
     text("code.collapseRecursively", "Collapse Recursively", (v) => collapseRecursively(v), {

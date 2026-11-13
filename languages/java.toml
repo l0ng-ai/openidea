@@ -27,7 +27,7 @@ install-hint = "Install Microsoft java-debug (Settings › Languages & Framework
 name = "jdtls"
 command = "jdtls"
 root-markers = ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "build.xml", ".project"]
-install-hint = "Install Eclipse JDT Language Server (brew install jdtls, or https://github.com/eclipse-jdtls/eclipse.jdt.ls); requires JDK 21+"
+install-hint = "Install Eclipse JDT Language Server (brew install jdtls, or https://github.com/eclipse-jdtls/eclipse.jdt.ls); runs on a JDK new enough for the installed release, chosen or downloaded automatically"
 
 [language-servers.initialization-options]
 bundles = []

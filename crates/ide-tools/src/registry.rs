@@ -434,6 +434,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "prisma-language-server",
+        display: "Prisma Language Server",
+        kind: LanguageServer,
+        commands: &["prisma-language-server"],
+        method: Method::Npm { packages: &["@prisma/language-server"] },
+        fallback: None,
+        version: V,
+        homepage: "https://github.com/prisma/language-tools",
+        needs: &[],
+    },
+    ToolSpec {
         name: "intelephense",
         display: "Intelephense (PHP)",
         kind: LanguageServer,

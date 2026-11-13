@@ -40,6 +40,7 @@ import { findOutputLinks, type OutputLink } from "@/features/run/links";
 import { openTarget, openUrl } from "@/features/run/navigate";
 import { navigateToMessage, rerunBuild, selectBuildNode, useBuildRun } from "./store";
 import styles from "./Build.module.css";
+import { WidestColumns } from "@/platform/consoleColumns";
 import { tx } from "@/platform/i18n";
 
 const SEVERITY_ICON: Record<Severity, string> = { error: "error", warning: "warning", info: "info", hint: "info" };
@@ -246,6 +247,8 @@ function BuildConsole() {
   const lines = useBuildRun((s) => s.lines);
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const [widest] = useState(() => new WidestColumns());
+  const columns = useMemo(() => widest.measure(lines), [widest, lines]);
   const virtualizer = useVirtualizer({
     count: lines.length,
     getScrollElement: () => ref.current,
@@ -268,7 +271,10 @@ function BuildConsole() {
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < LINE_HEIGHT * 2;
       }}
     >
-      <div className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
+      <div
+        className={styles.consoleInner}
+        style={{ height: virtualizer.getTotalSize(), minWidth: `calc(${columns}ch + 24px)` }}
+      >
         {virtualizer.getVirtualItems().map((v) => {
           const line = lines[v.index]!;
           return (

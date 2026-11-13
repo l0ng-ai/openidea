@@ -7,7 +7,7 @@
 import type { ITheme, Terminal } from "@xterm/xterm";
 import { fontWeightOf } from "@/platform/editorSettings";
 import { familyFaces, fontsLoaded, monoStack, resolveMonoFont } from "@/platform/fonts";
-import { parseColor, type Rgba } from "@/platform/cssColor";
+import { computedTokenColor, parseColor, type Rgba } from "@/platform/cssColor";
 
 export { parseColor, type Rgba };
 
@@ -133,12 +133,7 @@ export function documentTokenReader(): TokenReader {
   return (name) => {
     const raw = style.getPropertyValue(name).trim();
     if (!raw || parseColor(raw)) return raw;
-    const probe = Object.assign(document.createElement("span"), { hidden: true });
-    probe.style.color = `var(${name})`;
-    root.appendChild(probe);
-    const resolved = getComputedStyle(probe).color;
-    probe.remove();
-    return resolved;
+    return computedTokenColor(name, root);
   };
 }
 

@@ -85,7 +85,7 @@ export function exportData(
           ? "NULL"
           : numeric[i] && Number.isFinite(Number(v))
             ? v
-            : `'${(d.driver === "clickhouse" ? v.replace(/\\/g, "\\\\") : v).replace(/'/g, "''")}'`;
+            : `'${(d.driver === "clickhouse" || d.driver === "snowflake" ? v.replace(/\\/g, "\\\\") : v).replace(/'/g, "''")}'`;
       const head = `INSERT INTO ${quoteIdent(d.table, d.driver)} (${names.map((n) => quoteIdent(n, d.driver)).join(", ")}) VALUES`;
       return d.rows.map((r) => `${head} (${r.map(literal).join(", ")});`).join("\n");
     }

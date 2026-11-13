@@ -455,7 +455,16 @@ export function Menu({ open, onClose, anchor, items, placement = "bottom-start",
 // Context menus
 
 interface ContextMenuState {
-  menu: { x: number; y: number; items: MenuItem[]; numbers: boolean; id: number } | null;
+  menu: {
+    x: number;
+    y: number;
+    items: MenuItem[];
+    numbers: boolean;
+    id: number;
+    /** The text selection the menu was opened on (see `restoreSelection`). */
+    selection: Range[] | null;
+    owner: Element | null;
+  } | null;
 }
 
 export const useContextMenuStore = create<ContextMenuState>(() => ({ menu: null }));
@@ -464,11 +473,44 @@ let menuSeq = 0;
 export function showContextMenu(
   at: { clientX: number; clientY: number } | { x: number; y: number },
   items: MenuItem[],
-  options?: { numbers?: boolean },
+  options?: { numbers?: boolean; owner?: Element | null },
 ) {
   const x = "clientX" in at ? at.clientX : at.x;
   const y = "clientY" in at ? at.clientY : at.y;
-  useContextMenuStore.setState({ menu: { x, y, items, numbers: !!options?.numbers, id: ++menuSeq } });
+  useContextMenuStore.setState({
+    menu: {
+      x,
+      y,
+      items,
+      numbers: !!options?.numbers,
+      id: ++menuSeq,
+      selection: textSelection(),
+      owner: options?.owner ?? null,
+    },
+  });
+}
+
+/** The page's text selection, unless it is in an editable element (editors keep their own). */
+function textSelection(): Range[] | null {
+  const sel = document.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+  const node = sel.anchorNode;
+  const el = node instanceof Element ? node : node?.parentElement;
+  if (!el || el.closest("input, textarea, [contenteditable]:not([contenteditable='false'])")) return null;
+  return Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i).cloneRange());
+}
+
+/**
+ * WebKit drops a page's text selection when focus moves to another element, as when the menu
+ * focuses its first row and when it gives focus back: put the selection the menu was opened on
+ * back, so it stays highlighted while its Copy / Quote apply to it.
+ */
+function restoreSelection(ranges: readonly Range[]) {
+  const sel = document.getSelection();
+  if (!sel || !sel.isCollapsed) return;
+  if (!ranges.every((r) => r.startContainer.isConnected && r.endContainer.isConnected)) return;
+  sel.removeAllRanges();
+  for (const r of ranges) sel.addRange(r);
 }
 
 export function hideContextMenu() {
@@ -478,6 +520,20 @@ export function hideContextMenu() {
 /** Renders the active context menu; mount once (the workbench does). */
 export function ContextMenuHost() {
   const menu = useContextMenuStore((s) => s.menu);
+  const selection = menu?.selection ?? null;
+  const owner = menu?.owner ?? null;
+  useLayoutEffect(() => {
+    if (!owner) return;
+    owner.setAttribute("data-context-menu-open", "");
+    return () => owner.removeAttribute("data-context-menu-open");
+  }, [owner]);
+  // After the rows' layout effects: the first row has taken focus.
+  useLayoutEffect(() => {
+    if (!selection) return;
+    restoreSelection(selection);
+    // After the popup has given focus back; a click elsewhere selects afresh after this.
+    return () => queueMicrotask(() => restoreSelection(selection));
+  }, [selection]);
   if (!menu) return null;
   return (
     <Popup

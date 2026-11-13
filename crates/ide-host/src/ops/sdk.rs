@@ -7,6 +7,8 @@ use ide_core::{IdeError, IdeResult, RequestId};
 use ide_sdk::python::PythonPackage;
 use ide_sdk::{Sdk, SdkKind};
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn join_err(e: impl std::fmt::Display) -> IdeError {
     IdeError::internal(e.to_string())
@@ -18,6 +20,14 @@ fn join_err(e: impl std::fmt::Display) -> IdeError {
 pub struct LocatedTools {
     pub tools: Vec<ide_sdk::locate::LocatedTool>,
     pub compile_dir: ide_core::IpcPath,
+}
+
+/// An interpreter another project uses: the project root and the SDK itself.
+#[derive(Clone, Debug, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectInterpreter {
+    pub project: ide_core::IpcPath,
+    pub sdk: Sdk,
 }
 
 /// Installed interpreters / toolchains of `kind`; project-local ones first.
@@ -40,6 +50,50 @@ pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<V
             sdks.push(sdk);
         }
         sdks
+    })
+    .await
+    .map_err(join_err)
+}
+
+/// The Python interpreters of the projects opened recently (newest first), each with the
+/// project it belongs to. The open project is skipped: [`sdk_detect`] lists its own.
+pub async fn sdk_python_project_interpreters(host: &Host, window: &str) -> IdeResult<Vec<ProjectInterpreter>> {
+    host.require_trust(window)?;
+    let current = host.project(window).ok().map(|p| p.root.clone());
+    let config = host.config_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let roots: Vec<PathBuf> = ide_workspace::RecentProjects::load(&config)
+            .list()
+            .into_iter()
+            .map(|p| p.path.into_path_buf())
+            .filter(|root| current.as_deref() != Some(root.as_path()))
+            .collect();
+        // Each project resolves its configured interpreter, else its own virtualenv. The
+        // probes run `python`, so keep them off the async runtime and bound how many run at
+        // once: the recent list can hold ~30 projects, and each probe starts a process.
+        const PROBES: usize = 4;
+        let results = Mutex::new(Vec::with_capacity(roots.len()));
+        let next = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..roots.len().min(PROBES) {
+                scope.spawn(|| {
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(root) = roots.get(index) else { break };
+                        let settings = ide_workspace::SettingsStore::load(&config, Some(root)).effective();
+                        let Some(python) = ide_sdk::apply::python_interpreter(root, &settings) else { continue };
+                        let Some(sdk) = ide_sdk::python_interpreter_sdk(&python, Some(root)) else { continue };
+                        results
+                            .lock()
+                            .unwrap()
+                            .push((index, ProjectInterpreter { project: root.as_path().into(), sdk }));
+                    }
+                });
+            }
+        });
+        let mut found = results.into_inner().unwrap();
+        found.sort_by_key(|(index, _)| *index);
+        found.into_iter().map(|(_, interpreter)| interpreter).collect()
     })
     .await
     .map_err(join_err)
@@ -69,7 +123,14 @@ pub fn sdk_python_effective(host: &Host, window: &str, near: Option<PathBuf>) ->
         }
         None => (project.root.clone(), project.settings.effective()),
     };
-    Ok(ide_sdk::apply::python_interpreter_near(&root, near.as_deref(), &settings).map(Into::into))
+    // A member with no Python of its own falls back to the primary project's
+    // (the same chain run configurations use), so every answer names one interpreter.
+    let interpreter = ide_sdk::apply::python_interpreter_near(&root, near.as_deref(), &settings).or_else(|| {
+        (root != project.root)
+            .then(|| ide_sdk::apply::python_interpreter(&project.root, &project.settings.effective()))
+            .flatten()
+    });
+    Ok(interpreter.map(Into::into))
 }
 
 /// The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`.
@@ -304,6 +365,10 @@ pub async fn sdk_python_pip(
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("sdk_detect", |c| async move { sdk_detect(&c.host, &c.window, c.arg("kind")?).await });
     d.add(
+        "sdk_python_project_interpreters",
+        |c| async move { sdk_python_project_interpreters(&c.host, &c.window).await },
+    );
+    d.add(
         "sdk_python_interpreter",
         |c| async move { sdk_python_interpreter(&c.host, &c.window, c.arg("path")?).await },
     );
@@ -416,6 +481,51 @@ mod tests {
         assert!(detected.iter().any(|s| s.path == sdk.path && s.name == sdk.name));
         assert_eq!(sdk_python_effective(&host, "main", None).unwrap(), Some(sdk.path));
         assert!(sdk_python_interpreter(&host, "main", root.join("README.md")).await.unwrap().is_none());
+        host.close_project("main");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn another_projects_interpreter_is_listed_with_its_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("project");
+        let other = base.join("shop");
+        std::fs::create_dir_all(other.join(".openidea")).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        let python = fake_venv(&other, ".venv");
+        std::fs::write(
+            other.join(".openidea/settings.toml"),
+            "[languages.python]\ninterpreter = \".venv/bin/python\"\n",
+        )
+        .unwrap();
+        // The projects the user opened before this one.
+        let config = base.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        let recent = serde_json::json!([
+            { "path": other.to_str().unwrap(), "name": "shop", "openedAtMs": 2.0, "branch": null },
+            { "path": root.to_str().unwrap(), "name": "project", "openedAtMs": 1.0, "branch": null },
+        ]);
+        std::fs::write(config.join("recent.json"), serde_json::to_vec(&recent).unwrap()).unwrap();
+
+        let host = Host::new(HostConfig {
+            config_dir: config,
+            data_dir: base.join("data"),
+            local_data_dir: base.join("local"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(|_| {})),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        });
+        host.trust.decide(&root, true, false).unwrap();
+        host.open_project("main", &root).unwrap();
+
+        let list = sdk_python_project_interpreters(&host, "main").await.unwrap();
+        assert_eq!(list.len(), 1, "{list:?}");
+        assert_eq!(&*list[0].project, other.as_path());
+        assert_eq!(&*list[0].sdk.path, python.as_path());
+        assert_eq!(list[0].sdk.name, "Python 3.12 (shop)");
         host.close_project("main");
     }
 }

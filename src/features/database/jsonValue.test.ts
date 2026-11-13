@@ -5,6 +5,8 @@ describe("JSON column detection", () => {
   it("matches json, jsonb and MySQL JSON types", () => {
     for (const type of ["json", "jsonb", "JSON", "Json", "MYSQL_TYPE_JSON"]) expect(isJsonColumn(type)).toBe(true);
     for (const type of ["text", "_json", "jsonb[]", "notjson", "json_config"]) expect(isJsonColumn(type)).toBe(false);
+    for (const type of ["VARIANT", "OBJECT", "ARRAY", "variant"]) expect(isJsonColumn(type)).toBe(true);
+    for (const type of ["Array(Int32)", "VARCHAR(100)", "int4[]"]) expect(isJsonColumn(type)).toBe(false);
     expect(isJsonColumn("integer")).toBe(false);
     expect(isJsonColumn("")).toBe(false);
   });

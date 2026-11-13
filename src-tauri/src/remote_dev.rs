@@ -76,6 +76,8 @@ pub struct Connection {
     /// Remote ports forwarded to this machine (Ports tool window), by host (`None`: the remote
     /// host itself) and remote port.
     forwards: Mutex<Vec<(ForwardKey, Forward)>>,
+    /// Ports of the remote built-in web server forwarded here, by remote port.
+    web_forwards: Mutex<Vec<(u16, Forward)>>,
 }
 
 /// A forwarded port's host (`None`: the remote host itself) and remote port.
@@ -544,6 +546,7 @@ pub async fn remote_connect(
         next_channel: std::sync::atomic::AtomicU64::new(1),
         session,
         forwards: Mutex::new(Vec::new()),
+        web_forwards: Mutex::new(Vec::new()),
         exec,
     });
     if let RemoteTarget::DevContainer { folder, config } = &target {
@@ -749,6 +752,34 @@ async fn open_forward(c: &Connection, host: Option<&str>, remote_port: u16) -> I
     Err(IdeError::unavailable("Forwarding ports is not supported in a WSL project yet"))
 }
 
+/// `web_url` answers with the remote host's built-in web server, on its loopback: the URL's
+/// port is forwarded here. A WSL distribution shares this machine's loopback already.
+async fn forward_web_url(c: &Connection, url: &str) -> IdeResult<String> {
+    let Some((port, path)) = url.strip_prefix("http://127.0.0.1:").and_then(|rest| rest.split_once('/')) else {
+        return Ok(url.to_owned());
+    };
+    let Ok(remote) = port.parse::<u16>() else { return Ok(url.to_owned()) };
+    let existing = c.web_forwards.lock().iter().find(|(p, _)| *p == remote).map(|(_, f)| f.port());
+    let local = match existing {
+        Some(local) => local,
+        None => {
+            let forward = if let Some(session) = c.session.clone() {
+                Forward::Ssh(ide_ssh::Tunnel::listen_on(session, Some(remote), "127.0.0.1", remote).await?)
+            } else if let Some(exec) = c.exec.clone() {
+                Forward::Container(
+                    ide_remote::container_tunnel::Tunnel::listen(exec, remote, "127.0.0.1", remote).await?,
+                )
+            } else {
+                return Ok(url.to_owned());
+            };
+            let local = forward.port();
+            c.web_forwards.lock().push((remote, forward));
+            local
+        }
+    };
+    Ok(format!("http://127.0.0.1:{local}/{path}"))
+}
+
 /// Forwards the `forwardPorts` of the dev container's configuration (the local folder's).
 async fn forward_configured_ports(c: &Connection, folder: &str, config: &str) {
     let local = std::path::PathBuf::from(folder);
@@ -858,8 +889,12 @@ pub async fn remote_invoke(
     } else {
         None
     };
+    let web_url = cmd == "web_url";
     let call = Invoke { window: label, cmd, args };
-    let result = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30)).await?;
+    let mut result = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30)).await?;
+    if web_url && let Some(url) = result.as_str() {
+        result = Value::String(forward_web_url(&c, url).await?);
+    }
     if let (Some((peers, edit)), Some(version)) =
         (mirrored, result.as_u64().and_then(|version| u32::try_from(version).ok()))
     {

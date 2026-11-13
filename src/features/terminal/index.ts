@@ -11,6 +11,7 @@ import { lazyComponent } from "@/ui";
 import { installTerminalKeys } from "./keys";
 import { loadTerminalRuntime, terminalRuntime } from "./loader";
 import { SAMPLE_TUI_END, SAMPLE_TUI_START, sampleTuiFrame } from "./sampleTui";
+import type { SessionOptions } from "./session";
 
 const WINDOW = "terminal";
 
@@ -163,13 +164,18 @@ export function activate(): () => void {
         when: "projectOpen",
         hidden: true,
         run: async ({ arg }) => {
-          const a = arg as { program?: unknown; args?: unknown; name?: unknown; cwd?: unknown } | undefined;
-          if (!a || typeof a.program !== "string" || !a.program) return;
+          const a = arg as
+            | { program?: unknown; args?: unknown; name?: unknown; cwd?: unknown; spawn?: unknown }
+            | undefined;
+          const spawn =
+            typeof a?.spawn === "function" ? (a.spawn as NonNullable<SessionOptions["command"]>["spawn"]) : undefined;
+          if (!a || ((typeof a.program !== "string" || !a.program) && !spawn)) return;
           const args = Array.isArray(a.args) ? a.args.filter((x): x is string => typeof x === "string") : [];
           const cwd = (typeof a.cwd === "string" && a.cwd) || projectRoot();
           if (!cwd) return;
           const rt = await loadTerminalRuntime();
-          rt.newTab(cwd, typeof a.name === "string" && a.name ? a.name : undefined, { program: a.program, args });
+          const program = typeof a.program === "string" ? a.program : "";
+          rt.newTab(cwd, typeof a.name === "string" && a.name ? a.name : undefined, { program, args, spawn });
           toolWindowService().show(WINDOW, true);
           focusActiveSoon();
         },

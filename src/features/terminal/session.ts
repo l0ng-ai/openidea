@@ -93,6 +93,7 @@ export interface SessionOptions {
 
 /** Mouse-tracking DEC private modes (X10, normal, button, any-event, encodings). */
 const MOUSE_MODES = new Set([9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016]);
+const CLEAR_SCROLLBACK_MARKER = "\x1b]133;OpenIDEA;ClearScrollback\x07";
 
 let audio: AudioContext | null = null;
 
@@ -226,6 +227,7 @@ export class TerminalSession {
   private readonly ptyResize = settledResize((cols, rows) => this.resizePty(cols, rows));
   /** Keystrokes typed while the PTY is still starting; sent as soon as it exists. */
   private pendingInput = "";
+  private outputTail = "";
   private lastSize = { cols: 0, rows: 0 };
   /** Per-tab font size offset (px) relative to `workflowSettings().terminal.fontSize`. */
   private fontZoom = 0;
@@ -577,6 +579,21 @@ export class TerminalSession {
     if (this.ime.accept(data)) this.input(data);
   }
 
+  private writePtyOutput(chunk: string) {
+    const data = this.outputTail + chunk;
+    let output = data.replaceAll(CLEAR_SCROLLBACK_MARKER, "\x1b[2J\x1b[3J");
+    let held = 0;
+    for (let n = Math.min(CLEAR_SCROLLBACK_MARKER.length - 1, output.length); n > 0; n--) {
+      if (output.endsWith(CLEAR_SCROLLBACK_MARKER.slice(0, n))) {
+        held = n;
+        break;
+      }
+    }
+    this.outputTail = output.slice(output.length - held);
+    output = output.slice(0, output.length - held);
+    if (output) this.term.write(output);
+  }
+
   private doFit() {
     if (this.disposed || !this.host.isConnected) return;
     // The grid row is still 0 on the first layout pass (the track is set by a
@@ -613,6 +630,7 @@ export class TerminalSession {
   async start() {
     if (this.disposed || this.snapshot.status === "starting" || this.snapshot.status === "running") return;
     const generation = ++this.generation;
+    this.outputTail = "";
     const custom = this.opts.command;
     this.update({ status: "starting", exitCode: null, appTitle: null, commandRunning: !!custom && !custom.shell });
     if (!isTauri()) {
@@ -625,7 +643,7 @@ export class TerminalSession {
     this.lastSize = { cols, rows };
     const channel = new Channel<string>();
     channel.onmessage = (chunk) => {
-      if (generation === this.generation && !this.disposed) this.term.write(chunk);
+      if (generation === this.generation && !this.disposed) this.writePtyOutput(chunk);
     };
     try {
       const t = workflowSettings().terminal;
@@ -842,7 +860,8 @@ export class TerminalSession {
     this.resizeObserver?.disconnect();
     this.host.removeEventListener("mousedown", this.onMiddleClick);
     this.host.removeEventListener("wheel", this.onWheelZoom, { capture: true });
-    if (this.ptyId !== null && !this.opts.command?.spawn) void commands.termKill(this.ptyId);
+    // A session with an owner (`onExit`) is ended by that owner.
+    if (this.ptyId !== null && !this.opts.command?.onExit) void commands.termKill(this.ptyId);
     this.ptyId = null;
     this.disposables.forEach((d) => d.dispose());
     this.term.dispose();

@@ -62,6 +62,7 @@ import { useCompletionAnchor } from "./useCompletionAnchor";
 import { useAgentSettings } from "./agentSettings";
 import styles from "./Composer.module.css";
 import { isImeKey } from "@/platform/ime";
+import { isMacHost } from "@/platform/keymap";
 
 const MAX_PROMPT_HEIGHT = 280;
 const MAX_ITEMS = 12;
@@ -452,6 +453,12 @@ export function Composer(props: ComposerProps) {
       e.preventDefault();
       if (!props.disabled) props.onSubmit(send === "now");
       recalled.current = { index: -1, stash: "" };
+      return;
+    }
+    // macOS text boxes scroll on Home / End and leave the caret where it is.
+    if ((e.key === "Home" || e.key === "End") && !e.altKey && !e.ctrlKey && !e.metaKey && isMacHost()) {
+      e.preventDefault();
+      getSelection()?.modify(e.shiftKey ? "extend" : "move", e.key === "Home" ? "backward" : "forward", "lineboundary");
       return;
     }
     if (e.key === "Tab" && e.shiftKey) {

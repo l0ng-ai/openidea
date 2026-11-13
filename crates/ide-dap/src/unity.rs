@@ -37,7 +37,17 @@ pub(crate) async fn settle_startup(session: &crate::session::Session) {
     .await;
 }
 
+pub fn require_runtime(cwd: &std::path::Path) -> IdeResult<()> {
+    if cfg!(unix) && ide_core::tool_path::find_command("mono", &ide_core::tool_path::search_path(), cwd).is_none() {
+        return Err(IdeError::unavailable(
+            "Unity Debugger requires Mono. Install Mono, make sure mono is on PATH, then refresh the Unity process list.",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn editors(command: Option<String>, cwd: PathBuf) -> IdeResult<Vec<AttachableProcess>> {
+    require_runtime(&cwd)?;
     let command = command.unwrap_or_else(|| "unity-debug".into());
     let lookup = command.clone();
     let dir = cwd.clone();
@@ -70,8 +80,10 @@ pub async fn editors(command: Option<String>, cwd: PathBuf) -> IdeResult<Vec<Att
     let mut rows = parse_editors(&String::from_utf8_lossy(&out.stdout));
     #[cfg(windows)]
     if !rows.is_empty() {
-        let editors = editor_process_ids()?;
-        rows.retain(|p| editors.contains(&p.pid));
+        match editor_process_ids() {
+            Ok(editors) => rows.retain(|p| editors.contains(&p.pid)),
+            Err(error) => tracing::warn!(%error, "Unity process filtering failed; using adapter discovery results"),
+        }
     }
     // 优先显示当前项目的实例，等待用户选择后再附加。
     let path = cwd.join("Library/EditorInstance.json");
@@ -108,6 +120,11 @@ fn editor_process_ids() -> IdeResult<std::collections::HashSet<u32>> {
         }
         let mut entry = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..std::mem::zeroed() };
         let mut found = Process32FirstW(snapshot, &mut entry);
+        if found == 0 {
+            let error = std::io::Error::last_os_error();
+            CloseHandle(snapshot);
+            return Err(error.into());
+        }
         while found != 0 {
             let end = entry.szExeFile.iter().position(|c| *c == 0).unwrap_or(entry.szExeFile.len());
             let name = String::from_utf16_lossy(&entry.szExeFile[..end]);

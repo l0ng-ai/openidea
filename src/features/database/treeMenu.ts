@@ -107,6 +107,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         { label: "New", icon: "plus", submenu: [newConsole, sep, ...dataSourceItems()] },
         { label: "Copy/Paste", submenu: [copyRef, act("db.duplicateSource", n)] },
         refresh,
+        ...(n.source.driver === "snowflake" ? [act("db.introspect", n)] : []),
         act("db.disconnect", n, { disabled: !connected }),
         sep,
         rename,

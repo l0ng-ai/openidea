@@ -11,6 +11,7 @@ import {
   isCancelled,
   nextRequestId,
   type DataSource,
+  type DbCatalogSchema,
   type DbCompletion,
   type DbDatabases,
   type DbDriver,
@@ -124,6 +125,17 @@ export type DialogState =
   /** Import Data from File into a table. */
   | { kind: "import"; id: string; schema: string; table: string };
 
+/** The schemas and tables of a data source's databases, as far as introspection has read them. */
+export interface SourceCatalog {
+  status: "running" | "done" | "cancelled";
+  done: number;
+  total: number;
+  /** When the oldest of the databases was read (ms since the epoch; absent: nothing read yet). */
+  readAt?: number;
+  /** Database → its schemas with their tables and views. */
+  databases: Record<string, DbCatalogSchema[]>;
+}
+
 interface DatabaseState {
   sources: DataSource[];
   loaded: boolean;
@@ -131,6 +143,8 @@ interface DatabaseState {
   connected: Set<string>;
   /** Data source id → databases of its server (PostgreSQL). */
   databases: Record<string, Loaded<DbDatabases>>;
+  /** Data source id → what its introspection has read (Snowflake; see `introspection.ts`). */
+  catalogs: Record<string, SourceCatalog>;
   /** Target → schemas. */
   schemas: Record<string, Loaded<string[]>>;
   /** `${id}\u0000${schema}` → tables. */
@@ -205,6 +219,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   loaded: false,
   connected: new Set(),
   databases: {},
+  catalogs: {},
   schemas: {},
   tables: {},
   details: {},
@@ -502,9 +517,12 @@ export function consoleTints(s: Pick<DatabaseState, "consoles" | "sources">): Ma
   return out;
 }
 
-/** PostgreSQL / SQL Server data sources show their server's databases (IDEA's data source › database › schema). */
+/** PostgreSQL, SQL Server and Snowflake data sources show their server's databases (IDEA's data source › database › schema). */
 export function listsDatabases(source: DataSource | undefined): boolean {
-  return (source?.driver === "postgres" || source?.driver === "sqlServer") && !source.options?.singleDatabase;
+  return (
+    (source?.driver === "postgres" || source?.driver === "sqlServer" || source?.driver === "snowflake") &&
+    !source.options?.singleDatabase
+  );
 }
 
 /**
@@ -964,7 +982,7 @@ function showPlan(path: string, id: string, statement: SqlStatement, plan: DbPla
     const old = s.results.find((r) => r.plan);
     const tab: ResultTab = {
       id: old?.id ?? nextTab++,
-      title: PLAN_TITLE,
+      title: old?.title ?? PLAN_TITLE,
       path,
       sourceId: id,
       outcome: { statement, result: null, error: null },
@@ -1212,7 +1230,12 @@ export function cancelConsole(path: string) {
 
 export function closeResult(id: number) {
   useDatabase.setState((s) => {
+    const index = s.results.findIndex((r) => r.id === id);
+    if (index < 0) return s;
     const results = s.results.filter((r) => r.id !== id);
-    return { results, activeResult: s.activeResult === id ? (results.at(-1)?.id ?? OUTPUT_TAB) : s.activeResult };
+    return {
+      results,
+      activeResult: s.activeResult === id ? ((results[index - 1] ?? results[index])?.id ?? OUTPUT_TAB) : s.activeResult,
+    };
   });
 }

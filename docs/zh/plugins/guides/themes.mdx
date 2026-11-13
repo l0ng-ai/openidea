@@ -3,7 +3,7 @@ title: "主题"
 description: "编写配色主题插件：主题文件与编辑器配色方案文件、主题如何生效、导入 IntelliJ 主题、移植 VS Code 主题，以及完整的 token 参考。"
 ---
 
-OpenIDEA 内置七个主题：Islands 浅色、Islands 深色、高对比度、Solarized 浅色、Solarized 深色、One 浅色和 One 深色。
+OpenIDEA 内置五个主题：Islands 浅色、Islands 深色、高对比度、Solarized 浅色和 Solarized 深色。
 其他主题都来自 **主题插件**。
 
 主题插件是纯数据插件。和 IntelliJ 主题（一个 `.theme.json` 加一个可选的 `.icls` 编辑器配色方案）一样，它没有代码：
@@ -210,7 +210,7 @@ pnpm theme:import-intellij path/to/MyTheme.theme.json path/to/MyTheme.icls --out
 | `--syn-rainbow-1` … `--syn-rainbow-5`（语义高亮）                                     | `RAINBOW_COLOR1` … `RAINBOW_COLOR5`                                                                  |
 | `--wave-error`, `--wave-warning`                                                      | `ERRORS_ATTRIBUTES`, `WARNING_ATTRIBUTES`（效果颜色）                                                |
 | `--bg-matched-brace`, `--bg-identifier-under-caret`                                   | `MATCHED_BRACE_ATTRIBUTES`, `IDENTIFIER_UNDER_CARET_ATTRIBUTES`                                      |
-| `--bg-text-search-result`, `--bg-search-match`                                        | `TEXT_SEARCH_RESULT_ATTRIBUTES`, `SEARCH_RESULT_ATTRIBUTES`                                          |
+| `--bg-text-search-result`, `--bg-search-result`                                       | `TEXT_SEARCH_RESULT_ATTRIBUTES`, `SEARCH_RESULT_ATTRIBUTES`                                          |
 | `--syn-self`, `--syn-keyword-arg`, `--syn-docstring`, `--syn-predefined`              | `PY.SELF_PARAMETER`, `PY.KEYWORD_ARGUMENT`, `PY.DOC_COMMENT`, `PY.BUILTIN_NAME`                      |
 | `--ansi-*`                                                                            | `CONSOLE_*_OUTPUT`（`CONSOLE_DARKGRAY_OUTPUT` 为亮黑，`CONSOLE_GRAY_OUTPUT` 为白色）                 |
 
@@ -469,6 +469,7 @@ VS Code 主题（扩展中的 `themes/*.json`）包含 `type`（`dark` / `light`
 | `--fg-editor-selection`             | `inherit`                | `inherit`                |
 | `--bg-text-search-result`           | `#114957`                | `#fcd47e`                |
 | `--bg-text-search-result-current`   | `#165e70`                | `#f2bf57`                |
+| `--bg-search-result`                | `#2d543f`                | `#ccccff`                |
 | `--bg-matched-brace`                | `#43454a`                | `#93d9d9`                |
 | `--matched-brace-weight`            | `var(--fw-code-bold)`    | `inherit`                |
 | `--bg-matched-tag`                  | `#3f4045`                | `#c9ecec`                |

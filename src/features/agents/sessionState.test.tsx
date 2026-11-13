@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
+import { emitLocalIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { EditorShownProvider } from "@/workbench/contributions";
 import { hideContextMenu, useContextMenuStore } from "@/ui";
-import type { AgentChange, AgentEntry, AgentTask } from "@/bindings";
+import type { AgentChange, AgentCommit, AgentEntry, AgentTask } from "@/bindings";
 import { AgentsView } from "./AgentsView";
 import { SessionEditor, conversationRows } from "./SessionEditor";
 import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./model";
 import { disconnect, useAgents } from "./store";
+import { useChangesOptions } from "./changesOptions";
 import { taskActions } from "./taskActions";
 import { replyActions } from "./replyActions";
 import { focusedSession } from "./sessionFocus";
@@ -18,6 +20,10 @@ import tagStyles from "@/ui/InlineTag.module.css";
 const backend = vi.hoisted(() => ({
   entries: new Map<string, AgentEntry[]>(),
   changes: [] as AgentChange[],
+  changesCalls: 0,
+  grouped: { uncommitted: [] as AgentChange[], commits: [] as AgentCommit[] },
+  groupedCalls: 0,
+  rolledBack: [] as Array<[string, string[] | null, string | null]>,
   answers: [] as Array<[string, number, string | null]>,
   fetched: [] as string[],
   entryError: null as string | null,
@@ -50,8 +56,18 @@ vi.mock("@/platform/ipc", async (original) => ({
         return { status: "error", error: { kind: "unavailable", message: backend.entryError } };
       return { status: "ok", data: backend.entries.get(key) ?? [] };
     },
-    agentChanges: async () => ({ status: "ok", data: backend.changes }),
-    agentRollbackChanges: async () => ({ status: "ok", data: null }),
+    agentChanges: async () => {
+      backend.changesCalls += 1;
+      return { status: "ok", data: backend.changes };
+    },
+    agentGroupedChanges: async () => {
+      backend.groupedCalls += 1;
+      return { status: "ok", data: backend.grouped };
+    },
+    agentRollbackChanges: async (task: string, paths: string[] | null, view: string | null) => {
+      backend.rolledBack.push([task, paths, view]);
+      return { status: "ok", data: null };
+    },
     agentAcceptChanges: async (task: string, paths: string[] | null) => {
       backend.accepted.push([task, paths]);
       return { status: "ok", data: backend.acceptedOutcome };
@@ -156,7 +172,13 @@ beforeEach(() => {
   disconnect();
   localStorage.clear();
   backend.changes = [];
+  backend.changesCalls = 0;
+  backend.grouped = { uncommitted: [], commits: [] };
+  backend.groupedCalls = 0;
+  backend.rolledBack = [];
   backend.external = [];
+  // The flat list unless a test asks for the grouped view, so counts and selections stay as before.
+  useChangesOptions.setState({ groupByCommit: false });
   backend.imported = [];
   backend.externalError = null;
   backend.accepted = [];
@@ -228,7 +250,7 @@ describe("conversation rows", () => {
       tool("two"),
       { type: "agent", text: "More detail" },
       tool("List .", { status: "running" }),
-      { type: "permission", id: 1, title: "Run python3", options: [], chosen },
+      { type: "permission", id: 1, title: "Run python3", command: "python3", options: [], chosen },
       { type: "plan", items: [{ content: "Check files", status: "in_progress" }] },
       { type: "thought", text: "Consider the result" },
       { type: "agent", text: "Done" },
@@ -938,7 +960,7 @@ describe("a pending permission request above the composer", () => {
         diffs: [],
         locations: [],
       },
-      { type: "permission", id: 12, title: `Run ${command}`, options, chosen: null },
+      { type: "permission", id: 12, title: `Run ${command}`, command, options, chosen: null },
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
@@ -961,7 +983,7 @@ describe("a pending permission request above the composer", () => {
   });
 
   it.each(options)("sends the original $kind option id, then records it in the conversation", async (option) => {
-    const pending: AgentEntry = { type: "permission", id: 12, title: `Run ${command}`, options, chosen: null };
+    const pending: AgentEntry = { type: "permission", id: 12, title: `Run ${command}`, command, options, chosen: null };
     backend.answers = [];
     backend.entries.set("A", [pending]);
     useAgents.setState({ entries: new Map(backend.entries) });
@@ -984,7 +1006,7 @@ describe("a pending permission request above the composer", () => {
   });
 
   it("is answered with a number key when the focus isn't in a text field", async () => {
-    const pending: AgentEntry = { type: "permission", id: 12, title: `Run ${command}`, options, chosen: null };
+    const pending: AgentEntry = { type: "permission", id: 12, title: `Run ${command}`, command, options, chosen: null };
     backend.answers = [];
     backend.entries.set("A", [pending]);
     useAgents.setState({ entries: new Map(backend.entries) });
@@ -1007,6 +1029,7 @@ describe("a pending permission request above the composer", () => {
         type: "permission",
         id: 3,
         title: "Run ls d:/project",
+        command: "ls d:/project",
         options: [
           { id: "once", name: "Allow Once", kind: "allow_once" },
           { id: "reject", name: "Reject", kind: "reject_once" },
@@ -1200,6 +1223,7 @@ describe("session state across tasks and hosts", () => {
         kind: "modified",
         added: 8,
         removed: 2,
+        oldPath: null,
       },
     ];
     localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
@@ -1372,6 +1396,44 @@ describe("sessions from other apps", () => {
   });
 });
 
+describe("changes refresh", () => {
+  it("re-reads the changes only when the task's own checkout changes", async () => {
+    vi.useFakeTimers();
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    backend.changesCalls = 0;
+
+    // The watcher reports the main checkout and other tasks' worktrees too.
+    act(() => emitLocalIdeEvent({ type: "vcsChanged", root: "/elsewhere" }));
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    expect(backend.changesCalls).toBe(0);
+
+    act(() => emitLocalIdeEvent({ type: "vcsChanged", root: "/project" }));
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    expect(backend.changesCalls).toBe(1);
+  });
+
+  it("re-reads a worktree task's changes on the project's events, where its gitdir lives", async () => {
+    vi.useFakeTimers();
+    useChangesOptions.setState({ groupByCommit: true });
+    useAgents.setState({
+      tasks: new Map([["A", { ...task("A"), isolation: "worktree", cwd: "/worktrees/a", projectRoot: "/project" }]]),
+    });
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    backend.groupedCalls = 0;
+
+    act(() => emitLocalIdeEvent({ type: "vcsChanged", root: "/elsewhere" }));
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    expect(backend.groupedCalls).toBe(0);
+
+    // A commit in the worktree writes <project>/.git/worktrees/<slug>, so the event is rooted at the project.
+    act(() => emitLocalIdeEvent({ type: "vcsChanged", root: "/project" }));
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    expect(backend.groupedCalls).toBe(1);
+  });
+});
+
 describe("accept changes", () => {
   const worktreeChanges = () => {
     backend.changes = [
@@ -1381,6 +1443,7 @@ describe("accept changes", () => {
         kind: "modified",
         added: 8,
         removed: 2,
+        oldPath: null,
       },
     ];
     localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
@@ -1416,6 +1479,7 @@ describe("accept changes", () => {
         kind: "modified",
         added: 8,
         removed: 2,
+        oldPath: null,
       },
     ];
     localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
@@ -1423,5 +1487,82 @@ describe("accept changes", () => {
     await screen.findByRole("complementary", { name: "Changes" });
     expect(screen.queryByRole("button", { name: /Accept .* Changes…/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Rollback All Changes…" })).toBeInTheDocument();
+  });
+});
+
+describe("grouped changes", () => {
+  const commit = (overrides: Partial<AgentCommit> = {}): AgentCommit => ({
+    id: "a".repeat(40),
+    shortId: "aaaaaaa",
+    summary: "change a",
+    message: "change a\n\nbody",
+    timeMs: 1,
+    parent: "b".repeat(40),
+    files: [],
+    ...overrides,
+  });
+  const change = (path: string): AgentChange => ({
+    path: `/project/${path}`,
+    relPath: path,
+    kind: "modified",
+    added: 1,
+    removed: 1,
+    oldPath: null,
+  });
+  const worktreeTask = () => {
+    useChangesOptions.setState({ groupByCommit: true });
+    useAgents.setState({ tasks: new Map([["A", { ...task("A"), isolation: "worktree" }]]) });
+    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
+  };
+
+  it("puts committed files under their commit and rolls back only the uncommitted ones", async () => {
+    backend.grouped = { uncommitted: [change("a.ts")], commits: [commit({ files: [change("b.ts")] })] };
+    worktreeTask();
+    render(<SessionEditor input={input("A")} />);
+
+    expect(await screen.findByText("Uncommitted")).toBeInTheDocument();
+    expect(screen.getByText("Committed")).toBeInTheDocument();
+    expect(screen.getByText("aaaaaaa")).toBeInTheDocument();
+    expect(screen.getByText("change a")).toBeInTheDocument();
+
+    // The commit's files show once it is expanded; selecting one is not a rollback selection.
+    const commitRow = screen.getByText("change a").closest("[data-row]")!;
+    fireEvent.mouseDown(commitRow.querySelector("[data-tree-toggle]")!);
+    expect(await screen.findByText("b.ts")).toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByText("b.ts"));
+    expect(screen.getByRole("button", { name: "Rollback All Changes…" })).toBeInTheDocument();
+
+    fireEvent.mouseDown(screen.getByText("a.ts"));
+    expect(screen.getByRole("button", { name: "Rollback Selected Changes…" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Rollback Selected Changes…" }));
+    await waitFor(() => expect(backend.confirmed).toEqual(["Rollback Changes"]));
+    expect(backend.rolledBack).toEqual([["A", ["a.ts"], "group"]]);
+  });
+
+  it("counts only uncommitted files in the header and the tray", async () => {
+    backend.grouped = {
+      uncommitted: [change("a.ts")],
+      commits: [commit({ files: [change("b.ts"), change("c.ts")] })],
+    };
+    worktreeTask();
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByRole("complementary", { name: "Changes" });
+    expect(screen.getByRole("button", { name: /1 changed file/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /1 commit/ })).toBeInTheDocument();
+  });
+
+  it("accepts the task's committed work too, not only the uncommitted files", async () => {
+    backend.grouped = { uncommitted: [], commits: [commit({ files: [change("b.ts")] })] };
+    backend.changes = [change("b.ts")];
+    worktreeTask();
+    useAgents.setState({ tasks: new Map([["A", { ...task("A"), isolation: "worktree", status: "ready" }]]) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Committed");
+
+    const accept = screen.getByRole("button", { name: "Accept All Changes…" });
+    expect(accept).toBeEnabled();
+    fireEvent.click(accept);
+    await waitFor(() => expect(backend.accepted).toEqual([["A", null]]));
   });
 });

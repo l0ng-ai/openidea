@@ -41,7 +41,8 @@ describe("Command Execution Policy sub-page", () => {
       expect(agentsGroup).toBeDefined();
       const policyNode = agentsGroup?.children.find((n) => n.key === POLICY_PAGE);
       expect(policyNode?.title).toBe("Command Execution Policy");
-      expect(policyNode?.page?.projectScope).toBe(true);
+      // A project's settings file can't decide what agents run without asking.
+      expect(policyNode?.page?.projectScope).not.toBe(true);
     } finally {
       dispose();
     }
