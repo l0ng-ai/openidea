@@ -7920,5 +7920,7 @@
   "Whether the debugger for a build tool's JVMs is installed, offering the install when not (arg: { module, retry, done(ready) })": "检查构建工具启动的 JVM 所需的调试器是否已安装，未安装时提供安装（参数：{ module, retry, done(ready) }）",
   "This module has Kotlin sources, so debugging it needs the Kotlin debugger (kotlin-debug-adapter).": "此模块包含 Kotlin 源代码，调试它需要 Kotlin 调试器（kotlin-debug-adapter）。",
   "Implements {names}": "实现 {names}",
-  "Choose Implemented Interface of {name} ({count} found)": "选择 {name} 实现的接口（找到 {count} 个）"
+  "Choose Implemented Interface of {name} ({count} found)": "选择 {name} 实现的接口（找到 {count} 个）",
+  "Search tasks": "搜索任务",
+  "No matching tasks": "没有匹配的任务"
 }
