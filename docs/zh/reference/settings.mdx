@@ -20,6 +20,8 @@ description: "OpenIDEA 的设置保存在哪里、全局文件与项目文件如
 
 有些设置在项目文件中会被忽略：`mcpServer`、导入的配色方案（`editor.customSchemes`）和 `agents.newTaskApprovals` 只能全局配置。项目信任状态永远不会从设置文件中读取。
 
+项目文件不能放宽编码智能体的权限：`agentSecurity.allowedCommands` 和 `agents.defaults` 只能全局配置；项目中的 `agentSecurity.blockedCommands` 会追加到全局列表中，而不是替换它。项目 `agents.mcpServers` 中的 MCP 服务器会保持关闭，直到你在 **设置 › 智能体 › 外部 MCP 服务器** 中将其开启；服务器定义改变后也需要重新开启。
+
 ## 文件格式
 
 文件为 TOML 格式。键名使用下文列出的 camelCase 名称，并按节（section）分组：

@@ -745,6 +745,12 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         &self.root
     }
+    /// git's own folders for this worktree: its git dir and the common one (they differ for a
+    /// linked worktree, whose `.git` file points into the main repository).
+    pub fn metadata_dirs(&self) -> IdeResult<[PathBuf; 2]> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        Ok([self.git_dir.clone(), repo::absolute(self.gix()?.common_dir())?])
+    }
     /// Untracked files with one of these names (or under such a folder) are not reported.
     pub fn set_ignored_names(&self, names: IgnoredNames) {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));

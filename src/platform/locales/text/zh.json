@@ -7540,6 +7540,7 @@
   "No new MCP servers in the project's .mcp.json or .vscode/mcp.json.": "项目的 .mcp.json 和 .vscode/mcp.json 中没有新的 MCP 服务器。",
   "Imported 1 MCP server from the project.": "已从项目导入 1 个 MCP 服务器。",
   "Imported {count} MCP servers from the project.": "已从项目导入 {count} 个 MCP 服务器。",
+  "Servers added to the project's settings file outside OpenIDEA stay off until you turn them on here.": "在 OpenIDEA 之外添加到项目设置文件中的服务器会保持关闭，直到你在这里将其开启。",
   "Show branch and incoming/outgoing commits in the Project view": "在项目视图中显示分支及传入/传出提交",
   "Up to date with {upstream}": "已与 {upstream} 同步",
   "Highlight occurrences of selected text": "高亮所选文本的匹配项",
@@ -7809,5 +7810,7 @@
   "Reads the names of schemas, tables and views of every database, so completion works for all of them.": "读取每个数据库的架构、表和视图名称，使补全对所有数据库都可用。",
   "Introspect": "内省",
   "Not Now": "暂不",
-  "Introspect All Databases": "内省所有数据库"
+  "Introspect All Databases": "内省所有数据库",
+  "No credential store": "没有凭据存储",
+  "Values of agent and MCP server settings are kept in {path}, readable only by you.": "智能体和 MCP 服务器设置中的值保存在 {path} 中，仅你本人可读取。"
 }

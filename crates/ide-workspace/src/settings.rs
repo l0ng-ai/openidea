@@ -27,15 +27,50 @@ pub enum SettingsScope {
     Project,
 }
 
-fn remove_global_settings(layer: &mut Json) {
-    if let Some(layer) = layer.as_object_mut() {
-        layer.remove("mcpServer");
+/// Settings a project's own file can't hold: the IDE's MCP server, imported color schemes, and
+/// what agents may do without asking (commands run without asking, the modes new tasks start in,
+/// whether new tasks ask for approvals).
+const USER_ONLY: [&[&str]; 5] = [
+    &["mcpServer"],
+    &["editor", "customSchemes"],
+    &["agentSecurity", "allowedCommands"],
+    &["agents", "defaults"],
+    &["agents", "newTaskApprovals"],
+];
+
+/// The [`USER_ONLY`] setting that writing `value` at `key` would set, as a dotted key.
+fn user_only_setting(key: &str, value: &Json) -> Option<String> {
+    let segments: Vec<&str> = key.split('.').collect();
+    USER_ONLY
+        .iter()
+        .find(|path| match path.split_at_checked(segments.len()) {
+            Some((head, rest)) => head == segments && rest.iter().try_fold(value, |v, seg| v.get(seg)).is_some(),
+            None => segments.starts_with(path),
+        })
+        .map(|path| path.join("."))
+}
+
+/// Applies a project layer's limits before it merges onto `below`: [`USER_ONLY`] settings are
+/// dropped, and its blocked agent commands add to the ones below instead of replacing them.
+fn restrict_project_layer(below: &Json, layer: &mut Json) {
+    for path in USER_ONLY {
+        let (last, parents) = path.split_last().expect("non-empty path");
+        if let Some(table) = parents.iter().try_fold(&mut *layer, |v, seg| v.get_mut(seg)).and_then(Json::as_object_mut)
+        {
+            table.remove(*last);
+        }
     }
-    if let Some(editor) = layer.get_mut("editor").and_then(Json::as_object_mut) {
-        editor.remove("customSchemes");
-    }
-    if let Some(agents) = layer.get_mut("agents").and_then(Json::as_object_mut) {
-        agents.remove("newTaskApprovals");
+    if let (Some(inherited), Some(blocked)) = (
+        below.pointer("/agentSecurity/blockedCommands").and_then(Json::as_array),
+        layer.pointer_mut("/agentSecurity/blockedCommands").and_then(Json::as_array_mut),
+    ) {
+        let mut all = inherited.clone();
+        for pattern in blocked.drain(..) {
+            if !all.contains(&pattern) {
+                all.push(pattern);
+            }
+        }
+        *blocked = all;
     }
 }
 
@@ -227,7 +262,7 @@ impl SettingsStore {
         for (scope, file) in self.layers() {
             let Some(mut layer) = read_layer(&file) else { continue };
             if scope == SettingsScope::Project {
-                remove_global_settings(&mut layer);
+                restrict_project_layer(&merged, &mut layer);
             }
             if let Err(e) = try_merge(&mut merged, layer) {
                 tracing::warn!("{} has invalid settings, ignoring it: {e}", file.display());
@@ -257,7 +292,7 @@ impl SettingsStore {
             && let Some(mut layer) = read_layer(file)
         {
             if scope == SettingsScope::Project {
-                remove_global_settings(&mut layer);
+                restrict_project_layer(&merged, &mut layer);
             }
             if let Err(e) = try_merge(&mut merged, layer) {
                 tracing::warn!("{} has invalid settings, ignoring it: {e}", file.display());
@@ -271,19 +306,9 @@ impl SettingsStore {
     /// wrong type are rejected with `InvalidInput`; the file is left untouched.
     pub fn set(&self, scope: SettingsScope, key: &str, value: serde_json::Value) -> IdeResult<Settings> {
         if scope == SettingsScope::Project
-            && (key == "editor.customSchemes"
-                || key.starts_with("editor.customSchemes.")
-                || (key == "editor" && value.get("customSchemes").is_some()))
+            && let Some(setting) = user_only_setting(key, &value)
         {
-            return Err(IdeError::invalid("custom color schemes belong to user settings"));
-        }
-        if scope == SettingsScope::Project && (key == "mcpServer" || key.starts_with("mcpServer.")) {
-            return Err(IdeError::invalid("MCP server belongs to user settings"));
-        }
-        if scope == SettingsScope::Project
-            && (key == "agents.newTaskApprovals" || (key == "agents" && value.get("newTaskApprovals").is_some()))
-        {
-            return Err(IdeError::invalid("the approvals new agent tasks start with belong to user settings"));
+            return Err(IdeError::invalid(format!("{setting} belongs to user settings")));
         }
         let file = self.file(scope).ok_or_else(|| IdeError::invalid("no project is open"))?.to_path_buf();
         let segments: Vec<&str> = key.split('.').collect();
@@ -324,7 +349,7 @@ impl SettingsStore {
             let layer = if is_target { parse_layer(&new_text).ok() } else { read_layer(&layer_file) };
             let Some(mut layer) = layer else { continue };
             if layer_scope == SettingsScope::Project {
-                remove_global_settings(&mut layer);
+                restrict_project_layer(&merged, &mut layer);
             }
             if let Err(e) = try_merge(&mut merged, layer)
                 && is_target
@@ -1037,6 +1062,65 @@ mod tests {
                 .mcp_server
                 .enabled
         );
+    }
+
+    #[test]
+    fn a_project_file_can_only_add_to_the_agent_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".openidea")).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("settings.toml"),
+            "[agentSecurity]\nallowedCommands = [\"git status\"]\nblockedCommands = [\"git push*\"]\n\n\
+             [agents.defaults.claude]\nmodel = \"opus\"\n",
+        )
+        .unwrap();
+        let project_file = project.join(".openidea/settings.toml");
+        std::fs::write(
+            &project_file,
+            "[agentSecurity]\nallowedCommands = [\"node\"]\nblockedCommands = [\"npm publish*\"]\n\n\
+             [agents.defaults.claude]\nmode = \"bypassPermissions\"\n\n\
+             [agents.defaults.codex]\nmode = \"full-access\"\n",
+        )
+        .unwrap();
+        let store = SettingsStore::load(&config, Some(&project));
+        let s = store.effective();
+        assert_eq!(s.agent_security.allowed_commands, ["git status"]);
+        assert_eq!(s.agent_security.blocked_commands, ["git push*", "npm publish*"]);
+        assert_eq!(
+            s.agents.defaults,
+            BTreeMap::from([("claude".to_owned(), BTreeMap::from([("model".to_owned(), "opus".to_owned())]))])
+        );
+        let layer = store.layer(SettingsScope::Project);
+        assert!(layer.agent_security.allowed_commands.is_empty());
+        assert!(layer.agents.defaults.is_empty());
+
+        // An empty project list doesn't clear the user's, nor the built-in one.
+        std::fs::write(&project_file, "[agentSecurity]\nblockedCommands = []\n").unwrap();
+        assert_eq!(store.reload().agent_security.blocked_commands, ["git push*"]);
+        std::fs::remove_file(config.join("settings.toml")).unwrap();
+        assert_eq!(
+            store.reload().agent_security.blocked_commands,
+            ide_core::settings::AgentSecuritySettings::default().blocked_commands
+        );
+
+        for (key, value) in [
+            ("agentSecurity.allowedCommands", json!(["node"])),
+            ("agentSecurity", json!({"allowedCommands": ["node"], "blockedCommands": []})),
+            ("agents.defaults", json!({"claude": {"mode": "bypassPermissions"}})),
+            ("agents.defaults.claude", json!({"mode": "bypassPermissions"})),
+            ("agents.defaults.claude.mode", json!("bypassPermissions")),
+            ("agents", json!({"defaults": {"codex": {"mode": "full-access"}}})),
+        ] {
+            assert!(store.set(SettingsScope::Project, key, value).is_err(), "{key}");
+        }
+        let s = store.set(SettingsScope::Project, "agentSecurity.blockedCommands", json!(["curl*"])).unwrap();
+        assert!(s.agent_security.blocked_commands.ends_with(&["curl*".to_owned()]));
+        assert!(s.agent_security.blocked_commands.contains(&"rm -rf /".to_owned()));
+        let s = store.set(SettingsScope::Project, "agents.showCost", json!(true)).unwrap();
+        assert!(s.agents.show_cost);
     }
 
     #[test]

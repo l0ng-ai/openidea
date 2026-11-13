@@ -20,6 +20,8 @@ A file holds only the values that differ from the layer below. Tables merge key 
 
 Some settings are ignored in the project file: `mcpServer`, imported color schemes (`editor.customSchemes`) and `agents.newTaskApprovals` are global only. Project trust is never read from settings.
 
+A project file can't loosen what coding agents may do: `agentSecurity.allowedCommands` and `agents.defaults` are global only, and `agentSecurity.blockedCommands` in a project adds to the global list rather than replacing it. An MCP server in the project's `agents.mcpServers` stays off until you turn it on in **Settings › Agents › External MCP Servers**, and again after its definition changes.
+
 ## File format
 
 The files are TOML. Keys use the camelCase names shown below; sections group them:

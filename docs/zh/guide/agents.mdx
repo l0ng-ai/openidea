@@ -95,7 +95,7 @@ agent 运行过一个任务后，新任务会以它自动批准所有操作的�
 
 **设置 › 工具 › 智能体**（也可以在 agent 选择器中点 **更多 Agent…**）有两个标签页：
 
-- **内置**：每个内置 agent 的可执行文件是否在 `PATH` 中找到、指定 **自定义可执行文件** 的输入框、传给 agent 进程的 **环境变量**（格式为 `NAME=value; OTHER=value`）以及登录方式。改动对新会话生效。
+- **内置**：每个内置 agent 的可执行文件是否在 `PATH` 中找到、指定 **自定义可执行文件** 的输入框、传给 agent 进程的 **环境变量**（格式为 `NAME=value; OTHER=value`；这些值保存在系统凭据存储中）以及登录方式。改动对新会话生效。
 - **ACP 注册表**：[ACP Registry](https://agentclientprotocol.com) 中发布的 agent，可以搜索、**安装**、**更新** 和 **移除**。安装的 agent 保存在 OpenIDEA 的数据目录中；注册表提供 SHA-256 时会校验下载内容。
 
 **设置 › 工具 › 智能体 › 聊天** 决定任务标题栏显示哪些信息：**上下文窗口用量**、**任务耗时**、**用量限额**（agent 报告时，例如 Claude Code）和 **会话花费**。
@@ -130,7 +130,8 @@ MY_AGENT_LOG = "info"
   以 ACP 模式启动 agent 所需的参数。
 </ParamField>
 <ParamField path="env" type="table">
-  传给 agent 进程的额外环境变量。
+  传给 agent 进程的额外环境变量。OpenIDEA 下次读取该文件时会把这些值移到系统凭据存储中，文件里只保留变量名（值为空）。从
+  ACP Registry 安装的 agent 会把其注册表条目设置的环境变量保留在文件中。
 </ParamField>
 <ParamField path="driver" type="string" default="acp">
   ACP agent 用 `acp`；`claude` 和 `codex` 分别使用 Claude Code 和 Codex 的协议。
