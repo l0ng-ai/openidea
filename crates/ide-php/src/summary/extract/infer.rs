@@ -45,6 +45,8 @@ pub(super) struct Infer<'s> {
     /// values and constants (whose shapes keep literal values, for
     /// `key-of<Foo::MAP>`), not for property defaults.
     pub shapes: bool,
+    /// The file's tag, for the names of its anonymous classes.
+    pub tag: u64,
 }
 
 fn lossy(bytes: &[u8]) -> String {
@@ -98,7 +100,10 @@ impl Infer<'_> {
             },
             Expression::Array(array) => self.array(array.elements.iter()),
             Expression::LegacyArray(array) => self.array(array.elements.iter()),
-            Expression::AnonymousClass(_) => known(Type::Object),
+            Expression::AnonymousClass(class) => known(Type::named(&crate::summary::anonymous_fqn(
+                self.tag,
+                mago_span::HasSpan::span(class).start.offset,
+            ))),
             Expression::Closure(_) | Expression::ArrowFunction(_) => known(Type::Closure(None)),
             Expression::Variable(variable) => self.variable(variable),
             Expression::Construct(construct) => known(match construct {
@@ -418,6 +423,7 @@ pub(super) fn body_return(infer: &Infer<'_>, body: &Block<'_>) -> LazyType {
         scope: infer.scope,
         params: infer.params.clone(),
         literals: infer.literals,
+        tag: infer.tag,
         locals: Vec::new(),
         // An accessor's literals aren't a constant's value.
         shapes: !infer.literals,

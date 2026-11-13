@@ -17,6 +17,7 @@ class App\Container final @13:12-13:21 [13:0-49:1]
   method public set(string $id, Closure $factory): void @33:20-33:23 [33:4-37:5]
     @param Closure(self): object $factory
   method public make(string $id): object @39:20-39:24 [39:4-48:5]
+    ~ returns: mixed
 == src/Contracts/Repository.php
 interface App\Contracts\Repository @11:10-11:20 [11:0-27:1]
   @template T of object

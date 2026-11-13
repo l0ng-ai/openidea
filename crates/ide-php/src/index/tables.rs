@@ -109,6 +109,19 @@ fn entries(file: &str, summary: &FileSummary) -> Vec<Entry> {
         out.push(Entry { table: 3, key: ns.to_ascii_lowercase(), decl });
         namespaces.push(ns.to_owned());
     };
+    // Anonymous classes are found by name and nothing else: not by short
+    // name, namespace or parent.
+    for (index, class) in summary.anonymous.iter().enumerate() {
+        let kind = DeclKind::ClassLike(class.kind);
+        if let Some(key) = fqn_key(kind.name_kind(), &class.fqn) {
+            let index = (summary.class_likes.len() + index) as u32;
+            out.push(Entry {
+                table: 0,
+                key,
+                decl: Decl { kind, fqn: class.fqn.clone(), file: file.to_owned(), index },
+            });
+        }
+    }
     for (index, class) in summary.class_likes.iter().enumerate() {
         add(DeclKind::ClassLike(class.kind), &class.fqn, index, &mut out);
         let child = Decl {

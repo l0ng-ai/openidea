@@ -384,6 +384,13 @@ pub trait TypeProvider: Send + Sync {
         None
     }
 
+    /// A more precise type for property `name` that `class` (FQN) has
+    /// declared as `declared`, when the framework knows one (the `$model`
+    /// of a repository). `None` keeps the declaration.
+    fn declared_property(&self, _class: &str, _name: &str, _declared: &Type, _resolver: &Resolver<'_>) -> Option<Type> {
+        None
+    }
+
     /// The members the classes of `receiver` only have through magic
     /// methods, for completion, hover and goto (not their types: those
     /// come from the call and property steps). Members the classes declare
@@ -565,6 +572,12 @@ impl TypeProviders {
     /// [`TypeProvider::parameter`].
     pub fn parameter(&self, site: &ParameterSite<'_>, resolver: &Resolver<'_>) -> Option<Type> {
         self.providers.iter().find_map(|(_, provider)| provider.parameter(site, resolver))
+    }
+
+    /// The first refinement of a declared property; see
+    /// [`TypeProvider::declared_property`].
+    pub fn declared_property(&self, class: &str, name: &str, declared: &Type, resolver: &Resolver<'_>) -> Option<Type> {
+        self.providers.iter().find_map(|(_, provider)| provider.declared_property(class, name, declared, resolver))
     }
 
     /// The first answer for an undeclared property of `class`.
@@ -751,6 +764,37 @@ const MOCK_OBJECT: &str = "PHPUnit\\Framework\\MockObject\\MockObject";
 const STUB: &str = "PHPUnit\\Framework\\MockObject\\Stub";
 const PEST_MIXIN: &str = "Pest\\Mixins\\Expectation";
 const MOCKERY_MOCK: &str = "Mockery\\MockInterface";
+const FAKER: &str = "Faker\\Generator";
+/// Faker's providers (below `Faker\Provider\`) whose formatters the
+/// generator calls through `__call`: the base ones and the default locale's.
+const FAKER_PROVIDERS: &[&str] = &[
+    "Base",
+    "Address",
+    "Barcode",
+    "Biased",
+    "Color",
+    "Company",
+    "DateTime",
+    "File",
+    "HtmlLorem",
+    "Image",
+    "Internet",
+    "Lorem",
+    "Medical",
+    "Miscellaneous",
+    "Payment",
+    "Person",
+    "PhoneNumber",
+    "Text",
+    "UserAgent",
+    "Uuid",
+    "en_US\\Address",
+    "en_US\\Company",
+    "en_US\\Payment",
+    "en_US\\Person",
+    "en_US\\PhoneNumber",
+    "en_US\\Text",
+];
 const MOCK_BUILDER: &str = "PHPUnit\\Framework\\MockObject\\MockBuilder";
 
 /// Test-case methods creating a double of the class named by their first
@@ -894,6 +938,25 @@ impl TypeProvider for PhpUnitProvider {
     /// (`expect($order)->canRefund()->toBeFalse()`), which it forwards to.
     fn magic_members(&self, receiver: &Type, resolver: &Resolver<'_>, context: &Context) -> Vec<MagicMember> {
         let mut out = Vec::new();
+        // Faker's formatters live in its providers (`fake()->state()`).
+        if receiver
+            .members()
+            .iter()
+            .any(|member| matches!(member, Type::Named { fqn, .. } if fqn_eq(NameKind::ClassLike, fqn, FAKER)))
+        {
+            for provider in FAKER_PROVIDERS {
+                let Some(model) = resolver.class_model(&format!("Faker\\Provider\\{provider}")) else { continue };
+                for method in model.methods.iter() {
+                    if method.visibility == crate::summary::Visibility::Public && !method.name.starts_with("__") {
+                        out.push(MagicMember {
+                            name: method.name.clone(),
+                            is_static: false,
+                            target: MagicTarget::Method { class: model.fqn().to_owned(), method: method.name.clone() },
+                        });
+                    }
+                }
+            }
+        }
         for member in receiver.members() {
             let Type::Named { fqn, args } = member else { continue };
             let Some(value) = args.first() else { continue };

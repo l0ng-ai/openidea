@@ -83,6 +83,12 @@ const CONTAINER_CLASS: &str = "Illuminate\\Container\\Container";
 const FACADE: &str = "Illuminate\\Support\\Facades\\Facade";
 const MODEL: &str = "Illuminate\\Database\\Eloquent\\Model";
 const JSON_RESOURCE: &str = "Illuminate\\Http\\Resources\\Json\\JsonResource";
+const STATEFUL_GUARD: &str = "Illuminate\\Contracts\\Auth\\StatefulGuard";
+const FILESYSTEM_ADAPTER: &str = "Illuminate\\Filesystem\\FilesystemAdapter";
+/// What `Storage` stands for, and its contract: their `disk()` gives the
+/// adapter.
+const FILESYSTEM_MANAGERS: &[&str] =
+    &["Illuminate\\Filesystem\\FilesystemManager", "Illuminate\\Contracts\\Filesystem\\Factory"];
 /// prettus/l5-repository's repository: calls it doesn't declare go to its
 /// model (`__call`).
 const PRETTUS_REPOSITORY: &str = "Prettus\\Repository\\Eloquent\\BaseRepository";
@@ -614,6 +620,14 @@ impl LaravelProvider {
             return Some(service.clone());
         }
         let target = facade.as_ref().unwrap_or(receiver);
+        // `Storage::disk()`: the adapter, which has `download()`, `url()`
+        // and the rest the bare contract lacks.
+        if (name.eq_ignore_ascii_case("disk") || name.eq_ignore_ascii_case("drive"))
+            && Self::is_a(resolver, target, context, FILESYSTEM_MANAGERS)
+            && let Some(adapter) = resolver.class_model(FILESYSTEM_ADAPTER)
+        {
+            return Some(Type::named(adapter.fqn()));
+        }
         if let Some(ty) = Self::auth_user(resolver, target, name, string, core, context) {
             return Some(ty);
         }
@@ -1545,6 +1559,34 @@ impl LaravelProvider {
                 Self::forwarded_methods(resolver, ELOQUENT_BUILDER, true, &mut out);
                 Self::forwarded_methods(resolver, QUERY_BUILDER, true, &mut out);
                 Self::attributes(resolver, &model, &Self::counted_in(receiver, model.fqn()), &mut out);
+            } else if model.is_subclass_of(AUTH_FACTORY) {
+                // `auth()->user()`: the manager forwards to its guard.
+                let guard = [STATEFUL_GUARD, GUARD].into_iter().find(|class| resolver.class_model(class).is_some());
+                if let Some(guard) = guard {
+                    Self::forwarded_methods(resolver, guard, false, &mut out);
+                }
+            } else if model.is_subclass_of(FACTORY) {
+                // `hasPosts()`, `forAuthor()`: the relation they stand for.
+                let made = Self::factory_type(resolver, receiver)
+                    .and_then(|(_, args)| match args.first() {
+                        Some(Type::Named { fqn, .. }) => Some(fqn.clone()),
+                        _ => None,
+                    })
+                    .or_else(|| Self::factory_model(resolver, model.fqn()));
+                if let Some(made) = made {
+                    for relation in Self::model_relations(resolver, &made) {
+                        for prefix in ["has", "for"] {
+                            out.push(MagicMember {
+                                name: format!("{prefix}{}", studly(&relation.name)),
+                                is_static: false,
+                                target: MagicTarget::Method {
+                                    class: relation.class.clone(),
+                                    method: relation.name.clone(),
+                                },
+                            });
+                        }
+                    }
+                }
             } else if model.is_subclass_of(FORM_REQUEST) {
                 Self::request_fields(resolver, &model, &mut out);
             } else if let Some(target) = Self::stands_for(resolver, &model)
@@ -2001,6 +2043,15 @@ impl TypeProvider for LaravelProvider {
                 Self::model_property(resolver, &model, name)
             },
         )
+    }
+
+    /// `$this->model` in a Prettus repository is its model.
+    fn declared_property(&self, class: &str, name: &str, _declared: &Type, resolver: &Resolver<'_>) -> Option<Type> {
+        if name != "model" {
+            return None;
+        }
+        let repository = resolver.class_model(class).filter(|model| model.is_subclass_of(PRETTUS_REPOSITORY))?;
+        Self::model_of_repository(resolver, &repository).map(|model| Type::named(&model))
     }
 
     fn magic_members(&self, receiver: &Type, resolver: &Resolver<'_>, context: &Context) -> Vec<MagicMember> {

@@ -69,7 +69,7 @@ use crate::types::LazyType;
 /// shapes of inferred array literals; 21: shapes of constant array values;
 /// 22: only `$withCount` counts relations, with its class), so stored
 /// summaries are rebuilt.
-pub const SCHEMA_VERSION: u32 = 36;
+pub const SCHEMA_VERSION: u32 = 37;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -77,6 +77,31 @@ pub struct Loc {
     pub start: u32,
     pub end: u32,
     pub range: Range,
+}
+
+/// What every anonymous class is called.
+pub const ANONYMOUS_NAME: &str = "class@anonymous";
+
+/// The name an anonymous class starting at byte `offset` goes by: unique
+/// with the `tag` of its file ([`anonymous_tag`]).
+pub fn anonymous_fqn(tag: u64, offset: u32) -> String {
+    format!("{ANONYMOUS_NAME}:{tag:016x}:{offset}")
+}
+
+/// Whether `fqn` names an anonymous class.
+pub fn is_anonymous(fqn: &str) -> bool {
+    fqn.trim_start_matches('\\').starts_with(ANONYMOUS_NAME)
+}
+
+/// A number for a file's text (FNV-1a), telling its anonymous classes from
+/// those of other files.
+pub fn anonymous_tag(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// Everything one file declares for other files.
@@ -89,6 +114,11 @@ pub struct FileSummary {
     pub has_errors: bool,
     /// In source order.
     pub class_likes: Vec<ClassLike>,
+    /// The file's anonymous classes (`new class { … }`), under names
+    /// nothing can write ([`anonymous_fqn`]): found by that name, as the
+    /// type of the `new class` expression, and listed nowhere else.
+    #[serde(default)]
+    pub anonymous: Vec<ClassLike>,
     pub functions: Vec<FunctionDecl>,
     /// `const` statements and `define('NAME', …)` calls.
     pub constants: Vec<ConstantDecl>,
@@ -614,7 +644,12 @@ impl FileSummary {
     /// The class-like with this fully qualified name (case-insensitive).
     pub fn class_like(&self, fqn: &str) -> Option<&ClassLike> {
         let fqn = fqn.trim_start_matches('\\');
-        self.class_likes.iter().find(|class| class.fqn.eq_ignore_ascii_case(fqn))
+        self.class_likes.iter().chain(&self.anonymous).find(|class| class.fqn.eq_ignore_ascii_case(fqn))
+    }
+
+    /// The anonymous class whose `new class` starts at byte `start`.
+    pub fn anonymous_at(&self, start: u32) -> Option<&ClassLike> {
+        self.anonymous.iter().find(|class| class.loc.start == start)
     }
 
     /// The function with this fully qualified name (case-insensitive).

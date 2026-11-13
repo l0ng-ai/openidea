@@ -123,7 +123,7 @@ fn literals_and_operators() {
         ("($x ? 1 : 'a')/*|*/;", "int|string"),
         ("match ($x) { 1 => 'a', default => 2 }/*|*/;", "string|int"),
         ("($x instanceof Book)/*|*/;", "bool"),
-        ("new class {}/*|*/;", "object"),
+        ("new class {}/*|*/;", "class@anonymous"),
     ]);
 }
 

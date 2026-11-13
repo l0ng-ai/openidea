@@ -487,3 +487,25 @@ fn a_functions_untyped_return_is_read_from_its_body() {
     let mut p = Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/helpers.php", helpers), ("src/use.php", caller)]);
     assert_eq!(p.definition("src/use.php", caller).expect("handled"), [target("src/lib.php", 4, "title")]);
 }
+
+#[test]
+fn faker_formatters_resolve_to_their_provider() {
+    let faker = "<?php\nnamespace Faker {\n    class Generator\n    {\n        public function __call($method, $attributes) { return null; }\n    }\n}\nnamespace Faker\\Provider {\n    class Address\n    {\n        public function state(): string { return ''; }\n    }\n}\n";
+    let source = "<?php\n\nfunction seed(Faker\\Generator $faker): string\n{\n    return $faker->sta/*|*/te();\n}\n";
+    let mut p = Project::new(&[("lib/faker.php", faker), ("src/seed.php", source)]);
+    assert_eq!(p.definition("src/seed.php", source).expect("handled"), [target("lib/faker.php", 10, "state")]);
+}
+
+#[test]
+fn an_anonymous_class_object_has_its_members() {
+    let helpers = "<?php\n\ntrait Cleans\n{\n    public function clean(): Item { return new Item(); }\n}\n\nfunction sanitizer(): object\n{\n    return new class\n    {\n        use Cleans;\n\n        public function strict(): Item { return new Item(); }\n    };\n}\n";
+    // A method of the class, and one of a trait it uses, in another file.
+    let own = "<?php\n\nsanitizer()->str/*|*/ict();\n";
+    let mut p = Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/helpers.php", helpers), ("src/use.php", own)]);
+    assert_eq!(p.definition("src/use.php", own).expect("handled"), [target("src/helpers.php", 13, "strict")]);
+    let from_trait = "<?php\n\nsanitizer()->clean()->tit/*|*/le();\n";
+    assert_eq!(p.definition("src/use.php", from_trait).expect("handled"), [target("src/lib.php", 4, "title")]);
+    // A variable holding one, in the same file.
+    let local = "<?php\n\n$helper = new class\n{\n    public function item(): Item { return new Item(); }\n};\n$helper->it/*|*/em();\n";
+    assert_eq!(p.definition("src/use.php", local).expect("handled"), [target("src/use.php", 4, "item")]);
+}

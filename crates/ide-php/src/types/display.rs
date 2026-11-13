@@ -65,7 +65,10 @@ impl Display for Type {
                 (key, value) => write!(f, "iterable<{key}, {value}>"),
             },
             Self::Named { fqn, args } => {
-                f.write_str(fqn)?;
+                // An anonymous class shows as PHP names it, not by the
+                // name the index knows it under.
+                let shown = if crate::summary::is_anonymous(fqn) { crate::summary::ANONYMOUS_NAME } else { fqn };
+                f.write_str(shown)?;
                 if !args.is_empty() {
                     f.write_char('<')?;
                     list(f, args)?;

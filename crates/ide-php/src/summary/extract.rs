@@ -39,6 +39,7 @@ const DOCTRINE_ENTITY: &str = "Doctrine\\ORM\\Mapping\\Entity";
 pub(super) fn extract(file: &ParsedFile) -> FileSummary {
     let mut cx = Extractor {
         file,
+        tag: crate::summary::anonymous_tag(file.text()),
         scope: NameScope::global(),
         summary: FileSummary { schema: SCHEMA_VERSION, has_errors: file.has_errors(), ..FileSummary::default() },
         repository_scope: None,
@@ -71,6 +72,7 @@ pub(crate) fn inline_vars(
     }
     let cx = Extractor {
         file,
+        tag: crate::summary::anonymous_tag(file.text()),
         scope: scope.clone(),
         summary: FileSummary::default(),
         repository_scope: None,
@@ -89,6 +91,7 @@ pub(crate) fn doc_before(file: &ParsedFile, scope: &NameScope, start: u32, outer
     mago_syntax::comments::docblock::get_docblock_before_position(trivia, start)?;
     let cx = Extractor {
         file,
+        tag: crate::summary::anonymous_tag(file.text()),
         scope: scope.clone(),
         summary: FileSummary::default(),
         repository_scope: None,
@@ -205,6 +208,8 @@ impl Mods {
 
 struct Extractor<'f> {
     file: &'f ParsedFile,
+    /// The file's tag, for the names of its anonymous classes.
+    tag: u64,
     scope: NameScope,
     summary: FileSummary,
     /// The class being walked when it extends a `…Repository` class (its
@@ -321,8 +326,12 @@ impl Extractor<'_> {
         let params = self.params(&node.parameter_list);
         let return_type = self.return_type(&node.return_type_hint);
         let doc = self.doc_at(node.span().start.offset, &[]);
-        let inferred_return =
-            self.infers_return(&return_type, &doc).then(|| body_return(&self.infer(&params, &doc, &[]), &node.body));
+        // Declared `: object` and not documented: the body may return an
+        // anonymous class, which no hint can name.
+        let object = matches!(&return_type, Some(TypeHint::Builtin(name)) if name == "object")
+            && doc.as_ref().is_none_or(|doc| doc.return_type.is_none());
+        let inferred_return = (object || self.infers_return(&return_type, &doc))
+            .then(|| body_return(&self.infer(&params, &doc, &[]), &node.body));
         FunctionDecl {
             fqn: self.scope.qualify(node.name.value),
             name: lossy(node.name.value),
@@ -361,12 +370,13 @@ impl Extractor<'_> {
                 (param.name.clone(), ty)
             })
             .collect();
-        Infer { scope: &self.scope, params, literals: false, locals: Vec::new(), shapes: false }
+        Infer { scope: &self.scope, params, literals: false, locals: Vec::new(), shapes: false, tag: self.tag }
     }
 
     /// The type of a constant value or property default.
     fn value_type(&self, value: &Expression<'_>, literals: bool) -> LazyType {
-        Infer { scope: &self.scope, params: Vec::new(), literals, locals: Vec::new(), shapes: literals }.expr(value)
+        Infer { scope: &self.scope, params: Vec::new(), literals, locals: Vec::new(), shapes: literals, tag: self.tag }
+            .expr(value)
     }
 
     fn class_like(
@@ -377,15 +387,28 @@ impl Extractor<'_> {
         attributes: &Sequence<'_, AttributeList<'_>>,
         members: &Sequence<'_, ClassLikeMember<'_>>,
     ) -> ClassLike {
+        let named = (self.scope.qualify(name.value), lossy(name.value), self.loc(name.span));
+        self.class_like_named(kind, named, span, attributes, members)
+    }
+
+    /// A class-like under `(fqn, name, name location)`.
+    fn class_like_named(
+        &self,
+        kind: ClassKind,
+        (fqn, name, name_loc): (String, String, Loc),
+        span: Span,
+        attributes: &Sequence<'_, AttributeList<'_>>,
+        members: &Sequence<'_, ClassLikeMember<'_>>,
+    ) -> ClassLike {
         let doc = self.doc_at(span.start.offset, &[]);
         // Template and alias names of the class, in scope in every member's
         // docblock.
         let names: Vec<String> = doc.iter().flat_map(|doc| doc.local_type_names()).map(str::to_owned).collect();
         let mut class = ClassLike {
             kind,
-            fqn: self.scope.qualify(name.value),
-            name: lossy(name.value),
-            name_loc: self.loc(name.span),
+            fqn,
+            name,
+            name_loc,
             loc: self.loc(span),
             modifiers: ClassModifiers::default(),
             extends: Vec::new(),
@@ -714,7 +737,8 @@ impl Extractor<'_> {
         // documented: the body says what is in it.
         let container = doc.as_ref().is_none_or(|doc| doc.return_type.is_none())
             && match &return_type {
-                Some(TypeHint::Builtin(name)) => name == "array",
+                // `: object` too: an anonymous class can't be named.
+                Some(TypeHint::Builtin(name)) => name == "array" || name == "object",
                 Some(TypeHint::Named(fqn)) => {
                     fqn.rsplit('\\').next().is_some_and(|short| short.ends_with("Collection"))
                 }
@@ -818,6 +842,24 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
     fn walk_out_class(&self, _: &'ast Class<'arena>, cx: &mut Extractor<'f>) {
         cx.repository_scope = None;
         cx.classes.pop();
+    }
+
+    /// An anonymous class: a class under a name nothing can write, kept
+    /// apart from the file's named ones.
+    fn walk_in_anonymous_class(&self, node: &'ast mago_syntax::cst::AnonymousClass<'arena>, cx: &mut Extractor<'f>) {
+        let span = node.span();
+        let named = (
+            crate::summary::anonymous_fqn(cx.tag, span.start.offset),
+            crate::summary::ANONYMOUS_NAME.to_owned(),
+            cx.loc(node.class.span),
+        );
+        let mut class = cx.class_like_named(ClassKind::Class, named, span, &node.attribute_lists, &node.members);
+        class.modifiers.is_final = true;
+        class.extends = node.extends.as_ref().map(|extends| cx.class_names(&extends.types)).unwrap_or_default();
+        class.implements =
+            node.implements.as_ref().map(|implements| cx.class_names(&implements.types)).unwrap_or_default();
+        cx.provided_properties(&mut class, &node.members);
+        cx.summary.anonymous.push(class);
     }
 
     fn walk_in_interface(&self, node: &'ast Interface<'arena>, cx: &mut Extractor<'f>) {

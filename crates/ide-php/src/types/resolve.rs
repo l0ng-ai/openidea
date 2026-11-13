@@ -529,6 +529,10 @@ impl<'a> Resolver<'a> {
                 Type::Shape(shape) => !shape.fields.is_empty(),
                 _ => false,
             }),
+            // `object` for an anonymous class, which no hint can name.
+            Type::Object => members
+                .iter()
+                .all(|member| matches!(member, Type::Named { fqn, .. } if crate::summary::is_anonymous(fqn))),
             Type::Named { fqn, .. } => members.iter().all(|member| match member {
                 Type::Named { fqn: found, args } if !args.is_empty() => {
                     operators::same_class(found, fqn)
@@ -1112,7 +1116,18 @@ impl<'a> Resolver<'a> {
             let templates: Vec<&str> = doc.iter().flat_map(|doc| doc.local_type_names()).collect();
             Some(match (doc.and_then(|doc| doc.return_type.as_ref()), &function.return_type) {
                 (Some(ty), hint) => documented(Type::from_doc(ty, &templates), hint.as_ref()),
-                (None, Some(hint)) => Type::from_hint(hint),
+                (None, Some(hint)) => {
+                    // `: object` (or a bare container): what the body
+                    // returns when it says more.
+                    let hinted = Type::from_hint(hint);
+                    let inferred = function
+                        .inferred_return
+                        .as_ref()
+                        .filter(|_| is_bare_container(&hinted))
+                        .map(|lazy| self.lazy(lazy, &Context::default(), depth).widen())
+                        .filter(|inferred| self.refines_container(&hinted, inferred));
+                    inferred.unwrap_or(hinted)
+                }
                 (None, None) => match &function.inferred_return {
                     Some(lazy) => self.lazy(lazy, &Context::default(), depth).widen(),
                     None => Type::Mixed,
@@ -1354,6 +1369,8 @@ impl<'a> Resolver<'a> {
                 Type::Mixed => self.refined_property(&model, name, depth).unwrap_or(Type::Mixed),
                 ty => ty,
             };
+            // What a framework knows better than the declaration.
+            let ty = self.providers.declared_property(model.fqn(), name, &ty, self).unwrap_or(ty);
             let ty = self.expand_aliases(&ty, &property.declaring);
             Some(self.bind_member(&ty, &context, property.mixin.as_deref()))
         })?;
@@ -1600,7 +1617,7 @@ const PHPUNIT_TEST_CASE: &str = "PHPUnit\\Framework\\TestCase";
 /// arguments: a declaration a more precise type of the same container may
 /// stand in for.
 pub(crate) fn is_bare_container(ty: &Type) -> bool {
-    *ty == Type::array() || matches!(ty, Type::Named { args, .. } if args.is_empty())
+    *ty == Type::array() || *ty == Type::Object || matches!(ty, Type::Named { args, .. } if args.is_empty())
 }
 
 /// How many subclasses are looked at for a member the base class lacks.

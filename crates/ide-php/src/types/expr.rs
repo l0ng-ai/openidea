@@ -501,7 +501,11 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 let key = self.expr(access.index, frames);
                 self.element(&base, &key, frames)
             }
-            Expression::AnonymousClass(_) => Type::Object,
+            // The class the summary holds for it, under its own name.
+            Expression::AnonymousClass(class) => match self.summary.anonymous_at(class.span().start.offset) {
+                Some(found) => Type::named(&found.fqn),
+                None => Type::Object,
+            },
             Expression::Closure(closure) => self.closure(closure, frames),
             Expression::ArrowFunction(arrow) => self.arrow(arrow, frames),
             Expression::Variable(Variable::Direct(direct)) => {

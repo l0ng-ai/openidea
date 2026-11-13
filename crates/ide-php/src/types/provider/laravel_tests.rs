@@ -266,6 +266,8 @@ namespace Prettus\Repository\Eloquent {
         public function find($id) { return null; }
         /** @return mixed */
         public function findWhere(array $where) { return null; }
+        /** @var \Illuminate\Database\Eloquent\Model */
+        protected $model;
         public function __call($method, $arguments) { return null; }
     }
 }
@@ -346,6 +348,11 @@ fn repositories_and_concord_proxies_name_their_model() {
             // `parent::find()` under an abstract repository naming no model.
             (
                 "abstract class Base extends \\Prettus\\Repository\\Eloquent\\BaseRepository {}\nclass Mine extends Base {\n    function model(): string { return \\App\\Models\\User::class; }\n    function one() { return parent::find(1)/*|*/; }\n}",
+                "App\\Models\\User",
+            ),
+            // Its `$model` property is its model.
+            (
+                "class Mine2 extends \\App\\Repositories\\UserRepository {\n    function one() { return $this->model/*|*/; }\n}",
                 "App\\Models\\User",
             ),
             // The query of its `scopeQuery()` closure.
@@ -450,6 +457,28 @@ fn the_container_makes_what_a_class_string_names() {
             // A plain string says nothing.
             ("function f(string $name) { return app($name)/*|*/; }", "mixed"),
         ],
+    );
+}
+
+#[test]
+fn storage_disks_are_adapters() {
+    const STORAGE: &str = r#"<?php
+namespace Illuminate\Contracts\Filesystem { interface Filesystem {} }
+namespace Illuminate\Filesystem {
+    class FilesystemAdapter implements \Illuminate\Contracts\Filesystem\Filesystem {
+        public function download($path) { return null; }
+    }
+    class FilesystemManager {
+        public function disk($name = null): \Illuminate\Contracts\Filesystem\Filesystem { return new FilesystemAdapter(); }
+    }
+}
+"#;
+    check(
+        &[FRAMEWORK, APPLICATION, APP, STORAGE],
+        &[(
+            "(new \\Illuminate\\Filesystem\\FilesystemManager())->disk('public')/*|*/;",
+            "Illuminate\\Filesystem\\FilesystemAdapter",
+        )],
     );
 }
 
