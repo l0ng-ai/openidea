@@ -880,7 +880,7 @@ export class EditorController implements SlotHost {
           ] as MenuItem[])
         : ([
             { kind: "separator" },
-            openInMenu(slot.model.path),
+            openInMenu(slot.model.path, view.state.doc.lineAt(view.state.selection.main.head).number - 1),
             { kind: "separator" },
             localHistoryMenu(slot.model.path),
             gitMenu(slot.model.path),
@@ -1961,7 +1961,7 @@ export class EditorController implements SlotHost {
 }
 
 /** Open In › for a file: Project View, Finder / Explorer / Files, Terminal. */
-function openInMenu(path: string): MenuItem {
+function openInMenu(path: string, line?: number): MenuItem {
   return {
     label: "Open In",
     submenu: [
@@ -1971,7 +1971,7 @@ function openInMenu(path: string): MenuItem {
         : []),
       { kind: "action", action: "project.openInTerminal", arg: path, label: "Terminal" },
       { kind: "separator" },
-      ...menuGroupItems("openIn", { paths: [path] }),
+      ...menuGroupItems("openIn", { paths: [path], line }),
     ],
   };
 }
