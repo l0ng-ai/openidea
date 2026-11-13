@@ -144,12 +144,12 @@ export function DatabaseView() {
   useEffect(() => {
     if (!st.loaded) void loadSources();
   }, [st.loaded]);
-  // Go to Declaration from a console: the rows exist once the expanded nodes render.
+  // Go to Declaration from a console, Select Opened File: the rows exist once the expanded nodes render.
   useEffect(() => {
     if (!st.treeReveal) return;
-    const key = st.treeReveal.key;
+    const path = st.treeReveal.path;
     const frame = requestAnimationFrame(() => {
-      tree.current?.reveal(key);
+      path.toReversed().some((key) => tree.current?.reveal(key));
       tree.current?.focus();
     });
     return () => cancelAnimationFrame(frame);
@@ -690,10 +690,11 @@ function DatabaseToolbar() {
   );
 }
 
-/** Header controls (shown on hover, like IDEA's): Expand All, Collapse All. */
+/** Header controls (shown on hover, like IDEA's): Select Opened File, Expand All, Collapse All. */
 export function DatabaseHeaderActions() {
   return (
     <>
+      <IconButton icon="locate" action="db.selectOpened" size="small" iconSize={16} />
       <IconButton icon="expand-all" action="db.expandAll" size="small" iconSize={16} />
       <IconButton icon="collapse-all" action="db.collapseAll" size="small" iconSize={16} />
     </>

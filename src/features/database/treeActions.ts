@@ -31,6 +31,7 @@ import {
   readableDdl,
   refresh,
   revealInTree,
+  revealOpened,
   runSql,
   sourceById,
   tablesKey,
@@ -499,6 +500,15 @@ export function registerDatabaseTreeActions(): () => void {
       id: "db.separateProceduresAndFunctions",
       title: "Separate Procedures and Functions",
       run: toggleSeparateProceduresAndFunctions,
+    }),
+    tree({
+      id: "db.selectOpened",
+      title: "Select Opened File",
+      icon: "locate",
+      keywords: ["locate", "scroll from editor", "scroll from source", "select in database view"],
+      // From the editor: a user-assigned shortcut works outside the Database view too.
+      keyWhen: undefined,
+      run: () => void revealOpened(),
     }),
     tree({
       id: "db.expandAll",

@@ -425,16 +425,52 @@ describe("connection and metadata continuations", () => {
     expect(backend.schemas).not.toHaveBeenCalled();
   });
 
-  it("stops tree reveal after its connection becomes stale", async () => {
-    const response = deferred();
-    backend.connect.mockReturnValueOnce(response.promise);
-    const pending = revealInTree("pg", "public", "users", "table");
-    await disconnect("pg");
-    response.resolve(ok(null));
-    await pending;
-    expect(backend.databases).not.toHaveBeenCalled();
-    expect(backend.schemas).not.toHaveBeenCalled();
-    expect(useDatabase.getState().treeReveal).toBeNull();
+  it.each(["table", undefined] as const)(
+    "stops tree reveal after its connection becomes stale (kind %s)",
+    async (kind) => {
+      const response = deferred();
+      backend.connect.mockReturnValueOnce(response.promise);
+      const pending = revealInTree("pg", "public", "users", kind);
+      await disconnect("pg");
+      response.resolve(ok(null));
+      await pending;
+      expect(backend.databases).not.toHaveBeenCalled();
+      expect(backend.schemas).not.toHaveBeenCalled();
+      expect(useDatabase.getState().treeReveal).toBeNull();
+    },
+  );
+
+  it.each(["table", undefined] as const)(
+    "does not select a tree node after its pending details become stale (kind %s)",
+    async (kind) => {
+      useDatabase.setState({
+        databases: { pg: { status: "ok", value: { current: "app", names: ["app"] } } },
+        schemas: { pg: { status: "ok", value: ["public"] } },
+        tables: { "pg\u0000public": { status: "ok", value: [{ name: "users", kind: "view" }] } },
+      });
+      const response = deferred();
+      backend.details.mockReturnValueOnce(response.promise);
+      const pending = revealInTree("pg", "public", "users", kind, "id");
+      await vi.waitFor(() => expect(backend.details).toHaveBeenCalledOnce());
+      await disconnect("pg");
+      response.resolve(ok(details));
+      await pending;
+      expect(useDatabase.getState().treeReveal).toBeNull();
+      expect(useDatabase.getState().treeExpanded.size).toBe(0);
+      expect(ui.show).not.toHaveBeenCalled();
+    },
+  );
+
+  it("infers a view's folder while revealing a current table editor", async () => {
+    useDatabase.setState({
+      databases: { pg: { status: "ok", value: { current: "app", names: ["app"] } } },
+      schemas: { pg: { status: "ok", value: ["public"] } },
+      tables: { "pg\u0000public": { status: "ok", value: [{ name: "users", kind: "view" }] } },
+    });
+    await revealInTree("pg", "public", "users", undefined);
+    expect(useDatabase.getState().treeReveal?.path.at(-1)).toBe("pg/public/views/users");
+    expect(ui.show).toHaveBeenCalledWith("database");
+    expect(backend.connect).not.toHaveBeenCalled();
   });
 
   it("preserves successful write results without restoring a stale connection", async () => {
