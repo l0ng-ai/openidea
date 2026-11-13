@@ -394,6 +394,7 @@ function GroupTabs({ group }: { group: string }) {
     const others = tabs.length > 1;
     showContextMenu(e, [
       { label: "Rename Session…", icon: "edit", run: () => setRenaming({ id, anchor }) },
+      { kind: "action", action: "terminal.moveToEditor", arg: id },
       { kind: "separator" },
       { label: "Close Tab", icon: "close", run: () => void onClose(id) },
       {
@@ -417,7 +418,6 @@ function GroupTabs({ group }: { group: string }) {
   const renameTarget = renaming && tabs.find((t) => t.id === renaming.id);
   const moreItems: MenuItem[] = [
     { kind: "action", action: "terminal.new" },
-    { kind: "action", action: "cli.new" },
     { kind: "separator" },
     { kind: "header", label: "New Predefined Session" },
     ...shellItems(shells),

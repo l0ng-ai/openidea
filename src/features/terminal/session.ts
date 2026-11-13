@@ -213,7 +213,7 @@ export class TerminalSession {
   private selectingSearchMatch = false;
   private searchSelection = false;
   private readonly selectionHighlights: SelectionHighlightController;
-  private readonly opts: SessionOptions;
+  private opts: SessionOptions;
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
   private opened = false;
@@ -238,6 +238,15 @@ export class TerminalSession {
   private readonly ime = new ImeCommitGate(() => {
     if (this.term.textarea) this.term.textarea.value = "";
   });
+
+  /**
+   * Hands the session to another owner (a terminal tab moved to the editor): its
+   * snapshots, focus and exit go there from now on. The PTY keeps running.
+   */
+  rebind(owner: Pick<SessionOptions, "onChange" | "onFocus" | "onExit">) {
+    this.opts = { ...this.opts, ...owner, onExit: owner.onExit };
+    this.opts.onChange(this.key, this.snapshot);
+  }
 
   constructor(opts: SessionOptions) {
     this.opts = opts;

@@ -1,17 +1,21 @@
 /**
- * The PTY side of the CLI editor tabs (#2202): the backend spawns the user's
- * login shell (its default, no explicit program), the saved command is the
- * session's first input, and closing ends the PTY.
+ * The PTY side of the terminal editor tabs (#2202): a moved tool window session
+ * keeps running under the tab, a restored tab starts the user's login shell (its
+ * default, no explicit program) with any saved command as its first input, and
+ * closing ends the PTY.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useClis } from "./cli";
+import { TerminalSession } from "./session";
 import {
+  adoptCli,
   cliBusy,
   cliSession,
   cliSessionForTerminalId,
   cliSessionFromElement,
   disposeAllClis,
   disposeCli,
+  isCliSession,
   startCli,
 } from "./cliSessions";
 
@@ -59,7 +63,24 @@ const start = async (session: ReturnType<typeof startCli>) => {
   };
 };
 
-describe("CLI sessions", () => {
+describe("terminal editor sessions", () => {
+  it("adopt a running tool window session: its snapshots, DOM and keys follow the tab", async () => {
+    const toolWindow = vi.fn();
+    const session = new TerminalSession({ key: "s3", cwd: "/repo", onChange: toolWindow, onFocus() {} });
+    const feed = await start(session);
+    adoptCli("cli:moved", session);
+    expect(ipc.commands.termSpawn).toHaveBeenCalledTimes(1);
+    expect(cliSession("cli:moved")).toBe(session);
+    expect(useClis.getState().sessions["cli:moved"]?.status).toBe("running");
+    // The session keeps its own key ("s3"), so the tab's DOM is matched by the session.
+    expect(cliSessionFromElement(session.host)).toBe(session);
+    expect(isCliSession(session)).toBe(true);
+    toolWindow.mockClear();
+    await feed("\x1b]0;claude\x07");
+    expect(toolWindow).not.toHaveBeenCalled();
+    expect(useClis.getState().sessions["cli:moved"]?.appTitle).toBe("claude");
+  });
+
   it("runs the saved command as the login shell's first input", async () => {
     const session = startCli("cli:t1", "/repo", "claude --continue");
     await start(session);

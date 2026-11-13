@@ -1,8 +1,8 @@
 /**
- * Editor-area tab of one CLI (#2202): the session's xterm while it runs, else a
- * Start screen — a tab restored with the project never runs its command on its
- * own. The session lives in `cliSessions.ts`; this only attaches its host while
- * the tab is the one shown.
+ * Editor-area tab of one terminal session (#2202, Move to Editor): the session's xterm
+ * while it runs, else a Start screen — a tab restored with the project never starts on
+ * its own. The session lives in `cliSessions.ts`; this only attaches its host while the
+ * tab is the one shown.
  */
 import { useLayoutEffect, useRef, type FocusEvent } from "react";
 import { useProject } from "@/platform/project";
@@ -37,7 +37,7 @@ export function CliEditor({ input }: { input: EditorInput }) {
     };
   }, [input.key, live, shown]);
 
-  if (!data) return <EmptyState icon="terminal" title="CLI" />;
+  if (!data) return <EmptyState icon="terminal" title="Terminal" />;
   if (!live)
     return (
       <div className={styles.start}>
@@ -45,7 +45,7 @@ export function CliEditor({ input }: { input: EditorInput }) {
           <h1 className={styles.heading}>{data.name}</h1>
           {data.command && <pre className={styles.command}>{data.command}</pre>}
           <p className={styles.note}>
-            <T>Starts in the project directory through your login shell.</T>
+            <T>Starts a login shell where the session was.</T>
           </p>
           <Button variant="primary" disabled={!project?.root} onClick={() => void startTab(input)}>
             <T>Start</T>
