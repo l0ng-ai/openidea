@@ -78,6 +78,8 @@ pub struct SiteArg {
     /// The class the argument names: `Foo::class` or a class-name string
     /// literal (`'App\Foo'`), fully qualified without the leading `\`.
     pub class: Option<String>,
+    /// The argument is `self::class` or `static::class`.
+    pub own_class: bool,
     /// The value of a string literal argument.
     pub string: Option<String>,
     /// The value of an integer literal argument.
@@ -111,6 +113,11 @@ pub(crate) fn site_args(scope: &NameScope, list: &ArgumentList<'_>) -> Vec<SiteA
                             Resolution::Fqn(fqn) | Resolution::Fallback { namespaced: fqn, .. } => Some(fqn),
                             Resolution::Relative(_) => None,
                         };
+                    } else if let ClassLikeConstantSelector::Identifier(constant) = &access.constant
+                        && constant.value.eq_ignore_ascii_case(b"class")
+                        && matches!(access.class, Expression::Self_(_) | Expression::Static(_))
+                    {
+                        arg.own_class = true;
                     }
                 }
                 Expression::Literal(literal) => match literal_type(literal) {

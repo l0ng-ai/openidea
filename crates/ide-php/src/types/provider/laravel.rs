@@ -233,7 +233,22 @@ fn relation_class(method: &str) -> Option<&'static str> {
 /// What a Prettus repository finder returns: `Some(true)` for a collection
 /// of the model, `Some(false)` for the model.
 fn prettus_finder(method: &str) -> Option<bool> {
-    const MODEL: &[&str] = &["find", "first", "firstOrNew", "firstOrCreate", "create", "update", "updateOrCreate"];
+    // With those Bagisto's base repository adds (`findOrFail()`,
+    // `findOneByField()`, `findOneWhere()`).
+    const MODEL: &[&str] = &[
+        "find",
+        "findOrFail",
+        "findOneByField",
+        "findOneWhere",
+        "first",
+        "firstOrNew",
+        "firstOrCreate",
+        "create",
+        "update",
+        "updateOrCreate",
+        "getModel",
+        "makeModel",
+    ];
     const COLLECTION: &[&str] = &[
         "all",
         "get",
@@ -246,6 +261,10 @@ fn prettus_finder(method: &str) -> Option<bool> {
     ];
     if is_one_of(MODEL, method) { Some(false) } else { is_one_of(COLLECTION, method).then_some(true) }
 }
+
+/// The class argument of a relation call written `self::class` or
+/// `static::class`, in a payload: the receiver's model.
+const OWN_CLASS: &str = "@own";
 
 fn is_one_of(list: &[&str], method: &str) -> bool {
     list.iter().any(|name| name.eq_ignore_ascii_case(method))
@@ -502,6 +521,9 @@ impl LaravelProvider {
     ) -> Option<Type> {
         let receiver = args.first()?;
         let core = args.get(1)?;
+        // `$this->belongsTo(static::class)`: the receiver's model.
+        let own = (class == OWN_CLASS).then(|| Self::model_class(resolver, receiver, context).unwrap_or_default());
+        let class = own.as_deref().unwrap_or(class);
         // A static call on a facade is a call on its service.
         let facade = Self::is_a(resolver, receiver, context, &[FACADE])
             .then(|| Self::facade_service(resolver, receiver, context))
@@ -1624,6 +1646,8 @@ impl TypeProvider for LaravelProvider {
                     return Some(LazyType::Known(Type::generic(ATTRIBUTE, vec![getter, Type::Mixed])));
                 }
                 let receiver = site.receiver?.clone();
+                let own = relation_class(site.name).is_some() && site.args.first().is_some_and(|arg| arg.own_class);
+                let class = if own { OWN_CLASS } else { class };
                 // In summaries, only what is likely to matter there: relation
                 // definitions and static calls on a class (facades, models).
                 if site.stored

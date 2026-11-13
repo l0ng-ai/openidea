@@ -275,6 +275,7 @@ namespace App\Models {
     class Order extends \Illuminate\Database\Eloquent\Model implements \App\Contracts\Order, \App\Contracts\Shared {
         public function ship(): bool { return true; }
         public function invoices() { return $this->hasMany(Invoice::class); }
+        public function parent() { return $this->belongsTo(static::class); }
     }
     function order(): \App\Contracts\Order { return new Order(); }
     function shared(): \App\Contracts\Shared { return new Order(); }
@@ -328,6 +329,9 @@ fn repositories_and_concord_proxies_name_their_model() {
                 "Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\Invoice>",
             ),
             ("\\App\\Models\\shared()->ship()/*|*/;", "mixed"),
+            // `static::class` relates the model itself.
+            ("(new \\App\\Models\\Order())->parent/*|*/;", "?App\\Models\\Order"),
+            ("(new \\App\\Repositories\\UserRepository())->findOrFail(1)/*|*/;", "App\\Models\\User"),
         ],
     );
 }
