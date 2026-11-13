@@ -255,7 +255,8 @@ describe("agent composer", () => {
       allow_all: "on",
     });
     expect(usageLabel({ used: 24_000, size: 200_000 })).toEqual({
-      short: "12%",
+      short: "24k/200k (12%)",
+      percent: 12,
       detail: "24k / 200k tokens",
     });
     expect(imageFromDataUrl("data:image/png;base64,AAA", "a.png")).toEqual({
