@@ -191,6 +191,8 @@ struct State {
     limit_resets_ms: Option<f64>,
     terminal_only: Vec<String>,
     titled: bool,
+    /// A title is being read or generated.
+    titling: bool,
 }
 
 struct Turn {
@@ -365,6 +367,7 @@ impl Shim {
                 limit_resets_ms: None,
                 terminal_only: Vec::new(),
                 titled: false,
+                titling: false,
             }),
             cwd,
             starting: tokio::sync::Mutex::new(()),
@@ -1048,7 +1051,8 @@ impl Session {
                     } else if matches!(st.start, Start::New { .. }) {
                         st.start = Start::Resume { id: self.id.clone(), at: None };
                     }
-                    read_title = !st.titled;
+                    read_title = !st.titled && !st.titling;
+                    st.titling |= read_title;
                     if let Some(turn) = st.turn.as_ref()
                         && belongs(turn, &msg)
                     {
@@ -1073,19 +1077,48 @@ impl Session {
         }
     }
 
-    /// Sends the title Claude Code gave the session, once it has one.
+    /// Sends the session's title once it has one: the one in its transcript, or else one
+    /// Claude Code is asked for, as it titles no session run the way the Agent SDK runs it.
+    /// Without a title the next turn tries again.
     fn read_title(self: &Arc<Self>) {
         let me = self.clone();
-        tokio::task::spawn_blocking(move || {
-            let Some(title) = chain_title(&me) else { return };
-            me.st.lock().titled = true;
-            if let Some(shim) = me.shim() {
+        tokio::spawn(async move {
+            let reader = me.clone();
+            let entries = tokio::task::spawn_blocking(move || transcript_entries(&reader)).await.ok().flatten();
+            let mut title = entries.as_deref().and_then(history::title);
+            if title.is_none()
+                && let Some(source) = entries.as_deref().and_then(history::title_source)
+            {
+                title = me.generate_title(source).await;
+            }
+            {
+                let mut st = me.st.lock();
+                st.titling = false;
+                if title.is_none() {
+                    return;
+                }
+                st.titled = true;
+            }
+            if let (Some(title), Some(shim)) = (title, me.shim()) {
                 shim.notify(vec![Update {
                     session: me.id.clone(),
                     update: json!({ "sessionUpdate": "session_info_update", "title": title }),
                 }]);
             }
         });
+    }
+
+    /// A title Claude Code generates from `source`, also written to the transcript.
+    async fn generate_title(&self, source: String) -> Option<String> {
+        let proc = self.st.lock().proc.clone()?;
+        let request = json!({ "subtype": "generate_session_title", "description": source, "persist": true });
+        match proc.control(request).await {
+            Ok(r) => r.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned),
+            Err(e) => {
+                tracing::debug!("generating a claude session title: {e}");
+                None
+            }
+        }
     }
 
     async fn on_cli_request(self: &Arc<Self>, proc: &Arc<Proc>, msg: Value) {
@@ -1417,9 +1450,13 @@ fn strings(v: Option<&Value>) -> Vec<String> {
 
 /// The title in a session's transcript (or that of the session it continues).
 fn chain_title(session: &Session) -> Option<String> {
+    history::title(&transcript_entries(session)?)
+}
+
+fn transcript_entries(session: &Session) -> Option<Vec<Value>> {
     let shim = session.shim()?;
     let path = shim.transcript(&session.cwd, &session.id).filter(|p| p.exists())?;
-    history::title(&history::read(&path).ok()?)
+    history::read(&path).ok()
 }
 
 fn start_json(start: &Start) -> Value {

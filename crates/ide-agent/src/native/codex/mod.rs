@@ -28,6 +28,9 @@ const OUTPUT_EVERY: Duration = Duration::from_millis(200);
 const EARLY_CANCEL: Duration = Duration::from_secs(1);
 /// How long the client's connection outlives codex.
 const EXIT_GRACE: Duration = Duration::from_millis(100);
+/// What a thread's name is asked for with, after its first turn.
+const NAME_PROMPT: &str = "Name this conversation for a list of tasks: a short title of at most six words, in the \
+    language the user writes in. Reply with the title only, without quotes or a closing period.";
 
 pub(crate) fn connect(
     spec: &ProviderSpec,
@@ -126,6 +129,10 @@ struct Thread {
     early_cancel: Option<Instant>,
     /// The latest agent message (a subagent's answer).
     answer: String,
+    /// The thread has a name.
+    named: bool,
+    /// A name is being asked for.
+    naming: bool,
 }
 
 struct PendingPrompt {
@@ -329,6 +336,7 @@ impl CodexShim {
         t.parent = None;
         t.settings = Some(settings);
         t.cwd = cwd;
+        t.named = thread.get("name").and_then(Value::as_str).is_some_and(|n| !n.trim().is_empty());
         (id, options)
     }
 
@@ -625,8 +633,9 @@ impl CodexShim {
                 Some(translate::plan(params))
             }),
             "thread/tokenUsage/updated" => self.with_thread(thread, |_, _| translate::usage(params)),
-            "thread/name/updated" => self.with_thread(thread, |_, _| {
+            "thread/name/updated" => self.with_thread(thread, |t, _| {
                 let title = params.get("threadName").and_then(Value::as_str)?;
+                t.named = true;
                 Some(json!({ "sessionUpdate": "session_info_update", "title": title }))
             }),
             "thread/started" => self.thread_started(params.get("thread").unwrap_or(&Value::Null)),
@@ -812,9 +821,10 @@ impl CodexShim {
         }
     }
 
-    fn turn_completed(&self, thread: &str, turn: &Value) {
+    fn turn_completed(self: &Arc<Self>, thread: &str, turn: &Value) {
         let id = turn.get("id").and_then(Value::as_str).unwrap_or_default();
-        let (parent, answer) = {
+        let completed = turn.get("status").and_then(Value::as_str) == Some("completed");
+        let (parent, answer, name) = {
             let mut state = self.state.lock();
             let Some(t) = state.threads.get_mut(thread) else { return };
             if t.turn.as_deref().is_none_or(|r| r == id) {
@@ -830,8 +840,15 @@ impl CodexShim {
                 let _ = p.done.send((turn.clone(), error.clone()));
             }
             let answer = std::mem::take(&mut t.answer);
-            (t.parent.clone(), (answer, error))
+            let name =
+                completed && !id.is_empty() && t.parent.is_none() && t.settings.is_some() && !t.named && !t.naming;
+            t.naming |= name;
+            (t.parent.clone(), (answer, error), name)
         };
+        if name {
+            let (shim, thread, turn) = (self.clone(), thread.to_owned(), id.to_owned());
+            self.runtime.spawn(async move { shim.name_thread(&thread, &turn).await });
+        }
         let Some(parent) = parent else { return };
         let (answer, error) = answer;
         let mut state_of = match turn.get("status").and_then(Value::as_str) {
@@ -850,6 +867,28 @@ impl CodexShim {
                     "senderSessionId": thread, "recipientSessionId": parent,
                     "content": [{ "type": "text", "text": answer }] }),
             );
+        }
+    }
+
+    /// Names a thread from what it holds after `turn`, as codex leaves naming to its
+    /// clients; `thread/name/updated` brings the name back. Unnamed, the next turn tries again.
+    async fn name_thread(&self, thread: &str, turn: &str) {
+        let sample = json!({ "threadId": thread, "expectedTurnId": turn, "prompt": NAME_PROMPT, "effort": "low" });
+        let named = match self.call("thread/sample", sample).await {
+            Ok(r) => match r.get("text").and_then(Value::as_str).and_then(translate::thread_name) {
+                Some(name) => {
+                    self.call("thread/name/set", json!({ "threadId": thread, "name": name })).await.map(|_| ())
+                }
+                None => Err(error(codes::INTERNAL_ERROR, "codex gave no name")),
+            },
+            Err(e) => Err(e),
+        };
+        if let Err(e) = &named {
+            tracing::debug!("naming codex thread {thread}: {}", e.message);
+        }
+        if let Some(t) = self.state.lock().threads.get_mut(thread) {
+            t.naming = false;
+            t.named |= named.is_ok();
         }
     }
 
