@@ -108,12 +108,23 @@ class LensWidget extends WidgetType {
     // The inline one shares no class with the row, so none of the row's block styles reach into the line.
     const dom = document.createElement(this.inline ? "span" : "div");
     dom.className = this.inline ? "cm-openidea-lensInline" : "cm-openidea-lens";
-    this.fill(dom, view);
+    // The line-end hint draws from a zero-width anchor in an absolutely positioned inner box: an
+    // in-flow box would wrap to the next line when the line is soft-wrapped and there is no room.
+    const host = this.inline ? document.createElement("span") : dom;
+    if (this.inline) {
+      host.className = "cm-openidea-lensInlineInner";
+      dom.appendChild(host);
+    }
+    this.fill(host, view);
     return dom;
   }
 
   override updateDOM(dom: HTMLElement, view: EditorView): boolean {
-    this.fill(dom, view);
+    // A row and a line-end hint have different structures: a position change rebuilds the DOM.
+    if (dom.className !== (this.inline ? "cm-openidea-lensInline" : "cm-openidea-lens")) return false;
+    const host = this.inline ? (dom.firstElementChild as HTMLElement | null) : dom;
+    if (!host) return false;
+    this.fill(host, view);
     return true;
   }
 
@@ -205,27 +216,44 @@ function buildDecorations(state: EditorState): DecorationSet {
 }
 
 const lensTheme = EditorView.theme({
+  // IDEA paints code vision with the colour scheme's Inline hints attribute.
   ".cm-openidea-lens": {
     display: "flex",
     alignItems: "center",
     gap: "12px",
     height: "16px",
-    color: "var(--fg-muted)",
+    color: "var(--fg-inlay, var(--fg-muted))",
     WebkitUserSelect: "none",
     userSelect: "none",
     whiteSpace: "nowrap",
     overflow: "hidden",
   },
-  // "right": after the line's text, on its baseline, with IDEA's spacing.
+  // "right": a zero-width anchor at the end of the line, with the hint drawn from an absolutely
+  // positioned inner box, the way IDEA paints line-end inlays. Nothing here takes part in the
+  // line's flow: the hint can neither wrap to the next line (a soft-wrapped line has no room for
+  // it) nor stretch the line's height, and it overflows past the editor edge instead.
   ".cm-openidea-lensInline": {
-    display: "inline-flex",
-    alignItems: "baseline",
-    gap: "12px",
-    marginLeft: "12px",
-    color: "var(--fg-muted)",
+    display: "inline-block",
+    width: "0",
+    position: "relative",
+    lineHeight: "1",
+    color: "var(--fg-inlay, var(--fg-muted))",
     WebkitUserSelect: "none",
     userSelect: "none",
+  },
+  ".cm-openidea-lensInlineInner": {
+    position: "absolute",
+    left: "12px",
+    bottom: "-2px",
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
     whiteSpace: "nowrap",
+    // Pinned to the line, the hint may run past the editor's edge (IDEA clips it there); cap it so a
+    // long one cannot stretch across the whole window first.
+    maxWidth: "min(60ch, 50vw)",
+    overflow: "hidden",
+    pointerEvents: "auto",
   },
   ".cm-openidea-lensItem": {
     display: "inline-flex",
@@ -236,9 +264,10 @@ const lensTheme = EditorView.theme({
     background: "none",
     font: "inherit",
     color: "inherit",
-    // The items take the UI font; the row keeps the editor's, so its `ch`-based indent guides line up with the code.
+    // The items take the UI font (IDEA's label font) at the editor's size minus 1 (HintUtil.getSize),
+    // so hints scale with the editor font; the row keeps the editor's, so its `ch`-based indent guides line up with the code.
     fontFamily: "var(--font-ui)",
-    fontSize: "var(--fs-tiny)",
+    fontSize: "calc(1em - 1px)",
   },
   ".cm-openidea-lensAction": { cursor: "pointer" },
   ".cm-openidea-lensAction:hover": { color: "var(--accent)", textDecoration: "underline" },

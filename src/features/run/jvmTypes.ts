@@ -188,7 +188,7 @@ export const jarApplicationType: RunConfigTypeContribution = {
     { key: "jarPath", label: "Path to JAR", mono: true, required: true, browse: "file" },
     vmOptionsField(),
     { key: "programArgs", label: "Program arguments", mono: true },
-    { ...jreField, options: [{ value: "", label: "Default (java on PATH)" }] },
+    { ...jreField, options: [{ value: "", label: "Default (the project's JDK)" }] },
   ],
   commandLine(p) {
     return {

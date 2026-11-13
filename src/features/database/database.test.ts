@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DataSource } from "@/platform/ipc";
 import { exportData, type ExportData } from "./export";
 import { isNumericColumn } from "./Grid";
@@ -22,7 +22,7 @@ import {
   toCsv,
   toTsv,
 } from "./model";
-import { listsDatabases } from "./store";
+import { OUTPUT_TAB, closeResult, listsDatabases, useDatabase, type ResultTab } from "./store";
 import { VENDORS, sourceUrl, vendorById, vendorOf, vendorPreset } from "./vendors";
 
 describe("clipboard formats", () => {
@@ -441,5 +441,62 @@ describe("Options tab", () => {
   it("names the colour tokens", () => {
     expect(colorVar("red")).toBe("var(--db-color-red)");
     expect(colorVar(null)).toBeUndefined();
+  });
+});
+
+describe("closing result tabs", () => {
+  let previous: ReturnType<typeof useDatabase.getState>;
+  const tabs = [11, 35, 72, 109].map((id): ResultTab => {
+    const text = `SELECT ${id}`;
+    return {
+      id,
+      title: `Result ${id}`,
+      path: "console.sql",
+      sourceId: "pg",
+      outcome: {
+        statement: { from: 0, to: text.length, text },
+        error: null,
+        result: {
+          statement: text,
+          columns: [{ name: "value", typeName: "int4" }],
+          rows: [[String(id)]],
+          affected: null,
+          hasMore: false,
+          elapsedMs: 1,
+          executionMs: 1,
+        },
+      },
+    };
+  });
+
+  beforeEach(() => {
+    previous = useDatabase.getState();
+  });
+
+  afterEach(() => useDatabase.setState(previous, true));
+
+  it("selects the immediate left neighbor rather than the rightmost result", () => {
+    useDatabase.setState({ results: tabs, activeResult: 35 });
+    closeResult(35);
+    expect(useDatabase.getState().activeResult).toBe(11);
+    expect(useDatabase.getState().results.map((r) => r.id)).toEqual([11, 72, 109]);
+  });
+
+  it.each([
+    ["selects the right neighbor of the first result", [11, 35, 72, 109], 11, 11, 35, [35, 72, 109]],
+    ["selects the left neighbor of the last result", [11, 35, 72, 109], 109, 109, 72, [11, 35, 72]],
+    ["returns to Output after the only result closes", [11], 11, 11, OUTPUT_TAB, []],
+    ["keeps selection when an inactive result on the left closes", [11, 35, 72, 109], 72, 35, 72, [11, 72, 109]],
+    ["keeps selection when an inactive result on the right closes", [11, 35, 72, 109], 11, 109, 11, [11, 35, 72]],
+    ["keeps Output selected when a result closes", [11, 35, 72, 109], OUTPUT_TAB, 35, OUTPUT_TAB, [11, 72, 109]],
+    ["keeps an unset selection when a result closes", [11, 35, 72, 109], null, 11, null, [35, 72, 109]],
+    ["ignores an already closed result", [11, 35, 72, 109], 35, 999, 35, [11, 35, 72, 109]],
+    ["does not change a stale selection for a missing result", [11, 35, 72, 109], 999, 999, 999, [11, 35, 72, 109]],
+    ["does not close Output", [11, 35, 72, 109], OUTPUT_TAB, OUTPUT_TAB, OUTPUT_TAB, [11, 35, 72, 109]],
+  ] as const)("%s", (_name, ids, active, closed, expected, remaining) => {
+    useDatabase.setState({ results: ids.map((id) => tabs.find((r) => r.id === id)!), activeResult: active });
+    closeResult(closed);
+    expect(useDatabase.getState().activeResult).toBe(expected);
+    expect(useDatabase.getState().results.map((r) => r.id)).toEqual(remaining);
   });
 });

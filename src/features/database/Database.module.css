@@ -133,6 +133,9 @@
   flex-direction: column;
   min-height: 0;
 }
+.resultTabs {
+  padding-inline: var(--space-2);
+}
 .toolbar {
   display: flex;
   align-items: center;
