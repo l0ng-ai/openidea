@@ -256,3 +256,33 @@ fn higher_order_expectations_reach_the_value() {
         [target("lib/pest/Expectation.php", 9, "toBe")]
     );
 }
+
+#[test]
+fn test_without_arguments_is_the_test_case() {
+    let test = "<?php\n\nfunction openPanel(): int\n{\n    return test()->admin/*|*/Panel();\n}\n\ntest('x', function () {\n    openPanel();\n});\n";
+    let mut p = project("tests/Feature/Admin/PanelTest.php", test);
+    assert_eq!(
+        p.definition("tests/Feature/Admin/PanelTest.php", test).expect("handled"),
+        [target("tests/TestCase.php", 15, "adminPanel")]
+    );
+}
+
+#[test]
+fn this_in_a_trait_is_also_a_class_using_it() {
+    let concern = "<?php\nnamespace Tests;\n\ntrait OpensPanels\n{\n    public function open(): void\n    {\n        $this->login/*|*/As('ann');\n    }\n}\n\nabstract class PanelTestCase extends TestCase\n{\n    use OpensPanels;\n}\n";
+    let mut p = project("tests/OpensPanels.php", concern);
+    assert_eq!(
+        p.definition("tests/OpensPanels.php", concern).expect("handled"),
+        [target("tests/TestCase.php", 10, "loginAs")]
+    );
+    // The trait's own members still resolve.
+    let own = concern.replace("$this->login/*|*/As('ann');", "$this->op/*|*/en();");
+    assert_eq!(
+        p.definition("tests/OpensPanels.php", &own).expect("handled"),
+        [target("tests/OpensPanels.php", 5, "open")]
+    );
+    // A trait nothing uses: unknown members stay unknown.
+    let unused = concern.replace("    use OpensPanels;\n", "");
+    let mut p = project("tests/OpensPanels.php", &unused);
+    assert_eq!(p.definition("tests/OpensPanels.php", &unused).expect("handled"), []);
+}

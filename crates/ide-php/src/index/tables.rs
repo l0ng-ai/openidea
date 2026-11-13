@@ -117,7 +117,9 @@ fn entries(file: &str, summary: &FileSummary) -> Vec<Entry> {
             file: file.to_owned(),
             index: index as u32,
         };
-        for parent in class.extends.iter().chain(&class.implements) {
+        // The traits a class uses too: it is where their `$this` lives.
+        let traits = class.trait_uses.iter().flat_map(|uses| &uses.traits);
+        for parent in class.extends.iter().chain(&class.implements).chain(traits) {
             let parent = parent.strip_prefix('\\').unwrap_or(parent);
             out.push(Entry { table: 2, key: parent.to_ascii_lowercase(), decl: child.clone() });
         }

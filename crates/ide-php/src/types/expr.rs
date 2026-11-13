@@ -162,6 +162,8 @@ pub struct ExprTypes<'a, 'r> {
     /// The properties a Pest file's `beforeEach()` closures assign to
     /// `$this`, by name; `None` while one is being typed.
     pest_properties: RefCell<HashMap<String, Option<Type>>>,
+    /// The classes using each trait of the file asked about so far.
+    trait_hosts: RefCell<HashMap<String, Vec<String>>>,
 }
 
 const TOP_LEVEL: u32 = u32::MAX - 1;
@@ -188,6 +190,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             path: None,
             pest: std::cell::OnceCell::new(),
             pest_properties: RefCell::new(HashMap::new()),
+            trait_hosts: RefCell::new(HashMap::new()),
         }
     }
 
@@ -452,6 +455,22 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
     /// left side starts at `at` (the read is the assigned variable itself).
     fn lookup(&self, name: &[u8], at: u32, frames: &[Frame<'a>], here: bool) -> Type {
         if name == b"this" {
+            // In a trait, `$this` is also an object of a class using it
+            // (`$this->postJson()` in a test concern).
+            if let Some(class) = self.frame_class(frames)
+                && class.kind == crate::summary::ClassKind::Trait
+            {
+                let hosts = self
+                    .trait_hosts
+                    .borrow_mut()
+                    .entry(class.fqn.clone())
+                    .or_insert_with(|| self.resolver.trait_hosts(&class.fqn))
+                    .clone();
+                if !hosts.is_empty() {
+                    let this = std::iter::once(Type::Relative(Relative::This));
+                    return Type::intersection(this.chain(hosts.iter().map(|host| Type::named(host))));
+                }
+            }
             return if frames.iter().any(|frame| matches!(frame, Frame::Class(_))) || self.pest_class(frames).is_some() {
                 Type::Relative(Relative::This)
             } else {
@@ -944,6 +963,15 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                             .find_map(|fqn| self.resolver.function_call(fqn, &args))
                             .unwrap_or(Type::Mixed)
                     };
+                    // Pest's `test()` without arguments: the test case of the
+                    // file (`test()->createProduct()` in a helper function).
+                    if call.argument_list.arguments.is_empty()
+                        && name.rsplit('\\').next().is_some_and(|short| short.eq_ignore_ascii_case("test"))
+                        && let Some(path) = self.path.as_deref()
+                        && let Some(class) = self.resolver.pest_test_case(path)
+                    {
+                        return Type::named(&class);
+                    }
                     let Some(fqn) = resolved.resolution.candidates().next() else { return core() };
                     self.provided(CallKind::Function, fqn, None, &call.argument_list, &core, frames)
                 }

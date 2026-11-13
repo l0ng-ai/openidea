@@ -130,7 +130,8 @@ pub trait Declarations {
     fn user_models(&self) -> UserModels {
         UserModels::default()
     }
-    /// The class-likes that directly extend or implement `fqn`, by FQN.
+    /// The class-likes that directly extend, implement or (a trait) use
+    /// `fqn`, by FQN.
     fn direct_subclasses(&self, _fqn: &str) -> Vec<String> {
         Vec::new()
     }
@@ -185,7 +186,13 @@ impl Declarations for SummarySet {
 
     fn direct_subclasses(&self, fqn: &str) -> Vec<String> {
         let names = |class: &&ClassLike| {
-            class.extends.iter().chain(&class.implements).any(|parent| fqn_eq(NameKind::ClassLike, parent, fqn))
+            let traits = class.trait_uses.iter().flat_map(|uses| &uses.traits);
+            class
+                .extends
+                .iter()
+                .chain(&class.implements)
+                .chain(traits)
+                .any(|parent| fqn_eq(NameKind::ClassLike, parent, fqn))
         };
         let classes = self.summaries.iter().flat_map(|summary| &summary.class_likes);
         classes.filter(names).map(|class| class.fqn.clone()).collect()
@@ -476,6 +483,22 @@ impl<'a> Resolver<'a> {
     /// The class-likes that directly extend or implement `fqn`, by FQN.
     pub fn direct_subclasses(&self, fqn: &str) -> Vec<String> {
         self.decls.direct_subclasses(fqn)
+    }
+
+    /// The classes using trait `fqn` (at most [`MAX_TRAIT_HOSTS`], in name
+    /// order): what `$this` is in the trait's methods, beside the trait.
+    pub fn trait_hosts(&self, fqn: &str) -> Vec<String> {
+        let mut hosts: Vec<String> = self
+            .direct_subclasses(fqn)
+            .into_iter()
+            .filter(|host| {
+                self.class_model(host).is_some_and(|model| model.class.kind == crate::summary::ClassKind::Class)
+            })
+            .collect();
+        hosts.sort();
+        hosts.dedup();
+        hosts.truncate(MAX_TRAIT_HOSTS);
+        hosts
     }
 
     /// The project's Laravel macros, cached for the modification counter.
@@ -1393,6 +1416,9 @@ const FACADE_ROOTS: &[(&str, &str)] = &[
 
 /// PHPUnit's test case: what Pest binds test closures to by default.
 const PHPUNIT_TEST_CASE: &str = "PHPUnit\\Framework\\TestCase";
+
+/// How many classes using a trait type its `$this`.
+const MAX_TRAIT_HOSTS: usize = 3;
 
 /// Pest's expectation class, which `expect()->extend()` adds methods to.
 pub(crate) const PEST_EXPECTATION: &str = "Pest\\Expectation";
