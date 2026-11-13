@@ -50,7 +50,7 @@ const shared = [
   ["code.quickDocumentation", "db.quickDoc", "debug.setValue", "vcs.changelist.edit"],
   ["code.reformat", "project.reformatCode", "db.reformatValue"],
   ["code.optimizeImports", "project.optimizeImports"],
-  ["code.deleteLine", "db.duplicateSource", "project.compareWith", "vcs.showDiff"],
+  ["code.deleteLine", "db.duplicateSource", "project.compareWith", "vcs.showDiff", "vcs.log.changes.showDiff"],
   ["code.moveStatementDown", "find.field.recentSearches", "find.popup.recentSearches"],
   ["code.foldAll", "project.collapseAll"],
   ["refactor.rename", "project.rename", "db.rename", "vcs.changelist.edit", "vcs.log.editMessage", "vcs.shelf.rename"],
