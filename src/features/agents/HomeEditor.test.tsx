@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { AgentConfigOption, AgentProvider, NewAgentTask } from "@/bindings";
+import { useProject } from "@/platform/project";
 import { HomeEditor } from "./HomeEditor";
 import { HOME, savedDraft, updateComposer, useAgents } from "./store";
 
@@ -119,4 +120,22 @@ it("ignores old provider-wide effort choices and refreshes unsupported per-model
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toContainEqual({ id: "effort", value: "high" });
+});
+
+it.each([
+  [undefined, "full-access"],
+  ["ask", undefined],
+] as const)("with new-task approvals %s, sends mode %s", async (newTaskApprovals, mode) => {
+  const provider = { ...backend.providers[0]!, config: [option("mode", "mode", ["ask", "full-access"], "ask")] };
+  useAgents.setState({ providers: [provider] });
+  const settings = useProject.getState().settings;
+  useProject.setState({ settings: { ...settings, agents: { ...settings?.agents, newTaskApprovals } } as never });
+  try {
+    render(<HomeEditor />);
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(backend.create).toHaveBeenCalled());
+    expect(backend.create.mock.calls[0]![0].config.find((c: { id: string }) => c.id === "mode")?.value).toBe(mode);
+  } finally {
+    useProject.setState({ settings });
+  }
 });
