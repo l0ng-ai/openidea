@@ -113,10 +113,11 @@
 .stream:focus {
   outline: none;
 }
-/* Scrolled up: one click back to the latest message, floating over the stream's end. */
+/* Scrolled up: one click back to the latest message, centred over the stream's end like the conversation. */
 .jumpToLatest {
   position: absolute;
-  right: var(--space-3);
+  left: 50%;
+  transform: translateX(-50%);
   bottom: var(--space-2);
   z-index: 2;
   display: inline-flex;
