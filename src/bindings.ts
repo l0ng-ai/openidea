@@ -10021,8 +10021,10 @@ export type TestCaseReport = {
 	durationMs: number | null,
 	/**  Failure / error / skip message. */
 	message: string | null,
-	/**  Failure stack trace and captured output. */
+	/**  Failure / error stack trace. */
 	output: string | null,
+	/**  What the test printed (`<system-out>`, `<system-err>`). */
+	stdout: string | null,
 };
 
 export type TestCaseStatus = "passed" | "failed" | "skipped";

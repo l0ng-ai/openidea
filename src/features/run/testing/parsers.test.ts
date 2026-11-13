@@ -501,6 +501,23 @@ CalcTest > fails() FAILED
     expect(r.hasResult(["demo.CalcTest", "other"])).toBe(false);
   });
 
+  it("gives a class's own output from the gradle init script to the class", () => {
+    const r = results(
+      jvmParser(),
+      `##teamcity[testStdOut className='demo.CalcTest' out='class setUp|n']
+##teamcity[testStarted name='adds()' className='demo.CalcTest']
+##teamcity[testStdOut name='adds()' className='demo.CalcTest' out='adding|n']
+##teamcity[testFinished name='adds()' className='demo.CalcTest' duration='1']
+##teamcity[testStdOut className='demo.CalcTest' out='class tearDown|n']
+`,
+    );
+    const cls = r.get("demo.CalcTest")!;
+    expect(cls.children.map((c) => c.name)).toEqual(["adds"]);
+    expect(cls.output).toEqual(["class setUp", "class tearDown"]);
+    expect(nodeOutput(cls)).toEqual(["class setUp", "class tearDown", "adding"]);
+    expect(leaf(r, "demo.CalcTest", "adds")?.output).toEqual(["adding"]);
+  });
+
   it("shows a test as running from its start", () => {
     const r = new TestResults();
     r.apply(jvmParser().feed("##teamcity[testStarted name='slow()' className='demo.SlowTest']"));
