@@ -20,7 +20,7 @@ pub enum ToolKind {
 /// Where release archives come from.
 #[derive(Clone, Copy, Debug)]
 pub enum ReleaseSource {
-    /// 解压前校验固定版本归档的摘要。
+    /// One pinned archive, verified against its SHA-256 before extraction.
     Fixed { version: &'static str, url: &'static str, sha256: &'static str },
     /// Latest GitHub release of `owner/repo`; assets plus links in the release notes.
     GitHub { repo: &'static str },
@@ -1137,7 +1137,7 @@ mod tests {
     fn registry_names_match_language_configs() {
         let langs = ide_language::LanguageRegistry::load(None).unwrap().all();
         let mut known = std::collections::HashSet::new();
-        // Unity 调试器由项目类型启用，独立于常规 C# 调试器。
+        // The Unity debugger comes with Unity projects, apart from the C# debugger.
         known.insert(("unity-debug".to_owned(), "unity-debug".to_owned()));
         for l in &langs {
             for s in &l.language_servers {

@@ -55,7 +55,7 @@ fn unity_adapter_download_is_pinned_and_checksum_verified() {
     let tools = env.tools();
     let spec = registry::find("unity-debug").unwrap();
     let Method::Release { source, assets, locate } = spec.method else { panic!("expected release") };
-    // 验证固定版本解析无需发起网络请求。
+    // A fixed release resolves without a network request.
     let curl = env.sys.join(if cfg!(windows) { "curl.exe" } else { "curl" });
     fs::write(&curl, b"unused").unwrap();
     archive::make_executable(&curl).unwrap();

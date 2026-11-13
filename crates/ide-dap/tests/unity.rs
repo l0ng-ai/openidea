@@ -1,4 +1,4 @@
-//! Unity 编辑器实机测试。使用独立的临时项目和编辑器实例。
+//! Attaches to a real Unity Editor, with its own temporary project and Editor instance.
 //! OPENIDEA_UNITY_EDITOR=<Unity.exe> OPENIDEA_UNITY_ADAPTER=<UnityDebug.exe>
 //! cargo test -p ide-dap --test unity -- --ignored --nocapture
 
@@ -62,7 +62,7 @@ async fn real_editor_attach_breakpoint_step_variables_and_detach() {
     let editor = std::env::var("OPENIDEA_UNITY_EDITOR").expect("OPENIDEA_UNITY_EDITOR");
     let adapter = std::env::var("OPENIDEA_UNITY_ADAPTER").expect("OPENIDEA_UNITY_ADAPTER");
     let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target").canonicalize().unwrap();
-    // 保留编辑器日志，供失败时排查。
+    // Keep the Editor log for diagnosing a failure.
     let root = tempfile::Builder::new().prefix("unity-dap-smoke-").tempdir_in(target).unwrap().keep();
     let root = root.to_string_lossy().trim_start_matches(r"\\?\").replace('\\', "/");
     let root = PathBuf::from(root);
@@ -82,7 +82,7 @@ async fn real_editor_attach_breakpoint_step_variables_and_detach() {
     std::fs::write(&source, SCRIPT).unwrap();
     let mut command = tokio::process::Command::new(&editor);
     ide_core::process::prepare(command.as_std_mut());
-    // 测试项目无包依赖，跳过包服务。
+    // The test project has no packages: skip the package manager.
     command
         .args(["-batchmode", "-nographics", "-noUpm", "-debugCodeOptimization", "-projectPath"])
         .arg(&root)
@@ -136,7 +136,7 @@ async fn real_editor_attach_breakpoint_step_variables_and_detach() {
     };
     let session = start().await.unwrap();
     eprintln!("Attached; breakpoint states: {:?}", manager.breakpoint_states(&source));
-    // 启动返回时，Mono 应已准备好执行。
+    // Mono is ready to run once the start returns.
     assert!(!manager.threads(session).await.unwrap().is_empty());
     std::fs::write(root.join("go"), "").unwrap();
     let thread = stopped(&events, "breakpoint").await;
@@ -153,11 +153,11 @@ async fn real_editor_attach_breakpoint_step_variables_and_detach() {
     let frames = manager.stack_trace(session, thread).await.unwrap();
     assert!(!frames.is_empty(), "Empty step stack: {:?}", events.lock());
     assert!(frames[0].line > line);
-    // 在断点处断开后，编辑器应恢复运行。
+    // Detaching at a breakpoint resumes the Editor.
     manager.stop(session).await.unwrap();
     verify_resumed(&root, &mut child).await;
 
-    // 用同一编辑器重新附加，确认已有断点也能命中。
+    // Attaching again to the same Editor hits the existing breakpoint.
     std::fs::remove_file(root.join("done")).unwrap();
     events.lock().clear();
     let session = start().await.unwrap_or_else(|error| {

@@ -1,4 +1,4 @@
-//! 通过 UnityDebug 的发现协议枚举可附加的 Unity 编辑器。
+//! Lists the Unity Editors to attach to through UnityDebug's discovery (`unity-debug list`).
 
 use crate::{
     adapter,
@@ -7,7 +7,7 @@ use crate::{
 use ide_core::{IdeError, IdeResult};
 use std::{path::PathBuf, process::Stdio, time::Duration};
 
-/// 等待 Mono 报告可用线程。
+/// Waits until Mono reports its threads.
 pub(crate) async fn wait_for_threads(session: &crate::session::Session) -> IdeResult<()> {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
@@ -26,7 +26,7 @@ pub(crate) async fn wait_for_threads(session: &crate::session::Session) -> IdeRe
     })?
 }
 
-// Mono 会异步绑定断点，并在启动阶段自行恢复线程。等待这一批事件处理完。
+// Mono binds breakpoints asynchronously and resumes threads itself during startup: wait for that burst to end.
 pub(crate) async fn settle_startup(session: &crate::session::Session) {
     *session.unity_startup_activity.lock() = std::time::Instant::now();
     let _ = tokio::time::timeout(Duration::from_secs(3), async {
@@ -46,16 +46,17 @@ pub fn require_runtime(cwd: &std::path::Path) -> IdeResult<()> {
     Ok(())
 }
 
+const NOT_INSTALLED: &str = "debug adapter `unity` not found. Install Unity Debugger in Settings > Language Servers or configure the unity-debug tool path";
+
 pub async fn editors(command: Option<String>, cwd: PathBuf) -> IdeResult<Vec<AttachableProcess>> {
     require_runtime(&cwd)?;
     let command = command.unwrap_or_else(|| "unity-debug".into());
     let lookup = command.clone();
     let dir = cwd.clone();
     let binary = tokio::task::spawn_blocking(move || adapter::resolve_binary(&lookup, &dir))
-        .await.map_err(|e| IdeError::internal(e.to_string()))?
-        .ok_or_else(|| IdeError::unavailable(
-            "debug adapter `unity` not found. Install Unity Debugger in Settings > Language Servers or configure the unity-debug tool path"
-        ))?;
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+        .ok_or_else(|| IdeError::unavailable(NOT_INSTALLED))?;
     let mut cmd = tokio::process::Command::new(binary);
     ide_core::process::prepare(cmd.as_std_mut());
     cmd.arg("list")
@@ -85,7 +86,7 @@ pub async fn editors(command: Option<String>, cwd: PathBuf) -> IdeResult<Vec<Att
             Err(error) => tracing::warn!(%error, "Unity process filtering failed; using adapter discovery results"),
         }
     }
-    // 优先显示当前项目的实例，等待用户选择后再附加。
+    // The Editor of the open project comes first; the user picks which one to attach to.
     let path = cwd.join("Library/EditorInstance.json");
     let pid = std::fs::File::open(path).ok().and_then(|file| {
         use std::io::Read;
@@ -112,7 +113,7 @@ fn editor_process_ids() -> IdeResult<std::collections::HashSet<u32>> {
     };
 
     let mut unity = HashMap::new();
-    // 适配器也会发现资源导入子进程，通过父进程筛出真正的编辑器。
+    // The adapter also finds the asset import worker processes: keep the Unity processes whose parent isn't Unity.
     unsafe {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snapshot == INVALID_HANDLE_VALUE {
@@ -145,7 +146,7 @@ pub fn parse_editors(output: &str) -> Vec<AttachableProcess> {
         if !line.starts_with("Unity Editor (") {
             continue;
         }
-        // 3.0.1 输出 Unity Editor (Unity) (123)，新版会附加项目名。
+        // 3.0.1 prints `Unity Editor (Unity) (123)`; later versions append the project name.
         let Some((name, pid, project)) = line.match_indices(" (").find_map(|(at, _)| {
             let (id, project) = line[at + 2..].split_once(')')?;
             let pid = id.parse::<u32>().ok().filter(|n| *n > 0)?;

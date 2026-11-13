@@ -5,7 +5,7 @@ import { notifications } from "@/workbench/contributions";
 import { missingAdapter } from "./missingAdapter";
 import { useOverlays } from "./ui/popoverStore";
 
-/** 仅处理当前弹窗的请求结果，忽略已关闭或被刷新的请求。 */
+/** Applies only the latest request of the open popup; results for a closed or refreshed one are dropped. */
 export async function openAttachPopup(mode: "all" | "unity" = "all") {
   if (!isTauri()) {
     notifications().notify({ group: "run", level: "warning", title: "Attaching needs the desktop app" });
