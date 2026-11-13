@@ -235,12 +235,16 @@ const lintTheme = EditorView.theme({
   ".cm-lintRange-error": {
     textDecoration: "var(--editor-error-decoration, underline wavy var(--danger))",
     WebkitTextDecoration: "var(--editor-error-decoration, underline wavy var(--danger))",
+    fontWeight: "var(--wave-error-bold, inherit)",
+    fontStyle: "var(--wave-error-italic, inherit)",
     textDecorationSkipInk: "none",
     textUnderlineOffset: "3px",
   },
   ".cm-lintRange-warning": {
     textDecoration: "var(--editor-warning-decoration, underline wavy var(--warning))",
     WebkitTextDecoration: "var(--editor-warning-decoration, underline wavy var(--warning))",
+    fontWeight: "var(--wave-warning-bold, inherit)",
+    fontStyle: "var(--wave-warning-italic, inherit)",
     backgroundColor: "var(--editor-warning-background, transparent)",
     textDecorationSkipInk: "none",
     textUnderlineOffset: "3px",
@@ -254,8 +258,8 @@ const lintTheme = EditorView.theme({
   ".cm-lintRange-hint": { textDecoration: "none" },
   // Typo level: IDEA's green wavy underline.
   ".cm-lintRange.cm-lsp-typo": {
-    textDecoration: "underline wavy color-mix(in srgb, var(--success) 85%, transparent)",
-    WebkitTextDecoration: "underline wavy color-mix(in srgb, var(--success) 85%, transparent)",
+    textDecoration: "var(--wave-typo-effect, underline wavy var(--wave-typo, var(--success)))",
+    WebkitTextDecoration: "var(--wave-typo-effect, underline wavy var(--wave-typo, var(--success)))",
     textDecorationSkipInk: "none",
     textUnderlineOffset: "3px",
   },
@@ -263,9 +267,15 @@ const lintTheme = EditorView.theme({
     textDecoration: "none",
     backgroundColor: "transparent",
     color: "var(--fg-unused, var(--fg-faint))",
+    fontWeight: "var(--fg-unused-bold, inherit)",
+    fontStyle: "var(--fg-unused-italic, inherit)",
   },
   ".cm-lintRange.cm-lsp-unnecessary *": { color: "var(--fg-unused, var(--fg-faint))" },
-  ".cm-lintRange.cm-lsp-deprecated": { textDecoration: "line-through", textDecorationColor: "var(--fg-muted)" },
+  ".cm-lintRange.cm-lsp-deprecated": {
+    textDecoration: "var(--fg-deprecated-effect, line-through)",
+    textDecorationColor: "var(--fg-deprecated, var(--fg-muted))",
+    color: "var(--fg-deprecated, var(--fg-muted))",
+  },
   // An error or warning on the same range (merged into one mark) keeps its underline.
   ".cm-lintRange-error.cm-lsp-typo, .cm-lintRange-error.cm-lsp-unnecessary": {
     textDecoration: "var(--editor-error-decoration, underline wavy var(--danger))",

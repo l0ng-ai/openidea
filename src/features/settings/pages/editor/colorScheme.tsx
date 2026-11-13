@@ -10,6 +10,7 @@ import { fontWeightVars, type CustomColorSchemes, type TextAttributesOverride } 
 import {
   ATTRIBUTES,
   SCHEMES,
+  EFFECT_CSS,
   overrideDeclarations,
   effectiveScheme,
   resolvedSchemeTokens,
@@ -137,20 +138,32 @@ function previewVars(
 
 /** Text styled like an attribute in the preview. */
 function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
-  if (!attr?.token)
-    return {
+  const base = attr?.fg ?? attr?.effect;
+  if (!attr?.token) {
+    const colour: CSSProperties = {
       ...(attr?.fg ? { color: `var(${attr.fg})` } : null),
       ...(attr?.bg ? { backgroundColor: `var(${attr.bg})` } : null),
-      // Token-less attributes with a font-style renderer carry it on `--<fg>-*`, the same
-      // declarations `overrideDeclarations` emits for their overrides.
-      ...(attr?.fontStyle && (attr.fg ?? attr.effect)
-        ? {
-            fontWeight: `var(${attr.fg ?? attr.effect}-bold, inherit)`,
-            fontStyle: `var(${attr.fg ?? attr.effect}-italic, inherit)`,
-            textDecoration: `var(${attr.effect ?? attr.fg}-effect, none)`,
-          }
+    };
+    // Token-less attributes with a font-style renderer carry it on `--<fg|effect>-*`, the same
+    // declarations `overrideDeclarations` emits for their overrides.
+    if (!attr?.fontStyle || !base) return colour;
+    const effectColor = `var(${attr.effect ?? attr.fg ?? "--fg-muted"})`;
+    const effect: TextAttributesOverride["effect"] = attr.defaultEffect ?? (attr.effect ? "wave" : undefined);
+    const decoration =
+      effect && effect !== "none"
+        ? `var(${attr.effect ?? base}-effect, ${EFFECT_CSS[effect]?.(effectColor) ?? "none"})`
+        : undefined;
+    return {
+      ...colour,
+      fontWeight: `var(${base}-bold, ${
+        attr.defaultBold ? "var(--fw-code-bold, 700)" : "inherit"
+      })` as CSSProperties["fontWeight"],
+      fontStyle: `var(${base}-italic, ${attr.defaultItalic ? "italic" : "inherit"})`,
+      ...(decoration
+        ? { textDecoration: decoration, ...({ WebkitTextDecoration: decoration } as CSSProperties) }
         : null),
     };
+  }
   if (attr.italicOnly)
     return { fontStyle: `var(--syn-${attr.token}-italic, ${attr.defaultItalic === false ? "normal" : "italic"})` };
   const t = attr.token;
@@ -205,6 +218,11 @@ const SAMPLES: Record<string, CodeSample> = {
         ["could be const", "weakWarning"],
         ["   ", "text"],
         ["legacyCall", "unused"],
+      ],
+      [
+        ["typo", "typo"],
+        ["   ", "text"],
+        ["deprecatedCall", "deprecated"],
       ],
       [
         ["bad\u203dchar", "invalid"],
@@ -1052,13 +1070,7 @@ function AttributeEditor({
               checked={!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none"}
               onChange={(b) =>
                 set({
-                  effect: b
-                    ? inherited.effect && inherited.effect !== "none"
-                      ? inherited.effect
-                      : "underline"
-                    : inherited.effect && inherited.effect !== "none"
-                      ? "none"
-                      : undefined,
+                  effect: b ? (inherited.effect && inherited.effect !== "none" ? inherited.effect : "wave") : "none",
                   effectColor: b ? v.effectColor : undefined,
                 })
               }

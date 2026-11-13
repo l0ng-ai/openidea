@@ -204,6 +204,8 @@ html {
   --fg-fold-marker: #6f737a;
   --fg-whitespace: #6f737a;
   --fg-unused: #6f737a;
+  --wave-typo: #59a869;
+  --fg-deprecated: #6f737a;
   --bg-identifier-under-caret: #373b39;
   --bg-identifier-under-caret-write: #402f33;
   --fg-inlay: #868a91;
@@ -643,6 +645,8 @@ html {
   --fg-fold-marker: #8b8e94;
   --fg-whitespace: #b5b7bd;
   --fg-unused: #8c8c8c;
+  --wave-typo: #3d9950;
+  --fg-deprecated: #8c8c8c;
   --bg-identifier-under-caret: #edebfc;
   --bg-identifier-under-caret-write: #fce8f4;
   --fg-inlay: #73767c;
@@ -935,6 +939,8 @@ html {
   --fg-fold-marker: #9fa2a9;
   --fg-whitespace: #8b8e95;
   --fg-unused: #8b8e95;
+  --wave-typo: #6cbb7d;
+  --fg-deprecated: #8b8e95;
   --bg-identifier-under-caret: #3f4a44;
   --bg-identifier-under-caret-write: #553840;
   --fg-inlay: #ccced3;
@@ -1147,6 +1153,8 @@ html {
   --fg-fold-marker: var(--palette-muted);
   --fg-whitespace: var(--palette-muted);
   --fg-unused: var(--palette-muted);
+  --wave-typo: var(--palette-green);
+  --fg-deprecated: var(--palette-muted);
   --fg-inlay: var(--palette-muted);
   --fg-weak-warning: var(--palette-muted);
   --syn-inline-value: var(--palette-muted);
