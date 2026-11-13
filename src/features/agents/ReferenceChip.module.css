@@ -170,6 +170,9 @@
 /* A ``` block (pasted code, terminal output): a card with a title, the line count and the code. */
 .codeCard {
   display: block;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
   margin: 4px 0 6px;
   border-radius: var(--radius-control);
   background: var(--bg-editor-inline, var(--bg-elev));

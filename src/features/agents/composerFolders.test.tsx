@@ -13,6 +13,7 @@ const findDirs = vi.fn();
 const pathCompletions = vi.fn();
 const fsProbe = vi.fn();
 const fsEntryKind = vi.fn();
+const findSymbols = vi.fn();
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -26,11 +27,13 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       pathCompletions: (base: string, typed: string) => pathCompletions(base, typed),
       fsProbe: (path: string) => fsProbe(path),
       fsEntryKind: (path: string) => fsEntryKind(path),
+      findSymbols: (query: string, filter: string, limit: number) => findSymbols(query, filter, limit),
     },
   };
 });
 
 import { Composer } from "./Composer";
+import { registerAgentContextSource } from "@/workbench/contributions";
 import { useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { composerDraft, updateComposer } from "./store";
 import { emptyDraft, toPrompt } from "./composerModel";
@@ -375,6 +378,23 @@ describe("Composer pasted code and terminal output", () => {
     expect(textOf(box)).toBe("@src/a.rs:3-4 fn a()");
   });
 
+  it("pastes a stack trace as a card, its project lines as references after it", async () => {
+    const box = renderComposer();
+    const trace = "TypeError: boom\n    at run (/p/src/a.ts:12:5)\n    at main (/elsewhere/x.ts:3:1)";
+    paste(box, trace);
+    expect(screen.getByRole("group", { name: "Stack Trace" })).toHaveTextContent("3 lines");
+    await vi.waitFor(() => expect(textOf(box)).toBe(`\`\`\`trace\n${trace}\n\`\`\`\n@src/a.ts:12 `));
+    expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/a.ts"]);
+  });
+
+  it("folds long pasted text into a card", () => {
+    const box = renderComposer();
+    const long = Array.from({ length: 40 }, (_, i) => `row ${i}`).join("\n");
+    paste(box, long);
+    expect(screen.getByRole("group", { name: "Pasted Text" })).toHaveTextContent("40 lines");
+    expect(textOf(box)).toBe(`\`\`\`text\n${long}\n\`\`\`\n`);
+  });
+
   it("pastes other text as written", () => {
     const box = renderComposer();
     noteCopySource("something else", { kind: "terminal", title: "zsh" });
@@ -404,5 +424,69 @@ describe("editor copies", () => {
       view.destroy();
       act(() => useEditorRegistry.setState({ editors: new Set() }));
     }
+  });
+});
+
+describe("Composer @ context and symbols", () => {
+  it("offers what features contribute above the files and inserts it", async () => {
+    const off = [
+      registerAgentContextSource({
+        id: "problems",
+        title: "Problems",
+        description: "The project's errors and warnings",
+        icon: "problems",
+        resolve: async () => ({ kind: "block", info: "problems", text: "src/a.ts:3:1: error: nope" }),
+      }),
+      registerAgentContextSource({
+        id: "changes",
+        title: "Changes",
+        description: "Files with uncommitted changes",
+        icon: "diff",
+        resolve: async () => ({ kind: "files", paths: ["/p/src/a.ts", "/p/src/b.ts", "/elsewhere/c.ts"] }),
+      }),
+    ];
+    try {
+      const box = renderComposer();
+      typeChars(box, "fix @pro");
+      const options = await screen.findAllByRole("option");
+      expect(options[0]).toHaveTextContent("@problems");
+      fireEvent.keyDown(box, { key: "Enter" });
+      await vi.waitFor(() =>
+        expect(textOf(box)).toBe("fix\n```problems\nsrc/a.ts:3:1: error: nope\n```\n@src/a.ts:3 "),
+      );
+      expect(screen.getByRole("group", { name: "Problems" })).toBeInTheDocument();
+      typeChars(box, "@chan");
+      await screen.findAllByRole("option");
+      fireEvent.keyDown(box, { key: "Enter" });
+      await vi.waitFor(() => expect(textOf(box)).toMatch(/@src\/a\.ts:3 @src\/a\.ts @src\/b\.ts $/));
+      expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/a.ts", "/p/src/b.ts"]);
+    } finally {
+      off.forEach((d) => d());
+    }
+  });
+
+  it("references a symbol's file and line with @#", async () => {
+    findSymbols.mockReturnValue(
+      ok([
+        {
+          name: "fetchUser",
+          kind: "function",
+          container: "client",
+          path: "/p/src/api/client.ts",
+          relPath: "src/api/client.ts",
+          range: { start: { line: 11, col: 0 }, end: { line: 11, col: 9 } },
+          score: 10,
+          indices: [0, 1, 2],
+        },
+      ]),
+    );
+    const box = renderComposer();
+    typeChars(box, "@#fet");
+    const option = await screen.findByRole("option");
+    expect(option).toHaveTextContent("fetchUserclient · src/api/client.ts:12");
+    expect(findSymbols).toHaveBeenCalledWith("fet", "all", 12);
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(textOf(box)).toBe("@src/api/client.ts:12 ");
+    expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/api/client.ts"]);
   });
 });

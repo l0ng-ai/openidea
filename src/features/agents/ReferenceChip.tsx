@@ -300,10 +300,16 @@ function useReferenceHover(root: HTMLElement | null) {
   useEffect(() => (root ? referenceHover(root) : undefined), [root, t]);
 }
 
-/** A ``` block's header: icon and title ("Terminal · zsh", "ts"). */
+const KIND_TITLES = { terminal: "Terminal", problems: "Problems", trace: "Stack Trace", text: "Pasted Text" } as const;
+const KIND_ICONS = { terminal: "terminal", problems: "problems", trace: "exception", text: "text" } as const;
+
+/** A ``` block's header: icon and title ("Terminal · zsh", "TypeScript"). */
 function cardTitle(info: string): { icon: string; title: string } {
-  const { terminal, label, language } = fenceLabel(info);
-  if (terminal) return { icon: "terminal", title: label ? `${tx("Terminal")} · ${label}` : tx("Terminal") };
+  const { kind, label, language } = fenceLabel(info);
+  if (kind !== "code") {
+    const title = tx(KIND_TITLES[kind]);
+    return { icon: KIND_ICONS[kind], title: label ? `${title} · ${label}` : title };
+  }
   const name = language && label === language ? languageForPath(`x.${language}`) : null;
   return { icon: language ? fileIconName(`x.${language}`) : "file", title: name ?? (label || tx("Code")) };
 }
@@ -347,8 +353,8 @@ export function codeCardElement(info: string, body: string, onOpen: () => void, 
   pre.className = clsx(styles.codeBody, lines.length > COMPOSER_PREVIEW_LINES && styles.codeFaded);
   const shown = lines.slice(0, COMPOSER_PREVIEW_LINES).join("\n");
   pre.textContent = shown;
-  const { language, terminal } = fenceLabel(info);
-  if (!terminal) void highlightInto(pre, shown, language);
+  const { language, kind } = fenceLabel(info);
+  if (kind === "code") void highlightInto(pre, shown, language);
   card.append(head, pre);
   card.title = tx("Click to edit");
   card.addEventListener("mousedown", (e) => e.preventDefault());
@@ -370,8 +376,8 @@ function CodeCard({ info, body }: { info: string; body: string }) {
     const el = code.current;
     if (!el) return;
     el.textContent = shown;
-    const { language, terminal } = fenceLabel(info);
-    if (!terminal) void highlightInto(el, shown, language);
+    const { language, kind } = fenceLabel(info);
+    if (kind === "code") void highlightInto(el, shown, language);
   }, [shown, info]);
   const more = lines.length - MESSAGE_PREVIEW_LINES;
   return (

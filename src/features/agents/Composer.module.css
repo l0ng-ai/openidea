@@ -51,6 +51,11 @@
 .field :global(.cm-line) {
   padding: 0;
 }
+/* A wide card (a ``` block) takes the text's width, its code scrolling inside, rather than
+   widening the text past the box. */
+.field :global(.cm-content) {
+  min-width: 0;
+}
 .field :global(.cm-placeholder) {
   color: var(--fg-faint);
 }

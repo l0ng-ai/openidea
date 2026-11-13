@@ -779,6 +779,23 @@ export class TerminalSession {
     this.term.clearSelection();
   }
 
+  /** The last `max` lines down to the cursor (wrapped rows joined), for an agent's context. */
+  recentOutput(max = 80): { title: string; text: string } {
+    const buffer = this.term.buffer.active;
+    const end = buffer.baseY + buffer.cursorY;
+    const lines: string[] = [];
+    for (let y = Math.max(0, end - max + 1); y <= end; y++) {
+      const line = buffer.getLine(y);
+      if (!line) continue;
+      const text = line.translateToString(true);
+      if (line.isWrapped && lines.length) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+    while (lines.length && !lines.at(-1)!.trim()) lines.pop();
+    while (lines.length && !lines[0]!.trim()) lines.shift();
+    return { title: this.snapshot.appTitle ?? this.snapshot.title, text: lines.join("\n") };
+  }
+
   copySelection(): boolean {
     const text = this.term.getSelection();
     if (!text) return false;

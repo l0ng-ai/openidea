@@ -7879,5 +7879,12 @@
   "Enter Folder": "进入文件夹",
   "Click to edit": "点击编辑",
   "Show less": "收起",
-  "Show {more} more lines": "展开其余 {more} 行"
+  "Show {more} more lines": "展开其余 {more} 行",
+  "Nothing to add right now": "暂时没有可添加的内容",
+  "Pasted Text": "粘贴的文本",
+  "Files with uncommitted changes": "有未提交改动的文件",
+  "The project's errors and warnings": "项目中的错误和警告",
+  "The active terminal's recent output": "当前终端的最近输出",
+  "Stack Trace": "堆栈跟踪",
+  "Context": "上下文"
 }

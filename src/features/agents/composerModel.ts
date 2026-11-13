@@ -222,11 +222,55 @@ export function fenced(text: string, info: string): string {
   return `${fence}${info}\n${text.replace(/\r\n?/g, "\n").replace(/\s+$/, "")}\n${fence}`;
 }
 
-/** A block's kind and label: `terminal zsh` → a terminal named zsh; `ts` → TypeScript code. */
-export function fenceLabel(info: string): { terminal: boolean; label: string; language: string | null } {
+export type FenceKind = "terminal" | "problems" | "trace" | "text" | "code";
+
+/**
+ * A block's kind and label: `terminal zsh` → a terminal named zsh, `problems`, `trace` (an
+ * error's stack), `text` (a long paste); anything else is code in that language (`ts`).
+ */
+export function fenceLabel(info: string): { kind: FenceKind; label: string; language: string | null } {
   const [first = "", ...rest] = info.split(/\s+/);
-  if (first === "terminal") return { terminal: true, label: rest.join(" "), language: null };
-  return { terminal: false, label: info, language: first || null };
+  if (first === "terminal" || first === "problems" || first === "trace" || first === "text")
+    return { kind: first, label: rest.join(" "), language: null };
+  return { kind: "code", label: info, language: first || null };
+}
+
+/** An error's stack trace or a crash: pasted as a block, its project lines as references. */
+export function looksLikeTrace(text: string): boolean {
+  if (!text.trim().includes("\n")) return false;
+  return [
+    /^\s+at\s+\S/m, // JavaScript, Java, C#
+    /^Traceback \(most recent call last\)/m,
+    /^\s*File ".+", line \d+/m,
+    /panicked at /,
+    /^goroutine \d+ \[/m,
+    /^\s*\d+: .+\n\s+at \S+:\d+/m, // Rust backtrace
+    /^(?:Uncaught |Unhandled )?[\w.$]*(?:Error|Exception)\b.*\n\s+(?:at|File|in) /m,
+  ].some((re) => re.test(text));
+}
+
+/** Long pasted text goes in as a block rather than filling the box. */
+export const LONG_PASTE_LINES = 30;
+
+/**
+ * `path:line` places in output (`src/a.ts:12`, `/abs/a.go:34:5`, `(a.js:3:9)`,
+ * `File "a.py", line 7`), each once, at most `limit`, dependency paths left out.
+ */
+export function placesInText(text: string, limit = 8): { path: string; line: number }[] {
+  const out: { path: string; line: number }[] = [];
+  const seen = new Set<string>();
+  const add = (raw: string, line: string) => {
+    const path = raw.replace(/^file:\/\//, "");
+    if (/(^|[\\/])(node_modules|site-packages|\.cargo|\.rustup|go[\\/]pkg[\\/]mod)[\\/]/.test(path)) return;
+    const key = `${path}:${line}`;
+    if (seen.has(key) || out.length >= limit) return;
+    seen.add(key);
+    out.push({ path, line: Number(line) });
+  };
+  for (const m of text.matchAll(/File "([^"]+)", line (\d+)/g)) add(m[1]!, m[2]!);
+  for (const m of text.matchAll(/(?:file:\/\/)?((?:[A-Za-z]:)?[\w.@+\-\\/]*[\w-]\.[A-Za-z0-9]{1,8}):(\d+)(?::\d+)?/g))
+    add(m[1]!, m[2]!);
+  return out;
 }
 
 /**

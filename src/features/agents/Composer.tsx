@@ -11,7 +11,7 @@ import type { VirtualElement } from "@floating-ui/react-dom";
 import { history, historyKeymap, insertNewline, standardKeymap } from "@codemirror/commands";
 import { Annotation, Compartment, EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap, placeholder as placeholderText, type ViewUpdate } from "@codemirror/view";
-import type { AgentCommand, AgentConfigOption, AgentImage, SendKey, WhileRunning } from "@/bindings";
+import type { AgentCommand, AgentConfigOption, AgentImage, SendKey, SymbolMatch, WhileRunning } from "@/bindings";
 import { useEditorRegistry, openEditorPaths } from "@/editor/api";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { nativeDropPoint } from "@/platform/nativeDrop";
@@ -22,7 +22,12 @@ import { isRemoteWindow } from "@/platform/remote";
 import { registerKeyClaim } from "@/platform/keymap";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { copySourceOf } from "@/platform/clipboardSource";
-import { notifications, OWNS_FILE_DROP } from "@/workbench/contributions";
+import {
+  getAgentContextSources,
+  notifications,
+  OWNS_FILE_DROP,
+  type AgentContextSource,
+} from "@/workbench/contributions";
 import {
   FILES_DRAG,
   Icon,
@@ -45,7 +50,10 @@ import {
   resolveTyped,
   completionAt,
   fenced,
+  LONG_PASTE_LINES,
+  looksLikeTrace,
   pastedPaths,
+  placesInText,
   imageFromDataUrl,
   matchCommands,
   mentionOf,
@@ -67,7 +75,7 @@ import { isImeKey } from "@/platform/ime";
 const MAX_ITEMS = 12;
 const MAX_OPEN_EDITORS = 5;
 
-type Section = "command" | "skill" | "open" | "project";
+type Section = "command" | "skill" | "open" | "project" | "context" | "files";
 
 type Item =
   | {
@@ -78,6 +86,8 @@ type Item =
       indices?: readonly number[];
     }
   | { kind: "command"; command: AgentCommand }
+  | { kind: "context"; source: AgentContextSource }
+  | { kind: "symbol"; symbol: SymbolMatch; path: string }
   | { kind: "section"; source: Section };
 
 const isSection = (item: Item) => item.kind === "section";
@@ -87,6 +97,8 @@ const SECTION_TITLES: Record<Section, string> = {
   skill: "Skills",
   open: "Open Editors",
   project: "Project",
+  context: "Context",
+  files: "Files",
 };
 
 /** A change the store made (a quote, a reference sent from the editor): not written back. */
@@ -340,6 +352,22 @@ export function Composer(props: ComposerProps) {
     let alive = true;
     const query = completion.query;
     const timer = setTimeout(() => {
+      if (query.startsWith("#")) {
+        // `@#name`: a symbol, referenced by its file and line.
+        call(commands.findSymbols(query.slice(1), "all", MAX_ITEMS))
+          .then((found) => {
+            if (!alive) return;
+            setFiles(
+              found.map((symbol) => ({
+                kind: "symbol",
+                symbol,
+                path: root === projectRoot ? symbol.path : `${root}/${symbol.relPath}`,
+              })),
+            );
+          })
+          .catch(() => alive && setFiles([]));
+        return;
+      }
       if (isPathQuery(query)) {
         // Outside the index: list the directory typed so far.
         const typed = /(^|\/)\.\.?$/.test(query) ? `${query}/` : query;
@@ -414,7 +442,20 @@ export function Composer(props: ComposerProps) {
 
   const items: Item[] = useMemo(() => {
     if (!completion) return [];
-    if (completion.kind === "file") return files;
+    if (completion.kind === "file") {
+      const q = completion.query.toLowerCase();
+      if (q.startsWith("#") || isPathQuery(q)) return files;
+      // `@problems`, `@terminal`, `@changes`…: what features offer, above the files.
+      const sources = getAgentContextSources().filter((s) => s.id.startsWith(q));
+      if (!sources.length) return files;
+      const rest: Item[] =
+        files[0]?.kind === "section" || !files.length ? files : [{ kind: "section", source: "files" }, ...files];
+      return [
+        { kind: "section", source: "context" },
+        ...sources.map((source) => ({ kind: "context" as const, source })),
+        ...rest,
+      ];
+    }
     const out: Item[] = [];
     let source: "command" | "skill" | undefined;
     for (const command of matchCommands(props.commands, completion.query)) {
@@ -447,6 +488,46 @@ export function Composer(props: ComposerProps) {
   const accept = (item: Item | undefined, descend = false) => {
     if (!item || item.kind === "section" || !completion) return;
     const current = viewRef.current?.state.doc.toString() ?? text;
+    if (item.kind === "context") {
+      const view = viewRef.current;
+      const at = completion;
+      setCompletion(null);
+      if (!view) return;
+      void item.source.resolve().then(
+        (context) => {
+          if (!context) {
+            replace(at.from, at.to, "");
+            notifications().notify({
+              level: "info",
+              title: tx(item.source.title),
+              body: tx("Nothing to add right now"),
+            });
+          } else if (context.kind === "block") {
+            insertBlock(view, at.from, at.to, context.info, context.text);
+          } else {
+            const refs = context.paths.flatMap((path) => {
+              const rel = relativeTo([root, projectRoot], path);
+              return rel && rel !== "." && !/\s/.test(rel) ? [{ path: resolveTyped(root, rel), rel }] : [];
+            });
+            const known = new Set(composerDraft(id).files.map((f) => f.path));
+            updateComposer(id, { files: [...composerDraft(id).files, ...refs.filter((r) => !known.has(r.path))] });
+            replace(at.from, at.to, refs.length ? `${refs.map((r) => mentionOf(r.rel)).join(" ")} ` : "");
+          }
+        },
+        (error: unknown) =>
+          notifications().notify({ level: "error", title: tx(item.source.title), body: String(error) }),
+      );
+      return;
+    }
+    if (item.kind === "symbol") {
+      const rel = item.symbol.relPath;
+      const line = item.symbol.range.start.line + 1;
+      updateComposer(id, { files: [...composerDraft(id).files, { path: item.path, rel } satisfies FileRef] });
+      const next = applyCompletion(current, completion, mentionOf(rel, { from: line, to: line }));
+      setText(next.text, next.caret);
+      setCompletion(null);
+      return;
+    }
     if (item.kind === "file") {
       const rel = item.dir ? `${item.rel}/` : item.rel;
       // A folder stays referenced while its `@folder/` is left as typed (`toPrompt`).
@@ -571,6 +652,58 @@ export function Composer(props: ComposerProps) {
     return true;
   };
 
+  /** The project files `text` names at a line, as `@rel:line` (existing files only). */
+  const projectPlaces = async (text: string): Promise<string[]> => {
+    const found = await Promise.all(
+      placesInText(text).map(async ({ path, line }) => {
+        const absolute = /^(\/|[A-Za-z]:[\\/])/.test(path);
+        const rel = relativeTo([root, projectRoot], absolute ? path : resolveTyped(root, path.replace(/^\.\//, "")));
+        if (!rel || rel === "." || /\s/.test(rel)) return null;
+        const kind = await call(commands.fsEntryKind(resolveTyped(root, rel))).catch(() => null);
+        return kind === "file" ? { rel, line } : null;
+      }),
+    );
+    const refs = found.filter((r) => r !== null);
+    if (refs.length) {
+      const known = new Set(composerDraft(id).files.map((f) => f.rel));
+      const added = [...new Set(refs.map((r) => r.rel))]
+        .filter((rel) => !known.has(rel))
+        .map((rel) => ({ path: resolveTyped(root, rel), rel }) satisfies FileRef);
+      updateComposer(id, { files: [...composerDraft(id).files, ...added] });
+    }
+    return refs.map((r) => mentionOf(r.rel, { from: r.line, to: r.line }));
+  };
+
+  /**
+   * `text` as a ``` block on its own lines in place of `from`–`to`; the project files it names
+   * at a line follow it as references once they are found.
+   */
+  const insertBlock = (view: EditorView, start: number, to: number, info: string, text: string) => {
+    // The spaces before it on its line go: the block starts a line of its own.
+    const lineStart = view.state.doc.lineAt(start).from;
+    const from = lineStart + view.state.sliceDoc(lineStart, start).replace(/[ \t]+$/, "").length;
+    const before = view.state.sliceDoc(Math.max(0, from - 1), from);
+    const insert = `${before && before !== "\n" ? "\n" : ""}${fenced(text, info)}\n`;
+    replace(from, to, insert);
+    const end = from + insert.length;
+    const doc = view.state.doc;
+    void projectPlaces(text).then((mentions) => {
+      if (!mentions.length) return;
+      // Right after the block, unless the text changed meanwhile: then at the end.
+      const at = view.state.doc === doc ? end : view.state.doc.length;
+      replace(at, at, `${mentions.join(" ")} `);
+    });
+  };
+
+  /** A stack trace, or text too long to read in the box, goes in as a block. */
+  const pasteLong = (pasted: string, view: EditorView): boolean => {
+    const trace = looksLikeTrace(pasted);
+    if (!trace && pasted.split("\n").length < LONG_PASTE_LINES) return false;
+    const { from, to } = view.state.selection.main;
+    insertBlock(view, from, to, trace ? "trace" : "text", pasted);
+    return true;
+  };
+
   /**
    * Text copied in the IDE: an editor's lines become a reference to them (a ``` block when the
    * file is outside the project), a terminal's output a terminal block. A single line from an
@@ -580,10 +713,7 @@ export function Composer(props: ComposerProps) {
     const source = copySourceOf(pasted);
     if (!source) return false;
     const { from, to } = view.state.selection.main;
-    const block = (info: string) => {
-      const before = view.state.sliceDoc(Math.max(0, from - 1), from);
-      replace(from, to, `${before && before !== "\n" ? "\n" : ""}${fenced(pasted, info)}\n`);
-    };
+    const block = (info: string) => insertBlock(view, from, to, info, pasted);
     if (source.kind === "terminal") {
       block(`terminal ${source.title}`.trim());
       return true;
@@ -626,7 +756,7 @@ export function Composer(props: ComposerProps) {
       e.preventDefault();
       return true;
     }
-    if (plain && pastePath(plain, view)) {
+    if (plain && (pastePath(plain, view) || pasteLong(plain, view))) {
       e.preventDefault();
       return true;
     }
@@ -825,7 +955,11 @@ export function Composer(props: ComposerProps) {
                 ? `section:${item.source}`
                 : item.kind === "file"
                   ? item.path
-                  : `${item.command.source ?? "command"}:${item.command.name}`
+                  : item.kind === "context"
+                    ? `context:${item.source.id}`
+                    : item.kind === "symbol"
+                      ? `symbol:${item.path}:${item.symbol.range.start.line}:${item.symbol.name}`
+                      : `${item.command.source ?? "command"}:${item.command.name}`
             }
             isSection={isSection}
             renderSection={(item) => item.kind === "section" && tx(SECTION_TITLES[item.source])}
@@ -838,6 +972,27 @@ export function Composer(props: ComposerProps) {
             className={styles.items}
             renderItem={(item) => {
               if (item.kind === "section") return null;
+              if (item.kind === "context")
+                return (
+                  <>
+                    <Icon name={item.source.icon} size={16} />
+                    <span className={styles.itemName}>@{item.source.id}</span>
+                    <span className={styles.itemDetail}>{tx(item.source.description)}</span>
+                  </>
+                );
+              if (item.kind === "symbol")
+                return (
+                  <>
+                    <Icon name={`symbol-${item.symbol.kind}`} size={16} />
+                    <span className={styles.itemName}>
+                      <Matched text={item.symbol.name} indices={item.symbol.indices} />
+                    </span>
+                    <span className={styles.itemDetail}>
+                      {item.symbol.container ? `${item.symbol.container} · ` : ""}
+                      {item.symbol.relPath}:{item.symbol.range.start.line + 1}
+                    </span>
+                  </>
+                );
               if (item.kind === "command")
                 return (
                   <>

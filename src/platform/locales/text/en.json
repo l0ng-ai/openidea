@@ -1484,5 +1484,14 @@
   "Show {more} more lines": "Show {more} more lines",
   "Terminal": "Terminal",
   "Code": "Code",
-  "Copy": "Copy"
+  "Copy": "Copy",
+  "Nothing to add right now": "Nothing to add right now",
+  "Pasted Text": "Pasted Text",
+  "Files with uncommitted changes": "Files with uncommitted changes",
+  "The project's errors and warnings": "The project's errors and warnings",
+  "The active terminal's recent output": "The active terminal's recent output",
+  "Stack Trace": "Stack Trace",
+  "Context": "Context",
+  "Changes": "Changes",
+  "Problems": "Problems"
 }

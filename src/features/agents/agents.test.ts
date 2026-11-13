@@ -23,6 +23,8 @@ import {
   fencedBlocks,
   fenceLabel,
   pastedPaths,
+  looksLikeTrace,
+  placesInText,
   retryParts,
   usageLabel,
   limitLabel,
@@ -83,8 +85,28 @@ describe("fenced blocks", () => {
     expect(fencedBlocks(["x", ...text.split("\n"), "```ts", "open"])).toEqual([
       { open: 1, close: 4, info: "terminal zsh" },
     ]);
-    expect(fenceLabel("terminal zsh")).toEqual({ terminal: true, label: "zsh", language: null });
-    expect(fenceLabel("ts")).toEqual({ terminal: false, label: "ts", language: "ts" });
+    expect(fenceLabel("terminal zsh")).toEqual({ kind: "terminal", label: "zsh", language: null });
+    expect(fenceLabel("trace")).toEqual({ kind: "trace", label: "", language: null });
+    expect(fenceLabel("ts")).toEqual({ kind: "code", label: "ts", language: "ts" });
+  });
+});
+
+describe("pasted traces", () => {
+  const node =
+    "TypeError: x is undefined\n    at fetchUser (/p/src/api/client.ts:12:5)\n    at node_modules/lib/x.js:3:1";
+  const python =
+    'Traceback (most recent call last):\n  File "/p/app/main.py", line 7, in <module>\n    run()\nValueError: bad';
+  const rust = "thread 'main' panicked at src/main.rs:4:5:\nboom";
+  it("recognises stack traces, not prose", () => {
+    expect([node, python, rust].map(looksLikeTrace)).toEqual([true, true, true]);
+    expect(looksLikeTrace("see src/a.ts:3\nand more")).toBe(false);
+    expect(looksLikeTrace("Error: one line")).toBe(false);
+  });
+  it("finds the places a trace names, leaving dependencies out", () => {
+    expect(placesInText(node)).toEqual([{ path: "/p/src/api/client.ts", line: 12 }]);
+    expect(placesInText(python)).toEqual([{ path: "/p/app/main.py", line: 7 }]);
+    expect(placesInText(rust)).toEqual([{ path: "src/main.rs", line: 4 }]);
+    expect(placesInText("a.ts:1 a.ts:1 b.ts:2", 1)).toEqual([{ path: "a.ts", line: 1 }]);
   });
 });
 
