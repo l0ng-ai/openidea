@@ -552,9 +552,14 @@ impl LaravelProvider {
             && let Some(model) = Self::model_class(resolver, receiver, context)
         {
             // A documented generic relation (`HasMany<TRelatedModel, $this>`)
-            // is as good.
-            let generic =
-                core.members().iter().any(|member| matches!(member, Type::Named { args, .. } if !args.is_empty()));
+            // is as good, unless it only got the template's bound: the
+            // argument isn't a class string the core reads (a Concord
+            // proxy's `modelClass()`).
+            let bare = |arg: &Type| matches!(arg, Type::Named { fqn, .. } if fqn.trim_start_matches('\\').eq_ignore_ascii_case(MODEL));
+            let generic = core
+                .members()
+                .iter()
+                .any(|member| matches!(member, Type::Named { args, .. } if args.first().is_some_and(|arg| !bare(arg))));
             if !generic {
                 return Some(Type::generic(
                     &format!("{RELATIONS}{relation}"),

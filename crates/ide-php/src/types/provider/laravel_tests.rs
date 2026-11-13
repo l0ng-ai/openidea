@@ -267,6 +267,13 @@ namespace Prettus\Repository\Eloquent {
         public function __call($method, $arguments) { return null; }
     }
 }
+namespace Illuminate\Database\Eloquent\Relations {
+    /**
+     * @template TRelatedModel of \Illuminate\Database\Eloquent\Model
+     * @template TDeclaringModel
+     */
+    class HasOne extends Relation {}
+}
 namespace App\Contracts {
     interface Order {}
     interface Shared {}
@@ -276,6 +283,16 @@ namespace App\Models {
         public function ship(): bool { return true; }
         public function invoices() { return $this->hasMany(Invoice::class); }
         public function parent() { return $this->belongsTo(static::class); }
+        /**
+         * As Laravel declares its relations: generic.
+         *
+         * @template TRelatedModel of \Illuminate\Database\Eloquent\Model
+         * @param class-string<TRelatedModel> $related
+         * @return \Illuminate\Database\Eloquent\Relations\HasOne<TRelatedModel, $this>
+         */
+        public function hasOne($related) { return new \Illuminate\Database\Eloquent\Relations\HasOne(); }
+        public function lastInvoice() { return $this->hasOne(InvoiceProxy::modelClass()); }
+        public function firstInvoice() { return $this->hasOne(Invoice::class); }
     }
     function order(): \App\Contracts\Order { return new Order(); }
     function shared(): \App\Contracts\Shared { return new Order(); }
@@ -329,6 +346,10 @@ fn repositories_and_concord_proxies_name_their_model() {
                 "Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\Invoice>",
             ),
             ("\\App\\Models\\shared()->ship()/*|*/;", "mixed"),
+            // A proxy through a generic relation method (the core only gets
+            // the template's bound), and a class the core reads.
+            ("(new \\App\\Models\\Order())->lastInvoice/*|*/;", "?App\\Models\\Invoice"),
+            ("(new \\App\\Models\\Order())->firstInvoice/*|*/;", "?App\\Models\\Invoice"),
             // `static::class` relates the model itself.
             ("(new \\App\\Models\\Order())->parent/*|*/;", "?App\\Models\\Order"),
             ("(new \\App\\Repositories\\UserRepository())->findOrFail(1)/*|*/;", "App\\Models\\User"),
