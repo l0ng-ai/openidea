@@ -7,6 +7,7 @@ const status: McpServerStatus = {
   running: true,
   error: null,
   port: 1234,
+  portUnavailable: null,
   project: "/p",
   url: "http://127.0.0.1:1234/mcp?project=/p",
   token: "secret",
@@ -19,6 +20,13 @@ describe("MCP server settings", () => {
     expect(validateSettings({}).mcpServer.enabled).toBe(false);
     expect(validateSettings({ mcpServer: { enabled: true } }).mcpServer.enabled).toBe(true);
     expect(MCP_SERVER_PAGE.projectScope).not.toBe(true);
+  });
+  it("keeps a fixed port by default and a new token in every run", () => {
+    expect(DEFAULT_SETTINGS.mcpServer).toMatchObject({ fixedPort: true, port: 26371, fixedToken: false });
+    const custom = validateSettings({ mcpServer: { fixedPort: false, port: 7000, fixedToken: true } }).mcpServer;
+    expect(custom).toMatchObject({ fixedPort: false, port: 7000, fixedToken: true });
+    expect(validateSettings({ mcpServer: { port: 70000 } }).mcpServer.port).toBe(65535);
+    expect(validateSettings({ mcpServer: { port: "x" } }).mcpServer.port).toBe(26371);
   });
   it("copies a reusable stdio configuration without the token", () => {
     const config = stdioConfig(status)!;

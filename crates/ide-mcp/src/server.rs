@@ -49,10 +49,23 @@ struct Shared {
 /// removes its discovery file.
 pub struct McpServer {
     port: u16,
+    /// Why the port asked for in [`ServerOptions::port`] was not used.
+    port_unavailable: Option<String>,
     token: String,
     discovery: Option<PathBuf>,
     shutdown: watch::Sender<bool>,
     cancel: CancellationToken,
+}
+
+/// How [`McpServer::start_with`] listens.
+#[derive(Clone, Debug, Default)]
+pub struct ServerOptions {
+    /// Listen on `127.0.0.1:<port>`. When it can't be bound (in use, or reserved by the
+    /// system), a free port is taken instead and [`McpServer::port_unavailable`] says why.
+    /// `None`: a free port.
+    pub port: Option<u16>,
+    /// The bearer token; `None`: a new one.
+    pub token: Option<String>,
 }
 
 impl McpServer {
@@ -63,10 +76,32 @@ impl McpServer {
         discovery: Option<PathBuf>,
         runtime: &tokio::runtime::Handle,
     ) -> std::io::Result<Self> {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        Self::start_with(registry, discovery, runtime, ServerOptions::default())
+    }
+
+    /// [`Self::start`] on the port and with the token of `options`.
+    pub fn start_with(
+        registry: Arc<dyn ToolRegistry>,
+        discovery: Option<PathBuf>,
+        runtime: &tokio::runtime::Handle,
+        options: ServerOptions,
+    ) -> std::io::Result<Self> {
+        let (listener, port_unavailable) = match options.port {
+            Some(port) => match std::net::TcpListener::bind(("127.0.0.1", port)) {
+                Ok(listener) => (listener, None),
+                Err(e) => {
+                    tracing::warn!("MCP server: port {port} unavailable ({e}); taking a free one");
+                    (std::net::TcpListener::bind(("127.0.0.1", 0))?, Some(format!("port {port}: {e}")))
+                }
+            },
+            None => (std::net::TcpListener::bind(("127.0.0.1", 0))?, None),
+        };
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
-        let token = new_token()?;
+        let token = match options.token {
+            Some(token) => token,
+            None => new_token()?,
+        };
         let listener = {
             let _entered = runtime.enter();
             tokio::net::TcpListener::from_std(listener)?
@@ -91,11 +126,16 @@ impl McpServer {
         });
         runtime.spawn(accept(listener, shared, stopped));
         tracing::info!("MCP server on 127.0.0.1:{port}");
-        Ok(Self { port, token, discovery, shutdown, cancel })
+        Ok(Self { port, port_unavailable, token, discovery, shutdown, cancel })
     }
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Why the port of [`ServerOptions::port`] is not the one listened on.
+    pub fn port_unavailable(&self) -> Option<&str> {
+        self.port_unavailable.as_deref()
     }
 
     /// The bearer token of this run.

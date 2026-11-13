@@ -385,7 +385,7 @@ targetIndex, or narrow the call with a contextSnippet that shows the one you mea
         _ => None,
     });
     let (h, w) = (host.clone(), window.to_owned());
-    let written = crate::ops::lsp::apply_workspace_edit(&h, &w, edit).await;
+    let written = crate::ops::lsp::apply_agent_workspace_edit(&h, &w, edit).await;
     if let Err(e) = written {
         let hint = format!("The rename stopped while it wrote. {} Read the files again before you retry.", e.message);
         return Ok(RenameResult::failed("write_failed", hint).with_symbol(symbol));

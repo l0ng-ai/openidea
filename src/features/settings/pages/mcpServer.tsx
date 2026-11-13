@@ -6,6 +6,8 @@ import { WORKFLOW_LIMITS } from "@/platform/workflowSettings";
 import { useTx } from "@/platform/i18n";
 import { Button, Input, T, copyText } from "@/ui";
 import { Row } from "../components/Form";
+import { useSetting } from "../components/context";
+import { MCP_PORT_LIMITS } from "../model/schema";
 import type { PageSpec } from "./spec";
 import styles from "./McpServer.module.css";
 
@@ -23,9 +25,10 @@ export function stdioConfig(status: McpServerStatus): string | null {
   return JSON.stringify({ mcpServers: { openidea: { type: "stdio", command, args } } }, null, 2);
 }
 
-function useStatus(): McpServerStatus | null {
+function useStatus(): [McpServerStatus | null, () => void] {
   const root = useProject((s) => s.project?.root);
   const [status, setStatus] = useState<McpServerStatus | null>(null);
+  const [loads, setLoads] = useState(0);
   useEffect(() => {
     if (!isTauri()) return;
     let live = true;
@@ -43,13 +46,14 @@ function useStatus(): McpServerStatus | null {
       live = false;
       off();
     };
-  }, [root]);
-  return status;
+  }, [root, loads]);
+  return [status, () => setLoads((n) => n + 1)];
 }
 
 function McpServerEndpoint() {
   const tx = useTx();
-  const status = useStatus();
+  const [status, reload] = useStatus();
+  const [fixedToken] = useSetting<boolean>("mcpServer.fixedToken");
   const [copied, setCopied] = useState<string | null>(null);
   useEffect(() => {
     if (!copied) return;
@@ -61,9 +65,13 @@ function McpServerEndpoint() {
     if (!text) return;
     void copyText(text).then(() => setCopied(which));
   };
+  const regenerate = () => void call(commands.mcpRegenerateToken()).then(reload, reload);
   const { port, error } = status;
+  const busy = status.portUnavailable;
   const state = status.running
-    ? tx`Running on port ${port}`
+    ? busy
+      ? tx`Running on port ${port}: the fixed port is unavailable (${busy})`
+      : tx`Running on port ${port}`
     : error
       ? tx`Failed to start: ${error}`
       : tx("Not running");
@@ -72,7 +80,7 @@ function McpServerEndpoint() {
   return (
     <>
       <Row label="Status">
-        <span className={error ? styles.error : styles.status}>{state}</span>
+        <span className={error || busy ? styles.error : styles.status}>{state}</span>
       </Row>
       <Row
         label="Endpoint"
@@ -94,7 +102,7 @@ function McpServerEndpoint() {
       <Row
         label="Client configuration"
         stacked
-        hint="The HTTP configuration holds this run's token and stops working when OpenIDEA restarts. The stdio one starts OpenIDEA's executable, which relays to the running IDE."
+        hint="The HTTP configuration holds the token: it keeps working after OpenIDEA restarts only with a fixed port and a kept token. The stdio one starts OpenIDEA's executable, which relays to the running IDE."
       >
         <div className={styles.buttons}>
           <Button size="small" disabled={!http} onClick={() => copy("http", http)}>
@@ -110,6 +118,13 @@ function McpServerEndpoint() {
           )}
         </div>
       </Row>
+      {fixedToken && (
+        <Row label="Token" hint="Clients configured with the current token stop working.">
+          <Button size="small" disabled={!status.running} onClick={regenerate}>
+            <T>Regenerate Token</T>
+          </Button>
+        </Row>
+      )}
     </>
   );
 }
@@ -119,7 +134,7 @@ export const MCP_SERVER_PAGE: PageSpec = {
   title: "IDE MCP Server",
   group: "Agents",
   order: 470,
-  keywords: ["mcp", "model context protocol", "ai", "agent", "claude", "codex", "tools", "stdio"],
+  keywords: ["mcp", "model context protocol", "ai", "agent", "claude", "codex", "tools", "stdio", "port", "token"],
   sections: [
     {
       options: [
@@ -134,6 +149,26 @@ export const MCP_SERVER_PAGE: PageSpec = {
           key: "mcpServer.runWithoutConfirmation",
           label: "Run tools without confirmation (brave mode)",
           hint: "Run configurations, terminal commands and other tools that change a project start without asking, for unattended agents. Only the IDE's own settings can turn this on, not a project's.",
+        },
+        {
+          kind: "toggle",
+          key: "mcpServer.fixedPort",
+          label: "Use a fixed port",
+          hint: "Listen on the same port in every run, so HTTP clients and port forwards keep working after OpenIDEA restarts. When the port is in use, this run takes a free one and Status says so. Off: a free port in every run.",
+        },
+        {
+          kind: "number",
+          key: "mcpServer.port",
+          label: "Port",
+          ...MCP_PORT_LIMITS,
+          integer: true,
+          hint: "The fixed port on 127.0.0.1, used while Use a fixed port is on.",
+        },
+        {
+          kind: "toggle",
+          key: "mcpServer.fixedToken",
+          label: "Keep the token",
+          hint: "Keep the same bearer token in every run, stored for your account only. Off: a new token in every run. Anyone with the token can use the tools while OpenIDEA runs, so regenerate it if it leaks.",
         },
         {
           kind: "number",

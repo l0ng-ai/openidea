@@ -231,7 +231,11 @@ async fn mutations_preserve_unsaved_text_and_reject_metadata_and_escapes() {
         .iter()
         .rev()
         .find_map(|event| match event {
-            IdeEvent::WorkspaceEditApplied { id, .. } => Some(*id),
+            // Undoable like a refactoring, but marked as the agent's, so it isn't announced as one.
+            IdeEvent::WorkspaceEditApplied { id, by_agent, .. } => {
+                assert!(*by_agent, "an MCP edit is the agent's");
+                Some(*id)
+            }
             _ => None,
         })
         .unwrap();

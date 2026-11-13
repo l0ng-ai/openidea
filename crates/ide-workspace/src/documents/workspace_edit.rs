@@ -389,6 +389,12 @@ impl Documents {
         self.apply_workspace_edit_inner(edit, true, &mut |_| Ok(()))
     }
 
+    /// [`Self::apply_workspace_edit`] for an agent's edit (the MCP server's tools): undoable the
+    /// same way, announced as an agent's (`by_agent`) rather than as a refactoring.
+    pub fn apply_agent_workspace_edit(&self, edit: &WorkspaceEdit) -> IdeResult<()> {
+        self.apply_workspace_edit_as(edit, true, true, &mut |_| Ok(()))
+    }
+
     /// File moves already own a combined move/reference undo record.
     pub fn apply_file_move_edits(&self, edit: &WorkspaceEdit) -> IdeResult<()> {
         self.apply_workspace_edit_inner(edit, false, &mut |_| Ok(()))
@@ -398,6 +404,16 @@ impl Documents {
         &self,
         edit: &WorkspaceEdit,
         remember: bool,
+        before_operation: &mut dyn FnMut(usize) -> IdeResult<()>,
+    ) -> IdeResult<()> {
+        self.apply_workspace_edit_as(edit, remember, false, before_operation)
+    }
+
+    fn apply_workspace_edit_as(
+        &self,
+        edit: &WorkspaceEdit,
+        remember: bool,
+        by_agent: bool,
         before_operation: &mut dyn FnMut(usize) -> IdeResult<()>,
     ) -> IdeResult<()> {
         let _operation = self.operations.lock();
@@ -485,7 +501,7 @@ impl Documents {
                 });
             }
             history.prune(SystemTime::now(), MAX_HISTORY_BYTES, MAX_HISTORY_AGE);
-            self.sink.emit(IdeEvent::WorkspaceEditApplied { id, paths: affected });
+            self.sink.emit(IdeEvent::WorkspaceEditApplied { id, paths: affected, by_agent });
         }
         Ok(())
     }

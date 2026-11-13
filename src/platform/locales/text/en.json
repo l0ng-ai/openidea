@@ -760,7 +760,7 @@
   "Open a project to get its endpoint.": "Open a project to get its endpoint.",
   "No project open": "No project open",
   "Client configuration": "Client configuration",
-  "The HTTP configuration holds this run's token and stops working when OpenIDEA restarts. The stdio one starts OpenIDEA's executable, which relays to the running IDE.": "The HTTP configuration holds this run's token and stops working when OpenIDEA restarts. The stdio one starts OpenIDEA's executable, which relays to the running IDE.",
+  "The HTTP configuration holds the token: it keeps working after OpenIDEA restarts only with a fixed port and a kept token. The stdio one starts OpenIDEA's executable, which relays to the running IDE.": "The HTTP configuration holds the token: it keeps working after OpenIDEA restarts only with a fixed port and a kept token. The stdio one starts OpenIDEA's executable, which relays to the running IDE.",
   "Copy HTTP Config": "Copy HTTP Config",
   "Copy Stdio Config": "Copy Stdio Config",
   "Copied to the clipboard": "Copied to the clipboard",
@@ -1472,5 +1472,15 @@
   "Archived ({count})": "Archived ({count})",
   "no usages": "no usages",
   "1 usage": "1 usage",
-  "{n} usages": "{n} usages"
+  "{n} usages": "{n} usages",
+  "Running on port {port}: the fixed port is unavailable ({busy})": "Running on port {port}: the fixed port is unavailable ({busy})",
+  "Token": "Token",
+  "Clients configured with the current token stop working.": "Clients configured with the current token stop working.",
+  "Regenerate Token": "Regenerate Token",
+  "Use a fixed port": "Use a fixed port",
+  "Listen on the same port in every run, so HTTP clients and port forwards keep working after OpenIDEA restarts. When the port is in use, this run takes a free one and Status says so. Off: a free port in every run.": "Listen on the same port in every run, so HTTP clients and port forwards keep working after OpenIDEA restarts. When the port is in use, this run takes a free one and Status says so. Off: a free port in every run.",
+  "Port": "Port",
+  "The fixed port on 127.0.0.1, used while Use a fixed port is on.": "The fixed port on 127.0.0.1, used while Use a fixed port is on.",
+  "Keep the token": "Keep the token",
+  "Keep the same bearer token in every run, stored for your account only. Off: a new token in every run. Anyone with the token can use the tools while OpenIDEA runs, so regenerate it if it leaks.": "Keep the same bearer token in every run, stored for your account only. Off: a new token in every run. Anyone with the token can use the tools while OpenIDEA runs, so regenerate it if it leaks."
 }

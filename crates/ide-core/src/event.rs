@@ -77,6 +77,9 @@ pub enum IdeEvent {
     WorkspaceEditApplied {
         id: u32,
         paths: Vec<crate::IpcPath>,
+        /// Made by an agent through the MCP server's tools: undoable like a refactoring, but
+        /// not announced as one.
+        by_agent: bool,
     },
     /// An open document's language changed (Settings › File Types, Override File
     /// Type), or its UI mode (a framework's root marker appeared or went).
