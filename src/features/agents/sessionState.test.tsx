@@ -15,7 +15,8 @@ import { taskActions } from "./taskActions";
 import { replyActions } from "./replyActions";
 import { focusedSession } from "./sessionFocus";
 import styles from "./Session.module.css";
-import tagStyles from "@/ui/InlineTag.module.css";
+import chipStyles from "./ReferenceChip.module.css";
+import { textOf, typeIn } from "./composerTesting";
 
 const backend = vi.hoisted(() => ({
   entries: new Map<string, AgentEntry[]>(),
@@ -48,12 +49,19 @@ const backend = vi.hoisted(() => ({
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
   commands: {
+    fsProbe: async () => ({
+      status: "ok",
+      data: { size: 1, binary: false, tooLarge: false },
+    }),
     agentEntries: async (id: string, sub: string | null) => {
       const key = sub ? `${id}/${sub}` : id;
       backend.fetched.push(key);
       await backend.entryWait;
       if (backend.entryError !== null)
-        return { status: "error", error: { kind: "unavailable", message: backend.entryError } };
+        return {
+          status: "error",
+          error: { kind: "unavailable", message: backend.entryError },
+        };
       return { status: "ok", data: backend.entries.get(key) ?? [] };
     },
     agentChanges: async () => {
@@ -85,12 +93,22 @@ vi.mock("@/platform/ipc", async (original) => ({
       backend.imported.push([provider, sessionId]);
       const found = backend.external.find((e) => e.provider === provider && e.sessionId === sessionId);
       if (!found) throw new Error("unknown session");
-      return { status: "ok", data: { ...task("imported"), id: "imported", title: found.title, provider } };
+      return {
+        status: "ok",
+        data: {
+          ...task("imported"),
+          id: "imported",
+          title: found.title,
+          provider,
+        },
+      };
     },
   },
 }));
 vi.mock("@tauri-apps/api/webview", () => ({
-  getCurrentWebview: () => ({ onDragDropEvent: () => Promise.resolve(() => {}) }),
+  getCurrentWebview: () => ({
+    onDragDropEvent: () => Promise.resolve(() => {}),
+  }),
 }));
 vi.mock("@/workbench/messages", async (original) => ({
   ...(await original<typeof import("@/workbench/messages")>()),
@@ -139,7 +157,11 @@ const subagent: SubagentEntry = {
   endedMs: 1,
   cancellable: false,
 };
-const input = (id: string) => ({ kind: SESSION_KIND, key: sessionKey(id), data: { task: id } });
+const input = (id: string) => ({
+  kind: SESSION_KIND,
+  key: sessionKey(id),
+  data: { task: id },
+});
 const stream = () => document.querySelector<HTMLDivElement>(`.${styles.stream}`)!;
 const tool = (id: string, overrides: Partial<Extract<AgentEntry, { type: "tool" }>> = {}): AgentEntry => ({
   type: "tool",
@@ -182,7 +204,10 @@ beforeEach(() => {
   backend.imported = [];
   backend.externalError = null;
   backend.accepted = [];
-  backend.acceptedOutcome = { accepted: ["very-long-file-name.ts"], skipped: [] };
+  backend.acceptedOutcome = {
+    accepted: ["very-long-file-name.ts"],
+    skipped: [],
+  };
   backend.confirmed = [];
   backend.confirmAnswer = true;
   backend.entries = new Map([
@@ -203,7 +228,9 @@ beforeEach(() => {
 
 describe("conversation rows", () => {
   it("keeps authors above messages and their folded work with matching icon-only actions", async () => {
-    useProject.setState({ settings: { agents: { foldTurns: false } } as never });
+    useProject.setState({
+      settings: { agents: { foldTurns: false } } as never,
+    });
     const user = (text: string): AgentEntry => ({
       type: "user",
       text,
@@ -229,8 +256,12 @@ describe("conversation rows", () => {
     const author = stream().querySelectorAll(`.${styles.agentAuthor}`)[1]!;
     expect(author.nextElementSibling).toHaveClass(styles.processRun!);
     expect(author.parentElement?.nextElementSibling?.firstElementChild).toHaveClass(styles.agentMessage!);
-    const quote = within(stream()).getAllByRole("button", { name: "Quote Reply" });
-    const copy = within(stream()).getAllByRole("button", { name: "Copy Markdown" });
+    const quote = within(stream()).getAllByRole("button", {
+      name: "Quote Reply",
+    });
+    const copy = within(stream()).getAllByRole("button", {
+      name: "Copy Markdown",
+    });
     // One per turn: only a turn's final reply carries actions.
     expect(quote).toHaveLength(2);
     for (const button of [...quote, ...copy]) {
@@ -250,8 +281,18 @@ describe("conversation rows", () => {
       tool("two"),
       { type: "agent", text: "More detail" },
       tool("List .", { status: "running" }),
-      { type: "permission", id: 1, title: "Run python3", command: "python3", options: [], chosen },
-      { type: "plan", items: [{ content: "Check files", status: "in_progress" }] },
+      {
+        type: "permission",
+        id: 1,
+        title: "Run python3",
+        command: "python3",
+        options: [],
+        chosen,
+      },
+      {
+        type: "plan",
+        items: [{ content: "Check files", status: "in_progress" }],
+      },
       { type: "thought", text: "Consider the result" },
       { type: "agent", text: "Done" },
     ]);
@@ -284,9 +325,18 @@ describe("conversation rows", () => {
   );
 
   it("puts the time and hover actions under a turn's final reply only", async () => {
-    useProject.setState({ settings: { agents: { foldTurns: false } } as never });
+    useProject.setState({
+      settings: { agents: { foldTurns: false } } as never,
+    });
     backend.entries.set("A", [
-      { type: "user", text: "Question", attachments: [], steered: false, sentMs: 1000, doneMs: 13000 },
+      {
+        type: "user",
+        text: "Question",
+        attachments: [],
+        steered: false,
+        sentMs: 1000,
+        doneMs: 13000,
+      },
       { type: "agent", text: "First reply" },
       tool("read"),
       { type: "agent", text: "Final reply" },
@@ -349,7 +399,14 @@ describe("process folding", () => {
 describe("turn folding", () => {
   it("folds a finished turn's work under its message and keeps the reply", async () => {
     backend.entries.set("A", [
-      { type: "user", text: "Question", attachments: [], steered: false, sentMs: 1000, doneMs: 13000 },
+      {
+        type: "user",
+        text: "Question",
+        attachments: [],
+        steered: false,
+        sentMs: 1000,
+        doneMs: 13000,
+      },
       { type: "thought", text: "think" },
       tool("one"),
       { type: "agent", text: "Interim note" },
@@ -371,7 +428,14 @@ describe("turn folding", () => {
 
   it("leaves the turn the agent works on open", async () => {
     backend.entries.set("A", [
-      { type: "user", text: "Question", attachments: [], steered: false, sentMs: 1000, doneMs: null },
+      {
+        type: "user",
+        text: "Question",
+        attachments: [],
+        steered: false,
+        sentMs: 1000,
+        doneMs: null,
+      },
       tool("one"),
       { type: "agent", text: "Interim note" },
     ]);
@@ -404,7 +468,10 @@ describe("opened runs", () => {
       doneMs: null,
     } as const;
     const setTask = (status: AgentTask["status"]) => ({
-      tasks: new Map(useAgents.getState().tasks).set("A", { ...useAgents.getState().tasks.get("A")!, status }),
+      tasks: new Map(useAgents.getState().tasks).set("A", {
+        ...useAgents.getState().tasks.get("A")!,
+        status,
+      }),
     });
     useAgents.setState({
       entries: new Map([["A", [asked, tool("one"), tool("two"), { type: "agent", text: "Interim" }] as AgentEntry[]]]),
@@ -458,8 +525,33 @@ describe("folded content", () => {
   });
 });
 
+describe("message code blocks", () => {
+  it("shows a terminal block as a card, folding long output", async () => {
+    const output = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join("\n");
+    backend.entries.set("A", [
+      {
+        type: "user",
+        text: `why?\n\`\`\`terminal zsh\n${output}\n\`\`\`\nthanks`,
+        attachments: [],
+        images: [],
+        sentMs: 1,
+        doneMs: 2,
+        steered: false,
+      },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const card = await within(stream()).findByRole("group", { name: "Terminal · zsh" });
+    expect(card).toHaveTextContent("20 lines");
+    expect(card.querySelector("pre")!.textContent!.split("\n")).toHaveLength(12);
+    fireEvent.click(within(card).getByRole("button", { name: "Show 8 more lines" }));
+    expect(card.querySelector("pre")!.textContent!.split("\n")).toHaveLength(20);
+    expect(within(stream()).getByText(/thanks/)).toBeInTheDocument();
+  });
+});
+
 describe("message tags", () => {
-  it("shows file references and skills as distinct tags", async () => {
+  it("shows file references as chips that open the file, and skills as tags", async () => {
     backend.entries.set("A", [
       {
         type: "user",
@@ -473,8 +565,14 @@ describe("message tags", () => {
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    expect(await screen.findByText("@src/a.ts")).toHaveClass(tagStyles.tag!);
-    expect(screen.getByText("/triage")).toHaveClass(tagStyles.accent!);
+    const chip = await within(stream()).findByRole("button", {
+      name: "File reference a.ts",
+    });
+    expect(chip).toHaveTextContent("a.ts");
+    expect(chip).toHaveAttribute("data-ref-path", "/project/src/a.ts");
+    expect(within(stream()).getByText("/triage")).toHaveClass(chipStyles.command!);
+    // Mentioned in the text, so not listed again under it.
+    expect(within(stream()).getAllByText("a.ts")).toHaveLength(1);
   });
 });
 
@@ -514,8 +612,14 @@ describe("scrolling", () => {
     render(<SessionEditor input={input("A")} />);
     const el = stream();
     let height = 1000;
-    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
-    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      get: () => height,
+    });
+    Object.defineProperty(el, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
     el.scrollTop = 600;
     fireEvent.scroll(el);
     fireEvent.wheel(el, { deltaY: -200 });
@@ -523,16 +627,42 @@ describe("scrolling", () => {
     fireEvent.scroll(el);
     expect(screen.getByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
     height = 1100;
-    const sent = { type: "user", text: "Next", attachments: [], steered: false, sentMs: 1, doneMs: null } as AgentEntry;
+    const sent = {
+      type: "user",
+      text: "Next",
+      attachments: [],
+      steered: false,
+      sentMs: 1,
+      doneMs: null,
+    } as AgentEntry;
     act(() => useAgents.setState({ entries: new Map([["A", [reply, sent]]]) }));
     expect(el.scrollTop).toBe(1100);
     expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
   });
 
   it.each([
-    { name: "stays at the end below it", top: 300, bottom: 360, scrolled: 60, away: false },
-    { name: "keeps its header on screen", top: 50, bottom: 900, scrolled: 50, away: true },
-    { name: "back at the end without following", top: 300, bottom: 360, scrolled: 60, away: false, released: true },
+    {
+      name: "stays at the end below it",
+      top: 300,
+      bottom: 360,
+      scrolled: 60,
+      away: false,
+    },
+    {
+      name: "keeps its header on screen",
+      top: 50,
+      bottom: 900,
+      scrolled: 50,
+      away: true,
+    },
+    {
+      name: "back at the end without following",
+      top: 300,
+      bottom: 360,
+      scrolled: 60,
+      away: false,
+      released: true,
+    },
   ])("scrolls a section opened at the end into view: $name", async ({ top, bottom, scrolled, away, released }) => {
     backend.entries.set("A", [
       { type: "thought", text: "Weighing it" },
@@ -542,8 +672,14 @@ describe("scrolling", () => {
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Answer A");
     const el = stream();
-    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 1000 });
-    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      value: 1000,
+    });
+    Object.defineProperty(el, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
     el.getBoundingClientRect = () => ({ top: 0, bottom: 400 }) as DOMRect;
     el.scrollTop = 600;
     fireEvent.scroll(el);
@@ -575,13 +711,21 @@ describe("scrolling", () => {
   });
 
   it("keeps following when the view grows taller and the browser pulls the offset back", () => {
-    useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Initial reply" }]]]) });
+    useAgents.setState({
+      entries: new Map([["A", [{ type: "agent", text: "Initial reply" }]]]),
+    });
     render(<SessionEditor input={input("A")} />);
     const el = stream();
     let height = 1000;
     let viewport = 400;
-    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
-    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => viewport });
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      get: () => height,
+    });
+    Object.defineProperty(el, "clientHeight", {
+      configurable: true,
+      get: () => viewport,
+    });
     el.scrollTop = 600;
     fireEvent.scroll(el);
     // The composer shrank after sending: the end moved up and the offset was clamped to it.
@@ -590,19 +734,31 @@ describe("scrolling", () => {
     fireEvent.scroll(el);
     expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
     height = 1200;
-    act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Streaming" }]]]) }));
+    act(() =>
+      useAgents.setState({
+        entries: new Map([["A", [{ type: "agent", text: "Streaming" }]]]),
+      }),
+    );
     expect(el.scrollTop).toBe(1200);
   });
 
   it.each(["wheel", "touch", "ArrowUp", "PageUp", "Home", "Shift+Space"])(
     "releases following before an upward %s scroll, even within the bottom threshold",
     async (method) => {
-      useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Initial reply" }]]]) });
+      useAgents.setState({
+        entries: new Map([["A", [{ type: "agent", text: "Initial reply" }]]]),
+      });
       render(<SessionEditor input={input("A")} />);
       const el = stream();
       let height = 1000;
-      Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
-      Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+      Object.defineProperty(el, "scrollHeight", {
+        configurable: true,
+        get: () => height,
+      });
+      Object.defineProperty(el, "clientHeight", {
+        configurable: true,
+        value: 400,
+      });
       el.scrollTop = 600;
       fireEvent.scroll(el);
       if (method === "wheel") fireEvent.wheel(el, { deltaY: -4 });
@@ -614,7 +770,11 @@ describe("scrolling", () => {
       if (method === "Shift+Space") fireEvent.keyDown(el, { key: " ", shiftKey: true });
       // A chunk can land before the browser dispatches the scroll event.
       height = 1004;
-      act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Streaming" }]]]) }));
+      act(() =>
+        useAgents.setState({
+          entries: new Map([["A", [{ type: "agent", text: "Streaming" }]]]),
+        }),
+      );
       expect(el.scrollTop).toBe(600);
       el.scrollTop = 588;
       fireEvent.scroll(el);
@@ -623,7 +783,11 @@ describe("scrolling", () => {
       el.scrollTop = 592;
       fireEvent.scroll(el);
       height = 1008;
-      act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "More streaming" }]]]) }));
+      act(() =>
+        useAgents.setState({
+          entries: new Map([["A", [{ type: "agent", text: "More streaming" }]]]),
+        }),
+      );
       expect(el.scrollTop).toBe(592);
       expect(screen.getByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
       // Scrolling down to the end resumes following.
@@ -631,29 +795,49 @@ describe("scrolling", () => {
       el.scrollTop = 608;
       fireEvent.scroll(el);
       height = 1100;
-      act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Latest" }]]]) }));
+      act(() =>
+        useAgents.setState({
+          entries: new Map([["A", [{ type: "agent", text: "Latest" }]]]),
+        }),
+      );
       expect(el.scrollTop).toBe(1100);
     },
   );
 
   it("does not move the viewport while the scrollbar is held during streaming", () => {
-    useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Initial reply" }]]]) });
+    useAgents.setState({
+      entries: new Map([["A", [{ type: "agent", text: "Initial reply" }]]]),
+    });
     render(<SessionEditor input={input("A")} />);
     const el = stream();
     let height = 1000;
-    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
-    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      get: () => height,
+    });
+    Object.defineProperty(el, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
     el.scrollTop = 600;
     fireEvent.scroll(el);
     fireEvent.pointerDown(el);
     height = 1100;
-    act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Streaming" }]]]) }));
+    act(() =>
+      useAgents.setState({
+        entries: new Map([["A", [{ type: "agent", text: "Streaming" }]]]),
+      }),
+    );
     expect(el.scrollTop).toBe(600);
     el.scrollTop = 588;
     fireEvent.scroll(el);
     fireEvent.pointerUp(window);
     height = 1200;
-    act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "More streaming" }]]]) }));
+    act(() =>
+      useAgents.setState({
+        entries: new Map([["A", [{ type: "agent", text: "More streaming" }]]]),
+      }),
+    );
     expect(el.scrollTop).toBe(588);
   });
 
@@ -664,15 +848,25 @@ describe("scrolling", () => {
     const el = stream();
     const output = screen.getByText("Tool output");
     let height = 1000;
-    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
-    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      get: () => height,
+    });
+    Object.defineProperty(el, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
     output.style.overflowY = "auto";
     output.scrollTop = 100;
     el.scrollTop = 600;
     fireEvent.scroll(el);
     fireEvent.wheel(output, { deltaY: -4 });
     height = 1100;
-    act(() => useAgents.setState({ entries: new Map([["A", [...transcript, { type: "agent", text: "Streaming" }]]]) }));
+    act(() =>
+      useAgents.setState({
+        entries: new Map([["A", [...transcript, { type: "agent", text: "Streaming" }]]]),
+      }),
+    );
     expect(el.scrollTop).toBe(1100);
     expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
   });
@@ -681,8 +875,14 @@ describe("scrolling", () => {
     render(<SessionEditor input={input("A")} />);
     const el = stream();
     let height = 1000;
-    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
-    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      get: () => height,
+    });
+    Object.defineProperty(el, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
     fireEvent.wheel(el);
     el.scrollTop = 100;
     fireEvent.scroll(el);
@@ -691,7 +891,11 @@ describe("scrolling", () => {
     act(() => useAgents.setState({ entries: new Map([["A", []]]) }));
     expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
     height = 1400;
-    act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "New reply" }]]]) }));
+    act(() =>
+      useAgents.setState({
+        entries: new Map([["A", [{ type: "agent", text: "New reply" }]]]),
+      }),
+    );
     expect(el.scrollTop).toBe(1400);
     expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
   });
@@ -706,8 +910,14 @@ describe("scrolling", () => {
       </EditorShownProvider>,
     );
     const el = stream();
-    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 3000 });
-    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      value: 3000,
+    });
+    Object.defineProperty(el, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
     // Give the conversation a new tail while the scrollbar is held.
     fireEvent.pointerDown(el);
     act(() =>
@@ -738,8 +948,14 @@ describe("scrolling", () => {
     expect(await screen.findByText("Answer A")).toBeInTheDocument();
     const el = stream();
     let height = 1000;
-    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
-    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      get: () => height,
+    });
+    Object.defineProperty(el, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
     el.scrollTop = 600;
     fireEvent.scroll(el);
     // The conversation grew after it was scrolled to the end, or WebKit moved the offset back
@@ -761,8 +977,14 @@ describe("scrolling", () => {
     render(<SessionEditor input={input("A")} />);
     expect(await screen.findByText("Answer A")).toBeInTheDocument();
     const el = stream();
-    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 1000 });
-    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      value: 1000,
+    });
+    Object.defineProperty(el, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
     el.scrollTop = 600;
     fireEvent.scroll(el);
     el.scrollTop = 0;
@@ -775,13 +997,22 @@ describe("scrolling", () => {
     render(<SessionEditor input={input("A")} />);
     expect(await screen.findByText("Answer A")).toBeInTheDocument();
     const el = stream();
-    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 1000 });
-    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      value: 1000,
+    });
+    Object.defineProperty(el, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
     fireEvent.wheel(el);
     el.scrollTop = 100;
     fireEvent.scroll(el);
     const jump = await screen.findByRole("button", { name: "Jump to Latest" });
-    Object.defineProperty(el, "scrollTo", { configurable: true, value: vi.fn() });
+    Object.defineProperty(el, "scrollTo", {
+      configurable: true,
+      value: vi.fn(),
+    });
     fireEvent.click(jump);
     expect(el.scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" });
     expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
@@ -801,7 +1032,11 @@ describe("tool calls", () => {
   });
 
   it("folds consecutive finished tool calls into one collapsed row", async () => {
-    const edit = (id: string) => tool(id, { kind: "edit", diffs: [{ path: "/project/a.ts", added: 2, removed: 1 }] });
+    const edit = (id: string) =>
+      tool(id, {
+        kind: "edit",
+        diffs: [{ path: "/project/a.ts", added: 2, removed: 1 }],
+      });
     backend.entries.set("A", [edit("one"), edit("two"), { type: "agent", text: "Answer A" }]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
@@ -822,7 +1057,11 @@ describe("a pending question", () => {
         id: 7,
         title: question,
         options: [
-          { id: "a", name: "Ship it as is and record it (Recommended)", kind: "allow_once" },
+          {
+            id: "a",
+            name: "Ship it as is and record it (Recommended)",
+            kind: "allow_once",
+          },
           { id: "b", name: "Detect the request in code", kind: "allow_once" },
           { id: "c", name: "Skip", kind: "reject_once" },
         ],
@@ -833,7 +1072,9 @@ describe("a pending question", () => {
     backend.answers = [];
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    const card = await screen.findByRole("region", { name: "Allow tool call?" });
+    const card = await screen.findByRole("region", {
+      name: "Allow tool call?",
+    });
     expect(within(card).getByText(question.replaceAll("\n", " "))).toBeInTheDocument();
     expect(screen.getAllByText(question.replaceAll("\n", " "))).toHaveLength(1);
     const answers = within(card).getAllByRole("button");
@@ -861,7 +1102,13 @@ describe("a pending AskUserQuestion", () => {
           header: answerKey,
           question: "Which?",
           multiSelect: false,
-          options: [{ label: index === 0 ? "One" : "Two", description: "", preview: null }],
+          options: [
+            {
+              label: index === 0 ? "One" : "Two",
+              description: "",
+              preview: null,
+            },
+          ],
         })),
       },
     ]);
@@ -891,8 +1138,16 @@ describe("a pending AskUserQuestion", () => {
             question: "Which layout?",
             multiSelect: false,
             options: [
-              { label: "Table (Recommended)", description: "One row per check", preview: null },
-              { label: "List", description: "Grouped under headings", preview: null },
+              {
+                label: "Table (Recommended)",
+                description: "One row per check",
+                preview: null,
+              },
+              {
+                label: "List",
+                description: "Grouped under headings",
+                preview: null,
+              },
             ],
           },
           {
@@ -944,11 +1199,20 @@ describe("a pending AskUserQuestion", () => {
     fireEvent.click(within(card).getByRole("checkbox", { name: /^Disk/ }));
     fireEvent.click(within(card).getByRole("checkbox", { name: /^Other/ }));
     expect(submit).toHaveProperty("disabled", true);
-    fireEvent.change(within(card).getByPlaceholderText("Type your answer"), { target: { value: "GPU temps" } });
+    fireEvent.change(within(card).getByPlaceholderText("Type your answer"), {
+      target: { value: "GPU temps" },
+    });
     fireEvent.click(submit);
     await waitFor(() =>
       expect(backend.answers).toEqual([
-        ["A", 9, JSON.stringify({ "Which layout?": ["List"], "Which checks?": ["Disk", "GPU temps"] })],
+        [
+          "A",
+          9,
+          JSON.stringify({
+            "Which layout?": ["List"],
+            "Which checks?": ["Disk", "GPU temps"],
+          }),
+        ],
       ]),
     );
   });
@@ -1008,7 +1272,11 @@ describe("a pending permission request above the composer", () => {
   const command = 'python3 -c \'from pathlib import Path\np = Path("note.txt")\np.write_text("one\\ntwo")\'';
   const options = [
     { id: "opaque-once", name: "Allow Once", kind: "allow_once" },
-    { id: "opaque-policy", name: `Always Allow \`${command}\``, kind: "allow_always" },
+    {
+      id: "opaque-policy",
+      name: `Always Allow \`${command}\``,
+      kind: "allow_always",
+    },
     { id: "opaque-no", name: "Decline", kind: "reject_once" },
     { id: "opaque-stop", name: "Decline and Stop", kind: "reject_always" },
   ];
@@ -1025,11 +1293,20 @@ describe("a pending permission request above the composer", () => {
         diffs: [],
         locations: [],
       },
-      { type: "permission", id: 12, title: `Run ${command}`, command, options, chosen: null },
+      {
+        type: "permission",
+        id: 12,
+        title: `Run ${command}`,
+        command,
+        options,
+        chosen: null,
+      },
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    const card = await screen.findByRole("region", { name: "codex wants to run a command" });
+    const card = await screen.findByRole("region", {
+      name: "codex wants to run a command",
+    });
     expect(screen.getAllByRole("region", { name: "codex wants to run a command" })).toHaveLength(1);
     expect(screen.queryByRole("alert")).toBeNull();
     expect(stream()).not.toContainElement(card);
@@ -1048,36 +1325,58 @@ describe("a pending permission request above the composer", () => {
   });
 
   it.each(options)("sends the original $kind option id, then records it in the conversation", async (option) => {
-    const pending: AgentEntry = { type: "permission", id: 12, title: `Run ${command}`, command, options, chosen: null };
+    const pending: AgentEntry = {
+      type: "permission",
+      id: 12,
+      title: `Run ${command}`,
+      command,
+      options,
+      chosen: null,
+    };
     backend.answers = [];
     backend.entries.set("A", [pending]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    const card = await screen.findByRole("region", { name: "codex wants to run a command" });
+    const card = await screen.findByRole("region", {
+      name: "codex wants to run a command",
+    });
     const button = within(card).getAllByRole("button")[options.indexOf(option)]!;
     button.focus();
     fireEvent.click(button);
     await waitFor(() => expect(backend.answers).toEqual([["A", 12, option.id]]));
     act(() =>
-      useAgents.setState({ entries: new Map(backend.entries).set("A", [{ ...pending, chosen: option.name }]) }),
+      useAgents.setState({
+        entries: new Map(backend.entries).set("A", [{ ...pending, chosen: option.name }]),
+      }),
     );
     expect(card).not.toBeInTheDocument();
-    const record = within(stream()).getByRole("region", { name: "codex wants to run a command" });
+    const record = within(stream()).getByRole("region", {
+      name: "codex wants to run a command",
+    });
     expect(record.querySelector("pre")).toBeNull();
     expect(within(record).queryByRole("button")).toBeNull();
     expect(record.textContent).toContain("python3 …");
     expect(record.textContent).not.toContain("write_text");
-    await waitFor(() => expect(document.activeElement?.tagName).toBe("TEXTAREA"));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus());
   });
 
   it("is answered with a number key when the focus isn't in a text field", async () => {
-    const pending: AgentEntry = { type: "permission", id: 12, title: `Run ${command}`, command, options, chosen: null };
+    const pending: AgentEntry = {
+      type: "permission",
+      id: 12,
+      title: `Run ${command}`,
+      command,
+      options,
+      chosen: null,
+    };
     backend.answers = [];
     backend.entries.set("A", [pending]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     await screen.findByRole("region", { name: "codex wants to run a command" });
-    fireEvent.keyDown(document.querySelector("textarea")!, { key: "1" });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), {
+      key: "1",
+    });
     expect(backend.answers).toEqual([]);
     const elsewhere = document.body.appendChild(document.createElement("div"));
     fireEvent.keyDown(elsewhere, { key: "1" });
@@ -1103,12 +1402,20 @@ describe("a pending permission request above the composer", () => {
       },
     ]);
     backend.entries.set("B", [
-      { type: "permission", id: 4, title: "The agent asks for permission", options: [], chosen: null },
+      {
+        type: "permission",
+        id: 4,
+        title: "The agent asks for permission",
+        options: [],
+        chosen: null,
+      },
     ]);
     backend.answers = [];
     useAgents.setState({ entries: new Map(backend.entries) });
     const { unmount } = render(<SessionEditor input={input("A")} />);
-    const line = await screen.findByRole("region", { name: "codex wants to run a command" });
+    const line = await screen.findByRole("region", {
+      name: "codex wants to run a command",
+    });
     const answers = within(line.querySelector<HTMLElement>(`.${styles.permissionAnswers}`)!).getAllByRole("button");
     expect(answers.map((b) => b.textContent)).toEqual(["Allow Once", "Decline"]);
     fireEvent.click(answers[0]!);
@@ -1116,7 +1423,9 @@ describe("a pending permission request above the composer", () => {
     unmount();
 
     render(<SessionEditor input={input("B")} />);
-    const card = await screen.findByRole("region", { name: "Allow tool call?" });
+    const card = await screen.findByRole("region", {
+      name: "Allow tool call?",
+    });
     fireEvent.click(within(card).getByRole("button", { name: "Cancel" }));
     await waitFor(() =>
       expect(backend.answers).toEqual([
@@ -1177,7 +1486,9 @@ describe("conversation loading", () => {
   });
 
   it("keeps subagent failures separate and retries that subagent", async () => {
-    useAgents.setState({ entries: new Map([["A", backend.entries.get("A")!]]) });
+    useAgents.setState({
+      entries: new Map([["A", backend.entries.get("A")!]]),
+    });
     backend.entryError = "No such subagent";
     render(<SessionEditor input={input("A")} />);
     fireEvent.click(screen.getByRole("button", { name: /Explore task A/ }));
@@ -1251,7 +1562,9 @@ describe("session state across tasks and hosts", () => {
 
   it("opens a long conversation at its end and renders the earlier entries after it", async () => {
     const entries = Array.from({ length: 150 }, (_, i): AgentEntry => ({ type: "agent", text: `Reply ${i}` }));
-    useAgents.setState({ entries: new Map(useAgents.getState().entries).set("A", entries) });
+    useAgents.setState({
+      entries: new Map(useAgents.getState().entries).set("A", entries),
+    });
     render(<SessionEditor input={input("A")} />);
     expect(screen.getByText("Reply 149")).toBeInTheDocument();
     expect(await screen.findByText("Reply 0")).toBeInTheDocument();
@@ -1300,7 +1613,7 @@ describe("session state across tasks and hosts", () => {
     const markVisible = vi.spyOn(await import("./store"), "markVisible");
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const message = screen.getByRole("textbox", { name: "Message" });
-    fireEvent.change(message, { target: { value: "Draft to keep" } });
+    typeIn(message, "Draft to keep");
     const conversation = stream();
     fireEvent.click(screen.getByRole("button", { name: /1 changed file/ }));
     expect(screen.getByRole("complementary", { name: "Changes" })).toBeVisible();
@@ -1315,7 +1628,7 @@ describe("session state across tasks and hosts", () => {
     expect(markVisible).toHaveBeenCalledWith("A");
     expect(useAgents.getState().unread.has("A")).toBe(false);
     expect(screen.getByRole("textbox", { name: "Message" })).toBe(message);
-    expect(message).toHaveValue("Draft to keep");
+    expect(textOf(message)).toBe("Draft to keep");
     expect(useAgents.getState().composers.get("A")?.text).toBe("Draft to keep");
     expect(JSON.parse(localStorage.getItem("openidea.agents.changesOpen.v1")!).A).toBe(true);
   });
@@ -1341,7 +1654,10 @@ describe("session state across tasks and hosts", () => {
     fireEvent.wheel(stream());
     stream().scrollTop = stick ? height - viewport : 230;
     fireEvent.scroll(stream());
-    expect(useAgents.getState().scrollPositions.get("A")).toEqual({ top: stick ? 1600 : 230, stick });
+    expect(useAgents.getState().scrollPositions.get("A")).toEqual({
+      top: stick ? 1600 : 230,
+      stick,
+    });
     view.unmount();
     viewport = 150;
     useAgents.setState({ docked: "A", sessionLocation: "toolWindow" });
@@ -1404,24 +1720,39 @@ describe("meters in the task header", () => {
   it("shows the provider's usage limits by default and each meter as Settings › Tools › Agents › Chat allows", async () => {
     const reported: AgentTask = {
       ...task("A"),
-      usage: { used: 24_000, size: 200_000, cost: { amount: 0.42, currency: "USD" } },
+      usage: {
+        used: 24_000,
+        size: 200_000,
+        cost: { amount: 0.42, currency: "USD" },
+      },
     };
     const limits = [
       { window: "five_hour", usedPercent: 19, resetsMs: null },
       { window: "seven_day", usedPercent: 9.4, resetsMs: null },
     ];
-    useAgents.setState({ tasks: new Map([["A", reported]]), limits: new Map([["codex", limits]]) });
+    useAgents.setState({
+      tasks: new Map([["A", reported]]),
+      limits: new Map([["codex", limits]]),
+    });
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Answer A");
     const usage = screen.getByLabelText(/^Context /);
     expect(usage).toHaveTextContent("24k/200k (12%)");
-    expect(usage.querySelector(`.${styles.usageBar} span`)).toHaveStyle({ width: "12%" });
+    expect(usage.querySelector(`.${styles.usageBar} span`)).toHaveStyle({
+      width: "12%",
+    });
     expect(screen.getByText("5h 19%")).toBeInTheDocument();
     expect(screen.getByText("7d 9%")).toBeInTheDocument();
     expect(screen.queryByText("$0.42")).toBeNull();
     act(() =>
       useProject.setState({
-        settings: { agents: { showContextUsage: false, showUsageLimits: false, showCost: true } },
+        settings: {
+          agents: {
+            showContextUsage: false,
+            showUsageLimits: false,
+            showCost: true,
+          },
+        },
       }),
     );
     expect(screen.queryByText("24k/200k (12%)")).toBeNull();
@@ -1440,8 +1771,20 @@ describe("sessions from other apps", () => {
 
   it("lists external sessions in the history popup and imports one as a task", async () => {
     backend.external = [
-      { provider: "claude", sessionId: "abc", title: "Login fix", cwd: "/work/app", updatedMs: Date.now() },
-      { provider: "codex", sessionId: "thread-1", title: "Add tests", cwd: null, updatedMs: 0 },
+      {
+        provider: "claude",
+        sessionId: "abc",
+        title: "Login fix",
+        cwd: "/work/app",
+        updatedMs: Date.now(),
+      },
+      {
+        provider: "codex",
+        sessionId: "thread-1",
+        title: "Add tests",
+        cwd: null,
+        updatedMs: 0,
+      },
     ];
     await openHistory();
     expect(screen.getByText("Login fix")).toBeInTheDocument();
@@ -1484,7 +1827,17 @@ describe("changes refresh", () => {
     vi.useFakeTimers();
     useChangesOptions.setState({ groupByCommit: true });
     useAgents.setState({
-      tasks: new Map([["A", { ...task("A"), isolation: "worktree", cwd: "/worktrees/a", projectRoot: "/project" }]]),
+      tasks: new Map([
+        [
+          "A",
+          {
+            ...task("A"),
+            isolation: "worktree",
+            cwd: "/worktrees/a",
+            projectRoot: "/project",
+          },
+        ],
+      ]),
     });
     render(<SessionEditor input={input("A")} />);
     await act(async () => {});
@@ -1578,12 +1931,17 @@ describe("grouped changes", () => {
   });
   const worktreeTask = () => {
     useChangesOptions.setState({ groupByCommit: true });
-    useAgents.setState({ tasks: new Map([["A", { ...task("A"), isolation: "worktree" }]]) });
+    useAgents.setState({
+      tasks: new Map([["A", { ...task("A"), isolation: "worktree" }]]),
+    });
     localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
   };
 
   it("puts committed files under their commit and rolls back only the uncommitted ones", async () => {
-    backend.grouped = { uncommitted: [change("a.ts")], commits: [commit({ files: [change("b.ts")] })] };
+    backend.grouped = {
+      uncommitted: [change("a.ts")],
+      commits: [commit({ files: [change("b.ts")] })],
+    };
     worktreeTask();
     render(<SessionEditor input={input("A")} />);
 
@@ -1620,10 +1978,15 @@ describe("grouped changes", () => {
   });
 
   it("accepts the task's committed work too, not only the uncommitted files", async () => {
-    backend.grouped = { uncommitted: [], commits: [commit({ files: [change("b.ts")] })] };
+    backend.grouped = {
+      uncommitted: [],
+      commits: [commit({ files: [change("b.ts")] })],
+    };
     backend.changes = [change("b.ts")];
     worktreeTask();
-    useAgents.setState({ tasks: new Map([["A", { ...task("A"), isolation: "worktree", status: "ready" }]]) });
+    useAgents.setState({
+      tasks: new Map([["A", { ...task("A"), isolation: "worktree", status: "ready" }]]),
+    });
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Committed");
 

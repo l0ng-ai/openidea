@@ -28,7 +28,13 @@ import {
 import { removeAllSpecial, specialAt, toggleFieldAt, toggleMethodAt } from "./breakpoints/special";
 import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
-import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
+import {
+  isJavaAttachTarget,
+  isJavaDebuggable,
+  javaAttachConfig,
+  javaLaunchConfig,
+  jvmAttachDebuggerReady,
+} from "./java";
 import { cancelHotSwapBuild, reloadChangedClasses } from "./hotswap";
 import { refreshMemory, useMemory } from "./memory/memoryState";
 import { closeInstances, instancesOutdated, showInstances, showReferrers, useInstances } from "./memory/instancesState";
@@ -477,6 +483,20 @@ export function registerDebugActions(): () => void {
             if (session == null && process != null && !shared) await stopAssociatedProcess(process);
           })(),
         ),
+    },
+    {
+      id: "debug.jvmAttachReady",
+      title: "Check the JVM Debugger",
+      category: "Debug",
+      hidden: true,
+      description:
+        "Whether the debugger for a build tool's JVMs is installed, offering the install when not (arg: { module, retry, done(ready) })",
+      run: ({ arg }) => {
+        const a = arg as { module: string; retry: () => void; done: (ready: boolean) => void };
+        const root = useProject.getState().project?.root;
+        if (!root) return a.done(true);
+        void jvmAttachDebuggerReady(a.module, root, a.retry).then(a.done, () => a.done(true));
+      },
     },
     {
       id: "debug.stop",

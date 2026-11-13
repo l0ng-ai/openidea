@@ -612,6 +612,16 @@ pub(super) fn usage(params: &Value) -> Option<Value> {
     Some(json!({ "sessionUpdate": "usage_update", "used": used, "size": size }))
 }
 
+/// A thread name from the model's reply to the naming prompt: its first line, without
+/// quotes or a closing period. `None` when nothing is left.
+pub(super) fn thread_name(reply: &str) -> Option<String> {
+    const MAX_NAME: usize = 80;
+    let line = reply.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let line = line.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '“' | '”' | '「' | '」' | '*'));
+    let line = line.trim_end_matches(['.', '。']).trim();
+    (!line.is_empty()).then(|| line.chars().take(MAX_NAME).collect())
+}
+
 /// How a failed turn is reported.
 #[derive(Debug, PartialEq)]
 pub(super) enum Failure {

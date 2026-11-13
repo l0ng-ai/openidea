@@ -893,6 +893,27 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "slint-lsp",
+        display: "Slint LSP",
+        kind: LanguageServer,
+        commands: &["slint-lsp"],
+        method: Method::Release {
+            source: ReleaseSource::GitHub { repo: "slint-ui/slint" },
+            assets: &[
+                any_arch(Mac, "slint-lsp-universal-apple-darwin.tar.gz"),
+                rule(Linux, X64, "slint-lsp-x86_64-unknown-linux-gnu.tar.gz"),
+                rule(Linux, Arm64, "slint-lsp-aarch64-unknown-linux-gnu.tar.gz"),
+                rule(Windows, X64, "slint-lsp-x86_64-pc-windows-msvc.zip"),
+                rule(Windows, Arm64, "slint-lsp-aarch64-pc-windows-msvc.zip"),
+            ],
+            locate: &["slint-lsp"],
+        },
+        fallback: None,
+        version: ver("slint-lsp"),
+        homepage: "https://slint.dev",
+        needs: &[],
+    },
+    ToolSpec {
         name: "neocmakelsp",
         display: "neocmakelsp (CMake)",
         kind: LanguageServer,

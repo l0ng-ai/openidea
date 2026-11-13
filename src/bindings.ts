@@ -1594,6 +1594,8 @@ export const commands = {
 	sshSetSecret: (id: string, secret: string | null, save: boolean) => __TAURI_INVOKE<void>("ssh_set_secret", { id, secret, save }),
 	/**  Whether connecting with configuration `id` needs a password first. */
 	sshNeedsSecret: (id: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("ssh_needs_secret", { id })),
+	/**  Whether a password is saved under `key` (an FTP deployment server's). */
+	sshPasswordSaved: (key: string) => __TAURI_INVOKE<boolean>("ssh_password_saved", { key }),
 	/**  Trusts the host key that failed the last connection of configuration `id`. */
 	sshTrustHost: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("ssh_trust_host", { id })),
 	/**  Ids of the configurations with an open connection. */
@@ -1623,7 +1625,7 @@ export const commands = {
 } | null, IdeError>(__TAURI_INVOKE("deploy_info", { path, server })),
 	deployServerRoot: (server: string) => typedError<DeploymentRoot, IdeError>(__TAURI_INVOKE("deploy_server_root", { server })),
 	remoteList: (connection: FsConnection, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_list", { connection, path })),
-	deployTestConnection: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("deploy_test_connection", { connection, path })),
+	deployTestConnection: (connection: FsConnection, path: string, password: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("deploy_test_connection", { connection, path, password })),
 	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { connection, path })),
 	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[FsConnection, string] | null>("remote_of", { path }),
 	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { connection, path })),
@@ -2390,6 +2392,8 @@ export type AppearanceSettings_Deserialize = {
 	statusBarWidgets?: { [key in string]: boolean },
 	/**  Customize Main Toolbar; `None` = the default toolbar. */
 	mainToolbar?: MainToolbarSettings | null,
+	/**  Appearance › Background Image: an image shown through the IDE window. */
+	backgroundImage?: BackgroundImageSettings,
 };
 
 export type AppearanceSettings_Serialize = {
@@ -2452,6 +2456,8 @@ export type AppearanceSettings_Serialize = {
 	statusBarWidgets: { [key in string]: boolean },
 	/**  Customize Main Toolbar; `None` = the default toolbar. */
 	mainToolbar: MainToolbarSettings | null,
+	/**  Appearance › Background Image: an image shown through the IDE window. */
+	backgroundImage: BackgroundImageSettings,
 };
 
 export type ApplyOutcome = {
@@ -2502,7 +2508,7 @@ export type AskpassKind =
 /**  Yes / no (an unknown host key); answered with `yes` or `no`. */
 "confirm";
 
-export type AttachKind = "java" | "node" | "python" | "go" | "native";
+export type AttachKind = "java" | "node" | "python" | "dotnet" | "go" | "native";
 
 export type AttachableProcess = {
 	pid: number,
@@ -2530,6 +2536,20 @@ export type AutoUpload = "never" |
 "onExplicitSave" | 
 /**  Every save, including autosave and external changes. */
 "always";
+
+/**  Appearance › Background Image. An empty `path` shows no image. */
+export type BackgroundImageSettings = {
+	path?: string,
+	/**  Percent, 0–100. */
+	opacity?: number,
+	/**  `scale` (cover the window) | `plain` (original size) | `tile`. */
+	fill?: string,
+	/**
+	 *  Where the image is anchored: `center`, `top-left`, `top`, `top-right`, `left`, `right`,
+	 *  `bottom-left`, `bottom`, `bottom-right`.
+	 */
+	anchor?: string,
+};
 
 /**  A step run before a configuration launches; a failing step aborts the launch. */
 export type BeforeLaunchTask = {
@@ -4090,6 +4110,14 @@ export type DeploymentCoverage = {
 	skipped: TransferError[],
 };
 
+/**  Named set of deployment servers that files are uploaded to together. */
+export type DeploymentGroup = {
+	id?: string,
+	name?: string,
+	/**  [`DeploymentServer::id`]s, in upload order. */
+	servers?: string[],
+};
+
 /**  Local files to compare with a deployment server (Sync with Deployed). */
 export type DeploymentLaunch = {
 	/**  Deployment server id. */
@@ -4133,6 +4161,8 @@ export type DeploymentServer = {
 /**  Build, Execution, Deployment › Deployment (and its Options page). */
 export type DeploymentSettings = {
 	servers?: DeploymentServer[],
+	/**  Server groups: Upload to… on a group uploads to each of its servers. */
+	groups?: DeploymentGroup[],
 	/**  Server used by Upload / Download / Sync and automatic upload; empty = none. */
 	defaultServer?: string,
 	autoUpload?: AutoUpload,
@@ -4783,7 +4813,9 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 "unavailable" | "io" | "protocol" | "internal";
 
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
-export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
+export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | 
+/**  Problems of the window's files changed (a language server or a report). */
+"problems-changed" | "scheduled";
 
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {
@@ -9595,6 +9627,8 @@ export type SmartKeysSettings = {
 	pairQuotes?: boolean,
 	surroundSelection?: boolean,
 	tabOutOfPair?: boolean,
+	/**  Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag. */
+	simultaneousTagEditing?: boolean,
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
 	reformatOnPaste?: string,
 	escapeOnPaste?: boolean,
@@ -10526,7 +10560,9 @@ export type WindowTab = {
 /**  A workbench event delivered to plugins. */
 export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged } | { kind: "websocketReady"; value: WebsocketReady } | { kind: "runExited"; value: RunExited } | { kind: "terminalExited"; value: TerminalExited } | { kind: "contentTabAction"; value: ContentTabAction } | { kind: "fileClosed"; value: string } | { kind: "settingsChanged"; value: string[] } | 
 /**  Ids of extension points the receiving plugin declares whose contributions changed. */
-{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
+{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | 
+/**  Problems of the window's files changed; plugins re-read `problems`. */
+{ kind: "problemsChanged" } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,

@@ -79,6 +79,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("scala", include_str!("../../../languages/scala.toml")),
     ("scss", include_str!("../../../languages/scss.toml")),
     ("shellscript", include_str!("../../../languages/shellscript.toml")),
+    ("slint", include_str!("../../../languages/slint.toml")),
     ("sql", include_str!("../../../languages/sql.toml")),
     ("svelte", include_str!("../../../languages/svelte.toml")),
     ("swift", include_str!("../../../languages/swift.toml")),
@@ -1046,6 +1047,7 @@ mod tests {
             ("icon.svg.import", "godot-resource"),
             ("export_presets.cfg", "godot-resource"),
             ("water.gdshader", "gdshader"),
+            ("app-window.slint", "slint"),
             ("notes.txt", "plaintext"),
         ];
         for (path, id) in cases {

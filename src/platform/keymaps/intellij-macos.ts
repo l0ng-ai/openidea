@@ -405,6 +405,7 @@ export const intellijMacos: Record<string, string[]> = {
   "db.sqlScript": [],
   "db.goToReferencedTable": [],
   "db.selectOpened": [],
+  "db.expandAll": [],
   "db.collapseAll": [],
   // Terminal (keyWhen: terminalFocus); after VCS Update / Go to Test so it wins there.
   "terminal.new": ["Meta+T"],

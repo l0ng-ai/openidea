@@ -14,6 +14,7 @@ import {
   useBreakpoints,
 } from "../breakpoints/store";
 import { activeSession, addWatch, evaluate, isLive, startSession, useDebug, resumeExecution } from "../state";
+import { AmbiguousClassError, rememberImport } from "../classImports";
 import {
   addMethodBreakpoint,
   removeAllSpecial,
@@ -689,6 +690,7 @@ function EvaluateDialog() {
 function EvaluateDialogInner({ initial }: { initial: string }) {
   const [expression, setExpression] = useState(initial);
   const [result, setResult] = useState<VarRoot | null>(null);
+  const [ambiguous, setAmbiguous] = useState<AmbiguousClassError | null>(null);
   const [history, setHistory] = useState(() => readHistory("evaluate"));
   const [historyMenu, setHistoryMenu] = useState(false);
   const historyPos = useRef(-1);
@@ -705,15 +707,19 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
     pushHistory("evaluate", e);
     setHistory(readHistory("evaluate"));
     historyPos.current = -1;
+    setAmbiguous(null);
     try {
       const v: Variable = await evaluate(e, session?.adapter === "gdb" ? "watch" : "repl", session ?? null);
       setResult({ key: `eval:${e}:${Date.now()}`, kind: "eval", name: e, variable: v, error: null });
     } catch (err) {
       setResult({ key: `eval:${e}:${Date.now()}`, kind: "eval", name: e, variable: null, error: errorText(err) });
+      if (err instanceof AmbiguousClassError) setAmbiguous(err);
     }
   };
+  const className = ambiguous?.className ?? "";
   const recall = (text: string) => {
     setExpression(text);
+    setAmbiguous(null);
     requestAnimationFrame(() => {
       const el = field.current;
       if (!el) return;
@@ -780,6 +786,7 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
               value={expression}
               onChange={(e) => {
                 setExpression(e.target.value);
+                setAmbiguous(null);
                 historyPos.current = -1;
                 completion.onInput();
               }}
@@ -814,6 +821,24 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
               .map((h) => ({ label: h.replace(/\s+/g, " "), verbatim: true, run: () => recall(h) }))}
           />
         </div>
+        {ambiguous && (
+          <div className={styles.evalImport} role="group" aria-label={tx("Class to import")}>
+            <span className={styles.label}>{tx`Choose the class to import for ${className}:`}</span>
+            {ambiguous.candidates.map((c) => (
+              <Button
+                key={c}
+                variant="ghost"
+                size="small"
+                onClick={() => {
+                  if (session) rememberImport(session.id, c);
+                  void run();
+                }}
+              >
+                {c}
+              </Button>
+            ))}
+          </div>
+        )}
         <div className={styles.evalResult}>
           {result ? (
             <VariablesView roots={[result]} session={session?.id ?? null} aria-label="Evaluation result" />

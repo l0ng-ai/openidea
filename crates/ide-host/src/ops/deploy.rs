@@ -188,8 +188,14 @@ pub async fn remote_download_into(
     r
 }
 
-pub async fn deploy_test_connection(state: &Host, connection: FsConnection, path: String) -> IdeResult<()> {
-    state.remote.test_connection(&connection, &path).await
+/// `password`: an FTP password typed in the settings but not applied yet.
+pub async fn deploy_test_connection(
+    state: &Host,
+    connection: FsConnection,
+    path: String,
+    password: Option<String>,
+) -> IdeResult<()> {
+    state.remote.test_connection_with(&connection, &path, password).await
 }
 
 pub(crate) fn register(d: &mut crate::rpc::Dispatcher) {
@@ -231,6 +237,6 @@ pub(crate) fn register(d: &mut crate::rpc::Dispatcher) {
         remote_rename(&c.host, c.arg("connection")?, c.arg("from")?, c.arg("to")?).await
     });
     d.add("deploy_test_connection", |c| async move {
-        deploy_test_connection(&c.host, c.arg("connection")?, c.arg("path")?).await
+        deploy_test_connection(&c.host, c.arg("connection")?, c.arg("path")?, c.arg("password")?).await
     });
 }

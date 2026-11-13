@@ -871,6 +871,7 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
       ref={ref}
       className={styles.window}
       data-toolwindow={tw.id}
+      data-focus-scope=""
       aria-label={titleOf(tw)}
       hidden={hidden}
       tabIndex={-1}

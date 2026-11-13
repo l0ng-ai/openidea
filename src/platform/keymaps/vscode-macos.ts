@@ -393,6 +393,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "db.sqlScript": [],
   "db.goToReferencedTable": [],
   "db.selectOpened": [],
+  "db.expandAll": [],
   "db.collapseAll": [],
   // Find in Files popup (findPopupOpen): after the editor's keys, so these win while it is open.
   "find.popup.nextResult": ["Meta+G"],

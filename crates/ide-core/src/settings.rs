@@ -673,6 +673,28 @@ pub struct AppearanceSettings {
     pub status_bar_widgets: BTreeMap<String, bool>,
     /// Customize Main Toolbar; `None` = the default toolbar.
     pub main_toolbar: Option<MainToolbarSettings>,
+    /// Appearance › Background Image: an image shown through the IDE window.
+    pub background_image: BackgroundImageSettings,
+}
+
+/// Appearance › Background Image. An empty `path` shows no image.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BackgroundImageSettings {
+    pub path: String,
+    /// Percent, 0–100.
+    pub opacity: u8,
+    /// `scale` (cover the window) | `plain` (original size) | `tile`.
+    pub fill: String,
+    /// Where the image is anchored: `center`, `top-left`, `top`, `top-right`, `left`, `right`,
+    /// `bottom-left`, `bottom`, `bottom-right`.
+    pub anchor: String,
+}
+
+impl Default for BackgroundImageSettings {
+    fn default() -> Self {
+        Self { path: String::new(), opacity: 15, fill: "scale".into(), anchor: "center".into() }
+    }
 }
 
 /// Main toolbar entries per side, in order: title widget ids (`project`,
@@ -743,6 +765,7 @@ impl Default for AppearanceSettings {
             navigation_bar: NavigationBarPosition::StatusBar,
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
+            background_image: BackgroundImageSettings::default(),
         }
     }
 }

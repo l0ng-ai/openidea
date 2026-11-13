@@ -55,7 +55,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.7";
+pub const API_VERSION: &str = "1.8";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
@@ -1058,6 +1058,9 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
         }),
         WorkbenchEvent::EditorFocused(p) => wit_events::Event::EditorFocused(p),
         WorkbenchEvent::VcsChanged(p) => wit_events::Event::VcsChanged(p),
+        WorkbenchEvent::ProblemsChanged => {
+            wit_events::Event::Other(wit_types::Extension { kind: "problems-changed".into(), data: "{}".into() })
+        }
         WorkbenchEvent::Scheduled => wit_events::Event::Scheduled,
         WorkbenchEvent::ActionPerformed(a) => wit_events::Event::ActionPerformed(wit_events::ActionPerformed {
             action: a.action,

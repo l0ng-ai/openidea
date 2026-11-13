@@ -266,7 +266,7 @@ export function statusOf(path: string): FileStatus | undefined {
 }
 
 /** Repositories found below a project that is not itself under git (scanned in the background). */
-async function discoverRoots() {
+export async function discoverRoots() {
   const root = useVcs.getState().root;
   if (!root || !isTauri()) return;
   const roots = await call(commands.vcsRoots()).catch(() => []);

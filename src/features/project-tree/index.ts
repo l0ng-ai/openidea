@@ -34,6 +34,7 @@ import {
   initProjectTree,
   leadSelection,
   reloadAll,
+  reloadArchiveDirs,
   reloadLoadedDirs,
   setChangedFiles,
   setOpenFiles,
@@ -253,6 +254,7 @@ export function activate(): () => void {
     initProjectTypes(),
     onIdeEvent("fsChanged", (e) => void applyFsChange(e)),
     onIdeEvent("excludedDirsChanged", (e) => void reloadLoadedDirs(e.dirs)),
+    onIdeEvent("projectRootsChanged", () => void reloadArchiveDirs()),
   ];
   return () => {
     disposers.reverse().forEach((d) => d());

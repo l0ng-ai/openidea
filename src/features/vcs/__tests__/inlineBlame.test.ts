@@ -55,6 +55,11 @@ function editor(doc = "one\ntwo\nthree", context = ctx) {
 
 const hint = () => view?.dom.querySelector<HTMLElement>(".cm-vcs-inline-blame");
 const tick = () => vi.advanceTimersByTimeAsync(300);
+/** The hover belongs to the label: put the pointer on it before activating, as a user would. */
+const hoverLabel = (v: EditorView, pos: number) => {
+  hint()!.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+  activateHover(v, pos, 1);
+};
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -150,7 +155,7 @@ describe("current line decoration", () => {
     mocks.log.mockResolvedValue({ status: "ok", data: [{ message }] });
     const v = editor();
     await tick();
-    activateHover(v, 3, 1);
+    hoverLabel(v, 3);
     await vi.advanceTimersByTimeAsync(0);
     expect(hasHoverTooltips(v.state)).toBe(true);
     const tooltip = v.dom.querySelector(".cm-vcs-inline-blame-tooltip");
@@ -159,7 +164,7 @@ describe("current line decoration", () => {
     expect(tooltip?.textContent).toContain(alice.commit);
     expect(tooltip?.textContent).toContain(new Date(alice.timeMs!).toLocaleString());
     v.dispatch({ effects: closeHoverTooltips });
-    activateHover(v, 3, 1);
+    hoverLabel(v, 3);
     await vi.advanceTimersByTimeAsync(0);
     expect(mocks.log).toHaveBeenCalledTimes(1);
     v.dispatch({ selection: { anchor: 4 } });
@@ -170,11 +175,30 @@ describe("current line decoration", () => {
     mocks.log.mockResolvedValue({ status: "ok", data: [{ message: "Full message" }] });
     const v = editor();
     await tick();
-    activateHover(v, 3, 1);
+    hoverLabel(v, 3);
     await vi.advanceTimersByTimeAsync(0);
     expect(hasHoverTooltips(v.state)).toBe(true);
     settings(false);
     expect(hasHoverTooltips(v.state)).toBe(false);
+  });
+
+  it("keeps the commit tooltip closed when the pointer is on a line-end lens, not the label", async () => {
+    mocks.log.mockResolvedValue({ status: "ok", data: [{ message: "Full message" }] });
+    const v = editor();
+    await tick();
+    // A plugin lens shares the blame's line-end offset; hovering it must not open the blame.
+    const lens = document.createElement("span");
+    lens.className = "cm-plugin-lens";
+    v.dom.querySelector(".cm-line")!.appendChild(lens);
+    lens.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    activateHover(v, 3, 1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hasHoverTooltips(v.state)).toBe(false);
+    expect(mocks.log).not.toHaveBeenCalled();
+    // Moving onto the label itself still opens it.
+    hoverLabel(v, 3);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hasHoverTooltips(v.state)).toBe(true);
   });
 
   it("refetches edits, saves and VCS refreshes", async () => {
@@ -287,13 +311,24 @@ describe("current line decoration", () => {
   });
 
   it("steps past a code-vision hint, including one that appears after the blame", async () => {
-    /** Stands in for the code-vision anchor's inner box (jsdom has no layout, so it is 120px wide). */
+    // jsdom has no layout: the fake hint's inner box is a fixed 120px wide.
     class FakeHint extends WidgetType {
       toDOM() {
         const el = document.createElement("span");
         el.className = "cm-openidea-lensInlineInner";
         el.getBoundingClientRect = () => ({ width: 120 }) as DOMRect;
         return el;
+      }
+    }
+    // A plugin's line-end message is a zero-width anchor with its text in an inner box.
+    class FakeMessage extends WidgetType {
+      toDOM() {
+        const anchor = document.createElement("span");
+        anchor.className = "cm-plugin-after";
+        const inner = document.createElement("span");
+        inner.getBoundingClientRect = () => ({ width: 70 }) as DOMRect;
+        anchor.append(inner);
+        return anchor;
       }
     }
     const lens = new Compartment();
@@ -304,21 +339,27 @@ describe("current line decoration", () => {
     await tick();
     // the widget measures, and starts observing, in the task after its insertion
     await vi.advanceTimersByTimeAsync(10);
-    expect(hint()!.style.marginLeft).toBe("");
+    expect(hint()!.style.paddingLeft).toBe("");
 
     // the hint shows up only after the blame mounted — the blame must still step past it
     view.dispatch({
       effects: lens.reconfigure(
-        EditorView.decorations.of(Decoration.set([Decoration.widget({ widget: new FakeHint(), side: 1 }).range(0)])),
+        EditorView.decorations.of(
+          Decoration.set([
+            Decoration.widget({ widget: new FakeHint(), side: 1 }).range(3),
+            Decoration.widget({ widget: new FakeMessage(), side: 1 }).range(3),
+          ]),
+        ),
       ),
     });
     await vi.advanceTimersByTimeAsync(10);
     expect(view.dom.querySelector(".cm-openidea-lensInlineInner")).not.toBeNull();
-    expect(hint()!.style.marginLeft).toBe("calc(3ch + 120px)");
+    // hint 120px, then the message's 70px: the label steps past the whole chain
+    expect(hint()!.style.paddingLeft).toBe("calc(3ch + 190px)");
 
-    // and it gives the space back when the hint goes away
+    // and it gives the space back when the hint and the message go away
     view.dispatch({ effects: lens.reconfigure([]) });
     await vi.advanceTimersByTimeAsync(10);
-    expect(hint()!.style.marginLeft).toBe("");
+    expect(hint()!.style.paddingLeft).toBe("");
   });
 });

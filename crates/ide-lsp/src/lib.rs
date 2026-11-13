@@ -241,6 +241,9 @@ pub struct LspManager {
     virtual_origins: Mutex<HashMap<String, ide_core::ServerId>>,
     /// Contents fetched for virtual URIs.
     virtual_docs: Mutex<HashMap<String, VirtualDocument>>,
+    /// Modification time of the archive behind a cached library class, so a jar
+    /// replaced in place (a SNAPSHOT installed again) is read again.
+    virtual_stamps: Mutex<HashMap<String, std::time::SystemTime>>,
     injections: injections::State,
     /// Open notebooks by path. Locked before `docs` when both are.
     notebooks: Mutex<HashMap<PathBuf, notebook::NotebookState>>,
@@ -508,6 +511,7 @@ impl LspManager {
             go_mod_checked: Mutex::new(HashSet::new()),
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
+            virtual_stamps: Mutex::new(HashMap::new()),
             injections: injections::State::default(),
             notebooks: Mutex::new(HashMap::new()),
         })
@@ -3202,14 +3206,44 @@ impl LspManager {
         Ok(found)
     }
 
+    /// Whether the archive behind a cached library class changed since it was read.
+    /// Stats the archive: call from a blocking worker.
+    pub fn library_class_changed(&self, uri: &str) -> bool {
+        let Some(stamp) = self.virtual_stamps.lock().get(uri).copied() else { return false };
+        virtual_doc::archive_modified(uri) != Some(stamp)
+    }
+
+    /// Archives behind cached library classes that changed since they were read.
+    /// Stats each archive: call from a blocking worker.
+    pub fn changed_library_archives(&self) -> Vec<PathBuf> {
+        let uris: Vec<String> = self.virtual_stamps.lock().keys().cloned().collect();
+        let mut archives: Vec<PathBuf> = uris
+            .iter()
+            .filter(|uri| self.library_class_changed(uri))
+            .filter_map(|uri| virtual_doc::archive(uri))
+            .collect();
+        archives.sort();
+        archives.dedup();
+        archives
+    }
+
     /// Contents of a virtual document, from the server that owns `uri`:
     /// `workspace/textDocumentContent` (LSP 3.18) when the server serves the
     /// scheme, jdtls' `java/classFileContents` for `jdt:` URIs. A `jar:` entry
     /// is read from its archive, a `jar:` class shown as its library source
     /// (see [`library_source`]) or else decompiled by the server. Cached.
     pub async fn virtual_document(&self, uri: &str) -> IdeResult<VirtualDocument> {
-        if let Some(d) = self.virtual_docs.lock().get(uri) {
-            return Ok(d.clone());
+        let cached = self.virtual_docs.lock().get(uri).cloned();
+        if let Some(d) = cached {
+            let stamp = self.virtual_stamps.lock().get(uri).copied();
+            let current = {
+                let uri = uri.to_owned();
+                tokio::task::spawn_blocking(move || virtual_doc::archive_modified(&uri)).await.ok().flatten()
+            };
+            if stamp.is_none() || stamp == current {
+                return Ok(d);
+            }
+            self.virtual_docs.lock().remove(uri);
         }
         let scheme = virtual_doc::scheme(uri).to_owned();
         let jar_class = scheme == "jar" && library_source::parse(uri).is_some_and(|e| e.entry.ends_with(".class"));
@@ -3353,11 +3387,18 @@ impl LspManager {
         if let Some(server) = server {
             self.virtual_origins.lock().entry(uri.to_owned()).or_insert(server);
         }
+        let stamp = virtual_doc::archive_modified(uri);
         let mut cache = self.virtual_docs.lock();
+        let mut stamps = self.virtual_stamps.lock();
         if cache.len() >= VIRTUAL_CACHE_LIMIT {
             cache.clear();
+            stamps.clear();
         }
         cache.insert(uri.to_owned(), doc.clone());
+        match stamp {
+            Some(stamp) => stamps.insert(uri.to_owned(), stamp),
+            None => stamps.remove(uri),
+        };
         doc
     }
 

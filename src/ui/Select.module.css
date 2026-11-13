@@ -41,11 +41,12 @@
 /* A picker that reads as a chip beside the facts it belongs with (Chip). */
 .chip {
   composes: surface from "./Chip.module.css";
-  padding: 0 4px 0 8px;
+  padding: 0 4px 0 6px;
 }
 .chip:hover,
 .chip[aria-expanded="true"] {
-  background: var(--bg-hover);
+  background: var(--bg-toolbar-hover);
+  color: var(--fg-strong);
 }
 .chip:focus-visible {
   outline: none;

@@ -34,7 +34,7 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_FILE: &str = "plugin.toml";
 /// The plugin API (engine) version this host implements.
-pub const ENGINE_VERSION: &str = "1.7.0";
+pub const ENGINE_VERSION: &str = "1.8.0";
 /// The 0.1 API, still accepted for contribution-only packages and 0.1 components.
 pub const LEGACY_API: &str = "0.1";
 /// Marketplace categories, in the order they are shown.
@@ -166,6 +166,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "editor-focused",
     "action-performed",
     "vcs-changed",
+    "problems-changed",
 ];
 
 impl std::fmt::Display for ActivationEvent {
@@ -371,6 +372,11 @@ impl Manifest {
             if matches!(event, ActivationEvent::Event(kind) if matches!(kind.as_str(), "document-changed" | "websocket-ready"))
             {
                 self.needs_api(&format!("`{event}`"), 6)?;
+            }
+            // Added after 1.7.0 shipped: a 1.7 host rejects the manifest, so the gate is the minor
+            // that carries it.
+            if matches!(event, ActivationEvent::Event(kind) if kind == "problems-changed") {
+                self.needs_api(&format!("`{event}`"), 8)?;
             }
             if matches!(event, ActivationEvent::Event(kind) if matches!(kind.as_str(), "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action"))
             {

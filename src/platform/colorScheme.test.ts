@@ -4,6 +4,7 @@ import {
   ATTRIBUTES,
   CLEAR_COLOR,
   _setSchemeSource,
+  overrideDeclarations,
   resolvedAttribute,
   schemeAfterThemeChange,
   schemeCss,
@@ -340,5 +341,44 @@ describe("color schemes", () => {
     expect(v.tabs.placement).toBe("none");
     expect(v.codeStyle.languages.go).toEqual({ useTab: true });
     expect(v.general.softWrapFiles).toContain("*.md");
+  });
+
+  it("styles Errors and Warnings attributes beyond colour", () => {
+    const decls = overrideDeclarations({
+      error: { bold: true, italic: true, effect: "strikeout", effectColor: "#ff0000" },
+      unused: { italic: true },
+    });
+    const map = new Map(decls);
+    expect(map.get("--wave-error-bold")).toBe("var(--fw-code-bold, 700)");
+    expect(map.get("--wave-error-italic")).toBe("italic");
+    expect(map.get("--wave-error-effect")).toBe("line-through #ff0000");
+    expect(map.get("--editor-error-decoration")).toBe("line-through #ff0000");
+    expect(map.get("--wave-error")).toBe("#ff0000");
+    expect(map.get("--fg-unused-italic")).toBe("italic");
+    const none = new Map(overrideDeclarations({ warning: { effect: "none" }, deprecated: { effect: "underline" } }));
+    expect(none.get("--editor-warning-decoration")).toBe("none");
+    expect(none.get("--fg-deprecated-effect")).toBe("underline var(--fg-deprecated)");
+  });
+
+  it("keeps the font style of Errors and Warnings in custom schemes", () => {
+    const customs = {
+      "custom-x": {
+        name: "X",
+        parent: "dark" as const,
+        attributes: { error: { bold: true }, deprecated: { effect: "underline" as const } },
+      },
+    };
+    const css = schemeCss("custom-x", undefined, null, customs);
+    expect(css).toContain("--wave-error-bold: var(--fw-code-bold, 700)");
+    expect(css).toContain("--fg-deprecated-effect: underline var(--fg-deprecated)");
+  });
+
+  it("lists typo and deprecated symbol under Errors and Warnings", () => {
+    const ids = ATTRIBUTES.filter((a) => a.path.join("/") === "General/Errors and Warnings").map((a) => a.id);
+    expect(ids).toEqual(["error", "warning", "weakWarning", "typo", "unused", "deprecated", "invalid"]);
+    expect(resolvedAttribute("dark", "typo")).toMatchObject({ effect: "wave" });
+    expect(resolvedAttribute("dark", "deprecated")).toMatchObject({ effect: "strikeout", effectColor: "#8c8f95" });
+    expect(resolvedAttribute("dark", "deprecated").foreground).toBeUndefined();
+    expect(resolvedAttribute("dark", "error")).toMatchObject({ effect: "wave", bold: false, italic: false });
   });
 });

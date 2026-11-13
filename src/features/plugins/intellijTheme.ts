@@ -55,6 +55,12 @@ export const UI_KEYS: Record<string, string[]> = {
   "--bg-tab-selected": ["EditorTabs.underlinedTabBackground", "EditorTabs.selectedBackground"],
   // Islands paints the selected tab's border with `underlinedBorderColor`; the classic tabs underline with `underlineColor`.
   "--border-tab-selected": ["EditorTabs.underlinedBorderColor", "EditorTabs.underlineColor"],
+  // The selected tab of a part without focus (src/ui/focusScope.ts).
+  "--bg-tab-selected-inactive": ["EditorTabs.inactiveUnderlinedTabBackground"],
+  "--border-tab-selected-inactive": [
+    "EditorTabs.inactiveUnderlinedTabBorderColor",
+    "EditorTabs.inactiveUnderlineColor",
+  ],
   "--bg-tab-hover": ["EditorTabs.hoverBackground"],
   "--border-editor-tabs": ["EditorTabs.borderColor"],
   "--bg-toolbar-hover": ["ActionButton.hoverBackground"],

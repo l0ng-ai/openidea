@@ -172,6 +172,20 @@ pub fn description(uri: &str) -> Option<String> {
     }
 }
 
+/// The archive a `jar:` or `jdt:` library class comes from.
+pub(crate) fn archive(uri: &str) -> Option<std::path::PathBuf> {
+    match scheme(uri) {
+        "jar" => Some(crate::library_source::parse(uri)?.jar),
+        "jdt" => description(uri).filter(|p| p.ends_with(".jar") || p.ends_with(".jmod")).map(Into::into),
+        _ => None,
+    }
+}
+
+/// Modification time of the archive a `jar:` or `jdt:` library class comes from.
+pub(crate) fn archive_modified(uri: &str) -> Option<std::time::SystemTime> {
+    std::fs::metadata(archive(uri)?).and_then(|m| m.modified()).ok()
+}
+
 /// Check both the package and actual archive, so duplicate type names never pick another jar.
 pub(crate) fn matches_class(uri: &str, jar: &std::path::Path, package: &str, name: &str) -> bool {
     let segs = segments(uri);
@@ -302,6 +316,29 @@ mod tests {
         );
         assert_eq!(description("jdt://contents/a.jar/p/C.class").as_deref(), Some("a.jar › p"));
         assert_eq!(description("foo://x/y"), None);
+    }
+
+    #[test]
+    fn finds_the_archive_behind_a_library_class() {
+        assert_eq!(archive(JDT), Some("/Users/me/.m2/repository/spring-boot-4.1.1.jar".into()));
+        assert_eq!(
+            archive("jdt://contents/java.base/java.lang/String.class?=p/%5C/jdk%5C/lib%5C/jrt-fs.jar%60java.base=x"),
+            None
+        );
+        assert_eq!(archive("jdt://contents/a.jar/p/C.class"), None);
+        assert_eq!(archive("file:///a/C.java"), None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let jar = dir.path().join("lib-1.0-SNAPSHOT.jar");
+        std::fs::write(&jar, b"PK").unwrap();
+        let uri = format!("jar:file://{}!/p/C.class", jar.display());
+        assert_eq!(archive(&uri), Some(jar.clone()));
+        let before = archive_modified(&uri).unwrap();
+        let file = std::fs::File::options().write(true).open(&jar).unwrap();
+        file.set_modified(before + std::time::Duration::from_secs(5)).unwrap();
+        assert_ne!(archive_modified(&uri), Some(before));
+        std::fs::remove_file(&jar).unwrap();
+        assert_eq!(archive_modified(&uri), None);
     }
 
     #[test]

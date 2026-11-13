@@ -199,6 +199,8 @@ ship no `.icls` at all keep the built-in syntax colours.
 | `--bg-button`, `--border-button` | `Button.startBackground`, `Button.startBorderColor` |
 | `--bg-tab-selected` | `EditorTabs.underlinedTabBackground` |
 | `--border-tab-selected` | `EditorTabs.underlinedBorderColor` (Islands), `EditorTabs.underlineColor` |
+| `--bg-tab-selected-inactive` | `EditorTabs.inactiveUnderlinedTabBackground` |
+| `--border-tab-selected-inactive` | `EditorTabs.inactiveUnderlinedTabBorderColor`, `.inactiveUnderlineColor` |
 | `--fg-completion-match` | `CompletionPopup.matchForeground` |
 | `--bg-toolbar-hover`, `--bg-toolbar-pressed` | `ActionButton.hoverBackground`, `ActionButton.pressedBackground` |
 | `--bg-stripe-hover`, `--bg-stripe-selected` | `ToolWindow.Button.hoverBackground`, `.selectedBackground` |
@@ -262,6 +264,7 @@ from `type`, then map:
 | `--link` | `textLink.foreground` |
 | `--bg-input`, `--bg-field` | `input.background` |
 | `--bg-tab-selected`, `--border-tab-selected` | `tab.activeBackground`, `tab.activeBorderTop` |
+| `--bg-tab-selected-inactive`, `--border-tab-selected-inactive` | `tab.unfocusedActiveBackground`, `tab.unfocusedActiveBorderTop` |
 | `--scrollbar-thumb`, `--scrollbar-thumb-hover` | `scrollbarSlider.background`, `scrollbarSlider.hoverBackground` |
 | `--danger`, `--warning`, `--info` | `errorForeground`, `editorWarning.foreground`, `editorInfo.foreground` |
 | `--vcs-modified`, `--vcs-added`, `--vcs-deleted`, `--vcs-untracked`, `--vcs-ignored`, `--vcs-conflict` | `gitDecoration.modifiedResourceForeground`, `.addedResourceForeground`, `.deletedResourceForeground`, `.untrackedResourceForeground`, `.ignoredResourceForeground`, `.conflictingResourceForeground` |
@@ -329,7 +332,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-264 themeable tokens: 125 in the UI theme file, 139 in the editor colour scheme file.
+266 themeable tokens: 125 in the UI theme file, 141 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -518,6 +521,8 @@ a token.
 | `--fg-fold-marker` | `#6f737a` | `#8b8e94` |
 | `--fg-whitespace` | `#6f737a` | `#b5b7bd` |
 | `--fg-unused` | `#6f737a` | `#8c8c8c` |
+| `--wave-typo` | `#59a869` | `#3d9950` |
+| `--fg-deprecated` | `#8c8f95` | `#6c707e` |
 | `--bg-identifier-under-caret` | `#373b39` | `#edebfc` |
 | `--bg-identifier-under-caret-write` | `#402f33` | `#fce8f4` |
 | `--fg-inlay` | `#868a91` | `#73767c` |

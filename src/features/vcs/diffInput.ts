@@ -5,7 +5,7 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { baseName, effectiveKind } from "./model";
 import { readWorkingText } from "./ops";
-import { groupFileNodes, renamedFromPath, stagingSide, type ChangeNode } from "./changes";
+import { changeFileNodes, groupFileNodes, renamedFromPath, stagingSide, type ChangeNode } from "./changes";
 import { currentRepoRoot, statusOf } from "./store";
 import { repositoryPath } from "./repositoryPaths";
 
@@ -185,6 +185,20 @@ export function changeNodeDiffData(roots: readonly ChangeNode[], node: ChangeNod
   return withChain(
     nodes.map((n) => changeNodeDiff(n)),
     Math.max(0, nodes.indexOf(node)),
+  );
+}
+
+/**
+ * The Commit window's diff of a file: every file of the tree (in tree order) as the F7 chain,
+ * so past the last change it goes on into the unversioned files, as IDEA's Commit diff
+ * preview does (`ChangesViewDiffPreviewProcessor.iterateAllChanges`).
+ */
+export function changeTreeDiffData(roots: readonly ChangeNode[], node: ChangeNode): DiffData {
+  const all = changeFileNodes(roots);
+  const nodes = all.includes(node) ? all : [node];
+  return withChain(
+    nodes.map((n) => changeNodeDiff(n)),
+    nodes.indexOf(node),
   );
 }
 

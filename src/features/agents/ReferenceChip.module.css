@@ -1,0 +1,262 @@
+/* An `@file` / `/skill` reference: icon, name and line range, in the composer and in sent messages. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  height: 20px;
+  padding: 0 6px 0 4px;
+  margin: 0 1px;
+  vertical-align: -4px;
+  border-radius: var(--radius-selection);
+  background: color-mix(in srgb, var(--fg) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 14%, transparent);
+  color: var(--fg-strong);
+  font-size: var(--fs-small);
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+.chip:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.chip:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+.chip > svg,
+.chip > img {
+  flex: none;
+}
+.name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lines {
+  flex: none;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+/* The file is gone (renamed or deleted since it was referenced). */
+.missing {
+  color: var(--fg-muted);
+  background: transparent;
+  box-shadow: none;
+  outline: 1px dashed var(--border-strong);
+  outline-offset: -1px;
+}
+.missing .name {
+  text-decoration: line-through;
+}
+/* Selected together with the text around it in the composer. */
+.selected {
+  background: var(--bg-editor-selection);
+}
+/* A `/command` or skill. */
+.command {
+  display: inline;
+  padding: 1px 3px;
+  margin: 0 -3px;
+  border-radius: var(--radius-selection);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+/* `@something` that names no referenced file: as typed, just marked. */
+.pending {
+  color: var(--fg-strong);
+  text-decoration: underline dotted color-mix(in srgb, var(--fg) 40%, transparent);
+  text-underline-offset: 3px;
+}
+
+/* A quoted reply or selection in a sent message: as a Markdown quote in a reply. */
+.quote {
+  margin: 2px 0 6px;
+  padding: 0 10px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--fg-secondary);
+}
+
+/* Hover card: the full path, and the referenced lines (or the file's first lines). */
+.card {
+  position: fixed;
+  z-index: 1000;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(520px, calc(100vw - 24px));
+  border-radius: var(--radius-popup);
+  background: var(--bg-popup);
+  box-shadow:
+    0 0 0 1px var(--border-popup),
+    var(--shadow-popup);
+  color: var(--fg);
+  font-size: var(--fs-small);
+  pointer-events: none;
+  overflow: hidden;
+}
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+}
+.cardPath {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-strong);
+}
+.cardMeta {
+  flex: none;
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--fg-subtle);
+}
+.cardCode {
+  display: flex;
+  margin: 0;
+  padding: 6px 10px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-editor-inline, var(--bg-elev));
+  color: var(--fg-editor);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  line-height: 1.5;
+  white-space: pre;
+  overflow: hidden;
+  tab-size: 4;
+}
+.cardLine {
+  flex: none;
+  min-width: 3ch;
+  margin-right: 10px;
+  color: var(--fg-line-number);
+  text-align: right;
+  user-select: none;
+}
+
+/* A quote in the composer: its lines as one block, the `>` hidden. */
+.quoteLine {
+  margin-left: 0;
+  padding-left: 10px !important;
+  border-left: 3px solid var(--border-strong);
+  color: var(--fg-secondary);
+}
+.quoteFirst {
+  margin-top: 2px;
+}
+.quoteLast {
+  margin-bottom: 4px;
+}
+
+/* Sent message text: lays out as the text it wraps. */
+.text {
+  display: contents;
+}
+
+/* A ``` block (pasted code, terminal output): a card with a title, the line count and the code. */
+.codeCard {
+  display: block;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  margin: 4px 0 6px;
+  border-radius: var(--radius-control);
+  background: var(--bg-editor-inline, var(--bg-elev));
+  box-shadow: inset 0 0 0 1px var(--border);
+  white-space: normal;
+  overflow: hidden;
+  cursor: default;
+}
+.codeHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px 0 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-strong);
+  font-size: var(--fs-small);
+}
+.codeTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.codeMeta {
+  flex: none;
+  margin-left: auto;
+  color: var(--fg-subtle);
+}
+.codeRemove,
+.codeCopy {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.codeRemove:hover,
+.codeCopy:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+.codeBody {
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--fg-editor);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+  tab-size: 4;
+}
+/* More lines than shown: the last ones fade out. */
+.codeFaded {
+  -webkit-mask-image: linear-gradient(to bottom, var(--fg) 55%, transparent);
+  mask-image: linear-gradient(to bottom, var(--fg) 55%, transparent);
+}
+.codeMore {
+  display: block;
+  width: 100%;
+  height: 24px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: var(--link);
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+.codeMore:hover {
+  background: var(--bg-hover);
+}
+/* In the composer: the card opens as text on a click. */
+.codeCard[title] {
+  cursor: pointer;
+}
+.codeCard[title]:hover {
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+/* A ``` block being edited as text in the composer. */
+.codeLine {
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  background: var(--bg-editor-inline, var(--bg-elev));
+}

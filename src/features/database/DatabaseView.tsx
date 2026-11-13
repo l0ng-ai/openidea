@@ -58,7 +58,7 @@ import {
   useDatabase,
   type Loaded,
 } from "./store";
-import { DB_VIEW_FOCUS, openTableData } from "./treeActions";
+import { DB_VIEW_FOCUS, databaseTree, openTableData } from "./treeActions";
 import { newMenu, nodeMenu } from "./treeMenu";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
@@ -366,6 +366,34 @@ export function DatabaseView() {
     else if (n.kind === "table") await loadDetails(n.id, n.schema, n.table.name);
   };
 
+  const expandable = (n: Node) =>
+    n.kind === "source" ||
+    n.kind === "database" ||
+    n.kind === "schema" ||
+    n.kind === "folder" ||
+    n.kind === "table" ||
+    n.kind === "group";
+
+  // Expand All opens the nodes already loaded: it connects to nothing and runs no query.
+  useEffect(() => {
+    databaseTree.expandAll = () => {
+      const next = new Set(useDatabase.getState().treeExpanded);
+      const walk = (nodes: readonly Node[]) => {
+        for (const n of nodes) {
+          const kids = expandable(n) ? children(n) : undefined;
+          if (!kids) continue;
+          next.add(n.key);
+          walk(kids);
+        }
+      };
+      walk(roots);
+      useDatabase.setState({ treeExpanded: next });
+    };
+    return () => {
+      databaseTree.expandAll = null;
+    };
+  });
+
   const label = (n: Node): string => {
     switch (n.kind) {
       case "source":
@@ -509,14 +537,7 @@ export function DatabaseView() {
           getKey={(n) => n.key}
           getLabel={label}
           getChildren={children}
-          isExpandable={(n) =>
-            n.kind === "source" ||
-            n.kind === "database" ||
-            n.kind === "schema" ||
-            n.kind === "folder" ||
-            n.kind === "table" ||
-            n.kind === "group"
-          }
+          isExpandable={expandable}
           loadChildren={load}
           getIcon={(n) => icon(n)}
           getDetail={detail}
@@ -662,11 +683,12 @@ function DatabaseToolbar() {
   );
 }
 
-/** Header controls (shown on hover, like IDEA's): Collapse All. */
+/** Header controls (shown on hover, like IDEA's): Select Opened File, Expand All, Collapse All. */
 export function DatabaseHeaderActions() {
   return (
     <>
       <IconButton icon="locate" action="db.selectOpened" size="small" iconSize={16} />
+      <IconButton icon="expand-all" action="db.expandAll" size="small" iconSize={16} />
       <IconButton icon="collapse-all" action="db.collapseAll" size="small" iconSize={16} />
     </>
   );
