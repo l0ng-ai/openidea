@@ -143,6 +143,12 @@ export interface EditorKindContribution {
   /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
   onClose?(input: EditorInput): void;
   /**
+   * Whether the tab is busy (a process is running, like a terminal session's):
+   * closing its last tab asks first, and tab-limit eviction skips it. May be
+   * async; both the close confirmation and the eviction await the answer.
+   */
+  isBusy?(input: EditorInput): boolean | Promise<boolean>;
+  /**
    * The editor owns a document with unsaved state (a notebook): it takes part in
    * the dirty mark, Save All, autosave and the close prompts. Tabs with equal
    * `input.key` (splits) share one document.
