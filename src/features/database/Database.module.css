@@ -268,12 +268,28 @@
   gap: 6px;
   min-width: 0;
 }
-.tinted {
-  flex: 1;
-  margin: 0 -4px;
-  padding: 0 4px;
-  border-radius: var(--radius-control, 4px);
+/* The whole tree row, indent included, so a coloured source and its children form one band. */
+.tintedRow:not([aria-selected="true"]):not(:hover) {
+  border-radius: 0;
   background: color-mix(in srgb, var(--db-tint) var(--tint-strength), transparent);
+}
+.tintRed {
+  --db-tint: var(--db-color-red);
+}
+.tintOrange {
+  --db-tint: var(--db-color-orange);
+}
+.tintYellow {
+  --db-tint: var(--db-color-yellow);
+}
+.tintGreen {
+  --db-tint: var(--db-color-green);
+}
+.tintBlue {
+  --db-tint: var(--db-color-blue);
+}
+.tintViolet {
+  --db-tint: var(--db-color-violet);
 }
 .nodeLabel {
   overflow: hidden;
