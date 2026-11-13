@@ -174,6 +174,8 @@ for (const [theme, label] of [
     const surface = target.locator("..");
     const other = tab(page, "Result 3");
     const otherSurface = other.locator("..");
+    // The results hold focus, as they do at the end when the menu is opened from a result tab.
+    await tab(page, "Result 2").focus();
     await page.mouse.move(0, 0);
     const idle = await surface.evaluate((element) => getComputedStyle(element).backgroundColor);
     const selectedColor = await tab(page, "Result 2")
@@ -226,6 +228,43 @@ for (const [theme, label] of [
     await expect(menu(page)).toHaveCount(0);
   });
 }
+
+test("accents the selected tabs only in the part holding focus, as IDEA does", async ({ workbench: page }) => {
+  await openFromTree(page, "README.md");
+  await seedResults(page);
+  const token = (name: string) =>
+    page.evaluate((name) => {
+      const probe = document.body.appendChild(document.createElement("div"));
+      probe.style.background = `var(${name})`;
+      const color = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return color;
+    }, name);
+  const accent = await token("--bg-tab-selected");
+  const inactive = await token("--bg-tab-selected-inactive");
+  expect(inactive).not.toBe(accent);
+  const surfaces = [
+    page.getByRole("tablist", { name: "Editor tabs" }).getByRole("tab", { name: "README.md" }),
+    page.getByRole("tab", { name: "Database", exact: true }),
+    tab(page, "Result 2"),
+  ].map((tab) => tab.locator(".."));
+  const colors = () =>
+    Promise.all(surfaces.map((surface) => surface.evaluate((element) => getComputedStyle(element).backgroundColor)));
+
+  await page.getByRole("gridcell", { name: "beta rows", exact: true }).click();
+  await expect.poll(colors).toEqual([inactive, accent, accent]);
+  // A menu opened from a result tab keeps the results active.
+  await tab(page, "Result 2").click({ button: "right" });
+  await expect(menu(page)).toBeVisible();
+  await expect.poll(colors).toEqual([inactive, accent, accent]);
+  await page.keyboard.press("Escape");
+  await expect(menu(page)).toHaveCount(0);
+
+  await page.locator(".cm-content").first().click();
+  await expect.poll(colors).toEqual([accent, inactive, inactive]);
+  await page.getByRole("tree", { name: "Project", exact: true }).click({ position: { x: 10, y: 10 } });
+  await expect.poll(colors).toEqual([inactive, inactive, inactive]);
+});
 
 test("renames the clicked inactive result without changing its rows and navigates through Output with wraparound", async ({
   workbench: page,
