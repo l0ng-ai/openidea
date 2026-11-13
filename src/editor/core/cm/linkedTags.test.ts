@@ -4,6 +4,13 @@ import { EditorView } from "@codemirror/view";
 import { history, redo, undo } from "@codemirror/commands";
 import { html } from "@codemirror/lang-html";
 import { linkedTags } from "./linkedTags";
+import { prefsExtension } from "./prefs";
+import { angular } from "./angular";
+import { astro } from "./astro";
+import { django } from "./django";
+import { jsp } from "./jsp";
+import { vueLanguage } from "./vue";
+import { validateEditorExtras } from "@/platform/editorSettings";
 
 const views: EditorView[] = [];
 afterEach(() => views.splice(0).forEach((v) => v.destroy()));
@@ -12,6 +19,11 @@ const extensions: Extension = [html(), linkedTags];
 
 /** `|` marks carets, `[`/`]` a selection. */
 function make(text: string, extra: Extension = []) {
+  return makeWith([EditorState.allowMultipleSelections.of(true), extensions, extra], text);
+}
+
+/** Like `make`, with the full extension list spelled out. */
+function makeWith(extensions: Extension, text: string) {
   const ranges: ReturnType<typeof EditorSelection.cursor>[] = [];
   let doc = "";
   let anchor = -1;
@@ -25,7 +37,7 @@ function make(text: string, extra: Extension = []) {
     state: EditorState.create({
       doc,
       selection: EditorSelection.create(ranges.length ? ranges : [EditorSelection.cursor(0)]),
-      extensions: [EditorState.allowMultipleSelections.of(true), extensions, extra],
+      extensions,
     }),
     parent: document.body,
   });
@@ -187,5 +199,73 @@ describe("linked html tags", () => {
     expect(v.state.doc.toString()).toBe("<div></div>");
     expect(redo(v)).toBe(true);
     expect(v.state.doc.toString()).toBe("<divx></divx>");
+  });
+
+  // Every mode whose outer parser is `@lezer/html`: renaming an opening tag follows into
+  // the closing one (prefs.ts enables the filter for exactly these language ids).
+  describe("in the html-based modes", () => {
+    const modes: [string, () => Extension][] = [
+      ["Vue", () => vueLanguage()],
+      ["Angular Template", () => angular()],
+      ["JSP", () => jsp()],
+      ["Django Template", () => django()],
+      ["Astro", () => astro()],
+    ];
+
+    for (const [name, language] of modes) {
+      it(`renames the closing tag while the opening one is typed in ${name}`, () => {
+        const v = makeWith([language(), linkedTags], '<div| class="a">x</div>');
+        type(v, "s");
+        expect(v.state.doc.toString()).toBe('<divs class="a">x</divs>');
+      });
+    }
+  });
+
+  describe("the smart key gates the filter", () => {
+    /** The real wiring: prefsExtension attaches the filter for the document's language. */
+    const prefs = (language: string | undefined, smartKeys: Record<string, unknown> = {}) =>
+      makeWith(
+        [
+          EditorState.allowMultipleSelections.of(true),
+          // A parseable tree: the real editors attach the mode's parser beside prefsExtension.
+          html(),
+          prefsExtension({
+            prefs: validateEditorExtras({ smartKeys }),
+            path: "",
+            softWrap: false,
+            showWhitespace: false,
+            hardWrapAt: 120,
+            readOnly: false,
+            language,
+          }),
+        ],
+        "<div|></div>",
+      );
+
+    it("links tags for plain html", () => {
+      const v = prefs("html");
+      type(v, "s");
+      expect(v.state.doc.toString()).toBe("<divs></divs>");
+    });
+
+    it("links tags for the html-based language ids", () => {
+      for (const language of ["vue", "jsp", "django-html", "astro"]) {
+        const v = prefs(language);
+        type(v, "s");
+        expect(v.state.doc.toString()).toBe("<divs></divs>");
+      }
+    });
+
+    it("stays off when the option is off", () => {
+      const v = prefs("html", { simultaneousTagEditing: false });
+      type(v, "s");
+      expect(v.state.doc.toString()).toBe("<divs></div>");
+    });
+
+    it("stays off for the token-based erb mode", () => {
+      const v = prefs("erb");
+      type(v, "s");
+      expect(v.state.doc.toString()).toBe("<divs></div>");
+    });
   });
 });

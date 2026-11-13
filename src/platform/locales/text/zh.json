@@ -7782,6 +7782,7 @@
   "Role:": "角色：",
   "The user's default role when empty": "留空则使用用户的默认角色",
   "Token:": "令牌：",
+  "Simultaneous <tag></tag> editing": "同时编辑 <tag></tag>",
   "Single sign-on (web browser)": "单点登录（网页浏览器）",
   "Opens your web browser to sign in with your identity provider when connecting.": "连接时打开网页浏览器，通过身份提供方登录。",
   "Execute Script": "执行脚本",

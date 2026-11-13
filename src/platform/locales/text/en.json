@@ -1379,6 +1379,7 @@
   "Role:": "Role:",
   "The user's default role when empty": "The user's default role when empty",
   "Token:": "Token:",
+  "Simultaneous <tag></tag> editing": "Simultaneous <tag></tag> editing",
   "Single sign-on (web browser)": "Single sign-on (web browser)",
   "Opens your web browser to sign in with your identity provider when connecting.": "Opens your web browser to sign in with your identity provider when connecting.",
   "Execute Script": "Execute Script",

@@ -475,11 +475,19 @@ const noSurround = EditorView.inputHandler.of((view, from, to, text) => {
 /** Gutter icon groups of Settings › Editor › General › Gutter Icons (stable gutter classes). */
 export const GUTTER_ICON_GROUPS = [
   { id: "run", gutterClass: "cm-openidea-gutter-run" },
-  { id: "bookmarks", gutterClass: "cm-openidea-bookmarks" },
+  { id: "bookmarks", gutterClass: "cm-openidea-gutter-bookmarks" },
   { id: "inheritors", gutterClass: "cm-openidea-gutter-lineMarkers" },
   { id: "supers", gutterClass: "cm-openidea-gutter-lineMarkers" },
   { id: "colors", gutterClass: "cm-openidea-gutter-colors" },
 ] as const;
+
+/**
+ * Languages whose outer parser is `@lezer/html`, where simultaneous
+ * `<tag></tag>` editing works from the syntax tree. Angular templates carry
+ * the `html` backend id (the Angular mode is picked per project), `erb` is a
+ * token-based mode without a syntax tree and stays out.
+ */
+const LINKED_TAG_LANGUAGES = new Set(["html", "vue", "jsp", "django-html", "astro"]);
 
 export interface PrefsOptions {
   prefs: EditorExtras;
@@ -606,9 +614,11 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));
   if (k.pairQuotes) out.push(Prec.highest(skipClosingQuote));
   if (k.tabOutOfPair) out.push(tabOut);
-  // Simultaneous `<tag></tag>` editing (from the syntax tree, no option): plain HTML here;
-  // the other HTML-based modes follow once verified there too.
-  if (!o.readOnly && o.language === "html") out.push(linkedTags);
+  // Simultaneous `<tag></tag>` editing, from the syntax tree: every mode whose outer
+  // parser is `@lezer/html` — plain HTML plus the HTML-based modes (Vue SFCs, Angular
+  // templates, JSP, Django and Astro; Angular templates carry the `html` backend id).
+  // ERB is token-based (no syntax tree), so it stays out.
+  if (!o.readOnly && k.simultaneousTagEditing && LINKED_TAG_LANGUAGES.has(o.language ?? "")) out.push(linkedTags);
   if (o.commentStyle) out.push(lineCommentStyle.of(o.commentStyle));
 
   const keys = [];

@@ -158,6 +158,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     pairQuotes: true,
     surroundSelection: true,
     tabOutOfPair: true,
+    simultaneousTagEditing: true,
     reformatOnPaste: "indentEachLine",
     escapeOnPaste: true,
     smartIndent: true,
