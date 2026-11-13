@@ -7911,5 +7911,9 @@
   "{name} (group)": "{name}（分组）",
   "Servers in group": "组内服务器",
   "Upload to… on this group uploads the files to each of its servers in turn.": "对此分组执行“上传到…”时，会依次上传到组内的每台服务器。",
-  "Server Group": "服务器分组"
+  "Server Group": "服务器分组",
+  "Create Git Repository…": "创建 Git 仓库…",
+  "Select Directory for Git Init": "选择要执行 Git Init 的目录",
+  "Couldn't create Git repository": "无法创建 Git 仓库",
+  "Created Git repository in {dir}": "已在 {dir} 创建 Git 仓库"
 }

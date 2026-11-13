@@ -1510,5 +1510,9 @@
   "{name} (group)": "{name} (group)",
   "Servers in group": "Servers in group",
   "Upload to… on this group uploads the files to each of its servers in turn.": "Upload to… on this group uploads the files to each of its servers in turn.",
-  "Server Group": "Server Group"
+  "Server Group": "Server Group",
+  "Create Git Repository…": "Create Git Repository…",
+  "Select Directory for Git Init": "Select Directory for Git Init",
+  "Couldn't create Git repository": "Couldn't create Git repository",
+  "Created Git repository in {dir}": "Created Git repository in {dir}"
 }
