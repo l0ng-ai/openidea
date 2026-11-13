@@ -23,6 +23,7 @@ vi.mock("../CommitChooser", () => ({ chooseLogCommit: (commits: Commit[]) => api
 import { commitKey } from "../multiRoot";
 import { useVcs } from "../store";
 import { DEFAULT_LOG_OPTIONS, useLogOptions } from "../logOptions";
+import * as logPresentation from "../logPresentation";
 import {
   displayedLogGraph,
   emptyFilters,
@@ -32,9 +33,7 @@ import {
   goToRef,
   logState,
   openLogTab,
-  pageUntil,
   selectGitTab,
-  MAX_PAGE_UNTIL_PAGES,
   PAGE,
   reloadLog,
   revealCommit,
@@ -72,6 +71,7 @@ beforeEach(() => {
     commits: [],
     selection: [],
     selected: null,
+    seek: null,
     done: false,
     fragments: { expanded: new Set(), collapsed: new Set(), merges: new Set() },
     generation: useGitLog.getState().generation + 1,
@@ -79,6 +79,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   api.log.mockResolvedValue(ok([]));
   await reloadLog();
 });
@@ -298,41 +299,84 @@ describe("commit navigation", () => {
     expect(api.log.mock.calls[0]?.[1]).toMatchObject({ seek: target.id, branches: ["HEAD"] });
   });
 
-  it("stops pageUntil after maxPages to prevent unbounded paging and memory exhaustion", async () => {
-    let requestedPages = 0;
-    api.log.mockImplementation(async (_repo: string, q: LogQuery) => {
-      requestedPages++;
-      const skip = q.skip ?? 0;
-      return ok(
-        Array.from({ length: q.limit }, (_, i) => ({
-          ...c(`commit-${skip + i}`),
-          logPosition: skip + i,
-          repo: "/repo",
-        })),
-      );
-    });
+  it.each([10, 300])("does not rebuild the displayed graph for each of %i loaded commits", async (count) => {
+    const commits = Array.from({ length: count }, (_, i) => c(`commit${i}`, i + 1 < count ? [`commit${i + 1}`] : []));
+    useGitLog.setState({ commits, done: true });
+    const present = vi.spyOn(logPresentation, "presentLogGraph");
 
-    useGitLog.setState({ commits: [{ ...c("tip"), logPosition: 0, repo: "/repo" }], done: false });
-    await pageUntil(() => false, 3);
-    expect(requestedPages).toBe(3);
+    await goToParent(commits[0]!);
+
+    expect(useGitLog.getState().selected).toBe("commit1");
+    expect(api.log).not.toHaveBeenCalled();
+    expect(present.mock.calls.length).toBeLessThanOrEqual(3);
   });
 
-  it("stops pageUntil after MAX_PAGE_UNTIL_PAGES by default when searching for an unreachable commit", async () => {
-    let requestedPages = 0;
-    api.log.mockImplementation(async (_repo: string, q: LogQuery) => {
-      requestedPages++;
-      const skip = q.skip ?? 0;
-      return ok(
-        Array.from({ length: q.limit }, (_, i) => ({
-          ...c(`commit-${skip + i}`),
-          logPosition: skip + i,
-          repo: "/repo",
-        })),
-      );
+  it("reveals a commit beyond thirty fallback pages when seek does not find it", async () => {
+    const history = Array.from({ length: PAGE * 32 + 7 }, (_, i) => c(`commit${i}`));
+    const target = history.at(-1)!;
+    api.log.mockImplementation(async (_repo: string, q: LogQuery) => ok(history.slice(q.skip, q.skip + q.limit)));
+
+    await revealCommit(target.id, "/repo");
+
+    expect(api.log.mock.calls[0]?.[1].seek).toBe(target.id);
+    expect(api.log.mock.calls.length).toBeGreaterThan(31);
+    expect(useGitLog.getState().selected).toBe(commitKey({ ...target, repo: "/repo" }));
+  });
+
+  it("finds an old parent beyond thirty pages with one graph snapshot per check", async () => {
+    const tip = { ...c("tip", ["parent"]), repo: "/repo" };
+    const history = [
+      tip,
+      ...Array.from({ length: PAGE * 31 }, (_, i) =>
+        c(`commit${i}`, i + 1 < PAGE * 31 ? [`commit${i + 1}`] : ["parent"]),
+      ),
+      c("parent"),
+    ];
+    useGitLog.setState({ commits: [tip] });
+    api.log.mockImplementation(async (_repo: string, q: LogQuery) => ok(history.slice(q.skip, q.skip + q.limit)));
+    const present = vi.spyOn(logPresentation, "presentLogGraph");
+
+    await goToParent(tip);
+
+    expect(api.log.mock.calls.length).toBeGreaterThan(30);
+    expect(useGitLog.getState().selected).toBe(commitKey({ ...c("parent"), repo: "/repo" }));
+    expect(present.mock.calls.length).toBeLessThanOrEqual(api.log.mock.calls.length + 3);
+  });
+
+  it("recomputes collapsed parent adjacency after loading another page", async () => {
+    const tip = { ...c("tip", ["middle"]), repo: "/repo" };
+    useGitLog.setState({ commits: [tip] });
+    useLogOptions.setState({ collapseLinear: true });
+    api.log.mockResolvedValue(ok([c("middle", ["base"]), c("base")]));
+
+    await goToParent(tip);
+
+    expect(api.log).toHaveBeenCalledTimes(1);
+    expect(useGitLog.getState().selected).toBe(commitKey({ ...c("base"), repo: "/repo" }));
+  });
+
+  it("navigates the displayed parent of a linearized merge", async () => {
+    const commits = [c("merge", ["main", "side"]), c("side", ["base"]), c("main", ["base"]), c("base")];
+    useGitLog.setState({ commits, done: true });
+    useLogOptions.setState({ linearizeMerges: true });
+
+    await goToParent(commits[0]!);
+
+    expect(useGitLog.getState().selected).toBe("side");
+    expect(api.choose).not.toHaveBeenCalled();
+  });
+
+  it("does not confuse parent hashes shared by different repositories", async () => {
+    const tip = { ...c("tip", ["parent"]), repo: "/a" };
+    useVcs.setState({ roots: ["/a", "/b"] });
+    useGitLog.setState({
+      commits: [tip, { ...c("parent"), repo: "/b" }, { ...c("parent"), repo: "/a" }],
+      done: true,
     });
 
-    useGitLog.setState({ commits: [{ ...c("tip"), logPosition: 0, repo: "/repo" }], done: false });
-    await pageUntil(() => false);
-    expect(requestedPages).toBe(MAX_PAGE_UNTIL_PAGES);
+    await goToParent(tip);
+
+    expect(useGitLog.getState().selected).toBe(commitKey({ ...c("parent"), repo: "/a" }));
+    expect(api.choose).not.toHaveBeenCalled();
   });
 });

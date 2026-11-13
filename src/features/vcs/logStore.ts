@@ -1113,20 +1113,12 @@ export function selectedCommits(): Commit[] {
   return commits.filter((c) => ids.has(commitKey(c)));
 }
 
-/**
- * Maximum sequential page fetches allowed while searching history for a commit (e.g. in revealCommit or goToParent)
- * before stopping, preventing unbounded V8 heap growth / Out of Memory on large repositories.
- */
-export const MAX_PAGE_UNTIL_PAGES = 30;
-
-/** Stop on completion, failure, reaching the page limit, or a superseding view. */
-export async function pageUntil(find: () => boolean, maxPages = MAX_PAGE_UNTIL_PAGES) {
+/** Stop on completion, failure, or a superseding view; depth is never a limit. */
+async function pageUntil(find: () => boolean) {
   const generation = useGitLog.getState().generation;
-  let pages = 0;
-  while (!find() && !useGitLog.getState().done && useGitLog.getState().generation === generation && pages < maxPages) {
+  while (!find() && !useGitLog.getState().done && useGitLog.getState().generation === generation) {
     const before = useGitLog.getState().commits.length;
     await loadMore();
-    pages++;
     if (useGitLog.getState().commits.length <= before) break;
   }
 }
@@ -1204,12 +1196,18 @@ export function displayedLogGraph() {
 
 export async function goToParent(c: Commit) {
   const generation = useGitLog.getState().generation;
-  const parents = () => displayedLogGraph().graph.find((x) => x.id === commitKey(c))?.parents ?? [];
-  if (!parents().length) return;
-  const find = () => displayedLogGraph().commits.filter((x) => parents().includes(commitKey(x)));
-  await pageUntil(() => find().length === parents().length);
+  const find = () => {
+    const { graph, commits } = displayedLogGraph();
+    const parents = graph.find((x) => x.id === commitKey(c))?.parents ?? [];
+    return { parents, candidates: commits.filter((x) => parents.includes(commitKey(x))) };
+  };
+  if (!find().parents.length) return;
+  await pageUntil(() => {
+    const { parents, candidates } = find();
+    return candidates.length === parents.length;
+  });
   if (useGitLog.getState().generation !== generation) return;
-  const candidates = find();
+  const { candidates } = find();
   const chosen = candidates.length > 1 ? await chooseLogCommit(candidates, "Select Parent Commit") : candidates[0];
   if (chosen && useGitLog.getState().generation === generation) selectCommit(commitKey(chosen), true);
 }
