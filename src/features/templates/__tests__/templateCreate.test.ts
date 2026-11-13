@@ -10,6 +10,13 @@ const calls = vi.hoisted(() => ({
   openFile: vi.fn(),
   notify: vi.fn(),
   resolve: vi.fn(),
+  rollback: vi.fn(),
+}));
+
+const view = vi.hoisted(() => ({
+  state: { doc: { length: 0, toString: () => "" }, selection: { main: { head: 0 } } },
+  dispatch: vi.fn(),
+  focus: vi.fn(),
 }));
 
 vi.mock("@/platform/ipc", async (original) => ({
@@ -31,6 +38,12 @@ vi.mock("@/platform/ipc", async (original) => ({
   },
 }));
 
+vi.mock("@/editor/api", async (original) => ({
+  ...(await original<typeof import("@/editor/api")>()),
+  editorsFor: (path: string) => (/\.py$/.test(path) ? [{ view }] : []),
+  activeEditor: () => null,
+}));
+
 vi.mock("@/platform/actions", async (original) => ({
   ...(await original<typeof import("@/platform/actions")>()),
   executeAction: vi.fn(async () => true),
@@ -47,7 +60,11 @@ vi.mock("@/workbench/contributions", async (original) => ({
   resolveFileEditor: (path: string) => {
     calls.resolve(path);
     // A notebook: its own editor kind, no CodeMirror view.
-    return Promise.resolve(/\.ipynb$/.test(path) ? { input: { kind: "notebook", key: `notebook:${path}` } } : null);
+    return Promise.resolve(
+      /\.ipynb$/.test(path)
+        ? { input: { kind: "notebook", key: `notebook:${path}` }, admit: () => {}, rollback: calls.rollback }
+        : null,
+    );
   },
 }));
 
@@ -95,9 +112,28 @@ describe("createFromTemplate", () => {
     // The kind owns the document, so there is no "could not insert" warning.
     expect(calls.notify).not.toHaveBeenCalled();
     expect(calls.resolve).toHaveBeenCalledWith(path);
+    // The probe's acquisitions (the notebook backend session) are released.
+    expect(calls.rollback).toHaveBeenCalledTimes(1);
     expect(calls.openFile).toHaveBeenCalledWith(path);
-    // Resolution happens before opening, so the body is in place when it reads.
-    expect(calls.resolve.mock.invocationCallOrder[0]!).toBeLessThan(calls.openFile.mock.invocationCallOrder[0]!);
+    // The body is on disk before the editor reads it.
+    expect(calls.bytes.mock.invocationCallOrder[0]!).toBeLessThan(calls.openFile.mock.invocationCallOrder[0]!);
+  });
+
+  it("inserts a text template into the editor view, caret at $END$", async () => {
+    const py: FileTemplate = {
+      ...notebook,
+      id: "user.py",
+      extension: "py",
+      kinds: [{ id: "script", label: "Script", body: "print(1)\n$END$" }],
+    };
+    const path = await createFromTemplate(py, py.kinds[0]!, "/p", "main");
+
+    expect(calls.bytes).not.toHaveBeenCalled();
+    expect(calls.empty).toHaveBeenCalledWith(path);
+    expect(view.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ changes: { from: 0, insert: "print(1)\n" }, userEvent: "input" }),
+    );
+    expect(calls.notify).not.toHaveBeenCalled();
   });
 
   it("creates an empty file when the template renders nothing", async () => {
