@@ -520,6 +520,15 @@ export type EditorEvent =
   | { type: "docClosed"; doc: number; path: string }
   /** After the backend wrote the file. */
   | { type: "docSaved"; doc: number; path: string }
+  /** A local edit accepted by the shared document model. UTF-16 offsets. */
+  | {
+      type: "docChanged";
+      doc: number;
+      path: string;
+      baseVersion: number;
+      version: number;
+      changes: Array<{ from: number; to: number; insert: string }>;
+    }
   /** The active (focused or last focused) editor tab changed; `path` is null for non-file tabs. */
   | { type: "activeEditorChanged"; path: string | null; doc: number | null }
   /** Caret moved in the active text editor (throttled to animation frames). 0-based. */

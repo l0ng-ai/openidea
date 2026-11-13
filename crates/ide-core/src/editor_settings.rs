@@ -67,6 +67,8 @@ pub struct EditorAppearanceSettings {
     /// Smooth caret movement curve: `snappy` | `gliding`.
     pub caret_movement_style: String,
     pub line_numbers: bool,
+    /// Gutter numbering: `absolute` | `relative` | `hybrid` (absolute on the caret line, distances elsewhere).
+    pub line_number_mode: String,
     pub method_separators: bool,
     /// Sub-options of `editor.showWhitespace`.
     pub whitespace_leading: bool,
@@ -78,6 +80,10 @@ pub struct EditorAppearanceSettings {
     /// Right margin and visual guides from Code Style.
     pub hard_wrap_guides: bool,
     pub intention_bulb: bool,
+    /// Draw doc comments (Javadoc, KDoc, JSDoc, rustdoc) as rendered documentation
+    /// instead of their source, as IDEA's option of the same name. View › Active
+    /// Editor › Render Documentation Comments overrides this for one editor.
+    pub render_doc_comments: bool,
     /// Distraction Free Mode: width of the centred text column, in characters.
     pub distraction_free_width: u32,
 }
@@ -92,6 +98,7 @@ impl Default for EditorAppearanceSettings {
             smooth_caret_movement: false,
             caret_movement_style: "snappy".into(),
             line_numbers: true,
+            line_number_mode: "absolute".into(),
             method_separators: false,
             whitespace_leading: true,
             whitespace_inner: true,
@@ -100,6 +107,7 @@ impl Default for EditorAppearanceSettings {
             rainbow_indent_guides: false,
             hard_wrap_guides: true,
             intention_bulb: true,
+            render_doc_comments: false,
             distraction_free_width: 80,
         }
     }

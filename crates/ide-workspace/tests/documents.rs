@@ -345,6 +345,35 @@ fn backend_edits_emit_patches() {
 }
 
 #[test]
+fn versioned_background_edits_are_marked_non_undoable() {
+    let f = fixture();
+    let path = f.root.join("remote.txt");
+    fs::write(&path, "one").unwrap();
+    let doc = f.docs.open(&path).unwrap().id;
+    let patches = || {
+        f.events
+            .lock()
+            .iter()
+            .filter_map(|event| match event {
+                IdeEvent::DocPatched { workspace_edit, .. } => Some(*workspace_edit),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // A command's versioned edit stays an editor Undo step; a background one doesn't.
+    let edit = |text: &str| [TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 0)), new_text: text.into() }];
+    assert_eq!(f.docs.apply_edits_at(doc, 0, &edit("a")).unwrap(), Some(1));
+    assert_eq!(f.docs.apply_background_edits_at(doc, 1, &edit("b")).unwrap(), Some(2));
+    assert_eq!(patches(), [false, true]);
+    assert_eq!(f.docs.apply_background_edits_at(doc, 1, &edit("stale")).unwrap(), None);
+    assert_eq!(
+        f.docs.apply_edits_at(doc, 0, &[TextEdit { range: Range::default(), new_text: "stale".into() }]).unwrap(),
+        None
+    );
+}
+
+#[test]
 fn external_change_in_two_places_patches_each() {
     let f = fixture();
     let path = f.root.join("two.txt");

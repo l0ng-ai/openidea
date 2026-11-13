@@ -1726,6 +1726,12 @@ export const useDebugRunSessions = create<{
   Console: ComponentType<{ sessionId: number }> | null;
 }>(() => ({ sessions: [], serviceSessions: [], Console: null }));
 
+/**
+ * The Services tool window's badge: how many of its listed services are running.
+ * The run provider (another feature) keeps it current; `null` hides the badge.
+ */
+export const useServicesRunningCount = create<{ count: number | null }>(() => ({ count: null }));
+
 // ---------------------------------------------------------------------------
 // Processes a closing window or project would terminate. Features that own
 // child processes (Run/Debug sessions) publish them here, so the close guard can
@@ -1825,16 +1831,23 @@ export function addContributedFileTemplate(t: import("@/platform/fileTemplates")
   return () => useContributedFileTemplates.setState((s) => ({ templates: s.templates.filter((x) => x !== t) }));
 }
 
-/** Flush contributed document indexes before workspace usages or refactoring. */
-const documentIndexSync = new Set<(path: string) => Promise<void>>();
-export function registerDocumentIndexSync(sync: (path: string) => Promise<void>): () => void {
+/**
+ * Flush contributed document indexes before workspace usages or refactoring. A refactoring
+ * refuses (throws) while an index is incomplete; usages go ahead and resolve `false`, so the
+ * results can say they may be incomplete.
+ */
+export type DocumentIndexPurpose = "usages" | "refactor";
+type DocumentIndexSync = (path: string, purpose: DocumentIndexPurpose) => Promise<boolean | void>;
+const documentIndexSync = new Set<DocumentIndexSync>();
+export function registerDocumentIndexSync(sync: DocumentIndexSync): () => void {
   documentIndexSync.add(sync);
   return () => {
     documentIndexSync.delete(sync);
   };
 }
-export async function synchronizeDocumentIndexes(path: string): Promise<void> {
-  await Promise.all([...documentIndexSync].map((sync) => sync(path)));
+export async function synchronizeDocumentIndexes(path: string, purpose: DocumentIndexPurpose): Promise<boolean> {
+  const complete = await Promise.all([...documentIndexSync].map((sync) => sync(path, purpose)));
+  return complete.every((c) => c !== false);
 }
 
 /** Font zoom for non-CodeMirror surfaces, owned and released by their features. */

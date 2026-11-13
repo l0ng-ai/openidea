@@ -231,7 +231,7 @@ The full table is `UI_KEYS` in [`src/features/plugins/intellijTheme.ts`](../src/
 | `--syn-rainbow-1` … `--syn-rainbow-5` (Semantic highlighting, rainbow indent guides) | `RAINBOW_COLOR1` … `RAINBOW_COLOR5` |
 | `--wave-error`, `--wave-warning` | `ERRORS_ATTRIBUTES`, `WARNING_ATTRIBUTES` (effect colour) |
 | `--bg-matched-brace`, `--bg-identifier-under-caret` | `MATCHED_BRACE_ATTRIBUTES`, `IDENTIFIER_UNDER_CARET_ATTRIBUTES` |
-| `--bg-text-search-result`, `--bg-search-match` | `TEXT_SEARCH_RESULT_ATTRIBUTES`, `SEARCH_RESULT_ATTRIBUTES` |
+| `--bg-text-search-result`, `--bg-search-result` | `TEXT_SEARCH_RESULT_ATTRIBUTES`, `SEARCH_RESULT_ATTRIBUTES` |
 | `--syn-self`, `--syn-keyword-arg`, `--syn-docstring`, `--syn-predefined` | `PY.SELF_PARAMETER`, `PY.KEYWORD_ARGUMENT`, `PY.DOC_COMMENT`, `PY.BUILTIN_NAME` |
 | `--ansi-*` | `CONSOLE_*_OUTPUT` (`CONSOLE_DARKGRAY_OUTPUT` is bright black, `CONSOLE_GRAY_OUTPUT` white) |
 
@@ -329,7 +329,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-256 themeable tokens: 125 in the UI theme file, 131 in the editor colour scheme file.
+264 themeable tokens: 125 in the UI theme file, 139 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -452,6 +452,13 @@ a token.
 | `--syn-python-constant` | `var(--syn-constant)` | `var(--syn-constant)` |
 | `--syn-python-property` | `var(--syn-property)` | `var(--syn-property)` |
 | `--syn-python-type-parameter` | `var(--syn-type)` | `var(--syn-type)` |
+| `--syn-python-parentheses` | `var(--syn-punct)` | `var(--syn-punct)` |
+| `--syn-python-brackets` | `var(--syn-punct)` | `var(--syn-punct)` |
+| `--syn-python-braces` | `var(--syn-punct)` | `var(--syn-punct)` |
+| `--syn-python-nested-function` | `var(--syn-function)` | `var(--syn-function)` |
+| `--syn-python-method-call` | `var(--syn-function-call)` | `var(--syn-function-call)` |
+| `--syn-python-annotation` | `var(--syn-type)` | `var(--syn-type)` |
+| `--syn-python-format` | `var(--syn-escape)` | `var(--syn-escape)` |
 | `--syn-python-builtin` | `var(--syn-builtin)` | `var(--syn-builtin)` |
 | `--syn-python-predefined-definition` | `var(--syn-predefined)` | `var(--syn-predefined)` |
 | `--syn-python-predefined-usage` | `var(--syn-predefined)` | `var(--syn-predefined)` |
@@ -502,6 +509,7 @@ a token.
 | `--fg-editor-selection` | `inherit` | `inherit` |
 | `--bg-text-search-result` | `#114957` | `#fcd47e` |
 | `--bg-text-search-result-current` | `#165e70` | `#f2bf57` |
+| `--bg-search-result` | `#2d543f` | `#ccccff` |
 | `--bg-matched-brace` | `#43454a` | `#93d9d9` |
 | `--matched-brace-weight` | `var(--fw-code-bold)` | `inherit` |
 | `--bg-matched-tag` | `#3f4045` | `#c9ecec` |

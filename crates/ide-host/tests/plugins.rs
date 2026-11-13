@@ -154,9 +154,20 @@ impl PluginWorkspace for TestWorkspace {
         let snap = self.documents.snapshot(self.documents.by_path(path)?).ok()?;
         Some((u64::from(snap.version), snap.text))
     }
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[ide_core::TextEdit]) -> Result<u64, HostError> {
+    fn apply_edits(
+        &self,
+        path: &Path,
+        version: u64,
+        edits: &[ide_core::TextEdit],
+        background: bool,
+    ) -> Result<u64, HostError> {
         let doc = self.documents.by_path(path).ok_or_else(|| HostError::NotFound("not open".into()))?;
-        match self.documents.apply_edits_at(doc, version as u32, edits) {
+        let applied = if background {
+            self.documents.apply_background_edits_at(doc, version as u32, edits)
+        } else {
+            self.documents.apply_edits_at(doc, version as u32, edits)
+        };
+        match applied {
             Ok(Some(v)) => Ok(u64::from(v)),
             Ok(None) => Err(HostError::Stale),
             Err(e) => Err(HostError::Failed(e.message)),
@@ -455,10 +466,10 @@ fn edits_are_refused_when_the_document_changed() {
         range: ide_core::Range::new(ide_core::Pos::new(0, 0), ide_core::Pos::new(0, 3)),
         new_text: "ONE".into(),
     };
-    assert_eq!(f.workspace.apply_edits(&editor.path, doc.0, std::slice::from_ref(&edit)), Err(HostError::Stale));
+    assert_eq!(f.workspace.apply_edits(&editor.path, doc.0, std::slice::from_ref(&edit), false), Err(HostError::Stale));
     assert_eq!(f.workspace.text("src/notes.txt"), "typed one two three\nfour five\n");
     let now = f.workspace.document(&editor.path).unwrap().0;
-    assert_eq!(f.workspace.apply_edits(&editor.path, now, &[edit]), Ok(now + 1));
+    assert_eq!(f.workspace.apply_edits(&editor.path, now, &[edit], false), Ok(now + 1));
     assert_eq!(f.workspace.text("src/notes.txt"), "ONEed one two three\nfour five\n");
     let _ = (
         std::any::type_name::<Runtime>(),
@@ -806,6 +817,28 @@ fn a_reporting_task_outlives_its_background_budget() {
 
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+#[test]
+fn background_tasks_scale_and_renew_cpu_fuel_budget() {
+    let f = fixture(Limits {
+        fuel: 3_500,
+        timeout: Duration::from_millis(500),
+        background: Duration::from_millis(5_000),
+        ..Limits::default()
+    });
+    f.install(&misbehave_pkg());
+    if f.host.set_capability("misbehave", "process:git", true).is_err() {
+        return;
+    }
+    // Warm up activation in its own call so `patient` starts with a fresh 3_500-fuel budget.
+    assert_eq!(f.run("misbehave", "echo", Some("warm")).unwrap().as_deref(), Some("warm"));
+
+    let out = f.run("misbehave", "patient", None).expect("background task succeeds").expect("output");
+    assert_eq!(out, "still here");
+
+    let err = f.run("misbehave", "spin", None).unwrap_err();
+    assert!(err.contains("exceeded its CPU budget (3500 fuel per call)"), "{err}");
 }
 
 #[test]
@@ -4807,8 +4840,14 @@ impl PluginWorkspace for EndpointWorkspace {
     fn project_of(&self, _: &str) -> Option<PathBuf> {
         self.roots.lock().first().cloned()
     }
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[ide_core::TextEdit]) -> Result<u64, HostError> {
-        self.inner.apply_edits(path, version, edits)
+    fn apply_edits(
+        &self,
+        path: &Path,
+        version: u64,
+        edits: &[ide_core::TextEdit],
+        background: bool,
+    ) -> Result<u64, HostError> {
+        self.inner.apply_edits(path, version, edits, background)
     }
     fn publish_diagnostics(
         &self,
@@ -6643,7 +6682,11 @@ fn project_write_cannot_replace_the_git_file_of_a_linked_worktree() {
     }
     for rel in spellings {
         let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
-        assert!(err.contains("git's own files"), "{rel}: {err}");
+        // On Windows a stream name is refused before the path is looked at at all; elsewhere a colon
+        // is an ordinary character and the `.git` rule applies.
+        let refused =
+            if cfg!(windows) && rel.contains(':') { "file streams are not allowed" } else { "git's own files" };
+        assert!(err.contains(refused), "{rel}: {err}");
         assert_eq!(std::fs::read_to_string(&pointer).unwrap(), gitdir, "{rel}");
     }
 }

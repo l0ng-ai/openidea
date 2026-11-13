@@ -610,6 +610,7 @@ pub struct ChangelistState {
     pub files: std::collections::BTreeMap<String, String>,
 }
 
+mod backend;
 mod bek;
 mod blame;
 mod block_history;
@@ -637,6 +638,7 @@ pub use index_writes::is_own_index_write;
 mod text_encoding;
 mod write;
 
+pub use backend::Backend;
 pub use cli::{
     GitCommandObserver, detected_git_executable, filter_overrides_from, git_version, restrict, set_askpass_env,
     set_git_command_observer, set_git_executable,
@@ -745,6 +747,12 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         &self.root
     }
+    /// git's own folders for this worktree: its git dir and the common one (they differ for a
+    /// linked worktree, whose `.git` file points into the main repository).
+    pub fn metadata_dirs(&self) -> IdeResult<[PathBuf; 2]> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        Ok([self.git_dir.clone(), repo::absolute(self.gix()?.common_dir())?])
+    }
     /// Untracked files with one of these names (or under such a folder) are not reported.
     pub fn set_ignored_names(&self, names: IgnoredNames) {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
@@ -781,14 +789,23 @@ impl Repo {
     ) -> IdeResult<Option<String>> {
         let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        Ok(self.blob_of(path, rev.unwrap_or("HEAD"))?.map(|b| text_encoding::decode(&b, encoding).into_owned()))
+    }
+    /// The file's git mode at `rev` as printed by git (`100644`, `100755`, `120000`…),
+    /// `None` when absent there. `rev` follows `file_at`'s rules, `WT` reads the worktree.
+    pub fn file_mode_at(&self, path: &Path, rev: Option<&str>) -> IdeResult<Option<String>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        if rev == Some("WT") {
+            return repo::worktree_mode(self.root(), &self.rel_path(path)?);
+        }
         let rel = self.rel_path(path)?;
         let repo = self.gix()?;
-        Ok(repo::blob_at(&repo, &rel, rev.unwrap_or("HEAD"))?.map(|b| text_encoding::decode(&b, encoding).into_owned()))
+        repo::mode_at(&repo, &rel, rev.unwrap_or("HEAD"))
     }
     /// Raw revision bytes, for encoding detection when the working file is absent.
     pub fn file_bytes_at(&self, path: &Path, rev: Option<&str>) -> IdeResult<Option<Vec<u8>>> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        repo::blob_at(&self.gix()?, &self.rel_path(path)?, rev.unwrap_or("HEAD"))
+        self.blob_of(path, rev.unwrap_or("HEAD"))
     }
     /// Stage selected decoded hunks, retaining the index encoding, BOM and line endings.
     pub fn stage_hunks(

@@ -28,11 +28,13 @@ import {
   fileItem,
   folderItem,
   matchActions,
+  matchOutsideFiles,
   matchSettings,
   mergeActionResults,
   mergeSymbols,
   sectionsFor,
   textItems,
+  type OutsideFile,
   type SeItem,
   type SeTab,
   type SectionId,
@@ -43,6 +45,8 @@ export interface SeDeps {
   findFiles(query: string, limit: number): Promise<FileMatch[]>;
   /** Directories by name or path (`relPath` ending in `/`), listed with the files. */
   findDirs?(query: string, limit: number): Promise<FileMatch[]>;
+  /** Files outside the project index listed with its matches (Scratches). */
+  outsideFiles?(): Promise<OutsideFile[]>;
   findSymbols(query: string, filter: SymbolFilter, limit: number): Promise<SymbolMatch[]>;
   /** Optional language-server symbols; rejects with `unavailable` when no server. */
   workspaceSymbols?(request: RequestId, query: string): Promise<WorkspaceSymbol[]>;
@@ -260,15 +264,18 @@ export class SeController {
           // Directories rank with the files (equal scores: the file first); a file type filter
           // and a `File.kt:42` query ask for files only.
           const withDirs = !!this.deps.findDirs && !!text && !filter && q.line === null;
-          const [fetched, dirs] = await Promise.all([
+          const [indexed, dirs, outside] = await Promise.all([
             this.deps.findFiles(text, want),
             withDirs ? this.deps.findDirs!(text, want).catch(() => []) : [],
+            text && this.deps.outsideFiles ? this.deps.outsideFiles().catch(() => []) : [],
           ]);
-          const merged = dirs.length
-            ? [...fetched.map((m) => ({ m, folder: false })), ...dirs.map((m) => ({ m, folder: true }))].sort(
-                (a, b) => b.m.score - a.m.score || Number(a.folder) - Number(b.folder),
-              )
-            : fetched.map((m) => ({ m, folder: false }));
+          const fetched = outside.length ? [...indexed, ...matchOutsideFiles(outside, text)] : indexed;
+          const merged =
+            dirs.length || outside.length
+              ? [...fetched.map((m) => ({ m, folder: false })), ...dirs.map((m) => ({ m, folder: true }))].sort(
+                  (a, b) => b.m.score - a.m.score || Number(a.folder) - Number(b.folder),
+                )
+              : fetched.map((m) => ({ m, folder: false }));
           const matches = keep ? merged.filter(({ m }) => keep(m.path)) : merged;
           this.set(
             id,

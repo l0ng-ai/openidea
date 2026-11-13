@@ -228,6 +228,8 @@ impl Contribution {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum EventKind {
+    DocumentChanged,
+    WebsocketReady,
     FileClosed,
     SettingsChanged,
     InputModeChanged,
@@ -250,6 +252,8 @@ impl EventKind {
     /// The name the IDE knows it by.
     pub fn name(self) -> &'static str {
         match self {
+            Self::DocumentChanged => "document-changed",
+            Self::WebsocketReady => "websocket-ready",
             Self::FileClosed => "file-closed",
             Self::SettingsChanged => "settings-changed",
             Self::InputModeChanged => "input-mode-changed",
@@ -266,6 +270,53 @@ impl EventKind {
             Self::Scheduled => "scheduled",
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentTextChange {
+    pub from: u32,
+    pub to: u32,
+    pub insert: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentChanged {
+    pub path: String,
+    pub base_version: u64,
+    pub version: u64,
+    pub changes: Vec<DocumentTextChange>,
+}
+
+impl DocumentChanged {
+    /// Converts the wire changes to editor ranges after checking their base
+    /// version and absolute UTF-16 offsets.
+    pub fn text_edits(&self, document: &Document) -> Result<Vec<TextEdit>, Error> {
+        if document.version != self.base_version {
+            return Err(Error::Stale);
+        }
+        self.changes
+            .iter()
+            .map(|change| {
+                if change.from > change.to {
+                    return Err(Error::Invalid("document change has a reversed range".into()));
+                }
+                let start = crate::text::position_utf16(&document.text, change.from)
+                    .ok_or_else(|| Error::Invalid("document change starts outside the document".into()))?;
+                let end = crate::text::position_utf16(&document.text, change.to)
+                    .ok_or_else(|| Error::Invalid("document change ends outside the document".into()))?;
+                Ok(TextEdit { range: Range::new(start, end), text: change.insert.clone() })
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSocketReady {
+    pub plugin_id: String,
+    pub connection: u64,
 }
 
 /// How the user started an action; later IDEs may report more.
@@ -316,6 +367,8 @@ pub struct FilesChanged {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
+    DocumentChanged(DocumentChanged),
+    WebSocketReady(WebSocketReady),
     FileOpened(String),
     FileSaved(String),
     FilesChanged(FilesChanged),
@@ -517,6 +570,29 @@ mod tests {
         let d = Diagnostic::new(Range::default(), Severity::Hint, "m").code("c");
         assert_eq!((d.code.as_deref(), d.unnecessary, d.related.len()), (Some("c"), false, 0));
     }
+
+    #[test]
+    fn decodes_document_and_websocket_events() {
+        let change = Event::from_other(
+            "document-changed".into(),
+            r#"{"path":"/p/a.rs","baseVersion":7,"version":8,"changes":[{"from":1,"to":2,"insert":"x"}]}"#.into(),
+        );
+        assert!(matches!(change, Event::DocumentChanged(DocumentChanged { base_version: 7, .. })));
+        let ready = Event::from_other("websocket-ready".into(), r#"{"pluginId":"collab","connection":42}"#.into());
+        assert_eq!(ready, Event::WebSocketReady(WebSocketReady { plugin_id: "collab".into(), connection: 42 }));
+
+        let document = Document { version: 7, text: "a😀b".into() };
+        let change = DocumentChanged {
+            path: "/p/a.rs".into(),
+            base_version: 7,
+            version: 8,
+            changes: vec![DocumentTextChange { from: 1, to: 3, insert: "x".into() }],
+        };
+        assert_eq!(
+            change.text_edits(&document).unwrap(),
+            [TextEdit { range: Range::new(Position::new(0, 1), Position::new(0, 3)), text: "x".into() }]
+        );
+    }
 }
 
 /// A notification button invoking a command declared by this plugin.
@@ -541,6 +617,16 @@ impl NotificationAction {
 impl Event {
     /// Decodes additive events while preserving unknown or malformed payloads.
     pub fn from_other(kind: String, data: String) -> Self {
+        if kind == "document-changed"
+            && let Ok(change) = serde_json::from_str(&data)
+        {
+            return Self::DocumentChanged(change);
+        }
+        if kind == "websocket-ready"
+            && let Ok(ready) = serde_json::from_str(&data)
+        {
+            return Self::WebSocketReady(ready);
+        }
         if kind == "files-changed"
             && let Ok(batch) = serde_json::from_str(&data)
         {

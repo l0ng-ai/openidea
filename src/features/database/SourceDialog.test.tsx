@@ -18,4 +18,27 @@ describe("new data source", () => {
     fireEvent.click(within(screen.getByRole("listbox")).getByText("Password"));
     expect(savePassword().checked).toBe(false);
   });
+
+  it("names the secret of a Snowflake source after its authentication method", () => {
+    render(
+      <SourceDialog
+        initial={null}
+        preset={{
+          driver: "snowflake",
+          host: "",
+          snowflake: { warehouse: "", role: "", auth: "keyPair", privateKeyFile: "" },
+        }}
+      />,
+    );
+    expect(screen.getByText("Account:")).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "SSH/SSL" })).toBeNull();
+    expect(screen.getByLabelText("Private key:")).toBeTruthy();
+    expect((screen.getByLabelText("Passphrase:") as HTMLInputElement).type).toBe("password");
+    expect(savePassword().checked).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Snowflake authentication" }));
+    fireEvent.click(within(screen.getByRole("listbox")).getByText("Password"));
+    expect(screen.queryByLabelText("Private key:")).toBeNull();
+    expect((screen.getByLabelText("Password:") as HTMLInputElement).type).toBe("password");
+    for (const field of ["Schema:", "Warehouse:", "Role:"]) expect(screen.getByLabelText(field)).toBeTruthy();
+  });
 });

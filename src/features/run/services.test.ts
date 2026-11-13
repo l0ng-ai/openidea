@@ -21,6 +21,7 @@ import {
   readHidden,
   readTypes,
   runServiceItems,
+  runningServiceCount,
   sessionDetail,
   sessionStatus,
 } from "./services";
@@ -195,6 +196,27 @@ describe("run configurations in Services", () => {
     expect(configs).toEqual([first, second, fresh]);
   });
 
+  it("groups configurations by their folders first, as Run/Debug Configurations does", () => {
+    const kind = "spring-boot";
+    const gateway = { ...config("gateway", kind), folder: "Infra" };
+    const auth = { ...config("auth", kind), folder: "Infra" };
+    const orders = { ...config("orders", kind), folder: "Business" };
+    const loose = config("loose", kind);
+    const sessions = [session("s1", auth, "running", 1)];
+    const [group] = runServiceItems([loose, gateway, orders, auth], sessions, [kind], {
+      [kind]: [auth.id, gateway.id],
+    });
+    expect(group!.children!.map((c) => c.key)).toEqual([
+      "run:folder:spring-boot:Infra",
+      "run:folder:spring-boot:Business",
+      "run:config:loose",
+    ]);
+    expect(group!.children![0]).toMatchObject({ label: "Infra", icon: "folder", detail: "1 running" });
+    expect(group!.children![0]!.children!.map((c) => c.key)).toEqual(["run:config:auth", "run:config:gateway"]);
+    expect(group!.children![1]!.children!.map((c) => c.key)).toEqual(["run:config:orders"]);
+    expect(group!.detail).toBe("1 running");
+  });
+
   it("keeps stable service identity and session details after refresh and rename", () => {
     const renamed = { ...build, name: "Renamed build" };
     const items = runServiceItems(
@@ -351,6 +373,71 @@ describe("hidden configurations", () => {
       ["docker-compose", "docker-dockerfile", "docker-image"],
     );
     expect(items).toEqual([]);
+  });
+});
+
+describe("running service count (the Services badge)", () => {
+  const dev = config("dev", "npm");
+  const app = config("app", "spring-boot");
+  beforeEach(() => {
+    localStorage.clear();
+    useProject.setState({ project: { root: "/badge" } as never });
+    useRun.setState({ configs: [], sessions: [] });
+    useDebugRunSessions.setState({ serviceSessions: [] });
+    addType("npm");
+  });
+  afterEach(() => useProject.setState({ project: null }));
+
+  it("counts one per listed running configuration", () => {
+    expect(runningServiceCount()).toBeNull();
+    useRun.setState({ configs: [dev], sessions: [session("s1", dev, "running", 1)] });
+    expect(runningServiceCount()).toBe(1);
+    // A second parallel instance of the same configuration is still one service.
+    useRun.setState((s) => ({ sessions: [...s.sessions, session("s2", dev, "running", 2)] }));
+    expect(runningServiceCount()).toBe(1);
+    useRun.setState({ sessions: [session("s1", dev, "finished", 1)] });
+    expect(runningServiceCount()).toBeNull();
+  });
+
+  it("leaves out types not added and Docker kinds, and counts a live debugger", () => {
+    const compose = config("compose", "docker-compose");
+    useRun.setState({
+      configs: [dev, app, compose],
+      sessions: [
+        session("s1", dev, "running", 1),
+        session("s2", app, "running", 2),
+        session("s3", compose, "running", 3),
+      ],
+    });
+    expect(runningServiceCount()).toBe(1);
+    const debugged: DebugServiceSession = {
+      id: 1,
+      config: app,
+      status: "running",
+      processId: null,
+      startedAt: 4,
+      stop: async () => {},
+      rerun: null,
+      show: () => {},
+    };
+    // `app` is not added yet: its live debugger does not count.
+    useDebugRunSessions.setState({ serviceSessions: [debugged] });
+    expect(runningServiceCount()).toBe(1);
+    addType("spring-boot");
+    expect(runningServiceCount()).toBe(2);
+  });
+
+  it("does not count a configuration removed from the window while it runs", () => {
+    useRun.setState({ configs: [dev], sessions: [session("s1", dev, "running", 1)] });
+    const node = { key: "run:config:dev", label: "dev", icon: "" };
+    for (const entry of runServiceProvider.menu!(node)) {
+      if (entry.kind === "separator" || entry.kind === "header" || entry.kind === "action") continue;
+      if (entry.label === "Remove from Services") {
+        entry.run!();
+        break;
+      }
+    }
+    expect(runningServiceCount()).toBeNull();
   });
 });
 

@@ -111,8 +111,9 @@ pub trait PluginWorkspace: Send + Sync {
     /// Version and text of the open document at `path`.
     fn document(&self, path: &Path) -> Option<(u64, String)>;
     /// Applies `edits` to the open document at `path` if it is still at
-    /// `version`, as one change (one undo step in the editor).
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit]) -> Result<u64, HostError>;
+    /// `version`, as one change: one undo step in the editor, or none for a
+    /// `background` caller (a plugin event rather than a command).
+    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit], background: bool) -> Result<u64, HostError>;
     /// Code from the project may run (git hooks and config on fetch).
     fn trusted(&self, root: &Path) -> bool;
     /// Root of the project open in `window`.
@@ -178,7 +179,7 @@ impl SecretStore for FileSecretStore {
 }
 
 /// Largest response body a plugin receives.
-const MAX_RESPONSE: usize = 8 << 20;
+const MAX_RESPONSE: usize = 16 << 20;
 /// Largest stdout / stderr kept from a process.
 const MAX_OUTPUT: usize = 16 << 20;
 /// Most processes one plugin keeps running at once.
@@ -488,6 +489,7 @@ type SettingSnapshots = BTreeMap<(Option<String>, String), BTreeMap<String, Stri
 /// State shared by the host and every plugin's [`PluginApi`].
 pub(super) struct Shared {
     pub sink: Arc<dyn PluginEventSink>,
+    pub websockets: super::websocket::WebSocketHub,
     pub workspace: RwLock<Option<Arc<dyn PluginWorkspace>>>,
     /// `<plugins>/.data`: one directory per plugin id.
     pub data_dir: PathBuf,
@@ -565,7 +567,8 @@ impl Shared {
             ui,
             registry,
             locale: RwLock::new("en".into()),
-            sink,
+            sink: sink.clone(),
+            websockets: super::websocket::WebSocketHub::new(sink.clone()),
             workspace: RwLock::new(None),
             secrets: RwLock::new(Arc::new(FileSecretStore { dir: data_dir.clone() })),
             pins,
@@ -775,6 +778,7 @@ impl Shared {
 
         self.kill_processes(plugin);
         self.connections.clear(plugin);
+        self.websockets.disconnect_plugin(plugin);
         self.setting_snapshots.lock().retain(|(_, p), _| p != plugin);
         let channels: Vec<_> = {
             let mut output = self.output.lock();
@@ -1272,12 +1276,13 @@ pub(super) fn commit_draft(
         };
         // Both callers have checked that the window's project is trusted.
         r.set_execution_allowed(true);
-        let pending = r.pending_changes(&repo.options, budget, &|path| Ok(workspace.vcs_encoding(path))).map_err(
-            |e| match e.kind {
+        let backend = &r as &dyn ide_vcs::Backend;
+        let pending = backend
+            .pending_changes(&repo.options, budget, &|path| Ok(workspace.vcs_encoding(path)))
+            .map_err(|e| match e.kind {
                 ide_core::error::ErrorKind::InvalidInput => HostError::Invalid(e.message),
                 _ => HostError::Failed(e.message),
-            },
-        )?;
+            })?;
         let root = to_ipc(r.root());
         for c in pending {
             budget -= c.diff.as_ref().map_or(0, String::len).min(budget);
@@ -2048,13 +2053,14 @@ impl HostApi for PluginApi {
 
     fn apply_edits(
         &self,
-        _client: Option<&str>,
+        client: Option<&str>,
         path: &Path,
         version: u64,
         edits: Vec<TextEdit>,
     ) -> Result<u64, HostError> {
         let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("no project is open".into()))?;
-        workspace.apply_edits(path, version, &edits)
+        // Edits from a window's command are undoable; `editor.apply-edits-at` from a background event isn't.
+        workspace.apply_edits(path, version, &edits, client.is_none())
     }
 
     fn storage_get(&self, key: &str) -> Result<Option<String>, HostError> {
@@ -2262,7 +2268,7 @@ impl HostApi for PluginApi {
                 let mut response = response;
                 while let Some(chunk) = response.chunk().await.map_err(|e| HostError::Failed(e.to_string()))? {
                     if body.len() + chunk.len() > MAX_RESPONSE {
-                        return Err(HostError::Failed("response larger than 8 MiB".into()));
+                        return Err(HostError::Failed(format!("response larger than {} MiB", MAX_RESPONSE >> 20)));
                     }
                     body.extend_from_slice(&chunk);
                 }
@@ -2273,6 +2279,49 @@ impl HostApi for PluginApi {
                 () = cancel.cancelled() => Err(HostError::Cancelled),
             }
         })
+    }
+
+    fn websocket_connect(
+        &self,
+        root: &Path,
+        request: ide_plugin::WebSocketRequest,
+        timeout: Duration,
+    ) -> Result<u64, HostError> {
+        let secrets = self.shared.secrets.read().clone();
+        let plugin = self.id().to_owned();
+        let headers = request
+            .headers
+            .into_iter()
+            .map(|(name, value)| {
+                let value = fill_secrets(&value, |name| secrets.get(&plugin, name))?;
+                Ok((name, value))
+            })
+            .collect::<Result<Vec<_>, HostError>>()?;
+        net_runtime()
+            .block_on(self.shared.websockets.connect(
+                &plugin,
+                &to_ipc(root),
+                &request.url,
+                &headers,
+                &request.subprotocol,
+                timeout,
+            ))
+            .map_err(|error| match error {
+                super::websocket::ConnectError::Invalid(message) => HostError::Invalid(message),
+                super::websocket::ConnectError::Failed(message) => HostError::Failed(message),
+            })
+    }
+
+    fn websocket_send(&self, connection: u64, bytes: Vec<u8>) -> Result<(), HostError> {
+        self.shared.websockets.send(self.id(), connection, bytes).map_err(HostError::Failed)
+    }
+
+    fn websocket_drain(&self, connection: u64, limit: usize) -> Result<ide_plugin::WebSocketBatch, HostError> {
+        self.shared.websockets.drain(self.id(), connection, limit).map_err(HostError::Invalid)
+    }
+
+    fn websocket_close(&self, connection: u64) {
+        let _ = self.shared.websockets.disconnect(self.id(), connection);
     }
 
     /// The `net:ask` answer: a host the user allowed with "always" is
@@ -3220,11 +3269,16 @@ impl PluginWorkspace for HostWorkspace {
         Some((u64::from(snap.version), snap.text))
     }
 
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit]) -> Result<u64, HostError> {
+    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit], background: bool) -> Result<u64, HostError> {
         let (project, doc) =
             self.open_document(path).ok_or_else(|| HostError::NotFound(format!("{} is not open", path.display())))?;
         let version = u32::try_from(version).map_err(|_| HostError::Stale)?;
-        match project.documents.apply_edits_at(doc, version, edits) {
+        let applied = if background {
+            project.documents.apply_background_edits_at(doc, version, edits)
+        } else {
+            project.documents.apply_edits_at(doc, version, edits)
+        };
+        match applied {
             Ok(Some(v)) => Ok(u64::from(v)),
             Ok(None) => Err(HostError::Stale),
             Err(e) if e.kind == ide_core::error::ErrorKind::InvalidInput => Err(HostError::Invalid(e.message)),
@@ -3554,7 +3608,7 @@ mod tests {
         fn document(&self, _: &Path) -> Option<(u64, String)> {
             None
         }
-        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit], _: bool) -> Result<u64, HostError> {
             Err(HostError::Stale)
         }
         fn trusted(&self, _: &Path) -> bool {
@@ -3618,7 +3672,7 @@ mod tests {
         fn document(&self, _: &Path) -> Option<(u64, String)> {
             None
         }
-        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit], _: bool) -> Result<u64, HostError> {
             Err(HostError::Stale)
         }
         fn trusted(&self, _: &Path) -> bool {
@@ -3819,10 +3873,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let api = shell_api(tmp.path());
         let token = CancellationToken::new();
-        let cmd = shell("head -c 5242880 /dev/zero; head -c 5242880 /dev/zero >&2");
+        // stdout within the limit comes back whole; stderr beyond it is truncated (stdout beyond it fails).
+        let cmd = shell(&format!("head -c 5242880 /dev/zero; head -c {} /dev/zero >&2", MAX_OUTPUT + (1 << 20)));
         let out = api.run_process(cmd.clone(), None, None, &token, Duration::from_secs(5)).unwrap();
         assert_eq!(out.status, Some(0));
-        assert_eq!((out.stdout.len(), out.stderr.len()), (MAX_OUTPUT, MAX_OUTPUT));
+        assert_eq!((out.stdout.len(), out.stderr.len()), (5 << 20, MAX_OUTPUT));
         let id = api.start_process(cmd, None, None).unwrap();
         let out = api.wait_process(id, MAX_PENDING, Duration::from_secs(5), &token).unwrap();
         assert_eq!(out.status, Some(0));
@@ -3893,6 +3948,72 @@ mod tests {
         assert!(matches!(result, Err(HostError::Denied(cap)) if cap == "net:127.0.0.1"));
         assert!(target.accept().is_err(), "ungranted target must never receive a connection");
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_accepts_responses_up_to_16_mib_and_rejects_larger_bodies() {
+        fn serve_bytes(total: usize) -> (u16, std::thread::JoinHandle<()>) {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let handle = std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0; 4096];
+                let _ = stream.read(&mut buf);
+                let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n");
+                if stream.write_all(header.as_bytes()).is_err() {
+                    return;
+                }
+                let chunk = [b'x'; 64 << 10];
+                let mut sent = 0;
+                while sent < total {
+                    let n = (total - sent).min(chunk.len());
+                    if stream.write_all(&chunk[..n]).is_err() {
+                        break;
+                    }
+                    sent += n;
+                }
+            });
+            (port, handle)
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let api = api(dir.path(), Arc::default());
+
+        let (ok_port, ok_worker) = serve_bytes(10 << 20);
+        let resp = api
+            .fetch(
+                HttpRequest {
+                    method: "GET".into(),
+                    url: format!("http://127.0.0.1:{ok_port}/"),
+                    headers: Vec::new(),
+                    body: None,
+                    timeout: Duration::from_secs(10),
+                    grants: vec![Capability::Net("127.0.0.1".into())],
+                },
+                &CancellationToken::new(),
+            )
+            .expect("10 MiB response within 16 MiB limit succeeds");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body.len(), 10 << 20);
+        ok_worker.join().unwrap();
+
+        let (big_port, big_worker) = serve_bytes(MAX_RESPONSE + (1 << 20));
+        let err = api
+            .fetch(
+                HttpRequest {
+                    method: "GET".into(),
+                    url: format!("http://127.0.0.1:{big_port}/"),
+                    headers: Vec::new(),
+                    body: None,
+                    timeout: Duration::from_secs(10),
+                    grants: vec![Capability::Net("127.0.0.1".into())],
+                },
+                &CancellationToken::new(),
+            )
+            .expect_err("response exceeding 16 MiB fails explicitly");
+        assert!(matches!(&err, HostError::Failed(msg) if msg.contains("response larger than 16 MiB")), "{err:?}");
+        big_worker.join().unwrap();
     }
 
     #[test]
@@ -4078,7 +4199,7 @@ mod workbench_tests {
         fn document(&self, _: &Path) -> Option<(u64, String)> {
             self.text.clone().map(|s| (1, s))
         }
-        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit], _: bool) -> Result<u64, HostError> {
             Err(HostError::Stale)
         }
         fn trusted(&self, _: &Path) -> bool {

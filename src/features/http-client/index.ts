@@ -8,7 +8,7 @@
 import { activeEditor, registerEditorContribution, registerLanguageMode } from "@/editor/api";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
 import { call, commands, emitLocalIdeEvent, IpcError, isTauri } from "@/platform/ipc";
-import { ipcPath } from "@/platform/paths";
+import { appDataDir } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import {
   editorService,
@@ -106,9 +106,7 @@ function directoryArg(arg: unknown): string | null {
 /** New HTTP Request: `requests[_n].http` in `directory`, else a scratch, with an example request. */
 async function newRequest(directory?: string) {
   try {
-    const { appDataDir } = await import("@tauri-apps/api/path");
-    // `appDataDir()` is native (`C:\…`): the UI holds paths `/`-separated.
-    const dir = directory ?? `${ipcPath(await appDataDir()).replace(/\/+$/, "")}/scratches`;
+    const dir = directory ?? `${await appDataDir()}/scratches`;
     try {
       await call(commands.fsCreateDir(dir));
     } catch (e) {

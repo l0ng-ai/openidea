@@ -2,6 +2,7 @@
 import type { ChangelistState, FileStatus } from "@/bindings";
 import { baseName, dirName, effectiveKind, relTo, repoLabel, rootOf, stripSlash, type EffectiveKind } from "./model";
 import { tx } from "@/platform/i18n";
+import type { RepoHead } from "./store";
 
 export type GroupId = "conflicts" | "changes" | "unversioned" | "staged" | "unstaged";
 
@@ -38,8 +39,10 @@ export interface ChangeNode {
   kind?: EffectiveKind;
   /** Absolute path (files and directories). */
   path?: string;
-  /** Detail text: the relative directory (flat mode) or the old name. */
+  /** Detail text: the relative directory (flat mode), the old name or a repository's branch. */
   detail?: string;
+  /** Icon before the detail: a repository's branch, or its HEAD commit when detached. */
+  detailIcon?: "branch" | "commit";
   /** Change list id (change list groups and their descendants). */
   changelist?: string;
   /** The active change list's group. */
@@ -180,6 +183,13 @@ function childNodes(files: readonly FileStatus[], root: string, group: GroupId, 
     .map((f) => fileNode(f, root, group, true, scope));
 }
 
+/** The branch a repository is on, or its HEAD commit when detached (IDEA's repository node hint). */
+function headHint(head: RepoHead | undefined): Pick<ChangeNode, "detail" | "detailIcon"> {
+  if (head?.head) return { detail: head.head, detailIcon: "branch" };
+  if (head?.headCommit) return { detail: head.headCommit.slice(0, 8), detailIcon: "commit" };
+  return {};
+}
+
 /** With several repositories, a node per repository (IDEA's "Group by Repository") above the files. */
 function repoNodes(
   files: readonly FileStatus[],
@@ -188,6 +198,7 @@ function repoNodes(
   groupByDir: boolean,
   scope: string,
   repos: readonly string[],
+  heads: Readonly<Record<string, RepoHead>>,
 ): ChangeNode[] {
   if (repos.length < 2) return childNodes(files, root, group, groupByDir, scope);
   const byRepo = new Map<string, FileStatus[]>();
@@ -208,6 +219,7 @@ function repoNodes(
       children: childNodes(own, repo, group, groupByDir, `${scope}@${repo}`),
       files: own,
       path: repo,
+      ...headHint(heads[repo]),
     }));
 }
 
@@ -223,8 +235,9 @@ function tagList(nodes: ChangeNode[], id: string): ChangeNode[] {
  * Group roots (Merge Conflicts / Changes / Unversioned Files) with flat or directory
  * children. With change lists, "Changes" is split into one group per list
  * (`ChangelistState.files` keys are project-relative paths). With several
- * repositories (`repos`), each group's files are grouped by repository first. With
- * `byStaging`, "Changes" becomes "Staged Changes" and "Unstaged Changes" instead.
+ * repositories (`repos`), each group's files are grouped by repository first, with
+ * each repository's branch (`heads`) beside its name. With `byStaging`, "Changes"
+ * becomes "Staged Changes" and "Unstaged Changes" instead.
  */
 export function buildChangeTree(
   status: readonly FileStatus[],
@@ -233,6 +246,7 @@ export function buildChangeTree(
   lists?: ChangelistState,
   repos: readonly string[] = [],
   byStaging = false,
+  heads: Readonly<Record<string, RepoHead>> = {},
 ): ChangeNode[] {
   const byGroup = new Map<GroupId, FileStatus[]>();
   for (const fs of status) {
@@ -253,7 +267,7 @@ export function buildChangeTree(
       ];
       for (const [side, own] of sides) {
         if (!own.length) continue;
-        const children = repoNodes(own, root, side, groupByDir, side, repos);
+        const children = repoNodes(own, root, side, groupByDir, side, repos, heads);
         roots.push({
           key: `group:${side}`,
           type: "group",
@@ -281,7 +295,7 @@ export function buildChangeTree(
           type: "group",
           label: l.name,
           group: g,
-          children: tagList(repoNodes(own, root, g, groupByDir, scope, repos), l.id),
+          children: tagList(repoNodes(own, root, g, groupByDir, scope, repos, heads), l.id),
           files: own,
           changelist: l.id,
           active: l.id === lists.active,
@@ -291,7 +305,7 @@ export function buildChangeTree(
       continue;
     }
     if (!files.length) continue;
-    const children = repoNodes(files, root, g, groupByDir, g, repos);
+    const children = repoNodes(files, root, g, groupByDir, g, repos, heads);
     roots.push({ key: `group:${g}`, type: "group", label: GROUP_LABEL[g], group: g, children, files });
   }
   return roots;
@@ -376,7 +390,12 @@ export function renamedFromPath(fs: FileStatus): string | null {
 export function planCommit(status: readonly FileStatus[], checks: ReadonlyMap<string, CheckState>): CommitPlan {
   const plan: CommitPlan = { stage: [], exclude: [], included: [], partial: [] };
   for (const fs of status) {
-    if (!groupOf(fs)) continue;
+    if (!groupOf(fs)) {
+      // Listed nowhere, yet staged: added to the index, then deleted from disk. It is no
+      // change against HEAD, so the commit must not pick up the staged addition.
+      if (fs.staged && fs.staged !== "conflicted" && fs.unstaged !== "ignored") plan.exclude.push(stripSlash(fs.path));
+      continue;
+    }
     const c = checkOf(fs, checks);
     const path = stripSlash(fs.path);
     if (c === "none") {

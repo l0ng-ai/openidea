@@ -1,0 +1,11 @@
+{
+  "tools": {
+    "jdtls": "1.63.0-202610191322",
+    "java": "21.0.13.0.2 (Homebrew)"
+  },
+  "groups": {
+    "declaration": [
+      "jdt://contents/java.base/java.util/ArrayList.java#ArrayList"
+    ]
+  }
+}

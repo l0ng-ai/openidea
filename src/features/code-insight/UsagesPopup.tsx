@@ -146,7 +146,16 @@ function UsagesPopupInner() {
   const keys = shortcutLabel("find.usages");
   return (
     <Popup open anchor={anchor} onClose={close} aria-label="Usages" className={styles.popup}>
-      <div className={styles.focus} tabIndex={0} data-autofocus onKeyDown={onKeyDown}>
+      <div
+        className={styles.focus}
+        tabIndex={0}
+        data-autofocus
+        data-testid="usages-popup"
+        data-loading={loading}
+        data-total={total}
+        data-scope={scope ?? undefined}
+        onKeyDown={onKeyDown}
+      >
         <div className={styles.header}>
           <span className={styles.title}>
             {symbol ? tx`Usages of ${symbol}` : tx("Usages")}{" "}
@@ -191,7 +200,11 @@ function UsagesPopupInner() {
           </button>
         </div>
         <UsageAccessFilter items={all} />
-        {note && <div className={styles.note}>{note}</div>}
+        {note && (
+          <div className={styles.note} data-testid="usages-note">
+            {note}
+          </div>
+        )}
         <div className={styles.body} style={{ height: Math.max(1, Math.min(14, items.length)) * ROW }}>
           <List
             items={items}
@@ -211,7 +224,7 @@ function UsagesPopupInner() {
               </div>
             }
             renderItem={(u) => (
-              <div className={styles.row}>
+              <div className={styles.row} data-testid="usage-row" data-path={u.path} data-line={u.line}>
                 <Icon name={fileIconName(basename(u.path), u.path)} size={16} className={styles.icon} />
                 <UsagePreview usage={u} />
                 <span className={styles.spacer} />

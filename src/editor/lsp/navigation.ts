@@ -192,6 +192,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
         label: l.name,
         detail: [l.container, where].filter(Boolean).join(" · "),
         symbol: l.kind,
+        location: { path: l.path, line: l.range.start.line },
         run: () => navigateTo(l),
       };
     return {
@@ -199,6 +200,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
       label: names[i] ?? basename(l.path),
       detail: [indexed.get(i) ?? enclosingType(files.get(l.path), l), where].filter(Boolean).join(" · "),
       icon: fileIconName(basename(l.path), l.path),
+      location: { path: l.path, line: l.range.start.line },
       run: () => navigateTo(l),
     };
   });
@@ -244,7 +246,6 @@ function streamedImplementations(view: EditorView, offset: number, onOpen: () =>
       channel.onmessage = (locs) => {
         if (finished || opened || current !== request || !locs.length || superseded()) return;
         opened = true;
-        onOpen();
         first = dedupeLocations(locs);
         showing = locationItems(first).then((items) => {
           // All of them arrived meanwhile: shown as usual.
@@ -256,6 +257,7 @@ function streamedImplementations(view: EditorView, offset: number, onOpen: () =>
             kind: "list",
             anchor: caretAnchor(view, offset),
             title: searchingTitle(name, first.length),
+            busy: true,
             items,
             pin: pinToFind(name ?? "", first),
             onClose: () => {
@@ -263,6 +265,7 @@ function streamedImplementations(view: EditorView, offset: number, onOpen: () =>
               if (!finished) void commands.cancelRequest(request).catch(() => {});
             },
           });
+          onOpen();
         });
       };
       return lspRequest(() => commands.lspGotoImplementation(request, doc, pos, channel)).finally(() => {
@@ -282,6 +285,7 @@ function streamedImplementations(view: EditorView, offset: number, onOpen: () =>
       if (closed || superseded()) return;
       updatePopup("list", {
         title: chooserTitle("implementation", name, all.length),
+        busy: false,
         items,
         pin: pinToFind(name ?? "", all),
       });
@@ -328,7 +332,6 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   const gesture = ++gestures;
   latestGesture.set(view, gesture);
   pendingGestureHints.get(view)?.();
-  pendingGestureHints.delete(view);
   const source = view.state.doc;
   const context = docOf(view);
   const superseded = () =>
@@ -336,7 +339,25 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
     !view.dom.isConnected ||
     view.state.doc !== source ||
     docOf(view) !== context;
-  const offset = at ?? view.state.selection.main.head;
+  // Until the target or the chooser shows: preparing the chooser's rows (file lines, symbols)
+  // can take as long as the server's answer.
+  const done = showPendingHint(view, tx`Finding navigation target…`);
+  pendingGestureHints.set(view, done);
+  try {
+    await gotoResolved(view, kind, at ?? view.state.selection.main.head, superseded, done);
+  } finally {
+    done();
+    if (pendingGestureHints.get(view) === done) pendingGestureHints.delete(view);
+  }
+}
+
+async function gotoResolved(
+  view: EditorView,
+  kind: GotoKind,
+  offset: number,
+  superseded: () => boolean,
+  done: () => void,
+) {
   if (kind === "definition" || kind === "declaration") {
     const own = contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
     if (own?.(view, offset)) return;
@@ -379,17 +400,10 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   let serverDown = false;
   let streamed: ReturnType<typeof streamedImplementations> | null = null;
   try {
-    const done = showPendingHint(view, tx`Finding navigation target…`);
-    pendingGestureHints.set(view, done);
     const stream = kind === "implementation" ? streamedImplementations(view, offset, done, superseded) : null;
     streamed = stream;
     const request = stream ? () => stream.request(doc.doc, pos) : () => requestNavigation(view, offset, kind);
-    try {
-      locs = dedupeLocations(await gotoAfterEdits(view, request, superseded));
-    } finally {
-      done();
-      if (pendingGestureHints.get(view) === done) pendingGestureHints.delete(view);
-    }
+    locs = dedupeLocations(await gotoAfterEdits(view, request, superseded));
   } catch (e) {
     // The chooser shows the first ones: closing it cancelled the search, or the rest failed.
     if (streamed && (await streamed.opened())) {

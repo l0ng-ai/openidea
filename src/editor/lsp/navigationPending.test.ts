@@ -70,6 +70,38 @@ describe("slow navigation feedback", () => {
     expect(document.querySelector(".cm-lsp-hint")).toBeNull();
   });
 
+  it("shows progress while the chooser's rows load after a quick answer, until the chooser opens", async () => {
+    let finish!: (files: Map<string, string[]>) => void;
+    vi.spyOn(files, "readManyFileLines").mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    lspGoto.mockResolvedValueOnce({ status: "ok", data: [at("/p/a.rs", 1), at("/p/b.rs", 2)] });
+    const pending = gotoTargets(view, "definition");
+    await vi.advanceTimersByTimeAsync(250);
+    expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Finding navigation target…");
+    expect(listPopup()).toBeNull();
+    finish(new Map());
+    await pending;
+    expect(listPopup()?.items).toHaveLength(2);
+    expect(document.querySelector(".cm-lsp-hint")).toBeNull();
+    closePopup();
+  });
+
+  it("shows progress while the first implementations' rows load, until the chooser opens", async () => {
+    let finish!: (files: Map<string, string[]>) => void;
+    vi.spyOn(files, "readManyFileLines").mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    const search = slowImplementations();
+    const pending = gotoTargets(view, "implementation");
+    await vi.waitFor(() => expect(lspGotoImplementation).toHaveBeenCalled());
+    search.first([at("/p/Own.java", 3)]);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Finding navigation target…");
+    finish(new Map());
+    await vi.waitFor(() => expect(listPopup()).not.toBeNull());
+    expect(document.querySelector(".cm-lsp-hint")).toBeNull();
+    search.resolve({ status: "ok", data: [at("/p/Own.java", 3), at("/p/Library.java", 8)] });
+    await pending;
+    closePopup();
+  });
+
   it("replaces progress with the server error", async () => {
     const search = slowImplementations();
     const pending = gotoTargets(view, "implementation");

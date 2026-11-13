@@ -41,12 +41,65 @@
 /* The task's state and its terminal and changes, just above the composer. */
 .statusBar {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  /* The changes chip sits above the line; the facts stay on that line's baseline. */
+  align-items: flex-end;
+  gap: 6px;
   min-width: 0;
   padding: 0 2px;
+  overflow: hidden;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
+}
+.agent {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--fg-secondary);
+}
+.agentName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Where the task works, as the new-task composer shows it. */
+.where {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.note {
+  flex: none;
+  color: var(--fg-subtle);
+}
+.state {
+  flex: none;
+  white-space: nowrap;
+}
+/* The changes sit above the meter, time and terminal; those keep their one row at the right. */
+.statusEnd {
+  display: inline-flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  margin-left: auto;
+}
+/* Shrinks before the terminal buttons do: in a narrow docked session the meters clip, not the controls. */
+.statusMeters {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 .statusActions {
   display: flex;
@@ -54,12 +107,43 @@
   align-items: center;
   gap: 2px;
 }
-.statusText {
-  flex: 1 1 0;
+/* What changed (files, commits) above the meters; both open the Changes pane. */
+.statusChips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
   min-width: 0;
+}
+.statusChip {
+  composes: surface from "../../ui/Chip.module.css";
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0 8px;
+  overflow: hidden;
+  border: none;
+  color: var(--fg-secondary);
+  font: inherit;
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  cursor: pointer;
+}
+.statusChip:hover,
+.statusChip[aria-expanded="true"] {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+/* In a narrow docked session the chip is narrower than its text: the label ends in an ellipsis. */
+.statusChipLabel {
+  display: inline-block;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .muted {
   color: var(--fg-subtle);
@@ -113,10 +197,11 @@
 .stream:focus {
   outline: none;
 }
-/* Scrolled up: one click back to the latest message, floating over the stream's end. */
+/* Scrolled up: one click back to the latest message, centred over the stream's end like the conversation. */
 .jumpToLatest {
   position: absolute;
-  right: var(--space-3);
+  left: 50%;
+  transform: translateX(-50%);
   bottom: var(--space-2);
   z-index: 2;
   display: inline-flex;
@@ -954,9 +1039,12 @@
 }
 .meter {
   display: inline-flex;
+  flex: 0 1 auto;
   align-items: center;
+  min-width: 0;
   height: 22px;
   gap: 5px;
+  overflow: hidden;
 }
 .usageBar {
   width: 36px;
@@ -1100,6 +1188,47 @@
   font-size: var(--fs-small);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+/* Group and commit rows of the grouped Changes pane. */
+.changeGroup {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.changeGroupName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+.changeCommit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.changeCommitHash {
+  flex: none;
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+}
+.changeCommitSummary {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.changeCommitTime {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
 }
 
 .added {
@@ -1565,7 +1694,6 @@
   cursor: pointer;
 }
 .trayChip:hover,
-.trayChip[aria-pressed="true"],
 .trayChip[aria-expanded="true"] {
   background: var(--bg-hover);
   color: var(--fg);

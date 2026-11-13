@@ -320,6 +320,25 @@ describe("store", () => {
     }
   });
 
+  it("leaves a theme another window selected alone until this window's settings change", async () => {
+    const stop = [syncProjection(), followThemeSetting()];
+    try {
+      useProject.setState({ settings: { appearance: { theme: "plugin:theme-harbor-night/harbor-night" } } as never });
+      await refreshPlugins();
+      await waitFor(() => expect(usePlugins.getState().activeTheme?.theme.id).toBe("harbor-night"));
+      const setTheme = vi.spyOn(backend, "setTheme");
+      // Another window picked a built-in theme; this window's settings still name the plugin's.
+      act(() => usePlugins.setState({ activeTheme: null }));
+      await Promise.resolve();
+      expect(setTheme).not.toHaveBeenCalled();
+      act(() => useProject.setState({ settings: { appearance: { theme: "dark" } } as never }));
+      expect(setTheme).not.toHaveBeenCalled();
+    } finally {
+      stop.forEach((s) => s());
+      useProject.setState({ settings: null as never });
+    }
+  });
+
   it("installs from a folder, its plugin.toml, or a package file unpacked first", async () => {
     setConsentPrompt(async () => ({ optional: [] }));
     for (const [picked, unpacked] of [
@@ -1036,6 +1055,17 @@ describe("secrets", () => {
     await waitFor(() => expect(screen.getByText("Not set")).toBeInTheDocument());
     expect(await backend.secrets("ai")).toEqual([]);
   });
+  it("shows a declared secret on the plugin's details page", async () => {
+    const ai = plugin({ id: "ai", name: "AI Commit", contributions: [{ point: "secrets", label: "API key" }] });
+    const snapshot = {
+      plugins: [ai],
+      activeTheme: null,
+      ui: [{ pluginId: "ai", point: "secrets", key: "api-key", decl: { name: "api-key", label: "API key" } }],
+    };
+    setPluginsBackend({ ...createMemoryPluginsBackend([ai]), list: async () => snapshot });
+    render(<PluginsPage initialTab="installed" />);
+    expect(await screen.findByLabelText("Value of API key")).toBeInTheDocument();
+  });
 });
 
 describe("plugin line markers", () => {
@@ -1401,6 +1431,18 @@ describe("marketplace", () => {
       await user.click(screen.getByRole("button", { name: "Manage Plugins" }));
       await user.click(screen.getByRole("menuitem", { name: "Update All Plugins (2)" }));
       await waitFor(() => expect(consents.map(([id]) => id)).toEqual(["a", "b"]));
+    });
+
+    it("links an installed plugin without its own homepage to its marketplace repository", async () => {
+      const repository = "https://github.com/acme/a";
+      setPluginsBackend({
+        ...createMemoryPluginsBackend([plugin({ id: "a", name: "A Plugin", version: "1.0.0" })]),
+        marketUrl: async () => "https://plugins.example/index.json",
+        market: async () => [{ ...offered("a", "1.0.0", "1.0.0"), homepage: repository }],
+      });
+      render(<PluginsPage initialTab="installed" />);
+      await screen.findByRole("heading", { level: 2, name: "A Plugin" });
+      expect(await screen.findByRole("link", { name: repository })).toHaveAttribute("href", repository);
     });
 
     it("marks installed plugins with updates and updates one from its details", async () => {

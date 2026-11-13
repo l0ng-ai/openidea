@@ -3,6 +3,7 @@
  * act on the node passed as the argument (context menus) or on the tree's
  * lead node (toolbar, shortcuts while the tree has focus).
  */
+import { introspectSource } from "./introspection";
 import { writeClipboardText } from "@/platform/clipboard";
 import { call, commands, type DataSource, type DbDriver, type DbTableInfo } from "@/platform/ipc";
 import { registerActions, type Action } from "@/platform/actions";
@@ -221,6 +222,17 @@ export function registerDatabaseTreeActions(): () => void {
       icon: "refresh",
       keywords: ["synchronize", "introspect"],
       run: ({ arg }) => refreshNode(nodeFrom(arg)),
+    }),
+    tree({
+      id: "db.introspect",
+      title: "Introspect All Databases",
+      icon: "refresh",
+      keywords: ["snowflake", "completion", "catalog", "schemas"],
+      run: ({ arg }) => {
+        const n = nodeFrom(arg);
+        const id = n ? nodeTarget(n) : null;
+        if (id) void introspectSource(id);
+      },
     }),
     tree({
       id: "db.disconnect",

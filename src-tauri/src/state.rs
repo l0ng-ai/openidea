@@ -5,7 +5,7 @@ use ide_workspace::RecentProjects;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 pub use ide_host::{Host, Project};
 
@@ -19,8 +19,6 @@ pub struct AppState {
     pub recent: RecentProjects,
     /// Plugins (`ide_host::plugins`), shared by all windows.
     pub plugins: Arc<ide_host::plugins::PluginHost>,
-    /// The built-in web server (Open In › Browser, the editor's browser bar).
-    pub web: ide_web::WebServer,
     /// Agents › MCP Server: built-in IDE tools for agents.
     pub mcp: crate::commands::mcp::McpService,
     /// Credential prompts of `ssh` / `git` child processes (`None` if it failed to start).
@@ -65,8 +63,9 @@ impl AppState {
                 syntax.get_or_init(|| Arc::new(Syntax::new()));
             })?;
         }
-        let config_dir = app.path().app_config_dir()?;
-        let data_dir = app.path().app_data_dir()?;
+        // `OPENIDEA_CONFIG_DIR` / `OPENIDEA_DATA_DIR` move these; an unusable value fails the start.
+        let config_dir = ide_host::data_dirs::config_dir(&app.config().identifier)?;
+        let data_dir = ide_host::data_dirs::data_dir(&app.config().identifier)?;
         std::fs::create_dir_all(&config_dir)?;
         std::fs::create_dir_all(&data_dir)?;
         if let Err(error) = std::fs::create_dir_all(&local_data_dir) {
@@ -108,7 +107,6 @@ impl AppState {
             askpass: start_askpass(&app),
             sink: global_sink,
             plugins: crate::commands::plugin::create_host(&app, &data_dir, &host)?,
-            web: ide_web::WebServer::new(),
             mcp: Default::default(),
             remote_dev: crate::remote_dev::Connections::default(),
             host,

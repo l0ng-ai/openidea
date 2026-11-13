@@ -2,7 +2,7 @@
   "name": "openidea",
   "private": true,
   "description": "An open-source IDE inspired by IntelliJ IDEA",
-  "version": "0.1.42",
+  "version": "0.1.43",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -17,7 +17,7 @@
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "knip": "knip",
-    "typecheck": "tsrs --noEmit && tsrs -p tsconfig.node.json --noEmit && tsrs -p perf --noEmit && tsrs -p scripts --noEmit && tsrs -p smoke --noEmit",
+    "typecheck": "tsrs --noEmit && tsrs -p tsconfig.node.json --noEmit && tsrs -p perf --noEmit && tsrs -p evals --noEmit && tsrs -p scripts --noEmit && tsrs -p smoke --noEmit",
     "gen:bindings": "cargo test -p openidea --test export_bindings",
     "gen:windows-icons": "node scripts/gen-windows-icons.ts",
     "gen:angular-grammar": "lezer-generator src/editor/core/cm/angular/angular.grammar --typeScript -o src/editor/core/cm/angular/parser.ts",
@@ -31,6 +31,7 @@
     "e2e": "playwright test",
     "perf": "node perf/run.ts",
     "perf:rust": "node perf/rust.ts",
+    "eval": "node evals/run.ts",
     "release:prepare": "node scripts/release-prepare.ts",
     "nightly:prepare": "node scripts/nightly-prepare.ts"
   },
@@ -49,6 +50,7 @@
     "@codemirror/lang-java": "^6.0.2",
     "@codemirror/lang-javascript": "^6.2.5",
     "@codemirror/lang-sass": "^6.0.2",
+    "@codemirror/lang-sql": "^6.10.0",
     "@codemirror/lang-vue": "^0.1.3",
     "@codemirror/language": "^6.13.1",
     "@codemirror/language-data": "^6.5.2",

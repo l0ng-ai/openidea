@@ -14,7 +14,8 @@ import { identName, lex, type Token } from "./sql/lexer";
 const sqlName = (token: Token, driver: DbDriver): string => {
   const name = identName(token);
   if (token.kind === "quoted") return name;
-  return driver === "postgres" ? name.toLowerCase() : driver === "oracle" ? name.toUpperCase() : name;
+  if (driver === "postgres") return name.toLowerCase();
+  return driver === "oracle" || driver === "snowflake" ? name.toUpperCase() : name;
 };
 
 /** One select list item. */
@@ -295,7 +296,7 @@ export function pkResultColumns(
 const literalOf = (driver: DbDriver, v: string | null): string => {
   if (v === null) return "NULL";
   let s = v.replace(/'/g, "''");
-  if (driver === "mysql" || driver === "clickhouse") s = s.replace(/\\/g, "\\\\");
+  if (driver === "mysql" || driver === "clickhouse" || driver === "snowflake") s = s.replace(/\\/g, "\\\\");
   return `'${s}'`;
 };
 

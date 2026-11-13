@@ -5,7 +5,7 @@ members = ["crates/*", "src-tauri"]
 exclude = ["sdk", "plugins"]
 
 [workspace.package]
-version = "0.1.42"
+version = "0.1.43"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"
@@ -68,6 +68,7 @@ parking_lot = "0.12"
 rayon = "1"
 dashmap = "6"
 futures = "0.3"
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "__rustls-tls"] }
 
 # errors & diagnostics
 thiserror = "2"
@@ -110,7 +111,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-platform-verifier = "0.7"
 # Until SQLx releases its libsqlite3-sys 0.39 update (RUSTSEC-2026-0459).
-sqlx = { version = "0.9", git = "https://github.com/transact-rs/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "sqlite", "postgres", "mysql"] }
+sqlx = { version = "0.9", git = "https://github.com/l0ng-ai/sqlx", rev = "9894985a1babc7e6bc0437da4fd43e3143184073", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "sqlite", "postgres", "mysql"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls", "sql-browser-tokio"] }
 # Pure-Rust thin Oracle driver; pinned to the beta until it stabilizes.
 oracledb = "=26.0.0-beta.5"

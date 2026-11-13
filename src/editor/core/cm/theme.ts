@@ -332,6 +332,8 @@ export const openideaTheme = EditorView.theme({
 
   // Find in file (cm/find.ts)
   ...findStyles,
+  // Find in Files preview matches (search/find/parts.tsx)
+  ".cm-openidea-searchResult": { backgroundColor: "var(--bg-search-result)" },
 
   // Overlays
   ".cm-tooltip": {

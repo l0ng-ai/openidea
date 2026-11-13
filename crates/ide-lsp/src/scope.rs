@@ -80,7 +80,7 @@ pub(crate) struct Widened<R> {
 impl<R> Widened<R> {
     /// An answer from the server's analysis scope alone; `empty`: it found nothing.
     pub fn only(first: R, empty: bool, server: &Server) -> Self {
-        let incomplete = (empty && server.is_busy()).then_some(ReferencesIncomplete::Indexing);
+        let incomplete = (empty && server.indexing()).then_some(ReferencesIncomplete::Indexing);
         Self { first, second: None, incomplete }
     }
 }
@@ -130,7 +130,7 @@ impl LspManager {
         F: Fn() -> Fut,
         Fut: Future<Output = IdeResult<R>>,
     {
-        let busy = t.server.is_busy();
+        let indexing = t.server.indexing();
         // gopls searches the view of the file asked about; files opened for it only get views of
         // their own (see `go_scope`).
         let word = search_word(snap, pos).filter(|_| t.caps().open_close && snap.language.as_str() != "go");
@@ -143,7 +143,7 @@ impl LspManager {
         };
         let (first, candidates) = futures::join!(query(), candidates);
         let mut first = first?;
-        if busy && covered(&first).is_empty() && t.server.wait_idle(INDEX_WAIT, cancel).await {
+        if indexing && covered(&first).is_empty() && t.server.wait_indexed(INDEX_WAIT, cancel).await {
             first = query().await?;
         }
         if cancel.is_cancelled() {
@@ -151,7 +151,7 @@ impl LspManager {
         }
         // Servers report analysis progress often; only "nothing found" while it lasts is suspect.
         let mut incomplete =
-            (t.server.is_busy() && covered(&first).is_empty()).then_some(ReferencesIncomplete::Indexing);
+            (t.server.indexing() && covered(&first).is_empty()).then_some(ReferencesIncomplete::Indexing);
         let Some(candidates) = candidates else { return Ok(Widened { first, second: None, incomplete }) };
         if candidates.limit_hit {
             incomplete = incomplete.or(Some(ReferencesIncomplete::TooManyFiles));

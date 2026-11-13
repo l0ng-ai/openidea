@@ -5,13 +5,14 @@ import type {
   DbDriver,
   DbProperty,
   DbRowEdit,
+  DbSnowflakeAuth,
   DbSortKey,
   DbSsh,
   DbSslMode,
   DataSource,
 } from "@/platform/ipc";
 import type { SshConfigValid } from "@/platform/remoteSettings";
-import { vendorOf, vendorOfScheme } from "./vendors";
+import { blankSnowflake, vendorOf, vendorOfScheme } from "./vendors";
 
 export type Cell = string | null;
 
@@ -218,7 +219,13 @@ export function passesTreeFilter(name: string, filter: string | null | undefined
  * several schemas / databases to switch between; SQLite has one database only).
  */
 export function schemaSwitchable(driver: DbDriver | null | undefined): boolean {
-  return driver === "postgres" || driver === "mysql" || driver === "sqlServer" || driver === "oracle";
+  return (
+    driver === "postgres" ||
+    driver === "mysql" ||
+    driver === "sqlServer" ||
+    driver === "oracle" ||
+    driver === "snowflake"
+  );
 }
 
 /** The schema a console's statements run in: its pick, else the connection's default. */
@@ -353,6 +360,44 @@ const SSL_MODES: Record<string, DbSslMode> = {
   "verify-identity": "verifyFull",
 };
 
+const SNOWFLAKE_AUTHENTICATORS: Record<string, DbSnowflakeAuth> = {
+  snowflake_jwt: "keyPair",
+  snowflake: "password",
+  programmatic_access_token: "token",
+  oauth: "oAuth",
+  externalbrowser: "browser",
+};
+
+/** Applies a parameter of a Snowflake JDBC URL that names a connection setting. */
+function snowflakeParameter(source: Partial<DataSource>, name: string, value: string): boolean {
+  const settings = (source.snowflake ??= blankSnowflake());
+  switch (name.toLowerCase()) {
+    case "db":
+    case "database":
+      source.database = value;
+      return true;
+    case "schema":
+      source.options = { ...source.options, defaultSchema: value } as DataSource["options"];
+      return true;
+    case "warehouse":
+      settings.warehouse = value;
+      return true;
+    case "role":
+      settings.role = value;
+      return true;
+    case "private_key_file":
+      settings.privateKeyFile = value;
+      return true;
+    case "authenticator": {
+      const auth = SNOWFLAKE_AUTHENTICATORS[value.toLowerCase()];
+      if (auth) settings.auth = auth;
+      return !!auth;
+    }
+    default:
+      return false;
+  }
+}
+
 /**
  * Data Source from URL (and the General tab's URL field): `postgres://user:pass@host:5432/db`,
  * `mysql://…`, `mariadb://…`, wire-compatible products (`redshift://`, `tidb://`…), the
@@ -422,6 +467,7 @@ export function parseSourceUrl(raw: string): { source: Partial<DataSource>; pass
         source.sslKeyFile = v;
         break;
       default:
+        if (vendor.driver === "snowflake" && snowflakeParameter(source, k, v)) break;
         properties.push({ name: k, value: v });
     }
   }

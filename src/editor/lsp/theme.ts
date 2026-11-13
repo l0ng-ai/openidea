@@ -192,7 +192,10 @@ export const lspTheme = EditorView.theme({
   ".cm-lsp-doc-signature": { marginTop: "0", color: "var(--fg-emphasis)" },
 
   // --- hover / quick documentation / signature / hints ---------------------
-  ".cm-tooltip.cm-tooltip-hover": { ...tooltipSurface },
+  // Near the window edge CodeMirror caps the tooltip's height to the space left: its sections then
+  // shrink and scroll inside the popup instead of running past its border.
+  ".cm-tooltip.cm-tooltip-hover": { ...tooltipSurface, display: "flex", flexDirection: "column" },
+  ".cm-tooltip-hover > .cm-tooltip-section": { minHeight: 0, flexShrink: 1 },
   ".cm-lsp-hover": { maxWidth: "580px", maxHeight: "380px", overflow: "auto", padding: "10px 14px" },
   ".cm-lsp-hover-diagnostics + .cm-lsp-markdown": {
     borderTop: "1px solid var(--border-popup)",
