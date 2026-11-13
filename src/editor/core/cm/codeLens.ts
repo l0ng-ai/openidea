@@ -120,6 +120,8 @@ class LensWidget extends WidgetType {
   }
 
   override updateDOM(dom: HTMLElement, view: EditorView): boolean {
+    // A row and a line-end hint have different structures: a position change rebuilds the DOM.
+    if (dom.className !== (this.inline ? "cm-openidea-lensInline" : "cm-openidea-lens")) return false;
     const host = this.inline ? (dom.firstElementChild as HTMLElement | null) : dom;
     if (!host) return false;
     this.fill(host, view);
