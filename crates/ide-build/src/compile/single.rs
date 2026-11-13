@@ -4,11 +4,20 @@
 //! walks the whole reactor; compiling one file only needs that file's module
 //! outputs plus its dependency classpath, which is much faster to assemble.
 use super::*;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::process::Command as ProcCommand;
 
 /// Output file of the `dependency:build-classpath` probe, relative to each module.
 const CP_FILE: &str = "target/ide-compile-cp.txt";
+
+/// The resolved dependency classpath for one module and scope, tied to the same
+/// inputs as its launch build so POM, JDK, settings and profile changes invalidate it.
+#[derive(Debug, Deserialize, Serialize)]
+struct CachedClasspath {
+    fingerprint: LaunchFingerprint,
+    classpath: String,
+}
 
 /// A `.java` source and the module build that compiles it.
 pub struct SingleFileTarget {
@@ -100,7 +109,7 @@ pub fn find_javac(env: &BTreeMap<String, String>) -> String {
 /// `mvn dependency:build-classpath` (which resolves without compiling anything,
 /// so `-am` stays cheap). Entries are platform-separated (`;` on Windows).
 pub fn single_file_classpath(root: &Path, model: &BuildModel, target: &SingleFileTarget) -> IdeResult<String> {
-    classpath(root, model, target, "test")
+    classpath(root, model, target, "test", false)
 }
 
 /// Runtime (or test) dependency classpath for a launch module.
@@ -108,12 +117,80 @@ pub fn single_file_classpath(root: &Path, model: &BuildModel, target: &SingleFil
 /// The Java language server runs on its own JDK, so its Maven model can select a
 /// different JDK profile and dependency classifier than the project launch. Use the
 /// same Maven process that builds the module instead.
-pub fn module_classpath(root: &Path, model: &BuildModel, module: &Path, test: bool) -> IdeResult<String> {
+pub fn module_classpath(
+    root: &Path,
+    model: &BuildModel,
+    module: &Path,
+    test: bool,
+    local_repo: Option<PathBuf>,
+    cache: &Path,
+    cancel: &ide_core::CancellationToken,
+) -> IdeResult<String> {
     let target = module_target(root, model, module, test)?;
-    classpath(root, model, &target, if test { "test" } else { "runtime" })
+    let fingerprint = launch_fingerprint(root, model, &target.module, test, local_repo, cancel)?;
+    let cache_path = classpath_cache_path(root, cache, &target.module, test);
+    if let (Some(fingerprint), Some(path)) = (&fingerprint, &cache_path)
+        && let Ok(bytes) = fs::read(path)
+        && let Ok(cached) = serde_json::from_slice::<CachedClasspath>(&bytes)
+        && cached.fingerprint == *fingerprint
+        && classpath_entries_exist(root, &cached.classpath)
+    {
+        return Ok(cached.classpath);
+    }
+    let classpath = classpath(root, model, &target, if test { "test" } else { "runtime" }, true)?;
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    if let (Some(fingerprint), Some(path)) = (fingerprint, cache_path) {
+        let cached = CachedClasspath { fingerprint, classpath: classpath.clone() };
+        if let Err(error) = cache_classpath(&path, &cached) {
+            tracing::debug!(path = %path.display(), %error, "Cannot cache the Java launch classpath");
+        }
+    }
+    Ok(classpath)
 }
 
-fn classpath(root: &Path, model: &BuildModel, target: &SingleFileTarget, scope: &str) -> IdeResult<String> {
+/// One cache file per module and scope. Mirroring the module path keeps nested
+/// modules and their different dependency scopes from overwriting each other.
+fn classpath_cache_path(root: &Path, cache: &Path, module: &Path, test: bool) -> Option<PathBuf> {
+    let relative = module.strip_prefix(root).ok()?;
+    let mut path = cache.join("java-launch/classpaths");
+    path.push(if relative.as_os_str().is_empty() { Path::new("_root") } else { relative });
+    path.push(if test { "test.json" } else { "runtime.json" });
+    Some(path)
+}
+
+/// Best-effort cache persistence. A failed write only costs one later Maven
+/// probe, so the launch still succeeds even when the cache directory is unusable.
+fn cache_classpath(path: &Path, cached: &CachedClasspath) -> IdeResult<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_vec(cached).map_err(|e| IdeError::internal(e.to_string()))?)?;
+    Ok(())
+}
+
+/// A cache entry stays valid while every file exists. Maven also emits reactor
+/// output directories for modules with no classes, which may legitimately never be
+/// created; the launch snapshot already supplies the module's classes in that case.
+fn classpath_entries_exist(root: &Path, classpath: &str) -> bool {
+    // Temp directories on macOS are commonly reached through `/var`, while Maven
+    // reports the canonical `/private/var` path. Compare against both spellings.
+    let canonical_root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    std::env::split_paths(classpath).all(|entry| {
+        entry.exists()
+            || ((entry.starts_with(root) || entry.starts_with(&canonical_root))
+                && (entry.ends_with(Path::new("target/classes")) || entry.ends_with(Path::new("target/test-classes"))))
+    })
+}
+
+fn classpath(
+    root: &Path,
+    model: &BuildModel,
+    target: &SingleFileTarget,
+    scope: &str,
+    compile_first: bool,
+) -> IdeResult<String> {
     let mut entries: Vec<String> = Vec::new();
     // The module's own classes first: the file almost always uses classes next to it.
     let own: &[&str] = if target.test { &["target/test-classes", "target/classes"] } else { &["target/classes"] };
@@ -147,17 +224,13 @@ fn classpath(root: &Path, model: &BuildModel, target: &SingleFileTarget, scope: 
     }
     let output_arg = format!("-Dmdep.outputFile={probe}");
     let scope_arg = format!("-Dmdep.includeScope={scope}");
-    // Reactor dependencies are not in the local repository when the launch build
-    // only reached `compile`; package those modules in this invocation so the
-    // dependency plugin can resolve their artifacts.
-    args.extend([
-        "-DskipTests",
-        "package",
-        "dependency:build-classpath",
-        output_arg.as_str(),
-        scope_arg.as_str(),
-        "-q",
-    ]);
+    // A launch build may only have reached `compile`. Running `compile` in this
+    // same Maven session lets the dependency plugin resolve Reactor siblings from
+    // their target/classes without paying for package-phase plugins.
+    if compile_first {
+        args.push("compile");
+    }
+    args.extend(["dependency:build-classpath", output_arg.as_str(), scope_arg.as_str(), "-q"]);
     let top_dir = subdir(root, &target.top.dir);
     let status = ProcCommand::new(&target.top.command)
         .args(&args)
@@ -354,7 +427,7 @@ mod tests {
         let script = root.join("mvnw");
         fs::write(
             &script,
-            "#!/bin/sh\npl='.'\nwhile [ $# -gt 0 ]; do\nif [ \"$1\" = \"-pl\" ]; then pl=\"$2\"; shift 2; else shift; fi\ndone\nmkdir -p \"$pl/target\"\nprintf '/repo/a.jar:/repo/b.jar' > \"$pl/target/ide-compile-cp.txt\"\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > args.txt\npl='.'\nwhile [ $# -gt 0 ]; do\nif [ \"$1\" = \"-pl\" ]; then pl=\"$2\"; shift 2; else shift; fi\ndone\nmkdir -p \"$pl/target\"\nprintf '/repo/a.jar:/repo/b.jar' > \"$pl/target/ide-compile-cp.txt\"\n",
         )
         .unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
@@ -376,6 +449,8 @@ mod tests {
         assert!(cp.contains("/repo/a.jar"), "{cp}");
         assert!(cp.contains("/repo/b.jar"), "{cp}");
         assert!(cp.split(separator).count() >= 3, "{cp}");
+        let args = fs::read_to_string(root.join("args.txt")).unwrap();
+        assert!(!args.lines().any(|a| a == "compile" || a == "package"), "{args}");
     }
 
     /// A launch uses runtime dependencies, while tests additionally see test-scope ones.
@@ -396,16 +471,68 @@ mod tests {
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         let model = crate::load(root, &root.join("cache"), None);
 
-        let runtime = module_classpath(root, &model, &root.join("app"), false).unwrap();
+        let cache = root.join("cache");
+        let runtime =
+            module_classpath(root, &model, &root.join("app"), false, None, &cache, &CancellationToken::new()).unwrap();
         assert!(runtime.contains("/repo/runtime.jar"), "{runtime}");
         let args = fs::read_to_string(root.join("args.txt")).unwrap();
-        assert!(args.lines().any(|a| a == "package"), "{args}");
-        assert!(args.lines().any(|a| a == "-DskipTests"), "{args}");
+        assert!(args.lines().any(|a| a == "compile"), "{args}");
+        assert!(!args.lines().any(|a| a == "package"), "{args}");
         assert!(args.lines().any(|a| a == "-Dmdep.includeScope=runtime"), "{args}");
 
-        let test = module_classpath(root, &model, &root.join("app"), true).unwrap();
+        let test =
+            module_classpath(root, &model, &root.join("app"), true, None, &cache, &CancellationToken::new()).unwrap();
         assert!(test.contains("/repo/test.jar"), "{test}");
         let args = fs::read_to_string(root.join("args.txt")).unwrap();
         assert!(args.lines().any(|a| a == "-Dmdep.includeScope=test"), "{args}");
+    }
+
+    /// The launch classpath follows the Maven runner JDK and is reused until that
+    /// build input changes; the probe does not run packaging plugins.
+    #[cfg(unix)]
+    #[test]
+    fn launch_classpath_cache_follows_the_runner_jdk() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixture(root);
+        let script = root.join("mvnw");
+        // `dependency:build-classpath` reports reactor outputs as absolute paths. Keep
+        // the fake probe faithful so the cache's existence check sees the output.
+        fs::write(
+            &script,
+            "#!/bin/sh\nprintf x >> calls.txt\npl='.'\nwhile [ $# -gt 0 ]; do\nif [ \"$1\" = \"-pl\" ]; then pl=\"$2\"; shift 2; else shift; fi\ndone\nmkdir -p \"$pl/target/classes\" \"$JAVA_HOME/classpath\"\n: > \"$JAVA_HOME/classpath/jdk.jar\"\nprintf '%s/classpath/jdk.jar:%s/%s/target/classes:%s/empty/target/classes' \"$JAVA_HOME\" \"$(pwd)\" \"$pl\" \"$(pwd)\" > \"$pl/target/ide-compile-cp.txt\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut model = crate::load(root, &root.join("cache"), None);
+        for (name, version) in [("jdk21", "21"), ("jdk8", "8")] {
+            let home = root.join(name);
+            fs::create_dir_all(home.join("bin")).unwrap();
+            fs::write(home.join("release"), format!("JAVA_VERSION=\"{version}\"\n")).unwrap();
+            fs::write(home.join("bin/java"), "").unwrap();
+        }
+        let cache = root.join("classpath-cache");
+        let cancel = CancellationToken::new();
+        let jdk21 = root.join("jdk21");
+        for project in &mut model.maven.as_mut().unwrap().projects {
+            project.env.insert("JAVA_HOME".into(), jdk21.to_string_lossy().into_owned());
+        }
+        let first = module_classpath(root, &model, &root.join("app"), false, None, &cache, &cancel).unwrap();
+        assert!(first.contains("jdk21/classpath/jdk.jar"), "{first}");
+        assert!(!first.contains("jdk8/classpath/jdk.jar"), "{first}");
+        let second = module_classpath(root, &model, &root.join("app"), false, None, &cache, &cancel).unwrap();
+        assert_eq!(second, first);
+        assert_eq!(fs::read_to_string(root.join("calls.txt")).unwrap(), "x");
+
+        let jdk8 = root.join("jdk8");
+        for project in &mut model.maven.as_mut().unwrap().projects {
+            project.env.insert("JAVA_HOME".into(), jdk8.to_string_lossy().into_owned());
+        }
+        let switched = module_classpath(root, &model, &root.join("app"), false, None, &cache, &cancel).unwrap();
+        assert!(switched.contains("jdk8/classpath/jdk.jar"), "{switched}");
+        assert!(!switched.contains("jdk21/classpath/jdk.jar"), "{switched}");
+        assert_eq!(fs::read_to_string(root.join("calls.txt")).unwrap(), "xx");
     }
 }
