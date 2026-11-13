@@ -3,11 +3,15 @@
 @import "./tokens.css";
 
 /* Monochrome icons default to the theme icon grey; callers override for selected / disabled.
-   Programming ligatures off by default (matches `editor.ligatures`); CM / VCS viewers opt in
-   via `.cm-openidea-ligatures`. Inherited by every mono preview (Find results, Usages, …). */
+   Programming ligatures follow `editor.ligatures` (`data-ligatures`), inherited by every mono
+   preview (Find results, Usages, …). */
 :root {
   --icon-color: var(--fg-icon);
   font-variant-ligatures: none;
+}
+
+:root[data-ligatures] {
+  font-variant-ligatures: normal;
 }
 
 *,
@@ -188,7 +192,6 @@ a:hover {
 
 .mono {
   font-family: var(--font-mono);
-  font-variant-ligatures: none;
 }
 
 /* Syntax colours for read-only previews and result lines: the `tok-*` classes
