@@ -50,11 +50,13 @@
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
+/* The facts on the bar's line are as tall as its chips, so their text shares one centre line. */
 .agent {
   display: inline-flex;
   flex: 0 1 auto;
   align-items: center;
   gap: 4px;
+  height: 22px;
   min-width: 0;
   color: var(--fg-secondary);
 }
@@ -69,7 +71,8 @@
   display: inline-flex;
   flex: 0 1 auto;
   align-items: center;
-  gap: 6px;
+  /* The chips' own padding spaces them. */
+  gap: 2px;
   min-width: 0;
   overflow: hidden;
 }
@@ -78,7 +81,10 @@
   color: var(--fg-subtle);
 }
 .state {
+  display: inline-flex;
   flex: none;
+  align-items: center;
+  height: 22px;
   white-space: nowrap;
 }
 /* The changes sit above the meter, time and terminal; those keep their one row at the right. */
@@ -96,6 +102,7 @@
   display: inline-flex;
   flex: 0 1 auto;
   align-items: center;
+  height: 22px;
   gap: 8px;
   max-width: 100%;
   min-width: 0;
