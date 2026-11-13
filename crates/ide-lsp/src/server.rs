@@ -770,6 +770,20 @@ impl Server {
         self.combine(path)
     }
 
+    /// [`Server::set_diagnostics`] for a publication tagged with a document version older than
+    /// the text the server has now: shown, but not an answer for the current text, so
+    /// [`Server::last_published`] keeps its time.
+    pub fn set_obsolete_diagnostics(&self, path: PathBuf, items: Vec<lsp::Diagnostic>) -> Vec<lsp::Diagnostic> {
+        let before = self.last_published(&path);
+        let shown = self.set_diagnostics(path.clone(), items);
+        let mut published = self.published.lock();
+        match before {
+            Some(at) => published.insert(path, at),
+            None => published.remove(&path),
+        };
+        shown
+    }
+
     /// Records a pulled report for `path` (`None` items: unchanged since `result_id`'s
     /// predecessor); returns what the file now shows.
     pub fn set_pulled(
