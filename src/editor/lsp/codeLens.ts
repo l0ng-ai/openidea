@@ -81,8 +81,8 @@ export function lensTargets(items: readonly OutlineItem[]): LensTarget[] {
 }
 
 export function usagesLabel(n: number): string {
-  if (n === 0) return "no usages";
-  return n === 1 ? "1 usage" : `${n} usages`;
+  if (n === 0) return tx("no usages");
+  return n === 1 ? tx("1 usage") : tx`${n} usages`;
 }
 
 const setLenses = StateEffect.define<CodeLens[]>();

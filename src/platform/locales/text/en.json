@@ -1469,5 +1469,8 @@
   "Commands agents run appear in the Run tool window as _agent_ tabs. Beyond this many finished ones, the oldest move to the archive at the end of the tab strip. Running commands are never archived.": "Commands agents run appear in the Run tool window as _agent_ tabs. Beyond this many finished ones, the oldest move to the archive at the end of the tab strip. Running commands are never archived.",
   "Archived agent tabs to keep": "Archived agent tabs to keep",
   "Beyond this many archived agent tabs, the oldest are closed.": "Beyond this many archived agent tabs, the oldest are closed.",
-  "Archived ({count})": "Archived ({count})"
+  "Archived ({count})": "Archived ({count})",
+  "no usages": "no usages",
+  "1 usage": "1 usage",
+  "{n} usages": "{n} usages"
 }

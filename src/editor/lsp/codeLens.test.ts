@@ -79,6 +79,17 @@ const item = (name: string, kind: OutlineItem["kind"], line: number, children: O
   return { name, kind, detail: null, range: r, selection_range: r, children };
 };
 
+describe("usages label", () => {
+  it("is translated", async () => {
+    const { usagesLabel } = await import("./codeLens");
+    const { setLocale } = await import("@/platform/i18n");
+    expect([0, 1, 3].map(usagesLabel)).toEqual(["no usages", "1 usage", "3 usages"]);
+    await setLocale("zh");
+    expect([0, 1, 3].map(usagesLabel)).toEqual(["无用法", "1 个用法", "3 个用法"]);
+    await setLocale("en");
+  });
+});
+
 describe("usages lens targets", () => {
   it("skips callbacks and anonymous functions", () => {
     const items = [
