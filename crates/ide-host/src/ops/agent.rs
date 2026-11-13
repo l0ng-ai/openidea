@@ -381,7 +381,7 @@ fn persist_mcp_map(
     Ok(())
 }
 
-fn update_mcp_maps<F>(host: &Host, window: &str, f: F) -> IdeResult<Vec<McpServer>>
+fn update_mcp_maps<F>(host: &Host, window: &str, approve: Option<&str>, f: F) -> IdeResult<Vec<McpServer>>
 where
     F: FnOnce(&mut McpServerMap, &mut McpServerMap, Option<&std::path::Path>) -> Result<(), String>,
 {
@@ -390,43 +390,83 @@ where
     let prev_workspace = workspace.clone();
     let project_root = project.as_ref().map(|p| p.root.as_path());
     f(&mut user, &mut workspace, project_root).map_err(IdeError::invalid)?;
+    if let (Some(name), Some(p)) = (approve, &project)
+        && let Some(server) = workspace.get(name)
+    {
+        host.mcp_approvals.approve(&p.root, name, server)?;
+    }
     if workspace != prev_workspace {
         persist_mcp_map(host, project.as_ref(), McpScope::Workspace, &workspace)?;
     }
     if user != prev_user {
         persist_mcp_map(host, project.as_ref(), McpScope::User, &user)?;
     }
-    Ok(ide_agent::mcp::servers_from_settings(&user, &workspace))
+    Ok(listed(host, project.as_ref(), &user, workspace))
+}
+
+/// Workspace servers the user hasn't turned on in Settings are listed as off: agents don't start them.
+fn listed(
+    host: &Host,
+    project: Option<&std::sync::Arc<crate::Project>>,
+    user: &McpServerMap,
+    workspace: McpServerMap,
+) -> Vec<McpServer> {
+    let workspace = match project {
+        Some(p) => host.mcp_approvals.apply(&p.root, workspace),
+        None => workspace,
+    };
+    ide_agent::mcp::servers_from_settings(user, &workspace)
+}
+
+/// The MCP servers agent sessions of the project at `root` get: the user's, and the project's the
+/// user turned on.
+pub(crate) fn session_mcp_servers(
+    settings: &ide_workspace::SettingsStore,
+    approvals: &crate::trust::McpServerApprovals,
+    root: &std::path::Path,
+) -> Vec<McpServer> {
+    use ide_workspace::settings::SettingsScope;
+    let user = settings.layer(SettingsScope::Global).agents.mcp_servers;
+    let workspace = approvals.apply(root, settings.layer(SettingsScope::Project).agents.mcp_servers);
+    ide_agent::mcp::servers_from_settings(&user, &workspace)
 }
 
 /// Lists configured MCP servers across User (`settings.toml`) and Workspace (`.openidea/settings.toml`) scopes.
 pub fn mcp_list(host: &Host, window: &str) -> IdeResult<Vec<McpServer>> {
-    let (user, workspace, _) = mcp_maps(host, window);
-    Ok(ide_agent::mcp::servers_from_settings(&user, &workspace))
+    let (user, workspace, project) = mcp_maps(host, window);
+    Ok(listed(host, project.as_ref(), &user, workspace))
 }
 
-/// Creates or updates a User or Workspace MCP server and returns the updated list.
+/// Creates or updates a User or Workspace MCP server and returns the updated list. A Workspace
+/// server saved here is one the user turned on.
 pub fn mcp_save(host: &Host, window: &str, input: McpServerInput) -> IdeResult<Vec<McpServer>> {
-    update_mcp_maps(host, window, |user, workspace, project_root| {
+    let approve = (input.scope == McpScope::Workspace).then(|| input.name.trim().to_owned());
+    update_mcp_maps(host, window, approve.as_deref(), |user, workspace, project_root| {
         ide_agent::mcp::apply_save(user, workspace, project_root.is_some(), input)
     })
 }
 
 /// Enables or disables an MCP server and returns the updated list.
 pub fn mcp_set_enabled(host: &Host, window: &str, id: String, enabled: bool) -> IdeResult<Vec<McpServer>> {
-    update_mcp_maps(host, window, |user, workspace, _| {
+    let approve = ide_agent::mcp::parse_server_id(&id)
+        .filter(|(scope, _)| enabled && *scope == McpScope::Workspace)
+        .map(|(_, name)| name.to_owned());
+    update_mcp_maps(host, window, approve.as_deref(), |user, workspace, _| {
         ide_agent::mcp::apply_set_enabled(user, workspace, &id, enabled).map(|_| ())
     })
 }
 
 /// Removes a User or Workspace MCP server and returns the updated list.
 pub fn mcp_remove(host: &Host, window: &str, id: String) -> IdeResult<Vec<McpServer>> {
-    update_mcp_maps(host, window, |user, workspace, _| ide_agent::mcp::apply_remove(user, workspace, &id).map(|_| ()))
+    update_mcp_maps(host, window, None, |user, workspace, _| {
+        ide_agent::mcp::apply_remove(user, workspace, &id).map(|_| ())
+    })
 }
 
-/// Copies MCP servers from `.mcp.json` and `.vscode/mcp.json` into the workspace settings once.
+/// Copies MCP servers from `.mcp.json` and `.vscode/mcp.json` into the workspace settings once;
+/// they stay off until the user turns them on.
 pub fn mcp_import(host: &Host, window: &str) -> IdeResult<Vec<McpServer>> {
-    update_mcp_maps(host, window, |_, workspace, project_root| {
+    update_mcp_maps(host, window, None, |_, workspace, project_root| {
         let root = project_root.ok_or_else(|| "Open a project to import workspace MCP servers".to_string())?;
         ide_agent::mcp::apply_import(workspace, root);
         Ok(())
@@ -549,5 +589,44 @@ mod tests {
         for rejected in [other, member.join("child"), member.join("../other"), "relative".into()] {
             assert!(validate_project_root(&root, Some(&rejected)).is_err(), "{rejected:?}");
         }
+    }
+
+    #[test]
+    fn sessions_get_the_users_servers_and_the_projects_turned_on_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, root) = (tmp.path().join("config"), tmp.path().join("project"));
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(root.join(".openidea")).unwrap();
+        std::fs::write(config.join("settings.toml"), "[agents.mcpServers.shared]\ncommand = \"user-cmd\"\n").unwrap();
+        std::fs::write(
+            root.join(".openidea/settings.toml"),
+            "[agents.mcpServers.shared]\ncommand = \"project-cmd\"\n\n[agents.mcpServers.extra]\ncommand = \"extra\"\n",
+        )
+        .unwrap();
+        let settings = ide_workspace::SettingsStore::load(&config, Some(&root));
+        let approvals = crate::trust::McpServerApprovals::load(&tmp.path().join("data"));
+        let on = |servers: Vec<McpServer>| -> Vec<(McpScope, String, String)> {
+            servers
+                .into_iter()
+                .filter(|s| s.enabled)
+                .map(|s| (s.scope, s.name, s.command.unwrap_or_default()))
+                .collect()
+        };
+        assert_eq!(
+            on(session_mcp_servers(&settings, &approvals, &root)),
+            [(McpScope::User, "shared".to_owned(), "user-cmd".to_owned())]
+        );
+
+        let extra = settings.layer(ide_workspace::settings::SettingsScope::Project).agents.mcp_servers["extra"].clone();
+        approvals.approve(&root, "extra", &extra).unwrap();
+        assert!(on(session_mcp_servers(&settings, &approvals, &root)).contains(&(
+            McpScope::Workspace,
+            "extra".to_owned(),
+            "extra".to_owned()
+        )));
+        // Remembered across restarts, and only for this project.
+        let reloaded = crate::trust::McpServerApprovals::load(&tmp.path().join("data"));
+        assert!(reloaded.approved(&root, "extra", &extra));
+        assert!(!reloaded.approved(&tmp.path().join("other"), "extra", &extra));
     }
 }

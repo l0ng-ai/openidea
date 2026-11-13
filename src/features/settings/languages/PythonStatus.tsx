@@ -10,6 +10,7 @@ import { BarButton, Menu, type MenuItem } from "@/ui";
 import { Icon } from "@/ui/icons";
 import { effectivePython, type Sdk } from "./api";
 import { tildify } from "./components";
+import { interpreterIcon, interpreterPathKey } from "./interpreters";
 
 /** What the widget last resolved for a project, so the popup action can read it without a render. */
 interface Status {
@@ -23,6 +24,9 @@ interface Status {
 const usePopup = create<{ open: boolean; status: Status | null }>(() => ({ open: false, status: null }));
 const close = () => usePopup.setState({ open: false });
 const reset = () => usePopup.setState({ open: false, status: null });
+
+/** Settings arrays default to `[]`; a stable instance keeps the store selector from re-rendering. */
+const EMPTY: string[] = [];
 
 /** Whether the widget is on screen, read straight from the stores (the action runs outside a render). */
 function popupShown(): boolean {
@@ -69,7 +73,7 @@ export function nearMember(projects: string[] | undefined, file: string | null |
   return member ? dir : null;
 }
 
-export function interpreterChoices(sdks: Sdk[], current: string | null): { path: string; name: string }[] {
+export function interpreterChoices(sdks: Sdk[], current: string | null): (Sdk | { path: string; name: string })[] {
   const choices = [...new Map(sdks.map((sdk) => [sdk.path, sdk])).values()];
   if (!current || choices.some((sdk) => sdk.path === current)) return choices;
   return [...choices, { path: current, name: current }];
@@ -86,6 +90,7 @@ function PythonStatus() {
   const root = useProject((s) => s.project?.root);
   const trusted = useProject((s) => s.project?.trusted !== false);
   const configured = useProject((s) => s.settings?.languages?.python?.interpreter ?? "");
+  const hidden = useProject((s) => s.settings?.languages?.python?.hiddenInterpreters ?? EMPTY);
   const members = useProject((s) => s.project?.workspace?.projects);
   const status = usePopup((s) => s.status);
   const open = usePopup((s) => s.open);
@@ -151,7 +156,12 @@ function PythonStatus() {
   // sees the same state as the button without waiting for an effect to publish a flag.
   if (!popupShown() || !status) return null;
   const current = status;
-  const choices = interpreterChoices(current.sdks, current.python);
+  // Interpreters removed on the All Interpreters page are no longer offered.
+  const ignored = new Set(hidden.map(interpreterPathKey));
+  const choices = interpreterChoices(
+    current.sdks.filter((sdk) => !ignored.has(interpreterPathKey(sdk.path))),
+    current.python,
+  );
   // A configured interpreter the backend cannot resolve (its file is gone) reads
   // as "Invalid" — PyCharm marks such SDKs instead of showing them as working.
   const invalid = !!current.configured && !current.python;
@@ -164,6 +174,7 @@ function PythonStatus() {
     { kind: "header", label: "Python Interpreter" },
     ...choices.map((sdk): MenuItem => ({
       label: sdk.name,
+      icon: interpreterIcon("source" in sdk ? sdk.source : ""),
       verbatim: true,
       // Several system interpreters share a name ("Python 3.11"); their paths tell them apart.
       shortcut: (names.get(sdk.name) ?? 0) > 1 ? tildify(sdk.path) : undefined,

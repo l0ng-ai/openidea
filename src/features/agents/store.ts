@@ -781,9 +781,10 @@ export async function startTask(
     providers.find((p) => p.id === draft.provider),
     draft,
   );
+  const askForApprovals = useProject.getState().settings?.agents?.newTaskApprovals === "ask";
   const defaults = {
     ...cursorModelDefaults(draft.provider, options),
-    ...bypassDefaults(options),
+    ...(askForApprovals ? {} : bypassDefaults(options)),
     ...providerDefaults(draft.provider),
   };
   const config = options.flatMap((o) => {

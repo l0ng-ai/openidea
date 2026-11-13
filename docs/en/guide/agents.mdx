@@ -71,6 +71,8 @@ On your own messages you can **Edit** (the messages after it are replaced; files
 
 When an agent wants to run a command or call a tool that needs approval, the task shows the request and is listed as **Needs Input**. Choose one of the options the agent offers, such as **Allow Once**, **Allow for This Session**, **Always Allow**, **Decline**, **Always Decline** or **Decline and Stop**. Many agents also have a mode picker that approves edits or everything automatically; use it with care.
 
+Once an agent has run a task, new tasks start in its mode that approves everything (Claude Code's bypass permissions, Codex's Full Access), and the Command Execution Policy doesn't apply there. To start them in a mode that asks, set **Settings › Agents › Chat › New tasks start** to **Asking for approval**. Only your own settings choose this, never a project's.
+
 ### Review the changes
 
 Click **Show changes** in the task header to list the files the task changed. Click a file to open a diff between the task's starting point and now. For a worktree task, the changes live on its `agent/…` branch: open a terminal there with **Open in Terminal**, and merge or cherry-pick the branch with the Git tools (see [Version control](/en/guide/vcs)) when you are happy with it.
@@ -95,7 +97,7 @@ Tasks are saved per project and survive restarts. When the agent supports resumi
 
 **Settings › Tools › Agents** (also **More Agents…** in the agent picker) has two tabs:
 
-- **Built-in**: for each built-in agent, whether its executable was found on `PATH`, a field to point at a **Custom executable**, **Environment variables** for the agent process (written as `NAME=value; OTHER=value`) and how to sign in. Changes apply to new sessions.
+- **Built-in**: for each built-in agent, whether its executable was found on `PATH`, a field to point at a **Custom executable**, **Environment variables** for the agent process (written as `NAME=value; OTHER=value`; the values are kept in the OS credential store) and how to sign in. Changes apply to new sessions.
 - **ACP Registry**: agents published in the [ACP Registry](https://agentclientprotocol.com). Search, **Install**, **Update** and **Remove**. Installed agents are kept in OpenIDEA's data directory; downloads are checked against the registry's SHA-256 when it provides one.
 
 **Settings › Tools › Agents › Chat** chooses what the task header shows: **Context window usage**, **Time spent on the task**, **Usage limits** (when the agent reports them, such as Claude Code) and **Session cost**.
@@ -130,7 +132,9 @@ MY_AGENT_LOG = "info"
   Arguments that start the agent in ACP mode.
 </ParamField>
 <ParamField path="env" type="table">
-  Extra environment variables for the agent process.
+  Extra environment variables for the agent process. OpenIDEA moves their values to the OS credential store the next
+  time it reads the file, and keeps only the names in it (with empty values). An agent installed from the ACP Registry
+  keeps the environment its registry entry sets in the file.
 </ParamField>
 <ParamField path="driver" type="string" default="acp">
   `acp` for an ACP agent. `claude` and `codex` use the Claude Code and Codex protocols instead.
