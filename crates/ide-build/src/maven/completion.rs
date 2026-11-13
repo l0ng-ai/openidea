@@ -266,6 +266,23 @@ fn holds_files(dir: &Path, budget: &mut u32) -> bool {
     entries.flatten().any(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
 }
 
+/// Whether the version directory `dir` holds the version: its `.pom` or a `.jar`. A failed
+/// download leaves only `*.lastUpdated` tracking files behind, for a version that may not
+/// even exist (one typed while the POM was being edited).
+fn installed(dir: &Path, budget: &mut u32) -> bool {
+    if *budget == 0 {
+        return false;
+    }
+    *budget -= 1;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|e| {
+        e.file_type().map(|t| t.is_file()).unwrap_or(false)
+            && e.file_name().to_str().is_some_and(|n| n.ends_with(".pom") || n.ends_with(".jar"))
+    })
+}
+
 /// Whether `dir` is an artifact directory: it holds versions of one artifact,
 /// recognizable by a `maven-metadata*.xml` beside them or a child directory
 /// holding files. A group segment's children are directories without files.
@@ -359,7 +376,7 @@ fn scan_artifacts(dir: &Path, typed: &str, budget: &mut u32) -> Vec<PomCompletio
 /// The newest version directory of the artifact at `dir`, by Maven's ordering.
 fn newest_version(dir: &Path, budget: &mut u32) -> Option<String> {
     let children = subdirs(dir, budget)?;
-    children.into_iter().filter(|name| holds_files(&dir.join(name), budget)).max_by(|a, b| compare_versions(a, b))
+    children.into_iter().filter(|name| installed(&dir.join(name), budget)).max_by(|a, b| compare_versions(a, b))
 }
 
 /// The versions installed of the artifact at `dir`, completing the typed
@@ -368,7 +385,7 @@ fn scan_versions(dir: &Path, typed: &str, budget: &mut u32) -> Vec<PomCompletion
     let Some(children) = subdirs(dir, budget) else { return Vec::new() };
     let mut out: Vec<_> = children
         .into_iter()
-        .filter(|name| name.starts_with(typed) && holds_files(&dir.join(name), budget))
+        .filter(|name| name.starts_with(typed) && installed(&dir.join(name), budget))
         .map(|name| PomCompletionOption { label: name, detail: None })
         .collect();
     out.sort_by(|a, b| compare_versions(&b.label, &a.label));
@@ -443,6 +460,9 @@ mod tests {
             "org/example/lib/2.0-beta-1/lib-2.0-beta-1.jar",
             "org/example/lib/2.0/lib-2.0.pom",
             "net/nu/netty/4.1.100/netty-4.1.100.jar",
+            // Failed downloads (a version typed while editing): tracking files only, not installed.
+            "org/example/lib/2/lib-2.jar.lastUpdated",
+            "org/example/lib/3.0/lib-3.0.pom.lastUpdated",
         ] {
             let path = repo.join(file);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();

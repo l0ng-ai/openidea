@@ -33,11 +33,14 @@ export function pomCompletionExtension(ctx: EditorDocContext): Extension {
         from: found.from,
         to: found.to,
         filter: false,
-        options: found.options.map(({ label, detail }) => ({
+        // Kept in the backend's order (installed first, newest versions first): with no
+        // filtering, equal scores would sort the list by label.
+        options: found.options.map(({ label, detail }, i) => ({
           label,
           type: "constant",
           detail: detail ?? undefined,
           apply: label,
+          boost: Math.max(99 - i, -99),
         })),
       };
     } catch {

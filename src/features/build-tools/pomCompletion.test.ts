@@ -74,12 +74,12 @@ describe("POM dependency completion", () => {
       from: number;
       to: number;
       filter: boolean;
-      options: { label: string; type: string; detail?: string; apply: string }[];
+      options: { label: string; type: string; detail?: string; apply: string; boost: number }[];
     };
     expect(result).toMatchObject({ from: artifactId, to: artifactId + 3, filter: false });
     expect(result.options).toEqual([
-      { label: "example-lib", type: "constant", detail: "2.0", apply: "example-lib" },
-      { label: "example-api", type: "constant", detail: undefined, apply: "example-api" },
+      { label: "example-lib", type: "constant", detail: "2.0", apply: "example-lib", boost: 99 },
+      { label: "example-api", type: "constant", detail: undefined, apply: "example-api", boost: 98 },
     ]);
     expect(mavenDependencyCompletion).toHaveBeenCalledWith(7, artifactId + 3, expect.any(Number));
   });

@@ -472,6 +472,9 @@ pub async fn maven_goto_declaration(host: &Host, window: &str, pom: String, pos:
     .map_err(join_err)?
 }
 
+/// How long completion waits for Maven Central before answering from the local repository.
+const CENTRAL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Completion of the `<dependency>` coordinate the caret (`offset`, UTF-16) sits
 /// in the value of in the POM `doc`: the coordinates installed in the local
 /// repository (Settings › Maven's, else `~/.m2/repository`) — group ids,
@@ -503,27 +506,40 @@ pub async fn maven_dependency_completion(
             let repo = ide_sdk::apply::maven_local_repository(&project.root, &settings)
                 .or_else(ide_build::maven::default_local_repo);
             let mut options = repo.map_or_else(Vec::new, |repo| local_options(&repo, &target));
-            // Central's answers are cached for the session (the shared version
-            // cache); offline or rate-limited, the local repository alone still
-            // completes, so a failed fetch never fails the completion.
-            let remote = match target.kind {
-                PomCompletionKind::GroupId if !target.typed.is_empty() => {
-                    cache.versions(&MavenCentralGroups, &target.typed, &cancel).unwrap_or_default()
-                }
-                PomCompletionKind::ArtifactId => match &target.group {
-                    Some(group) => cache
-                        .versions(&MavenCentralArtifacts { group: group.clone() }, &target.typed, &cancel)
-                        .unwrap_or_default(),
-                    None => Vec::new(),
-                },
-                PomCompletionKind::Version => match (&target.group, &target.artifact) {
-                    (Some(group), Some(artifact)) => cache
-                        .versions(&MavenCentralVersions, &format!("{group}:{artifact}"), &cancel)
-                        .unwrap_or_default(),
-                    _ => Vec::new(),
-                },
-                _ => Vec::new(), // A group id from nothing: the search endpoint has no such query.
+            // Central's answers are cached for the session (the shared version cache).
+            // The local repository answers at once: Central gets `CENTRAL_WAIT`, then the
+            // lookup finishes in the background and fills the cache for the next request.
+            // Offline, behind a proxy or rate-limited, a failed fetch never fails completion.
+            let remote = {
+                let (cache, target) = (cache.clone(), target.clone());
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let detached = ide_core::CancellationToken::new();
+                    let found = match target.kind {
+                        PomCompletionKind::GroupId if !target.typed.is_empty() => {
+                            cache.versions(&MavenCentralGroups, &target.typed, &detached).unwrap_or_default()
+                        }
+                        PomCompletionKind::ArtifactId => match &target.group {
+                            Some(group) => cache
+                                .versions(&MavenCentralArtifacts { group: group.clone() }, &target.typed, &detached)
+                                .unwrap_or_default(),
+                            None => Vec::new(),
+                        },
+                        PomCompletionKind::Version => match (&target.group, &target.artifact) {
+                            (Some(group), Some(artifact)) => cache
+                                .versions(&MavenCentralVersions, &format!("{group}:{artifact}"), &detached)
+                                .unwrap_or_default(),
+                            _ => Vec::new(),
+                        },
+                        _ => Vec::new(), // A group id from nothing: the search endpoint has no such query.
+                    };
+                    let _ = tx.send(found);
+                });
+                rx.recv_timeout(CENTRAL_WAIT).unwrap_or_default()
             };
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
             let known: std::collections::HashSet<String> = options.iter().map(|o| o.label.clone()).collect();
             options.extend(
                 remote
