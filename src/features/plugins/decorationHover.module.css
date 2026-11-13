@@ -1,0 +1,188 @@
+/* Transfer CodeMirror's available-height cap without changing mixed hover groups. */
+:global(.cm-tooltip):has(> .card:global(.cm-lsp-hover):only-child) {
+  display: flex;
+  flex-direction: column;
+}
+
+.card:global(.cm-lsp-hover):global(.cm-tooltip),
+:global(.cm-tooltip) .card:global(.cm-lsp-hover) {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: min(580px, calc(100vw - var(--space-3) * 2));
+  min-width: 0;
+  min-height: 0;
+  max-width: calc(100vw - var(--space-3) * 2);
+  max-height: min(380px, calc(100vh - var(--space-3) * 2));
+  overflow: hidden;
+  padding: 0;
+  border-radius: var(--radius-popup);
+}
+
+:global(.cm-tooltip) .card:global(.cm-lsp-hover) {
+  position: relative;
+}
+
+.card:global(.cm-lsp-hover):global(.cm-tooltip)[data-resized],
+:global(.cm-tooltip) .card:global(.cm-lsp-hover)[data-resized] {
+  max-height: calc(100vh - var(--space-3) * 2);
+}
+
+.card:global(.cm-lsp-hover) .content {
+  box-sizing: border-box;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  line-height: 1.55;
+  color: var(--fg-strong);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.card:global(.cm-lsp-hover) .content::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.card:global(.cm-lsp-hover) .content > :first-child {
+  margin-top: 0;
+}
+
+.card:global(.cm-lsp-hover) .content > :last-child {
+  margin-bottom: 0;
+}
+
+.card:global(.cm-lsp-hover) .content :is(pre, code) {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.card:global(.cm-lsp-hover) .content pre {
+  margin: var(--space-2) 0;
+  padding: var(--space-2);
+  background: var(--bg-popup-inline, var(--bg-elev));
+  border-radius: var(--radius-small);
+}
+
+.card:global(.cm-lsp-hover) .content table {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.card:global(.cm-lsp-hover) .content :is(th, td) {
+  min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border-strong);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.card:global(.cm-lsp-hover) .content blockquote {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  margin: var(--space-2) 0;
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--border-strong);
+  color: var(--fg-muted);
+}
+
+.card:global(.cm-lsp-hover) .content hr {
+  margin: var(--space-3) 0;
+  border: 0;
+  border-top: 1px solid var(--border-popup);
+}
+
+.card:global(.cm-lsp-hover) .content img {
+  max-width: 100%;
+  height: auto;
+}
+
+.card:global(.cm-lsp-hover) .resizeHandle {
+  position: absolute;
+  z-index: 1;
+  box-sizing: border-box;
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  appearance: none;
+  touch-action: none;
+}
+
+.card:global(.cm-lsp-hover) .resizeHandle:is([data-edge="n"], [data-edge="s"]) {
+  right: 0;
+  left: 0;
+  height: var(--space-2);
+  cursor: ns-resize;
+}
+
+.card:global(.cm-lsp-hover) .resizeHandle[data-edge="n"] {
+  top: 0;
+}
+
+.card:global(.cm-lsp-hover) .resizeHandle[data-edge="s"] {
+  bottom: 0;
+}
+
+.card:global(.cm-lsp-hover) .resizeHandle:is([data-edge="e"], [data-edge="w"]) {
+  top: 0;
+  bottom: 0;
+  width: var(--space-2);
+  cursor: ew-resize;
+}
+
+.card:global(.cm-lsp-hover) .resizeHandle[data-edge="e"] {
+  right: 0;
+}
+
+.card:global(.cm-lsp-hover) .resizeHandle[data-edge="w"] {
+  left: 0;
+}
+
+.card:global(.cm-lsp-hover) .resizeHandle[data-edge="se"] {
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  width: var(--space-4);
+  height: var(--space-4);
+  cursor: nwse-resize;
+}
+
+.card:global(.cm-lsp-hover) .resizeHandle[data-edge="se"]::after {
+  position: absolute;
+  right: calc(var(--space-2) / 2);
+  bottom: calc(var(--space-2) / 2);
+  width: var(--space-2);
+  height: var(--space-2);
+  border-right: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+  content: "";
+}
+
+.card:global(.cm-lsp-hover) :is(.content, .resizeHandle):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}

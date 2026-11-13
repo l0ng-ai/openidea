@@ -9,7 +9,7 @@ import {
 } from "@codemirror/view";
 import type { DecorationSet, Range } from "@/bindings";
 import { registerEditorContribution, useEditorRegistry, type EditorDocContext } from "@/editor/api";
-import { hoverCard } from "@/editor/lsp/hover";
+import { resizableDecorationHover } from "./decorationHover";
 import { highlightInto, loadMarkdown, markupToHtml, renderMarkup } from "@/editor/lsp/markdown";
 import { commands, isTauri } from "@/platform/ipc";
 import { logError } from "@/platform/errorLog";
@@ -257,16 +257,22 @@ function markdownHover(field: StateField<PlacedDecorations>, ctx: EditorDocConte
       end: placed.to,
       above: true,
       create: () => {
-        const dom = hoverCard([renderPluginMarkdown(placed.markdown, ctx.uiMode)]);
+        const hover = resizableDecorationHover(view, renderPluginMarkdown(placed.markdown, ctx.uiMode));
         const card: OpenHover = {
           plugin: placed.plugin,
           path: placed.path,
           range: placed.range,
-          dom,
+          dom: hover.content,
           uiMode: ctx.uiMode,
         };
         openHovers.add(card);
-        return { dom, destroy: () => openHovers.delete(card) };
+        return {
+          ...hover,
+          destroy: () => {
+            hover.destroy?.();
+            openHovers.delete(card);
+          },
+        };
       },
     };
   };

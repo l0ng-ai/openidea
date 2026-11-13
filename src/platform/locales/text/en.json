@@ -1344,5 +1344,10 @@
   "Close Agent Task": "Close Agent Task",
   "Close and New Agent Task": "Close and New Agent Task",
   "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.": "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.",
-  "Closes the agent task tab in the editor, then opens the New Task page.": "Closes the agent task tab in the editor, then opens the New Task page."
+  "Closes the agent task tab in the editor, then opens the New Task page.": "Closes the agent task tab in the editor, then opens the New Task page.",
+  "Resize conversation from the top": "Resize conversation from the top",
+  "Resize conversation from the right": "Resize conversation from the right",
+  "Resize conversation from the bottom": "Resize conversation from the bottom",
+  "Resize conversation from the left": "Resize conversation from the left",
+  "Resize conversation from the corner": "Resize conversation from the corner"
 }

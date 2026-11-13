@@ -7731,5 +7731,10 @@
   "Download Remote Files Into Folder": "将远程文件下载到文件夹",
   "Download Remote Host files into a local folder (arg: { server, paths, target })": "将远程主机中的文件下载到本地文件夹（参数：{ server, paths, target }）",
   "Delegate IDE build/run actions to Maven": "将 IDE 构建/运行操作委托给 Maven",
-  "Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server.": "运行和调试时用 Maven（项目的 javac）构建 Maven 模块，而不是用 Java 语言服务器。编辑器中的问题仍来自语言服务器。"
+  "Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server.": "运行和调试时用 Maven（项目的 javac）构建 Maven 模块，而不是用 Java 语言服务器。编辑器中的问题仍来自语言服务器。",
+  "Resize conversation from the top": "从上边缘调整会话窗口大小",
+  "Resize conversation from the right": "从右边缘调整会话窗口大小",
+  "Resize conversation from the bottom": "从下边缘调整会话窗口大小",
+  "Resize conversation from the left": "从左边缘调整会话窗口大小",
+  "Resize conversation from the corner": "从角部调整会话窗口大小"
 }

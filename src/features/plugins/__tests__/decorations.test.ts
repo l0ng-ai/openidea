@@ -311,3 +311,47 @@ it("describes ide.commands explicitly in consent", () => {
   });
   expect(description).toContain("including running programs, committing and pushing");
 });
+
+async function openResizeHover(markdown = "**model** conversation") {
+  setPluginDecorations("test", [
+    { ...set(), items: [{ range, style: "highlight", hover: null, after: " + model", markdownHover: markdown }] },
+  ]);
+  vi.useFakeTimers();
+  try {
+    const label = [...editor.view.dom.querySelectorAll("span")].find((span) => span.textContent === " + model")!;
+    label.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 1, clientY: 1 }));
+    await vi.advanceTimersByTimeAsync(400);
+  } finally {
+    vi.useRealTimers();
+  }
+  const card = document.querySelector<HTMLElement>(".cm-tooltip .cm-lsp-hover")!;
+  expect(card).not.toBeNull();
+  vi.spyOn(card, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 100, 400, 240));
+  vi.spyOn(card.closest(".cm-tooltip")!, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 100, 400, 240));
+  return card;
+}
+
+function resizePointer(target: EventTarget, type: string, x: number, y: number, buttons = 1) {
+  const event = new MouseEvent(type, { clientX: x, clientY: y, bubbles: true, cancelable: true, button: 0, buttons });
+  Object.defineProperty(event, "pointerId", { value: 1 });
+  target.dispatchEvent(event);
+}
+
+it.each([
+  ["n", 0, -60, 400, 300],
+  ["e", 80, 0, 480, 240],
+  ["s", 0, 60, 400, 300],
+  ["w", -80, 0, 480, 240],
+  ["se", 80, 60, 480, 300],
+] as const)("resizes the model hover by its %s edge", async (edge, dx, dy, width, height) => {
+  const card = await openResizeHover();
+  const handle = card.querySelector<HTMLButtonElement>(`button[data-edge="${edge}"]`);
+  expect(handle).not.toBeNull();
+  expect(handle!.getAttribute("aria-label")).toBeTruthy();
+  resizePointer(handle!, "pointerdown", 300, 220);
+  resizePointer(window, "pointermove", 300 + dx, 220 + dy);
+  expect(card.style.width).toBe(`${width}px`);
+  expect(card.style.height).toBe(`${height}px`);
+  resizePointer(window, "pointerup", 300 + dx, 220 + dy, 0);
+  expect(document.documentElement.hasAttribute("data-drag-cursor")).toBe(false);
+});
