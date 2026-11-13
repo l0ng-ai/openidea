@@ -797,3 +797,42 @@ fn search_context_reads_non_utf8_files() {
     let p = project(&[("a.rs", &gbk("foo(\"新增\"); // 中文 foo\n"))]);
     assert_eq!(run_context(p.path(), C::InComments), vec![("a.rs".to_owned(), 0, vec![(17, 20)])]);
 }
+
+#[test]
+fn subtree_masks_preserve_results_across_search_scopes() {
+    let p = project(&[
+        ("edge/build/deep/generated.go", b"hit"),
+        ("edge/src/main.go", b"hit"),
+        ("internal/build/build.go", b"hit"),
+        ("edge/build-notes.go", b"hit"),
+    ]);
+    let q = SearchQuery { exclude: vec!["edge/build/**".into()], ..query("hit") };
+    let (views, _) = run(p.path(), &q);
+    assert_eq!(paths(&views), ["edge/build-notes.go", "edge/src/main.go", "internal/build/build.go"]);
+    let mask = ide_search::FileMask::new(&q.include, &q.exclude).unwrap();
+    for scope in [
+        SearchScope::Directory { path: "edge/build".into() },
+        SearchScope::Files { paths: vec!["edge/build/deep/generated.go".into()] },
+    ] {
+        let (views, _) = run(p.path(), &SearchQuery { scope: scope.clone(), ..q.clone() });
+        assert!(views.is_empty());
+        assert!(ide_search::scope_files(p.path(), &scope, &mask, None, &CancellationToken::new()).unwrap().is_empty());
+    }
+    // A file-name exclusion must not prune a same-named directory.
+    let (views, _) = run(p.path(), &SearchQuery { exclude: vec!["build".into()], ..query("hit") });
+    assert_eq!(views.len(), 4);
+}
+
+#[test]
+fn ignore_whitelists_do_not_override_explicit_subtree_masks() {
+    let p = project(&[
+        (".gitignore", b"generated/*\n!generated/keep/\n"),
+        ("generated/keep/.gitignore", b"!keep.go\n"),
+        ("generated/keep/keep.go", b"needle"),
+        ("src/main.go", b"needle"),
+    ]);
+    let (views, _) = run(p.path(), &query("needle"));
+    assert_eq!(paths(&views), ["generated/keep/keep.go", "src/main.go"]);
+    let (views, _) = run(p.path(), &SearchQuery { exclude: vec!["generated/**".into()], ..query("needle") });
+    assert_eq!(paths(&views), ["src/main.go"]);
+}
