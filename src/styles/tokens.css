@@ -205,7 +205,7 @@ html {
   --fg-whitespace: #6f737a;
   --fg-unused: #6f737a;
   --wave-typo: #59a869;
-  --fg-deprecated: #6f737a;
+  --fg-deprecated: #8c8f95;
   --bg-identifier-under-caret: #373b39;
   --bg-identifier-under-caret-write: #402f33;
   --fg-inlay: #868a91;
@@ -646,7 +646,7 @@ html {
   --fg-whitespace: #b5b7bd;
   --fg-unused: #8c8c8c;
   --wave-typo: #3d9950;
-  --fg-deprecated: #8c8c8c;
+  --fg-deprecated: #6c707e;
   --bg-identifier-under-caret: #edebfc;
   --bg-identifier-under-caret-write: #fce8f4;
   --fg-inlay: #73767c;
@@ -940,7 +940,7 @@ html {
   --fg-whitespace: #8b8e95;
   --fg-unused: #8b8e95;
   --wave-typo: #6cbb7d;
-  --fg-deprecated: #8b8e95;
+  --fg-deprecated: #b6b8be;
   --bg-identifier-under-caret: #3f4a44;
   --bg-identifier-under-caret-write: #553840;
   --fg-inlay: #ccced3;

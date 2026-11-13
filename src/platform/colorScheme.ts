@@ -156,13 +156,7 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     defaultEffect: "wave",
     fontStyle: true,
   },
-  {
-    id: "weakWarning",
-    name: "Weak warning",
-    path: ["General", "Errors and Warnings"],
-    fg: "--fg-weak-warning",
-    fontStyle: true,
-  },
+  { id: "weakWarning", name: "Weak warning", path: ["General", "Errors and Warnings"], fg: "--fg-weak-warning" },
   {
     id: "typo",
     name: "Typo",
@@ -182,7 +176,7 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     id: "deprecated",
     name: "Deprecated symbol",
     path: ["General", "Errors and Warnings"],
-    fg: "--fg-deprecated",
+    effect: "--fg-deprecated",
     defaultEffect: "strikeout",
     fontStyle: true,
   },
@@ -382,6 +376,11 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
 /** Variables a scheme sets: every attribute variable plus the editor tokens derived from them. */
 const SCHEME_VARS = new Set<string>([
   ...ATTRIBUTES.flatMap((a) => [a.fg, a.bg, a.effect].filter((v): v is string => !!v)),
+  // Font style of token-less attributes (`overrideDeclarations` writes them for custom schemes too).
+  ...ATTRIBUTES.flatMap((a) => {
+    const base = a.fg ?? a.effect;
+    return !a.token && a.fontStyle && base ? [`${base}-bold`, `${base}-italic`, `${a.effect ?? base}-effect`] : [];
+  }),
   "--syn-comment-style",
   "--syn-doc-comment-tag-effect",
   "--editor-error-decoration",
@@ -551,7 +550,7 @@ export function overrideDeclarations(
     if (setOrCleared(o.background) && attr.bg) out.push([attr.bg, o.background]);
     if (setOrCleared(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
     if (attr.effect && (setOrCleared(o.effectColor) || o.effect)) {
-      const style = o.effect && o.effect !== "none" ? o.effect : "wave";
+      const style = o.effect ?? attr.defaultEffect ?? "wave";
       const color = setOrCleared(o.effectColor) ? o.effectColor! : `var(${attr.effect})`;
       const decoration = EFFECT_CSS[style]?.(color) ?? "none";
       if (attr.id === "error") out.push(["--editor-error-decoration", decoration]);
@@ -580,7 +579,9 @@ export function overrideDeclarations(
         if (o.effect)
           out.push([
             `${attr.effect ?? base}-effect`,
-            EFFECT_CSS[o.effect]?.(setOrCleared(o.effectColor) ? o.effectColor! : "currentColor") ?? "none",
+            EFFECT_CSS[o.effect]?.(
+              setOrCleared(o.effectColor) ? o.effectColor! : attr.effect ? `var(${attr.effect})` : "currentColor",
+            ) ?? "none",
           ]);
       }
     }

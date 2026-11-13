@@ -124,6 +124,8 @@ function previewVars(
       k.startsWith("--border-") ||
       k.startsWith("--ansi-") ||
       k.startsWith("--git-") ||
+      k.startsWith("--wave-") ||
+      k.startsWith("--editor-") ||
       k === "--caret"
     )
       vars[k] = v;
@@ -1070,7 +1072,13 @@ function AttributeEditor({
               checked={!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none"}
               onChange={(b) =>
                 set({
-                  effect: b ? (inherited.effect && inherited.effect !== "none" ? inherited.effect : "wave") : "none",
+                  effect: b
+                    ? inherited.effect && inherited.effect !== "none"
+                      ? inherited.effect
+                      : "underline"
+                    : inherited.effect && inherited.effect !== "none"
+                      ? "none"
+                      : undefined,
                   effectColor: b ? v.effectColor : undefined,
                 })
               }

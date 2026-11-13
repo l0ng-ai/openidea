@@ -260,6 +260,8 @@ const lintTheme = EditorView.theme({
   ".cm-lintRange.cm-lsp-typo": {
     textDecoration: "var(--wave-typo-effect, underline wavy var(--wave-typo, var(--success)))",
     WebkitTextDecoration: "var(--wave-typo-effect, underline wavy var(--wave-typo, var(--success)))",
+    fontWeight: "var(--wave-typo-bold, inherit)",
+    fontStyle: "var(--wave-typo-italic, inherit)",
     textDecorationSkipInk: "none",
     textUnderlineOffset: "3px",
   },
@@ -272,9 +274,10 @@ const lintTheme = EditorView.theme({
   },
   ".cm-lintRange.cm-lsp-unnecessary *": { color: "var(--fg-unused, var(--fg-faint))" },
   ".cm-lintRange.cm-lsp-deprecated": {
-    textDecoration: "var(--fg-deprecated-effect, line-through)",
-    textDecorationColor: "var(--fg-deprecated, var(--fg-muted))",
-    color: "var(--fg-deprecated, var(--fg-muted))",
+    textDecoration: "var(--fg-deprecated-effect, line-through var(--fg-deprecated, var(--fg-muted)))",
+    WebkitTextDecoration: "var(--fg-deprecated-effect, line-through var(--fg-deprecated, var(--fg-muted)))",
+    fontWeight: "var(--fg-deprecated-bold, inherit)",
+    fontStyle: "var(--fg-deprecated-italic, inherit)",
   },
   // An error or warning on the same range (merged into one mark) keeps its underline.
   ".cm-lintRange-error.cm-lsp-typo, .cm-lintRange-error.cm-lsp-unnecessary": {
