@@ -16,8 +16,6 @@ description: "React 工作台的组织方式：带 activate() 的功能模块、
 | `features/<name>/` | 每个目录一个功能（`search`、`vcs`、`debugger`、`run`、`terminal`、`database`、`plugins` 等），导出 `activate()`。                                                                 |
 | `bindings.ts`      | 生成的 IPC 绑定，禁止手改。                                                                                                                                                       |
 
-功能专属的间距放在该功能的 CSS Module 中。例如，数据库 Results 通过 `Tabs.className` 应用 `--space-2` 水平内边距；共享的紧凑标签页保持无内边距，供标题栏内使用。
-
 ## 功能与 `activate()`
 
 每个功能导出 `activate(): void | (() => void)`：注册 action、工具窗口、状态栏项、编辑器扩展和服务，并返回一个撤销全部注册的 disposer。`src/features/index.ts` 按激活顺序列出所有功能，并把每个 `activate` 包在 `try` 里调用，一个功能抛错不会影响其他功能。`src/workbench/activate.ts` 先于它运行，提供功能依赖的外壳服务（工具窗口、通知）。

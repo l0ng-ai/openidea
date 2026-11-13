@@ -16,8 +16,6 @@ The frontend is React 19 with zustand stores and CodeMirror 6 for editors, bundl
 | `features/<name>/` | One feature each (`search`, `vcs`, `debugger`, `run`, `terminal`, `database`, `plugins`…), exporting `activate()`.                                                                                                         |
 | `bindings.ts`      | Generated IPC bindings. Never edit.                                                                                                                                                                                        |
 
-Feature-owned spacing stays in the feature's CSS module. For example, database Results applies the `--space-2` inline inset through `Tabs.className`; the shared compact tabs remain unpadded for use inside headers.
-
 ## Features and `activate()`
 
 Each feature exports `activate(): void | (() => void)`. It registers actions, tool windows, status items, editor contributions and services, and returns a disposer that undoes all of it. `src/features/index.ts` lists the features in activation order and activates each inside a `try`, so one feature that throws doesn't stop the others. `src/workbench/activate.ts` runs first and provides the shell services (tool windows, notifications) that features rely on.
