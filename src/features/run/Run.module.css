@@ -12,6 +12,32 @@
   background: none;
 }
 
+/* Archived agent tabs (`run_command`), after the run tabs. */
+.agentArchive {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  margin: 0 4px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.agentArchive:hover {
+  background: var(--bg-hover);
+}
+.agentArchive[data-active] {
+  color: var(--accent);
+}
+.agentArchiveCount {
+  font-size: var(--fs-small);
+}
+
 .panel {
   flex: 1;
   display: flex;

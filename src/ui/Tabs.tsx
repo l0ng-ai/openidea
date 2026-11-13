@@ -40,6 +40,8 @@ export interface TabItem {
   /** CSS colour the tab background is tinted with (IDEA's data source / file colours). */
   tint?: string;
   italic?: boolean;
+  /** Greyed out, e.g. a run tab whose process has ended. */
+  dimmed?: boolean;
   tooltip?: string;
   /** Trailing content (counts, badges). */
   trailing?: ReactNode;
@@ -431,7 +433,7 @@ export function Tabs({
                 aria-controls={panelIdPrefix ? `${panelIdPrefix}-panel-${item.id}` : undefined}
                 aria-selected={selected}
                 tabIndex={selected || (!activeId && index === 0) ? 0 : -1}
-                className={styles.tabButton}
+                className={clsx(styles.tabButton, item.dimmed && styles.dimmed)}
                 style={item.color ? { color: item.color } : undefined}
                 onClick={(e) => {
                   // Shift+click is mouse-only: a keyboard Enter with Shift held still selects.

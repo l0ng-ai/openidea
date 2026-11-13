@@ -682,7 +682,7 @@ export const TOOLS_PAGES: PageSpec[] = [
             key: "agents.newTaskApprovals",
             label: "New tasks start",
             options: NEW_TASK_APPROVAL_OPTIONS,
-            hint: "Without asking means the agent's bypass or full-access mode, where the Command Execution Policy doesn't apply",
+            hint: "Without asking means the agent's bypass or full-access mode, where command permissions don't apply",
           },
         ],
       },

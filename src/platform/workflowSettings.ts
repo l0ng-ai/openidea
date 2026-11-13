@@ -165,6 +165,14 @@ export interface AgentSecurityValid {
   blockedCommands: string[];
 }
 
+/** Agents › IDE MCP Server: the Run tool window's agent tabs (`run_command`). */
+export interface AgentRunSettingsValid {
+  /** Finished agent tabs shown; older ones go to the archive. */
+  tabLimit: number;
+  /** Archived agent tabs kept; older ones are closed. */
+  archiveLimit: number;
+}
+
 export interface WorkflowSettings extends RemoteSettings {
   vcs: VcsSettingsValid;
   console: ConsoleSettingsValid;
@@ -183,6 +191,8 @@ export const WORKFLOW_LIMITS = {
   bufferKb: { min: 16, max: 1_048_576 },
   tooltipDelay: { min: 0, max: 10_000 },
   terminationTimeoutMs: { min: 0, max: 600_000 },
+  agentTabLimit: { min: 0, max: 1000 },
+  agentArchiveLimit: { min: 0, max: 100_000 },
   terminalFontSize: { min: 6, max: 72 },
   terminalLineHeight: { min: 0.5, max: 3 },
   terminalColumnWidth: { min: 0.5, max: 2 },
@@ -542,6 +552,18 @@ export function validateAgentSecurity(raw: unknown): AgentSecurityValid {
   };
 }
 
+export const DEFAULT_AGENT_RUNS: AgentRunSettingsValid = { tabLimit: 1, archiveLimit: 999 };
+
+/** From `mcpServer` (Agents › IDE MCP Server). */
+export function validateAgentRuns(raw: unknown): AgentRunSettingsValid {
+  const v = obj(raw);
+  const d = DEFAULT_AGENT_RUNS;
+  return {
+    tabLimit: num(v.agentTabLimit, d.tabLimit, WORKFLOW_LIMITS.agentTabLimit, true),
+    archiveLimit: num(v.agentArchiveLimit, d.archiveLimit, WORKFLOW_LIMITS.agentArchiveLimit, true),
+  };
+}
+
 export function validateWorkflow(raw: unknown): WorkflowSettings {
   const root = obj(raw);
   return {
@@ -619,3 +641,14 @@ export const EXTERNAL_TOOL_MACROS: ReadonlyArray<{ name: string; description: st
   { name: "$SelectedText$", description: "Text selected in the editor" },
   { name: "$Prompt$", description: "Asks for a value when the tool runs" },
 ];
+
+/** Agents › IDE MCP Server limits on the Run tool window's agent tabs. */
+export function agentRunSettings(): AgentRunSettingsValid {
+  return validateAgentRuns(obj(useProject.getState().settings).mcpServer);
+}
+
+/** React hook over {@link agentRunSettings}. */
+export function useAgentRunSettings(): AgentRunSettingsValid {
+  const raw = useProject((p) => obj(p.settings).mcpServer);
+  return validateAgentRuns(raw);
+}

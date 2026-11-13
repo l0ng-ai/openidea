@@ -1,5 +1,5 @@
 /**
- * Settings › Tools › Agents › Command Execution Policy: whitelist (auto-approve)
+ * Settings › Tools › Agents › Command Permissions: whitelist (auto-approve)
  * and blacklist (auto-reject) command patterns evaluated on agent permission requests.
  */
 import { useMemo, useState } from "react";
@@ -47,18 +47,18 @@ export function AgentPolicyPage() {
   };
 
   return (
-    <section className={styles.body} aria-label="Command Execution Policy">
+    <section className={styles.body} aria-label="Command Permissions">
       <p className={styles.notice}>
         <T>
-          Allowed commands run without asking: an entry matches that command, alone or with more arguments. Commands
-          with substitutions, redirections or variable assignments always ask. Blocked commands are rejected and win
-          over allowed ones; they support the * and ? wildcards.
+          Allowed commands run without asking, with or without extra arguments. Blocked commands are always rejected,
+          even if allowed, and support * and ? wildcards. Commands with substitutions, redirections or variable
+          assignments always ask.
         </T>
       </p>
       <div className={styles.grid}>
         <div className={styles.column}>
           <div className={styles.columnTitle}>
-            <T>Allowed Commands (Whitelist)</T>
+            <T>Allowed Commands</T>
           </div>
           <div className={styles.items}>
             {policy.allowedCommands.map((pattern) => (
@@ -80,7 +80,7 @@ export function AgentPolicyPage() {
               value={allowDraft}
               onChange={(e) => setAllowDraft(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addAllowed()}
-              placeholder={tx("e.g. cargo test*")}
+              placeholder={tx("e.g. cargo test")}
               aria-label="Allowed command pattern"
             />
             <Button size="small" aria-label="Add allowed command" onClick={addAllowed}>
@@ -90,7 +90,7 @@ export function AgentPolicyPage() {
         </div>
         <div className={styles.column}>
           <div className={styles.columnTitle}>
-            <T>Blocked Commands (Blacklist)</T>
+            <T>Blocked Commands</T>
           </div>
           <div className={styles.items}>
             {policy.blockedCommands.map((pattern) => (

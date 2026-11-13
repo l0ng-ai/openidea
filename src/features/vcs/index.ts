@@ -14,7 +14,7 @@ import {
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
-import { executeAction } from "@/platform/actions";
+import { executeAction, registerActions } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { lazyComponent } from "@/ui";
 import { registerVcsActions } from "./actions";
@@ -50,6 +50,7 @@ import { closeLogTab, installGitLog, selectGitTab, useGitLog } from "./logStore"
 import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
 import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
+import { openOnRemoteActions, registerOpenOnRemote } from "./openOnRemote";
 
 /** The Resolve/Continue/Abort buttons exist in the title bar only while there is something to resolve. */
 function trackMergeRebaseItem(): () => void {
@@ -231,6 +232,8 @@ export function activate(): () => void {
       (signOff) => useCommit.setState({ signOff }),
     ),
     registerVcsActions(),
+    registerActions(openOnRemoteActions),
+    registerOpenOnRemote(),
     registerHistoryActions(),
     registerLogPaneActions(),
     activateSettingsPages(),

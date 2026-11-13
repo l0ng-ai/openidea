@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { commands, call, isTauri, onIdeEvent, type McpServerStatus } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { WORKFLOW_LIMITS } from "@/platform/workflowSettings";
 import { useTx } from "@/platform/i18n";
 import { Button, Input, T, copyText } from "@/ui";
 import { Row } from "../components/Form";
@@ -133,6 +134,22 @@ export const MCP_SERVER_PAGE: PageSpec = {
           key: "mcpServer.runWithoutConfirmation",
           label: "Run tools without confirmation (brave mode)",
           hint: "Run configurations, terminal commands and other tools that change a project start without asking, for unattended agents. Only the IDE's own settings can turn this on, not a project's.",
+        },
+        {
+          kind: "number",
+          key: "mcpServer.agentTabLimit",
+          label: "Finished agent tabs to show",
+          ...WORKFLOW_LIMITS.agentTabLimit,
+          integer: true,
+          hint: "Commands agents run appear in the Run tool window as _agent_ tabs. Beyond this many finished ones, the oldest move to the archive at the end of the tab strip. Running commands are never archived.",
+        },
+        {
+          kind: "number",
+          key: "mcpServer.agentArchiveLimit",
+          label: "Archived agent tabs to keep",
+          ...WORKFLOW_LIMITS.agentArchiveLimit,
+          integer: true,
+          hint: "Beyond this many archived agent tabs, the oldest are closed.",
         },
         {
           kind: "custom",
