@@ -1,4 +1,6 @@
 {
+  "Fix ESLint Problems": "Fix ESLint Problems",
+  "No ESLint problems to fix": "No ESLint problems to fix",
   "Pin ({count})": "Pin ({count})",
   "Unpin ({count})": "Unpin ({count})",
   "New Group": "New Group",

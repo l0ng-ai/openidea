@@ -1,4 +1,6 @@
 {
+  "Fix ESLint Problems": "修复 ESLint 问题",
+  "No ESLint problems to fix": "没有可修复的 ESLint 问题",
   "Pin ({count})": "固定（{count}）",
   "Unpin ({count})": "取消固定（{count}）",
   "New Group": "新建组",
