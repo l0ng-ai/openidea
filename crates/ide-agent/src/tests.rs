@@ -2391,6 +2391,27 @@ async fn idle_agents_stop_and_resume_their_session_on_the_next_message() {
     assert!(live(&mgr, &task.id));
     mgr.shutdown();
 
+    // Undoing turns or copying the conversation starts a stopped agent: it stops again too.
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    mgr.set_idle_release(Duration::from_millis(200));
+    let task = mgr.create(new()).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!live(&mgr, &task.id));
+    mgr.rollback(&task.id, 1).await.unwrap();
+    assert!(live(&mgr, &task.id));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!live(&mgr, &task.id), "an agent started to undo turns stops too");
+    mgr.fork(&task.id, None).await.unwrap();
+    assert!(live(&mgr, &task.id));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!live(&mgr, &task.id), "an agent started to copy the conversation stops too");
+    mgr.shutdown();
+
     // An agent that can't reload its session keeps running: stopping it would lose the conversation.
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent { no_load: true, ..FakeAgent::default() });
