@@ -529,6 +529,71 @@ describe("scrolling", () => {
     expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
   });
 
+  it.each([
+    { name: "stays at the end below it", top: 300, bottom: 360, scrolled: 60, away: false },
+    { name: "keeps its header on screen", top: 50, bottom: 900, scrolled: 50, away: true },
+    { name: "back at the end without following", top: 300, bottom: 360, scrolled: 60, away: false, released: true },
+  ])("scrolls a section opened at the end into view: $name", async ({ top, bottom, scrolled, away, released }) => {
+    backend.entries.set("A", [
+      { type: "thought", text: "Weighing it" },
+      { type: "agent", text: "Answer A" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    const el = stream();
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.getBoundingClientRect = () => ({ top: 0, bottom: 400 }) as DOMRect;
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    if (released) {
+      fireEvent.wheel(el, { deltaY: -50 });
+      el.scrollTop = 550;
+      fireEvent.scroll(el);
+      el.scrollTop = 600;
+      fireEvent.scroll(el);
+      expect(screen.getByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
+    }
+    const fold = stream().querySelector("details")!;
+    fold.getBoundingClientRect = () => ({ top, bottom }) as DOMRect;
+    // It grows once its content renders.
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      get: () => (fold.children.length > 1 ? 1000 + bottom - top : 1000),
+    });
+    fireEvent.pointerDown(fold);
+    fireEvent.pointerUp(fold);
+    fold.open = true;
+    act(() => {
+      fireEvent(fold, new Event("toggle"));
+    });
+    expect(el.scrollTop).toBe(600 + scrolled);
+    fireEvent.scroll(el);
+    // With the end out of view, the next chunk doesn't pull the reader away from the section.
+    expect(screen.queryByRole("button", { name: "Jump to Latest" }) !== null).toBe(away);
+  });
+
+  it("keeps following when the view grows taller and the browser pulls the offset back", () => {
+    useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Initial reply" }]]]) });
+    render(<SessionEditor input={input("A")} />);
+    const el = stream();
+    let height = 1000;
+    let viewport = 400;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => viewport });
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    // The composer shrank after sending: the end moved up and the offset was clamped to it.
+    viewport = 500;
+    el.scrollTop = 500;
+    fireEvent.scroll(el);
+    expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+    height = 1200;
+    act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Streaming" }]]]) }));
+    expect(el.scrollTop).toBe(1200);
+  });
+
   it.each(["wheel", "touch", "ArrowUp", "PageUp", "Home", "Shift+Space"])(
     "releases following before an upward %s scroll, even within the bottom threshold",
     async (method) => {
