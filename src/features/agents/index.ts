@@ -59,7 +59,7 @@ export function activateSettingsPages(): () => void {
     }),
     registerSettingsPage({
       id: POLICY_PAGE,
-      title: "Command Execution Policy",
+      title: "Command Permissions",
       group: AGENTS_GROUP,
       order: 490,
       keywords: ["agent", "policy", "security", "whitelist", "blacklist", "permission", "command", "exec"],

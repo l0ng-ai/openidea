@@ -22,6 +22,37 @@ pub async fn clipboard_write_text(app: AppHandle, window: WebviewWindow, text: S
     with_clipboard(app, move || ide_clipboard::set_text(&text, owner).map_err(ide_core::IdeError::from)).await
 }
 
+/// The clipboard's plain text, read natively as [`clipboard_write_text`] writes it: a Paste
+/// from a menu has no paste event, and WebKitGTK gives `navigator.clipboard.readText()` no
+/// text there (#3041). None on Windows, where the WebView's clipboard is used.
+#[tauri::command]
+#[specta::specta]
+pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
+    #[cfg(target_os = "linux")]
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.run_on_main_thread(move || {
+            let sender = std::cell::Cell::new(Some(tx));
+            gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).request_text(move |_, text| {
+                if let Some(sender) = sender.take() {
+                    let _ = sender.send(text.map(|t| t.to_string()));
+                }
+            });
+        })
+        .map_err(|error| IdeError::internal(format!("Cannot dispatch clipboard access to the main thread: {error}")))?;
+        Ok(rx.await.ok().flatten())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        with_clipboard(app, || Ok(ide_clipboard::text())).await
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = app;
+        Ok(None)
+    }
+}
+
 /// Absolute paths on the clipboard, empty when it holds no file list.
 #[tauri::command]
 #[specta::specta]

@@ -1087,7 +1087,7 @@
   "New tasks start": "New tasks start",
   "Without asking for approval": "Without asking for approval",
   "Asking for approval": "Asking for approval",
-  "Without asking means the agent's bypass or full-access mode, where the Command Execution Policy doesn't apply": "Without asking means the agent's bypass or full-access mode, where the Command Execution Policy doesn't apply",
+  "Without asking means the agent's bypass or full-access mode, where command permissions don't apply": "Without asking means the agent's bypass or full-access mode, where command permissions don't apply",
   "Conversation": "Conversation",
   "Fold a finished turn's work": "Fold a finished turn's work",
   "Reasoning and tool calls before the reply fold into one line under its message": "Reasoning and tool calls before the reply fold into one line under its message",
@@ -1456,5 +1456,18 @@
   "Dependencies": "Dependencies",
   "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff.": "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff.",
   "No credential store": "No credential store",
-  "Values of agent and MCP server settings are kept in {path}, readable only by you.": "Values of agent and MCP server settings are kept in {path}, readable only by you."
+  "Values of agent and MCP server settings are kept in {path}, readable only by you.": "Values of agent and MCP server settings are kept in {path}, readable only by you.",
+  "Open on Git Remote": "Open on Git Remote",
+  "Opens the file or directory on the web page of its repository's remote.": "Opens the file or directory on the web page of its repository's remote.",
+  "This file has no page on a Git remote": "This file has no page on a Git remote",
+  "Run Agent Command": "Run Agent Command",
+  "Runs `{ name, command, cwd, env }` from the MCP server's `run_command` in the agent tab `name`; throws when it did not start.": "Runs `{ name, command, cwd, env }` from the MCP server's `run_command` in the agent tab `name`; throws when it did not start.",
+  "Archived agent tabs: {count}": "Archived agent tabs: {count}",
+  "Archived agent tabs": "Archived agent tabs",
+  "Close All Archived Tabs": "Close All Archived Tabs",
+  "Finished agent tabs to show": "Finished agent tabs to show",
+  "Commands agents run appear in the Run tool window as _agent_ tabs. Beyond this many finished ones, the oldest move to the archive at the end of the tab strip. Running commands are never archived.": "Commands agents run appear in the Run tool window as _agent_ tabs. Beyond this many finished ones, the oldest move to the archive at the end of the tab strip. Running commands are never archived.",
+  "Archived agent tabs to keep": "Archived agent tabs to keep",
+  "Beyond this many archived agent tabs, the oldest are closed.": "Beyond this many archived agent tabs, the oldest are closed.",
+  "Archived ({count})": "Archived ({count})"
 }

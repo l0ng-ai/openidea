@@ -234,7 +234,19 @@ pub async fn start_request(
 ) -> IdeResult<RunInfo> {
     let cancel = request.map(|id| host.begin_request(id)).unwrap_or_default();
     let operation = config.extras.params.get("plugin.operation").cloned();
-    let result = start_inner(host, window, config, on_output, &cancel).await;
+    let mut config = config;
+    let agent = match host.project(window) {
+        Ok(project) => host.mcp_agent_runs.launch(&project.root, window, &mut config),
+        Err(_) => None,
+    };
+    let on_output = match &agent {
+        Some(agent) => agent.wrap_output(on_output),
+        None => on_output,
+    };
+    let result = start_inner(host, window, config, on_output, agent.as_ref(), &cancel).await;
+    if let Some(agent) = &agent {
+        agent.started(&result);
+    }
     if let Some(id) = request {
         host.end_request(id);
     }
@@ -249,6 +261,7 @@ async fn start_inner(
     window: &str,
     mut config: RunConfig,
     on_output: Emit<OutputChunk>,
+    agent: Option<&crate::mcp::run::agent::Launch>,
     cancel: &ide_core::CancellationToken,
 ) -> IdeResult<RunInfo> {
     if cancel.is_cancelled() {
@@ -281,6 +294,9 @@ async fn start_inner(
     let mut sink = project.sink.clone();
     if let Some(plugins) = host.plugin_host() {
         sink = plugins.run_operation_sink(window, &mut config, sink)?;
+    }
+    if let Some(agent) = agent {
+        sink = agent.wrap_sink(sink);
     }
     if config.command.is_empty() {
         return Err(IdeError::invalid("run configuration has no command"));
@@ -450,6 +466,7 @@ pub fn stop(host: &Host, window: &str, id: RunId) -> IdeResult<()> {
     if let Some(plugins) = host.plugin_host() {
         plugins.run_operation_stopped(id);
     }
+    host.mcp_agent_runs.stopping(id);
     let settings = match host.project(window) {
         Ok(p) => p.settings.effective(),
         Err(_) => host.global_settings.effective(),
@@ -461,7 +478,9 @@ pub fn stop(host: &Host, window: &str, id: RunId) -> IdeResult<()> {
     host.processes.stop_with_grace(id, grace)
 }
 
+/// Input the user typed into a run (the agent's goes to the process directly).
 pub fn stdin(host: &Host, id: RunId, data: &str) -> IdeResult<()> {
+    host.mcp_agent_runs.user_input(id, data);
     if host.remote.runs.contains(id) {
         return host.remote.runs.write_stdin(id, data);
     }

@@ -658,6 +658,24 @@ impl Server {
         }
     }
 
+    /// Waits until no `$/progress` task is active, background work included (jdtls' builds,
+    /// rust-analyzer's `cargo check`), unlike [`Server::wait_indexed`]; false on timeout or
+    /// cancellation.
+    pub async fn wait_idle(&self, timeout: Duration, cancel: &CancellationToken) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let notified = self.phase_notify.notified();
+            if !self.is_busy() || self.running().is_none() {
+                return !self.is_busy();
+            }
+            tokio::select! {
+                () = notified => {}
+                () = tokio::time::sleep_until(deadline) => return !self.is_busy(),
+                () = cancel.cancelled() => return false,
+            }
+        }
+    }
+
     // ---- transiently opened files ----
 
     /// Registers a holder of the transient file `path` on instance `generation`;

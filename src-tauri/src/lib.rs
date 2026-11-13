@@ -176,6 +176,12 @@ pub fn run() {
     })
     .setup(move |app| {
         builder.mount_events(app);
+        #[cfg(windows)]
+        tauri::async_runtime::spawn_blocking(|| {
+            if let Ok(exe) = tauri::utils::platform::current_exe() {
+                ide_tools::portable_update::cleanup(&exe);
+            }
+        });
         // An unusable directory variable stops the start with a message, never a silent fallback.
         let identifier = app.config().identifier.clone();
         let local_data_dir = local_data_dir.and_then(|dir| {

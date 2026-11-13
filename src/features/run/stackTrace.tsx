@@ -16,6 +16,7 @@ import { findOutputLinks } from "./links";
 import { useRun } from "./store";
 import styles from "./StackTrace.module.css";
 import { tx } from "@/platform/i18n";
+import { readClipboardPlainText } from "@/platform/clipboard";
 
 export interface StackTraceTab {
   id: string;
@@ -83,7 +84,7 @@ export function closeStackTrace(id: string) {
 async function openDialog() {
   let clip = "";
   try {
-    clip = (await navigator.clipboard?.readText()) ?? "";
+    clip = await readClipboardPlainText();
   } catch {
     // clipboard unavailable or denied: start empty
   }

@@ -60,6 +60,8 @@ pub struct Host {
     plugin_host: RwLock<std::sync::Weak<plugins::PluginHost>>,
     pub mcp_reports: mcp::Reports,
     pub mcp_requests: mcp::Requests,
+    /// Commands agents run in the Run tool window (`run_command`).
+    pub mcp_agent_runs: mcp::AgentRuns,
     pub trust: trust::TrustStore,
     pub(crate) mcp_approvals: Arc<trust::McpServerApprovals>,
     pub config_dir: PathBuf,
@@ -141,6 +143,7 @@ impl Host {
             mcp_executable: RwLock::default(),
             mcp_reports: Default::default(),
             mcp_requests: Default::default(),
+            mcp_agent_runs: Default::default(),
             trust: trust::TrustStore::load(&config_dir, &data_dir),
             mcp_approvals: Arc::new(trust::McpServerApprovals::load(&data_dir)),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
@@ -269,6 +272,7 @@ impl Host {
     fn begin_close(&self, window: &str) -> Option<std::thread::JoinHandle<()>> {
         self.mcp_reports.forget_window(window);
         self.mcp_requests.forget_window(window);
+        self.mcp_agent_runs.forget_window(window);
         self.external_logs.write().remove(self.owner_window(window));
         for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
             self.cancel_request(request);
