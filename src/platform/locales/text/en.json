@@ -1426,7 +1426,7 @@
   "Double-click an interpreter to use it for this project.": "Double-click an interpreter to use it for this project.",
   "All Interpreters": "All Interpreters",
   "Dependencies": "Dependencies",
-  "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff.": "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff."
+  "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff.": "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff.",
   "No credential store": "No credential store",
   "Values of agent and MCP server settings are kept in {path}, readable only by you.": "Values of agent and MCP server settings are kept in {path}, readable only by you."
 }
