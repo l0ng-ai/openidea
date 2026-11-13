@@ -321,3 +321,33 @@ class Grid {
     let cases: Vec<(&str, &str)> = cases.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     check(&[APP], TEST_HEADER, &cases);
 }
+
+#[test]
+fn a_bare_container_return_takes_what_the_body_returns() {
+    const GRID: &str = r#"
+class Grid {
+    protected $columns = [];
+
+    public function add(Clock $clock): void { $this->columns[] = $clock; }
+    public function getColumns(): array { return $this->columns; }
+    public function names(): array { return ['a' => 1]; }
+    /** @return array<string, Mailer> */
+    public function documented(): array { return $this->columns; }
+    public function unknown(array $rows): array { return $rows; }
+
+    public function read(): void {
+        BODY
+    }
+}
+"#;
+    let t = |expr: &str| GRID.replace("BODY", &format!("{expr}/*|*/;"));
+    let cases = [
+        (t("$this->getColumns()"), "list<App\\Clock>".to_owned()),
+        (t("foreach ($this->getColumns() as $c) { $c; }\n$c"), "App\\Clock".to_owned()),
+        // A `@return` wins; a body that says no more keeps the hint.
+        (t("$this->documented()"), "array<string, App\\Mailer>".to_owned()),
+        (t("$this->unknown([])"), "array".to_owned()),
+    ];
+    let cases: Vec<(&str, &str)> = cases.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    check(&[APP], TEST_HEADER, &cases);
+}

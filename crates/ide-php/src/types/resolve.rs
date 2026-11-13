@@ -504,6 +504,33 @@ impl<'a> Resolver<'a> {
         self.decls.direct_subclasses(fqn)
     }
 
+    /// Whether `found` is the bare container `declared` (see
+    /// [`is_bare_container`]) with its element types: lists and arrays of
+    /// something known for `array`, the class (or a subclass) with generic
+    /// arguments for a class.
+    pub(crate) fn refines_container(&self, declared: &Type, found: &Type) -> bool {
+        let members = found.members();
+        if members.is_empty() {
+            return false;
+        }
+        match declared {
+            // An array literal is a shape.
+            Type::Array { .. } => members.iter().all(|member| match member {
+                Type::List { value, .. } | Type::Array { value, .. } => **value != Type::Mixed,
+                Type::Shape(shape) => !shape.fields.is_empty(),
+                _ => false,
+            }),
+            Type::Named { fqn, .. } => members.iter().all(|member| match member {
+                Type::Named { fqn: found, args } if !args.is_empty() => {
+                    operators::same_class(found, fqn)
+                        || self.class_model(found).is_some_and(|class| class.is_subclass_of(fqn))
+                }
+                _ => false,
+            }),
+            _ => false,
+        }
+    }
+
     /// What callers in other files pass for parameter `site`
     /// ([`Declarations::call_site_types`]), cached for the modification
     /// counter.
@@ -1143,7 +1170,18 @@ impl<'a> Resolver<'a> {
                     (None, _) if let Some(inherited) = self.inherited_return(method, name, depth) => {
                         return Some(inherited);
                     }
-                    (None, Some(hint)) => Type::from_hint(hint),
+                    (None, Some(hint)) => {
+                        // A bare container: what the body returns, when it
+                        // is that container with its element types.
+                        let hinted = Type::from_hint(hint);
+                        let inferred = declared
+                            .inferred_return
+                            .as_ref()
+                            .filter(|_| is_bare_container(&hinted))
+                            .map(|lazy| self.lazy(lazy, &context, depth).widen())
+                            .filter(|inferred| self.refines_container(&hinted, inferred));
+                        inferred.unwrap_or(hinted)
+                    }
                     (None, None) => match &declared.inferred_return {
                         Some(lazy) => self.lazy(lazy, &context, depth).widen(),
                         None => Type::Mixed,
@@ -1474,6 +1512,13 @@ const FACADE_ROOTS: &[(&str, &str)] = &[
 
 /// PHPUnit's test case: what Pest binds test closures to by default.
 const PHPUNIT_TEST_CASE: &str = "PHPUnit\\Framework\\TestCase";
+
+/// `array` with nothing about its elements, or a class without generic
+/// arguments: a declaration a more precise type of the same container may
+/// stand in for.
+pub(crate) fn is_bare_container(ty: &Type) -> bool {
+    *ty == Type::array() || matches!(ty, Type::Named { args, .. } if args.is_empty())
+}
 
 /// How many classes using a trait type its `$this`.
 const MAX_TRAIT_HOSTS: usize = 3;

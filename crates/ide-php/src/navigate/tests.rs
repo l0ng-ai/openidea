@@ -430,3 +430,13 @@ fn a_parameter_nobody_calls_stays_unknown_and_object_is_refined() {
     let object = "<?php\n\nclass Printer\n{\n    public function run(): void\n    {\n        $this->show(new Item());\n    }\n\n    private function show(object $item): void\n    {\n        $item->tit/*|*/le();\n    }\n}\n";
     assert_eq!(p.definition("src/Printer.php", object).expect("handled"), [target("src/lib.php", 4, "title")]);
 }
+
+#[test]
+fn a_bare_container_parameter_takes_its_callers_elements() {
+    let source = "<?php\n\nclass Printer\n{\n    public function run(): void\n    {\n        $this->all([new Item(), new Item()]);\n    }\n\n    private function all(array $items): void\n    {\n        foreach ($items as $item) {\n            $item->tit/*|*/le();\n        }\n    }\n}\n";
+    let mut p = Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/Printer.php", source)]);
+    assert_eq!(p.definition("src/Printer.php", source).expect("handled"), [target("src/lib.php", 4, "title")]);
+    // A caller passing something that is no array of known elements: the declared `array` stays.
+    let mixed = source.replace("$this->all([new Item(), new Item()]);", "$this->all([new Item()]); $this->all($_GET);");
+    assert_eq!(p.definition("src/Printer.php", &mixed).expect("handled"), []);
+}

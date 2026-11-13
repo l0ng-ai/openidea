@@ -721,7 +721,21 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 // Nothing says: what the callers pass, when asked for.
                 let param = &decl.params[index];
                 let undeclared = param.type_hint.is_none() && doc.and_then(|doc| doc.param_type(&name)).is_none();
-                // A parameter declared `object` says as little.
+                // A parameter declared `object` says as little; one declared
+                // a bare container (`array`, `Collection $items`) takes its
+                // callers' when they all pass that container with its
+                // element types.
+                let container = self.call_sites.is_some()
+                    && (ty == Type::array()
+                        || matches!(&ty, Type::Named { fqn, args }
+                            if args.is_empty() && fqn.rsplit('\\').next().is_some_and(|short| short.ends_with("Collection"))));
+                if container
+                    && let Some(passed) = self.call_site_parameter(class, decl, index)
+                    && self.resolver.refines_container(&ty, &passed)
+                {
+                    self.call_site_typed.borrow_mut().push(param.name.clone());
+                    return Some(passed);
+                }
                 if ((undeclared && ty == Type::Mixed) || ty == Type::Object)
                     && let Some(passed) = self.call_site_parameter(class, decl, index)
                 {

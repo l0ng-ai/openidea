@@ -668,12 +668,23 @@ impl Extractor<'_> {
             if fqn.trim_start_matches('\\').starts_with("Illuminate\\Database\\Eloquent\\Relations\\")
                 || fqn.trim_start_matches('\\').eq_ignore_ascii_case("Illuminate\\Database\\Eloquent\\Casts\\Attribute"))
             && doc.as_ref().is_none_or(|doc| doc.return_type.is_none());
+        // Declared a bare container (`: array`, `: Collection`) and not
+        // documented: the body says what is in it.
+        let container = doc.as_ref().is_none_or(|doc| doc.return_type.is_none())
+            && match &return_type {
+                Some(TypeHint::Builtin(name)) => name == "array",
+                Some(TypeHint::Named(fqn)) => {
+                    fqn.rsplit('\\').next().is_some_and(|short| short.ends_with("Collection"))
+                }
+                _ => false,
+            };
         // A model's `newFactory(): Factory` names its factory in the body.
         let factory = node.name.value.eq_ignore_ascii_case(b"newFactory") && params.is_empty();
         let inferred_return = match &node.body {
             MethodBody::Concrete(body)
                 if accessor
                     || factory
+                    || container
                     || relation
                     || (self.infers_return(&return_type, &doc)
                         && !node.name.value.eq_ignore_ascii_case(b"__construct")) =>

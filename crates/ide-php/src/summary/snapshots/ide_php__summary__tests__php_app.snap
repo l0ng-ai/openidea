@@ -1,6 +1,5 @@
 ---
 source: crates/ide-php/src/summary/tests.rs
-assertion_line: 638
 expression: golden
 ---
 == .phpstorm.meta.php
@@ -73,6 +72,7 @@ class App\Repository\AbstractRepository abstract @15:15-15:33 [15:0-39:1]
     @param T $entity
   method public find(string $id): ?object @25:20-25:24 [25:4-28:5]
   method public all(): App\Support\Collection @30:20-30:23 [30:4-33:5]
+    ~ returns: App\Support\Collection
   method public save(object $entity): void @35:20-35:24 [35:4-38:5]
 == src/Repository/BookRepository.php
 class App\Repository\BookRepository @14:6-14:20 [14:0-39:1]
