@@ -63,6 +63,7 @@ import {
   SYNTAX_NOTE,
   declarationFallback,
   indexDefinitions,
+  isDeclarationName,
   isSelfTarget,
   localHighlights,
   type DeclarationTarget,
@@ -360,6 +361,15 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   }
 }
 
+/** Whether the caret is on the name of a declaration, by the syntax tree (no language server wait). */
+async function onDeclarationName(view: EditorView, offset: number): Promise<boolean> {
+  const doc = docOf(view);
+  if (!doc) return false;
+  const pos = offsetToPos(view.state.doc, offset);
+  const at = await structure.nodeAt(doc.doc, { start: pos, end: pos }).catch(() => null);
+  return isDeclarationName(at);
+}
+
 async function gotoResolved(
   view: EditorView,
   kind: GotoKind,
@@ -374,7 +384,10 @@ async function gotoResolved(
     const before = view.state.doc;
     const plugin = await contributedNavigation(view, offset).catch(() => null);
     if (view.state.doc !== before || superseded()) return;
-    if (plugin) {
+    // ⌘B on a declaration shows its usages, also when a plugin links the name elsewhere (a
+    // MyBatis mapper method to its XML statement).
+    if (plugin && !(kind === "definition" && (await onDeclarationName(view, offset)))) {
+      if (superseded()) return;
       if (plugin.targets.length === 1) await navigateTo(plugin.targets[0]!);
       else {
         const items = await locationItems(plugin.targets);

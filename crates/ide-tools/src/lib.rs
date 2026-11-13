@@ -1410,10 +1410,16 @@ impl Tools {
             .ok_or_else(|| IdeError::new(ErrorKind::Io, format!("`{main}` was not found in {}", dl.name)))?;
         let rel = found.strip_prefix(&pkg).expect("inside pkg").to_path_buf();
         let final_dir = self.root.join(spec.name);
-        if final_dir.exists() {
-            std::fs::remove_dir_all(&final_dir)?;
-        }
-        std::fs::rename(&pkg, &final_dir)?;
+        // Downloads made by the IDE itself are not quarantined, but archives may carry the flag.
+        clear_quarantine(&pkg);
+        // The previous install is removed in the background once replaced: deleting a large
+        // tool takes a while, and there is nothing left to cancel by then.
+        let previous = self.root.join(format!(".previous-{}", spec.name));
+        let _ = std::fs::remove_dir_all(&previous);
+        put_in_place(&pkg, &final_dir, &previous, cancel)?;
+        std::thread::spawn(move || {
+            let _ = std::fs::remove_dir_all(previous);
+        });
         let target = final_dir.join(&rel);
         let bin = final_dir.join("bin");
         if is_bundle(main) {
@@ -1428,8 +1434,6 @@ impl Tools {
                 archive::link_executable(&bin, main, &target)?;
             }
         }
-        // Downloads made by the IDE itself are not quarantined, but archives may carry the flag.
-        clear_quarantine(&final_dir);
         self.write_manifest(spec.name, &Manifest { version: Some(dl.version.clone()), source: Some(dl.url.clone()) })
     }
 
@@ -1563,6 +1567,25 @@ fn fetch_verified(
 }
 
 /// Removes the quarantine flag archives may carry, so macOS runs what was unpacked.
+/// Moves the unpacked `pkg` to `dest`, moving a previous install aside to `aside`.
+/// Cancelling stops it until then: the last point where the previous install is untouched.
+fn put_in_place(pkg: &Path, dest: &Path, aside: &Path, cancel: &CancellationToken) -> IdeResult<()> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let replaced = dest.exists();
+    if replaced {
+        std::fs::rename(dest, aside)?;
+    }
+    if let Err(e) = std::fs::rename(pkg, dest) {
+        if replaced {
+            let _ = std::fs::rename(aside, dest);
+        }
+        return Err(e.into());
+    }
+    Ok(())
+}
+
 fn clear_quarantine(dir: &Path) {
     #[cfg(target_os = "macos")]
     {

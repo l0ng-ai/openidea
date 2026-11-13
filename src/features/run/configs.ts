@@ -130,6 +130,11 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
       return "file-csharp";
     case "go":
       return "file-go";
+    case "rebar3":
+    case "escript":
+      return "file-erlang";
+    case "mix":
+      return "file-elixir";
     case "node":
       return "file-js";
     case "application":

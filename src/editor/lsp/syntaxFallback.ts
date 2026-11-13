@@ -63,6 +63,14 @@ export function usageRole(at: NodeAt | null): UsageRole {
   return "other";
 }
 
+const DECLARATION = /(declaration|definition|declarator)$/;
+
+/** Whether the syntax tree puts the identifier at `at` as the name of a declaration (`int f()`'s `f`). */
+export function isDeclarationName(at: NodeAt | null): boolean {
+  const parent = at?.ancestors[0];
+  return !!parent && at.node.field === "name" && DECLARATION.test(parent.kind);
+}
+
 /** Index symbols that may be the declaration of `name` used in `role`. */
 export function filterSymbols(matches: readonly SymbolMatch[], name: string, role: UsageRole): SymbolMatch[] {
   return matches.filter((m) => {

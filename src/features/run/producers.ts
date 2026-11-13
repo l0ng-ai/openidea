@@ -220,6 +220,7 @@ export type ScriptLanguage =
   | "cpp"
   | "dart"
   | "elixir"
+  | "escript"
   | "scala"
   | "shebang";
 
@@ -259,6 +260,7 @@ export function scriptLanguage(path: string, content?: string): ScriptLanguage |
   if (/\.(cpp|cc|cxx|c\+\+)$/.test(name)) return "cpp";
   if (/\.dart$/.test(name)) return "dart";
   if (/\.exs$/.test(name)) return "elixir";
+  if (/\.escript$/.test(name)) return "escript";
   if (/\.(scala|sc)$/.test(name)) return "scala";
   if (!name.includes(".") && shebang(content)) return "shebang";
   return null;
@@ -313,6 +315,8 @@ export function toolsFor(lang: ScriptLanguage, content?: string): string[] {
       return ["dart"];
     case "elixir":
       return ["elixir"];
+    case "escript":
+      return ["escript"];
     case "scala":
       return ["scala-cli"];
   }
@@ -338,6 +342,7 @@ const INSTALL: Record<string, string> = {
   cpp: "Install a C++ compiler: `xcode-select --install` (clang++) or `brew install gcc`.",
   dart: "Install the Dart SDK (`brew install dart-sdk`).",
   elixir: "Install Elixir (`brew install elixir`).",
+  escript: "Install Erlang/OTP (`brew install erlang`).",
   scala: "Install Scala CLI (`brew install Virtuslab/scala-cli/scala-cli`).",
   shell: "Install the shell named in the script's #! line.",
   shebang: "Install the interpreter named in the script's #! line.",
@@ -905,6 +910,7 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     case "lua":
     case "swift":
     case "elixir":
+    case "escript":
       return simple(lang, s, env, lang, () => [s.arg]);
     case "r":
       return simple(lang, s, env, "r", () => [s.arg]);

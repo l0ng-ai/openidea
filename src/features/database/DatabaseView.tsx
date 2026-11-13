@@ -5,8 +5,8 @@
  * with counts and column types, loaded lazily. Double-click a table to open its data, a data
  * source to open its query console.
  */
-import { useEffect, useMemo, useRef, type CSSProperties } from "react";
-import type { DbDatabases, DbTableDetails } from "@/platform/ipc";
+import { useEffect, useMemo, useRef } from "react";
+import type { DbColor, DbDatabases, DbTableDetails } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import {
@@ -23,7 +23,6 @@ import {
   T,
 } from "@/ui";
 import {
-  colorVar,
   databaseKey,
   passesObjectFilter,
   passesTreeFilter,
@@ -63,6 +62,15 @@ import { newMenu, nodeMenu } from "./treeMenu";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
 import { databaseRequest } from "./requests";
+
+const ROW_TINTS: Record<DbColor, string | undefined> = {
+  red: styles.tintRed,
+  orange: styles.tintOrange,
+  yellow: styles.tintYellow,
+  green: styles.tintGreen,
+  blue: styles.tintBlue,
+  violet: styles.tintViolet,
+};
 
 const GROUP_LABELS: Record<Group, string> = {
   columns: "columns",
@@ -549,6 +557,12 @@ export function DatabaseView() {
           getIcon={(n) => icon(n)}
           getDetail={detail}
           getColor={(n) => (n.kind === "message" && n.error ? "var(--danger)" : undefined)}
+          rowClassName={(n) => {
+            // IDEA tints every row of a coloured data source across its full width and height.
+            const target = nodeTarget(n);
+            const color = target ? sourceOf(target)?.color : null;
+            return color ? `${styles.tintedRow} ${ROW_TINTS[color]}` : undefined;
+          }}
           renderNode={(n: Node) => {
             const i = icon(n);
             const d = detail(n);
@@ -560,13 +574,9 @@ export function DatabaseView() {
                   ? styles.keyLabel
                   : styles.nodeLabel;
             const live = n.kind === "source" && [...st.connected].some((t) => splitTarget(t).id === n.source.id);
-            const target = nodeTarget(n);
-            // IDEA tints every row of a coloured data source.
-            const tint = colorVar(target ? sourceOf(target)?.color : null);
             return (
               <span
-                className={tint ? `${styles.nodeRow} ${styles.tinted}` : styles.nodeRow}
-                style={tint ? ({ "--db-tint": tint } as CSSProperties) : undefined}
+                className={styles.nodeRow}
                 title={n.kind === "source" && n.source.comment ? n.source.comment : undefined}
               >
                 {i && (
