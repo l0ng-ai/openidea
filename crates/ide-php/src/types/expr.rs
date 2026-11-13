@@ -261,7 +261,8 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         self.call_site_busy.borrow_mut().pop();
         let mut types: Vec<Type> = Vec::new();
         for ty in found.iter().flat_map(|ty| ty.members()) {
-            if *ty != Type::Mixed && !types.contains(ty) {
+            // `object` says no more than the parameter's own `object`.
+            if !matches!(ty, Type::Mixed | Type::Never | Type::Void | Type::Object) && !types.contains(ty) {
                 types.push(ty.clone());
             }
         }
@@ -720,8 +721,8 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 // Nothing says: what the callers pass, when asked for.
                 let param = &decl.params[index];
                 let undeclared = param.type_hint.is_none() && doc.and_then(|doc| doc.param_type(&name)).is_none();
-                if undeclared
-                    && ty == Type::Mixed
+                // A parameter declared `object` says as little.
+                if ((undeclared && ty == Type::Mixed) || ty == Type::Object)
                     && let Some(passed) = self.call_site_parameter(class, decl, index)
                 {
                     self.call_site_typed.borrow_mut().push(param.name.clone());

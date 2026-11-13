@@ -402,6 +402,38 @@ fn mock_closures_get_the_mock() {
 }
 
 #[test]
+fn closures_of_fakes_conditionables_and_object_receivers() {
+    const BAG: &str = r#"<?php
+namespace Illuminate\Support\Traits {
+    trait Conditionable {
+        public function when($value = null, ?callable $callback = null) { return $this; }
+    }
+}
+namespace App {
+    class Bag { use \Illuminate\Support\Traits\Conditionable; }
+}
+"#;
+    check(
+        &[FRAMEWORK, APPLICATION, APP, BAG],
+        &[
+            // A fake's assertion: an object of the class named before the closure.
+            (
+                "Payments::assertQueued(PaymentGateway::class, fn ($mail) => $mail/*|*/);",
+                "App\\Services\\PaymentGateway",
+            ),
+            ("Payments::assertQueued('welcome', fn ($mail) => $mail/*|*/);", "mixed"),
+            // `when()` where `Conditionable` declares it: the object itself.
+            ("(new \\App\\Bag())->when(true, fn ($bag) => $bag/*|*/);", "App\\Bag"),
+            // A receiver declared `object` is as unknown as an undeclared one.
+            (
+                "function f(object $query) { $query->orWhere(function ($q) { $q/*|*/; }); }",
+                "Illuminate\\Database\\Query\\Builder",
+            ),
+        ],
+    );
+}
+
+#[test]
 fn join_closures_get_the_join_clause() {
     const JOIN: &str = r#"<?php
 namespace Illuminate\Database\Query;

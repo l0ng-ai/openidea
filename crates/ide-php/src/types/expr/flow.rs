@@ -1369,7 +1369,18 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                     }
                 }
             }
-            previous = string_literal(value);
+            // A class named before the closure keys it too
+            // (`Mail::assertQueued(Welcome::class, fn ($mail) => …)`).
+            previous = string_literal(value).or_else(|| match value {
+                Expression::Access(Access::ClassConstant(_)) => match self.types.type_of(value, self.frames) {
+                    Type::ClassString(Some(class)) => match *class {
+                        Type::Named { fqn, .. } => Some(fqn),
+                        _ => None,
+                    },
+                    _ => None,
+                },
+                _ => None,
+            });
         }
         if keyed.is_empty() {
             return;

@@ -509,9 +509,13 @@ impl<'a> Resolver<'a> {
     /// counter.
     pub fn call_site_types(&self, site: &crate::types::expr::CallSiteParam<'_>, public: bool, depth: u8) -> Vec<Type> {
         let key = Key::CallSite(site.class.to_ascii_lowercase(), site.method.to_ascii_lowercase(), site.index);
-        let found = self.cached(key, || Some(Type::union(self.decls.call_site_types(site, public, depth))));
+        // An empty union is `never`: nothing found.
+        let found = self.cached(key, || {
+            let types = self.decls.call_site_types(site, public, depth);
+            (!types.is_empty()).then(|| Type::union(types))
+        });
         match found {
-            Some(ty) if ty != Type::Mixed => ty.members().to_vec(),
+            Some(ty) if ty != Type::Mixed && ty != Type::Never => ty.members().to_vec(),
             _ => Vec::new(),
         }
     }

@@ -114,6 +114,23 @@ const NESTED_QUERIES: &[&str] = &[
     "orHaving",
     "havingNested",
 ];
+/// Assertions of Laravel's fakes (`Mail`, `Event`, `Bus`, `Queue`,
+/// `Notification`) taking a class and a closure about its objects.
+const FAKE_ASSERTIONS: &[&str] = &[
+    "assertQueued",
+    "assertNotQueued",
+    "assertSent",
+    "assertNotSent",
+    "assertDispatched",
+    "assertNotDispatched",
+    "assertDispatchedSync",
+    "assertPushed",
+    "assertNotPushed",
+    "assertPushedOn",
+    "assertSentTo",
+    "assertListening",
+];
+
 /// `Conditionable` methods, whose closure gets the object itself.
 const CONDITIONAL_CLOSURES: &[&str] = &["when", "unless", "tap"];
 const SUPPORT_COLLECTION: &str = "Illuminate\\Support\\Collection";
@@ -931,10 +948,21 @@ impl LaravelProvider {
         if !is_one_of(JOINS, method) {
             return None;
         }
-        let queries = *receiver == Type::Mixed
+        let queries = matches!(receiver, Type::Mixed | Type::Object)
             || Self::is_a(resolver, receiver, context, &[ELOQUENT_BUILDER, QUERY_BUILDER, RELATION, MODEL]);
         let clause = resolver.class_model(JOIN_CLAUSE)?;
         queries.then(|| vec![Type::named(clause.fqn())])
+    }
+
+    /// `Mail::assertQueued(Welcome::class, fn ($mail) => …)` and the other
+    /// fakes' assertions: the closure gets an object of the class named
+    /// before it.
+    fn fake_closure(resolver: &Resolver<'_>, method: &str, key: &str) -> Option<Vec<Type>> {
+        if key.is_empty() || !is_one_of(FAKE_ASSERTIONS, method) {
+            return None;
+        }
+        let class = resolver.class_model(key)?;
+        Some(vec![Type::named(class.fqn())])
     }
 
     /// `$query->where(function ($q) { … })` and the like: the nested query
@@ -953,9 +981,18 @@ impl LaravelProvider {
             let model = Self::about_model(resolver, receiver, context)?;
             return Some(vec![Type::generic(ELOQUENT_BUILDER, vec![Type::named(&model)])]);
         }
-        // `when()` is many classes' method: only on a known query.
+        // `when()` is many classes' method: on a known query, or where
+        // Laravel's `Conditionable` declares it (collections, factories),
+        // the closure gets the object itself.
+        if conditional {
+            let declared = resolver
+                .class_models(receiver, context)
+                .iter()
+                .any(|model| model.method(method).is_some_and(|found| found.declaring.fqn.ends_with("Conditionable")));
+            return declared.then(|| vec![receiver.clone()]);
+        }
         let rule = Self::is_a(resolver, receiver, context, DATABASE_RULES);
-        if conditional || !(rule || *receiver == Type::Mixed) {
+        if conditional || !(rule || matches!(receiver, Type::Mixed | Type::Object)) {
             return None;
         }
         let builder = resolver.class_model(QUERY_BUILDER)?;
@@ -1966,6 +2003,7 @@ impl TypeProvider for LaravelProvider {
             return None;
         }
         Self::relation_closure(resolver, receiver, method, key, context)
+            .or_else(|| Self::fake_closure(resolver, method, key))
             .or_else(|| Self::join_closure(resolver, receiver, method, context))
             .or_else(|| Self::query_closure(resolver, receiver, method, context))
             .or_else(|| {

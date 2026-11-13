@@ -415,3 +415,18 @@ fn hover_says_a_parameters_type_comes_from_its_callers() {
     let hover = p.engine.hover(doc, pos).expect("a hover").markdown;
     assert!(hover.contains("Item $item") && !hover.contains("inferred"), "{hover}");
 }
+
+#[test]
+fn a_parameter_nobody_calls_stays_unknown_and_object_is_refined() {
+    // No caller: `mixed`, not the empty union.
+    let source =
+        "<?php\n\nclass Printer\n{\n    public function show($item): void\n    {\n        echo $it/*|*/em;\n    }\n}\n";
+    let mut p = Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/Printer.php", source)]);
+    let (text, pos) = caret(source);
+    let doc = p.open("src/Printer.php", &text);
+    let hover = p.engine.hover(doc, pos).expect("a hover").markdown;
+    assert!(hover.contains("mixed $item") && !hover.contains("inferred"), "{hover}");
+    // Declared `object`: what the callers pass says more.
+    let object = "<?php\n\nclass Printer\n{\n    public function run(): void\n    {\n        $this->show(new Item());\n    }\n\n    private function show(object $item): void\n    {\n        $item->tit/*|*/le();\n    }\n}\n";
+    assert_eq!(p.definition("src/Printer.php", object).expect("handled"), [target("src/lib.php", 4, "title")]);
+}
