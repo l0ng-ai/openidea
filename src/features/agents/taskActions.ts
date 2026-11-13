@@ -2,11 +2,18 @@ import type { AgentTask } from "@/bindings";
 import type { Action } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import type { MenuItem } from "@/ui";
-import { showError, confirmChecked } from "@/workbench/messages";
+import { confirm, showError, confirmChecked } from "@/workbench/messages";
 import { promptInput } from "@/workbench/inputDialogs";
 import { isBusy } from "./model";
+import { groupNameError, type OrganizeGroup } from "./organize";
 import {
   archiveTask,
+  deleteTaskGroup,
+  moveTasksToGroup,
+  newTaskGroup,
+  pinTasks,
+  renameTaskGroup,
+  taskGroups,
   unarchiveTask,
   deleteTask,
   dockTask,
@@ -20,13 +27,15 @@ import {
   useAgents,
 } from "./store";
 
-/** The Agents tool window's options menu: where conversations open. */
+/** The Agents tool window's options menu: where conversations open, and a new list group. */
 export function useAgentsHeaderMenu(): MenuItem[] {
   const location = useAgents((s) => s.sessionLocation);
   return [
     // A radio pair: check marks only, no action icons beside them.
     { kind: "action", action: "agents.useToolWindow", icon: "", checked: location === "toolWindow" },
     { kind: "action", action: "agents.useEditor", icon: "", checked: location === "editor" },
+    { kind: "separator" },
+    { kind: "action", action: "agents.newTaskGroup", label: "New Group…", icon: "plus" },
   ];
 }
 
@@ -80,6 +89,121 @@ async function confirmDelete(tasks: AgentTask[]) {
       (t) => deleteTask(t.id, t.isolation === "worktree" && r.checked),
       tx("Cannot delete agent tasks"),
     );
+}
+
+/** Asks for a name, then adds a group with `tasks` in it. */
+async function promptNewGroup(tasks: readonly string[]) {
+  const name = await promptInput({
+    title: "New Group",
+    label: "Group name:",
+    okLabel: "Create",
+    validate: (v) => groupNameError(v, taskGroups()),
+  });
+  if (name !== null) newTaskGroup(name.trim(), tasks);
+}
+
+async function promptRenameGroup(group: string) {
+  const current = useAgents.getState().organize.groups.find((g) => g.id === group);
+  if (!current) return;
+  const name = await promptInput({
+    title: "Rename Group",
+    label: "Group name:",
+    initial: current.name,
+    okLabel: "Rename",
+    validate: (v) => groupNameError(v, taskGroups(), current.name),
+  });
+  if (name !== null) renameTaskGroup(group, name.trim());
+}
+
+async function confirmRemoveGroup(group: string) {
+  const current = useAgents.getState().organize.groups.find((g) => g.id === group);
+  if (!current) return;
+  if (
+    await confirm({
+      title: tx("Remove Group"),
+      message: tx`Remove “${current.name}”? Its tasks move back to their status groups.`,
+      ok: tx("Remove"),
+      icon: "warning",
+    })
+  )
+    deleteTaskGroup(group);
+}
+
+/** Pins and unpins of the selected tasks, then where they go. */
+function arrangeMenu(tasks: AgentTask[], ids: string[]): MenuItem[] {
+  const { groups, groupOf, pinned } = useAgents.getState().organize;
+  const isPinned = new Set(pinned);
+  const toPin = tasks.filter((t) => !isPinned.has(t.id));
+  const toUnpin = tasks.filter((t) => isPinned.has(t.id));
+  return [
+    ...(toPin.length
+      ? ([
+          {
+            kind: "action",
+            action: "agents.pinTasks",
+            label: toPin.length > 1 ? tx`Pin (${toPin.length})` : "Pin",
+            icon: "pin",
+            arg: toPin.map((t) => t.id),
+          },
+        ] satisfies MenuItem[])
+      : []),
+    ...(toUnpin.length
+      ? ([
+          {
+            kind: "action",
+            action: "agents.unpinTasks",
+            label: toUnpin.length > 1 ? tx`Unpin (${toUnpin.length})` : "Unpin",
+            icon: "pin",
+            arg: toUnpin.map((t) => t.id),
+          },
+        ] satisfies MenuItem[])
+      : []),
+    {
+      kind: "item",
+      id: "move-to-group",
+      label: "Move to Group",
+      icon: "folder",
+      submenu: groupSubmenu(
+        ids,
+        groups,
+        ids.map((id) => groupOf[id]),
+      ),
+    },
+  ];
+}
+
+/** The groups to move the tasks into; the one they all belong to is checked. */
+function groupSubmenu(ids: string[], groups: OrganizeGroup[], current: Array<string | undefined>): MenuItem[] {
+  return [
+    ...groups.map((group): MenuItem => ({
+      kind: "item",
+      id: `group:${group.id}`,
+      label: group.name,
+      verbatim: true,
+      checked: current.every((g) => g === group.id),
+      run: () => moveTasksToGroup(ids, group.id),
+    })),
+    ...(groups.length ? ([{ kind: "separator" }] satisfies MenuItem[]) : []),
+    { kind: "item", id: "group:new", label: "New Group…", icon: "plus", run: () => void promptNewGroup(ids) },
+    ...(current.some(Boolean)
+      ? ([
+          {
+            kind: "item",
+            id: "group:none",
+            label: "Remove from Group",
+            run: () => moveTasksToGroup(ids, null),
+          },
+        ] satisfies MenuItem[])
+      : []),
+  ];
+}
+
+/** A user group's row menu. */
+export function groupMenu(group: OrganizeGroup): MenuItem[] {
+  return [
+    { kind: "action", action: "agents.renameTaskGroup", label: "Rename Group…", icon: "edit", arg: group.id },
+    { kind: "action", action: "agents.removeTaskGroup", label: "Remove Group", icon: "close", arg: group.id },
+  ];
 }
 
 export const taskActions: Action[] = [
@@ -198,6 +322,54 @@ export const taskActions: Action[] = [
     hidden: true,
     run: ({ arg }) => confirmDelete(resolveTasks(arg)),
   },
+  {
+    id: "agents.pinTasks",
+    title: "Pin Agent Tasks",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) =>
+      pinTasks(
+        resolveTasks(arg).map((task) => task.id),
+        true,
+      ),
+  },
+  {
+    id: "agents.unpinTasks",
+    title: "Unpin Agent Tasks",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) =>
+      pinTasks(
+        resolveTasks(arg).map((task) => task.id),
+        false,
+      ),
+  },
+  {
+    id: "agents.newTaskGroup",
+    title: "New Agent Task Group",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) =>
+      promptNewGroup(Array.isArray(arg) ? arg.filter((id): id is string => typeof id === "string") : []),
+  },
+  {
+    id: "agents.renameTaskGroup",
+    title: "Rename Agent Task Group",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) => {
+      if (typeof arg === "string") return promptRenameGroup(arg);
+    },
+  },
+  {
+    id: "agents.removeTaskGroup",
+    title: "Remove Agent Task Group",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) => {
+      if (typeof arg === "string") return confirmRemoveGroup(arg);
+    },
+  },
 ];
 
 export function taskMenu(tasks: AgentTask[]): MenuItem[] {
@@ -227,6 +399,8 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
           { kind: "separator" },
         ] satisfies MenuItem[])
       : []),
+    ...arrangeMenu(tasks, ids),
+    { kind: "separator" },
     ...(archived
       ? ([
           {

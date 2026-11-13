@@ -194,3 +194,18 @@ export function serversSummary(
   const text = names.length === 1 ? names[0]! : `${names[0]} +${names.length - 1}`;
   return { text, tone };
 }
+
+const RUNNING: ReadonlySet<ServerStatus> = new Set(["ready", "busy"]);
+
+/** Whether a running ESLint server covers `path` (a `language` file below its configuration). */
+export function eslintCovers(path: string, language: string | null | undefined): boolean {
+  if (!language) return false;
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const file = norm(path);
+  for (const s of useServers.getState().servers.values()) {
+    if (s.name !== "eslint" || !RUNNING.has(s.status) || !s.languages.includes(language)) continue;
+    const root = s.root ? norm(s.root) : null;
+    if (!root || file.startsWith(`${root}/`)) return true;
+  }
+  return false;
+}

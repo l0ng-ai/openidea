@@ -45,7 +45,7 @@ impl Store {
             }
         };
         let store = Self { db: RwLock::new(db) };
-        let stamp = format!("{SCHEMA}\n{fingerprint}\n{}", root.display());
+        let stamp = format!("{SCHEMA}\n{}\n{fingerprint}\n{}", env!("INDEX_SOURCE_HASH"), root.display());
         match store.meta("stamp") {
             Ok(Some(v)) if v == stamp.as_bytes() => {}
             _ => {
