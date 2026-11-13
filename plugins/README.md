@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.7.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.8.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -418,9 +418,22 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.8
+
+API 1.8.0 is in development on `main`. Use `engines.openidea = "^1.8"` and the
+matching SDK. Released 1.7 plugins keep working. New in 1.8:
+
+- `problems-changed` (activation `on-event:problems-changed`, event
+  `Event::ProblemsChanged`): the host records every `Diagnostics` event it
+  emits — language servers, builds, spelling and plugin providers — per file
+  and producer, and `diagnostics.problems` reads that snapshot, so a plugin's
+  annotations follow the file instead of the window that published them.
+  `set_decorations` accepts files outside the open project for the same reason,
+  and the `typo` / `weak` styles are no longer dropped.
+
 ### API 1.7
 
-API 1.7.0 is in development on `main`. Use `engines.openidea = "^1.7"` and the
+API 1.7.0 shipped with OpenIDEA 0.1.44. Use `engines.openidea = "^1.7"` and the
 matching SDK. Released 1.6 plugins keep working. New in 1.7:
 
 - `host::open_diff(&ContentDiff { .. }, file_name)` (`views.open-diff`) opens

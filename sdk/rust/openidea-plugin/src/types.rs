@@ -245,6 +245,8 @@ pub enum EventKind {
     /// Needs `events.input`.
     ActionPerformed,
     VcsChanged,
+    /// Problems of the window's files changed (a language server or a report): JSON object (`Event::Other`).
+    ProblemsChanged,
     Scheduled,
 }
 
@@ -267,6 +269,7 @@ impl EventKind {
             Self::EditorFocused => "editor-focused",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
+            Self::ProblemsChanged => "problems-changed",
             Self::Scheduled => "scheduled",
         }
     }

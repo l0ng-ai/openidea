@@ -352,6 +352,15 @@ where
     deserializer.deserialize_map(Properties)
 }
 
+/// A sample shown in a setting's own style (the Colour Scheme colours), e.g. the
+/// message an Inspection Lens severity produces.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct SettingExample {
+    pub text: String,
+    /// `error`, `warning`, `weak`, `typo`, `info` or `muted`: which sample style to draw.
+    pub style: String,
+}
+
 /// One setting of a plugin.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -370,6 +379,8 @@ pub struct SettingSchema {
     pub multiline: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub example: Option<SettingExample>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<Box<SettingSchema>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -455,6 +466,20 @@ fn setting_at(key: &str, raw: &serde_json::value::RawValue, depth: u8) -> Result
             Some(_) => Err(format!("setting {key:?}: `{name}` is a string up to {max} bytes")),
         }
     };
+    let example = match o.get("example") {
+        None => None,
+        Some(v) => {
+            let e: SettingExample = serde_json::from_value(v.clone())
+                .map_err(|e| format!("setting {key:?}: `example` is {{\"text\", \"style\"}}: {e}"))?;
+            if e.text.is_empty() || e.text.len() > 300 {
+                return Err(format!("setting {key:?}: `example.text` is 1–300 bytes"));
+            }
+            if e.style.len() > 32 || !e.style.chars().all(|c| c.is_ascii_lowercase()) {
+                return Err(format!("setting {key:?}: `example.style` is a lowercase style name"));
+            }
+            Some(e)
+        }
+    };
     let s = SettingSchema {
         key: key.to_owned(),
         kind: kind.to_owned(),
@@ -464,6 +489,7 @@ fn setting_at(key: &str, raw: &serde_json::value::RawValue, depth: u8) -> Result
         options,
         multiline: o.get("multiline").and_then(Value::as_bool).unwrap_or(false),
         group: text("group", MAX_TITLE)?,
+        example,
         items,
         properties,
     };
