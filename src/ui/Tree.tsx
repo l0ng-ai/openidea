@@ -31,6 +31,7 @@ import { acquirePopup } from "./popupState";
 import styles from "./Tree.module.css";
 import { T } from "./T";
 import { setContext } from "@/platform/context";
+import { registerKeyClaim } from "@/platform/keymap";
 import { useGivenTx } from "@/platform/i18n";
 import { useTreeReorder, type TreeReorder } from "./treeReorder";
 import { startPointerDrag, type DragData } from "./pointerDrag";
@@ -367,10 +368,18 @@ export function Tree<T>(props: TreeProps<T>) {
     pendingScrollToLead.current = null;
   }, [lead, indexOfKey, virtualizer]);
 
-  // Speed search owns Escape while active.
+  // Speed search owns Escape while active, and ⌫ with any modifier: the query is edited like a
+  // text field instead of the view's shortcuts running (⌘⌫ is Drop… in the Database view).
   useEffect(() => {
     if (!query) return;
-    return acquirePopup();
+    const release = acquirePopup();
+    const unclaim = registerKeyClaim(
+      (e) => e.key === "Backspace" && e.target instanceof Node && !!scrollRef.current?.contains(e.target),
+    );
+    return () => {
+      release();
+      unclaim();
+    };
   }, [query]);
 
   const setExpanded = (row: Row<T>, open: boolean) => {
@@ -523,7 +532,8 @@ export function Tree<T>(props: TreeProps<T>) {
         break;
       case "Backspace":
         if (!query) return;
-        setQuery(query.slice(0, -1));
+        // ⌘⌫ erases the query, ⌥⌫ / Ctrl+⌫ its last word, as in a text field.
+        setQuery(e.metaKey ? "" : e.altKey || e.ctrlKey ? query.replace(/\w*\W*$/, "") : query.slice(0, -1));
         break;
       case "ArrowDown":
       case "ArrowUp": {
