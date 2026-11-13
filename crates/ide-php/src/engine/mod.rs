@@ -1579,6 +1579,33 @@ impl Declarations for PhpEngine {
         out
     }
 
+    /// Reads the file declaring the class (its open buffer first).
+    fn body_return(&self, class: &str, method: &str, depth: u8) -> Option<Type> {
+        let index = self.index()?;
+        let documents = self.open_documents();
+        let resolver = self.resolver();
+        for decl in index.declarations(NameKind::ClassLike, class).unwrap_or_default() {
+            let path = decl.path();
+            let open = documents.iter().find(|document| document.path == path);
+            let parsed = match open {
+                Some(document) => self.parse_open(document),
+                None => {
+                    let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                    Arc::new(ParsedFile::parse(&crate::index::path_key(&path), text.as_str()))
+                }
+            };
+            let names = crate::names::FileNames::resolve(&parsed);
+            let summary = FileSummary::extract(&parsed);
+            let types = crate::types::ExprTypes::new(&parsed, &names, &summary, &resolver)
+                .at_path(Some(&path))
+                .with_call_site_depth(depth);
+            if let Some(found) = types.body_return(class, method) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
     /// From the index (open buffers not saved yet aren't looked at).
     fn classes_named(&self, name: &str) -> Vec<String> {
         let found = self.index().and_then(|index| index.by_short_name(name).ok()).unwrap_or_default();

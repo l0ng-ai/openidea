@@ -434,6 +434,24 @@ namespace App {
 }
 
 #[test]
+fn the_container_makes_what_a_class_string_names() {
+    check(
+        INSTALLED,
+        &[
+            // A variable holding a class name.
+            ("$class = PaymentGateway::class;\napp($class)/*|*/;", "App\\Services\\PaymentGateway"),
+            // One of an array of class names.
+            (
+                "class Helpers {\n    protected $helpers = ['pay' => PaymentGateway::class, 'user' => User::class];\n    function pick($type) { return app($this->helpers[$type])/*|*/; }\n}",
+                "App\\Services\\PaymentGateway|App\\Models\\User",
+            ),
+            // A plain string says nothing.
+            ("function f(string $name) { return app($name)/*|*/; }", "mixed"),
+        ],
+    );
+}
+
+#[test]
 fn join_closures_get_the_join_clause() {
     const JOIN: &str = r#"<?php
 namespace Illuminate\Database\Query;

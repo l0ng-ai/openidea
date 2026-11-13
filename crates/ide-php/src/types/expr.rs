@@ -173,6 +173,10 @@ pub struct ExprTypes<'a, 'r> {
     call_site_busy: RefCell<Vec<(String, String, usize)>>,
     /// The names of the parameters typed from their callers so far.
     call_site_typed: RefCell<Vec<String>>,
+    /// The starts of the calls that stayed unknown after their body was
+    /// asked: a call on one of them isn't asked again (a chain of unknown
+    /// calls would otherwise type its receiver twice at every link).
+    unknown_calls: RefCell<std::collections::HashSet<u32>>,
 }
 
 const TOP_LEVEL: u32 = u32::MAX - 1;
@@ -203,6 +207,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             call_sites: None,
             call_site_busy: RefCell::new(Vec::new()),
             call_site_typed: RefCell::new(Vec::new()),
+            unknown_calls: RefCell::new(std::collections::HashSet::new()),
         }
     }
 
@@ -1043,6 +1048,118 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
     }
 
     fn call(&self, call: &'a Call<'a>, frames: &[Frame<'a>]) -> Type {
+        let ty = self.call_declared(call, frames);
+        if ty != Type::Mixed || self.call_sites.is_none() {
+            return ty;
+        }
+        let found = self.call_body_return(call, frames);
+        if found.is_none() {
+            self.unknown_calls.borrow_mut().insert(call.span().start.offset);
+        }
+        found.unwrap_or(ty)
+    }
+
+    /// What a method call returns when nothing declared or stored says:
+    /// the method has no return type and no `@return`, and the index-time
+    /// inference of its body gave up. The body is typed again with the full
+    /// analysis ([`Self::body_return`]), in this file or through the
+    /// declarations. Only where guesses are asked for
+    /// ([`Self::with_call_sites`]).
+    fn call_body_return(&self, call: &'a Call<'a>, frames: &[Frame<'a>]) -> Option<Type> {
+        let depth = self.call_sites?;
+        if depth >= MAX_CALL_SITE_DEPTH {
+            return None;
+        }
+        let named = |selector: &ClassLikeMemberSelector<'_>| match selector {
+            ClassLikeMemberSelector::Identifier(name) => Some(lossy(name.value)),
+            _ => None,
+        };
+        // A receiver that is a call already found unknown says nothing.
+        let unknown = |object: &Expression<'_>| match object {
+            Expression::Call(inner) => self.unknown_calls.borrow().contains(&inner.span().start.offset),
+            _ => false,
+        };
+        let (receiver, name) = match call {
+            Call::Method(call) if !unknown(call.object) => (self.expr(call.object, frames), named(&call.method)?),
+            Call::NullSafeMethod(call) if !unknown(call.object) => {
+                (self.expr(call.object, frames).without_null(), named(&call.method)?)
+            }
+            Call::StaticMethod(call) => (self.class_ref(call.class, frames), named(&call.method)?),
+            _ => return None,
+        };
+        let context = self.context(frames);
+        let mut found = Vec::new();
+        for model in self.resolver.class_models(&receiver, &context) {
+            let Some(method) = model.method(&name) else { continue };
+            let Some(declared) = method.declared() else { continue };
+            if declared.return_type.is_some() || declared.doc.as_ref().is_some_and(|doc| doc.return_type.is_some()) {
+                continue;
+            }
+            let class = method.declaring.fqn.clone();
+            let key = (class.to_ascii_lowercase(), name.to_ascii_lowercase(), usize::MAX);
+            if self.call_site_busy.borrow().contains(&key) {
+                continue;
+            }
+            self.call_site_busy.borrow_mut().push(key);
+            let here =
+                self.summary.class_likes.iter().any(|own| crate::names::fqn_eq(NameKind::ClassLike, &own.fqn, &class));
+            let ty = if here {
+                self.body_return(&class, &name)
+            } else {
+                self.resolver.body_return(&class, &name, depth + 1)
+            };
+            self.call_site_busy.borrow_mut().pop();
+            found.extend(ty);
+        }
+        (!found.is_empty()).then(|| Type::union(found)).filter(|ty| *ty != Type::Mixed)
+    }
+
+    /// What the body of method `method` of `class`, declared in this file,
+    /// returns: the union of its `return` values as this analysis types
+    /// them (`null` for a bare `return;`). `None` for a generator, a body
+    /// without a `return`, or nothing known.
+    pub(crate) fn body_return(&self, class: &str, method: &str) -> Option<Type> {
+        let declaring =
+            self.summary.class_likes.iter().find(|own| crate::names::fqn_eq(NameKind::ClassLike, &own.fqn, class))?;
+        let decl = declaring.methods.iter().find(|own| own.name.eq_ignore_ascii_case(method))?;
+        let text = self.file.text();
+        let (start, end) = (decl.loc.start as usize, (decl.loc.end as usize).min(text.len()));
+        let body = text.get(start..end)?;
+        // The frames of the method, from an expression in one of its
+        // `return`s.
+        let mut from = 0;
+        let (node, frames) = loop {
+            let at = from + body[from..].find("return")?;
+            from = at + "return".len();
+            let Some((_, frames)) = self.find((start + from + 1) as u32) else { continue };
+            let own = frames.iter().position(
+                |frame| matches!(frame, Frame::Method(node) if node.name.span.start.offset == decl.name_loc.start),
+            );
+            if let Some(index) = own
+                && let Frame::Method(node) = &frames[index]
+            {
+                break (*node, frames[..=index].to_vec());
+            }
+        };
+        let mago_syntax::cst::MethodBody::Concrete(block) = &node.body else { return None };
+        let mut returns = Returns::default();
+        ReturnWalker.walk_block(block, &mut returns);
+        if returns.generator || returns.values.is_empty() {
+            return None;
+        }
+        let context = self.context(&frames);
+        let mut types: Vec<Type> = returns
+            .values
+            .iter()
+            .map(|value| self.resolver.resolve(&LazyType::Known(self.expr(value, &frames).widen()), &context))
+            .collect();
+        if returns.bare {
+            types.push(Type::Null);
+        }
+        Some(Type::union(types)).filter(|ty| *ty != Type::Mixed)
+    }
+
+    fn call_declared(&self, call: &'a Call<'a>, frames: &[Frame<'a>]) -> Type {
         let context = self.context(frames);
         match call {
             Call::Function(call) => match call.function {

@@ -566,6 +566,27 @@ impl LaravelProvider {
         (!class.is_empty()).then(|| Type::named(class))
     }
 
+    /// The classes a class-string argument names (`class-string<Foo>`, a
+    /// union of at most four, a literal class name): what the container
+    /// makes of it.
+    fn made_from(resolver: &Resolver<'_>, argument: &Type) -> Option<Type> {
+        let mut made = Vec::new();
+        for member in argument.members() {
+            let class = match member {
+                Type::ClassString(Some(class)) => match class.as_ref() {
+                    Type::Named { .. } => class.as_ref().clone(),
+                    _ => return None,
+                },
+                Type::LiteralString(name) => Type::named(resolver.class_model(name)?.fqn()),
+                _ => return None,
+            };
+            if !made.contains(&class) {
+                made.push(class);
+            }
+        }
+        (1..=4).contains(&made.len()).then(|| Type::union(made))
+    }
+
     /// The resolve step for a method or static call: `args` are the
     /// receiver and what the providers after this one say.
     fn resolve_call(
@@ -1862,7 +1883,11 @@ impl TypeProvider for LaravelProvider {
                 // `app()` without arguments is the application.
                 let bare = if site.args.is_empty() { "bare" } else { "args" };
                 let payload = format!("helper:{bare}:{}:{class}:{string}", site.name);
-                Some(provided(self.key(), payload, Vec::new(), (site.next)()))
+                // No class in the syntax: what the argument's type names
+                // (`app($this->helpers[$type])`).
+                let dynamic = class.is_empty() && string.is_empty() && !site.args.is_empty() && !site.stored;
+                let args = if dynamic { (site.arg_types)().into_iter().take(1).collect() } else { Vec::new() };
+                Some(provided(self.key(), payload, args, (site.next)()))
             }
             CallKind::Method | CallKind::StaticMethod => {
                 if let Some(getter) = Self::accessor_getter(site) {
@@ -1921,7 +1946,7 @@ impl TypeProvider for LaravelProvider {
                 if bare == "bare" {
                     return short_name(fqn).eq_ignore_ascii_case("app").then(|| Type::named(APPLICATION));
                 }
-                Self::make(resolver, class, string)
+                Self::make(resolver, class, string).or_else(|| Self::made_from(resolver, args.first()?))
             }
             "auth" => {
                 let (fqn, guard) = rest.split_once(':')?;

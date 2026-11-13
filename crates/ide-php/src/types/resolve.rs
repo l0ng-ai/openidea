@@ -137,6 +137,12 @@ pub trait Declarations {
     fn call_site_types(&self, _site: &crate::types::expr::CallSiteParam<'_>, _public: bool, _depth: u8) -> Vec<Type> {
         Vec::new()
     }
+    /// What the body of method `method` of `class` returns, typed with the
+    /// full analysis of its file ([`crate::types::ExprTypes::body_return`]);
+    /// `depth` is how deep the lookup is already.
+    fn body_return(&self, _class: &str, _method: &str, _depth: u8) -> Option<Type> {
+        None
+    }
     /// The class-likes with short name `name` (any case), by FQN.
     fn classes_named(&self, _name: &str) -> Vec<String> {
         Vec::new()
@@ -236,6 +242,9 @@ enum Key {
     /// What callers pass for a parameter: lower-case class and method, the
     /// parameter's position.
     CallSite(String, String, usize),
+    /// What a method's body returns, typed on demand: lower-case class and
+    /// method.
+    BodyReturn(String, String),
     /// Not a declaration: marks a chain cut by [`MAX_DEPTH`], so nothing
     /// above it is cached.
     Depth,
@@ -545,6 +554,13 @@ impl<'a> Resolver<'a> {
             Some(ty) if ty != Type::Mixed && ty != Type::Never => ty.members().to_vec(),
             _ => Vec::new(),
         }
+    }
+
+    /// What the body of a method of another file returns
+    /// ([`Declarations::body_return`]), cached for the modification counter.
+    pub fn body_return(&self, class: &str, method: &str, depth: u8) -> Option<Type> {
+        let key = Key::BodyReturn(class.to_ascii_lowercase(), method.to_ascii_lowercase());
+        self.cached(key, || self.decls.body_return(class, method, depth))
     }
 
     /// The class-likes with short name `name` (any case), by FQN.

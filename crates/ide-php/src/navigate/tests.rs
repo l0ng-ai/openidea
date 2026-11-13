@@ -440,3 +440,22 @@ fn a_bare_container_parameter_takes_its_callers_elements() {
     let mixed = source.replace("$this->all([new Item(), new Item()]);", "$this->all([new Item()]); $this->all($_GET);");
     assert_eq!(p.definition("src/Printer.php", &mixed).expect("handled"), []);
 }
+
+#[test]
+fn a_return_the_index_could_not_type_is_read_from_the_body() {
+    // `pick()` returns its untyped parameter: only the callers say what.
+    let source = "<?php\n\nclass Printer\n{\n    public function run(): void\n    {\n        $this->pick(new Item())->tit/*|*/le();\n    }\n\n    private function pick($item)\n    {\n        if (! $item) {\n            return null;\n        }\n\n        return $item;\n    }\n}\n";
+    let mut p = Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/Printer.php", source)]);
+    assert_eq!(p.definition("src/Printer.php", source).expect("handled"), [target("src/lib.php", 4, "title")]);
+    // The method in another file.
+    let helper = "<?php\n\nclass Picker\n{\n    public function pick($item)\n    {\n        return $item;\n    }\n}\n";
+    let caller =
+        "<?php\n\nfunction show(Picker $picker): string\n{\n    return $picker->pick(new Item())->tit/*|*/le();\n}\n";
+    let mut p = Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/Picker.php", helper), ("src/show.php", caller)]);
+    assert_eq!(p.definition("src/show.php", caller).expect("handled"), [target("src/lib.php", 4, "title")]);
+    // A declared return type is never second-guessed.
+    let declared = helper.replace("public function pick($item)", "public function pick($item): Other");
+    let mut p =
+        Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/Picker.php", &declared), ("src/show.php", caller)]);
+    assert_eq!(p.definition("src/show.php", caller).expect("handled"), []);
+}

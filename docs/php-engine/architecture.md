@@ -129,14 +129,24 @@ then on). `test()` without arguments is the test case of the file
 
 ### What nothing declares
 
-Four rules type code that carries no declaration, each from the code around
-it:
+These rules type code that carries no declaration, each from the code around
+it. The first three are inference every feature uses, inspections included;
+the last three are guesses only what the editor shows uses
+(`ExprTypes::with_call_sites`):
 
 - **An untyped property** (no hint, no `@var`) has the union of what the
   methods of its class assign to it, when that is at most four different
   things and none of them unknown (`CoreProvider::property`; a test case's
   `setUp()` assignments come first, through the PHPUnit provider). The type
-  is stored in the summary as the property's default type.
+  is stored in the summary as the property's default type. Elements count
+  too: `$this->items[] = $item;` and `$this->byName[$key] = $item;` make it a
+  list (an array) of what is added, and refine a property declared no more
+  than `array` (the hint, or `@var array`); a documented element type wins.
+- **A method declared a bare container** (`: array`, or a class whose name
+  ends in `Collection`) without a `@return` returns what its body does, when
+  that is the same container with its element types
+  (`Resolver::refines_container`). The extractor stores the body's type for
+  these as it does for a method without a return type.
 - **`$this` in a trait** is also an object of the classes using the trait
   (`Resolver::trait_hosts`: up to three, in name order), as an intersection,
   so what the trait expects of its host resolves. The index's subclass table
@@ -162,8 +172,17 @@ it:
   16 files in all, cached per modification count). Unknown arguments are
   left out; one to four different types make the union, more make nothing;
   a caller whose argument is itself an untyped parameter is followed three
-  levels deep. Hover adds where the type comes from. Not done: free
+  levels deep. Hover adds where the type comes from. A parameter declared
+  `object` is refined the same way, and one declared a bare container when
+  every caller passes that container with its elements. Not done: free
   functions, and methods called from more files than the cap.
+- **A method call nothing types** (no return type, no `@return`, and the
+  index-time inference of the body gave up, often because the result
+  depends on an untyped parameter) is typed from the body with the full
+  analysis: `ExprTypes::body_return`, in the file itself or, through
+  `Declarations::body_return`, in the file declaring the class (parsed on
+  demand, cached per modification count). A call on a receiver already
+  found unknown isn't asked again, which keeps long chains linear.
 
 ## Threads and cancellation
 
