@@ -199,12 +199,11 @@ impl ProjectIndex {
             return None;
         }
         Some(
-            file.symbols
-                .iter()
+            data.symbols_of(file)
                 .map(|s| ide_language::SymbolTag {
                     name: s.name.to_string(),
                     kind: s.kind,
-                    container: s.container.as_ref().map(ToString::to_string),
+                    container: s.container.map(ToString::to_string),
                     range: s.range,
                 })
                 .collect(),
@@ -523,7 +522,8 @@ pub mod bench_support {
                     })
                     .collect();
                 let record = FileRecord { symbols, ..Default::default() };
-                data.insert(FileEntry::new(PathBuf::from("/bench").join(&rel), rel, record));
+                let (entry, symbols) = FileEntry::new(PathBuf::from("/bench").join(&rel), rel, record);
+                data.insert(entry, symbols);
             }
             let recent = data.paths().take(MAX_RECENT).cloned().collect();
             Self { data, recent }
