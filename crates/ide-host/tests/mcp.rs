@@ -112,6 +112,16 @@ async fn reads_unsaved_text_and_searches_the_overlay_with_a_limit() {
     assert_eq!(found["more"], true);
     let all = h.json("search_text", json!({"q":"fresh","limit":20})).await;
     assert_eq!(all["items"][0]["filePath"], "src/a.txt");
+    // The matched line comes with the result (unsaved text included), and lines around it on request.
+    assert_eq!(all["items"][0]["lineText"], "fresh needle text");
+    assert!(all["items"][0].get("contextAfter").is_none());
+    let after = h.json("search_text", json!({"q":"fresh","context":"+1"})).await;
+    assert_eq!(after["items"][0]["contextAfter"], json!(["needle needle"]));
+    let before = h.json("search_regex", json!({"q":"needle needle","context":"-1"})).await;
+    assert_eq!(before["items"][0]["lineText"], "needle needle");
+    assert_eq!(before["items"][0]["contextBefore"], json!(["fresh needle text"]));
+    let bad = h.error("search_text", json!({"q":"fresh","context":"around"})).await;
+    assert!(bad.contains("context must be"), "{bad}");
     let all = h.json("search_text", json!({"q":"needle","limit":20})).await;
     assert!(all["items"].as_array().unwrap().iter().all(|v| !v["filePath"].as_str().unwrap().contains("ignored")));
     let files = h.json("search_file", json!({"q":"*.txt","paths":["src/**"]})).await;
@@ -452,6 +462,25 @@ async fn brave_mode_runs_tools_without_asking_only_from_the_global_settings() {
     .unwrap();
     assert!(!format!("{result:?}").contains("denied"), "{result:?}");
     assert!(!h.events.lock().unwrap().iter().any(|e| matches!(e, IdeEvent::McpRequest { .. })), "nothing asked");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_files_says_why_a_file_could_not_be_checked() {
+    let h = Harness::new();
+    let untrusted = h.json("check_files", json!({"filePaths": ["src/a.txt"]})).await;
+    assert_eq!(untrusted["files"][0]["status"], "untrusted", "{untrusted}");
+    h.trust().await;
+    let files = h.json("check_files", json!({"filePaths": ["src/a.txt", "src/gone.txt"], "timeout": 5000})).await;
+    assert_eq!(files["files"][0]["filePath"], "src/a.txt");
+    assert_eq!(files["files"][0]["status"], "noLanguageServer", "{files}");
+    assert_eq!(files["files"][0]["problems"], json!([]));
+    assert_eq!(files["files"][1]["status"], "failed", "{files}");
+    assert!(files["files"][1]["error"].is_string());
+    // No cap of the tool's own: a very long timeout is taken as given, without overflowing.
+    let long = h.json("check_files", json!({"filePaths": ["src/a.txt"], "timeout": 9_000_000_000_000_i64})).await;
+    assert_eq!(long["files"][0]["status"], "noLanguageServer", "{long}");
+    let none = h.error("check_files", json!({"filePaths": []})).await;
+    assert!(none.contains("at least one file"), "{none}");
 }
 
 /// Answers `run_command`'s window requests the way the Run tool window does: starts the

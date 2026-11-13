@@ -25,7 +25,7 @@ const FOREVER_MS: u64 = 365 * 24 * 60 * 60 * 1000;
 /// The `timeout` argument in milliseconds, `default` when absent: the agent decides how long
 /// to wait (long waits are answered on an event stream, see `ide_mcp`). As in JetBrains
 /// (`withTimeoutOrNull`), zero or a negative value times out at once.
-fn timeout(call: &Call, default: usize) -> IdeResult<Duration> {
+pub(crate) fn timeout(call: &Call, default: usize) -> IdeResult<Duration> {
     Ok(match call.opt_i64("timeout")? {
         None => Duration::from_millis(default as u64),
         Some(n) if n <= 0 => Duration::ZERO,

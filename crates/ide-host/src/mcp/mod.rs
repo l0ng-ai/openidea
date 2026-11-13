@@ -1,4 +1,5 @@
 //! Built-in IDE tools. Transport and discovery live in `ide-mcp`.
+mod check;
 mod edit;
 mod editors;
 mod requests;
@@ -31,6 +32,7 @@ fn tools() -> Vec<tool::Tool> {
     let mut tools = files::tools();
     tools.extend(search::tools());
     tools.extend(editors::tools());
+    tools.push(check::check_files());
     tools.push(symbols::get_symbol_info());
     tools.push(symbols::find_references());
     tools.extend(edit::tools());
