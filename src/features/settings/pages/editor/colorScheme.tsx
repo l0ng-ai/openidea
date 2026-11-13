@@ -1004,26 +1004,30 @@ function AttributeEditor({
   // attribute cannot carry it (ColorAndFontDescriptionPanel.kt). Only the italic-only
   // semantic modifiers (static symbol etc.) collapse to their single channel.
   const font = !attr.noFontStyle;
-  const boldItalic = attr.italicOnly ? undefined : font;
+  const boldItalic = !attr.italicOnly;
   return (
     <div className={styles.attrEditor} aria-label={`${attr.name} attributes`}>
-      {(boldItalic || attr.italicOnly) && (
+      {boldItalic && (
         <div className={styles.attrRow}>
-          {boldItalic && (
-            <Checkbox
-              checked={v.bold ?? inherited.bold ?? false}
-              onChange={(b) => set({ bold: b === (inherited.bold ?? false) ? undefined : b })}
-              label="Bold"
-            />
-          )}
           <Checkbox
-            checked={v.italic ?? inherited.italic ?? (attr.italicOnly ? (attr.defaultItalic ?? true) : false)}
-            onChange={(b) =>
-              set({
-                italic:
-                  b === (inherited.italic ?? (attr.italicOnly ? (attr.defaultItalic ?? true) : false)) ? undefined : b,
-              })
-            }
+            checked={v.bold ?? inherited.bold ?? false}
+            disabled={!font}
+            onChange={(b) => set({ bold: b === (inherited.bold ?? false) ? undefined : b })}
+            label="Bold"
+          />
+          <Checkbox
+            checked={v.italic ?? inherited.italic ?? false}
+            disabled={!font}
+            onChange={(b) => set({ italic: b === (inherited.italic ?? false) ? undefined : b })}
+            label="Italic"
+          />
+        </div>
+      )}
+      {attr.italicOnly && (
+        <div className={styles.attrRow}>
+          <Checkbox
+            checked={v.italic ?? inherited.italic ?? attr.defaultItalic ?? true}
+            onChange={(b) => set({ italic: b === (inherited.italic ?? attr.defaultItalic ?? true) ? undefined : b })}
             label="Italic"
           />
         </div>
