@@ -7915,5 +7915,8 @@
   "Create Git Repository…": "创建 Git 仓库…",
   "Select Directory for Git Init": "选择要执行 Git Init 的目录",
   "Couldn't create Git repository": "无法创建 Git 仓库",
-  "Created Git repository in {dir}": "已在 {dir} 创建 Git 仓库"
+  "Created Git repository in {dir}": "已在 {dir} 创建 Git 仓库",
+  "Check the JVM Debugger": "检查 JVM 调试器",
+  "Whether the debugger for a build tool's JVMs is installed, offering the install when not (arg: { module, retry, done(ready) })": "检查构建工具启动的 JVM 所需的调试器是否已安装，未安装时提供安装（参数：{ module, retry, done(ready) }）",
+  "This module has Kotlin sources, so debugging it needs the Kotlin debugger (kotlin-debug-adapter).": "此模块包含 Kotlin 源代码，调试它需要 Kotlin 调试器（kotlin-debug-adapter）。"
 }

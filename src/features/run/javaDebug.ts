@@ -150,11 +150,31 @@ function needsPinnedPort(config: RunConfig): boolean {
   return config.isTest || config.args.some(isMavenTestGoal);
 }
 
+/**
+ * Whether the debugger can attach to the JVMs `config` starts. When it isn't installed, the
+ * debugger offers the install (then debugs again) and the build isn't started for nothing.
+ */
+function attachDebuggerReady(config: RunConfig, show?: boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    executeAction("debug.jvmAttachReady", {
+      module: config.module ?? config.cwd ?? "",
+      retry: () => void debugWithAgent(config, show),
+      done: resolve,
+    }).then(
+      (ran) => {
+        if (!ran) resolve(true);
+      },
+      () => resolve(true),
+    );
+  });
+}
+
 /** Runs `config` with a JDWP agent and attaches the Java debugger to every JVM it starts. */
 export async function debugWithAgent(config: RunConfig, show?: boolean): Promise<boolean> {
   const pinned = needsPinnedPort(config) ? await call(commands.debugFreePort()).catch(() => null) : null;
   const agent = jdwpLaunch(config, pinned ?? undefined);
   if (!agent) return false;
+  if (!(await attachDebuggerReady(config, show))) return true;
   const launch = await withGradleAttachListener(agent);
   let sessionId: string | null = null;
   const waiting: number[] = [];
