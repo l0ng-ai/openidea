@@ -1,11 +1,12 @@
 import { branchesByRepo } from "./multiRoot";
 /** Title bar branch widget (branch name + incoming / outgoing markers) + Branches popup. */
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import type { Branch, BranchInfo } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import { bindingsFor, normalizeBinding, registerKeyClaim, shortcutLabel, strokeOf } from "@/platform/keymap";
 import { useEditorRegistry } from "@/editor/api";
 import {
@@ -201,16 +202,53 @@ function toggleOption(key: keyof PopupOptions) {
   }
 }
 
-/** Groups and folders the user expanded or collapsed, remembered for the session (per popup kind). */
-const useExpansion = create<{ single: ReadonlyMap<string, boolean>; multi: ReadonlyMap<string, boolean> }>(() => ({
-  single: new Map(),
-  multi: new Map(),
-}));
+/**
+ * Groups and folders the user expanded or collapsed (per popup kind), kept per project across
+ * sessions as IDEA's GitBranchesPopupTreeState does.
+ */
+const useExpansion = create<{
+  root: string | null;
+  single: ReadonlyMap<string, boolean>;
+  multi: ReadonlyMap<string, boolean>;
+}>(() => ({ root: null, single: new Map(), multi: new Map() }));
+
+const EXPANSION_KEY = "openidea.vcs.branchesPopup.expanded:";
+
+/** Switches to the expansion stored for the project at `root`. */
+function loadExpansion(root: string | null) {
+  if (useExpansion.getState().root === root) return;
+  const next = { root, single: new Map<string, boolean>(), multi: new Map<string, boolean>() };
+  try {
+    const v: unknown = root ? JSON.parse(localStorage.getItem(EXPANSION_KEY + root) ?? "null") : null;
+    for (const kind of ["single", "multi"] as const) {
+      const entries = (v as Record<string, unknown> | null)?.[kind];
+      if (Array.isArray(entries))
+        for (const e of entries)
+          if (Array.isArray(e) && typeof e[0] === "string" && typeof e[1] === "boolean") next[kind].set(e[0], e[1]);
+    }
+  } catch {
+    // Storage unavailable: defaults.
+  }
+  useExpansion.setState(next);
+}
 
 function useExpanded(kind: "single" | "multi") {
   const expanded = useExpansion((s) => s[kind]);
-  const setOpen = (key: string, open: boolean) =>
-    useExpansion.setState((s) => (s[kind].get(key) === open ? s : { [kind]: withExpanded(s[kind], key, open) }));
+  const setOpen = (key: string, open: boolean) => {
+    const s = useExpansion.getState();
+    if (s[kind].get(key) === open) return;
+    const next = { ...s, [kind]: withExpanded(s[kind], key, open) };
+    useExpansion.setState(next);
+    if (!next.root) return;
+    try {
+      localStorage.setItem(
+        EXPANSION_KEY + next.root,
+        JSON.stringify({ single: [...next.single], multi: [...next.multi] }),
+      );
+    } catch {
+      // Kept for this session only.
+    }
+  };
   return [expanded, setOpen] as const;
 }
 
@@ -317,6 +355,8 @@ function BranchesPopup({ anchor, onClose }: { anchor: PopupAnchor; onClose: () =
   // ⌥⌘N is also Inline (enabled while a popup is open over an editor): the search field handles it here.
   useEffect(() => registerKeyClaim((_e, stroke) => isNewBranchStroke(stroke)), []);
   const [initialSize] = useState(loadPopupSize);
+  const root = useProject((s) => s.project?.root ?? null);
+  useLayoutEffect(() => loadExpansion(root), [root]);
   return (
     <Popup
       open
