@@ -869,13 +869,14 @@ impl CodexShim {
             "item/commandExecution/requestApproval" => {
                 let choices = translate::decisions(params, true);
                 let title = translate::command_approval_title(params, item.as_ref());
-                let call = tool_call_of(
-                    &item_id,
-                    &title,
-                    "execute",
-                    reason,
-                    Some(json!({ "command": params.get("command"), "cwd": params.get("cwd") })),
-                );
+                let mut input = json!({
+                    "command": translate::approval_command(params, item.as_ref()),
+                    "cwd": params.get("cwd"),
+                });
+                if let Some(network) = params.get("networkApprovalContext").filter(|c| !c.is_null()) {
+                    input["networkApprovalContext"] = network.clone();
+                }
+                let call = tool_call_of(&item_id, &title, "execute", reason, Some(input));
                 Ok(self.ask(&thread, call, &choices, decline))
             }
             "item/fileChange/requestApproval" => {

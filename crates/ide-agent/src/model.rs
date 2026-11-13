@@ -384,6 +384,10 @@ pub enum AgentEntry {
     Permission {
         id: u32,
         title: String,
+        /// The shell command the request asks to run, from its structured input; `None` for
+        /// any other request, whatever its title says.
+        #[serde(default)]
+        command: Option<String>,
         options: Vec<AgentPermissionOption>,
         /// Set when the request asks `AskUserQuestion`'s questions; answered with a JSON object
         /// of question to answer instead of an option.
