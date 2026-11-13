@@ -38,10 +38,29 @@
 .muted {
   color: var(--fg-muted);
 }
+/* A zero-width anchor at the line end with the message in an absolutely positioned inner box,
+   the way the code-vision hint is drawn: the annotation takes no part in the line's flow, so it
+   neither stretches the line nor moves the caret at the line end. The message's own offset is a
+   custom property: the blame steps past the message by measuring this inner box plus that
+   offset (inlineBlame.ts). */
 .after {
+  --openidea-message-offset: var(--space-2);
+  display: inline-block;
+  width: 0;
+  position: relative;
+  line-height: 1;
+  user-select: none;
+}
+.afterInner {
+  position: absolute;
+  left: var(--openidea-message-offset);
+  bottom: -2px;
   white-space: pre;
-  margin-inline-start: calc(var(--space-2) / 2);
   color: var(--fg-muted);
+  /* No width cap and no overflow: a descender (g, y, p) would be clipped by a
+     line-height-1 box, and a long message simply runs past the editor's edge,
+     where the scroller clips it — the way IDEA paints line-end inlays. */
+  pointer-events: auto;
 }
 
 /* Inline text follows the scheme's Error / Warning colours, the way Inspection Lens

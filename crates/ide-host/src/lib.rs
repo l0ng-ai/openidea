@@ -296,6 +296,9 @@ impl Host {
         }
         project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
         project.plugin_diagnostics.close();
+        // The producers will re-report when a project reopens; until then the snapshot
+        // must not answer for files whose project is gone.
+        self.diagnostics.forget_root(&project.root);
         if let Some(plugins) = plugins::editor_plugin_host() {
             plugins.invalidate_client_navigation(&project.root, Some(window), None);
             plugins.set_active_file(window, None);

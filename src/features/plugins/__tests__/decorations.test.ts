@@ -44,7 +44,11 @@ afterEach(() => {
 it("renders plain annotations, maps them through edits, and withdraws them", () => {
   setPluginDecorations("test", [set()]);
   expect(editor.view.dom.textContent).toContain("<plain>");
+  // The range mark carries the hover on the code; the line-end message carries it too.
   expect(editor.view.dom.querySelector('[title="hover"]')?.textContent).toBe("te");
+  const message = editor.view.dom.querySelector(".cm-plugin-after");
+  expect(message?.firstElementChild?.textContent).toBe("<plain>");
+  expect(message?.firstElementChild?.getAttribute("title")).toBe("hover");
   expect(editor.view.dom.querySelector("plain")).toBeNull();
   editor.view.dispatch({ changes: { from: 0, insert: "x" } });
   expect(editor.view.dom.querySelector('[title="hover"]')?.textContent).toBe("te");
@@ -52,15 +56,19 @@ it("renders plain annotations, maps them through edits, and withdraws them", () 
   expect(editor.view.dom.textContent).not.toContain("<plain>");
 });
 
-it("filters project roots and unknown styles and replaces tree badges", () => {
+it("filters tree badges by project root but not editor annotations, and drops unknown styles", () => {
+  // Editor annotations follow the file: a set from another root still renders where the file is open.
   setPluginDecorations("test", [set("/other")]);
-  expect(editor.view.dom.textContent).not.toContain("<plain>");
+  expect(editor.view.dom.textContent).toContain("<plain>");
   const unknown = set();
   unknown.items[0]!.style = "unknown";
   setPluginDecorations("test", [unknown]);
   expect(editor.view.dom.textContent).not.toContain("<plain>");
-  const tree = { ...set(), tree: true, items: [], file: { style: "modified", badge: "M", tooltip: "changed" } };
+  // Tree badges are per root.
+  const tree = { ...set("/other"), tree: true, items: [], file: { style: "modified", badge: "M", tooltip: "changed" } };
   setPluginDecorations("test", [tree]);
+  expect(getFileDecoration("/p/a.txt")?.badge).toBeUndefined();
+  setPluginDecorations("test", [{ ...tree, root: "/p" }]);
   expect(getFileDecoration("/p/a.txt")?.badge).toBe("M");
   setPluginDecorations("test", []);
   expect(getFileDecoration("/p/a.txt")?.badge).toBeUndefined();

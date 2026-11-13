@@ -3,7 +3,7 @@
 //! the UI-reported Problems reports, so what a plugin sees no longer depends on
 //! window lifetime, the invoking window's project, or the report loop's liveness.
 
-use ide_core::{Diagnostic, EventSink, IdeEvent, IpcPath, SharedSink};
+use ide_core::{Diagnostic, EventSink, IdeEvent, SharedSink};
 use parking_lot::RwLock;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -75,13 +75,4 @@ pub fn recording_sink_factory(store: Arc<DiagnosticsStore>, inner: crate::SinkFa
         let inner = inner(window);
         Arc::new(RecordingSink { inner, store: store.clone() }) as SharedSink
     })
-}
-
-/// One file's problems from one producer, the shape plugins receive.
-pub fn file_problems(
-    path: &std::path::Path,
-    source: String,
-    items: Vec<Diagnostic>,
-) -> (IpcPath, String, Vec<Diagnostic>) {
-    (IpcPath(path.to_path_buf()), source, items)
 }

@@ -138,7 +138,6 @@ impl PluginHost {
                 }
                 let workspace = workspace.as_ref()?;
                 let real = ide_plugin::resolve_real(path);
-                eprintln!("PDBG pathfilter ev={:?} client={client:?} path={path:?}", event.kind().name());
                 // The file's own project, not the invoking window's: annotations follow
                 // the file, so a plugin hears about a file another window has open.
                 let root = match client {

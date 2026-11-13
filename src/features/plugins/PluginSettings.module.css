@@ -85,13 +85,15 @@
   max-width: 560px;
 }
 
-/* A severity's sample, drawn the way the annotation appears in the editor. The label column
-   is fixed so the samples line up, one row per setting. */
+/* A severity's sample, drawn the way the annotation appears in the editor: the line-end
+   message carries the severity colour alone — the wave belongs to the code token, the
+   message itself is never underlined. The label column is fixed so the samples line up,
+   one row per setting. */
 .exampleRow {
   display: grid;
   grid-template-columns: 180px minmax(0, 1fr);
   align-items: baseline;
-  column-gap: 12px;
+  column-gap: var(--space-3);
 }
 .example {
   font-family: var(--openidea-editor-font, var(--font-mono));
@@ -100,22 +102,18 @@
 }
 .example[data-style="error"] {
   color: var(--wave-error);
-  text-decoration: underline wavy var(--wave-error);
 }
 .example[data-style="warning"] {
   color: var(--wave-warning);
-  text-decoration: underline wavy var(--wave-warning);
 }
 .example[data-style="weak"] {
   color: var(--fg-weak-warning);
 }
 .example[data-style="typo"] {
   color: var(--wave-typo, var(--success));
-  text-decoration: underline wavy var(--wave-typo, var(--success));
 }
 .example[data-style="info"] {
   color: var(--info);
-  text-decoration: underline dotted var(--info);
 }
 .example[data-style="muted"] {
   color: var(--fg-muted);

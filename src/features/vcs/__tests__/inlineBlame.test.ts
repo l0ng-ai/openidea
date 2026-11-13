@@ -320,6 +320,17 @@ describe("current line decoration", () => {
         return el;
       }
     }
+    // A plugin's line-end message is a zero-width anchor with its text in an inner box.
+    class FakeMessage extends WidgetType {
+      toDOM() {
+        const anchor = document.createElement("span");
+        anchor.className = "cm-plugin-after";
+        const inner = document.createElement("span");
+        inner.getBoundingClientRect = () => ({ width: 70 }) as DOMRect;
+        anchor.append(inner);
+        return anchor;
+      }
+    }
     const lens = new Compartment();
     view = new EditorView({
       parent: document.body,
@@ -333,14 +344,20 @@ describe("current line decoration", () => {
     // the hint shows up only after the blame mounted — the blame must still step past it
     view.dispatch({
       effects: lens.reconfigure(
-        EditorView.decorations.of(Decoration.set([Decoration.widget({ widget: new FakeHint(), side: 1 }).range(3)])),
+        EditorView.decorations.of(
+          Decoration.set([
+            Decoration.widget({ widget: new FakeHint(), side: 1 }).range(3),
+            Decoration.widget({ widget: new FakeMessage(), side: 1 }).range(3),
+          ]),
+        ),
       ),
     });
     await vi.advanceTimersByTimeAsync(10);
     expect(view.dom.querySelector(".cm-openidea-lensInlineInner")).not.toBeNull();
-    expect(hint()!.style.paddingLeft).toBe("calc(3ch + 120px)");
+    // hint 120px, then the message's 70px: the label steps past the whole chain
+    expect(hint()!.style.paddingLeft).toBe("calc(3ch + 190px)");
 
-    // and it gives the space back when the hint goes away
+    // and it gives the space back when the hint and the message go away
     view.dispatch({ effects: lens.reconfigure([]) });
     await vi.advanceTimersByTimeAsync(10);
     expect(hint()!.style.paddingLeft).toBe("");
