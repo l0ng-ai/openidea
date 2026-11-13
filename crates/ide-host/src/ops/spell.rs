@@ -44,10 +44,6 @@ pub async fn spell_check(
     request: RequestId,
 ) -> IdeResult<Vec<Typo>> {
     let project = host.project(window)?;
-    // The typos go out as a diagnostics event, the way every other producer publishes: the
-    // host records it in its snapshot and the window hears about it, so a Problems view and a
-    // plugin subscribed to `problems-changed` see them without polling.
-    let sink = project.sink.clone();
     let syntax = host.syntax();
     let cancel = host.begin_request(request);
     let result = blocking(move || {
@@ -85,7 +81,9 @@ pub async fn spell_check(
     })
     .await;
     host.end_request(request);
-    // Publish them; the editor still draws from its own call above, unchanged.
+    // Record the typos in the host's diagnostics snapshot so line-end annotations
+    // see them without waiting for a UI report; the editor still draws from its
+    // own call above, unchanged.
     if let Ok((path, typos)) = &result {
         let items: Vec<ide_core::Diagnostic> = typos
             .iter()
@@ -100,7 +98,7 @@ pub async fn spell_check(
                 server: None,
             })
             .collect();
-        sink.emit(ide_core::IdeEvent::Diagnostics { path: path.clone().into(), source: "Spelling".into(), items });
+        host.diagnostics.replace(path, "Spelling", items);
     }
     result.map(|(_, typos)| typos)
 }
