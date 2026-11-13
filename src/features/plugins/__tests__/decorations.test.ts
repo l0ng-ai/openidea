@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorState, StateEffect } from "@codemirror/state";
+import { EditorView, activateHover, getTooltip, hoverTooltip, showTooltip, tooltips } from "@codemirror/view";
 import type { DecorationSet } from "@/bindings";
 import { _addEditor, _removeEditor, type EditorDocContext, type TextEditorHandle } from "@/editor/api";
 import { useProject } from "@/platform/project";
@@ -9,6 +9,9 @@ import { getFileDecoration } from "@/workbench/contributions";
 import { decorationExtension, setPluginDecorations } from "../decorations";
 import { capabilityDescription } from "../consent";
 import { handleRuntimeEvent } from "../runtimeUi";
+
+const { openUrl } = vi.hoisted(() => ({ openUrl: vi.fn() }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl }));
 
 const ctx: EditorDocContext = {
   doc: 1,
@@ -354,4 +357,258 @@ it.each([
   expect(card.style.height).toBe(`${height}px`);
   resizePointer(window, "pointerup", 300 + dx, 220 + dy, 0);
   expect(document.documentElement.hasAttribute("data-drag-cursor")).toBe(false);
+});
+
+it("anchors a long-line conversation to its model label and follows its rendered position", async () => {
+  const code = "x".repeat(1000);
+  editor.view.dispatch({ changes: { from: 0, to: editor.view.state.doc.length, insert: code } });
+  const longRange = { start: { line: 0, col: 0 }, end: { line: 0, col: code.length } };
+  setPluginDecorations("test", [
+    {
+      ...set(),
+      items: [{ range: longRange, style: "highlight", hover: null, after: " + model", markdownHover: "conversation" }],
+    },
+  ]);
+  const label = [...editor.view.dom.querySelectorAll("span")].find((span) => span.textContent === " + model")!;
+  const labelRect = vi.spyOn(label, "getBoundingClientRect").mockReturnValue(new DOMRect(800, 300, 150, 20));
+  vi.spyOn(editor.view, "coordsAtPos").mockReturnValue(new DOMRect(20, 300, 1, 20));
+  vi.useFakeTimers();
+  try {
+    label.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 850, clientY: 310 }));
+    await vi.advanceTimersByTimeAsync(400);
+    const tooltip = editor.view.state.facet(showTooltip)[0]!;
+    const rendered = getTooltip(editor.view, tooltip)!;
+    expect(rendered.getCoords!(tooltip.pos).left).toBe(800);
+    expect(rendered.getCoords!(tooltip.pos).top).toBe(300);
+    labelRect.mockReturnValue(new DOMRect(500, 340, 150, 20));
+    expect(rendered.getCoords!(tooltip.pos).left).toBe(500);
+    expect(rendered.getCoords!(tooltip.pos).top).toBe(340);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("keeps a body-hosted conversation open while crossing from its label, then dismisses outside", async () => {
+  editor.view.dispatch({ effects: StateEffect.appendConfig.of(tooltips({ parent: document.body })) });
+  const card = await openResizeHover("conversation message\n\n".repeat(40));
+  const label = [...editor.view.dom.querySelectorAll("span")].find((span) => span.textContent === " + model")!;
+  vi.spyOn(label, "getBoundingClientRect").mockReturnValue(new DOMRect(400, 380, 100, 20));
+  expect(editor.view.dom.contains(card)).toBe(false);
+  editor.view.dom.dispatchEvent(
+    new MouseEvent("mouseleave", { relatedTarget: document.body, clientX: 450, clientY: 370 }),
+  );
+  expect(card.isConnected).toBe(true);
+  document.body.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 450, clientY: 355 }));
+  expect(card.isConnected).toBe(true);
+  card.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 450, clientY: 320 }));
+  const handle = card.querySelector<HTMLButtonElement>('button[data-edge="se"]')!;
+  resizePointer(handle, "pointerdown", 490, 330);
+  resizePointer(window, "pointermove", 570, 390);
+  resizePointer(window, "pointerup", 570, 390, 0);
+  expect(card.isConnected).toBe(true);
+  expect(card.style.width).toBe("480px");
+  expect(card.style.height).toBe("300px");
+  expect(card.textContent).toContain("conversation message");
+  document.body.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 10, clientY: 10 }));
+  expect(card.isConnected).toBe(false);
+});
+
+it("keeps a hydrated conversation anchored to the replacement model label", async () => {
+  const card = await openResizeHover("loading conversation");
+  const handle = card.querySelector<HTMLButtonElement>('button[data-edge="e"]')!;
+  resizePointer(handle, "pointerdown", 490, 220);
+  resizePointer(window, "pointermove", 570, 220);
+  resizePointer(window, "pointerup", 570, 220, 0);
+  setPluginDecorations("test", [
+    {
+      ...set(),
+      items: [
+        { range, style: "highlight", hover: null, after: " + model", markdownHover: "the hydrated conversation" },
+      ],
+    },
+  ]);
+  const label = [...editor.view.dom.querySelectorAll("span")].find((span) => span.textContent === " + model")!;
+  vi.spyOn(label, "getBoundingClientRect").mockReturnValue(new DOMRect(620, 380, 100, 20));
+  const tooltip = editor.view.state.facet(showTooltip)[0]!;
+  expect(getTooltip(editor.view, tooltip)!.getCoords!(tooltip.pos).left).toBe(620);
+  expect(document.querySelector(".cm-tooltip .cm-lsp-hover")).toBe(card);
+  expect(card.textContent).toContain("the hydrated conversation");
+  expect(card.style.width).toBe("480px");
+});
+
+it.each(["Escape", "outside pointer", "window blur", "window leave", "editor destruction"])(
+  "cleans up an interactive conversation on %s",
+  async (action) => {
+    const card = await openResizeHover();
+    const handle = card.querySelector<HTMLButtonElement>('button[data-edge="e"]')!;
+    resizePointer(handle, "pointerdown", 490, 220);
+    resizePointer(window, "pointermove", 570, 220);
+    expect(document.documentElement.hasAttribute("data-drag-cursor")).toBe(true);
+    if (action === "Escape") window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    else if (action === "outside pointer") resizePointer(document.body, "pointerdown", 10, 10);
+    else if (action === "window blur") window.dispatchEvent(new Event("blur"));
+    else if (action === "window leave")
+      document.documentElement.dispatchEvent(new MouseEvent("mouseleave", { relatedTarget: null }));
+    else editor.view.destroy();
+    expect(card.isConnected).toBe(false);
+    expect(document.documentElement.hasAttribute("data-drag-cursor")).toBe(false);
+    resizePointer(window, "pointermove", 800, 220);
+    expect(card.style.width).toBe("480px");
+  },
+);
+
+it("dismisses only the plugin conversation, not another provider's hover", async () => {
+  const other = hoverTooltip(() => ({
+    pos: 0,
+    create: () => {
+      const dom = document.createElement("div");
+      dom.textContent = "other provider";
+      return { dom };
+    },
+  }));
+  editor.view.dispatch({ effects: StateEffect.appendConfig.of(other) });
+  const card = await openResizeHover();
+  activateHover(editor.view, 0, 1, { tooltip: other });
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  expect(card.isConnected).toBe(false);
+  expect(document.body.textContent).toContain("other provider");
+  expect(editor.view.state.field(other.active)).toHaveLength(1);
+});
+
+it("opens the configured commit detail URL when the conversation SHA is clicked", async () => {
+  const sha = "2b03ef6774cfb016dcf8c48f849c0684d8908c6a";
+  const url = `https://tenant.example.invalid/gitai/admin/repos/commit?repo=https%3A%2F%2Fgithub.com%2Fl0ng-ai%2Fopenidea&sha=${sha}`;
+  await loadMarkdown();
+  const card = await openResizeHover(`[${sha.slice(0, 8)}](${url})`);
+  const link = card.querySelector("a")!;
+  expect(link.getAttribute("href")).toBe(url);
+  vi.stubGlobal("__TAURI_INTERNALS__", {});
+  try {
+    link.click();
+    await vi.waitFor(() => expect(openUrl).toHaveBeenCalledWith(url));
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it.each([null, " + model"])(
+  "keeps a text-origin conversation open throughout its annotated range (%s)",
+  async (after) => {
+    const code = "x".repeat(1000);
+    editor.view.dispatch({ changes: { from: 0, to: editor.view.state.doc.length, insert: code } });
+    const longRange = { start: { line: 0, col: 0 }, end: { line: 0, col: code.length } };
+    setPluginDecorations("test", [
+      {
+        ...set(),
+        items: [{ range: longRange, style: "highlight", hover: null, after, markdownHover: "text conversation" }],
+      },
+    ]);
+    vi.spyOn(editor.view, "coordsAtPos").mockImplementation((pos) => new DOMRect(pos, 10, 1, 10));
+    vi.spyOn(editor.view, "posAtCoords").mockImplementation(({ x }) => Math.round(x));
+    vi.spyOn(editor.view.scrollDOM, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1200, 600));
+    const line = editor.view.contentDOM.querySelector(".cm-line")!;
+    vi.useFakeTimers();
+    try {
+      line.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 500, clientY: 15 }));
+      await vi.advanceTimersByTimeAsync(400);
+    } finally {
+      vi.useRealTimers();
+    }
+    const card = document.querySelector<HTMLElement>(".cm-tooltip .cm-lsp-hover")!;
+    expect(card).not.toBeNull();
+    vi.spyOn(card.closest(".cm-tooltip")!, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 30, 400, 100));
+    line.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 510, clientY: 15 }));
+    expect(card.isConnected).toBe(true);
+    line.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 1300, clientY: 15 }));
+    expect(card.isConnected).toBe(false);
+  },
+);
+
+it("does not strand a naturally opened second hover after crossing the popup gap", async () => {
+  const other = hoverTooltip(() => ({
+    pos: 0,
+    end: 6,
+    create: () => {
+      const dom = document.createElement("div");
+      dom.textContent = "natural provider";
+      return { dom };
+    },
+  }));
+  editor.view.dispatch({ effects: StateEffect.appendConfig.of([other, tooltips({ parent: document.body })]) });
+  const card = await openResizeHover();
+  const label = [...editor.view.dom.querySelectorAll("span")].find((span) => span.textContent === " + model")!;
+  vi.spyOn(label, "getBoundingClientRect").mockReturnValue(new DOMRect(400, 380, 100, 20));
+  expect(editor.view.state.field(other.active)).toHaveLength(1);
+  editor.view.dom.dispatchEvent(
+    new MouseEvent("mouseleave", { relatedTarget: document.body, clientX: 450, clientY: 370 }),
+  );
+  expect(card.isConnected).toBe(true);
+  card.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 450, clientY: 320 }));
+  card
+    .closest(".cm-tooltip")!
+    .dispatchEvent(new MouseEvent("mouseleave", { relatedTarget: document.body, clientX: 10, clientY: 10 }));
+  document.body.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 10, clientY: 10 }));
+  expect(card.isConnected).toBe(false);
+  expect(editor.view.state.field(other.active)).toHaveLength(0);
+});
+
+it("uses the rich model label rather than a plain annotation at the same offset", async () => {
+  setPluginDecorations("test", [
+    {
+      ...set(),
+      items: [
+        { range, style: "highlight", hover: null, after: "plain note", markdownHover: null },
+        { range, style: "highlight", hover: null, after: " + model", markdownHover: "conversation" },
+      ],
+    },
+  ]);
+  const spans = [...editor.view.dom.querySelectorAll("span")];
+  const plain = spans.find((span) => span.textContent === "plain note")!;
+  const label = spans.find((span) => span.textContent === " + model")!;
+  vi.spyOn(plain, "getBoundingClientRect").mockReturnValue(new DOMRect(200, 300, 100, 20));
+  vi.spyOn(label, "getBoundingClientRect").mockReturnValue(new DOMRect(800, 300, 100, 20));
+  vi.useFakeTimers();
+  try {
+    label.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 850, clientY: 310 }));
+    await vi.advanceTimersByTimeAsync(400);
+    const tooltip = editor.view.state.facet(showTooltip)[0]!;
+    expect(getTooltip(editor.view, tooltip)!.getCoords!(tooltip.pos).left).toBe(800);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("does not select a conversation when identical model labels make the anchor ambiguous", async () => {
+  const item = { range, style: "highlight", hover: null, after: " + model", markdownHover: "first conversation" };
+  setPluginDecorations("test", [{ ...set(), items: [item] }]);
+  setPluginDecorations("second", [{ ...set(), items: [{ ...item, markdownHover: "second conversation" }] }]);
+  vi.useFakeTimers();
+  try {
+    const label = [...editor.view.dom.querySelectorAll("span")].find((span) => span.textContent === " + model")!;
+    label.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 1, clientY: 1 }));
+    await vi.advanceTimersByTimeAsync(400);
+    expect(document.querySelector(".cm-tooltip .cm-lsp-hover")).toBeNull();
+  } finally {
+    vi.useRealTimers();
+    setPluginDecorations("second", []);
+  }
+});
+
+it("withdraws a removed conversation without hiding another provider", async () => {
+  const other = hoverTooltip(() => ({
+    pos: 0,
+    end: 6,
+    create: () => {
+      const dom = document.createElement("div");
+      dom.textContent = "remaining provider";
+      return { dom };
+    },
+  }));
+  editor.view.dispatch({ effects: StateEffect.appendConfig.of(other) });
+  const card = await openResizeHover();
+  expect(editor.view.state.field(other.active)).toHaveLength(1);
+  setPluginDecorations("test", []);
+  expect(card.isConnected).toBe(false);
+  expect(editor.view.state.field(other.active)).toHaveLength(1);
+  expect(document.body.textContent).toContain("remaining provider");
 });

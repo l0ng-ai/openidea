@@ -4,6 +4,8 @@ import {
   EditorView,
   WidgetType,
   hoverTooltip,
+  closeHoverTooltip,
+  activateHover,
   type DecorationSet as CmDecorations,
   type Tooltip,
 } from "@codemirror/view";
@@ -103,7 +105,7 @@ interface PlacedHover {
   range: Range;
   from: number;
   to: number;
-  after: boolean;
+  after: string | null;
   markdown: string;
 }
 
@@ -112,6 +114,8 @@ interface OpenHover {
   plugin: string;
   path: string;
   range: Range;
+  after: string | null;
+  close: () => void;
   dom: HTMLElement;
   uiMode: EditorDocContext["uiMode"];
 }
@@ -129,7 +133,13 @@ function refreshedMarkdown(card: OpenHover) {
   for (const set of currentSets(snapshots.get(card.plugin) ?? []))
     if (!set.tree && set.path === card.path)
       for (const item of set.items)
-        if (item.markdownHover && sameRange(item.range, card.range)) return item.markdownHover;
+        if (
+          item.markdownHover &&
+          Object.hasOwn(colors, item.style) &&
+          item.after === card.after &&
+          sameRange(item.range, card.range)
+        )
+          return item.markdownHover;
   return null;
 }
 
@@ -175,6 +185,7 @@ function refreshOpenHovers(plugin: string) {
     if (card.plugin !== plugin) continue;
     const markdown = refreshedMarkdown(card);
     if (markdown) card.dom.replaceChildren(renderPluginMarkdown(markdown, card.uiMode));
+    else card.close();
   }
 }
 
@@ -219,7 +230,7 @@ export function decorationExtension(ctx: EditorDocContext) {
             if (from == null || to == null || from > to) continue;
             const markdown = item.markdownHover || null;
             if (markdown)
-              hovers.push({ plugin, path: ctx.path, range: item.range, from, to, after: !!item.after, markdown });
+              hovers.push({ plugin, path: ctx.path, range: item.range, from, to, after: item.after, markdown });
             if (from < to)
               ranges.push(
                 Decoration.mark({
@@ -239,42 +250,108 @@ export function decorationExtension(ctx: EditorDocContext) {
     return { decorations: Decoration.set(ranges, true), hovers };
   };
 
-  return [field, hoverTooltip(markdownHover(field, ctx), { hideOnChange: true })];
+  const tooltip: ReturnType<typeof hoverTooltip> = hoverTooltip(
+    markdownHover(
+      field,
+      ctx,
+      (view) => view.dispatch({ effects: closeHoverTooltip(tooltip) }),
+      (view, pos, side) => activateHover(view, pos, side, { tooltip }),
+    ),
+    { hideOnChange: true },
+  );
+  return [field, tooltip];
 }
 
 /**
  * The decoration under the pointer, preferring an `after` label when the
  * pointer is on its widget rather than on the decorated text.
  */
-function markdownHover(field: StateField<PlacedDecorations>, ctx: EditorDocContext) {
-  return (view: EditorView, pos: number, side: number): Tooltip | null => {
+function markdownHover(
+  field: StateField<PlacedDecorations>,
+  ctx: EditorDocContext,
+  close: (view: EditorView) => void,
+  lock: (view: EditorView, pos: number, side: -1 | 1) => void,
+) {
+  const active = new WeakMap<EditorView, { placed: PlacedHover; fromLabel: boolean; tooltip: Tooltip }>();
+  return (view: EditorView, pos: number, side: -1 | 1): Tooltip | null => {
     const hovers = view.state.field(field).hovers;
     const candidates = hovers.filter((h) => h.from <= pos && pos <= h.to);
     const placed = candidates.find((h) => h.after && h.to === pos && side >= 0) ?? candidates[candidates.length - 1];
     if (!placed) return null;
-    return {
-      pos: placed.from,
+    const fromLabel = !!placed.after && placed.to === pos && side >= 0;
+    const current = active.get(view);
+    if (
+      current?.placed.plugin === placed.plugin &&
+      current.fromLabel === fromLabel &&
+      sameRange(current.placed.range, placed.range) &&
+      current.placed.after === placed.after
+    )
+      return current.tooltip;
+    let label: HTMLElement | undefined;
+    let mounted = false;
+    const anchor = fromLabel
+      ? () => {
+          if (!label?.isConnected) {
+            const matches = [...view.dom.querySelectorAll<HTMLElement>(`.${styles.after}`)].filter(
+              (node) => node.textContent === placed.after && view.posAtDOM(node) === placed.to,
+            );
+            label = matches.length === 1 ? matches[0] : undefined;
+          }
+          if (!label && mounted)
+            queueMicrotask(() => {
+              if (active.get(view)?.tooltip === tooltip) close(view);
+            });
+          return label ?? null;
+        }
+      : undefined;
+    if (anchor && !anchor()) return null;
+    const tooltip: Tooltip = {
+      pos: fromLabel ? placed.to : placed.from,
       end: placed.to,
       above: true,
       create: () => {
-        const hover = resizableDecorationHover(view, renderPluginMarkdown(placed.markdown, ctx.uiMode));
+        const hover = resizableDecorationHover(view, renderPluginMarkdown(placed.markdown, ctx.uiMode), {
+          anchor,
+          position: fromLabel ? placed.to : placed.from,
+          close: () => close(view),
+          containsSource: (event) => {
+            if (!(event.target instanceof Node) || !view.contentDOM.contains(event.target)) return false;
+            const at = view.posAtCoords({ x: event.clientX, y: event.clientY });
+            return at != null && placed.from <= at && at <= placed.to;
+          },
+        });
         const card: OpenHover = {
           plugin: placed.plugin,
           path: placed.path,
           range: placed.range,
+          after: placed.after,
+          close: () => close(view),
           dom: hover.content,
           uiMode: ctx.uiMode,
         };
         openHovers.add(card);
+        let live = true;
         return {
           ...hover,
+          mount: () => {
+            mounted = true;
+            // Activate only our provider, after CodeMirror finishes creating its tooltip views.
+            queueMicrotask(() => {
+              if (live) lock(view, pos, side);
+            });
+          },
           destroy: () => {
+            live = false;
+            mounted = false;
             hover.destroy?.();
             openHovers.delete(card);
+            if (active.get(view)?.tooltip === tooltip) active.delete(view);
           },
         };
       },
     };
+    active.set(view, { placed, fromLabel, tooltip });
+    return tooltip;
   };
 }
 

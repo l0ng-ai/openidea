@@ -1,4 +1,4 @@
-import { Direction, repositionTooltips, type EditorView, type TooltipView } from "@codemirror/view";
+import { Direction, repositionTooltips, type EditorView, type Rect, type TooltipView } from "@codemirror/view";
 import { hoverCard } from "@/editor/lsp/hover";
 import { tx } from "@/platform/i18n";
 import { lockDragCursor } from "@/ui/dragCursor";
@@ -11,6 +11,12 @@ type Bounds = Pick<DOMRect, "left" | "top" | "width" | "height">;
 export function resizableDecorationHover(
   view: EditorView,
   markdown: HTMLElement,
+  options: {
+    anchor?: () => HTMLElement | null;
+    position: number;
+    close: () => void;
+    containsSource: (event: MouseEvent) => boolean;
+  },
 ): TooltipView & { content: HTMLElement } {
   const content = document.createElement("div");
   content.className = styles.content!;
@@ -27,6 +33,9 @@ export function resizableDecorationHover(
   let above = true;
   let disposed = false;
   let stopDrag: (() => void) | undefined;
+
+  const anchorRect = () =>
+    options.anchor ? options.anchor()?.getBoundingClientRect() : view.coordsAtPos(options.position);
 
   const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(value, max));
   const limits = () => {
@@ -97,7 +106,6 @@ export function resizableDecorationHover(
       const releaseCursor = lockDragCursor(
         edge === "se" ? "nwse-resize" : edge === "e" || edge === "w" ? "ew-resize" : "ns-resize",
       );
-      const holdHover = (e: Event) => e.stopPropagation();
       const move = (e: PointerEvent) => {
         if (e.pointerId !== event.pointerId) return;
         if (!(e.buttons & 1)) return finish();
@@ -118,8 +126,6 @@ export function resizableDecorationHover(
         win.removeEventListener("pointercancel", end);
         win.removeEventListener("blur", finish);
         win.removeEventListener("keydown", key, true);
-        win.removeEventListener("mousemove", holdHover, true);
-        win.removeEventListener("mouseleave", holdHover, true);
         handle.removeEventListener("lostpointercapture", end);
         if (handle.hasPointerCapture?.(event.pointerId)) handle.releasePointerCapture(event.pointerId);
         releaseCursor();
@@ -131,8 +137,6 @@ export function resizableDecorationHover(
       win.addEventListener("pointercancel", end);
       win.addEventListener("blur", finish);
       win.addEventListener("keydown", key, true);
-      win.addEventListener("mousemove", holdHover, true);
-      win.addEventListener("mouseleave", holdHover, true);
       handle.addEventListener("lostpointercapture", end);
       handle.setPointerCapture?.(event.pointerId);
     });
@@ -154,6 +158,48 @@ export function resizableDecorationHover(
     });
     dom.append(handle);
   }
+  const contains = (rect: Rect, x: number, y: number) =>
+    x >= rect.left - 4 && x <= rect.right + 4 && y >= rect.top - 4 && y <= rect.bottom + 4;
+  const bridge = (a: Rect, b: Rect, x: number, y: number) => {
+    if (a.bottom > b.top || y < a.bottom - 4 || y > b.top + 4) return false;
+    const fraction = a.bottom === b.top ? 0.5 : clamp((y - a.bottom) / (b.top - a.bottom), 0, 1);
+    return x >= a.left + (b.left - a.left) * fraction - 4 && x <= a.right + (b.right - a.right) * fraction + 4;
+  };
+  const transpose = (rect: Rect): Rect => ({ left: rect.top, right: rect.bottom, top: rect.left, bottom: rect.right });
+  const keepOpen = (event: MouseEvent) => {
+    if (stopDrag || options.containsSource(event)) return true;
+    const target = event.type === "mouseleave" ? event.relatedTarget : event.target;
+    if (target instanceof Node && (dom.contains(target) || options.anchor?.()?.contains(target))) return true;
+    const anchor = anchorRect();
+    if (!anchor) return false;
+    const surface = (dom.closest<HTMLElement>(".cm-tooltip") ?? dom).getBoundingClientRect();
+    const { clientX: x, clientY: y } = event;
+    return (
+      contains(anchor, x, y) ||
+      contains(surface, x, y) ||
+      bridge(anchor, surface, x, y) ||
+      bridge(surface, anchor, x, y) ||
+      bridge(transpose(anchor), transpose(surface), y, x) ||
+      bridge(transpose(surface), transpose(anchor), y, x)
+    );
+  };
+  // The provider is explicitly activated; observe its lifetime without intercepting other providers.
+  const moveOver = (event: MouseEvent) => {
+    if (!keepOpen(event)) options.close();
+  };
+  const clickOutside = (event: PointerEvent) => {
+    if (!(event.target instanceof Node) || (!dom.contains(event.target) && !options.anchor?.()?.contains(event.target)))
+      options.close();
+  };
+  const closeOnEscape = (event: KeyboardEvent) => {
+    if (event.key === "Escape") options.close();
+  };
+  win.addEventListener("mousemove", moveOver, true);
+  win.addEventListener("pointerdown", clickOutside, true);
+  win.addEventListener("keydown", closeOnEscape, true);
+  win.addEventListener("blur", options.close);
+  dom.ownerDocument.documentElement.addEventListener("mouseleave", options.close);
+
   const fitViewport = () => {
     stopDrag?.();
     if (bounds) apply(bounds);
@@ -164,8 +210,8 @@ export function resizableDecorationHover(
     content,
     offset,
     resize: false,
-    getCoords: (pos) => {
-      const anchor = view.coordsAtPos(pos);
+    getCoords: () => {
+      const anchor = anchorRect();
       if (!anchor) {
         // Keep unrendered anchors clipped while satisfying TooltipView's non-null contract.
         const top = view.scrollDOM.getBoundingClientRect().top - 1;
@@ -182,6 +228,11 @@ export function resizableDecorationHover(
       disposed = true;
       stopDrag?.();
       win.removeEventListener("resize", fitViewport);
+      win.removeEventListener("mousemove", moveOver, true);
+      win.removeEventListener("pointerdown", clickOutside, true);
+      win.removeEventListener("keydown", closeOnEscape, true);
+      win.removeEventListener("blur", options.close);
+      dom.ownerDocument.documentElement.removeEventListener("mouseleave", options.close);
     },
   };
 }
