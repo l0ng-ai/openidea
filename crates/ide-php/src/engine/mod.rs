@@ -1518,6 +1518,16 @@ impl Declarations for PhpEngine {
     }
 
     /// From the index (open buffers not saved yet aren't looked at).
+    fn classes_named(&self, name: &str) -> Vec<String> {
+        let found = self.index().and_then(|index| index.by_short_name(name).ok()).unwrap_or_default();
+        found
+            .into_iter()
+            .filter(|decl| matches!(decl.kind, crate::index::DeclKind::ClassLike(_)))
+            .map(|decl| decl.fqn)
+            .collect()
+    }
+
+    /// From the index (open buffers not saved yet aren't looked at).
     fn direct_subclasses(&self, fqn: &str) -> Vec<String> {
         let found = self.index().and_then(|index| index.direct_subclasses(fqn).ok()).unwrap_or_default();
         found.into_iter().map(|decl| decl.fqn).collect()

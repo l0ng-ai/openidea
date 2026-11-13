@@ -281,6 +281,14 @@ fn this_in_a_trait_is_also_a_class_using_it() {
         p.definition("tests/OpensPanels.php", &own).expect("handled"),
         [target("tests/OpensPanels.php", 5, "open")]
     );
+    // Through a trait using the trait.
+    let nested =
+        concern.replace("    use OpensPanels;\n", "    use Bench;\n") + "\ntrait Bench\n{\n    use OpensPanels;\n}\n";
+    let mut p = project("tests/OpensPanels.php", &nested);
+    assert_eq!(
+        p.definition("tests/OpensPanels.php", &nested).expect("handled"),
+        [target("tests/TestCase.php", 10, "loginAs")]
+    );
     // A trait nothing uses: unknown members stay unknown.
     let unused = concern.replace("    use OpensPanels;\n", "");
     let mut p = project("tests/OpensPanels.php", &unused);

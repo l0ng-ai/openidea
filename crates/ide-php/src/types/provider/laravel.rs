@@ -82,6 +82,7 @@ const CONTAINER: &str = "Illuminate\\Contracts\\Container\\Container";
 const CONTAINER_CLASS: &str = "Illuminate\\Container\\Container";
 const FACADE: &str = "Illuminate\\Support\\Facades\\Facade";
 const MODEL: &str = "Illuminate\\Database\\Eloquent\\Model";
+const JSON_RESOURCE: &str = "Illuminate\\Http\\Resources\\Json\\JsonResource";
 /// prettus/l5-repository's repository: calls it doesn't declare go to its
 /// model (`__call`).
 const PRETTUS_REPOSITORY: &str = "Prettus\\Repository\\Eloquent\\BaseRepository";
@@ -446,7 +447,7 @@ impl LaravelProvider {
 
     /// The model of the first model contract among the members of `ty`.
     fn contract_of(resolver: &Resolver<'_>, ty: &Type, context: &Context) -> Option<String> {
-        resolver.class_models(ty, context).iter().find_map(|class| Self::contract_model(resolver, class))
+        resolver.class_models(ty, context).iter().find_map(|class| Self::stands_for(resolver, class))
     }
 
     /// The class behind facade `facade` (what its `getFacadeAccessor()`
@@ -1077,6 +1078,66 @@ impl LaravelProvider {
     /// (`comments(): HasMany`) takes its related model from what the body
     /// returns (`$this->hasMany(Comment::class)`).
     fn relation_return(resolver: &Resolver<'_>, model: &ClassModel, name: &str) -> Type {
+        let returned = Self::declared_relation(resolver, model, name);
+        // `product(): MorphTo`: nothing names the related model, the
+        // relation's name does when one model is called that (`Product`).
+        let morph = format!("{RELATIONS}MorphTo");
+        let open = |ty: &Type| {
+            match ty {
+            Type::Named { fqn, args } => {
+                resolver.class_model(fqn).is_some_and(|class| class.is_subclass_of(&morph))
+                    && args.first().is_none_or(|arg| {
+                        matches!(arg, Type::Named { fqn, .. } if fqn.trim_start_matches('\\').eq_ignore_ascii_case(MODEL))
+                    })
+            }
+            _ => false,
+        }
+        };
+        if !returned.members().iter().any(open) {
+            return returned;
+        }
+        let Some(related) = Self::model_named(resolver, &studly(name)) else { return returned };
+        returned.map(&mut |ty| match ty {
+            Type::Named { fqn, .. } if open(ty) => {
+                Some(Type::generic(fqn, vec![Type::named(&related), Type::named(model.fqn())]))
+            }
+            _ => None,
+        })
+    }
+
+    /// The one Eloquent model with short name `name`.
+    fn model_named(resolver: &Resolver<'_>, name: &str) -> Option<String> {
+        let models: Vec<std::sync::Arc<ClassModel>> = resolver
+            .classes_named(name)
+            .iter()
+            .filter_map(|fqn| resolver.class_model(fqn))
+            .filter(|class| class.class.kind == crate::summary::ClassKind::Class && class.is_subclass_of(MODEL))
+            .collect();
+        // A model extending another of the same name (a package's own
+        // `Product`) doesn't make the name ambiguous.
+        let mut roots = models.iter().filter(|class| {
+            !models.iter().any(|other| other.fqn() != class.fqn() && class.is_subclass_of(other.fqn()))
+        });
+        let model = roots.next()?;
+        roots.next().is_none().then(|| model.fqn().to_owned())
+    }
+
+    /// The model an API resource is about when nothing says (`@mixin`
+    /// does): the one model its name starts with (`ProductResource`).
+    fn resource_model(resolver: &Resolver<'_>, class: &ClassModel) -> Option<String> {
+        if !class.is_subclass_of(JSON_RESOURCE) {
+            return None;
+        }
+        let name = class.class.name.strip_suffix("Resource").filter(|name| !name.is_empty())?;
+        Self::model_named(resolver, name)
+    }
+
+    /// The model `class` stands for: a model contract's, an API resource's.
+    fn stands_for(resolver: &Resolver<'_>, class: &ClassModel) -> Option<String> {
+        Self::contract_model(resolver, class).or_else(|| Self::resource_model(resolver, class))
+    }
+
+    fn declared_relation(resolver: &Resolver<'_>, model: &ClassModel, name: &str) -> Type {
         let this = Type::named(model.fqn());
         let returned = resolver.method_return(&this, name, &Context::default());
         // A raw accessor (`title(): Attribute`) too: `Attribute::make(get:
@@ -1422,7 +1483,7 @@ impl LaravelProvider {
                 Self::attributes(resolver, &model, &Self::counted_in(receiver, model.fqn()), &mut out);
             } else if model.is_subclass_of(FORM_REQUEST) {
                 Self::request_fields(resolver, &model, &mut out);
-            } else if let Some(target) = Self::contract_model(resolver, &model)
+            } else if let Some(target) = Self::stands_for(resolver, &model)
                 && let Some(target) = resolver.class_model(&target)
             {
                 // A model contract: its model's members.
@@ -1868,7 +1929,7 @@ impl TypeProvider for LaravelProvider {
             || {
                 // A model contract's property is its model's.
                 let contract = resolver.class_model(class)?;
-                let model = Self::contract_model(resolver, &contract)?;
+                let model = Self::stands_for(resolver, &contract)?;
                 Self::model_property(resolver, &model, name)
             },
         )

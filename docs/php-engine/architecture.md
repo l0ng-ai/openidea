@@ -123,8 +123,28 @@ Higher-order expectations work through the PHPUnit provider: a method of the
 expected value called on the expectation (`expect($order)->canRefund()`)
 resolves to the value's method and stays an expectation, and so does a
 property of the value (`->state->toBe(…)`, without the value's type from
-then on). Not done: members the `uses()` traits add beyond the test case
-class.
+then on). `test()` without arguments is the test case of the file
+(`test()->createProduct()` in a helper function). Not done: members the
+`uses()` traits add beyond the test case class.
+
+### What nothing declares
+
+Three rules type code that carries no declaration, each from the code around
+it:
+
+- **An untyped property** (no hint, no `@var`) has the union of what the
+  methods of its class assign to it, when that is at most four different
+  things and none of them unknown (`CoreProvider::property`; a test case's
+  `setUp()` assignments come first, through the PHPUnit provider). The type
+  is stored in the summary as the property's default type.
+- **`$this` in a trait** is also an object of the classes using the trait
+  (`Resolver::trait_hosts`: up to three, in name order), as an intersection,
+  so what the trait expects of its host resolves. The index's subclass table
+  records trait uses for this.
+- **`$this` in an anonymous class**, which no summary holds, reaches the
+  members the class declares (read from the syntax tree, in the file) and
+  those of the class it extends, for Go to Declaration and hover; not for
+  completion, Find Usages or Rename.
 
 ## Threads and cancellation
 

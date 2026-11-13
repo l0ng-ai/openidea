@@ -274,6 +274,22 @@ namespace Illuminate\Database\Eloquent\Relations {
      */
     class HasOne extends Relation {}
 }
+namespace Illuminate\Database\Eloquent\Relations {
+    class MorphTo extends Relation {}
+}
+namespace Illuminate\Http\Resources\Json {
+    class JsonResource {
+        public function __get($key) { return null; }
+        public function __call($method, $parameters) { return null; }
+    }
+}
+// A package's own model of the same name doesn't make `User` ambiguous.
+namespace App\Sitemap {
+    class User extends \App\Models\User {}
+}
+namespace App\Resources {
+    class OrderResource extends \Illuminate\Http\Resources\Json\JsonResource {}
+}
 namespace App\Contracts {
     interface Order {}
     interface Shared {}
@@ -283,6 +299,7 @@ namespace App\Models {
         public function ship(): bool { return true; }
         public function invoices() { return $this->hasMany(Invoice::class); }
         public function parent() { return $this->belongsTo(static::class); }
+        public function user(): \Illuminate\Database\Eloquent\Relations\MorphTo { return $this->morphTo(); }
         /**
          * As Laravel declares its relations: generic.
          *
@@ -357,6 +374,14 @@ fn repositories_and_concord_proxies_name_their_model() {
             // the template's bound), and a class the core reads.
             ("(new \\App\\Models\\Order())->lastInvoice/*|*/;", "?App\\Models\\Invoice"),
             ("(new \\App\\Models\\Order())->firstInvoice/*|*/;", "?App\\Models\\Invoice"),
+            // A `morphTo()` relation: the one model its name names.
+            ("(new \\App\\Models\\Order())->user/*|*/;", "?App\\Models\\User"),
+            // An API resource stands for the model its name starts with.
+            ("(new \\App\\Resources\\OrderResource())->ship()/*|*/;", "bool"),
+            (
+                "(new \\App\\Resources\\OrderResource())->invoices/*|*/;",
+                "Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\Invoice>",
+            ),
             // `static::class` relates the model itself.
             ("(new \\App\\Models\\Order())->parent/*|*/;", "?App\\Models\\Order"),
             ("(new \\App\\Repositories\\UserRepository())->findOrFail(1)/*|*/;", "App\\Models\\User"),

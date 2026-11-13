@@ -130,6 +130,10 @@ pub trait Declarations {
     fn user_models(&self) -> UserModels {
         UserModels::default()
     }
+    /// The class-likes with short name `name` (any case), by FQN.
+    fn classes_named(&self, _name: &str) -> Vec<String> {
+        Vec::new()
+    }
     /// The class-likes that directly extend, implement or (a trait) use
     /// `fqn`, by FQN.
     fn direct_subclasses(&self, _fqn: &str) -> Vec<String> {
@@ -182,6 +186,11 @@ impl Declarations for SummarySet {
 
     fn laravel(&self) -> LaravelFacts {
         LaravelFacts::merge(self.summaries.iter().map(|summary| &summary.laravel))
+    }
+
+    fn classes_named(&self, name: &str) -> Vec<String> {
+        let classes = self.summaries.iter().flat_map(|summary| &summary.class_likes);
+        classes.filter(|class| class.name.eq_ignore_ascii_case(name)).map(|class| class.fqn.clone()).collect()
     }
 
     fn direct_subclasses(&self, fqn: &str) -> Vec<String> {
@@ -485,16 +494,33 @@ impl<'a> Resolver<'a> {
         self.decls.direct_subclasses(fqn)
     }
 
+    /// The class-likes with short name `name` (any case), by FQN.
+    pub fn classes_named(&self, name: &str) -> Vec<String> {
+        self.decls.classes_named(name)
+    }
+
     /// The classes using trait `fqn` (at most [`MAX_TRAIT_HOSTS`], in name
     /// order): what `$this` is in the trait's methods, beside the trait.
     pub fn trait_hosts(&self, fqn: &str) -> Vec<String> {
-        let mut hosts: Vec<String> = self
-            .direct_subclasses(fqn)
-            .into_iter()
-            .filter(|host| {
-                self.class_model(host).is_some_and(|model| model.class.kind == crate::summary::ClassKind::Class)
-            })
-            .collect();
+        // Through the traits using the trait, a few levels.
+        let mut hosts: Vec<String> = Vec::new();
+        let mut traits = vec![fqn.to_owned()];
+        for _ in 0..MAX_TRAIT_HOSTS {
+            let mut next = Vec::new();
+            for used in &traits {
+                for host in self.direct_subclasses(used) {
+                    match self.class_model(&host).map(|model| model.class.kind) {
+                        Some(crate::summary::ClassKind::Class) => hosts.push(host),
+                        Some(crate::summary::ClassKind::Trait) => next.push(host),
+                        _ => {}
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            traits = next;
+        }
         hosts.sort();
         hosts.dedup();
         hosts.truncate(MAX_TRAIT_HOSTS);
