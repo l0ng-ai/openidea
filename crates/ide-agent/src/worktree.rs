@@ -225,6 +225,15 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// The bytes of `path` (`Some(None)`: no file there), or `None` when it is there but can't be read.
+fn existing(path: &Path) -> Option<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Some(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(_) => None,
+    }
+}
+
 fn crlf_to_lf(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     for (i, &b) in bytes.iter().enumerate() {
@@ -416,7 +425,8 @@ pub(crate) fn accept(
     let target = |rel: &str| -> IdeResult<Option<Option<Vec<u8>>>> {
         let in_task = repo.root().join(rel);
         let current = std::fs::read(&in_task).ok();
-        let local_bytes = std::fs::read(local_root.join(rel)).ok();
+        // A file there that can't be read is the checkout's own: never written over.
+        let Some(local_bytes) = existing(&local_root.join(rel)) else { return Ok(None) };
         if local_bytes == current {
             return Ok(Some(current));
         }
@@ -493,8 +503,8 @@ pub(crate) fn accept(
                     continue;
                 };
                 let task_bytes = std::fs::read(repo.root().join(&change.rel_path)).ok();
-                let at_new = std::fs::read(&new_path).ok();
-                if at_new.is_some() && at_new != task_bytes {
+                let at_new = existing(&new_path);
+                if at_new.as_ref().is_none_or(|at_new| at_new.is_some() && *at_new != task_bytes) {
                     skipped.push(skip(&change.rel_path));
                     continue;
                 }
@@ -984,6 +994,25 @@ mod tests {
         assert_eq!(outcome.skipped.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(), ["A.txt"]);
         assert_eq!(std::fs::read_to_string(repo.join("A.txt")).unwrap(), "mine\n");
         assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "one\ntwo\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accept_leaves_a_checkout_file_it_cannot_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_tmp, repo, created) = accept_repo();
+        std::fs::write(created.path.join("new.txt"), "task\n").unwrap();
+        std::fs::write(repo.join("new.txt"), "mine\n").unwrap();
+        std::fs::set_permissions(repo.join("new.txt"), std::fs::Permissions::from_mode(0o200)).unwrap();
+        if std::fs::read(repo.join("new.txt")).is_ok() {
+            eprintln!("running as a user that reads any file; nothing to check");
+            return;
+        }
+        let changes = listed(&created.path, &created.base_commit);
+        let outcome = accept(&repo, &created.path, &created.base_commit, &changes).unwrap();
+        std::fs::set_permissions(repo.join("new.txt"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(outcome.skipped.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(), ["new.txt"]);
+        assert_eq!(std::fs::read_to_string(repo.join("new.txt")).unwrap(), "mine\n");
     }
 
     #[cfg(windows)]

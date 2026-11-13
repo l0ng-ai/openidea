@@ -1491,18 +1491,21 @@ impl DbManager {
         let Some(session) = session else { return Ok(()) };
         let mut held = session.lock().await;
         let Some(mut conn) = held.take() else { return Ok(()) };
-        let result = async {
-            conn.command(if commit { "COMMIT" } else { "ROLLBACK" }).await?;
-            conn.restore_default().await
-        }
-        .await;
-        match result {
-            Ok(()) => Ok(()),
-            Err(e) => {
+        if let Err(e) = conn.command(if commit { "COMMIT" } else { "ROLLBACK" }).await {
+            // Discarding a Snowflake connection doesn't end its session, which the data source's
+            // other targets share: the transaction stays open, so it stays held to be ended again.
+            if matches!(conn, conn::Held::Snowflake(..)) {
+                *held = Some(conn);
+            } else {
                 conn.discard().await;
-                Err(e)
             }
+            return Err(e);
         }
+        if let Err(e) = conn.restore_default().await {
+            conn.discard().await;
+            return Err(e);
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
