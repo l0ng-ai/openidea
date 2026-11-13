@@ -234,6 +234,11 @@ pub trait HostApi: Send + Sync {
         let _ = (path, set, item);
         Err(HostError::Failed("decorations unavailable".into()))
     }
+    /// Replace all `(path, icon)` entries of a tree decoration set at once (API 1.8).
+    fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
+        let _ = (set, items);
+        Err(HostError::Failed("decorations unavailable".into()))
+    }
     /// Trusted repository history.
     fn vcs_log(
         &self,

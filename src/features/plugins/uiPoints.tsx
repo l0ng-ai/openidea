@@ -19,7 +19,7 @@ import { getAction } from "@/platform/actions";
 import { evaluateWhen, getContext, useContextKeys } from "@/platform/context";
 import { tx } from "@/platform/i18n";
 import { isMacHost, registerExtensionBindings } from "@/platform/keymap";
-import { addFileIconProvider, fileIconName, registerExternalIcons, type MenuItem } from "@/ui";
+import { addFileIconProvider, bumpFileIconRevision, fileIconName, registerExternalIcons, type MenuItem } from "@/ui";
 import { addContributedFileTemplate } from "@/workbench/contributions";
 import {
   addContributedSnippets,
@@ -294,6 +294,7 @@ interface FileIconDecl {
   patterns: string[];
   /** A dark-theme variant was given. */
   dark: boolean;
+  revision?: string;
 }
 
 interface FileTemplateDecl {
@@ -340,7 +341,10 @@ function projectFileIcon(pluginId: string, decl: FileIconDecl): () => void {
             ]
           : [[name, light]],
       );
-      const remove = addFileIconProvider((file) => (decl.patterns.some((p) => matchesPattern(p, file)) ? name : null));
+      const remove =
+        decl.patterns.length > 0
+          ? addFileIconProvider((file) => (decl.patterns.some((p) => matchesPattern(p, file)) ? name : null))
+          : (bumpFileIconRevision(), () => bumpFileIconRevision());
       undo = () => {
         remove();
         unregister();

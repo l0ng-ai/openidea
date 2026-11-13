@@ -743,6 +743,7 @@ pub(super) fn custom_editor(pkg: &Package, decl: toml::Value) -> Result<UiDecl, 
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FileIconDecl {
     id: String,
+    #[serde(default)]
     patterns: Vec<String>,
     icon: PathBuf,
     #[serde(default)]
@@ -754,13 +755,19 @@ pub fn file_icon_asset(id: &str, dark: bool) -> String {
     format!("fileIcon/{id}/{}", if dark { "dark" } else { "light" })
 }
 
-/// `[[contributes.fileIcons]]`: an icon for the files matching `patterns`,
-/// whatever icon theme is in use (the user's own file type icons still win).
+/// `[[contributes.fileIcons]]`: an icon for the files matching `patterns` (or
+/// assigned dynamically through `decorations.set-file-icon` when `patterns` is
+/// omitted in API 1.8), whatever icon theme is in use (the user's own file type
+/// icons still win).
 pub(super) fn file_icon(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     let d: FileIconDecl = decode(FILE_ICONS, decl)?;
     validate_item_id(&d.id, "file icon id")?;
     let what = format!("file icon {:?}", d.id);
-    file_patterns(&d.patterns, &what)?;
+    if d.patterns.is_empty() {
+        pkg.manifest.needs_api("contributes.fileIcons without patterns", 8)?;
+    } else {
+        file_patterns(&d.patterns, &what)?;
+    }
     let mut files = Vec::new();
     let mut assets = Vec::new();
     for (path, dark) in [(Some(&d.icon), false), (d.icon_dark.as_ref(), true)] {
@@ -769,8 +776,16 @@ pub(super) fn file_icon(pkg: &Package, decl: toml::Value) -> Result<UiDecl, Stri
         assets.push((file_icon_asset(&d.id, dark), svg));
         files.push(path.clone());
     }
-    let json = serde_json::json!({ "id": d.id, "patterns": d.patterns, "dark": d.icon_dark.is_some() });
-    let mut out = UiDecl::new(d.id.clone(), d.patterns.join(", "), json);
+    let bytes = serde_json::to_vec(&assets).map_err(|e| e.to_string())?;
+    let revision = blake3::hash(&bytes).to_hex().to_string();
+    let json = serde_json::json!({
+        "id": d.id,
+        "patterns": d.patterns,
+        "dark": d.icon_dark.is_some(),
+        "revision": revision,
+    });
+    let label = if d.patterns.is_empty() { d.id.clone() } else { d.patterns.join(", ") };
+    let mut out = UiDecl::new(d.id.clone(), label, json);
     out.files = files;
     out.assets = assets;
     Ok(out)
