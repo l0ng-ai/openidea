@@ -444,6 +444,54 @@
   display: flex;
   flex-direction: column;
 }
+/* Go to a merge commit's file: parent 1 | merge result | parent 2, each pane scrolling itself. */
+.mergeDiff {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.mergeDiffLabels {
+  flex: none;
+  height: var(--h-row);
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.mergeDiffLabels > span {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0 12px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.mergeDiffLabels > span + span {
+  border-left: 1px solid var(--border);
+}
+.mergeDiffPanes {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+}
+.mergeDiffPane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+.mergeDiffPane + .mergeDiffPane {
+  border-left: 1px solid var(--border);
+}
+.mergeDiffPane > :global(.cm-editor) {
+  flex: 1;
+  min-width: 0;
+}
 .subjectLine {
   color: var(--fg-strong);
   font-weight: 600;
