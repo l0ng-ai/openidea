@@ -302,7 +302,11 @@ function NameStep({
           {error ?? (
             <>
               {where}
-              {packageStyle && pkg ? (packageStyle === "php" ? ` · namespace ${pkg}` : ` · package ${pkg}`) : ""}
+              {packageStyle && pkg
+                ? packageStyle === "php" || packageStyle === "csharp"
+                  ? ` · namespace ${pkg}`
+                  : ` · package ${pkg}`
+                : ""}
             </>
           )}
         </div>
