@@ -419,6 +419,12 @@ mod imp {
     pub fn set_file_note(path: &str, set: &str, note: &str, tooltip: Option<&str>) -> Result<(), Error> {
         wit::decorations::set_file_note(path, set, note, tooltip).map_err(error)
     }
+    pub fn set_file_icon(path: &str, set: &str, icon: &str, tooltip: Option<&str>) -> Result<(), Error> {
+        wit::decorations::set_file_icon(path, set, icon, tooltip).map_err(error)
+    }
+    pub fn set_file_icons(set: &str, items: &[(String, String)]) -> Result<(), Error> {
+        wit::decorations::set_file_icons(set, items).map_err(error)
+    }
     pub fn vcs_log(p: &ProjectRes, path: Option<&str>, limit: u32) -> Result<Vec<CommitInfo>, Error> {
         wit::vcs::log(p, path, limit)
             .map(|v| {
@@ -1849,6 +1855,16 @@ pub fn clear_file_decorations(set: &str) -> Result<(), Error> {
 /// annotation for the file (API 1.7). One line of at most 200 characters. Requires project.read.
 pub fn set_file_note(path: &str, set: &str, note: &str, tooltip: Option<&str>) -> Result<(), Error> {
     imp::set_file_note(path, set, note, tooltip)
+}
+/// Set a `[[contributes.fileIcons]]` icon for a file or folder in the project tree, replacing
+/// this tree set's annotation for the path (API 1.8). Requires project.read.
+pub fn set_file_icon(path: &str, set: &str, icon: &str, tooltip: Option<&str>) -> Result<(), Error> {
+    imp::set_file_icon(path, set, icon, tooltip)
+}
+/// Replace all `(path, icon)` entries of a tree icon set at once (API 1.8; at most 10,000 entries).
+/// Requires project.read.
+pub fn set_file_icons(set: &str, items: &[(String, String)]) -> Result<(), Error> {
+    imp::set_file_icons(set, items)
 }
 
 /// Starts an owned run configuration in the invoking window. Its id receives run-exited.

@@ -706,13 +706,20 @@ export function setFileIconTheme(theme: FileIconTheme | null) {
   useFileIconRevision.setState((n) => n + 1, true);
 }
 
-/** The icon theme's icon for a plain folder, or null to keep the built-in one. */
+/** The icon theme's (or plugin path provider's) icon for a plain folder, or null to keep the built-in one. */
 export function themedFolderIconName(
   folderName: string,
   expanded = false,
   holdsOpenFile = false,
   path: string | null = null,
 ): IconName | null {
+  if (path) {
+    const normalized = path.replace(/\\/g, "/");
+    for (const provide of pathIconProviders) {
+      const icon = provide(normalized);
+      if (icon && iconPath(icon)) return icon as IconName;
+    }
+  }
   return (fileIconTheme?.folder(folderName, expanded, holdsOpenFile, path) ?? null) as IconName | null;
 }
 
@@ -1141,12 +1148,25 @@ export function setFileIconOverride(resolve: ((fileName: string) => IconName | n
   iconOverride = resolve;
 }
 
-/** Icons for particular files (plugin `fileIcons`), newest first: after the user's, before the icon theme's. */
+/** Icons for exact project paths (plugin `decorations.set-file-icon`), newest first: before filename globs. */
+let pathIconProviders: ReadonlyArray<(path: string) => string | null> = [];
+
+/** Icons for particular files (plugin `fileIcons`), newest first: after path providers, before the icon theme's. */
 let fileIconProviders: ReadonlyArray<(fileName: string, path: string | null) => string | null> = [];
 
 /** Bumps the file-icon revision so mounted trees and editor tabs re-resolve icons. */
 export function bumpFileIconRevision() {
   useFileIconRevision.setState((n) => n + 1, true);
+}
+
+/** Adds an exact-path icon provider for files and plain folders; the returned function removes it. */
+export function addPathIconProvider(resolve: (path: string) => string | null): () => void {
+  pathIconProviders = [resolve, ...pathIconProviders];
+  bumpFileIconRevision();
+  return () => {
+    pathIconProviders = pathIconProviders.filter((p) => p !== resolve);
+    bumpFileIconRevision();
+  };
 }
 
 /** Adds a file icon provider (an `ext:` or built-in icon name or null); the returned function removes it. */
@@ -1163,6 +1183,13 @@ export function addFileIconProvider(resolve: (fileName: string, path: string | n
 export function fileIconName(fileName: string, path: string | null = null): IconName {
   const custom = iconOverride?.(fileName);
   if (custom) return custom;
+  if (path) {
+    const normalized = path.replace(/\\/g, "/");
+    for (const provide of pathIconProviders) {
+      const icon = provide(normalized);
+      if (icon && iconPath(icon)) return icon as IconName;
+    }
+  }
   for (const provide of fileIconProviders) {
     const icon = provide(fileName, path);
     if (icon && iconPath(icon)) return icon as IconName;

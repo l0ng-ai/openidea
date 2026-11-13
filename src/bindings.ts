@@ -4976,6 +4976,8 @@ export type FileDecoration = {
 	tooltip: string | null,
 	/**  Text shown after the name (API 1.7 `set-file-note`). */
 	note?: string | null,
+	/**  `[[contributes.fileIcons]]` id for this file or folder (API 1.8 `set-file-icon`). */
+	icon?: string | null,
 };
 
 export type FileEdit = { kind: "edit"; path: IpcPath; edits: TextEdit[]; 

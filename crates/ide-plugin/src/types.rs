@@ -932,6 +932,9 @@ pub struct FileDecoration {
     /// Text shown after the name (API 1.7 `set-file-note`).
     #[serde(default)]
     pub note: Option<String>,
+    /// `[[contributes.fileIcons]]` id for this file or folder (API 1.8 `set-file-icon`).
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 /// Commit metadata, date in Unix seconds.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

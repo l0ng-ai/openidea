@@ -3761,6 +3761,43 @@ path = "templates/new.draw"
 }
 
 #[test]
+fn file_icons_without_patterns_require_api_1_8_and_project_assets() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("dynamic-icons");
+    std::fs::create_dir_all(pkg.join("icons")).unwrap();
+    std::fs::write(pkg.join("icons/helm-dir.svg"), r#"<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>"#)
+        .unwrap();
+    let write_manifest = |api: &str| {
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                r#"id = "dynamic-icons"
+name = "Dynamic Icons"
+version = "0.1.0"
+engines.openidea = "{api}"
+
+[[contributes.fileIcons]]
+id = "helm-dir"
+icon = "icons/helm-dir.svg"
+"#
+            ),
+        )
+        .unwrap();
+    };
+    write_manifest("^1.7");
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("1.8"), "{err:?}");
+
+    write_manifest("^1.8");
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let assets = f.host.assets("dynamic-icons", "fileIcon/helm-dir/").unwrap();
+    assert_eq!(assets.len(), 1);
+    assert!(assets[0].1.contains("<circle"));
+}
+
+#[test]
 fn file_templates_fixture_installs_without_write_capabilities() {
     let f = fixture(Limits::default());
     let info = f.install(&sample("file-templates"));
