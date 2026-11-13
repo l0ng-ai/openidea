@@ -22,7 +22,7 @@ import { gotoTestOrSubject, type TestNavDeps } from "./gotoTest";
 import { baseName, memberAt, methodStop, superMethods } from "./structureNav";
 import { tx } from "@/platform/i18n";
 
-const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 
 /** A backend document id for `path` while `fn` runs (open editors are reused). */
 async function withDoc<T>(path: string, fn: (doc: number) => Promise<T>): Promise<T> {
