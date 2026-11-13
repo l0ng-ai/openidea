@@ -196,6 +196,9 @@ pub fn mcp_report_problems(
 ) -> IdeResult<()> {
     state.project(window.label())?;
     state.host.mcp_reports.report_problems(window.label(), reset, files);
+    // Plugins that draw problems (Inspection Lens) re-read them; the report carries no window,
+    // so they also hear about it before the next file event.
+    state.plugins.post_window_events(window.label(), vec![ide_plugin::WorkbenchEvent::ProblemsChanged], None);
     Ok(())
 }
 

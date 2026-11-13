@@ -166,6 +166,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "editor-focused",
     "action-performed",
     "vcs-changed",
+    "problems-changed",
 ];
 
 impl std::fmt::Display for ActivationEvent {
@@ -368,7 +369,7 @@ impl Manifest {
         }
         let mut seen = BTreeSet::new();
         for event in &self.activation {
-            if matches!(event, ActivationEvent::Event(kind) if matches!(kind.as_str(), "document-changed" | "websocket-ready"))
+            if matches!(event, ActivationEvent::Event(kind) if matches!(kind.as_str(), "document-changed" | "websocket-ready" | "problems-changed"))
             {
                 self.needs_api(&format!("`{event}`"), 6)?;
             }
