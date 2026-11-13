@@ -11,6 +11,7 @@ import {
   registerMenuGroup,
   registerOverlay,
   registerSettingsPage,
+  hasRunConfiguration,
   type MenuGroupContext,
 } from "@/workbench/contributions";
 import { insertLiveTemplate, surroundTarget, surroundWith, templateEditorExtension } from "./editor";
@@ -24,6 +25,7 @@ import { tagAtCaret, updateTag } from "./emmet/editor";
 import { loadEmmet } from "./emmet/model";
 import { promptAbbreviation, UpdateTagDialogHost } from "./emmet/UpdateTagDialog";
 import { tx } from "@/platform/i18n";
+import type { ProjectType } from "@/platform/projectType";
 
 const EDITOR_WHEN = "textEditorActive && !editorReadOnly && (editorFocus || popupOpen || !toolWindowFocus)";
 const MARKUP_PATH = /\.(html?|xhtml|shtml|vue|svelte|xml)$/i;
@@ -92,6 +94,22 @@ function newFileAction(t: FileTemplate): Action {
   };
 }
 
+// Generic templates and user or plugin templates have no project type restriction.
+const templateProjectTypes: Partial<Record<string, readonly ProjectType[]>> = {
+  rust: ["cargo"],
+  typescript: ["node", "vite"],
+  tsx: ["node", "vite"],
+  javascript: ["node", "vite"],
+  python: ["python"],
+  jupyter: ["python"],
+  go: ["go"],
+  "go-mod": ["go"],
+  php: ["php"],
+  "php-class": ["php"],
+  java: ["maven", "gradle"],
+  kotlin: ["maven", "gradle"],
+};
+
 /** New popup / New › entries: the enabled templates ("File" is the project view's own entry), then From Template…. */
 function registerNewMenuGroups(): () => void {
   const arg = (ctx: MenuGroupContext) => (ctx.paths[0] ? { directory: ctx.paths[0] } : undefined);
@@ -100,16 +118,24 @@ function registerNewMenuGroups(): () => void {
       id: "templates.new",
       menus: ["new"],
       order: 10,
-      items: (_menu, ctx) =>
-        fileTemplates()
-          .filter((t) => t.enabled !== false && t.id !== "file")
+      items: (_menu, ctx) => {
+        const directory = ctx.paths[0];
+        const tomcat = directory !== undefined && hasRunConfiguration("tomcat", directory);
+        return fileTemplates()
+          .filter((t) => {
+            if (t.enabled === false || t.id === "file") return false;
+            if (t.id === "tomcat-context") return tomcat;
+            const types = templateProjectTypes[t.id];
+            return !types || !ctx.projectType || types.includes(ctx.projectType);
+          })
           .map((t) => ({
             kind: "action",
             action: `templates.new.${t.id}`,
             arg: arg(ctx),
             label: t.name,
             icon: t.icon,
-          })),
+          }));
+      },
     }),
     registerMenuGroup({
       id: "templates.newFromTemplate",

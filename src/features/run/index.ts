@@ -6,13 +6,15 @@ import { registerEditorContribution } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, registerActions } from "@/platform/actions";
 import { getContext, setContext, useContextKeys } from "@/platform/context";
 import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
+import { projectFolder, useProject } from "@/platform/project";
+import { isSameOrInside } from "@/platform/paths";
 import { agentRunSettings, onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import {
   menuGroupItems,
   useDebugRunSessions,
   notifications,
+  provideRunConfigurationLookup,
   provideRunOutput,
   registerMenuGroup,
   registerOverlay,
@@ -44,6 +46,7 @@ import { invalidateGoModules } from "./goModules";
 import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
+import { runDirectory } from "./navigate";
 import {
   cleanupRemovedProject,
   registerRunServiceActions,
@@ -348,7 +351,7 @@ function useRunningCount(): number | null {
 }
 
 const CONFIG_FILES =
-  /(?:^|\/)(?:\.openidea\/run\.toml|package\.json|deno\.jsonc?|Cargo\.toml|build\.gradle(?:\.kts)?|pom\.xml|go\.(?:mod|work)|pyproject\.toml|setup\.cfg|pytest\.ini|manage\.py|Makefile|justfile|CMakeLists\.txt|CMakeCache\.txt|index-[^/]+\.json)$/;
+  /(?:^|\/)(?:\.openidea\/run(?:\.local)?\.toml|package\.json|deno\.jsonc?|Cargo\.toml|build\.gradle(?:\.kts)?|pom\.xml|go\.(?:mod|work)|pyproject\.toml|setup\.cfg|pytest\.ini|manage\.py|Makefile|justfile|CMakeLists\.txt|CMakeCache\.txt|index-[^/]+\.json)$/;
 
 let reloadTimer: ReturnType<typeof setTimeout> | undefined;
 function scheduleReload() {
@@ -765,6 +768,18 @@ export function activate(): () => void {
   disposers.push(() => setBeforeLaunchRunner(null));
   provideRunOutput({ subscribe: subscribeOutput });
   disposers.push(() => provideRunOutput(undefined));
+  provideRunConfigurationLookup((kind, directory) => {
+    const { project } = useProject.getState();
+    if (!project?.trusted) return false;
+    const owner = projectFolder(project, directory);
+    if (!owner || !isSameOrInside(directory, owner.root)) return false;
+    return useRun.getState().configs.some((config) => {
+      if (config.kind !== kind) return false;
+      const path = runDirectory(config.module ?? config.cwd);
+      return isSameOrInside(path, owner.root) && projectFolder(project, path)?.root === owner.root;
+    });
+  });
+  disposers.push(() => provideRunConfigurationLookup(undefined));
   if (hasProject()) void loadConfigs();
 
   // Reload when run.toml or build files change on disk (cheap; detection is fast).
