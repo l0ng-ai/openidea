@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFromTemplate } from "../files/create";
 import { renderFileTemplate, type FileTemplate } from "../files/model";
+import { BUILTIN_FILE_TEMPLATES } from "../files/builtins";
+import { activate as activateTemplates } from "../index";
+import { menuGroupItems } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 
 const files = vi.hoisted(() => new Map<string, string>());
@@ -51,28 +54,7 @@ vi.mock("@/workbench/contributions", async (original) => ({
   },
 }));
 
-const NOTEBOOK_BODY = `{
- "cells": [
-  {
-   "cell_type": "markdown",
-   "metadata": {},
-   "source": ["# $NAME$"]
-  }
- ],
- "metadata": {},
- "nbformat": 4,
- "nbformat_minor": 5
-}
-`;
-
-const notebook: FileTemplate = {
-  id: "user.jupyter",
-  name: "Jupyter Notebook",
-  icon: "file-jupyter",
-  extension: "ipynb",
-  nameStyle: "asis",
-  kinds: [{ id: "notebook", label: "Notebook", body: NOTEBOOK_BODY }],
-};
+const notebook: FileTemplate = BUILTIN_FILE_TEMPLATES.find((t) => t.id === "jupyter")!;
 
 afterEach(() => {
   files.clear();
@@ -81,12 +63,14 @@ afterEach(() => {
 });
 
 describe("createFromTemplate", () => {
-  it("writes the rendered body before a notebook editor takes the file", async () => {
+  it("writes the built-in notebook body before the notebook editor takes the file", async () => {
     useProject.setState({ project: { root: "/p", name: "p" } as never });
-    const path = await createFromTemplate(notebook, notebook.kinds[0]!, "/p", "analysis");
+    const titled = notebook.kinds.find((k) => k.id === "titled")!;
+    const path = await createFromTemplate(notebook, titled, "/p", "analysis");
 
     expect(path).toBe("/p/analysis.ipynb");
-    expect(files.get(path)).toBe(NOTEBOOK_BODY.replace("$NAME$", "analysis"));
+    const { text } = renderFileTemplate(titled.body, { name: "analysis", fileName: "analysis.ipynb" });
+    expect(files.get(path)).toBe(text);
     expect(JSON.parse(files.get(path)!)).toMatchObject({
       nbformat: 4,
       cells: [{ cell_type: "markdown", source: ["# analysis"] }],
@@ -110,11 +94,28 @@ describe("createFromTemplate", () => {
     expect(calls.notify).not.toHaveBeenCalled();
   });
 
-  it("renders the notebook body a text template would have got", () => {
-    const { text } = renderFileTemplate(NOTEBOOK_BODY, { name: "report", fileName: "report.ipynb" });
+  it("renders the built-in notebook body a text template would have got", () => {
+    const titled = notebook.kinds.find((k) => k.id === "titled")!;
+    const { text } = renderFileTemplate(titled.body, { name: "report", fileName: "report.ipynb" });
     expect(JSON.parse(text)).toMatchObject({
       nbformat: 4,
       cells: [{ cell_type: "markdown", source: ["# report"] }],
     });
+  });
+});
+
+describe("New menu", () => {
+  it("lists Jupyter Notebook with its icon, without duplicating entries", () => {
+    const dispose = activateTemplates();
+    try {
+      const items = menuGroupItems("new", { paths: ["/p"] });
+      const actions = items.filter((i) => i.kind === "action");
+      const row = actions.find((i) => i.kind === "action" && i.action === "templates.new.jupyter");
+      expect(row).toMatchObject({ label: "Jupyter Notebook", icon: "file-jupyter" });
+      const ids = actions.map((i) => i.action);
+      expect(new Set(ids).size).toBe(ids.length);
+    } finally {
+      dispose();
+    }
   });
 });
