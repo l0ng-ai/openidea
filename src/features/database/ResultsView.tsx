@@ -23,6 +23,7 @@ import {
   tooltipAttrs,
 } from "@/ui";
 import { notifications } from "@/workbench/contributions";
+import { ToolWindowContentTabs } from "@/workbench/toolwindows/ToolWindows";
 import { ChartView } from "./ChartView";
 import { ColumnsPopup } from "./ColumnsPopup";
 import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
@@ -706,26 +707,28 @@ export function ResultsView() {
         );
       }}
     >
-      <Tabs
-        className={styles.resultTabs}
-        variant="compact"
-        aria-label="Results"
-        activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
-        panelIdPrefix="db-results"
-        onSelect={(id) => useDatabase.setState({ activeResult: Number(id) })}
-        onClose={(id) => closeResult(Number(id))}
-        onContextMenu={tabMenu}
-        items={[
-          { id: String(OUTPUT_TAB), label: "Output", icon: "db-console", closable: false },
-          ...results.map((r) => ({
-            id: String(r.id),
-            label: r.title,
-            icon: r.plan ? "db-plan" : "db-table",
-            closable: true,
-            tooltip: r.outcome.statement.text,
-          })),
-        ]}
-      />
+      <ToolWindowContentTabs>
+        <Tabs
+          className={styles.resultTabs}
+          variant="compact"
+          aria-label="Results"
+          activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
+          panelIdPrefix="db-results"
+          onSelect={(id) => useDatabase.setState({ activeResult: Number(id) })}
+          onClose={(id) => closeResult(Number(id))}
+          onContextMenu={tabMenu}
+          items={[
+            { id: String(OUTPUT_TAB), label: "Output", icon: "db-console", closable: false },
+            ...results.map((r) => ({
+              id: String(r.id),
+              label: r.title,
+              icon: r.plan ? "db-plan" : "db-table",
+              closable: true,
+              tooltip: r.outcome.statement.text,
+            })),
+          ]}
+        />
+      </ToolWindowContentTabs>
       <div className={styles.fill}>
         {!tab ? <Output /> : tab.plan ? <PlanResult key={tab.id} tab={tab} /> : <Result key={tab.id} tab={tab} />}
       </div>
