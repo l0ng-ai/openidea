@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Variable } from "@/platform/ipc";
 import {
   AmbiguousClassError,
-  declaresPackagePrivate,
+  declaresInaccessible,
   evaluateWithImports,
   forgetImports,
   importingCompletion,
@@ -37,19 +37,30 @@ describe("qualify", () => {
   it("leaves members, methods, strings, chars and comments alone", () => {
     expect(qualify("a.JSON", names)).toBe("a.JSON");
     expect(qualify("JSON (1)", names)).toBe("JSON (1)");
+    // A constructor call is a type.
+    expect(qualify("new JSON()", names)).toBe("new com.alibaba.fastjson2.JSON()");
+    expect(qualify("new JSON ()", names)).toBe("new com.alibaba.fastjson2.JSON ()");
+    expect(qualify("renew JSON()", names)).toBe("renew JSON()");
     expect(qualify('"JSON \\" JSON"', names)).toBe('"JSON \\" JSON"');
     expect(qualify("/* JSON */ 1 // JSON", names)).toBe("/* JSON */ 1 // JSON");
     expect(qualify("JSONArray", names)).toBe("JSONArray");
   });
 });
 
-describe("declaresPackagePrivate", () => {
+describe("declaresInaccessible", () => {
   it("tells a class only its package sees from a public one", () => {
-    expect(declaresPackagePrivate("package org.json;\n\nclass JSON {\n}", "JSON")).toBe(true);
-    expect(declaresPackagePrivate("package org.json;\nfinal class JSON {}", "JSON")).toBe(true);
-    expect(declaresPackagePrivate("package a;\npublic abstract class JSON {}", "JSON")).toBe(false);
-    expect(declaresPackagePrivate("package a;\n@Deprecated public interface JSON {}", "JSON")).toBe(false);
-    expect(declaresPackagePrivate("package a;\npublic class JSONArray {}", "JSON")).toBe(false);
+    expect(declaresInaccessible("package org.json;\n\nclass JSON {\n}", "JSON")).toBe(true);
+    expect(declaresInaccessible("package org.json;\nfinal class JSON {}", "JSON")).toBe(true);
+    expect(declaresInaccessible("package a;\npublic abstract class JSON {}", "JSON")).toBe(false);
+    expect(declaresInaccessible("package a;\n@Deprecated public interface JSON {}", "JSON")).toBe(false);
+    expect(declaresInaccessible("package a;\npublic class JSONArray {}", "JSON")).toBe(false);
+  });
+
+  it("hides a private nested class but not one without modifiers", () => {
+    const arrays = "public class Arrays {\n    private static class ArrayList<E> extends AbstractList<E> {}\n}";
+    expect(declaresInaccessible(arrays, "ArrayList", true)).toBe(true);
+    const map = "public interface Map<K, V> {\n    interface Entry<K, V> {}\n}";
+    expect(declaresInaccessible(map, "Entry", true)).toBe(false);
   });
 });
 

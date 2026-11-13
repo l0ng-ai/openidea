@@ -67,12 +67,14 @@ export function unresolvedNames(message: string): string[] {
 
 /**
  * `expression` with each name in `names` written qualified where it stands for a type: not
- * after `.` (a member), not before `(` (a method), not in a string, char or comment.
+ * after `.` (a member), not before `(` unless after `new` (a method, not a constructor), not
+ * in a string, char or comment.
  */
 export function qualify(expression: string, names: ReadonlyMap<string, string>): string {
   if (!names.size) return expression;
   let out = "";
   let prev = "";
+  let prevWord = "";
   let i = 0;
   const n = expression.length;
   while (i < n) {
@@ -95,14 +97,18 @@ export function qualify(expression: string, names: ReadonlyMap<string, string>):
       const name = expression.slice(i, end);
       const qualified = names.get(name);
       const next = expression.slice(end).match(/^\s*(\S?)/)![1];
-      out += qualified && prev !== "." && next !== "(" ? qualified : name;
+      out += qualified && prev !== "." && (next !== "(" || prevWord === "new") ? qualified : name;
       prev = "a";
+      prevWord = name;
       i = end;
       continue;
     }
     const token = expression.slice(i, end);
     out += token;
-    if (token.trim()) prev = token.length === 1 ? token : "a";
+    if (token.trim()) {
+      prev = token.length === 1 ? token : "a";
+      prevWord = "";
+    }
     i = end;
   }
   return out;
@@ -115,15 +121,19 @@ function packageOf(container: string | null): string {
 }
 
 /**
- * Whether `source` declares type `simple` without `public`: a class only its package sees
- * (android-json's `org.json.JSON`). `false` when the declaration is not found.
+ * Whether `source` declares type `simple` so that other packages can't use it: `private`
+ * (`java.util.Arrays.ArrayList`), or top-level without `public` (android-json's `org.json.JSON`).
+ * A nested type without modifiers counts as visible: it is public inside an interface.
+ * `false` when the declaration is not found.
  */
-export function declaresPackagePrivate(source: string, simple: string): boolean {
+export function declaresInaccessible(source: string, simple: string, nested = false): boolean {
   const declaration = new RegExp(
     String.raw`^[ \t]*((?:@[\w.]+(?:\([^)]*\))?\s+|[a-z-]+\s+)*)(?:class|interface|enum|record|@interface)\s+${simple.replaceAll("$", "\\$")}\b`,
     "m",
   ).exec(source);
-  return !!declaration && !/\b(public|protected|private)\b/.test(declaration[1]!);
+  if (!declaration) return false;
+  const modifiers = declaration[1]!;
+  return /\bprivate\b/.test(modifiers) || (!nested && !/\b(public|protected)\b/.test(modifiers));
 }
 
 async function sourceOf(path: string): Promise<string> {
@@ -146,7 +156,8 @@ export async function findClasses(simple: string): Promise<string[]> {
   const hidden = await Promise.all(
     names.map((name) =>
       sourceOf(found.get(name)!).then(
-        (source) => declaresPackagePrivate(source, simple),
+        // Nested in a type: the container's last segment is a class name (`java.util.Map`).
+        (source) => declaresInaccessible(source, simple, /(^|\.)[A-Z][\w$]*$/.test(name.slice(0, -simple.length - 1))),
         () => false,
       ),
     ),
