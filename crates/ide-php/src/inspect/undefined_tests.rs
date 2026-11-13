@@ -276,3 +276,74 @@ echo new Model\Book(), new Book(), new Volume(), helper(), LIMIT;
         ]
     );
 }
+
+#[test]
+fn classes_in_phpdoc() {
+    let mut p = project();
+    let text = r#"<?php
+namespace Shop;
+
+use App\Model\Book;
+
+/**
+ * @template T of Book
+ * @template U of Vanished
+ * @psalm-type Row = array{book: Book, lost: LostInAlias}
+ * @property Book $book
+ * @property Phantom|null $phantom
+ * @method Ghost find(Book $book, Spectre $other)
+ * @mixin \App\Model\Book
+ * @mixin \App\Model\Gone
+ * @see NotAType
+ * @link https://example.com/Elsewhere
+ */
+class Shelf
+{
+    /** @var list<Book|Missing> */
+    private $books = [];
+
+    /**
+     * Takes a Nowhere and returns nothing (text is not a type).
+     *
+     * @param  T  $item
+     * @param  Row  $row
+     * @param  array<string, Absent>  $map
+     * @param  int|string|non-empty-string|positive-int  $scalar
+     * @return self|static|Book|null
+     * @throws \RuntimeException
+     * @throws Lost
+     * @psalm-suppress MixedAssignment
+     */
+    public function add($item, $row, $map, $scalar) {}
+}
+
+/** @return Book|Nope */
+function pick() {}
+"#;
+    let found = p.inspect(text);
+    let docs: Vec<String> = found
+        .problems
+        .iter()
+        .filter(|problem| problem.inspection == "PhpUndefinedDocClass")
+        .map(|problem| problem.message.clone())
+        .collect();
+    assert_eq!(
+        docs,
+        [
+            "Undefined class 'Vanished'",
+            "Undefined class 'LostInAlias'",
+            "Undefined class 'Phantom'",
+            "Undefined class 'Ghost'",
+            "Undefined class 'Spectre'",
+            "Undefined class '\\App\\Model\\Gone'",
+            "Undefined class 'Missing'",
+            "Undefined class 'Absent'",
+            "Undefined class 'Lost'",
+            "Undefined class 'Nope'",
+        ]
+    );
+    // Informational, and on the name inside the docblock.
+    let problem = found.problems.iter().find(|problem| problem.message.contains("Phantom")).unwrap();
+    assert_eq!(problem.severity, Severity::Info);
+    assert_eq!(&text[problem.start as usize..problem.end as usize], "Phantom");
+}

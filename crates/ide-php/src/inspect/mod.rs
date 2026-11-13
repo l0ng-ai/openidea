@@ -127,6 +127,7 @@ impl Inspections {
     fn builtin_modes(mode: &dyn Fn(&'static str) -> TypeCheckMode) -> Self {
         let mut list: Vec<Arc<dyn Inspection>> = vec![
             Arc::new(undefined::UndefinedClass),
+            Arc::new(undefined::UndefinedDocClass),
             Arc::new(undefined::UndefinedFunction),
             Arc::new(undefined::UndefinedConstant),
             Arc::new(members::UndefinedMethod),

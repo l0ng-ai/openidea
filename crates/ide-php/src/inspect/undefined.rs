@@ -46,7 +46,9 @@ use super::{Inspection, InspectionContext, Problems, fixes};
 use crate::engine::{EngineState, is_meta_path};
 use crate::names::{FileNames, NameKind, NameRole, Resolution, ResolvedName, fqn_eq};
 use crate::navigate::find_declaration;
+use crate::summary::{DocBlock, DocType};
 use crate::syntax::ParsedFile;
+use crate::types::Type;
 
 /// `PhpUndefinedClass`.
 pub struct UndefinedClass;
@@ -56,6 +58,24 @@ pub struct UndefinedFunction;
 
 /// `PhpUndefinedConstant`.
 pub struct UndefinedConstant;
+
+/// `PhpUndefinedDocClass`: class names in the types of PHPDoc tags.
+pub struct UndefinedDocClass;
+
+impl Inspection for UndefinedDocClass {
+    fn id(&self) -> &'static str {
+        "PhpUndefinedDocClass"
+    }
+
+    /// A wrong type in a docblock doesn't break the program.
+    fn default_severity(&self) -> Severity {
+        Severity::Info
+    }
+
+    fn check(&self, cx: &InspectionContext<'_>, out: &mut Problems) {
+        check_docs(cx, out);
+    }
+}
 
 impl Inspection for UndefinedClass {
     fn id(&self) -> &'static str {
@@ -168,6 +188,154 @@ fn check(cx: &InspectionContext<'_>, kind: NameKind, out: &mut Problems) {
             problem.with_fix(fix);
         }
     }
+}
+
+/// The docblocks of the file's declarations, as the summary parsed them:
+/// the classes their tags' types name that nothing declares. Only what the
+/// summary understood as a type is looked at (`@param`, `@return`, `@var`,
+/// `@throws`, `@property`, `@method`, `@mixin`, `@extends`, `@implements`,
+/// `@use`, template bounds, type aliases, assertions), so `@see`, `@link`
+/// and free text never are; template parameters and type aliases aren't
+/// classes. Names that start lower case or hold a `-` are taken for
+/// pseudo-types the parser doesn't know.
+fn check_docs(cx: &InspectionContext<'_>, out: &mut Problems) {
+    if cx.engine.status().state != EngineState::Ready || is_meta_path(cx.path) {
+        return;
+    }
+    let summary = cx.summary();
+    if summary.has_errors {
+        return;
+    }
+    let scan = Scan::of(cx.parsed, cx.names());
+    let mut known: HashMap<String, bool> = HashMap::new();
+    let mut reported: Vec<(u32, u32)> = Vec::new();
+    let mut check = |doc: &DocBlock, at: u32, outer: &[&str], out: &mut Problems| {
+        let mut templates: Vec<&str> = outer.to_vec();
+        templates.extend(doc.local_type_names());
+        for method in &doc.methods {
+            templates.extend(method.templates.iter().map(|template| template.name.as_str()));
+        }
+        let mut named: Vec<String> = Vec::new();
+        for ty in doc_types(doc) {
+            Type::from_doc(ty, &templates).map(&mut |ty| {
+                if let Type::Named { fqn, .. } = ty
+                    && !named.contains(fqn)
+                {
+                    named.push(fqn.clone());
+                }
+                None
+            });
+        }
+        for fqn in named {
+            let fqn = fqn.trim_start_matches('\\');
+            let short = fqn.rsplit('\\').next().unwrap_or(fqn);
+            if short.is_empty()
+                || short.contains('-')
+                || !short.starts_with(|first: char| first.is_ascii_uppercase())
+                || crate::summary::is_anonymous(fqn)
+                || IGNORED_NAMESPACES.iter().any(|ns| fqn.len() > ns.len() && fqn[..ns.len()].eq_ignore_ascii_case(ns))
+            {
+                continue;
+            }
+            let defined = *known.entry(fqn.to_ascii_lowercase()).or_insert_with(|| {
+                find_declaration(summary, NameKind::ClassLike, fqn).is_some()
+                    || cx.engine.declares(NameKind::ClassLike, fqn)
+                    || cx.engine.laravel_class_alias(fqn).is_some()
+                    || scan.guards.iter().any(|guard| fqn_eq(NameKind::ClassLike, fqn, &guard.fqn))
+            });
+            if defined {
+                continue;
+            }
+            let Some((start, end, written)) = doc_name_range(cx, at, fqn) else { continue };
+            if reported.contains(&(start, end)) {
+                continue;
+            }
+            reported.push((start, end));
+            out.report(start, end, format!("Undefined class '{written}'"));
+        }
+    };
+    for class in summary.class_likes.iter().chain(&summary.anonymous) {
+        let outer: Vec<&str> = class.doc.iter().flat_map(|doc| doc.local_type_names()).collect();
+        if let Some(doc) = &class.doc {
+            check(doc, class.loc.start, &[], out);
+        }
+        for method in &class.methods {
+            if let Some(doc) = &method.doc {
+                check(doc, method.loc.start, &outer, out);
+            }
+        }
+        for property in &class.properties {
+            if let Some(doc) = &property.doc {
+                check(doc, property.loc.start, &outer, out);
+            }
+        }
+        if cx.is_cancelled() {
+            return;
+        }
+    }
+    for function in &summary.functions {
+        if let Some(doc) = &function.doc {
+            check(doc, function.loc.start, &[], out);
+        }
+    }
+}
+
+/// Every type a docblock's tags carry.
+fn doc_types(doc: &DocBlock) -> Vec<&DocType> {
+    let mut out: Vec<&DocType> = Vec::new();
+    out.extend(doc.vars.iter().map(|var| &var.ty));
+    out.extend(doc.params.iter().map(|param| &param.ty));
+    out.extend(&doc.return_type);
+    out.extend(&doc.throws);
+    out.extend(doc.templates.iter().flat_map(|template| template.bound.iter().chain(&template.default)));
+    out.extend(doc.extends.iter().chain(&doc.implements).chain(&doc.uses).chain(&doc.mixins));
+    out.extend(doc.properties.iter().filter_map(|property| property.ty.as_ref()));
+    for method in &doc.methods {
+        out.extend(&method.return_type);
+        out.extend(method.params.iter().filter_map(|param| param.ty.as_ref()));
+    }
+    out.extend(doc.type_aliases.iter().filter_map(|alias| alias.ty.as_ref()));
+    out.extend(doc.asserts.iter().map(|assert| &assert.ty));
+    out
+}
+
+/// Where the docblock in front of the declaration at `at` writes class
+/// `fqn`: the byte range and the text of the first name in it resolving to
+/// the class, else of the first whole word that is its short name.
+fn doc_name_range(cx: &InspectionContext<'_>, at: u32, fqn: &str) -> Option<(u32, u32, String)> {
+    let trivia = cx.parsed.program().trivia.as_slice();
+    let comment = mago_syntax::comments::docblock::get_docblock_before_position(trivia, at)?;
+    let text = String::from_utf8_lossy(comment.value);
+    let base = comment.span.start.offset;
+    let short = fqn.rsplit('\\').next().unwrap_or(fqn);
+    let scope = cx.names().scope_at(base);
+    let bytes = text.as_bytes();
+    let part = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'\\';
+    let mut fallback = None;
+    let mut from = 0;
+    while let Some(found) = text[from..].find(short) {
+        let at = from + found;
+        let end = at + short.len();
+        from = end;
+        if bytes.get(end).is_some_and(|byte| part(*byte)) {
+            continue;
+        }
+        let mut start = at;
+        while start > 0 && part(bytes[start - 1]) {
+            start -= 1;
+        }
+        // A variable (`$Foo`) is not a type.
+        if start > 0 && bytes[start - 1] == b'$' {
+            continue;
+        }
+        let written = &text[start..end];
+        let range = (base + start as u32, base + end as u32, written.to_owned());
+        if scope.resolve(NameKind::ClassLike, written).resolution.matches(NameKind::ClassLike, fqn) {
+            return Some(range);
+        }
+        fallback.get_or_insert(range);
+    }
+    fallback
 }
 
 /// An imported name of `kind`: the item of a `use` line.

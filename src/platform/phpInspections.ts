@@ -54,7 +54,14 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
     name: "Undefined class",
     group: "Undefined symbols",
     description:
-      "Reports classes, interfaces, traits and enums that no file of the project, its include paths or the PHP stubs declares. Names checked with class_exists() first are not reported.",
+      "Reports classes, interfaces, traits and enums that no file of the project, its include paths or the PHP stubs declares, also where a use line imports them. Names checked with class_exists() first are not reported.",
+  },
+  {
+    code: "PhpUndefinedDocClass",
+    name: "Undefined class in PHPDoc",
+    group: "Undefined symbols",
+    description:
+      "Reports classes named in the types of PHPDoc tags (@param, @return, @var, @throws, @property, @method, @mixin and the like) that nothing declares. Template parameters, type aliases and text after the type are not checked.",
   },
   {
     code: "PhpUndefinedFunction",

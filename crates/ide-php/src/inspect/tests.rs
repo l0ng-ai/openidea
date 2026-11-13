@@ -371,6 +371,7 @@ fn replacing_the_inspections_runs_them_again() {
         p.engine.inspections().ids(),
         [
             "PhpUndefinedClass",
+            "PhpUndefinedDocClass",
             "PhpUndefinedFunction",
             "PhpUndefinedConstant",
             "PhpUndefinedMethod",

@@ -68,7 +68,7 @@ fn every_call_and_type_check_takes_its_own_mode() {
     // The mode is asked under the inspection's own id.
     let ids = set.ids();
     let position = |id: &str| ids.iter().position(|i| *i == id).unwrap();
-    assert_eq!(asked.iter().map(|id| position(id)).collect::<Vec<_>>(), [8, 9, 10, 11, 12]);
+    assert_eq!(asked.iter().map(|id| position(id)).collect::<Vec<_>>(), [9, 10, 11, 12, 13]);
 }
 
 #[test]
