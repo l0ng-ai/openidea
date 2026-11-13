@@ -1,7 +1,7 @@
 /**
- * CLI editor tabs (#2202) in the workbench: the editor kinds the terminal
- * feature registers, what the editor session saves for them, and the Start
- * screen of a tab restored without its session (a command never runs on its own).
+ * Terminal editor tabs (#2202) in the workbench: the editor kind the terminal
+ * feature registers, Move to Editor, what the editor session saves for the tabs,
+ * and the Start screen of a tab restored without its session (nothing runs on its own).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -20,6 +20,8 @@ const runtime = vi.hoisted(() => ({
   startCli: vi.fn(),
   disposeCli: vi.fn(),
   cliBusy: vi.fn(),
+  detachTab: vi.fn(),
+  useTerminals: { getState: () => ({ tabs: [] as { id: string }[], activeTab: null, sessions: {} }) },
 }));
 const editorService = vi.hoisted(() => ({
   openInput: vi.fn(async () => undefined),
@@ -41,7 +43,7 @@ const cliInputOf = (key = "cli:r1-x"): EditorInput => ({
   data: { name: "Claude Code", command: "claude" },
 });
 
-/** Opens both a CLI tab and the launcher tab in a fresh state. */
+/** Opens `inputs` as tabs in a fresh state. */
 const withTabs = (...inputs: EditorInput[]): TabsState => {
   let s = initialTabsState();
   const paneId = paneIds(s)[0]!;
@@ -64,17 +66,15 @@ afterEach(() => {
   useClis.setState({ sessions: {} });
 });
 
-describe("CLI editor kinds", () => {
-  it("registers the session tab (kept alive, restorable, busy-aware) and the transient launcher", () => {
+describe("terminal editor kind", () => {
+  it("registers the session tab (kept alive, restorable, busy-aware)", () => {
     const deactivate = activate();
     try {
       const kind = useContributions.getState().editorKinds.get("cli");
       expect(kind).toMatchObject({ restorable: true, keepAlive: true });
       expect(kind?.isBusy?.(cliInputOf())).toBe(false);
       expect(kind?.title?.(cliInputOf())).toBe("Claude Code");
-      const launcher = useContributions.getState().editorKinds.get("cli.launcher");
-      expect(launcher?.title?.({ kind: "cli.launcher", key: "cli:launcher" })).toBe("New CLI");
-      expect(launcher?.restorable).toBeFalsy();
+      expect(kind?.title?.({ kind: "cli", key: "cli:r9", data: {} })).toBe("Terminal");
     } finally {
       deactivate();
     }
@@ -97,10 +97,10 @@ describe("CLI editor kinds", () => {
     }
   });
 
-  it("saves CLI tabs with the session (never the launcher) and restores them unstarted", () => {
+  it("saves the tabs with the session and restores them unstarted", () => {
     const deactivate = activate();
     try {
-      const s = withTabs(cliInputOf(), { kind: "cli.launcher", key: "cli:launcher" });
+      const s = withTabs(cliInputOf());
       const restored = parseSession(
         JSON.parse(
           JSON.stringify(
@@ -121,21 +121,20 @@ describe("CLI editor kinds", () => {
     }
   });
 
-  it("opens the launcher from the cli.new action", async () => {
+  it("offers Move to Editor for a terminal tab", async () => {
     const deactivate = activate();
     try {
-      await executeAction("cli.new");
-      expect(editorService.openInput).toHaveBeenCalledExactlyOnceWith(
-        { kind: "cli.launcher", key: "cli:launcher", data: {} },
-        { focus: true },
-      );
+      await executeAction("terminal.moveToEditor", "t9");
+      // An unknown tab moves nothing.
+      expect(runtime.detachTab).not.toHaveBeenCalled();
+      expect(editorService.openInput).not.toHaveBeenCalled();
     } finally {
       deactivate();
     }
   });
 });
 
-describe("restored CLI tab", () => {
+describe("restored terminal editor tab", () => {
   it("shows Start and runs the command only when asked", async () => {
     const deactivate = activate();
     try {
@@ -145,7 +144,7 @@ describe("restored CLI tab", () => {
       expect(screen.getByText("claude")).toBeInTheDocument();
       expect(runtime.startCli).not.toHaveBeenCalled();
       await act(async () => fireEvent.click(screen.getByRole("button", { name: "Start" })));
-      expect(runtime.startCli).toHaveBeenCalledExactlyOnceWith("cli:r2-y", "/repo", "claude");
+      expect(runtime.startCli).toHaveBeenCalledExactlyOnceWith("cli:r2-y", "/repo", "claude", "/repo");
       // Once the session exists the tab is the xterm pane, not the Start screen.
       act(() => {
         useClis.setState({ sessions: { "cli:r2-y": { status: "running" } as never } });

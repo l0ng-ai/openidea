@@ -1,14 +1,7 @@
 {
-  "Add CLI…": "添加 CLI…",
-  "CLI": "CLI",
   "Fix ESLint Problems": "修复 ESLint 问题",
-  "New CLI": "新建 CLI",
   "No ESLint problems to fix": "没有可修复的 ESLint 问题",
-  "No saved CLIs yet — add one, or open a plain shell.": "还没有保存的 CLI——添加一个，或打开普通 Shell。",
-  "Open Shell": "打开 Shell",
-  "Opens the New CLI tab: saved agent CLIs (Claude Code, Codex…) start as full-size editor tabs.": "打开“新建 CLI”标签页：保存的 agent CLI（Claude Code、Codex…）以全尺寸编辑器标签页启动。",
   "Pin ({count})": "固定（{count}）",
-  "Starts in the project directory through your login shell.": "通过你的登录 Shell 在项目目录中启动。",
   "Unpin ({count})": "取消固定（{count}）",
   "New Group": "新建组",
   "Rename Group": "重命名组",
@@ -7949,5 +7942,8 @@
   "Implements {names}": "实现 {names}",
   "Choose Implemented Interface of {name} ({count} found)": "选择 {name} 实现的接口（找到 {count} 个）",
   "Search tasks": "搜索任务",
-  "No matching tasks": "没有匹配的任务"
+  "No matching tasks": "没有匹配的任务",
+  "Move to Editor": "移至编辑器",
+  "Moves a terminal tab, with its running session, into the editor area (arg: tab id).": "把终端标签连同正在运行的会话移到编辑器区域（参数：标签 id）。",
+  "Starts a login shell where the session was.": "在会话原来的目录启动登录 shell。"
 }

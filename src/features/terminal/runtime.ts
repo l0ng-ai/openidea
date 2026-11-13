@@ -4,9 +4,11 @@ export {
   applySettingsToAll,
   applyThemeToAll,
   closeAll,
+  detachTab,
   newTab,
   pluginSession,
   syncTerminalProject,
+  tabTitle,
   unbindTerminals,
   newTabAt,
   requestCloseSession,
@@ -18,6 +20,7 @@ export {
   useTerminals,
 } from "./store";
 export {
+  adoptCli,
   applySettingsToClis,
   applyThemeToClis,
   cliBusy,
@@ -26,6 +29,7 @@ export {
   cliSessionFromElement,
   disposeAllClis,
   disposeCli,
+  isCliSession,
   startCli,
 } from "./cliSessions";
 export { CliEditor } from "./CliEditor";

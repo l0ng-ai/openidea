@@ -1,10 +1,9 @@
 /**
- * The PTY side of the CLI editor tabs (#2202): one `TerminalSession` per tab
- * key, exactly the tool window's session lifecycle — the backend spawns the
- * user's login shell (so PATH, nvm and aliases apply), the session buffers the
- * saved command typed before the shell starts and sends it as its first input,
- * and the shell stays after the CLI exits. Sessions outlive React: they belong
- * to the tab, which reattaches the same xterm host when it is shown again.
+ * The PTY side of the terminal editor tabs (#2202): one `TerminalSession` per tab
+ * key. A tab moved from the Terminal tool window brings its running session along;
+ * a restored tab starts a login shell (so PATH, nvm and aliases apply) when asked.
+ * Sessions outlive React: they belong to the tab, which reattaches the same xterm
+ * host when it is shown again.
  */
 import { workflowSettings } from "@/platform/workflowSettings";
 import { useClis } from "./cli";
@@ -24,25 +23,37 @@ export function cliSessionForTerminalId(id: number): TerminalSession | undefined
   return allCliSessions().find((s) => s.terminalId === id);
 }
 
-/** Session whose DOM contains `el` (the focused xterm of a CLI tab). */
+/** Session whose DOM contains `el` (the focused xterm of an editor tab). */
 export function cliSessionFromElement(el: Element | null): TerminalSession | undefined {
   const host = el?.closest?.<HTMLElement>("[data-terminal-session]");
   const key = host?.dataset.terminalSession;
-  return key ? sessions.get(key) : undefined;
+  // A moved session keeps the key it had in the tool window, so match the session's own.
+  return key ? allCliSessions().find((s) => s.key === key) : undefined;
+}
+
+/** Whether `session` belongs to an editor tab (not to the Terminal tool window). */
+export function isCliSession(session: TerminalSession): boolean {
+  return allCliSessions().includes(session);
 }
 
 function onChange(key: string, snapshot: SessionSnapshot) {
   useClis.setState((s) => ({ sessions: { ...s.sessions, [key]: snapshot } }));
 }
 
+/** Tab `key` takes over `session`, a running tool window session (Move to Editor). */
+export function adoptCli(key: string, session: TerminalSession) {
+  sessions.set(key, session);
+  session.rebind({ onChange: (_, snapshot) => onChange(key, snapshot), onFocus() {}, onExit: undefined });
+}
+
 /**
- * Starts tab `key`'s CLI in `cwd`: a login shell that runs `command` first (an
- * empty command is a plain shell). Already-started tabs are returned as they are.
+ * Starts tab `key`'s session in `cwd` (else `fallbackRoot`): a login shell that runs
+ * `command` first (an empty command is a plain shell). Started tabs are returned as they are.
  */
-export function startCli(key: string, cwd: string, command: string): TerminalSession {
+export function startCli(key: string, cwd: string, command: string, fallbackRoot?: string): TerminalSession {
   const existing = sessions.get(key);
   if (existing) return existing;
-  const session = new TerminalSession({ key, cwd, onChange, onFocus() {} });
+  const session = new TerminalSession({ key, cwd, fallbackRoot, onChange, onFocus() {} });
   sessions.set(key, session);
   useClis.setState((s) => ({ sessions: { ...s.sessions, [key]: session.state } }));
   // Typed while the PTY is still starting: sent as the shell's first input.

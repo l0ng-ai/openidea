@@ -1,19 +1,12 @@
 {
   "Add": "Add",
-  "Add CLI…": "Add CLI…",
   "Cancel": "Cancel",
-  "CLI": "CLI",
   "Command": "Command",
   "Fix ESLint Problems": "Fix ESLint Problems",
   "Name": "Name",
-  "New CLI": "New CLI",
   "No ESLint problems to fix": "No ESLint problems to fix",
-  "No saved CLIs yet — add one, or open a plain shell.": "No saved CLIs yet — add one, or open a plain shell.",
-  "Open Shell": "Open Shell",
-  "Opens the New CLI tab: saved agent CLIs (Claude Code, Codex…) start as full-size editor tabs.": "Opens the New CLI tab: saved agent CLIs (Claude Code, Codex…) start as full-size editor tabs.",
   "Pin ({count})": "Pin ({count})",
   "Start": "Start",
-  "Starts in the project directory through your login shell.": "Starts in the project directory through your login shell.",
   "Unpin ({count})": "Unpin ({count})",
   "New Group": "New Group",
   "Rename Group": "Rename Group",
@@ -1558,5 +1551,8 @@
   "Implements {names}": "Implements {names}",
   "Choose Implemented Interface of {name} ({count} found)": "Choose Implemented Interface of {name} ({count} found)",
   "Search tasks": "Search tasks",
-  "No matching tasks": "No matching tasks"
+  "No matching tasks": "No matching tasks",
+  "Move to Editor": "Move to Editor",
+  "Moves a terminal tab, with its running session, into the editor area (arg: tab id).": "Moves a terminal tab, with its running session, into the editor area (arg: tab id).",
+  "Starts a login shell where the session was.": "Starts a login shell where the session was."
 }

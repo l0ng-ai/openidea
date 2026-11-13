@@ -1,31 +1,29 @@
 /**
- * CLI editor tabs (#2202): input kinds and data validation, the saved CLIs
- * (global), and the launch / start flows through the terminal runtime.
+ * Terminal editor tabs (#2202): input data validation, Move to Editor and the
+ * Start flow of a restored tab through the terminal runtime.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  cliData,
-  cliInput,
-  decodeSavedClis,
-  launchCli,
-  openCliLauncher,
-  readSavedClis,
-  removeSavedCli,
-  saveCli,
-  startTab,
-  useSavedClis,
-  CLI_LAUNCHER_KEY,
-  type SavedCli,
-} from "./cli";
+import { cliData, cliInput, moveTerminalToEditor, startTab } from "./cli";
 
+const tabs = vi.hoisted(() => ({
+  state: {
+    tabs: [] as { id: string; session: string }[],
+    activeTab: null as string | null,
+    sessions: {} as Record<string, unknown>,
+  },
+}));
 const runtime = vi.hoisted(() => ({
   loaded: false,
   startCli: vi.fn(),
+  adoptCli: vi.fn(),
+  detachTab: vi.fn(),
+  tabTitle: vi.fn((_tab: unknown, _sessions: unknown) => "Local (2)"),
+  useTerminals: { getState: () => tabs.state },
 }));
 const editor = vi.hoisted(() => ({
   openInput: vi.fn(async (_input?: unknown, _options?: unknown) => undefined),
-  closeInput: vi.fn(async (_key?: unknown) => true),
 }));
+const toolWindows = vi.hoisted(() => ({ hide: vi.fn() }));
 
 vi.mock("./loader", () => ({
   loadTerminalRuntime: async () => runtime,
@@ -34,11 +32,10 @@ vi.mock("./loader", () => ({
 vi.mock("@/workbench/contributions", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   editorService: () => editor,
+  toolWindowService: () => toolWindows,
 }));
 
 import { useProject } from "@/platform/project";
-
-const root = () => useProject.getState().project?.root ?? null;
 
 beforeEach(() => {
   runtime.loaded = true;
@@ -46,86 +43,88 @@ beforeEach(() => {
 });
 afterEach(() => {
   useProject.setState({ project: null, settings: null });
-  useSavedClis.setState({ saved: [] });
-  localStorage.clear();
+  tabs.state = { tabs: [], activeTab: null, sessions: {} };
   vi.clearAllMocks();
 });
 
-describe("CLI input data", () => {
+describe("terminal editor tab data", () => {
   it("validates untrusted session data", () => {
-    const input = cliInput("Claude Code", "claude --continue");
-    expect(cliData(input)).toEqual({ name: "Claude Code", command: "claude --continue" });
+    const input = cliInput("Claude Code", "claude --continue", "/repo/app");
+    expect(cliData(input)).toEqual({ name: "Claude Code", command: "claude --continue", cwd: "/repo/app" });
     expect(cliData({ ...input, data: undefined })).toBeNull();
     expect(cliData({ ...input, data: { name: "  ", command: "x" } })).toBeNull();
-    expect(cliData({ ...input, data: { name: " A ", command: 3 } })).toEqual({ name: "A", command: "" });
+    expect(cliData({ ...input, data: { name: " A ", command: 3, cwd: 4 } })).toEqual({ name: "A", command: "" });
     expect(cliData({ ...input, kind: "file", path: "/repo/a.ts" })).toBeNull();
   });
 
-  it("mints a fresh key per launch, so restored tabs are their own", () => {
-    const a = cliInput("A", "a");
-    const b = cliInput("A", "a");
+  it("mints a fresh key per tab, so restored tabs are their own", () => {
+    const a = cliInput("A", "");
+    const b = cliInput("A", "");
     expect(a.key).not.toBe(b.key);
     expect(a.kind).toBe("cli");
   });
 });
 
-describe("saved CLIs", () => {
-  it("decodes untrusted JSON: strings only, unique ids, capped", () => {
-    expect(decodeSavedClis(null)).toEqual([]);
-    expect(decodeSavedClis("x")).toEqual([]);
-    const good: SavedCli = { id: "a", name: " A ", command: " aider " };
-    expect(decodeSavedClis([good, { id: "b", name: "B", command: "" }, { id: "a", name: "C", command: "c" }])).toEqual([
-      { id: "a", name: "A", command: "aider" },
-    ]);
-    const many = Array.from({ length: 40 }, (_, i) => ({ id: `id${i}`, name: `N${i}`, command: `c${i}` }));
-    expect(decodeSavedClis(many)).toHaveLength(32);
+describe("Move to Editor", () => {
+  const session = { state: { cwd: "/repo/app" } };
+
+  it("hands the running session to a new editor tab named like the terminal tab", async () => {
+    tabs.state.tabs = [
+      { id: "t1", session: "s1" },
+      { id: "t2", session: "s2" },
+    ];
+    runtime.detachTab.mockImplementation((id: string) => {
+      tabs.state.tabs = tabs.state.tabs.filter((t) => t.id !== id);
+      return session;
+    });
+    await moveTerminalToEditor("t2");
+    expect(runtime.detachTab).toHaveBeenCalledExactlyOnceWith("t2");
+    const input = editor.openInput.mock.calls[0]?.[0] as { kind: string; key: string; data: unknown };
+    expect(input.kind).toBe("cli");
+    expect(input.data).toEqual({ name: "Local (2)", command: "", cwd: "/repo/app" });
+    expect(runtime.adoptCli).toHaveBeenCalledExactlyOnceWith(input.key, session);
+    // The session belongs to the tab before it mounts, so it attaches instead of showing Start.
+    expect(runtime.adoptCli.mock.invocationCallOrder[0]).toBeLessThan(editor.openInput.mock.invocationCallOrder[0]!);
+    expect(runtime.startCli).not.toHaveBeenCalled();
+    expect(toolWindows.hide).not.toHaveBeenCalled();
   });
 
-  it("saves and removes for every project", () => {
-    saveCli("Claude Code", "claude");
-    saveCli("Aider", "aider --model x");
-    expect(useSavedClis.getState().saved.map((s) => s.name)).toEqual(["Claude Code", "Aider"]);
-    const again = readSavedClis();
-    expect(again).toEqual(useSavedClis.getState().saved);
-    removeSavedCli(again[0]!.id);
-    expect(readSavedClis().map((s) => s.name)).toEqual(["Aider"]);
+  it("moves the active tab by default and hides the emptied tool window", async () => {
+    tabs.state.tabs = [{ id: "t1", session: "s1" }];
+    tabs.state.activeTab = "t1";
+    runtime.detachTab.mockImplementation(() => {
+      tabs.state.tabs = [];
+      return session;
+    });
+    await moveTerminalToEditor();
+    expect(runtime.detachTab).toHaveBeenCalledWith("t1");
+    expect(toolWindows.hide).toHaveBeenCalledWith("terminal");
+  });
+
+  it("does nothing for an unknown tab", async () => {
+    await moveTerminalToEditor("missing");
+    expect(runtime.detachTab).not.toHaveBeenCalled();
+    expect(editor.openInput).not.toHaveBeenCalled();
   });
 });
 
-describe("launching", () => {
-  it("starts the session in the project root and opens its tab", async () => {
-    await launchCli("Claude Code", "claude --continue");
-    const input = editor.openInput.mock.calls[0]?.[0] as { kind: string; key: string; data: unknown };
-    expect(input.kind).toBe("cli");
-    expect(input.data).toEqual({ name: "Claude Code", command: "claude --continue" });
-    expect(runtime.startCli).toHaveBeenCalledExactlyOnceWith(input.key, "/repo", "claude --continue");
-    // The session exists before the tab mounts, so it attaches instead of showing Start.
-    expect(runtime.startCli.mock.invocationCallOrder[0]).toBeLessThan(editor.openInput.mock.invocationCallOrder[0]!);
-    // The launcher tab makes way for the new CLI.
-    expect(editor.closeInput).toHaveBeenCalledWith(CLI_LAUNCHER_KEY);
+describe("restored tabs", () => {
+  it("start a login shell where the session was, the project root as fallback", async () => {
+    const input = cliInput("Local", "", "/repo/app");
+    await startTab(input);
+    expect(runtime.startCli).toHaveBeenCalledExactlyOnceWith(input.key, "/repo/app", "", "/repo");
+    expect(editor.openInput).not.toHaveBeenCalled();
   });
 
-  it("starts a restored tab's CLI where it stands", async () => {
+  it("run a command saved with them only when started", async () => {
     const input = cliInput("Codex", "codex --yolo");
     await startTab(input);
-    expect(runtime.startCli).toHaveBeenCalledExactlyOnceWith(input.key, "/repo", "codex --yolo");
-    expect(editor.openInput).not.toHaveBeenCalled();
+    expect(runtime.startCli).toHaveBeenCalledExactlyOnceWith(input.key, "/repo", "codex --yolo", "/repo");
   });
 
-  it("opens the launcher tab", async () => {
-    await openCliLauncher();
-    expect(editor.openInput).toHaveBeenCalledExactlyOnceWith(
-      { kind: "cli.launcher", key: CLI_LAUNCHER_KEY, data: {} },
-      { focus: true },
-    );
-  });
-
-  it("does nothing without a project", async () => {
+  it("do nothing without a project", async () => {
     useProject.setState({ project: null });
-    await launchCli("A", "a");
-    await startTab(cliInput("A", "a"));
+    await startTab(cliInput("A", ""));
     expect(runtime.startCli).not.toHaveBeenCalled();
-    expect(editor.openInput).not.toHaveBeenCalled();
-    expect(root()).toBeNull();
   });
 });

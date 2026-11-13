@@ -15,7 +15,7 @@ import {
   toolWindowService,
 } from "@/workbench/contributions";
 import { lazyComponent } from "@/ui";
-import { CLI_KIND, CLI_LAUNCHER_KIND, cliData, openCliLauncher } from "./cli";
+import { CLI_KIND, cliData, moveTerminalToEditor } from "./cli";
 import { installTerminalKeys } from "./keys";
 import { loadTerminalRuntime, terminalRuntime } from "./loader";
 import { SAMPLE_TUI_END, SAMPLE_TUI_START, sampleTuiFrame } from "./sampleTui";
@@ -122,34 +122,27 @@ export function activate(): () => void {
       component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalView)),
       headerContent: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalTabs)),
     }),
-    // CLI sessions as editor tabs (#2202): saved with the editor session, kept alive while hidden.
+    // Terminal sessions moved to the editor (#2202): saved with the editor session, kept alive while hidden.
     registerEditorKind({
       kind: CLI_KIND,
       component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.CliEditor)),
-      title: (input) => cliData(input)?.name ?? "CLI",
+      title: (input) => cliData(input)?.name ?? "Terminal",
       icon: () => "terminal",
-      // A reopened tab shows Start: its command never runs on its own.
+      // A reopened tab shows Start: nothing runs on its own.
       restorable: true,
       keepAlive: true,
       onClose: (input) => terminalRuntime()?.disposeCli(input.key),
       isBusy: (input) => terminalRuntime()?.cliBusy(input.key) ?? false,
     }),
-    registerEditorKind({
-      kind: CLI_LAUNCHER_KIND,
-      component: lazyComponent(() => import("./CliLauncher").then((m) => m.CliLauncher)),
-      title: () => "New CLI",
-      icon: () => "terminal",
-    }),
     registerActions([
       {
-        id: "cli.new",
-        title: "New CLI",
-        description: "Opens the New CLI tab: saved agent CLIs (Claude Code, Codex…) start as full-size editor tabs.",
+        id: "terminal.moveToEditor",
+        title: "Move to Editor",
+        description: "Moves a terminal tab, with its running session, into the editor area (arg: tab id).",
         category: "Terminal",
-        icon: "terminal",
         when: "projectOpen",
-        keywords: ["cli", "agent", "claude", "codex", "aider", "shell"],
-        run: () => openCliLauncher(),
+        keywords: ["terminal", "editor", "cli", "claude", "codex"],
+        run: (arg) => moveTerminalToEditor(typeof arg === "string" ? arg : undefined),
       },
       {
         id: "terminal.new",

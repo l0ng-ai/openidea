@@ -13,7 +13,7 @@ vi.mock("./loader", () => ({
     sessionFromElement: () => mock.session,
     // CLI editor tabs have no tool-window Close/Find of their own.
     cliSessionFromElement: () => undefined,
-    cliSession: () => undefined,
+    isCliSession: () => false,
   }),
 }));
 vi.mock("@/platform/workflowSettings", () => ({ workflowSettings: () => mock.settings }));
