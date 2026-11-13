@@ -916,3 +916,22 @@ exit 1
     let args = fs::read_to_string(log).unwrap();
     assert!(args.contains(&format!("--python {}", sdk.join("python3.14").display())), "{args}");
 }
+
+#[test]
+fn a_cancelled_install_leaves_the_previous_one_in_place() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (pkg, dest, aside) = (tmp.path().join("pkg"), tmp.path().join("tool"), tmp.path().join(".previous-tool"));
+    fs::create_dir_all(&pkg).unwrap();
+    fs::write(pkg.join("new"), "").unwrap();
+    fs::create_dir_all(&dest).unwrap();
+    fs::write(dest.join("old"), "").unwrap();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let err = put_in_place(&pkg, &dest, &aside, &cancel).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Cancelled);
+    assert!(dest.join("old").exists() && pkg.join("new").exists() && !aside.exists());
+
+    put_in_place(&pkg, &dest, &aside, &CancellationToken::new()).unwrap();
+    assert!(dest.join("new").exists() && !dest.join("old").exists());
+    assert!(aside.join("old").exists(), "the previous install is moved aside");
+}

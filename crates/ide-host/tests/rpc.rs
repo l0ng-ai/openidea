@@ -481,3 +481,53 @@ async fn the_desktop_routes_exactly_what_a_server_of_this_build_answers() {
     assert!(rpc::client_commands().contains(&"term_spawn"));
     plugins.host().shutdown();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn renames_a_branch_with_the_clients_argument_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("repo");
+    std::fs::create_dir(&root).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").args(args).current_dir(&root).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(root.join("a.txt"), "a\n").unwrap();
+    git(&["add", "."]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]);
+    git(&["branch", "feature"]);
+    let peer_slot = Arc::new(OnceLock::new());
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: tmp.path().join("config"),
+        data_dir: tmp.path().join("data"),
+        local_data_dir: tmp.path().join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (sr, sw) = tokio::io::split(server_io);
+    tokio::spawn(rpc::serve(host, Dispatcher::standard(), peer_slot, sr, sw));
+    let (cr, cw) = tokio::io::split(client_io);
+    let peer = Peer::connect(cr, cw, Arc::new(Client::default()));
+    invoke(&peer, "open_project", json!({"path": root})).await.unwrap();
+    invoke(&peer, "project_trust_set", json!({"path": root, "trusted": true, "folder": false})).await.unwrap();
+    // The argument names the desktop client sends (`vcsRenameBranch` in src/bindings.ts).
+    invoke(
+        &peer,
+        "vcs_rename_branch",
+        json!({"repo": null, "from": "feature", "to": "renamed", "unsetUpstream": false}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        git(&["branch", "--format=%(refname:short)", "--list"]).lines().collect::<Vec<_>>(),
+        ["main", "renamed"]
+    );
+    invoke(&peer, "close_project", json!({})).await.unwrap();
+    peer.kill();
+}
