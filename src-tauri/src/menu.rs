@@ -217,6 +217,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
     }
 
     let mut file = vec![
+        act("file.newUntitled", "New File"),
         sub(
             "new",
             "New",

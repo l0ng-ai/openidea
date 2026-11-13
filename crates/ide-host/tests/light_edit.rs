@@ -179,3 +179,41 @@ async fn light_notebooks_open_without_interpreter_detection_or_execution() {
     assert!(!bin.join("python.probed").exists());
     host.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn untitled_buffers_reach_the_disk_through_save_as() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp_root = dunce::canonicalize(tmp.path()).unwrap();
+    let dir = tmp_root.join("notes");
+    let host = host(&tmp_root.join("app"));
+
+    // A window with no file (a welcome screen's File › New File): rooted at the
+    // home folder, no watcher yet, doc commands work.
+    let empty = host.open_light_empty("main").unwrap();
+    assert!(empty.light);
+    let untitled = ops::doc::open_untitled(&host, "main", None).await.unwrap();
+    assert_eq!(untitled.path, std::path::PathBuf::from("untitled:Untitled-1"));
+    assert_eq!(untitled.language.as_str(), "plaintext");
+    let version = ops::doc::edit(&host, "main", untitled.id, untitled.version, untitled_edit("# notes\n")).unwrap();
+    assert!(ops::doc::save(&host, "main", untitled.id).await.is_ok(), "saving nowhere is a no-op");
+    assert!(host.project("main").unwrap().documents.is_dirty(untitled.id).unwrap());
+
+    // Save As: the buffer lands on the disk and turns into a file document.
+    let target = dir.join("deep/notes.md");
+    let saved = ops::doc::save_as(&host, "main", untitled.id, target.clone()).await.unwrap();
+    assert_eq!(saved.path, target);
+    assert_eq!(saved.language.as_str(), "markdown");
+    assert!(!saved.dirty);
+    // The platform's default line separator applies to new buffers.
+    assert_eq!(std::fs::read_to_string(&target).unwrap().replace("\r\n", "\n"), "# notes\n");
+    ops::doc::edit(&host, "main", untitled.id, version, untitled_edit("x\n")).unwrap();
+    ops::doc::save(&host, "main", untitled.id).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&target).unwrap().replace("\r\n", "\n"), "x\n# notes\n");
+
+    // The saved file's folder is followed for external changes now.
+    host.shutdown().await;
+}
+
+fn untitled_edit(insert: &str) -> ChangeSet {
+    ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: insert.into() }] }
+}

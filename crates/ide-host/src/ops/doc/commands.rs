@@ -50,7 +50,10 @@ pub async fn doc_set_encoding(
     reload: bool,
 ) -> IdeResult<DocumentEncoding> {
     let project = host.project(window)?;
-    if reload && let Some(uri) = project.documents.virtual_uri(doc)? {
+    if reload
+        && !project.documents.is_untitled(doc)?
+        && let Some(uri) = project.documents.virtual_uri(doc)?
+    {
         let vd = if uri.starts_with("git-revision:") {
             crate::ops::vcs::revision_virtual_document(host, window, &uri, Some(&encoding)).await?
         } else {

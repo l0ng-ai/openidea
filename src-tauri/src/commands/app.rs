@@ -119,6 +119,33 @@ pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Setting
     Ok(project.settings.effective())
 }
 
+/// LightEdit without a file (File › New File from a welcome window); returns
+/// the effective (global) settings.
+#[tauri::command]
+#[specta::specta]
+pub async fn light_edit_open_untitled(window: Window) -> IdeResult<Settings> {
+    let app = window.app_handle().clone();
+    let label = window.label().to_owned();
+    let log_label = label.clone();
+    let result = async {
+        if app.state::<AppState>().project(&label).is_ok_and(|p| !p.light) {
+            crate::windows::close_auxiliary_windows(&app, &label);
+            crate::window_groups::detach(&app, &label)?;
+            crate::window_groups::persist(&app).await?;
+        }
+        tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().open_light_empty(&label))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))?
+    };
+    match result.await {
+        Ok(project) => Ok(project.settings.effective()),
+        Err(e) => {
+            tracing::warn!("light_edit_open_untitled ({log_label}): {e}");
+            Err(e)
+        }
+    }
+}
+
 fn project_info(project: &crate::state::Project) -> ProjectInfo {
     ide_host::ops::project::info(project)
 }

@@ -26,6 +26,31 @@ pub async fn doc_close(window: Window, state: State<'_, AppState>, doc: DocId) -
     blocking(move || ide_host::ops::doc::close(&host, &window, doc)).await
 }
 
+/// Opens an editable untitled buffer (a new-file tab); it reaches the disk
+/// through `doc_save_as`, which turns it into a regular file document.
+#[tauri::command]
+#[specta::specta]
+pub async fn doc_open_untitled(
+    window: Window,
+    state: State<'_, AppState>,
+    name: Option<String>,
+) -> IdeResult<DocumentInfo> {
+    ide_host::ops::doc::open_untitled(&state.host, window.label(), name).await
+}
+
+/// Save As for an untitled buffer: writes it to `path` and re-keys the buffer
+/// (undo history and version are kept; the language is re-detected).
+#[tauri::command]
+#[specta::specta]
+pub async fn doc_save_as(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+    path: PathBuf,
+) -> IdeResult<DocumentInfo> {
+    ide_host::ops::doc::save_as(&state.host, window.label(), doc, path).await
+}
+
 /// Applies a CodeMirror change set; returns the new version. Rejects with
 /// `outOfSync` when `base_version` is stale; the UI then calls `doc_snapshot`.
 #[tauri::command]

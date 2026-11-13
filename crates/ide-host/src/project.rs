@@ -703,12 +703,27 @@ impl Host {
             return Err(IdeError::invalid(format!("{} is a folder", file.display())));
         }
         let dir = file.parent().map(Path::to_path_buf).ok_or_else(|| IdeError::invalid("no parent folder"))?;
+        let watch = dir.clone();
+        self.open_light_in(window, dir, Some(&watch))
+    }
+
+    /// LightEdit without a file (a welcome window's File › New File): rooted
+    /// at the user's home folder, watching nothing until a buffer is saved
+    /// into a real folder ([`Project::watch_light_dir`]).
+    pub fn open_light_empty(&self, window: &str) -> IdeResult<Arc<Project>> {
+        let dir = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+        self.open_light_in(window, dir, None)
+    }
+
+    fn open_light_in(&self, window: &str, dir: PathBuf, watch_dir: Option<&Path>) -> IdeResult<Arc<Project>> {
         let opening = self.opening(window);
         let _opening = opening.lock();
         if let Ok(current) = self.project(window)
             && current.light
         {
-            current.watch_light_dir(&dir);
+            if let Some(dir) = watch_dir {
+                current.watch_light_dir(dir);
+            }
             return Ok(current);
         }
         self.close_project(window);
@@ -727,7 +742,16 @@ impl Host {
         let syntax = Arc::new(SyntaxCache::new(self.syntax()));
         documents.add_observer(Arc::new(SyntaxObserver(syntax.clone())));
         documents.add_observer(Arc::new(HistoryObserver(history.clone())));
-        let watcher = light_watcher(&dir, &sink, &documents, &history)?;
+        let watcher = match watch_dir {
+            Some(dir) => light_watcher(dir, &sink, &documents, &history)?,
+            // A quiet private folder stands in until the first save brings a
+            // real folder in.
+            None => {
+                let idle = self.local_data_dir.join("light-edit");
+                std::fs::create_dir_all(&idle)?;
+                light_watcher(&idle, &sink, &documents, &history)?
+            }
+        };
         let project_key = project_key(&dir);
         let (db, http_history, agents) = self.project_services(&dir, &project_key, &settings, &sink);
         let notebooks = crate::notebook::NotebookService::new(
@@ -773,7 +797,7 @@ impl Host {
             light: true,
             root: dir,
         });
-        tracing::info!("window {window} edits {} without a project", file.display());
+        tracing::info!("window {window} edits {} without a project", project.root.display());
         self.insert_project(window, project.clone());
         Ok(project)
     }
