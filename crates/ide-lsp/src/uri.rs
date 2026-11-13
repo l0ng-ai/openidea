@@ -1,6 +1,8 @@
 //! `file://` URI ⇄ path conversion (RFC 8089, VS Code-compatible encoding).
 
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
+use serde_json::Value;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -21,6 +23,53 @@ const PATH: &AsciiSet = &CONTROLS
     .add(b'{')
     .add(b'|')
     .add(b'}');
+
+/// What RFC 3986 doesn't allow in a URI and a server may still leave unencoded in a `file:`
+/// URI (non-ASCII is always encoded); `%` stays, it starts the escapes already there.
+const LOOSE: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'<')
+    .add(b'>')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
+
+/// Percent-encodes the characters URIs don't allow in every `file:` URI in `value`, string
+/// values and object keys alike (a workspace edit's `changes`). Eclipse's jdtls sends a path
+/// as is (`file:///H:/项目/…`), which `lsp_types::Uri` rejects, failing the whole response.
+pub fn encode_loose_file_uris(value: &mut Value) {
+    match value {
+        Value::String(s) => {
+            if let Some(encoded) = encode_loose(s) {
+                *s = encoded;
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(encode_loose_file_uris),
+        Value::Object(map) => {
+            if map.keys().any(|k| encode_loose(k).is_some()) {
+                *map = std::mem::take(map).into_iter().map(|(k, v)| (encode_loose(&k).unwrap_or(k), v)).collect();
+            }
+            map.values_mut().for_each(encode_loose_file_uris);
+        }
+        _ => {}
+    }
+}
+
+fn encode_loose(s: &str) -> Option<String> {
+    if !s.get(..5).is_some_and(|scheme| scheme.eq_ignore_ascii_case("file:")) {
+        return None;
+    }
+    match Cow::from(utf8_percent_encode(s, LOOSE)) {
+        Cow::Owned(encoded) => Some(encoded),
+        Cow::Borrowed(_) => None,
+    }
+}
 
 pub fn path_to_uri_string(path: &Path) -> String {
     let s = if cfg!(windows) {
@@ -94,6 +143,28 @@ pub use ide_core::text::is_virtual_uri;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_uris_a_server_leaves_unencoded_are_encoded() {
+        // jdtls on a project under a Chinese folder (`java.usages` / references response).
+        let mut v = serde_json::json!({ "result": [{
+            "location": { "uri": "file:///H:/项目/online disk/A.java", "range": { "start": { "line": 1, "character": 2 }, "end": { "line": 1, "character": 3 } } },
+            "kind": "unknown"
+        }], "edit": { "changes": { "file:///tmp/目录/b.java": [] } }, "text": "项目" });
+        let raw = v["result"][0]["location"].clone();
+        assert!(serde_json::from_value::<lsp_types::Location>(raw).is_err(), "lsp-types rejects it as sent");
+        encode_loose_file_uris(&mut v);
+        let uri = v["result"][0]["location"]["uri"].as_str().unwrap();
+        assert_eq!(uri, "file:///H:/%E9%A1%B9%E7%9B%AE/online%20disk/A.java");
+        let location: lsp_types::Location = serde_json::from_value(v["result"][0]["location"].clone()).unwrap();
+        assert!(uri_to_path(location.uri.as_str()).unwrap().ends_with("项目/online disk/A.java"));
+        assert!(v["edit"]["changes"].get("file:///tmp/%E7%9B%AE%E5%BD%95/b.java").is_some());
+        assert_eq!(v["text"], "项目", "only file: URIs change");
+        // Already encoded: untouched.
+        let mut encoded = serde_json::json!("file:///a%20b/%E9%A1%B9.java");
+        encode_loose_file_uris(&mut encoded);
+        assert_eq!(encoded, "file:///a%20b/%E9%A1%B9.java");
+    }
 
     #[cfg(unix)]
     #[test]
