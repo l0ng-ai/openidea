@@ -112,13 +112,23 @@ export function defaultDirectory(): string | null {
   return path ? dirname(path) : (useProject.getState().project?.root ?? null);
 }
 
+/** Whether a non-text editor opens `path`; the probe's acquisitions are released. */
+async function providedEditor(path: string): Promise<boolean> {
+  const resolution = await resolveFileEditor(path).catch(() => null);
+  if (!resolution) return false;
+  try {
+    await resolution.rollback();
+  } catch {
+    // Released on a best-effort basis; opening resolves the editor again.
+  }
+  return true;
+}
+
 /**
  * Creates `input` (a name, possibly with sub-directories) in `directory`
- * from `kind` and opens it. Throws with a user-facing message on failure.
- *
- * The rendered body is written before the file is opened: kinds with their own
- * editor (notebooks) never show a CodeMirror view to insert it into, and read
- * the file from disk, so opening it first would leave the template unused.
+ * from `kind`, opens it and inserts the rendered body with the caret at
+ * `$END$` (a file a non-text editor opens, like a notebook, gets the body on
+ * disk instead). Throws with a user-facing message on failure.
  */
 export async function createFromTemplate(
   t: FileTemplate,
@@ -147,21 +157,18 @@ export async function createFromTemplate(
     templateIncludes(),
   );
   if (cancelled?.()) return plan.path;
-  if (text) await call(commands.fsCreateFileBytes(plan.path, [...new TextEncoder().encode(text)]));
-  // The empty command applies the project's EditorConfig charset (BOM).
+  // A provided editor (a notebook shows cells, not text) reads the file from
+  // disk and has no view to insert into, so its body is written on create.
+  const provided = await providedEditor(plan.path);
+  if (provided && text) await call(commands.fsCreateFileBytes(plan.path, [...new TextEncoder().encode(text)]));
   else await call(commands.fsCreateFile(plan.path));
   notifyFileOperation({ kind: "created", paths: [plan.path] });
   onCreated?.();
   await new Promise((r) => setTimeout(r, 0));
-  // A provided editor owns the document (a notebook shows cells, not text) and
-  // reads the body just written; there is no view to wait for or to fill.
-  const custom = (await resolveFileEditor(plan.path)) !== null;
   await editorService().openFile(plan.path, { focus: true });
-  const handle = custom ? null : text ? await waitForEditor(plan.path) : null;
+  if (provided) return plan.path;
+  const handle = await waitForEditor(plan.path);
   if (!handle) {
-    // Either the body is in the file (written above, or read by a provided
-    // editor) or the template is empty: nothing is left to insert.
-    if (text || custom) return plan.path;
     notifications().notify({
       level: "warning",
       title: `Created ${plan.fileName}`,
@@ -170,7 +177,7 @@ export async function createFromTemplate(
     return plan.path;
   }
   const { view } = handle;
-  if (view.state.doc.length === 0) {
+  if (text && view.state.doc.length === 0) {
     view.dispatch({
       changes: { from: 0, insert: text },
       selection: EditorSelection.cursor(Math.min(caret, text.length)),
@@ -190,7 +197,6 @@ export async function createFromTemplate(
           scrollIntoView: true,
         });
     }
-    // The body reached the file already; this also persists the formatter's edits.
     await executeAction("file.save");
   }
   return plan.path;

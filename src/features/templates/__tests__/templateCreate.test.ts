@@ -13,6 +13,13 @@ const calls = vi.hoisted(() => ({
   openFile: vi.fn(),
   notify: vi.fn(),
   resolve: vi.fn(),
+  rollback: vi.fn(),
+}));
+
+const view = vi.hoisted(() => ({
+  state: { doc: { length: 0, toString: () => "" }, selection: { main: { head: 0 } } },
+  dispatch: vi.fn(),
+  focus: vi.fn(),
 }));
 
 vi.mock("@/platform/ipc", async (original) => ({
@@ -34,6 +41,12 @@ vi.mock("@/platform/ipc", async (original) => ({
   },
 }));
 
+vi.mock("@/editor/api", async (original) => ({
+  ...(await original<typeof import("@/editor/api")>()),
+  editorsFor: (path: string) => (/\.py$/.test(path) ? [{ view }] : []),
+  activeEditor: () => null,
+}));
+
 vi.mock("@/platform/actions", async (original) => ({
   ...(await original<typeof import("@/platform/actions")>()),
   executeAction: vi.fn(async () => true),
@@ -50,11 +63,36 @@ vi.mock("@/workbench/contributions", async (original) => ({
   resolveFileEditor: (path: string) => {
     calls.resolve(path);
     // A notebook: its own editor kind, no CodeMirror view.
-    return Promise.resolve(/\.ipynb$/.test(path) ? { input: { kind: "notebook", key: `notebook:${path}` } } : null);
+    return Promise.resolve(
+      /\.ipynb$/.test(path)
+        ? { input: { kind: "notebook", key: `notebook:${path}` }, admit: () => {}, rollback: calls.rollback }
+        : null,
+    );
   },
 }));
 
-const notebook: FileTemplate = BUILTIN_FILE_TEMPLATES.find((t) => t.id === "jupyter")!;
+const NOTEBOOK_BODY = `{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": ["# $NAME$"]
+  }
+ ],
+ "metadata": {},
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
+`;
+
+const notebook: FileTemplate = {
+  id: "user.jupyter",
+  name: "Jupyter Notebook",
+  icon: "file-jupyter",
+  extension: "ipynb",
+  nameStyle: "asis",
+  kinds: [{ id: "notebook", label: "Notebook", body: NOTEBOOK_BODY }],
+};
 
 afterEach(() => {
   files.clear();
@@ -63,14 +101,12 @@ afterEach(() => {
 });
 
 describe("createFromTemplate", () => {
-  it("writes the built-in notebook body before the notebook editor takes the file", async () => {
+  it("writes the rendered body before a notebook editor takes the file", async () => {
     useProject.setState({ project: { root: "/p", name: "p" } as never });
-    const titled = notebook.kinds.find((k) => k.id === "titled")!;
-    const path = await createFromTemplate(notebook, titled, "/p", "analysis");
+    const path = await createFromTemplate(notebook, notebook.kinds[0]!, "/p", "analysis");
 
     expect(path).toBe("/p/analysis.ipynb");
-    const { text } = renderFileTemplate(titled.body, { name: "analysis", fileName: "analysis.ipynb" });
-    expect(files.get(path)).toBe(text);
+    expect(files.get(path)).toBe(NOTEBOOK_BODY.replace("$NAME$", "analysis"));
     expect(JSON.parse(files.get(path)!)).toMatchObject({
       nbformat: 4,
       cells: [{ cell_type: "markdown", source: ["# analysis"] }],
@@ -79,9 +115,28 @@ describe("createFromTemplate", () => {
     // The kind owns the document, so there is no "could not insert" warning.
     expect(calls.notify).not.toHaveBeenCalled();
     expect(calls.resolve).toHaveBeenCalledWith(path);
+    // The probe's acquisitions (the notebook backend session) are released.
+    expect(calls.rollback).toHaveBeenCalledTimes(1);
     expect(calls.openFile).toHaveBeenCalledWith(path);
-    // Resolution happens before opening, so the body is in place when it reads.
-    expect(calls.resolve.mock.invocationCallOrder[0]!).toBeLessThan(calls.openFile.mock.invocationCallOrder[0]!);
+    // The body is on disk before the editor reads it.
+    expect(calls.bytes.mock.invocationCallOrder[0]!).toBeLessThan(calls.openFile.mock.invocationCallOrder[0]!);
+  });
+
+  it("inserts a text template into the editor view, caret at $END$", async () => {
+    const py: FileTemplate = {
+      ...notebook,
+      id: "user.py",
+      extension: "py",
+      kinds: [{ id: "script", label: "Script", body: "print(1)\n$END$" }],
+    };
+    const path = await createFromTemplate(py, py.kinds[0]!, "/p", "main");
+
+    expect(calls.bytes).not.toHaveBeenCalled();
+    expect(calls.empty).toHaveBeenCalledWith(path);
+    expect(view.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ changes: { from: 0, insert: "print(1)\n" }, userEvent: "input" }),
+    );
+    expect(calls.notify).not.toHaveBeenCalled();
   });
 
   it("creates an empty file when the template renders nothing", async () => {
@@ -94,9 +149,8 @@ describe("createFromTemplate", () => {
     expect(calls.notify).not.toHaveBeenCalled();
   });
 
-  it("renders the built-in notebook body a text template would have got", () => {
-    const titled = notebook.kinds.find((k) => k.id === "titled")!;
-    const { text } = renderFileTemplate(titled.body, { name: "report", fileName: "report.ipynb" });
+  it("renders the notebook body a text template would have got", () => {
+    const { text } = renderFileTemplate(NOTEBOOK_BODY, { name: "report", fileName: "report.ipynb" });
     expect(JSON.parse(text)).toMatchObject({
       nbformat: 4,
       cells: [{ cell_type: "markdown", source: ["# report"] }],
@@ -104,8 +158,22 @@ describe("createFromTemplate", () => {
   });
 });
 
-describe("New menu", () => {
-  it("lists Jupyter Notebook with its icon, without duplicating entries", () => {
+describe("built-in Jupyter Notebook", () => {
+  const builtin = BUILTIN_FILE_TEMPLATES.find((t) => t.id === "jupyter")!;
+
+  it("writes the titled notebook body before the notebook editor takes the file", async () => {
+    const titled = builtin.kinds.find((k) => k.id === "titled")!;
+    const path = await createFromTemplate(builtin, titled, "/p", "analysis");
+
+    expect(path).toBe("/p/analysis.ipynb");
+    expect(JSON.parse(files.get(path)!)).toMatchObject({
+      nbformat: 4,
+      cells: [{ cell_type: "markdown", source: ["# analysis"] }],
+    });
+    expect(calls.notify).not.toHaveBeenCalled();
+  });
+
+  it("is listed in the New menu with its icon, without duplicating entries", () => {
     const dispose = activateTemplates();
     try {
       const items = menuGroupItems("new", { paths: ["/p"] });

@@ -416,6 +416,9 @@ mod imp {
     pub fn clear_file_decorations(set: &str) -> Result<(), Error> {
         wit::decorations::clear_file(set).map_err(error)
     }
+    pub fn set_file_note(path: &str, set: &str, note: &str, tooltip: Option<&str>) -> Result<(), Error> {
+        wit::decorations::set_file_note(path, set, note, tooltip).map_err(error)
+    }
     pub fn vcs_log(p: &ProjectRes, path: Option<&str>, limit: u32) -> Result<Vec<CommitInfo>, Error> {
         wit::vcs::log(p, path, limit)
             .map(|v| {
@@ -1841,6 +1844,11 @@ pub fn set_file_decoration(path: &str, set: &str, item: &FileDecoration) -> Resu
 /// Clear this plugin's tree decoration set in all projects. Requires project.read.
 pub fn clear_file_decorations(set: &str) -> Result<(), Error> {
     imp::clear_file_decorations(set)
+}
+/// Set a note shown after a file's name in the project tree, replacing this tree set's
+/// annotation for the file (API 1.7). One line of at most 200 characters. Requires project.read.
+pub fn set_file_note(path: &str, set: &str, note: &str, tooltip: Option<&str>) -> Result<(), Error> {
+    imp::set_file_note(path, set, note, tooltip)
 }
 
 /// Starts an owned run configuration in the invoking window. Its id receives run-exited.

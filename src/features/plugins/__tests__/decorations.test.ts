@@ -66,6 +66,19 @@ it("filters project roots and unknown styles and replaces tree badges", () => {
   expect(getFileDecoration("/p/a.txt")?.badge).toBeUndefined();
 });
 
+it("shows a tree note after the name without colouring the file", () => {
+  const note = {
+    ...set(),
+    tree: true,
+    items: [],
+    file: { style: "", badge: null, tooltip: "why", note: "entry point" },
+  };
+  setPluginDecorations("test", [note]);
+  expect(getFileDecoration("/p/a.txt")).toMatchObject({ suffix: [{ text: "entry point" }], tooltip: "why" });
+  expect(getFileDecoration("/p/a.txt")?.color).toBeUndefined();
+  setPluginDecorations("test", []);
+});
+
 it("selects UTF-16 ranges and reveals without changing text", () => {
   handleRuntimeEvent({ type: "editorRanges", path: ctx.path, ranges: [range], reveal: false });
   expect(editor.view.state.selection.main.from).toBe(2);

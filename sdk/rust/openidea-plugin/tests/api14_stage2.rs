@@ -67,6 +67,14 @@ fn decorations_replace_clear_validate_styles_badges_paths_and_limits() {
     host::set_file_decoration("a.txt", "test", &file("😀a")).unwrap();
     host::clear_file_decorations("test").unwrap();
     assert!(mock.file_decorations().is_empty());
+    host::set_file_decoration("a.txt", "notes", &file("A")).unwrap();
+    host::set_file_note("a.txt", "notes", "entry point", Some("why")).unwrap();
+    assert!(mock.file_decorations().is_empty(), "a note replaces the set's annotation");
+    assert_eq!(mock.file_notes().values().next(), Some(&("entry point".to_string(), Some("why".to_string()))));
+    assert!(host::set_file_note("a.txt", "notes", "two\nlines", None).is_err());
+    assert!(host::set_file_note("a.txt", "notes", &"x".repeat(201), None).is_err());
+    host::clear_file_decorations("notes").unwrap();
+    assert!(mock.file_notes().is_empty());
     for i in 0..50 {
         host::set_decorations("a.txt", &format!("set{i}"), &[]).unwrap();
     }

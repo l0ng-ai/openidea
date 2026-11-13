@@ -1,4 +1,4 @@
-package openidea:plugin@1.6.0;
+package openidea:plugin@1.7.0;
 
 /// Declarative views: tool windows declared
 /// under `[[contributes.views]]` and custom editors under
@@ -149,6 +149,12 @@ interface views {
     open-content-tab: func(tab: content-tab) -> result<_, error>;
     /// Answers content-tab-action in its originating window.
     reply-content-tab: func(request-id: string, reply: content-tab-reply) -> result<_, error>;
+    /// Opens two texts in the diff viewer of the window the call came from
+    /// (API 1.7): a review's file before and after, say. `file-name` (a name or
+    /// relative path, at most 256 characters) picks the syntax highlighting and
+    /// names the tab when `diff.title` is absent. Only from a command or event
+    /// of a window; each side at most 1 MiB.
+    open-diff: func(diff: content-diff, file-name: option<string>) -> result<_, error>;
 
     /// The view (or every custom editor of that id) shows outdated content:
     /// the IDE renders it again.

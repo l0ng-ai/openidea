@@ -922,6 +922,9 @@ pub struct FileDecoration {
     pub badge: Option<String>,
     pub style: String,
     pub tooltip: Option<String>,
+    /// Text shown after the name (API 1.7 `set-file-note`).
+    #[serde(default)]
+    pub note: Option<String>,
 }
 /// Commit metadata, date in Unix seconds.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

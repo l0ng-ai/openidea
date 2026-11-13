@@ -78,7 +78,8 @@ pub(crate) fn sso_seed(key: &str, token: &str) {
     }
 }
 
-/// Live sessions by their connection settings, so targets opened with the same settings share one.
+/// Live sessions by data source and connection settings, so the targets of one data source (its
+/// databases, the tree, consoles) opened with the same settings share one.
 static SESSIONS: LazyLock<parking_lot::Mutex<HashMap<String, Weak<State>>>> =
     LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
@@ -104,6 +105,15 @@ struct Lane {
     /// The `USE` statement the session is known to be under (`None`: a statement may have
     /// moved it; empty: as the login left it, without a database or schema).
     context: parking_lot::Mutex<Option<String>>,
+}
+
+/// What [`SnowflakePool::statement`] does when the session is gone and it signs in again.
+#[derive(Clone, Copy)]
+enum Lost<'a> {
+    /// Runs the statement again on the new session, after this `USE` when there is one.
+    Enter(Option<&'a str>),
+    /// Fails: the statement was part of a transaction that ended with the session.
+    Fail,
 }
 
 const CONSOLE: usize = 0;
@@ -251,7 +261,12 @@ fn gunzip(bytes: Vec<u8>) -> IdeResult<Vec<u8>> {
 }
 
 impl SnowflakePool {
-    pub(crate) async fn connect(source: &DataSource, secret: Option<&str>, setup: Setup) -> IdeResult<Self> {
+    pub(crate) async fn connect(
+        source: &DataSource,
+        secret: Option<&str>,
+        setup: Setup,
+        root: Option<&std::path::Path>,
+    ) -> IdeResult<Self> {
         let settings = source.snowflake();
         let endpoint = account::endpoint(source)?;
         let user = source.user.trim();
@@ -302,9 +317,15 @@ impl SnowflakePool {
             lane: CONSOLE,
         };
         // Everything that makes a session what it is, the secret included (hashed: the key is only compared).
+        // The data source and its project too: its databases share a session, but another data source
+        // with the same settings, or the same one in another project (a plugin's source has the same id
+        // in every project), gets its own: its statements and transactions are not this one's. A browser
+        // sign-in is still shared through the cached ID token.
         let key = blake3::hash(
             format!(
-                "{}\0{user}\0{:?}\0{}\0{}\0{}\0{}\0{:?}\0{:?}",
+                "{:?}\0{}\0{}\0{user}\0{:?}\0{}\0{}\0{}\0{}\0{:?}\0{:?}",
+                root,
+                source.id,
                 api.address(),
                 settings.auth,
                 secret.unwrap_or_default(),
@@ -636,13 +657,18 @@ impl SnowflakePool {
             () = self.closed.cancelled() => return Err(closed()),
             turn = self.lane().turn.lock() => turn,
         };
-        // A `USE` needs no schema to run in, and may be what makes the schema reachable.
-        if first_word(sql) != "USE" {
-            self.enter(schema, cancel).await?;
-        }
+        // A `USE` needs no schema to run in, and may be what makes the schema reachable. Ending a
+        // transaction needs none either, and must not fail because the schema is gone meanwhile.
+        let context = match first_word(sql).as_str() {
+            "USE" | "COMMIT" | "ROLLBACK" => None,
+            _ => {
+                self.enter(schema, cancel).await?;
+                self.context(schema)
+            }
+        };
         // These can move the session to another database or schema.
         let moves = matches!(first_word(sql).as_str(), "USE" | "CALL" | "EXECUTE");
-        let result = self.statement(sql, skip, max_rows, cancel).await;
+        let result = self.statement(sql, skip, max_rows, Lost::Enter(context.as_deref()), cancel).await;
         if moves {
             *self.lane().context.lock() = None;
         }
@@ -655,16 +681,14 @@ impl SnowflakePool {
             && self.lane().context.lock().as_deref() != Some(wanted.as_str())
         {
             *self.lane().context.lock() = None;
-            match self.statement(&wanted, 0, 0, cancel).await {
-                Ok(_) => {}
-                // The session's role may not use this database or schema (after `USE ROLE`, or a
-                // schema that is gone). The statement still runs, in the session's own context:
-                // it may be the `USE` that leads back, or name its objects in full. Asked again
-                // once a statement moves the session.
-                Err(refused) if refused.kind == ErrorKind::InvalidInput => {
-                    tracing::warn!("Snowflake: the session did not enter its database and schema");
-                }
-                Err(error) => return Err(error),
+            // Refused (the session's role may not use this database or schema): the statement
+            // does not run, since the session is still wherever it was, which may be another
+            // target's database. Tried again with the next statement.
+            if let Err(error) = self.statement(&wanted, 0, 0, Lost::Enter(None), cancel).await {
+                return Err(IdeError {
+                    message: format!("{wanted} failed, so the statement was not run: {}", error.message),
+                    ..error
+                });
             }
             *self.lane().context.lock() = Some(wanted);
         }
@@ -680,11 +704,11 @@ impl SnowflakePool {
         let _turn = self.lane().turn.lock().await;
         let cancel = CancellationToken::new();
         self.enter(None, &cancel).await?;
-        self.statement("BEGIN", 0, 0, &cancel).await?;
+        self.statement("BEGIN", 0, 0, Lost::Enter(self.context(None).as_deref()), &cancel).await?;
         let changes = async {
             let mut total = 0;
             for (sql, expect_one) in statements {
-                let changed = self.statement(sql, 0, 0, &cancel).await?.affected.unwrap_or(0.0) as u64;
+                let changed = self.statement(sql, 0, 0, Lost::Fail, &cancel).await?.affected.unwrap_or(0.0) as u64;
                 if *expect_one && changed != 1 {
                     return Err(IdeError::invalid(format!(
                         "{sql}: expected to change 1 row, changed {changed}; nothing was saved"
@@ -697,22 +721,24 @@ impl SnowflakePool {
         .await;
         match changes {
             Ok(total) => {
-                self.statement("COMMIT", 0, 0, &cancel).await?;
+                self.statement("COMMIT", 0, 0, Lost::Fail, &cancel).await?;
                 Ok(total)
             }
             Err(error) => {
-                let _ = self.statement("ROLLBACK", 0, 0, &cancel).await;
+                let _ = self.statement("ROLLBACK", 0, 0, Lost::Fail, &cancel).await;
                 Err(error)
             }
         }
     }
 
-    /// One statement on the session; the caller holds the session's turn.
+    /// One statement on the session; the caller holds the session's turn. `lost`: what to do when
+    /// the session is gone and a new one is signed in to.
     async fn statement(
         &self,
         sql: &str,
         skip: usize,
         max_rows: usize,
+        lost: Lost<'_>,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
         let started = Instant::now();
@@ -743,12 +769,56 @@ impl SnowflakePool {
                 Ok(Outcome::Done(result)) => return Ok(*result),
                 Ok(Outcome::Expired { gone }) if !renewed => {
                     renewed = true;
-                    tokens = if gone { self.login().await? } else { self.renew(&tokens).await? };
+                    if !gone {
+                        tokens = self.renew(&tokens).await?;
+                        continue;
+                    }
+                    if let Lost::Fail = lost {
+                        // The transaction ended with the session: nothing of it was saved.
+                        let _ = self.login().await;
+                        return Err(IdeError::new(
+                            ErrorKind::Io,
+                            "Snowflake: the session was lost during the transaction; nothing was saved",
+                        ));
+                    }
+                    // The new session is under the login's database and schema, which may be another
+                    // target's: back to this one's before the statement runs again.
+                    tokens = self.login().await?;
+                    if let Lost::Enter(Some(wanted)) = lost {
+                        self.reenter(wanted, &tokens, cancel).await?;
+                    }
                 }
                 Ok(Outcome::Expired { .. }) => {
                     return Err(IdeError::new(ErrorKind::Io, "Snowflake: the session expired; reconnect"));
                 }
                 Err(error) => return Err(self.shared.api.scrub.clean(error)),
+            }
+        }
+    }
+
+    /// [`enter`](Self::enter) on a session just signed in to (its `tokens`), within [`statement`](Self::statement).
+    async fn reenter(&self, wanted: &str, tokens: &Tokens, cancel: &CancellationToken) -> IdeResult<()> {
+        let request_id = uuid();
+        let outcome = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(IdeError::cancelled()),
+            () = self.closed.cancelled() => return Err(closed()),
+            outcome = self.run(wanted, 0, 0, tokens, &request_id, Instant::now()) => outcome,
+        };
+        match outcome {
+            Ok(Outcome::Done(_)) => {
+                *self.lane().context.lock() = Some(wanted.to_owned());
+                Ok(())
+            }
+            Ok(Outcome::Expired { .. }) => {
+                Err(IdeError::new(ErrorKind::Io, "Snowflake: the session expired; reconnect"))
+            }
+            Err(error) => {
+                let error = self.shared.api.scrub.clean(error);
+                Err(IdeError {
+                    message: format!("{wanted} failed, so the statement was not run: {}", error.message),
+                    ..error
+                })
             }
         }
     }

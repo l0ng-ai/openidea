@@ -88,6 +88,9 @@
 .italic {
   font-style: italic;
 }
+.dimmed {
+  opacity: 0.6;
+}
 .closeSlot {
   position: relative;
   display: flex;

@@ -407,13 +407,64 @@ async fn a_lost_session_signs_in_again() {
     let (listener, port) = bind().await;
     let gone = r#"{"success":false,"code":"390114","message":"Authentication token has expired. The user must authenticate again."}"#;
     let again = r#"{"success":true,"data":{"token":"session-token-3","masterToken":"master-token-3"}}"#;
-    let server = serve(listener, vec![ok(LOGIN_OK), ok(gone), ok(again), ok(one()), ok(CLOSED_OK)]);
+    let status = json!({ "success": true, "data": { "rowtype": [{ "name": "status", "type": "text" }],
+        "rowset": [["Statement executed successfully."]], "queryResultFormat": "json", "statementTypeId": 0x5000 } })
+    .to_string();
+    let server = serve(listener, vec![ok(LOGIN_OK), ok(gone), ok(again), ok(status), ok(one()), ok(CLOSED_OK)]);
     let pool = Pool::connect(&source(port), None, None).await.unwrap();
     pool.execute("select 1", 5, &CancellationToken::new()).await.unwrap();
     pool.close().await;
     let seen = server.await.unwrap();
     assert!(seen[2].line().starts_with("POST /session/v1/login-request?"), "{}", seen[2].line());
-    assert_eq!(seen[3].header("authorization"), Some("Snowflake Token=\"session-token-3\""));
+    // The new session enters the target's schema before the statement runs again.
+    assert_eq!(seen[3].json()["sqlText"], "USE SCHEMA \"ANALYTICS\".\"PUBLIC\"");
+    assert_eq!(seen[4].json()["sqlText"], "select 1");
+    assert_eq!(seen[4].header("authorization"), Some("Snowflake Token=\"session-token-3\""));
+}
+
+#[tokio::test]
+async fn a_lost_session_runs_the_statement_in_its_own_database_again() {
+    let (listener, port) = bind().await;
+    let gone = r#"{"success":false,"code":"390114","message":"Authentication token has expired. The user must authenticate again."}"#;
+    let again = r#"{"success":true,"data":{"token":"session-token-3","masterToken":"master-token-3"}}"#;
+    let status = || {
+        json!({ "success": true, "data": { "rowtype": [{ "name": "status", "type": "text" }],
+            "rowset": [["Statement executed successfully."]], "queryResultFormat": "json", "statementTypeId": 0x5000 } })
+        .to_string()
+    };
+    // Raw Data entered, the statement finds the session gone, a new login (under ANALYTICS),
+    // Raw Data entered again, the statement.
+    let replies = vec![ok(LOGIN_OK), ok(status()), ok(gone), ok(again), ok(status()), ok(one()), ok(CLOSED_OK)];
+    let server = serve(listener, replies);
+    let first = Pool::connect(&source(port), None, None).await.unwrap();
+    let mut other = source(port);
+    other.database = "Raw Data".into();
+    other.options.default_schema = String::new();
+    let second = Pool::connect(&other, None, None).await.unwrap();
+    second.execute("delete from t", 1, &CancellationToken::new()).await.unwrap();
+    first.close().await;
+    second.close().await;
+    let sent: Vec<String> =
+        server.await.unwrap()[1..6].iter().map(|r| r.json()["sqlText"].as_str().unwrap_or("").to_owned()).collect();
+    let raw = "USE DATABASE \"Raw Data\"";
+    assert_eq!(sent, [raw, "delete from t", "", raw, "delete from t"]);
+}
+
+#[tokio::test]
+async fn a_transaction_ends_even_when_its_schema_is_gone() {
+    let (listener, port) = bind().await;
+    let status = json!({ "success": true, "data": { "rowtype": [{ "name": "status", "type": "text" }],
+        "rowset": [["Statement executed successfully."]], "queryResultFormat": "json", "statementTypeId": 0x5000 } })
+    .to_string();
+    let server = serve(listener, vec![ok(LOGIN_OK), ok(status), ok(CLOSED_OK)]);
+    let pool = Pool::connect(&source(port), None, None).await.unwrap();
+    // The console's schema was dropped since it was picked: ending the transaction doesn't switch to it.
+    let mut console = crate::conn::Held::acquire(&pool).await.unwrap();
+    console.apply_context(Some("Dropped")).await.unwrap();
+    console.execute(&pool, "ROLLBACK", 0, &CancellationToken::new()).await.unwrap();
+    pool.close().await;
+    let seen = server.await.unwrap();
+    assert_eq!(seen[1].json()["sqlText"], "ROLLBACK");
 }
 
 #[tokio::test]
@@ -714,7 +765,7 @@ async fn a_console_schema_is_switched_with_its_statement_and_only_when_needed() 
 }
 
 #[tokio::test]
-async fn a_role_that_may_not_use_the_schema_still_runs_statements() {
+async fn a_role_that_may_not_use_the_schema_runs_nothing_elsewhere() {
     let status = || {
         json!({ "success": true, "data": { "rowtype": [{ "name": "status", "type": "text" }],
             "rowset": [["Statement executed successfully."]], "queryResultFormat": "json", "statementTypeId": 0x5000 } })
@@ -722,14 +773,12 @@ async fn a_role_that_may_not_use_the_schema_still_runs_statements() {
     };
     let refused = r#"{"success":false,"code":"002043","message":"SQL compilation error:\nObject does not exist, or operation cannot be performed."}"#;
     let (listener, port) = bind().await;
-    // use role | the schema is refused once, the statement runs | the next one does not ask again |
-    // a role that is not granted | use role back, the schema is entered again
+    // use role | the schema is refused, the statement is not sent | asked again, refused again |
+    // use role back, the schema is entered, the statement runs
     let replies = vec![
         ok(LOGIN_OK),
         ok(status()),
         ok(refused),
-        ok(one()),
-        ok(one()),
         ok(refused),
         ok(status()),
         ok(status()),
@@ -740,20 +789,22 @@ async fn a_role_that_may_not_use_the_schema_still_runs_statements() {
     let pool = Pool::connect(&source(port), None, None).await.unwrap();
     let cancel = CancellationToken::new();
     pool.execute("use role auditor", 0, &cancel).await.unwrap();
-    pool.execute("select 1", 1, &cancel).await.unwrap();
-    pool.execute("select 2", 1, &cancel).await.unwrap();
-    let missing = pool.execute("use role nobody", 0, &cancel).await.unwrap_err();
-    assert!(missing.message.contains("002043") && missing.message.contains("granted"), "{}", missing.message);
+    let error = pool.execute("delete from t", 1, &cancel).await.unwrap_err();
+    assert!(
+        error.message.contains("USE SCHEMA")
+            && error.message.contains("was not run")
+            && error.message.contains("002043"),
+        "{}",
+        error.message
+    );
+    assert!(pool.execute("select 2", 1, &cancel).await.is_err());
     pool.execute("use role analyst", 0, &cancel).await.unwrap();
     pool.execute("select 3", 1, &cancel).await.unwrap();
     pool.close().await;
     let sent: Vec<String> =
-        server.await.unwrap()[1..9].iter().map(|r| r.json()["sqlText"].as_str().unwrap().to_owned()).collect();
+        server.await.unwrap()[1..7].iter().map(|r| r.json()["sqlText"].as_str().unwrap().to_owned()).collect();
     let schema = "USE SCHEMA \"ANALYTICS\".\"PUBLIC\"";
-    assert_eq!(
-        sent,
-        ["use role auditor", schema, "select 1", "select 2", "use role nobody", "use role analyst", schema, "select 3"]
-    );
+    assert_eq!(sent, ["use role auditor", schema, schema, "use role analyst", schema, "select 3"]);
 }
 
 #[tokio::test]
@@ -783,6 +834,45 @@ async fn databases_of_one_data_source_share_a_login() {
     let sent: Vec<String> = seen[1..4].iter().map(|r| r.json()["sqlText"].as_str().unwrap().to_owned()).collect();
     assert_eq!(sent, ["select 1", "USE DATABASE \"Raw Data\"", "select 2"]);
     assert!(seen[4].line().starts_with("POST /session?delete=true"), "{}", seen[4].line());
+}
+
+#[tokio::test]
+async fn data_sources_with_the_same_settings_have_their_own_sessions() {
+    let (listener, port) = bind().await;
+    let second = r#"{"success":true,"data":{"token":"session-token-2","masterToken":"master-token-2"}}"#;
+    let server = serve(listener, vec![ok(LOGIN_OK), ok(second), ok(one()), ok(one()), ok(CLOSED_OK), ok(CLOSED_OK)]);
+    let first = Pool::connect(&source(port), None, None).await.unwrap();
+    let mut copy = source(port);
+    copy.id = format!("{}-copy", copy.id);
+    let other = Pool::connect(&copy, None, None).await.unwrap();
+    let cancel = CancellationToken::new();
+    first.execute("select 1", 1, &cancel).await.unwrap();
+    other.execute("select 2", 1, &cancel).await.unwrap();
+    first.close().await;
+    other.close().await;
+    let seen = server.await.unwrap();
+    assert!(seen[1].line().starts_with("POST /session/v1/login-request?"), "{}", seen[1].line());
+    assert_eq!(seen[2].header("authorization"), Some("Snowflake Token=\"session-token-1\""));
+    assert_eq!(seen[3].header("authorization"), Some("Snowflake Token=\"session-token-2\""));
+}
+
+#[tokio::test]
+async fn one_data_source_in_two_projects_has_a_session_in_each() {
+    let (listener, port) = bind().await;
+    let second = r#"{"success":true,"data":{"token":"session-token-2","masterToken":"master-token-2"}}"#;
+    let server = serve(listener, vec![ok(LOGIN_OK), ok(second), ok(one()), ok(one()), ok(CLOSED_OK), ok(CLOSED_OK)]);
+    // A plugin's data source has the same id in every project.
+    let first = Pool::connect(&source(port), None, Some(std::path::Path::new("/projects/a"))).await.unwrap();
+    let other = Pool::connect(&source(port), None, Some(std::path::Path::new("/projects/b"))).await.unwrap();
+    let cancel = CancellationToken::new();
+    first.execute("select 1", 1, &cancel).await.unwrap();
+    other.execute("select 2", 1, &cancel).await.unwrap();
+    first.close().await;
+    other.close().await;
+    let seen = server.await.unwrap();
+    assert!(seen[1].line().starts_with("POST /session/v1/login-request?"), "{}", seen[1].line());
+    assert_eq!(seen[2].header("authorization"), Some("Snowflake Token=\"session-token-1\""));
+    assert_eq!(seen[3].header("authorization"), Some("Snowflake Token=\"session-token-2\""));
 }
 
 #[tokio::test]

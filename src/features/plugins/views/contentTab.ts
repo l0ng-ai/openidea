@@ -176,9 +176,22 @@ function validDiff(v: unknown): ContentTabDiff | undefined {
 }
 
 /** Opens a plugin's two texts in the diff viewer; `path` picks the syntax highlighting. */
-export function openPluginDiff(diff: ContentTabDiff, path: string, title: string) {
+/**
+ * A plugin diff's path: the file name only picks the syntax highlighting. It is virtual, so the
+ * diff viewer never probes or opens a file of that name (a plugin may lack file system access).
+ */
+export function pluginDiffPath(name: string): string {
+  const base =
+    name
+      .split(/[\\/]/)
+      .pop()
+      ?.replace(/[\u0000-\u001f:]/g, "") || "diff";
+  return `plugin-diff:/${base}`;
+}
+
+export function openPluginDiff(diff: ContentTabDiff, name: string, title: string) {
   void executeAction("vcs.openDiff", {
-    path,
+    path: pluginDiffPath(name),
     title: diff.title ?? title,
     left: { type: "text", text: diff.left, label: diff.leftLabel ?? tx("Before") },
     right: { type: "text", text: diff.right, label: diff.rightLabel ?? tx("After") },

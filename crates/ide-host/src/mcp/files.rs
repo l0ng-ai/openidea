@@ -30,9 +30,14 @@ fn read_file() -> Tool {
         "Reads a file in the project directory or from any project dependency or other project source root.
 Can read text sources inside jar/zip archives; compiled class files are not decompiled.
 Returns numbered lines (1-indexed) as text.
-By default, reads up to 2000 lines starting from the beginning of the file.
+By default, reads up to 2000 lines starting from the beginning of the file; a longer file keeps its first and last
+lines with a `…N lines truncated…` marker between them.
+With `offset` or `limit`, returns exactly lines `offset` to `offset + limit - 1` (fewer at the end of the file),
+followed by `…N more lines; read on with offset=M…` when the file goes on.
 The maximum accepted limit is 5000 lines.",
         |call| async move {
+            // An explicit range is read as asked; the default read of a whole file keeps its head and tail.
+            let window = call.opt_i64("offset")?.is_some() || call.opt_i64("limit")?.is_some();
             let offset = positive(&call, "offset", 1)?;
             let limit = positive(&call, "limit", DEFAULT_READ_LIMIT)?;
             if limit > MAX_READ_LIMIT {
@@ -50,7 +55,7 @@ The maximum accepted limit is 5000 lines.",
                 )));
             }
             let text = crate::ops::fs::read_text(&call.host(), call.window(), path).await?;
-            Ok(Output::text(render_slice(&text, offset as usize, limit as usize)?))
+            Ok(Output::text(render_slice(&text, offset as usize, limit as usize, window)?))
         },
     )
     .param(Param::required("file_path", ParamType::String, util::FILE_PATH_DESCRIPTION))
@@ -70,10 +75,12 @@ fn positive(call: &Call, name: &str, default: i64) -> IdeResult<i64> {
     }
 }
 
-/// Lines `start..` of `text` as `L<n>: <line>`; when more than `max_lines` remain, the first
-/// and the last halves of the budget with a `…N lines truncated…` marker between them.
+/// Lines `start..` of `text` as `L<n>: <line>`, at most `max_lines` of them. A `window` is
+/// exactly the lines from `start` on, then how many lines remain; otherwise, when more than
+/// `max_lines` remain, the first and the last halves of the budget with a `…N lines truncated…`
+/// marker between them.
 /// Lines are the editor's: a trailing line break starts an empty last line.
-fn render_slice(text: &str, start: usize, max_lines: usize) -> IdeResult<String> {
+fn render_slice(text: &str, start: usize, max_lines: usize, window: bool) -> IdeResult<String> {
     let lines: Vec<&str> = text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
     let count = lines.len();
     if start > count {
@@ -85,6 +92,15 @@ fn render_slice(text: &str, start: usize, max_lines: usize) -> IdeResult<String>
     let available = count - start + 1;
     if available <= max_lines {
         return Ok(range(start, count));
+    }
+    if window {
+        let end = start + max_lines - 1;
+        return Ok(format!(
+            "{}\n\u{2026}{} more lines; read on with offset={}\u{2026}",
+            range(start, end),
+            count - end,
+            end + 1
+        ));
     }
     let head = max_lines / 2;
     let tail = max_lines - head;
@@ -245,7 +261,7 @@ mod tests {
     use super::*;
 
     fn slice(text: &str, start: usize, max: usize) -> String {
-        render_slice(text, start, max).unwrap()
+        render_slice(text, start, max, false).unwrap()
     }
 
     #[test]
@@ -254,16 +270,25 @@ mod tests {
         assert_eq!(slice("a\r\nb\n", 1, 10), "L1: a\nL2: b\nL3: ");
         assert_eq!(slice("", 1, 10), "L1: ");
         assert_eq!(slice("a\nb\nc", 2, 10), "L2: b\nL3: c");
-        assert!(render_slice("", 2, 10).unwrap_err().message.contains("offset exceeds file length"));
-        assert!(render_slice("a\nb", 3, 10).unwrap_err().message.contains("offset exceeds file length"));
+        assert!(render_slice("", 2, 10, true).unwrap_err().message.contains("offset exceeds file length"));
+        assert!(render_slice("a\nb", 3, 10, true).unwrap_err().message.contains("offset exceeds file length"));
     }
 
     #[test]
-    fn keeps_head_and_tail_of_long_slices() {
+    fn keeps_head_and_tail_of_a_long_default_read() {
         let text = (1..=11).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
         assert_eq!(slice(&text, 1, 4), "L1: line 1\nL2: line 2\n…7 lines truncated…\nL10: line 10\nL11: line 11");
         assert_eq!(slice(&text, 3, 4), "L3: line 3\nL4: line 4\n…5 lines truncated…\nL10: line 10\nL11: line 11");
         assert_eq!(slice(&text, 1, 1), "…10 lines truncated…\nL11: line 11");
+    }
+
+    #[test]
+    fn reads_an_explicit_range_exactly_and_says_where_to_read_on() {
+        let text = (1..=11).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+        let window = |start, max| render_slice(&text, start, max, true).unwrap();
+        assert_eq!(window(5, 3), "L5: line 5\nL6: line 6\nL7: line 7\n…4 more lines; read on with offset=8…");
+        assert_eq!(window(1, 1), "L1: line 1\n…10 more lines; read on with offset=2…");
+        assert_eq!(window(10, 3), "L10: line 10\nL11: line 11", "the end of the file needs no marker");
     }
 
     #[test]

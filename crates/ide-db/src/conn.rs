@@ -753,7 +753,7 @@ impl Pool {
             return crate::oracle::OraclePool::connect(source, password, &setup).await.map(Pool::Oracle);
         }
         if source.driver == DbDriver::Snowflake {
-            return crate::snowflake::SnowflakePool::connect(source, password, setup).await.map(Pool::Snowflake);
+            return crate::snowflake::SnowflakePool::connect(source, password, setup, root).await.map(Pool::Snowflake);
         }
         let timeout = setup.connect_timeout.unwrap_or(Duration::from_secs(30));
         let init = Arc::new(setup.statements);
