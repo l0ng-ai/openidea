@@ -200,6 +200,9 @@ function Pager({ tab }: { tab: ResultTab }) {
   );
 }
 
+/** Unsubmitted edits by the rows they were made on, kept while another result tab is shown. */
+const keptEdits = new WeakMap<DbQueryResult, PendingEdits>();
+
 function Result({ tab }: { tab: ResultTab }) {
   const [view, setView] = useState<"table" | "chart">("table");
   const [panel, setPanel] = useState<DataPanel | null>(null);
@@ -275,14 +278,19 @@ function Result({ tab }: { tab: ResultTab }) {
     sources.some((s) => s !== null);
 
   // The pending edits belong to the result they were made on: fresh rows (a
-  // re-run, another page) start over, without an effect.
-  const [pending, setPending] = useState<{ outcome: DbQueryResult | null; edits: PendingEdits }>({
-    outcome: null,
-    edits: emptyEdits(),
-  });
+  // re-run, another page) start over, without an effect. They outlive the pane,
+  // which remounts when another result tab is selected.
+  const [pending, setPending] = useState<{ outcome: DbQueryResult | null; edits: PendingEdits }>(() => ({
+    outcome: r ?? null,
+    edits: (r && keptEdits.get(r)) ?? emptyEdits(),
+  }));
   const edits = pending.outcome === r ? pending.edits : emptyEdits();
   const setEdits = (f: (e: PendingEdits) => PendingEdits) =>
-    setPending((previous) => ({ outcome: r, edits: f(previous.outcome === r ? previous.edits : emptyEdits()) }));
+    setPending((previous) => {
+      const next = f(previous.outcome === r ? previous.edits : emptyEdits());
+      if (r) keptEdits.set(r, next);
+      return { outcome: r ?? null, edits: next };
+    });
   const loaded = r?.rows.length ?? 0;
   const rowCount = loaded + edits.inserts.length;
   const value = useCallback(
