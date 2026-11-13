@@ -7854,5 +7854,8 @@
   "All Interpreters": "所有解释器",
   "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff.": "配置项目解释器及其软件包、IDE 已知的所有解释器，以及 Ruff。",
   "No credential store": "没有凭据存储",
-  "Values of agent and MCP server settings are kept in {path}, readable only by you.": "智能体和 MCP 服务器设置中的值保存在 {path} 中，仅你本人可读取。"
+  "Values of agent and MCP server settings are kept in {path}, readable only by you.": "智能体和 MCP 服务器设置中的值保存在 {path} 中，仅你本人可读取。",
+  "Open on Git Remote": "在 Git 远程上打开",
+  "Opens the file or directory on the web page of its repository's remote.": "在仓库远程的网页上打开该文件或目录。",
+  "This file has no page on a Git remote": "该文件在 Git 远程上没有对应页面"
 }
