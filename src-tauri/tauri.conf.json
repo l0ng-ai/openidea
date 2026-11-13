@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OpenIDEA",
-  "version": "0.1.40",
-  "identifier": "ai.l0ng.openidea",
+  "productName": "OpenIDEA Nightly",
+  "version": "0.1.41-nightly.202611130929",
+  "identifier": "ai.l0ng.openidea.nightly",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -31,9 +31,21 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "app",
+      "dmg",
+      "appimage",
+      "deb",
+      "nsis"
+    ],
     "createUpdaterArtifacts": true,
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "category": "DeveloperTool",
     "copyright": "Copyright © 2026 OpenIDEA contributors",
     "license": "Apache-2.0",
@@ -48,7 +60,9 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFCOUU0MUFFOUY4NzZCNkQKUldSdGE0ZWZya0dlRzNnRFJUR2loUVdNZ1BmamxkNzFoaWNPUTBsRmI0cjhxZFRqQURybkMwakEK",
-      "endpoints": ["https://github.com/l0ng-ai/openidea/releases/latest/download/latest.json"]
+      "endpoints": [
+        "https://github.com/l0ng-ai/openidea/releases/download/nightly/latest.json"
+      ]
     }
   }
 }
