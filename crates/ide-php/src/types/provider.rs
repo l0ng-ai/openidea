@@ -643,7 +643,27 @@ impl TypeProvider for CoreProvider {
         let core = (site.core)();
         (core != LazyType::mixed()).then_some(core)
     }
+
+    /// A property without a type or `@var`: what the methods of its class
+    /// assign to it (`$this->reader = IOFactory::load($path);`), when it is
+    /// few different things.
+    fn property(&self, site: &PropertySite<'_>) -> Option<LazyType> {
+        let mut assigned: Vec<LazyType> = Vec::new();
+        for value in site.assigned {
+            if !assigned.contains(&value.ty) {
+                assigned.push(value.ty.clone());
+            }
+        }
+        // Nothing known, or too many to mean one thing.
+        if assigned.is_empty() || assigned.len() > MAX_ASSIGNED || assigned.contains(&LazyType::mixed()) {
+            return None;
+        }
+        Some(LazyType::union(assigned))
+    }
 }
+
+/// How many different values assigned to an untyped property still type it.
+const MAX_ASSIGNED: usize = 4;
 
 /// PHPUnit: test doubles and fixtures set up in `setUp()`.
 ///

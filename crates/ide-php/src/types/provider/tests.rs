@@ -148,8 +148,8 @@ fn phpunit_set_up_fields() {
         (t("$this->clock->now()"), "int".to_owned()),
         (t("$this->mailer"), format!("App\\Mailer&{MOCK}")),
         (t("$this->mailer->send('a')"), "bool".to_owned()),
-        // Assigned outside setUp(): not typed by the provider.
-        (t("$this->later"), "mixed".to_owned()),
+        // Assigned outside setUp(): the core's rule for untyped properties.
+        (t("$this->later"), "App\\Clock".to_owned()),
         // A declared type wins.
         (t("$this->documented"), "App\\Mailer".to_owned()),
         (t("$this->count"), "int".to_owned()),
@@ -167,14 +167,14 @@ fn phpunit_set_up_fields() {
     };
     assert_eq!(ty("clock").as_deref(), Some("phpunit:setUp(Tests\\ClockTest, App\\Clock)"));
     assert!(ty("mailer").unwrap().starts_with("phpunit:setUp(Tests\\ClockTest, phpunit:double:"), "{:?}", ty("mailer"));
-    assert_eq!(ty("later"), None);
+    assert_eq!(ty("later").as_deref(), Some("App\\Clock"));
     assert_eq!(ty("documented"), None);
     assert_eq!(ty("shared"), None);
 
-    // Not a test case: the default value types the property.
+    // Not a test case: what is assigned (unknown here) types the property.
     let plain =
         format!("{TEST_HEADER}{}", SETUP_TEST.replace("extends TestCase ", "").replace("BODY", "$this->mailer/*|*/;"));
-    assert_eq!(type_with(None, &[APP], &plain), "null");
+    assert_eq!(type_with(None, &[APP], &plain), "mixed");
 }
 
 #[test]
