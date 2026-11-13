@@ -323,11 +323,38 @@ fn resolve_gradle_command(root: &Path, build_dir: &Path, s: &Settings, use_wrapp
     }
     let wrapper = build_dir.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
     if use_wrapper && wrapper.is_file() {
+        // `gradlew` can't start without its jar, which `.gitignore`s with `*.jar` often leave
+        // out: run the distribution the wrapper already unpacked instead.
+        if build_dir.join("gradle/wrapper/gradle-wrapper.jar").is_file() {
+            return wrapper;
+        }
+        let home = setting_path(root, &g.user_home)
+            .or_else(|| std::env::var_os("GRADLE_USER_HOME").map(PathBuf::from))
+            .or_else(|| Some(crate::home_dir()?.join(".gradle")));
+        if let Some(gradle) = home.and_then(|home| unpacked_wrapper_distribution(build_dir, &home)) {
+            return gradle;
+        }
+        // Nothing to run instead: the wrapper's failure explains what is missing.
         return wrapper;
     }
     pinned::pinned_install(build_dir, Tool::Gradle)
         .map(|(home, _)| home.join("bin").join(name))
         .unwrap_or_else(|| name.into())
+}
+
+/// `bin/gradle` of the distribution `gradle/wrapper/gradle-wrapper.properties` names, once the
+/// wrapper has unpacked it in `<gradle_user_home>/wrapper/dists` (and marked it complete).
+fn unpacked_wrapper_distribution(build_dir: &Path, gradle_user_home: &Path) -> Option<PathBuf> {
+    let properties = std::fs::read_to_string(build_dir.join("gradle/wrapper/gradle-wrapper.properties")).ok()?;
+    let url = properties.lines().find_map(|line| line.trim().strip_prefix("distributionUrl="))?;
+    let zip = url.trim().replace("\\:", ":").rsplit('/').next()?.to_owned();
+    let name = zip.strip_suffix(".zip")?;
+    let gradle = if cfg!(windows) { "gradle.bat" } else { "gradle" };
+    // One directory per distribution URL hash, each holding the unpacked `gradle-<version>`.
+    let hashes = std::fs::read_dir(gradle_user_home.join("wrapper/dists").join(name)).ok()?;
+    hashes.flatten().map(|e| e.path()).filter(|dir| dir.join(format!("{zip}.ok")).is_file()).find_map(|dir| {
+        std::fs::read_dir(&dir).ok()?.flatten().map(|e| e.path().join("bin").join(gradle)).find(|p| p.is_file())
+    })
 }
 
 fn gradle_run_jdk<'a>(
@@ -1618,6 +1645,17 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
                         }
                     }
                     path_dirs.push(bin);
+                }
+            }
+            // JAR Application's default JRE is the project JDK; a chosen JRE is an absolute `java`.
+            "jar-application" => {
+                if let Some(jdk) = &jdk
+                    && c.command == "java"
+                {
+                    let java = crate::java::java_executable(&jdk.home);
+                    if java.is_file() {
+                        c.command = java.to_string_lossy().into_owned();
+                    }
                 }
             }
             "tomcat" => {

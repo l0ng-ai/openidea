@@ -658,6 +658,24 @@ impl Server {
         }
     }
 
+    /// Waits until no `$/progress` task is active, background work included (jdtls' builds,
+    /// rust-analyzer's `cargo check`), unlike [`Server::wait_indexed`]; false on timeout or
+    /// cancellation.
+    pub async fn wait_idle(&self, timeout: Duration, cancel: &CancellationToken) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let notified = self.phase_notify.notified();
+            if !self.is_busy() || self.running().is_none() {
+                return !self.is_busy();
+            }
+            tokio::select! {
+                () = notified => {}
+                () = tokio::time::sleep_until(deadline) => return !self.is_busy(),
+                () = cancel.cancelled() => return false,
+            }
+        }
+    }
+
     // ---- transiently opened files ----
 
     /// Registers a holder of the transient file `path` on instance `generation`;
@@ -750,6 +768,20 @@ impl Server {
     pub fn set_diagnostics(&self, path: PathBuf, items: Vec<lsp::Diagnostic>) -> Vec<lsp::Diagnostic> {
         set_or_remove(&mut self.pushed.lock(), path.clone(), items);
         self.combine(path)
+    }
+
+    /// [`Server::set_diagnostics`] for a publication tagged with a document version older than
+    /// the text the server has now: shown, but not an answer for the current text, so
+    /// [`Server::last_published`] keeps its time.
+    pub fn set_obsolete_diagnostics(&self, path: PathBuf, items: Vec<lsp::Diagnostic>) -> Vec<lsp::Diagnostic> {
+        let before = self.last_published(&path);
+        let shown = self.set_diagnostics(path.clone(), items);
+        let mut published = self.published.lock();
+        match before {
+            Some(at) => published.insert(path, at),
+            None => published.remove(&path),
+        };
+        shown
     }
 
     /// Records a pulled report for `path` (`None` items: unchanged since `result_id`'s

@@ -297,6 +297,7 @@ export const intellijWindows: Record<string, string[]> = {
   "vcs.rollback": ["Ctrl+Alt+Z"],
   "vcs.addToVcs": ["Ctrl+Alt+A"],
   "vcs.showDiff": ["Ctrl+D"],
+  "vcs.log.changes.showDiff": ["Ctrl+D"],
   "vcs.showDiffInNewWindow": [],
   "vcs.nextChange": ["Ctrl+Alt+Shift+Down"],
   "vcs.prevChange": ["Ctrl+Alt+Shift+Up"],
@@ -360,6 +361,8 @@ export const intellijWindows: Record<string, string[]> = {
   "db.openValueWindow": [],
   "db.findInValue": ["Ctrl+F"],
   "db.execute": ["Ctrl+Enter"],
+  "db.nextResultTab": ["Alt+Right"],
+  "db.previousResultTab": ["Alt+Left"],
   // Table editor with pending changes (after `vcs.rollback`, so Ctrl+Alt+Z reverts the table's edits there).
   "db.goToColumn": ["Ctrl+F12"],
   "db.submitChanges": ["Ctrl+Enter"],
@@ -399,6 +402,7 @@ export const intellijWindows: Record<string, string[]> = {
   "db.runSqlScript": [],
   "db.sqlScript": [],
   "db.goToReferencedTable": [],
+  "db.expandAll": [],
   "db.collapseAll": [],
   // Terminal (keyWhen: terminalFocus); after VCS Update / Go to Test so it wins there.
   "terminal.new": ["Ctrl+Shift+T"],

@@ -107,3 +107,29 @@ describe("routine grouping", () => {
     expect(tree.queryByText("functions")).toBeNull();
   });
 });
+
+describe("Expand All", () => {
+  it("opens every loaded node and leaves unloaded ones closed", async () => {
+    useDatabase.setState({
+      sources: [
+        { id: "pg", name: "PostgreSQL", driver: "postgres", options: { singleDatabase: true } },
+        { id: "lite", name: "SQLite", driver: "sqlite" },
+      ],
+      tables: { [tablesKey("pg", "public")]: { status: "ok", value: [{ name: "users", kind: "table" }] } },
+      treeExpanded: new Set(),
+    });
+    render(<DatabaseView />);
+    await act(() => executeAction("db.expandAll"));
+    expect([...useDatabase.getState().treeExpanded].sort()).toEqual([
+      "pg",
+      "pg/public",
+      "pg/public/routines",
+      "pg/public/tables",
+    ]);
+    const tree = within(screen.getByRole("tree", { name: "Data sources" }));
+    expect(tree.getByText("refresh_data")).toBeInTheDocument();
+    // Its columns aren't loaded, and neither is the SQLite source: Expand All loads nothing.
+    expect(tree.getByText("users").closest('[role="treeitem"]')).toHaveAttribute("aria-expanded", "false");
+    expect(tree.getByText("SQLite").closest('[role="treeitem"]')).toHaveAttribute("aria-expanded", "false");
+  });
+});

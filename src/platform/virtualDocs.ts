@@ -73,6 +73,11 @@ export function invalidateVirtualDocument(uri: string): void {
   cache.delete(uri);
 }
 
+/** Forgets every cached document: a build tool reload may have replaced library jars in place. */
+export function invalidateVirtualDocuments(): void {
+  cache.clear();
+}
+
 /** Contents of a virtual document (cached; failures are retried on the next call). */
 export function virtualDocument(uri: string): Promise<VirtualDocument> {
   let p = cache.get(uri);

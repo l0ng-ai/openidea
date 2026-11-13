@@ -7,7 +7,7 @@ import { executeAction, executeActionOrThrow, getAction, registerActions } from 
 import { getContext, setContext, useContextKeys } from "@/platform/context";
 import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
+import { agentRunSettings, onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import {
   menuGroupItems,
@@ -94,6 +94,7 @@ import {
   isLive,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
+import { startAgentRun, trimAgentArchive, type AgentRunRequest } from "./agentRuns";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
 
@@ -380,6 +381,7 @@ export function activate(): () => void {
       icon: "toolwindow-run",
       anchor: "bottom",
       stripe: "onUse",
+      sessionContent: true,
       order: 5,
       component: lazyComponent(() => import("./RunView").then((m) => m.RunView)),
       headerContent: lazyComponent(() => import("./RunView").then((m) => m.RunTabs)),
@@ -637,6 +639,16 @@ export function activate(): () => void {
         },
       },
       {
+        id: "run.agentStart",
+        title: "Run Agent Command",
+        description:
+          "Runs `{ name, command, cwd, env }` from the MCP server's `run_command` in the agent tab `name`; throws when it did not start.",
+        category: "Run",
+        hidden: true,
+        when: "projectOpen",
+        run: ({ arg }) => startAgentRun(arg as AgentRunRequest),
+      },
+      {
         id: "run.pluginStart",
         title: "Run Plugin Configuration",
         category: "Run",
@@ -736,6 +748,11 @@ export function activate(): () => void {
       setContext("run.cmakeBuild", cmakeBuildId(cmake, s.configs));
       setContext("run.updatableRunning", updatableSessions().length > 0);
     }),
+    // Agent tabs (`run_command`): the archive keeps at most Settings' number of them.
+    useRun.subscribe((s, prev) => {
+      if (s.sessions !== prev.sessions) trimAgentArchive();
+    }),
+    onWorkflowSettingsChange(() => agentRunSettings(), trimAgentArchive),
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
       resetRuns();

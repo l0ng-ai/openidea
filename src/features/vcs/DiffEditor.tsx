@@ -37,6 +37,7 @@ import { call, commands } from "@/platform/ipc";
 import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
+import { isVirtualUri } from "@/platform/virtualDocs";
 import { IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
 import { registerSoftWrapSurface } from "@/workbench/softWrap";
 import { editorService, type EditorInput } from "@/workbench/contributions";
@@ -819,7 +820,8 @@ export function DiffEditor({
   const fileSource = sideFile(left, path) ?? sideFile(right, path);
   const [onDisk, setOnDisk] = useState<string | null>(null);
   useEffect(() => {
-    if (fileSource) return;
+    // A virtual path (a plugin's text diff) names no file on disk.
+    if (fileSource || isVirtualUri(path)) return;
     let alive = true;
     void call(commands.fsProbe(path)).then(
       () => alive && setOnDisk(path),
@@ -1105,7 +1107,8 @@ export function DiffEditor({
     viewer: viewerOf,
   });
   useEffect(() => {
-    nav.current = {
+    // Keep the registered navigator's identity while refreshing its handlers.
+    Object.assign(nav.current, {
       next: () => step(1),
       prev: () => step(-1),
       jumpToSource,
@@ -1113,7 +1116,7 @@ export function DiffEditor({
       file,
       showSettings,
       viewer: viewerOf,
-    };
+    });
   });
 
   useEffect(

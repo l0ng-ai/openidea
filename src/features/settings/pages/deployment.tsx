@@ -13,10 +13,24 @@ import {
   deploymentConnectable,
   deploymentConnection,
   deploymentSecretKey,
+  type DeploymentGroupValid,
   type DeploymentServerValid,
   type FtpConnectionValid,
 } from "@/platform/remoteSettings";
-import { Badge, Button, Checkbox, Dialog, Icon, IconButton, Input, Select, Spinner, T, Tabs } from "@/ui";
+import {
+  Badge,
+  Button,
+  Checkbox,
+  Dialog,
+  Icon,
+  IconButton,
+  Input,
+  Select,
+  showContextMenu,
+  Spinner,
+  T,
+  Tabs,
+} from "@/ui";
 import { GlobListEditor, Row } from "../components/Form";
 import { SshConfigSelect, useSshConfigs } from "../components/SshConfigSelect";
 import { useSetting } from "../components/context";
@@ -25,10 +39,13 @@ import {
   fixDefaultServer,
   folderWithin,
   formatExcludes,
+  newGroup,
   newServer,
   parseExcludes,
+  pruneGroups,
   remoteParent,
   removeMapping,
+  toggleGroupServer,
   updateMapping,
 } from "./deploymentModel";
 import { choosePath } from "../languages/api";
@@ -611,44 +628,118 @@ function ExcludedPathsTab({
 
 type ServerTab = "connection" | "mappings" | "excluded";
 
+function GroupPanel({
+  group,
+  servers,
+  update,
+}: {
+  group: DeploymentGroupValid;
+  servers: readonly DeploymentServerValid[];
+  update: (patch: Partial<DeploymentGroupValid>) => void;
+}) {
+  const tx = useTx();
+  return (
+    <div className={styles.panel}>
+      <TextField label="Name" value={group.name} onChange={(name) => update({ name })} />
+      <div className={styles.groupMembers} role="group" aria-label={tx("Servers in group")}>
+        <div className={styles.groupTitle}>
+          <T>Servers in group</T>
+        </div>
+        {servers.length === 0 && (
+          <div className={styles.note}>
+            <T>No servers. Click + to add one.</T>
+          </div>
+        )}
+        {servers.map((s) => (
+          <Checkbox
+            key={s.id}
+            checked={group.servers.includes(s.id)}
+            onChange={() => update(toggleGroupServer(group, s.id, servers))}
+            label={<span>{s.name || s.id}</span>}
+          />
+        ))}
+      </div>
+      <div className={styles.note}>
+        <T>Upload to… on this group uploads the files to each of its servers in turn.</T>
+      </div>
+    </div>
+  );
+}
+
+type Selection = { kind: "server" | "group"; id: string } | null;
+
 function DeploymentServersEditor() {
   const tx = useTx();
   const [servers, setServers] = useSetting<DeploymentServerValid[]>("deployment.servers");
+  const [groups, setGroups] = useSetting<DeploymentGroupValid[]>("deployment.groups");
   const [defaultServer, setDefaultServer] = useSetting<string>("deployment.defaultServer");
   const list = servers ?? [];
-  const [selected, setSelected] = useState<string | null>(list[0]?.id ?? null);
+  const groupList = groups ?? [];
+  const [selected, setSelected] = useState<Selection>(list[0] ? { kind: "server", id: list[0].id } : null);
   const [tab, setTab] = useState<ServerTab>("connection");
-  const current = list.find((s) => s.id === selected) ?? null;
+  const current = selected?.kind === "server" ? (list.find((s) => s.id === selected.id) ?? null) : null;
+  const currentGroup = selected?.kind === "group" ? (groupList.find((g) => g.id === selected.id) ?? null) : null;
   const effectiveDefault = fixDefaultServer(list, defaultServer ?? "");
 
   const commit = (next: DeploymentServerValid[]) => {
     setServers(next);
     const d = fixDefaultServer(next, defaultServer ?? "");
     if (d !== (defaultServer ?? "")) setDefaultServer(d);
+    const pruned = pruneGroups(groupList, next);
+    if (pruned.some((g, i) => g !== groupList[i])) setGroups(pruned);
   };
   const update = (patch: Partial<DeploymentServerValid>) => {
     if (current) commit(list.map((s) => (s.id === current.id ? { ...s, ...patch } : s)));
   };
+  const updateGroup = (patch: Partial<DeploymentGroupValid>) => {
+    if (currentGroup) setGroups(groupList.map((g) => (g.id === currentGroup.id ? { ...g, ...patch } : g)));
+  };
   const add = (base?: DeploymentServerValid) => {
     const server = newServer(list, base);
     commit([...list, server]);
-    setSelected(server.id);
+    setSelected({ kind: "server", id: server.id });
     setTab("connection");
   };
+  const addGroup = () => {
+    const group = newGroup(groupList);
+    setGroups([...groupList, group]);
+    setSelected({ kind: "group", id: group.id });
+  };
   const remove = () => {
+    if (currentGroup) {
+      const index = groupList.indexOf(currentGroup);
+      const rest = groupList.filter((g) => g.id !== currentGroup.id);
+      setGroups(rest);
+      const next = rest[Math.min(index, rest.length - 1)] ?? null;
+      setSelected(next ? { kind: "group", id: next.id } : list[0] ? { kind: "server", id: list[0].id } : null);
+      return;
+    }
     if (!current) return;
     const index = list.indexOf(current);
     const rest = list.filter((s) => s.id !== current.id);
     commit(rest);
-    setSelected(rest[Math.min(index, rest.length - 1)]?.id ?? null);
+    const next = rest[Math.min(index, rest.length - 1)] ?? null;
+    setSelected(next ? { kind: "server", id: next.id } : null);
   };
+  const isSelected = (kind: "server" | "group", id: string) => selected?.kind === kind && selected.id === id;
 
   return (
     <div className={styles.layout}>
       <div className={workflow.tableBox}>
         <div className={workflow.toolbar} role="toolbar" aria-label={tx("Deployment servers actions")}>
-          <IconButton icon="plus" title="Add" size="small" onClick={() => add()} />
-          <IconButton icon="minus" title="Remove" size="small" disabled={!current} onClick={remove} />
+          <IconButton
+            icon="plus"
+            title="Add"
+            size="small"
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              showContextMenu({ x: r.left, y: r.bottom }, [
+                { label: "Server", icon: "web", run: () => add() },
+                { label: "Server Group", icon: "folder", run: addGroup },
+              ]);
+            }}
+          />
+          <IconButton icon="minus" title="Remove" size="small" disabled={!current && !currentGroup} onClick={remove} />
           <IconButton
             icon="copy"
             title="Copy"
@@ -665,18 +756,31 @@ function DeploymentServersEditor() {
           />
         </div>
         <div className={styles.serverList} role="listbox" aria-label={tx("Deployment servers")}>
-          {list.length === 0 && (
+          {list.length === 0 && groupList.length === 0 && (
             <div className={styles.empty}>
               <T>No servers. Click + to add one.</T>
             </div>
           )}
+          {groupList.map((g) => (
+            <div
+              key={g.id}
+              role="option"
+              aria-selected={isSelected("group", g.id)}
+              className={clsx(styles.serverRow, isSelected("group", g.id) && styles.serverSelected)}
+              onMouseDown={() => setSelected({ kind: "group", id: g.id })}
+            >
+              <Icon name="folder" />
+              <span className={styles.serverName}>{g.name || g.id}</span>
+              <Badge>{g.servers.length}</Badge>
+            </div>
+          ))}
           {list.map((s) => (
             <div
               key={s.id}
               role="option"
-              aria-selected={s.id === selected}
-              className={clsx(styles.serverRow, s.id === selected && styles.serverSelected)}
-              onMouseDown={() => setSelected(s.id)}
+              aria-selected={isSelected("server", s.id)}
+              className={clsx(styles.serverRow, isSelected("server", s.id) && styles.serverSelected)}
+              onMouseDown={() => setSelected({ kind: "server", id: s.id })}
             >
               <Icon name="web" />
               <span className={clsx(styles.serverName, s.id === effectiveDefault && styles.default)}>
@@ -687,7 +791,11 @@ function DeploymentServersEditor() {
           ))}
         </div>
       </div>
-      {current ? (
+      {currentGroup ? (
+        <div className={styles.detail}>
+          <GroupPanel key={currentGroup.id} group={currentGroup} servers={list} update={updateGroup} />
+        </div>
+      ) : current ? (
         <div className={styles.detail}>
           <Tabs
             variant="compact"
@@ -780,6 +888,7 @@ export const DEPLOYMENT_PAGES: PageSpec[] = [
               "Passive mode",
               "Test Connection",
               "Use as Default",
+              "Server Group",
               "Local path",
               "Deployment path",
               "Web path",

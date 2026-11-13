@@ -1196,12 +1196,18 @@ export function displayedLogGraph() {
 
 export async function goToParent(c: Commit) {
   const generation = useGitLog.getState().generation;
-  const parents = () => displayedLogGraph().graph.find((x) => x.id === commitKey(c))?.parents ?? [];
-  if (!parents().length) return;
-  const find = () => displayedLogGraph().commits.filter((x) => parents().includes(commitKey(x)));
-  await pageUntil(() => find().length === parents().length);
+  const find = () => {
+    const { graph, commits } = displayedLogGraph();
+    const parents = graph.find((x) => x.id === commitKey(c))?.parents ?? [];
+    return { parents, candidates: commits.filter((x) => parents.includes(commitKey(x))) };
+  };
+  if (!find().parents.length) return;
+  await pageUntil(() => {
+    const { parents, candidates } = find();
+    return candidates.length === parents.length;
+  });
   if (useGitLog.getState().generation !== generation) return;
-  const candidates = find();
+  const { candidates } = find();
   const chosen = candidates.length > 1 ? await chooseLogCommit(candidates, "Select Parent Commit") : candidates[0];
   if (chosen && useGitLog.getState().generation === generation) selectCommit(commitKey(chosen), true);
 }

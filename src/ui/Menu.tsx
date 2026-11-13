@@ -109,6 +109,8 @@ const selectable = (r: Resolved | undefined) => !!r && r.kind === "item" && !r.d
 
 interface MenuListProps {
   items: MenuItem[];
+  /** Reserve space for item icons even when an item has none. */
+  iconColumn?: boolean;
   /** Called after an item ran (closes the whole menu chain). */
   onDone: () => void;
   /** Close just this level (submenus). */
@@ -125,6 +127,7 @@ interface MenuListProps {
 
 export function MenuList({
   items,
+  iconColumn = true,
   onDone,
   onCloseLevel,
   autoFocusFirst = true,
@@ -341,6 +344,9 @@ export function MenuList({
       aria-label={aria["aria-label"]}
       className={styles.menu}
       onKeyDown={onKeyDown}
+      // A right-click in an open menu does nothing; without this it reaches whatever is under the
+      // menu in the component tree, e.g. the title bar's toolbar menu behind File › Open Recent.
+      onContextMenu={(e) => e.preventDefault()}
       onPointerMove={(e) => {
         if (e.currentTarget.contains(e.target as Node)) pointerMove({ x: e.clientX, y: e.clientY });
       }}
@@ -384,9 +390,11 @@ export function MenuList({
                   {numbersOf[i] ?? ""}
                 </span>
               )}
-              <span className={styles.icon} data-menu-icon={!r.checked && r.icon ? "" : undefined}>
-                {r.checked ? <Icon name="check" size={13} /> : r.icon ? <Icon name={r.icon} size={14} /> : null}
-              </span>
+              {iconColumn && (
+                <span className={styles.icon} data-menu-icon={!r.checked && r.icon ? "" : undefined}>
+                  {r.checked ? <Icon name="check" size={13} /> : r.icon ? <Icon name={r.icon} size={14} /> : null}
+                </span>
+              )}
               <span className={styles.label} title={r.label}>
                 {r.label}
               </span>
@@ -428,6 +436,7 @@ export interface MenuProps {
   onClose: () => void;
   anchor: PopupAnchor;
   items: MenuItem[];
+  iconColumn?: boolean;
   placement?: Placement;
   "aria-label"?: string;
   /** Numeric mnemonics on the first nine rows; see `MenuList`. */
@@ -435,7 +444,16 @@ export interface MenuProps {
 }
 
 /** A dropdown menu anchored to an element or point. */
-export function Menu({ open, onClose, anchor, items, placement = "bottom-start", numbers, ...aria }: MenuProps) {
+export function Menu({
+  open,
+  onClose,
+  anchor,
+  items,
+  placement = "bottom-start",
+  iconColumn,
+  numbers,
+  ...aria
+}: MenuProps) {
   return (
     <Popup
       open={open}
@@ -446,7 +464,13 @@ export function Menu({ open, onClose, anchor, items, placement = "bottom-start",
       autoFocus={false}
       className={styles.popup}
     >
-      <MenuList items={items} onDone={onClose} numbers={numbers} aria-label={aria["aria-label"]} />
+      <MenuList
+        items={items}
+        onDone={onClose}
+        iconColumn={iconColumn}
+        numbers={numbers}
+        aria-label={aria["aria-label"]}
+      />
     </Popup>
   );
 }
@@ -463,6 +487,7 @@ interface ContextMenuState {
     id: number;
     /** The text selection the menu was opened on (see `restoreSelection`). */
     selection: Range[] | null;
+    owner: Element | null;
   } | null;
 }
 
@@ -472,12 +497,20 @@ let menuSeq = 0;
 export function showContextMenu(
   at: { clientX: number; clientY: number } | { x: number; y: number },
   items: MenuItem[],
-  options?: { numbers?: boolean },
+  options?: { numbers?: boolean; owner?: Element | null },
 ) {
   const x = "clientX" in at ? at.clientX : at.x;
   const y = "clientY" in at ? at.clientY : at.y;
   useContextMenuStore.setState({
-    menu: { x, y, items, numbers: !!options?.numbers, id: ++menuSeq, selection: textSelection() },
+    menu: {
+      x,
+      y,
+      items,
+      numbers: !!options?.numbers,
+      id: ++menuSeq,
+      selection: textSelection(),
+      owner: options?.owner ?? null,
+    },
   });
 }
 
@@ -512,6 +545,12 @@ export function hideContextMenu() {
 export function ContextMenuHost() {
   const menu = useContextMenuStore((s) => s.menu);
   const selection = menu?.selection ?? null;
+  const owner = menu?.owner ?? null;
+  useLayoutEffect(() => {
+    if (!owner) return;
+    owner.setAttribute("data-context-menu-open", "");
+    return () => owner.removeAttribute("data-context-menu-open");
+  }, [owner]);
   // After the rows' layout effects: the first row has taken focus.
   useLayoutEffect(() => {
     if (!selection) return;

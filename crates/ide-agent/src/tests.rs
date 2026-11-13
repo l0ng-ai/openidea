@@ -264,6 +264,23 @@ impl Handler for FakeAgent {
                     self.say(&session, &format!("late chose {chosen}"));
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
+                if text == "escalate" {
+                    // A request for wider access, titled with text the model wrote.
+                    let peer = self.latest();
+                    let answer: Value = tokio::runtime::Handle::current()
+                        .block_on(peer.request(
+                            "session/request_permission",
+                            json!({"sessionId": session, "toolCall": {"toolCallId": "e1", "title": "Run cargo test",
+                                "kind": "other", "rawInput": {"network": {"enabled": true}}},
+                                "options": [{"optionId": "yes", "name": "Allow for this turn", "kind": "allow_once"},
+                                            {"optionId": "no", "name": "Decline", "kind": "reject_once"}]}),
+                            None,
+                        ))
+                        .unwrap();
+                    let chosen = answer.pointer("/outcome/optionId").and_then(Value::as_str).unwrap_or("none");
+                    self.say(&session, &format!("escalation chose {chosen}"));
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
                 if text == "ask" {
                     let peer = self.latest();
                     let answer: Value = tokio::runtime::Handle::current()
@@ -344,7 +361,8 @@ impl Handler for FakeAgent {
                 let answer: Value = tokio::runtime::Handle::current()
                     .block_on(peer.request(
                         "session/request_permission",
-                        json!({"sessionId": session, "toolCall": {"toolCallId": "t1", "title": "Run cargo test"},
+                        json!({"sessionId": session, "toolCall": {"toolCallId": "t1", "title": "Run cargo test",
+                            "kind": "execute", "rawInput": {"command": "cargo test"}},
                             "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"},
                                         {"optionId": "no", "name": "Reject", "kind": "reject_once"}]}),
                         None,
@@ -366,7 +384,8 @@ fn manager(dir: &Path, agent: Arc<FakeAgent>) -> AgentManager {
 fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentManager {
     // These tests speak to FakeAgent, never an installed CLI, including after a provider reload.
     let agents = dir.join("agents");
-    provider::set_builtin_command(&agents, "claude", Some(&dir.join("missing-claude").to_string_lossy())).unwrap();
+    provider::set_builtin_command(&agents, None, "claude", Some(&dir.join("missing-claude").to_string_lossy()))
+        .unwrap();
     let connector: Connector = Arc::new(move |_spec, _cwd, client, _stderr| {
         let (a, b) = duplex(1 << 20);
         let (ar, aw) = tokio::io::split(a);
@@ -385,6 +404,7 @@ fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentMan
             // The project is the boundary of the skill walk: nothing above it (such as the
             // user's profile, when temp lives under it) leaks into the test.
             home_dir: Some(dir.to_path_buf()),
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -1410,6 +1430,7 @@ async fn real_claude_task_in_a_worktree() {
             models_file: tmp.path().join("models.json"),
             custom_agents_dir: None,
             home_dir: None,
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
     );
@@ -2243,6 +2264,7 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
             models_file: tmp.path().join("models.json"),
             custom_agents_dir: Some(agents_dir.clone()),
             home_dir: None,
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -2367,6 +2389,27 @@ async fn idle_agents_stop_and_resume_their_session_on_the_next_message() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     assert!(live(&mgr, &task.id));
+    mgr.shutdown();
+
+    // Undoing turns or copying the conversation starts a stopped agent: it stops again too.
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    mgr.set_idle_release(Duration::from_millis(200));
+    let task = mgr.create(new()).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!live(&mgr, &task.id));
+    mgr.rollback(&task.id, 1).await.unwrap();
+    assert!(live(&mgr, &task.id));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!live(&mgr, &task.id), "an agent started to undo turns stops too");
+    mgr.fork(&task.id, None).await.unwrap();
+    assert!(live(&mgr, &task.id));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!live(&mgr, &task.id), "an agent started to copy the conversation stops too");
     mgr.shutdown();
 
     // An agent that can't reload its session keeps running: stopping it would lose the conversation.
@@ -2553,6 +2596,7 @@ async fn delete_running_agent(no_load: bool) {
             models_file: root.join("models.json"),
             custom_agents_dir: None,
             home_dir: None,
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -3185,5 +3229,45 @@ async fn security_policy_auto_approves_whitelist_and_rejects_blacklist() {
             AgentEntry::Permission { chosen: Some(c), .. } if c.contains("Blocked by policy")
         )),
         "{blocked_entries:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn security_policy_never_auto_approves_a_request_that_only_reads_like_a_command() {
+    use ide_core::settings::AgentSecuritySettings;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent);
+    mgr.set_security_hook(Arc::new(|| AgentSecuritySettings {
+        allowed_commands: vec!["cargo test".into()],
+        blocked_commands: vec![],
+    }));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("escalate"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    let pending = entries
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, chosen: None, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the request was answered without the user: {entries:?}"));
+    mgr.respond(&task.id, pending, Some("no".into())).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(
+        entries.iter().any(|e| matches!(e, AgentEntry::Agent { text } if text == "escalation chose no")),
+        "{entries:?}"
     );
 }

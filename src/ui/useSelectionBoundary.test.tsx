@@ -121,8 +121,10 @@ it("selects only the pane's text on primary+A", () => {
   const event = fireEvent.keyDown(pane, { key: "a", ctrlKey: true, metaKey: true });
   expect(event).toBe(false);
   const range = window.getSelection()!.getRangeAt(0);
-  expect(range.startContainer).toBe(pane);
-  expect(range.endContainer).toBe(pane);
+  expect(range.startContainer).toBe(view.getByText("GET /data.json").firstChild);
+  expect(range.startOffset).toBe(0);
+  expect(range.endContainer).toBe(view.getByText("GET /data.json").firstChild);
+  expect(range.endOffset).toBe("GET /data.json".length);
   expect(window.getSelection()!.toString()).not.toContain("Request history");
 });
 
@@ -132,4 +134,14 @@ it("leaves Select All in an editable field to the field", () => {
   expect(fireEvent.keyDown(input, { key: "a", ctrlKey: true, metaKey: true })).toBe(true);
   expect(selectReadingPane(input)).toBe(false);
   expect(selectReadingPane(document.body)).toBe(false);
+});
+
+it("ends Select All in the pane's last selectable text, not on its edge before the composer", () => {
+  const view = fixture();
+  expect(selectReadingPane(view.getByText("First message"))).toBe(true);
+  const range = window.getSelection()!.getRangeAt(0);
+  expect(range.startContainer).toBe(view.text("First message"));
+  expect(range.endContainer).toBe(view.text("Last message"));
+  expect(range.endOffset).toBe("Last message".length);
+  expect(window.getSelection()!.toString()).not.toContain("Reply to the agent");
 });

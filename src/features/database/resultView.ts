@@ -13,14 +13,44 @@ export interface LocalSort {
   descending: boolean;
 }
 
-const NUMBER = /^-?\d+(\.\d+)?(e[+-]?\d+)?$/i;
+const NUMBER = /^(-?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i;
+
+function decimalKey(value: string) {
+  const parts = NUMBER.exec(value)!;
+  const fraction = parts[3] ?? "";
+  const digits = (parts[2]! + fraction).replace(/^0+/, "");
+  if (!digits) return null;
+  let end = digits.length;
+  while (digits[end - 1] === "0") end--;
+  return {
+    negative: parts[1] === "-",
+    digits: digits.slice(0, end),
+    order: BigInt(parts[4] ?? "0") + BigInt(digits.length) - BigInt(fraction.length),
+  };
+}
+
+function compareNumbers(a: string, b: string): number {
+  const difference = Number(a) - Number(b);
+  // Distinct floating-point values keep decimal order; rounded ties need the original digits.
+  if (difference) return difference;
+  const left = decimalKey(a);
+  const right = decimalKey(b);
+  if (!left) return !right ? 0 : right.negative ? 1 : -1;
+  if (!right) return left.negative ? -1 : 1;
+  if (left.negative !== right.negative) return left.negative ? -1 : 1;
+  const direction = left.negative ? -1 : 1;
+  // Compare decimal orders without expanding even enormous exponents into zeroes.
+  if (left.order !== right.order) return direction * (left.order < right.order ? -1 : 1);
+  if (left.digits === right.digits) return 0;
+  return direction * (left.digits < right.digits ? -1 : 1);
+}
 
 /** Numbers by value, then text; NULL first (as most databases sort ascending). */
 export function compareCells(a: Cell, b: Cell): number {
   if (a === b) return 0;
   if (a === null) return -1;
   if (b === null) return 1;
-  if (NUMBER.test(a) && NUMBER.test(b)) return Number(a) - Number(b);
+  if (NUMBER.test(a) && NUMBER.test(b)) return compareNumbers(a, b);
   return a < b ? -1 : 1;
 }
 

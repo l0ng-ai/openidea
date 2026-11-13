@@ -14,7 +14,11 @@
  * - a keyCode-229 keydown never reaches xterm, so its deferred textarea diff cannot run;
  * - while such a keydown is pending, an `insertText` is sent from the event's own `data`
  *   (not from a value diff), then the textarea is cleared;
- * - composition input that arrives without a `compositionstart` is sent the same way.
+ * - composition input that arrives without a `compositionstart` is sent the same way;
+ * - so is an `insertText` while only a modifier is down: an IME that commits a shifted
+ *   character directly (`？` from Shift+/ with WeChat or Pinyin) delivers it before the
+ *   character's keydown, and the Shift keydown already armed xterm's gate, so the first press
+ *   was dropped.
  *
  * Everything else stays xterm's: real compositions (`compositionstart` … `compositionend`),
  * input events for keys xterm already sent, and input with no IME keydown behind it.
@@ -27,6 +31,8 @@
  *   (`awd` arrives as `aw d`), so the textarea is rewritten to what was typed.
  */
 import { isImeKey } from "@/platform/ime";
+
+const MODIFIERS = new Set(["Shift", "Control", "Alt", "Meta"]);
 
 /** Commit-shaped input events that xterm's own input path ignores entirely. */
 const COMPOSITION_COMMITS = new Set(["insertFromComposition", "insertCompositionText"]);
@@ -62,6 +68,9 @@ export function ownTerminalInput({ host, textarea, send }: TerminalInputOptions)
   let imeKey = false;
   /** The pending key belongs to an IME: its commit is ours to deliver. */
   let imeDown = false;
+  /** Since the last keyup: a modifier went down, and any other key went down. */
+  let modifierDown = false;
+  let keyDown = false;
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (composing) {
@@ -69,6 +78,8 @@ export function ownTerminalInput({ host, textarea, send }: TerminalInputOptions)
       if (e.keyCode === 0) e.stopPropagation();
       return;
     }
+    if (MODIFIERS.has(e.key)) modifierDown = true;
+    else keyDown = true;
     imeKey = isImeKey(e);
     imeDown = imeKey;
     if (imeKey) {
@@ -90,6 +101,8 @@ export function ownTerminalInput({ host, textarea, send }: TerminalInputOptions)
   const onKeyUp = () => {
     imeKey = false;
     imeDown = false;
+    modifierDown = false;
+    keyDown = false;
   };
 
   const onInput = (e: InputEvent) => {
@@ -97,7 +110,8 @@ export function ownTerminalInput({ host, textarea, send }: TerminalInputOptions)
     if (e.inputType === "insertText") {
       // Without an IME keydown behind it this is xterm's: it drops the event for a key it
       // already sent (Option/AltGr, plain typing) and delivers the rest (dictation, emoji).
-      if (!imeDown) return;
+      // With only a modifier down, no key of xterm's is behind it: xterm would drop it too.
+      if (!imeDown && !(modifierDown && !keyDown)) return;
     } else if (!COMPOSITION_COMMITS.has(e.inputType)) {
       return;
     }

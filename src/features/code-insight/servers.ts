@@ -5,6 +5,7 @@ import type { ServerId, ServerInfo, ServerStatus } from "@/bindings";
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
+import { tx } from "@/platform/i18n";
 
 export interface ServerEntry {
   id: ServerId;
@@ -94,9 +95,15 @@ export async function refreshServers() {
 }
 
 export async function restartServer(id: ServerId) {
+  const missing = useServers.getState().servers.get(id)?.status === "missing";
   try {
     await call(commands.lspRestart(id));
   } catch (e) {
+    const entry = useServers.getState().servers.get(id);
+    if (missing && entry?.status === "missing") {
+      notifications().notify({ group: "lsp", level: "warning", title: tx`${entry.name} is still not installed` });
+      return;
+    }
     notifications().notify({
       group: "lsp",
       level: "error",
@@ -193,4 +200,19 @@ export function serversSummary(
   const names = [...new Set((active.length ? active : servers).map((s) => s.name))];
   const text = names.length === 1 ? names[0]! : `${names[0]} +${names.length - 1}`;
   return { text, tone };
+}
+
+const RUNNING: ReadonlySet<ServerStatus> = new Set(["ready", "busy"]);
+
+/** Whether a running ESLint server covers `path` (a `language` file below its configuration). */
+export function eslintCovers(path: string, language: string | null | undefined): boolean {
+  if (!language) return false;
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const file = norm(path);
+  for (const s of useServers.getState().servers.values()) {
+    if (s.name !== "eslint" || !RUNNING.has(s.status) || !s.languages.includes(language)) continue;
+    const root = s.root ? norm(s.root) : null;
+    if (!root || file.startsWith(`${root}/`)) return true;
+  }
+  return false;
 }

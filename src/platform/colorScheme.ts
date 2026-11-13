@@ -31,6 +31,9 @@ export interface AttributeDef {
   token?: string;
   /** A semantic modifier whose only configurable attribute is italic. */
   italicOnly?: boolean;
+  /** The attribute's renderer applies font style and effects (tokens, the Git surfaces,
+   * Errors and Warnings): overrides land on `--<fg|effect>-*`. */
+  fontStyle?: true;
   defaultBold?: boolean;
   defaultItalic?: boolean;
   defaultEffect?: TextAttributesOverride["effect"];
@@ -49,6 +52,7 @@ const syn = (
   name,
   path,
   token,
+  fontStyle: true,
   fg: `--syn-${token}`,
   ...defaults,
 });
@@ -68,7 +72,12 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "text", name: "Default text", path: ["General", "Text"], fg: "--fg-editor", bg: "--bg-editor" },
   { id: "caret", name: "Caret", path: ["General", "Editor"], fg: "--caret" },
   { id: "caretRow", name: "Caret row", path: ["General", "Editor"], bg: "--bg-current-line" },
-  { id: "selection", name: "Selection background", path: ["General", "Editor"], bg: "--bg-editor-selection" },
+  {
+    id: "selection",
+    name: "Selection background",
+    path: ["General", "Editor"],
+    bg: "--bg-editor-selection",
+  },
   {
     id: "selectionForeground",
     name: "Selection foreground",
@@ -119,17 +128,58 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     fg: "--fg-fold-placeholder",
     bg: "--bg-fold-placeholder",
   },
-  { id: "searchResult", name: "Search result", path: ["General", "Search Results"], bg: "--bg-search-match" },
+  {
+    id: "searchResult",
+    name: "Search result",
+    path: ["General", "Search Results"],
+    bg: "--bg-search-match",
+  },
   {
     id: "searchResultCurrent",
     name: "Current search result",
     path: ["General", "Search Results"],
     bg: "--bg-search-match-current",
   },
-  { id: "error", name: "Error", path: ["General", "Errors and Warnings"], effect: "--wave-error" },
-  { id: "warning", name: "Warning", path: ["General", "Errors and Warnings"], effect: "--wave-warning" },
+  {
+    id: "error",
+    name: "Error",
+    path: ["General", "Errors and Warnings"],
+    effect: "--wave-error",
+    defaultEffect: "wave",
+    fontStyle: true,
+  },
+  {
+    id: "warning",
+    name: "Warning",
+    path: ["General", "Errors and Warnings"],
+    effect: "--wave-warning",
+    defaultEffect: "wave",
+    fontStyle: true,
+  },
   { id: "weakWarning", name: "Weak warning", path: ["General", "Errors and Warnings"], fg: "--fg-weak-warning" },
-  { id: "unused", name: "Unused symbol", path: ["General", "Errors and Warnings"], fg: "--fg-unused" },
+  {
+    id: "typo",
+    name: "Typo",
+    path: ["General", "Errors and Warnings"],
+    effect: "--wave-typo",
+    defaultEffect: "wave",
+    fontStyle: true,
+  },
+  {
+    id: "unused",
+    name: "Unused symbol",
+    path: ["General", "Errors and Warnings"],
+    fg: "--fg-unused",
+    fontStyle: true,
+  },
+  {
+    id: "deprecated",
+    name: "Deprecated symbol",
+    path: ["General", "Errors and Warnings"],
+    effect: "--fg-deprecated",
+    defaultEffect: "strikeout",
+    fontStyle: true,
+  },
   syn("invalid", "Bad character", ["General", "Errors and Warnings"], "invalid"),
   syn("todo", "TODO defaults", ["General", "Code"], "todo"),
   { id: "inlineValue", name: "Inline debugger values", path: ["Debugger"], fg: "--syn-inline-value" },
@@ -137,7 +187,12 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
 
   // Console / terminal: IDEA's Console Colors (background + 16 ANSI). `--ansi-*` is mirrored
   // to `--terminal-ansi-*` in overrideDeclarations so the terminal picks up edits.
-  { id: "consoleBackground", name: "Console background", path: ["Console Colors"], bg: "--bg-console" },
+  {
+    id: "consoleBackground",
+    name: "Console background",
+    path: ["Console Colors"],
+    bg: "--bg-console",
+  },
   { id: "ansiBlack", name: "Black", path: ["Console Colors"], fg: "--ansi-black" },
   { id: "ansiRed", name: "Red", path: ["Console Colors"], fg: "--ansi-red" },
   { id: "ansiGreen", name: "Green", path: ["Console Colors"], fg: "--ansi-green" },
@@ -154,6 +209,63 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "ansiBrightMagenta", name: "Bright magenta", path: ["Console Colors"], fg: "--ansi-bright-magenta" },
   { id: "ansiBrightCyan", name: "Bright cyan", path: ["Console Colors"], fg: "--ansi-bright-cyan" },
   { id: "ansiBrightWhite", name: "Bright white", path: ["Console Colors"], fg: "--ansi-bright-white" },
+
+  // Color Scheme › Git: inline blame segments and project view branch decorations.
+  // The inline blame widget and the project root suffix read these variables directly;
+  // only the blame segments render font style, so the branch decorations opt out.
+  {
+    id: "gitBlameAuthor",
+    name: "Editor inline blame › Author",
+    path: ["Git"],
+    fg: "--git-blame-author",
+    bg: "--git-blame-author-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameDate",
+    name: "Editor inline blame › Date time",
+    path: ["Git"],
+    fg: "--git-blame-date",
+    bg: "--git-blame-date-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameIssue",
+    name: "Editor inline blame › Issue link",
+    path: ["Git"],
+    fg: "--git-blame-issue",
+    bg: "--git-blame-issue-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameSubject",
+    name: "Editor inline blame › Subject",
+    path: ["Git"],
+    fg: "--git-blame-subject",
+    bg: "--git-blame-subject-bg",
+    fontStyle: true,
+  },
+  { id: "gitBranchChanged", name: "Project View › Changed decoration", path: ["Git"], fg: "--git-branch-changed" },
+  { id: "gitHeadTags", name: "Project View › HEAD tags decoration", path: ["Git"], fg: "--git-head-tags" },
+  { id: "gitLocalBranch", name: "Project View › Local branch decoration", path: ["Git"], fg: "--git-local-branch" },
+  {
+    id: "gitMasterWithRemote",
+    name: "Project View › master/main with remote",
+    path: ["Git"],
+    fg: "--git-master-with-remote",
+  },
+  {
+    id: "gitMasterWithoutRemote",
+    name: "Project View › master/main without remote",
+    path: ["Git"],
+    fg: "--git-master-without-remote",
+  },
+  {
+    id: "gitTrackingBranch",
+    name: "Project View › Tracking branch decoration",
+    path: ["Git"],
+    fg: "--git-tracking-branch",
+  },
 
   syn("keyword", "Keyword", [LD], "keyword"),
   syn("identifier", "Identifiers › Local variable", [LD], "variable"),
@@ -264,6 +376,11 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
 /** Variables a scheme sets: every attribute variable plus the editor tokens derived from them. */
 const SCHEME_VARS = new Set<string>([
   ...ATTRIBUTES.flatMap((a) => [a.fg, a.bg, a.effect].filter((v): v is string => !!v)),
+  // Font style of token-less attributes (`overrideDeclarations` writes them for custom schemes too).
+  ...ATTRIBUTES.flatMap((a) => {
+    const base = a.fg ?? a.effect;
+    return !a.token && a.fontStyle && base ? [`${base}-bold`, `${base}-italic`, `${a.effect ?? base}-effect`] : [];
+  }),
   "--syn-comment-style",
   "--syn-doc-comment-tag-effect",
   "--editor-error-decoration",
@@ -402,7 +519,7 @@ export function boldWeight(bold: boolean): string {
   return bold ? "var(--fw-code-bold, 700)" : "var(--fw-code, 400)";
 }
 
-const EFFECT_CSS: Record<string, (c: string) => string> = {
+export const EFFECT_CSS: Record<string, (c: string) => string> = {
   underline: (c) => `underline ${c}`,
   wave: (c) => `underline wavy ${c}`,
   strikeout: (c) => `line-through ${c}`,
@@ -432,9 +549,12 @@ export function overrideDeclarations(
     }
     if (setOrCleared(o.background) && attr.bg) out.push([attr.bg, o.background]);
     if (setOrCleared(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
-    if (attr.effect && setOrCleared(o.effectColor)) {
-      if (attr.id === "error") out.push(["--editor-error-decoration", `underline wavy ${o.effectColor}`]);
-      if (attr.id === "warning") out.push(["--editor-warning-decoration", `underline wavy ${o.effectColor}`]);
+    if (attr.effect && (setOrCleared(o.effectColor) || o.effect)) {
+      const style = o.effect ?? attr.defaultEffect ?? "wave";
+      const color = setOrCleared(o.effectColor) ? o.effectColor! : `var(${attr.effect})`;
+      const decoration = EFFECT_CSS[style]?.(color) ?? "none";
+      if (attr.id === "error") out.push(["--editor-error-decoration", decoration]);
+      if (attr.id === "warning") out.push(["--editor-warning-decoration", decoration]);
     }
     if (attr.token) {
       const t = attr.token;
@@ -449,6 +569,21 @@ export function overrideDeclarations(
           `--syn-${t}-effect`,
           EFFECT_CSS[o.effect]?.(setOrCleared(o.effectColor) ? o.effectColor! : "currentColor") ?? "none",
         ]);
+    } else if (attr.fontStyle) {
+      // Token-less attributes whose renderer applies font style (the Git blame segments)
+      // carry it on `--<fg>-*`, mirroring the token scheme's `--syn-<token>-*` family.
+      const base = attr.fg ?? attr.effect;
+      if (base) {
+        if (o.bold !== undefined) out.push([`${base}-bold`, boldWeight(o.bold)]);
+        if (o.italic !== undefined) out.push([`${base}-italic`, o.italic ? "italic" : "normal"]);
+        if (o.effect)
+          out.push([
+            `${attr.effect ?? base}-effect`,
+            EFFECT_CSS[o.effect]?.(
+              setOrCleared(o.effectColor) ? o.effectColor! : attr.effect ? `var(${attr.effect})` : "currentColor",
+            ) ?? "none",
+          ]);
+      }
     }
   }
   return out;
@@ -558,8 +693,20 @@ export function resolvedAttribute(
     const italicCss =
       vars.get(`--syn-${token}-italic`) ?? (token === "comment" ? vars.get("--syn-comment-style") : undefined);
     out.italic = own?.italic ?? italicFromCss(italicCss) ?? attr.defaultItalic ?? false;
-  } else if (effect) out.effect = effect;
-  if (token && effect) out.effect = effect;
+    if (effect) out.effect = effect;
+  } else {
+    // Token-less attributes whose renderer applies font style (the Git segments, Errors and
+    // Warnings) carry their overrides on `--<fg|effect>-*`, the same declarations
+    // `overrideDeclarations` emits.
+    if (attr.fontStyle) {
+      const base = attr.fg ?? attr.effect;
+      const bold = base ? vars.get(`${base}-bold`) : undefined;
+      const italic = base ? vars.get(`${base}-italic`) : undefined;
+      out.bold = boldFromCss(bold) ?? attr.defaultBold ?? false;
+      out.italic = italicFromCss(italic) ?? attr.defaultItalic ?? false;
+    }
+    if (effect) out.effect = effect;
+  }
   return out;
 }
 

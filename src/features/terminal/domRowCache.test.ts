@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 import type { Terminal } from "@xterm/xterm";
-import { installDomRowCache } from "./domRowCache";
+import { ICON_SPAN_CLASS, installDomRowCache } from "./domRowCache";
 
 /** Mirrors the shape of xterm 6's private DomRenderer closely enough for the cache. */
 function fakeRendererClass() {
@@ -74,6 +74,16 @@ describe("installDomRowCache", () => {
     expect(rowAt(renderer, 0).firstChild).toBe(first);
     expect(rowAt(renderer, 1).firstChild).not.toBe(second);
     expect(rowAt(renderer, 1).textContent).toBe("ce");
+  });
+
+  it("lifts spans with Nerd Font icons over the next cell's background", () => {
+    const Renderer = fakeRendererClass();
+    // U+E606 (Python logo) and U+F0035 (a Material Design icon) are drawn wider than one cell.
+    const renderer = new Renderer(["\uE606 py \u{F0035} ~/src"]);
+    installDomRowCache(terminalWith(renderer));
+    renderer.renderRows(0, 0);
+    const lifted = [...rowAt(renderer, 0).children].map((span) => span.classList.contains(ICON_SPAN_CLASS));
+    expect(lifted).toEqual([true, false, true, false]);
   });
 
   it("re-renders rows after clear() and link underlines rebuilt them", () => {

@@ -1,7 +1,7 @@
 //! The repositories of a project (IDEA's VCS roots): the one containing the project
 //! root plus those nested below it (separate clones side by side, submodules).
 
-use crate::{FileStatus, Repo};
+use crate::{Backend, FileStatus, Repo};
 use ide_core::IdeResult;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -142,6 +142,9 @@ impl Repos {
     /// Changes of every repository. A nested repository reports its own files, so the
     /// enclosing one's "untracked folder" entry for it is dropped. A repository that cannot
     /// be read (e.g. deleted since the last scan) is left out; fails only when all fail.
+    ///
+    /// The reads go through [`Backend`], the Changes-view surface — repositories of a
+    /// future second backend slot in here once `Repos` learns to hold them.
     pub fn status(&self) -> IdeResult<Vec<FileStatus>> {
         let mut out = Vec::new();
         let mut first_error = None;
@@ -153,7 +156,7 @@ impl Repos {
                 .map(|r| r.root())
                 .filter(|r| *r != repo.root() && r.starts_with(repo.root()))
                 .collect();
-            let status = match repo.status() {
+            let status = match (repo.as_ref() as &dyn Backend).status() {
                 Ok(status) => {
                     read += 1;
                     status

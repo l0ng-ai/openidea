@@ -2,16 +2,14 @@ import { EditorView } from "@codemirror/view";
 import { activeEditor, editorsFor, useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { tx } from "@/platform/i18n";
 import { call, commands, emitLocalIdeEvent, IpcError } from "@/platform/ipc";
-import { ipcPath } from "@/platform/paths";
+import { appDataDir } from "@/platform/platformInfo";
 import { editorService } from "@/workbench/contributions";
 import { appendRequests } from "./spring/request";
 
 export const GENERATED_REQUESTS = "generated-requests.http";
 
 async function scratchFile(): Promise<{ path: string; created: boolean }> {
-  const { appDataDir } = await import("@tauri-apps/api/path");
-  // `appDataDir()` is native (`C:\…`): the editor is found by its `/` path.
-  const dir = `${ipcPath(await appDataDir()).replace(/\/+$/, "")}/scratches`;
+  const dir = `${await appDataDir()}/scratches`;
   const ignoreExisting = (e: unknown) => {
     if (!(e instanceof IpcError && e.kind === "alreadyExists")) throw e;
   };

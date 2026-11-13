@@ -225,6 +225,15 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// The bytes of `path` (`Some(None)`: no file there), or `None` when it is there but can't be read.
+fn existing(path: &Path) -> Option<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Some(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(_) => None,
+    }
+}
+
 fn crlf_to_lf(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     for (i, &b) in bytes.iter().enumerate() {
@@ -358,6 +367,38 @@ impl TaskBase {
     }
 }
 
+/// One side of an Accept (the task's worktree or the checkout): where its files really are, and
+/// git's own folders for it.
+struct Confined {
+    root: PathBuf,
+    metadata: Vec<PathBuf>,
+}
+
+impl Confined {
+    fn new(root: &Path, repo: Option<&Repo>) -> IdeResult<Self> {
+        let metadata = match repo {
+            Some(repo) => repo.metadata_dirs()?.iter().map(|d| ide_core::real_path::resolve_real(d)).collect(),
+            None => Vec::new(),
+        };
+        Ok(Self { root: dunce::canonicalize(root)?, metadata })
+    }
+
+    /// Whether `rel` may be read or written here: it doesn't name git's metadata under any
+    /// spelling (case, trailing dots or spaces, stream suffixes, short names), stays in the tree
+    /// once links are followed, and isn't a link itself.
+    fn allows(&self, rel: &str) -> bool {
+        use ide_core::real_path::{names_git_dir, reaches_git_dir, resolve_real};
+        let path = self.root.join(rel);
+        if names_git_dir(Path::new(rel)) || path.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+            return false;
+        }
+        let real = resolve_real(&path);
+        real.starts_with(&self.root)
+            && !reaches_git_dir(&self.root, &real)
+            && !self.metadata.iter().any(|dir| real.starts_with(dir))
+    }
+}
+
 /// Copies the task's `changes` (against `base`) from the worktree `cwd` into the
 /// local checkout `root`, uncommitted: the user reviews and commits them with the
 /// VCS tools. Files the checkout changed itself are left alone and reported, so
@@ -370,28 +411,40 @@ pub(crate) fn accept(
 ) -> IdeResult<crate::AgentAcceptOutcome> {
     let repo = repo_at(cwd)?;
     // Change paths are repository-relative, and the task's project may be a folder inside it.
-    let local_root = discover(root)?.map_or_else(|| root.to_path_buf(), |r| r.root().to_path_buf());
+    let local = discover(root)?;
+    let local_root = local.as_ref().map_or_else(|| root.to_path_buf(), |r| r.root().to_path_buf());
+    // Paths come from what the agent left in its worktree: neither side may lead into git's own
+    // files or out through a link.
+    let task_side = Confined::new(repo.root(), Some(&repo))?;
+    let checkout_side = Confined::new(&local_root, local.as_ref())?;
+    let copyable = |rel: &str| task_side.allows(rel) && checkout_side.allows(rel);
     let renamed_from: BTreeMap<String, String> =
         repo.diff_with_worktree(base)?.into_iter().filter_map(|f| Some((f.path, f.old_path?))).collect();
-    // Brings one path of the checkout to the task's version, unless the checkout changed it itself.
-    let apply = |rel: &str| -> IdeResult<bool> {
-        let local = local_root.join(rel);
+    // The task's version of one path of the checkout (`Some(None)`: absent there), or `None` when
+    // the checkout changed it itself.
+    let target = |rel: &str| -> IdeResult<Option<Option<Vec<u8>>>> {
         let in_task = repo.root().join(rel);
-        let base_bytes = repo.file_bytes_at(&in_task, Some(base))?;
         let current = std::fs::read(&in_task).ok();
-        let local_bytes = std::fs::read(&local).ok();
+        // A file there that can't be read is the checkout's own: never written over.
+        let Some(local_bytes) = existing(&local_root.join(rel)) else { return Ok(None) };
         if local_bytes == current {
-            return Ok(true);
+            return Ok(Some(current));
         }
+        let base_bytes = repo.file_bytes_at(&in_task, Some(base))?;
         // The checkout may hold the committed LF text with CRLF line ends (`core.autocrlf`).
         let unchanged = match (&local_bytes, &base_bytes) {
             (Some(now), Some(at_base)) => now == at_base || crlf_to_lf(now) == *at_base,
             (now, at_base) => now == at_base,
         };
-        if !unchanged {
-            return Ok(false);
+        Ok(unchanged.then_some(current))
+    };
+    // Puts `bytes` (`None`: nothing) at `rel` of the checkout.
+    let write = |rel: &str, bytes: Option<Vec<u8>>| -> IdeResult<()> {
+        let local = local_root.join(rel);
+        if std::fs::read(&local).ok() == bytes {
+            return Ok(());
         }
-        match current {
+        match bytes {
             Some(bytes) => {
                 if let Some(parent) = local.parent() {
                     std::fs::create_dir_all(parent)?;
@@ -403,6 +456,12 @@ pub(crate) fn accept(
                 _ => {}
             },
         }
+        Ok(())
+    };
+    // Brings one path of the checkout to the task's version, unless the checkout changed it itself.
+    let apply = |rel: &str| -> IdeResult<bool> {
+        let Some(bytes) = target(rel)? else { return Ok(false) };
+        write(rel, bytes)?;
         Ok(true)
     };
     let mut accepted = Vec::with_capacity(changes.len());
@@ -411,13 +470,26 @@ pub(crate) fn accept(
         path: path.to_owned(),
         reason: "the checkout has changes of its own to it; accept it by hand".to_owned(),
     };
+    let refuse = |path: &str| crate::AgentAcceptSkipped {
+        path: path.to_owned(),
+        reason: "it leads into git's own files or through a link, so it is not copied".to_owned(),
+    };
     for change in changes {
+        let old = renamed_from.get(&change.rel_path);
+        if !copyable(&change.rel_path) {
+            skipped.push(refuse(&change.rel_path));
+            continue;
+        }
+        if let Some(old) = old.filter(|old| !copyable(old)) {
+            skipped.push(refuse(old));
+            continue;
+        }
         // A case-only rename (`a.txt` → `A.txt`). Where the disk resolves both
         // spellings to one file it is renamed in place and `apply` then refreshes
         // the content. On a case-sensitive disk the two names are different files:
-        // the old one's unchanged-ness (it is the file the checkout had) decides —
-        // then the task's version lands at the new name and the old one goes.
-        let old = renamed_from.get(&change.rel_path);
+        // both are checked before either changes — the old one must be the file the
+        // checkout had, the new one absent or already the task's — then the task's
+        // version lands at the new name before the old one goes.
         let case_only =
             old.is_some_and(|o| o != &change.rel_path && o.to_lowercase() == change.rel_path.to_lowercase());
         if case_only {
@@ -426,20 +498,18 @@ pub(crate) fn accept(
             if same_file(&old_path, &new_path) {
                 std::fs::rename(&old_path, &new_path)?;
             } else {
-                if !apply(old)? {
+                let Some(old_target) = target(old)? else {
                     skipped.push(skip(old));
                     continue;
+                };
+                let task_bytes = std::fs::read(repo.root().join(&change.rel_path)).ok();
+                let at_new = existing(&new_path);
+                if at_new.as_ref().is_none_or(|at_new| at_new.is_some() && *at_new != task_bytes) {
+                    skipped.push(skip(&change.rel_path));
+                    continue;
                 }
-                // `apply(old)` removed the old file (the task's tree has it only at
-                // the new name); now write that version under the new name. `apply`
-                // can't do it — it reads the new name's own base/absence — so the
-                // write is open-coded from the same task bytes `apply` would use.
-                if let Ok(bytes) = std::fs::read(repo.root().join(&change.rel_path)) {
-                    if let Some(parent) = new_path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&new_path, bytes)?;
-                }
+                write(&change.rel_path, task_bytes)?;
+                write(old, old_target)?;
                 accepted.push(change.rel_path.clone());
                 continue;
             }
@@ -908,6 +978,138 @@ mod tests {
             .filter(|n| n.eq_ignore_ascii_case("a.txt"))
             .collect();
         assert_eq!(names, ["A.txt"]);
+    }
+
+    #[test]
+    fn a_case_only_rename_keeps_a_file_the_checkout_has_at_the_new_name() {
+        let (_tmp, repo, created) = accept_repo();
+        std::fs::write(repo.join("A.txt"), "mine\n").unwrap();
+        if std::fs::read_to_string(repo.join("a.txt")).unwrap() == "mine\n" {
+            eprintln!("this disk doesn't tell a.txt from A.txt; nothing to check");
+            return;
+        }
+        git(&created.path, &["mv", "a.txt", "A.txt"]);
+        let changes = listed(&created.path, &created.base_commit);
+        let outcome = accept(&repo, &created.path, &created.base_commit, &changes).unwrap();
+        assert_eq!(outcome.skipped.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(), ["A.txt"]);
+        assert_eq!(std::fs::read_to_string(repo.join("A.txt")).unwrap(), "mine\n");
+        assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "one\ntwo\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accept_leaves_a_checkout_file_it_cannot_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_tmp, repo, created) = accept_repo();
+        std::fs::write(created.path.join("new.txt"), "task\n").unwrap();
+        std::fs::write(repo.join("new.txt"), "mine\n").unwrap();
+        std::fs::set_permissions(repo.join("new.txt"), std::fs::Permissions::from_mode(0o200)).unwrap();
+        if std::fs::read(repo.join("new.txt")).is_ok() {
+            eprintln!("running as a user that reads any file; nothing to check");
+            return;
+        }
+        let changes = listed(&created.path, &created.base_commit);
+        let outcome = accept(&repo, &created.path, &created.base_commit, &changes).unwrap();
+        std::fs::set_permissions(repo.join("new.txt"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(outcome.skipped.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(), ["new.txt"]);
+        assert_eq!(std::fs::read_to_string(repo.join("new.txt")).unwrap(), "mine\n");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn accept_does_not_write_into_the_checkouts_git_folder_through_its_short_name() {
+        let (_tmp, repo, created) = accept_repo();
+        if !repo.join("GIT~1").join("HEAD").is_file() {
+            eprintln!("8.3 short names are disabled on this volume; nothing to check");
+            return;
+        }
+        // Written in the worktree under the name the checkout's `.git` folder also has.
+        let wt = &created.path;
+        std::fs::rename(wt.join(".git"), wt.join("gitfile")).unwrap();
+        std::fs::create_dir_all(wt.join("GIT~1").join("hooks")).unwrap();
+        std::fs::write(wt.join("GIT~1").join("hooks").join("pre-commit"), "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::rename(wt.join("gitfile"), wt.join(".git")).unwrap();
+        std::fs::write(wt.join("a.txt"), "one\nTWO\n").unwrap();
+
+        let changes = listed(wt, &created.base_commit);
+        assert!(changes.iter().any(|c| c.rel_path == "GIT~1/hooks/pre-commit"), "control: git lists it");
+        let outcome = accept(&repo, wt, &created.base_commit, &changes).unwrap();
+        assert!(!repo.join(".git").join("hooks").join("pre-commit").exists(), "{outcome:?}");
+        assert_eq!(outcome.accepted, ["a.txt"]);
+        assert_eq!(outcome.skipped.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(), ["GIT~1/hooks/pre-commit"]);
+    }
+
+    #[test]
+    fn accept_refuses_paths_that_lead_into_git_metadata_under_any_spelling() {
+        let (tmp, repo, _created) = accept_repo();
+        let checkout = Confined::new(&repo, Repo::discover(&repo).unwrap().as_ref()).unwrap();
+        for rel in [
+            ".git/hooks/pre-commit",
+            ".GIT/hooks/pre-commit",
+            ".git./hooks/pre-commit",
+            ".git /hooks/pre-commit",
+            ".git::$INDEX_ALLOCATION/hooks/pre-commit",
+            "sub/.git/config",
+            "../outside.txt",
+        ] {
+            assert!(!checkout.allows(rel), "{rel}");
+        }
+        assert!(checkout.allows("src/new.txt"));
+        assert!(checkout.allows(".github/workflows/ci.yml"));
+
+        // git's folder under another name inside the tree (`--separate-git-dir`).
+        let separate = tmp.path().join("separate");
+        std::fs::create_dir(&separate).unwrap();
+        git(&separate, &["init", "-q", "--separate-git-dir", "meta", "-b", "main"]);
+        let side = Confined::new(&separate, Repo::discover(&separate).unwrap().as_ref()).unwrap();
+        assert!(!side.allows("meta/hooks/pre-commit"));
+        assert!(side.allows("metadata.txt"));
+    }
+
+    /// A link the task left in its worktree, or a linked folder in the checkout: neither is followed.
+    #[test]
+    fn accept_does_not_follow_links_on_either_side() {
+        let (tmp, repo, created) = accept_repo();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "secret\n").unwrap();
+        // A folder link in the checkout (a junction on Windows, which needs no privilege).
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, repo.join("linked")).unwrap();
+        #[cfg(windows)]
+        assert!(
+            std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(repo.join("linked"))
+                .arg(&outside)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        std::fs::create_dir(created.path.join("linked")).unwrap();
+        std::fs::write(created.path.join("linked/new.txt"), "x\n").unwrap();
+        std::fs::write(created.path.join("a.txt"), "one\nTWO\n").unwrap();
+        // A file link in the worktree, where the platform lets this user create one.
+        #[cfg(unix)]
+        let file_link = std::os::unix::fs::symlink(outside.join("secret.txt"), created.path.join("copied.txt"));
+        #[cfg(windows)]
+        let file_link = std::os::windows::fs::symlink_file(outside.join("secret.txt"), created.path.join("copied.txt"));
+        if let Err(e) = &file_link {
+            eprintln!("no file link ({e}); checking the folder link only");
+        }
+
+        let changes: Vec<_> = listed(&created.path, &created.base_commit);
+        let outcome = accept(&repo, &created.path, &created.base_commit, &changes).unwrap();
+        assert!(!outside.join("new.txt").exists(), "{outcome:?}");
+        assert!(!repo.join("copied.txt").exists(), "{outcome:?}");
+        assert!(outcome.accepted.contains(&"a.txt".to_owned()));
+        let refused: Vec<_> = outcome.skipped.iter().map(|s| s.path.as_str()).collect();
+        if file_link.is_ok() {
+            assert_eq!(refused, ["copied.txt", "linked/new.txt"]);
+        } else {
+            assert_eq!(refused, ["linked/new.txt"]);
+        }
     }
 
     #[test]

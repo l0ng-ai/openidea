@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import clsx from "clsx";
 import { BarButton, IconButton, Popup, ProgressBar, showContextMenu, T, tooltipAttrs } from "@/ui";
 import { useContributions, useStatusInfo, type StatusItemContribution } from "./contributions";
@@ -129,7 +129,13 @@ export function TaskStatus() {
 export function BackgroundTasksHost() {
   const open = useTaskPopup((s) => s.open);
   const tasks = useTasks((s) => s.tasks);
-  const anchor = document.querySelector("[data-background-tasks]") ?? {
+  // The last task ending (or cancelled from here) closes the popup: its status bar anchor goes away.
+  const hadTasks = useRef(tasks.length > 0);
+  useLayoutEffect(() => {
+    if (hadTasks.current && !tasks.length) useTaskPopup.setState({ open: false });
+    hadTasks.current = tasks.length > 0;
+  }, [tasks.length]);
+  const anchor = (tasks.length ? document.querySelector("[data-background-tasks]") : null) ?? {
     x: window.innerWidth - 16,
     y: window.innerHeight - 16,
   };

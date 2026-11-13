@@ -264,6 +264,7 @@ describe("catalogs", () => {
     "my-agent",
     "Java",
     "Python",
+    "Python {short}",
     "C/C++",
     "C#",
     "Go",

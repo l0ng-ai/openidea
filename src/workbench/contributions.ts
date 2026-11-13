@@ -76,6 +76,11 @@ export interface ToolWindowContribution {
    * or "onUse" — listed under the stripe's "…" until first opened (Find, Run…).
    */
   stripe?: "shown" | "onUse";
+  /**
+   * Its content lasts only while the project is open (run and debug sessions, search results),
+   * so it isn't reopened with the project.
+   */
+  sessionContent?: boolean;
 }
 
 export type StatusAlign = "left" | "right";
@@ -894,6 +899,12 @@ export interface DecorationSegment {
   icon?: string;
   strike?: boolean;
   label?: string;
+  /** CSS colour of this segment; falls back to the suffix colour. */
+  color?: string;
+  /** CSS values for the segment's font style / effect, e.g. scheme-driven bold or wavy underline. */
+  fontWeight?: string;
+  fontStyle?: string;
+  textDecoration?: string;
 }
 
 export interface FileDecoration {

@@ -25,6 +25,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Branch, ChangedFile, Commit } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
+import { setContext } from "@/platform/context";
 import { maybeEditorService, useGitLogChecks, type EditorInput } from "@/workbench/contributions";
 import {
   EmptyState,
@@ -2627,6 +2628,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
     },
     [scope],
   );
+  useEffect(() => () => setContext("vcsLogChangesFocus", false), []);
 
   if (!commit)
     return (
@@ -2667,7 +2669,13 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   const details = (
     <SplitGroup orientation="vertical" id="git-log-details">
       <SplitPanel id="files" defaultSize="60%" minSize="60px">
-        <div className={styles.filesPane}>
+        <div
+          className={styles.filesPane}
+          onFocusCapture={() => setContext("vcsLogChangesFocus", true)}
+          onBlurCapture={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setContext("vcsLogChangesFocus", false);
+          }}
+        >
           <div className={styles.detailsBar} role="toolbar" aria-label={tx("Changed files")}>
             <IconButton
               icon="diff"

@@ -63,7 +63,7 @@ const MAX_TABS = 12;
 
 export interface ResultTab {
   id: number;
-  /** `Result N` (numbered per window, like IDEA). */
+  /** `Result N`, `Result N-2`… (N numbers a console execution, like IDEA). */
   title: string;
   /** Console file the statement came from. */
   path: string;
@@ -80,6 +80,8 @@ export interface ResultTab {
   pageSize?: number;
   /** Rows of the whole query, once counted. */
   total?: number | null;
+  /** Kept when the console runs again (Pin Tab); results otherwise replace the console's last ones. */
+  pinned?: boolean;
 }
 
 /** One line of the consoles' Output log (IDEA's Database Console output). */
@@ -734,6 +736,7 @@ export async function openConsole(id: string): Promise<void> {
 }
 
 let nextTab = 1;
+let nextRun = 1;
 let nextLine = 1;
 
 export function log(kind: OutputLine["kind"], text: string, prompt?: string) {
@@ -882,8 +885,9 @@ export async function openDdl(id: string, schema: string, name: string): Promise
 /**
  * Runs the statement at `from` (or the selection `from..to`, UTF-16 offsets)
  * of console `path` on its data source. Result sets open as `Result N` tabs
- * of the Services view, everything is logged to its Output tab; returns the
- * outcomes (errors included) for the editor's marks.
+ * of the Services view, replacing the console's unpinned ones; everything is
+ * logged to its Output tab; returns the outcomes (errors included) for the
+ * editor's marks.
  */
 /** Asks for the values of the statements' query parameters and binds them; `[]` when cancelled. */
 async function withParams(statements: SqlStatement[], driver: DbDriver): Promise<SqlStatement[]> {
@@ -931,15 +935,16 @@ export async function executeConsole(
     const pageSize = useDatabase.getState().maxRows;
     const schema = consoleSchema(path) || (await loadCompletion(id))?.defaultSchema || "";
     const outcomes = await run(id, statements, request, pageSize, 0, schema);
-    const tabs: ResultTab[] = outcomes
-      .filter((o) => o.result?.columns.length)
-      .map((outcome) => {
-        const n = nextTab++;
-        return { id: n, title: tx`Result ${n}`, path, sourceId: id, schema, outcome, page: 0, pageSize };
-      });
+    const sets = outcomes.filter((o) => o.result?.columns.length);
+    const n = sets.length ? nextRun++ : 0;
+    const tabs: ResultTab[] = sets.map((outcome, i) => {
+      const index = i + 1;
+      const title = index === 1 ? tx`Result ${n}` : tx`Result ${n}-${index}`;
+      return { id: nextTab++, title, path, sourceId: id, schema, outcome, page: 0, pageSize };
+    });
     const failed = outcomes.some((o) => o.error);
     useDatabase.setState((s) => ({
-      results: [...s.results, ...tabs].slice(-MAX_TABS),
+      results: replaceResults(s.results, path, tabs),
       activeResult: failed || !tabs.length ? OUTPUT_TAB : tabs.at(-1)!.id,
     }));
     showServiceView(RESULTS_VIEW, false);
@@ -967,6 +972,27 @@ export async function executeConsole(
   }
 }
 
+/**
+ * IDEA reuses result tabs: a console's new result sets take the place of its
+ * unpinned ones (where the first of them was), others stay. Nothing is
+ * replaced when the run returned no result set (an UPDATE keeps the SELECT).
+ */
+function replaceResults(results: ResultTab[], path: string, tabs: ResultTab[]): ResultTab[] {
+  if (!tabs.length) return results;
+  const replaced = (r: ResultTab) => r.path === path && !r.plan && !r.pinned;
+  const at = results.findIndex(replaced);
+  const kept = results.filter((r) => !replaced(r));
+  const index = at < 0 ? kept.length : at;
+  return capResults([...kept.slice(0, index), ...tabs, ...kept.slice(index)], tabs);
+}
+
+/** Drops the oldest tabs beyond `MAX_TABS`, never pinned or `fresh` ones (exceeding the limit instead). */
+function capResults(results: ResultTab[], fresh: ResultTab[]): ResultTab[] {
+  let extra = results.length - MAX_TABS;
+  if (extra <= 0) return results;
+  return results.filter((r) => r.pinned || fresh.includes(r) || extra-- <= 0);
+}
+
 /** The statements of console `path` to run or explain: the selection's, else the one at `from`, parameters bound. */
 async function consoleStatements(id: string, text: string, from: number, to: number): Promise<SqlStatement[]> {
   const statements: SqlStatement[] = await call(commands.dbStatements(id, text, from, to));
@@ -979,16 +1005,16 @@ const PLAN_TITLE = "Query Plan";
 /** Shows `plan` of `statement` in the window's Query Plan tab (one per window, like IDEA's). */
 function showPlan(path: string, id: string, statement: SqlStatement, plan: DbPlanNode[]) {
   useDatabase.setState((s) => {
-    const old = s.results.find((r) => r.plan);
+    const old = s.results.find((r) => r.plan && !r.pinned);
     const tab: ResultTab = {
       id: old?.id ?? nextTab++,
-      title: PLAN_TITLE,
+      title: old?.title ?? PLAN_TITLE,
       path,
       sourceId: id,
       outcome: { statement, result: null, error: null },
       plan,
     };
-    const results = old ? s.results.map((r) => (r === old ? tab : r)) : [...s.results, tab].slice(-MAX_TABS);
+    const results = old ? s.results.map((r) => (r === old ? tab : r)) : capResults([...s.results, tab], [tab]);
     return { results, activeResult: tab.id };
   });
   showServiceView(RESULTS_VIEW, false);
@@ -1114,7 +1140,9 @@ export async function loadResultPage(tabId: number, page: number, pageSize: numb
         ...(rerun || sizeChanged ? { total: null } : {}),
       });
     } else patchResult(tabId, { busy: false });
-    if (outcome?.error) useDatabase.setState({ activeResult: OUTPUT_TAB });
+    // A run of its console may have replaced the tab meanwhile.
+    if (outcome?.error && useDatabase.getState().results.some((r) => r.id === tabId))
+      useDatabase.setState({ activeResult: OUTPUT_TAB });
   } catch (e) {
     patchResult(tabId, { busy: false });
     if (!isCancelled(e)) log("error", message(e));
@@ -1230,7 +1258,16 @@ export function cancelConsole(path: string) {
 
 export function closeResult(id: number) {
   useDatabase.setState((s) => {
+    const index = s.results.findIndex((r) => r.id === id);
+    if (index < 0) return s;
     const results = s.results.filter((r) => r.id !== id);
-    return { results, activeResult: s.activeResult === id ? (results.at(-1)?.id ?? OUTPUT_TAB) : s.activeResult };
+    return {
+      results,
+      activeResult: s.activeResult === id ? ((results[index - 1] ?? results[index])?.id ?? OUTPUT_TAB) : s.activeResult,
+    };
   });
+}
+
+export function pinResult(id: number, pinned: boolean) {
+  patchResult(id, { pinned });
 }

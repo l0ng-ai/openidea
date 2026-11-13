@@ -241,6 +241,12 @@ pub enum Pool {
     Snowflake(crate::snowflake::SnowflakePool),
 }
 
+/// Some servers and proxies (e.g. Aliyun RDS for MySQL 5.6) advertise `CLIENT_DEPRECATE_EOF` but
+/// still end result sets with legacy EOF packets, which sqlx then fails to read as OK packets.
+fn legacy_eof(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Protocol(msg) if msg.starts_with("OK_Packet too short"))
+}
+
 pub(crate) fn db_err(e: sqlx::Error) -> IdeError {
     match &e {
         sqlx::Error::Database(d) => {
@@ -747,7 +753,7 @@ impl Pool {
             return crate::oracle::OraclePool::connect(source, password, &setup).await.map(Pool::Oracle);
         }
         if source.driver == DbDriver::Snowflake {
-            return crate::snowflake::SnowflakePool::connect(source, password, setup).await.map(Pool::Snowflake);
+            return crate::snowflake::SnowflakePool::connect(source, password, setup, root).await.map(Pool::Snowflake);
         }
         let timeout = setup.connect_timeout.unwrap_or(Duration::from_secs(30));
         let init = Arc::new(setup.statements);
@@ -873,9 +879,16 @@ impl Pool {
                 if !tz.is_empty() {
                     opts = opts.timezone(Some(tz.to_owned()));
                 }
-                let manager = MysqlManager { options: opts, init: init.clone(), timeout };
+                let mut manager = MysqlManager { options: opts, init: init.clone(), timeout };
                 // Open once directly so authentication failures retain their database error.
-                let first = manager.connect().await.map_err(db_err)?;
+                let first = match manager.connect().await {
+                    Err(e) if legacy_eof(&e) => {
+                        manager.options = manager.options.clone().deprecate_eof(false);
+                        manager.connect().await
+                    }
+                    first => first,
+                }
+                .map_err(db_err)?;
                 let pool = Bb8Pool::builder().max_size(MAX).connection_timeout(timeout).build_unchecked(manager);
                 let _ = pool.add(first);
                 Ok(Pool::Mysql(ServerPool { inner: pool, closed: AtomicBool::new(false) }))

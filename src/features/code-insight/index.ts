@@ -5,7 +5,8 @@
  */
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { registerOverlay, registerStatusItem, registerToolWindow } from "@/workbench/contributions";
+import { registerMenuGroup, registerOverlay, registerStatusItem, registerToolWindow } from "@/workbench/contributions";
+import { getContext } from "@/platform/context";
 import { clearProblems, installProblemsEvents, useProblems } from "./problemsStore";
 import { installProblemDecorations } from "./decorations";
 import { ProblemsHeaderActions, ProblemsTabs, ProblemsView, useProblemsHeaderMenu } from "./ProblemsView";
@@ -14,7 +15,7 @@ import { UsagesPopup } from "./UsagesPopup";
 import { findUsages, rerunActiveUsages, resetUsages, showUsageResults, showUsagesPopup } from "./usages";
 import { HierarchyTabs, HierarchyView } from "./HierarchyView";
 import { resetHierarchy, showHierarchy } from "./hierarchy";
-import { installServerEvents } from "./servers";
+import { eslintCovers, installServerEvents } from "./servers";
 import { ServerStatus } from "./ServerStatus";
 import { reportProblems } from "./problemsReport";
 import { installWorkspaceEditUndo } from "./workspaceUndo";
@@ -47,6 +48,16 @@ export function activate(): () => void {
     reportProblems(),
     installProblemDecorations(),
     installServerEvents(),
+    // WebStorm's editor popup offers Fix ESLint Problems wherever ESLint lints the file.
+    registerMenuGroup({
+      id: "codeInsight.eslint",
+      menus: ["editor"],
+      order: 40,
+      items: (_menu, { paths }) =>
+        paths.length === 1 && eslintCovers(paths[0]!, getContext().editorLangId as string | null)
+          ? [{ kind: "action", action: "code.fixEslintProblems" }]
+          : [],
+    }),
     installWorkspaceEditUndo(),
     registerToolWindow({
       id: "problems",
@@ -66,6 +77,7 @@ export function activate(): () => void {
       icon: "toolwindow-usages",
       anchor: "bottom",
       stripe: "onUse",
+      sessionContent: true,
       order: 35,
       component: UsagesView,
       headerContent: UsagesTabs,

@@ -42,6 +42,29 @@ export function formatInlineBlame(line: BlameLine, now = Date.now()): string {
   return `${line.author}${date ? `, ${date}` : ""} · ${line.summary.replace(/\s+/g, " ")}`;
 }
 
+/** The four segments Color Scheme › Git › Editor inline blame styles. */
+interface BlameSegment {
+  text: string;
+  key: "author" | "date" | "subject" | "issue";
+}
+
+/** Splits the blame text so each part can use its own Git scheme colour. */
+export function inlineBlameSegments(line: BlameLine, now = Date.now()): BlameSegment[] {
+  if (isUncommitted(line)) return [{ text: formatInlineBlame(line, now), key: "subject" }];
+  const date = relativeBlameDate(line.timeMs, now);
+  const summary = line.summary.replace(/\s+/g, " ");
+  const author = line.author;
+  // A trailing (#123) / #ISSUE-1 reference is the issue link, coloured separately.
+  const issue = /\s(\(#[^)]+\)|#[\w-]+)\s*$/.exec(summary);
+  const subject = issue ? summary.slice(0, issue.index) : summary;
+  return [
+    { text: date ? `${author}, ` : `${author} · `, key: "author" },
+    ...(date ? [{ text: `${date} · `, key: "date" } as BlameSegment] : []),
+    { text: subject, key: "subject" },
+    ...(issue ? [{ text: summary.slice(issue.index), key: "issue" } as BlameSegment] : []),
+  ];
+}
+
 /** Only the current document version is retained, including its in-flight request. */
 class BlameCache {
   private doc: Text | undefined;
@@ -62,6 +85,10 @@ class BlameCache {
 }
 
 class BlameWidget extends WidgetType {
+  /** Last offset applied, so the observer does not rewrite the style on every keystroke. */
+  private appliedWidth = -1;
+  private observer: MutationObserver | undefined;
+
   constructor(readonly line: BlameLine) {
     super();
   }
@@ -70,11 +97,39 @@ class BlameWidget extends WidgetType {
     return formatInlineBlame(other.line) === formatInlineBlame(this.line) && other.line.commit === this.line.commit;
   }
 
+  /**
+   * A code-vision hint drawn at the line end is out of flow (see codeLens.ts), so it does not make
+   * room for itself: step the blame past its measured width, as IDEA lays its line-end inlays out.
+   * The hint can also appear (or go away) after this widget mounted, hence the observer below.
+   */
+  private stepPastHint(el: HTMLElement) {
+    const hint = el.closest(".cm-line")?.querySelector<HTMLElement>(".cm-openidea-lensInlineInner");
+    const width = hint ? Math.round(hint.getBoundingClientRect().width) : 0;
+    if (width === this.appliedWidth) return;
+    this.appliedWidth = width;
+    el.style.marginLeft = width ? `calc(3ch + ${width}px)` : "";
+  }
+
   toDOM() {
     const el = document.createElement("span");
     el.className = "cm-vcs-inline-blame";
-    el.textContent = formatInlineBlame(this.line);
+    for (const segment of inlineBlameSegments(this.line)) {
+      const part = document.createElement("span");
+      part.className = `cm-vcs-inline-blame-${segment.key}`;
+      part.textContent = segment.text;
+      el.append(part);
+    }
     el.contentEditable = "false";
+    // The element is only measurable once CodeMirror has inserted it: defer to the next task, not a
+    // nested frame, so a widget that goes away first simply skips.
+    setTimeout(() => {
+      if (!el.isConnected) return;
+      this.stepPastHint(el);
+      const line = el.closest(".cm-line");
+      if (!line) return;
+      this.observer = new MutationObserver(() => this.stepPastHint(el));
+      this.observer.observe(line, { childList: true, subtree: true });
+    }, 0);
     if (!isUncommitted(this.line)) {
       el.setAttribute("role", "button");
       el.tabIndex = 0;
@@ -89,6 +144,11 @@ class BlameWidget extends WidgetType {
       });
     }
     return el;
+  }
+
+  destroy(): void {
+    this.observer?.disconnect();
+    this.observer = undefined;
   }
 }
 
@@ -259,7 +319,6 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
     ),
     EditorView.baseTheme({
       ".cm-vcs-inline-blame": {
-        color: "var(--fg-inlay)",
         marginLeft: "3ch",
         display: "inline-block",
         maxWidth: "min(60ch, 50vw)",
@@ -268,6 +327,34 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
         whiteSpace: "nowrap",
         verticalAlign: "bottom",
         userSelect: "none",
+      },
+      ".cm-vcs-inline-blame-author": {
+        color: "var(--git-blame-author, var(--fg-inlay))",
+        backgroundColor: "var(--git-blame-author-bg, transparent)",
+        fontWeight: "var(--git-blame-author-bold, inherit)",
+        fontStyle: "var(--git-blame-author-italic, inherit)",
+        textDecoration: "var(--git-blame-author-effect, none)",
+      },
+      ".cm-vcs-inline-blame-date": {
+        color: "var(--git-blame-date, var(--fg-inlay))",
+        backgroundColor: "var(--git-blame-date-bg, transparent)",
+        fontWeight: "var(--git-blame-date-bold, inherit)",
+        fontStyle: "var(--git-blame-date-italic, inherit)",
+        textDecoration: "var(--git-blame-date-effect, none)",
+      },
+      ".cm-vcs-inline-blame-subject": {
+        color: "var(--git-blame-subject, var(--fg-inlay))",
+        backgroundColor: "var(--git-blame-subject-bg, transparent)",
+        fontWeight: "var(--git-blame-subject-bold, inherit)",
+        fontStyle: "var(--git-blame-subject-italic, inherit)",
+        textDecoration: "var(--git-blame-subject-effect, none)",
+      },
+      ".cm-vcs-inline-blame-issue": {
+        color: "var(--git-blame-issue, var(--fg-inlay))",
+        backgroundColor: "var(--git-blame-issue-bg, transparent)",
+        fontWeight: "var(--git-blame-issue-bold, inherit)",
+        fontStyle: "var(--git-blame-issue-italic, inherit)",
+        textDecoration: "var(--git-blame-issue-effect, none)",
       },
       '.cm-vcs-inline-blame[role="button"]': { cursor: "pointer" },
       ".cm-vcs-inline-blame-tooltip": {

@@ -5,6 +5,7 @@
   display: flex;
   flex-direction: column;
   background: var(--bg-app);
+  outline: none;
 }
 .toolbar {
   flex: none;
@@ -84,6 +85,7 @@
 }
 .message {
   flex: 1;
+  outline: none;
   display: flex;
   flex-direction: column;
   align-items: center;

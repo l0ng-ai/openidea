@@ -105,6 +105,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     smoothCaretMovement: false,
     caretMovementStyle: "snappy",
     lineNumbers: true,
+    lineNumberMode: "absolute",
     methodSeparators: false,
     whitespaceLeading: true,
     whitespaceInner: true,

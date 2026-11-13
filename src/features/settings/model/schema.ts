@@ -18,7 +18,13 @@ import {
   type ProjectStructureValid,
 } from "@/platform/languageSettings";
 import { EDITOR_EXTRA_DEFAULTS, validateEditorExtras, type EditorExtras } from "@/platform/editorSettings";
-import { DEFAULT_WORKFLOW, validateWorkflow, type WorkflowSettings } from "@/platform/workflowSettings";
+import {
+  DEFAULT_AGENT_RUNS,
+  DEFAULT_WORKFLOW,
+  validateAgentRuns,
+  validateWorkflow,
+  type WorkflowSettings,
+} from "@/platform/workflowSettings";
 import { DEFAULT_INSPECTIONS, validateInspections, type InspectionSettingsValid } from "@/platform/inspections";
 import { DEFAULT_PROXY, validateProxy, type ProxySettingsValid } from "@/platform/proxySettings";
 import {
@@ -33,6 +39,10 @@ import {
   type NotificationsValid,
 } from "./behaviorSchema";
 import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
+
+/** Agents › IDE MCP Server › Port: its default (`ide-core::settings::DEFAULT_MCP_PORT`) and range. */
+export const DEFAULT_MCP_PORT = 26371;
+export const MCP_PORT_LIMITS = { min: 1, max: 65535 };
 
 /** A built-in theme, a plugin's (`plugin:<id>/<theme>`) or the legacy `"system"`. */
 export type ThemeId = ThemeChoiceId | "system";
@@ -106,7 +116,17 @@ export interface ValidSettings extends WorkflowSettings {
   /** Tools › Agents › Chat: the meters in an agent task's header. */
   agents: Required<AgentSettings>;
   /** Agents › IDE MCP Server (global). */
-  mcpServer: { enabled: boolean; runWithoutConfirmation: boolean };
+  mcpServer: {
+    enabled: boolean;
+    runWithoutConfirmation: boolean;
+    agentTabLimit: number;
+    agentArchiveLimit: number;
+    /** Listen on `port` in every run rather than a free port each time. */
+    fixedPort: boolean;
+    port: number;
+    /** Keep the bearer token across runs rather than make a new one each run. */
+    fixedToken: boolean;
+  };
 }
 
 /** One `languageServers.<name>` entry; every field optional, like in settings.toml. */
@@ -193,10 +213,19 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     expandToolOutput: false,
     sendWith: "enter",
     whileRunning: "queue",
+    newTaskApprovals: "bypass",
     defaults: {},
     mcpServers: {},
   },
-  mcpServer: { enabled: false, runWithoutConfirmation: false },
+  mcpServer: {
+    enabled: false,
+    runWithoutConfirmation: false,
+    agentTabLimit: DEFAULT_AGENT_RUNS.tabLimit,
+    agentArchiveLimit: DEFAULT_AGENT_RUNS.archiveLimit,
+    fixedPort: true,
+    port: DEFAULT_MCP_PORT,
+    fixedToken: false,
+  },
   ...DEFAULT_WORKFLOW,
 };
 
@@ -362,12 +391,18 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       expandToolOutput: bool(agents.expandToolOutput, d.agents.expandToolOutput),
       sendWith: oneOf(agents.sendWith, ["enter", "modEnter"] as const, d.agents.sendWith),
       whileRunning: oneOf(agents.whileRunning, ["queue", "steer"] as const, d.agents.whileRunning),
+      newTaskApprovals: oneOf(agents.newTaskApprovals, ["bypass", "ask"] as const, d.agents.newTaskApprovals),
       defaults: agentDefaults(agents.defaults),
       mcpServers: agentMcpServers(agents.mcpServers),
     },
     mcpServer: {
       enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled),
       runWithoutConfirmation: bool(obj(root.mcpServer).runWithoutConfirmation, d.mcpServer.runWithoutConfirmation),
+      agentTabLimit: validateAgentRuns(root.mcpServer).tabLimit,
+      agentArchiveLimit: validateAgentRuns(root.mcpServer).archiveLimit,
+      fixedPort: bool(obj(root.mcpServer).fixedPort, d.mcpServer.fixedPort),
+      port: num(obj(root.mcpServer).port, d.mcpServer.port, MCP_PORT_LIMITS, true),
+      fixedToken: bool(obj(root.mcpServer).fixedToken, d.mcpServer.fixedToken),
     },
     ...validateWorkflow(root),
   };

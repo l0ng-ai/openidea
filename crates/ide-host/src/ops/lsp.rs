@@ -1483,21 +1483,36 @@ pub async fn lsp_restart_named(host: &Host, name: &str) -> IdeResult<()> {
 pub async fn apply_workspace_edit(host: &Host, window: &str, edit: WorkspaceEdit) -> IdeResult<()> {
     let project = host.project(window)?;
     blocking(move || {
-        // Multi-file refactorings leave a Local History point to go back to.
-        let paths: Vec<&std::path::Path> = edit
-            .files
-            .iter()
-            .filter_map(|f| match f {
-                ide_core::FileEdit::Edit { path, .. } => Some(&**path),
-                _ => None,
-            })
-            .collect();
-        if edit.files.len() > 1 {
-            project.record_before_refactoring(&paths, "Apply changes");
-        }
+        record_before_multi_file_edit(&project, &edit);
         apply_edit(&project.documents, &edit)
     })
     .await
+}
+
+/// [`apply_workspace_edit`] for the MCP server's tools: undoable the same way, but the UI does
+/// not announce it as a refactoring.
+pub async fn apply_agent_workspace_edit(host: &Host, window: &str, edit: WorkspaceEdit) -> IdeResult<()> {
+    let project = host.project(window)?;
+    blocking(move || {
+        record_before_multi_file_edit(&project, &edit);
+        project.documents.apply_agent_workspace_edit(&edit)
+    })
+    .await
+}
+
+/// Multi-file edits leave a Local History point to go back to.
+fn record_before_multi_file_edit(project: &crate::Project, edit: &WorkspaceEdit) {
+    let paths: Vec<&std::path::Path> = edit
+        .files
+        .iter()
+        .filter_map(|f| match f {
+            ide_core::FileEdit::Edit { path, .. } => Some(&**path),
+            _ => None,
+        })
+        .collect();
+    if edit.files.len() > 1 {
+        project.record_before_refactoring(&paths, "Apply changes");
+    }
 }
 
 pub async fn prepare_workspace_edit(host: &Host, window: &str, mut edit: WorkspaceEdit) -> IdeResult<WorkspaceEdit> {

@@ -7,11 +7,20 @@
  * several times a second while only one or two actually changed; the window then falls
  * behind on keystrokes. Rows are still built (cheap); only identical ones are left in place.
  *
- * Remove once xterm's DomRenderer does this itself (xterm 6.0.0 does not).
+ * Rows are also where wide icons get lifted over the next cell ([`ICON_SPAN_CLASS`]): a Nerd
+ * Font icon is often drawn wider than one cell, and the DOM renderer paints the next span's
+ * background over its right part (powerline prompts showed half icons).
+ *
+ * Remove the cache once xterm's DomRenderer does this itself (xterm 6.0.0 does not).
  */
 import type { Terminal } from "@xterm/xterm";
 
 const MARKUP = Symbol("rowMarkup");
+
+/** Private Use Area characters: Nerd Font / Powerline icons, often drawn wider than their cell. */
+const ICON = /[\uE000-\uF8FF]|[\u{F0000}-\u{10FFFD}]/u;
+/** Lifts a span holding such an icon over the next one, so the next cell's background doesn't cover it. */
+export const ICON_SPAN_CLASS = "openidea-terminal-icon";
 
 type RowElement = HTMLElement & { [MARKUP]?: string };
 
@@ -92,7 +101,10 @@ function renderRows(this: DomRenderer, start: number, end: number) {
       -1,
     );
     let markup = "";
-    for (const span of spans) markup += span.outerHTML;
+    for (const span of spans) {
+      if (ICON.test(span.textContent ?? "")) span.classList.add(ICON_SPAN_CLASS);
+      markup += span.outerHTML;
+    }
     if (element[MARKUP] === markup) continue;
     element[MARKUP] = markup;
     element.replaceChildren(...spans);

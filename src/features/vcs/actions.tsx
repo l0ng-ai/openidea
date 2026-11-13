@@ -49,6 +49,7 @@ import { allRepos, runRemote } from "./ops";
 import { showPushDialog, showUpdateDialog, type PushTarget, type UpdateTarget } from "./remoteUi";
 import { comparePathsWithRevision, showDirectoryWorkingDiff } from "./comparePaths";
 import { showCloneDialog } from "./clone";
+import { createRepository } from "./createRepository";
 import {
   showManageRemotes,
   showMergeDialog,
@@ -247,6 +248,15 @@ export function registerVcsActions(): () => void {
       run: () => useCommit.setState((s) => ({ historyTick: s.historyTick + 1 })),
     },
     {
+      id: "vcs.createRepository",
+      title: "Create Git Repository…",
+      category: "Git",
+      icon: "branch",
+      when: "projectOpen && projectLocal",
+      keywords: ["init", "git", "enable version control"],
+      run: () => createRepository(),
+    },
+    {
       id: "vcs.clone",
       title: "Get from Version Control…",
       category: "Git",
@@ -373,7 +383,8 @@ export function registerVcsActions(): () => void {
       icon: "diff",
       when: VCS,
       // ⌘D duplicates the line inside a text editor; Git › Show Diff still works there.
-      keyWhen: "!editorTextFocus",
+      // In the Git Log's changed files it shows the commit's diff instead.
+      keyWhen: "!editorTextFocus && !vcsLogChangesFocus",
       run: async ({ arg, ctx }) => {
         if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
         const line =

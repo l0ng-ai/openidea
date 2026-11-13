@@ -9,7 +9,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { EditorSelection, MapMode, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { codeLenses, shownAgain, type CodeLens } from "@/editor/api";
-import { executeAction } from "@/platform/actions";
+import { executeAction, getAction } from "@/platform/actions";
 import { commands, nextRequestId, type OutlineItem, type RequestId, type SymbolKind } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { debounce, docOf, isUnavailable, lspRequest } from "./lsp";
@@ -81,8 +81,8 @@ export function lensTargets(items: readonly OutlineItem[]): LensTarget[] {
 }
 
 export function usagesLabel(n: number): string {
-  if (n === 0) return "no usages";
-  return n === 1 ? "1 usage" : `${n} usages`;
+  if (n === 0) return tx("no usages");
+  return n === 1 ? tx("1 usage") : tx`${n} usages`;
 }
 
 const setLenses = StateEffect.define<CodeLens[]>();
@@ -105,6 +105,12 @@ const lensField = StateField.define<CodeLens[]>({
 
 const usagesEnabled = () => editorPrefs().inlay.codeVisionUsages;
 const authorEnabled = () => editorPrefs().inlay.codeVisionAuthor;
+
+/** The author hint opens the file's blame annotations, and leaves them open when shown. */
+function showAnnotations(view: EditorView) {
+  view.focus();
+  if (!getAction("vcs.annotate")?.toggled?.()) void executeAction("vcs.annotate");
+}
 
 function openUsages(view: EditorView, offset: number) {
   view.dispatch({ selection: EditorSelection.cursor(offset), userEvent: "select.lens" });
@@ -258,6 +264,7 @@ class UsagesLensPlugin {
             icon: "user",
             order: 20,
             kind: "author",
+            run: showAnnotations,
           });
         const n = usages ? this.cache.get(key(t)) : undefined;
         if (n === undefined || (n === 0 && !editorPrefs().inlay.codeVisionNoUsages)) continue;

@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.6.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.7.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -418,9 +418,20 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.7
+
+API 1.7.0 is in development on `main`. Use `engines.openidea = "^1.7"` and the
+matching SDK. Released 1.6 plugins keep working. New in 1.7:
+
+- `host::open_diff(&ContentDiff { .. }, file_name)` (`views.open-diff`) opens
+  two texts in the invoking window's diff viewer, for example a merge request's
+  file before and after; `file_name` picks the syntax highlighting. Web views
+  send `{ op: "open-diff", left, right, leftLabel?, rightLabel?, title?, fileName? }`.
+  Commands and events only; each side at most 1 MiB.
+
 ### API 1.5
 
-API 1.5.0 is planned for the next OpenIDEA release. Use
+API 1.5.0 shipped with OpenIDEA 0.1.41. Use
 `engines.openidea = "^1.5"` and the matching SDK. Released 1.4 plugins keep
 working. New in 1.5:
 
@@ -587,6 +598,7 @@ then run `openidea-plugin check`.
 | `TextEditor::set_selections(ranges)`, `reveal(range)`                                                          | `editor.text-editor`                       | API 1.4: selections or scrolling in this window's already open editor; no capability. Commands/events only, UTF-16 coordinates.                                                                                                                                                                                                                           |
 | `host::set_decorations`, `clear_decorations`                                                                   | `decorations.{set,clear}`                  | API 1.4: project-scoped editor annotations cleared on plugin stop. Requires `project.read`.                                                                                                                                                                                                                                                               |
 | `host::set_file_decoration`, `clear_file_decorations`                                                          | `decorations.{set-file,clear-file}`        | API 1.4: project-tree badges/styles. Requires `project.read`.                                                                                                                                                                                                                                                                                             |
+| `host::set_file_note`                                                                                          | `decorations.set-file-note`                | API 1.7: a note after the name in the project tree (one line, at most 200 characters). Requires `project.read`.                                                                                                                                                                                                                                           |
 | `Project::search_text(query, limit)`                                                                           | `workspace.project.search-text`            | API 1.4: cancellable Find in Files with unsaved documents and project excludes, at most 10,000 matches. Requires `project.read`.                                                                                                                                                                                                                          |
 | `host::problems(path)`                                                                                         | `diagnostics.problems`                     | API 1.4: project Problems reports grouped by file/source, optional file filter. Requires `project.read` and an invoking window. Empty for remote projects.                                                                                                                                                                                                |
 | `Project::vcs_log(path, limit)`                                                                                | `vcs.log`                                  | API 1.4: newest first, at most 1000 commits, optional file history. Requires `vcs.read` and trust.                                                                                                                                                                                                                                                        |
@@ -638,6 +650,7 @@ then run `openidea-plugin check`.
 | `host::write_terminal(key, text)`                                                                              | `views.write-terminal`                     | API 1.4: write only to this plugin's still-running terminal in this window; trusted project, commands/events only.                                                                                                                                                                                                                                        |
 | `host::open_content_tab(tab)`                                                                                  | `views.open-content-tab`                   | API 1.4: the shared content editor protocol, without a web view; actions arrive as `content-tab-action`.                                                                                                                                                                                                                                                  |
 | `host::reply_content_tab(request_id, reply)`                                                                   | `views.reply-content-tab`                  | API 1.4: reply to an owned action in the originating window. No capability; commands/events only.                                                                                                                                                                                                                                                         |
+| `host::open_diff(diff, file_name)`                                                                             | `views.open-diff`                          | API 1.7: two texts in the invoking window's diff viewer; `file_name` (at most 256 characters) picks the highlighting. Commands/events only; each side at most 1 MiB.                                                                                                                                                                                      |
 | `RunConfigurations::configurations(root)`                                                                      | export `run-configurations.configurations` | API 1.4: optional `plugin-run-configurations` world; SDK registration `run_configurations`. Full project list, refreshed on configuration listing.                                                                                                                                                                                                        |
 | `TestResults::parse(config, chunk)`                                                                            | export `test-results.parse`                | API 1.4: optional `plugin-test-results` world; SDK registration `test_results`. Bounded output batches for `framework = "plugin"`; failures use built-in parsers.                                                                                                                                                                                         |
 | `TestResults::select_tests(config, tests)`                                                                     | export `test-results.select-tests`         | API 1.4: full replacement argv for test-tree name paths, or `None` when unsupported (the SDK default). Enables rerunning failed tests and running tree selections.                                                                                                                                                                                        |
@@ -839,8 +852,10 @@ Decorations are plain text, with fixed styles mapped to theme tokens:
 `highlight`, `search`, `added`, `modified`, `removed`, `warning`, `error`, `info`,
 `underline`, `strikethrough`, `muted`. Unknown styles are ignored. Editor items
 have `{ range, style, hover, after }`; tree items have `{ badge, style, tooltip }`,
-where a badge has at most two Unicode characters. Paths must resolve inside an
-open project; absolute paths select that project, relative paths use the invoking
+where a badge has at most two Unicode characters. A tree item can instead be a note
+(`set-file-note`, API 1.7): muted text after the file or folder name, one line of at
+most 200 characters, with an optional tooltip; it replaces that set's item for the file.
+Paths must resolve inside an open project; absolute paths select that project, relative paths use the invoking
 project. Sets are isolated by plugin and project and shared by all windows of
 that project. Setting replaces a set's items for one file; clearing removes that
 set in all projects. Each plugin has at most 50 editor sets and 50 tree sets,
@@ -1331,7 +1346,7 @@ main-toolbar actions use the focused editor context.
 `net.http:<host>` for unencrypted HTTP to other hosts; it does not imply an
 HTTPS grant. Both use the same wildcard rules. Each redirect is checked before
 connecting to the destination; HTTPS → HTTP also requires `net.http:<host>`,
-even on loopback. Responses are limited to 8 MiB. Requests run on the project
+even on loopback. Responses are limited to 16 MiB. Requests run on the project
 machine. A manifest using `net.http:` or `ipc:` declares `engines.openidea = "^1.4"`.
 
 A plugin with `net:ask` (API 1.5) may reach an HTTPS (or loopback) host that is
@@ -2417,7 +2432,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 is planned with the next release; API 1.6.0 is in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41 and 1.6.0 with 0.1.43; API 1.7.0 is in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a

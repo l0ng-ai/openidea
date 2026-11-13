@@ -40,7 +40,7 @@ mod vue_navigation;
 mod vue_refs;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
-pub use inspect::{FileInspection, InspectHost, InspectOptions};
+pub use inspect::{CheckedServer, DocumentCheck, FileInspection, InspectHost, InspectOptions};
 pub use jdtls::jvm_inspect::JdtJvmInspector;
 pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
@@ -120,6 +120,8 @@ struct DocState {
     compose_detected: bool,
     /// The notebook a code cell belongs to: synced through `notebookDocument/*`, not as a file.
     notebook: Option<PathBuf>,
+    /// When the servers last got new text (open or change): diagnostics published before are stale.
+    changed: std::time::Instant,
 }
 
 impl DocState {
@@ -158,6 +160,8 @@ struct DocSnap {
     language: LanguageId,
     text: Arc<DocText>,
     servers: Vec<Arc<Server>>,
+    /// [`DocState::changed`].
+    changed: std::time::Instant,
 }
 
 impl DocSnap {
@@ -237,6 +241,9 @@ pub struct LspManager {
     virtual_origins: Mutex<HashMap<String, ide_core::ServerId>>,
     /// Contents fetched for virtual URIs.
     virtual_docs: Mutex<HashMap<String, VirtualDocument>>,
+    /// Modification time of the archive behind a cached library class, so a jar
+    /// replaced in place (a SNAPSHOT installed again) is read again.
+    virtual_stamps: Mutex<HashMap<String, std::time::SystemTime>>,
     injections: injections::State,
     /// Open notebooks by path. Locked before `docs` when both are.
     notebooks: Mutex<HashMap<PathBuf, notebook::NotebookState>>,
@@ -378,15 +385,32 @@ fn read_jar_source(uri: &str, encoding: Option<&str>) -> Option<(String, ide_vfs
 /// Library classes in `jar:` targets (the official Kotlin LSP) go to their source
 /// in the artifact's sources jar when it is cached, at the declaration of the
 /// name navigated from; [`LspManager::virtual_document`] serves it.
-async fn library_sources(snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
-    if !locs.iter().any(|l| l.uri.as_deref().is_some_and(|u| u.starts_with("jar:") && u.ends_with(".class"))) {
+async fn library_sources(snap: &DocSnap, root: &Path, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
+    let jar_class = |u: &str| u.starts_with("jar:") && u.ends_with(".class");
+    // The path names the class's source file (`Db.kt`); the handle in the query, the class.
+    let jdt_class = |u: &str| u.starts_with("jdt://contents/") && u.contains(".class");
+    if !locs.iter().any(|l| l.uri.as_deref().is_some_and(|u| jar_class(u) || jdt_class(u))) {
         return locs;
     }
     let name = library_source::identifier_at(snap.text.line(pos.line as usize), pos.col).map(str::to_owned);
+    let root = root.to_owned();
     tokio::task::spawn_blocking(move || {
         locs.into_iter()
             .map(|loc| {
-                let Some(uri) = loc.uri.as_deref().filter(|u| u.starts_with("jar:") && u.ends_with(".class")) else {
+                // A class JDT finds in a project's class folder (Kotlin compiled for Java code):
+                // the project's source file, not the decompiled class.
+                if let Some(uri) = loc.uri.as_deref().filter(|u| jdt_class(u)) {
+                    let source = library_source::folder_class(uri)
+                        .and_then(|(package, class)| library_source::project_class_source(&root, &package, &class));
+                    let Some(source) = source else { return loc };
+                    let range = name
+                        .as_deref()
+                        .zip(std::fs::read_to_string(&source).ok())
+                        .map(|(n, text)| library_source::declaration_range(&text, n))
+                        .unwrap_or_default();
+                    return Location { path: source.into(), range, uri: None };
+                }
+                let Some(uri) = loc.uri.as_deref().filter(|u| jar_class(u)) else {
                     return loc;
                 };
                 let Some((source, loaded)) = library_source::class_source(uri, None) else { return loc };
@@ -487,6 +511,7 @@ impl LspManager {
             go_mod_checked: Mutex::new(HashSet::new()),
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
+            virtual_stamps: Mutex::new(HashMap::new()),
             injections: injections::State::default(),
             notebooks: Mutex::new(HashMap::new()),
         })
@@ -1153,6 +1178,7 @@ impl LspManager {
             servers: servers.iter().map(|s| Attached { server: s.clone(), opened_gen: None }).collect(),
             compose_detected,
             notebook: None,
+            changed: std::time::Instant::now(),
         };
         let compose_added = {
             let mut docs = self.docs.lock();
@@ -1200,6 +1226,7 @@ impl LspManager {
         let mut docs = self.docs.lock();
         let Some(d) = docs.get_mut(&doc) else { return };
         d.version = version as i32;
+        d.changed = std::time::Instant::now();
 
         // Servers that have this document open on their current instance.
         let targets: Vec<(Arc<Server>, Running, SyncKind, Encoding)> = d
@@ -1375,6 +1402,7 @@ impl LspManager {
             language: d.language.clone(),
             text: d.text.clone(),
             servers,
+            changed: d.changed,
         })
     }
 
@@ -1416,13 +1444,9 @@ impl LspManager {
         let params = serde_json::to_value(params).map_err(|e| IdeError::internal(e.to_string()))?;
         let stamp = self.injected_request_stamp(&params);
         let fut = async {
-            if t.server.name == "csharp-ls" {
-                let mut value = t.run.peer.request::<Value, Value>(method, params, cancel.cloned()).await?;
-                virtual_doc::normalize_csharp_uris(&mut value);
-                serde_json::from_value(value).map_err(|e| RpcError::Protocol(format!("{method}: {e}")))
-            } else {
-                t.run.peer.request::<Value, R>(method, params, cancel.cloned()).await
-            }
+            let mut value = t.run.peer.request::<Value, Value>(method, params, cancel.cloned()).await?;
+            virtual_doc::normalize_uris(&mut value);
+            serde_json::from_value(value).map_err(|e| RpcError::Protocol(format!("{method}: {e}")))
         };
         let result = match tokio::time::timeout(timeout, fut).await {
             Ok(r) => r.map_err(|e| rpc_err(&t.server.name, method, e)),
@@ -1683,7 +1707,7 @@ impl LspManager {
             Ok(found) => {
                 let locs =
                     convert::goto_response(&self.conv(t.enc()), lsp::GotoDefinitionResponse::Array(found.locations));
-                let locs = library_sources(snap, pos, locs).await;
+                let locs = library_sources(snap, &self.project_root, pos, locs).await;
                 self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                 (locs, found.complete)
             }
@@ -1732,7 +1756,7 @@ impl LspManager {
             match r {
                 Ok(Some(r)) => {
                     let locs = convert::goto_response(&self.conv(t.enc()), r);
-                    let locs = library_sources(snap, pos, locs).await;
+                    let locs = library_sources(snap, &self.project_root, pos, locs).await;
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                     self.note_arduino_sources(&t.server, &locs);
                     let locs = merge_locations(first, locs);
@@ -3182,14 +3206,44 @@ impl LspManager {
         Ok(found)
     }
 
+    /// Whether the archive behind a cached library class changed since it was read.
+    /// Stats the archive: call from a blocking worker.
+    pub fn library_class_changed(&self, uri: &str) -> bool {
+        let Some(stamp) = self.virtual_stamps.lock().get(uri).copied() else { return false };
+        virtual_doc::archive_modified(uri) != Some(stamp)
+    }
+
+    /// Archives behind cached library classes that changed since they were read.
+    /// Stats each archive: call from a blocking worker.
+    pub fn changed_library_archives(&self) -> Vec<PathBuf> {
+        let uris: Vec<String> = self.virtual_stamps.lock().keys().cloned().collect();
+        let mut archives: Vec<PathBuf> = uris
+            .iter()
+            .filter(|uri| self.library_class_changed(uri))
+            .filter_map(|uri| virtual_doc::archive(uri))
+            .collect();
+        archives.sort();
+        archives.dedup();
+        archives
+    }
+
     /// Contents of a virtual document, from the server that owns `uri`:
     /// `workspace/textDocumentContent` (LSP 3.18) when the server serves the
     /// scheme, jdtls' `java/classFileContents` for `jdt:` URIs. A `jar:` entry
     /// is read from its archive, a `jar:` class shown as its library source
     /// (see [`library_source`]) or else decompiled by the server. Cached.
     pub async fn virtual_document(&self, uri: &str) -> IdeResult<VirtualDocument> {
-        if let Some(d) = self.virtual_docs.lock().get(uri) {
-            return Ok(d.clone());
+        let cached = self.virtual_docs.lock().get(uri).cloned();
+        if let Some(d) = cached {
+            let stamp = self.virtual_stamps.lock().get(uri).copied();
+            let current = {
+                let uri = uri.to_owned();
+                tokio::task::spawn_blocking(move || virtual_doc::archive_modified(&uri)).await.ok().flatten()
+            };
+            if stamp.is_none() || stamp == current {
+                return Ok(d);
+            }
+            self.virtual_docs.lock().remove(uri);
         }
         let scheme = virtual_doc::scheme(uri).to_owned();
         let jar_class = scheme == "jar" && library_source::parse(uri).is_some_and(|e| e.entry.ends_with(".class"));
@@ -3333,11 +3387,18 @@ impl LspManager {
         if let Some(server) = server {
             self.virtual_origins.lock().entry(uri.to_owned()).or_insert(server);
         }
+        let stamp = virtual_doc::archive_modified(uri);
         let mut cache = self.virtual_docs.lock();
+        let mut stamps = self.virtual_stamps.lock();
         if cache.len() >= VIRTUAL_CACHE_LIMIT {
             cache.clear();
+            stamps.clear();
         }
         cache.insert(uri.to_owned(), doc.clone());
+        match stamp {
+            Some(stamp) => stamps.insert(uri.to_owned(), stamp),
+            None => stamps.remove(uri),
+        };
         doc
     }
 
