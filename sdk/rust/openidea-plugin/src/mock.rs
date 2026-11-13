@@ -174,6 +174,7 @@ struct State {
     terminal_writes: Vec<(String, String)>,
     content_tabs: BTreeMap<String, crate::ContentTab>,
     content_replies: Vec<(String, crate::ContentTabReply)>,
+    diffs: Vec<(crate::ContentDiff, Option<String>)>,
     database_sources: BTreeMap<(String, String), PluginDataSource>,
     database_credentials: BTreeSet<(String, String)>,
     database_connections: Vec<(String, String)>,
@@ -2249,6 +2250,13 @@ pub mod current {
     }
     pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Result<(), Error> {
         with(|s| s.content_replies.push((request.into(), reply.clone())));
+        Ok(())
+    }
+    pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
+        if diff.left.contains('\0') || diff.right.contains('\0') {
+            return Err(Error::Invalid("invalid diff".into()));
+        }
+        with(|s| s.diffs.push((diff.clone(), file_name.map(Into::into))));
         Ok(())
     }
     pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {

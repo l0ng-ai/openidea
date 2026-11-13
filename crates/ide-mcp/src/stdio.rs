@@ -35,7 +35,8 @@ pub fn run(discovery: &Path, project: Option<PathBuf>) -> i32 {
 }
 
 /// Relays each line of `input` (a JSON-RPC message or batch) to the IDE and
-/// writes its answer, if any, as one line to `output`.
+/// writes what it answers, if anything, one message per line to `output`: the
+/// answer, and before it the progress notifications of a long call.
 pub async fn bridge<R, W>(discovery: &Path, project: &Path, input: R, mut output: W) -> std::io::Result<()>
 where
     R: AsyncBufRead + Unpin,
@@ -44,23 +45,37 @@ where
     let scope = crate::server::new_token()?;
     let mut lines = input.lines();
     let mut pending = tokio::task::JoinSet::new();
+    let (sent, mut received) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let mut eof = false;
     loop {
+        if eof && pending.is_empty() && received.is_empty() {
+            break;
+        }
         let reply = tokio::select! {
             line = lines.next_line(), if !eof => {
                 let Some(line) = line? else { eof = true; continue };
                 if line.trim().is_empty() { continue; }
                 match serde_json::from_str::<Value>(&line) {
                     Ok(message) => {
-                        let (discovery, project, scope) = (discovery.to_owned(), project.to_owned(), scope.clone());
-                        pending.spawn(async move { relay(&discovery, &project, &message, &scope).await });
+                        let (discovery, project, scope, sent) =
+                            (discovery.to_owned(), project.to_owned(), scope.clone(), sent.clone());
+                        pending.spawn(async move {
+                            if let Some(reply) = relay(&discovery, &project, &message, &scope, &sent).await {
+                                let _ = sent.send(reply);
+                            }
+                        });
                         continue;
                     }
                     Err(e) => Some(error_response(Value::Null, -32700, &format!("not JSON: {e}"))),
                 }
             }
-            reply = pending.join_next(), if !pending.is_empty() => match reply { Some(reply) => reply.map_err(std::io::Error::other)?, None => None },
-            else => break,
+            Some(message) = received.recv() => Some(message),
+            done = pending.join_next(), if !pending.is_empty() => {
+                if let Some(Err(e)) = done {
+                    return Err(std::io::Error::other(e));
+                }
+                continue;
+            }
         };
         if let Some(reply) = reply {
             output.write_all(reply.to_string().as_bytes()).await?;
@@ -72,15 +87,24 @@ where
 }
 
 /// The IDE's answer to `message`, or an error response for each request in
-/// it when the IDE can't be reached.
-async fn relay(discovery: &Path, project: &Path, message: &Value, scope: &str) -> Option<Value> {
-    let failure = match post(discovery, project, message, scope).await {
-        Ok((StatusCode::ACCEPTED, _)) => return None,
-        Ok((_, body)) if !body.is_empty() => match serde_json::from_slice::<Value>(&body) {
+/// it when the IDE can't be reached. An answer on an event stream goes to `sent`
+/// with the messages before it.
+async fn relay(
+    discovery: &Path,
+    project: &Path,
+    message: &Value,
+    scope: &str,
+    sent: &tokio::sync::mpsc::UnboundedSender<Value>,
+) -> Option<Value> {
+    let failure = match post(discovery, project, message, scope, sent).await {
+        Ok(Answer::Streamed { answered: true }) => return None,
+        Ok(Answer::Streamed { answered: false }) => "OpenIDEA's answer ended early".to_owned(),
+        Ok(Answer::Body(StatusCode::ACCEPTED, _)) => return None,
+        Ok(Answer::Body(_, body)) if !body.is_empty() => match serde_json::from_slice::<Value>(&body) {
             Ok(reply) => return Some(reply),
             Err(_) => String::from_utf8_lossy(&body).trim().to_owned(),
         },
-        Ok((status, _)) => format!("OpenIDEA answered {status}"),
+        Ok(Answer::Body(status, _)) => format!("OpenIDEA answered {status}"),
         Err(e) => e,
     };
     let errors: Vec<Value> = requests(message).into_iter().map(|id| error_response(id, NOT_OPEN, &failure)).collect();
@@ -100,9 +124,23 @@ fn requests(message: &Value) -> Vec<Value> {
     }
 }
 
+enum Answer {
+    Body(StatusCode, Bytes),
+    /// The messages of an event stream went to the channel; `answered`: one was a response.
+    Streamed {
+        answered: bool,
+    },
+}
+
 /// POSTs `message` to the server in the discovery file; a message for the
 /// user when that fails.
-async fn post(discovery: &Path, project: &Path, message: &Value, scope: &str) -> Result<(StatusCode, Bytes), String> {
+async fn post(
+    discovery: &Path,
+    project: &Path,
+    message: &Value,
+    scope: &str,
+    sent: &tokio::sync::mpsc::UnboundedSender<Value>,
+) -> Result<Answer, String> {
     let not_running = || {
         format!(
             "OpenIDEA's MCP server is not running. Start OpenIDEA, open {} in it, and turn on Settings › Agents › MCP Server",
@@ -125,6 +163,60 @@ async fn post(discovery: &Path, project: &Path, message: &Value, scope: &str) ->
         .map_err(|e| e.to_string())?;
     let response = sender.send_request(request).await.map_err(|e| format!("cannot reach OpenIDEA: {e}"))?;
     let status = response.status();
-    let body = response.into_body().collect().await.map_err(|e| format!("OpenIDEA's answer: {e}"))?.to_bytes();
-    Ok((status, body))
+    let streamed = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|v| v.to_str().is_ok_and(|v| v.starts_with("text/event-stream")));
+    let mut body = response.into_body();
+    if !streamed {
+        let body = body.collect().await.map_err(|e| format!("OpenIDEA's answer: {e}"))?.to_bytes();
+        return Ok(Answer::Body(status, body));
+    }
+    let (mut buffer, mut answered) = (Vec::new(), false);
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|e| format!("OpenIDEA's answer: {e}"))?;
+        let Ok(data) = frame.into_data() else { continue };
+        buffer.extend_from_slice(&data);
+        for data in take_events(&mut buffer) {
+            if let Ok(message) = serde_json::from_str::<Value>(&data) {
+                answered |= message.get("method").is_none();
+                let _ = sent.send(message);
+            }
+        }
+    }
+    Ok(Answer::Streamed { answered })
+}
+
+/// The `data` of each complete server-sent event at the start of `buffer`, which keeps
+/// the rest. Comments and other fields are skipped.
+fn take_events(buffer: &mut Vec<u8>) -> Vec<String> {
+    let mut events = Vec::new();
+    while let Some(end) = buffer.windows(2).position(|w| w == b"\n\n") {
+        let block: Vec<u8> = buffer.drain(..end + 2).collect();
+        let block = String::from_utf8_lossy(&block).replace("\r\n", "\n");
+        let data: Vec<&str> = block
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(|d| d.strip_prefix(' ').unwrap_or(d))
+            .collect();
+        if !data.is_empty() {
+            events.push(data.join("\n"));
+        }
+    }
+    events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_events;
+
+    #[test]
+    fn events_are_taken_whole_and_comments_skipped() {
+        let mut buffer = b": running\n\nevent: message\ndata: {\"a\":1}\n\nevent: message\ndata: {\"b\"".to_vec();
+        assert_eq!(take_events(&mut buffer), ["{\"a\":1}"]);
+        assert_eq!(buffer, b"event: message\ndata: {\"b\"");
+        buffer.extend_from_slice(b":2}\n\n");
+        assert_eq!(take_events(&mut buffer), ["{\"b\":2}"]);
+        assert!(buffer.is_empty());
+    }
 }

@@ -982,7 +982,7 @@ function showPlan(path: string, id: string, statement: SqlStatement, plan: DbPla
     const old = s.results.find((r) => r.plan);
     const tab: ResultTab = {
       id: old?.id ?? nextTab++,
-      title: PLAN_TITLE,
+      title: old?.title ?? PLAN_TITLE,
       path,
       sourceId: id,
       outcome: { statement, result: null, error: null },
@@ -1230,7 +1230,12 @@ export function cancelConsole(path: string) {
 
 export function closeResult(id: number) {
   useDatabase.setState((s) => {
+    const index = s.results.findIndex((r) => r.id === id);
+    if (index < 0) return s;
     const results = s.results.filter((r) => r.id !== id);
-    return { results, activeResult: s.activeResult === id ? (results.at(-1)?.id ?? OUTPUT_TAB) : s.activeResult };
+    return {
+      results,
+      activeResult: s.activeResult === id ? ((results[index - 1] ?? results[index])?.id ?? OUTPUT_TAB) : s.activeResult,
+    };
   });
 }

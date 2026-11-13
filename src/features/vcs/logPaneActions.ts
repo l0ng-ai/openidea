@@ -152,6 +152,7 @@ export function registerLogPaneActions(): () => void {
       icon: "diff",
       when: LOG,
       hidden: true,
+      keyWhen: "vcsLogChangesFocus",
       run: ({ arg }) => void showChangesDiff(changesArg(arg)),
     },
     {

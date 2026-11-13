@@ -39,6 +39,10 @@ impl ToolRegistry for Registry {
         match name {
             "echo" if args["text"] == "fail" => Err(ToolCallError::Failed("it failed".into())),
             "echo" => Ok(format!("{} in {}", args["text"].as_str().unwrap_or(""), project.display())),
+            "sleep" => {
+                std::thread::sleep(std::time::Duration::from_millis(args["ms"].as_u64().unwrap()));
+                Ok("slept".into())
+            }
             _ => Err(ToolCallError::UnknownTool(format!("no tool {name:?}"))),
         }
     }
@@ -250,6 +254,20 @@ async fn the_stdio_bridge_relays_lines_and_explains_a_missing_ide() {
     let reply: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(reply["id"], 5);
     assert!(reply["error"]["message"].as_str().unwrap().contains("MCP server is not running"), "{reply}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_stdio_bridge_relays_a_long_call_answered_on_an_event_stream() {
+    let s = setup();
+    let call = json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": { "name": "sleep", "arguments": { "ms": 1500 }, "_meta": { "progressToken": 4 } } });
+    let mut output = Vec::new();
+    stdio::bridge(&s.discovery, &s.project, format!("{call}\n").as_bytes(), &mut output).await.unwrap();
+    let replies: Vec<Value> =
+        String::from_utf8(output).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let answer = replies.last().unwrap();
+    assert_eq!(answer["id"], 4, "{replies:?}");
+    assert_eq!(answer["result"]["content"][0]["text"], "slept");
 }
 
 #[tokio::test(flavor = "multi_thread")]

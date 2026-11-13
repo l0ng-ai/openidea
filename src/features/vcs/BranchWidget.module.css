@@ -55,7 +55,9 @@
 .searchGrow {
   flex: 1;
 }
+/* Its height fits the rows; in a resized popup it takes the rest of the height. */
 .listWrap {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;

@@ -757,19 +757,23 @@ pub(super) fn answer_of(choices: &[Choice], outcome: &Value, decline: Value) -> 
     choices.iter().find(|c| selected && c.option["optionId"].as_str() == chosen).map_or(decline, |c| c.answer.clone())
 }
 
+/// The command a command approval is about: the request's own, else its item's.
+pub(super) fn approval_command<'a>(params: &'a Value, item: Option<&'a Value>) -> Option<&'a str> {
+    // Approval payloads can describe a different command from the item's earlier summary.
+    let item = item.filter(|i| i.get("id") == params.get("itemId"));
+    params
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty())
+        .or_else(|| item.and_then(|i| i.get("command")).and_then(Value::as_str).filter(|c| !c.is_empty()))
+}
+
 /// The ACP title of a command approval.
 pub(super) fn command_approval_title(params: &Value, item: Option<&Value>) -> String {
     if let Some(host) = params.pointer("/networkApprovalContext/host").and_then(Value::as_str) {
         return format!("Allow network access to {host}");
     }
-    // Approval payloads can describe a different command from the item's earlier summary.
-    let item = item.filter(|i| i.get("id") == params.get("itemId"));
-    let command = params
-        .get("command")
-        .and_then(Value::as_str)
-        .filter(|c| !c.is_empty())
-        .or_else(|| item.and_then(|i| i.get("command")).and_then(Value::as_str).filter(|c| !c.is_empty()));
-    match command {
+    match approval_command(params, item) {
         Some(command) => format!("Run {}", crate::shell_script(command).unwrap_or_else(|| command.to_owned())),
         None => "Run a command".to_owned(),
     }

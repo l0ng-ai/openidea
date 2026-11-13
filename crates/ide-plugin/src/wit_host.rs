@@ -1770,6 +1770,12 @@ impl views::Host for StoreData {
             )
             .map_err(to_wit))
     }
+    fn open_diff(&mut self, diff: views::ContentDiff, file_name: Option<String>) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        Ok(self.host.open_diff(self.invocation.client.as_deref().unwrap(), diff.into(), file_name).map_err(to_wit))
+    }
     fn reply_content_tab(&mut self, request_id: String, reply: views::ContentTabReply) -> Fallible<()> {
         if let Err(e) = self.require_window() {
             return Ok(Err(e));

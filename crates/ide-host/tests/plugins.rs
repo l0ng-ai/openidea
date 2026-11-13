@@ -6352,6 +6352,26 @@ fn api14_stage3_configurations_test_results_and_content_actions_use_real_exports
     assert!(f.host.parse_test_results("main", "plugin:execution:dynamic", "trap".into()).unwrap().is_none());
 }
 
+#[cfg(unix)]
+#[test]
+fn a_plugin_command_opens_a_diff_in_its_window() {
+    let f = execution_fixture();
+    f.take_events();
+    f.run("execution", "diff", None).unwrap();
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(eventually(|| {
+        f.events.lock().iter().any(|(client, event)| {
+            client.as_deref() == Some("main")
+                && matches!(event, PluginEvent::OpenDiff { plugin_id, diff, file_name }
+                    if plugin_id == "execution"
+                        && diff.left == "before\n"
+                        && diff.right == "after\n"
+                        && diff.title.as_deref() == Some("Review")
+                        && file_name.as_deref() == Some("src/review.rs"))
+        })
+    }));
+}
+
 #[test]
 fn api14_fixture_exports_test_selection() {
     let f = fixture(Limits::default());
@@ -6682,7 +6702,11 @@ fn project_write_cannot_replace_the_git_file_of_a_linked_worktree() {
     }
     for rel in spellings {
         let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
-        assert!(err.contains("git's own files"), "{rel}: {err}");
+        // On Windows a stream name is refused before the path is looked at at all; elsewhere a colon
+        // is an ordinary character and the `.git` rule applies.
+        let refused =
+            if cfg!(windows) && rel.contains(':') { "file streams are not allowed" } else { "git's own files" };
+        assert!(err.contains(refused), "{rel}: {err}");
         assert_eq!(std::fs::read_to_string(&pointer).unwrap(), gitdir, "{rel}");
     }
 }

@@ -11,6 +11,14 @@ describe("mirrorManifest", () => {
     platforms: {
       "darwin-aarch64": { signature: "sig-mac", url: `${gh}/OpenIDEA_aarch64.app.tar.gz` },
       "windows-x86_64-nsis": { signature: "sig-win", url: `${gh}/OpenIDEA_0.1.38_x64-setup.exe` },
+      "windows-x86_64-portable": {
+        signature: "sig-portable",
+        url: `${gh}/OpenIDEA_0.1.38_windows_x64_portable.zip`,
+      },
+      "windows-aarch64-portable": {
+        signature: "sig-portable-arm",
+        url: `${gh}/OpenIDEA_0.1.38_windows_arm64_portable.zip`,
+      },
     },
   };
 
@@ -21,6 +29,14 @@ describe("mirrorManifest", () => {
       platforms: {
         "darwin-aarch64": { signature: "sig-mac", url: `${cnb}/OpenIDEA_aarch64.app.tar.gz` },
         "windows-x86_64-nsis": { signature: "sig-win", url: `${cnb}/OpenIDEA_0.1.38_x64-setup.exe` },
+        "windows-x86_64-portable": {
+          signature: "sig-portable",
+          url: `${cnb}/OpenIDEA_0.1.38_windows_x64_portable.zip`,
+        },
+        "windows-aarch64-portable": {
+          signature: "sig-portable-arm",
+          url: `${cnb}/OpenIDEA_0.1.38_windows_arm64_portable.zip`,
+        },
       },
     });
   });

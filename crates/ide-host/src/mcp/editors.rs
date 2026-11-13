@@ -65,7 +65,7 @@ async fn current_file(call: Call) -> IdeResult<Output> {
     })
 }
 
-fn problem(d: Diagnostic, text: &str) -> Value {
+pub(super) fn problem(d: Diagnostic, text: &str) -> Value {
     json!({
         "severity": d.severity, "description": d.message,
         "lineContent": text.lines().nth(d.range.start.line as usize).unwrap_or_default(),

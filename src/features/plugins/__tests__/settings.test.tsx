@@ -179,7 +179,9 @@ it("lists the plugin's declared secrets on its settings page", async () => {
     list: async () => ({
       plugins: [{ id: "example.helper" } as never],
       activeTheme: null,
-      ui: [{ pluginId: "example.helper", point: "secrets", key: "api-key", decl: { name: "api-key", label: "API key" } }],
+      ui: [
+        { pluginId: "example.helper", point: "secrets", key: "api-key", decl: { name: "api-key", label: "API key" } },
+      ],
     }),
   });
   const { refreshPlugins } = await import("../store");

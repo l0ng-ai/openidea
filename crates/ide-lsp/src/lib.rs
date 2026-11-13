@@ -40,7 +40,7 @@ mod vue_navigation;
 mod vue_refs;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
-pub use inspect::{FileInspection, InspectHost, InspectOptions};
+pub use inspect::{CheckedServer, DocumentCheck, FileInspection, InspectHost, InspectOptions};
 pub use jdtls::jvm_inspect::JdtJvmInspector;
 pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
@@ -378,15 +378,32 @@ fn read_jar_source(uri: &str, encoding: Option<&str>) -> Option<(String, ide_vfs
 /// Library classes in `jar:` targets (the official Kotlin LSP) go to their source
 /// in the artifact's sources jar when it is cached, at the declaration of the
 /// name navigated from; [`LspManager::virtual_document`] serves it.
-async fn library_sources(snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
-    if !locs.iter().any(|l| l.uri.as_deref().is_some_and(|u| u.starts_with("jar:") && u.ends_with(".class"))) {
+async fn library_sources(snap: &DocSnap, root: &Path, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
+    let jar_class = |u: &str| u.starts_with("jar:") && u.ends_with(".class");
+    // The path names the class's source file (`Db.kt`); the handle in the query, the class.
+    let jdt_class = |u: &str| u.starts_with("jdt://contents/") && u.contains(".class");
+    if !locs.iter().any(|l| l.uri.as_deref().is_some_and(|u| jar_class(u) || jdt_class(u))) {
         return locs;
     }
     let name = library_source::identifier_at(snap.text.line(pos.line as usize), pos.col).map(str::to_owned);
+    let root = root.to_owned();
     tokio::task::spawn_blocking(move || {
         locs.into_iter()
             .map(|loc| {
-                let Some(uri) = loc.uri.as_deref().filter(|u| u.starts_with("jar:") && u.ends_with(".class")) else {
+                // A class JDT finds in a project's class folder (Kotlin compiled for Java code):
+                // the project's source file, not the decompiled class.
+                if let Some(uri) = loc.uri.as_deref().filter(|u| jdt_class(u)) {
+                    let source = library_source::folder_class(uri)
+                        .and_then(|(package, class)| library_source::project_class_source(&root, &package, &class));
+                    let Some(source) = source else { return loc };
+                    let range = name
+                        .as_deref()
+                        .zip(std::fs::read_to_string(&source).ok())
+                        .map(|(n, text)| library_source::declaration_range(&text, n))
+                        .unwrap_or_default();
+                    return Location { path: source.into(), range, uri: None };
+                }
+                let Some(uri) = loc.uri.as_deref().filter(|u| jar_class(u)) else {
                     return loc;
                 };
                 let Some((source, loaded)) = library_source::class_source(uri, None) else { return loc };
@@ -1683,7 +1700,7 @@ impl LspManager {
             Ok(found) => {
                 let locs =
                     convert::goto_response(&self.conv(t.enc()), lsp::GotoDefinitionResponse::Array(found.locations));
-                let locs = library_sources(snap, pos, locs).await;
+                let locs = library_sources(snap, &self.project_root, pos, locs).await;
                 self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                 (locs, found.complete)
             }
@@ -1732,7 +1749,7 @@ impl LspManager {
             match r {
                 Ok(Some(r)) => {
                     let locs = convert::goto_response(&self.conv(t.enc()), r);
-                    let locs = library_sources(snap, pos, locs).await;
+                    let locs = library_sources(snap, &self.project_root, pos, locs).await;
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                     self.note_arduino_sources(&t.server, &locs);
                     let locs = merge_locations(first, locs);

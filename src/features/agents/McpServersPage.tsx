@@ -324,6 +324,14 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                 />
               </div>
 
+              {!isCollapsed && scope === "workspace" && (
+                <p className={styles.sectionNote}>
+                  <T>
+                    Servers added to the project's settings file outside OpenIDEA stay off until you turn them on here.
+                  </T>
+                </p>
+              )}
+
               {!isCollapsed && items.length > 0 && (
                 <div className={styles.sectionBody} role="list">
                   {items.map((server) => {
