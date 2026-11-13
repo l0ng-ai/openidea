@@ -2609,6 +2609,82 @@ fn git_toolbox_does_not_fetch_untrusted_projects() {
     assert!(err.contains("Restricted Mode"), "{err}");
 }
 
+/// Git Toolbox in a workspace window whose container folder is not a
+/// repository (every member is its own clone): the status bar follows the
+/// focused file's repository, and the scheduled fetch covers every member.
+#[test]
+fn official_git_toolbox_follows_members_in_a_workspace() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(50)), ..Limits::default() });
+    let tmp = tempfile::tempdir().unwrap();
+    // A remote with `main`, cloned by member `a` (at `main`) and member `b`
+    // (on its own branch, to tell the two apart in the status bar).
+    let remote = tmp.path().join("remote.git");
+    std::fs::create_dir(&remote).unwrap();
+    git(&remote, &["init", "--bare", "-b", "main"]);
+    let seed = tmp.path().join("seed");
+    std::fs::create_dir(&seed).unwrap();
+    git(&seed, &["init", "-b", "main"]);
+    std::fs::write(seed.join("seed.txt"), "seed\n").unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-m", "one"]);
+    git(&seed, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    git(&seed, &["push", "-u", "origin", "main"]);
+    let member_a = tmp.path().join("member-a");
+    git(tmp.path(), &["clone", remote.to_str().unwrap(), member_a.to_str().unwrap()]);
+    let member_a = dunce::canonicalize(member_a).unwrap();
+    let member_b = tmp.path().join("member-b");
+    git(tmp.path(), &["clone", remote.to_str().unwrap(), member_b.to_str().unwrap()]);
+    let member_b = dunce::canonicalize(member_b).unwrap();
+    git(&member_b, &["checkout", "-b", "feature"]);
+    git(&member_b, &["push", "-u", "origin", "feature"]);
+    // The window's project is the container; the members are attached to it.
+    f.workspace.other_roots.lock().extend([member_a.clone(), member_b.clone()]);
+
+    f.install(&official("git-toolbox"));
+    let item = |host: &PluginHost| {
+        host.status_items().into_iter().find(|(p, id, _)| p == "openidea.git-toolbox" && id == "branch")
+    };
+    let now = Instant::now();
+    let focus = |path: &Path| {
+        f.host
+            .post_events(Some("main"), vec![WorkbenchEvent::EditorFocused(Some(path.to_string_lossy().into_owned()))]);
+        f.host.flush_events_at(now + Duration::from_secs(3));
+        f.host.wait_events(Duration::from_secs(10));
+    };
+    // Focusing a file of member `a` shows that member's branch: the window's
+    // project is the container, which is no repository.
+    focus(&member_a.join("seed.txt"));
+    assert_eq!(item(&f.host).map(|(_, _, i)| i.text), Some("main".into()));
+    // Fetch Now fetches the shown member; the container is not a repository.
+    f.run("openidea.git-toolbox", "fetch", None).unwrap();
+    let fetched = stored(&f, "openidea.git-toolbox");
+    assert!(
+        fetched.iter().any(|(key, _)| key == &format!("last-fetch:{}", to_ipc(&member_a))),
+        "{member_a:?}: {fetched:?}"
+    );
+    assert_eq!(fetched.iter().filter(|(key, _)| key.starts_with("last-fetch:")).count(), 1, "{fetched:?}");
+    // Switching to the other member follows it.
+    focus(&member_b.join("seed.txt"));
+    assert_eq!(item(&f.host).map(|(_, _, i)| i.text), Some("feature".into()));
+
+    // Idle: reclaimed; the schedule then wakes it to fetch every member (the
+    // container is skipped: it has no repository).
+    std::thread::sleep(Duration::from_millis(100));
+    f.host.tick();
+    assert_eq!(item(&f.host).map(|(_, _, i)| i.text), Some("feature".into()), "the item stays while it sleeps");
+    f.take_events();
+    f.host.tick_at(Instant::now() + Duration::from_secs(301));
+    assert!(f.host.wait_events(Duration::from_secs(30)));
+    let fetched = stored(&f, "openidea.git-toolbox");
+    for member in [&member_a, &member_b] {
+        assert!(
+            fetched.iter().any(|(key, _)| key == &format!("last-fetch:{}", to_ipc(member))),
+            "{member:?}: {fetched:?}"
+        );
+    }
+    assert_eq!(item(&f.host).map(|(_, _, i)| i.text), Some("feature".into()));
+}
+
 /// A tiny HTTP server: each request is answered after `delay(n)` (n counts
 /// requests) with `body`. Returns its port and the request bodies it got.
 fn http_server(
