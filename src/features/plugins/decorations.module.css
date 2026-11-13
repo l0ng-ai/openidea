@@ -23,6 +23,12 @@
 .info {
   text-decoration: underline dotted var(--info);
 }
+.typo {
+  text-decoration: underline wavy var(--wave-typo, var(--success));
+}
+.weak {
+  color: var(--fg-weak-warning);
+}
 .underline {
   text-decoration: underline;
 }
@@ -36,4 +42,32 @@
   white-space: pre;
   margin-inline-start: calc(var(--space-2) / 2);
   color: var(--fg-muted);
+}
+
+/* Inline text follows the scheme's Error / Warning colours, the way Inspection Lens
+   colours an annotation. The message span carries the severity class, and the line-end
+   text itself is never underlined: the wave belongs to the code token. */
+.after .error {
+  color: var(--wave-error);
+  text-decoration: none;
+}
+.after .warning {
+  color: var(--wave-warning);
+  text-decoration: none;
+}
+.after .info {
+  color: var(--info, var(--fg-weak-warning));
+  text-decoration: none;
+}
+.after .typo {
+  color: var(--wave-typo, var(--success));
+  text-decoration: none;
+}
+.after .weak {
+  color: var(--fg-weak-warning);
+  text-decoration: none;
+}
+.after .underline,
+.after .strikethrough {
+  text-decoration: none;
 }

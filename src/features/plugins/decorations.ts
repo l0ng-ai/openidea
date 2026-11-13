@@ -19,6 +19,8 @@ const colors: Record<string, string> = {
   warning: "var(--warning)",
   error: "var(--danger)",
   info: "var(--info)",
+  typo: "var(--wave-typo)",
+  weak: "var(--fg-weak-warning)",
   underline: "var(--fg-editor)",
   strikethrough: "var(--fg-editor)",
   muted: "var(--fg-muted)",
@@ -73,9 +75,16 @@ class AfterText extends WidgetType {
   }
   override toDOM() {
     const span = document.createElement("span");
-    span.className = `${styles.after} ${this.style}`;
-    span.textContent = this.text;
-    if (this.hover) span.title = this.hover;
+    span.className = styles.after ?? "";
+    // The gap before the message stays outside the styled text, so the severity colour and
+    // decoration underline the message alone rather than the leading spaces.
+    const gap = /^\s+/.exec(this.text)?.[0];
+    if (gap) span.appendChild(document.createTextNode(gap));
+    const text = document.createElement("span");
+    text.className = this.style;
+    text.textContent = this.text.slice(gap?.length ?? 0);
+    if (this.hover) text.title = this.hover;
+    span.appendChild(text);
     return span;
   }
 }
@@ -100,8 +109,11 @@ export function decorationExtension(ctx: EditorDocContext) {
                 ),
               );
             if (item.after)
+              // `side: 0` keeps the annotation before other line-end widgets (Code Vision's
+              // author hint and usages lens are `side: 1`): the message hugs the code and the
+              // blame label follows it, as in Inspection Lens.
               ranges.push(
-                Decoration.widget({ widget: new AfterText(item.after, className, item.hover), side: 1 }).range(to),
+                Decoration.widget({ widget: new AfterText(item.after, className, item.hover), side: 0 }).range(to),
               );
           }
         }
