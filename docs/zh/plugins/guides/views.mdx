@@ -248,11 +248,12 @@ Vite + React 页面由 `plugins/build.sh official/graphviz` 构建到 `web/`，�
 声明 `engines.openidea = "^1.3"` 后，页面可以通过 `openidea.postMessage` 发送 JSON 消息，请 IDE 打开更多东西。
 这些协议只运行通过 `process:<program>` 授权的程序，工作目录是窗口所在的受信任项目根目录，从不经过 shell：
 
-| `op`                                                          | 打开什么                                                                                              |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `pty-spawn`、`pty-input`、`pty-resize`、`pty-kill`、`pty-ack` | 归该 frame 所有的交互式 PTY；输出以 `pty-data`、`pty-exit`、`pty-error` 返回。每个插件最多 8 个会话。 |
-| `open-log-tab`                                                | 只读编辑器标签页，持续显示程序输出，可带参数开关。                                                    |
-| `open-content-tab`                                            | 内容由插件提供的编辑器标签页，带工具栏操作，用 `content-tab-reply` 回复。                             |
+| `op`                                                          | 打开什么                                                                                               |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `pty-spawn`、`pty-input`、`pty-resize`、`pty-kill`、`pty-ack` | 归该 frame 所有的交互式 PTY；输出以 `pty-data`、`pty-exit`、`pty-error` 返回。每个插件最多 8 个会话。  |
+| `open-log-tab`                                                | 只读编辑器标签页，持续显示程序输出，可带参数开关。                                                     |
+| `open-content-tab`                                            | 内容由插件提供的编辑器标签页，带工具栏操作，用 `content-tab-reply` 回复。                              |
+| `open-diff`                                                   | API 1.7：在差异查看器中对比两段文本（`left`、`right`，可选标签、`title`，以及用于高亮的 `fileName`）。 |
 
 消息字段和限制见 [插件指南](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#web-frame-ptys-api-13)；
 `crates/ide-plugin/tests/fixtures/` 下已构建的 `web-pty`、`web-log`、`web-content` 测试插件演示了这些协议。
@@ -303,15 +304,16 @@ impl Details for MyPlugin {
 
 以下函数需在窗口的命令或事件中调用：
 
-| 函数                                            | 打开什么                                                                                                                          |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `host::open_location(path, line, column)`       | 在编辑器中打开项目文件并定位光标（`project.read`；插件私有目录中的文件也可以）。                                                  |
-| `host::open_editor(path, selection)`            | API 1.4：打开项目文件并选中一个范围。                                                                                             |
-| `host::open_terminal(title, program, args)`     | 在项目根目录运行已批准 `process:<program>` 的终端标签页。                                                                         |
-| `host::open_terminal_session(key, title, &cmd)` | API 1.4：带 key 的终端；再次使用同一 key 会聚焦它。用 `host::write_terminal(key, text)` 写入；退出时收到 `terminal-exited` 事件。 |
-| `host::open_log_tab(key, title, &log)`          | API 1.3：基于 `ProcessLog` 的只读日志标签页。每个窗口最多 32 个；暂不支持远程项目。                                               |
-| `host::open_content_tab(&ContentTab { .. })`    | API 1.4：不依赖网页视图的内容编辑器标签页；操作以 `content-tab-action` 事件送达，用 `host::reply_content_tab` 回复。              |
-| `host::output_append(channel, text)`            | API 1.4：每个通道一个只读 **输出** 标签页（32 个通道，各 1 MiB）；另有 `output_clear`、`output_reveal`。                          |
+| 函数                                              | 打开什么                                                                                                                          |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `host::open_location(path, line, column)`         | 在编辑器中打开项目文件并定位光标（`project.read`；插件私有目录中的文件也可以）。                                                  |
+| `host::open_editor(path, selection)`              | API 1.4：打开项目文件并选中一个范围。                                                                                             |
+| `host::open_terminal(title, program, args)`       | 在项目根目录运行已批准 `process:<program>` 的终端标签页。                                                                         |
+| `host::open_terminal_session(key, title, &cmd)`   | API 1.4：带 key 的终端；再次使用同一 key 会聚焦它。用 `host::write_terminal(key, text)` 写入；退出时收到 `terminal-exited` 事件。 |
+| `host::open_log_tab(key, title, &log)`            | API 1.3：基于 `ProcessLog` 的只读日志标签页。每个窗口最多 32 个；暂不支持远程项目。                                               |
+| `host::open_content_tab(&ContentTab { .. })`      | API 1.4：不依赖网页视图的内容编辑器标签页；操作以 `content-tab-action` 事件送达，用 `host::reply_content_tab` 回复。              |
+| `host::open_diff(&ContentDiff { .. }, file_name)` | API 1.7：在差异查看器中对比两段文本，例如评审中某个文件的修改前后；`file_name` 决定语法高亮。                                     |
+| `host::output_append(channel, text)`              | API 1.4：每个通道一个只读 **输出** 标签页（32 个通道，各 1 MiB）；另有 `output_clear`、`output_reveal`。                          |
 
 ```rust
 use openidea_plugin::{ContentAction, ContentTab, host};

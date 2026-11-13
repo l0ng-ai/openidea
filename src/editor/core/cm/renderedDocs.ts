@@ -25,8 +25,13 @@
  * Off, which is the default, the icon still shows over a comment, so one comment can be
  * read rendered, as in IDEA. That costs typing nothing: while the file renders no
  * comments and none is flipped, its comments are found only once typing pauses
- * (`passiveScanner`), the Markdown parser is not loaded, and the gutter has a column
+ * (`deferredScanner`), the Markdown parser is not loaded, and the gutter has a column
  * only if the file has doc comments.
+ *
+ * On, typing costs about as little: a keystroke away from every comment's lines only
+ * moves the rendered comments along with the text, and the file is scanned again once
+ * typing pauses. Anything else that changes the text (paste, undo, a reload) rebuilds at
+ * once, so the comments it brings in render at once.
  */
 import {
   EditorState,
@@ -36,6 +41,7 @@ import {
   RangeSet,
   StateEffect,
   StateField,
+  type ChangeSet,
   type Extension,
   type Transaction,
 } from "@codemirror/state";
@@ -369,11 +375,55 @@ type PlacedComment = DocComment & { line: number; end: number; rendered: boolean
 
 interface DocsView {
   decorations: DecorationSet;
-  /** Every doc comment, rendered or not. */
+  /** Every doc comment, rendered or not, in document order. */
   comments: ReadonlyArray<PlacedComment>;
+  /**
+   * Moved along with keystrokes since the last scan, instead of found again: what the
+   * parser made of them may differ, until `deferredScanner` rebuilds.
+   */
+  stale: boolean;
 }
 
-const INACTIVE: DocsView = { decorations: Decoration.none, comments: [] };
+const INACTIVE: DocsView = { decorations: Decoration.none, comments: [], stale: false };
+
+/** Asks for the scan a stale view is waiting for. */
+const rescanDocs = StateEffect.define<null>();
+
+/** Comments moved along with a change, as an edit elsewhere moves them; their text is unchanged. */
+function mapComments(comments: ReadonlyArray<PlacedComment>, changes: ChangeSet): PlacedComment[] {
+  return comments.map((c) => ({
+    ...c,
+    from: changes.mapPos(c.from, 1),
+    to: changes.mapPos(c.to, -1),
+    line: changes.mapPos(c.line, 1),
+    end: changes.mapPos(c.end, -1),
+  }));
+}
+
+/**
+ * Whether a change can skip the scan: a keystroke (typed or deleted characters) that
+ * touches no comment's lines. Everything else (paste, undo, formatting, a reload) brings
+ * comments in or out at once, so it rebuilds at once; a keystroke on a comment's line
+ * moves its edges. A keystroke elsewhere can still change comments (`/*` makes the rest of
+ * the file one), which the scan after the pause takes in.
+ */
+function typedOutsideComments(view: DocsView, tr: Transaction): boolean {
+  if (!(tr.isUserEvent("input.type") || tr.isUserEvent("delete"))) return false;
+  const { comments } = view;
+  let touches = false;
+  tr.changes.iterChangedRanges((fromA, toA) => {
+    // The first comment that does not end before the change.
+    let lo = 0;
+    let hi = comments.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (comments[mid]!.end < fromA) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo < comments.length && comments[lo]!.line <= toA) touches = true;
+  });
+  return !touches;
+}
 
 /**
  * Rendered comments by their source, shared by every editor, least recently used first.
@@ -442,7 +492,7 @@ function build(state: EditorState): DocsView {
       ),
     );
   }
-  return { decorations: Decoration.set(decorations), comments };
+  return { decorations: Decoration.set(decorations), comments, stale: false };
 }
 
 /** Start of the comment the mouse is over, or null. Cleared by any edit, which moves the text under it. */
@@ -476,7 +526,7 @@ const setPassive = StateEffect.define<readonly PlacedComment[]>();
 /**
  * The doc comments of a file that renders none, for their icons. Rescanning the file on
  * each keystroke would make typing in a large file several times slower for a feature
- * that is off, so `passiveScanner` rescans once typing pauses; meanwhile the comments
+ * that is off, so `deferredScanner` rescans once typing pauses; meanwhile the comments
  * found are mapped through the edits. Empty while the file renders comments: `docsField`
  * has them then.
  */
@@ -487,32 +537,29 @@ const passiveDocs = StateField.define<readonly PlacedComment[]>({
     // Switched off: the comments rendered a moment ago are known only to the last scan.
     if (active(tr.startState)) return placeComments(tr.state);
     for (const e of tr.effects) if (e.is(setPassive)) return e.value;
-    if (!tr.docChanged) return value;
-    const map = (pos: number, assoc: number) => tr.changes.mapPos(pos, assoc);
-    return value.map((c) => ({
-      ...c,
-      from: map(c.from, 1),
-      to: map(c.to, -1),
-      line: map(c.line, 1),
-      end: map(c.end, -1),
-    }));
+    return tr.docChanged ? mapComments(value, tr.changes) : value;
   },
 });
 
-/** Scans a file that renders no comments once the edits and the parser have paused. */
-const passiveScanner = ViewPlugin.fromClass(
+/**
+ * Scans the file once edits and the parser have paused: a file that renders no comments,
+ * for their icons; one that does, when keystrokes have only moved its comments along.
+ */
+const deferredScanner = ViewPlugin.fromClass(
   class {
     timer: ReturnType<typeof setTimeout> | null = null;
     constructor(readonly view: EditorView) {}
     update(update: ViewUpdate) {
-      if (active(update.state)) return this.cancel();
-      if (update.docChanged || syntaxTree(update.startState) !== syntaxTree(update.state)) {
-        this.cancel();
-        this.timer = setTimeout(() => {
-          this.timer = null;
-          if (!active(this.view.state)) this.view.dispatch({ effects: setPassive.of(placeComments(this.view.state)) });
-        }, PASSIVE_SCAN_DELAY);
-      }
+      if (!update.docChanged && syntaxTree(update.startState) === syntaxTree(update.state)) return;
+      // Rendering and up to date: the view was just built, nothing is waiting.
+      if (active(update.state) && !update.state.field(docsField).stale) return this.cancel();
+      this.cancel();
+      this.timer = setTimeout(() => {
+        this.timer = null;
+        const { state } = this.view;
+        if (!active(state)) this.view.dispatch({ effects: setPassive.of(placeComments(state)) });
+        else if (state.field(docsField).stale) this.view.dispatch({ effects: rescanDocs.of(null) });
+      }, RESCAN_DELAY);
     }
     cancel() {
       if (this.timer !== null) clearTimeout(this.timer);
@@ -524,8 +571,8 @@ const passiveScanner = ViewPlugin.fromClass(
   },
 );
 
-/** How long edits and parsing must pause before a file that renders no comments is scanned. */
-const PASSIVE_SCAN_DELAY = 300;
+/** How long edits and parsing must pause before the file is scanned again. */
+const RESCAN_DELAY = 300;
 
 /** Every doc comment of the file, as last found. */
 function placedComments(state: EditorState): ReadonlyArray<PlacedComment> {
@@ -587,13 +634,26 @@ const docsField = StateField.define<DocsView>({
   create: build,
   update(value, tr) {
     if (tr.effects.some((e) => e.is(markdownLoaded))) renderCache.clear();
-    const rebuild =
-      tr.docChanged ||
+    if (
       tr.reconfigured ||
-      tr.effects.some((e) => e.is(toggleRenderedView) || e.is(markdownLoaded) || e.is(relabel)) ||
-      // The parser finishing more of the file can bring comments it had not reached.
-      syntaxTree(tr.startState) !== syntaxTree(tr.state);
-    return rebuild ? build(tr.state) : value;
+      tr.effects.some((e) => e.is(toggleRenderedView) || e.is(markdownLoaded) || e.is(relabel) || e.is(rescanDocs))
+    )
+      return build(tr.state);
+    if (tr.docChanged) {
+      // A keystroke away from every comment moves them along; the scan waits for a pause.
+      if (active(tr.state) && typedOutsideComments(value, tr))
+        return {
+          decorations: value.decorations.map(tr.changes),
+          comments: mapComments(value.comments, tr.changes),
+          stale: true,
+        };
+      return build(tr.state);
+    }
+    // The parser finishing more of the file can bring comments it had not reached: built
+    // at once, so a file opens with the comments on screen rendered, unless keystrokes
+    // already have the scan waiting for a pause.
+    if (syntaxTree(tr.startState) !== syntaxTree(tr.state)) return value.stale ? value : build(tr.state);
+    return value;
   },
   provide: (f) => EditorView.decorations.from(f, (v) => v.decorations),
 });
@@ -838,7 +898,7 @@ export const renderedDocsExtension: Extension = [
   flipped,
   docsField,
   passiveDocs,
-  passiveScanner,
+  deferredScanner,
   hovered,
   hoverTracker,
   showSourceAtCaret,

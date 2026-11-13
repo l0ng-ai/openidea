@@ -109,7 +109,8 @@ function FrontWindow({ title, onClose, children }: { title: string; onClose: () 
       <div
         ref={body}
         className="vcsDiffDialogBody"
-        style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}
+        // The dialog body is not a flex container: fill it so the editors reach the footer.
+        style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}
       >
         {children}
       </div>

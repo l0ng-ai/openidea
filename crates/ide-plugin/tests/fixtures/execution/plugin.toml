@@ -41,6 +41,10 @@ id = "content"
 title = "content"
 
 [[contributes.commands]]
+id = "diff"
+title = "diff"
+
+[[contributes.commands]]
 id = "events"
 title = "events"
 

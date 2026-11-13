@@ -1,3 +1,4 @@
+import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { ICON_NAMES, type IconName } from "@/ui";
 import { pluginsBackend } from "../backend";
@@ -172,6 +173,34 @@ function validDiff(v: unknown): ContentTabDiff | undefined {
     rightLabel: d.rightLabel as string | undefined,
     title: d.title as string | undefined,
   };
+}
+
+/** Opens a plugin's two texts in the diff viewer; `path` picks the syntax highlighting. */
+export function openPluginDiff(diff: ContentTabDiff, path: string, title: string) {
+  void executeAction("vcs.openDiff", {
+    path,
+    title: diff.title ?? title,
+    left: { type: "text", text: diff.left, label: diff.leftLabel ?? tx("Before") },
+    right: { type: "text", text: diff.right, label: diff.rightLabel ?? tx("After") },
+  });
+}
+
+/** `open-diff` from a plugin web view, or the `views.open-diff` host call. */
+export function openPluginDiffRequest(value: object, length: number) {
+  const m = value as Record<string, unknown>;
+  if (length > 3 << 20 || (m.fileName !== undefined && !text(m.fileName, 256))) {
+    throw new Error(tx("Invalid content editor configuration"));
+  }
+  const fileName = m.fileName as string | undefined;
+  const diff = validDiff({
+    left: m.left,
+    right: m.right,
+    leftLabel: m.leftLabel,
+    rightLabel: m.rightLabel,
+    title: m.title,
+  });
+  if (!diff) throw new Error(tx("Invalid content editor configuration"));
+  openPluginDiff(diff, fileName ?? diff.title ?? "", fileName ?? tx("Diff"));
 }
 
 export function handleContentTabReplyText(pluginId: string, rawText: string): boolean {
