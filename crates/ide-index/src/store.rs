@@ -1,14 +1,117 @@
 //! Persistence of file records in redb, so a restart only re-parses changed files.
 
-use crate::data::FileRecord;
+use crate::data::{FileEntry, FileRecord, IndexData, Sym, char_mask};
+use ide_core::{Range, SymbolKind};
 use parking_lot::RwLock;
 use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableDefinition, TableError};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 const FILES: TableDefinition<&str, &[u8]> = TableDefinition::new("files");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 /// Bump when [`FileRecord`] or its encoding changes.
 const SCHEMA: &str = "openidea-index-3";
+
+/// One file's fixed-size columns in the start-up snapshot.
+#[derive(Clone, Copy, Serialize, Deserialize, Default)]
+struct FileMeta {
+    mtime: u64,
+    size: u64,
+    hash: [u8; 32],
+    ignored: bool,
+    /// End of this file's symbols in [`Snapshot::symbols`].
+    sym_end: u32,
+}
+
+/// One symbol's fixed-size columns; names and containers share [`Snapshot::text`].
+#[derive(Clone, Copy, Serialize, Deserialize)]
+struct FlatSymbol {
+    name_start: u32,
+    name_len: u32,
+    container_start: u32,
+    container_len: u32,
+    kind: SymbolKind,
+    range: Range,
+}
+
+/// A columnar copy of the index for fast start-up: a handful of contiguous
+/// arrays and two string arenas instead of one postcard record per redb key.
+#[derive(Serialize, Deserialize, Default)]
+pub(crate) struct Snapshot {
+    rels: String,
+    rel_ends: Vec<u32>,
+    meta: Vec<FileMeta>,
+    symbols: Vec<FlatSymbol>,
+    text: String,
+}
+
+impl Snapshot {
+    pub(crate) fn len(&self) -> usize {
+        self.meta.len()
+    }
+
+    /// Rejects a corrupt snapshot before any offsets are used for slicing.
+    fn valid(&self) -> bool {
+        if self.rel_ends.len() != self.meta.len() {
+            return false;
+        }
+        let mut rel_end = 0;
+        for end in &self.rel_ends {
+            if *end < rel_end || *end as usize > self.rels.len() {
+                return false;
+            }
+            rel_end = *end;
+        }
+        if rel_end as usize != self.rels.len() {
+            return false;
+        }
+        let mut sym_end = 0;
+        for meta in &self.meta {
+            if meta.sym_end < sym_end || meta.sym_end as usize > self.symbols.len() {
+                return false;
+            }
+            sym_end = meta.sym_end;
+        }
+        if sym_end as usize != self.symbols.len() {
+            return false;
+        }
+        self.symbols.iter().all(|s| {
+            let name_end = s.name_start as usize + s.name_len as usize;
+            let container_end = s.container_start as usize + s.container_len as usize;
+            name_end <= self.text.len()
+                && (s.container_start == u32::MAX
+                    || (s.container_start as usize <= self.text.len() && container_end <= self.text.len()))
+        })
+    }
+
+    pub(crate) fn rel(&self, file: usize) -> &str {
+        let start = if file == 0 { 0 } else { self.rel_ends[file - 1] as usize };
+        &self.rels[start..self.rel_ends[file] as usize]
+    }
+
+    pub(crate) fn entry(&self, file: usize, root: &Path) -> FileEntry {
+        let meta = self.meta[file];
+        let sym_start = if file == 0 { 0 } else { self.meta[file - 1].sym_end as usize };
+        let symbols = (sym_start..meta.sym_end as usize)
+            .map(|i| {
+                let s = self.symbols[i];
+                let name = &self.text[s.name_start as usize..(s.name_start + s.name_len) as usize];
+                let container = (s.container_start != u32::MAX)
+                    .then(|| &self.text[s.container_start as usize..(s.container_start + s.container_len) as usize]);
+                Sym {
+                    mask: char_mask(name),
+                    name: name.into(),
+                    kind: s.kind,
+                    container: container.map(Into::into),
+                    range: s.range,
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let rel = self.rel(file);
+        FileEntry::from_flat(root.join(rel), rel.to_owned(), meta.mtime, meta.size, meta.hash, meta.ignored, symbols)
+    }
+}
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -77,6 +180,7 @@ impl Store {
         {
             let mut meta = txn.open_table(META).map_err(err)?;
             meta.insert("stamp", stamp.as_bytes()).map_err(err)?;
+            meta.remove("snapshot").map_err(err)?;
             txn.open_table(FILES).map_err(err)?;
         }
         txn.commit().map_err(err)
@@ -101,6 +205,50 @@ impl Store {
         Ok(out)
     }
 
+    /// Writes the current index as one columnar snapshot for fast next start-up.
+    pub(crate) fn save_snapshot(&self, data: &IndexData) -> Result<()> {
+        let mut snap = Snapshot::default();
+        for e in data.files.iter().flatten() {
+            snap.rels.push_str(&e.rel);
+            snap.rel_ends.push(snap.rels.len() as u32);
+            for s in e.symbols.iter() {
+                let name_start = snap.text.len() as u32;
+                snap.text.push_str(&s.name);
+                let (container_start, container_len) = match s.container.as_deref() {
+                    Some(c) => {
+                        let start = snap.text.len() as u32;
+                        snap.text.push_str(c);
+                        (start, c.len() as u32)
+                    }
+                    None => (u32::MAX, 0),
+                };
+                snap.symbols.push(FlatSymbol {
+                    name_start,
+                    name_len: s.name.len() as u32,
+                    container_start,
+                    container_len,
+                    kind: s.kind,
+                    range: s.range,
+                });
+            }
+            snap.meta.push(FileMeta {
+                mtime: e.mtime,
+                size: e.size,
+                hash: e.hash,
+                ignored: e.ignored,
+                sym_end: snap.symbols.len() as u32,
+            });
+        }
+        let bytes = postcard::to_allocvec(&snap).map_err(err)?;
+        self.set_meta("snapshot", &bytes)
+    }
+
+    /// The columnar start-up snapshot, if it was written and still decodes.
+    pub(crate) fn load_snapshot(&self) -> Option<Snapshot> {
+        let snapshot: Snapshot = self.meta("snapshot").ok().flatten().and_then(|v| postcard::from_bytes(&v).ok())?;
+        snapshot.valid().then_some(snapshot)
+    }
+
     /// Applies upserts and deletions in one transaction. Non-durable commits
     /// are cheap (no fsync) and become durable with the next durable one.
     pub(crate) fn apply(&self, puts: &[(String, FileRecord)], deletes: &[String], durable: bool) -> Result<()> {
@@ -121,6 +269,8 @@ impl Store {
                 table.remove(rel.as_str()).map_err(err)?;
             }
         }
+        // Any file change makes the columnar start-up snapshot stale.
+        txn.open_table(META).map_err(err)?.remove("snapshot").map_err(err)?;
         txn.commit().map_err(err)
     }
 
@@ -183,5 +333,40 @@ mod tests {
         std::fs::write(dir.path().join("index.redb"), b"garbage, not a database").unwrap();
         let s = Store::open(dir.path(), Path::new("/p"), "fp").unwrap();
         assert!(s.load().unwrap().is_empty());
+    }
+
+    #[test]
+    fn snapshot_roundtrips_and_is_invalidated_by_changes() {
+        use crate::data::{FileEntry, IndexData, StoredSymbol};
+        use ide_core::{Range, SymbolKind};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path(), Path::new("/p"), "fp").unwrap();
+        let record = FileRecord {
+            mtime: 7,
+            size: 3,
+            symbols: vec![StoredSymbol {
+                name: "OrderController".into(),
+                kind: SymbolKind::Class,
+                container: Some("Order".into()),
+                range: Range::default(),
+            }],
+            ..Default::default()
+        };
+        let mut data = IndexData::default();
+        data.insert(FileEntry::new(std::path::PathBuf::from("/p/src/Order.rs"), "src/Order.rs".into(), record));
+        store.save_snapshot(&data).unwrap();
+
+        let snapshot = store.load_snapshot().expect("snapshot");
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot.rel(0), "src/Order.rs");
+        let entry = snapshot.entry(0, Path::new("/p"));
+        assert_eq!(&*entry.rel, "src/Order.rs");
+        assert_eq!(entry.symbols.len(), 1);
+        assert_eq!(&*entry.symbols[0].name, "OrderController");
+        assert_eq!(entry.symbols[0].container.as_deref(), Some("Order"));
+
+        store.apply(&[], &[], false).unwrap();
+        assert!(store.load_snapshot().is_none(), "a file change invalidates the snapshot");
     }
 }

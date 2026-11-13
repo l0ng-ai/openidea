@@ -107,6 +107,33 @@ impl FileEntry {
         }
     }
 
+    /// Builds an entry from the columnar start-up snapshot, skipping `FileRecord`.
+    pub(crate) fn from_flat(
+        path: PathBuf,
+        rel: String,
+        mtime: u64,
+        size: u64,
+        hash: [u8; 32],
+        ignored: bool,
+        symbols: Box<[Sym]>,
+    ) -> Self {
+        let name_start = rel.rfind('/').map_or(0, |i| i + 1);
+        let name = &rel[name_start..];
+        Self {
+            name_start_chars: rel[..name_start].chars().count() as u32,
+            name_mask: char_mask(name),
+            rel_mask: char_mask(&rel),
+            name_start: name_start as u32,
+            path,
+            rel: rel.into_boxed_str(),
+            mtime,
+            size,
+            hash,
+            symbols,
+            ignored,
+        }
+    }
+
     pub(crate) fn name(&self) -> &str {
         &self.rel[self.name_start as usize..]
     }

@@ -189,22 +189,18 @@ impl Shared {
         let root = self.filter().root().to_owned();
         let seen: HashSet<&Path> = found.iter().map(|f| f.path.as_path()).collect();
         let started = Instant::now();
-        match store.load() {
-            Ok(records) => {
-                // Hydrate the flat in-memory tables straight from the cache. The walk
-                // that just ran already applied excludes and resolved symlinks, so a
-                // second per-record `canonicalize` (one syscall per file) would only
-                // repeat that work and used to dominate start-up. Keep a lexical guard
-                // so a corrupt cache cannot escape the project root.
-                let entries: Vec<FileEntry> = records
+        match store.load_snapshot() {
+            Some(snapshot) => {
+                let entries: Vec<FileEntry> = (0..snapshot.len())
                     .into_par_iter()
-                    .filter(|(rel, _)| {
-                        safe_rel(rel) && {
-                            let path = root.join(rel);
-                            seen.contains(path.as_path())
+                    .filter_map(|i| {
+                        let rel = snapshot.rel(i);
+                        if !safe_rel(rel) {
+                            return None;
                         }
+                        let path = root.join(rel);
+                        seen.contains(path.as_path()).then(|| snapshot.entry(i, &root))
                     })
-                    .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
                     .collect();
                 let mut d = self.data.write();
                 d.reserve(entries.len());
@@ -212,15 +208,42 @@ impl Shared {
                     d.insert(e);
                 }
                 tracing::info!(
-                    "index cache: hydrated {} files, {} symbols in {:?}",
+                    "index snapshot: hydrated {} files, {} symbols in {:?}",
                     d.file_count,
                     d.symbol_count,
                     started.elapsed()
                 );
                 #[cfg(test)]
-                eprintln!("index cache: hydrated {} files in {:?}", d.file_count, started.elapsed());
+                eprintln!("index snapshot: hydrated {} files in {:?}", d.file_count, started.elapsed());
             }
-            Err(e) => tracing::warn!("index cache load failed: {e}"),
+            None => match store.load() {
+                Ok(records) => {
+                    // Fallback for an index that changed since the snapshot: redb
+                    // records are decoded one file at a time and filtered by the walk.
+                    let entries: Vec<FileEntry> = records
+                        .into_par_iter()
+                        .filter(|(rel, _)| {
+                            safe_rel(rel) && {
+                                let path = root.join(rel);
+                                seen.contains(path.as_path())
+                            }
+                        })
+                        .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
+                        .collect();
+                    let mut d = self.data.write();
+                    d.reserve(entries.len());
+                    for e in entries {
+                        d.insert(e);
+                    }
+                    tracing::info!(
+                        "index cache: hydrated {} files, {} symbols in {:?}",
+                        d.file_count,
+                        d.symbol_count,
+                        started.elapsed()
+                    );
+                }
+                Err(e) => tracing::warn!("index cache load failed: {e}"),
+            },
         }
         let recent: Vec<PathBuf> = store.load_recent().into_iter().map(|rel| root.join(rel)).collect();
         let mut r = self.recent.lock();
@@ -325,6 +348,12 @@ impl Shared {
             }
         }
         self.persist(&[], &[], true);
+        if let Some(store) = &self.store {
+            let d = self.data.read();
+            if let Err(e) = store.save_snapshot(&d) {
+                tracing::warn!("index snapshot: {e}");
+            }
+        }
         self.indexing.store(false, Ordering::SeqCst);
         self.sink.emit(IdeEvent::Task {
             id: task,
