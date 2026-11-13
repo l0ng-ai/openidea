@@ -94,6 +94,7 @@ const COLLECTION: &str = "Illuminate\\Database\\Eloquent\\Collection";
 const ATTRIBUTE: &str = "Illuminate\\Database\\Eloquent\\Casts\\Attribute";
 const RELATIONS: &str = "Illuminate\\Database\\Eloquent\\Relations\\";
 const RELATION: &str = "Illuminate\\Database\\Eloquent\\Relations\\Relation";
+const JOIN_CLAUSE: &str = "Illuminate\\Database\\Query\\JoinClause";
 const SUPPORT_COLLECTION: &str = "Illuminate\\Support\\Collection";
 const FACTORY: &str = "Illuminate\\Database\\Eloquent\\Factories\\Factory";
 const CARBON: &str = "Illuminate\\Support\\Carbon";
@@ -843,6 +844,19 @@ impl LaravelProvider {
         let model = Self::about_model(resolver, receiver, context)?;
         let related = Self::relation_path_model(resolver, &model, key)?;
         Some(vec![Type::generic(ELOQUENT_BUILDER, vec![Type::named(&related)])])
+    }
+
+    /// `->leftJoin('posts', function ($join) { $join->on(…); })`: the join
+    /// clause, on a builder, relation or model, or a receiver of unknown
+    /// type (the method names are the query builder's own).
+    fn join_closure(resolver: &Resolver<'_>, receiver: &Type, method: &str, context: &Context) -> Option<Vec<Type>> {
+        if !is_one_of(JOINS, method) {
+            return None;
+        }
+        let queries = *receiver == Type::Mixed
+            || Self::is_a(resolver, receiver, context, &[ELOQUENT_BUILDER, QUERY_BUILDER, RELATION, MODEL]);
+        let clause = resolver.class_model(JOIN_CLAUSE)?;
+        queries.then(|| vec![Type::named(clause.fqn())])
     }
 
     /// A raw Eloquent or query builder (what a `@mixin` without arguments
@@ -1780,6 +1794,7 @@ impl TypeProvider for LaravelProvider {
             return None;
         }
         Self::relation_closure(resolver, receiver, method, key, context)
+            .or_else(|| Self::join_closure(resolver, receiver, method, context))
     }
 
     /// The `Builder $query` of a model's local scope (`scopePublished`, a

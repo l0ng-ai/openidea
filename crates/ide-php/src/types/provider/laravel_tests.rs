@@ -337,6 +337,28 @@ fn repositories_and_concord_proxies_name_their_model() {
 }
 
 #[test]
+fn join_closures_get_the_join_clause() {
+    const JOIN: &str = r#"<?php
+namespace Illuminate\Database\Query;
+class JoinClause extends Builder {
+    public function on($first, $operator = null, $second = null): static { return $this; }
+}
+"#;
+    let clause = "Illuminate\\Database\\Query\\JoinClause";
+    check(
+        &[FRAMEWORK, APPLICATION, APP, JOIN],
+        &[
+            ("User::where('a', 1)->leftJoin('posts', function ($join) { $join/*|*/; });", clause),
+            ("User::where('a', 1)->join('posts', fn ($join) => $join->on('a', '=', 'b')/*|*/);", clause),
+            // An untyped query (`$this->queryBuilder`).
+            ("$query->leftJoin('posts', function ($join) { $join/*|*/; });", clause),
+            // Not a query.
+            ("(new PaymentGateway())->join('posts', function ($join) { $join/*|*/; });", "mixed"),
+        ],
+    );
+}
+
+#[test]
 fn eloquent_relations_and_accessors() {
     let has_many = "Illuminate\\Database\\Eloquent\\Relations\\HasMany<App\\Models\\Post, App\\Models\\User>";
     check(
