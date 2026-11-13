@@ -215,7 +215,7 @@
   "JAR Application": "JAR Application",
   "Run an executable JAR": "Run an executable JAR",
   "Path to JAR": "Path to JAR",
-  "Default (java on PATH)": "Default (java on PATH)",
+  "Default (the project's JDK)": "Default (the project's JDK)",
   "Stream Sample TUI": "Stream Sample TUI",
   "Arduino tool '{configured}' was not found. Set its path in Settings > Languages & Frameworks > Language Servers, or in settings.toml under languages.arduino.": "Arduino tool '{configured}' was not found. Set its path in Settings > Languages & Frameworks > Language Servers, or in settings.toml under languages.arduino.",
   "Arduino tool '{name}' was not found on PATH or in Arduino IDE. Install Arduino IDE 2, or set its path in Settings > Languages & Frameworks > Language Servers or settings.toml under languages.arduino.": "Arduino tool '{name}' was not found on PATH or in Arduino IDE. Install Arduino IDE 2, or set its path in Settings > Languages & Frameworks > Language Servers or settings.toml under languages.arduino.",
