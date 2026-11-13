@@ -15,6 +15,7 @@ describe("agent chat settings", () => {
       expandToolOutput: false,
       sendWith: "enter",
       whileRunning: "queue",
+      newTaskApprovals: "bypass",
       defaults: {},
       mcpServers: {},
     });
@@ -33,6 +34,7 @@ describe("agent chat settings", () => {
         thinking: "collapsed",
         toolCalls: "nope",
         sendWith: "modEnter",
+        newTaskApprovals: "ask",
         defaults: { claude: { model: "opus", effort: 3 }, codex: "x" },
       },
     }).agents;
@@ -40,7 +42,9 @@ describe("agent chat settings", () => {
       thinking: "collapsed",
       toolCalls: "grouped",
       sendWith: "modEnter",
+      newTaskApprovals: "ask",
       defaults: { claude: { model: "opus" }, codex: {} },
     });
+    expect(validateSettings({ agents: { newTaskApprovals: "never" } }).agents.newTaskApprovals).toBe("bypass");
   });
 });
