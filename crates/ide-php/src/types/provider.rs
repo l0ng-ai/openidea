@@ -664,6 +664,7 @@ const TEST_CASE: &str = "PHPUnit\\Framework\\TestCase";
 const LEGACY_TEST_CASE: &str = "PHPUnit_Framework_TestCase";
 const MOCK_OBJECT: &str = "PHPUnit\\Framework\\MockObject\\MockObject";
 const STUB: &str = "PHPUnit\\Framework\\MockObject\\Stub";
+const PEST_MIXIN: &str = "Pest\\Mixins\\Expectation";
 const MOCK_BUILDER: &str = "PHPUnit\\Framework\\MockObject\\MockBuilder";
 
 /// Test-case methods creating a double of the class named by their first
@@ -681,6 +682,12 @@ const DOUBLES: &[(&str, &str)] = &[
 
 /// `MockBuilder` methods returning the double.
 const BUILDER_DOUBLES: &[&str] = &["getMock", "getMockForAbstractClass", "getMockForTrait"];
+
+/// Pest's expectation class, or the mixin declaring its assertions (whose
+/// `self` return types name the mixin).
+fn is_expectation(fqn: &str) -> bool {
+    fqn_eq(NameKind::ClassLike, fqn, super::resolve::PEST_EXPECTATION) || fqn_eq(NameKind::ClassLike, fqn, PEST_MIXIN)
+}
 
 impl PhpUnitProvider {
     fn is_test_case(resolver: &Resolver<'_>, ty: &Type, context: &Context) -> bool {
@@ -713,10 +720,13 @@ impl TypeProvider for PhpUnitProvider {
             return Some(provided(self.key(), payload, vec![receiver], (site.core)()));
         }
         // `MockBuilder::getMock()` and friends (no class argument).
-        BUILDER_DOUBLES
-            .iter()
-            .any(|name| name.eq_ignore_ascii_case(site.name))
-            .then(|| provided(self.key(), "built", vec![receiver], (site.core)()))
+        if BUILDER_DOUBLES.iter().any(|name| name.eq_ignore_ascii_case(site.name)) {
+            return Some(provided(self.key(), "built", vec![receiver], (site.core)()));
+        }
+        // A method of the value a Pest expectation forwards to
+        // (`expect($order)->canRefund()->toBeFalse()`): an expectation.
+        (site.kind == CallKind::Method && !site.stored)
+            .then(|| provided(self.key(), format!("expectation:{}", site.name), vec![receiver], (site.core)()))
     }
 
     fn property(&self, site: &PropertySite<'_>) -> Option<LazyType> {
@@ -743,6 +753,17 @@ impl TypeProvider for PhpUnitProvider {
             })?;
             return Some(Type::intersection([built, Type::named(MOCK_OBJECT)]));
         }
+        if let Some(method) = payload.strip_prefix("expectation:") {
+            let expectation = super::resolve::PEST_EXPECTATION;
+            let on_expectation = receiver
+                .members()
+                .iter()
+                .find(|member| matches!(member, Type::Named { fqn, .. } if is_expectation(fqn)))?;
+            let Type::Named { args, .. } = on_expectation else { return None };
+            let model = resolver.class_model(expectation)?;
+            let declared = model.method(method).is_some();
+            return (!declared).then(|| Type::generic(model.fqn(), args.clone()));
+        }
         if !Self::is_test_case(resolver, receiver, context) {
             return None;
         }
@@ -754,6 +775,41 @@ impl TypeProvider for PhpUnitProvider {
         }
         let (adds, class) = payload.strip_prefix("double:")?.split_once(':')?;
         Some(Type::intersection([Type::named(class), Type::named(adds)]))
+    }
+
+    /// Pest's higher-order expectations: a property of the expected value
+    /// read on the expectation (`expect($order)->state->toBe('paid')`) is
+    /// an expectation again.
+    fn magic_property(&self, class: &str, _name: &str, resolver: &Resolver<'_>) -> Option<Type> {
+        if !is_expectation(class) {
+            return None;
+        }
+        resolver.class_model(super::resolve::PEST_EXPECTATION).map(|model| Type::named(model.fqn()))
+    }
+
+    /// The methods of the value an expectation is about
+    /// (`expect($order)->canRefund()->toBeFalse()`), which it forwards to.
+    fn magic_members(&self, receiver: &Type, resolver: &Resolver<'_>, context: &Context) -> Vec<MagicMember> {
+        let mut out = Vec::new();
+        for member in receiver.members() {
+            let Type::Named { fqn, args } = member else { continue };
+            let Some(value) = args.first() else { continue };
+            if !is_expectation(fqn) {
+                continue;
+            }
+            for model in resolver.class_models(value, context) {
+                for method in model.methods.iter() {
+                    if method.visibility == crate::summary::Visibility::Public && !method.name.starts_with("__") {
+                        out.push(MagicMember {
+                            name: method.name.clone(),
+                            is_static: false,
+                            target: MagicTarget::Method { class: model.fqn().to_owned(), method: method.name.clone() },
+                        });
+                    }
+                }
+            }
+        }
+        out
     }
 }
 

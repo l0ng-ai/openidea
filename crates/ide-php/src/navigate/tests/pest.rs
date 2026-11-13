@@ -177,3 +177,82 @@ fn properties_set_up_before_each_test_are_typed() {
     let mut p = project("tests/Feature/PanelTest.php", test);
     assert_eq!(p.definition("tests/Feature/PanelTest.php", test).expect("handled"), []);
 }
+
+const MIXIN: &str = r#"<?php
+namespace Pest\Mixins;
+
+/** @template TValue */
+final class Expectation
+{
+    /** @return self<TValue> */
+    public function toBeTrue(): self { return $this; }
+}
+"#;
+
+const GENERIC_EXPECTATION: &str = r#"<?php
+namespace Pest;
+
+/**
+ * @template TValue
+ * @mixin Mixins\Expectation<TValue>
+ */
+final class Expectation
+{
+    public function toBe(mixed $expected): self { return $this; }
+
+    public function __call(string $method, array $parameters): Expectation { return $this; }
+}
+
+/**
+ * @template TValue
+ * @param TValue $value
+ * @return Expectation<TValue>
+ */
+function expect(mixed $value = null): Expectation { return new Expectation(); }
+"#;
+
+#[test]
+fn higher_order_expectations_reach_the_value() {
+    let files = |test: &str| {
+        Project::new(&[
+            ("lib/phpunit/TestCase.php", PHPUNIT),
+            ("lib/pest/Expectation.php", GENERIC_EXPECTATION),
+            ("lib/pest/Mixin.php", MIXIN),
+            ("tests/TestCase.php", TEST_CASES),
+            ("tests/Unit/PanelTest.php", test),
+        ])
+    };
+    let head =
+        "<?php\n\nuse function Pest\\expect;\n\ntest('x', function () {\n    $panel = new Tests\\AdminTestCase('x');\n";
+    // A method of the expected value, and the expectation after it.
+    let test = format!("{head}    expect($panel)->admin/*|*/Panel()->toBe(1);\n}});\n");
+    let mut p = files(&test);
+    assert_eq!(
+        p.definition("tests/Unit/PanelTest.php", &test).expect("handled"),
+        [target("tests/TestCase.php", 15, "adminPanel")]
+    );
+    let test = format!("{head}    expect($panel)->adminPanel()->to/*|*/Be(1);\n}});\n");
+    let mut p = files(&test);
+    assert_eq!(
+        p.definition("tests/Unit/PanelTest.php", &test).expect("handled"),
+        [target("lib/pest/Expectation.php", 9, "toBe")]
+    );
+    // After an assertion of the mixin (which returns the mixin's `self`).
+    let test = format!(
+        "{head}    expect($panel)->toBeTrue()->admin/*|*/Panel()->name->toBe(1);
+}});
+"
+    );
+    let mut p = files(&test);
+    assert_eq!(
+        p.definition("tests/Unit/PanelTest.php", &test).expect("handled"),
+        [target("tests/TestCase.php", 15, "adminPanel")]
+    );
+    // A property of the value is an expectation again.
+    let test = format!("{head}    expect($panel)->name->to/*|*/Be(1);\n}});\n");
+    let mut p = files(&test);
+    assert_eq!(
+        p.definition("tests/Unit/PanelTest.php", &test).expect("handled"),
+        [target("lib/pest/Expectation.php", 9, "toBe")]
+    );
+}

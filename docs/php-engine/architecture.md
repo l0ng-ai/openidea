@@ -119,9 +119,12 @@ indexed as macros of `Pest\Expectation` returning the expectation, and `$this`
 in their closure is the expectation. A property of `$this` the test case
 doesn't declare has the type the file's `beforeEach()` closures assign to it
 (`$this->manager = app(Manager::class);`, also inside `describe()` blocks).
-Not done: higher-order expectations
-(`expect($x)->name->toBe(…)`), and members the `uses()` traits add beyond the
-test case class.
+Higher-order expectations work through the PHPUnit provider: a method of the
+expected value called on the expectation (`expect($order)->canRefund()`)
+resolves to the value's method and stays an expectation, and so does a
+property of the value (`->state->toBe(…)`, without the value's type from
+then on). Not done: members the `uses()` traits add beyond the test case
+class.
 
 ## Threads and cancellation
 
