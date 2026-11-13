@@ -69,7 +69,7 @@ use crate::types::LazyType;
 /// shapes of inferred array literals; 21: shapes of constant array values;
 /// 22: only `$withCount` counts relations, with its class), so stored
 /// summaries are rebuilt.
-pub const SCHEMA_VERSION: u32 = 25;
+pub const SCHEMA_VERSION: u32 = 26;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

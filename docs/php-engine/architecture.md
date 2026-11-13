@@ -112,9 +112,13 @@ access: the first class (not trait) of the file's own `uses(…)`, else of the
 to the configuring file, usually `tests/Pest.php`) holds the file most
 closely, else PHPUnit's `TestCase`. The calls are indexed as Laravel facts
 (`PestUses`); `ExprTypes::at_path` gives the analysis the file's path, which
-the editor features, Inspect Code and Find Usages pass. Not done: Pest's
-custom expectations (`expect()->extend('toBeX', …)`), and members the
-`uses()` traits add beyond the test case class.
+the editor features, Inspect Code and Find Usages pass.
+
+Custom expectations (`expect()->extend('toBeX', function (…) { … })`) are
+indexed as macros of `Pest\Expectation` returning the expectation, and `$this`
+in their closure is the expectation. Not done: higher-order expectations
+(`expect($x)->name->toBe(…)`), and members the `uses()` traits add beyond the
+test case class.
 
 ## Threads and cancellation
 

@@ -685,7 +685,9 @@ impl<'a> Resolver<'a> {
     /// `Macroable`), or on one of Laravel's facades standing for it
     /// ([`FACADE_ROOTS`]), as methods.
     fn macros_of(&self, model: &ClassModel) -> Vec<crate::summary::Method> {
-        if model.class.kind != crate::summary::ClassKind::Class || model.method("macro").is_none() {
+        let extendable = model.method("macro").is_some()
+            || (fqn_eq(NameKind::ClassLike, model.fqn(), PEST_EXPECTATION) && model.method("extend").is_some());
+        if model.class.kind != crate::summary::ClassKind::Class || !extendable {
             return Vec::new();
         }
         let named = |class: &str| fqn_eq(NameKind::ClassLike, class, model.fqn());
@@ -1374,6 +1376,9 @@ const FACADE_ROOTS: &[(&str, &str)] = &[
 
 /// PHPUnit's test case: what Pest binds test closures to by default.
 const PHPUNIT_TEST_CASE: &str = "PHPUnit\\Framework\\TestCase";
+
+/// Pest's expectation class, which `expect()->extend()` adds methods to.
+pub(crate) const PEST_EXPECTATION: &str = "Pest\\Expectation";
 
 /// `path` with its `.` and `..` segments applied, without touching the disk.
 fn lexical(path: &std::path::Path) -> std::path::PathBuf {

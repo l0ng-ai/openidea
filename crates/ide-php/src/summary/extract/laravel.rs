@@ -41,12 +41,14 @@ use mago_syntax::cst::{
 };
 
 use super::Extractor;
-use crate::names::{NameKind, Resolution};
+use crate::names::{NameKind, RelativeClass, Resolution};
 use crate::summary::{
     Binding, Cast, Column, CountedRelation, DocType, Loc, Macro, Method, ModelCasts, PestUses, RenamedColumn,
-    RequestRules, RouteFileKind, RoutePath, RouteRegistration, RuleEntry, RuleMethod, Table, Visibility, counted_spec,
+    RequestRules, RouteFileKind, RoutePath, RouteRegistration, RuleEntry, RuleMethod, Table, TypeHint, Visibility,
+    counted_spec,
 };
 use crate::types::ops::literal_type;
+use crate::types::resolve::PEST_EXPECTATION;
 use crate::types::{LazyType, Type};
 
 /// Container methods registering a binding.
@@ -364,6 +366,35 @@ impl Extractor<'_> {
             return;
         }
         let Some(class) = self.class_ref(class) else { return };
+        self.push_macro(class, list, span, false);
+    }
+
+    /// `expect()->extend('toBeX', function (…) { … })`: a Pest custom
+    /// expectation, a method of `Pest\Expectation` returning the expectation.
+    pub(super) fn expectation_extend(
+        &mut self,
+        object: &Expression<'_>,
+        selector: &ClassLikeMemberSelector<'_>,
+        list: &ArgumentList<'_>,
+        span: Span,
+    ) {
+        if !method_name(selector).is_some_and(|name| name.eq_ignore_ascii_case("extend")) {
+            return;
+        }
+        let Expression::Call(Call::Function(call)) = object else { return };
+        let Expression::Identifier(function) = call.function else { return };
+        let function = lossy(function.value());
+        let is_expect = function.trim_start_matches('\\').eq_ignore_ascii_case("expect")
+            || function.trim_start_matches('\\').eq_ignore_ascii_case("Pest\\expect");
+        if !is_expect || !call.argument_list.arguments.is_empty() {
+            return;
+        }
+        self.push_macro(PEST_EXPECTATION.to_owned(), list, span, true);
+    }
+
+    /// The macro `list` (`'name', callback`) registers on `class`;
+    /// `returns_self` for one the call returns the receiver of.
+    fn push_macro(&mut self, class: String, list: &ArgumentList<'_>, span: Span, returns_self: bool) {
         let args = args(list);
         let (Some(Expression::Literal(Literal::String(name))), Some(callback)) = (args.first(), args.get(1)) else {
             return;
@@ -394,6 +425,11 @@ impl Extractor<'_> {
                 (params, return_type, inferred)
             }
             _ => return,
+        };
+        let (return_type, inferred_return) = if returns_self {
+            (Some(TypeHint::Relative(RelativeClass::Static)), None)
+        } else {
+            (return_type, inferred_return)
         };
         let method = Method {
             name: lossy(text),

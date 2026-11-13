@@ -789,6 +789,7 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
         cx.method_binding(node.object, &node.method, &node.argument_list);
         cx.method_routes(node.object, &node.method, &node.argument_list);
         cx.rule_method(&node.method, &node.argument_list);
+        cx.expectation_extend(node.object, &node.method, &node.argument_list, node.span());
     }
 
     fn walk_in_static_method_call(&self, node: &'ast StaticMethodCall<'arena>, cx: &mut Extractor<'f>) {

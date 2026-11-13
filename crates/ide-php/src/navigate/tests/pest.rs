@@ -107,3 +107,59 @@ fn other_closures_and_folders() {
     let mut p = project("tests/Feature/HelperTest.php", test);
     assert_eq!(p.definition("tests/Feature/HelperTest.php", test).expect("handled"), []);
 }
+
+const EXPECTATION: &str = r#"<?php
+namespace Pest;
+
+final class Expectation
+{
+    public mixed $value;
+
+    public function extend(string $name, \Closure $extend): void {}
+
+    public function toBe(mixed $expected): self { return $this; }
+}
+
+function expect(mixed $value = null): Expectation { return new Expectation(); }
+"#;
+
+const EXTEND: &str = r#"<?php
+
+expect()->extend('toBePrice', function (float $expected) {
+    $this->to/*|*/Be($expected);
+
+    return $this;
+});
+"#;
+
+#[test]
+fn custom_expectations_are_methods_of_the_expectation() {
+    let config = EXTEND.replace("/*|*/", "");
+    let files = |test: &str| {
+        Project::new(&[
+            ("lib/pest/Expectation.php", EXPECTATION),
+            ("tests/Pest.php", config.as_str()),
+            ("tests/Unit/PriceTest.php", test),
+        ])
+    };
+    // The custom expectation, and what it returns: the expectation.
+    let test = "<?php\n\nuse function Pest\\expect;\n\ntest('x', function () {\n    expect(1.0)->toBePrice(1.0)->to/*|*/Be(1.0);\n});\n";
+    let mut p = files(test);
+    assert_eq!(
+        p.definition("tests/Unit/PriceTest.php", test).expect("handled"),
+        [target("lib/pest/Expectation.php", 9, "toBe")]
+    );
+    let test =
+        "<?php\n\nuse function Pest\\expect;\n\ntest('x', function () {\n    expect(1.0)->toBe/*|*/Price(1.0);\n});\n";
+    let mut p = files(test);
+    assert_eq!(
+        p.definition("tests/Unit/PriceTest.php", test).expect("handled"),
+        [target("tests/Pest.php", 2, "toBePrice")]
+    );
+    // `$this` in the closure is the expectation.
+    let mut p = files("<?php\n");
+    assert_eq!(
+        p.definition("tests/Pest.php", EXTEND).expect("handled"),
+        [target("lib/pest/Expectation.php", 9, "toBe")]
+    );
+}

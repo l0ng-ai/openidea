@@ -146,12 +146,17 @@ pub struct ExprTypes<'a, 'r> {
     /// The file's path, when known ([`Self::at_path`]): for what Pest binds
     /// its test closures to.
     path: Option<std::path::PathBuf>,
-    /// The starts of the file's Pest test closures, and the class they are
-    /// bound to; computed on first use.
-    pest: std::cell::OnceCell<(Vec<u32>, Option<String>)>,
+    /// The starts of the file's Pest test closures (with whether each is a
+    /// custom expectation's), and the class the tests are bound to; computed
+    /// on first use.
+    pest: std::cell::OnceCell<PestClosures>,
 }
 
 const TOP_LEVEL: u32 = u32::MAX - 1;
+
+/// A Pest file's closures by start, `true` for a custom expectation's, and
+/// the test case its test closures are bound to.
+type PestClosures = (Vec<(u32, bool)>, Option<String>);
 
 impl<'a, 'r> ExprTypes<'a, 'r> {
     pub fn new(
@@ -198,10 +203,14 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         let (closures, class) = self.pest.get_or_init(|| {
             let mut closures = Vec::new();
             pest_closures(self.file.program().statements.iter(), &mut closures);
-            let class = if closures.is_empty() { None } else { self.resolver.pest_test_case(path) };
+            let tests = closures.iter().any(|(_, expectation)| !expectation);
+            let class = if tests { self.resolver.pest_test_case(path) } else { None };
             (closures, class)
         });
-        closures.contains(&start).then_some(class.as_deref()?)
+        match closures.iter().find(|(known, _)| *known == start)? {
+            (_, true) => Some(crate::types::resolve::PEST_EXPECTATION),
+            (_, false) => class.as_deref(),
+        }
     }
 
     /// The flow of the scope `frames` end in: their innermost function-like,
@@ -1518,12 +1527,42 @@ const PEST_FUNCTIONS: &[&str] = &["test", "it", "todo", "beforeeach", "aftereach
 
 /// The starts of the closures passed to Pest's functions in `statements`
 /// (the file's top level, namespaces, and `describe()` closures), through
-/// chained calls (`test(…)->with([…])`).
-fn pest_closures<'s>(statements: impl Iterator<Item = &'s mago_syntax::cst::Statement<'s>>, out: &mut Vec<u32>) {
-    use mago_syntax::cst::{Argument, Statement};
+/// chained calls (`test(…)->with([…])`), and of custom expectations
+/// (`expect()->extend('toBeX', function () { … })`, marked `true`).
+fn pest_closures<'s>(
+    statements: impl Iterator<Item = &'s mago_syntax::cst::Statement<'s>>,
+    out: &mut Vec<(u32, bool)>,
+) {
+    use mago_syntax::cst::{Argument, ClassLikeMemberSelector, Statement};
     for statement in statements {
         match statement {
             Statement::Expression(statement) => {
+                if let Expression::Call(Call::Method(call)) = statement.expression
+                    && let ClassLikeMemberSelector::Identifier(method) = &call.method
+                    && method.value.eq_ignore_ascii_case(b"extend")
+                    && let Expression::Call(Call::Function(root)) = call.object
+                    && let Expression::Identifier(function) = root.function
+                    && function
+                        .value()
+                        .rsplit(|byte| *byte == b'\\')
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(b"expect"))
+                    && root.argument_list.arguments.is_empty()
+                    && let Some(start) = call.argument_list.arguments.iter().nth(1).and_then(|argument| {
+                        let value = match argument {
+                            Argument::Positional(argument) => argument.value,
+                            Argument::Named(argument) => argument.value,
+                        };
+                        match value {
+                            Expression::Closure(closure) => Some(closure.span().start.offset),
+                            Expression::ArrowFunction(arrow) => Some(arrow.span().start.offset),
+                            _ => None,
+                        }
+                    })
+                {
+                    out.push((start, true));
+                    continue;
+                }
                 let mut expr = statement.expression;
                 while let Expression::Call(Call::Method(call)) = expr {
                     expr = call.object;
@@ -1542,12 +1581,12 @@ fn pest_closures<'s>(statements: impl Iterator<Item = &'s mago_syntax::cst::Stat
                     };
                     match value {
                         Expression::Closure(closure) => {
-                            out.push(closure.span().start.offset);
+                            out.push((closure.span().start.offset, false));
                             if name == "describe" {
                                 pest_closures(closure.body.statements.iter(), out);
                             }
                         }
-                        Expression::ArrowFunction(arrow) => out.push(arrow.span().start.offset),
+                        Expression::ArrowFunction(arrow) => out.push((arrow.span().start.offset, false)),
                         _ => {}
                     }
                 }
