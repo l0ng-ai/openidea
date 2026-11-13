@@ -432,7 +432,7 @@ function Result({ tab }: { tab: ResultTab }) {
   return (
     <div className={styles.view} ref={viewRef} data-db-table-editor="">
       <div className={styles.toolbar}>
-        <IconButton icon="db-table" title="Table" aria-pressed={view === "table"} onClick={() => setView("table")} />
+        <IconButton icon="database" title="Table" aria-pressed={view === "table"} onClick={() => setView("table")} />
         <IconButton icon="db-chart" title="Chart" aria-pressed={view === "chart"} onClick={() => setView("chart")} />
         <span className={styles.toolbarSeparator} />
         <IconButton icon="refresh" title="Rerun Query" disabled={busy} onClick={() => void rerunResult(tab.id)} />
@@ -714,7 +714,7 @@ export function ResultsView() {
           ...results.map((r) => ({
             id: String(r.id),
             label: r.title,
-            icon: r.plan ? "db-plan" : "db-table",
+            icon: r.plan ? "db-plan" : "database",
             closable: true,
             tooltip: r.outcome.statement.text,
           })),
