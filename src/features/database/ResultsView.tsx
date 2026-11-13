@@ -4,10 +4,11 @@
  * a toolbar (re-run, export / copy as CSV, JSON, SQL…), the grid and a floating row count.
  */
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { call, commands, type DbPlanNode, type DbQueryResult } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
+import { setContext } from "@/platform/context";
 import {
   Button,
   EmptyState,
@@ -36,6 +37,7 @@ import {
   type EditBlockReason,
 } from "./resultEditing";
 import { pageWindow } from "./resultView";
+import { resultTabMenu } from "./resultTabActions";
 import { analyze } from "./sql/analyze";
 import { nameMatcher } from "./sql/dialect";
 import {
@@ -655,6 +657,14 @@ export function ResultsView() {
   const results = useDatabase((s) => s.results);
   const active = useDatabase((s) => s.activeResult);
   const hasOutput = useDatabase((s) => s.output.length > 0);
+  useEffect(() => () => setContext("dbResultsFocus", false), []);
+  const tabMenu = (id: string, e: MouseEvent) => {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    showContextMenu(e.clientX || e.clientY ? e : { x: rect.left, y: rect.bottom }, resultTabMenu(Number(id)), {
+      owner: e.currentTarget,
+    });
+  };
   if (!results.length && !hasOutput)
     return (
       <EmptyState title="No results">
@@ -663,14 +673,34 @@ export function ResultsView() {
     );
   const tab = results.find((r) => r.id === active);
   return (
-    <div className={styles.view}>
+    <div
+      className={styles.view}
+      onFocusCapture={() => setContext("dbResultsFocus", true)}
+      onBlurCapture={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) setContext("dbResultsFocus", false);
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
+        const tab = (e.target as Element).closest<HTMLElement>('[role="tab"]');
+        if (!tab?.id.startsWith("db-results-tab-")) return;
+        e.preventDefault();
+        const rect = tab.getBoundingClientRect();
+        showContextMenu(
+          { x: rect.left, y: rect.bottom },
+          resultTabMenu(Number(tab.id.slice("db-results-tab-".length))),
+          { owner: tab.parentElement },
+        );
+      }}
+    >
       <Tabs
         className={styles.resultTabs}
         variant="compact"
         aria-label="Results"
         activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
+        panelIdPrefix="db-results"
         onSelect={(id) => useDatabase.setState({ activeResult: Number(id) })}
         onClose={(id) => closeResult(Number(id))}
+        onContextMenu={tabMenu}
         items={[
           { id: String(OUTPUT_TAB), label: "Output", icon: "db-console", closable: false },
           ...results.map((r) => ({

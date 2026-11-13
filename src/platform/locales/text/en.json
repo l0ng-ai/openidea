@@ -1,4 +1,11 @@
 {
+  "Close": "Close",
+  "Close Others": "Close Others",
+  "Close All": "Close All",
+  "Rename Tab": "Rename Tab",
+  "Tab name:": "Tab name:",
+  "Select Next Tab": "Select Next Tab",
+  "Select Previous Tab": "Select Previous Tab",
   "Absolute": "Absolute",
   "Relative": "Relative",
   "Hybrid": "Hybrid",

@@ -21,6 +21,7 @@ import {
 } from "@/workbench/contributions";
 import { installCellActions } from "./cellActions";
 import { installValueEditorActions } from "./valueEditorActions";
+import { registerResultTabActions } from "./resultTabActions";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, tableTitle } from "./tableInput";
 import { nodeTarget, type DbNode } from "./nodes";
@@ -128,6 +129,7 @@ export function activate(): () => void {
     installTableEditorFocus(),
     installValueEditorActions(),
     installCellActions(),
+    registerResultTabActions(),
     registerDatabaseTreeActions(),
     registerActions([
       {

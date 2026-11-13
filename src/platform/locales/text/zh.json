@@ -1,4 +1,8 @@
 {
+  "Close Others": "关闭其他",
+  "Close All": "全部关闭",
+  "Rename Tab": "重命名标签页",
+  "Tab name:": "标签页名称：",
   "Absolute": "绝对",
   "Relative": "相对",
   "Hybrid": "混合",

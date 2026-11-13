@@ -463,6 +463,7 @@ interface ContextMenuState {
     id: number;
     /** The text selection the menu was opened on (see `restoreSelection`). */
     selection: Range[] | null;
+    owner: Element | null;
   } | null;
 }
 
@@ -472,12 +473,20 @@ let menuSeq = 0;
 export function showContextMenu(
   at: { clientX: number; clientY: number } | { x: number; y: number },
   items: MenuItem[],
-  options?: { numbers?: boolean },
+  options?: { numbers?: boolean; owner?: Element | null },
 ) {
   const x = "clientX" in at ? at.clientX : at.x;
   const y = "clientY" in at ? at.clientY : at.y;
   useContextMenuStore.setState({
-    menu: { x, y, items, numbers: !!options?.numbers, id: ++menuSeq, selection: textSelection() },
+    menu: {
+      x,
+      y,
+      items,
+      numbers: !!options?.numbers,
+      id: ++menuSeq,
+      selection: textSelection(),
+      owner: options?.owner ?? null,
+    },
   });
 }
 
@@ -512,6 +521,12 @@ export function hideContextMenu() {
 export function ContextMenuHost() {
   const menu = useContextMenuStore((s) => s.menu);
   const selection = menu?.selection ?? null;
+  const owner = menu?.owner ?? null;
+  useLayoutEffect(() => {
+    if (!owner) return;
+    owner.setAttribute("data-context-menu-open", "");
+    return () => owner.removeAttribute("data-context-menu-open");
+  }, [owner]);
   // After the rows' layout effects: the first row has taken focus.
   useLayoutEffect(() => {
     if (!selection) return;
