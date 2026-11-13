@@ -239,6 +239,9 @@ fn types_relation_closures_collections_and_factories() {
         ("Post::factory()->create()/*|*/;", "App\\Models\\Post".to_owned()),
         ("Post::factory()->published()->make()/*|*/;", "App\\Models\\Post".to_owned()),
         ("Post::factory()->count(3)->create()/*|*/;", collection("Post")),
+        // The magic relation methods keep the factory.
+        ("Post::factory()->hasComments(2)->forAuthor()->create()/*|*/;", "App\\Models\\Post".to_owned()),
+        ("Post::factory()->count(3)->hasComments()->create()/*|*/;", collection("Post")),
         ("Post::factory(3)->make()/*|*/;", collection("Post")),
         ("Post::factory()->count(2)->state([])->create()/*|*/;", collection("Post")),
         ("Post::factory()->createOne()/*|*/;", "App\\Models\\Post".to_owned()),

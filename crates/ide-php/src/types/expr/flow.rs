@@ -1350,8 +1350,10 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
         let mut previous: Option<String> = None;
         for argument in arguments.arguments.iter() {
             let value = argument_value(argument);
-            if let (Some(key), Some(start)) = (&previous, function_start(value)) {
-                keyed.push((key.clone(), start));
+            // Without a string before it, the key is empty
+            // (`scopeQuery(fn ($query) => …)`, `leftJoin($table, fn ($join) => …)`).
+            if let Some(start) = function_start(value) {
+                keyed.push((previous.clone().unwrap_or_default(), start));
             }
             if let Expression::Array(_) | Expression::LegacyArray(_) = value {
                 let elements: Vec<&ArrayElement<'_>> = match value {

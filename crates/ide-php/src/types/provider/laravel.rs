@@ -263,6 +263,13 @@ fn prettus_finder(method: &str) -> Option<bool> {
     if is_one_of(MODEL, method) { Some(false) } else { is_one_of(COLLECTION, method).then_some(true) }
 }
 
+/// `hasPosts`, `forAuthor`: a factory's magic relation methods.
+fn is_factory_relation(method: &str) -> bool {
+    ["has", "for"].iter().any(|prefix| {
+        method.strip_prefix(prefix).is_some_and(|rest| rest.starts_with(|first: char| first.is_ascii_uppercase()))
+    })
+}
+
 /// The class argument of a relation call written `self::class` or
 /// `static::class`, in a payload: the receiver's model.
 const OWN_CLASS: &str = "@own";
@@ -579,6 +586,11 @@ impl LaravelProvider {
         {
             let model = Type::named(&model);
             return Some(if collection { Type::generic(COLLECTION, vec![Type::Int, model]) } else { model });
+        }
+        // A factory's `hasPosts()` and `forAuthor()` (its `__call`): the
+        // factory.
+        if *core == Type::Mixed && is_factory_relation(name) && Self::is_a(resolver, receiver, context, &[FACTORY]) {
+            return Some(receiver.clone());
         }
         // A Prettus repository: what it doesn't declare is a call on its
         // model; so is a call on a model contract.
@@ -1800,6 +1812,14 @@ impl TypeProvider for LaravelProvider {
         }
         Self::relation_closure(resolver, receiver, method, key, context)
             .or_else(|| Self::join_closure(resolver, receiver, method, context))
+            .or_else(|| {
+                // `$repository->scopeQuery(fn ($query) => …)`: its model's query.
+                if !method.eq_ignore_ascii_case("scopeQuery") {
+                    return None;
+                }
+                let model = Self::repository_model(resolver, receiver, context)?;
+                Some(vec![Type::generic(ELOQUENT_BUILDER, vec![Type::named(&model)])])
+            })
     }
 
     /// The `Builder $query` of a model's local scope (`scopePublished`, a

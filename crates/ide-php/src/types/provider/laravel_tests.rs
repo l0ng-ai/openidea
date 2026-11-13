@@ -324,6 +324,8 @@ fn repositories_and_concord_proxies_name_their_model() {
             ("(new \\App\\Repositories\\UserRepository())->active()/*|*/;", BUILDER),
             ("(new \\App\\Repositories\\UserRepository())->plain()/*|*/;", "int"),
             ("(new \\App\\Repositories\\UserRepository())->where('a', 1)->first()/*|*/;", "?App\\Models\\User"),
+            // The query of its `scopeQuery()` closure.
+            ("(new \\App\\Repositories\\UserRepository())->scopeQuery(fn ($query) => $query/*|*/);", BUILDER),
             // A contract: the model implementing it.
             ("(new \\App\\Repositories\\OrderRepository())->ship()/*|*/;", "bool"),
             ("(new \\App\\Repositories\\OrderRepository())->where('a', 1)->first()/*|*/;", "?App\\Models\\Order"),
@@ -373,6 +375,8 @@ class JoinClause extends Builder {
             ("User::where('a', 1)->join('posts', fn ($join) => $join->on('a', '=', 'b')/*|*/);", clause),
             // An untyped query (`$this->queryBuilder`).
             ("$query->leftJoin('posts', function ($join) { $join/*|*/; });", clause),
+            // A table that isn't a string literal.
+            ("$query->leftJoin($table, function ($join) { $join/*|*/; });", clause),
             // Not a query.
             ("(new PaymentGateway())->join('posts', function ($join) { $join/*|*/; });", "mixed"),
         ],
