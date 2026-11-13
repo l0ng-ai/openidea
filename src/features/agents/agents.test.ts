@@ -22,6 +22,7 @@ import {
   fenced,
   fencedBlocks,
   fenceLabel,
+  pastedPaths,
   retryParts,
   usageLabel,
   limitLabel,
@@ -84,6 +85,21 @@ describe("fenced blocks", () => {
     ]);
     expect(fenceLabel("terminal zsh")).toEqual({ terminal: true, label: "zsh", language: null });
     expect(fenceLabel("ts")).toEqual({ terminal: false, label: "ts", language: "ts" });
+  });
+});
+
+describe("pastedPaths", () => {
+  it("reads absolute paths with lines, quotes and file URLs, one per line", () => {
+    expect(pastedPaths("/a/b.ts:10-20\n  '/a/c d.ts' \nfile:///a/%E4%B8%AD.ts\n/a/dir/\n/a/e.ts:3:7")).toEqual([
+      { path: "/a/b.ts", lines: { from: 10, to: 20 } },
+      { path: "/a/c d.ts" },
+      { path: "/a/中.ts" },
+      { path: "/a/dir" },
+      { path: "/a/e.ts", lines: { from: 3, to: 3 } },
+    ]);
+    expect(pastedPaths("C:\\work\\a.ts:4")).toEqual([{ path: "C:\\work\\a.ts", lines: { from: 4, to: 4 } }]);
+    expect(pastedPaths("/a/b.ts\nnot a path")).toBeNull();
+    expect(pastedPaths("see /a/b.ts")).toBeNull();
   });
 });
 

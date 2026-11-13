@@ -45,6 +45,7 @@ import {
   resolveTyped,
   completionAt,
   fenced,
+  pastedPaths,
   imageFromDataUrl,
   matchCommands,
   mentionOf,
@@ -540,23 +541,30 @@ export function Composer(props: ComposerProps) {
   };
 
   /**
-   * A pasted path of a project file or folder (`/abs/src/a.rs`, `/abs/src/a.rs:10-20`) goes in
-   * as a reference when it exists; anything else is pasted as text.
+   * Pasted paths of project files or folders (one per line, with `:10-20` lines, quoted or
+   * `file://`) go in as references when they all exist; anything else is pasted as text.
    */
   const pastePath = (pasted: string, view: EditorView): boolean => {
-    const m = /^((?:\/|[A-Za-z]:[\\/])[^\s:]*(?:\\[^\s:]*)*)(?::(\d+)(?:-(\d+))?)?$/.exec(pasted.trim());
-    const rel = m ? relativeTo([root, projectRoot], m[1]!) : null;
-    if (!m || !rel || rel === ".") return false;
+    const paths = pastedPaths(pasted);
+    const found = paths?.map((p) => ({ ...p, rel: relativeTo([root, projectRoot], p.path) }));
+    // A mention ends at whitespace: a path with a space stays text.
+    if (!found || found.some((p) => !p.rel || p.rel === "." || /\s/.test(p.rel))) return false;
     const { from, to } = view.state.selection.main;
-    const path = resolveTyped(root, rel);
-    void call(commands.fsProbe(path)).then(
-      (probe) => {
-        const ref = { path, rel } satisfies FileRef;
-        updateComposer(id, { files: [...composerDraft(id).files, ref] });
-        const lines = m[2] && !probe.binary ? { from: Number(m[2]), to: Number(m[3] ?? m[2]) } : undefined;
+    void Promise.all(
+      found.map(async (p) => {
+        const path = resolveTyped(root, p.rel!);
+        const kind = await call(commands.fsEntryKind(path));
+        const dir = kind === "dir";
+        return { path, rel: dir ? `${p.rel}/` : p.rel!, lines: dir ? undefined : p.lines };
+      }),
+    ).then(
+      (refs) => {
+        const known = new Set(composerDraft(id).files.map((f) => f.path));
+        const added = refs.filter((r) => !known.has(r.path)).map(({ path, rel }) => ({ path, rel }) satisfies FileRef);
+        updateComposer(id, { files: [...composerDraft(id).files, ...added] });
         const before = view.state.sliceDoc(Math.max(0, from - 1), from);
         const glue = before && !/\s/.test(before) ? " " : "";
-        replace(from, to, `${glue}${mentionOf(rel, lines)} `);
+        replace(from, to, `${glue}${refs.map((r) => mentionOf(r.rel, r.lines)).join(" ")} `);
       },
       () => replace(from, to, pasted),
     );
@@ -618,7 +626,7 @@ export function Composer(props: ComposerProps) {
       e.preventDefault();
       return true;
     }
-    if (plain && !plain.includes("\n") && pastePath(plain, view)) {
+    if (plain && pastePath(plain, view)) {
       e.preventDefault();
       return true;
     }

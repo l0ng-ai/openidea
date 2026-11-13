@@ -12,6 +12,7 @@ const findFiles = vi.fn();
 const findDirs = vi.fn();
 const pathCompletions = vi.fn();
 const fsProbe = vi.fn();
+const fsEntryKind = vi.fn();
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -24,6 +25,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       findDirs: (query: string, limit: number) => findDirs(query, limit),
       pathCompletions: (base: string, typed: string) => pathCompletions(base, typed),
       fsProbe: (path: string) => fsProbe(path),
+      fsEntryKind: (path: string) => fsEntryKind(path),
     },
   };
 });
@@ -63,6 +65,13 @@ beforeEach(() => {
   findFiles.mockReset().mockReturnValue(ok([match("/p/src/agents.ts", "src/agents.ts", 40)]));
   findDirs.mockReset().mockReturnValue(ok([match("/p/src/agents", "src/agents/", 90)]));
   pathCompletions.mockReset().mockReturnValue(ok([{ name: "lib", dir: true }]));
+  fsEntryKind
+    .mockReset()
+    .mockImplementation((path: string) =>
+      path.startsWith("/p/")
+        ? ok(path.endsWith(".ts") ? "file" : "dir")
+        : Promise.resolve({ status: "error", error: { kind: "notFound", message: "" } }),
+    );
   fsProbe.mockReset().mockReturnValue(
     Promise.resolve({
       status: "error",
@@ -272,7 +281,6 @@ describe("Composer editing", () => {
   });
 
   it("references a pasted path of a project file, with its lines", async () => {
-    fsProbe.mockReturnValue(ok({ size: 10, binary: false, tooLarge: false }));
     const box = renderComposer();
     const user = userEvent.setup();
     act(() => box.focus());
@@ -281,6 +289,26 @@ describe("Composer editing", () => {
     expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/a.ts"]);
     await user.paste("/elsewhere/b.ts");
     expect(textOf(box)).toBe("@src/a.ts:3-5 /elsewhere/b.ts");
+  });
+
+  it("references pasted folders, several paths and file URLs", async () => {
+    const box = renderComposer();
+    const user = userEvent.setup();
+    act(() => box.focus());
+    await user.paste("/p/src/dir\n'/p/src/b.ts'\nfile:///p/src/c.ts");
+    await vi.waitFor(() => expect(textOf(box)).toBe("@src/dir/ @src/b.ts @src/c.ts "));
+    expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/dir", "/p/src/b.ts", "/p/src/c.ts"]);
+  });
+
+  it("pastes a path that is gone, or holds a space, as text", async () => {
+    const box = renderComposer();
+    const user = userEvent.setup();
+    act(() => box.focus());
+    await user.paste("/p/my dir/a.ts");
+    expect(textOf(box)).toBe("/p/my dir/a.ts");
+    fsEntryKind.mockReturnValue(Promise.resolve({ status: "error", error: { kind: "notFound", message: "" } }));
+    await user.paste(" /p/gone.ts");
+    await vi.waitFor(() => expect(textOf(box)).toBe("/p/my dir/a.ts /p/gone.ts"));
   });
 });
 

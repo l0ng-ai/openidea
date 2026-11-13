@@ -229,6 +229,37 @@ export function fenceLabel(info: string): { terminal: boolean; label: string; la
   return { terminal: false, label: info, language: first || null };
 }
 
+/**
+ * Pasted absolute paths, one per line (`/abs/a.rs`, `/abs/a.rs:10-20`, `/abs/a.rs:10:5`,
+ * quoted, or `file://` URLs); `null` when any line is something else.
+ */
+export function pastedPaths(text: string): { path: string; lines?: { from: number; to: number } }[] | null {
+  const rows = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!rows.length) return null;
+  const out: { path: string; lines?: { from: number; to: number } }[] = [];
+  for (let row of rows) {
+    row = row.replace(/^(["'])(.*)\1$/, "$2");
+    if (row.startsWith("file://")) {
+      try {
+        row = decodeURIComponent(new URL(row).pathname).replace(/^\/([A-Za-z]:)/, "$1");
+      } catch {
+        return null;
+      }
+    }
+    const m = /^((?:\/|[A-Za-z]:[\\/]).*?)(?::(\d+)(?:(?:-(\d+))|(?::\d+))?)?$/.exec(row);
+    if (!m) return null;
+    const from = m[2] ? Number(m[2]) : undefined;
+    out.push({
+      path: m[1]!.replace(/[\\/]+$/, "") || m[1]!,
+      ...(from !== undefined && { lines: { from, to: m[3] ? Math.max(from, Number(m[3])) : from } }),
+    });
+  }
+  return out;
+}
+
 /** `@rel` with a line range suffix when given ("@src/a.rs:10-20"). */
 export function mentionOf(rel: string, lines?: { from: number; to: number }): string {
   if (!lines) return `@${rel}`;
