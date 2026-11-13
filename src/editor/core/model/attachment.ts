@@ -121,6 +121,7 @@ export async function attachDocument(
     text: () => model.sync.localText.toString(),
     lineEnding: () => model.getMeta().lineEnding,
     uiMode: () => model.getMeta().uiMode,
+    context: () => model.ctx(),
     get readOnly() {
       return model.getMeta().readOnly || model.virtual;
     },
