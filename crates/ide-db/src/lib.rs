@@ -14,6 +14,7 @@ mod snowflake;
 pub mod source;
 pub mod split;
 pub mod sql;
+pub mod tools;
 mod watch;
 pub use watch::SourcesWatch;
 
@@ -785,6 +786,56 @@ impl DbManager {
         let rows = if strict { result? } else { result.unwrap_or_default() };
         let v = rows.into_iter().next().and_then(|r| r.into_iter().next().flatten());
         Ok(v.unwrap_or_else(|| "Connected".into()))
+    }
+
+    /// Runs `job` with the client tool at `executable` against target `id`, connected like the
+    /// data source (through its SSH tunnel, with its SSL settings and password), until it exits
+    /// or `cancel` fires. Connects first, so a missing password fails the way it does for a
+    /// console. Returns the exit code.
+    pub async fn run_tool(
+        &self,
+        id: &str,
+        executable: &std::path::Path,
+        job: &tools::DbToolJob,
+        cancel: &CancellationToken,
+        on_output: impl FnMut(Vec<tools::ToolLine>),
+    ) -> IdeResult<Option<i32>> {
+        let tool = job.tool();
+        if !tool.is_program(executable) {
+            return Err(IdeError::invalid(format!("{} is not {}", executable.display(), tool.program())));
+        }
+        let source = self.source(id)?;
+        if source.driver != tool.driver() {
+            return Err(IdeError::invalid(format!("{} cannot connect to {}", tool.program(), source.name)));
+        }
+        self.pool(id).await?;
+        let password = self.password(&source).await;
+        // Holding the tunnel keeps it open while the tool runs, even if the tree disconnects.
+        let (target, _tunnel) = self.endpoint(&source, None, true).await?;
+        let prepared = tools::prepare(job, &target, password.as_deref());
+        tools::run(executable, &prepared.args, &prepared.env, cancel, on_output).await
+    }
+
+    /// The command [`DbManager::run_tool`] would run, for the dialogs' preview: the data source's
+    /// own host and port (not a tunnel's local end), and no password.
+    pub fn tool_preview(&self, id: &str, executable: &std::path::Path, job: &tools::DbToolJob) -> IdeResult<String> {
+        let source = self.source(id)?;
+        let prepared = tools::prepare(job, &source, None);
+        Ok(tools::command_line(executable, &prepared.args))
+    }
+
+    /// The PostgreSQL server's `server_version_num` (`150013` for 15.13).
+    pub async fn server_version(&self, id: &str) -> IdeResult<u32> {
+        let pool = self.pool(id).await?;
+        if pool.driver() != DbDriver::Postgres {
+            return Err(IdeError::invalid("not a PostgreSQL data source"));
+        }
+        let rows = pool.rows("SHOW server_version_num", 1).await?;
+        rows.into_iter()
+            .next()
+            .and_then(|r| r.into_iter().next().flatten())
+            .and_then(|v| v.trim().parse().ok())
+            .ok_or_else(|| IdeError::internal("no server version"))
     }
 
     pub fn is_connected(&self, id: &str) -> bool {
