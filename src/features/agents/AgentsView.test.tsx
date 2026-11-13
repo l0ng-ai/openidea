@@ -391,6 +391,32 @@ describe("Agents pinned and grouped tasks", () => {
     expect(treeRows().some((text) => text.includes("Pinned"))).toBe(false);
   });
 
+  it("filters every section by the search, archived ones included, and highlights the match", () => {
+    const tasks = useAgents.getState().tasks;
+    const rename = (id: string, title: string, status: AgentTask["status"] = "ready") =>
+      tasks.set(id, { ...tasks.get(id)!, title, status });
+    rename("one", "Fix the lexer");
+    rename("two", "Refactor parser");
+    rename("three", "Lexer cleanup", "archived");
+    useAgents.setState({ tasks: new Map(tasks), organize: { groups: [frontend], groupOf: { two: "g1" }, pinned: [] } });
+    setup();
+    const field = screen.getByLabelText("Search tasks");
+    fireEvent.change(field, { target: { value: "lxr" } });
+    const rows = treeRows();
+    expect(rows.some((text) => text.includes("Fix the lexer"))).toBe(true);
+    // Archived is collapsed by default; a search looks inside it.
+    expect(rows.some((text) => text.includes("Lexer cleanup"))).toBe(true);
+    // The user group has no match: it goes.
+    expect(rows.some((text) => text.includes("Frontend") || text.includes("Refactor parser"))).toBe(false);
+    const lexer = screen.getAllByRole("treeitem").find((item) => item.textContent?.includes("Fix the lexer"))!;
+    expect([...lexer.querySelectorAll("mark")].map((m) => m.textContent).join("")).toBe("lxr");
+
+    fireEvent.change(field, { target: { value: "nothing like it" } });
+    expect(screen.getByText("No matching tasks")).toBeInTheDocument();
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(treeRows().some((text) => text.includes("Frontend"))).toBe(true);
+  });
+
   it("shows a user group above the status groups, without its tasks in them too", () => {
     useAgents.setState({ organize: { groups: [frontend], groupOf: { two: "g1" }, pinned: [] } });
     setup();
