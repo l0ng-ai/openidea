@@ -1531,7 +1531,8 @@ impl Declarations for PhpEngine {
                 files.push(path);
             }
         };
-        let mut classes = vec![site.class.to_owned()];
+        // A function has no hierarchy: only the files naming it.
+        let mut classes = if site.class.is_empty() { Vec::new() } else { vec![site.class.to_owned()] };
         let mut next = 0;
         while next < classes.len() && classes.len() <= CALL_SITE_FILES {
             let class = classes[next].clone();
@@ -1546,7 +1547,8 @@ impl Declarations for PhpEngine {
             }
         }
         if public {
-            let naming = index.files_with_word(site.method).unwrap_or_default();
+            let short = site.method.rsplit('\\').next().unwrap_or(site.method);
+            let naming = index.files_with_word(short).unwrap_or_default();
             if naming.len() <= CALL_SITE_FILES {
                 for path in naming {
                     add(path, &mut files);
@@ -1579,12 +1581,14 @@ impl Declarations for PhpEngine {
         out
     }
 
-    /// Reads the file declaring the class (its open buffer first).
+    /// Reads the file declaring the class (its open buffer first), or the
+    /// function `method` when `class` is empty.
     fn body_return(&self, class: &str, method: &str, depth: u8) -> Option<Type> {
         let index = self.index()?;
         let documents = self.open_documents();
         let resolver = self.resolver();
-        for decl in index.declarations(NameKind::ClassLike, class).unwrap_or_default() {
+        let (kind, name) = if class.is_empty() { (NameKind::Function, method) } else { (NameKind::ClassLike, class) };
+        for decl in index.declarations(kind, name).unwrap_or_default() {
             let path = decl.path();
             let open = documents.iter().find(|document| document.path == path);
             let parsed = match open {
@@ -1599,8 +1603,10 @@ impl Declarations for PhpEngine {
             let types = crate::types::ExprTypes::new(&parsed, &names, &summary, &resolver)
                 .at_path(Some(&path))
                 .with_call_site_depth(depth);
-            if let Some(found) = types.body_return(class, method) {
-                return Some(found);
+            let found =
+                if class.is_empty() { types.function_body_return(method) } else { types.body_return(class, method) };
+            if found.is_some() {
+                return found;
             }
         }
         None

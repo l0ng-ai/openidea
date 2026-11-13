@@ -275,6 +275,34 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         (1..=MAX_CALL_SITE_TYPES).contains(&known).then(|| Type::union(types))
     }
 
+    /// [`Self::call_site_parameter`] for parameter `index` of a function:
+    /// its calls in this file and in the files naming it.
+    fn call_site_function_parameter(&self, function: &FunctionDecl, index: usize) -> Option<Type> {
+        let depth = self.call_sites?;
+        if depth >= MAX_CALL_SITE_DEPTH {
+            return None;
+        }
+        let param = function.params.get(index)?;
+        let key = (String::new(), function.fqn.to_ascii_lowercase(), index);
+        if self.call_site_busy.borrow().contains(&key) {
+            return None;
+        }
+        self.call_site_busy.borrow_mut().push(key);
+        let site = CallSiteParam { class: "", method: &function.fqn, index, name: &param.name };
+        let mut found = Vec::new();
+        call_site_arguments(self, &site, &mut found);
+        found.extend(self.resolver.call_site_types(&site, true, depth + 1));
+        self.call_site_busy.borrow_mut().pop();
+        let mut types: Vec<Type> = Vec::new();
+        for ty in found.iter().flat_map(|ty| ty.members()) {
+            if !matches!(ty, Type::Mixed | Type::Never | Type::Void | Type::Object) && !types.contains(ty) {
+                types.push(ty.clone());
+            }
+        }
+        let known = types.iter().filter(|ty| **ty != Type::Null).count();
+        (1..=MAX_CALL_SITE_TYPES).contains(&known).then(|| Type::union(types))
+    }
+
     /// The class `$this` is in the closures of `frames` when the outermost
     /// function-like is a Pest test closure (`test()`, `it()`,
     /// `beforeEach()`, `afterEach()`, `todo()`, and the closures of
@@ -696,7 +724,18 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 let decl = self.function_decl(function)?;
                 let doc = decl.doc.as_deref();
                 let ty = declared(&decl.params, doc, doc.iter().flat_map(|doc| doc.local_type_names()).collect())?;
-                Some(self.resolver.finish(&ty, &Context::default()))
+                let ty = self.resolver.finish(&ty, &Context::default());
+                // Nothing says (or `object`): what the callers pass.
+                let index = decl.params.iter().position(|param| param.name == name)?;
+                let param = &decl.params[index];
+                let undeclared = param.type_hint.is_none() && doc.and_then(|doc| doc.param_type(&name)).is_none();
+                if ((undeclared && ty == Type::Mixed) || ty == Type::Object)
+                    && let Some(passed) = self.call_site_function_parameter(decl, index)
+                {
+                    self.call_site_typed.borrow_mut().push(param.name.clone());
+                    return Some(if param.variadic { Type::list_of(passed) } else { passed });
+                }
+                Some(ty)
             }
             Frame::Method(method) => {
                 let start = method.name.span.start.offset;
@@ -1079,6 +1118,9 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             Expression::Call(inner) => self.unknown_calls.borrow().contains(&inner.span().start.offset),
             _ => false,
         };
+        if let Call::Function(call) = call {
+            return self.function_call_body_return(call, depth);
+        }
         let (receiver, name) = match call {
             Call::Method(call) if !unknown(call.object) => (self.expr(call.object, frames), named(&call.method)?),
             Call::NullSafeMethod(call) if !unknown(call.object) => {
@@ -1090,7 +1132,16 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         let context = self.context(frames);
         let mut found = Vec::new();
         for model in self.resolver.class_models(&receiver, &context) {
-            let Some(method) = model.method(&name) else { continue };
+            let Some(method) = model.method(&name) else {
+                // Only subclasses declare it: what theirs return.
+                for sub in self.resolver.subtype_members(model.fqn(), &name, true) {
+                    let ty = self.resolver.method_return(&Type::named(sub.fqn()), &name, &Context::in_class(sub.fqn()));
+                    if ty != Type::Mixed && !found.contains(&ty) {
+                        found.push(ty);
+                    }
+                }
+                continue;
+            };
             let Some(declared) = method.declared() else { continue };
             if declared.return_type.is_some() || declared.doc.as_ref().is_some_and(|doc| doc.return_type.is_some()) {
                 continue;
@@ -1111,7 +1162,74 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             self.call_site_busy.borrow_mut().pop();
             found.extend(ty);
         }
-        (!found.is_empty()).then(|| Type::union(found)).filter(|ty| *ty != Type::Mixed)
+        (1..=MAX_CALL_SITE_TYPES).contains(&found.len()).then(|| Type::union(found)).filter(|ty| *ty != Type::Mixed)
+    }
+
+    /// [`Self::call_body_return`] for a call of a function without a return
+    /// type or `@return`.
+    fn function_call_body_return(&self, call: &'a mago_syntax::cst::FunctionCall<'a>, depth: u8) -> Option<Type> {
+        let Expression::Identifier(identifier) = call.function else { return None };
+        let name = String::from_utf8_lossy(identifier.value());
+        let resolved = self.scope(identifier.span().start.offset).resolve(NameKind::Function, &name);
+        let decls = self.resolver.declarations();
+        let (fqn, function) =
+            resolved.resolution.candidates().find_map(|fqn| Some((fqn.to_owned(), decls.function(fqn)?)))?;
+        if function.return_type.is_some() || function.doc.as_ref().is_some_and(|doc| doc.return_type.is_some()) {
+            return None;
+        }
+        let key = (String::new(), fqn.to_ascii_lowercase(), usize::MAX);
+        if self.call_site_busy.borrow().contains(&key) {
+            return None;
+        }
+        self.call_site_busy.borrow_mut().push(key);
+        let here = self.summary.functions.iter().any(|own| crate::names::fqn_eq(NameKind::Function, &own.fqn, &fqn));
+        let ty = if here { self.function_body_return(&fqn) } else { self.resolver.body_return("", &fqn, depth + 1) };
+        self.call_site_busy.borrow_mut().pop();
+        ty
+    }
+
+    /// [`Self::body_return`] for function `fqn`, declared in this file.
+    pub(crate) fn function_body_return(&self, fqn: &str) -> Option<Type> {
+        let decl = self.summary.functions.iter().find(|own| crate::names::fqn_eq(NameKind::Function, &own.fqn, fqn))?;
+        let text = self.file.text();
+        let (start, end) = (decl.loc.start as usize, (decl.loc.end as usize).min(text.len()));
+        let body = text.get(start..end)?;
+        let mut from = 0;
+        let (node, frames) = loop {
+            let at = from + body[from..].find("return")?;
+            from = at + "return".len();
+            let Some((_, frames)) = self.find((start + from + 1) as u32) else { continue };
+            let own = frames.iter().position(
+                |frame| matches!(frame, Frame::Function(node) if node.name.span.start.offset == decl.name_loc.start),
+            );
+            if let Some(index) = own
+                && let Frame::Function(node) = &frames[index]
+            {
+                break (*node, frames[..=index].to_vec());
+            }
+        };
+        self.returned(&node.body, &frames)
+    }
+
+    /// The union of what the `return`s of `block` give in `frames` (`null`
+    /// for a bare `return;`); `None` for a generator, no `return`, or
+    /// nothing known.
+    fn returned(&self, block: &'a mago_syntax::cst::Block<'a>, frames: &[Frame<'a>]) -> Option<Type> {
+        let mut returns = Returns::default();
+        ReturnWalker.walk_block(block, &mut returns);
+        if returns.generator || returns.values.is_empty() {
+            return None;
+        }
+        let context = self.context(frames);
+        let mut types: Vec<Type> = returns
+            .values
+            .iter()
+            .map(|value| self.resolver.resolve(&LazyType::Known(self.expr(value, frames).widen()), &context))
+            .collect();
+        if returns.bare {
+            types.push(Type::Null);
+        }
+        Some(Type::union(types)).filter(|ty| *ty != Type::Mixed)
     }
 
     /// What the body of method `method` of `class`, declared in this file,
@@ -1142,21 +1260,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             }
         };
         let mago_syntax::cst::MethodBody::Concrete(block) = &node.body else { return None };
-        let mut returns = Returns::default();
-        ReturnWalker.walk_block(block, &mut returns);
-        if returns.generator || returns.values.is_empty() {
-            return None;
-        }
-        let context = self.context(&frames);
-        let mut types: Vec<Type> = returns
-            .values
-            .iter()
-            .map(|value| self.resolver.resolve(&LazyType::Known(self.expr(value, &frames).widen()), &context))
-            .collect();
-        if returns.bare {
-            types.push(Type::Null);
-        }
-        Some(Type::union(types)).filter(|ty| *ty != Type::Mixed)
+        self.returned(block, &frames)
     }
 
     fn call_declared(&self, call: &'a Call<'a>, frames: &[Frame<'a>]) -> Type {
@@ -1877,8 +1981,9 @@ const MAX_CALL_SITE_DEPTH: u8 = 3;
 /// A parameter whose callers are looked for.
 #[derive(Clone, Copy, Debug)]
 pub struct CallSiteParam<'s> {
-    /// The class declaring the method (FQN).
+    /// The class declaring the method (FQN); empty for a function.
     pub class: &'s str,
+    /// The method's name, or the function's FQN.
     pub method: &'s str,
     /// The parameter's position and name (without `$`).
     pub index: usize,
@@ -1892,17 +1997,35 @@ pub struct CallSiteParam<'s> {
 /// are left out.
 pub(crate) fn call_site_arguments(types: &ExprTypes<'_, '_>, site: &CallSiteParam<'_>, out: &mut Vec<Type>) {
     let text = types.file.text();
-    let needle = format!("{}(", site.method);
+    let function = site.class.is_empty();
+    let short = site.method.rsplit('\\').next().unwrap_or(site.method);
+    let needle = format!("{short}(");
     let mut from = 0;
     while let Some(found) = text[from..].find(&needle) {
         let at = from + found;
         from = at + needle.len();
-        // A member call: `->name(` or `::name(`.
+        // A member call: `->name(` or `::name(`; a function's is neither.
         let before = &text[..at];
-        if !(before.ends_with("->") || before.ends_with("::")) {
+        let member = before.ends_with("->") || before.ends_with("::");
+        if member == function {
             continue;
         }
         let Some((expr, frames)) = types.find(at as u32) else { continue };
+        if function {
+            // A call of this very function (not its declaration, and not
+            // another one of the same short name).
+            let Expression::Call(Call::Function(call)) = expr else { continue };
+            let Expression::Identifier(identifier) = call.function else { continue };
+            let name = String::from_utf8_lossy(identifier.value());
+            let resolved = types.scope(identifier.span().start.offset).resolve(NameKind::Function, &name);
+            let decls = types.resolver.declarations();
+            let called = resolved.resolution.candidates().find(|fqn| decls.function(fqn).is_some());
+            if !called.is_some_and(|fqn| crate::names::fqn_eq(NameKind::Function, fqn, site.method)) {
+                continue;
+            }
+            push_passed(&types.call_args(&call.argument_list, &frames), site, out);
+            continue;
+        }
         let named = |selector: &ClassLikeMemberSelector<'_>| {
             matches!(selector, ClassLikeMemberSelector::Identifier(name)
                 if name.value.eq_ignore_ascii_case(site.method.as_bytes()))
@@ -1926,20 +2049,25 @@ pub(crate) fn call_site_arguments(types: &ExprTypes<'_, '_>, site: &CallSitePara
         if !on_class {
             continue;
         }
-        let args = types.call_args(list, &frames);
-        let passed = match args.iter().find(|arg| arg.name.as_deref() == Some(site.name)) {
-            Some(named) => Some(named),
-            None => {
-                let positional: Vec<&CallArg> = args.iter().take_while(|arg| arg.name.is_none()).collect();
-                let spread = positional.iter().take(site.index + 1).any(|arg| arg.spread);
-                if spread { None } else { positional.get(site.index).copied() }
-            }
-        };
-        if let Some(arg) = passed {
-            let ty = arg.ty.widen();
-            if ty != Type::Mixed {
-                out.push(ty);
-            }
+        push_passed(&types.call_args(list, &frames), site, out);
+    }
+}
+
+/// The argument of `args` for parameter `site` (by name, else by position
+/// when no spread comes before it), when its type is known.
+fn push_passed(args: &[CallArg], site: &CallSiteParam<'_>, out: &mut Vec<Type>) {
+    let passed = match args.iter().find(|arg| arg.name.as_deref() == Some(site.name)) {
+        Some(named) => Some(named),
+        None => {
+            let positional: Vec<&CallArg> = args.iter().take_while(|arg| arg.name.is_none()).collect();
+            let spread = positional.iter().take(site.index + 1).any(|arg| arg.spread);
+            if spread { None } else { positional.get(site.index).copied() }
+        }
+    };
+    if let Some(arg) = passed {
+        let ty = arg.ty.widen();
+        if ty != Type::Mixed {
+            out.push(ty);
         }
     }
 }

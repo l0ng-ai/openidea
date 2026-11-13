@@ -568,6 +568,47 @@ impl<'a> Resolver<'a> {
         self.decls.classes_named(name)
     }
 
+    /// The subclasses and implementors of `class` (not `final`) that have
+    /// method (`method`) or property `name`, which `class` itself lacks: one
+    /// model per class declaring it, at most [`MAX_SUBTYPES`] classes looked
+    /// at. What a call on a receiver typed with the base class may run.
+    pub fn subtype_members(&self, class: &str, name: &str, method: bool) -> Vec<Arc<ClassModel>> {
+        let Some(base) = self.class_model(class) else { return Vec::new() };
+        if base.class.modifiers.is_final {
+            return Vec::new();
+        }
+        let mut seen = vec![base.fqn().to_ascii_lowercase()];
+        let mut queue = vec![base.fqn().to_owned()];
+        let mut found: Vec<Arc<ClassModel>> = Vec::new();
+        let mut declaring: Vec<String> = Vec::new();
+        let mut next = 0;
+        while next < queue.len() && seen.len() <= MAX_SUBTYPES {
+            let parent = queue[next].clone();
+            next += 1;
+            for child in self.direct_subclasses(&parent) {
+                let key = child.to_ascii_lowercase();
+                if seen.contains(&key) {
+                    continue;
+                }
+                seen.push(key);
+                let Some(model) = self.class_model(&child) else { continue };
+                let declared_in = if method {
+                    model.method(name).map(|found| found.declaring.fqn.clone())
+                } else {
+                    model.property(name).map(|found| found.declaring.fqn.clone())
+                };
+                if let Some(declared_in) = declared_in
+                    && !declaring.contains(&declared_in)
+                {
+                    declaring.push(declared_in);
+                    found.push(model);
+                }
+                queue.push(child);
+            }
+        }
+        found
+    }
+
     /// The classes using trait `fqn` (at most [`MAX_TRAIT_HOSTS`], in name
     /// order): what `$this` is in the trait's methods, beside the trait.
     pub fn trait_hosts(&self, fqn: &str) -> Vec<String> {
@@ -1278,8 +1319,12 @@ impl<'a> Resolver<'a> {
             let ty = if let Some(declared) = property.declared() {
                 // Declared `array` and no more: the elements its class adds.
                 let elements = declared.default_type.as_ref().filter(|lazy| super::provider::has_elements(lazy));
-                let bare = |ty: Type| match elements {
-                    Some(lazy) if ty == Type::array() => self.lazy(lazy, &context, depth).widen(),
+                // Declared `mixed`: what its class assigns (not a literal
+                // default, which says what it starts as).
+                let assigned = declared.default_type.as_ref().filter(|lazy| super::provider::is_assigned(lazy));
+                let bare = |ty: Type| match (elements, assigned) {
+                    (Some(lazy), _) if ty == Type::array() => self.lazy(lazy, &context, depth).widen(),
+                    (_, Some(lazy)) if ty == Type::Mixed => self.lazy(lazy, &context, depth).widen(),
                     _ => ty,
                 };
                 match (declared.doc.as_ref().and_then(|doc| doc.var_type(name)), &declared.type_hint) {
@@ -1303,6 +1348,12 @@ impl<'a> Resolver<'a> {
                     _ => Type::Mixed,
                 }
             };
+            // Unknown as declared: what this class, or one between it and
+            // the declaring class, assigns to it.
+            let ty = match ty {
+                Type::Mixed => self.refined_property(&model, name, depth).unwrap_or(Type::Mixed),
+                ty => ty,
+            };
             let ty = self.expand_aliases(&ty, &property.declaring);
             Some(self.bind_member(&ty, &context, property.mixin.as_deref()))
         })?;
@@ -1312,6 +1363,22 @@ impl<'a> Resolver<'a> {
             ty = substitute(&ty, &self.receiver_bindings(receiver, &property.declaring));
         }
         Some(bind_static(&ty, receiver.this))
+    }
+
+    /// What `model`'s class, or the nearest parent that does, assigns to the
+    /// inherited property `name` ([`ClassLike::refined`]).
+    fn refined_property(&self, model: &ClassModel, name: &str, depth: usize) -> Option<Type> {
+        let mut class = Some(model.class.clone());
+        for _ in 0..8 {
+            let current = class?;
+            if let Some((_, lazy)) = current.refined.iter().find(|(refined, _)| refined == name) {
+                let ty = self.lazy(lazy, &Context::in_class(&current.fqn), depth).widen();
+                return (ty != Type::Mixed).then_some(ty);
+            }
+            class =
+                current.extends.first().and_then(|parent| self.class_model(parent)).map(|parent| parent.class.clone());
+        }
+        None
     }
 
     /// True when a `@property` tag shadowed by a real property of `class`
@@ -1535,6 +1602,9 @@ const PHPUNIT_TEST_CASE: &str = "PHPUnit\\Framework\\TestCase";
 pub(crate) fn is_bare_container(ty: &Type) -> bool {
     *ty == Type::array() || matches!(ty, Type::Named { args, .. } if args.is_empty())
 }
+
+/// How many subclasses are looked at for a member the base class lacks.
+const MAX_SUBTYPES: usize = 32;
 
 /// How many classes using a trait type its `$this`.
 const MAX_TRAIT_HOSTS: usize = 3;

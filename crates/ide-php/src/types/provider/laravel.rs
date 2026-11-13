@@ -607,6 +607,12 @@ impl LaravelProvider {
         let facade = Self::is_a(resolver, receiver, context, &[FACADE])
             .then(|| Self::facade_service(resolver, receiver, context))
             .flatten();
+        // `Foo::getFacadeRoot()` is the service itself.
+        if name.eq_ignore_ascii_case("getFacadeRoot")
+            && let Some(service) = &facade
+        {
+            return Some(service.clone());
+        }
         let target = facade.as_ref().unwrap_or(receiver);
         if let Some(ty) = Self::auth_user(resolver, target, name, string, core, context) {
             return Some(ty);

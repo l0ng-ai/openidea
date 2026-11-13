@@ -399,6 +399,7 @@ impl Extractor<'_> {
             attributes: self.attributes(attributes),
             doc,
             repository: self.repository_class(attributes),
+            refined: Vec::new(),
         };
         for member in members {
             match member {
@@ -453,11 +454,20 @@ impl Extractor<'_> {
     /// hint nor `@var`, from what the class's methods assign to them
     /// (`$this->x = …` in PHPUnit's `setUp()`).
     fn provided_properties(&self, class: &mut ClassLike, members: &Sequence<'_, ClassLikeMember<'_>>) {
+        // No type, or `mixed` (the hint or `@var mixed`), which says as
+        // little.
         let untyped = |property: &Property| {
-            !property.is_promoted
-                && !property.is_static
-                && property.type_hint.is_none()
-                && property.doc.as_ref().is_none_or(|doc| doc.var_type(&property.name).is_none())
+            let unhinted = match &property.type_hint {
+                None => true,
+                Some(TypeHint::Builtin(name)) => name == "mixed",
+                Some(_) => false,
+            };
+            let undocumented = property
+                .doc
+                .as_ref()
+                .and_then(|doc| doc.var_type(&property.name))
+                .is_none_or(|doc| doc.0.trim().eq_ignore_ascii_case("mixed"));
+            !property.is_promoted && !property.is_static && unhinted && undocumented
         };
         // Declared `array` and no more (the hint, `@var array`): the
         // elements the methods add say what is in it.
@@ -475,7 +485,9 @@ impl Extractor<'_> {
             };
             !property.is_promoted && !property.is_static && (hint.is_some() || documented.is_some())
         };
-        if !class.properties.iter().any(|property| untyped(property) || bare_array(property)) {
+        // A class with a parent may assign what the parent declares.
+        let inherits = !class.extends.is_empty() || !class.trait_uses.is_empty();
+        if !inherits && !class.properties.iter().any(|property| untyped(property) || bare_array(property)) {
             return;
         }
         let mut assigned: Vec<(String, Assigned)> = Vec::new();
@@ -484,7 +496,13 @@ impl Extractor<'_> {
             let MethodBody::Concrete(body) = &node.body else { continue };
             let start = node.name.span.start.offset;
             let Some(method) = class.methods.iter().find(|method| method.name_loc.start == start) else { continue };
-            let found = this_assignments(body);
+            let mut found = this_assignments(body);
+            // Only what types something: an own property open to it, or
+            // one the class doesn't declare (whole values).
+            found.retain(|(name, target, _)| match class.properties.iter().find(|property| property.name == *name) {
+                Some(property) => untyped(property) || bare_array(property),
+                None => inherits && *target == infer::Target::Whole,
+            });
             if found.is_empty() {
                 continue;
             }
@@ -518,9 +536,33 @@ impl Extractor<'_> {
             let site =
                 PropertySite { class: &class.fqn, extends: &class.extends, name: &property.name, assigned: &own };
             if let Some(ty) = TypeProviders::builtin().property(&site) {
+                // Declared (`mixed`, `array`): marked as what is assigned,
+                // apart from a literal default.
+                let declared = property.type_hint.is_some()
+                    || property.doc.as_ref().is_some_and(|doc| doc.var_type(&property.name).is_some());
+                let ty = if declared { crate::types::provider::assigned(ty) } else { ty };
                 class.properties[i].default_type = Some(ty);
             }
         }
+        // The properties of a parent the class assigns: what the core rule
+        // makes of the values, for this class and below.
+        let mut inherited: Vec<&String> = Vec::new();
+        for (name, _) in &assigned {
+            if !class.properties.iter().any(|property| property.name == *name) && !inherited.contains(&name) {
+                inherited.push(name);
+            }
+        }
+        let mut refined = Vec::new();
+        for name in inherited {
+            let own: Vec<Assigned> = assigned.iter().filter(|(own, _)| own == name).map(|(_, a)| a.clone()).collect();
+            let site = PropertySite { class: &class.fqn, extends: &class.extends, name, assigned: &own };
+            if let Some(ty) =
+                crate::types::provider::TypeProvider::property(&crate::types::provider::CoreProvider, &site)
+            {
+                refined.push((name.clone(), ty));
+            }
+        }
+        class.refined = refined;
     }
 
     fn trait_use(&self, node: &AstTraitUse<'_>) -> TraitUse {

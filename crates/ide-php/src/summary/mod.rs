@@ -69,7 +69,7 @@ use crate::types::LazyType;
 /// shapes of inferred array literals; 21: shapes of constant array values;
 /// 22: only `$withCount` counts relations, with its class), so stored
 /// summaries are rebuilt.
-pub const SCHEMA_VERSION: u32 = 35;
+pub const SCHEMA_VERSION: u32 = 36;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -195,6 +195,12 @@ pub struct ClassLike {
     /// (`#[ORM\Entity(repositoryClass: FooRepository::class)]`), fully
     /// qualified, for the Symfony type provider.
     pub repository: Option<String>,
+    /// What the class's methods assign to properties it doesn't declare
+    /// itself (`$this->reader = …` for a `$reader` of its parent): the
+    /// type those have in this class and below, when the declaration says
+    /// no more than `mixed`.
+    #[serde(default)]
+    pub refined: Vec<(String, LazyType)>,
 }
 
 /// One `use A, B { … }` inside a class-like.

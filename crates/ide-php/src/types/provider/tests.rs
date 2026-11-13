@@ -351,3 +351,41 @@ class Grid {
     let cases: Vec<(&str, &str)> = cases.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     check(&[APP], TEST_HEADER, &cases);
 }
+
+#[test]
+fn mixed_and_inherited_properties_take_what_is_assigned() {
+    const SOURCES: &str = r#"
+abstract class Source {
+    protected mixed $reader;
+    protected mixed $clock;
+    protected mixed $nothing = null;
+
+    public function start(Clock $clock): void { $this->clock = $clock; }
+}
+class Sheet extends Source {
+    public function open(Mailer $mailer): void { $this->reader = $mailer; }
+    public function read(): void {
+        BODY
+    }
+}
+class Plain extends Source {
+    public function read(): void {
+        OTHER
+    }
+}
+"#;
+    let t = |expr: &str| SOURCES.replace("BODY", &format!("{expr}/*|*/;")).replace("OTHER", "");
+    let other = |expr: &str| SOURCES.replace("OTHER", &format!("{expr}/*|*/;")).replace("BODY", "");
+    let cases = [
+        // Declared `mixed`: what its own class assigns.
+        (t("$this->clock"), "App\\Clock".to_owned()),
+        // Inherited, assigned in the class that uses it.
+        (t("$this->reader"), "App\\Mailer".to_owned()),
+        // A sibling that assigns nothing keeps the declaration; a literal
+        // default types nothing declared `mixed`.
+        (other("$this->reader"), "mixed".to_owned()),
+        (t("$this->nothing"), "mixed".to_owned()),
+    ];
+    let cases: Vec<(&str, &str)> = cases.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    check(&[APP], TEST_HEADER, &cases);
+}

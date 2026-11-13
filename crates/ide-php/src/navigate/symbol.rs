@@ -607,12 +607,34 @@ impl<'a> Lookup<'a, '_> {
         }
         // A member only the magic methods have.
         let method = kind == MemberKind::Method;
-        self.resolver
+        let magic: Vec<Decl> = self
+            .resolver
             .providers()
             .magic_member(receiver, name, method, self.resolver, context)
-            .map(|member| Decl::Magic(Magic { member, ty }))
+            .map(|member| Decl::Magic(Magic { member, ty: ty.clone() }))
             .into_iter()
-            .collect()
+            .collect();
+        if !magic.is_empty() {
+            return magic;
+        }
+        // A member only subclasses declare (the receiver is typed with
+        // their base class): all of them.
+        let mut decls = Vec::new();
+        for base in self.resolver.class_models(receiver, context) {
+            for model in self.resolver.subtype_members(base.fqn(), name, method) {
+                let receiver = Type::named(model.fqn());
+                let context = Context::in_class(model.fqn());
+                decls.push(Decl::Member(Member {
+                    kind,
+                    model,
+                    name: name.to_owned(),
+                    receiver,
+                    context,
+                    ty: ty.clone(),
+                }));
+            }
+        }
+        decls
     }
 
     /// `$o->name`: the property of the receiver's classes, else a property

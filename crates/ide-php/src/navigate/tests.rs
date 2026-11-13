@@ -459,3 +459,31 @@ fn a_return_the_index_could_not_type_is_read_from_the_body() {
         Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/Picker.php", &declared), ("src/show.php", caller)]);
     assert_eq!(p.definition("src/show.php", caller).expect("handled"), []);
 }
+
+#[test]
+fn a_method_only_subclasses_declare_resolves_to_them() {
+    let lib = "<?php\n\nabstract class Importer\n{\n}\n\nclass ProductImporter extends Importer\n{\n    public function queue(): Item { return new Item(); }\n}\n\nclass CustomerImporter extends Importer\n{\n    public function queue(): Item { return new Item(); }\n}\n\nfinal class Sealed\n{\n}\n";
+    let source = "<?php\n\nfunction run(Importer $importer): void\n{\n    $importer->que/*|*/ue();\n}\n";
+    let mut p = Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/importers.php", lib), ("src/run.php", source)]);
+    let mut found = p.definition("src/run.php", source).expect("handled");
+    found.sort();
+    assert_eq!(found, [target("src/importers.php", 8, "queue"), target("src/importers.php", 13, "queue")]);
+    // The call has what they return.
+    let chained = source.replace("$importer->que/*|*/ue();", "$importer->queue()->tit/*|*/le();");
+    assert_eq!(p.definition("src/run.php", &chained).expect("handled"), [target("src/lib.php", 4, "title")]);
+    // Nothing declares it anywhere below: still unknown.
+    let missing = source.replace("que/*|*/ue", "noth/*|*/ing");
+    assert_eq!(p.definition("src/run.php", &missing).expect("handled"), []);
+}
+
+#[test]
+fn a_functions_untyped_return_is_read_from_its_body() {
+    let helpers = "<?php\n\nfunction wrap($value)\n{\n    return $value ?: new Item();\n}\n\nfunction item()\n{\n    return wrap(new Item());\n}\n";
+    // In the file declaring it, and from another file.
+    let own = format!("{helpers}\nitem()->tit/*|*/le();\n");
+    let mut p = Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/helpers.php", own.as_str())]);
+    assert_eq!(p.definition("src/helpers.php", &own).expect("handled"), [target("src/lib.php", 4, "title")]);
+    let caller = "<?php\n\nitem()->tit/*|*/le();\n";
+    let mut p = Project::new(&[("src/lib.php", CALL_SITE_LIB), ("src/helpers.php", helpers), ("src/use.php", caller)]);
+    assert_eq!(p.definition("src/use.php", caller).expect("handled"), [target("src/lib.php", 4, "title")]);
+}

@@ -226,6 +226,8 @@ fn facades_forward_to_their_service() {
             ("Documented::documented()/*|*/;", "int"),
             // Neither the facade nor the service has it.
             ("Payments::refund()/*|*/;", "mixed"),
+            // The facade's root is its service.
+            ("Payments::getFacadeRoot()/*|*/;", "App\\Services\\PaymentGateway"),
         ],
     );
 }

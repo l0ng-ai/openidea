@@ -683,6 +683,9 @@ impl TypeProvider for CoreProvider {
     }
 
     fn resolve(&self, payload: &str, args: &[Type], _resolver: &Resolver<'_>, _context: &Context) -> Option<Type> {
+        if payload == ASSIGNED {
+            return args.first().cloned();
+        }
         let element = args.first().filter(|element| **element != Type::Mixed)?.widen();
         match payload {
             ELEMENTS => Some(Type::list_of(element)),
@@ -696,10 +699,28 @@ impl TypeProvider for CoreProvider {
 const ELEMENTS: &str = "elements";
 const ENTRIES: &str = "entries";
 
+/// The core's payload for what a class assigns to a property it declares
+/// with a type that says nothing (`mixed`).
+const ASSIGNED: &str = "assigned";
+
+/// `ty` marked as what a class assigns to a declared property.
+pub(crate) fn assigned(ty: LazyType) -> LazyType {
+    provided("core", ASSIGNED, vec![ty], LazyType::mixed())
+}
+
+/// Whether `lazy` is what a class assigns to a declared property
+/// ([`assigned`]).
+pub(crate) fn is_assigned(lazy: &LazyType) -> bool {
+    matches!(lazy, LazyType::Provided { key, payload, .. } if key == "core" && payload == ASSIGNED)
+}
+
 /// Whether `lazy` is (or has among its members) the elements added to a
 /// property ([`CoreProvider::property`]).
 pub(crate) fn has_elements(lazy: &LazyType) -> bool {
     match lazy {
+        LazyType::Provided { key, payload, args, .. } if key == "core" && payload == ASSIGNED => {
+            args.iter().any(has_elements)
+        }
         LazyType::Provided { key, payload, .. } => key == "core" && (payload == ELEMENTS || payload == ENTRIES),
         LazyType::Union(members) => members.iter().any(has_elements),
         _ => false,

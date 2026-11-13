@@ -674,6 +674,7 @@ pub(super) fn add_macros(model: &mut ClassModel, macros: Vec<Method>) {
             attributes: Vec::new(),
             doc: None,
             repository: None,
+            refined: Vec::new(),
         });
         let method = &declaring.methods[0];
         let macro_method = ModelMethod {
