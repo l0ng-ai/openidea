@@ -48,7 +48,7 @@ export interface GridColumn {
   enumValues?: readonly string[];
 }
 
-const NUMERIC_TYPE = /int|num|dec|real|float|double|money|serial|^bit$/i;
+const NUMERIC_TYPE = /int|num|dec|real|float|double|money|serial|^bit$|^fixed\b/i;
 const NUMBER = /^-?\d+(\.\d+)?(e[+-]?\d+)?$/i;
 
 /** Numbers are right-aligned (IDEA): by type, else when every sampled value is one. */

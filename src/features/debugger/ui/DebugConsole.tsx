@@ -37,6 +37,7 @@ import { findOutputLinks, type OutputLink } from "@/features/run/links";
 import { openTarget, openUrl, runDirectory } from "@/features/run/navigate";
 import { segmentLine, type SegmentMark } from "@/features/run/segments";
 import styles from "./DebugToolWindow.module.css";
+import { WidestColumns } from "@/platform/consoleColumns";
 
 const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
 
@@ -128,6 +129,8 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const logColors = useWorkflowSettings((s) => s.console.logColors);
   const [wrapOverride, setWrapOverride] = useState<boolean | null>(null);
   const softWrap = wrapOverride ?? defaultWrap;
+  const [widest] = useState(() => new WidestColumns());
+  const columns = useMemo(() => widest.measure(lines ?? []), [widest, lines]);
   const programmatic = useRef(false);
   const [input, setInput] = useState("");
   const history = useRef<string[]>(readHistory("console"));
@@ -452,7 +455,11 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
           {!lines?.length && session.launch?.request === "attach" && (
             <T>The attached process may not provide standard output to the debugger.</T>
           )}
-          <div ref={inner} className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
+          <div
+            ref={inner}
+            className={styles.consoleInner}
+            style={{ height: virtualizer.getTotalSize(), minWidth: softWrap ? undefined : `${columns}ch` }}
+          >
             {virtualizer.getVirtualItems().map((item) => {
               const l = lines?.[item.index];
               if (!l) return null;

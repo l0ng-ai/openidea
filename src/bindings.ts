@@ -877,6 +877,23 @@ export const commands = {
 	label: string,
 } | null, IdeError>(__TAURI_INVOKE("maven_goto_declaration", { pom, pos })),
 	/**
+	 *  Completion of the `<dependency>` coordinate the caret (`offset`, UTF-16) sits
+	 *  in the value of in the POM `doc`, from the local repository and Maven Central.
+	 */
+	mavenDependencyCompletion: (doc: DocId, offset: number, request: RequestId) => typedError<{
+	/**  UTF-16 offset where the completed text starts: the value's first character. */
+	from: number,
+	/**
+	 *  UTF-16 offset where the replaced value ends: past the caret when the caret
+	 *  sits inside an existing value, which is then replaced whole.
+	 */
+	to: number,
+	/**  Which coordinate element the caret is in. */
+	kind: PomCompletionKind,
+	/**  The suggestions, local repository first. */
+	options: PomCompletionOption[],
+} | null, IdeError>(__TAURI_INVOKE("maven_dependency_completion", { doc, offset, request })),
+	/**
 	 *  Build › Build Project / Rebuild Project / Build Module (`file`: a file or folder of the
 	 *  module) / Build Artifacts, streaming the console and messages on `on_event`; cancellable
 	 *  with `cancel_request(request)`. Diagnostics of `clear` (the files of the previous build)
@@ -967,6 +984,8 @@ export const commands = {
 	scaffoldCreate: (req: CreateRequest, request: RequestId, onEvent: Channel<ScaffoldEvent>) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("scaffold_create", { req, request, onEvent })),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
+	/**  The Python interpreters of the recently opened projects, each with its project. */
+	sdkPythonProjectInterpreters: () => typedError<ProjectInterpreter[], IdeError>(__TAURI_INVOKE("sdk_python_project_interpreters")),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
 	sdkPythonInterpreter: (path: string) => typedError<{
 	/**
@@ -1574,10 +1593,10 @@ export const commands = {
 	/**  Forgets the credential of `key` (a `git_credentials` entry). */
 	gitCredentialForget: (key: string) => __TAURI_INVOKE<void>("git_credential_forget", { key }),
 	/**
-	 *  Tools › Start SSH Session: the system `ssh` command line for configuration `id`
-	 *  (run in a terminal tab, so prompts and host-key questions are answered there).
+	 *  Tools › Start SSH Session: a shell on configuration `id` in a terminal tab, through the
+	 *  built-in client with the configuration's saved credentials.
 	 */
-	sshTerminalCommand: (id: string) => typedError<SshTerminalCommand, IdeError>(__TAURI_INVOKE("ssh_terminal_command", { id })),
+	sshOpenTerminal: (id: string, cols: number, rows: number, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("ssh_open_terminal", { id, cols, rows, onOutput })),
 	deployCoverage: (paths: IpcPath[]) => typedError<DeploymentCoverage[], IdeError>(__TAURI_INVOKE("deploy_coverage", { paths })),
 	deployUpload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_upload", { paths, server, request })),
 	deployDownload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_download", { paths, server, request })),
@@ -1643,6 +1662,12 @@ export const commands = {
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
 	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
 	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
+	dbSessionContext: (id: string) => typedError<DbSessionContext, IdeError>(__TAURI_INVOKE("db_session_context", { id })),
+	dbDatabaseCatalog: (id: string, database: string) => typedError<DbCatalogSchema[], IdeError>(__TAURI_INVOKE("db_database_catalog", { id, database })),
+	dbSavedCatalog: (id: string) => typedError<{
+	databases?: DbCatalogDatabase[],
+} | null, IdeError>(__TAURI_INVOKE("db_saved_catalog", { id })),
+	dbRetainCatalog: (id: string, databases: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_retain_catalog", { id, databases })),
 	dbSchemas: (id: string) => typedError<string[], IdeError>(__TAURI_INVOKE("db_schemas", { id })),
 	dbTables: (id: string, schema: string) => typedError<DbTableInfo[], IdeError>(__TAURI_INVOKE("db_tables", { id, schema })),
 	dbTableDetails: (id: string, schema: string, table: string) => typedError<DbTableDetails, IdeError>(__TAURI_INVOKE("db_table_details", { id, schema, table })),
@@ -1874,7 +1899,12 @@ endedMs: number | null;
 /**  Whether it can be stopped on its own. */
 cancellable: boolean } | 
 /**  A message between sessions in a subagent's conversation: its task (`incoming`) or its report. */
-{ type: "message"; incoming: boolean; text: string } | { type: "permission"; id: number; title: string; options: AgentPermissionOption[]; 
+{ type: "message"; incoming: boolean; text: string } | { type: "permission"; id: number; title: string; 
+/**
+ *  The shell command the request asks to run, from its structured input; `None` for
+ *  any other request, whatever its title says.
+ */
+command?: string | null; options: AgentPermissionOption[]; 
 /**
  *  Set when the request asks `AskUserQuestion`'s questions; answered with a JSON object
  *  of question to answer instead of an option.
@@ -2089,6 +2119,11 @@ export type AgentSettings_Deserialize = {
 	 *  send it into the turn.
 	 */
 	whileRunning?: WhileRunning,
+	/**
+	 *  Whether new tasks start in the agent's mode that approves everything (Claude Code's
+	 *  bypass permissions, Codex's full access) or in one that asks. User settings only.
+	 */
+	newTaskApprovals?: NewTaskApprovals,
 	/**  Settings new tasks of an agent start with: agent id → option id → value. */
 	defaults?: { [key in string]: { [key in string]: string } },
 	/**
@@ -2122,6 +2157,11 @@ export type AgentSettings_Serialize = {
 	 *  send it into the turn.
 	 */
 	whileRunning: WhileRunning,
+	/**
+	 *  Whether new tasks start in the agent's mode that approves everything (Claude Code's
+	 *  bypass permissions, Codex's full access) or in one that asks. User settings only.
+	 */
+	newTaskApprovals: NewTaskApprovals,
 	/**  Settings new tasks of an agent start with: agent id → option id → value. */
 	defaults: { [key in string]: { [key in string]: string } },
 	/**
@@ -2236,6 +2276,8 @@ export type AppInfo = {
 	platform: string,
 	windowsBuildNumber: number | null,
 	configDir: IpcPath,
+	/**  User data (plugins, scratches, Local History); follows `OPENIDEA_DATA_DIR`. */
+	dataDir: IpcPath,
 	/**  Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges. */
 	wayland: boolean,
 };
@@ -2269,7 +2311,9 @@ export type AppMetrics = {
 	memory: ProcessMemory[],
 };
 
-export type AppearanceSettings = {
+export type AppearanceSettings = AppearanceSettings_Serialize | AppearanceSettings_Deserialize;
+
+export type AppearanceSettings_Deserialize = {
 	/**
 	 *  A built-in theme id (`light`, `dark`, `dark-hc`, …), `system` (legacy
 	 *  "Sync with OS"), or a plugin's theme: `plugin:<plugin-id>/<theme-id>`.
@@ -2329,6 +2373,68 @@ export type AppearanceSettings = {
 	statusBarWidgets?: { [key in string]: boolean },
 	/**  Customize Main Toolbar; `None` = the default toolbar. */
 	mainToolbar?: MainToolbarSettings | null,
+};
+
+export type AppearanceSettings_Serialize = {
+	/**
+	 *  A built-in theme id (`light`, `dark`, `dark-hc`, …), `system` (legacy
+	 *  "Sync with OS"), or a plugin's theme: `plugin:<plugin-id>/<theme-id>`.
+	 */
+	theme: string,
+	accent: string,
+	uiFontSize: number | null,
+	locale: string,
+	/**  Follow the OS light/dark mode with the preferred themes below. */
+	syncWithOs: boolean,
+	preferredLightTheme: string,
+	preferredDarkTheme: string,
+	/**  A plugin's file icon theme (`<plugin-id>/<theme-id>`); empty = the built-in icons. */
+	fileIconTheme: string,
+	fileIconThemeOptions: { [key in string]: FileIconThemeOptions },
+	/**  IDE zoom in percent (50–300). */
+	zoom: number,
+	/**  Apply `ui_font_family` / `ui_font_size` (otherwise the theme's). */
+	useCustomFont: boolean,
+	uiFontFamily: string,
+	/**  Font tried when `ui_font_family` lacks a glyph; empty = none. */
+	uiFontFallback: string,
+	contrastScrollbars: boolean,
+	/**  Adjust colours for red-green vision deficiency. */
+	redGreenVision: boolean,
+	differentToolWindowBackground: boolean,
+	compactMode: boolean,
+	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
+	smallTreeIndents: boolean,
+	fullPathInTitle: boolean,
+	projectColorsInToolbar: boolean,
+	dndWithAltOnly: boolean,
+	menuIcons: boolean,
+	/**  `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar. */
+	mainMenuStyle: string,
+	/**  A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
+	mainMenuAlt: boolean,
+	/**  `subpixel` | `greyscale` | `none` */
+	ideAntialiasing: string,
+	editorAntialiasing: string,
+	showToolWindowBars: boolean,
+	showToolWindowNames: boolean,
+	showToolWindowBadges: boolean,
+	widescreenToolWindows: boolean,
+	/**  View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
+	showMainToolbar: boolean,
+	showStatusBar: boolean,
+	/**
+	 *  View › Appearance › Navigation Bar: the file path breadcrumbs, shown in
+	 *  the status bar by default, above the editor, or not at all.
+	 */
+	navigationBar: NavigationBarPosition,
+	/**
+	 *  Status bar widgets shown (`true`) or hidden (`false`) by the user
+	 *  (status bar context menu); widgets not listed use their default.
+	 */
+	statusBarWidgets: { [key in string]: boolean },
+	/**  Customize Main Toolbar; `None` = the default toolbar. */
+	mainToolbar: MainToolbarSettings | null,
 };
 
 export type ApplyOutcome = {
@@ -3386,6 +3492,8 @@ export type DataSource_Deserialize = {
 	options?: DbOptions,
 	introspection?: DbIntrospection,
 	properties?: DbProperty[],
+	/**  Snowflake settings (`None`: not a Snowflake data source, or all defaults). */
+	snowflake?: DbSnowflake | null,
 	/**
 	 *  Stored app-wide and listed in every project. Implied by the file it is read from,
 	 *  so not written to it.
@@ -3428,6 +3536,8 @@ export type DataSource_Serialize = {
 	options: DbOptions,
 	introspection: DbIntrospection,
 	properties: DbProperty[],
+	/**  Snowflake settings (`None`: not a Snowflake data source, or all defaults). */
+	snowflake: DbSnowflake | null,
 	/**
 	 *  Stored app-wide and listed in every project. Implied by the file it is read from,
 	 *  so not written to it.
@@ -3448,6 +3558,19 @@ export type DateFormatSettings = {
 	use24Hour?: boolean,
 	/**  "Today", "Yesterday", "5 min ago". */
 	pretty?: boolean,
+};
+
+export type DbCatalogDatabase = {
+	name: string,
+	/**  When this database was read, in milliseconds since the Unix epoch. */
+	readAt: number | null,
+	schemas: DbCatalogSchema[],
+};
+
+/**  A schema of a database and its tables and views. */
+export type DbCatalogSchema = {
+	name: string,
+	tables: DbTableInfo[],
 };
 
 export type DbCellValue = {
@@ -3503,7 +3626,7 @@ export type DbDriver = "sqlite" | "postgres" |
 /**  Microsoft SQL Server. */
 "sqlServer" | "clickhouse" | 
 /**  Oracle Database (pure-Rust thin driver, no client library). */
-"oracle";
+"oracle" | "snowflake";
 
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
 export type DbForeignKey = {
@@ -3628,11 +3751,22 @@ export type DbRoutineInfo = {
  */
 export type DbRowEdit = { kind: "update"; key: DbCellValue[]; values: DbCellValue[] } | { kind: "insert"; values: DbCellValue[] } | { kind: "delete"; key: DbCellValue[] };
 
+/**  A schema object the tree lists by name under a folder of its kind. */
+export type DbSchemaObject = {
+	/**  `stage`, `stream`, `task`, `pipe`, `fileFormat`. */
+	kind: string,
+	name: string,
+	/**  What the list says about it (a stage's type, a stream's table, a task's schedule). */
+	detail: string,
+};
+
 /**  A schema's routines (procedures and functions), packages and sequences. */
 export type DbSchemaObjects = {
 	routines: DbRoutineInfo[],
 	packages: DbPackageInfo[],
 	sequences: DbSequenceInfo[],
+	/**  Objects of kinds only some databases have (Snowflake stages, streams, tasks…). */
+	others?: DbSchemaObject[],
 };
 
 export type DbSequenceInfo = {
@@ -3640,9 +3774,54 @@ export type DbSequenceInfo = {
 	dataType: string,
 };
 
+/**  What a Snowflake session computes with and acts as, and what it may switch to. */
+export type DbSessionContext = {
+	/**  Empty: no warehouse is in use. */
+	warehouse: string,
+	role: string,
+	warehouses: string[],
+	roles: string[],
+};
+
+/**
+ *  Snowflake connection settings beyond the shared ones: the account identifier is
+ *  [`DataSource::host`], the schema [`DbOptions::default_schema`].
+ */
+export type DbSnowflake = {
+	warehouse?: string,
+	role?: string,
+	auth?: DbSnowflakeAuth,
+	/**
+	 *  PEM private key of [`DbSnowflakeAuth::KeyPair`]; `~/` is the home directory. Only the
+	 *  path is stored: the key is read from the file at each login.
+	 */
+	privateKeyFile?: string,
+};
+
+/**
+ *  How a Snowflake data source signs in. The data source's one saved secret is what the
+ *  method needs: the private key's passphrase, the password, or the token.
+ */
+export type DbSnowflakeAuth = 
+/**  RSA key pair: a JWT signed with the private key file. */
+"keyPair" | 
+/**  User name and password. */
+"password" | 
+/**  Programmatic access token. */
+"token" | 
+/**  OAuth access token. */
+"oAuth" | 
+/**  Single sign-on in the web browser. */
+"browser";
+
 export type DbSortKey = {
 	column: string,
 	descending: boolean,
+};
+
+/**  What introspection has read of a data source. */
+export type DbSourceCatalog = {
+	databases?: DbCatalogDatabase[],
 };
 
 /**  Connect through an SSH tunnel: the database host and port are reached from `host`. */
@@ -4350,6 +4529,8 @@ export type EditorAppearanceSettings = {
 	/**  Smooth caret movement curve: `snappy` | `gliding`. */
 	caretMovementStyle?: string,
 	lineNumbers?: boolean,
+	/**  Gutter numbering: `absolute` | `relative` | `hybrid` (absolute on the caret line, distances elsewhere). */
+	lineNumberMode?: string,
 	methodSeparators?: boolean,
 	/**  Sub-options of `editor.showWhitespace`. */
 	whitespaceLeading?: boolean,
@@ -7175,6 +7356,13 @@ export type NewAgentTask = {
 	base: string | null,
 };
 
+/**  The approvals new agent tasks start with. */
+export type NewTaskApprovals = 
+/**  The agent's mode that approves everything without asking, when it has one. */
+"bypass" | 
+/**  A mode in which the agent asks before edits and commands. */
+"ask";
+
 /**  Result of `node_at`: the smallest named node covering a range, with its ancestors. */
 export type NodeAt = {
 	node: SyntaxNode,
@@ -7859,6 +8047,43 @@ export type PluginsSnapshot = {
 	ui: UiContribution[],
 };
 
+/**
+ *  The completion offered at a caret of a POM: the replaced value span (UTF-16
+ *  offsets) and the suggestions, local ones first.
+ */
+export type PomCompletion = {
+	/**  UTF-16 offset where the completed text starts: the value's first character. */
+	from: number,
+	/**
+	 *  UTF-16 offset where the replaced value ends: past the caret when the caret
+	 *  sits inside an existing value, which is then replaced whole.
+	 */
+	to: number,
+	/**  Which coordinate element the caret is in. */
+	kind: PomCompletionKind,
+	/**  The suggestions, local repository first. */
+	options: PomCompletionOption[],
+};
+
+/**  The coordinate element a POM completion fills. */
+export type PomCompletionKind = 
+/**  The dependency's `<groupId>`. */
+"groupId" | 
+/**  The dependency's `<artifactId>`. */
+"artifactId" | 
+/**  The dependency's `<version>`. */
+"version";
+
+/**
+ *  One suggestion: the coordinate as inserted, and an optional note shown in
+ *  the lookup (the owning group of an artifactId, its newest installed version).
+ */
+export type PomCompletionOption = {
+	/**  The text the completion inserts (`org.example.lib`, `example-lib`, `1.2.0`). */
+	label: string,
+	detail: string | null,
+};
+
 /**  What a go-to-declaration in a POM found, and where. */
 export type PomGoto = {
 	/**
@@ -8118,6 +8343,12 @@ export type ProjectInfo_Serialize = {
 	unity?: UnityProjectInfo | null,
 };
 
+/**  An interpreter another project uses: the project root and the SDK itself. */
+export type ProjectInterpreter = {
+	project: IpcPath,
+	sdk: Sdk,
+};
+
 /**  A project-level library (Project Structure › Libraries). */
 export type ProjectLibrary = {
 	name?: string,
@@ -8271,6 +8502,20 @@ export type PythonSettings = {
 	interpreter?: string,
 	/**  Activate the interpreter's virtualenv in new terminal sessions. */
 	activateVirtualenv?: boolean,
+	/**
+	 *  Interpreters the user added to Settings › Python › All Interpreters (executable paths).
+	 *  Detection contributes the rest; `hidden_interpreters` removes some of them.
+	 */
+	interpreters?: string[],
+	/**
+	 *  Interpreters the user removed from that list, as executable paths: detection does
+	 *  not list them again.
+	 */
+	hiddenInterpreters?: string[],
+	/**  Hide interpreters that belong to another project (a virtualenv inside its folder). */
+	hideOtherProjectInterpreters?: boolean,
+	/**  Show each interpreter's path under its name on the interpreters page. */
+	showInterpreterPaths?: boolean,
 };
 
 /**  Half-open range `[start, end)`. */
@@ -9067,7 +9312,7 @@ export type SettingsScope = "global" | "project";
 
 export type Settings_Deserialize = {
 	general?: GeneralSettings,
-	appearance?: AppearanceSettings,
+	appearance?: AppearanceSettings_Deserialize,
 	editor?: EditorSettings_Deserialize,
 	keymap?: string,
 	files?: FileSettings,
@@ -9131,7 +9376,7 @@ export type Settings_Deserialize = {
 
 export type Settings_Serialize = {
 	general: GeneralSettings,
-	appearance: AppearanceSettings,
+	appearance: AppearanceSettings_Serialize,
 	editor: EditorSettings_Serialize,
 	keymap: string,
 	files: FileSettings,
@@ -9370,12 +9615,6 @@ export type SshConfiguration = {
 /**  Tools › SSH Configurations. */
 export type SshSettings = {
 	configs?: SshConfiguration[],
-};
-
-export type SshTerminalCommand = {
-	shell: string,
-	args: string[],
-	title: string,
 };
 
 export type StackFrame = {

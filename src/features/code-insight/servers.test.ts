@@ -20,7 +20,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 
 const { emitLocalIdeEvent } = await import("@/platform/ipc");
 const { useProject } = await import("@/platform/project");
-const { BUSY_SHOW_DELAY_MS, installServerEvents, serversSummary, useServers } = await import("./servers");
+const { BUSY_SHOW_DELAY_MS, eslintCovers, installServerEvents, serversSummary, useServers } = await import("./servers");
 
 describe("server status", () => {
   let dispose = () => {};
@@ -134,5 +134,28 @@ describe("serversSummary", () => {
     expect(text(entry(1, "basedpyright", "ready"), entry(2, "pyright", "stopped"))).toBe("basedpyright");
     expect(text(entry(1, "basedpyright", "ready"), entry(2, "ty", "starting"))).toBe("basedpyright +1");
     expect(serversSummary([entry(2, "pyright", "stopped")])).toMatchObject({ text: "pyright", tone: "idle" });
+  });
+});
+
+describe("ESLint coverage", () => {
+  afterEach(() => useServers.setState({ servers: new Map() }));
+
+  it("covers files of its languages below its configuration while it runs", () => {
+    const eslint = (status: "ready" | "starting", root: string | null) =>
+      useServers.setState({
+        servers: new Map([
+          [1, { id: 1, name: "eslint", status, message: null, languages: ["javascript", "typescript"], root }],
+        ]),
+      });
+    eslint("ready", "/p/web");
+    expect(eslintCovers("/p/web/src/a.ts", "typescript")).toBe(true);
+    expect(eslintCovers("/p/web/src/a.ts", "rust")).toBe(false);
+    expect(eslintCovers("/p/api/a.ts", "typescript")).toBe(false);
+    expect(eslintCovers("/p/webapp/a.ts", "typescript")).toBe(false);
+    expect(eslintCovers("/p/web/src/a.ts", null)).toBe(false);
+    eslint("starting", "/p/web");
+    expect(eslintCovers("/p/web/src/a.ts", "typescript")).toBe(false);
+    eslint("ready", "C:\\p\\web");
+    expect(eslintCovers("C:\\p\\web\\a.js", "javascript")).toBe(true);
   });
 });

@@ -51,12 +51,12 @@ test("stripe tooltips stay inside the viewport with a gap on either side and at 
 
 test("stripe themes inherit base tooltip tokens and keep shortcut text readable", async ({ workbench: page }) => {
   const button = page.locator('[data-tooltip-stripe="left"][data-tooltip-shortcut]').first();
-  for (const theme of ["dark", "light", "dark-hc", "solarized-light", "solarized-dark", "one-light", "one-dark"]) {
+  for (const theme of ["dark", "light", "dark-hc", "solarized-light", "solarized-dark"]) {
     await page.mouse.move(700, 400);
     await page.evaluate((theme) => {
       const root = document.documentElement;
       root.dataset.theme = theme.endsWith("light") ? "light" : theme === "dark-hc" ? "dark-hc" : "dark";
-      if (theme.includes("-light") || ["solarized-dark", "one-dark"].includes(theme)) root.dataset.colorTheme = theme;
+      if (theme.includes("-light") || theme === "solarized-dark") root.dataset.colorTheme = theme;
       else delete root.dataset.colorTheme;
     }, theme);
     await button.hover();

@@ -262,7 +262,20 @@ const APPEARANCE = editorPage({
           key: `${P}.appearance.hardWrapGuides`,
           label: "Show hard wrap and visual guides (configured in Code Style options)",
         },
-        { t: "check", key: `${P}.appearance.lineNumbers`, label: "Show line numbers" },
+        {
+          t: "check",
+          key: `${P}.appearance.lineNumbers`,
+          label: "Show line numbers",
+          inline: {
+            kind: "select",
+            key: `${P}.appearance.lineNumberMode`,
+            options: [
+              { value: "absolute", label: "Absolute" },
+              { value: "relative", label: "Relative" },
+              { value: "hybrid", label: "Hybrid" },
+            ],
+          },
+        },
         { t: "check", key: `${P}.appearance.methodSeparators`, label: "Show method separators" },
         {
           t: "check",

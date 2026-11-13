@@ -238,6 +238,13 @@ pub enum Pool {
     SqlServer(Bb8Pool<MssqlConnectionManager>),
     Clickhouse(crate::clickhouse::ClickhousePool),
     Oracle(crate::oracle::OraclePool),
+    Snowflake(crate::snowflake::SnowflakePool),
+}
+
+/// Some servers and proxies (e.g. Aliyun RDS for MySQL 5.6) advertise `CLIENT_DEPRECATE_EOF` but
+/// still end result sets with legacy EOF packets, which sqlx then fails to read as OK packets.
+fn legacy_eof(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Protocol(msg) if msg.starts_with("OK_Packet too short"))
 }
 
 pub(crate) fn db_err(e: sqlx::Error) -> IdeError {
@@ -703,6 +710,9 @@ impl Setup {
         if source.driver == DbDriver::Clickhouse && !o.time_zone.trim().is_empty() {
             s.params.push(("session_timezone".into(), o.time_zone.trim().into()));
         }
+        if source.driver == DbDriver::Snowflake && !o.time_zone.trim().is_empty() {
+            s.params.push(("TIMEZONE".into(), o.time_zone.trim().into()));
+        }
         let script = o.startup_script.trim();
         if !script.is_empty() {
             s.statements.extend(crate::split::split(script, source.driver).into_iter().map(|st| st.text));
@@ -720,6 +730,7 @@ impl Pool {
             Pool::SqlServer(_) => DbDriver::SqlServer,
             Pool::Clickhouse(_) => DbDriver::Clickhouse,
             Pool::Oracle(_) => DbDriver::Oracle,
+            Pool::Snowflake(_) => DbDriver::Snowflake,
         }
     }
 
@@ -740,6 +751,9 @@ impl Pool {
         }
         if source.driver == DbDriver::Oracle {
             return crate::oracle::OraclePool::connect(source, password, &setup).await.map(Pool::Oracle);
+        }
+        if source.driver == DbDriver::Snowflake {
+            return crate::snowflake::SnowflakePool::connect(source, password, setup).await.map(Pool::Snowflake);
         }
         let timeout = setup.connect_timeout.unwrap_or(Duration::from_secs(30));
         let init = Arc::new(setup.statements);
@@ -865,9 +879,16 @@ impl Pool {
                 if !tz.is_empty() {
                     opts = opts.timezone(Some(tz.to_owned()));
                 }
-                let manager = MysqlManager { options: opts, init: init.clone(), timeout };
+                let mut manager = MysqlManager { options: opts, init: init.clone(), timeout };
                 // Open once directly so authentication failures retain their database error.
-                let first = manager.connect().await.map_err(db_err)?;
+                let first = match manager.connect().await {
+                    Err(e) if legacy_eof(&e) => {
+                        manager.options = manager.options.clone().deprecate_eof(false);
+                        manager.connect().await
+                    }
+                    first => first,
+                }
+                .map_err(db_err)?;
                 let pool = Bb8Pool::builder().max_size(MAX).connection_timeout(timeout).build_unchecked(manager);
                 let _ = pool.add(first);
                 Ok(Pool::Mysql(ServerPool { inner: pool, closed: AtomicBool::new(false) }))
@@ -899,7 +920,7 @@ impl Pool {
                 Ok(Pool::SqlServer(pool))
             }
             DbDriver::Clickhouse => unreachable!(),
-            DbDriver::Oracle => unreachable!(),
+            DbDriver::Oracle | DbDriver::Snowflake => unreachable!(),
         }
     }
 
@@ -907,6 +928,7 @@ impl Pool {
         match self {
             Pool::SqlServer(_) | Pool::Oracle(_) => {}
             Pool::Clickhouse(p) => p.close(),
+            Pool::Snowflake(p) => p.close().await,
             Pool::Sqlite(p) => p.close().await,
             Pool::Postgres(p) => p.closed.store(true, Ordering::Relaxed),
             Pool::Mysql(p) => p.closed.store(true, Ordering::Relaxed),
@@ -918,6 +940,7 @@ impl Pool {
             Pool::SqlServer(_) => false,
             Pool::Oracle(p) => p.is_closed(),
             Pool::Clickhouse(p) => p.is_closed(),
+            Pool::Snowflake(p) => p.is_closed(),
             Pool::Sqlite(p) => p.is_closed(),
             Pool::Postgres(p) => p.closed.load(Ordering::Relaxed),
             Pool::Mysql(p) => p.closed.load(Ordering::Relaxed),
@@ -928,6 +951,9 @@ impl Pool {
     pub async fn rows(&self, sql: &str, max: usize) -> IdeResult<Vec<Vec<Option<String>>>> {
         if let Pool::Clickhouse(p) = self {
             return Ok(p.execute(sql, max, &CancellationToken::new()).await?.rows);
+        }
+        if let Pool::Snowflake(p) = self {
+            return Ok(p.metadata().execute(sql, max, &CancellationToken::new()).await?.rows);
         }
         let mut conn = Held::acquire(self).await?;
         conn.apply_context(None).await?;
@@ -953,6 +979,9 @@ impl Pool {
         if let Pool::Clickhouse(p) = self {
             return p.execute_from(sql, skip, max_rows, cancel).await;
         }
+        if let Pool::Snowflake(p) = self {
+            return p.execute_from(sql, skip, max_rows, cancel).await;
+        }
         let mut conn = Held::acquire(self).await?;
         let r = match conn.apply_context(None).await {
             Ok(()) => conn.execute_from(self, sql, skip, max_rows, cancel).await,
@@ -970,6 +999,7 @@ impl Pool {
     pub async fn transaction(&self, statements: &[(String, bool)]) -> IdeResult<u64> {
         match self {
             Pool::Clickhouse(_) => Err(crate::clickhouse::transaction_error()),
+            Pool::Snowflake(p) => p.transaction(statements).await,
             Pool::SqlServer(_) => {
                 let mut held = Held::acquire(self).await?;
                 held.apply_context(None).await?;
@@ -1051,6 +1081,8 @@ pub enum Held {
     SqlServer(Box<bb8::PooledConnection<'static, MssqlConnectionManager>>),
     Clickhouse(crate::clickhouse::ClickhousePool),
     Oracle(Box<crate::oracle::OracleConnection>),
+    /// The shared session, and the schema this holder's statements run in.
+    Snowflake(crate::snowflake::SnowflakePool, Option<String>),
 }
 
 impl Held {
@@ -1067,6 +1099,12 @@ impl Held {
                 Held::Clickhouse(p.clone())
             }
             Pool::Oracle(p) => Held::Oracle(Box::new(p.get().await?)),
+            Pool::Snowflake(p) => {
+                if p.is_closed() {
+                    return Err(IdeError::new(ErrorKind::Io, "Snowflake connection is closed"));
+                }
+                Held::Snowflake(p.clone(), None)
+            }
         })
     }
 
@@ -1111,6 +1149,11 @@ impl Held {
     }
 
     pub async fn apply_context(&mut self, schema: Option<&str>) -> IdeResult<()> {
+        if let Held::Snowflake(_, wanted) = self {
+            // Applied with each statement, while it holds the shared session.
+            *wanted = schema.filter(|s| !s.is_empty()).map(str::to_owned);
+            return Ok(());
+        }
         let driver = match self {
             Held::Postgres(_) => DbDriver::Postgres,
             Held::Mysql(_) => DbDriver::Mysql,
@@ -1166,7 +1209,7 @@ impl Held {
             Held::Mysql(c) => fetch!(&mut ****c, sql, max, Cells::Text),
             Held::SqlServer(c) => mssql_fetch(c, sql, 0, max).await,
             Held::Oracle(c) => crate::oracle::run(c, sql, 0, max, Cells::Text, &CancellationToken::new()).await,
-            Held::Clickhouse(_) => unreachable!(),
+            Held::Clickhouse(_) | Held::Snowflake(..) => unreachable!(),
         };
         if result.is_ok() {
             self.after_statement(sql);
@@ -1188,6 +1231,12 @@ impl Held {
         match self {
             Held::SqlServer(c) => mssql_command(c, sql).await,
             Held::Clickhouse(_) => Err(crate::clickhouse::transaction_error()),
+            Held::Snowflake(c, schema) => {
+                if sql.trim().is_empty() {
+                    return Ok(());
+                }
+                c.execute_in(schema.as_deref(), sql, 0, 0, &CancellationToken::new()).await.map(drop)
+            }
             Held::Oracle(c) => {
                 let sql = sql.trim();
                 if sql.is_empty() {
@@ -1201,7 +1250,9 @@ impl Held {
                     Held::Sqlite(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
                     Held::Postgres(c) => sqlx::raw_sql(sql).execute(&mut ****c).await.map(drop),
                     Held::Mysql(c) => sqlx::raw_sql(sql).execute(&mut ****c).await.map(drop),
-                    Held::SqlServer(_) | Held::Clickhouse(_) | Held::Oracle(_) => unreachable!(),
+                    Held::SqlServer(_) | Held::Clickhouse(_) | Held::Oracle(_) | Held::Snowflake(..) => {
+                        unreachable!()
+                    }
                 }
                 .map_err(db_err)
             }
@@ -1226,7 +1277,7 @@ impl Held {
             Held::SqlServer(mut c) => {
                 c.0.take();
             }
-            Held::Clickhouse(_) => {}
+            Held::Clickhouse(_) | Held::Snowflake(..) => {}
             Held::Oracle(mut c) => c.discard_inner(),
         }
     }
@@ -1255,6 +1306,9 @@ impl Held {
     ) -> IdeResult<QueryResult> {
         if let Held::Clickhouse(c) = self {
             return c.execute_from(sql, skip, max_rows, cancel).await;
+        }
+        if let Held::Snowflake(c, schema) = self {
+            return c.execute_in(schema.as_deref(), sql, skip, max_rows, cancel).await;
         }
         self.before_statement(sql);
         let started = Instant::now();
@@ -1300,7 +1354,7 @@ impl Held {
                 }
             }
             Held::Oracle(c) => crate::oracle::run(c, sql, skip, max_rows, Cells::Display, cancel).await?,
-            Held::Clickhouse(_) => unreachable!(),
+            Held::Clickhouse(_) | Held::Snowflake(..) => unreachable!(),
         };
         self.after_statement(sql);
         let (columns, rows, affected, has_more, first) = fetched;
@@ -1323,7 +1377,7 @@ pub fn begin_statement(driver: DbDriver) -> &'static str {
         DbDriver::Mysql => "START TRANSACTION",
         DbDriver::SqlServer => "BEGIN TRAN",
         DbDriver::Oracle => "", // opens implicitly with autocommit off
-        DbDriver::Sqlite | DbDriver::Postgres | DbDriver::Clickhouse => "BEGIN",
+        DbDriver::Sqlite | DbDriver::Postgres | DbDriver::Clickhouse | DbDriver::Snowflake => "BEGIN",
     }
 }
 

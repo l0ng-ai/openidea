@@ -384,6 +384,30 @@ fn fake_jdk(dir: &Path) {
 }
 
 #[test]
+fn jar_application_runs_on_the_project_jdk_unless_a_jre_is_chosen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let jdk = tmp.path().join("jbr");
+    fake_jdk(&jdk);
+    let mut s = Settings::default();
+    let mut configs = vec![run("jar-application", "java", &["-jar", "app.jar"])];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].command, "java", "java on PATH without a project JDK");
+
+    s.languages.java.jdk = jdk.to_string_lossy().into_owned();
+    let chosen = tmp.path().join("other/bin/java").to_string_lossy().into_owned();
+    let mut configs = vec![
+        run("jar-application", "java", &["-jar", "app.jar"]),
+        run("jar-application", &chosen, &["-jar", "app.jar"]),
+    ];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    let java = crate::java::java_executable(&project_jdk(tmp.path(), &s).unwrap().home).to_string_lossy().into_owned();
+    assert_eq!(configs[0].command, java);
+    assert_eq!(configs[1].command, chosen, "an explicit JRE stays");
+    // Saved as the default, so it follows a later Project JDK change.
+    assert_eq!(without_derived(&configs[0], tmp.path(), &s).command, "java");
+}
+
+#[test]
 fn project_jdk_and_maven_settings() {
     if cfg!(windows) {
         return; // Unix paths and shells
@@ -2260,7 +2284,7 @@ fn file_runtime_uses_nearest_virtualenv_and_explicit_project_settings_win() {
     let outer = fake_venv(root, ".venv");
     let inner = fake_venv(&root.join("apps/api"), ".venv");
     let near = root.join("apps/api/src/package");
-    let mut settings = Settings::default();
+    let settings = Settings::default();
     assert_eq!(crate::apply::python_interpreter_near(root, Some(&near), &settings), Some(inner));
     assert_eq!(crate::apply::python_interpreter_near(root, Some(&root.join("apps/other")), &settings), Some(outer));
     let mut settings = Settings::default();

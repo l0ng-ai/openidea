@@ -3,7 +3,8 @@ import type { Cell } from "./model";
 /** Automatic formatting and content detection are bounded on the UI thread. */
 export const JSON_INLINE_LIMIT = 256_000;
 
-export const isJsonColumn = (type: string) => /^(json|jsonb|MYSQL_TYPE_JSON)$/i.test(type.trim());
+/** JSON types, Snowflake's semi-structured ones included. */
+export const isJsonColumn = (type: string) => /^(json|jsonb|MYSQL_TYPE_JSON|variant|object|array)$/i.test(type.trim());
 
 export interface JsonError {
   message: string;

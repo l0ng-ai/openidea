@@ -207,6 +207,20 @@ impl Deployment<'_> {
     async fn remote_files(&self, dir: &str, out: &mut Vec<ide_ssh::RemoteEntry>) -> IdeResult<()> {
         use futures::stream::{FuturesUnordered, StreamExt};
         let start = out.len();
+        // One `find` over SSH instead of a listing per folder (thousands of round trips on a
+        // big project); the same entries the walk below would keep.
+        if let Some(entries) = self.fs.tree(dir, self.exclude.prunable_names()).await {
+            if self.cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            let base = dir.trim_end_matches('/');
+            out.extend(entries.into_iter().filter(|e| {
+                let rel = e.path.strip_prefix(base).unwrap_or(&e.path);
+                !self.exclude.remote(&e.path) && !rel.split('/').any(|name| !name.is_empty() && self.exclude.name(name))
+            }));
+            out[start..].sort_by(|a, b| a.path.cmp(&b.path));
+            return Ok(());
+        }
         let mut pending = vec![dir.to_owned()];
         let mut listing = FuturesUnordered::new();
         loop {

@@ -1,5 +1,12 @@
-import { EditorSelection, EditorState } from "@codemirror/state";
-import { EditorView, activateHover, closeHoverTooltips, hasHoverTooltips } from "@codemirror/view";
+import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
+import {
+  Decoration,
+  EditorView,
+  WidgetType,
+  activateHover,
+  closeHoverTooltips,
+  hasHoverTooltips,
+} from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BlameLine, Settings } from "@/bindings";
 import { HEAVY_LIMIT, _emitEditorEvent } from "@/editor/api";
@@ -251,5 +258,41 @@ describe("current line decoration", () => {
     view = undefined;
     await tick();
     expect(mocks.file).not.toHaveBeenCalled();
+  });
+
+  it("steps past a code-vision hint, including one that appears after the blame", async () => {
+    /** Stands in for the code-vision anchor's inner box (jsdom has no layout, so it is 120px wide). */
+    class FakeHint extends WidgetType {
+      toDOM() {
+        const el = document.createElement("span");
+        el.className = "cm-openidea-lensInlineInner";
+        el.getBoundingClientRect = () => ({ width: 120 }) as DOMRect;
+        return el;
+      }
+    }
+    const lens = new Compartment();
+    view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "one\ntwo\nthree", extensions: [inlineBlame(ctx), lens.of([])] }),
+    });
+    await tick();
+    // the widget measures, and starts observing, in the task after its insertion
+    await vi.advanceTimersByTimeAsync(10);
+    expect(hint()!.style.marginLeft).toBe("");
+
+    // the hint shows up only after the blame mounted — the blame must still step past it
+    view.dispatch({
+      effects: lens.reconfigure(
+        EditorView.decorations.of(Decoration.set([Decoration.widget({ widget: new FakeHint(), side: 1 }).range(0)])),
+      ),
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(view.dom.querySelector(".cm-openidea-lensInlineInner")).not.toBeNull();
+    expect(hint()!.style.marginLeft).toBe("calc(3ch + 120px)");
+
+    // and it gives the space back when the hint goes away
+    view.dispatch({ effects: lens.reconfigure([]) });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(hint()!.style.marginLeft).toBe("");
   });
 });

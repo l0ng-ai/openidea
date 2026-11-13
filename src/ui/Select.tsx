@@ -28,8 +28,8 @@ export interface SelectProps<V extends string = string> {
   onChange: (value: V) => void;
   placeholder?: string;
   disabled?: boolean;
-  /** `ghost` renders as plain text + chevron (title bar widgets). */
-  variant?: "framed" | "ghost";
+  /** `ghost` renders as plain text + chevron (title bar widgets); `chip` as a chip that opens. */
+  variant?: "framed" | "ghost" | "chip";
   className?: string;
   "aria-label"?: string;
   /** Custom trigger content. */
