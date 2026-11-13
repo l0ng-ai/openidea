@@ -10,7 +10,7 @@ import { showHint } from "@/editor/lsp/hint";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { navigationModifierHeld } from "@/platform/navigationModifier";
 import { activeSession, evaluate } from "../state";
-import { inlineValue } from "../values";
+import { inlineValue, shownValue } from "../values";
 import { tx } from "@/platform/i18n";
 import { iconMarkup, selectableText } from "@/ui";
 import { mountValueTree } from "../ui/ValueHintTree";
@@ -70,13 +70,19 @@ export function valueHint(
   const name = document.createElement("span");
   name.className = styles.valueName!;
   name.textContent = `${expression} = `;
-  dom.append(name, max === null ? value.value : inlineValue(value.value, max));
-  if (value.typeName) {
-    const type = document.createElement("span");
-    type.className = styles.valueType!;
-    type.textContent = `  {${value.typeName}}`;
-    dom.append(type);
-  }
+  const shown = shownValue(value.value, value.typeName);
+  // A JVM object's `{Type@id}` leads its value; other types follow it.
+  const leading = shown.label?.includes("@") ?? false;
+  const type = (text: string) => {
+    const span = document.createElement("span");
+    span.className = styles.valueType!;
+    span.textContent = text;
+    return span;
+  };
+  dom.append(name);
+  if (leading) dom.append(type(`${shown.label} `));
+  dom.append(max === null ? shown.text : inlineValue(shown.text, max));
+  if (shown.label && !leading) dom.append(type(`  ${shown.label}`));
   return { dom, destroy: () => tree?.unmount() };
 }
 
