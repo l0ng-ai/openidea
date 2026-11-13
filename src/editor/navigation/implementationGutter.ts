@@ -39,6 +39,7 @@ import { gutterIconMarkup } from "@/ui";
 import {
   MARKER_ICONS,
   candidateKey,
+  implementsMarker,
   inheritorsMarker,
   markerCandidates,
   supersMarker,
@@ -167,10 +168,13 @@ export async function fillMarkers(
     groups.has("inheritors") && !cache.unsupported.has("inheritors")
       ? candidates.filter((c) => c.inheritable && cache.entries.get(candidateKey(c))?.inheritors === undefined)
       : [];
-  const up =
-    groups.has("supers") && !cache.unsupported.has("supers")
-      ? candidates.filter((c) => c.overriding && c.owner && cache.entries.get(candidateKey(c))?.supers === undefined)
-      : [];
+  const askSupers = groups.has("supers") && !cache.unsupported.has("supers");
+  const up = askSupers
+    ? candidates.filter((c) => c.overriding && c.owner && cache.entries.get(candidateKey(c))?.supers === undefined)
+    : [];
+  const implicit = askSupers
+    ? candidates.filter((c) => c.implicit && cache.entries.get(candidateKey(c))?.supers === undefined)
+    : [];
 
   let implementations: Location[][] = [];
   const known = down.length ? await fromHierarchy(path, down, deps.supers) : new Map<MarkerCandidate, Location[]>();
@@ -206,13 +210,26 @@ export async function fillMarkers(
   }
   const supers: SuperMethod[][] = [];
   for (const c of up) supers.push(await superMethodTargets(path, c.owner!, c.symbol, deps.supers));
+  // Go: an implementation request on a type or method answers the interfaces it satisfies.
+  let satisfied: Location[][] = [];
+  if (implicit.length) {
+    try {
+      satisfied = await deps.implementations(implicit.map((c) => ({ line: c.line, col: c.col })));
+    } catch (e) {
+      if (isCancelled(e)) throw e;
+      if (isUnavailable(e)) cache.unsupported.add("supers");
+      implicit.length = 0;
+    }
+  }
 
   const files = await deps.readFiles([
     ...implementations.flat().map((l) => l.path),
     ...supers.flat().map((s) => s.location.path),
+    ...satisfied.flat().map((l) => l.path),
   ]);
   down.forEach((c, i) => (entry(c).inheritors = inheritorsMarker(c, implementations[i] ?? [], files)));
   up.forEach((c, i) => (entry(c).supers = supersMarker(c, supers[i]!, files)));
+  implicit.forEach((c, i) => (entry(c).supers = implementsMarker(c, withoutSelf(path, c, satisfied[i] ?? []), files)));
 }
 
 /**
@@ -481,7 +498,9 @@ class MarkersPlugin {
         if (stale()) return;
         entry.outline = {
           items,
-          candidates: markerCandidates(items, (l) => (l < text.lines ? text.line(l + 1).text : "")),
+          candidates: markerCandidates(items, (l) => (l < text.lines ? text.line(l + 1).text : ""), {
+            implicitInterfaces: ctx.language === "go",
+          }),
         };
       }
       const { candidates, items } = entry.outline;
