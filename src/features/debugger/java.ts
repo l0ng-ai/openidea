@@ -80,6 +80,29 @@ export async function moduleHasKotlinSources(cwd: string): Promise<boolean> {
   return false;
 }
 
+/**
+ * Whether the debugger for the JVMs of `module` is installed. Maven / Gradle start those JVMs
+ * before the debugger attaches, so a missing Kotlin debugger is offered here, before the build
+ * runs: "Install and Debug" installs it and calls `retry`.
+ */
+export async function jvmAttachDebuggerReady(module: string, root: string, retry: () => void): Promise<boolean> {
+  if (!(await moduleHasKotlinSources(module ? join(root, module) : root))) return true;
+  const tools = await call(commands.toolsList()).catch(() => []);
+  if (tools.find((t) => t.name === KOTLIN_ADAPTER)?.status !== "missing") return true;
+  notifications().notify({
+    group: "run",
+    level: "warning",
+    key: "debug.start",
+    title: "The Kotlin debugger is not installed",
+    body: "This module has Kotlin sources, so debugging it needs the Kotlin debugger (kotlin-debug-adapter).",
+    sticky: true,
+    actions: [
+      { label: "Install and Debug", run: () => void executeAction("tools.install", KOTLIN_ADAPTER).then(retry) },
+    ],
+  });
+  return false;
+}
+
 /** java-debug missing from jdtls: offer the one-click install (jdtls restarts with the bundle). */
 function offerInstall(e: unknown): never {
   if (e instanceof IpcError && e.kind === "unavailable" && /java-debug|debugger/i.test(e.message)) {

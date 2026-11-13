@@ -52,6 +52,7 @@ import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./c
 import { enterInBlockComment, enterInDocComment } from "./docComment";
 import { renderDocComments } from "./renderedDocs";
 import { skipClosingQuote, smartAngleBrackets, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
+import { linkedTags } from "./linkedTags";
 import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
 import { LINE_INSET } from "./lineInset";
@@ -480,6 +481,14 @@ export const GUTTER_ICON_GROUPS = [
   { id: "colors", gutterClass: "cm-openidea-gutter-colors" },
 ] as const;
 
+/**
+ * Languages whose outer parser is `@lezer/html`, where simultaneous
+ * `<tag></tag>` editing works from the syntax tree. Angular templates carry
+ * the `html` backend id (the Angular mode is picked per project), `erb` is a
+ * token-based mode without a syntax tree and stays out.
+ */
+const LINKED_TAG_LANGUAGES = new Set(["html", "vue", "jsp", "django-html", "astro"]);
+
 export interface PrefsOptions {
   prefs: EditorExtras;
   path: string;
@@ -605,6 +614,11 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));
   if (k.pairQuotes) out.push(Prec.highest(skipClosingQuote));
   if (k.tabOutOfPair) out.push(tabOut);
+  // Simultaneous `<tag></tag>` editing, from the syntax tree: every mode whose outer
+  // parser is `@lezer/html` — plain HTML plus the HTML-based modes (Vue SFCs, Angular
+  // templates, JSP, Django and Astro; Angular templates carry the `html` backend id).
+  // ERB is token-based (no syntax tree), so it stays out.
+  if (!o.readOnly && k.simultaneousTagEditing && LINKED_TAG_LANGUAGES.has(o.language ?? "")) out.push(linkedTags);
   if (o.commentStyle) out.push(lineCommentStyle.of(o.commentStyle));
 
   const keys = [];

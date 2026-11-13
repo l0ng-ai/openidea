@@ -1,13 +1,20 @@
 /**
  * Integrated terminal: xterm.js sessions on backend PTYs in the bottom
- * "Terminal" tool window (tabs, split tab groups, links, IDEA-style shortcuts).
+ * "Terminal" tool window (tabs, split tab groups, links, IDEA-style shortcuts),
+ * plus the CLI editor tabs (#2202): full-size agent CLIs as editor-area tabs.
  */
 import { registerActions } from "@/platform/actions";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
-import { provideEmbeddedTerminal, registerToolWindow, toolWindowService } from "@/workbench/contributions";
+import {
+  provideEmbeddedTerminal,
+  registerEditorKind,
+  registerToolWindow,
+  toolWindowService,
+} from "@/workbench/contributions";
 import { lazyComponent } from "@/ui";
+import { CLI_KIND, CLI_LAUNCHER_KIND, cliData, openCliLauncher } from "./cli";
 import { installTerminalKeys } from "./keys";
 import { loadTerminalRuntime, terminalRuntime } from "./loader";
 import { SAMPLE_TUI_END, SAMPLE_TUI_START, sampleTuiFrame } from "./sampleTui";
@@ -104,7 +111,35 @@ export function activate(): () => void {
       component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalView)),
       headerContent: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalTabs)),
     }),
+    // CLI sessions as editor tabs (#2202): saved with the editor session, kept alive while hidden.
+    registerEditorKind({
+      kind: CLI_KIND,
+      component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.CliEditor)),
+      title: (input) => cliData(input)?.name ?? "CLI",
+      icon: () => "terminal",
+      // A reopened tab shows Start: its command never runs on its own.
+      restorable: true,
+      keepAlive: true,
+      onClose: (input) => terminalRuntime()?.disposeCli(input.key),
+      isBusy: (input) => terminalRuntime()?.cliBusy(input.key) ?? false,
+    }),
+    registerEditorKind({
+      kind: CLI_LAUNCHER_KIND,
+      component: lazyComponent(() => import("./CliLauncher").then((m) => m.CliLauncher)),
+      title: () => "New CLI",
+      icon: () => "terminal",
+    }),
     registerActions([
+      {
+        id: "cli.new",
+        title: "New CLI",
+        description: "Opens the New CLI tab: saved agent CLIs (Claude Code, Codex…) start as full-size editor tabs.",
+        category: "Terminal",
+        icon: "terminal",
+        when: "projectOpen",
+        keywords: ["cli", "agent", "claude", "codex", "aider", "shell"],
+        run: () => openCliLauncher(),
+      },
       {
         id: "terminal.new",
         title: "New Terminal Tab",
@@ -266,19 +301,30 @@ export function activate(): () => void {
     installTerminalKeys(),
     onWorkflowSettingsChange(
       (s) => s.terminal,
-      () => terminalRuntime()?.applySettingsToAll(),
+      () => {
+        terminalRuntime()?.applySettingsToAll();
+        terminalRuntime()?.applySettingsToClis();
+      },
     ),
     // Font "same as editor" follows Editor › Font.
     useProject.subscribe((s, prev) => {
-      if (s.settings?.editor !== prev.settings?.editor) terminalRuntime()?.applySettingsToAll();
+      if (s.settings?.editor !== prev.settings?.editor) {
+        terminalRuntime()?.applySettingsToAll();
+        terminalRuntime()?.applySettingsToClis();
+      }
     }),
-    onIdeEvent("terminalExited", (e) => terminalRuntime()?.sessionForTerminalId(e.terminal)?.exited(e.code)),
+    onIdeEvent("terminalExited", (e) => {
+      const rt = terminalRuntime();
+      (rt?.sessionForTerminalId(e.terminal) ?? rt?.cliSessionForTerminalId(e.terminal))?.exited(e.code);
+    }),
     // Sessions belong to the project. Remember this project's tabs, then open the next one's.
     useProject.subscribe((s, prev) => {
       const rt = terminalRuntime();
       if (rt && s.project?.root !== prev.project?.root) {
         if (rt.useTerminalFind.getState().open) rt.closeTerminalFind();
         rt.syncTerminalProject(s.project?.root ?? null);
+        // The editor drops the old project's tabs without `onClose`; their CLIs end with it.
+        rt.disposeAllClis();
       }
     }),
   ];
@@ -286,6 +332,7 @@ export function activate(): () => void {
   if (typeof MutationObserver !== "undefined" && typeof document !== "undefined") {
     const observer = new MutationObserver(() => {
       terminalRuntime()?.applyThemeToAll();
+      terminalRuntime()?.applyThemeToClis();
       terminalRuntime()?.applyThemeToEmbedded();
     });
     // A palette or plugin theme switch keeps data-theme when both themes share a light / dark base.

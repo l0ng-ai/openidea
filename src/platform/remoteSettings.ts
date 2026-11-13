@@ -43,8 +43,17 @@ export interface DeploymentServerValid {
   excludedPaths: string[];
 }
 
+/** Servers that Upload to… on the group uploads to, one after another. */
+export interface DeploymentGroupValid {
+  id: string;
+  name: string;
+  /** Server ids, in upload order. */
+  servers: string[];
+}
+
 export interface DeploymentSettingsValid {
   servers: DeploymentServerValid[];
+  groups: DeploymentGroupValid[];
   defaultServer: string;
   autoUpload: AutoUploadValid;
   deleteRemote: boolean;
@@ -106,6 +115,7 @@ export const DEFAULT_DEPLOYMENT_SERVER: DeploymentServerValid = {
 
 export const DEFAULT_DEPLOYMENT: DeploymentSettingsValid = {
   servers: [],
+  groups: [],
   defaultServer: "",
   autoUpload: "never",
   deleteRemote: false,
@@ -206,8 +216,14 @@ export function validateDeployment(raw: unknown): DeploymentSettingsValid {
     mappings: validateMappings(s.mappings),
     excludedPaths: strings(s.excludedPaths, []),
   }));
+  const groups = withIds(o.groups, "group", (g) => ({
+    id: text(g.id, ""),
+    name: text(g.name, ""),
+    servers: strings(g.servers, []),
+  }));
   return {
     servers,
+    groups,
     defaultServer: text(o.defaultServer, d.defaultServer),
     autoUpload: oneOf(o.autoUpload, ["never", "onExplicitSave", "always"] as const, d.autoUpload),
     deleteRemote: bool(o.deleteRemote, d.deleteRemote),

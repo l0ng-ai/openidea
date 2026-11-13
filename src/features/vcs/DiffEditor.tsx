@@ -1107,7 +1107,8 @@ export function DiffEditor({
     viewer: viewerOf,
   });
   useEffect(() => {
-    nav.current = {
+    // Keep the registered navigator's identity while refreshing its handlers.
+    Object.assign(nav.current, {
       next: () => step(1),
       prev: () => step(-1),
       jumpToSource,
@@ -1115,7 +1116,7 @@ export function DiffEditor({
       file,
       showSettings,
       viewer: viewerOf,
-    };
+    });
   });
 
   useEffect(

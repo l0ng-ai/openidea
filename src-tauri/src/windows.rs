@@ -660,6 +660,8 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     decorate_csd(&window);
     #[cfg(target_os = "macos")]
     crate::page_swipe::install(&window);
+    #[cfg(target_os = "macos")]
+    crate::macos::keep_full_screen_on_escape();
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window, app.try_state::<WindowsState>().is_some_and(|w| w.opens_project(window.label())));

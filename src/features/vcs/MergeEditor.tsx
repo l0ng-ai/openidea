@@ -541,6 +541,10 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   }, [actionHost]);
 
   const focusProps = {
+    // WebKit doesn't focus a clicked button: focus then moves to the nearest focusable
+    // ancestor, which must be this editor for the footer and toolbar buttons to keep it the
+    // focused merge editor their actions run in.
+    tabIndex: -1,
     onFocusCapture: (e: React.FocusEvent<HTMLDivElement>) => {
       const target = e.target as Node;
       if (oursRef.current?.contains(target)) paneRef.current = "left";
