@@ -20,6 +20,7 @@ import {
 import { lazyComponent } from "@/ui";
 import { GradleView, MavenView } from "./BuildToolView";
 import { ExecutePopupHost } from "./ExecutePopup";
+import { pomCompletionExtension } from "./pomCompletion";
 import { pomNavigationExtension } from "./pomNavigation";
 import { buildToolsRunAnything } from "./runAnything";
 import { versionCatalogExtension } from "./versionCatalog";
@@ -193,6 +194,7 @@ export function activate(): () => void {
     registerOverlay({ id: "build-tools.execute", component: ExecutePopupHost }),
     registerEditorContribution({ id: "build-tools.versionCatalog", extensions: versionCatalogExtension }),
     registerEditorContribution({ id: "build-tools.pomNavigation", extensions: pomNavigationExtension }),
+    registerEditorContribution({ id: "build-tools.pomCompletion", extensions: pomCompletionExtension }),
     registerRunAnythingProvider(buildToolsRunAnything),
     registerEditorKind({
       kind: ANALYZER_KIND,

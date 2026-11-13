@@ -17,6 +17,7 @@ export const AGENT_SETTINGS_DEFAULTS: ResolvedAgentSettings = {
   expandToolOutput: false,
   sendWith: "enter",
   whileRunning: "queue",
+  newTaskApprovals: "bypass",
   defaults: {},
   mcpServers: {},
 };

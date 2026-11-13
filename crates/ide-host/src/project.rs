@@ -541,7 +541,7 @@ impl Host {
         mark("git");
         tracing::info!("opened {} in window {window} in {} ms {laps:?}", root.display(), started.elapsed().as_millis());
 
-        let (db, http_history, agents) = self.project_services(&root, &project_key, &settings);
+        let (db, http_history, agents) = self.project_services(&root, &project_key, &settings, &sink);
         let db_sources_watch = db_sources_watch(&db, &sink, &self.runtime);
         let notebooks = crate::notebook::NotebookService::new(
             self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
@@ -634,6 +634,7 @@ impl Host {
         root: &Path,
         project_key: &str,
         settings: &Arc<SettingsStore>,
+        sink: &SharedSink,
     ) -> (Arc<ide_db::DbManager>, Arc<ide_http::History>, Arc<ide_agent::AgentManager>) {
         let db = Arc::new(
             ide_db::DbManager::new(
@@ -660,12 +661,23 @@ impl Host {
                 models_file: self.data_dir.join("agents").join("models.json"),
                 custom_agents_dir: Some(self.config_dir.join("agents")),
                 home_dir: dirs::home_dir(),
+                env_secrets: Some(Arc::new(AgentEnvSecrets {
+                    secrets: self.agent_secrets.clone(),
+                    sink: sink.clone(),
+                    told: AtomicBool::new(false),
+                })),
             },
             self.runtime.clone(),
         ));
         let settings = settings.clone();
+        {
+            let settings = settings.clone();
+            agents.set_new_task_approvals_hook(Arc::new(move || settings.effective().agents.new_task_approvals));
+        }
+        let approvals = self.mcp_approvals.clone();
+        let root = root.to_path_buf();
         agents.set_mcp_servers_hook(Box::new(move || {
-            ide_agent::mcp::servers_from_settings(&Default::default(), &settings.effective().agents.mcp_servers)
+            crate::ops::agent::session_mcp_servers(&settings, &approvals, &root)
         }));
         (db, http_history, agents)
     }
@@ -708,7 +720,7 @@ impl Host {
         documents.add_observer(Arc::new(HistoryObserver(history.clone())));
         let watcher = light_watcher(&dir, &sink, &documents, &history)?;
         let project_key = project_key(&dir);
-        let (db, http_history, agents) = self.project_services(&dir, &project_key, &settings);
+        let (db, http_history, agents) = self.project_services(&dir, &project_key, &settings, &sink);
         let notebooks = crate::notebook::NotebookService::new(
             self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
             sink.clone(),
@@ -1584,6 +1596,37 @@ pub(crate) fn project_key(root: &Path) -> String {
         h = h.wrapping_mul(0x100000001b3);
     }
     format!("{h:016x}")
+}
+
+/// The environment values of agent files in [`crate::agent_secrets::AgentSecrets`]; the
+/// window is told (once) when they had to go to the owner-only file instead.
+struct AgentEnvSecrets {
+    secrets: Arc<crate::agent_secrets::AgentSecrets>,
+    sink: SharedSink,
+    told: AtomicBool,
+}
+
+impl ide_agent::EnvSecrets for AgentEnvSecrets {
+    fn get(&self, key: &str) -> Option<String> {
+        self.secrets.get(key)
+    }
+
+    fn set(&self, key: &str, value: &str) -> IdeResult<()> {
+        if self.secrets.set(key, value)? == crate::agent_secrets::Kept::LocalFile
+            && !self.told.swap(true, Ordering::Relaxed)
+        {
+            self.secrets.notify_kept_locally(&self.sink);
+        }
+        Ok(())
+    }
+
+    fn delete(&self, key: &str) {
+        self.secrets.delete(key);
+    }
+
+    fn keys(&self, prefix: &str) -> Vec<String> {
+        self.secrets.keys(prefix)
+    }
 }
 
 struct LspObserver(Arc<LspManager>);

@@ -40,7 +40,9 @@
     color var(--dur-fast) var(--ease),
     background var(--dur-fast) var(--ease);
 }
-.tab:hover {
+/* showContextMenu's owner keeps its hover appearance while the menu is open. */
+.tab:hover,
+.tab:where([data-context-menu-open]) {
   background: var(--bg-toolbar-hover);
 }
 .selected,
@@ -101,6 +103,7 @@
   transition: opacity var(--dur-fast) var(--ease);
 }
 .tab:hover .close,
+.tab:where([data-context-menu-open]) .close,
 .selected .close,
 .close:focus-visible {
   opacity: 1;
@@ -119,6 +122,7 @@
   transition: opacity var(--dur-fast) var(--ease);
 }
 .tab:hover .closeSlot .modified,
+.tab:where([data-context-menu-open]) .closeSlot .modified,
 .selected .closeSlot .modified {
   opacity: 0;
 }

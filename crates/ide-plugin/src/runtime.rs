@@ -365,14 +365,7 @@ pub trait HostApi: Send + Sync {
     }
     /// The most specific open project containing a document (including a new file).
     fn project_of(&self, path: &Path) -> Option<std::path::PathBuf> {
-        if !path.is_absolute() {
-            return None;
-        }
-        let real = crate::resolve_real(path);
-        self.projects()
-            .into_iter()
-            .filter(|root| real.starts_with(crate::resolve_real(root)))
-            .max_by_key(|root| root.components().count())
+        crate::sandbox::innermost_root(self.projects(), path)
     }
 
     /// Searches the current in-memory index of an open project.
