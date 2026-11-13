@@ -175,15 +175,18 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   }, [id, connected]);
   // A commit in the task's checkout moves its HEAD: pick it up without waiting for the agent.
   // The watcher reports every repository under the project, so the main checkout and other
-  // tasks' worktrees would otherwise re-read this task's commits for nothing.
-  const cwd = task?.cwd ?? null;
+  // tasks' worktrees would otherwise re-read this task's changes for nothing. A worktree's
+  // gitdir is `<project>/.git/worktrees/<slug>`, outside the worktree itself: the watcher only
+  // reports the project there, so that is the root its events match.
+  const refreshRoot =
+    task?.isolation === "worktree" ? (task.projectRoot ?? project?.root ?? null) : (task?.cwd ?? null);
   useEffect(() => {
     if (!connected) return;
     return onIdeEvent("vcsChanged", (e) => {
-      if (!cwd || !isSameOrInside(cwd, e.root)) return;
+      if (!refreshRoot || !isSameOrInside(refreshRoot, e.root)) return;
       scheduleChanges(id);
     });
-  }, [id, connected, cwd]);
+  }, [id, connected, refreshRoot]);
   // A kept-alive tab stays mounted behind the shown one: it isn't read there, nor searched.
   const shown = useEditorShown();
   useEffect(() => {

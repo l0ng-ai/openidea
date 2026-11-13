@@ -37,6 +37,8 @@ mod window_groups;
 mod window_work_area;
 mod window_zoom;
 mod windows;
+#[cfg(windows)]
+mod windows_error_mode;
 
 use parking_lot::Mutex;
 use state::AppState;
@@ -72,6 +74,8 @@ pub fn export_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     ide_workspace::process::mark_start();
+    #[cfg(windows)]
+    windows_error_mode::quiet_error_dialogs();
     let context = tauri::generate_context!();
     #[cfg(debug_assertions)]
     let context = dev::configure(context);

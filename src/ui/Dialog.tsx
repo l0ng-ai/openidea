@@ -12,6 +12,7 @@ import appIcon from "../../src-tauri/icons/128x128.png";
 import styles from "./Dialog.module.css";
 import { isImeKey } from "@/platform/ime";
 import { lockDragCursor } from "./dragCursor";
+import { suspendKeyboardDispatch } from "@/platform/keymap";
 
 /**
  * `default`: filled accent button, triggered by Enter. `cancel`: Esc / close
@@ -100,6 +101,8 @@ export interface DialogProps {
   open: boolean;
   /** Cancel: Escape, the close button / light, and `cancel` buttons without a handler. */
   onClose: () => void;
+  /** Keep workbench shortcuts out of blocking prompts; dialog-local keys still work. */
+  blockWorkbenchShortcuts?: boolean;
   title?: ReactNode;
   children: ReactNode;
   /** Footer buttons; ordered per platform (see `orderDialogButtons`). */
@@ -209,6 +212,7 @@ const ENTER_OWNERS =
 
 function DialogInner({
   onClose,
+  blockWorkbenchShortcuts = false,
   title,
   children,
   buttons,
@@ -271,6 +275,8 @@ function DialogInner({
     if (!cancelOnDeactivate) return;
     return onWindowDeactivate(() => onCloseRef.current());
   }, [cancelOnDeactivate]);
+
+  useEffect(() => (blockWorkbenchShortcuts ? suspendKeyboardDispatch() : undefined), [blockWorkbenchShortcuts]);
 
   const ancestry = useRef(useContext(PopupAncestry));
   useEffect(() => {
