@@ -610,6 +610,7 @@ pub struct ChangelistState {
     pub files: std::collections::BTreeMap<String, String>,
 }
 
+mod backend;
 mod bek;
 mod blame;
 mod block_history;
@@ -637,6 +638,7 @@ pub use index_writes::is_own_index_write;
 mod text_encoding;
 mod write;
 
+pub use backend::Backend;
 pub use cli::{
     GitCommandObserver, detected_git_executable, filter_overrides_from, git_version, restrict, set_askpass_env,
     set_git_command_observer, set_git_executable,

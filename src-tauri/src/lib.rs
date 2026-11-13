@@ -80,7 +80,7 @@ pub fn run() {
     #[cfg(debug_assertions)]
     let context = dev::configure(context);
     if let Some(project) = ide_mcp::stdio_request(&std::env::args().collect::<Vec<_>>()) {
-        let app_data = dirs::data_dir().unwrap_or_default().join(&context.config().identifier);
+        let app_data = ide_host::data_dirs::data_dir(&context.config().identifier).unwrap_or_default();
         std::process::exit(ide_mcp::stdio::run(&ide_mcp::discovery_path(&app_data), project));
     }
     // The `openidea` command: answer and exit, no UI.
@@ -129,6 +129,13 @@ pub fn run() {
         .with_state_flags(window_state_flags())
         // One remembered geometry per kind of auxiliary window (all projects' settings windows share one).
         .map_label(windows::state_key);
+    // The plugin stores its file in the OS configuration directory; an absolute name follows
+    // `OPENIDEA_CONFIG_DIR` instead.
+    #[cfg(not(target_os = "linux"))]
+    let window_state = match ide_host::data_dirs::config_dir(&context.config().identifier) {
+        Ok(dir) => window_state.with_filename(dir.join(tauri_plugin_window_state::DEFAULT_FILENAME).to_string_lossy()),
+        Err(_) => window_state,
+    };
     #[cfg(target_os = "macos")]
     let window_state = window_state.with_filter(windows::keeps_window_state);
     #[cfg(not(target_os = "linux"))]
@@ -155,30 +162,12 @@ pub fn run() {
         let webview = request.message.webview_ref();
         if let Some(state) = webview.try_state::<AppState>() {
             let label = AppState::owner_window(webview.label());
-            if let Some(connection) = state.remote_dev.get(label) {
-                let label = label.to_owned();
-                let command = request.message.command().to_owned();
-                let invoke = invoke.clone();
-                let app = webview.app_handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    match connection.authorize_command(&label, &command).await {
-                        Ok(()) => {
-                            let resolver = request.resolver.clone();
-                            // Sync commands must run on the main thread, as they do in local windows.
-                            if let Err(error) = app.run_on_main_thread(move || {
-                                invoke(request);
-                            }) {
-                                resolver.reject(ide_core::IdeError::internal(format!(
-                                    "failed to dispatch command on the main thread: {error}"
-                                )));
-                            }
-                        }
-                        Err(error) => request.resolver.reject(error),
-                    }
-                });
-                return true;
-            }
-            if let Err(error) = state.host.authorize_command(webview.label(), request.message.command()) {
+            let command = request.message.command();
+            let authorized = match state.remote_dev.get(label) {
+                Some(connection) => connection.authorize_command(&state.host.trust, command),
+                None => state.host.authorize_command(webview.label(), command),
+            };
+            if let Err(error) = authorized {
                 request.resolver.reject(error);
                 return true;
             }
@@ -187,6 +176,13 @@ pub fn run() {
     })
     .setup(move |app| {
         builder.mount_events(app);
+        // An unusable directory variable stops the start with a message, never a silent fallback.
+        let identifier = app.config().identifier.clone();
+        let local_data_dir = local_data_dir.and_then(|dir| {
+            ide_host::data_dirs::config_dir(&identifier)?;
+            ide_host::data_dirs::data_dir(&identifier)?;
+            Ok(dir)
+        });
         let local_data_dir = match local_data_dir {
             Ok(dir) => dir,
             Err(error) => {

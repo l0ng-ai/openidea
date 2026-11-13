@@ -87,7 +87,9 @@ Click **Show changes** in the task header to list the files the task changed. Cl
 
 The **Agents** tool window lists the project's tasks by what they need from you: **Needs Input**, **Failed**, usage limit reached, **Running**, **Ready to Review** and **Archived**. Its badge counts tasks that need input or have unread replies.
 
-Tasks open in editor tabs by default. **Chat in Tool Window** and **Chat in Editor** switch where conversations open; you can also drag a task into the editor area. A task's context menu has **Open**, **Rename…**, **Open in Terminal**, **Copy to a New Task**, **Archive** / **Unarchive** and **Delete…**. Deleting a worktree task also removes its worktree.
+Tasks open in editor tabs by default. **Chat in Tool Window** and **Chat in Editor** switch where conversations open; you can also drag a task into the editor area. A task's context menu has **Open**, **Rename…**, **Open in Terminal**, **Copy to a New Task**, **Pin** / **Unpin**, **Move to Group**, **Archive** / **Unarchive** and **Delete…**. Deleting a worktree task also removes its worktree.
+
+Pinned tasks sit above every group. **Move to Group** puts a task in a group of your own, and so does dropping it on a group header; **New Group…** in the tool window's options menu (⋯) creates an empty one, and a group's own menu renames or removes it. Groups and pins are kept per project.
 
 Tasks are saved per project and survive restarts. When the agent supports resuming sessions, the conversation continues where it left off on the next message; such an agent is also stopped after five idle minutes and started again when you send the next message.
 

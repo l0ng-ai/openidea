@@ -101,7 +101,8 @@ class BlameWidget extends WidgetType {
       if (!line) return;
       this.observer = new MutationObserver(() => this.stepPastHint(el));
       this.observer.observe(line, { childList: true, subtree: true });
-    }, 0);    if (!isUncommitted(this.line)) {
+    }, 0);
+    if (!isUncommitted(this.line)) {
       el.setAttribute("role", "button");
       el.tabIndex = 0;
       const open = () => void executeAction("vcs.showCommit", this.line.commit);

@@ -6,7 +6,7 @@ import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import { basename, useProject } from "@/platform/project";
-import { Icon, Select, T, type SelectOption } from "@/ui";
+import { Chip, Select, T, type SelectOption } from "@/ui";
 import { defaultTaskProject } from "./project";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import { Composer } from "./Composer";
@@ -42,6 +42,8 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   );
   const members = project?.workspace?.projects ?? [];
   const root = members.includes(selected ?? "") ? selected! : (members[0] ?? project?.root ?? "");
+  // A window without a project yet has no fact to show: the where row stays empty until it does.
+  const projectLabel = members.length ? basename(root) : project?.name;
   const [repoState, setRepoState] = useState<{
     root: string;
     branches: Branch[];
@@ -111,24 +113,29 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
         <div className={styles.where}>
           {members.length > 1 ? (
             <Select
-              variant="ghost"
+              variant="chip"
               aria-label={tx("Project")}
               className={styles.projectPicker}
               value={root}
-              options={members.map((path) => ({ value: path, label: basename(path), detail: path }))}
+              options={members.map((path) => ({
+                value: path,
+                label: basename(path),
+                detail: path,
+                icon: "folder",
+              }))}
               onChange={(path) => {
                 setSelected(path);
                 updateDraft({ base: null });
               }}
             />
-          ) : (
-            <span className={styles.project} title={root}>
-              {members.length ? basename(root) : project?.name}
-            </span>
-          )}
+          ) : projectLabel ? (
+            <Chip icon="folder" title={root} className={styles.projectChip}>
+              {projectLabel}
+            </Chip>
+          ) : null}
           {isGit && (
             <Select
-              variant="ghost"
+              variant="chip"
               aria-label="Isolation"
               className={styles.isolation}
               value={isolation}
@@ -152,10 +159,9 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                   <T>on</T>
                 </span>
               )}
-              <span className={styles.branch} title={current}>
-                <Icon name="branch" size={14} />
-                <span className={styles.branchName}>{current}</span>
-              </span>
+              <Chip icon="branch" title={current} className={styles.branch}>
+                {current}
+              </Chip>
             </>
           )}
           {isolation === "worktree" && branches.length > 0 && (
@@ -166,11 +172,11 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                 </span>
               )}
               <Select
-                variant="ghost"
+                variant="chip"
                 aria-label="Base branch"
                 className={styles.basePicker}
                 value={base}
-                options={branches.map((b) => ({ value: b.name, label: b.name }))}
+                options={branches.map((b) => ({ value: b.name, label: b.name, icon: "branch" }))}
                 onChange={(b) => updateDraft({ base: b === current ? null : b })}
               />
             </>

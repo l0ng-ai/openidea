@@ -38,6 +38,7 @@ import { confirm } from "@/workbench/messages";
 import {
   Button,
   Checkbox,
+  Chip,
   EmptyState,
   Icon,
   IconButton,
@@ -320,16 +321,28 @@ function SessionStatus({
   task,
   entries,
   head,
+  changes,
+  commits,
+  changesOpen,
+  onToggleChanges,
 }: {
   task: AgentTask;
   entries: AgentEntry[] | null;
   head: string | null;
+  changes: AgentChange[] | null;
+  commits: readonly AgentCommit[];
+  changesOpen: boolean;
+  onToggleChanges: () => void;
 }) {
   const tx = useTx();
   const project = useProject((s) => s.project);
-  const projectName = project?.workspace ? basename(task.projectRoot ?? project.root) : null;
-  const where = task.isolation === "worktree" ? branchLabel(task.branch) : null;
+  const projectRoot = task.projectRoot ?? project?.root ?? null;
+  const projectName = project?.workspace && projectRoot ? basename(projectRoot) : project?.name;
+  const local = task.isolation !== "worktree";
+  const branch = local ? head : branchLabel(task.branch) || null;
   const pickedModel = task.status !== "archived" && task.config.some((o) => o.category === "model");
+  const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
+  const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
   return (
     <div
       className={styles.statusBar}
@@ -338,25 +351,74 @@ function SessionStatus({
         showContextMenu(e, taskMenu([task]));
       }}
     >
-      <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
-      <span className={styles.statusText} title={task.cwd}>
-        {providerName(task.provider)}
-        {/* The composer's model picker shows the model when the agent offers one. */}
-        {task.model && !pickedModel ? ` · ${task.model}` : ""}
-        {projectName ? ` · ${projectName}` : ""}
-        {" · "}
-        {where ?? (
+      <span className={styles.agent} title={task.cwd}>
+        <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
+        <span className={styles.agentName}>
+          {providerName(task.provider)}
+          {/* The composer's model picker shows the model when the agent offers one. */}
+          {task.model && !pickedModel ? ` · ${task.model}` : ""}
+        </span>
+      </span>
+      {/* The same three facts as the new-task composer: project, checkout, branch. */}
+      <span className={styles.where}>
+        {projectName && (
+          <Chip icon="folder" title={projectRoot ?? undefined}>
+            {projectName}
+          </Chip>
+        )}
+        <Chip icon={local ? "folder" : "branch"}>
+          <T>{local ? "Local checkout" : "New worktree"}</T>
+        </Chip>
+        {branch && (
           <>
-            <T>Local checkout</T>
-            {head ? ` · ${head}` : ""}
+            {local && (
+              <span className={styles.note}>
+                <T>on</T>
+              </span>
+            )}
+            <Chip icon="branch" title={branch}>
+              {branch}
+            </Chip>
           </>
         )}
-        {" · "}
+      </span>
+      <span className={styles.state}>
         <T>{statusLabel(task.status)}</T>
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
       </span>
-      <Meters task={task} entries={entries} />
-      <StatusActions task={task} />
+      {/* What changed sits above the meter, time and terminal; those keep their one row at the right. */}
+      <span className={styles.statusEnd}>
+        {(!!changes?.length || !!commits.length) && (
+          <span className={styles.statusChips}>
+            {!!changes?.length && (
+              <button type="button" className={styles.statusChip} aria-expanded={changesOpen} onClick={onToggleChanges}>
+                <Icon name="edit" size={12} />
+                {/* The counts are the chip's own items, so its gap spaces them and the label can still truncate. */}
+                <span className={styles.statusChipLabel}>
+                  {tx(changes.length === 1 ? "1 changed file" : "{count} changed files").replace(
+                    "{count}",
+                    String(changes.length),
+                  )}
+                </span>
+                {added > 0 && <span className={styles.added}>+{added}</span>}
+                {removed > 0 && <span className={styles.removed}>−{removed}</span>}
+              </button>
+            )}
+            {!!commits.length && (
+              <button type="button" className={styles.statusChip} aria-expanded={changesOpen} onClick={onToggleChanges}>
+                <Icon name="commit" size={12} />
+                <span className={styles.statusChipLabel}>
+                  {tx(commits.length === 1 ? "1 commit" : "{count} commits").replace("{count}", String(commits.length))}
+                </span>
+              </button>
+            )}
+          </span>
+        )}
+        <span className={styles.statusMeters}>
+          <Meters task={task} entries={entries} />
+          <StatusActions task={task} />
+        </span>
+      </span>
     </div>
   );
 }
@@ -400,13 +462,13 @@ function Limit({ limit, now }: { limit: AgentLimit; now: number }) {
   );
 }
 
-/** Context window use: "12%", the numbers in the tooltip. */
+/** Context window use: "167k/1M (17%)", the exact counts in the tooltip. */
 function Usage({ usage }: { usage: AgentUsage }) {
   const label = usageLabel(usage);
   return (
     <span className={styles.meter} title={label.detail} aria-label={`Context ${label.short}, ${label.detail}`}>
       <span className={styles.usageBar} aria-hidden>
-        <span style={{ width: label.short }} />
+        <span style={{ width: `${label.percent}%` }} />
       </span>
       {label.short}
     </span>
@@ -578,10 +640,11 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   const dragging = useRef(false);
   // When the user last scrolled the conversation (wheel, touch, keys, the scrollbar, Find):
   // that leaves the end. WebKit also moves the offset back on its own while rows lay out,
-  // which comes with a change of the content height; a scroll without one is meant too (the
+  // which comes with a change of the content height, and pulls it back to the end when the view
+  // grows taller (the composer shrinks after a send); a scroll without either is meant too (the
   // scrollbar thumb, a jump), whatever moved it.
   const userScrolled = useRef(-Infinity);
-  const seenHeight = useRef(0);
+  const seenHeight = useRef({ content: 0, view: 0 });
   const markUserScroll = useCallback(() => {
     userScrolled.current = performance.now();
   }, []);
@@ -708,6 +771,40 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
       if (restored.current) positions.set(key, { ...position.current, top: el.scrollTop });
     };
   }, [key, positions]);
+  // How far the end was below the view when a section was toggled, before its content renders.
+  const gapAtToggle = useRef(Infinity);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const toggled = () => {
+      gapAtToggle.current = el.scrollHeight - el.scrollTop - el.clientHeight;
+    };
+    el.addEventListener("toggle", toggled, true);
+    return () => el.removeEventListener("toggle", toggled, true);
+  }, []);
+  /**
+   * An opened section grew the conversation below its header: with the end in view, stay at
+   * it; otherwise bring what it shows into view. Either way its header stays on screen, and
+   * following stops when that leaves the end out of view.
+   */
+  const revealFold = useCallback(
+    (fold: HTMLElement) => {
+      const el = ref.current;
+      if (!el || dragging.current) return;
+      const view = el.getBoundingClientRect();
+      const box = fold.getBoundingClientRect();
+      const atEnd = position.current.stick || gapAtToggle.current < 40;
+      gapAtToggle.current = Infinity;
+      const below = atEnd ? el.scrollHeight - el.scrollTop - el.clientHeight : box.bottom - view.bottom;
+      if (below > 0) el.scrollTop += Math.max(0, Math.min(below, box.top - view.top));
+      if (atEnd && el.scrollHeight - el.scrollTop - el.clientHeight >= 40) {
+        position.current = { top: el.scrollTop, stick: false };
+        positions.set(key, position.current);
+        setAway(true);
+      }
+    },
+    [key, positions],
+  );
   /** Back to the end of the stream; following resumes from there. */
   const jumpToLatest = useCallback(() => {
     const el = ref.current;
@@ -778,126 +875,134 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
     );
   return (
     <OpenFolds.Provider value={openFolds}>
-      <div className={styles.streamArea}>
-        {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
-        <div
-          ref={ref}
-          // The conversation is read and copied like a document; focusable so ⌘F reaches it.
-          className={clsx(styles.stream, selectableText)}
-          tabIndex={-1}
-          onWheel={(e) => {
-            markUserScroll();
-            if (e.deltaY < 0 && !e.ctrlKey && !e.defaultPrevented) stopFollowing(e.target);
-            else if (e.deltaY > 0 && !e.ctrlKey && !e.defaultPrevented) scrollingUp.current = false;
-          }}
-          onTouchStart={(e) => {
-            touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
-          }}
-          onTouchMove={(e) => {
-            markUserScroll();
-            const y = e.touches.length === 1 ? e.touches[0]!.clientY : null;
-            if (y !== null && touchY.current !== null && y > touchY.current) stopFollowing(e.target);
-            else if (y !== null && touchY.current !== null && y < touchY.current) scrollingUp.current = false;
-            touchY.current = y;
-          }}
-          onKeyDown={(e) => {
-            markUserScroll();
-            if (e.defaultPrevented || (e.target as Element).closest("input, textarea, [contenteditable]")) return;
-            if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home" || (e.key === " " && e.shiftKey))
-              stopFollowing(e.target);
-            else if (e.key === "ArrowDown" || e.key === "PageDown" || e.key === "End" || (e.key === " " && !e.shiftKey))
+      <RevealFold.Provider value={revealFold}>
+        <div className={styles.streamArea}>
+          {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
+          <div
+            ref={ref}
+            // The conversation is read and copied like a document; focusable so ⌘F reaches it.
+            className={clsx(styles.stream, selectableText)}
+            tabIndex={-1}
+            onWheel={(e) => {
+              markUserScroll();
+              if (e.deltaY < 0 && !e.ctrlKey && !e.defaultPrevented) stopFollowing(e.target);
+              else if (e.deltaY > 0 && !e.ctrlKey && !e.defaultPrevented) scrollingUp.current = false;
+            }}
+            onTouchStart={(e) => {
+              touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
+            }}
+            onTouchMove={(e) => {
+              markUserScroll();
+              const y = e.touches.length === 1 ? e.touches[0]!.clientY : null;
+              if (y !== null && touchY.current !== null && y > touchY.current) stopFollowing(e.target);
+              else if (y !== null && touchY.current !== null && y < touchY.current) scrollingUp.current = false;
+              touchY.current = y;
+            }}
+            onKeyDown={(e) => {
+              markUserScroll();
+              if (e.defaultPrevented || (e.target as Element).closest("input, textarea, [contenteditable]")) return;
+              if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home" || (e.key === " " && e.shiftKey))
+                stopFollowing(e.target);
+              else if (
+                e.key === "ArrowDown" ||
+                e.key === "PageDown" ||
+                e.key === "End" ||
+                (e.key === " " && !e.shiftKey)
+              )
+                scrollingUp.current = false;
+            }}
+            onPointerDown={() => {
+              markUserScroll();
               scrollingUp.current = false;
-          }}
-          onPointerDown={() => {
-            markUserScroll();
-            scrollingUp.current = false;
-          }}
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-            const laidOut = el.scrollHeight !== seenHeight.current;
-            seenHeight.current = el.scrollHeight;
-            const byUser = dragging.current || performance.now() - userScrolled.current < 500 || !laidOut;
-            const movedDown = el.scrollTop > position.current.top;
-            const stayedAtEnd = position.current.stick && el.scrollTop === position.current.top;
-            const stick =
-              (atEnd && !scrollingUp.current && (movedDown || stayedAtEnd)) || (position.current.stick && !byUser);
-            // Still following: back to the end the offset was moved away from.
-            if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
-            position.current = { top: el.scrollTop, stick };
-            positions.set(key, position.current);
-            setAway(!position.current.stick);
-            // Reached the top of what is painted: fetch the earlier entries, but only
-            // once the drag has settled.
-            if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
-            if (!position.current.stick && el.scrollTop < 120 && !dragging.current) loadWhenStill();
-          }}
-          // Copy, plus Quote for a selection: replies to it in the composer.
-          onContextMenu={(e) => {
-            const text = selectionIn(e.currentTarget);
-            const items = copyMenuFor(e.target) ?? [];
-            if (text.trim() && task.status !== "archived") {
-              items.push({
-                kind: "action",
-                action: "agents.quoteReply",
-                label: "Quote",
-                arg: { task: task.id, text },
-              });
-            }
-            if (!items.length) return;
-            e.preventDefault();
-            showContextMenu(e, items);
-          }}
-        >
-          {loadError && (
-            <div role="alert">
-              <EmptyState
-                title={tx`Couldn't load the conversation: ${loadError}`}
-                actions={
-                  <Button
-                    onClick={() =>
-                      void executeAction("agents.retryConversation", {
-                        task: task.id,
-                        subagent: subagent?.id ?? null,
-                      })
-                    }
-                  >
-                    Retry
-                  </Button>
-                }
-              />
-            </div>
-          )}
-          {entries === null ? (
-            !loadError && <Spinner />
-          ) : entries.length === 0 && !busy && !loadError ? (
-            <EmptyState title="No conversation history" />
-          ) : (
-            rows.map((row) => (
-              <div
-                key={row.index}
-                className={styles.conversationRow}
-                data-message={
-                  (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
-                }
-                data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
-              >
-                {authorHeaders.has(row.index) && (
-                  <div className={styles.agentAuthor}>
-                    <div className={styles.role}>
-                      <Icon name={providerIcon(task.provider)} size={13} />
-                      <span>{providerName(task.provider)}</span>
-                    </div>
-                  </div>
-                )}
-                {renderConversationRow(row)}
+            }}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+              const laidOut =
+                el.scrollHeight !== seenHeight.current.content || el.clientHeight !== seenHeight.current.view;
+              seenHeight.current = { content: el.scrollHeight, view: el.clientHeight };
+              const byUser = dragging.current || performance.now() - userScrolled.current < 500 || !laidOut;
+              const movedDown = el.scrollTop > position.current.top;
+              const stayedAtEnd = position.current.stick && el.scrollTop === position.current.top;
+              const stick =
+                (atEnd && !scrollingUp.current && (movedDown || stayedAtEnd)) || (position.current.stick && !byUser);
+              // Still following: back to the end the offset was moved away from.
+              if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
+              position.current = { top: el.scrollTop, stick };
+              positions.set(key, position.current);
+              setAway(!position.current.stick);
+              // Reached the top of what is painted: fetch the earlier entries, but only
+              // once the drag has settled.
+              if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
+              if (!position.current.stick && el.scrollTop < 120 && !dragging.current) loadWhenStill();
+            }}
+            // Copy, plus Quote for a selection: replies to it in the composer.
+            onContextMenu={(e) => {
+              const text = selectionIn(e.currentTarget);
+              const items = copyMenuFor(e.target) ?? [];
+              if (text.trim() && task.status !== "archived") {
+                items.push({
+                  kind: "action",
+                  action: "agents.quoteReply",
+                  label: "Quote",
+                  arg: { task: task.id, text },
+                });
+              }
+              if (!items.length) return;
+              e.preventDefault();
+              showContextMenu(e, items);
+            }}
+          >
+            {loadError && (
+              <div role="alert">
+                <EmptyState
+                  title={tx`Couldn't load the conversation: ${loadError}`}
+                  actions={
+                    <Button
+                      onClick={() =>
+                        void executeAction("agents.retryConversation", {
+                          task: task.id,
+                          subagent: subagent?.id ?? null,
+                        })
+                      }
+                    >
+                      Retry
+                    </Button>
+                  }
+                />
               </div>
-            ))
-          )}
-          <WorkingRow task={task} entries={entries} subagent={subagent} />
+            )}
+            {entries === null ? (
+              !loadError && <Spinner />
+            ) : entries.length === 0 && !busy && !loadError ? (
+              <EmptyState title="No conversation history" />
+            ) : (
+              rows.map((row) => (
+                <div
+                  key={row.index}
+                  className={styles.conversationRow}
+                  data-message={
+                    (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
+                  }
+                  data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
+                >
+                  {authorHeaders.has(row.index) && (
+                    <div className={styles.agentAuthor}>
+                      <div className={styles.role}>
+                        <Icon name={providerIcon(task.provider)} size={13} />
+                        <span>{providerName(task.provider)}</span>
+                      </div>
+                    </div>
+                  )}
+                  {renderConversationRow(row)}
+                </div>
+              ))
+            )}
+            <WorkingRow task={task} entries={entries} subagent={subagent} />
+          </div>
+          {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
         </div>
-        {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
-      </div>
+      </RevealFold.Provider>
     </OpenFolds.Provider>
   );
 }
@@ -1777,6 +1882,9 @@ const FoldedContent = createContext(false);
  */
 const OpenFolds = createContext<Map<string, boolean> | null>(null);
 
+/** Scrolls a section the reader just opened into view (`Stream`). */
+const RevealFold = createContext<((el: HTMLElement) => void) | null>(null);
+
 /**
  * A collapsed section that renders its content only once opened: most of a long conversation
  * stays folded, and keeping it out of the DOM keeps showing and restyling the tab cheap.
@@ -1797,13 +1905,24 @@ function Fold({
 }) {
   const always = useContext(FoldedContent);
   const remembered = useContext(OpenFolds);
+  const reveal = useContext(RevealFold);
   const [expanded, setExpanded] = useState(() => !!open || (!!id && !!remembered?.get(id)));
+  const ref = useRef<HTMLDetailsElement>(null);
+  const opened = useRef(false);
+  // Once its content is laid out, so its height is known.
+  useLayoutEffect(() => {
+    if (!expanded || !opened.current) return;
+    opened.current = false;
+    if (ref.current) reveal?.(ref.current);
+  }, [expanded, reveal]);
   return (
     <details
+      ref={ref}
       className={className}
       open={open || (!!id && expanded) || undefined}
       onToggle={(e) => {
         const now = e.currentTarget.open;
+        opened.current = now;
         setExpanded(now);
         if (id && remembered) {
           if (now) remembered.set(id, true);
@@ -2431,26 +2550,10 @@ function QuestionForm({
 
 /**
  * What needs the user or tells where the agent is, above the composer: an approval it
- * waits for (answered with 1, 2, 3… when the focus isn't in a text field), the plan, the
- * task's changes, then what runs and what is queued, and a line saying what it does now.
+ * waits for (answered with 1, 2, 3… when the focus isn't in a text field), the plan,
+ * then what runs and what is queued, and a line saying what it does now.
  */
-function Tray({
-  task,
-  entries,
-  changes,
-  commits,
-  changesOpen,
-  onToggleChanges,
-  children,
-}: {
-  task: AgentTask;
-  entries: AgentEntry[] | null;
-  changes: AgentChange[] | null;
-  commits: readonly AgentCommit[];
-  changesOpen: boolean;
-  onToggleChanges: () => void;
-  children: ReactNode;
-}) {
+function Tray({ task, entries, children }: { task: AgentTask; entries: AgentEntry[] | null; children: ReactNode }) {
   const tx = useTx();
   const pending = entries?.find(
     (e): e is PermissionEntry => e.type === "permission" && !e.chosen && !e.questions?.length,
@@ -2459,41 +2562,20 @@ function Tray({
   const [planOpen, setPlanOpen] = useState(false);
   const done = plan?.items.filter((i) => i.status === "completed").length ?? 0;
   const planShown = plan && plan.items.length > 0 && done < plan.items.length;
-  const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
-  const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
   return (
     <div className={styles.tray}>
       {pending && <PendingPermission task={task} entry={pending} />}
-      {(planShown || !!changes?.length || !!commits.length) && (
+      {planShown && (
         <div className={styles.trayStrip}>
-          {planShown && (
-            <button
-              type="button"
-              className={styles.trayChip}
-              aria-expanded={planOpen}
-              onClick={() => setPlanOpen(!planOpen)}
-            >
-              <Icon name="todo" size={13} />
-              {tx`Plan ${done}/${plan.items.length}`}
-            </button>
-          )}
-          {!!changes?.length && (
-            <button type="button" className={styles.trayChip} aria-pressed={changesOpen} onClick={onToggleChanges}>
-              <Icon name="edit" size={13} />
-              {tx(changes.length === 1 ? "1 changed file" : "{count} changed files").replace(
-                "{count}",
-                String(changes.length),
-              )}
-              {added > 0 && <span className={styles.added}>+{added}</span>}
-              {removed > 0 && <span className={styles.removed}>−{removed}</span>}
-            </button>
-          )}
-          {!!commits.length && (
-            <button type="button" className={styles.trayChip} aria-pressed={changesOpen} onClick={onToggleChanges}>
-              <Icon name="commit" size={13} />
-              {tx(commits.length === 1 ? "1 commit" : "{count} commits").replace("{count}", String(commits.length))}
-            </button>
-          )}
+          <button
+            type="button"
+            className={styles.trayChip}
+            aria-expanded={planOpen}
+            onClick={() => setPlanOpen(!planOpen)}
+          >
+            <Icon name="todo" size={13} />
+            {tx`Plan ${done}/${plan.items.length}`}
+          </button>
         </div>
       )}
       {planShown && planOpen && (
@@ -2662,7 +2744,15 @@ function SessionComposer({
     );
   return (
     <div className={styles.composerArea}>
-      <SessionStatus task={task} entries={entries} head={head} />
+      <SessionStatus
+        task={task}
+        entries={entries}
+        head={head}
+        changes={changes}
+        commits={commits}
+        changesOpen={changesOpen}
+        onToggleChanges={onToggleChanges}
+      />
       {task.status === "archived" && (
         <div className={styles.banner}>
           <span className={styles.bannerText}>
@@ -2675,14 +2765,7 @@ function SessionComposer({
           />
         </div>
       )}
-      <Tray
-        task={task}
-        entries={entries}
-        changes={changes}
-        commits={commits}
-        changesOpen={changesOpen}
-        onToggleChanges={onToggleChanges}
-      >
+      <Tray task={task} entries={entries}>
         <WorkingSubagents entries={entries} onOpen={onOpenSubagent} />
         <BackgroundTasks task={task} />
         {task.queue.length > 0 && <Queue task={task} />}

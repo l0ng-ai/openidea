@@ -994,7 +994,7 @@ export function CommitMessageField({
   const amend = useCommit((s) => s.amend);
   const focusTick = useCommit((s) => s.focusTick);
   const ref = useRef<HTMLTextAreaElement>(null);
-  const historyRef = useRef<HTMLButtonElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyTick = useCommit((s) => s.historyTick);
   const checkProblems = useCommit((s) => s.checkProblems);
@@ -1025,10 +1025,9 @@ export function CommitMessageField({
 
   return (
     <>
-      <div className={styles.commitBar}>
+      <div ref={barRef} className={styles.commitBar}>
         <Checkbox checked={amend} onChange={(v) => void setAmend(v)} label="Amend" />
         <IconButton
-          ref={historyRef}
           icon="history"
           title="Commit Message History"
           size="small"
@@ -1040,8 +1039,9 @@ export function CommitMessageField({
         <Menu
           open={historyOpen}
           onClose={() => setHistoryOpen(false)}
-          anchor={historyRef}
-          placement="bottom-end"
+          anchor={barRef}
+          placement="top-start"
+          iconColumn={false}
           aria-label="Recent commit messages"
           items={history.map((m, i) => ({
             id: `h${i}`,
