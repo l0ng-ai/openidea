@@ -181,7 +181,8 @@ export const vscodeMacos: Record<string, string[]> = {
 
   // File / editor tabs
   "file.save": ["Meta+S"],
-  "file.new": ["Meta+N"],
+  "file.newUntitled": ["Meta+N"],
+  "file.new": [],
   "file.settings": ["Meta+,"],
   "file.projectStructure": [],
   "file.openProject": ["Meta+O"],

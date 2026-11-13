@@ -635,6 +635,8 @@ export const EDITOR_TAB_MIME = "application/x-openidea-editor-tab";
 export interface EditorService {
   openFile(path: string, options?: OpenOptions): Promise<void>;
   openInput(input: EditorInput, options?: OpenOptions): Promise<void>;
+  /** File › New File: an editable untitled buffer; Save asks for a path. */
+  openUntitled?(options?: OpenOptions): Promise<void>;
   /** Path of the focused text editor, if any. */
   activePath(): string | null;
   /** Doc id + cursor of the focused text editor. */

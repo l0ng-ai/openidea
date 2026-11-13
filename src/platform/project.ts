@@ -79,6 +79,12 @@ export async function openLightEdit(path: string): Promise<void> {
   useProject.setState({ project: null, settings, lightEdit: true });
 }
 
+/** Switches this window to LightEdit without a file (File › New File from the welcome screen). */
+export async function openLightEditUntitled(): Promise<void> {
+  const settings = await call(commands.lightEditOpenUntitled());
+  useProject.setState({ project: null, settings, lightEdit: true });
+}
+
 export async function closeProject() {
   await commands.closeProject();
   useProject.setState({ project: null, lightEdit: false });

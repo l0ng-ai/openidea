@@ -339,6 +339,7 @@ function PaneView({ paneId }: { paneId: string }) {
       onClose={(id) => void ctrl.closeTab(paneId, id)}
       onCloseOthers={(id) => void ctrl.closeOthers(paneId, id)}
       closeOnShiftClick
+      onDoubleClickEmpty={() => void executeAction("file.newUntitled")}
       onDoubleClick={(id) => {
         // IDEA: a preview tab becomes a regular one; any other tab maximizes the editor.
         if (pane.tabs.find((t) => t.id === id)?.preview) ctrl.keepTab(paneId, id);
@@ -500,6 +501,7 @@ function EditorTabActions({ paneId, tab }: { paneId: string; tab: Tab }) {
     <div className={styles.tabActions}>
       <ContributedToolbar slot="editor.title" />
       {LayoutActions && <LayoutActions path={tab.input.path!} tabId={tab.id} />}
+      <IconButton icon="plus" title="New File" size="small" onClick={() => void executeAction("file.newUntitled")} />
       <IconButton
         icon="split"
         title="Split Right"

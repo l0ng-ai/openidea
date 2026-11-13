@@ -1431,6 +1431,7 @@
   "{program} {found} is installed, but this project needs {min} or later.": "{program} {found} is installed, but this project needs {min} or later.",
   "{program} is not installed.": "{program} is not installed.",
   "Create a project, open a folder from disk or clone a repository from version control.": "Create a project, open a folder from disk or clone a repository from version control.",
+  "New File": "New File",
   "New Project": "New Project",
   "{path} already exists and is not empty": "{path} already exists and is not empty",
   "Example": "Example",

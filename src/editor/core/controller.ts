@@ -11,7 +11,7 @@ import { create } from "zustand";
 import { setContext } from "@/platform/context";
 import { shortcutLabel } from "@/platform/keymap";
 import { isSameOrInside } from "@/platform/paths";
-import { basename, useProject } from "@/platform/project";
+import { basename, dirname, useProject } from "@/platform/project";
 import { editorPrefs } from "@/platform/editorSettings";
 import {
   _emitEditorEvent,
@@ -45,6 +45,8 @@ import { restoreMaximizedToolWindow } from "@/workbench/toolwindows/store";
 import { ask, confirm } from "@/workbench/messages";
 import { t } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
+import { save as saveFileDialog, type DialogFilter as SaveDialogFilter } from "@/platform/dialog";
+import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { isRemoteWindow } from "@/platform/remote";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
 import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
@@ -131,9 +133,16 @@ export const virtualInput = (
   data: { title: vd.title, description: vd.description, decompiled: vd.decompiled } satisfies VirtualInputData,
 });
 
-/** Inputs shown in the text editor: files and virtual documents. */
+/**
+ * An editable new-file buffer (File › New File). Its `path` is the minted
+ * `untitled:` URI, which identifies its document model; Save asks for a real
+ * path and turns the tab into a file one.
+ */
+export const untitledInput = (uri: string): EditorInput => ({ kind: "untitled", key: uri, path: uri });
+
+/** Inputs shown in the text editor: files, virtual documents and untitled buffers. */
 export function isTextInput(input: EditorInput): input is EditorInput & { path: string } {
-  return (input.kind === "file" || input.kind === "virtual") && !!input.path;
+  return (input.kind === "file" || input.kind === "virtual" || input.kind === "untitled") && !!input.path;
 }
 
 export const useTabs = create<TabsState>(() => initialTabsState());
@@ -158,6 +167,29 @@ export const useEditorStatus = create<{ status: EditorStatus | null }>(() => ({ 
 export const useTabErrors = create<Record<string, string>>(() => ({}));
 /** Per-tab find bar state (open / replace mode), like IDEA's per-editor search session. */
 export const useFindBars = create<Record<string, { replace: boolean; seq: number } | undefined>>(() => ({}));
+/** Text file entry shown first in the save dialog's type dropdown. */
+const TXT_FILTER = { name: "Text files (*.txt)", extensions: ["txt"] };
+
+/**
+ * The save dialog's type dropdown: every registered language (its name and
+ * extensions), plus plain text and an all-files escape hatch. Picking a type
+ * makes the OS append that extension; the backend re-detects from the path.
+ */
+let cachedLanguageFilters: SaveDialogFilter[] | null = null;
+async function languageFilters(): Promise<SaveDialogFilter[]> {
+  cachedLanguageFilters ??= await commands
+    .languages()
+    .catch(() => [] as { name: string; extensions: string[] }[])
+    .then((languages) => [
+      TXT_FILTER,
+      ...languages
+        .map((l) => ({ name: `${l.name} (${l.extensions.map((e) => `*.${e}`).join(", ")})`, extensions: l.extensions }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+      { name: "All files (*.*)", extensions: ["*"] },
+    ]);
+  return cachedLanguageFilters ?? [];
+}
+
 export const useGotoLine = create<{ open: boolean }>(() => ({ open: false }));
 
 /** Paths of open file tabs, all panes in visual order, unique. */
@@ -175,11 +207,20 @@ export function openFilePaths(s: TabsState): string[] {
 
 /** Editor Tabs › Sort tabs alphabetically: by file name. */
 function tabSortKey(input: EditorInput): string {
-  return basename(input.path ?? input.key);
+  return basename(untitledTitle(input.path ?? input.key));
 }
 
 function isTextTab(tab: Tab | null | undefined): tab is Tab & { input: { path: string } } {
   return !!tab && isTextInput(tab.input);
+}
+
+/** Keys of untitled buffers whose last tab the transition `before` → `after` closes. */
+function closedUntitledKeys(before: TabsState, after: TabsState): string[] {
+  const open = openKeys(after);
+  const out = new Set<string>();
+  for (const pane of Object.values(before.panes))
+    for (const tab of pane.tabs) if (tab.input.kind === "untitled" && !open.has(tab.input.key)) out.add(tab.input.key);
+  return [...out];
 }
 
 type EditorKinds = ReturnType<typeof useContributions.getState>["editorKinds"];
@@ -195,6 +236,7 @@ interface OpenRequest {
 /** Tab title of an editor input: the file name, or what its editor kind calls it. */
 export function tabTitle(input: EditorInput, kinds: EditorKinds): string {
   if (input.kind === "file") return basename(input.path ?? input.key);
+  if (input.kind === "untitled") return untitledTitle(input.path ?? input.key);
   if (input.kind === "virtual")
     return (input.data as VirtualInputData | undefined)?.title ?? basename(input.path ?? input.key);
   const kind = kinds.get(input.kind);
@@ -207,6 +249,7 @@ export function tabTitle(input: EditorInput, kinds: EditorKinds): string {
 
 export function tabIcon(input: EditorInput, kinds: EditorKinds): string {
   if (input.kind === "file") return fileIconName(basename(input.path ?? ""), input.path ?? null);
+  if (input.kind === "untitled") return fileIconName(untitledTitle(input.path ?? ""));
   if (input.kind === "virtual") return fileIconName(tabTitle(input, kinds));
   const kind = kinds.get(input.kind);
   try {
@@ -272,6 +315,7 @@ export class EditorController implements SlotHost {
       {
         settings: () => useProject.getState().settings ?? useProject.getState().project?.settings,
         notify: (n) => notifications().notify(n),
+        saveAs: (model) => this.saveUntitled(model),
       },
       scheduler,
     );
@@ -523,6 +567,8 @@ export class EditorController implements SlotHost {
     for (const slot of this.slots.values()) {
       if (slot.disposed) continue;
       const path = slot.model.path;
+      // Untitled buffers have no file to restore a caret for (and are not saved as tabs).
+      if (isUntitledUri(path)) continue;
       // The last focused slot of a document wins over other split copies.
       if (files[path] && slot.model.lastFocused !== slot && !this.restoredViews.has(path)) continue;
       files[path] = slot.viewState();
@@ -1127,6 +1173,86 @@ export class EditorController implements SlotHost {
     return this.admitInput(input, o, this.openingGeneration(o));
   }
 
+  /** File › New File: an editable untitled buffer; Save asks for a path. */
+  async openUntitled(o: OpenOptions = {}): Promise<void> {
+    const generation = this.openingGeneration(o);
+    await this.projectTransition;
+    this.checkOpening(generation);
+    const info = await this.manager.backend.openUntitled(null);
+    this.checkOpening(generation);
+    this.manager.adopt(info);
+    await this.admitInput(untitledInput(info.path), o, generation);
+  }
+
+  /**
+   * ManagerHost.saveAs: an untitled buffer's explicit save asks for a path
+   * (Save As). The backend re-keys the buffer; the model is re-pointed and
+   * every tab showing it becomes a file tab.
+   */
+  private async saveUntitled(model: import("./model/document").DocModel): Promise<boolean> {
+    const path = await saveFileDialog({
+      title: t("app.action.newFile"),
+      defaultPath: this.saveAsSuggestion(model),
+      filters: await languageFilters(),
+    });
+    if (!path) return false;
+    const untitled = model.path;
+    try {
+      const info = await this.manager.backend.saveAs(model.doc, path);
+      this.manager.retarget(model, info);
+      this.swapUntitledTabs(untitled, info.path);
+      return true;
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: "Cannot save file",
+        body: e instanceof Error ? e.message : String(e),
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Where the save dialog opens for a new buffer: the project root, or, in a
+   * LightEdit window, the folder of its most recently open real file. The file
+   * type comes from the dialog's own type dropdown (see `languageFilters`).
+   */
+  private saveAsSuggestion(model: import("./model/document").DocModel): string {
+    const root = useProject.getState().project?.root;
+    const dir =
+      root ??
+      (() => {
+        const s = useTabs.getState();
+        for (const pane of Object.values(s.panes)) {
+          for (const id of pane.mru) {
+            const tab = pane.tabs.find((t) => t.id === id);
+            if (tab?.input.kind === "file" && tab.input.path) return dirname(tab.input.path);
+          }
+        }
+        return null;
+      })();
+    const name = untitledTitle(model.path);
+    return dir ? `${dir}/${name}` : name;
+  }
+
+  /** Save As turned an untitled buffer into `path`: retarget every tab showing it. */
+  private swapUntitledTabs(oldKey: string, path: string) {
+    const s = useTabs.getState();
+    let changed = false;
+    const panes: TabsState["panes"] = {};
+    for (const [paneId, pane] of Object.entries(s.panes)) {
+      let paneChanged = false;
+      const tabs = pane.tabs.map((tab) => {
+        if (tab.input.key !== oldKey) return tab;
+        paneChanged = true;
+        return { ...tab, input: fileInput(path) };
+      });
+      panes[paneId] = paneChanged ? { ...pane, tabs } : pane;
+      changed ||= paneChanged;
+    }
+    if (changed) useTabs.setState({ ...s, panes }, true);
+  }
+
   private async admitInput(
     input: EditorInput,
     o: OpenOptions,
@@ -1448,6 +1574,36 @@ export class EditorController implements SlotHost {
             else return false;
           }
           authorized.add(d.input.key);
+        }
+        // Dirty untitled buffers: autosave never writes them in place, so
+        // closing their last tab asks (Save opens the Save As dialog).
+        const untitledAuthorized = new Set<string>();
+        for (;;) {
+          const current = useTabs.getState();
+          const key = closedUntitledKeys(current, currentRemoval(current)).find((k) => !untitledAuthorized.has(k));
+          if (!key) break;
+          const model = this.manager.get(key);
+          if (!model || model.closed || !model.getMeta().dirty) {
+            untitledAuthorized.add(key);
+            continue;
+          }
+          const decision = await ask({
+            title: t("app.unsaved.title"),
+            body: t("app.unsaved.body", { count: 1, project: untitledTitle(key) }),
+            buttons: [
+              { id: "discard", label: t("app.unsaved.discard") },
+              { id: "save", label: t("app.unsaved.save"), primary: true },
+            ],
+            icon: "warning",
+          });
+          if (decision.button === "save") {
+            await model.save("explicit");
+            // Still dirty: the Save As dialog was cancelled or the save failed.
+            if (model.getMeta().dirty) return false;
+          } else if (decision.button !== "discard") {
+            return false;
+          }
+          untitledAuthorized.add(key);
         }
         // Again after the discards: a tab may have become busy while they ran.
         if (!(await this.confirmBusyClose(currentRemoval, confirmedBusy))) return false;

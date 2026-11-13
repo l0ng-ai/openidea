@@ -129,6 +129,8 @@ export interface TabsProps {
   /** Shift+left-click a tab closes it (editor tabs; plain clicks still select). */
   closeOnShiftClick?: boolean;
   onDoubleClick?: (id: string) => void;
+  /** Double-click on the strip's empty space (editor tabs: a new-file tab). */
+  onDoubleClickEmpty?: () => void;
   onContextMenu?: (id: string, e: MouseEvent) => void;
   /** `editor`: 30px with separators (editor tabs); `compact`: 28px plain (popups, tool window sub-tabs). */
   variant?: "editor" | "compact";
@@ -162,6 +164,7 @@ export function Tabs({
   onTogglePin,
   closeOnShiftClick,
   onDoubleClick,
+  onDoubleClickEmpty,
   onContextMenu,
   variant = "editor",
   trailing,
@@ -369,8 +372,20 @@ export function Tabs({
         className,
       )}
       ref={stripRef}
+      onDoubleClick={(e) => {
+        // The strip's empty space belongs to the root (the scroller is content-sized),
+        // so the empty-area double click is detected here, away from tabs and widgets.
+        if (!onDoubleClickEmpty) return;
+        const t = e.target as Element | null;
+        if (t?.closest("[role=tab], [data-tab-close], [data-tabs-trailing]")) return;
+        onDoubleClickEmpty();
+      }}
     >
-      {vertical && trailing && <div className={styles.trailing}>{trailing}</div>}
+      {vertical && trailing && (
+        <div className={styles.trailing} data-tabs-trailing>
+          {trailing}
+        </div>
+      )}
       <div
         ref={scrollRef}
         role="tablist"
@@ -541,7 +556,11 @@ export function Tabs({
           />
         </>
       )}
-      {!vertical && trailing && <div className={styles.trailing}>{trailing}</div>}
+      {!vertical && trailing && (
+        <div className={styles.trailing} data-tabs-trailing>
+          {trailing}
+        </div>
+      )}
     </div>
   );
 }
