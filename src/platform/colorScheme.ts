@@ -31,7 +31,8 @@ export interface AttributeDef {
   token?: string;
   /** A semantic modifier whose only configurable attribute is italic. */
   italicOnly?: boolean;
-  /** The attribute's renderer applies font style and effects (tokens, the Git surfaces). */
+  /** The attribute's renderer applies font style and effects (tokens, the Git surfaces,
+   * Errors and Warnings): overrides land on `--<fg|effect>-*`. */
   fontStyle?: true;
   defaultBold?: boolean;
   defaultItalic?: boolean;
@@ -139,10 +140,46 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     path: ["General", "Search Results"],
     bg: "--bg-search-match-current",
   },
-  { id: "error", name: "Error", path: ["General", "Errors and Warnings"], effect: "--wave-error" },
-  { id: "warning", name: "Warning", path: ["General", "Errors and Warnings"], effect: "--wave-warning" },
+  {
+    id: "error",
+    name: "Error",
+    path: ["General", "Errors and Warnings"],
+    effect: "--wave-error",
+    defaultEffect: "wave",
+    fontStyle: true,
+  },
+  {
+    id: "warning",
+    name: "Warning",
+    path: ["General", "Errors and Warnings"],
+    effect: "--wave-warning",
+    defaultEffect: "wave",
+    fontStyle: true,
+  },
   { id: "weakWarning", name: "Weak warning", path: ["General", "Errors and Warnings"], fg: "--fg-weak-warning" },
-  { id: "unused", name: "Unused symbol", path: ["General", "Errors and Warnings"], fg: "--fg-unused" },
+  {
+    id: "typo",
+    name: "Typo",
+    path: ["General", "Errors and Warnings"],
+    effect: "--wave-typo",
+    defaultEffect: "wave",
+    fontStyle: true,
+  },
+  {
+    id: "unused",
+    name: "Unused symbol",
+    path: ["General", "Errors and Warnings"],
+    fg: "--fg-unused",
+    fontStyle: true,
+  },
+  {
+    id: "deprecated",
+    name: "Deprecated symbol",
+    path: ["General", "Errors and Warnings"],
+    effect: "--fg-deprecated",
+    defaultEffect: "strikeout",
+    fontStyle: true,
+  },
   syn("invalid", "Bad character", ["General", "Errors and Warnings"], "invalid"),
   syn("todo", "TODO defaults", ["General", "Code"], "todo"),
   { id: "inlineValue", name: "Inline debugger values", path: ["Debugger"], fg: "--syn-inline-value" },
@@ -339,6 +376,11 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
 /** Variables a scheme sets: every attribute variable plus the editor tokens derived from them. */
 const SCHEME_VARS = new Set<string>([
   ...ATTRIBUTES.flatMap((a) => [a.fg, a.bg, a.effect].filter((v): v is string => !!v)),
+  // Font style of token-less attributes (`overrideDeclarations` writes them for custom schemes too).
+  ...ATTRIBUTES.flatMap((a) => {
+    const base = a.fg ?? a.effect;
+    return !a.token && a.fontStyle && base ? [`${base}-bold`, `${base}-italic`, `${a.effect ?? base}-effect`] : [];
+  }),
   "--syn-comment-style",
   "--syn-doc-comment-tag-effect",
   "--editor-error-decoration",
@@ -477,7 +519,7 @@ export function boldWeight(bold: boolean): string {
   return bold ? "var(--fw-code-bold, 700)" : "var(--fw-code, 400)";
 }
 
-const EFFECT_CSS: Record<string, (c: string) => string> = {
+export const EFFECT_CSS: Record<string, (c: string) => string> = {
   underline: (c) => `underline ${c}`,
   wave: (c) => `underline wavy ${c}`,
   strikeout: (c) => `line-through ${c}`,
@@ -507,9 +549,12 @@ export function overrideDeclarations(
     }
     if (setOrCleared(o.background) && attr.bg) out.push([attr.bg, o.background]);
     if (setOrCleared(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
-    if (attr.effect && setOrCleared(o.effectColor)) {
-      if (attr.id === "error") out.push(["--editor-error-decoration", `underline wavy ${o.effectColor}`]);
-      if (attr.id === "warning") out.push(["--editor-warning-decoration", `underline wavy ${o.effectColor}`]);
+    if (attr.effect && (setOrCleared(o.effectColor) || o.effect)) {
+      const style = o.effect ?? attr.defaultEffect ?? "wave";
+      const color = setOrCleared(o.effectColor) ? o.effectColor! : `var(${attr.effect})`;
+      const decoration = EFFECT_CSS[style]?.(color) ?? "none";
+      if (attr.id === "error") out.push(["--editor-error-decoration", decoration]);
+      if (attr.id === "warning") out.push(["--editor-warning-decoration", decoration]);
     }
     if (attr.token) {
       const t = attr.token;
@@ -534,7 +579,9 @@ export function overrideDeclarations(
         if (o.effect)
           out.push([
             `${attr.effect ?? base}-effect`,
-            EFFECT_CSS[o.effect]?.(setOrCleared(o.effectColor) ? o.effectColor! : "currentColor") ?? "none",
+            EFFECT_CSS[o.effect]?.(
+              setOrCleared(o.effectColor) ? o.effectColor! : attr.effect ? `var(${attr.effect})` : "currentColor",
+            ) ?? "none",
           ]);
       }
     }
@@ -646,14 +693,20 @@ export function resolvedAttribute(
     const italicCss =
       vars.get(`--syn-${token}-italic`) ?? (token === "comment" ? vars.get("--syn-comment-style") : undefined);
     out.italic = own?.italic ?? italicFromCss(italicCss) ?? attr.defaultItalic ?? false;
-  } else if (attr.fontStyle) {
-    const base = attr.fg ?? attr.effect;
-    const bold = base ? vars.get(`${base}-bold`) : undefined;
-    const italic = base ? vars.get(`${base}-italic`) : undefined;
-    if (bold !== undefined) out.bold = boldFromCss(bold) ?? false;
-    if (italic !== undefined) out.italic = italicFromCss(italic) ?? false;
-  } else if (effect) out.effect = effect;
-  if (token && effect) out.effect = effect;
+    if (effect) out.effect = effect;
+  } else {
+    // Token-less attributes whose renderer applies font style (the Git segments, Errors and
+    // Warnings) carry their overrides on `--<fg|effect>-*`, the same declarations
+    // `overrideDeclarations` emits.
+    if (attr.fontStyle) {
+      const base = attr.fg ?? attr.effect;
+      const bold = base ? vars.get(`${base}-bold`) : undefined;
+      const italic = base ? vars.get(`${base}-italic`) : undefined;
+      out.bold = boldFromCss(bold) ?? attr.defaultBold ?? false;
+      out.italic = italicFromCss(italic) ?? attr.defaultItalic ?? false;
+    }
+    if (effect) out.effect = effect;
+  }
   return out;
 }
 
