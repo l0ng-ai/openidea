@@ -171,6 +171,27 @@ function loadOptions(): PopupOptions {
 /** The popup's gear options (Group by Prefix, Show Recent Branches, Show Tags), kept across sessions. */
 const usePopupOptions = create<PopupOptions>(loadOptions);
 
+/** The size the popup was last resized to, as IDEA keeps it across sessions. */
+const SIZE_KEY = "openidea.vcs.branchesPopup.size";
+
+function loadPopupSize(): { w: number; h: number } | null {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(SIZE_KEY) ?? "null");
+    const { w, h } = (v ?? {}) as Record<string, unknown>;
+    return typeof w === "number" && typeof h === "number" ? { w, h } : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePopupSize(size: { w: number; h: number }) {
+  try {
+    localStorage.setItem(SIZE_KEY, JSON.stringify(size));
+  } catch {
+    // Storage unavailable: the next popup opens at its default size.
+  }
+}
+
 function toggleOption(key: keyof PopupOptions) {
   usePopupOptions.setState((s) => ({ [key]: !s[key] }));
   try {
@@ -295,6 +316,7 @@ function BranchesPopup({ anchor, onClose }: { anchor: PopupAnchor; onClose: () =
   const actions = useMemo(() => [...POPUP_ACTIONS, ...extensionPopupActions(extensions)], [extensions]);
   // ⌥⌘N is also Inline (enabled while a popup is open over an editor): the search field handles it here.
   useEffect(() => registerKeyClaim((_e, stroke) => isNewBranchStroke(stroke)), []);
+  const [initialSize] = useState(loadPopupSize);
   return (
     <Popup
       open
@@ -303,6 +325,11 @@ function BranchesPopup({ anchor, onClose }: { anchor: PopupAnchor; onClose: () =
       placement="bottom-start"
       aria-label="Git Branches"
       className={clsx(styles.popup, multi && styles.wide)}
+      resizable="both"
+      minWidth={280}
+      minHeight={200}
+      initialSize={initialSize}
+      onResized={savePopupSize}
     >
       {multi ? (
         <MultiRepoPanel onClose={onClose} actions={actions} />

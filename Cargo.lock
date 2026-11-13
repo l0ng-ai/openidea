@@ -8727,7 +8727,7 @@ checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 [[package]]
 name = "sqlx"
 version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+source = "git+https://github.com/l0ng-ai/sqlx?rev=9894985a1babc7e6bc0437da4fd43e3143184073#9894985a1babc7e6bc0437da4fd43e3143184073"
 dependencies = [
  "sqlx-core",
  "sqlx-macros",
@@ -8739,7 +8739,7 @@ dependencies = [
 [[package]]
 name = "sqlx-core"
 version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+source = "git+https://github.com/l0ng-ai/sqlx?rev=9894985a1babc7e6bc0437da4fd43e3143184073#9894985a1babc7e6bc0437da4fd43e3143184073"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -8774,7 +8774,7 @@ dependencies = [
 [[package]]
 name = "sqlx-macros"
 version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+source = "git+https://github.com/l0ng-ai/sqlx?rev=9894985a1babc7e6bc0437da4fd43e3143184073#9894985a1babc7e6bc0437da4fd43e3143184073"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8786,7 +8786,7 @@ dependencies = [
 [[package]]
 name = "sqlx-macros-core"
 version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+source = "git+https://github.com/l0ng-ai/sqlx?rev=9894985a1babc7e6bc0437da4fd43e3143184073#9894985a1babc7e6bc0437da4fd43e3143184073"
 dependencies = [
  "cfg-if",
  "dotenvy",
@@ -8810,7 +8810,7 @@ dependencies = [
 [[package]]
 name = "sqlx-mysql"
 version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+source = "git+https://github.com/l0ng-ai/sqlx?rev=9894985a1babc7e6bc0437da4fd43e3143184073#9894985a1babc7e6bc0437da4fd43e3143184073"
 dependencies = [
  "bitflags 2.13.2",
  "byteorder",
@@ -8835,7 +8835,7 @@ dependencies = [
 [[package]]
 name = "sqlx-postgres"
 version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+source = "git+https://github.com/l0ng-ai/sqlx?rev=9894985a1babc7e6bc0437da4fd43e3143184073#9894985a1babc7e6bc0437da4fd43e3143184073"
 dependencies = [
  "atoi",
  "base64 0.22.1",
@@ -8869,7 +8869,7 @@ dependencies = [
 [[package]]
 name = "sqlx-sqlite"
 version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+source = "git+https://github.com/l0ng-ai/sqlx?rev=9894985a1babc7e6bc0437da4fd43e3143184073#9894985a1babc7e6bc0437da4fd43e3143184073"
 dependencies = [
  "atoi",
  "flume",

@@ -102,6 +102,11 @@ pub struct AgentSettings {
     #[serde(deserialize_with = "or_default")]
     #[specta(type = WhileRunning)]
     pub while_running: WhileRunning,
+    /// Whether new tasks start in the agent's mode that approves everything (Claude Code's
+    /// bypass permissions, Codex's full access) or in one that asks. User settings only.
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = NewTaskApprovals)]
+    pub new_task_approvals: NewTaskApprovals,
     /// Settings new tasks of an agent start with: agent id → option id → value.
     #[serde(deserialize_with = "agent_defaults")]
     #[specta(type = BTreeMap<String, BTreeMap<String, String>>)]
@@ -127,6 +132,7 @@ impl Default for AgentSettings {
             expand_tool_output: false,
             send_with: SendKey::Enter,
             while_running: WhileRunning::Queue,
+            new_task_approvals: NewTaskApprovals::Bypass,
             defaults: BTreeMap::new(),
             mcp_servers: BTreeMap::new(),
         }
@@ -268,6 +274,17 @@ pub enum WhileRunning {
     #[default]
     Queue,
     Steer,
+}
+
+/// The approvals new agent tasks start with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum NewTaskApprovals {
+    /// The agent's mode that approves everything without asking, when it has one.
+    #[default]
+    Bypass,
+    /// A mode in which the agent asks before edits and commands.
+    Ask,
 }
 
 /// Agents › MCP Server: agents use the IDE's built-in tools.
@@ -1021,11 +1038,28 @@ pub struct PythonSettings {
     pub interpreter: String,
     /// Activate the interpreter's virtualenv in new terminal sessions.
     pub activate_virtualenv: bool,
+    /// Interpreters the user added to Settings › Python › All Interpreters (executable paths).
+    /// Detection contributes the rest; `hidden_interpreters` removes some of them.
+    pub interpreters: Vec<String>,
+    /// Interpreters the user removed from that list, as executable paths: detection does
+    /// not list them again.
+    pub hidden_interpreters: Vec<String>,
+    /// Hide interpreters that belong to another project (a virtualenv inside its folder).
+    pub hide_other_project_interpreters: bool,
+    /// Show each interpreter's path under its name on the interpreters page.
+    pub show_interpreter_paths: bool,
 }
 
 impl Default for PythonSettings {
     fn default() -> Self {
-        Self { interpreter: String::new(), activate_virtualenv: true }
+        Self {
+            interpreter: String::new(),
+            activate_virtualenv: true,
+            interpreters: Vec::new(),
+            hidden_interpreters: Vec::new(),
+            hide_other_project_interpreters: false,
+            show_interpreter_paths: true,
+        }
     }
 }
 
