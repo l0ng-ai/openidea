@@ -250,7 +250,14 @@ impl ClientHandler {
         {
             return;
         }
-        let shown = self.server.set_diagnostics(path.clone(), params.diagnostics);
+        // A late answer for an older version of the text is shown, but isn't fresh (`check_files`).
+        let obsolete =
+            params.version.is_some_and(|v| mgr.docs.lock().values().any(|d| d.path == path && d.version > v));
+        let shown = if obsolete {
+            self.server.set_obsolete_diagnostics(path.clone(), params.diagnostics)
+        } else {
+            self.server.set_diagnostics(path.clone(), params.diagnostics)
+        };
         mgr.emit_diagnostics(&self.server, path, shown, self.encoding());
     }
 
