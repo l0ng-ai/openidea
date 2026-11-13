@@ -151,6 +151,9 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   const project = useProject.getState().project;
   // Scratches and other contributed roots live outside the project: no VCS, roots or LSP usages.
   const inProject = !!project && nodes.every((n) => isSameOrInside(n.path, project.root));
+  // Workspace members may live outside the workspace folder; they have VCS and usages too.
+  const memberRoots = project ? [project.root, ...(project.workspace?.projects ?? [])] : [];
+  const inWorkspace = nodes.every((n) => memberRoots.some((root) => isSameOrInside(n.path, root)));
   const items: MenuItem[] = [];
   const push = (...list: Entry[]) => list.forEach((i) => i && items.push(i));
 
@@ -228,7 +231,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
       shortcut: keyLabel("project.open"),
       run: () => files.forEach((f) => void openFile(f.path)),
     },
-    inProject &&
+    inWorkspace &&
       singleFile && {
         id: "findUsages",
         label: "Find Usages",
@@ -338,7 +341,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   );
 
   // Git › (`vcsAvailable` also covers repositories nested below a non-Git project root)
-  if (inProject && (project?.isGit || getContext().vcsAvailable === true)) {
+  if (inWorkspace && (project?.isGit || getContext().vcsAvailable === true)) {
     const arg = vcsArg(nodes);
     const dirs = nodes.some((n) => n.dir);
     push(
