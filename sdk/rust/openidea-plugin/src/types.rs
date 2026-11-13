@@ -67,7 +67,7 @@ pub enum NotificationLevel {
 }
 
 /// 0-based line and UTF-16 code unit column (as in the editor and LSP).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     pub line: u32,
     pub character: u32,
@@ -80,7 +80,7 @@ impl Position {
 }
 
 /// Half-open range; a cursor is an empty range.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Range {
     pub start: Position,
     pub end: Position,
@@ -207,10 +207,37 @@ impl From<String> for ContextValue {
     }
 }
 
+/// What another plugin contributed to an extension point this plugin declares
+/// (`[[extension-points]]`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Contribution {
+    /// The contributing plugin's id.
+    pub plugin: String,
+    /// The contribution as JSON, checked by the IDE against the point's fields.
+    pub data: String,
+}
+
+impl Contribution {
+    /// Decodes [`data`](Self::data) into the plugin's own type.
+    pub fn parse<T: serde::de::DeserializeOwned>(&self) -> Result<T, Error> {
+        serde_json::from_str(&self.data).map_err(|e| Error::Invalid(format!("contribution of {}: {e}", self.plugin)))
+    }
+}
+
 /// Kinds of workbench events; later SDKs add more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum EventKind {
+    DocumentChanged,
+    WebsocketReady,
+    FileClosed,
+    SettingsChanged,
+    InputModeChanged,
+    RunExited,
+    TerminalExited,
+    ContentTabAction,
+    /// Contributions to a point this plugin declares changed: JSON array of point ids (`Event::Other`).
+    ExtensionsChanged,
     FileOpened,
     FileSaved,
     FilesChanged,
@@ -225,6 +252,15 @@ impl EventKind {
     /// The name the IDE knows it by.
     pub fn name(self) -> &'static str {
         match self {
+            Self::DocumentChanged => "document-changed",
+            Self::WebsocketReady => "websocket-ready",
+            Self::FileClosed => "file-closed",
+            Self::SettingsChanged => "settings-changed",
+            Self::InputModeChanged => "input-mode-changed",
+            Self::RunExited => "run-exited",
+            Self::TerminalExited => "terminal-exited",
+            Self::ContentTabAction => "content-tab-action",
+            Self::ExtensionsChanged => "extensions-changed",
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
@@ -234,6 +270,53 @@ impl EventKind {
             Self::Scheduled => "scheduled",
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentTextChange {
+    pub from: u32,
+    pub to: u32,
+    pub insert: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentChanged {
+    pub path: String,
+    pub base_version: u64,
+    pub version: u64,
+    pub changes: Vec<DocumentTextChange>,
+}
+
+impl DocumentChanged {
+    /// Converts the wire changes to editor ranges after checking their base
+    /// version and absolute UTF-16 offsets.
+    pub fn text_edits(&self, document: &Document) -> Result<Vec<TextEdit>, Error> {
+        if document.version != self.base_version {
+            return Err(Error::Stale);
+        }
+        self.changes
+            .iter()
+            .map(|change| {
+                if change.from > change.to {
+                    return Err(Error::Invalid("document change has a reversed range".into()));
+                }
+                let start = crate::text::position_utf16(&document.text, change.from)
+                    .ok_or_else(|| Error::Invalid("document change starts outside the document".into()))?;
+                let end = crate::text::position_utf16(&document.text, change.to)
+                    .ok_or_else(|| Error::Invalid("document change ends outside the document".into()))?;
+                Ok(TextEdit { range: Range::new(start, end), text: change.insert.clone() })
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSocketReady {
+    pub plugin_id: String,
+    pub connection: u64,
 }
 
 /// How the user started an action; later IDEs may report more.
@@ -284,6 +367,8 @@ pub struct FilesChanged {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
+    DocumentChanged(DocumentChanged),
+    WebSocketReady(WebSocketReady),
     FileOpened(String),
     FileSaved(String),
     FilesChanged(FilesChanged),
@@ -365,7 +450,7 @@ pub struct CommitDraft {
 }
 
 /// A range in a file.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Location {
     /// Absolute path.
     pub path: String,
@@ -485,6 +570,29 @@ mod tests {
         let d = Diagnostic::new(Range::default(), Severity::Hint, "m").code("c");
         assert_eq!((d.code.as_deref(), d.unnecessary, d.related.len()), (Some("c"), false, 0));
     }
+
+    #[test]
+    fn decodes_document_and_websocket_events() {
+        let change = Event::from_other(
+            "document-changed".into(),
+            r#"{"path":"/p/a.rs","baseVersion":7,"version":8,"changes":[{"from":1,"to":2,"insert":"x"}]}"#.into(),
+        );
+        assert!(matches!(change, Event::DocumentChanged(DocumentChanged { base_version: 7, .. })));
+        let ready = Event::from_other("websocket-ready".into(), r#"{"pluginId":"collab","connection":42}"#.into());
+        assert_eq!(ready, Event::WebSocketReady(WebSocketReady { plugin_id: "collab".into(), connection: 42 }));
+
+        let document = Document { version: 7, text: "a😀b".into() };
+        let change = DocumentChanged {
+            path: "/p/a.rs".into(),
+            base_version: 7,
+            version: 8,
+            changes: vec![DocumentTextChange { from: 1, to: 3, insert: "x".into() }],
+        };
+        assert_eq!(
+            change.text_edits(&document).unwrap(),
+            [TextEdit { range: Range::new(Position::new(0, 1), Position::new(0, 3)), text: "x".into() }]
+        );
+    }
 }
 
 /// A notification button invoking a command declared by this plugin.
@@ -509,6 +617,16 @@ impl NotificationAction {
 impl Event {
     /// Decodes additive events while preserving unknown or malformed payloads.
     pub fn from_other(kind: String, data: String) -> Self {
+        if kind == "document-changed"
+            && let Ok(change) = serde_json::from_str(&data)
+        {
+            return Self::DocumentChanged(change);
+        }
+        if kind == "websocket-ready"
+            && let Ok(ready) = serde_json::from_str(&data)
+        {
+            return Self::WebSocketReady(ready);
+        }
         if kind == "files-changed"
             && let Ok(batch) = serde_json::from_str(&data)
         {
@@ -516,4 +634,93 @@ impl Event {
         }
         Self::Other { kind, data }
     }
+}
+
+/// An editor in the invoking window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenEditor {
+    pub path: String,
+    pub language: String,
+    pub dirty: bool,
+    pub active: bool,
+}
+/// Find in Files options. Include and exclude are project-relative globs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextQuery {
+    pub pattern: String,
+    pub regex: bool,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+}
+/// A text search match with zero-based UTF-16 coordinates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextMatch {
+    pub location: Location,
+    pub line: String,
+}
+/// Bounded text search result.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextSearch {
+    pub matches: Vec<TextMatch>,
+    pub limit_hit: bool,
+}
+/// A file's Problems view diagnostics from one source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileProblems {
+    pub path: String,
+    pub source: String,
+    pub diagnostics: Vec<Diagnostic>,
+}
+/// An editor annotation. Styles are fixed theme-token names; unknown names are ignored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Decoration {
+    pub range: Range,
+    pub style: String,
+    pub hover: Option<String>,
+    pub after: Option<String>,
+}
+/// A project-tree annotation. Badge is at most two Unicode characters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileDecoration {
+    pub badge: Option<String>,
+    pub style: String,
+    pub tooltip: Option<String>,
+}
+/// Repository history metadata. Date is Unix seconds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitInfo {
+    pub id: String,
+    pub short_id: String,
+    pub author: String,
+    pub author_email: String,
+    pub date: i64,
+    pub subject: String,
+    pub body: String,
+    pub parents: Vec<String>,
+}
+/// Attribution for a zero-based document line. Date is Unix seconds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlameLine {
+    pub line: u32,
+    pub commit: String,
+    pub author: String,
+    pub date: i64,
+    pub summary: String,
+}
+
+/// Non-secret settings of a plugin-owned project database source (API 1.4).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDataSource {
+    pub id: String,
+    pub name: String,
+    pub driver: String,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub database: Option<String>,
+    pub user: Option<String>,
+    pub url: Option<String>,
+    pub options: Vec<(String, String)>,
 }

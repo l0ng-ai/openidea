@@ -1,9 +1,13 @@
 /** IDE-rendered plugin settings; every control edits the dialog's staged form. */
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { tx } from "@/platform/i18n";
 import { Button, Checkbox, IconButton, Input, Select, T } from "@/ui";
 import { registerSettingsPage, useSettingsForm } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
+import { localizeContributions, usePluginCatalogs } from "./pluginText";
+import { itemsOf } from "./projection";
+import { SecretsDetails, type SecretDecl } from "./secrets";
+import { usePlugins } from "./store";
 import styles from "./PluginSettings.module.css";
 
 export interface SettingSchema {
@@ -222,7 +226,9 @@ function SettingControl({ pluginId, s }: { pluginId: string; s: SettingSchema })
         set={(v) => {
           const valid = accepts(s, v);
           setInvalid(!valid);
-          if (valid) form.setMapEntry("plugins", [pluginId, s.key], v === s.default ? null : v);
+          // Keep the chosen value even when it equals the default: false and ""
+          // are real plugin settings, not "remove the override".
+          if (valid) form.setMapEntry("plugins", [pluginId, s.key], v);
         }}
       />
       {s.description && <div className={styles.description}>{s.description}</div>}
@@ -302,6 +308,7 @@ function settingsPage(pluginId: string, page: Pick<SettingsPage, "properties" | 
             </div>
           </>
         )}
+        <PluginSecrets pluginId={pluginId} />
       </div>
     );
   };
@@ -318,6 +325,30 @@ function keywords(page: Pick<SettingsPage, "properties" | "actions">): string[] 
     ...(s.properties ?? []).flatMap(fieldWords),
   ];
   return [...page.properties.flatMap(fieldWords), ...(page.actions ?? []).map((a) => a.title)];
+}
+
+/**
+ * The plugin's `[[contributes.secrets]]` on its Settings page: a password
+ * field per secret, which is where users look for an API key. The plugin
+ * details page lists the same fields.
+ */
+function PluginSecrets({ pluginId }: { pluginId: string }) {
+  const ui = usePlugins((s) => s.ui);
+  const catalogs = usePluginCatalogs((s) => s.catalogs);
+  const plugin = usePlugins((s) => s.plugins.find((p) => p.id === pluginId));
+  const items = useMemo(
+    () => (plugin ? itemsOf<SecretDecl>(localizeContributions(ui, catalogs), "secrets", pluginId) : []),
+    [ui, catalogs, pluginId, plugin],
+  );
+  if (!plugin || !items.length) return null;
+  return (
+    <section className={styles.group}>
+      <h3>
+        <T>Secrets</T>
+      </h3>
+      <SecretsDetails plugin={plugin} items={items} />
+    </section>
+  );
 }
 
 export function projectSettings(pluginId: string, decl: SettingsDecl): () => void {

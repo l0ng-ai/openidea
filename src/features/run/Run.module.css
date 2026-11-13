@@ -34,6 +34,14 @@
   gap: 2px;
   padding: 4px 0;
   border-right: 1px solid var(--border);
+  min-height: 0;
+  /* A pane shorter than the buttons (the Services detail) scrolls them with the wheel
+     instead of growing the pane and adding a second scrollbar. */
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.toolbar::-webkit-scrollbar {
+  display: none;
 }
 .toolbarSep {
   width: 16px;
@@ -81,7 +89,32 @@
 
 /* Console */
 
+.consoleFindOpen {
+  position: absolute;
+  top: 6px;
+  right: 14px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  color: var(--fg-secondary);
+  background: var(--bg-toolbar);
+  opacity: 0.6;
+}
+
+.consoleFindOpen:hover,
+.consoleFindOpen:focus-visible {
+  opacity: 1;
+  color: var(--fg-primary);
+}
+
 .consoleWrap {
+  position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -126,7 +159,7 @@
   left: 0;
   min-width: 100%;
   padding: 0 12px;
-  line-height: 20px;
+  line-height: inherit;
   white-space: pre;
   tab-size: 4;
 }
@@ -197,6 +230,10 @@
   min-width: 0;
   flex: 1;
 }
+.testRow .testStatus {
+  width: var(--oi-tree-icon-size, 16px);
+  height: var(--oi-tree-icon-size, 16px);
+}
 .testName {
   flex: 1;
   min-width: 0;
@@ -217,9 +254,6 @@
   font-size: var(--fs-ui);
 }
 
-.passed {
-  color: var(--success);
-}
 .failed {
   color: var(--danger);
 }
@@ -431,17 +465,26 @@
 .editDialog {
   max-width: calc(100vw - 48px);
 }
-.editBody {
-  display: flex;
-  height: 100%;
-  min-height: min(520px, calc(100vh - 200px));
-}
-.editSidebar {
-  flex: none;
-  width: 250px;
+.editDialog [data-dialog-body] {
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border-popup);
+}
+.editBody {
+  display: flex;
+  flex: 1 1 auto;
+  height: min(520px, calc(100vh - 200px));
+  min-height: 0;
+}
+.editSplit {
+  flex: 1;
+}
+.editSidebar {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.editDetails {
+  container: run-config-content / inline-size;
 }
 .editToolbar {
   flex: none;
@@ -452,6 +495,7 @@
 }
 .editList {
   flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 4px 0;
 }
@@ -481,14 +525,42 @@
 .editForm {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   overflow: auto;
   padding: 12px 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
+.configFields {
+  display: grid;
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  column-gap: var(--space-3);
+  row-gap: var(--space-2);
+  align-content: start;
+  min-width: 0;
+}
+.configFields > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.configFields:not(.configFieldsTomcat) > .field,
+.configFields:not(.configFieldsTomcat) > .formHeader,
+.configFields:not(.configFieldsTomcat) > .formHeader > .field {
+  grid-template-columns: subgrid;
+}
+.formHeader > .field {
+  grid-column: 1 / -1;
+}
 .editFormTomcat {
   overflow: hidden;
+}
+.configFieldsTomcat {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 .tomcatTreeIconWrap {
   position: relative;
@@ -519,9 +591,11 @@
 }
 .field {
   display: grid;
-  grid-template-columns: 120px 1fr;
-  align-items: center;
-  gap: 12px;
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  align-items: start;
+  column-gap: var(--space-3);
+  row-gap: 4px;
+  min-width: 0;
 }
 .fieldTop {
   align-items: start;
@@ -532,12 +606,20 @@
 .fieldLabel {
   color: var(--fg-secondary);
   font-size: var(--fs-ui);
+  padding-top: max(0px, calc((var(--h-field) - 1.4em) / 2));
+  overflow-wrap: anywhere;
 }
 .fieldControl {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+}
+.fieldControl > * {
+  max-width: 100%;
+}
+.fieldControl > span {
+  overflow-wrap: anywhere;
 }
 .fieldError {
   color: var(--danger);
@@ -561,19 +643,24 @@
   flex: none;
   align-self: flex-start;
   margin: 8px 12px;
+  max-width: calc(100% - 24px);
+  text-align: left;
+  overflow-wrap: anywhere;
 }
 /* Below "Edit configuration templates…". */
 .editImportLink {
   margin-top: 0;
 }
 .footerRun {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
+  min-width: 0;
 }
 .formHeader {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 16px;
   padding-bottom: 10px;
@@ -589,10 +676,22 @@
   gap: 10px;
   max-width: 440px;
 }
+.nameControl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  min-width: 0;
+}
+.nameControl > input {
+  flex: 1 1 160px;
+  min-width: 0;
+}
 .storeProjectGroup {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 .formSection {
   display: flex;
@@ -603,6 +702,7 @@
   flex: 1;
   font-weight: 600;
   color: var(--fg-strong);
+  min-width: 0;
 }
 .formSection .noticeLink {
   display: inline-flex;
@@ -651,7 +751,8 @@
   align-self: flex-start;
 }
 .taskRow {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 4px;
   min-height: var(--h-row);
@@ -659,9 +760,10 @@
 .taskRow > :first-child {
   min-width: 0;
 }
-.taskRow > .taskLabel,
-.taskRow > input {
-  flex: 1;
+.taskActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
 }
 .taskLabel {
   overflow: hidden;
@@ -768,16 +870,25 @@
   gap: 6px;
   color: var(--danger);
   font-size: var(--fs-ui);
+  min-width: 0;
+}
+.footerError > svg {
+  flex: none;
 }
 
-/* Editor gutter ▶ run icons */
-.runGutter {
-  width: 14px;
+@container run-config-content (max-width: 360px) {
+  .configFields,
+  .editForm > .field {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
+
+/* Editor gutter ▶ run icons (the column collapses when the file has none) */
 .runGutter :global(.cm-gutterElement) {
   display: flex;
   align-items: center;
-  justify-content: center;
+  /* Spare width stays left of the icons, which sit next to the code. */
+  justify-content: flex-end;
 }
 .runMarker {
   width: 14px;

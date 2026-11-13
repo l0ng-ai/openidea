@@ -73,9 +73,15 @@ pub struct Connection {
     session: Option<Arc<ide_ssh::Session>>,
     /// How to reach a dev container's ports; `None` for SSH and WSL.
     exec: Option<Arc<ide_remote::container_tunnel::Exec>>,
-    /// Remote ports forwarded to this machine (Ports tool window), by remote port.
-    forwards: Mutex<Vec<(u16, Forward)>>,
+    /// Remote ports forwarded to this machine (Ports tool window), by host (`None`: the remote
+    /// host itself) and remote port.
+    forwards: Mutex<Vec<(ForwardKey, Forward)>>,
+    /// Ports of the remote built-in web server forwarded here, by remote port.
+    web_forwards: Mutex<Vec<(u16, Forward)>>,
 }
+
+/// A forwarded port's host (`None`: the remote host itself) and remote port.
+type ForwardKey = (Option<String>, u16);
 
 /// A forwarded port: through the SSH connection, or `docker exec` in a dev container.
 enum Forward {
@@ -237,7 +243,9 @@ impl Handler for ClientHandler {
     }
 
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
-        use ide_host::plugins::remote_host::{SECRET_REQUEST, SecretRequest};
+        use ide_host::plugins::remote_host::{
+            AUTH_REQUEST, AuthRequest, SECRET_REQUEST, SECRET_WRITE, SecretRequest, SecretWrite,
+        };
         match method {
             // A remote plugin's request header needs a secret from this machine's keychain.
             SECRET_REQUEST => {
@@ -245,6 +253,18 @@ impl Handler for ClientHandler {
                     serde_json::from_value(params).map_err(|e| (ide_jsonrpc::codes::INVALID_PARAMS, e.to_string()))?;
                 let state = self.app.state::<AppState>();
                 Ok(serde_json::to_value(state.plugins.declared_secret(&r.plugin, &r.name)).unwrap_or(Value::Null))
+            }
+            SECRET_WRITE => {
+                let request: SecretWrite =
+                    serde_json::from_value(params).map_err(|e| (ide_jsonrpc::codes::INVALID_PARAMS, e.to_string()))?;
+                Ok(serde_json::to_value(self.app.state::<AppState>().plugins.remote_secret_write(request))
+                    .unwrap_or(Value::Null))
+            }
+            AUTH_REQUEST => {
+                let request: AuthRequest =
+                    serde_json::from_value(params).map_err(|e| (ide_jsonrpc::codes::INVALID_PARAMS, e.to_string()))?;
+                Ok(serde_json::to_value(self.app.state::<AppState>().plugins.remote_auth(&self.window, request))
+                    .unwrap_or(Value::Null))
             }
             _ => Err((ide_jsonrpc::codes::METHOD_NOT_FOUND, format!("unhandled method {method}"))),
         }
@@ -514,7 +534,7 @@ pub async fn remote_connect(
         peer.request("invoke", call, None).await.map_err(ide_host::rpc::error_from_reply)?;
     // As the server resolved it (symlinks, a trailing `/`): the frontend compares it with the project's.
     let root = serde_json::to_value(&project.root).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or(root);
-    let _ = window.set_title(&format!("{} [{title_tag}]", project.name));
+    let _ = window.set_title(&format!("{} [{title_tag}]", project.display_name));
     let connection = Arc::new(Connection {
         peer,
         target: target.clone(),
@@ -526,6 +546,7 @@ pub async fn remote_connect(
         next_channel: std::sync::atomic::AtomicU64::new(1),
         session,
         forwards: Mutex::new(Vec::new()),
+        web_forwards: Mutex::new(Vec::new()),
         exec,
     });
     if let RemoteTarget::DevContainer { folder, config } = &target {
@@ -537,8 +558,11 @@ pub async fn remote_connect(
     state.remote_dev.0.lock().insert(label.clone(), connection.clone());
     let weak = Arc::downgrade(&connection);
     let peer = connection.peer.clone();
+    let auth_plugins = state.plugins.clone();
+    let auth_window = label.clone();
     tauri::async_runtime::spawn(async move {
         peer.closed().await;
+        auth_plugins.forget_remote_loopbacks(&auth_window);
         if let Some(connection) = weak.upgrade() {
             connection.forwards.lock().clear();
         }
@@ -656,10 +680,17 @@ pub fn remote_current(window: Window, state: State<'_, AppState>) -> Option<Remo
 pub struct ForwardedPort {
     pub remote_port: u16,
     pub local_port: u16,
+    /// The host the port belongs to, as a dev container reaches it (a Compose service from
+    /// `forwardPorts`); `None` for the remote host itself.
+    pub host: Option<String>,
 }
 
 fn forwarded(c: &Connection) -> Vec<ForwardedPort> {
-    c.forwards.lock().iter().map(|(remote, t)| ForwardedPort { remote_port: *remote, local_port: t.port() }).collect()
+    c.forwards
+        .lock()
+        .iter()
+        .map(|((host, remote), t)| ForwardedPort { remote_port: *remote, local_port: t.port(), host: host.clone() })
+        .collect()
 }
 
 fn connection(window: &Window, state: &AppState) -> IdeResult<Arc<Connection>> {
@@ -689,34 +720,64 @@ pub async fn remote_forward_port(
         return Err(IdeError::invalid("Port must be between 1 and 65535"));
     }
     let c = connection(&window, &state)?;
-    if let Some(p) = forwarded(&c).into_iter().find(|p| p.remote_port == remote_port) {
+    if let Some(p) = forwarded(&c).into_iter().find(|p| p.host.is_none() && p.remote_port == remote_port) {
         return Ok(p);
     }
-    let tunnel = open_forward(&c, remote_port).await?;
-    let port = ForwardedPort { remote_port, local_port: tunnel.port() };
+    let tunnel = open_forward(&c, None, remote_port).await?;
+    let port = ForwardedPort { remote_port, local_port: tunnel.port(), host: None };
     let mut forwards = c.forwards.lock();
     if c.peer.is_closed() {
         return Err(IdeError::cancelled());
     }
-    if let Some(existing) = forwards.iter().find(|(remote, _)| *remote == remote_port) {
-        return Ok(ForwardedPort { remote_port, local_port: existing.1.port() });
+    if let Some(existing) = forwards.iter().find(|(key, _)| *key == (None, remote_port)) {
+        return Ok(ForwardedPort { remote_port, local_port: existing.1.port(), host: None });
     }
-    forwards.push((remote_port, tunnel));
+    forwards.push(((None, remote_port), tunnel));
     Ok(port)
 }
 
-/// Forwards `remote_port` to the same local port when it is free, else to a free one.
-async fn open_forward(c: &Connection, remote_port: u16) -> IdeResult<Forward> {
-    if let Some(session) = c.session.clone() {
+/// Forwards `remote_port` of `host` (`None`: the remote host itself) to the same local port
+/// when it is free, else to a free one. Another host is reached from a dev container only.
+async fn open_forward(c: &Connection, host: Option<&str>, remote_port: u16) -> IdeResult<Forward> {
+    if let (Some(session), None) = (c.session.clone(), host) {
         let tunnel = ide_ssh::Tunnel::listen_on(session, Some(remote_port), "localhost", remote_port).await?;
         return Ok(Forward::Ssh(tunnel));
     }
     if let Some(exec) = c.exec.clone() {
+        let host = host.unwrap_or("localhost");
         return Ok(Forward::Container(
-            ide_remote::container_tunnel::Tunnel::listen(exec, remote_port, remote_port).await?,
+            ide_remote::container_tunnel::Tunnel::listen(exec, remote_port, host, remote_port).await?,
         ));
     }
     Err(IdeError::unavailable("Forwarding ports is not supported in a WSL project yet"))
+}
+
+/// `web_url` answers with the remote host's built-in web server, on its loopback: the URL's
+/// port is forwarded here. A WSL distribution shares this machine's loopback already.
+async fn forward_web_url(c: &Connection, url: &str) -> IdeResult<String> {
+    let Some((port, path)) = url.strip_prefix("http://127.0.0.1:").and_then(|rest| rest.split_once('/')) else {
+        return Ok(url.to_owned());
+    };
+    let Ok(remote) = port.parse::<u16>() else { return Ok(url.to_owned()) };
+    let existing = c.web_forwards.lock().iter().find(|(p, _)| *p == remote).map(|(_, f)| f.port());
+    let local = match existing {
+        Some(local) => local,
+        None => {
+            let forward = if let Some(session) = c.session.clone() {
+                Forward::Ssh(ide_ssh::Tunnel::listen_on(session, Some(remote), "127.0.0.1", remote).await?)
+            } else if let Some(exec) = c.exec.clone() {
+                Forward::Container(
+                    ide_remote::container_tunnel::Tunnel::listen(exec, remote, "127.0.0.1", remote).await?,
+                )
+            } else {
+                return Ok(url.to_owned());
+            };
+            let local = forward.port();
+            c.web_forwards.lock().push((remote, forward));
+            local
+        }
+    };
+    Ok(format!("http://127.0.0.1:{local}/{path}"))
 }
 
 /// Forwards the `forwardPorts` of the dev container's configuration (the local folder's).
@@ -728,7 +789,13 @@ async fn forward_configured_ports(c: &Connection, folder: &str, config: &str) {
             "" => ide_workspace::devcontainer::find(&local),
             config => Some(local.join(config)),
         };
-        path.map(|path| ide_workspace::devcontainer::load_file(&path).map(|c| c.forward_ports)).transpose()
+        path.map(|path| {
+            ide_workspace::devcontainer::load_file(&path).map(|c| {
+                let own = c.forward_ports.into_iter().map(|port| (None, port));
+                own.chain(c.forward_host_ports.into_iter().map(|(host, port)| (Some(host), port))).collect::<Vec<_>>()
+            })
+        })
+        .transpose()
     })
     .await;
     let ports = match ports {
@@ -736,25 +803,34 @@ async fn forward_configured_ports(c: &Connection, folder: &str, config: &str) {
         Ok(Ok(None)) => return,
         result => return tracing::warn!("{}: forwardPorts: {result:?}", c.host),
     };
-    for remote_port in ports {
-        if c.forwards.lock().iter().any(|(remote, _)| *remote == remote_port) {
+    for key in ports {
+        if c.forwards.lock().iter().any(|(forwarded, _)| *forwarded == key) {
             continue;
         }
-        match open_forward(c, remote_port).await {
-            Ok(tunnel) => c.forwards.lock().push((remote_port, tunnel)),
-            Err(e) => tracing::warn!("{}: cannot forward port {remote_port}: {e}", c.host),
+        let (host, remote_port) = &key;
+        match open_forward(c, host.as_deref(), *remote_port).await {
+            Ok(tunnel) => c.forwards.lock().push((key, tunnel)),
+            Err(e) => {
+                tracing::warn!("{}: cannot forward {}:{remote_port}: {e}", c.host, host.as_deref().unwrap_or("port"))
+            }
         }
     }
 }
 
-/// Stops forwarding `remote_port`.
+/// Stops forwarding `remote_port` of `host` (`None`: the remote host itself).
 #[tauri::command]
 #[specta::specta]
-pub async fn remote_stop_forwarding(window: Window, state: State<'_, AppState>, remote_port: u16) -> IdeResult<()> {
+pub async fn remote_stop_forwarding(
+    window: Window,
+    state: State<'_, AppState>,
+    remote_port: u16,
+    host: Option<String>,
+) -> IdeResult<()> {
     let c = connection(&window, &state)?;
+    let key = (host, remote_port);
     let tunnel = {
         let mut forwards = c.forwards.lock();
-        forwards.iter().position(|(remote, _)| *remote == remote_port).map(|index| forwards.remove(index).1)
+        forwards.iter().position(|(forwarded, _)| *forwarded == key).map(|index| forwards.remove(index).1)
     };
     if let Some(Forward::Container(tunnel)) = tunnel {
         tunnel.close().await;
@@ -813,8 +889,12 @@ pub async fn remote_invoke(
     } else {
         None
     };
+    let web_url = cmd == "web_url";
     let call = Invoke { window: label, cmd, args };
-    let result: Value = c.peer.request("invoke", call, None).await.map_err(ide_host::rpc::error_from_reply)?;
+    let mut result = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30)).await?;
+    if web_url && let Some(url) = result.as_str() {
+        result = Value::String(forward_web_url(&c, url).await?);
+    }
     if let (Some((peers, edit)), Some(version)) =
         (mirrored, result.as_u64().and_then(|version| u32::try_from(version).ok()))
     {
@@ -858,9 +938,38 @@ pub async fn remote_import_local(
     result
 }
 
+// Conversation reads are snapshots; a silent host must not leave them pending forever.
+async fn invoke_reply(peer: &Peer, call: Invoke, entries_timeout: std::time::Duration) -> IdeResult<Value> {
+    let reply = peer.request("invoke", &call, None);
+    if call.cmd == "agent_entries" {
+        tokio::time::timeout(entries_timeout, reply)
+            .await
+            .map_err(|_| IdeError::unavailable("Loading the conversation timed out. Try again."))?
+            .map_err(ide_host::rpc::error_from_reply)
+    } else {
+        reply.await.map_err(ide_host::rpc::error_from_reply)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn conversation_read_times_out_when_the_host_never_replies() {
+        let (client, _silent_host) = tokio::io::duplex(4096);
+        let (reader, writer) = tokio::io::split(client);
+        let peer = Peer::connect(reader, writer, Arc::new(ide_jsonrpc::NoopHandler));
+        let call = Invoke {
+            window: "main".into(),
+            cmd: "agent_entries".into(),
+            args: serde_json::json!({"task": "saved-codex-task", "subagent": null}),
+        };
+        let error = invoke_reply(&peer, call, std::time::Duration::from_millis(10)).await.unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
+        assert_eq!(error.message, "Loading the conversation timed out. Try again.");
+        peer.kill();
+    }
 
     #[test]
     fn maps_uname_to_rust_platform_names() {

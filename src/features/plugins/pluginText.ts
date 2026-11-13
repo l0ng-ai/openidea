@@ -77,10 +77,12 @@ const TEXT_KEYS: Record<string, readonly string[]> = {
   commands: ["title", "category"],
   menus: ["submenu"],
   views: ["title"],
+  markerIcons: ["tooltip"],
   customEditors: ["title"],
   statusBar: ["text", "tooltip"],
   settings: ["title"],
   fileTemplates: ["name"],
+  snippets: [],
   iconThemes: ["label"],
   themes: ["name"],
   secrets: ["label", "description"],
@@ -90,6 +92,7 @@ function localizeDecl(decl: unknown, keys: readonly string[], t: PluginTranslate
   if (!decl || typeof decl !== "object") return decl;
   const out: Record<string, unknown> = { ...(decl as Record<string, unknown>) };
   for (const key of keys) if (typeof out[key] === "string") out[key] = t(out[key]);
+  if (Array.isArray(out.entries)) out.entries = out.entries.map((s) => localizeDecl(s, ["description"], t));
   if (Array.isArray(out.properties))
     out.properties = out.properties.map((p) => localizeDecl(p, ["title", "description", "group"], t));
   if (Array.isArray(out.pages)) out.pages = out.pages.map((p) => localizeDecl(p, ["title"], t));

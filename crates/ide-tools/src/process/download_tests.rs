@@ -94,7 +94,14 @@ fn http() -> Option<Http> {
         eprintln!("skipping download test: curl is not installed");
         return None;
     };
-    Some(Http { curl, gh: None, explicit_github_token: None, https_only: false, revoke_best_effort: false })
+    Some(Http {
+        curl,
+        gh: None,
+        explicit_github_token: None,
+        https_only: false,
+        revoke_best_effort: false,
+        accept: None,
+    })
 }
 
 #[test]

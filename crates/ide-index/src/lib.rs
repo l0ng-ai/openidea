@@ -234,6 +234,15 @@ impl ProjectIndex {
         matching::find_files(&d, &matching::Recents { paths: &recent }, query, limit)
     }
 
+    /// All indexed files with this exact basename, for resolving printed source locations.
+    /// Unlike interactive fuzzy search, this must not truncate candidates before package matching.
+    pub fn files_named(&self, name: &str) -> Vec<PathBuf> {
+        let data = self.shared.data.read();
+        let mut files: Vec<_> = data.files.iter().flatten().filter(|file| file.name() == name).collect();
+        files.sort_by(|a, b| a.rel.len().cmp(&b.rel.len()).then_with(|| a.rel.cmp(&b.rel)));
+        files.into_iter().map(|file| file.path.clone()).collect()
+    }
+
     /// Up to `limit` indexed files below `dir` (VCS-ignored ones left out) whose path relative to
     /// `dir` satisfies `matches`: a file list without walking the disk. `None` while nothing is
     /// indexed yet (first scan without a cache).
@@ -310,6 +319,19 @@ impl ProjectIndex {
         matching::symbols_named(&self.shared.data.read(), name, kind, limit)
     }
 
+    /// Symbols named exactly `name` (of `kind`, if given) whose file is inside one of `roots`
+    /// (the project root plus its configured dependency roots): answers bounded by the cap
+    /// never evict matches from a root because another root filled it first.
+    pub fn symbols_named_within(
+        &self,
+        name: &str,
+        kind: Option<SymbolKind>,
+        roots: &[PathBuf],
+        limit: usize,
+    ) -> Vec<SymbolMatch> {
+        matching::symbols_named_within(&self.shared.data.read(), name, kind, roots, limit)
+    }
+
     /// Incrementally re-indexes changed paths (called from the vfs watcher).
     /// Cheap: the work is queued for the indexing thread.
     pub fn update(&self, changed: &[PathBuf], removed: &[PathBuf]) {
@@ -320,6 +342,28 @@ impl ProjectIndex {
         }
         if !changed.is_empty() {
             self.shared.enqueue(Job::Changed(changed));
+        }
+    }
+
+    /// Refreshes ignore matchers and indexed entries in the affected subtrees.
+    pub fn ignore_rules_changed(&self, dirs: &[PathBuf]) {
+        let filter = self.shared.filter();
+        let mut affected = Vec::new();
+        for dir in dirs {
+            let path = if dir.is_absolute() { dir.clone() } else { self.root.join(dir) };
+            let path = dunce::canonicalize(&path).unwrap_or(path);
+            for root in filter.roots() {
+                if path.starts_with(root) {
+                    affected.push(path.clone());
+                    break;
+                }
+                if root.starts_with(&path) {
+                    affected.push(root.to_path_buf());
+                }
+            }
+        }
+        if !affected.is_empty() {
+            self.shared.enqueue(Job::IgnoreRules(affected));
         }
     }
 

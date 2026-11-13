@@ -36,6 +36,7 @@ import { defineBuiltinUiPoints } from "./points";
 import { localizeContributions, loadPluginCatalogs, usePluginCatalogs } from "./pluginText";
 import { clearUiContributions, syncUiContributions } from "./projection";
 import { handleRuntimeEvent, refreshEventKinds, startRuntimeUi } from "./runtimeUi";
+import { refreshRunTargets } from "./runTargets";
 import {
   grantPlugin,
   runPluginCommand,
@@ -103,7 +104,12 @@ export function pluginThemeCss(theme: ActiveTheme["theme"]): string {
  */
 export function applyPluginTheme(theme: ActiveTheme | null, root: HTMLElement = document.documentElement) {
   const doc = root.ownerDocument;
-  doc.getElementById(PLUGIN_THEME_STYLE_ID)?.remove();
+  const current = doc.getElementById(PLUGIN_THEME_STYLE_ID);
+  const id = theme && `${theme.pluginId}/${theme.theme.id}`;
+  const css = theme && pluginThemeCss(theme.theme);
+  // The same theme again (each window hears every selection): replacing its stylesheet restyles the page.
+  if (theme && current?.textContent === css && root.dataset.pluginTheme === id) return;
+  current?.remove();
   const had = root.dataset.pluginTheme !== undefined;
   if (!theme) {
     delete root.dataset.pluginTheme;
@@ -112,9 +118,9 @@ export function applyPluginTheme(theme: ActiveTheme | null, root: HTMLElement = 
   } else {
     const style = doc.createElement("style");
     style.id = PLUGIN_THEME_STYLE_ID;
-    style.textContent = pluginThemeCss(theme.theme);
+    style.textContent = css;
     doc.head.appendChild(style);
-    root.dataset.pluginTheme = `${theme.pluginId}/${theme.theme.id}`;
+    root.dataset.pluginTheme = id!;
     root.dataset.pluginThemeKind = theme.theme.kind === "light" ? "light" : "dark";
     applyThemeAttributes(currentThemeId(), root);
   }
@@ -239,8 +245,10 @@ export function followThemeSetting(): () => void {
   };
   reconcile();
   const disposers = [
+    // Not on the host's theme changing: another window selects it before this one's settings
+    // say so, and selecting this window's choice back would flip it until they agree.
     usePlugins.subscribe((s, prev) => {
-      if (s.loaded !== prev.loaded || s.activeTheme !== prev.activeTheme) reconcile();
+      if (s.loaded !== prev.loaded) reconcile();
     }),
     useProject.subscribe((s, prev) => {
       if (s.settings?.appearance !== prev.settings?.appearance) reconcile();
@@ -330,6 +338,7 @@ export function handlePluginEvent(e: PluginEvent) {
  */
 export function followPluginChanges(): () => void {
   return pluginsBackend().onEvent((e) => {
+    if (e.type === "runTargetsChanged") void refreshRunTargets(false).catch(() => {});
     if (e.type === "commandsChanged" || e.type === "themeChanged" || e.type === "languagesChanged")
       handlePluginEvent(e);
   });

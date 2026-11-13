@@ -2,7 +2,7 @@
 import { activeEditor, onEditorEvent, openEditorPaths, useEditorRegistry } from "@/editor/api";
 import { commands, call, onIdeEvent, ideEventsReady } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { isRemoteWindow } from "@/platform/remote";
+import { isRemoteWindow, useRemote } from "@/platform/remote";
 
 import { registerOverlay } from "@/workbench/contributions";
 import { McpConfirmHost } from "./ConfirmDialog";
@@ -29,8 +29,9 @@ export function activate(): () => void {
   let disposed = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const report = () => {
+    if (timer) clearTimeout(timer);
     timer = null;
-    if (isRemoteWindow() || !useProject.getState().project) return;
+    if (!useProject.getState().project) return;
     const paths = openEditorPaths();
     const editor = activeEditor();
     const focused = document.hasFocus();
@@ -85,8 +86,15 @@ export function activate(): () => void {
       schedule();
     }
   });
-  window.addEventListener("focus", schedule);
-  window.addEventListener("blur", schedule);
+  const offRemote = useRemote.subscribe((s, prev) => {
+    if (s.session !== prev.session) {
+      lastPaths = undefined;
+      lastEditor = undefined;
+      schedule();
+    }
+  });
+  window.addEventListener("focus", report);
+  window.addEventListener("blur", report);
   return () => {
     disposed = true;
     unload();
@@ -96,9 +104,10 @@ export function activate(): () => void {
     window.removeEventListener("beforeunload", unload);
     offRegistry();
     offEvents();
+    offRemote();
     offProject();
-    window.removeEventListener("focus", schedule);
-    window.removeEventListener("blur", schedule);
+    window.removeEventListener("focus", report);
+    window.removeEventListener("blur", report);
     if (timer) clearTimeout(timer);
   };
 }

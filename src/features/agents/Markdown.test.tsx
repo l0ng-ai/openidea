@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { resetMermaidForTests } from "../viewers/markdown/mermaid";
 import { StrictMode } from "react";
-import { Markdown } from "./Markdown";
+import { Markdown, markdownBlocks, markdownHtml } from "./Markdown";
 
 const { openFile, openExternalUrl } = vi.hoisted(() => ({
   openFile: vi.fn().mockResolvedValue(undefined),
@@ -12,12 +12,19 @@ const { openFile, openExternalUrl } = vi.hoisted(() => ({
 const copyText = vi.hoisted(() => vi.fn());
 const readImage = vi.fn<(path: string) => Promise<string>>();
 const PIXEL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
-vi.mock("@/workbench/contributions", () => ({ editorService: () => ({ openFile }) }));
+vi.mock("@/workbench/contributions", () => ({
+  editorService: () => ({ openFile }),
+}));
 vi.mock("@/platform/openUrl", () => ({ openExternalUrl }));
-vi.mock("@/ui", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/ui")>()), copyText }));
+vi.mock("@/ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/ui")>()),
+  copyText,
+}));
 
 const mermaid = vi.hoisted(() => ({ initialize: vi.fn(), render: vi.fn() }));
-vi.mock("mermaid", () => ({ default: { initialize: mermaid.initialize, render: mermaid.render } }));
+vi.mock("mermaid", () => ({
+  default: { initialize: mermaid.initialize, render: mermaid.render },
+}));
 
 const DIAGRAM = "flowchart TD\n    A-->B";
 const FENCE = `\`\`\`mermaid\n${DIAGRAM}\n\`\`\`\n`;
@@ -33,8 +40,9 @@ beforeEach(() => {
     document.body.append(tmp);
     return {
       svg:
-        `<svg id="${id}"><defs><marker id="${id}-arrow" orient="auto"><path d="M0,0L8,4"/></marker></defs>` +
-        `<path d="M0,4" marker-end="url(#${id}-arrow)"/><text>${text.split("\n")[0]}</text></svg>`,
+        `<svg id="${id}"><style>#${id} .flowchart-link{fill:none;}#${id} [id$="-arrow"] path{fill:#9fa2a8;}</style>` +
+        `<defs><marker id="${id}-arrow" orient="auto"><path d="M0,0L8,4"/></marker></defs>` +
+        `<path class="flowchart-link" d="M0,4" marker-end="url(#${id}-arrow)"/><text>${text.split("\n")[0]}</text></svg>`,
     };
   });
   mockIPC((cmd, args) => (cmd === "fs_read_image" ? readImage((args as { path: string }).path) : null));
@@ -147,13 +155,24 @@ it("loads raw HTML images without allowing alternate sources or forged paths", a
   expect(container.querySelector("source, [srcset], [onerror]")).toBeNull();
 });
 
-it.each([PIXEL, "https://example.com/code.png", "http://localhost:9000/code.png"])(
-  "keeps an inline or web image: %s",
+it("keeps an inline image: a data URL loads without a request", () => {
+  render(<Markdown text={`![QR](${PIXEL})`} cwd="/repo" />);
+  expect(screen.getByRole("img")).toHaveAttribute("src", PIXEL);
+  expect(screen.getByRole("img")).toHaveAttribute("referrerpolicy", "no-referrer");
+  expect(readImage).not.toHaveBeenCalled();
+});
+
+it.each(["https://example.com/code.png", "http://localhost:9000/code.png"])(
+  "loads a web image in a reply only on a click: %s",
   (src) => {
-    render(<Markdown text={`![QR](${src})`} cwd="/repo" />);
-    expect(screen.getByRole("img")).toHaveAttribute("src", src);
-    expect(screen.getByRole("img")).toHaveAttribute("referrerpolicy", "no-referrer");
+    const { container } = render(<Markdown text={`![QR](${src})`} cwd="/repo" />);
+    const img = container.querySelector("img")!;
+    // Not fetched on render: a button stands in, the image is hidden with no src.
+    expect(img).not.toHaveAttribute("src");
     expect(readImage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: `Load image from ${new URL(src).host}` }));
+    expect(img).toHaveAttribute("src", src);
+    expect(img).toHaveAttribute("referrerpolicy", "no-referrer");
   },
 );
 
@@ -169,7 +188,11 @@ it("reuses image reads while a reply streams, but reads again for another messag
 });
 
 it("reports read failure and retries on the next render", async () => {
-  readImage.mockRejectedValueOnce({ kind: "io", message: "missing", data: null });
+  readImage.mockRejectedValueOnce({
+    kind: "io",
+    message: "missing",
+    data: null,
+  });
   const { rerender } = render(<Markdown text="![QR](/tmp/missing.png)" cwd="/repo" />);
   await waitFor(() => expect(screen.getByRole("img")).toHaveAttribute("alt", "Unable to load image: /tmp/missing.png"));
   expect(screen.getByRole("img")).not.toHaveAttribute("src");
@@ -201,10 +224,23 @@ it.each(["javascript:alert(1)", "data:text/html,test", "/tmp/%ZZ.png", "/tmp/cod
 );
 
 it("reports network or decode failures without leaving a broken source", () => {
-  render(<Markdown text="![QR](https://example.com/gone.png)" cwd="/repo" />);
-  fireEvent.error(screen.getByRole("img"));
-  expect(screen.getByRole("img")).not.toHaveAttribute("src");
-  expect(screen.getByRole("img")).toHaveAttribute("alt", "Unable to load image: https://example.com/gone.png");
+  const { container } = render(<Markdown text="![QR](https://example.com/gone.png)" cwd="/repo" />);
+  fireEvent.click(screen.getByRole("button", { name: "Load image from example.com" }));
+  const img = container.querySelector("img")!;
+  fireEvent.error(img);
+  expect(img).not.toHaveAttribute("src");
+  expect(img).toHaveAttribute("alt", "Unable to load image: https://example.com/gone.png");
+});
+
+it("drops a reply attribute that names another host, so nothing fetches on render", () => {
+  const { container } = render(
+    <Markdown
+      text={'<video poster="https://example.com/p.jpg"></video><p background="//evil.test/x">x</p>'}
+      cwd="/repo"
+    />,
+  );
+  expect(container.querySelector("[poster]")).toBeNull();
+  expect(container.querySelector("[background]")).toBeNull();
 });
 
 describe("mermaid diagrams in a reply", () => {
@@ -236,11 +272,15 @@ describe("mermaid diagrams in a reply", () => {
     expect(idsOne).toHaveLength(2);
     expect(idsTwo).toHaveLength(2);
     expect(idsOne.filter((id) => idsTwo.includes(id))).toEqual([]);
-    // Every marker reference resolves inside its own copy.
+    // Every marker reference and scoped `<style>` selector resolves inside its own copy.
     for (const root of [one.container, two.container]) {
       const svg = root.querySelector(".mermaid-output svg")!;
       const ref = svg.querySelector("[marker-end]")!.getAttribute("marker-end")!;
       expect(new Set(idsOf(root)).has(/url\(#(.+)\)/.exec(ref)![1]!)).toBe(true);
+      expect(svg.querySelector("style")!.textContent).toContain(
+        `#${svg.getAttribute("id")} .flowchart-link{fill:none;}`,
+      );
+      expect(svg.querySelector("defs [id$='-arrow'] path")).not.toBeNull();
     }
   });
 
@@ -267,5 +307,45 @@ describe("mermaid diagrams in a reply", () => {
     rerender(<Markdown text={`${FENCE}\n\nDone.`} cwd="/repo" onDiagramDrawn={onDiagramDrawn} />);
     await act(async () => {});
     expect(onDiagramDrawn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("streamed replies", () => {
+  it("cuts a reply into blocks that join back into it", () => {
+    const text = "# Plan\n\nFirst *one*.\n\n- a\n- b\n\n```ts\nconst a = 1;\n```\n\nTail";
+    const blocks = markdownBlocks(text);
+    expect(blocks.join("")).toBe(text);
+    expect(blocks).toHaveLength(5);
+    expect(blocks.map((b) => markdownHtml(b)).join("")).toBe(markdownHtml(text));
+    expect(markdownBlocks("See [docs][d].\n\n[d]: https://example.com")).toHaveLength(1);
+  });
+
+  it("renders an HTML block that wraps Markdown whole", () => {
+    const text = "<details>\n<summary>Log</summary>\n\ntext\n\n</details>";
+    expect(markdownBlocks(text)).toEqual([text]);
+    const { container } = render(<Markdown text={text} cwd="/repo" />);
+    expect(container.querySelector("details p")?.textContent).toBe("text");
+  });
+
+  it("cuts only what streamed on after the blocks that ended", () => {
+    const before = markdownBlocks("One.\n\nTwo.\n\nThr");
+    const after = markdownBlocks("One.\n\nTwo.\n\nThree.\n\n- a", before);
+    expect(after).toEqual(["One.\n\n", "Two.\n\n", "Three.\n\n", "- a"]);
+    expect(after[0]).toBe(before[0]);
+    expect(markdownBlocks("Other.\n\nTwo.\n\nThree.", before)).toEqual(["Other.\n\n", "Two.\n\n", "Three."]);
+  });
+
+  it("keeps the blocks a chunk didn't change", () => {
+    const head = "Intro paragraph.\n\n```ts\nconst a = 1;\n```\n\n";
+    const { container, rerender } = render(<Markdown text={`${head}Half a sen`} cwd="/repo" />);
+    const intro = container.querySelector("p")!;
+    const code = container.querySelector("pre")!;
+    rerender(<Markdown text={`${head}Half a sentence, then more.`} cwd="/repo" />);
+    expect(container.querySelector("p")).toBe(intro);
+    expect(container.querySelector("pre")).toBe(code);
+    expect(container.querySelectorAll("p")[1]!.textContent).toBe("Half a sentence, then more.");
+    expect(screen.getAllByRole("button", { name: "Copy Code" })).toHaveLength(1);
+    rerender(<Markdown text="Something else" cwd="/repo" />);
+    expect(container.textContent?.trim()).toBe("Something else");
   });
 });

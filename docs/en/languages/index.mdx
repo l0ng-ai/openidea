@@ -1,0 +1,210 @@
+---
+title: "Language support"
+description: "Which languages OpenIDEA supports, which language servers and debuggers it uses, and how they get installed."
+---
+
+OpenIDEA describes every language in a small definition file, `languages/<id>.toml`. The definition says which files belong to the language, how to highlight them, and which language server and debug adapter provide code intelligence and debugging. Everything a language server offers (completion, navigation, diagnostics, refactorings) then works through the same editor features for every language.
+
+## How language support works
+
+Each open file gets its language from the definitions, checked in this order:
+
+1. A per-file **Override File Type** (in the context menu of a file in the project tree or of an editor tab).
+2. An exact file name (`Dockerfile`, `go.mod`) or a file name pattern.
+3. A framework's folder: an `.html` or `.txt` file in a `templates` folder with a `manage.py` above it is a Django template.
+4. The extension, longest match first (`.html.erb` before `.erb`).
+5. The first line: a shebang such as `#!/usr/bin/env python3`, or a pattern such as `<?php`.
+6. Otherwise the file is plain text.
+
+You can add or remove file name patterns per language in **Settings › Editor › File Types** (**Recognized File Types**).
+
+For a recognized file, support comes in layers:
+
+- **Highlighting** is instant: it comes from a CodeMirror mode in the editor, or from the bundled tree-sitter grammar when the language has no mode.
+- **Structure** (outline, folding and the symbols in the project index) comes from a bundled tree-sitter grammar and needs no setup.
+- **Code intelligence** comes from one or more language servers (LSP). The IDE starts them when you open a file, using the nearest folder that contains one of the server's root markers (`Cargo.toml`, `package.json`, `pom.xml`, ...) as the workspace root.
+- **Debugging** comes from a debug adapter (DAP).
+
+<Note>
+  Language servers and debug adapters run programs from your machine, so they start only in projects you trust.
+</Note>
+
+### Several servers for one language
+
+A language can list more than one server:
+
+- **Alternatives** (shown as `a → b` in the table below): only the first one that is installed runs. Python, for example, uses basedpyright, and falls back to pyright, ty or pyrefly only when basedpyright is missing. In **Settings › Languages & Frameworks › Language Servers** you can pick one of them or set the choice to **Automatic** (the first one available).
+- **Additions** (shown as `+ b`): run next to the main server, usually only in projects that use them. Ruff joins basedpyright in projects with a Ruff configuration; oxlint joins vtsls in projects with an oxlint configuration; the Angular and Laravel servers join in Angular and Laravel projects.
+
+## Installing language servers and debuggers
+
+OpenIDEA does not bundle language servers. When you open a file whose server is missing, a notification says that the server is not installed and offers **Install**, which installs it and restarts code insight for that language. You can also manage every tool on one page:
+
+<Steps>
+  <Step title="Open the Language Servers page">
+    Open **Settings › Languages & Frameworks › Language Servers** (`⌘,` / `Ctrl+Alt+S`, then search for "Language
+    Servers"), or run the **Language Servers…** action from **Find Action…** (`⌘⇧A` / `Ctrl+Shift+A`).
+  </Step>
+  <Step title="Find the tool">
+    Filter by tool or language. Each entry shows whether the tool is installed by the IDE, found on your `PATH`, set to
+    a custom executable, or missing.
+  </Step>
+  <Step title="Install or point to your own copy">
+    Click **Install** (or **Reinstall**) to let the IDE install it, or set **Executable** to a binary you installed
+    yourself.
+  </Step>
+</Steps>
+
+The IDE never needs `sudo`. It installs tools into its own tools folder in the local data directory (see [Data directories and logs](/en/reference/data-directories)), using the method that fits each tool:
+
+| Method                        | Used for                                                                                                                                                                                             |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| npm                           | Node-based servers such as vtsls, Pyright, Intelephense, the Vue, Svelte, Astro, Angular, CSS, HTML, JSON, YAML, Bash and Dockerfile servers. Needs Node.js.                                         |
+| pip into a private virtualenv | basedpyright, ty, pyrefly, Ruff (uses `uv` when available).                                                                                                                                          |
+| pip into a private folder     | debugpy.                                                                                                                                                                                             |
+| `go install`                  | gopls, Delve, sqls. Needs Go.                                                                                                                                                                        |
+| `rustup component add`        | rust-analyzer (falls back to a download from Open VSX).                                                                                                                                              |
+| `gem install`                 | Solargraph into its own gem home; Ruby LSP into the project's Ruby.                                                                                                                                  |
+| `dotnet tool install`         | csharp-ls, FsAutoComplete. Needs the .NET SDK.                                                                                                                                                       |
+| Release download              | clangd, CodeLLDB, vscode-js-debug, JDT LS, java-debug, Kotlin LSP, Lua, Marksman, Taplo, ZLS, terraform-ls and others, from GitHub, Open VSX, Maven Central, the Eclipse download site or HashiCorp. |
+| Bundled                       | The Lombok agent for JDT LS ships with the app.                                                                                                                                                      |
+
+When the IDE looks for a server, it checks the executable you set in settings first, then its own tools folder, then your `PATH`. Servers that the IDE cannot install (for example sourcekit-lsp, which comes with the Swift toolchain, or the Godot editor's own server) show an install hint instead.
+
+<Tip>
+  GitHub release downloads use `GITHUB_TOKEN`, `GH_TOKEN` or your `gh` login when one is available, which avoids
+  anonymous API rate limits.
+</Tip>
+
+### Configuring a server
+
+Selecting a language server on the Language Servers page shows its settings, which are stored under `languageServers.<name>` in your settings (globally or per project):
+
+- turn the server off, or choose which of several alternatives runs;
+- **Executable**: the program to start;
+- **Startup**: **Arguments**, **Environment variables** and **Initialization options** (changing these restarts the server);
+- **Workspace Configuration**: the answer to the server's `workspace/configuration` requests, applied without a restart.
+
+**Add Language Server…** registers a server that no definition knows about: give its command, the languages it serves and its root markers.
+
+## Support matrix
+
+The table lists every built-in language definition. Server and debugger names in **bold** can be installed from the IDE; the others you install yourself (the install hint in the IDE says how). "Highlighting" and "Tree-sitter" mark instant highlighting and the bundled grammar for outline and folding.
+
+| Language            | ID                 | Files                                                       | Highlighting | Tree-sitter | Language servers                                                                      | Debugger                 |
+| ------------------- | ------------------ | ----------------------------------------------------------- | ------------ | ----------- | ------------------------------------------------------------------------------------- | ------------------------ |
+| .env                | `dotenv`           | `.env`                                                      | Yes          | —           | —                                                                                     | —                        |
+| Arduino             | `arduino`          | `.ino`                                                      | Yes          | Yes         | arduino-language-server                                                               | —                        |
+| AsciiDoc            | `asciidoc`         | `.adoc`, `.asciidoc`                                        | Yes          | —           | —                                                                                     | —                        |
+| Astro               | `astro`            | `.astro`                                                    | Yes          | —           | **astro-ls** + **oxlint**                                                             | —                        |
+| Batch               | `bat`              | `.bat`, `.cmd`                                              | Yes          | —           | —                                                                                     | —                        |
+| C                   | `c`                | `.c`, `.h`                                                  | Yes          | Yes         | **clangd**                                                                            | lldb-dap                 |
+| C#                  | `csharp`           | `.cs`, `.csx`                                               | Yes          | Yes         | **csharp-ls**                                                                         | **netcoredbg**           |
+| C++                 | `cpp`              | `.cpp`, `.cc`, `.cxx`, `.c++`, `.hpp`, …                    | Yes          | Yes         | **clangd**                                                                            | lldb-dap                 |
+| Clojure             | `clojure`          | `.clj`, `.cljs`, `.cljc`, `.cljd`, `.edn`, …                | Yes          | —           | **clojure-lsp**                                                                       | —                        |
+| CMake               | `cmake`            | `.cmake`                                                    | Yes          | Yes         | **neocmakelsp** → cmake-language-server                                               | —                        |
+| CSS                 | `css`              | `.css`, `.pcss`, `.postcss`                                 | Yes          | Yes         | **vscode-css-language-server**                                                        | —                        |
+| D                   | `d`                | `.d`, `.di`                                                 | Yes          | —           | serve-d                                                                               | —                        |
+| Dart                | `dart`             | `.dart`                                                     | Yes          | Yes         | dart                                                                                  | dart                     |
+| Diff                | `diff`             | `.diff`, `.patch`, `.rej`                                   | Yes          | —           | —                                                                                     | —                        |
+| Django Template     | `django-html`      | `.djhtml`, `templates/*.html`, `*.txt`                      | Yes          | Yes         | **vscode-html-language-server**                                                       | —                        |
+| Dockerfile          | `dockerfile`       | `.dockerfile`, `.containerfile`                             | Yes          | —           | **dockerfile-language-server**                                                        | —                        |
+| Elixir              | `elixir`           | `.ex`, `.exs`                                               | Yes          | Yes         | **elixir-ls**                                                                         | **elixir-ls-debugger**   |
+| ERB                 | `erb`              | `.erb`, `.html.erb`, `.rhtml`, `.js.erb`, `.text.erb`, …    | Yes          | —           | —                                                                                     | —                        |
+| Erlang              | `erlang`           | `.erl`, `.hrl`, `.escript`, `.app.src`                      | Yes          | —           | elp                                                                                   | —                        |
+| F#                  | `fsharp`           | `.fs`, `.fsi`, `.fsx`                                       | Yes          | —           | **fsautocomplete**                                                                    | **netcoredbg**           |
+| GDScript            | `gdscript`         | `.gd`                                                       | Yes          | Yes         | godot                                                                                 | godot                    |
+| Git Attributes      | `gitattributes`    | `.gitattributes`                                            | —            | —           | —                                                                                     | —                        |
+| Go                  | `go`               | `.go`                                                       | Yes          | Yes         | **gopls**                                                                             | **delve**                |
+| Go Module           | `go.mod`           | `go.mod`                                                    | Yes          | —           | **gopls**                                                                             | —                        |
+| Go Workspace        | `go.work`          | `go.work`                                                   | Yes          | —           | **gopls**                                                                             | —                        |
+| Godot Resource      | `godot-resource`   | `.tscn`, `.tres`, `.godot`, `.import`                       | Yes          | —           | —                                                                                     | —                        |
+| Godot Shader        | `gdshader`         | `.gdshader`, `.gdshaderinc`                                 | Yes          | —           | —                                                                                     | —                        |
+| GraphQL             | `graphql`          | `.graphql`, `.graphqls`, `.gql`                             | Yes          | Yes         | **graphql-lsp**                                                                       | —                        |
+| Groovy              | `groovy`           | `.groovy`, `.gradle`, `.gvy`, `.gy`, `.gsh`                 | Yes          | —           | groovy-language-server                                                                | —                        |
+| Haskell             | `haskell`          | `.hs`, `.hs-boot`, `.hsig`                                  | Yes          | Yes         | haskell-language-server                                                               | —                        |
+| HCL                 | `hcl`              | `.hcl`, `.nomad`, `.pkr.hcl`                                | Yes          | Yes         | —                                                                                     | —                        |
+| HTML                | `html`             | `.html`, `.htm`, `.xhtml`, `.shtml`, `.html.tmpl`           | Yes          | Yes         | **vscode-html-language-server** + **angular-language-server**                         | —                        |
+| HTTP Request        | `http`             | `.http`, `.rest`                                            | Yes          | —           | —                                                                                     | —                        |
+| Ignore File         | `ignore`           | `.gitignore`, `.dockerignore`                               | —            | —           | —                                                                                     | —                        |
+| INI                 | `ini`              | `.ini`, `.cfg`, `.conf`, `.cnf`, `.inf`, …                  | Yes          | —           | —                                                                                     | —                        |
+| Java                | `java`             | `.java`                                                     | Yes          | Yes         | **jdtls** → **kmp-lsp**                                                               | **java-debug**           |
+| JavaScript          | `javascript`       | `.js`, `.mjs`, `.cjs`                                       | Yes          | Yes         | **vtsls** → **typescript-language-server** + **oxlint**                               | **js-debug**             |
+| JavaScript JSX      | `javascriptreact`  | `.jsx`                                                      | Yes          | Yes         | **vtsls** → **typescript-language-server** + **oxlint**                               | **js-debug**             |
+| JSON                | `json`             | `.json`, `.geojson`, `.topojson`, `.webmanifest`, `.har`, … | Yes          | Yes         | **vscode-json-language-server**                                                       | —                        |
+| JSON with Comments  | `jsonc`            | `.jsonc`, `.code-workspace`, `.code-snippets`               | Yes          | Yes         | **vscode-json-language-server**                                                       | —                        |
+| JSP                 | `jsp`              | `.jsp`, `.jspx`, `.jspf`, `.jsph`, `.tag`, …                | Yes          | —           | —                                                                                     | —                        |
+| Julia               | `julia`            | `.jl`                                                       | Yes          | —           | julia-languageserver                                                                  | —                        |
+| Kotlin              | `kotlin`           | `.kt`, `.kts`                                               | Yes          | Yes         | **kotlin-lsp** → **kotlin-language-server** → **kmp-lsp**                             | **kotlin-debug-adapter** |
+| LaTeX               | `latex`            | `.tex`, `.ltx`, `.sty`, `.cls`, `.dtx`, …                   | Yes          | —           | **texlab**                                                                            | —                        |
+| Less                | `less`             | `.less`                                                     | Yes          | —           | **vscode-css-language-server**                                                        | —                        |
+| Log                 | `log`              | `.log`                                                      | Yes          | —           | —                                                                                     | —                        |
+| Lua                 | `lua`              | `.lua`, `.luau`, `.rockspec`                                | Yes          | Yes         | **lua-language-server**                                                               | —                        |
+| Makefile            | `makefile`         | `.mk`, `.mak`, `.make`                                      | Yes          | Yes         | —                                                                                     | —                        |
+| Markdown            | `markdown`         | `.md`, `.markdown`, `.mdown`, `.mkd`, `.mkdn`, …            | Yes          | Yes         | **marksman**                                                                          | —                        |
+| Nix                 | `nix`              | `.nix`                                                      | Yes          | Yes         | nil → nixd                                                                            | —                        |
+| Objective-C         | `objective-c`      | `.m`                                                        | Yes          | —           | **clangd**                                                                            | lldb-dap                 |
+| Objective-C++       | `objective-cpp`    | `.mm`                                                       | Yes          | —           | **clangd**                                                                            | lldb-dap                 |
+| OCaml               | `ocaml`            | `.ml`, `.mll`, `.mly`                                       | Yes          | Yes         | ocamllsp                                                                              | ocamlearlybird           |
+| OCaml Interface     | `ocaml.interface`  | `.mli`                                                      | Yes          | Yes         | ocamllsp                                                                              | —                        |
+| Perl                | `perl`             | `.pl`, `.pm`, `.pod`, `.psgi`, `.cgi`                       | Yes          | —           | **perlnavigator**                                                                     | —                        |
+| PHP                 | `php`              | `.php`, `.phtml`, `.php3`, `.php4`, `.php5`, …              | Yes          | Yes         | **intelephense** → phpactor + **laravel-lsp**                                         | **php-debug**            |
+| Plain Text          | `plaintext`        | `.txt`, `.text`                                             | —            | —           | —                                                                                     | —                        |
+| PowerShell          | `powershell`       | `.ps1`, `.psm1`, `.psd1`, `.pssc`, `.psrc`                  | Yes          | —           | powershell-editor-services                                                            | —                        |
+| Prisma              | `prisma`           | `.prisma`                                                   | Yes          | Yes         | **prisma-language-server**                                                            | —                        |
+| Properties          | `properties`       | `.properties`, `.prefs`                                     | Yes          | —           | —                                                                                     | —                        |
+| Protocol Buffers    | `proto`            | `.proto`                                                    | Yes          | Yes         | **buf**                                                                               | —                        |
+| Python              | `python`           | `.py`, `.pyi`, `.pyw`                                       | Yes          | Yes         | **basedpyright** → **pyright** → **ty** → **pyrefly** + **ruff**                      | **debugpy**              |
+| R                   | `r`                | `.r`, `.rprofile`                                           | Yes          | —           | r-languageserver                                                                      | —                        |
+| reStructuredText    | `restructuredtext` | `.rst`                                                      | Yes          | —           | —                                                                                     | —                        |
+| Ruby                | `ruby`             | `.rb`, `.rake`, `.gemspec`, `.ru`, `.rbi`, …                | Yes          | Yes         | **ruby-lsp** → **solargraph**                                                         | rdbg                     |
+| Rust                | `rust`             | `.rs`                                                       | Yes          | Yes         | **rust-analyzer**                                                                     | **codelldb**             |
+| Sass                | `sass`             | `.sass`                                                     | Yes          | —           | —                                                                                     | —                        |
+| Scala               | `scala`            | `.scala`, `.sc`, `.sbt`, `.mill`                            | Yes          | Yes         | metals                                                                                | —                        |
+| SCSS                | `scss`             | `.scss`                                                     | Yes          | —           | **vscode-css-language-server**                                                        | —                        |
+| Shell Script        | `shellscript`      | `.sh`, `.bash`, `.zsh`, `.ksh`, `.ash`, …                   | Yes          | Yes         | **bash-language-server**                                                              | **bash-debug**           |
+| SQL                 | `sql`              | `.sql`, `.ddl`, `.dml`, `.psql`, `.pgsql`, …                | Yes          | —           | **sqls**                                                                              | —                        |
+| Svelte              | `svelte`           | `.svelte`                                                   | Yes          | —           | **svelte-language-server** + **oxlint**                                               | —                        |
+| Swift               | `swift`            | `.swift`, `.swiftinterface`                                 | Yes          | Yes         | sourcekit-lsp                                                                         | lldb-dap                 |
+| Terraform           | `terraform`        | `.tf`, `.tofu`, `.tftest.hcl`                               | Yes          | Yes         | **terraform-ls**                                                                      | —                        |
+| Terraform Variables | `terraform-vars`   | `.tfvars`                                                   | Yes          | Yes         | **terraform-ls**                                                                      | —                        |
+| TOML                | `toml`             | `.toml`                                                     | Yes          | Yes         | **taplo**                                                                             | —                        |
+| TypeScript          | `typescript`       | `.ts`, `.mts`, `.cts`                                       | Yes          | Yes         | **vtsls** → **typescript-language-server** + **angular-language-server** + **oxlint** | **js-debug**             |
+| TypeScript JSX      | `typescriptreact`  | `.tsx`                                                      | Yes          | Yes         | **vtsls** → **typescript-language-server** + **oxlint**                               | **js-debug**             |
+| Vue                 | `vue`              | `.vue`                                                      | Yes          | —           | **vue-language-server**, **vtsls** + **oxlint**                                       | —                        |
+| XML                 | `xml`              | `.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`, …                  | Yes          | Yes         | **lemminx**                                                                           | —                        |
+| YAML                | `yaml`             | `.yaml`, `.yml`                                             | Yes          | Yes         | **yaml-language-server**                                                              | —                        |
+| Zig                 | `zig`              | `.zig`, `.zon`                                              | Yes          | Yes         | **zls**                                                                               | **codelldb**             |
+
+Notes:
+
+- **C, C++, Objective-C, Swift**: `lldb-dap` comes with LLVM or Xcode. C and C++ can also be debugged with **CodeLLDB** or GDB 14+; see [C and C++](/en/languages/cpp).
+- **Ruby**: `rdbg` comes from the `debug` gem.
+- **GDScript**: the language server and debugger are the Godot editor itself; see [Godot](/en/languages/godot).
+- **Arduino**: needs Arduino IDE 2 (Arduino Language Server, Arduino CLI and clangd).
+- **Vue**: the Vue server and vtsls run together; vtsls handles the TypeScript part.
+
+## Run, test and debug
+
+Run configurations are detected from the build files in your project. The table shows what is detected for each ecosystem; see [Run configurations](/en/guide/run), [Testing](/en/guide/testing) and [Debugging](/en/guide/debugging) for how to use them.
+
+| Ecosystem               | Detected from                                                                 | Configurations                                                               |
+| ----------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| JavaScript / TypeScript | `package.json`, `deno.json`                                                   | package scripts (npm, pnpm, Yarn, Bun), Deno tasks                           |
+| Rust                    | `Cargo.toml`                                                                  | `cargo build`, `cargo run`, `cargo test`                                     |
+| Go                      | `go.mod`                                                                      | Go Build, Go Test                                                            |
+| Java / Kotlin           | `pom.xml`, Gradle build files                                                 | Maven goals, Gradle tasks, Application, JAR Application, Spring Boot, Tomcat |
+| Python                  | `pyproject.toml`, `setup.py`, `requirements.txt`, `manage.py`, a `.venv`, ... | `python -m <package>`, pytest, Django `runserver` and tests                  |
+| PHP                     | `composer.json`, `phpunit.xml`                                                | Composer scripts, PHPUnit or Pest, Laravel `artisan serve`                   |
+| Ruby                    | `Gemfile`, `Rakefile`, `*.gemspec`, `config.ru`                               | Rails server, Rake tasks, RSpec, Minitest                                    |
+| C / C++                 | `CMakeLists.txt`                                                              | CMake targets                                                                |
+| C#                      | `.sln`, `.slnx`, `.csproj`                                                    | .NET Project, `dotnet test`                                                  |
+| GDScript                | `project.godot`                                                               | Godot                                                                        |
+| Any                     | `justfile`, `Makefile`                                                        | just recipes, Make targets                                                   |
+
+Running, testing (with a test tree and **Rerun Failed Tests**) and debugging are tested end to end on sample projects for TypeScript, Python, Rust, Go, Java, Kotlin and PHP; debugging is also tested for C and C++. Code intelligence is tested with each of these languages' real servers (TypeScript, Python, Rust, Go, Java, Kotlin, PHP).
+
+## Changing or adding a language
+
+- To change a built-in definition, put a file with the same `id` in the `languages` folder of the configuration directory; it replaces the built-in one at the next start. See [Add a language](/en/languages/adding) for the format.
+- Plugins can add languages, with their own servers and debuggers. See [Language features](/en/plugins/guides/language-features).

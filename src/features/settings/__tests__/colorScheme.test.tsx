@@ -116,8 +116,102 @@ describe("scheme actions", () => {
   it("shows a malformed-file error without staging any changes", async () => {
     mocks.read.mockResolvedValueOnce({ status: "ok", data: '<scheme name="bad">' });
     await run("import");
-    await waitFor(() => expect(mocks.error).toHaveBeenCalledWith("Color Scheme", "Invalid .icls color scheme"));
+    await waitFor(() =>
+      expect(mocks.error).toHaveBeenCalledWith("Import Scheme", expect.stringContaining("Invalid .icls color scheme")),
+    );
     expect(useSettingsDialog.getState().staged).toEqual({});
+  });
+
+  it("offers .xml scheme files in the chooser and imports one (#2714)", async () => {
+    mocks.open.mockResolvedValueOnce("/downloads/Material Darker.xml");
+    mocks.read.mockResolvedValueOnce({
+      status: "ok",
+      data: readFileSync("src/platform/__fixtures__/colorSchemes/material-darker.xml", "utf8"),
+    });
+    await run("import");
+    expect(mocks.open).toHaveBeenCalledWith({
+      multiple: false,
+      filters: [{ name: "IntelliJ Color Scheme", extensions: ["icls", "xml"] }],
+    });
+    expect(value("colorScheme")).toMatch(/^custom-/);
+    expect(screen.getByRole("status")).toHaveTextContent("Applied 13 values; skipped 2");
+    const schemes = value("customSchemes") as Record<string, { name: string }>;
+    expect(Object.values(schemes).some((s) => s.name === "Material Darker")).toBe(true);
+  });
+
+  it("names a scheme without a name attribute after its file (#2714)", async () => {
+    mocks.open.mockResolvedValueOnce("/downloads/one-dark-wrapped.xml");
+    mocks.read.mockResolvedValueOnce({
+      status: "ok",
+      data: readFileSync("src/platform/__fixtures__/colorSchemes/one-dark-wrapped.xml", "utf8"),
+    });
+    await run("import");
+    const schemes = value("customSchemes") as Record<string, { name: string }>;
+    expect(Object.values(schemes).some((s) => s.name === "one-dark-wrapped")).toBe(true);
+  });
+});
+
+describe("python scheme attributes", () => {
+  it("groups Python attributes as PyCharm does", () => {
+    schemePage("editor.colorScheme.python");
+    const tree = screen.getByRole("tree", { name: "Color scheme attributes" });
+    // The tree virtualizes; a collapsed group renders before its siblings, so a group near
+    // the top is enough to prove grouping, and expanding it shows its leaves.
+    expect(within(tree).getByRole("treeitem", { name: "Functions" })).toBeInTheDocument();
+    for (const flat of ["Byte string", "F-string", "Method call"])
+      expect(within(tree).queryByRole("treeitem", { name: flat })).toBeNull();
+    const functions = within(tree).getByRole("treeitem", { name: "Functions" });
+    act(() => fireEvent.mouseDown(within(functions).getByText("Functions").previousElementSibling!, { button: 0 }));
+    expect(within(tree).getByRole("treeitem", { name: "Method call" })).toBeInTheDocument();
+  });
+
+  it("selects Python docstring tags and keywords from their preview", () => {
+    schemePage("editor.colorScheme.python");
+    const preview = screen.getByLabelText("Color scheme preview");
+    const tag = preview.querySelector('code span[style*="--syn-python-docstring-tag"]')!;
+    expect(tag).toHaveTextContent("param");
+    act(() => fireEvent.click(tag));
+    expect(screen.getByRole("treeitem", { name: "Tag", selected: true })).toBeInTheDocument();
+    const keyword = preview.querySelector('code span[style*="--syn-python-docstring-keyword"]')!;
+    expect(keyword).toHaveTextContent("x");
+    act(() => fireEvent.click(keyword));
+    expect(screen.getByRole("treeitem", { name: "Keyword", selected: true })).toBeInTheDocument();
+  });
+});
+
+describe("doc comment scheme attributes", () => {
+  it.each([
+    ["en", "Doc comment", "Tag", "Tag value", "Markup"],
+    ["zh", "文档注释", "标签", "标签值", "标记"],
+  ])("groups, previews, edits and resets doc attributes in %s", async (locale, group, tag, valueName, markup) => {
+    await act(async () => {
+      await setLocale(locale);
+    });
+    try {
+      act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+      schemePage("editor.colorScheme.language-defaults");
+      const preview = screen.getByLabelText(locale === "en" ? "Color scheme preview" : "配色方案预览");
+      for (const [sample, label, id] of [
+        ["@param", tag, "docCommentTag"],
+        ["id", valueName, "docCommentTagValue"],
+        ["<b>", markup, "docCommentMarkup"],
+      ]) {
+        act(() => fireEvent.click(within(preview).getByText(sample!)));
+        expect(screen.getAllByRole("treeitem", { name: group })).toHaveLength(1);
+        expect(screen.getByRole("treeitem", { name: label, selected: true })).toBeInTheDocument();
+        act(() => fireEvent.click(screen.getByRole("checkbox", { name: locale === "en" ? "Bold" : "粗体" })));
+        act(() => fireEvent.click(screen.getByRole("checkbox", { name: locale === "en" ? "Italic" : "斜体" })));
+        expect(value("colorOverrides")).toMatchObject({ dark: { [id!]: { bold: true, italic: true } } });
+      }
+      act(() =>
+        fireEvent.click(screen.getByRole("button", { name: locale === "en" ? "Restore Defaults" : "恢复默认值" })),
+      );
+      expect(value("colorOverrides")).toEqual({});
+    } finally {
+      await act(async () => {
+        await setLocale("en");
+      });
+    }
   });
 });
 
@@ -273,5 +367,18 @@ describe("scheme attribute state", () => {
     expect(effects).not.toBeChecked();
     expect(value("colorOverrides")).toEqual({});
     expect(useSettingsDialog.getState().staged["global|editor.colorOverrides"]).toBeUndefined();
+  });
+});
+
+describe("Console Colors (#2698)", () => {
+  it("lists ANSI colours and selects Red from the preview", () => {
+    act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+    schemePage("editor.colorScheme.console-colors");
+    const tree = screen.getByRole("tree", { name: "Color scheme attributes" });
+    expect(within(tree).getByRole("treeitem", { name: "Console background" })).toBeInTheDocument();
+    expect(within(tree).getByRole("treeitem", { name: "Red" })).toBeInTheDocument();
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(within(preview).getByText(/^red\s*$/)));
+    expect(screen.getByRole("treeitem", { name: "Red", selected: true })).toBeInTheDocument();
   });
 });

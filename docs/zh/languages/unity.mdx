@@ -1,0 +1,94 @@
+---
+title: "Unity"
+description: "把 OpenIDEA 设为 Unity 的外部脚本编辑器，浏览 Unity 项目，并让 .meta 文件始终跟随资源。"
+---
+
+只要文件夹里有 `Assets` 目录和 `ProjectSettings/ProjectVersion.txt`，OpenIDEA 就会把它识别为 Unity 项目：接收 Unity 发来的打开脚本请求，隐藏 Unity 的缓存目录，移动资源时连同 `.meta` 文件一起处理，并通过 C# 语言服务器提供代码智能。不需要安装任何 Unity 包或编辑器插件。
+
+## 把 OpenIDEA 设为外部脚本编辑器
+
+<Steps>
+  <Step title="在 Unity 中打开 External Tools">
+    在 Unity 中打开 **Edit › Preferences › External Tools**（macOS 上是 **Unity › Settings** 或 **Unity › Preferences**，再进入 **External Tools**）。
+  </Step>
+  <Step title="选择 OpenIDEA">
+    在 **External Script Editor** 中点 **Browse**，选择 OpenIDEA 的可执行文件（macOS 上选 `OpenIDEA.app`）。
+  </Step>
+  <Step title="填写参数">
+    把 **External Script Editor Args** 设为：
+
+    ```text
+    $(ProjectPath) --file $(File) --line $(Line) --column $(Column)
+    ```
+
+    Unity 展开占位符时会自己给项目路径和文件路径加引号，路径里有空格也没问题。不要再在占位符外面加一层引号。
+
+  </Step>
+</Steps>
+
+之后在 Unity 的 Project 窗口双击脚本，或在 Console 中双击源码位置，OpenIDEA 会打开项目（如果已有窗口打开了该项目，就切到那个窗口），打开文件并把光标放到对应的行和列。其他已打开的标签页保持不变。
+
+### 参数说明
+
+以下参数属于应用程序本身的可执行文件：
+
+| 参数                           | 含义                                                                                             |
+| ------------------------------ | ------------------------------------------------------------------------------------------------ |
+| 第一个路径（`$(ProjectPath)`） | 要打开的项目文件夹。有了它，冷启动时打开的是整个 Unity 项目，而不是单个文件。                    |
+| `--file <path>`                | 要打开的文件。相对路径相对于项目文件夹解析；没给项目时相对于启动时的工作目录。文件必须存在。     |
+| `--line <n>`                   | 行号，从 1 开始。`0` 和 `-1`（Unity 在没有位置信息时传的值）表示未知位置，文件打开时不定位光标。 |
+| `--column <n>`                 | 列号，从 1 开始。省略或未知时光标放在行首。                                                      |
+
+也可以写成 `--file=...`、`--line=...`、`--column=...`。参数无效或文件不存在时会报错。如果不传项目文件夹，`--file` 会在已经包含该文件的项目窗口中打开，否则用轻量编辑打开。
+
+自己在命令行调用可执行文件时，按所用 shell 的规则给路径加引号。另行安装的 `openidea` 命令语法不同（`--line`、`--column` 写在文件前面，没有 `--file`），见[命令行](/zh/reference/cli)。
+
+<Note>
+  在 Windows 上，请让 Unity 和 OpenIDEA 以相同的权限运行（都以管理员身份，或都不是）。如果正在运行的 OpenIDEA
+  对双击没有反应，用一致的权限重启两者后再试。
+</Note>
+
+## Unity 项目视图
+
+打开 Unity 项目后，**项目**工具窗口会切换到 **Unity 项目**视图。根节点上会显示从 `ProjectVersion.txt` 读到的编辑器版本（例如 `Unity 6000.0.62f1`）。
+
+**Unity 项目**视图默认隐藏：
+
+- `.meta` 文件；
+- 项目根目录下的生成目录：`Library`、`Temp`、`Obj`、`obj`、`Logs`、`Build`、`Builds`、`UserSettings`、`.vs`、`.idea`、`.vscode`；
+- 根目录下生成的解决方案和项目文件（`.csproj`、`.sln`、`.slnx` 等）。
+
+需要查看时，打开视图的选项菜单，在 **外观** 下勾选 **显示 Meta 文件** 或 **显示生成的文件**。**项目**和**项目文件**视图始终显示全部文件。
+
+`Assets` 和 `Packages` 被标记为源代码目录，`ProjectSettings` 为资源目录。上面列出的生成目录不参与索引、搜索和文件监听，即使 Unity 之后才创建它们也一样，所以 `Library/PackageCache` 不会拖慢 IDE，也不会出现在搜索结果中。
+
+## 资源与 .meta 文件
+
+对 `Assets` 下资源的文件操作会保持 Unity 元数据一致：
+
+- **重命名和移动**时 `.meta` 文件随资源一起走，重构引起的文件移动也一样。
+- **删除**时资源和 `.meta` 文件一起删除，本地历史记录会保留两者的副本。
+- **复制**时为副本生成新的 GUID，并改写副本之间的引用（文本序列化的 YAML 资源以及 `.asmdef` / `.asmref` 文件），避免与原文件冲突。二进制序列化的资源（以二进制模式保存的预制体、场景、材质等）无法这样复制，需要先在 Unity 中把资源序列化方式改为 **Force Text**。
+- `Assets` 目录本身不能被移动、复制或删除；如果只选中了某个资源的 `.meta` 文件而资源本身存在，操作会被拒绝，请改选资源。
+- 新建文件时，文件名也会和已有的 `.meta` 文件一起检查是否重名。
+
+在 IDE 中新建文件后，如果 Git 询问是否添加，Unity 为它生成的 `.meta` 文件也会一并添加。
+
+## 代码智能
+
+Unity 项目中的 C# 和普通 C# 项目使用同一个语言服务器 csharp-ls，安装方式见 [C# 与 .NET](/zh/languages/csharp)。即使还没有解决方案文件，Unity 项目也会被当作它的工作区根目录。
+
+csharp-ls 读取 Unity 生成的 `.sln` 和 `.csproj` 文件。缺少这些文件时，**Unity 项目**视图会提示：
+
+> 缺少 C# 项目文件。请在 Unity 的偏好设置 > 外部工具中选择外部脚本编辑器，然后重新生成项目文件。
+
+Unity 写出这些文件后，IDE 会自动感知并加载，无需重新打开项目。
+
+在 `MonoBehaviour` 这类 Unity 类型上使用 **导航 › 声明或用法**，会以只读方式打开反编译后的源码。反编译文件不做错误检查，因为它们使用的 C# 语言版本往往和项目不同。
+
+## 限制
+
+- OpenIDEA 不会生成 Unity 的 C# 项目文件，需要由 Unity 生成。
+- 没有 Unity 调试集成：无法从 OpenIDEA 附加到 Unity 编辑器或播放器。
+- 没有 Unity 专用的检查、运行配置，也不支持 ShaderLab。
+- 从 Unity 打开文件只支持本地项目，不支持 WSL 中的项目。

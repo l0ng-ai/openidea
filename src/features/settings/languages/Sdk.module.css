@@ -390,15 +390,6 @@
   gap: 4px;
 }
 
-/* Project Structure sections (Project, Modules, Libraries, Facets, Artifacts, SDKs) */
-.sectionTabs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
-}
 .sectionTab {
   flex-shrink: 0;
   display: inline-flex;

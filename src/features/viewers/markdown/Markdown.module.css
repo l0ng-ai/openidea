@@ -145,6 +145,7 @@
 
 /* Mermaid diagrams: the source stays until the diagram is drawn, and next to an error. */
 .preview :global([data-mermaid]) {
+  position: relative;
   margin: 0 0 1em;
 }
 .preview :global([data-mermaid] > pre) {
@@ -176,4 +177,16 @@
   font-size: var(--fs-code);
   text-align: left;
   white-space: pre-wrap;
+}
+
+::highlight(markdown-selection-match) {
+  background-color: var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent));
+}
+::highlight(markdown-find) {
+  background-color: var(--bg-search-match, color-mix(in srgb, var(--warning) 30%, transparent));
+  color: var(--fg-search-match, inherit);
+}
+::highlight(markdown-find-current) {
+  background-color: var(--bg-search-match-current, color-mix(in srgb, var(--warning) 48%, transparent));
+  color: var(--fg-search-match, inherit);
 }

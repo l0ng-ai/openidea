@@ -1,0 +1,360 @@
+---
+title: "视图与装饰"
+description: "工具窗口、自定义编辑器、网页视图、服务节点、由代码打开的编辑器标签页和终端，以及编辑器与项目树装饰。"
+---
+
+插件可以在这些地方放置界面：
+
+| 位置                   | 声明                                             | 内容                                                 |
+| ---------------------- | ------------------------------------------------ | ---------------------------------------------------- |
+| 工具窗口               | `[[contributes.views]]`                          | 由代码渲染（树、列表、表单、表格、消息、HTML）或网页 |
+| **服务** 工具窗口      | `[[contributes.views]]`，`location = "services"` | 由代码渲染的树，外加详情面板                         |
+| 特定文件的编辑器       | `[[contributes.customEditors]]`                  | 由代码渲染或网页；与文件共用同一个文本文档           |
+| 编辑器标签页和终端     | 无需声明（由代码打开）                           | 内容标签页、日志标签页、终端会话、输出通道           |
+| 编辑器和项目树中的标注 | 无需声明（由代码设置）                           | 装饰                                                 |
+
+行号槽标记和行号槽按钮属于编辑器提供者，见 [语言功能](/zh/plugins/guides/language-features)。
+文件图标见 [图标主题](/zh/plugins/guides/icon-themes)。
+
+## 声明工具窗口
+
+```toml
+[[contributes.views]]
+id = "todos"
+title = "TODO Example"
+icon = "search"            # IDE 图标名（最多 64 字节）或包内 SVG
+location = "right"         # left、right（默认）、bottom、services
+```
+
+| 字段        | API | 说明                                                                                           |
+| ----------- | --- | ---------------------------------------------------------------------------------------------- |
+| `id`        | 1.0 | 插件内唯一。                                                                                   |
+| `title`     | 1.0 | 1–256 字节，通过插件的文本目录翻译。                                                           |
+| `icon`      | 1.0 | 图标名或包内 `.svg`（最大 64 KiB，会被净化）。                                                 |
+| `location`  | 1.0 | `left`、`right`、`bottom`；`services` 需要 API 1.3。                                           |
+| `web`       | 1.0 | 包内网页（`web/index.html`），代替由代码渲染的内容。见下文“网页视图”。                         |
+| `group`     | 1.3 | 同一插件中 group 相同的视图共用一个工具窗口，每个视图一个标签页，按声明顺序排列。              |
+| `when`      | 1.3 | `when` 子句；为假时视图从侧栏和分组标签中移除，既不渲染也不激活。                              |
+| `secondary` | 1.3 | 为 `true` 时放在所在停靠区的次级分区：**左下**、**右下** 或 **底部右侧**。用户保存的位置优先。 |
+| `detail`    | 1.3 | 为 `true` 时在树或列表旁显示所选条目的详情标签页（不能与 `web` 同用）。                        |
+| `header`    | 1.3 | 不分组的工具窗口网页视图若自己绘制顶栏，可设为 `none`（见“网页视图”）。默认 `default`。        |
+
+没有 `web` 的视图需要代码（`wasm`）。显示视图会激活插件（`on-view:<id>`）。
+
+### 分组与条件显示
+
+```toml
+engines.openidea = "^1.3"
+
+[[contributes.views]]
+id = "endpoints"
+title = "Spring"
+group = "spring"
+when = "workspaceContains:pom.xml || workspaceContains:build.gradle"
+
+[[contributes.views]]
+id = "beans"
+title = "Beans"
+group = "spring"
+when = "plugin.my-plugin.ready"
+```
+
+分组中的第一条声明决定窗口的标题、图标、位置和 `secondary`，即使这个视图当前被隐藏；所有标签页都隐藏时窗口消失。
+标签页在首次选中时加载，之后只要仍然适用就保持挂载，所以切换标签时网页视图的状态不会丢。上下文变化、文件新建或删除、
+项目切换时会重新计算 `when`。这些字段只控制可见性，不授予任何访问权限。
+
+## 渲染视图
+
+注册 `register_plugin!(MyPlugin, views)` 并实现 `openidea_plugin::views::Views`（WIT 导出 `view-provider`）。
+视图就是数据：工具栏、主体和状态行。IDE 用自己的组件绘制（主题、键盘操作、快速搜索），再把用户的操作发回来。
+
+摘自 [TODO Finder](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/todo-finder) 示例：
+
+```rust
+use openidea_plugin::views::{Body, ListItem, View, ViewEvent, Viewport, Views};
+use openidea_plugin::{Error, Invocation, Location, TextQuery, host, register_plugin};
+
+fn query() -> TextQuery {
+    TextQuery { pattern: "TODO".into(), case_sensitive: true, ..Default::default() }
+}
+
+impl Views for TodoFinder {
+    fn render(&mut self, _view: &str, _viewport: Option<Viewport>, ctx: &Invocation) -> Result<View, Error> {
+        let found = ctx.project().ok_or("Open a project first")?.search_text(&query(), 500)?;
+        let items = found
+            .matches
+            .into_iter()
+            .map(|m| {
+                let detail = format!("{}:{}", m.location.path, m.location.range.start.line + 1);
+                ListItem::new(&serde_json::to_string(&m.location).unwrap(), &m.line).detail(&detail)
+            })
+            .collect();
+        Ok(View {
+            toolbar: vec![],
+            body: Body::List(items),
+            status: found.limit_hit.then(|| "Showing the first 500 matches".into()),
+        })
+    }
+
+    fn handle(&mut self, _view: &str, event: ViewEvent, _ctx: &Invocation) -> Result<(), Error> {
+        if let ViewEvent::Activate(key) = event {
+            let location: Location = serde_json::from_str(&key).map_err(|e| Error::Invalid(e.to_string()))?;
+            host::open_location(&location.path, location.range.start.line, location.range.start.character)?;
+        }
+        Ok(())
+    }
+}
+
+register_plugin!(TodoFinder, views);
+```
+
+内容变化时调用 `host::refresh_view(view)`，IDE 会再次调用 `render`。`host::reveal_view(view)`
+在发起调用的窗口中把插件的某个视图切到前台。对工具窗口来说，`ctx.editor()` 是窗口中当前活动的文本编辑器，
+所以工具栏按钮可以操作用户正在编辑的内容。
+
+### 主体类型
+
+| 主体                                 | 说明                                                                                                                                                                                  |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Body::Message(text)`                | 居中消息：空状态和错误。可用 `View::message(text)` 构造。                                                                                                                             |
+| `Body::Tree(items)`                  | `TreeItem` 的扁平列表，`parent` 指向更早出现的 key。`.expandable(expanded)` 在子节点未知时先显示展开箭头，`Expand` 事件再请求子节点。                                                 |
+| `Body::List(items)`                  | `ListItem::new(key, label)`，可加 `.icon()` 和 `.detail()`（标签后的灰色文字）。                                                                                                      |
+| `Body::Form(fields)`                 | `Field::new(key, label, value)`：`Text`、`Multiline`、`Checkbox`、`Choice(options, chosen)`。API 1.3 新增 `FieldValue::label(text)` 和 `FieldValue::readonly_text(text, multiline)`。 |
+| `Body::Table(table)`                 | `columns`、`total_rows`、`first_row`、`rows`、`editable`。IDE 只请求可见的行（`viewport`）；`Viewport::range(viewport, total, default_rows)` 用于裁剪范围。                           |
+| `Body::sortable_table(&table, sort)` | 表头可点击的表格。点击会发来列和方向（`ViewEvent::sort()`），插件排序后重新渲染。                                                                                                     |
+| `Body::Html(html)`                   | 在沙箱 frame 中显示的 HTML（见下文）。                                                                                                                                                |
+
+工具栏按钮：`View::new(body).button(Button::new("refresh", "Refresh").icon("refresh"))`，状态行：`.status("12 items")`。
+
+### 事件
+
+`ViewEvent` 包括 `Button(id)`、`Activate(key)`（双击或回车）、`Select(key)`、`Expand(key)`、`Collapse(key)`、
+`Field(key, value)`（复选框为 `true`/`false`）、`Cell { row, column, value }`、`InsertRow(before)`、
+`DeleteRows(rows)`，以及来自 HTML 主体的 `Message(text)`。表格行的单击和空格用 `event.table_select()` 解码，
+双击和回车用 `event.table_activate()`（API 1.3，从 0 开始的绝对行号）。
+
+后续 API 新增的主体、字段和事件以 `Other { kind, data }` 传递：IDE 不认识某种主体时会提示需要更新，
+不认识的字段类型则直接省略。条目右键菜单使用 `viewItem.context`（见 [命令与动作](/zh/plugins/guides/commands) 中的“菜单”一节）。
+
+## 自定义编辑器
+
+自定义编辑器打开与 patterns 匹配的文件，编辑的是该文件的文本文档：
+
+```toml
+[[contributes.customEditors]]
+id = "table"
+title = "Table"
+patterns = ["*.csv", "*.tsv"]   # 1–16 个文件名通配符，不能含目录
+priority = "default"            # 或 "option"：只能通过“打开方式”使用
+layout = "tab"                  # 或 "split" / "preview"：显示在文本编辑器旁边
+# web = "web/index.html"        # 用网页代替代码渲染的内容
+```
+
+- `priority = "default"` 时匹配的文件直接用插件编辑器打开；`option` 时可通过 **打开方式** 选择。
+  **作为文本打开** 会打开文本编辑器。
+- `layout = "split"` 或 `"preview"` 时，文件在文本编辑器中打开，插件编辑器显示在旁边，标签栏中出现
+  **仅编辑器** / **编辑器和预览** / **仅预览** 切换，和 Markdown 一样；取值决定文件打开时的初始布局。
+  `"tab"`（默认）是独立的标签页。
+- 在 `render` 和 `handle` 中，`ctx.editor()` 就是该编辑器的文档。用 `document()` 读取，
+  用 `apply_edits(version, edits)` 修改。同一文件的文本编辑器会同步变化，撤销/重做共用一份历史，
+  保存、修改标记和关闭提示都归文档所有。
+
+[CSV Editor](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/csv-editor) 把表格编辑转换成文本编辑：
+
+```rust
+fn handle(&mut self, _view: &str, event: ViewEvent, ctx: &Invocation) -> Result<(), Error> {
+    let editor = ctx.editor().ok_or_else(|| Error::Invalid("the table editor needs a document".into()))?;
+    let doc = editor.document()?;
+    let edits = edits_for(&doc.text, &event)?;
+    if !edits.is_empty() {
+        // 如果用户同时在文本视图中输入，会返回 Stale；表格随后重新渲染。
+        editor.apply_edits(doc.version, &edits)?;
+    }
+    Ok(())
+}
+```
+
+它需要 `editor.read` 和 `editor.write`。
+
+## HTML 主体
+
+`Body::Html` 在沙箱 frame 中运行：不透明源（opaque origin），CSP 只允许其内联脚本、内联样式和 `data:` 图片，
+没有网络，也没有 IDE API。它只能通过 `openidea.postMessage(text)` 和 `openidea.onMessage(fn)` 与插件通信，
+消息以 `ViewEvent::Message` 送达，插件用 `host::post_view_message(view, text)` 回复。
+[Regex Tester](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/regex-tester) 就是这样工作的。
+重新渲染会重新加载 frame，所以状态应由页面自己保存。
+
+frame 会跟随 IDE 主题变化而无需重新加载。其根元素带有 `data-theme="light|dark"` 以及以下 CSS 变量（均为具体颜色值）：
+
+| 变量                                                                                                              | 含义                                        |
+| ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `--openidea-bg`、`--openidea-bg-elevated`、`--openidea-bg-hover`、`--openidea-bg-selected`、`--openidea-bg-input` | 表面色（frame 本身透明）                    |
+| `--openidea-fg`、`--openidea-fg-strong`、`--openidea-fg-muted`                                                    | 文字                                        |
+| `--openidea-border`、`--openidea-focus-ring`、`--openidea-link`                                                   | 线条、焦点、链接                            |
+| `--openidea-accent`、`--openidea-fg-on-accent`                                                                    | 强调色及其上的文字                          |
+| `--openidea-danger`、`--openidea-warning`、`--openidea-success`、`--openidea-info`                                | 状态色                                      |
+| `--openidea-font-ui`、`--openidea-font-mono`、`--openidea-font-size`                                              | 字体（IDE 自带的网页字体在 frame 中不可用） |
+
+脚本还可以使用 `openidea.theme`（`{ dark, vars }`）和 `openidea.onThemeChange(fn)`。变量只会增加，不会删除。
+
+## 网页视图
+
+视图或自定义编辑器也可以是包内附带的网页，用来实现声明式主体表达不了的界面（画布、图表编辑器等）。不需要代码：
+
+```toml
+[[contributes.customEditors]]
+id = "preview"
+title = "Preview"
+patterns = ["*.dot", "*.gv"]
+layout = "split"
+web = "web/index.html"   # 页面；它所在的目录就是它能加载的范围
+```
+
+- 页面所在目录（绝不是包根目录）属于声明的一部分：其下每个文件都会被检查（最多 4096 个文件、256 MiB，不允许链接），
+  随包安装和签名。
+- 页面从 IDE 自己的 URL scheme 加载到 `<iframe sandbox="allow-scripts">` 中：不透明源，没有网络、cookie 和存储，
+  只能访问页面自己的文件。请使用相对路径构建（Vite：`base: "./"`）。
+- 页面脚本运行前就能用到与 HTML 主体相同的 `openidea` 对象，另外还有：
+
+| `window.openidea`                    | 作用                                                                                        |
+| ------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `document.get()`                     | 自定义编辑器文档的 `{ version, text, readOnly, name }`（工具窗口中没有）                    |
+| `document.edit(version, edits)`      | 把 `[{ from, to, insert }]`（UTF-16 偏移）作为一次可撤销修改应用；版本不符时以 `stale` 拒绝 |
+| `document.replace(version, text)`    | 同上，但替换整个文本                                                                        |
+| `document.onChange(fn)`              | 其他地方（文本编辑器、撤销、另一个窗口）修改后收到 `{ version, text }`                      |
+| `saveFile({ name, data, filters? })` | IDE 的保存对话框；返回所选路径或 `null`                                                     |
+| `openFile({ filters? })`             | IDE 的打开对话框；返回 `{ name, data }` 或 `null`                                           |
+| `postMessage` / `onMessage`          | 与插件代码（如果有）互发消息                                                                |
+
+页面获得焦点时，它自己不处理的 IDE 快捷键（保存、关闭、查找操作等）仍然有效；编辑类按键交给页面。
+声明 `clipboard` 权限后，页面可以使用 `navigator.clipboard`。
+
+**自定义顶栏**（API 1.3）。不分组的工具窗口网页视图可以声明 `header = "none"`：页面就绪后，IDE 用右上角的
+**选项**、**隐藏** 按钮取代标准的工具窗口标题栏，并设置 `--openidea-corner-inset-width`（`64px`）和
+`--openidea-corner-inset-height`（`34px`），页面可据此为自己的顶栏留出位置：
+
+```css
+.toolbar {
+  min-height: var(--openidea-corner-inset-height, 0px);
+  padding-right: var(--openidea-corner-inset-width, 0px);
+}
+```
+
+[Graphviz](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/graphviz) 是完整示例：`web-src/` 中的
+Vite + React 页面由 `plugins/build.sh official/graphviz` 构建到 `web/`，插件代码把 Graphviz 报告的错误发布为问题。
+
+### 页面协议（API 1.3）
+
+声明 `engines.openidea = "^1.3"` 后，页面可以通过 `openidea.postMessage` 发送 JSON 消息，请 IDE 打开更多东西。
+这些协议只运行通过 `process:<program>` 授权的程序，工作目录是窗口所在的受信任项目根目录，从不经过 shell：
+
+| `op`                                                          | 打开什么                                                                                              |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `pty-spawn`、`pty-input`、`pty-resize`、`pty-kill`、`pty-ack` | 归该 frame 所有的交互式 PTY；输出以 `pty-data`、`pty-exit`、`pty-error` 返回。每个插件最多 8 个会话。 |
+| `open-log-tab`                                                | 只读编辑器标签页，持续显示程序输出，可带参数开关。                                                    |
+| `open-content-tab`                                            | 内容由插件提供的编辑器标签页，带工具栏操作，用 `content-tab-reply` 回复。                             |
+
+消息字段和限制见 [插件指南](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#web-frame-ptys-api-13)；
+`crates/ide-plugin/tests/fixtures/` 下已构建的 `web-pty`、`web-log`、`web-content` 测试插件演示了这些协议。
+
+## 服务视图与详情面板
+
+`location = "services"`（API 1.3）把视图的树放进 **服务** 工具窗口，与 Docker 和运行配置并列，而不是单独开一个工具窗口：
+
+```toml
+engines.openidea = "^1.3"
+
+[[contributes.views]]
+id = "kube"
+title = "Kubernetes"
+icon = "icons/kubernetes.svg"
+location = "services"
+
+[capabilities]
+optional = ["process:kubectl"]
+```
+
+树中的条目就是服务节点：`render`、`handle`、工具栏（作用于选中节点）和 `viewItem.context` 菜单与工具窗口中一样。
+树旁的面板来自 `detail-provider` 导出：注册 `register_plugin!(MyPlugin, views, details)` 并实现
+`openidea_plugin::details::Details`：
+
+```rust
+use openidea_plugin::details::{Details, Pane, ProcessLog, Tab};
+
+impl Details for MyPlugin {
+    fn detail(&mut self, _view: &str, key: &str, _ctx: &Invocation) -> Result<Vec<Tab>, Error> {
+        let pod = key.trim_start_matches("pod:");
+        let log = ProcessLog::new("kubectl", &["logs", "-f", "--tail=1000", pod])
+            .toggle("ts", "Timestamps", &["--timestamps"]);
+        Ok(vec![Tab::new("log", "Log", log), Tab::new("inspect", "Inspect", Pane::Text(self.describe(pod)?))])
+    }
+}
+```
+
+每个节点最多 8 个标签页；IDE 自己切换标签，不调用插件，`host::refresh_view(view)` 后会重新请求。
+标签页可以是 `Pane::Message`、只读的 `Pane::Text`（最多 1 MiB）或 `ProcessLog`：IDE 在项目根目录运行该程序
+（需要 `process:<program>` 授权）并跟踪输出（去除 ANSI，保留最后 5000 行，提供 **软换行**、**清除**，结束时显示退出码）。
+开关会追加其 `args` 并重启程序。面板关闭或服务窗口隐藏时程序停止。
+
+**列表与详情视图**（API 1.3）。任意位置的树或列表视图都可以声明 `detail = true`，在选中条目旁显示同样的
+`Details` 标签页，中间有可调整的分隔条。宿主在条目的 `select` 事件之后以及 `refresh_view` 之后请求详情。
+
+## 由代码打开的标签页和终端
+
+以下函数需在窗口的命令或事件中调用：
+
+| 函数                                            | 打开什么                                                                                                                          |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `host::open_location(path, line, column)`       | 在编辑器中打开项目文件并定位光标（`project.read`；插件私有目录中的文件也可以）。                                                  |
+| `host::open_editor(path, selection)`            | API 1.4：打开项目文件并选中一个范围。                                                                                             |
+| `host::open_terminal(title, program, args)`     | 在项目根目录运行已批准 `process:<program>` 的终端标签页。                                                                         |
+| `host::open_terminal_session(key, title, &cmd)` | API 1.4：带 key 的终端；再次使用同一 key 会聚焦它。用 `host::write_terminal(key, text)` 写入；退出时收到 `terminal-exited` 事件。 |
+| `host::open_log_tab(key, title, &log)`          | API 1.3：基于 `ProcessLog` 的只读日志标签页。每个窗口最多 32 个；暂不支持远程项目。                                               |
+| `host::open_content_tab(&ContentTab { .. })`    | API 1.4：不依赖网页视图的内容编辑器标签页；操作以 `content-tab-action` 事件送达，用 `host::reply_content_tab` 回复。              |
+| `host::output_append(channel, text)`            | API 1.4：每个通道一个只读 **输出** 标签页（32 个通道，各 1 MiB）；另有 `output_clear`、`output_reveal`。                          |
+
+```rust
+use openidea_plugin::{ContentAction, ContentTab, host};
+
+host::open_content_tab(&ContentTab {
+    key: "service-config".into(),
+    title: "service.toml".into(),
+    file_name: Some("service.toml".into()),
+    language: Some("toml".into()),
+    content: "name = \"demo\"\n".into(),
+    read_only: false,
+    actions: vec![ContentAction { id: "save".into(), label: "Apply".into(), primary: true, save: true, ..Default::default() }],
+})?;
+```
+
+## 装饰
+
+装饰（API 1.4，WIT `decorations.wit`）用于在编辑器和项目树中添加标注。需要 `project.read`，路径必须在打开的项目内。
+
+```rust
+use openidea_plugin::{Decoration, FileDecoration, Position, Range, host};
+
+let at = Position::new(3, 20);
+host::set_decorations(&path, "blame", &[Decoration {
+    range: Range::new(at, at),
+    style: "muted".into(),
+    hover: Some("Fix the parser".into()),
+    after: Some("  Ada · 1a2b3c4d".into()),   // 显示在范围之后的纯文本
+}])?;
+
+host::set_file_decoration(&path, "status", &FileDecoration {
+    badge: Some("M".into()),                  // 最多两个字符
+    style: "modified".into(),
+    tooltip: Some("Changed by the tool".into()),
+})?;
+```
+
+- 样式映射到主题 token：`highlight`、`search`、`added`、`modified`、`removed`、`warning`、`error`、`info`、
+  `underline`、`strikethrough`、`muted`。未知样式会被忽略。
+- 一个装饰集（`set_id`）属于插件和项目，该项目的所有窗口共享。设置时替换该集合在这个文件上的全部条目；
+  `clear_decorations(set_id)` 和 `clear_file_decorations(set_id)` 在所有地方移除整个集合。
+- 限制：每个插件最多 50 个编辑器集合和 50 个树集合，每个文件最多 10,000 个编辑器条目，元数据总计 4 MiB。
+  禁用、卸载或崩溃时会撤回；空闲回收时保留。
+
+[Blame Annotations](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/blame-annotations)
+把 `Project::vcs_blame` 的结果变成行尾装饰。

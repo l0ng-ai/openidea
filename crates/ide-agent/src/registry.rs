@@ -826,7 +826,7 @@ mod tests {
         assert!(!shown.iter().any(|a| a.id == "cline"));
 
         write_atomic(&p.cache_file, INDEX.as_bytes()).unwrap();
-        let mut providers: Vec<AgentProvider> = provider::load(Some(&p.agents_dir))
+        let mut providers: Vec<AgentProvider> = provider::load(Some(&p.agents_dir), None)
             .into_iter()
             .filter(|s| s.id == "amp-acp")
             .map(|s| provider::describe(&s))
@@ -918,7 +918,7 @@ mod tests {
         assert_eq!(agent.command, v1.to_string_lossy());
         assert_eq!((agent.args.as_slice(), agent.env["A"].as_str()), (&["acp".to_owned()][..], "1"));
         assert_eq!(agent.registry, Some(RegistryRef { id: "demo".into(), version: "1.0.0".into() }));
-        let spec = provider::load(Some(&p.agents_dir)).into_iter().find(|s| s.id == "demo").unwrap();
+        let spec = provider::load(Some(&p.agents_dir), None).into_iter().find(|s| s.id == "demo").unwrap();
         assert_eq!(spec.source, AgentSource::Registry { version: "1.0.0".into(), update: None });
         assert!(provider::installed(&spec.command));
 
@@ -991,7 +991,7 @@ mod tests {
         assert_eq!((shown[0].installed.as_deref(), shown[0].update), (Some("1.0.104"), true));
 
         write_atomic(&p.cache_file, index.as_bytes()).unwrap();
-        let spec = provider::load(Some(&p.agents_dir)).into_iter().find(|s| s.id == "copilot").unwrap();
+        let spec = provider::load(Some(&p.agents_dir), None).into_iter().find(|s| s.id == "copilot").unwrap();
         assert_eq!(spec.name, "GitHub Copilot");
         assert_eq!(spec.login_hint, "Run `copilot` in a terminal and sign in.");
         assert_eq!(spec.source, AgentSource::Registry { version: "1.0.104".into(), update: None });
@@ -1004,7 +1004,7 @@ mod tests {
         );
 
         remove(&p, "github-copilot-cli").unwrap();
-        let fallback = provider::load(Some(&p.agents_dir)).into_iter().find(|s| s.id == "copilot").unwrap();
+        let fallback = provider::load(Some(&p.agents_dir), None).into_iter().find(|s| s.id == "copilot").unwrap();
         assert_eq!(fallback.source, AgentSource::Builtin);
     }
 }

@@ -46,7 +46,14 @@ export interface CustomKeymapSettings {
 
 export interface ValidSettings extends WorkflowSettings {
   plugins: Record<string, Record<string, unknown>>;
-  general: { reopenLastProject: boolean; confirmExit: boolean } & GeneralExtras;
+  general: {
+    reopenLastProject: boolean;
+    confirmExit: boolean;
+    /** Last window closes instead of showing the Welcome screen. */
+    closeWithoutWelcome: boolean;
+    /** Closing a window drops its saved editor tabs. */
+    closeTabsWithWindow: boolean;
+  } & GeneralExtras;
   appearance: { theme: ThemeId; accent: string; uiFontSize: number; locale: Locale } & AppearanceExtras;
   editor: {
     fontFamily: string;
@@ -78,6 +85,8 @@ export interface ValidSettings extends WorkflowSettings {
     fileTypes: FileTypeAssociations;
     /** Override File Type: file → language id (project scope). */
     fileTypeOverrides: Record<string, string>;
+    /** Files opened in associated applications: file-name patterns. */
+    associatedApplications: string[];
   };
   keymapOverrides: Record<string, string[]>;
   customKeymaps: Record<string, CustomKeymapSettings>;
@@ -96,8 +105,8 @@ export interface ValidSettings extends WorkflowSettings {
   languageServers: Record<string, LanguageServerEntry>;
   /** Tools › Agents › Chat: the meters in an agent task's header. */
   agents: Required<AgentSettings>;
-  /** Tools › MCP Server (global). */
-  mcpServer: { enabled: boolean };
+  /** Agents › IDE MCP Server (global). */
+  mcpServer: { enabled: boolean; runWithoutConfirmation: boolean };
 }
 
 /** One `languageServers.<name>` entry; every field optional, like in settings.toml. */
@@ -125,7 +134,13 @@ export { ACCENT_PRESETS } from "@/workbench/theme";
 
 export const DEFAULT_SETTINGS: ValidSettings = {
   plugins: {},
-  general: { reopenLastProject: true, confirmExit: true, ...DEFAULT_GENERAL_EXTRAS },
+  general: {
+    reopenLastProject: true,
+    confirmExit: true,
+    closeWithoutWelcome: false,
+    closeTabsWithWindow: false,
+    ...DEFAULT_GENERAL_EXTRAS,
+  },
   appearance: { theme: "light", accent: "#3871e1", uiFontSize: 13, locale: "en", ...DEFAULT_APPEARANCE_EXTRAS },
   editor: {
     fontFamily: "JetBrains Mono",
@@ -153,6 +168,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     localHistoryMaxMb: 512,
     fileTypes: {},
     fileTypeOverrides: {},
+    associatedApplications: ["*.xlsx", "*.xls", "*.docx", "*.doc", "*.pptx", "*.ppt", "*.pdf"],
   },
   keymapOverrides: {},
   customKeymaps: {},
@@ -165,8 +181,22 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   spelling: { ideWords: [], projectWords: [], customDictionaries: [] },
   tools: {},
   languageServers: {},
-  agents: { showContextUsage: true, showWorkTime: true, showUsageLimits: true, showCost: false },
-  mcpServer: { enabled: false },
+  agents: {
+    showContextUsage: true,
+    showWorkTime: true,
+    showUsageLimits: true,
+    showCost: false,
+    foldTurns: true,
+    smoothText: true,
+    thinking: "auto",
+    toolCalls: "grouped",
+    expandToolOutput: false,
+    sendWith: "enter",
+    whileRunning: "queue",
+    defaults: {},
+    mcpServers: {},
+  },
+  mcpServer: { enabled: false, runWithoutConfirmation: false },
   ...DEFAULT_WORKFLOW,
 };
 
@@ -186,6 +216,41 @@ type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
 const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
 const str = (v: unknown, d: string) => (typeof v === "string" && v.trim() ? v : d);
+const stringMap = (v: unknown): Record<string, string> =>
+  Object.fromEntries(Object.entries(obj(v)).filter((e): e is [string, string] => typeof e[1] === "string"));
+
+/** Agent id → option id → value, keeping only string values. */
+function agentDefaults(v: unknown): Record<string, Record<string, string>> {
+  return Object.fromEntries(Object.entries(obj(v)).map(([agent, options]) => [agent, stringMap(options)]));
+}
+
+function agentMcpServers(v: unknown): Required<AgentSettings>["mcpServers"] {
+  const out: Required<AgentSettings>["mcpServers"] = {};
+  for (const [name, raw] of Object.entries(obj(v))) {
+    if (!name.trim()) continue;
+    const s = obj(raw);
+    const transport = oneOf(s.transport, ["stdio", "http", "sse"] as const, "stdio");
+    const enabled = bool(s.enabled, true);
+    const command = typeof s.command === "string" && s.command.trim() ? s.command.trim() : null;
+    const args = stringList(s.args);
+    const env = stringMap(s.env);
+    const url = typeof s.url === "string" && s.url.trim() ? s.url.trim() : null;
+    const headers = stringMap(s.headers);
+    const agents = stringList(s.agents);
+    out[name] = {
+      transport,
+      enabled,
+      ...(command ? { command } : {}),
+      ...(args.length ? { args } : {}),
+      ...(Object.keys(env).length ? { env } : {}),
+      ...(url ? { url } : {}),
+      ...(Object.keys(headers).length ? { headers } : {}),
+      ...(agents.length ? { agents } : {}),
+    };
+  }
+  return out;
+}
+
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[], d: T): T =>
   typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : d;
 const num = (v: unknown, d: number, { min, max }: { min: number; max: number }, int = false) => {
@@ -223,6 +288,8 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       ...validateGeneralExtras(g),
       reopenLastProject: bool(g.reopenLastProject, d.general.reopenLastProject),
       confirmExit: bool(g.confirmExit, d.general.confirmExit),
+      closeWithoutWelcome: bool(g.closeWithoutWelcome, d.general.closeWithoutWelcome),
+      closeTabsWithWindow: bool(g.closeTabsWithWindow, d.general.closeTabsWithWindow),
     },
     appearance: {
       ...validateAppearanceExtras(a),
@@ -261,6 +328,9 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       localHistoryMaxMb: num(f.localHistoryMaxMb, d.files.localHistoryMaxMb, LIMITS.localHistoryMaxMb, true),
       fileTypes: validateFileTypes(f.fileTypes),
       fileTypeOverrides: validateFileTypeOverrides(f.fileTypeOverrides),
+      associatedApplications: Array.isArray(f.associatedApplications)
+        ? stringList(f.associatedApplications)
+        : [...d.files.associatedApplications],
     },
     keymapOverrides: overrides,
     customKeymaps,
@@ -285,8 +355,20 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       showWorkTime: bool(agents.showWorkTime, d.agents.showWorkTime),
       showUsageLimits: bool(agents.showUsageLimits, d.agents.showUsageLimits),
       showCost: bool(agents.showCost, d.agents.showCost),
+      foldTurns: bool(agents.foldTurns, d.agents.foldTurns),
+      smoothText: bool(agents.smoothText, d.agents.smoothText),
+      thinking: oneOf(agents.thinking, ["auto", "expanded", "collapsed"] as const, d.agents.thinking),
+      toolCalls: oneOf(agents.toolCalls, ["grouped", "each"] as const, d.agents.toolCalls),
+      expandToolOutput: bool(agents.expandToolOutput, d.agents.expandToolOutput),
+      sendWith: oneOf(agents.sendWith, ["enter", "modEnter"] as const, d.agents.sendWith),
+      whileRunning: oneOf(agents.whileRunning, ["queue", "steer"] as const, d.agents.whileRunning),
+      defaults: agentDefaults(agents.defaults),
+      mcpServers: agentMcpServers(agents.mcpServers),
     },
-    mcpServer: { enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled) },
+    mcpServer: {
+      enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled),
+      runWithoutConfirmation: bool(obj(root.mcpServer).runWithoutConfirmation, d.mcpServer.runWithoutConfirmation),
+    },
     ...validateWorkflow(root),
   };
 }

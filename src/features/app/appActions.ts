@@ -4,6 +4,7 @@ import type { Action } from "@/platform/actions";
 import { revealInFileManager } from "@/platform/fileManager";
 import { t } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { selectReadingPane } from "@/ui";
 import { maybeEditorService, notifications, runUndoHandlers } from "@/workbench/contributions";
 import { showAbout } from "./AboutDialog";
 import { quitApp } from "./closeGuard";
@@ -19,7 +20,7 @@ export async function showLog(): Promise<void> {
   if (!isTauri()) return;
   try {
     const loc = await call(commands.appLogLocation());
-    await revealInFileManager(loc.file ?? loc.dir);
+    await revealInFileManager(loc.file ?? loc.dir, null);
   } catch (e) {
     notifications().notify({ level: "error", title: t("app.log.failed"), body: errorText(e) });
   }
@@ -48,6 +49,7 @@ export function editCommand(command: "undo" | "redo" | "cut" | "copy" | "paste" 
       }
       if (focused instanceof Element && runUndoHandlers(command, focused)) return;
     }
+    if (command === "selectAll" && selectReadingPane(document.activeElement)) return;
     if (command === "paste" && navigator.clipboard?.readText) {
       void navigator.clipboard.readText().then((text) => document.execCommand("insertText", false, text));
       return;

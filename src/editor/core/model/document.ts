@@ -82,9 +82,12 @@ export interface DocMeta {
   language: string;
   uiMode: string | null;
   encoding: string;
+  hasBom: boolean;
   lineEnding: LineEnding;
   readOnly: boolean;
   dirty: boolean;
+  /** "Reload with Encoding" can re-decode this document's source bytes. */
+  canReloadEncoding: boolean;
   banner: Banner;
   indent: { tabSize: number; insertSpaces: boolean };
 }
@@ -248,10 +251,12 @@ export class DocModel {
       language: info.language,
       uiMode: uiMode ?? this.desc?.name ?? null,
       encoding: info.encoding,
+      hasBom: info.hasBom,
       lineEnding: info.lineEnding,
       // Library sources (External Libraries) open read-only, like IDEA's.
       readOnly: info.readOnly || (!this.virtual && isLibraryPath(info.path)),
       dirty: info.dirty,
+      canReloadEncoding: info.canReloadEncoding,
       banner: bannerFor(info),
       indent: { tabSize: 4, insertSpaces: true },
     };
@@ -267,6 +272,20 @@ export class DocModel {
       },
       {
         applyRemote: (cs, grouped) => this.applyRemote(cs, grouped),
+        onLocalCommitted: (baseVersion, version, changes) => {
+          const eventChanges: Array<{ from: number; to: number; insert: string }> = [];
+          changes.iterChanges((from, to, _fromB, _toB, inserted) => {
+            eventChanges.push({ from, to, insert: inserted.toString() });
+          });
+          _emitEditorEvent({
+            type: "docChanged",
+            doc: this.doc,
+            path: this.path,
+            baseVersion,
+            version,
+            changes: eventChanges,
+          });
+        },
         onDiscarded: (reason) => {
           logError(`document ${this.path}: unsaved edits replaced by the file's content`, reason);
           manager.notify({
@@ -414,16 +433,14 @@ export class DocModel {
   }
 
   /**
-   * Indentation explicit reformat requests use (`formatIndentFacet`): with an
-   * explicit per-language Tabs and Indents override, the Code Style without the
-   * file's detected indents — the override must reach the formatter, or the
-   * language server keeps its own style. Without an override formatting keeps
-   * the editor's indent.
+   * Indentation explicit reformat requests use (`formatIndentFacet`): the Code Style
+   * (EditorConfig included) without the file's detected indents, as in IDEA, where
+   * detection only affects editing. Otherwise a file indented differently from the
+   * Code Style reformats to its own indent and other files to the Code Style's.
+   * An indent chosen for this file in the status bar still applies.
    */
   formatIndent() {
-    const lang = this.info ? prefsOf(this.settings()).codeStyle.languages[this.info.id] : undefined;
-    if (!lang || (lang.useTab === undefined && lang.tabSize === undefined && lang.indent === undefined)) return null;
-    return effectiveIndent(this.settings(), this.info, this.editorconfig, null);
+    return this.indentOverride ?? effectiveIndent(this.settings(), this.info, this.editorconfig, null);
   }
 
   /**
@@ -449,6 +466,18 @@ export class DocModel {
 
   toggleSoftWrap() {
     this.softWrapOverride = !this.softWrapOn();
+    this.applySettings();
+  }
+
+  /** Rendered doc comments toggled for this file (wins over settings until the file is closed). */
+  renderedDocsOverride: boolean | null = null;
+
+  renderedDocsOn(): boolean {
+    return this.renderedDocsOverride ?? prefsOf(this.settings()).appearance.renderDocComments;
+  }
+
+  toggleRenderedDocs() {
+    this.renderedDocsOverride = !this.renderedDocsOn();
     this.applySettings();
   }
 
@@ -480,6 +509,7 @@ export class DocModel {
           info: this.info,
           readOnly: this.meta.readOnly,
           wrapOverride: this.softWrapOverride,
+          renderedDocsOverride: this.renderedDocsOverride,
         }),
       ),
     ];
@@ -515,6 +545,7 @@ export class DocModel {
             info: this.info,
             readOnly,
             wrapOverride: this.softWrapOverride,
+            renderedDocsOverride: this.renderedDocsOverride,
           }),
         ),
       ]);

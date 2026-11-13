@@ -4,7 +4,9 @@
 use super::{CommitAnswer, CommitRequest, CommitSelection, PluginContextKey, PluginEvent, PluginEventSink};
 use ide_core::ipc_path::to_ipc;
 use ide_core::{CancellationToken, TextEdit};
+use ide_extension::Capability;
 use ide_extension::Package;
+use ide_extension::ledger::{Ledger, Subject};
 use ide_language::ProgramPin;
 use ide_plugin::{
     CommitChange, CommitDraft, EventKind, HostApi, HostError, HttpRequest, HttpResponse, NotificationLevel,
@@ -16,7 +18,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command as StdCommand, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Largest storage of one plugin (keys + values).
@@ -37,10 +39,54 @@ type ContextKey = (Option<String>, String, String);
 /// What plugins see of the open projects; provided by the app
 /// ([`super::PluginHost::set_workspace`]), over [`crate::Host`] on the desktop.
 pub trait PluginWorkspace: Send + Sync {
+    /// Execution host of the Database subsystem; absent on unsupported hosts.
+    fn database_host(&self) -> Option<Arc<crate::Host>> {
+        None
+    }
+
+    /// A freshly resolved configuration owned by this plugin in the invoking project.
+    fn run_configuration(&self, _client: &str, _plugin: &str, _config: &str) -> Result<ide_run::RunConfig, HostError> {
+        Err(HostError::NotFound("run configuration unavailable".into()))
+    }
+
+    /// Window-owned reports shared with the MCP tools.
+    fn open_editors(&self, _client: &str) -> Result<Vec<ide_plugin::OpenEditor>, HostError> {
+        Ok(Vec::new())
+    }
+    /// Shared Find in Files service, preferring the invoking window's document store.
+    fn search_text(
+        &self,
+        _client: Option<&str>,
+        _root: &Path,
+        _query: ide_plugin::TextQuery,
+        _limit: u32,
+        _cancel: &CancellationToken,
+    ) -> Result<ide_plugin::TextSearch, HostError> {
+        Err(HostError::Failed("search unavailable".into()))
+    }
+    /// Problems view reports for this window's project.
+    fn problems(&self, _client: &str, _path: Option<&Path>) -> Result<Vec<ide_plugin::FileProblems>, HostError> {
+        Ok(Vec::new())
+    }
+
     /// Roots of the open projects.
     fn projects(&self) -> Vec<PathBuf>;
+    /// Roots of the workspace members attached to the project at `root` (a
+    /// project window group's folders, as the editor and LSP resolve them).
+    /// Empty for a plain project.
+    fn member_roots(&self, _root: &Path) -> Vec<PathBuf> {
+        Vec::new()
+    }
     /// Unsaved text of the open document at `path`.
     fn buffer_text(&self, path: &Path) -> Option<String>;
+    /// A window's unsaved text, with the normal project overlay as fallback.
+    fn buffer_text_in(&self, _client: Option<&str>, path: &Path) -> Option<String> {
+        self.buffer_text(path)
+    }
+    /// An editor owned by this window.
+    fn document_in(&self, _client: &str, path: &Path) -> Option<(u64, String)> {
+        self.document(path)
+    }
     /// Whether the editor holds changes for `path` that are not on disk yet;
     /// writing such a file would lose them.
     fn buffer_dirty(&self, _path: &Path) -> bool {
@@ -65,12 +111,17 @@ pub trait PluginWorkspace: Send + Sync {
     /// Version and text of the open document at `path`.
     fn document(&self, path: &Path) -> Option<(u64, String)>;
     /// Applies `edits` to the open document at `path` if it is still at
-    /// `version`, as one change (one undo step in the editor).
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit]) -> Result<u64, HostError>;
+    /// `version`, as one change: one undo step in the editor, or none for a
+    /// `background` caller (a plugin event rather than a command).
+    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit], background: bool) -> Result<u64, HostError>;
     /// Code from the project may run (git hooks and config on fetch).
     fn trusted(&self, root: &Path) -> bool;
     /// Root of the project open in `window`.
     fn project_of(&self, window: &str) -> Option<PathBuf>;
+    /// Windows showing the open project at `root`, the most recently focused first.
+    fn project_windows(&self, _root: &Path) -> Vec<String> {
+        Vec::new()
+    }
     /// Shows `items` as producer `source`'s diagnostics of `path` (replacing earlier ones).
     fn publish_diagnostics(&self, source: &str, path: &Path, items: Vec<ide_core::Diagnostic>)
     -> Result<(), HostError>;
@@ -120,23 +171,17 @@ impl SecretStore for FileSecretStore {
             None => map.remove(name),
         };
         let file = self.file(plugin);
-        std::fs::create_dir_all(file.parent().expect("has parent")).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+        ide_vfs::create_private_dir(file.parent().expect("has parent")).map_err(|e| e.to_string())?;
         let bytes = serde_json::to_vec(&map).map_err(|e| e.to_string())?;
-        let tmp = file.with_extension("tmp");
-        std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-        }
-        std::fs::rename(&tmp, &file).map_err(|e| e.to_string())
+        replace_entry(&file, &bytes).map_err(|e| e.to_string())
     }
 }
 
 /// Largest response body a plugin receives.
 const MAX_RESPONSE: usize = 8 << 20;
 /// Largest stdout / stderr kept from a process.
-const MAX_OUTPUT: usize = 4 << 20;
+const MAX_OUTPUT: usize = 16 << 20;
 /// Most processes one plugin keeps running at once.
 const MAX_PROCESSES: usize = 8;
 /// Most output one stream of a handle holds until the plugin reads it.
@@ -155,6 +200,34 @@ pub(super) fn net_runtime() -> &'static tokio::runtime::Runtime {
             .build()
             .expect("plugin network runtime")
     })
+}
+
+#[derive(Debug)]
+struct RedirectDenied(String);
+impl std::fmt::Display for RedirectDenied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is not granted for this redirect", self.0)
+    }
+}
+impl std::error::Error for RedirectDenied {}
+
+fn network_error(error: reqwest::Error) -> HostError {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    while let Some(e) = source {
+        if let Some(denied) = e.downcast_ref::<RedirectDenied>() {
+            return HostError::Denied(denied.0.clone());
+        }
+        source = e.source();
+    }
+    HostError::Failed(error.to_string())
+}
+
+fn redirect_capability(from: &reqwest::Url, to: &reqwest::Url) -> Result<Capability, String> {
+    if from.scheme() == "https" && to.scheme() == "http" {
+        ide_plugin::net_host(to.as_str()).map(Capability::NetHttp)
+    } else {
+        ide_plugin::net_capability(to.as_str())
+    }
 }
 
 /// Replaces `{{secret:<name>}}` in `value` with the plugin's secrets.
@@ -182,15 +255,16 @@ struct TaskEntry {
 }
 
 /// A question a plugin's call waits on: the user's (a prompt) or a window's.
-struct PromptEntry {
-    plugin: String,
-    client: String,
-    answer: Waiter,
+pub(super) struct PromptEntry {
+    pub(super) plugin: String,
+    pub(super) client: String,
+    pub(super) answer: Waiter,
 }
 
-enum Waiter {
+pub(super) enum Waiter {
     Prompt(std::sync::mpsc::SyncSender<Option<Vec<String>>>),
     Commit(std::sync::mpsc::SyncSender<CommitAnswer>),
+    Command(std::sync::mpsc::SyncSender<super::CommandAnswer>),
 }
 
 /// A process a plugin started and has not released (API 1.3 `process.start`).
@@ -405,9 +479,17 @@ fn append_process_env(command: &mut StdCommand, env: &[(String, String)]) -> Res
     Ok(())
 }
 
+/// Approved project-specific programs.
+pub(super) type ProjectPins = Arc<RwLock<HashMap<(String, String, PathBuf), ProgramPin>>>;
+
+type ContentRequests = BTreeMap<(String, String, String), (String, Instant)>;
+
+type SettingSnapshots = BTreeMap<(Option<String>, String), BTreeMap<String, String>>;
+
 /// State shared by the host and every plugin's [`PluginApi`].
 pub(super) struct Shared {
     pub sink: Arc<dyn PluginEventSink>,
+    pub websockets: super::websocket::WebSocketHub,
     pub workspace: RwLock<Option<Arc<dyn PluginWorkspace>>>,
     /// `<plugins>/.data`: one directory per plugin id.
     pub data_dir: PathBuf,
@@ -416,16 +498,32 @@ pub(super) struct Shared {
     /// (plugin, handle id) → the processes it started and has not released.
     processes: Mutex<HashMap<(String, u64), Arc<Proc>>>,
     next_process: AtomicU64,
+    connections: super::ipc::Connections,
+    pub loopbacks: RwLock<Arc<dyn super::auth::Service>>,
     process_shutdowns: Mutex<Vec<std::thread::JoinHandle<()>>>,
-    prompts: Mutex<HashMap<u64, PromptEntry>>,
+    pub(super) prompts: Mutex<HashMap<u64, PromptEntry>>,
     /// Plugins being stopped: their calls may not open new prompts (taken before `prompts`).
-    prompts_blocked: Mutex<BTreeSet<String>>,
-    next_prompt: AtomicU64,
+    pub(super) prompts_blocked: Mutex<BTreeSet<String>>,
+    /// One network question per plugin; refusals throttle all hosts for 30 seconds.
+    net_prompts: Mutex<HashMap<String, Option<Instant>>>,
+    pub net_hosts_session_only: AtomicBool,
+    session_net_hosts: Mutex<HashMap<String, BTreeSet<String>>>,
+    pub(super) next_prompt: AtomicU64,
+    pub(super) run_configurations: super::run_detectors::DynamicConfigurations,
+    pub(super) run_targets: Mutex<super::run_targets::Targets>,
+    pub(super) operations: Mutex<BTreeMap<String, super::execution::Operation>>,
+    pub(super) content_tabs: Mutex<BTreeMap<(String, String, String), ide_plugin::ContentTab>>,
+    pub(super) content_requests: Mutex<ContentRequests>,
+
     /// (plugin, item id) → item, for windows opened later.
+    output: Mutex<BTreeMap<(String, String), String>>,
+    decorations: Mutex<BTreeMap<String, Vec<super::DecorationSet>>>,
     status: Mutex<BTreeMap<(String, String), StatusItem>>,
+    setting_snapshots: Mutex<SettingSnapshots>,
+    window_status: Mutex<BTreeMap<(String, String, String), StatusItem>>,
     /// (scope, plugin, key) → JSON value.
     contexts: Mutex<BTreeMap<ContextKey, String>>,
-    closed_clients: Mutex<BTreeSet<String>>,
+    pub(super) closed_clients: Mutex<BTreeSet<String>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
     pub subscriptions: Mutex<super::event_paths::Subscriptions>,
     /// plugin → files it shows problems for, withdrawn when it stops.
@@ -433,8 +531,15 @@ pub(super) struct Shared {
     pub secrets: RwLock<Arc<dyn SecretStore>>,
     /// (plugin, `process:` capability) → the approved program.
     pub pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
+    /// The grant ledger, shared with the [`super::PluginHost`]: `net:ask`
+    /// looks up and records "always allow" hosts right where a request runs.
+    pub ledger: Arc<Mutex<Ledger>>,
+    pub project_pins: ProjectPins,
+    pub event_editors: RwLock<HashMap<String, ide_plugin::EditorContext>>,
     /// Validated UI declarations (settings schemas, declared views).
     pub ui: Arc<ide_extension::UiStore>,
+    /// Extension points plugins declare and what was contributed to them.
+    pub registry: Arc<ide_extension::ExtensionRegistry>,
     /// The UI language the windows report (BCP 47).
     pub locale: RwLock<String>,
     /// (plugin, window) → the log tabs its code opened there, oldest first:
@@ -455,24 +560,46 @@ impl Shared {
         data_dir: PathBuf,
         pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
         ui: Arc<ide_extension::UiStore>,
+        ledger: Arc<Mutex<Ledger>>,
+        registry: Arc<ide_extension::ExtensionRegistry>,
     ) -> Arc<Self> {
         Arc::new(Self {
             ui,
+            registry,
             locale: RwLock::new("en".into()),
-            sink,
+            sink: sink.clone(),
+            websockets: super::websocket::WebSocketHub::new(sink.clone()),
             workspace: RwLock::new(None),
             secrets: RwLock::new(Arc::new(FileSecretStore { dir: data_dir.clone() })),
             pins,
+            ledger,
+            project_pins: Arc::default(),
+            event_editors: RwLock::default(),
             data_dir,
             tasks: Mutex::default(),
             next_task: AtomicU64::new(1),
             processes: Mutex::default(),
             next_process: AtomicU64::new(1),
+            connections: super::ipc::Connections::default(),
+            loopbacks: RwLock::new(Arc::new(super::auth::Loopbacks::default())),
             process_shutdowns: Mutex::default(),
             prompts: Mutex::default(),
             prompts_blocked: Mutex::default(),
+            net_prompts: Mutex::default(),
+            net_hosts_session_only: AtomicBool::new(false),
+            session_net_hosts: Mutex::default(),
             next_prompt: AtomicU64::new(1),
+            run_configurations: Arc::default(),
+            run_targets: Mutex::default(),
+            operations: Mutex::default(),
+            content_tabs: Mutex::default(),
+            content_requests: Mutex::default(),
+
             status: Mutex::default(),
+            output: Mutex::default(),
+            decorations: Mutex::default(),
+            window_status: Mutex::default(),
+            setting_snapshots: Mutex::default(),
             contexts: Mutex::default(),
             closed_clients: Mutex::default(),
             subscriptions: Mutex::default(),
@@ -518,6 +645,45 @@ impl Shared {
         self.status.lock().iter().map(|((p, id), item)| (p.clone(), id.clone(), item.clone())).collect()
     }
 
+    pub fn changed_settings(self: &Arc<Self>, pkg: &Package, client: Option<&str>) -> Vec<String> {
+        let root = client.and_then(|c| self.project_of(c));
+        let api = PluginApi { pkg: pkg.clone(), shared: self.clone() };
+        let mut current = BTreeMap::new();
+        for item in self.ui.items(super::ui_points::SETTINGS, Some(pkg.id())) {
+            if let Some(properties) = item.decl.get("properties").and_then(|p| p.as_array()) {
+                for property in properties {
+                    if let Some(key) = property.get("key").and_then(|k| k.as_str())
+                        && let Some(value) = api.setting(root.as_deref(), key)
+                    {
+                        current.insert(key.into(), value);
+                    }
+                }
+            }
+        }
+        let previous =
+            self.setting_snapshots.lock().insert((client.map(str::to_owned), pkg.id().into()), current.clone());
+        previous
+            .map(|old| current.into_iter().filter(|(k, v)| old.get(k) != Some(v)).map(|(k, _)| k).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn status_snapshot(&self, client: &str) -> Vec<super::PluginStatusItem> {
+        let mut items: Vec<_> = self
+            .status_items()
+            .into_iter()
+            .map(|(plugin_id, id, item)| super::PluginStatusItem { plugin_id, id, item, window: false })
+            .collect();
+        items.extend(self.window_status.lock().iter().filter(|((w, ..), _)| w == client).map(
+            |((_, plugin_id, id), item)| super::PluginStatusItem {
+                plugin_id: plugin_id.clone(),
+                id: id.clone(),
+                item: item.clone(),
+                window: true,
+            },
+        ));
+        items
+    }
+
     pub fn context_keys(&self, client: Option<&str>) -> Vec<PluginContextKey> {
         let contexts = self.contexts.lock();
         let mut keys: BTreeMap<(&str, &str), &str> = BTreeMap::new();
@@ -542,6 +708,13 @@ impl Shared {
         self.prompts.lock().retain(|_, entry| entry.client != client);
         drop(closed);
         self.contexts.lock().retain(|(scope, ..), _| scope.as_deref() != Some(client));
+        self.loopbacks.read().forget_window(client);
+        self.window_status.lock().retain(|(window, ..), _| window != client);
+        self.operations.lock().retain(|_, op| op.client != client);
+        self.content_tabs.lock().retain(|(_, window, _), _| window != client);
+        self.content_requests.lock().retain(|(_, window, _), _| window != client);
+        self.event_editors.write().remove(client);
+        self.setting_snapshots.lock().retain(|(window, _), _| window.as_deref() != Some(client));
         let mine: Vec<_> = {
             let mut processes = self.processes.lock();
             let keys: Vec<_> = processes
@@ -597,7 +770,29 @@ impl Shared {
     /// Withdraws a plugin's run-time state (it stopped or failed). Its
     /// subscriptions go only with `subscriptions`, as they survive restarts.
     pub fn clear_plugin(&self, plugin: &str, subscriptions: bool) {
+        self.withdraw_run_targets(Some(plugin), None);
+        self.run_configurations.write().retain(|(p, _), _| p != plugin);
+        self.operations.lock().retain(|_, op| op.plugin != plugin);
+        self.content_tabs.lock().retain(|(p, _, _), _| p != plugin);
+        self.content_requests.lock().retain(|(p, _, _), _| p != plugin);
+
         self.kill_processes(plugin);
+        self.connections.clear(plugin);
+        self.websockets.disconnect_plugin(plugin);
+        self.setting_snapshots.lock().retain(|(_, p), _| p != plugin);
+        let channels: Vec<_> = {
+            let mut output = self.output.lock();
+            let keys: Vec<_> = output.keys().filter(|(p, _)| p == plugin).cloned().collect();
+            for key in &keys {
+                output.remove(key);
+            }
+            keys
+        };
+        for (_, channel) in channels {
+            self.sink.emit(None, PluginEvent::OutputChanged { plugin_id: plugin.into(), channel, text: None });
+        }
+
+        self.loopbacks.read().clear(plugin);
         let removed: Vec<String> = {
             let mut status = self.status.lock();
             let ids: Vec<String> = status.keys().filter(|(p, _)| p == plugin).map(|(_, id)| id.clone()).collect();
@@ -609,7 +804,24 @@ impl Shared {
         for id in removed {
             self.sink.emit(None, PluginEvent::StatusItemChanged { plugin_id: plugin.to_owned(), id, item: None });
         }
+        let removed: Vec<_> = {
+            let mut items = self.window_status.lock();
+            let keys: Vec<_> = items.keys().filter(|(_, p, _)| p == plugin).cloned().collect();
+            for key in &keys {
+                items.remove(key);
+            }
+            keys
+        };
+        for (window, _, id) in removed {
+            self.sink
+                .emit(Some(&window), PluginEvent::WindowStatusItemChanged { plugin_id: plugin.into(), id, item: None });
+        }
+        if self.decorations.lock().remove(plugin).is_some() {
+            self.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: plugin.into(), sets: Vec::new() });
+        }
         self.withdraw_prompts(plugin);
+        self.net_prompts.lock().remove(plugin);
+        self.session_net_hosts.lock().remove(plugin);
         let removed: Vec<(Option<String>, String)> = {
             let mut contexts = self.contexts.lock();
             let keys: Vec<_> = contexts.keys().filter(|(_, p, _)| p == plugin).cloned().collect();
@@ -688,6 +900,13 @@ impl Shared {
         self.prompts_blocked.lock().remove(plugin);
     }
 
+    /// A window other than `client` where `plugin` waits for the user's answer (a prompt or a
+    /// Commit request). The plugin runs one call at a time, so anything else asked of it waits
+    /// behind that answer.
+    pub fn waiting_elsewhere(&self, plugin: &str, client: &str) -> Option<String> {
+        self.prompts.lock().values().find(|p| p.plugin == plugin && p.client != client).map(|p| p.client.clone())
+    }
+
     /// The user answered (`Some`) or dismissed (`None`) a prompt.
     pub fn answer_prompt(&self, id: u64, answer: Option<Vec<String>>) -> bool {
         let mut prompts = self.prompts.lock();
@@ -699,6 +918,16 @@ impl Shared {
     }
 
     /// A window answered a [`CommitRequest`].
+    pub fn answer_command(&self, client: &str, id: u64, answer: super::CommandAnswer) -> bool {
+        let mut prompts = self.prompts.lock();
+        if !matches!(prompts.get(&id), Some(PromptEntry { client: window, answer: Waiter::Command(_), .. }) if window == client)
+        {
+            return false;
+        }
+        let Some(PromptEntry { answer: Waiter::Command(tx), .. }) = prompts.remove(&id) else { return false };
+        tx.try_send(answer).is_ok()
+    }
+
     pub fn answer_commit(&self, id: u64, answer: CommitAnswer) -> bool {
         let mut prompts = self.prompts.lock();
         if !matches!(prompts.get(&id), Some(PromptEntry { answer: Waiter::Commit(_), .. })) {
@@ -725,6 +954,15 @@ fn storage_io(e: std::io::Error) -> HostError {
     HostError::Failed(format!("storage: {e}"))
 }
 
+fn replace_entry(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut tmp =
+        tempfile::Builder::new().prefix(".entry-").suffix(".tmp").tempfile_in(path.parent().expect("has parent"))?;
+    tmp.write_all(bytes)?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
 /// A key's file name: its hash, since keys may hold any character.
 fn entry_name(key: &str) -> String {
     blake3::hash(key.as_bytes()).to_hex().to_string()
@@ -746,8 +984,7 @@ fn write_entry(dir: &Path, key: &str, value: &str) -> Result<(), HostError> {
     bytes.extend_from_slice(&len.to_le_bytes());
     bytes.extend_from_slice(key.as_bytes());
     bytes.extend_from_slice(value.as_bytes());
-    let tmp = file.with_extension("tmp");
-    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &file)).map_err(storage_io)
+    replace_entry(&file, &bytes).map_err(storage_io)
 }
 
 /// The stored entries' files and the bytes of their keys and values.
@@ -784,6 +1021,9 @@ impl PluginApi {
     /// older version into it.
     fn storage(&self) -> Result<PathBuf, HostError> {
         let dir = self.shared.storage_dir(self.id());
+        std::fs::create_dir_all(&self.shared.data_dir).map_err(storage_io)?;
+        ide_vfs::create_private_dir(dir.parent().expect("has parent")).map_err(failed)?;
+        ide_vfs::create_private_dir(&dir).map_err(failed)?;
         let legacy = self.shared.data_dir.join(self.id()).join("storage.json");
         match std::fs::read(&legacy) {
             Ok(bytes) => {
@@ -802,7 +1042,17 @@ impl PluginApi {
 
     /// The program approved for the (already checked) `process:` grant,
     /// verified right before it starts.
+    #[cfg(test)]
     fn approved_program(&self, program: &str) -> Result<PathBuf, HostError> {
+        self.approved_program_in_project(program, None)
+    }
+
+    pub(super) fn approved_program_in_project(&self, program: &str, root: Option<&Path>) -> Result<PathBuf, HostError> {
+        if let Some(pin) = root.and_then(|root| {
+            self.shared.project_pins.read().get(&(self.id().into(), format!("process:{program}"), root.into())).cloned()
+        }) {
+            return pin.verify().map(Path::to_path_buf).map_err(|e| HostError::Denied(e.to_string()));
+        }
         let cap = format!("process:{program}");
         // Granted without a pinned file: the program wasn't found when it was
         // allowed, and installing it later approves nothing by itself.
@@ -828,7 +1078,7 @@ impl PluginApi {
         cancel: &CancellationToken,
         on_line: &dyn Fn(super::PluginOutputLine),
     ) -> Result<Option<i32>, HostError> {
-        let binary = self.approved_program(program)?;
+        let binary = self.approved_program_in_project(program, cwd)?;
         let cwd = cwd.map(Path::to_path_buf).unwrap_or_else(|| self.shared.data_dir.join(self.id()));
         let _ = std::fs::create_dir_all(&cwd);
         let mut cmd = std::process::Command::new(&binary);
@@ -1024,6 +1274,8 @@ pub(super) fn commit_draft(
         let Some(r) = ide_vcs::Repo::discover(&repo.root.0).map_err(failed)? else {
             return Err(HostError::NotFound(format!("{} is not in a git repository", repo.root.0.display())));
         };
+        // Both callers have checked that the window's project is trusted.
+        r.set_execution_allowed(true);
         let pending = r.pending_changes(&repo.options, budget, &|path| Ok(workspace.vcs_encoding(path))).map_err(
             |e| match e.kind {
                 ide_core::error::ErrorKind::InvalidInput => HostError::Invalid(e.message),
@@ -1051,6 +1303,515 @@ fn failed(e: impl std::fmt::Display) -> HostError {
 }
 
 impl HostApi for PluginApi {
+    fn database_upsert(&self, root: &Path, source: ide_plugin::PluginDataSource) -> Result<(), HostError> {
+        let (host, db) = self.database_host(root)?;
+        let id = source.id.clone();
+        let source = super::database::settings(source)?;
+        self.remember_database_project(root, &id)?;
+        host.runtime.block_on(db.upsert_plugin_source(self.pkg.id(), &id, source)).map_err(super::database::error)?;
+        let internal = ide_db::plugin::source_id(self.pkg.id(), &id);
+        for project in host.projects().into_iter().filter(|p| p.root == root) {
+            host.runtime.block_on(project.db.disconnect_source(&internal));
+        }
+        super::database::changed(&host, root);
+        Ok(())
+    }
+    fn database_remove(&self, root: &Path, id: &str) -> Result<(), HostError> {
+        let (host, db) = self.database_host(root)?;
+        host.runtime.block_on(db.remove_plugin_source(self.pkg.id(), id)).map_err(super::database::error)?;
+        let internal = ide_db::plugin::source_id(self.pkg.id(), id);
+        for project in host.projects().into_iter().filter(|p| p.root == root) {
+            host.runtime.block_on(project.db.forget_plugin_source(&internal));
+        }
+        super::database::changed(&host, root);
+        Ok(())
+    }
+    fn database_sources(&self, root: &Path) -> Result<Vec<String>, HostError> {
+        let (_, db) = self.database_host(root)?;
+        db.plugin_sources(self.pkg.id()).map_err(super::database::error)
+    }
+    fn database_credential(&self, root: &Path, id: &str, password: String) -> Result<(), HostError> {
+        let (host, db) = self.database_host(root)?;
+        let source = db.plugin_source(self.pkg.id(), id).map_err(super::database::error)?;
+        self.remember_database_project(root, id)?;
+        for project in host.projects().into_iter().filter(|p| p.root == root) {
+            host.runtime.block_on(project.db.set_password(&source.id, Some(password.clone()), true)).map_err(failed)?;
+        }
+        Ok(())
+    }
+    fn database_connect(
+        &self,
+        root: &Path,
+        client: &str,
+        id: &str,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        self.connect_database(root, client, id, cancel, timeout)
+    }
+    fn mcp_stdio_command(&self, client: &str) -> Option<Vec<String>> {
+        let host = self.shared.workspace()?.database_host()?;
+        let root = host.project(client).ok()?.root.clone();
+        host.mcp_executable.read().as_ref().map(|exe| ide_mcp::stdio_command(exe, &root))
+    }
+
+    fn extension_contributions(&self, point: &str) -> Result<Vec<(String, String)>, HostError> {
+        self.require_api("extension points", 5)?;
+        match self.shared.registry.point_owner(point) {
+            None => Err(HostError::NotFound(format!("no running plugin declares {point}"))),
+            Some(owner) if owner != self.id() => Err(HostError::Denied(format!("extension point {point}"))),
+            Some(_) => Ok(self
+                .shared
+                .registry
+                .contributions_to(point)
+                .into_iter()
+                .map(|c| (c.plugin, c.data.to_string()))
+                .collect()),
+        }
+    }
+
+    fn register_run_target(&self, root: &Path, target: ide_plugin::PluginRunTarget) -> Result<(), HostError> {
+        self.register_target(root, target)
+    }
+    fn unregister_run_target(&self, root: &Path, id: &str) {
+        self.unregister_target(root, id);
+    }
+
+    fn start_run(
+        &self,
+        client: &str,
+        config: &str,
+        args: Vec<String>,
+        debug: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        let _ = timeout;
+        if cancel.is_cancelled() {
+            return Err(HostError::Cancelled);
+        }
+        let mut run =
+            self.shared.workspace().ok_or(HostError::Cancelled)?.run_configuration(client, self.id(), config)?;
+        let binary = self.approved_program_in_project(&run.command, self.shared.project_of(client).as_deref())?;
+        if debug && run.debug_adapter.is_none() {
+            return Err(HostError::Invalid("this configuration has no debugger".into()));
+        }
+        let program = run.command.clone();
+        if debug && run.extras.target.as_ref().is_some_and(|t| !t.is_empty()) {
+            return Err(HostError::Invalid("debugging this target is not supported".into()));
+        }
+        if debug {
+            run.command = binary.to_string_lossy().into_owned();
+        }
+        run.args.extend(args);
+        let id = self.new_operation(
+            client,
+            super::execution::OperationKind::Run { config: config.into(), configuration: run.id.clone(), program },
+        )?;
+        run.extras.params.insert(super::execution::RUN_OPERATION.into(), id.clone());
+        let request = super::WindowRequest::Run { operation: id.clone(), config: Box::new(run), debug };
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::WindowRequest { plugin_id: self.id().into(), request_id: String::new(), request },
+        );
+        Ok(id)
+    }
+    fn open_terminal_session(
+        &self,
+        client: &str,
+        key: String,
+        title: String,
+        cmd: ProcessCommand,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        super::execution::label(&key, 128)?;
+        super::execution::label(&title, 256)?;
+        let root =
+            self.shared.project_of(client).ok_or_else(|| HostError::Invalid("no project in this window".into()))?;
+        if !self.shared.workspace().is_some_and(|w| w.trusted(&root)) {
+            return Err(HostError::Denied("project is not trusted".into()));
+        }
+        let binary = self.approved_program_in_project(&cmd.program, Some(&root))?;
+        let mut command = StdCommand::new(&binary);
+        append_process_env(&mut command, &cmd.env)?;
+        if cmd.args.iter().any(|a| a.contains('\0')) {
+            return Err(HostError::Invalid("NUL in terminal argument".into()));
+        }
+        let existing = self
+            .shared
+            .operations
+            .lock()
+            .iter()
+            .find(|(_, op)| {
+                op.plugin == self.id()
+                    && op.client == client
+                    && matches!(&op.kind, super::execution::OperationKind::Terminal { key: k, .. } if k == &key)
+            })
+            .map(|(id, _)| id.clone());
+        let id = match existing {
+            Some(id) => id,
+            None => self.new_operation(
+                client,
+                super::execution::OperationKind::Terminal { key: key.clone(), command: cmd.clone() },
+            )?,
+        };
+        let request = super::WindowRequest::Terminal {
+            operation: id.clone(),
+            key,
+            title,
+            program: binary.into(),
+            args: cmd.args,
+            env: cmd.env.into_iter().collect(),
+            cwd: root.into(),
+        };
+        if let Err(error) = self.window_request(client, request, cancel, timeout) {
+            self.shared.operations.lock().remove(&id);
+            return Err(error);
+        }
+        Ok(id)
+    }
+    fn write_terminal(
+        &self,
+        client: &str,
+        key: &str,
+        text: String,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        let root = self.shared.project_of(client).ok_or(HostError::Cancelled)?;
+        if !self.shared.workspace().is_some_and(|w| w.trusted(&root)) {
+            return Err(HostError::Denied("project is not trusted".into()));
+        }
+        let _ = timeout;
+        if cancel.is_cancelled() {
+            return Err(HostError::Cancelled);
+        }
+        let terminal = self
+            .shared
+            .operations
+            .lock()
+            .iter()
+            .find(|(_, op)| {
+                op.plugin == self.id()
+                    && op.client == client
+                    && op.root.as_ref() == Some(&root)
+                    && matches!(&op.kind, super::execution::OperationKind::Terminal { key: k, .. } if k == key)
+            })
+            .and_then(|(_, op)| op.terminal.clone())
+            .ok_or_else(|| HostError::NotFound("no running terminal with this key".into()))?;
+        let (host, id) = terminal;
+        host.upgrade().ok_or(HostError::Cancelled)?.terminals.write(id, &text).map_err(failed)
+    }
+
+    fn open_content_tab(
+        &self,
+        client: &str,
+        tab: ide_plugin::ContentTab,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        super::execution::validate_tab(&tab)?;
+        let mut tabs = self.shared.content_tabs.lock();
+        let key = (self.id().into(), client.into(), tab.key.clone());
+        if !tabs.contains_key(&key) && tabs.keys().filter(|(p, w, _)| p == self.id() && w == client).count() >= 32 {
+            return Err(HostError::Invalid("at most 32 content tabs".into()));
+        }
+        let previous = tabs.insert(key.clone(), tab.clone());
+        drop(tabs);
+        if let Err(error) = self.window_request(client, super::WindowRequest::ContentTab { tab }, cancel, timeout) {
+            let mut tabs = self.shared.content_tabs.lock();
+            if let Some(previous) = previous {
+                tabs.insert(key, previous);
+            } else {
+                tabs.remove(&key);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+    fn reply_content_tab(
+        &self,
+        client: &str,
+        request: &str,
+        reply: ide_plugin::ContentTabReply,
+    ) -> Result<(), HostError> {
+        super::execution::validate_reply(&reply)?;
+        if self.shared.content_requests.lock().remove(&(self.id().into(), client.into(), request.into())).is_none() {
+            return Err(HostError::NotFound("unknown content action request".into()));
+        }
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::ContentTabReply { plugin_id: self.id().into(), request_id: request.into(), reply },
+        );
+        Ok(())
+    }
+
+    fn owns_command(&self, id: &str) -> bool {
+        let commands = self.shared.ui.items(super::COMMANDS, None);
+        let mut matches = commands.iter().filter(|c| id == format!("plugin.{}.{}", c.plugin_id, c.key)).peekable();
+        matches.peek().is_some() && matches.all(|c| c.plugin_id == self.id())
+    }
+
+    fn open_editors(&self, client: &str) -> Result<Vec<ide_plugin::OpenEditor>, HostError> {
+        self.shared.workspace().ok_or_else(|| HostError::NotFound("window project".into()))?.open_editors(client)
+    }
+    fn editor_open(&self, client: &str, path: &Path, selection: Option<ide_core::Range>) -> Result<(), HostError> {
+        self.shared.sink.emit(Some(client), PluginEvent::EditorOpen { path: path.into(), selection });
+        Ok(())
+    }
+    fn editor_ranges(
+        &self,
+        client: &str,
+        path: &Path,
+        ranges: Vec<ide_core::Range>,
+        reveal: bool,
+    ) -> Result<(), HostError> {
+        let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("window project".into()))?;
+        if !workspace.open_editors(client)?.iter().any(|e| Path::new(&e.path) == path) {
+            return Err(HostError::Invalid("editor does not belong to the invoking window".into()));
+        }
+        let (_, text) =
+            workspace.document_in(client, path).ok_or_else(|| HostError::NotFound("editor is closed".into()))?;
+        let document = ide_text::Document::new(&text);
+        for r in &ranges {
+            if !valid_range(&document, *r) {
+                return Err(HostError::Invalid("range outside document".into()));
+            }
+        }
+        self.shared.sink.emit(Some(client), PluginEvent::EditorRanges { path: path.into(), ranges, reveal });
+        Ok(())
+    }
+    fn search_text(
+        &self,
+        client: Option<&str>,
+        root: &Path,
+        query: ide_plugin::TextQuery,
+        limit: u32,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<ide_plugin::TextSearch, HostError> {
+        let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("project closed".into()))?;
+        if query.pattern.len() > 16_384 || query.include.len() + query.exclude.len() > 256 {
+            return Err(HostError::Invalid("search query too large".into()));
+        }
+        let token = cancel.child_token();
+        let timed = token.clone();
+        let (done, wait) = std::sync::mpsc::channel();
+        let timer = std::thread::spawn(move || {
+            if wait.recv_timeout(deadline.saturating_duration_since(Instant::now())).is_err() {
+                timed.cancel();
+            }
+        });
+        let result = workspace.search_text(client, root, query, limit.min(10_000), &token);
+        let _ = done.send(());
+        let _ = timer.join();
+        if cancel.is_cancelled() {
+            Err(HostError::Cancelled)
+        } else if Instant::now() >= deadline {
+            Err(HostError::Failed("text search timed out".into()))
+        } else {
+            result
+        }
+    }
+    fn problems(&self, client: &str, path: Option<&Path>) -> Result<Vec<ide_plugin::FileProblems>, HostError> {
+        self.shared.workspace().ok_or_else(|| HostError::NotFound("window project".into()))?.problems(client, path)
+    }
+    fn decorations(&self, path: Option<&Path>, set: &str, items: Vec<ide_plugin::Decoration>) -> Result<(), HostError> {
+        self.set_decorations(path, set, items, None, false)
+    }
+    fn file_decorations(
+        &self,
+        path: Option<&Path>,
+        set: &str,
+        item: Option<ide_plugin::FileDecoration>,
+    ) -> Result<(), HostError> {
+        self.set_decorations(path, set, Vec::new(), item, true)
+    }
+    fn vcs_log(
+        &self,
+        root: &Path,
+        path: Option<&str>,
+        limit: u32,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<ide_plugin::CommitInfo>, HostError> {
+        let repo = self.read_repo(root)?;
+        let path = path
+            .map(|p| ide_plugin::resolve_new_in_root(root, p).map(ide_core::IpcPath::from).map_err(HostError::Invalid))
+            .transpose()?;
+        let Some(repo) = repo else {
+            return Ok(Vec::new());
+        };
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let query = ide_vcs::LogQuery { path, limit: limit.min(1000), ..Default::default() };
+        repo.log_cancellable(&query, cancel)
+            .map(|cs| {
+                cs.into_iter()
+                    .map(|c| ide_plugin::CommitInfo {
+                        id: c.id,
+                        short_id: c.short_id,
+                        author: c.author,
+                        author_email: c.email,
+                        date: (c.time_ms / 1000.0) as i64,
+                        subject: c.summary,
+                        body: c
+                            .message
+                            .split_once('\n')
+                            .map_or(String::new(), |(_, body)| body.trim_start_matches('\n').into()),
+                        parents: c.parents,
+                    })
+                    .collect()
+            })
+            .map_err(failed)
+    }
+    fn vcs_blame(
+        &self,
+        client: Option<&str>,
+        root: &Path,
+        path: &str,
+    ) -> Result<Vec<ide_plugin::BlameLine>, HostError> {
+        let repo = self.read_repo(root)?;
+        let path = ide_plugin::resolve_new_in_root(root, path).map_err(HostError::Invalid)?;
+        let Some(repo) = repo else {
+            return Ok(Vec::new());
+        };
+        let workspace = self.shared.workspace().unwrap();
+        let text = workspace.buffer_text_in(client, &path);
+        repo.blame(&path, text.as_deref(), None, workspace.vcs_encoding(&path))
+            .map(|lines| {
+                lines
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, l)| ide_plugin::BlameLine {
+                        line: i as u32,
+                        commit: l.commit,
+                        author: l.author,
+                        date: (l.time_ms / 1000.0) as i64,
+                        summary: l.summary,
+                    })
+                    .collect()
+            })
+            .map_err(failed)
+    }
+    fn vcs_diff(
+        &self,
+        root: &Path,
+        path: Option<&str>,
+        against: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, HostError> {
+        let repo = self.read_repo(root)?;
+        let path = path.map(|p| ide_plugin::resolve_new_in_root(root, p).map_err(HostError::Invalid)).transpose()?;
+        let Some(repo) = repo else {
+            return Ok(None);
+        };
+        repo.working_tree_patch(path.as_deref(), against, 4 << 20, cancel).map(Some).map_err(failed)
+    }
+
+    fn execute_command(
+        &self,
+        invocation: &ide_plugin::Invocation,
+        id: &str,
+        arg: Option<String>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<Option<String>, HostError> {
+        let client = from_window(invocation.client.as_deref(), "execute commands")?;
+        let mut chain = invocation.command_chain.clone();
+        chain.push(self.id().into());
+        if chain.len() > 8 {
+            return Err(HostError::Invalid("command nesting limit (8)".into()));
+        }
+        for command in self.shared.ui.items(super::COMMANDS, None) {
+            if id == format!("plugin.{}.{}", command.plugin_id, command.key) && chain.contains(&command.plugin_id) {
+                return Err(HostError::Invalid("recursive plugin command".into()));
+            }
+        }
+        let request = self.shared.next_prompt.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        {
+            let closed = self.shared.closed_clients.lock();
+            let blocked = self.shared.prompts_blocked.lock();
+            if closed.contains(client) || blocked.contains(self.id()) {
+                return Err(HostError::Cancelled);
+            }
+            self.shared.prompts.lock().insert(
+                request,
+                PromptEntry { plugin: self.id().into(), client: client.into(), answer: Waiter::Command(tx) },
+            );
+        }
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::ExecuteCommand { request_id: request.to_string(), id: id.into(), arg, chain },
+        );
+        let deadline = Instant::now() + timeout;
+        loop {
+            match rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(super::CommandAnswer::Value(value)) => return Ok(value),
+                Ok(super::CommandAnswer::NotFound) => return Err(HostError::NotFound(id.into())),
+                Ok(super::CommandAnswer::Failed(error)) => return Err(HostError::Failed(error)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                    if !cancel.is_cancelled() && Instant::now() < deadline => {}
+                Err(_) => {
+                    self.shared.prompts.lock().remove(&request);
+                    return Err(HostError::Cancelled);
+                }
+            }
+        }
+    }
+    fn output_write(&self, channel: &str, text: Option<&str>) -> Result<(), HostError> {
+        if channel.is_empty() || channel.len() > 128 || channel.chars().any(char::is_control) {
+            return Err(HostError::Invalid("output channel must be 1-128 bytes without control characters".into()));
+        }
+        let key = (self.id().to_owned(), channel.to_owned());
+        let mut channels = self.shared.output.lock();
+        if !channels.contains_key(&key) && channels.keys().filter(|(p, _)| p == self.id()).count() >= 32 {
+            return Err(HostError::Invalid("at most 32 output channels".into()));
+        }
+        let buffer = channels.entry(key).or_default();
+        if let Some(text) = text {
+            let mut start = text.len().saturating_sub(1 << 20);
+            while !text.is_char_boundary(start) {
+                start += 1;
+            }
+            buffer.push_str(&text[start..]);
+        } else {
+            buffer.clear();
+        }
+        let mut remove = buffer.len().saturating_sub(1 << 20);
+        while !buffer.is_char_boundary(remove) {
+            remove += 1;
+        }
+        buffer.drain(..remove);
+        let text = buffer.clone();
+        drop(channels);
+        self.shared.sink.emit(
+            None,
+            PluginEvent::OutputChanged { plugin_id: self.id().into(), channel: channel.into(), text: Some(text) },
+        );
+        Ok(())
+    }
+    fn output_reveal(&self, client: &str, channel: &str) -> Result<(), HostError> {
+        let key = (self.id().to_owned(), channel.to_owned());
+        if !self.shared.output.lock().contains_key(&key) {
+            self.output_write(channel, None)?;
+        }
+        if self.shared.client_closed(client) {
+            return Err(HostError::Cancelled);
+        }
+        let text = self.shared.output.lock().get(&key).cloned().unwrap_or_default();
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::RevealOutput { plugin_id: self.id().into(), channel: channel.into(), text },
+        );
+        Ok(())
+    }
+    fn require_api(&self, what: &str, minor: u64) -> Result<(), HostError> {
+        self.pkg.manifest.needs_api(what, minor).map_err(HostError::Invalid)
+    }
+
     fn notify(
         &self,
         client: Option<&str>,
@@ -1059,14 +1820,28 @@ impl HostApi for PluginApi {
         body: String,
         actions: Vec<ide_plugin::NotificationAction>,
     ) -> Result<(), HostError> {
-        if !actions.is_empty() {
-            let commands = self.shared.ui.items("commands", Some(self.id()));
-            if let Some(a) = actions.iter().find(|a| !commands.iter().any(|c| c.key == a.command)) {
-                return Err(HostError::NotFound(format!("the plugin declares no command {:?}", a.command)));
-            }
-        }
+        check_actions(self, &actions)?;
         let plugin_id = self.id().to_owned();
         self.shared.sink.emit(client, PluginEvent::Notification { plugin_id, level, title, body, actions });
+        Ok(())
+    }
+
+    fn notify_project(
+        &self,
+        root: &Path,
+        level: NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<ide_plugin::NotificationAction>,
+    ) -> Result<(), HostError> {
+        check_actions(self, &actions)?;
+        let windows = self.shared.workspace().map(|w| w.project_windows(root)).unwrap_or_default();
+        let window = windows
+            .into_iter()
+            .find(|w| !self.shared.client_closed(w))
+            .ok_or_else(|| HostError::NotFound(format!("the project {} is not open", root.display())))?;
+        let plugin_id = self.id().to_owned();
+        self.shared.sink.emit(Some(&window), PluginEvent::Notification { plugin_id, level, title, body, actions });
         Ok(())
     }
 
@@ -1202,6 +1977,32 @@ impl HostApi for PluginApi {
             .emit(None, PluginEvent::StatusItemChanged { plugin_id: self.id().to_owned(), id: id.to_owned(), item });
     }
 
+    fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
+        let closed = self.shared.closed_clients.lock();
+        let blocked = self.shared.prompts_blocked.lock();
+        if closed.contains(client) || blocked.contains(self.id()) {
+            return Err(HostError::Cancelled);
+        }
+        let key = (client.to_owned(), self.id().to_owned(), id.to_owned());
+        let mut items = self.shared.window_status.lock();
+        if let Some(item) = &item {
+            if !items.contains_key(&key)
+                && items.keys().filter(|(w, p, _)| w == client && p == self.id()).count() >= MAX_STATUS_ITEMS
+            {
+                return Err(HostError::Invalid("too many window status items".into()));
+            }
+            items.insert(key, item.clone());
+        } else {
+            items.remove(&key);
+        }
+        drop(items);
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::WindowStatusItemChanged { plugin_id: self.id().into(), id: id.into(), item },
+        );
+        Ok(())
+    }
+
     fn set_context(&self, client: Option<&str>, key: &str, value: Option<String>) -> Result<(), HostError> {
         let map_key = (client.map(str::to_owned), self.id().to_owned(), key.to_owned());
         {
@@ -1237,6 +2038,10 @@ impl HostApi for PluginApi {
         self.shared.workspace().map(|w| w.projects()).unwrap_or_default()
     }
 
+    fn member_roots(&self, root: &Path) -> Vec<PathBuf> {
+        self.shared.workspace().map(|w| w.member_roots(root)).unwrap_or_default()
+    }
+
     fn buffer_text(&self, path: &Path) -> Option<String> {
         self.shared.workspace()?.buffer_text(path)
     }
@@ -1247,13 +2052,14 @@ impl HostApi for PluginApi {
 
     fn apply_edits(
         &self,
-        _client: Option<&str>,
+        client: Option<&str>,
         path: &Path,
         version: u64,
         edits: Vec<TextEdit>,
     ) -> Result<u64, HostError> {
         let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("no project is open".into()))?;
-        workspace.apply_edits(path, version, &edits)
+        // Edits from a window's command are undoable; `editor.apply-edits-at` from a background event isn't.
+        workspace.apply_edits(path, version, &edits, client.is_none())
     }
 
     fn storage_get(&self, key: &str) -> Result<Option<String>, HostError> {
@@ -1301,7 +2107,7 @@ impl HostApi for PluginApi {
     }
 
     fn vcs_status(&self, root: &Path) -> Result<Option<RepositoryStatus>, HostError> {
-        let Some(repo) = ide_vcs::Repo::discover(root).map_err(failed)? else { return Ok(None) };
+        let Some(repo) = self.repo(root)? else { return Ok(None) };
         let info = repo.branch_info().map_err(failed)?;
         let changed = repo.status().map_err(failed)?.len();
         Ok(Some(RepositoryStatus {
@@ -1327,7 +2133,7 @@ impl HostApi for PluginApi {
         if !workspace.is_some_and(|w| w.trusted(root)) {
             return Err(HostError::Failed("the project is in Restricted Mode: git does not run there".into()));
         }
-        let Some(repo) = ide_vcs::Repo::discover(root).map_err(failed)? else {
+        let Some(repo) = self.repo(root)? else {
             return Err(HostError::NotFound("the project is not in a git repository".into()));
         };
         match repo.fetch(cancel, &|_| {}) {
@@ -1377,23 +2183,29 @@ impl HostApi for PluginApi {
             out.sort();
             return Ok(out);
         }
+        // A project window group's members are project scope too (their files
+        // are in the group's index, and a group root holds none of them).
+        let mut roots = vec![root.to_path_buf()];
+        roots.extend(self.member_roots(root));
         let mut out = Vec::new();
-        for (n, entry) in ignore::WalkBuilder::new(root)
-            .hidden(false)
-            .filter_entry(|e| e.file_name() != ".git")
-            .build()
-            .flatten()
-            .enumerate()
-        {
-            if n >= MAX_WALK || out.len() >= limit {
-                break;
-            }
-            if !entry.file_type().is_some_and(|t| t.is_file()) {
-                continue;
-            }
-            let Ok(rel) = entry.path().strip_prefix(root) else { continue };
-            if matcher.is_match(rel) {
-                out.push(to_ipc(entry.path()));
+        'walk: for root in &roots {
+            for (n, entry) in ignore::WalkBuilder::new(root)
+                .hidden(false)
+                .filter_entry(|e| e.file_name() != ".git")
+                .build()
+                .flatten()
+                .enumerate()
+            {
+                if n >= MAX_WALK || out.len() >= limit {
+                    break 'walk;
+                }
+                if !entry.file_type().is_some_and(|t| t.is_file()) {
+                    continue;
+                }
+                let Ok(rel) = entry.path().strip_prefix(root) else { continue };
+                if matcher.is_match(rel) {
+                    out.push(to_ipc(entry.path()));
+                }
             }
         }
         out.sort();
@@ -1419,25 +2231,32 @@ impl HostApi for PluginApi {
         }
         let method = reqwest::Method::from_bytes(request.method.to_ascii_uppercase().as_bytes())
             .map_err(|_| HostError::Invalid(format!("method {:?}", request.method)))?;
-        let client = ide_http::client::shared().map_err(|e| HostError::Failed(e.message))?;
-        // A redirect to another host is refused after the fact (the shared
-        // client follows redirects).
+        let grants = request.grants.clone();
+        let policy = reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("too many redirects");
+            }
+            let wanted = attempt.previous().last().map_or_else(
+                || ide_plugin::net_capability(attempt.url().as_str()),
+                |from| redirect_capability(from, attempt.url()),
+            );
+            match wanted {
+                Ok(wanted) if grants.iter().any(|g| g.covers(&wanted)) => attempt.follow(),
+                Ok(wanted) => attempt.error(RedirectDenied(wanted.to_string())),
+                Err(error) => attempt.error(error),
+            }
+        });
+        let client = ide_http::client::build_with_redirect(&ide_core::proxy_settings::proxy(), policy)
+            .map_err(|e| HostError::Failed(e.message))?;
         let builder = client.request(method, &request.url).headers(headers).timeout(request.timeout);
         let builder = match request.body {
             Some(body) => builder.body(body),
             None => builder,
         };
         let cancel = cancel.clone();
-        let host = ide_plugin::net_host(&request.url).map_err(HostError::Invalid)?;
         net_runtime().block_on(async move {
             let send = async {
-                let response = builder.send().await.map_err(|e| HostError::Failed(e.to_string()))?;
-                if ide_plugin::net_host(response.url().as_str()).ok().as_deref() != Some(host.as_str()) {
-                    return Err(HostError::Denied(format!(
-                        "net:{} (redirected)",
-                        response.url().host_str().unwrap_or("?")
-                    )));
-                }
+                let response = builder.send().await.map_err(network_error)?;
                 let status = response.status().as_u16();
                 let headers = response
                     .headers()
@@ -1461,10 +2280,186 @@ impl HostApi for PluginApi {
         })
     }
 
+    fn websocket_connect(
+        &self,
+        root: &Path,
+        request: ide_plugin::WebSocketRequest,
+        timeout: Duration,
+    ) -> Result<u64, HostError> {
+        let secrets = self.shared.secrets.read().clone();
+        let plugin = self.id().to_owned();
+        let headers = request
+            .headers
+            .into_iter()
+            .map(|(name, value)| {
+                let value = fill_secrets(&value, |name| secrets.get(&plugin, name))?;
+                Ok((name, value))
+            })
+            .collect::<Result<Vec<_>, HostError>>()?;
+        net_runtime()
+            .block_on(self.shared.websockets.connect(
+                &plugin,
+                &to_ipc(root),
+                &request.url,
+                &headers,
+                &request.subprotocol,
+                timeout,
+            ))
+            .map_err(|error| match error {
+                super::websocket::ConnectError::Invalid(message) => HostError::Invalid(message),
+                super::websocket::ConnectError::Failed(message) => HostError::Failed(message),
+            })
+    }
+
+    fn websocket_send(&self, connection: u64, bytes: Vec<u8>) -> Result<(), HostError> {
+        self.shared.websockets.send(self.id(), connection, bytes).map_err(HostError::Failed)
+    }
+
+    fn websocket_drain(&self, connection: u64, limit: usize) -> Result<ide_plugin::WebSocketBatch, HostError> {
+        self.shared.websockets.drain(self.id(), connection, limit).map_err(HostError::Invalid)
+    }
+
+    fn websocket_close(&self, connection: u64) {
+        let _ = self.shared.websockets.disconnect(self.id(), connection);
+    }
+
+    /// The `net:ask` answer: a host the user allowed with "always" is
+    /// remembered in the ledger (no dialog again, background included); a new
+    /// host is asked about in `client`'s window when there is one. Dismissal
+    /// and refusal both deny and throttle further questions.
+    fn net_ask(
+        &self,
+        subject: &Subject,
+        client: Option<&str>,
+        host: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Option<bool>, HostError> {
+        if cancel.is_cancelled() {
+            return Err(HostError::Cancelled);
+        }
+        if !self.pkg.manifest.declares(&Capability::NetAsk) {
+            return Ok(None);
+        }
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        {
+            let ledger = self.shared.ledger.lock();
+            if let Some(grant) = ledger.get(subject)
+                && grant.confirmed
+                && grant.has(&Capability::NetAsk)
+                && grant.net_hosts.contains(&host)
+            {
+                return Ok(Some(true));
+            }
+        }
+        if self.shared.session_net_hosts.lock().get(self.id()).is_some_and(|hosts| hosts.contains(&host)) {
+            return Ok(Some(true));
+        }
+        let Some(client) = client else { return Ok(None) };
+        {
+            let closed = self.shared.closed_clients.lock();
+            if closed.contains(client) {
+                return Ok(None);
+            }
+        }
+        if self.shared.prompts_blocked.lock().contains(self.id()) {
+            return Ok(None);
+        }
+        {
+            let mut prompts = self.shared.net_prompts.lock();
+            if prompts.get(self.id()).is_some_and(|until| until.is_none_or(|until| until > Instant::now())) {
+                return Ok(None);
+            }
+            prompts.insert(self.id().to_owned(), None);
+        }
+        let session_only = self.shared.net_hosts_session_only.load(Ordering::Relaxed);
+        let answer = self.ask(Some(client), Prompt::NetPermission { host: host.clone(), session_only }, cancel);
+        let result = match answer {
+            Ok(Some(keys)) if keys == ["session"] || keys == ["always"] => {
+                let mut ledger = self.shared.ledger.lock();
+                if cancel.is_cancelled() {
+                    Err(HostError::Cancelled)
+                } else if ledger.get(subject).is_some_and(|g| g.confirmed && g.has(&Capability::NetAsk)) {
+                    if session_only || keys == ["session"] {
+                        self.shared.session_net_hosts.lock().entry(self.id().into()).or_default().insert(host);
+                    } else {
+                        ledger.remember_net_host(subject, &host);
+                        if let Err(e) = ledger.save() {
+                            tracing::warn!("saving plugin grants: {e}");
+                        }
+                    }
+                    drop(ledger);
+                    self.shared.sink.emit(None, PluginEvent::CommandsChanged);
+                    Ok(Some(true))
+                } else {
+                    Ok(None)
+                }
+            }
+            Ok(Some(keys)) if keys == ["once"] => Ok(Some(false)),
+            Ok(_) => Ok(None),
+            Err(e) => Err(e),
+        };
+        let mut prompts = self.shared.net_prompts.lock();
+        if matches!(result, Ok(Some(_))) {
+            prompts.remove(self.id());
+        } else {
+            prompts.insert(self.id().to_owned(), Some(Instant::now() + Duration::from_secs(30)));
+        }
+        result
+    }
+
     fn secret_is_set(&self, name: &str) -> bool {
         self.shared.secrets.read().get(self.id(), name).is_some()
     }
 
+    fn secret_set(&self, name: &str, value: Option<&str>) -> Result<(), HostError> {
+        if !self.shared.ui.items(super::providers::SECRETS_POINT, Some(self.id())).iter().any(|s| s.key == name) {
+            return Err(HostError::NotFound(format!("undeclared secret {name:?}")));
+        }
+        self.shared.secrets.read().set(self.id(), name, value).map_err(HostError::Failed)
+    }
+    fn begin_loopback(&self, client: &str, path: &str) -> Result<(u64, String), HostError> {
+        let closed = self.shared.closed_clients.lock();
+        let blocked = self.shared.prompts_blocked.lock();
+        if closed.contains(client) || blocked.contains(self.id()) {
+            return Err(HostError::Cancelled);
+        }
+        self.shared.loopbacks.read().begin(self.id(), client, path)
+    }
+    fn wait_loopback(
+        &self,
+        id: u64,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, HostError> {
+        self.shared.loopbacks.read().clone().wait(self.id(), id, timeout, cancel)
+    }
+    fn close_loopback(&self, id: u64) {
+        self.shared.loopbacks.read().close(self.id(), id);
+    }
+    fn ipc_connect(&self, name: &str, cancel: &CancellationToken, timeout: Duration) -> Result<u64, HostError> {
+        self.shared.connections.connect(self.id(), name, cancel, timeout)
+    }
+    fn ipc_write(
+        &self,
+        id: u64,
+        bytes: Vec<u8>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        self.shared.connections.write(self.id(), id, bytes, cancel, timeout)
+    }
+    fn ipc_read(
+        &self,
+        id: u64,
+        max: usize,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<u8>, HostError> {
+        self.shared.connections.read(self.id(), id, max, timeout, cancel)
+    }
+    fn ipc_close(&self, id: u64) {
+        self.shared.connections.close(self.id(), id);
+    }
     fn run_process(
         &self,
         cmd: ProcessCommand,
@@ -1473,7 +2468,7 @@ impl HostApi for PluginApi {
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<ProcessOutput, HostError> {
-        let binary = self.approved_program(&cmd.program)?;
+        let binary = self.approved_program_in_project(&cmd.program, cwd.or(cmd.approval_root.as_deref()))?;
         let cwd = self.spawn_dir(cwd);
         let mut command = StdCommand::new(&binary);
         ide_core::process::prepare(&mut command);
@@ -1496,9 +2491,14 @@ impl HostApi for PluginApi {
         let read = |pipe: Option<Box<dyn Read + Send>>| {
             std::thread::spawn(move || {
                 let mut out = Vec::new();
+                let mut overflow = false;
                 if let Some(p) = pipe {
                     let mut p = p;
-                    let _ = p.by_ref().take(MAX_OUTPUT as u64).read_to_end(&mut out);
+                    let _ = p.by_ref().take((MAX_OUTPUT + 1) as u64).read_to_end(&mut out);
+                    if out.len() > MAX_OUTPUT {
+                        overflow = true;
+                        out.truncate(MAX_OUTPUT);
+                    }
                     let _ = std::io::copy(&mut p, &mut std::io::sink());
                 }
                 let mut text = String::from_utf8_lossy(&out).into_owned();
@@ -1507,7 +2507,7 @@ impl HostApi for PluginApi {
                     end -= 1;
                 }
                 text.truncate(end);
-                text
+                (text, overflow)
             })
         };
         let stdout = read(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
@@ -1527,11 +2527,18 @@ impl HostApi for PluginApi {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
-        Ok(ProcessOutput {
-            status: status.code(),
-            stdout: stdout.join().unwrap_or_default(),
-            stderr: stderr.join().unwrap_or_default(),
-        })
+        let (stdout, stdout_overflow) = stdout.join().unwrap_or_default();
+        let (stderr, _) = stderr.join().unwrap_or_default();
+        if stdout_overflow {
+            tracing::warn!(
+                plugin = %self.id(),
+                program = %cmd.program,
+                limit_mib = MAX_OUTPUT >> 20,
+                "process stdout exceeded limit"
+            );
+            return Err(HostError::Failed(format!("{} stdout exceeded {} MiB limit", cmd.program, MAX_OUTPUT >> 20)));
+        }
+        Ok(ProcessOutput { status: status.code(), stdout, stderr })
     }
 
     fn subscribe(&self, kind: EventKind) {
@@ -1554,7 +2561,7 @@ impl HostApi for PluginApi {
         }
     }
     fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError> {
-        let binary = self.approved_program(&cmd.program)?;
+        let binary = self.approved_program_in_project(&cmd.program, cwd.or(cmd.approval_root.as_deref()))?;
         let cwd = self.spawn_dir(cwd);
         if client.is_some_and(|c| self.shared.closed_clients.lock().contains(c)) {
             return Err(HostError::Cancelled);
@@ -1777,7 +2784,7 @@ impl HostApi for PluginApi {
         args: Vec<String>,
         cwd: Option<&Path>,
     ) -> Result<(), HostError> {
-        let binary = self.approved_program(program)?;
+        let binary = self.approved_program_in_project(program, cwd)?;
         let cwd = cwd.map(Path::to_path_buf).unwrap_or_else(|| self.shared.data_dir.join(self.id()));
         let _ = std::fs::create_dir_all(&cwd);
         let event = PluginEvent::OpenTerminal {
@@ -1810,7 +2817,7 @@ impl HostApi for PluginApi {
         log: ide_plugin::ServiceLog,
     ) -> Result<(), HostError> {
         // Fails now, rather than in the tab, when the approved file is gone or changed.
-        self.approved_program(&log.program)?;
+        self.approved_program_in_project(&log.program, self.shared.project_of(client).as_deref())?;
         {
             let mut all = self.shared.log_tabs.lock();
             let tabs = all.entry((self.id().to_owned(), client.to_owned())).or_default();
@@ -1849,7 +2856,7 @@ impl HostApi for PluginApi {
         ide_vfs::create_private_dir(&data).map_err(failed)?;
         let files = data.join("files");
         ide_vfs::create_private_dir(&files).map_err(failed)?;
-        files.canonicalize().map_err(failed)
+        dunce::canonicalize(files).map_err(failed)
     }
 
     fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError> {
@@ -1883,7 +2890,9 @@ impl HostApi for PluginApi {
             Err(e) if e.kind == ide_core::error::ErrorKind::NotFound => ("utf-8".to_string(), false),
             Err(e) => return Err(not_writable(real, e)),
         };
-        if self.plugin_dir().is_ok_and(|dir| real.starts_with(dir)) {
+        let private = self.plugin_dir().is_ok_and(|dir| real.starts_with(dir));
+        check_write_path(real)?;
+        if private {
             let bytes = ide_vfs::encode(text, &encoding, has_bom).map_err(|e| not_writable(real, e))?;
             ide_vfs::write_atomic_private(real, &bytes).map(drop).map_err(|e| not_writable(real, e))
         } else {
@@ -1893,12 +2902,24 @@ impl HostApi for PluginApi {
 
     fn write_bytes_file(&self, real: &Path, bytes: &[u8]) -> Result<(), HostError> {
         check_unsaved(self.shared.workspace(), real)?;
-        if self.plugin_dir().is_ok_and(|dir| real.starts_with(dir)) {
+        let private = self.plugin_dir().is_ok_and(|dir| real.starts_with(dir));
+        check_write_path(real)?;
+        if private {
             ide_vfs::write_atomic_private(real, bytes).map(drop).map_err(|e| not_writable(real, e))
         } else {
             ide_vfs::write_atomic(real, bytes).map(drop).map_err(|e| not_writable(real, e))
         }
     }
+}
+
+/// Approved write paths are already resolved. Refuse substitutions since approval.
+fn check_write_path(path: &Path) -> Result<(), HostError> {
+    let parent = path.parent().ok_or_else(|| HostError::Invalid("no directory to put it in".into()))?;
+    let checked = ide_plugin::resolve_writable_in_root(parent, &to_ipc(path)).map_err(HostError::Invalid)?;
+    if checked != path {
+        return Err(HostError::Invalid(format!("{}: file path changed before writing", path.display())));
+    }
+    Ok(())
 }
 
 /// A file that is not there, or cannot be read, as the plugin sees it.
@@ -1937,12 +2958,43 @@ fn not_writable(path: &Path, e: ide_core::error::IdeError) -> HostError {
     }
 }
 
+/// Notification buttons must name commands the plugin declares.
+fn check_actions(api: &PluginApi, actions: &[ide_plugin::NotificationAction]) -> Result<(), HostError> {
+    let commands = if actions.is_empty() { Vec::new() } else { api.shared.ui.items("commands", Some(api.id())) };
+    match actions.iter().find(|a| !commands.iter().any(|c| c.key == a.command)) {
+        Some(a) => Err(HostError::NotFound(format!("the plugin declares no command {:?}", a.command))),
+        None => Ok(()),
+    }
+}
+
 /// [`PluginWorkspace`] over the desktop host's open projects.
 pub struct HostWorkspace(pub std::sync::Weak<crate::Host>);
 
 impl HostWorkspace {
+    fn project_for(&self, client: Option<&str>, root: &Path) -> Option<Arc<crate::project::Project>> {
+        let host = self.0.upgrade()?;
+        client
+            .and_then(|w| host.project(w).ok())
+            .filter(|p| p.root == root)
+            .or_else(|| host.windows_for_root(root).first().and_then(|w| host.project(w).ok()))
+            // A project window group's member root: its files belong to the
+            // group's project, like everywhere else in the editor.
+            .or_else(|| {
+                host.projects()
+                    .into_iter()
+                    .find(|p| crate::project::workspace_member_roots(&p.root).iter().any(|m| m.as_path() == root))
+            })
+    }
     fn projects(&self) -> Vec<Arc<crate::project::Project>> {
         self.0.upgrade().map(|h| h.projects()).unwrap_or_default()
+    }
+
+    /// The open project whose workspace group contains `root` (the group root
+    /// itself matches `p.root == root` and needs no member lookup).
+    fn project_covering(&self, root: &Path) -> Option<Arc<crate::project::Project>> {
+        self.projects().into_iter().find(|p| {
+            p.root == root || crate::project::workspace_member_roots(&p.root).iter().any(|m| m.as_path() == root)
+        })
     }
 
     /// The project holding an open document at `path`, and its id.
@@ -1952,11 +3004,200 @@ impl HostWorkspace {
 }
 
 impl PluginWorkspace for HostWorkspace {
+    fn database_host(&self) -> Option<Arc<crate::Host>> {
+        self.0.upgrade()
+    }
+    fn run_configuration(&self, client: &str, plugin: &str, config: &str) -> Result<ide_run::RunConfig, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let prefix = format!("{}{}:", ide_run::EXTERNAL_PREFIX, plugin);
+        let id = if config.starts_with(&prefix) { config.to_owned() } else { format!("{prefix}{config}") };
+        let project = host.project(client).map_err(failed)?;
+        project.require_trust().map_err(failed)?;
+        let plugins = host.plugin_host().ok_or(HostError::Cancelled)?;
+        let detected = plugins
+            .run_detection()
+            .detect(&project.root)
+            .into_iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| HostError::NotFound("no owned run configuration with this id".into()))?;
+        let mut config = ide_run::load_user_configs(&project.root)
+            .map_err(failed)?
+            .into_iter()
+            .find(|c| c.id == id)
+            .unwrap_or(detected);
+        ide_sdk::apply::apply_to_run_configs(
+            std::slice::from_mut(&mut config),
+            &project.root,
+            &project.settings.effective(),
+        );
+        if config.debug_adapter.is_none() {
+            let cwd = config.cwd.as_ref().map(|p| p.as_ref()).unwrap_or(&project.root);
+            config.debug_adapter =
+                config.args.iter().map(|arg| cwd.join(arg)).filter(|path| path.is_file()).find_map(|path| {
+                    let language = project.languages.detect(&path, None);
+                    project.languages.get(&language)?.debugger.map(|d| d.adapter)
+                });
+        }
+        Ok(config)
+    }
+
+    fn buffer_text_in(&self, client: Option<&str>, path: &Path) -> Option<String> {
+        client
+            .and_then(|w| self.0.upgrade()?.project(w).ok()?.documents.text_of(path))
+            .or_else(|| self.buffer_text(path))
+    }
+    fn document_in(&self, client: &str, path: &Path) -> Option<(u64, String)> {
+        let project = self.0.upgrade()?.project(client).ok()?;
+        let doc = project.documents.by_path(path)?;
+        let snapshot = project.documents.snapshot(doc).ok()?;
+        Some((u64::from(snapshot.version), snapshot.text))
+    }
+    fn open_editors(&self, client: &str) -> Result<Vec<ide_plugin::OpenEditor>, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let project = host.project(client).map_err(failed)?;
+        let active = host.mcp_reports.focused(client).map(|e| e.path.into_path_buf());
+        Ok(host
+            .mcp_reports
+            .editors(&[client.into()])
+            .into_iter()
+            .map(|path| {
+                let language = project
+                    .languages
+                    .detect(&path, project.documents.text_of(&path).as_deref().and_then(|t| t.lines().next()));
+                ide_plugin::OpenEditor {
+                    active: active.as_ref() == Some(&path),
+                    dirty: project
+                        .documents
+                        .by_path(&path)
+                        .is_some_and(|doc| project.documents.is_dirty(doc).unwrap_or(false)),
+                    language: language.to_string(),
+                    path: to_ipc(&path),
+                }
+            })
+            .collect())
+    }
+    fn search_text(
+        &self,
+        client: Option<&str>,
+        root: &Path,
+        query: ide_plugin::TextQuery,
+        limit: u32,
+        cancel: &CancellationToken,
+    ) -> Result<ide_plugin::TextSearch, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let project = self.project_for(client, root).ok_or_else(|| HostError::NotFound("project closed".into()))?;
+        // Matches must land in the project root or, for a project window group,
+        // in any of its members.
+        let mut roots = vec![root.to_path_buf()];
+        roots.extend(crate::project::workspace_member_roots(root));
+        if limit == 0 {
+            return Ok(ide_plugin::TextSearch::default());
+        }
+        let mut query = ide_search::SearchQuery {
+            pattern: query.pattern,
+            is_regex: query.regex,
+            case_sensitive: query.case_sensitive,
+            whole_word: query.whole_word,
+            include: query.include,
+            exclude: query.exclude,
+            scope: ide_search::SearchScope::Project,
+            max_matches: limit.min(10_000).saturating_add(1),
+            context: Default::default(),
+        };
+        query.exclude.extend(project.search_excludes());
+        let files = Mutex::new(Vec::new());
+        let summary = crate::ops::search::search_project(&project, &host.syntax(), &query, cancel, &|file| {
+            files.lock().push(file)
+        })
+        .map_err(failed)?;
+        if summary.cancelled || cancel.is_cancelled() {
+            return Err(HostError::Cancelled);
+        }
+        let mut out = ide_plugin::TextSearch { matches: Vec::new(), limit_hit: summary.limit_hit };
+        let mut bytes = 0usize;
+        for file in files.into_inner() {
+            if cancel.is_cancelled() {
+                return Err(HostError::Cancelled);
+            }
+            // Restrict project.read to the project root and its workspace
+            // members, including symlink targets.
+            let Ok(path) = ide_plugin::resolve_in_roots(&roots, &to_ipc(&file.path.0)) else {
+                continue;
+            };
+            let text = project.documents.text_of(&path).or_else(|| {
+                let loaded = project.documents.load_file_bounded(&path, ide_plugin::MAX_READ_BYTES as usize).ok()?;
+                (!loaded.binary && !loaded.too_large)
+                    .then(|| ide_text::normalize_line_endings(&loaded.text).into_owned())
+            });
+            let Some(text) = text else {
+                out.limit_hit = true;
+                continue;
+            };
+            let doc = ide_text::Document::new(&text);
+            for (start, end) in ide_search::match_ranges(&text, &query).map_err(failed)? {
+                if out.matches.len() >= limit as usize {
+                    out.limit_hit = true;
+                    return Ok(out);
+                }
+                let range = ide_core::Range::new(doc.byte_to_pos(start), doc.byte_to_pos(end));
+                let line = text[..start].rfind('\n').map_or(0, |i| i + 1);
+                let end_line = text[start..].find('\n').map_or(text.len(), |i| start + i);
+                let preview = text[line..end_line].trim_end_matches('\r');
+                let mut cut = preview.len().min(4096);
+                while !preview.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                let preview = &preview[..cut];
+                bytes += preview.len() + path.as_os_str().len() + 64;
+                if bytes > 4 << 20 {
+                    out.limit_hit = true;
+                    return Ok(out);
+                }
+                out.matches.push(ide_plugin::TextMatch {
+                    location: ide_plugin::Location { path: path.clone(), range },
+                    line: preview.into(),
+                });
+            }
+        }
+        Ok(out)
+    }
+    fn problems(&self, client: &str, path: Option<&Path>) -> Result<Vec<ide_plugin::FileProblems>, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let root = host.project(client).map_err(failed)?.root.clone();
+        let windows = host.windows_for_root(&root);
+        let mut out = Vec::new();
+        for file in host.mcp_reports.problems(&windows) {
+            if path.is_some_and(|p| p != file.path.0) {
+                continue;
+            }
+            if ide_plugin::resolve_new_in_root(&root, &to_ipc(&file.path.0)).is_err() {
+                continue;
+            }
+            let mut sources: BTreeMap<String, Vec<ide_core::Diagnostic>> = BTreeMap::new();
+            for d in file.items {
+                sources.entry(d.server.clone().or_else(|| d.source.clone()).unwrap_or_default()).or_default().push(d);
+            }
+            out.extend(sources.into_iter().map(|(source, diagnostics)| ide_plugin::FileProblems {
+                path: to_ipc(&file.path.0),
+                source,
+                diagnostics,
+            }));
+        }
+        Ok(out)
+    }
+
     fn projects(&self) -> Vec<PathBuf> {
-        let mut roots: Vec<PathBuf> = HostWorkspace::projects(self).iter().map(|p| p.root.clone()).collect();
+        let mut roots: Vec<PathBuf> = HostWorkspace::projects(self)
+            .iter()
+            .flat_map(|p| std::iter::once(p.root.clone()).chain(crate::project::workspace_member_roots(&p.root)))
+            .collect();
         roots.sort();
         roots.dedup();
         roots
+    }
+
+    fn member_roots(&self, root: &Path) -> Vec<PathBuf> {
+        crate::project::workspace_member_roots(root)
     }
 
     fn buffer_text(&self, path: &Path) -> Option<String> {
@@ -1969,9 +3210,9 @@ impl PluginWorkspace for HostWorkspace {
     }
 
     fn indexed_files(&self, root: &Path, matches: &dyn Fn(&Path) -> bool, limit: usize) -> Option<Vec<PathBuf>> {
-        // The index of the project rooted at `root` (a workspace member's files are in its own).
-        let project = HostWorkspace::projects(self).into_iter().find(|p| p.root == root)?;
-        project.index.files_matching(root, matches, limit)
+        // The index covering `root`: the project rooted there, or the workspace
+        // group project whose member it is (a member's files are in the group's).
+        HostWorkspace::project_covering(self, root)?.index.files_matching(root, matches, limit)
     }
 
     fn symbols(
@@ -1982,9 +3223,7 @@ impl PluginWorkspace for HostWorkspace {
         cancel: &CancellationToken,
         deadline: Instant,
     ) -> Result<Vec<ide_plugin::SymbolInfo>, HostError> {
-        let project = HostWorkspace::projects(self)
-            .into_iter()
-            .find(|p| p.root == root)
+        let project = HostWorkspace::project_covering(self, root)
             .ok_or_else(|| HostError::NotFound("the project is no longer open".into()))?;
         let stopped = || cancel.is_cancelled() || Instant::now() >= deadline;
         let interrupted = || {
@@ -1994,15 +3233,13 @@ impl PluginWorkspace for HostWorkspace {
                 HostError::Failed("symbol search timed out".into())
             }
         };
+        // The symbols of the requested root and, for a project window group, of
+        // its members (a member's symbols are in the group's index).
+        let members = crate::project::workspace_member_roots(root);
+        let in_scope = |path: &Path| path.starts_with(root) || members.iter().any(|m| path.starts_with(m));
         let symbols = project
             .index
-            .find_symbols_until(
-                query,
-                ide_index::SymbolFilter::All,
-                limit.min(1000),
-                &|path| path.starts_with(root),
-                &stopped,
-            )
+            .find_symbols_until(query, ide_index::SymbolFilter::All, limit.min(1000), &in_scope, &stopped)
             .ok_or_else(interrupted)?;
         let mut out = Vec::new();
         for s in symbols {
@@ -2031,11 +3268,16 @@ impl PluginWorkspace for HostWorkspace {
         Some((u64::from(snap.version), snap.text))
     }
 
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit]) -> Result<u64, HostError> {
+    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit], background: bool) -> Result<u64, HostError> {
         let (project, doc) =
             self.open_document(path).ok_or_else(|| HostError::NotFound(format!("{} is not open", path.display())))?;
         let version = u32::try_from(version).map_err(|_| HostError::Stale)?;
-        match project.documents.apply_edits_at(doc, version, edits) {
+        let applied = if background {
+            project.documents.apply_background_edits_at(doc, version, edits)
+        } else {
+            project.documents.apply_edits_at(doc, version, edits)
+        };
+        match applied {
             Ok(Some(v)) => Ok(u64::from(v)),
             Ok(None) => Err(HostError::Stale),
             Err(e) if e.kind == ide_core::error::ErrorKind::InvalidInput => Err(HostError::Invalid(e.message)),
@@ -2044,11 +3286,19 @@ impl PluginWorkspace for HostWorkspace {
     }
 
     fn trusted(&self, root: &Path) -> bool {
-        HostWorkspace::projects(self).iter().any(|p| p.root == root && p.is_trusted())
+        // A workspace member is as trusted as the group's project it was opened with.
+        HostWorkspace::project_covering(self, root).is_some_and(|p| p.is_trusted())
     }
 
     fn project_of(&self, window: &str) -> Option<PathBuf> {
         self.0.upgrade()?.project(window).ok().map(|p| p.root.clone())
+    }
+
+    fn project_windows(&self, root: &Path) -> Vec<String> {
+        let Some(host) = self.0.upgrade() else { return Vec::new() };
+        let mut windows = host.windows_for_root(root);
+        host.mcp_reports.most_recently_focused_first(&mut windows);
+        windows
     }
 
     fn publish_diagnostics(
@@ -2062,6 +3312,12 @@ impl PluginWorkspace for HostWorkspace {
             .iter()
             .filter(|p| path.starts_with(&p.root))
             .max_by_key(|p| p.root.as_os_str().len())
+            // A project window group's member files report through the group's project.
+            .or_else(|| {
+                projects
+                    .iter()
+                    .find(|p| crate::project::workspace_member_roots(&p.root).iter().any(|m| path.starts_with(m)))
+            })
             .ok_or_else(|| HostError::Invalid(format!("{} is not in an open project", path.display())))?;
         project.sink.emit(ide_core::IdeEvent::Diagnostics {
             path: path.to_path_buf().into(),
@@ -2076,15 +3332,25 @@ impl PluginWorkspace for HostWorkspace {
             .into_iter()
             .filter(|p| path.starts_with(&p.root))
             .max_by_key(|p| p.root.as_os_str().len())
+            .or_else(|| {
+                HostWorkspace::projects(self)
+                    .into_iter()
+                    .find(|p| crate::project::workspace_member_roots(&p.root).iter().any(|m| path.starts_with(m)))
+            })
             .and_then(|p| p.vcs_encoding(path, None).ok())
             .unwrap_or_else(|| encoding_rs::UTF_8.into())
     }
 
     fn plugin_settings(&self, plugin: &str, root: Option<&Path>) -> serde_json::Map<String, serde_json::Value> {
         let Some(host) = self.0.upgrade() else { return serde_json::Map::new() };
+        // A member root reads the settings of the group's project, like the
+        // group's own root does.
         let settings = match root.and_then(|r| host.projects().into_iter().find(|p| p.root == r)) {
             Some(p) => p.settings.effective(),
-            None => host.global_settings.effective(),
+            None => match root.map(|r| HostWorkspace::project_covering(self, r)) {
+                Some(Some(p)) => p.settings.effective(),
+                _ => host.global_settings.effective(),
+            },
         };
         settings.plugins.get(plugin).cloned().unwrap_or_default()
     }
@@ -2100,8 +3366,148 @@ mod tests {
         )
         .unwrap();
         let sink: Arc<dyn PluginEventSink> = Arc::new(|_: Option<&str>, _: PluginEvent| {});
-        let shared = Shared::new(sink, dir.join(".data"), pins, ide_extension::UiStore::new());
+        let shared = Shared::new(
+            sink,
+            dir.join(".data"),
+            pins,
+            ide_extension::UiStore::new(),
+            Arc::default(),
+            Arc::new(ide_extension::ExtensionRegistry::new()),
+        );
         PluginApi { pkg: Package::new(manifest, dir.to_path_buf()), shared }
+    }
+
+    #[test]
+    fn net_questions_are_exclusive_throttled_and_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut api = api(dir.path(), Arc::default());
+        api.pkg = Package::new(
+            ide_extension::Manifest::parse(
+                "id = \"acme.lint\"\nname = \"Lint\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.5\"\n[capabilities]\nrequired = [\"net:ask\"]\n",
+            ).unwrap(),
+            dir.path().to_path_buf(),
+        );
+        let subject = Subject::Installed(api.id().into());
+        api.shared.ledger.lock().confirm(
+            &ide_extension::ledger::Request {
+                subject: subject.clone(),
+                plugin_id: api.id(),
+                version: "1.0.0",
+                package_hash: "h",
+                required: vec![Capability::NetAsk],
+                optional: vec![],
+            },
+            &[],
+            BTreeMap::new(),
+        );
+        for answer in [Some(vec!["always".into(), "once".into()]), None] {
+            api.shared.net_prompts.lock().clear();
+            let cancel = CancellationToken::new();
+            std::thread::scope(|scope| {
+                let run = scope.spawn(|| api.net_ask(&subject, Some("main"), "::1", &cancel));
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let id = loop {
+                    if let Some(id) = api.shared.prompts.lock().keys().next().copied() {
+                        break id;
+                    }
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                assert_eq!(api.net_ask(&subject, Some("other"), "other.example", &cancel).unwrap(), None);
+                if let Some(answer) = answer {
+                    assert!(api.shared.answer_prompt(id, Some(answer)));
+                    assert_eq!(run.join().unwrap().unwrap(), None);
+                } else {
+                    cancel.cancel();
+                    assert!(matches!(run.join().unwrap(), Err(HostError::Cancelled)));
+                }
+            });
+            assert!(api.shared.prompts.lock().is_empty());
+            assert!(api.shared.ledger.lock().get(&subject).unwrap().net_hosts.is_empty());
+            assert_eq!(api.net_ask(&subject, Some("main"), "new.example", &CancellationToken::new()).unwrap(), None);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_recheck_approved_paths_after_symlink_substitution() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let root = tmp.path().join("project");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        let path = ide_plugin::resolve_writable_in_root(&root, "nested/file.txt").unwrap();
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "unchanged").unwrap();
+        symlink(&outside, &path).unwrap();
+        assert!(api.write_text_file(&path, "text").is_err());
+        assert!(api.write_bytes_file(&path, b"bytes").is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "unchanged");
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(root.join("nested")).unwrap();
+        symlink(tmp.path(), root.join("nested")).unwrap();
+        assert!(api.write_text_file(&path, "text").is_err());
+        assert!(api.write_bytes_file(&path, b"bytes").is_err());
+        assert!(!tmp.path().join("file.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_and_secrets_do_not_write_through_temporary_symlinks() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "unchanged").unwrap();
+        let dir = api.storage().unwrap();
+        let entry = dir.join(entry_name("key"));
+        symlink(&outside, entry.with_extension("tmp")).unwrap();
+        symlink(&outside, &entry).unwrap();
+        api.storage_set("key", Some("value".into())).unwrap();
+        assert_eq!(api.storage_get("key").unwrap().as_deref(), Some("value"));
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "unchanged");
+
+        let secrets = FileSecretStore { dir: tmp.path().join("secrets") };
+        secrets.set("acme.lint", "key", Some("before")).unwrap();
+        symlink(&outside, secrets.file("acme.lint").with_extension("tmp")).unwrap();
+        secrets.set("acme.lint", "key", Some("after")).unwrap();
+        assert_eq!(secrets.get("acme.lint", "key").as_deref(), Some("after"));
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "unchanged");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_and_secrets_refuse_symlinked_private_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let dir = api.storage().unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, &dir).unwrap();
+        assert!(api.storage_set("key", Some("value".into())).is_err());
+        let secrets = FileSecretStore { dir: tmp.path().join("secrets") };
+        std::fs::create_dir(&secrets.dir).unwrap();
+        std::os::unix::fs::symlink(&outside, secrets.dir.join("acme.lint")).unwrap();
+        assert!(secrets.set("acme.lint", "key", Some("value")).is_err());
+        assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn private_directory_matches_resolved_write_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let dir = api.plugin_dir().unwrap();
+        let verbatim = std::fs::canonicalize(&dir).unwrap();
+        for root in [&dir, &verbatim] {
+            let path = ide_plugin::resolve_new_in_root(root, "state.txt").unwrap();
+            assert!(path.starts_with(&dir), "private writes must use the private-directory branch");
+            api.write_text_file(&path, "text").unwrap();
+            api.write_bytes_file(&path, b"bytes").unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), b"bytes");
+        }
     }
 
     #[test]
@@ -2180,7 +3586,7 @@ mod tests {
     fn repository_and_search_paths_match_ipc_events() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(std::process::Command::new("git").args(["init", "-q"]).arg(tmp.path()).status().unwrap().success());
-        let root = tmp.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
         std::fs::create_dir(root.join("src")).unwrap();
         let file = root.join("src/Example.java");
         std::fs::write(&file, "class Example {}\n").unwrap();
@@ -2201,7 +3607,7 @@ mod tests {
         fn document(&self, _: &Path) -> Option<(u64, String)> {
             None
         }
-        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit], _: bool) -> Result<u64, HostError> {
             Err(HostError::Stale)
         }
         fn trusted(&self, _: &Path) -> bool {
@@ -2223,7 +3629,7 @@ mod tests {
     #[test]
     fn find_files_uses_the_project_index_when_there_is_one() {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
         let api = api(&root, Arc::default());
         *api.shared.workspace.write() = Some(Arc::new(Indexed(
             root.clone(),
@@ -2248,6 +3654,55 @@ mod tests {
             api.find_files(&other, ".config/tool/*.xml", 10).unwrap(),
             [to_ipc(&other.join(".config/tool/index.xml"))]
         );
+    }
+
+    /// A workspace whose container root has no files: the member holds them.
+    struct Members(PathBuf, Vec<PathBuf>);
+    impl PluginWorkspace for Members {
+        fn projects(&self) -> Vec<PathBuf> {
+            vec![self.0.clone()]
+        }
+        fn member_roots(&self, root: &Path) -> Vec<PathBuf> {
+            if root == self.0 { self.1.clone() } else { Vec::new() }
+        }
+        fn buffer_text(&self, _: &Path) -> Option<String> {
+            None
+        }
+        fn document(&self, _: &Path) -> Option<(u64, String)> {
+            None
+        }
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit], _: bool) -> Result<u64, HostError> {
+            Err(HostError::Stale)
+        }
+        fn trusted(&self, _: &Path) -> bool {
+            true
+        }
+        fn project_of(&self, _: &str) -> Option<PathBuf> {
+            None
+        }
+        fn publish_diagnostics(&self, _: &str, _: &Path, _: Vec<ide_core::Diagnostic>) -> Result<(), HostError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn find_files_cover_workspace_members() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let (root, member) = (base.join("workspace"), base.join("member"));
+        std::fs::create_dir_all(root.join(".openidea")).unwrap();
+        std::fs::create_dir_all(member.join("src")).unwrap();
+        std::fs::write(root.join(".openidea/workspace.json"), "{}").unwrap();
+        std::fs::write(member.join("src/UserMapper.xml"), "<mapper/>").unwrap();
+        let api = api(&root, Arc::default());
+        *api.shared.workspace.write() = Some(Arc::new(Members(root.clone(), vec![member.clone()])));
+        // The container holds no sources: the member's files are project scope.
+        assert_eq!(api.find_files(&root, "**/*Mapper.xml", 10).unwrap(), [to_ipc(&member.join("src/UserMapper.xml"))]);
+        // A member root lists its own files, like any project root.
+        assert_eq!(api.find_files(&member, "src/*.xml", 10).unwrap(), [to_ipc(&member.join("src/UserMapper.xml"))]);
+        // And a path outside the group is never listed.
+        std::fs::write(base.join("OutsideMapper.xml"), "<mapper/>").unwrap();
+        assert!(api.find_files(&root, "**/*Mapper.xml", 10).unwrap().len() == 1);
     }
 
     #[test]
@@ -2338,7 +3793,12 @@ mod tests {
 
     #[cfg(unix)]
     fn shell(script: &str) -> ProcessCommand {
-        ProcessCommand { program: "sh".into(), args: vec!["-c".into(), script.into()], env: Vec::new() }
+        ProcessCommand {
+            program: "sh".into(),
+            args: vec!["-c".into(), script.into()],
+            env: Vec::new(),
+            approval_root: None,
+        }
     }
 
     #[cfg(unix)]
@@ -2412,10 +3872,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let api = shell_api(tmp.path());
         let token = CancellationToken::new();
-        let cmd = shell("head -c 5242880 /dev/zero; head -c 5242880 /dev/zero >&2");
+        // stdout within the limit comes back whole; stderr beyond it is truncated (stdout beyond it fails).
+        let cmd = shell(&format!("head -c 5242880 /dev/zero; head -c {} /dev/zero >&2", MAX_OUTPUT + (1 << 20)));
         let out = api.run_process(cmd.clone(), None, None, &token, Duration::from_secs(5)).unwrap();
         assert_eq!(out.status, Some(0));
-        assert_eq!((out.stdout.len(), out.stderr.len()), (MAX_OUTPUT, MAX_OUTPUT));
+        assert_eq!((out.stdout.len(), out.stderr.len()), (5 << 20, MAX_OUTPUT));
         let id = api.start_process(cmd, None, None).unwrap();
         let out = api.wait_process(id, MAX_PENDING, Duration::from_secs(5), &token).unwrap();
         assert_eq!(out.status, Some(0));
@@ -2450,6 +3911,58 @@ mod tests {
         assert!(
             matches!(api.approved_program("lint"), Err(HostError::Denied(e)) if e.contains("changed since it was approved"))
         );
+    }
+    #[test]
+    fn redirects_check_grants_before_connecting_and_downgrades_require_http() {
+        assert_eq!(
+            redirect_capability(&"https://localhost/start".parse().unwrap(), &"http://localhost/end".parse().unwrap())
+                .unwrap(),
+            Capability::NetHttp("localhost".into())
+        );
+        let source = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        target.set_nonblocking(true).unwrap();
+        let source_port = source.local_addr().unwrap().port();
+        let target_port = target.local_addr().unwrap().port();
+        let worker = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = source.accept().unwrap();
+            let mut buf = [0; 4096];
+            let _ = stream.read(&mut buf);
+            write!(stream, "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target_port}/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let api = api(dir.path(), Arc::default());
+        let result = api.fetch(
+            HttpRequest {
+                method: "GET".into(),
+                url: format!("http://localhost:{source_port}/"),
+                headers: Vec::new(),
+                body: None,
+                timeout: Duration::from_secs(2),
+                grants: vec![Capability::Net("localhost".into())],
+            },
+            &CancellationToken::new(),
+        );
+        assert!(matches!(result, Err(HostError::Denied(cap)) if cap == "net:127.0.0.1"));
+        assert!(target.accept().is_err(), "ungranted target must never receive a connection");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn output_ring_keeps_utf8_and_is_withdrawn_on_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let api = api(dir.path(), Arc::default());
+        api.output_write("build", Some(&"😀".repeat(300_000))).unwrap();
+        let buffer = api.shared.output.lock().get(&(api.id().into(), "build".into())).cloned().unwrap();
+        assert_eq!(buffer.len(), 1 << 20);
+        api.output_write("build", Some("x")).unwrap();
+        let buffer = api.shared.output.lock().get(&(api.id().into(), "build".into())).cloned().unwrap();
+        assert!(buffer.len() <= 1 << 20 && buffer.ends_with('x'));
+        api.output_write("build", None).unwrap();
+        assert!(api.shared.output.lock().get(&(api.id().into(), "build".into())).unwrap().is_empty());
+        api.shared.clear_plugin(api.id(), true);
+        assert!(api.shared.output.lock().is_empty());
     }
 }
 
@@ -2489,5 +4002,353 @@ mod credential_tests {
         }
         assert!(matches!(from_window(None, "open a URL"), Err(HostError::Invalid(_))));
         assert_eq!(from_window(Some("main"), "open a URL").unwrap(), "main");
+    }
+}
+
+fn valid_range(document: &ide_text::Document, range: ide_core::Range) -> bool {
+    range.start <= range.end
+        && [range.start, range.end].into_iter().all(|pos| document.byte_to_pos(document.pos_to_byte(pos)) == pos)
+}
+
+impl PluginApi {
+    /// The repository of `root`, which may execute only when `root` is a trusted project.
+    /// Status needs it there: a restricted repository is read without its config, so it knows
+    /// no upstream. The other reads use [`Self::read_repo`] and never execute.
+    fn repo(&self, root: &Path) -> Result<Option<ide_vcs::Repo>, HostError> {
+        let repo = ide_vcs::Repo::discover(root).map_err(failed)?;
+        if let Some(repo) = &repo {
+            repo.set_execution_allowed(self.shared.workspace().is_some_and(|w| w.trusted(root)));
+        }
+        Ok(repo)
+    }
+    fn read_repo(&self, root: &Path) -> Result<Option<ide_vcs::Repo>, HostError> {
+        if !self.shared.workspace().is_some_and(|w| w.trusted(root)) {
+            return Err(HostError::Failed("the project is in Restricted Mode: git does not run there".into()));
+        }
+        let repo = ide_vcs::Repo::discover(root).map_err(failed)?;
+        if let Some(repo) = &repo {
+            repo.set_execution_allowed(false);
+        }
+        Ok(repo)
+    }
+    fn set_decorations(
+        &self,
+        path: Option<&Path>,
+        set: &str,
+        mut items: Vec<ide_plugin::Decoration>,
+        file: Option<ide_plugin::FileDecoration>,
+        tree: bool,
+    ) -> Result<(), HostError> {
+        if set.is_empty() || set.len() > 128 {
+            return Err(HostError::Invalid("set id must be 1-128 bytes".into()));
+        }
+        if items.len() > 10_000 || file.as_ref().and_then(|f| f.badge.as_ref()).is_some_and(|b| b.chars().count() > 2) {
+            return Err(HostError::Invalid("decoration limit exceeded".into()));
+        }
+        items.retain(|d| decoration_style(&d.style));
+        if items.iter().any(|d| d.range.start > d.range.end) {
+            return Err(HostError::Invalid("reversed decoration range".into()));
+        }
+        let replacement = if let Some(path) = path {
+            let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("no project open".into()))?;
+            let (root, real) = workspace
+                .projects()
+                .into_iter()
+                .filter_map(|root| ide_plugin::resolve_new_in_root(&root, &to_ipc(path)).ok().map(|real| (root, real)))
+                .max_by_key(|(root, _)| root.components().count())
+                .ok_or_else(|| HostError::Invalid("path outside open projects".into()))?;
+            Some(super::DecorationSet {
+                root: root.into(),
+                path: real.into(),
+                set_id: set.into(),
+                tree,
+                items,
+                file: file.filter(|f| decoration_style(&f.style)),
+            })
+        } else {
+            None
+        };
+        let mut all = self.shared.decorations.lock();
+        let mut sets = all.get(self.id()).cloned().unwrap_or_default();
+        sets.retain(|s| !(s.tree == tree && s.set_id == set && replacement.as_ref().is_none_or(|r| r.path == s.path)));
+        if let Some(replacement) = replacement {
+            sets.push(replacement);
+        }
+        let names: BTreeSet<_> = sets.iter().filter(|s| s.tree == tree).map(|s| &s.set_id).collect();
+        if names.len() > 50 || serde_json::to_vec(&sets).map_err(failed)?.len() > 4 << 20 {
+            return Err(HostError::Invalid("decoration sets exceed plugin limits".into()));
+        }
+        // A plugin may spread one file's annotations across sets, but the combined limit is fixed.
+        let mut counts = BTreeMap::new();
+        for s in &sets {
+            *counts.entry(&s.path).or_insert(0usize) += s.items.len();
+        }
+        if counts.values().any(|n| *n > 10_000) {
+            return Err(HostError::Invalid("at most 10000 decorations per file".into()));
+        }
+        all.insert(self.id().into(), sets.clone());
+        // Emit while holding the state lock so replacement snapshots cannot arrive out of order.
+        self.shared.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: self.id().into(), sets });
+        Ok(())
+    }
+}
+fn decoration_style(style: &str) -> bool {
+    matches!(
+        style,
+        "highlight"
+            | "search"
+            | "added"
+            | "modified"
+            | "removed"
+            | "warning"
+            | "error"
+            | "info"
+            | "underline"
+            | "strikethrough"
+            | "muted"
+    )
+}
+impl Shared {
+    pub(super) fn decoration_sets(&self) -> BTreeMap<String, Vec<super::DecorationSet>> {
+        self.decorations.lock().clone()
+    }
+}
+
+#[cfg(test)]
+mod workbench_tests {
+    use super::*;
+    struct Workspace {
+        root: PathBuf,
+        trusted: bool,
+        text: Option<String>,
+    }
+    impl PluginWorkspace for Workspace {
+        fn projects(&self) -> Vec<PathBuf> {
+            vec![self.root.clone()]
+        }
+        fn buffer_text(&self, _: &Path) -> Option<String> {
+            self.text.clone()
+        }
+        fn document(&self, _: &Path) -> Option<(u64, String)> {
+            self.text.clone().map(|s| (1, s))
+        }
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit], _: bool) -> Result<u64, HostError> {
+            Err(HostError::Stale)
+        }
+        fn trusted(&self, _: &Path) -> bool {
+            self.trusted
+        }
+        fn project_of(&self, _: &str) -> Option<PathBuf> {
+            Some(self.root.clone())
+        }
+        fn publish_diagnostics(&self, _: &str, _: &Path, _: Vec<ide_core::Diagnostic>) -> Result<(), HostError> {
+            Ok(())
+        }
+        fn open_editors(&self, client: &str) -> Result<Vec<ide_plugin::OpenEditor>, HostError> {
+            Ok(if client == "main" {
+                vec![ide_plugin::OpenEditor {
+                    path: to_ipc(&self.root.join("a.txt")),
+                    language: "text".into(),
+                    active: true,
+                    dirty: true,
+                }]
+            } else {
+                Vec::new()
+            })
+        }
+    }
+    fn api(root: &Path, trusted: bool, text: Option<&str>) -> PluginApi {
+        let manifest = ide_extension::Manifest::parse(
+            "id = \"test\"\nname = \"Test\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.4\"\n",
+        )
+        .unwrap();
+        let shared = Shared::new(
+            Arc::new(|_: Option<&str>, _: PluginEvent| {}),
+            root.join(".data"),
+            Arc::default(),
+            ide_extension::UiStore::new(),
+            Arc::default(),
+            Arc::new(ide_extension::ExtensionRegistry::new()),
+        );
+        *shared.workspace.write() =
+            Some(Arc::new(Workspace { root: root.into(), trusted, text: text.map(str::to_owned) }));
+        PluginApi { pkg: Package::new(manifest, root.into()), shared }
+    }
+    #[test]
+    fn command_exemption_requires_a_declared_unambiguous_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let api = api(dir.path(), true, None);
+        let own = api.shared.ui.insert(ide_extension::UiContribution {
+            plugin_id: "test".into(),
+            point: super::super::COMMANDS.into(),
+            key: "other.run".into(),
+            decl: serde_json::json!({}),
+        });
+        assert!(api.owns_command("plugin.test.other.run"));
+        assert!(!api.owns_command("plugin.test.unknown"));
+        let other = api.shared.ui.insert(ide_extension::UiContribution {
+            plugin_id: "test.other".into(),
+            point: super::super::COMMANDS.into(),
+            key: "run".into(),
+            decl: serde_json::json!({}),
+        });
+        assert!(!api.owns_command("plugin.test.other.run"));
+        drop(other);
+        assert!(api.owns_command("plugin.test.other.run"));
+        drop(own);
+    }
+    #[test]
+    fn selections_validate_window_and_utf16_without_requiring_a_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let path = root.join("a.txt");
+        let api = api(&root, true, Some("😀abc"));
+        let range = |col| ide_core::Range::point(ide_core::Pos::new(0, col));
+        assert!(api.editor_ranges("main", &path, vec![range(2)], false).is_ok());
+        assert!(api.editor_ranges("main", &path, vec![range(1)], true).is_err());
+        assert!(api.editor_ranges("other", &path, vec![range(2)], false).is_err());
+    }
+    #[test]
+    fn decoration_sets_validate_paths_limits_and_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let path = root.join("a.txt");
+        std::fs::write(&path, "text").unwrap();
+        let api = api(&root, true, None);
+        let item = |style: &str| ide_plugin::Decoration {
+            range: ide_core::Range::default(),
+            style: style.into(),
+            hover: None,
+            after: Some("after".into()),
+        };
+        api.decorations(Some(&path), "set", vec![item("highlight"), item("unknown")]).unwrap();
+        assert_eq!(api.shared.decoration_sets()["test"][0].items.len(), 1);
+        assert!(api.decorations(Some(&root.join("../outside.txt")), "set", vec![]).is_err());
+        api.decorations(None, "set", vec![]).unwrap();
+        for i in 0..50 {
+            api.decorations(Some(&path), &format!("s{i}"), vec![]).unwrap();
+        }
+        assert!(api.decorations(Some(&path), "overflow", vec![]).is_err());
+        api.decorations(Some(&path), "s0", vec![item("info"); 10_000]).unwrap();
+        assert!(api.decorations(Some(&path), "s1", vec![item("info")]).is_err());
+        assert!(
+            api.file_decorations(
+                Some(&path),
+                "tree",
+                Some(ide_plugin::FileDecoration { badge: Some("abc".into()), style: "info".into(), tooltip: None })
+            )
+            .is_err()
+        );
+        api.shared.clear_plugin("test", true);
+        assert!(api.shared.decoration_sets().is_empty());
+    }
+    fn git(root: &Path, args: &[&str]) {
+        let out = StdCommand::new("git").current_dir(root).args(args).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    #[test]
+    fn vcs_reads_reuse_history_and_dirty_blame_and_require_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "user.name", "Test"]);
+        git(&root, &["config", "user.email", "test@example.com"]);
+        let path = root.join("a.txt");
+        std::fs::write(&path, "committed\nsecond\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "Subject\n\nBody"]);
+        std::fs::write(&path, "disk\nsecond\n").unwrap();
+        let api = api(&root, true, Some("unsaved\nsecond\nnew\n"));
+        let cancel = CancellationToken::new();
+        let history = api.vcs_log(&root, Some("a.txt"), 10, &cancel).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].subject, "Subject");
+        assert_eq!(history[0].body.trim(), "Body");
+        assert!(history[0].date > 0);
+        let lines = api.vcs_blame(None, &root, "a.txt").unwrap();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].commit.bytes().all(|b| b == b'0'));
+        assert_eq!(lines[1].commit, history[0].id);
+        assert_eq!(lines[2].line, 2);
+        let patch = api.vcs_diff(&root, Some("a.txt"), None, &cancel).unwrap().unwrap();
+        assert!(patch.contains("+disk"));
+        assert!(!patch.contains("+unsaved"));
+        assert!(api.vcs_diff(&root, None, Some("--output=outside"), &cancel).is_err());
+        assert!(api.vcs_log(&root, Some("../outside"), 1, &cancel).is_err());
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(api.vcs_log(&root, Some("a.txt"), 10, &cancel).unwrap().len(), 1);
+        assert!(api.vcs_diff(&root, Some("a.txt"), None, &cancel).unwrap().unwrap().contains("-committed"));
+        let restricted = super::workbench_tests::api(&root, false, None);
+        assert!(restricted.vcs_log(&root, None, 1, &cancel).is_err());
+        assert!(restricted.vcs_blame(None, &root, "a.txt").is_err());
+        assert!(restricted.vcs_diff(&root, None, None, &cancel).is_err());
+        std::fs::write(&path, "x".repeat(5 << 20)).unwrap();
+        assert!(api.vcs_diff(&root, None, None, &cancel).is_err());
+    }
+    /// Security audit lead 2: status has no trust check to stop it, so in Restricted Mode the
+    /// repository it opens must not run what its config names.
+    #[test]
+    fn vcs_status_runs_no_repository_program_in_restricted_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "user.name", "Test"]);
+        git(&root, &["config", "user.email", "test@example.com"]);
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "base"]);
+        let marker = dir.path().join("FILTER-RAN");
+        let clean = format!("echo x > '{}'; cat", marker.to_str().unwrap().replace('\\', "/"));
+        git(&root, &["config", "filter.marker.clean", &clean]);
+        std::fs::write(root.join(".gitattributes"), "*.txt filter=marker\n").unwrap();
+        // Same length as the committed text: only reading the file tells them apart.
+        std::fs::write(root.join("a.txt"), "BASE\n").unwrap();
+
+        let restricted = api(&root, false, None);
+        let status = restricted.vcs_status(&root);
+        assert!(!marker.exists(), "status ran the repository's clean filter in Restricted Mode");
+        assert_eq!(status.unwrap().unwrap().changed_files, 2);
+
+        // Control: the same call runs the fixture's filter in a trusted project.
+        api(&root, true, None).vcs_status(&root).unwrap();
+        assert!(marker.exists(), "control: a trusted status did not run the clean filter, fixture is not live");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vcs_reads_never_run_repository_configured_helpers() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "user.name", "Test"]);
+        git(&root, &["config", "user.email", "test@example.com"]);
+        std::fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "base"]);
+        let marker = root.join("HELPER-RAN");
+        let helper = format!("touch '{}'", marker.display());
+        for key in [
+            "core.fsmonitor",
+            "diff.external",
+            "diff.test.command",
+            "diff.test.textconv",
+            "filter.test.clean",
+            "filter.test.process",
+        ] {
+            git(&root, &["config", key, &helper]);
+        }
+        git(&root, &["config", "filter.test.required", "true"]);
+        assert!(!marker.exists(), "setup ran helper");
+        std::fs::write(root.join(".gitattributes"), "*.txt diff=test filter=test\n").unwrap();
+        std::fs::write(root.join("a.txt"), "changed\n").unwrap();
+        let api = api(&root, true, Some("unsaved\n"));
+        let cancel = CancellationToken::new();
+        api.vcs_log(&root, None, 10, &cancel).unwrap();
+        assert!(!marker.exists(), "log ran helper");
+        api.vcs_blame(None, &root, "a.txt").unwrap();
+        assert!(!marker.exists(), "blame ran helper");
+        api.vcs_diff(&root, None, None, &cancel).unwrap();
+        assert!(!marker.exists());
     }
 }

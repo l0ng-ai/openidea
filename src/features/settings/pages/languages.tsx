@@ -1,12 +1,11 @@
 /**
- * PyCharm's top-level "Python" group (Interpreter), "Project Structure", and
+ * PyCharm's top-level "Python" group (Interpreter) and
  * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript. Pages live in
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
 import { GoPage, JavaPage, NodePage, PhpPage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
 import { MarkdownPage } from "../languages/MarkdownPage";
 import { OxfmtPage, PrettierPage, RuffPage } from "../languages/FormatterPage";
-import { ProjectStructurePage } from "../languages/ProjectStructurePage";
 import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
 import { GoBuildTagsPage, GO_BUILD_TAG_SECTIONS } from "../languages/GoBuildTags";
 import { GoModulesPage, GO_MODULE_SECTIONS } from "../languages/GoModules";
@@ -34,31 +33,14 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "install package",
       "add interpreter",
       "activate virtualenv",
+      "docstrings",
+      "documentation string format",
+      "reStructuredText",
+      "Epytext",
+      "NumPy",
+      "Google",
     ],
     component: PythonInterpreterPage,
-  },
-  {
-    id: "projectStructure",
-    title: "Project Structure",
-    // IntelliJ IDEA order: … Version Control, Project Structure, Build, Execution, Deployment, Languages & Frameworks …
-    order: 350,
-    keywords: [
-      "project structure",
-      "content root",
-      "sources root",
-      "test sources",
-      "resources",
-      "excluded",
-      "mark directory as",
-      "project sdk",
-      "language level",
-      "modules",
-      "libraries",
-      "facets",
-      "artifacts",
-      "sdks",
-    ],
-    component: ProjectStructurePage,
   },
   {
     id: "languages.go",
@@ -111,6 +93,9 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "lombok",
       "javaagent",
       "eclipse jdt",
+      "shared jdtls",
+      "linked builds",
+      "server process",
     ],
     component: JavaPage,
   },

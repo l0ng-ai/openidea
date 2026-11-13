@@ -4,8 +4,10 @@
  * results grids, and a table data editor. Connections, introspection and
  * statements run in Rust (`ide-db`).
  */
-import { lazyComponent, lazyWhen } from "@/ui";
+import { lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import { activeEditor, lazyEditorExtension, registerEditorContribution } from "@/editor/api";
+import { tx } from "@/platform/i18n";
+import { onIdeEvent } from "@/platform/ipc";
 import { registerActions } from "@/platform/actions";
 import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
 import { useProject } from "@/platform/project";
@@ -17,6 +19,8 @@ import {
   setFileDecorations,
   toolWindowService,
 } from "@/workbench/contributions";
+import { installCellActions } from "./cellActions";
+import { installValueEditorActions } from "./valueEditorActions";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, tableTitle } from "./tableInput";
 import { nodeTarget, type DbNode } from "./nodes";
@@ -27,6 +31,11 @@ import {
   consoleSource,
   consoleTints,
   loadSources,
+  connect,
+  loadSchemas,
+  loadDatabases,
+  listsDatabases,
+  sourceById,
   openConsole,
   openHistory,
   openSourceDialog,
@@ -34,10 +43,18 @@ import {
   watchIdleConnections,
 } from "./store";
 
+function useDatabaseHeaderMenu(): MenuItem[] {
+  const separate = useDatabase((s) => s.separateProceduresAndFunctions);
+  return [{ kind: "action", action: "db.separateProceduresAndFunctions", checked: separate }];
+}
+
 const useDialogOpen = () => useDatabase((s) => !!s.dialog);
 
 export function activate(): () => void {
   const disposers = [
+    onIdeEvent("dbSourcesChanged", () => {
+      void loadSources();
+    }),
     registerToolWindow({
       id: DB_TOOL_WINDOW,
       title: "Database",
@@ -45,6 +62,7 @@ export function activate(): () => void {
       anchor: "right",
       order: 20,
       component: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseView)),
+      headerMenu: useDatabaseHeaderMenu,
       headerActions: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseHeaderActions)),
     }),
     registerServiceView({
@@ -81,6 +99,7 @@ export function activate(): () => void {
         loaded: false,
         connected: new Set(),
         databases: {},
+        catalogs: {},
         schemas: {},
         tables: {},
         details: {},
@@ -107,8 +126,27 @@ export function activate(): () => void {
     () => setFileDecorations("database", new Map()),
     watchIdleConnections(),
     installTableEditorFocus(),
+    installValueEditorActions(),
+    installCellActions(),
     registerDatabaseTreeActions(),
     registerActions([
+      {
+        id: "db.pluginConnect",
+        title: "Connect Plugin Data Source",
+        category: "Tools",
+        when: "projectOpen",
+        run: async (e) => {
+          if (!useProject.getState().project?.trusted)
+            throw new Error(tx("Trust this project to connect plugin data sources"));
+          const id = e.arg;
+          if (typeof id !== "string") throw new Error(tx("Invalid data source id"));
+          await loadSources();
+          toolWindowService().show(DB_TOOL_WINDOW, true);
+          if (!(await connect(id))) throw new Error(tx("Database connection failed"));
+          if (listsDatabases(sourceById(id))) await loadDatabases(id);
+          else await loadSchemas(id);
+        },
+      },
       {
         id: "db.showToolWindow",
         title: "Database",
@@ -163,6 +201,24 @@ export function activate(): () => void {
             return;
           }
           await (await import("./console")).executeInView(e.view, e.ctx.path);
+        },
+      },
+      {
+        id: "db.executeScript",
+        title: "Execute SQL Script",
+        category: "Tools",
+        icon: "gutter-run-all",
+        keywords: ["run all", "whole file", "statements"],
+        when: `editorTextFocus && editorLangId == ${SQL_LANGUAGE}`,
+        run: async () => {
+          const e = activeEditor();
+          if (!e || e.ctx.language !== SQL_LANGUAGE) return;
+          if (!useDatabase.getState().loaded) await loadSources();
+          if (!consoleSource(e.ctx.path) && !useDatabase.getState().sources.length) {
+            openSourceDialog(null);
+            return;
+          }
+          await (await import("./console")).executeScriptInView(e.view, e.ctx.path);
         },
       },
       {

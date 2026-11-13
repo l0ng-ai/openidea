@@ -1,0 +1,143 @@
+---
+title: "Editor basics"
+description: "Carets and selections, line editing, the clipboard history, folding, formatting, editor tabs and split editors."
+---
+
+The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below are the defaults of the **macOS** keymap on macOS and the **Windows** keymap on Windows and Linux; you can change any of them in **Settings › Keymap** (see [Keymaps](/en/guide/keymap)). Every command is also available from **Find Action** (`⇧⌘A` / `Ctrl+Shift+A`).
+
+## Carets and selections
+
+| Action                                   | macOS      | Windows / Linux    |
+| ---------------------------------------- | ---------- | ------------------ |
+| **Add or Remove Caret**                  | `⌥⇧`-click | `Alt+Shift`-click  |
+| **Clone Caret Above**                    | `⌥⌥↑`      | `Ctrl Ctrl+Up`     |
+| **Clone Caret Below**                    | `⌥⌥↓`      | `Ctrl Ctrl+Down`   |
+| **Add Selection for Next Occurrence**    | `⌃G`       | `Alt+J`            |
+| **Unselect Occurrence**                  | `⌃⇧G`      | `Alt+Shift+J`      |
+| **Select All Occurrences**               | `⌃⌘G`      | `Ctrl+Alt+Shift+J` |
+| **Add Carets to Ends of Selected Lines** | `⌥⇧G`      | `Alt+Shift+G`      |
+| **Column Selection Mode**                | `⇧⌘8`      | `Alt+Shift+Insert` |
+| **Extend Selection**                     | `⌥↑`       | `Ctrl+W`           |
+| **Shrink Selection**                     | `⌥↓`       | `Ctrl+Shift+W`     |
+
+- **Clone Caret Above / Below**: press the modifier twice and hold it, then press the arrow key.
+- **Add Selection for Next Occurrence** selects the word at the caret first, then adds the next match on every press. When nothing more is found, a hint appears; press again to continue from the top of the file.
+- Drag with `⌥` / `Alt` held (or with the middle mouse button on macOS and Windows) to make a rectangular selection without switching modes.
+- **Extend Selection** grows the selection to the enclosing word, expression, statement and block, using the syntax tree.
+
+## Editing lines and code
+
+| Action                                          | macOS           | Windows / Linux                                |
+| ----------------------------------------------- | --------------- | ---------------------------------------------- |
+| **Duplicate Line or Selection**                 | `⌘D`            | `Ctrl+D`                                       |
+| **Delete Line**                                 | `⌘⌫`            | `Ctrl+Y`                                       |
+| **Move Line Up** / **Move Line Down**           | `⌥⇧↑` / `⌥⇧↓`   | `Alt+Shift+Up` / `Alt+Shift+Down`              |
+| **Move Statement Up** / **Move Statement Down** | `⇧⌘↑` / `⇧⌘↓`   | `Ctrl+Shift+Up` / `Ctrl+Shift+Down`            |
+| **Move Element Left** / **Move Element Right**  | `⌥⇧⌘←` / `⌥⇧⌘→` | `Ctrl+Alt+Shift+Left` / `Ctrl+Alt+Shift+Right` |
+| **Comment with Line Comment**                   | `⌘/`            | `Ctrl+/`                                       |
+| **Comment with Block Comment**                  | `⌥⌘/`           | `Ctrl+Shift+/`                                 |
+| **Join Lines**                                  | `⌃⇧J`           | `Ctrl+Shift+J`                                 |
+| **Toggle Case**                                 | `⇧⌘U`           | `Ctrl+Shift+U`                                 |
+| **Start New Line**                              | `⇧↵`            | `Shift+Enter`                                  |
+| **Start New Line Before Current**               | `⌥⌘↵`           | `Ctrl+Alt+Enter`                               |
+| **Split Line**                                  | `⌘↵`            | `Ctrl+Enter`                                   |
+| **Complete Current Statement**                  | `⇧⌘↵`           | `Ctrl+Shift+Enter`                             |
+| **Unwrap/Remove…**                              | `⇧⌘⌦`           | `Ctrl+Shift+Delete`                            |
+| **Move Caret to Matching Brace**                | `⌃M`            | `Ctrl+Shift+M`                                 |
+| **Move Caret to Code Block Start** / **End**    | `⌥⌘[` / `⌥⌘]`   | `Ctrl+[` / `Ctrl+]`                            |
+| **Toggle Insert/Overwrite**                     | `Insert`        | `Insert`                                       |
+
+**Edit › Sort Lines** and **Edit › Reverse Lines** reorder the selected lines; they have no default shortcut.
+
+Brackets and quotes are paired as you type, and typing a quote or bracket over a selection surrounds it. These and other typing aids (smart Home, Tab out of a closing bracket, smart indent on Enter, documentation comment stubs, what Backspace does with indentation, reformat on paste) are under **Settings › Editor › General › Smart Keys**.
+
+## Clipboard
+
+| Action                   | macOS  | Windows / Linux    |
+| ------------------------ | ------ | ------------------ |
+| **Paste from History…**  | `⇧⌘V`  | `Ctrl+Shift+V`     |
+| **Paste as Plain Text**  | `⌥⇧⌘V` | `Ctrl+Alt+Shift+V` |
+| **Copy Reference**       | `⌥⇧⌘C` | `Ctrl+Alt+Shift+C` |
+| **Copy Path/Reference…** | `⇧⌘C`  | `Ctrl+Shift+C`     |
+
+**Paste from History…** lists the last 30 pieces of text you copied or cut in the window, newest first. Pick one with `↵` / `Enter`; `⌫` / `Delete` removes the selected entries. The history lives in memory and is cleared when the window closes.
+
+Copying from the editor puts rich text (with syntax colours) on the clipboard as well; turn this off in **Settings › Editor › General › Rich-Text Copy**.
+
+## Folding
+
+| Action                                            | macOS               | Windows / Linux                 |
+| ------------------------------------------------- | ------------------- | ------------------------------- |
+| **Collapse** / **Expand**                         | `⌘-` / `⌘=`         | `Ctrl+-` / `Ctrl+=`             |
+| **Collapse All** / **Expand All**                 | `⇧⌘-` / `⇧⌘=`       | `Ctrl+Shift+-` / `Ctrl+Shift+=` |
+| **Collapse Recursively** / **Expand Recursively** | `⌥⌘-` / `⌥⌘=`       | `Ctrl+Alt+-` / `Ctrl+Alt+=`     |
+| **Expand to Level** 1–5                           | `⌘*`, then `1`–`5`  | `Ctrl+*`, then `1`–`5`          |
+| **Expand All to Level** 1–5                       | `⇧⌘*`, then `1`–`5` | `Ctrl+Shift+*`, then `1`–`5`    |
+| **Fold Code Block**                               | `⇧⌘.`               | `Ctrl+Shift+.`                  |
+| **Fold Selection / Remove Region**                | `⌘.`                | `Ctrl+.`                        |
+| **Custom Folding…**                               | `⌥⌘.`               | `Ctrl+Alt+.`                    |
+
+All folding commands are also in **Code › Folding**. Fold regions come from the language's syntax and from region comments; **Custom Folding…** jumps to one of the file's custom regions. Choose what is folded when a file opens (file header, imports, documentation comments) in **Settings › Editor › General › Code Folding**.
+
+## Formatting
+
+| Action                | macOS  | Windows / Linux    |
+| --------------------- | ------ | ------------------ |
+| **Reformat Code**     | `⌥⌘L`  | `Ctrl+Alt+L`       |
+| **Reformat File…**    | `⌥⇧⌘L` | `Ctrl+Alt+Shift+L` |
+| **Auto-Indent Lines** | `⌃⌥I`  | `Ctrl+Alt+I`       |
+| **Optimize Imports**  | `⌃⌥O`  | `Ctrl+Alt+O`       |
+
+**Reformat Code** formats the selection, or the whole file when nothing is selected, as one undo step. The formatting comes from the file's language server or from the formatter the language is configured with (for example Ruff for Python, Prettier or oxfmt for web languages; find their commands as **Reformat with …** in Find Action). **Reformat File…** also lets you choose the scope and optimize imports.
+
+Indentation and other style options are under **Settings › Editor › Code Style**, with a page per language. `.editorconfig` files in the project are read too.
+
+To format on every save, enable **Reformat code** (and optionally **Optimize imports**) in **Settings › Tools › Actions on Save**. Trailing spaces and the final line break on save are set in **Settings › Editor › General**, section **Save Files**.
+
+## Tabs
+
+| Action                  | macOS | Windows / Linux |
+| ----------------------- | ----- | --------------- |
+| **Close Tab**           | `⌘W`  | `Ctrl+F4`       |
+| **Select Next Tab**     | `⌃→`  | `Alt+Right`     |
+| **Select Previous Tab** | `⌃←`  | `Alt+Left`      |
+| **Switcher**            | `⌃⇥`  | `Ctrl+Tab`      |
+
+**Window › Editor Tabs** also has **Pin Tab**, **Close Other Tabs**, **Close All Tabs** and **Reopen Closed Tab**, all without default shortcuts. **Window › Move Tab to New Window** detaches the current tab into its own window.
+
+Tab placement, the tab limit and what happens when it is reached, the preview tab, sorting, and which tab is activated after one closes are set in **Settings › Editor › General › Editor Tabs**.
+
+## Split editors
+
+| Action                      | macOS | Windows / Linux |
+| --------------------------- | ----- | --------------- |
+| **Split Right**             | `⌘\`  | —               |
+| **Go to Next Splitter**     | `⌥⇥`  | `Alt+Tab`       |
+| **Go to Previous Splitter** | `⌥⇧⇥` | `Alt+Shift+Tab` |
+
+**Window › Editor Tabs** also offers **Split Down**, **Unsplit**, **Unsplit All**, **Move to Opposite Group**, **Open in Opposite Group** and **Change Splitter Orientation**. You can also drag a tab to an edge of the editor area to split it.
+
+## View options
+
+| Action                 | macOS | Windows / Linux |
+| ---------------------- | ----- | --------------- |
+| **Increase Font Size** | `⌥⇧.` | `Alt+Shift+.`   |
+| **Decrease Font Size** | `⌥⇧,` | `Alt+Shift+,`   |
+| **Scroll to Center**   | `⌃L`  | `Ctrl+M`        |
+
+- **View › Active Editor › Soft-Wrap** wraps long lines in the current editor. To wrap some file types by default, use **Settings › Editor › General**, section **Soft Wraps**.
+- **View › Reset Font Size in All Editors** undoes font zoom. Changing the font size with `⌘` / `Ctrl` + mouse wheel can be turned on in **Settings › Editor › General**, section **Mouse Control**.
+- **View › Appearance › Enter Distraction Free Mode** hides tool windows, tabs, the status bar and the gutter and centres the text. Run the same command again to leave.
+- Line numbers, whitespace, indent guides, caret style and the intention bulb are in **Settings › Editor › General › Appearance**. Breadcrumbs and sticky lines (the enclosing declarations pinned at the top while you scroll) have their own pages under **Settings › Editor › General**.
+
+## Saving
+
+As in IntelliJ IDEA, there is no per-file save: files are saved when you switch to another application or to the built-in terminal, and **File › Save All** (`⌘S` / `Ctrl+S`) saves everything at once. **Settings › Appearance & Behavior › System Settings**, section **Autosave**, can also save after the IDE has been idle for a while.
+
+Changes made outside the IDE are picked up when you switch back to its window. **Reload from Disk** (`⌥⌘Y` / `Ctrl+Alt+Y`) reloads the current file now.
+
+## Related
+
+- [Code intelligence](/en/guide/code-intelligence): completion, navigation and documentation.
+- [Live templates and macros](/en/guide/templates)
+- [Vim mode](/en/guide/vim)

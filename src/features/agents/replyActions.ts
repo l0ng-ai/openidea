@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import type { Action } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { confirm } from "@/workbench/messages";
@@ -20,7 +21,7 @@ export const copyReplyAction: Action = {
     const reply = arg as CopyReply | undefined;
     if (!reply || typeof reply.text !== "string" || !reply.text.trim()) return;
     try {
-      await navigator.clipboard.writeText(reply.text);
+      await writeClipboardText(reply.text);
       reply.onCopied?.();
     } catch (e) {
       notifications().notify({ level: "error", title: "Couldn't copy the reply", body: String(e) });
@@ -131,7 +132,7 @@ export const replyActions: Action[] = [
   },
   {
     id: "agents.forkReply",
-    title: "Branch Conversation from Here",
+    title: "Fork Conversation from Here",
     category: "Agents",
     icon: "branch",
     hidden: true,
@@ -139,7 +140,7 @@ export const replyActions: Action[] = [
       const resolved = resolveReply(arg);
       if (!resolved?.operations.fork) return;
       const { task, reply } = resolved;
-      return runReplyOperation(task.id, "Couldn't copy the task", () => forkTask(task.id, reply.turn + 1));
+      return runReplyOperation(task.id, "Couldn't fork the task", () => forkTask(task.id, reply.turn + 1));
     },
   },
 ];

@@ -6,13 +6,14 @@
  */
 import { RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import type { EditorDocContext } from "@/editor/api";
+import { emptyGutterSpacer, gutterSpacer, type EditorDocContext } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { shortcutLabel } from "@/platform/keymap";
 import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
 import { notifications, runExecutors } from "@/workbench/contributions";
 import {
+  canDebugProduced,
   choiceItems,
   executeContext,
   launchProduced,
@@ -105,8 +106,7 @@ export function targetMenuItems(target: RunTarget, path: string, content: string
     choices.length > 1
       ? { submenu: choiceItems(choices, debug).filter((i) => i.kind !== "header") }
       : { run: () => void launch(target, path, debug, content) };
-  // Like IDEA, Debug only where a debugger can run it.
-  const debuggable = !p || !!(p.debug || p.config?.debugAdapter || p.missing);
+  const debuggable = !p || canDebugProduced(p);
   return [
     { label: tx`Run '${name}'`, icon: "run", shortcut: shortcutLabel("run.runContext"), ...pick(false) } as MenuItem,
     ...(debuggable
@@ -173,6 +173,8 @@ class RunMarker extends GutterMarker {
     return el;
   }
 }
+
+const runSpacer = gutterSpacer(styles.runMarker ?? "");
 
 /** The gutter asks for markers on every update: rebuild only when targets or test results changed. */
 const markerCache = new WeakMap<readonly PlacedTarget[], { version: number; set: RangeSet<GutterMarker> }>();
@@ -263,7 +265,9 @@ export function runGutter(ctx: EditorDocContext): Extension {
     gutter({
       class: `${styles.runGutter} cm-openidea-gutter-run`,
       markers: (view) => markers(view.state, path),
-      initialSpacer: () => new RunMarker({ line: 0, pos: 0, kind: "test", name: "", path: [] }, path),
+      // One icon of width only while the file has run targets; other files keep a narrow gutter.
+      initialSpacer: () => emptyGutterSpacer,
+      updateSpacer: (_spacer, update) => (update.state.field(targetsField).length ? runSpacer : emptyGutterSpacer),
       domEventHandlers: {
         mousedown: (view, block, event) => {
           const target = view.state.field(targetsField).find((t) => t.pos === block.from);

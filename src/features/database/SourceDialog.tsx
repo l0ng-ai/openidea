@@ -12,6 +12,8 @@ import {
   type DbIntrospection,
   type DbOptions,
   type DbProperty,
+  type DbSnowflake,
+  type DbSnowflakeAuth,
   type DbSsh,
   type SshAuth,
   type DbSslMode,
@@ -34,7 +36,7 @@ import {
   sshTunnelReady,
 } from "./model";
 import { closeDialog, loadDatabases, loadSchemas, saveSource, useDatabase } from "./store";
-import { VENDORS, sourceUrl, vendorById, vendorOf } from "./vendors";
+import { VENDORS, blankSnowflake, sourceUrl, vendorById, vendorOf } from "./vendors";
 import styles from "./Database.module.css";
 import { isImeKey } from "@/platform/ime";
 
@@ -71,6 +73,21 @@ const SSH_AUTH: Array<SelectOption<SshAuth>> = [
   { value: "keyPair", label: "Key pair" },
 ];
 
+const SNOWFLAKE_AUTH: Array<SelectOption<DbSnowflakeAuth>> = [
+  { value: "keyPair", label: "Key pair" },
+  { value: "browser", label: "Single sign-on (web browser)" },
+  { value: "password", label: "Password" },
+  { value: "token", label: "Programmatic access token" },
+  { value: "oAuth", label: "OAuth token" },
+];
+
+/** What the data source's secret is, by Snowflake authentication method. */
+export function snowflakeSecretLabel(auth: DbSnowflakeAuth | null | undefined): string {
+  if (auth === "password") return "Password:";
+  if (auth === "token" || auth === "oAuth") return "Token:";
+  return "Passphrase:";
+}
+
 /** Driver property names the Advanced tab suggests, and what the backend does with them. */
 const PROPERTIES: Record<string, { names: string[]; hint: string }> = {
   clickhouse: {
@@ -101,6 +118,17 @@ const PROPERTIES: Record<string, { names: string[]; hint: string }> = {
     names: ["connect_timeout"],
     hint: "Connection settings for SQL Server.",
   },
+  snowflake: {
+    names: [
+      "QUERY_TAG",
+      "STATEMENT_TIMEOUT_IN_SECONDS",
+      "TIMEZONE",
+      "WEEK_START",
+      "CLIENT_SESSION_KEEP_ALIVE",
+      "connect_timeout",
+    ],
+    hint: "Session parameters set when signing in (any session parameter, e.g. QUERY_TAG). connect_timeout is in seconds.",
+  },
   oracle: {
     names: ["NLS_DATE_FORMAT", "NLS_TIMESTAMP_FORMAT", "NLS_LANGUAGE", "connect_timeout"],
     hint: "Session parameters set after connecting (ALTER SESSION SET name = value). connect_timeout is in seconds.",
@@ -125,7 +153,6 @@ const blankOptions = (): DbOptions => ({
   keepAliveSecs: null,
   autoDisconnectSecs: null,
   singleDatabase: false,
-  instantClient: "",
 });
 
 const blankIntrospection = (): DbIntrospection => ({
@@ -176,7 +203,7 @@ function blank(): DataSource {
 }
 
 async function pickFile(title: string): Promise<string | null> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const file = await open({ multiple: false, directory: false, title });
   return typeof file === "string" ? file : null;
 }
@@ -385,8 +412,15 @@ export function SourceDialog({
   const vendor = vendorOf(s);
   const sqlite = s.driver === "sqlite";
   const postgres = s.driver === "postgres";
+  /** Drivers that can list every database on the host (tree level + Schemas tab). */
+  const serverDatabases = postgres || s.driver === "sqlServer" || s.driver === "snowflake";
   const clickhouse = s.driver === "clickhouse";
   const oracle = s.driver === "oracle";
+  const snowflake = s.driver === "snowflake";
+  const sf: DbSnowflake = { ...blankSnowflake(), ...s.snowflake };
+  const setSnowflake = (patch: Partial<DbSnowflake>) =>
+    setS((x) => ({ ...x, snowflake: { ...blankSnowflake(), ...x.snowflake, ...patch } }));
+  const browserSignIn = snowflake && sf.auth === "browser";
   const urlOnly = !sqlite && !!s.urlOnly;
   const parsedUrl = urlOnly ? parseSourceUrl(s.url ?? "") : null;
   const urlValid = !!parsedUrl && parsedUrl.source.driver === s.driver;
@@ -394,10 +428,13 @@ export function SourceDialog({
   const database = urlOnly ? (parsedUrl?.source.database ?? "") : (s.database ?? "");
   const name =
     s.name?.trim() || (sqlite ? fileSourceName(s.file ?? "") : `${database || s.user || "db"}@${host || "localhost"}`);
-  const sshOn = !sqlite && !!ssh.enabled;
+  // Snowflake is reached over HTTPS, where a tunnel to another host name cannot pass certificate checks.
+  const sshOn = !sqlite && !snowflake && !!ssh.enabled;
   const valid = sqlite
     ? !!s.file?.trim()
-    : (urlOnly ? urlValid : !!s.host?.trim()) && (!sshOn || sshTunnelReady(ssh, sshConfigs));
+    : (urlOnly ? urlValid : !!s.host?.trim()) &&
+      (!sshOn || sshTunnelReady(ssh, sshConfigs)) &&
+      (!snowflake || (!!s.user?.trim() && (sf.auth !== "keyPair" || !!sf.privateKeyFile?.trim())));
   const sslOn = (s.ssl ?? "prefer") !== "disable";
 
   /** What is saved / tested: a preset's port when the field was left empty. */
@@ -415,6 +452,9 @@ export function SourceDialog({
         vendor: v.id === v.driver ? "" : v.id,
         port,
         ssl: v.ssl ?? (v.driver === "clickhouse" ? "disable" : x.ssl),
+        ...(v.driver === "snowflake"
+          ? { host: x.host === "localhost" ? "" : x.host, snowflake: { ...blankSnowflake(), ...x.snowflake } }
+          : {}),
         ...(v.driver === "clickhouse"
           ? {
               user: x.user || "default",
@@ -432,6 +472,8 @@ export function SourceDialog({
     const p = parseSourceUrl(text);
     if (!p || p.source.driver !== s.driver) return;
     const { host: h, port, database: db, user, ssl, sslCaFile, sslCertFile, sslKeyFile, vendor: v } = p.source;
+    if (p.source.snowflake) setSnowflake(p.source.snowflake);
+    if (p.source.options?.defaultSchema) setOptions({ defaultSchema: p.source.options.defaultSchema });
     set({
       host: h,
       port,
@@ -488,18 +530,14 @@ export function SourceDialog({
   const loadNames = async () => {
     const id = initial?.id;
     if (!id) return;
-    await Promise.all([postgres ? loadDatabases(id) : Promise.resolve(), loadSchemas(id)]);
+    await Promise.all([serverDatabases ? loadDatabases(id) : Promise.resolve(), loadSchemas(id)]);
   };
 
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: "general", label: "General" },
     { id: "options", label: "Options" },
-    ...(sqlite
-      ? []
-      : [
-          { id: "ssh" as const, label: "SSH/SSL" },
-          { id: "schemas" as const, label: "Schemas" },
-        ]),
+    ...(sqlite ? [] : snowflake ? [] : [{ id: "ssh" as const, label: "SSH/SSL" }]),
+    ...(sqlite ? [] : [{ id: "schemas" as const, label: "Schemas" }]),
     { id: "advanced", label: "Advanced" },
   ];
   const current = tabs.some((t) => t.id === tab) ? tab : "general";
@@ -536,13 +574,14 @@ export function SourceDialog({
           {!urlOnly && (
             <>
               <label className={styles.formLabel} htmlFor="db-host">
-                <T>Host:</T>
+                {tx(snowflake ? "Account:" : "Host:")}
               </label>
               <div className={styles.formRow}>
                 <Input
                   id="db-host"
                   className={styles.fill}
                   value={s.host ?? ""}
+                  placeholder={snowflake ? "myorg-myaccount or xy12345.eu-central-1" : undefined}
                   onChange={(e) => set({ host: e.target.value })}
                 />
                 <label className={styles.formLabel} htmlFor="db-port">
@@ -574,16 +613,53 @@ export function SourceDialog({
             placeholder={urlOnly ? "from the URL" : ""}
             onChange={(e) => set({ user: e.target.value })}
           />
-          <label className={styles.formLabel} htmlFor="db-password">
-            <T>Password:</T>
+          {snowflake && (
+            <>
+              <span className={styles.formLabel}>
+                <T>Authentication:</T>
+              </span>
+              <Select
+                aria-label="Snowflake authentication"
+                value={sf.auth ?? "keyPair"}
+                options={SNOWFLAKE_AUTH}
+                onChange={(auth) => setSnowflake({ auth })}
+              />
+              {sf.auth === "keyPair" && (
+                <FileField
+                  id="db-snowflake-key"
+                  label="Private key:"
+                  value={sf.privateKeyFile ?? ""}
+                  placeholder="~/.ssh/rsa_key.p8"
+                  title="Private Key File"
+                  onChange={(privateKeyFile) => setSnowflake({ privateKeyFile })}
+                />
+              )}
+            </>
+          )}
+          {browserSignIn && (
+            <>
+              <span />
+              <span className={styles.formHint}>
+                <T>Opens your web browser to sign in with your identity provider when connecting.</T>
+              </span>
+            </>
+          )}
+          <label className={styles.formLabel} htmlFor="db-password" hidden={browserSignIn}>
+            {tx(snowflake ? snowflakeSecretLabel(sf.auth) : "Password:")}
           </label>
-          <div className={styles.formRow}>
+          <div className={styles.formRow} hidden={browserSignIn}>
             <Input
               id="db-password"
               className={styles.fill}
               type="password"
               value={password ?? ""}
-              placeholder={initial && password === undefined ? "<unchanged>" : ""}
+              placeholder={
+                initial && password === undefined
+                  ? "<unchanged>"
+                  : snowflake && sf.auth === "keyPair"
+                    ? "Only for an encrypted key"
+                    : ""
+              }
               onChange={(e) => setPassword(e.target.value)}
             />
             <Checkbox
@@ -603,6 +679,36 @@ export function SourceDialog({
                 placeholder={oracle ? "Service name, e.g. ORCLPDB1" : undefined}
                 onChange={(e) => set({ database: e.target.value })}
               />
+              {snowflake && (
+                <>
+                  <label className={styles.formLabel} htmlFor="db-snowflake-schema">
+                    <T>Schema:</T>
+                  </label>
+                  <Input
+                    id="db-snowflake-schema"
+                    value={options.defaultSchema ?? ""}
+                    onChange={(e) => setOptions({ defaultSchema: e.target.value })}
+                  />
+                  <label className={styles.formLabel} htmlFor="db-snowflake-warehouse">
+                    <T>Warehouse:</T>
+                  </label>
+                  <Input
+                    id="db-snowflake-warehouse"
+                    value={sf.warehouse ?? ""}
+                    placeholder="The user's default warehouse when empty"
+                    onChange={(e) => setSnowflake({ warehouse: e.target.value })}
+                  />
+                  <label className={styles.formLabel} htmlFor="db-snowflake-role">
+                    <T>Role:</T>
+                  </label>
+                  <Input
+                    id="db-snowflake-role"
+                    value={sf.role ?? ""}
+                    placeholder="The user's default role when empty"
+                    onChange={(e) => setSnowflake({ role: e.target.value })}
+                  />
+                </>
+              )}
             </>
           )}
           <label className={styles.formLabel} htmlFor="db-url">
@@ -672,19 +778,6 @@ export function SourceDialog({
             placeholder="HR (ALTER SESSION SET CURRENT_SCHEMA)"
             onChange={(e) => setOptions({ defaultSchema: e.target.value })}
           />
-          <label className={styles.formLabel} htmlFor="db-instant-client">
-            <T>Instant Client:</T>
-          </label>
-          <Input
-            id="db-instant-client"
-            value={options.instantClient ?? ""}
-            placeholder="/opt/oracle/instantclient_23_5"
-            onChange={(e) => setOptions({ instantClient: e.target.value })}
-          />
-          <span />
-          <span className={styles.formHint}>
-            <T>Directory of Oracle Instant Client 19 or later. Empty: ORACLE_HOME or the system library path.</T>
-          </span>
         </>
       )}
       {!sqlite && (
@@ -716,7 +809,7 @@ export function SourceDialog({
         fallback={300}
         onChange={(autoDisconnectSecs) => setOptions({ autoDisconnectSecs })}
       />
-      {postgres && (
+      {serverDatabases && (
         <>
           <span />
           <Checkbox
@@ -741,9 +834,11 @@ export function SourceDialog({
               ? "SET max_execution_time = 30;"
               : sqlite
                 ? "PRAGMA foreign_keys = ON;"
-                : oracle
-                  ? "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS';"
-                  : "SET SESSION sql_mode = 'ANSI';"
+                : snowflake
+                  ? "ALTER SESSION SET QUERY_TAG = 'ide';"
+                  : oracle
+                    ? "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS';"
+                    : "SET SESSION sql_mode = 'ANSI';"
         }
         onChange={(e) => setOptions({ startupScript: e.target.value })}
       />
@@ -941,7 +1036,7 @@ export function SourceDialog({
   const schemasTab = (
     <>
       <div className={styles.formWide}>
-        {postgres && (
+        {serverDatabases && (
           <NamePicker
             allLabel={tx("All databases")}
             addLabel={tx("Add databases pattern")}
@@ -1110,7 +1205,12 @@ export function SourceDialog({
           />
           {/* IDEA's Make Global: stored with the IDE and listed in every project. */}
           <span title={tx("Available in all projects")}>
-            <Checkbox checked={!!s.global} onChange={(global) => set({ global })} label="Global" />
+            <Checkbox
+              checked={!!s.global}
+              disabled={!!s.pluginOwner}
+              onChange={(global) => set({ global })}
+              label="Global"
+            />
           </span>
         </div>
         <span />

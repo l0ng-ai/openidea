@@ -9,6 +9,7 @@
 import { Channel } from "@tauri-apps/api/core";
 import { commands, type LibraryGroup, type RequestId } from "@/bindings";
 import { mergeLibraryGroups } from "@/platform/libraries";
+import { isGradleBuildInput } from "@/platform/buildFiles";
 import { registerActions } from "@/platform/actions";
 import { setLibraryRoots } from "@/editor/api";
 import { call, isCancelled, isTauri, nextRequestId, onIdeEvent } from "@/platform/ipc";
@@ -28,9 +29,13 @@ const GROUP_ICONS: Record<string, string> = {
   goModules: "file-gomod",
   maven: "maven-project",
   gradle: "file-gradle",
+  classpath: "file-java",
   ruby: "file-ruby",
   gems: "file-ruby",
 };
+
+/** SDK groups, which IDEA writes in angle brackets (`< 21 >`); library groups (`Maven: g:a:v`) go without. */
+const SDK_KINDS = new Set(["jdk", "python", "ruby", "go", "rust"]);
 
 /** An archive's root (`/jdk/lib/src.zip!`): its entries live below `<archive>!/`. */
 const isArchiveRoot = (path: string) => path.endsWith("!");
@@ -57,6 +62,7 @@ const MANIFESTS = new Set([
   "go.mod",
   "go.sum",
   "go.work",
+  ".classpath",
   "pyproject.toml",
   "setup.py",
   "requirements.txt",
@@ -73,7 +79,7 @@ export function touchesManifest(paths: readonly string[]): boolean {
   return paths.some(
     (p) =>
       !/[\\/]node_modules[\\/]/.test(p) &&
-      MANIFESTS.has(p.slice(Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")) + 1)),
+      (isGradleBuildInput(p) || MANIFESTS.has(p.slice(Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")) + 1))),
   );
 }
 
@@ -88,7 +94,7 @@ export function librariesRoot(groups: readonly LibraryGroup[]): ProjectViewRootC
     order: 5,
     readOnly: true,
     children: groups.map((g) => ({
-      label: `< ${g.name} >`,
+      label: SDK_KINDS.has(g.kind) ? `< ${g.name} >` : g.name,
       icon: GROUP_ICONS[g.kind] ?? "library",
       children: g.roots.map((r) => ({
         label: r.name,

@@ -1,4 +1,4 @@
-//! Tools › MCP Server: runs `ide_mcp::McpServer` over built-in host tools
+//! Agents › MCP Server: runs `ide_mcp::McpServer` over built-in host tools
 //! while `mcpServer.enabled` is on, and reports where it listens.
 
 use crate::state::AppState;
@@ -27,6 +27,7 @@ pub fn apply(state: &AppState) {
             running.stop();
         }
         ide_agent::set_mcp_executable(None);
+        state.host.set_mcp_executable(None);
         *state.mcp.error.lock() = None;
         return;
     }
@@ -41,6 +42,7 @@ pub fn apply(state: &AppState) {
     ) {
         Ok(started) => {
             let exe = std::env::current_exe().unwrap_or_default();
+            state.host.set_mcp_executable(Some(exe.clone()));
             ide_agent::set_mcp_executable(Some(exe));
             *server = Some(started);
             *state.mcp.error.lock() = None;
@@ -54,13 +56,14 @@ pub fn apply(state: &AppState) {
 
 /// Stops the server on exit (its discovery file goes with it).
 pub fn stop(state: &AppState) {
+    state.host.set_mcp_executable(None);
     ide_agent::set_mcp_executable(None);
     if let Some(server) = state.mcp.server.lock().take() {
         server.stop();
     }
 }
 
-/// What Settings › Tools › MCP Server shows.
+/// What Settings › Agents › MCP Server shows.
 #[derive(Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerStatus {

@@ -135,6 +135,39 @@ it("shows Allow All inside the mode popup when both options exist", () => {
   expect(onChange).toHaveBeenNthCalledWith(2, "allow_all", "on");
 });
 
+it("shows Codex's collaboration mode next to its approval mode and sends Plan", () => {
+  const onChange = vi.fn();
+  render(
+    <ConfigPickers
+      config={[
+        {
+          id: "mode",
+          name: "Mode",
+          category: "mode",
+          description: null,
+          current: "workspace-write",
+          via: "option",
+          values: [value("read-only", "Read-only"), value("workspace-write", "Workspace access")],
+        },
+        {
+          id: "collaboration_mode",
+          name: "Collaboration mode",
+          category: "collaboration_mode",
+          description: null,
+          current: "default",
+          via: "option",
+          values: [value("default", "Default"), value("plan", "Plan")],
+        },
+      ]}
+      onChange={onChange}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Collaboration mode" })).toHaveTextContent("Default");
+  fireEvent.click(screen.getByRole("button", { name: "Collaboration mode" }));
+  fireEvent.click(screen.getByRole("option", { name: "Plan" }));
+  expect(onChange).toHaveBeenCalledExactlyOnceWith("collaboration_mode", "plan");
+});
+
 it("sends the complete nested model id through ConfigPickers", () => {
   const onChange = vi.fn();
   render(<ConfigPickers config={[config([value("9router/cmc/Beam")])]} onChange={onChange} />);
@@ -223,6 +256,26 @@ describe("model and effort button", () => {
     expect(screen.queryByRole("button", { name: "Reasoning Effort" })).not.toBeInTheDocument();
   });
 
+  it("tucks Fast into the model popup with effort", () => {
+    const config = [
+      ...copilotConfig().filter((o) => o.category !== "thought_level"),
+      {
+        id: "fast",
+        name: "Fast",
+        category: "model_config",
+        description: null,
+        current: "false",
+        via: "option" as const,
+        values: [value("false", "Off"), value("true", "On")],
+      },
+    ];
+    render(<ConfigPickers config={config} onChange={vi.fn()} />);
+    expect(screen.queryByRole("switch", { name: "Fast" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    const dialog = screen.getByRole("dialog", { name: "Model & effort settings" });
+    expect(within(dialog).getByRole("switch", { name: "Fast" })).toHaveAttribute("aria-checked", "false");
+  });
+
   it("steps through the advertised effort levels and picks a model from the popup", () => {
     const onChange = vi.fn();
     render(<ConfigPickers config={copilotConfig()} values={{ reasoning_effort: "high" }} onChange={onChange} />);
@@ -234,8 +287,24 @@ describe("model and effort button", () => {
     expect(slider).toHaveAttribute("aria-valuetext", "high");
     fireEvent.change(slider, { target: { value: "3" } });
     expect(onChange).toHaveBeenLastCalledWith("reasoning_effort", "xhigh");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Model" }));
-    fireEvent.click(screen.getByRole("option", { name: /GPT-6 Sol/ }));
+    // The model list is in the popup itself, not behind a second dropdown.
+    expect(within(dialog).queryByRole("button", { name: "Model" })).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("option", { name: /GPT-6 Sol/ }));
+    expect(onChange).toHaveBeenLastCalledWith("model", "gpt-6-sol");
+    expect(screen.getByRole("dialog", { name: "Model & effort settings" })).toBeInTheDocument();
+  });
+
+  it("filters the model list and picks the highlighted model with the keyboard", () => {
+    const onChange = vi.fn();
+    render(<ConfigPickers config={copilotConfig()} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    const dialog = screen.getByRole("dialog", { name: "Model & effort settings" });
+    const search = within(dialog).getByPlaceholderText("Search…");
+    expect(search).toHaveFocus();
+    fireEvent.change(search, { target: { value: "sol" } });
+    expect(within(dialog).getAllByRole("option")).toHaveLength(1);
+    fireEvent.keyDown(search, { key: "ArrowDown" });
+    fireEvent.keyDown(search, { key: "Enter" });
     expect(onChange).toHaveBeenLastCalledWith("model", "gpt-6-sol");
   });
 

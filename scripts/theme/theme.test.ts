@@ -40,8 +40,8 @@ describe("theme token reference", () => {
     expect(() => themeTokenGroups(bad)).toThrow(/--b .*section comment/);
   });
 
-  it("is current in docs/plugins/themes.md (run pnpm gen:theme-docs)", () => {
-    const doc = read("docs/plugins/themes.md");
+  it("is current in plugins/themes.md (run pnpm gen:theme-docs)", () => {
+    const doc = read("plugins/themes.md");
     expect(withReference(doc, referenceMarkdown(groups))).toBe(doc);
   });
 });
@@ -80,6 +80,15 @@ describe("theme plugin template", () => {
 });
 
 describe("IntelliJ theme import", () => {
+  it("imports Python docstring tags and the OpenIDEA keyword extension", () => {
+    const scheme = convertIcls(`<scheme><attributes>
+      <option name="PY.DOC_COMMENT_TAG"><value><option name="FOREGROUND" value="123456"/></value></option>
+      <option name="OPENIDEA_pyDocstringKeyword"><value><option name="FOREGROUND" value="654321"/></value></option>
+      </attributes></scheme>`);
+    expect(scheme.tokens["--syn-python-docstring-tag"]).toBe("#123456");
+    expect(scheme.tokens["--syn-python-docstring-keyword"]).toBe("#654321");
+  });
+
   const themeJson = `{
     // comment
     "name": "Deep Sea",
@@ -150,6 +159,17 @@ describe("IntelliJ theme import", () => {
     expect(s).toBeNull();
   });
 
+  it("maps the selection foreground colour (#2446)", () => {
+    const s = convertIcls(`<scheme name="Sel" version="142" parent_scheme="Default"><colors>
+      <option name="SELECTION_BACKGROUND" value="214283" />
+      <option name="SELECTION_FOREGROUND" value="112233" />
+    </colors></scheme>`);
+    expect(s.tokens).toMatchObject({
+      "--bg-editor-selection": "#214283",
+      "--fg-editor-selection": "#112233",
+    });
+  });
+
   it("only targets tokens that exist in tokens.css", () => {
     const declared = new Set([...css.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]!));
     // Read with a fallback by the editor (no tokens.css default), still themeable.
@@ -182,6 +202,31 @@ describe("IntelliJ theme import", () => {
       "--syn-property": "#a9b7c6",
     });
     expect(s.tokens["--syn-constant"]).toBeUndefined();
+  });
+
+  it("maps doc comment tags, tag values and markup", () => {
+    const fg = (c: string) => `<value><option name="FOREGROUND" value="${c}"/></value>`;
+    const s = convertIcls(`<scheme name="Docs" parent_scheme="Darcula"><attributes>
+      <option name="DEFAULT_DOC_COMMENT_TAG">${fg("67a37c")}</option>
+      <option name="DEFAULT_DOC_COMMENT_TAG_VALUE">${fg("abadb3")}</option>
+      <option name="DEFAULT_DOC_MARKUP"><value><option name="FOREGROUND" value="68a67e"/><option name="BACKGROUND" value="e2ffe2"/></value></option>
+      </attributes></scheme>`);
+    expect(s.tokens).toMatchObject({
+      "--syn-doc-comment-tag": "#67a37c",
+      "--syn-doc-comment-tag-value": "#abadb3",
+      "--syn-doc-markup": "#68a67e",
+      "--syn-doc-markup-bg": "#e2ffe2",
+    });
+  });
+
+  it("keeps the search result colour apart from the text search result and the lists' search match", () => {
+    const bg = (c: string) => `<value><option name="BACKGROUND" value="${c}"/></value>`;
+    const s = convertIcls(`<scheme name="Search" parent_scheme="Darcula"><attributes>
+      <option name="SEARCH_RESULT_ATTRIBUTES">${bg("2d543f")}</option>
+      <option name="TEXT_SEARCH_RESULT_ATTRIBUTES">${bg("114957")}</option>
+      </attributes></scheme>`);
+    expect(s.tokens).toMatchObject({ "--bg-search-result": "#2d543f", "--bg-text-search-result": "#114957" });
+    expect(s.tokens).not.toHaveProperty("--bg-search-match");
   });
 
   it("produces an installable package", () => {

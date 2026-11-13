@@ -38,17 +38,26 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "app_cli_uninstall",
         "app_log_location",
         "app_check_update",
-        "app_startup_update_check",
+        "app_update_window_ready",
+        "app_update_status",
+        "app_update_announcement",
         "app_install_update",
         "caches_schedule_invalidation",
         "clear_caches",
         "clipboard_file_list",
         "clipboard_has_files",
+        "clipboard_image",
         "clipboard_set_file_list",
+        "clipboard_write_text",
         "jdk_download_vendors",
         "jdk_download_releases",
         "jdk_download_location",
         "jdk_download",
+        "jdtls_required_java",
+        "scaffold_catalog",
+        "scaffold_options",
+        "scaffold_requirements",
+        "scaffold_create",
         "run_system_env",
         "run_gradle_jvm_args_script",
         "proxy_check_connection",
@@ -86,6 +95,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "remote_delete",
         "remote_mkdir",
         "remote_rename",
+        "remote_download_into",
         "remote_import_local",
         "remote_bootstrap_exec",
         "deploy_upload",
@@ -447,4 +457,63 @@ async fn revocation_still_applies_when_a_project_folder_was_removed() {
     host.set_project_trust(&project.root, false, false).await.unwrap();
     assert!(!project.is_trusted());
     host.shutdown().await;
+}
+
+#[test]
+fn attached_member_trust_is_required_after_restart_and_revocation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (config, data) = (tmp.path().join("config"), tmp.path().join("data"));
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("primary");
+    let other = base.join("other");
+    for path in [&root, &other] {
+        std::fs::create_dir(path).unwrap();
+    }
+    ide_workspace::workspace::Workspace::attach(&root, "Primary", vec![root.clone(), other.clone()]).unwrap();
+    let trust = TrustStore::load(&config, &data);
+    trust.decide(&root, true, false).unwrap();
+    trust.inherit(&other).unwrap();
+    assert!(trust.window_trusted(&root).unwrap());
+    let trust = TrustStore::load(&config, &data);
+    assert!(trust.status(&root).unwrap().trusted);
+    assert!(!trust.window_trusted(&root).unwrap());
+    assert!(!trust.status(&other).unwrap().decided);
+    trust.decide(&root, true, false).unwrap();
+    assert!(!trust.window_trusted(&root).unwrap(), "trusting only the root does not recover the window");
+    trust.decide(&other, true, false).unwrap();
+    assert!(trust.window_trusted(&root).unwrap());
+    trust.decide(&other, false, false).unwrap();
+    assert!(trust.status(&other).unwrap().decided);
+    assert!(!trust.window_trusted(&root).unwrap());
+    trust.decide(&other, true, false).unwrap();
+    assert!(trust.window_trusted(&root).unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_project_created_with_new_project_is_trusted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host = host(&tmp.path().join("app"), false);
+    let req: ide_scaffold::CreateRequest = serde_json::from_value(serde_json::json!({
+        "generator": "empty",
+        "location": tmp.path().join("projects").to_string_lossy(),
+        "name": "fresh",
+        "git": false,
+        "values": {},
+    }))
+    .unwrap();
+    let dir = ide_host::ops::scaffold::scaffold_create(
+        &host,
+        "welcome",
+        req,
+        ide_core::RequestId(902),
+        ide_host::ops::Channel::new(|_| {}),
+    )
+    .await
+    .unwrap();
+    let dir = std::path::PathBuf::from(dir);
+    assert!(host.trust.status(&dir).unwrap().trusted);
+    // Its siblings are not.
+    let sibling = tmp.path().join("projects/other");
+    std::fs::create_dir(&sibling).unwrap();
+    assert!(!host.trust.status(&sibling).unwrap().trusted);
 }

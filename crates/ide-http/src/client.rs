@@ -26,15 +26,26 @@ pub fn with_proxy(builder: reqwest::ClientBuilder, proxy: &ProxySettings) -> req
 
 /// A client for `proxy`.
 pub fn build(proxy: &ProxySettings) -> IdeResult<reqwest::Client> {
+    build_with_redirect(proxy, reqwest::redirect::Policy::default())
+}
+
+/// The backend's TLS configuration: ring with the operating system's trust store.
+pub fn tls_config() -> IdeResult<rustls::ClientConfig> {
     use rustls_platform_verifier::BuilderVerifierExt;
-    let fail = |e: String| IdeError::internal(format!("HTTP client: {e}"));
+    let fail = |e: String| IdeError::internal(format!("TLS client: {e}"));
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let tls = rustls::ClientConfig::builder_with_provider(provider)
+    rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|e| fail(e.to_string()))?
         .with_platform_verifier()
-        .map_err(|e| fail(e.to_string()))?
-        .with_no_client_auth();
+        .map_err(|e| fail(e.to_string()))
+        .map(|builder| builder.with_no_client_auth())
+}
+
+/// A client with an explicit redirect policy, for callers enforcing network grants.
+pub fn build_with_redirect(proxy: &ProxySettings, redirect: reqwest::redirect::Policy) -> IdeResult<reqwest::Client> {
+    let fail = |e: String| IdeError::internal(format!("HTTP client: {e}"));
+    let tls = tls_config()?;
     // `localhost` is tried on IPv4 first: local servers (Ollama, dev servers)
     // usually listen there, and on Windows a refused `::1` costs ~2 s before
     // the system resolver's order falls back. Ports come from the URL.
@@ -44,6 +55,7 @@ pub fn build(proxy: &ProxySettings) -> IdeResult<reqwest::Client> {
     ];
     let builder = reqwest::Client::builder()
         .tls_backend_preconfigured(tls)
+        .redirect(redirect)
         .resolve_to_addrs("localhost", &loopback)
         .connect_timeout(Duration::from_secs(30))
         .user_agent(concat!("OpenIDEA-HttpClient/", env!("CARGO_PKG_VERSION")));

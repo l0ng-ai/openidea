@@ -56,6 +56,22 @@ impl TrustStore {
                 || self.inherited.lock().contains(&root)))
     }
 
+    pub fn window_trusted(&self, root: &Path) -> IdeResult<bool> {
+        if !self.trusted(root)? {
+            return Ok(false);
+        }
+        if let Some(workspace) = ide_workspace::workspace::Workspace::load(root)?
+            && !workspace.is_container(root)
+        {
+            for member in workspace.projects.iter().filter(|p| *p != root && p.exists()) {
+                if !self.trusted(member)? {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
     /// Trusts `path` for this process without recording a decision (see [`TRUSTED_ROOT_ENV`]).
     pub fn inherit(&self, path: &Path) -> IdeResult<()> {
         let root = dunce::canonicalize(path)?;
@@ -126,6 +142,61 @@ fn persist(file: &Path, state: &TrustDecisions) -> IdeResult<()> {
     Ok(())
 }
 
+type McpServers = std::collections::BTreeMap<String, ide_core::settings::AgentMcpServer>;
+
+/// Workspace MCP servers (a project's `agents.mcpServers`) the user turned on in Settings, by a
+/// fingerprint of the project and the server's definition. Agents start a workspace server only
+/// while its definition is one the user turned on, so a server added or changed in the project's
+/// file stays off until then.
+pub struct McpServerApprovals {
+    file: PathBuf,
+    approved: Mutex<std::collections::BTreeSet<String>>,
+}
+
+impl McpServerApprovals {
+    pub fn load(data: &Path) -> Self {
+        let file = data.join("mcp-server-approvals.json");
+        let approved = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        Self { file, approved: Mutex::new(approved) }
+    }
+
+    fn fingerprint(root: &Path, name: &str, server: &ide_core::settings::AgentMcpServer) -> String {
+        // Turning a server off and on again doesn't change what it runs.
+        let server = ide_core::settings::AgentMcpServer { enabled: true, ..server.clone() };
+        let bytes = serde_json::to_vec(&(root, name, server)).expect("MCP server serializes");
+        blake3::hash(&bytes).to_hex().to_string()
+    }
+
+    pub fn approved(&self, root: &Path, name: &str, server: &ide_core::settings::AgentMcpServer) -> bool {
+        self.approved.lock().contains(&Self::fingerprint(root, name, server))
+    }
+
+    pub fn approve(&self, root: &Path, name: &str, server: &ide_core::settings::AgentMcpServer) -> IdeResult<()> {
+        let fingerprint = Self::fingerprint(root, name, server);
+        let mut approved = self.approved.lock();
+        if approved.contains(&fingerprint) {
+            return Ok(());
+        }
+        let mut next = approved.clone();
+        next.insert(fingerprint);
+        if let Some(parent) = self.file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(&next).map_err(|e| IdeError::internal(e.to_string()))?;
+        ide_vfs::write_atomic(&self.file, &bytes)?;
+        *approved = next;
+        Ok(())
+    }
+
+    /// `workspace` with the servers the user hasn't turned on switched off.
+    pub fn apply(&self, root: &Path, mut workspace: McpServers) -> McpServers {
+        for (name, server) in &mut workspace {
+            server.enabled &= self.approved(root, name, server);
+        }
+        workspace
+    }
+}
+
 impl crate::Host {
     pub async fn set_project_trust(&self, path: &Path, trusted: bool, folder: bool) -> IdeResult<()> {
         self.trust.decide(path, trusted, folder)?;
@@ -134,7 +205,7 @@ impl crate::Host {
 
     pub async fn refresh_project_trust(&self) -> IdeResult<()> {
         for project in self.projects().into_iter().filter(|p| !p.light) {
-            let trusted = self.trust.trusted(&project.root).unwrap_or(false);
+            let trusted = self.trust.window_trusted(&project.root).unwrap_or(false);
             let previous = project.trusted.swap(trusted, std::sync::atomic::Ordering::AcqRel);
             if previous == trusted {
                 continue;
@@ -146,6 +217,9 @@ impl crate::Host {
                 phpstan.interrupt();
             }
             if !trusted {
+                if let Some(plugins) = self.plugin_host() {
+                    plugins.withdraw_project_run_targets(&project.root);
+                }
                 project.lsp.set_execution_allowed(false);
             }
             project.repos();
@@ -202,6 +276,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
         "term_",
         "settings_",
         "project_trust_",
+        // New Project writes only where the user chose and runs no code of an open project.
+        "scaffold_",
         "ssh_",
         "git_credential",
     ]
@@ -218,17 +294,22 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "app_cli_uninstall"
             | "app_log_location"
             | "app_check_update"
-            | "app_startup_update_check"
+            | "app_update_window_ready"
+            | "app_update_status"
+            | "app_update_announcement"
             | "app_install_update"
             | "caches_schedule_invalidation"
             | "clear_caches"
             | "clipboard_file_list"
             | "clipboard_has_files"
+            | "clipboard_image"
             | "clipboard_set_file_list"
+            | "clipboard_write_text"
             | "jdk_download_vendors"
             | "jdk_download_releases"
             | "jdk_download_location"
             | "jdk_download"
+            | "jdtls_required_java"
             | "run_system_env"
             | "run_gradle_jvm_args_script"
             | "proxy_check_connection"
@@ -268,6 +349,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "deploy_coverage"
             | "deploy_test_connection"
             | "find_files"
+            | "find_files_named"
             | "find_dirs"
             | "find_symbols"
             | "mark_recent"
@@ -311,6 +393,11 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "agent_registry_list"
             | "agent_registry_install"
             | "agent_registry_remove"
+            | "agent_mcp_list"
+            | "agent_mcp_save"
+            | "agent_mcp_set_enabled"
+            | "agent_mcp_remove"
+            | "agent_mcp_import"
             | "coverage_import"
             | "system_font_families"
             | "user_font_data"
@@ -396,6 +483,9 @@ pub fn projectless_command_allowed(cmd: &str) -> bool {
             | "plugin_set_enabled"
             | "plugin_grant"
             | "plugin_set_capability"
+            | "plugin_revoke_net_host"
+            | "plugin_choose_program"
+            | "plugin_program"
             | "plugin_roll_back"
             | "plugin_reload"
     )
@@ -427,5 +517,13 @@ impl TrustStore {
         let trusted = self.trusted(&root)?;
         let state = self.decisions()?;
         Ok(TrustStatus { decided: trusted || state.restricted.contains(&root), root: root.into(), trusted })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn restricted_mode_allows_clipboard_write_text() {
+        assert!(super::restricted_command_allowed("clipboard_write_text"));
     }
 }

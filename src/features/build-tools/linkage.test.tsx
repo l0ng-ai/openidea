@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { executeAction, registerAction, allActions, isActionEnabled } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import type { BuildModel, GradleModel, ProjectInfo, RunConfig } from "@/platform/ipc";
+import { emitLocalIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { usePlatform } from "@/platform/platformInfo";
 import { GradleView, MavenView } from "./BuildToolView";
 import { activate } from "./index";
 import { expandableKeys, gradleChildren, gradleRoots, gradleProjectKey } from "./model";
 import { executeBuildLine } from "./runAnything";
-import { useBuild } from "./store";
+import { classifyPickedPoms, mavenPomForImport, useBuild } from "./store";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -16,9 +18,11 @@ const mocks = vi.hoisted(() => ({
   model: vi.fn(),
   configs: vi.fn(),
   open: vi.fn(),
+  readDir: vi.fn(),
   confirm: vi.fn(),
   menu: vi.fn(),
   link: vi.fn(),
+  notify: vi.fn(),
   unlink: vi.fn(),
   show: vi.fn(),
   sync: vi.fn(),
@@ -38,6 +42,7 @@ vi.mock("@/platform/ipc", async (original) => {
       gradleLinkProjects: mocks.link,
       gradleUnlinkProjects: mocks.unlink,
       buildSync: mocks.sync,
+      fsReadDir: (path: string) => mocks.readDir(path),
       cancelRequest: () => Promise.resolve(),
     },
   };
@@ -51,6 +56,7 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
   toolWindowService: () => ({ show: mocks.show }),
+  notifications: () => ({ notify: mocks.notify }),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.open }));
 vi.mock("@/workbench/messages", () => ({ confirm: mocks.confirm }));
@@ -110,6 +116,22 @@ afterEach(() => {
   dispose();
   useProject.setState({ project: null });
   setContext("projectOpen", false);
+});
+
+it("re-reads the build model when an applied Groovy or Kotlin script changes", async () => {
+  vi.useFakeTimers();
+  try {
+    for (const path of ["/p/gradle/dependencies.gradle", "/p/gradle/dependencies.gradle.kts"]) {
+      const calls = mocks.model.mock.calls.length;
+      await act(async () => {
+        emitLocalIdeEvent({ type: "fsChanged", created: [], modified: [path], removed: [] });
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(mocks.model).toHaveBeenCalledTimes(calls + 1);
+    }
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("offers unlink on a root's context menu and persists a confirmed project setting", async () => {
@@ -213,18 +235,149 @@ it("re-adds a picked POM using the plus button and preserves other unlinked root
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Add Maven Projects" }));
   });
-  expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "/p", directory: false }));
-  expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.unlinkedProjects", '["b/pom.xml"]');
+  await waitFor(() =>
+    expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "/p", directory: false })),
+  );
+  await waitFor(() =>
+    expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.unlinkedProjects", '["b/pom.xml"]'),
+  );
 });
 
-it.each([null, "/outside/pom.xml", "/p/a/build.xml", "/p/../outside/pom.xml", "/p/a/pom.xml"])(
-  "ignores cancelled, invalid, outside or already linked picks: %s",
+it.each([null, "/p/a/build.xml", "/p/a/pom.xml", "not-a-file"])(
+  "ignores cancelled, invalid or already linked picks: %s",
   async (picked) => {
     mocks.open.mockResolvedValue(picked);
     await executeAction("maven.addProjects");
     expect(mocks.set).not.toHaveBeenCalled();
   },
 );
+
+it("imports a module directory from Project Structure when that directory contains pom.xml", async () => {
+  mocks.get.mockResolvedValue({
+    languages: { java: { maven: { unlinkedProjects: [], linkedProjects: [] } } },
+  });
+  mocks.open.mockResolvedValue("/B");
+  mocks.readDir.mockResolvedValue([
+    {
+      name: "pom.xml",
+      path: "/B/pom.xml",
+      kind: "file",
+      size: 1,
+      mtimeMs: 1,
+      ignored: false,
+      excluded: false,
+      hidden: false,
+    },
+  ]);
+  await act(async () => {
+    await executeAction("maven.importExternal");
+  });
+  expect(mocks.show).toHaveBeenCalledWith("maven");
+  expect(mocks.open).toHaveBeenCalledWith(
+    expect.objectContaining({
+      title: "Import Module from Existing Sources",
+      directory: true,
+      defaultPath: "/p",
+    }),
+  );
+  expect(mocks.readDir).toHaveBeenCalledWith("/B");
+  expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.linkedProjects", '["/B/pom.xml"]');
+});
+
+it("does not link a module directory that has no pom.xml", async () => {
+  mocks.open.mockResolvedValue("/B");
+  mocks.readDir.mockResolvedValue([]);
+  await act(async () => {
+    await executeAction("maven.importExternal");
+  });
+  expect(mocks.set).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith(
+    expect.objectContaining({
+      level: "warning",
+      title: "Maven project was not imported",
+      body: expect.stringContaining("pom.xml"),
+    }),
+  );
+});
+
+it("maps a module directory or a pom.xml onto the same link", () => {
+  expect(mavenPomForImport("/code/B")).toBe("/code/B/pom.xml");
+  expect(mavenPomForImport("/code/B/pom.xml")).toBe("/code/B/pom.xml");
+});
+
+it("links a sibling pom.xml outside the opened project and collapses duplicate spellings", async () => {
+  mocks.get.mockResolvedValue({
+    languages: { java: { maven: { unlinkedProjects: [], linkedProjects: [] } } },
+  });
+  mocks.open.mockResolvedValue(["/p/../B/pom.xml", "/B/pom.xml", "/other/notes.xml"]);
+  await act(async () => {
+    await executeAction("maven.addProjects");
+  });
+  expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.linkedProjects", '["/B/pom.xml"]');
+  expect(mocks.notify).toHaveBeenCalledWith(
+    expect.objectContaining({
+      level: "warning",
+      body: expect.stringContaining("/other/notes.xml"),
+    }),
+  );
+});
+
+it("links `\\\\?\\`-prefixed and differently-cased picks on Windows", async () => {
+  const os = usePlatform.getState().os;
+  usePlatform.setState({ os: "windows" });
+  try {
+    useProject.setState({ project: { root: "C:\\Projects\\demo" } as ProjectInfo });
+    mocks.get.mockResolvedValue({
+      languages: { java: { maven: { unlinkedProjects: [], linkedProjects: [] } } },
+    });
+    mocks.open.mockResolvedValue(["\\\\?\\C:\\Projects\\demo\\svc\\pom.xml", "c:/Projects/demo/web/pom.xml"]);
+    await act(async () => {
+      await executeAction("maven.addProjects");
+    });
+    expect(mocks.set).toHaveBeenCalledWith(
+      "project",
+      "languages.java.maven.linkedProjects",
+      '["svc/pom.xml","web/pom.xml"]',
+    );
+  } finally {
+    usePlatform.setState({ os });
+  }
+});
+
+it("warns about a pick that is not a pom.xml instead of silently doing nothing", async () => {
+  mocks.open.mockResolvedValue("/other/readme.xml");
+  await act(async () => {
+    await executeAction("maven.addProjects");
+  });
+  expect(mocks.set).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith(
+    expect.objectContaining({
+      level: "warning",
+      title: expect.stringContaining("not added"),
+      body: expect.stringContaining("/other/readme.xml"),
+    }),
+  );
+});
+
+it("classifies inside, sibling and lexical paths without a filesystem walk", () => {
+  expect(classifyPickedPoms("/p", ["/p/a/../stub/pom.xml", "/p/../B/pom.xml", "/B/pom.xml"])).toEqual({
+    link: ["stub/pom.xml", "/B/pom.xml"],
+    rejected: [],
+  });
+  expect(classifyPickedPoms("/p", ["/p/a/build.xml"])).toEqual({ link: [], rejected: ["/p/a/build.xml"] });
+  const os = usePlatform.getState().os;
+  usePlatform.setState({ os: "windows" });
+  try {
+    expect(
+      classifyPickedPoms("C:\\Projects\\demo", [
+        "\\\\?\\C:\\Projects\\demo\\..\\B\\pom.xml",
+        "c:/Projects/demo/svc/pom.xml",
+      ]),
+    ).toEqual({ link: ["C:/Projects/B/pom.xml", "svc/pom.xml"], rejected: [] });
+  } finally {
+    usePlatform.setState({ os });
+  }
+});
 
 it("links picked POMs that no reactor lists as independent top-level projects", async () => {
   mocks.get.mockResolvedValue({
@@ -241,6 +394,27 @@ it("links picked POMs that no reactor lists as independent top-level projects", 
     "languages.java.maven.linkedProjects",
     '["tools/pom.xml","stub/pom.xml"]',
   );
+});
+
+it("unlinking an external project removes the link and does not delete it from disk", async () => {
+  mocks.get.mockResolvedValue({ languages: { java: { maven: { linkedProjects: ["/B/pom.xml"] } } } });
+  const external = {
+    ...model.maven!.projects[0]!,
+    pom: "/B/pom.xml",
+    dir: "/B",
+    artifactId: "b",
+    displayName: "project-b",
+  };
+  const linked: BuildModel = { ...model, maven: { ...model.maven!, projects: [...model.maven!.projects, external] } };
+  mocks.model.mockResolvedValue(linked);
+  await act(async () => {
+    useBuild.setState({ model: linked });
+  });
+  await act(async () => {
+    await executeAction("maven.unlinkProjects", { pom: "/B/pom.xml" });
+  });
+  expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.linkedProjects", "[]");
+  expect(mocks.set).not.toHaveBeenCalledWith("project", "languages.java.maven.unlinkedProjects", expect.anything());
 });
 
 it("unlinking a linked independent project removes the link instead of hiding it", async () => {
@@ -317,7 +491,7 @@ it("runs duplicate task paths with the selected build's wrapper, cwd and offline
       model,
       expanded: { maven: new Set(), gradle: expanded },
       current: { gradle: gradleProjectKey(builds[1]!, builds[1]!.projects[1]!) },
-      settings: { ...useBuild.getState().settings, gradle: { offline: true } },
+      settings: { ...useBuild.getState().settings, gradle: { offline: true, skipTests: false } },
     }),
   );
   const started: RunConfig[] = [];
@@ -341,7 +515,8 @@ it("runs duplicate task paths with the selected build's wrapper, cwd and offline
       command: "/p/second/gradlew",
       cwd: "second",
       args: [":app:test", "--offline"],
-      env: { JAVA_HOME: "/second/jdk" },
+      // The build's `JAVA_HOME` follows Settings at launch instead of being frozen here (#2433).
+      env: {},
     });
 });
 

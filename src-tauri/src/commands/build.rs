@@ -5,7 +5,7 @@ use ide_build::compile::{BuildEvent, BuildKind, BuildResult};
 use ide_build::maven::PomGoto;
 use ide_build::pom_edit::ArtifactKey;
 use ide_build::{BuildModel, BuildTool, SyncProgress};
-use ide_core::{IdeResult, Location, Pos, RequestId};
+use ide_core::{DocId, IdeResult, Location, Pos, RequestId};
 #[allow(unused_imports)]
 pub use ide_host::ops::build::*;
 use tauri::ipc::Channel;
@@ -129,6 +129,20 @@ pub async fn maven_goto_declaration(
     ide_host::ops::build::maven_goto_declaration(&state.host, window.label(), pom, pos).await
 }
 
+/// Completion of the `<dependency>` coordinate the caret (`offset`, UTF-16) sits
+/// in the value of in the POM `doc`, from the local repository and Maven Central.
+#[tauri::command]
+#[specta::specta]
+pub async fn maven_dependency_completion(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+    offset: u32,
+    request: RequestId,
+) -> IdeResult<Option<ide_build::maven::completion::PomCompletion>> {
+    ide_host::ops::build::maven_dependency_completion(&state.host, window.label(), doc, offset, request).await
+}
+
 /// Adds an `<exclusion>` of `exclusion` to the declaration of the direct dependency
 /// `dependency` of the Maven module `pom`, through the open document when there is one
 /// (saved). Returns the declaration; nothing changes when it already excludes it.
@@ -167,6 +181,32 @@ pub async fn build_run(
         kind,
         file,
         cmake,
+        request,
+        clear,
+        crate::commands::sender(on_event),
+    )
+    .await
+}
+
+/// Build › Compile File: compiles one Java source of a linked Maven module with
+/// `javac`, streaming the console and messages on `on_event`; cancellable with
+/// `cancel_request(request)`. Diagnostics of `clear` (the files of the previous
+/// build) are cleared first; the new messages are published as `build`
+/// diagnostics.
+#[tauri::command]
+#[specta::specta]
+pub async fn build_compile_file(
+    window: Window,
+    state: State<'_, AppState>,
+    file: std::path::PathBuf,
+    request: RequestId,
+    clear: Vec<std::path::PathBuf>,
+    on_event: Channel<BuildEvent>,
+) -> IdeResult<BuildResult> {
+    ide_host::ops::build::build_compile_file(
+        &state.host,
+        window.label(),
+        file,
         request,
         clear,
         crate::commands::sender(on_event),

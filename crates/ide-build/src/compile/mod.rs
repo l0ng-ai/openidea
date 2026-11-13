@@ -4,9 +4,17 @@
 //! for the Build tool window, the Problems view and the editor.
 
 mod fingerprint;
+mod launch_resources;
 mod parse;
+mod single;
+mod up_to_date;
 
-pub use fingerprint::{LaunchFingerprint, launch_fingerprint};
+pub use fingerprint::{LaunchFingerprint, launch_fingerprint, menu_fingerprint};
+pub use launch_resources::process_launch_resources;
+pub use single::{
+    SingleFileTarget, compile_file_plan, find_javac, javac_step, single_file_classpath, single_file_target,
+};
+pub use up_to_date::{menu_up_to_date, record_menu_build};
 
 use crate::process::{self, Stream};
 use crate::{BuildModel, maven};
@@ -258,13 +266,26 @@ pub(super) fn maven_steps(
         BuildKind::Rebuild => &["clean", "test-compile"],
         BuildKind::Artifacts => &["package", "-DskipTests"],
     };
+    // The IDE's compile builds are not coverage runs. JaCoCo's offline `instrument`
+    // rewrites target/classes in `process-classes`; `jacoco.skip` prevents that in this
+    // build. It does not restore classes instrumented by an earlier build: Rebuild's
+    // `clean` removes those, while an incremental Build can still reuse them.
+    let skip_jacoco = matches!(kind, BuildKind::Build | BuildKind::Rebuild);
     let tops: Vec<&maven::MavenProject> = m.projects.iter().filter(|p| !p.aggregated).collect();
     if tops.is_empty() {
         return Err(IdeError::not_found("no Maven project found"));
     }
     let step = |p: &maven::MavenProject, extra: &[String]| {
-        let mut s = BuildStep::new(&p.command, &["-B", "-Dstyle.color=never"], &subdir(root, &p.dir), Format::Maven);
+        let mut s = BuildStep::new(
+            &p.command,
+            &["-B", "-Dstyle.color=never", maven::LOCAL_REPO_TRACKING_ARG],
+            &subdir(root, &p.dir),
+            Format::Maven,
+        );
         s.args.extend(p.options.iter().cloned());
+        if skip_jacoco {
+            s.args.push("-Djacoco.skip=true".into());
+        }
         s.args.extend(extra.iter().cloned());
         s.args.extend(goals.iter().map(|g| (*g).to_owned()));
         s.env = p.env.clone();
@@ -772,13 +793,7 @@ pub fn launch_has_non_java_sources(root: &Path, model: &BuildModel, module: &Pat
     has_non_java_sources(module)
 }
 
-fn launch_plan(root: &Path, model: &BuildModel, module: &Path, test: bool) -> IdeResult<BuildPlan> {
-    let kind = if model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| subdir(root, &p.dir) == module)) {
-        // JDT may have left newer error stubs in Maven's output directories.
-        BuildKind::Rebuild
-    } else {
-        BuildKind::Build
-    };
+fn launch_plan(root: &Path, model: &BuildModel, module: &Path, test: bool, kind: BuildKind) -> IdeResult<BuildPlan> {
     let mut plan = plan(root, model, kind, Some(module), None)?;
     if plan.system == BuildSystem::Maven && !test {
         for step in &mut plan.steps {
@@ -790,6 +805,12 @@ fn launch_plan(root: &Path, model: &BuildModel, module: &Path, test: bool) -> Id
     Ok(plan)
 }
 
+#[derive(Debug)]
+pub struct LaunchBuild {
+    pub class_dirs: Vec<PathBuf>,
+    pub failure: Option<String>,
+}
+
 /// Compiles the module at `module` with its build system before a JVM launch and
 /// returns the class directories it wrote, to put ahead of the jdtls classpath.
 pub fn build_for_launch(
@@ -797,11 +818,12 @@ pub fn build_for_launch(
     model: &BuildModel,
     module: &Path,
     test: bool,
+    kind: BuildKind,
     cancel: &CancellationToken,
-) -> IdeResult<Vec<PathBuf>> {
-    let plan = launch_plan(root, model, module, test)?;
+) -> IdeResult<LaunchBuild> {
+    let plan = launch_plan(root, model, module, test, kind)?;
     let result = run(root, &plan, cancel, &|_| {})?;
-    if !result.success {
+    let failure = if !result.success {
         let errors: Vec<String> = result
             .messages
             .iter()
@@ -812,17 +834,21 @@ pub fn build_for_launch(
                 _ => m.text.clone(),
             })
             .collect();
-        return Err(IdeError::internal(format!("Build failed:\n{}", errors.join("\n"))));
-    }
-    if plan.system == BuildSystem::Maven
+        Some(format!("Build failed:\n{}", errors.join("\n")))
+    } else {
+        None
+    };
+    let class_dirs = if plan.system == BuildSystem::Maven
         && let Some(m) = &model.maven
     {
-        return Ok(maven_launch_projects(root, m, module, test)
+        maven_launch_projects(root, m, module, test)
             .iter()
             .flat_map(|p| launch_class_dirs(plan.system, &subdir(root, &p.dir), test && subdir(root, &p.dir) == module))
-            .collect());
-    }
-    Ok(launch_class_dirs(plan.system, module, test))
+            .collect()
+    } else {
+        launch_class_dirs(plan.system, module, test)
+    };
+    Ok(LaunchBuild { class_dirs, failure })
 }
 
 fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<PathBuf> {
@@ -1024,6 +1050,22 @@ mod tests {
     }
 
     #[test]
+    fn maven_compile_steps_skip_jacoco_but_artifacts_do_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("demo");
+        write(&root, "pom.xml", "<project><artifactId>demo</artifactId></project>");
+        let model = crate::load(&root, &tmp.path().join("cache"), None);
+        for (kind, expected) in [(BuildKind::Build, true), (BuildKind::Rebuild, true), (BuildKind::Artifacts, false)] {
+            let plan = plan(&root, &model, kind, None, None).unwrap();
+            assert_eq!(
+                plan.steps[0].args.iter().any(|arg| arg == "-Djacoco.skip=true"),
+                expected,
+                "{kind:?}: {plan:?}"
+            );
+        }
+    }
+
+    #[test]
     fn plans_per_build_system() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("demo");
@@ -1039,9 +1081,25 @@ mod tests {
         assert_eq!(p.system, BuildSystem::Maven);
         assert_eq!(p.title, "demo");
         assert_eq!(p.steps.len(), 1);
-        assert_eq!(p.steps[0].args, ["-B", "-Dstyle.color=never", "test-compile"]);
+        assert_eq!(
+            p.steps[0].args,
+            ["-B", "-Dstyle.color=never", maven::LOCAL_REPO_TRACKING_ARG, "-Djacoco.skip=true", "test-compile"]
+        );
         let p = plan(&root, &model, BuildKind::Rebuild, Some(&root.join("core/src/main/java/A.java")), None).unwrap();
-        assert_eq!(p.steps[0].args, ["-B", "-Dstyle.color=never", "-pl", "core", "-am", "clean", "test-compile"]);
+        assert_eq!(
+            p.steps[0].args,
+            [
+                "-B",
+                "-Dstyle.color=never",
+                maven::LOCAL_REPO_TRACKING_ARG,
+                "-Djacoco.skip=true",
+                "-pl",
+                "core",
+                "-am",
+                "clean",
+                "test-compile"
+            ]
+        );
         assert_eq!(p.steps[0].cwd, root);
         assert_eq!(p.title, "demo: build module 'core'");
 
@@ -1309,14 +1367,44 @@ mod tests {
         write(root, "app/pom.xml", "<project/>");
         let model = reactor_model();
         for (test, goal) in [(false, "compile"), (true, "test-compile")] {
-            let plan = launch_plan(root, &model, &root.join("app"), test).unwrap();
+            // A normal launch is incremental: no `clean` (IDEA's Make, not Rebuild).
+            let plan = launch_plan(root, &model, &root.join("app"), test, BuildKind::Build).unwrap();
             let step = &plan.steps[0];
             assert_eq!(step.cwd, root);
             assert_eq!(step.program, "mvnw");
             assert_eq!(step.env["JAVA_HOME"], "/jdk");
             assert_eq!(
                 step.args,
-                ["-B", "-Dstyle.color=never", "-s", "settings.xml", "-pl", "app", "-am", "clean", goal]
+                [
+                    "-B",
+                    "-Dstyle.color=never",
+                    maven::LOCAL_REPO_TRACKING_ARG,
+                    "-s",
+                    "settings.xml",
+                    "-Djacoco.skip=true",
+                    "-pl",
+                    "app",
+                    "-am",
+                    goal
+                ]
+            );
+            // Rebuild cleans first, as IDEA's Rebuild does.
+            let plan = launch_plan(root, &model, &root.join("app"), test, BuildKind::Rebuild).unwrap();
+            assert_eq!(
+                plan.steps[0].args,
+                [
+                    "-B",
+                    "-Dstyle.color=never",
+                    maven::LOCAL_REPO_TRACKING_ARG,
+                    "-s",
+                    "settings.xml",
+                    "-Djacoco.skip=true",
+                    "-pl",
+                    "app",
+                    "-am",
+                    "clean",
+                    goal
+                ]
             );
         }
     }
@@ -1337,9 +1425,10 @@ mod tests {
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut model = reactor_model();
         model.maven.as_mut().unwrap().projects[0].command = wrapper.to_string_lossy().into_owned();
-        let dirs = build_for_launch(root, &model, &root.join("app"), true, &CancellationToken::new()).unwrap();
+        let dirs = build_for_launch(root, &model, &root.join("app"), true, BuildKind::Build, &CancellationToken::new())
+            .unwrap();
         assert_eq!(
-            dirs,
+            dirs.class_dirs,
             ["app/target/test-classes", "app/target/classes", "middle/target/classes", "lib/target/classes"]
                 .map(|p| root.join(p))
         );
@@ -1348,12 +1437,16 @@ mod tests {
             "mvnw",
             "#!/bin/sh\necho '[ERROR] Kotlin compilation failed: unresolved reference broken' >&2\nexit 1\n",
         );
-        let error = build_for_launch(root, &model, &root.join("app"), false, &CancellationToken::new()).unwrap_err();
-        assert!(error.message.contains("Kotlin compilation failed"), "{}", error.message);
+        let error =
+            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &CancellationToken::new())
+                .unwrap()
+                .failure
+                .unwrap();
+        assert!(error.contains("Kotlin compilation failed"), "{error}");
         let cancel = CancellationToken::new();
         cancel.cancel();
         assert_eq!(
-            build_for_launch(root, &model, &root.join("app"), false, &cancel).unwrap_err().kind,
+            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &cancel).unwrap_err().kind,
             ide_core::error::ErrorKind::Cancelled
         );
     }

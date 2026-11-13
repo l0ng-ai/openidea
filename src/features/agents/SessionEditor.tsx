@@ -1,21 +1,26 @@
 /** An agent task as an editor tab: the conversation, a composer and the task's changed files. */
 import {
+  createContext,
   Fragment,
   memo,
   startTransition,
   useCallback,
+  useContext,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ReactElement,
+  type ReactNode,
   type RefObject,
 } from "react";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
 import type {
   AgentChange,
+  AgentCommit,
   AgentEntry,
   AgentImage,
   AgentLimit,
@@ -26,8 +31,10 @@ import type {
 } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { isSameOrInside } from "@/platform/paths";
 import { basename, relativeDir, useProject } from "@/platform/project";
-import { editorService, notifications, useEditorShown, type EditorInput } from "@/workbench/contributions";
+import { notifications, useEditorShown, type EditorInput } from "@/workbench/contributions";
+import { confirm } from "@/workbench/messages";
 import {
   Button,
   Checkbox,
@@ -40,6 +47,7 @@ import {
   SearchField,
   Spinner,
   T,
+  Tabs,
   Tree,
   copyMenuFor,
   copyText,
@@ -51,8 +59,11 @@ import {
 } from "@/ui";
 import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
-import { TaskStatusIcon } from "./AgentsView";
+import { commitFileDiffData, openDiff, withChain, type DiffData } from "@/features/vcs/diffInput";
+import { repositoryPath } from "@/features/vcs/repositoryPaths";
+import { setChangesOptions, useChangesOptions } from "./changesOptions";
 import { Composer } from "./Composer";
+import { selectionIn } from "./selection";
 import { SubmitButton } from "./SubmitButton";
 import {
   canSend,
@@ -67,6 +78,9 @@ import {
 import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
+import { useAgentSettings } from "./agentSettings";
+import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
+import { useRevealedText } from "./reveal";
 import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
 import {
   commandPrefix,
@@ -95,11 +109,14 @@ import {
   type SubagentEntry,
 } from "./model";
 import {
+  acceptChanges,
   cancelTask,
   stopBackgroundTask,
   loadEntries,
   markVisible,
   refreshChanges,
+  rollbackChanges,
+  scheduleChanges,
   editQueued,
   forkTask,
   rerunFrom,
@@ -124,7 +141,13 @@ export function SessionEditor({ input, docked = false }: { input: EditorInput; d
 function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const task = useAgents((s) => s.tasks.get(id));
   const entries = useAgents((s) => s.entries.get(id));
-  const changes = useAgents((s) => s.changes.get(id));
+  // Grouping needs commits of the task's own: local checkouts keep the flat list.
+  const isolation = useAgents((s) => s.tasks.get(id)?.isolation);
+  const grouped = useChangesOptions((s) => s.groupByCommit) && isolation === "worktree";
+  const sinceStart = useAgents((s) => s.changes.get(id));
+  const review = useAgents((s) => s.groupedChanges.get(id));
+  const changes = grouped ? (review?.uncommitted ?? null) : (sinceStart ?? null);
+  const commits = grouped ? (review?.commits ?? []) : [];
   const project = useProject((s) => s.project);
   const head = useLocalHead(
     task?.isolation === "local" ? task.status : null,
@@ -135,25 +158,41 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const [path, setPath] = useState<string[]>([]);
   const view = path.at(-1) ?? null;
   const viewEntries = useAgents((s) => s.entries.get(entriesKey(id, view)));
+  const loadError = useAgents((s) => s.entryLoads.get(entriesKey(id, view))?.error);
   // Each subagent's card, from its parent's conversation.
   const cards = useAgents(
     useShallow((s) => path.map((sub, i) => findSubagent(s.entries.get(entriesKey(id, path[i - 1] ?? null)), sub))),
   );
+  // Connecting to the project's agents clears what was loaded before: a tab restored with the
+  // project reads its conversation once that is done, not before (#2414).
+  const connected = useAgents((s) => s.loaded);
   useEffect(() => {
+    if (!connected) return;
     // Loaded entries are kept current by the task's events: reopening the tab needn't fetch them again.
     if (!useAgents.getState().entries.has(id)) void loadEntries(id).catch(() => undefined);
     void refreshChanges(id);
-  }, [id]);
+  }, [id, connected]);
+  // A commit in the task's checkout moves its HEAD: pick it up without waiting for the agent.
+  // The watcher reports every repository under the project, so the main checkout and other
+  // tasks' worktrees would otherwise re-read this task's commits for nothing.
+  const cwd = task?.cwd ?? null;
+  useEffect(() => {
+    if (!connected) return;
+    return onIdeEvent("vcsChanged", (e) => {
+      if (!cwd || !isSameOrInside(cwd, e.root)) return;
+      scheduleChanges(id);
+    });
+  }, [id, connected, cwd]);
   // A kept-alive tab stays mounted behind the shown one: it isn't read there, nor searched.
   const shown = useEditorShown();
   useEffect(() => {
     if (shown && (!docked || !changesOpen)) return markVisible(id);
   }, [id, docked, changesOpen, shown]);
   useEffect(() => {
-    if (view && !useAgents.getState().entries.has(entriesKey(id, view))) {
+    if (connected && view && !useAgents.getState().entries.has(entriesKey(id, view))) {
       void loadEntries(id, view).catch(() => undefined);
     }
-  }, [id, view]);
+  }, [id, view, connected]);
   const openSubagent = useCallback((sub: string) => setPath((p) => [...p, sub]), []);
   const [finding, setFinding] = useState(false);
   const [findFocus, setFindFocus] = useState(0);
@@ -181,24 +220,20 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
       }}
     >
       <div className={styles.conversation} hidden={docked && changesOpen}>
-        <Header
-          task={task}
-          changes={changes ?? null}
-          changesOpen={changesOpen}
-          onToggleChanges={() => setChangesOpen(!changesOpen)}
-          docked={docked}
-        />
         {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
-        <Stream
-          key={view ?? ""}
-          task={task}
-          entries={viewEntries ?? null}
-          subagent={view ? (cards.at(-1) ?? null) : null}
-          onOpenSubagent={openSubagent}
-          finding={finding && shown}
-          findFocus={findFocus}
-          onCloseFind={() => setFinding(false)}
-        />
+        <FoldedContent.Provider value={finding && shown}>
+          <Stream
+            key={view ?? ""}
+            task={task}
+            entries={viewEntries ?? null}
+            loadError={loadError}
+            subagent={view ? (cards.at(-1) ?? null) : null}
+            onOpenSubagent={openSubagent}
+            finding={finding && shown}
+            findFocus={findFocus}
+            onCloseFind={() => setFinding(false)}
+          />
+        </FoldedContent.Provider>
         {view ? (
           <div className={styles.readOnly}>
             <T>Subagents take their instructions from the agent that started them.</T>
@@ -206,7 +241,16 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
         ) : (
           <>
             <QuestionCard task={task} entries={entries ?? null} />
-            <SessionComposer task={task} entries={entries ?? null} head={head} onOpenSubagent={openSubagent} />
+            <SessionComposer
+              task={task}
+              entries={entries ?? null}
+              head={head}
+              changes={changes ?? null}
+              commits={commits}
+              changesOpen={changesOpen}
+              onToggleChanges={() => setChangesOpen(!changesOpen)}
+              onOpenSubagent={openSubagent}
+            />
           </>
         )}
       </div>
@@ -214,6 +258,8 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
         <ChangesPane
           task={task}
           changes={changes ?? null}
+          commits={commits}
+          grouped={grouped}
           head={head}
           docked={docked}
           onHide={() => setChangesOpen(false)}
@@ -252,58 +298,17 @@ function useLocalHead(status: AgentTask["status"] | null, root: string | null): 
   return local ? head : null;
 }
 
-function Header({
-  task,
-  changes,
-  changesOpen,
-  onToggleChanges,
-  docked,
-}: {
-  task: AgentTask;
-  changes: AgentChange[] | null;
-  changesOpen: boolean;
-  onToggleChanges: () => void;
-  /** The tool window bar above a docked conversation already shows the title. */
-  docked?: boolean;
-}) {
-  const tx = useTx();
-  const count = changes?.length ?? 0;
+/** The task's terminal, at the end of its status line. */
+function StatusActions({ task }: { task: AgentTask }) {
   return (
-    <div
-      className={styles.header}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        showContextMenu(e, taskMenu([task]));
-      }}
-    >
-      <TaskStatusIcon status={task.status} />
-      {!docked && (
-        <span className={styles.title} title={task.title}>
-          {task.title}
-        </span>
-      )}
-      <span className={styles.headerSpacer} />
+    <span className={styles.statusActions}>
       <IconButton
+        size="small"
         icon="terminal"
-        title="Open in Terminal"
+        title="Terminal"
         onClick={() => void executeAction("terminal.openAt", task.cwd)}
       />
-      {task.status === "archived" && (
-        <IconButton icon="undo" title="Unarchive Task" action="agents.unarchiveTasks" actionArg={[task.id]} />
-      )}
-      <button
-        type="button"
-        className={styles.changesToggle}
-        aria-pressed={changesOpen}
-        disabled={count === 0 && !changesOpen}
-        aria-label={changesOpen ? tx("Hide changes") : tx("Show changes")}
-        title={changesOpen ? tx("Hide changes") : tx("Show changes")}
-        onClick={onToggleChanges}
-      >
-        <Icon name="toolwindow-changes" size={14} />
-        {count > 0 && <span>{count}</span>}
-      </button>
-    </div>
+    </span>
   );
 }
 
@@ -321,12 +326,20 @@ function SessionStatus({
   const project = useProject((s) => s.project);
   const projectName = project?.workspace ? basename(task.projectRoot ?? project.root) : null;
   const where = task.isolation === "worktree" ? branchLabel(task.branch) : null;
+  const pickedModel = task.status !== "archived" && task.config.some((o) => o.category === "model");
   return (
-    <div className={styles.statusBar}>
+    <div
+      className={styles.statusBar}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        showContextMenu(e, taskMenu([task]));
+      }}
+    >
       <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
       <span className={styles.statusText} title={task.cwd}>
         {providerName(task.provider)}
-        {task.model ? ` · ${task.model}` : ""}
+        {/* The composer's model picker shows the model when the agent offers one. */}
+        {task.model && !pickedModel ? ` · ${task.model}` : ""}
         {projectName ? ` · ${projectName}` : ""}
         {" · "}
         {where ?? (
@@ -340,13 +353,14 @@ function SessionStatus({
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
       </span>
       <Meters task={task} entries={entries} />
+      <StatusActions task={task} />
     </div>
   );
 }
 
 /**
  * Context use, usage limits and cost (when the agent reports them) and the time spent on
- * the task, each as Settings › Tools › Agents › Chat allows.
+ * the task, each as Settings › Agents › Chat allows.
  */
 function Meters({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
   const tx = useTx();
@@ -457,9 +471,69 @@ function SubagentBar({
   );
 }
 
+/**
+ * Lets the rows of a long conversation skip rendering while off screen (`data-measured`, see
+ * the CSS), so showing the tab again or restyling it costs what is on screen, not the whole
+ * history. A row skips only once it was laid out: it keeps its real height, and scrolling up
+ * doesn't jump (WebKit has no scroll anchoring). A new width lays them out again once it
+ * settles; Find in Conversation (`enabled` false) needs every row laid out.
+ */
+function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, enabled: boolean) {
+  // The width the marked rows were laid out at.
+  const width = useRef(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const unmark = () => {
+      for (const row of el.querySelectorAll(`:scope > .${styles.conversationRow}[data-measured]`)) {
+        row.removeAttribute("data-measured");
+      }
+    };
+    if (!enabled) return unmark();
+    if (!visible) return;
+    let frame = 0;
+    let timer: number | undefined;
+    const mark = () => {
+      cancelAnimationFrame(frame);
+      // The next frame lays the new rows out (and remembers their size); mark them after it.
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          for (const row of el.querySelectorAll(`:scope > .${styles.conversationRow}:not([data-measured])`)) {
+            row.setAttribute("data-measured", "");
+          }
+        });
+      });
+    };
+    const remeasure = () => {
+      if (el.clientWidth === width.current) return;
+      width.current = el.clientWidth;
+      unmark();
+    };
+    remeasure();
+    mark();
+    const rows = new MutationObserver(mark);
+    rows.observe(el, { childList: true });
+    const resize = new ResizeObserver(() => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        remeasure();
+        mark();
+      }, 200);
+    });
+    resize.observe(el);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+      rows.disconnect();
+      resize.disconnect();
+    };
+  }, [ref, visible, enabled]);
+}
+
 interface StreamProps {
   task: AgentTask;
   entries: AgentEntry[] | null;
+  loadError?: string | null;
   /** The card of the subagent whose conversation this is; `null`: the task's own. */
   subagent: SubagentEntry | null;
   onOpenSubagent: (id: string) => void;
@@ -472,9 +546,19 @@ interface StreamProps {
 /** Entries rendered at a time when a conversation opens at its end. */
 const ENTRY_BATCH = 40;
 
-function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
+function scrollsInside(target: EventTarget | null, root: HTMLElement): boolean {
+  for (let el = target instanceof Element ? target : null; el && el !== root; el = el.parentElement) {
+    if (el.scrollTop <= 0) continue;
+    const overflow = getComputedStyle(el).overflowY;
+    if (overflow === "auto" || overflow === "scroll") return true;
+  }
+  return false;
+}
+
+function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
+  const [openFolds] = useState(() => new Map<string, boolean>());
   const key = entriesKey(task.id, subagent?.id ?? null);
   const positions = useAgents.getState().scrollPositions;
   const position = useRef(positions.get(key) ?? { top: 0, stick: true });
@@ -489,6 +573,30 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   // Keep a process run intact so prepending never replaces the anchored row.
   while (entries && start > 0 && isProcessEntry(entries[start]!) && isProcessEntry(entries[start - 1]!)) start--;
   const dragging = useRef(false);
+  // When the user last scrolled the conversation (wheel, touch, keys, the scrollbar, Find):
+  // that leaves the end. WebKit also moves the offset back on its own while rows lay out,
+  // which comes with a change of the content height; a scroll without one is meant too (the
+  // scrollbar thumb, a jump), whatever moved it.
+  const userScrolled = useRef(-Infinity);
+  const seenHeight = useRef(0);
+  const markUserScroll = useCallback(() => {
+    userScrolled.current = performance.now();
+  }, []);
+  const touchY = useRef<number | null>(null);
+  const scrollingUp = useRef(false);
+  // Release before the browser scrolls: a streamed chunk can arrive before its scroll event.
+  const stopFollowing = useCallback(
+    (target: EventTarget | null) => {
+      const el = ref.current;
+      if (!el || el.scrollHeight <= el.clientHeight || scrollsInside(target, el)) return;
+      scrollingUp.current = true;
+      if (!position.current.stick) return;
+      position.current = { top: el.scrollTop, stick: false };
+      positions.set(key, position.current);
+      setAway(true);
+    },
+    [key, positions],
+  );
   // Earlier entries are prepended above the view: remember where the first painted row is
   // so the content stays put and the scrollbar doesn't jump under the pointer.
   const anchor = useRef<{ el: Element; top: number } | null>(null);
@@ -540,17 +648,28 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   }, [start]);
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
+  useOffscreenRows(ref, visible, !finding);
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
-    if (el && position.current.stick) el.scrollTop = el.scrollHeight;
+    if (el && position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
   }, []);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
     const truncated = entries.length < previousLength.current;
+    // A message the user just sent: back to the end, where it shows, wherever they had scrolled.
+    const sent = previousLength.current > 0 && entries.slice(previousLength.current).some((e) => e.type === "user");
     previousLength.current = entries.length;
+    if (sent && !position.current.stick) {
+      scrollingUp.current = false;
+      position.current = { top: el.scrollTop, stick: true };
+      positions.set(key, position.current);
+      setAway(false);
+      return;
+    }
     if ((truncated || entries.length === 0) && el.scrollHeight - el.scrollTop - el.clientHeight < 40) {
+      scrollingUp.current = false;
       position.current = { top: el.scrollTop, stick: true };
       positions.set(key, position.current);
       setAway(false);
@@ -559,8 +678,9 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
-    if (position.current.stick) el.scrollTop = el.scrollHeight;
-    else if (!restored.current) el.scrollTop = position.current.top;
+    if (position.current.stick) {
+      if (!dragging.current) el.scrollTop = el.scrollHeight;
+    } else if (!restored.current) el.scrollTop = position.current.top;
     restored.current = true;
   });
   useLayoutEffect(() => {
@@ -577,7 +697,7 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
     const el = ref.current;
     if (!el) return;
     const observer = new ResizeObserver(() => {
-      if (position.current.stick) el.scrollTop = el.scrollHeight;
+      if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
     });
     observer.observe(el);
     return () => {
@@ -589,14 +709,13 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const jumpToLatest = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    position.current = { top: el.scrollHeight, stick: true };
+    scrollingUp.current = false;
+    position.current = { top: el.scrollTop, stick: true };
     if (typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     else el.scrollTop = el.scrollHeight;
     setAway(false);
     el.focus({ preventScroll: true });
   }, []);
-  const waiting = entries?.some((e) => e.type === "permission" && !e.chosen);
-  const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   // Forks and undo apply to the task's own turns, not a subagent's conversation.
   const turns = useMemo(() => (entries && !subagent ? turnNumbers(entries) : null), [entries, subagent]);
   const replies = useMemo(() => (entries && !subagent ? replyTurns(entries) : null), [entries, subagent]);
@@ -604,11 +723,16 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const busy = subagent ? subagentWorking(subagent.status) : isBusy(task.status);
   const lastIndex = entries ? entries.length - 1 : -1;
   // Keep the row stable when earlier history is prepended; its author can move with the work.
-  const rows = useMemo(() => (entries ? conversationRows(entries, start) : []), [entries, start]);
+  const { foldTurns, toolCalls } = useAgentSettings();
+  const rows = useMemo(() => {
+    if (!entries) return [];
+    const rows = conversationRows(entries, start, toolCalls === "grouped");
+    return foldTurns && !finding ? foldTurnRows(rows, foldedTurns(entries, start, busy)) : rows;
+  }, [entries, start, busy, foldTurns, toolCalls, finding]);
   const authorHeaders = useMemo(() => {
     const headers = new Set<number>();
     const byAgent = (row: ConversationRow) =>
-      row.kind === "process" ||
+      row.kind !== "entry" ||
       (row.entry.type !== "user" &&
         row.entry.type !== "subagent" &&
         !(row.entry.type === "message" && row.entry.incoming));
@@ -635,85 +759,143 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
     ),
     [task, turns, replies, times, lastIndex, busy, onOpenSubagent, onDiagramDrawn],
   );
+  const renderConversationRow = (row: ConversationRow): ReactNode =>
+    row.kind === "turn" ? (
+      <TurnFold row={row} entries={entries ?? []}>
+        {row.rows.map((inner) => (
+          <div key={inner.index} className={styles.conversationRow}>
+            {renderConversationRow(inner)}
+          </div>
+        ))}
+      </TurnFold>
+    ) : row.kind === "process" ? (
+      <ProcessRun row={row} task={task} lastIndex={lastIndex} busy={busy} onDiagramDrawn={onDiagramDrawn} />
+    ) : (
+      renderRow(row)
+    );
   return (
-    <div className={styles.streamArea}>
-      {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
-      <div
-        ref={ref}
-        // The conversation is read and copied like a document; focusable so ⌘F reaches it.
-        className={clsx(styles.stream, selectableText)}
-        tabIndex={-1}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          position.current = { top: el.scrollTop, stick: el.scrollHeight - el.scrollTop - el.clientHeight < 40 };
-          positions.set(key, position.current);
-          setAway(!position.current.stick);
-          // Reached the top of what is painted: fetch the earlier entries, but only
-          // once the drag has settled.
-          if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
-          if (!position.current.stick && el.scrollTop < 120 && !dragging.current) loadWhenStill();
-        }}
-        // Copy, plus Quote for a selection: replies to it in the composer.
-        onContextMenu={(e) => {
-          const text = selectionIn(e.currentTarget);
-          const items = copyMenuFor(e.target) ?? [];
-          if (text.trim() && task.status !== "archived") {
-            items.push({ kind: "action", action: "agents.quoteReply", label: "Quote", arg: { task: task.id, text } });
-          }
-          if (!items.length) return;
-          e.preventDefault();
-          showContextMenu(e, items);
-        }}
-      >
-        {entries === null ? (
-          <Spinner />
-        ) : (
-          rows.map((row) => (
-            <div
-              key={row.index}
-              className={styles.conversationRow}
-              data-message={
-                (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
-              }
-              data-process={row.kind === "process" || row.entry.type !== "user" || undefined}
-            >
-              {authorHeaders.has(row.index) && (
-                <div className={styles.agentAuthor}>
-                  <div className={styles.role}>
-                    <Icon name={providerIcon(task.provider)} size={13} />
-                    <span>{providerName(task.provider)}</span>
-                  </div>
-                </div>
-              )}
-              {row.kind === "process" ? (
-                <ProcessRun row={row} task={task} lastIndex={lastIndex} busy={busy} renderRow={renderRow} />
-              ) : (
-                renderRow(row)
-              )}
+    <OpenFolds.Provider value={openFolds}>
+      <div className={styles.streamArea}>
+        {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
+        <div
+          ref={ref}
+          // The conversation is read and copied like a document; focusable so ⌘F reaches it.
+          className={clsx(styles.stream, selectableText)}
+          tabIndex={-1}
+          onWheel={(e) => {
+            markUserScroll();
+            if (e.deltaY < 0 && !e.ctrlKey && !e.defaultPrevented) stopFollowing(e.target);
+            else if (e.deltaY > 0 && !e.ctrlKey && !e.defaultPrevented) scrollingUp.current = false;
+          }}
+          onTouchStart={(e) => {
+            touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
+          }}
+          onTouchMove={(e) => {
+            markUserScroll();
+            const y = e.touches.length === 1 ? e.touches[0]!.clientY : null;
+            if (y !== null && touchY.current !== null && y > touchY.current) stopFollowing(e.target);
+            else if (y !== null && touchY.current !== null && y < touchY.current) scrollingUp.current = false;
+            touchY.current = y;
+          }}
+          onKeyDown={(e) => {
+            markUserScroll();
+            if (e.defaultPrevented || (e.target as Element).closest("input, textarea, [contenteditable]")) return;
+            if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home" || (e.key === " " && e.shiftKey))
+              stopFollowing(e.target);
+            else if (e.key === "ArrowDown" || e.key === "PageDown" || e.key === "End" || (e.key === " " && !e.shiftKey))
+              scrollingUp.current = false;
+          }}
+          onPointerDown={() => {
+            markUserScroll();
+            scrollingUp.current = false;
+          }}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+            const laidOut = el.scrollHeight !== seenHeight.current;
+            seenHeight.current = el.scrollHeight;
+            const byUser = dragging.current || performance.now() - userScrolled.current < 500 || !laidOut;
+            const movedDown = el.scrollTop > position.current.top;
+            const stayedAtEnd = position.current.stick && el.scrollTop === position.current.top;
+            const stick =
+              (atEnd && !scrollingUp.current && (movedDown || stayedAtEnd)) || (position.current.stick && !byUser);
+            // Still following: back to the end the offset was moved away from.
+            if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
+            position.current = { top: el.scrollTop, stick };
+            positions.set(key, position.current);
+            setAway(!position.current.stick);
+            // Reached the top of what is painted: fetch the earlier entries, but only
+            // once the drag has settled.
+            if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
+            if (!position.current.stick && el.scrollTop < 120 && !dragging.current) loadWhenStill();
+          }}
+          // Copy, plus Quote for a selection: replies to it in the composer.
+          onContextMenu={(e) => {
+            const text = selectionIn(e.currentTarget);
+            const items = copyMenuFor(e.target) ?? [];
+            if (text.trim() && task.status !== "archived") {
+              items.push({
+                kind: "action",
+                action: "agents.quoteReply",
+                label: "Quote",
+                arg: { task: task.id, text },
+              });
+            }
+            if (!items.length) return;
+            e.preventDefault();
+            showContextMenu(e, items);
+          }}
+        >
+          {loadError && (
+            <div role="alert">
+              <EmptyState
+                title={tx`Couldn't load the conversation: ${loadError}`}
+                actions={
+                  <Button
+                    onClick={() =>
+                      void executeAction("agents.retryConversation", {
+                        task: task.id,
+                        subagent: subagent?.id ?? null,
+                      })
+                    }
+                  >
+                    Retry
+                  </Button>
+                }
+              />
             </div>
-          ))
-        )}
-        {subagent && subagentWorking(subagent.status) && (
-          <div className={styles.working}>
-            <Spinner size={12} />
-            <T>{subagent.status === "needsInput" ? "Waiting for your answer…" : "Working…"}</T>
-            {subagent.startedMs != null && <Elapsed since={subagent.startedMs} />}
-          </div>
-        )}
-        {!subagent && (task.status === "running" || task.status === "starting") && !waiting && (
-          <div className={styles.working}>
-            <Spinner size={12} />
-            {task.retry ? (
-              <Retrying retry={task.retry} />
-            ) : (
-              <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
-            )}
-            {lastUser?.sentMs != null && !lastUser.doneMs && <Elapsed since={lastUser.sentMs} />}
-          </div>
-        )}
+          )}
+          {entries === null ? (
+            !loadError && <Spinner />
+          ) : entries.length === 0 && !busy && !loadError ? (
+            <EmptyState title="No conversation history" />
+          ) : (
+            rows.map((row) => (
+              <div
+                key={row.index}
+                className={styles.conversationRow}
+                data-message={
+                  (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
+                }
+                data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
+              >
+                {authorHeaders.has(row.index) && (
+                  <div className={styles.agentAuthor}>
+                    <div className={styles.role}>
+                      <Icon name={providerIcon(task.provider)} size={13} />
+                      <span>{providerName(task.provider)}</span>
+                    </div>
+                  </div>
+                )}
+                {renderConversationRow(row)}
+              </div>
+            ))
+          )}
+          <WorkingRow task={task} entries={entries} subagent={subagent} />
+        </div>
+        {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
       </div>
-      {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
-    </div>
+    </OpenFolds.Provider>
   );
 }
 
@@ -789,13 +971,6 @@ function Elapsed({ since }: { since: number }) {
   return <span className={styles.muted}>{formatDuration(now - since)}</span>;
 }
 
-/** Text selected in `stream`, or "" when the selection is elsewhere. */
-function selectionIn(stream: HTMLElement): string {
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
-  return stream.contains(sel.getRangeAt(0).commonAncestorContainer) ? sel.toString() : "";
-}
-
 interface RangeSet {
   clear(): void;
   add(range: Range): void;
@@ -862,7 +1037,11 @@ function FindBar({
     };
     update();
     const observer = new MutationObserver(update);
-    observer.observe(stream, { subtree: true, childList: true, characterData: true });
+    observer.observe(stream, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
@@ -966,6 +1145,108 @@ const TOOL_ICONS: Record<string, string> = {
 };
 
 /** Memoized: the earlier entries rendered behind a reopened conversation leave the rest alone. */
+function AgentMessage({
+  task,
+  text,
+  turnCount,
+  reply,
+  time,
+  working,
+  onDiagramDrawn,
+}: {
+  task: AgentTask;
+  text: string;
+  turnCount: number;
+  reply?: ReplyTurn;
+  time?: ReplyTimes | null;
+  /** The reply streams: its text is revealed at a pace. */
+  working: boolean;
+  onDiagramDrawn: () => void;
+}) {
+  const { smoothText } = useAgentSettings();
+  const shown = useRevealedText(text, working && smoothText);
+  // The revealed text grows the conversation between its renders: keep following the end.
+  useLayoutEffect(() => {
+    if (working) onDiagramDrawn();
+  }, [shown, working, onDiagramDrawn]);
+  return (
+    <div className={styles.agentMessage}>
+      <div className={styles.agentCard}>
+        <AgentReply
+          text={shown}
+          cwd={task.cwd}
+          task={task}
+          reply={reply}
+          turnCount={turnCount}
+          onDiagramDrawn={onDiagramDrawn}
+          actions={false}
+        />
+      </div>
+      {/* Only a turn's final reply carries its time and actions, once the turn has ended. */}
+      {reply && !(isBusy(task.status) && reply.turn === turnCount - 1) && (
+        <div className={styles.messageFooter}>
+          <MessageTime sentMs={time?.sentMs ?? null} doneMs={time?.doneMs ?? null} at="done" />
+          <ReplyActions text={text} task={task} reply={reply} turnCount={turnCount} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The first line of reasoning, without its Markdown emphasis: what a folded thought was about. */
+export function thoughtPreview(text: string): string {
+  const line = text.split("\n").find((l) => l.trim()) ?? "";
+  return line
+    .replace(/^\s*(#+\s*|[-*]\s+)?/, "")
+    .replace(/[*_`]+/g, "")
+    .trim();
+}
+
+/** The agent's reasoning: open while it streams, folded after, as Settings › Agents › Chat says. */
+function ThoughtEntry({
+  task,
+  text,
+  working,
+  onDiagramDrawn,
+}: {
+  task: AgentTask;
+  text: string;
+  working: boolean;
+  onDiagramDrawn: () => void;
+}) {
+  const { thinking, smoothText } = useAgentSettings();
+  const open = thinking === "expanded" || (thinking === "auto" && working);
+  // Streaming reasoning in view is revealed at the reply's pace; folded, nothing is painted.
+  const shown = useRevealedText(text, working && smoothText && open);
+  useLayoutEffect(() => {
+    if (working && open) onDiagramDrawn();
+  }, [shown, working, open, onDiagramDrawn]);
+  return (
+    <div className={styles.process}>
+      <Fold
+        className={clsx(styles.thought, thinking === "auto" && working && styles.thoughtLive)}
+        open={open}
+        summary={
+          <summary>
+            <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
+            {working ? (
+              <span className={styles.shimmer}>
+                <T>Thinking</T>
+              </span>
+            ) : (
+              <span className={styles.thoughtPreview}>{thoughtPreview(text) || <T>Reasoning</T>}</span>
+            )}
+          </summary>
+        }
+      >
+        <div className={styles.thoughtBody}>
+          <Markdown text={shown} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
+        </div>
+      </Fold>
+    </div>
+  );
+}
+
 const Entry = memo(function Entry({
   task,
   entry,
@@ -994,42 +1275,18 @@ const Entry = memo(function Entry({
       return <UserMessage task={task} entry={entry} turn={turn} turnCount={turnCount} />;
     case "agent":
       return (
-        <div className={styles.agentMessage}>
-          <div className={styles.agentCard}>
-            <AgentReply
-              text={entry.text}
-              cwd={task.cwd}
-              task={task}
-              reply={reply}
-              turnCount={turnCount}
-              onDiagramDrawn={onDiagramDrawn}
-              actions={false}
-            />
-          </div>
-          <div className={styles.messageFooter}>
-            <MessageTime sentMs={time?.sentMs ?? null} doneMs={time?.doneMs ?? null} at="done" />
-            <ReplyActions text={entry.text} task={task} reply={reply} turnCount={turnCount} />
-          </div>
-        </div>
+        <AgentMessage
+          task={task}
+          text={entry.text}
+          turnCount={turnCount}
+          reply={reply}
+          time={time}
+          working={working}
+          onDiagramDrawn={onDiagramDrawn}
+        />
       );
     case "thought":
-      return (
-        <div className={styles.process}>
-          <details className={styles.thought}>
-            <summary>
-              {working ? (
-                <Spinner size={12} />
-              ) : (
-                <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
-              )}
-              <T>{working ? "Thinking" : "Reasoning"}</T>
-            </summary>
-            <div className={styles.thoughtBody}>
-              <Markdown text={entry.text} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
-            </div>
-          </details>
-        </div>
-      );
+      return <ThoughtEntry task={task} text={entry.text} working={working} onDiagramDrawn={onDiagramDrawn} />;
     case "tool":
       return <ToolEntry task={task} entry={entry} />;
     case "plan":
@@ -1077,7 +1334,8 @@ const Entry = memo(function Entry({
         </div>
       );
     case "permission":
-      return <PermissionLine task={task} entry={entry} />;
+      // Waiting for an answer, it is asked above the composer; the conversation keeps the record.
+      return entry.chosen || entry.questions?.length ? <PermissionLine task={task} entry={entry} /> : null;
     case "error":
       return (
         <div className={styles.error} role="alert">
@@ -1131,26 +1389,8 @@ function UserMessage({
   const files = entry.attachments.slice(0, entry.attachments.length - images.length);
   return (
     <div className={clsx(styles.message, styles.userMessage)}>
+      {/* Actions and the time sit beside the author on hover: the reply under it has the turn's duration. */}
       <div className={styles.messageHead}>
-        <span className={styles.role}>
-          <T>You</T>
-        </span>
-      </div>
-      <div className={styles.user}>
-        <MessageText text={entry.text} />
-        <ImageStrip images={images} />
-        {files.length > 0 && (
-          <div className={styles.attachments}>
-            {files.map((a, i) => (
-              <span key={i} className={styles.attachment}>
-                <Icon name={fileIconName(a)} size={12} />
-                {a}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-      <div className={styles.messageFooter}>
         <MessageActions>
           <IconButton size="small" icon="copy" title="Copy" onClick={() => void copyText(entry.text)} />
           {inPlace && entry.text && (
@@ -1160,6 +1400,7 @@ function UserMessage({
             <IconButton
               size="small"
               icon="diff-revert"
+              iconSize={14}
               title="Retract Message"
               action="agents.retractMessage"
               actionArg={{ task: task.id, turn }}
@@ -1181,12 +1422,29 @@ function UserMessage({
             <IconButton
               size="small"
               icon="branch"
-              title="Copy to a New Task From Here"
-              onClick={() => void forkTask(task.id, turn + 1).catch(failed("Couldn't copy the task"))}
+              title="Fork"
+              onClick={() => void forkTask(task.id, turn + 1).catch(failed("Couldn't fork the task"))}
             />
           )}
         </MessageActions>
-        <MessageTime sentMs={entry.sentMs ?? null} doneMs={entry.doneMs ?? null} />
+        <MessageTime sentMs={entry.sentMs ?? null} doneMs={null} />
+        <span className={styles.role}>
+          <T>You</T>
+        </span>
+      </div>
+      <div className={styles.user}>
+        <MessageText text={entry.text} />
+        <ImageStrip images={images} />
+        {files.length > 0 && (
+          <div className={styles.attachments}>
+            {files.map((a, i) => (
+              <span key={i} className={styles.attachment}>
+                <Icon name={fileIconName(a)} size={12} />
+                {a}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1222,7 +1480,11 @@ function MessageEditor({
       await onSend(text.trim(), images);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      notifications().notify({ level: "error", title: "Couldn't send the message", body: String(e) });
+      notifications().notify({
+        level: "error",
+        title: "Couldn't send the message",
+        body: String(e),
+      });
     } finally {
       pending.current = false;
       setSending(false);
@@ -1322,21 +1584,27 @@ type IndexedEntry = { index: number; entry: AgentEntry };
 /** A row of the conversation: an entry, or a run of reasoning/tool calls folded together. */
 type ConversationRow =
   | { kind: "entry"; index: number; entry: AgentEntry }
-  | { kind: "process"; index: number; entries: IndexedEntry[] };
+  | { kind: "process"; index: number; entries: IndexedEntry[] }
+  /** A finished turn's work before its reply, folded into one line under its message. */
+  | { kind: "turn"; index: number; turn: FoldedTurn; rows: ConversationRow[] };
 
 type EntryRow = Extract<ConversationRow, { kind: "entry" }>;
 
 const liveTool = (entry: AgentEntry) =>
   entry.type === "tool" && (entry.status === "running" || entry.status === "pending");
 
-/** Reasoning and finished tool calls fold together; a running tool stays visible on its own. */
-const isProcessEntry = (entry: AgentEntry) => entry.type === "thought" || (entry.type === "tool" && !liveTool(entry));
+/**
+ * Reasoning and tool calls fold together, running ones included: the run keeps its place while
+ * a call finishes, and its summary line says what is running.
+ */
+const isProcessEntry = (entry: AgentEntry) => entry.type === "thought" || entry.type === "tool";
 
 /**
  * The conversation's rows from `from`: a run of reasoning and finished tool calls becomes
  * one folded row (the work behind a decision), so messages and decisions stay readable.
  */
-export function conversationRows(entries: readonly AgentEntry[], from: number): ConversationRow[] {
+export function conversationRows(entries: readonly AgentEntry[], from: number, group = true): ConversationRow[] {
+  if (!group) return entries.slice(from).map((entry, i) => ({ kind: "entry", index: from + i, entry }));
   const rows: ConversationRow[] = [];
   let run: IndexedEntry[] = [];
   const flush = () => {
@@ -1355,54 +1623,196 @@ export function conversationRows(entries: readonly AgentEntry[], from: number): 
   return rows;
 }
 
+/** `rows` with the work of each turn in `turns` (keyed by its message) folded into one row. */
+export function foldTurnRows(rows: ConversationRow[], turns: ReadonlyMap<number, FoldedTurn>): ConversationRow[] {
+  if (!turns.size) return rows;
+  const out: ConversationRow[] = [];
+  let open: Extract<ConversationRow, { kind: "turn" }> | null = null;
+  for (const row of rows) {
+    if (open && row.index < open.turn.reply) {
+      open.rows.push(row);
+      continue;
+    }
+    open = null;
+    out.push(row);
+    const turn = row.kind === "entry" ? turns.get(row.index) : undefined;
+    if (turn) {
+      open = { kind: "turn", index: row.index + 1, turn, rows: [] };
+      out.push(open);
+    }
+  }
+  return out;
+}
+
+/** "Edited 2 files · Read 4 files": what a run of work did; "Reasoning" when it only thought. */
+function workSummaryText(work: WorkSummary, tx: ReturnType<typeof useTx>, toolCalls: number): string[] {
+  const parts = workParts(work).map((p) => tx(p.text).replace("{count}", String(p.count)));
+  if (!parts.length && toolCalls) parts.push(`${toolCalls} ${tx(toolCalls === 1 ? "tool call" : "tool calls")}`);
+  if (!parts.length && work.thoughts) parts.push(tx("Reasoning"));
+  return parts;
+}
+
+/** A finished turn's work, folded under its message: one line saying what it did and for how long. */
+function TurnFold({
+  row,
+  entries,
+  children,
+}: {
+  row: Extract<ConversationRow, { kind: "turn" }>;
+  entries: readonly AgentEntry[];
+  children: ReactNode;
+}) {
+  const tx = useTx();
+  const { turn } = row;
+  const work = summarizeWork(entries.slice(turn.user + 1, turn.reply));
+  const parts = workSummaryText(work, tx, 0);
+  const messages = entries.slice(turn.user + 1, turn.reply).filter((e) => e.type === "agent").length;
+  if (messages) parts.push(tx(messages === 1 ? "1 message" : "{count} messages").replace("{count}", String(messages)));
+  const took = turn.sentMs != null && turn.doneMs != null ? formatDuration(turn.doneMs - turn.sentMs) : null;
+  return (
+    <Fold
+      id={`turn:${turn.user}`}
+      className={clsx(styles.turnFold, styles.process)}
+      summary={
+        <summary className={styles.processSummary}>
+          <Icon name="chevron-right" size={12} className={styles.processChevron} />
+          <span className={styles.processParts}>{parts.join(" · ")}</span>
+          {work.added > 0 && <span className={styles.added}>+{work.added}</span>}
+          {work.removed > 0 && <span className={styles.removed}>−{work.removed}</span>}
+          {took && <span className={styles.muted}>{took}</span>}
+        </summary>
+      }
+    >
+      <div className={styles.turnBody}>{children}</div>
+    </Fold>
+  );
+}
+
 /** Reasoning and tool calls between messages, folded into one row. */
 const ProcessRun = memo(function ProcessRun({
   row,
   task,
   lastIndex,
   busy,
-  renderRow,
+  onDiagramDrawn,
 }: {
   row: Extract<ConversationRow, { kind: "process" }>;
   task: AgentTask;
   lastIndex: number;
   busy: boolean;
-  /** Renders one non-folded row (a reasoning entry). */
-  renderRow: (row: EntryRow) => ReactElement;
+  onDiagramDrawn: () => void;
 }) {
   const tx = useTx();
   const tools = row.entries.filter(
     (item): item is IndexedEntry & { entry: ToolEntryData } => item.entry.type === "tool",
   );
-  const reasoning = row.entries.filter(({ entry }) => entry.type === "thought").length;
-  const added = tools.reduce((n, { entry }) => n + entry.diffs.reduce((sum, d) => sum + d.added, 0), 0);
-  const removed = tools.reduce((n, { entry }) => n + entry.diffs.reduce((sum, d) => sum + d.removed, 0), 0);
+  const work = summarizeWork(row.entries.map(({ entry }) => entry));
+  const { added, removed } = work;
   const working = busy && row.entries.some(({ index }) => index === lastIndex);
-  const parts = [
-    reasoning > 0 ? tx("Reasoning") : null,
-    tools.length > 0 ? `${tools.length} ${tx(tools.length === 1 ? "tool call" : "tool calls")}` : null,
-  ].filter(Boolean);
+  const parts = workSummaryText(work, tx, tools.length);
+  // What the run is doing now: the call still running, or the reasoning it ends with.
+  const live = [...tools].reverse().find(({ entry }) => liveTool(entry))?.entry;
+  const last = row.entries.at(-1)!.entry;
+  const current = live
+    ? shortTitle(task, live.title || live.kind)
+    : working && last.type === "thought"
+      ? tx("Thinking")
+      : null;
+  // While the run grows, its open body follows the latest call unless scrolled up.
+  const body = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
+  useLayoutEffect(() => {
+    const el = body.current;
+    if (el && working && following.current) el.scrollTop = el.scrollHeight;
+  });
   return (
-    <details className={clsx(styles.processRun, styles.process)}>
-      <summary className={styles.processSummary}>
-        <Icon name="chevron-right" size={12} className={styles.processChevron} />
-        {working && <Spinner size={12} />}
-        <span>{parts.join(" · ")}</span>
-        {added > 0 && <span className={styles.added}>+{added}</span>}
-        {removed > 0 && <span className={styles.removed}>−{removed}</span>}
-      </summary>
-      <div className={styles.processBody}>
+    <Fold
+      id={`run:${row.index}`}
+      className={clsx(styles.processRun, styles.process)}
+      summary={
+        <summary className={styles.processSummary}>
+          <Icon name="chevron-right" size={12} className={styles.processChevron} />
+          <span className={clsx(styles.processParts, (working || live) && styles.shimmer)}>{parts.join(" · ")}</span>
+          {added > 0 && <span className={styles.added}>+{added}</span>}
+          {removed > 0 && <span className={styles.removed}>−{removed}</span>}
+          {current && <span className={clsx(styles.processCurrent, styles.shimmer)}>{current}</span>}
+        </summary>
+      }
+    >
+      <div
+        ref={body}
+        className={styles.processBody}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        }}
+      >
         {row.entries.map(({ index, entry }) =>
           entry.type === "tool" ? (
             <ToolEntry key={index} task={task} entry={entry} />
-          ) : (
-            renderRow({ kind: "entry", index, entry })
-          ),
+          ) : entry.type === "thought" ? (
+            <ThoughtEntry
+              key={index}
+              task={task}
+              text={entry.text}
+              working={busy && index === lastIndex}
+              onDiagramDrawn={onDiagramDrawn}
+            />
+          ) : null,
         )}
       </div>
-    </details>
+    </Fold>
   );
 });
+
+/** Set while Find in Conversation is open: folded sections render their content, so it is found. */
+const FoldedContent = createContext(false);
+
+/**
+ * Which keyed folds of a conversation the reader opened. A fold's row can remount (a run
+ * grows from one call to two, a finished turn folds its work away); this keeps it as it was.
+ */
+const OpenFolds = createContext<Map<string, boolean> | null>(null);
+
+/**
+ * A collapsed section that renders its content only once opened: most of a long conversation
+ * stays folded, and keeping it out of the DOM keeps showing and restyling the tab cheap.
+ */
+function Fold({
+  id,
+  className,
+  open,
+  summary,
+  children,
+}: {
+  /** Remembers whether the reader opened it across remounts (`OpenFolds`). */
+  id?: string;
+  className?: string;
+  open?: boolean;
+  summary: ReactElement;
+  children: ReactNode;
+}) {
+  const always = useContext(FoldedContent);
+  const remembered = useContext(OpenFolds);
+  const [expanded, setExpanded] = useState(() => !!open || (!!id && !!remembered?.get(id)));
+  return (
+    <details
+      className={className}
+      open={open || (!!id && expanded) || undefined}
+      onToggle={(e) => {
+        const now = e.currentTarget.open;
+        setExpanded(now);
+        if (id && remembered) {
+          if (now) remembered.set(id, true);
+          else remembered.delete(id);
+        }
+      }}
+    >
+      {summary}
+      {(expanded || open || always) && children}
+    </details>
+  );
+}
 
 const ToolEntry = memo(function ToolEntry({
   task,
@@ -1411,10 +1821,11 @@ const ToolEntry = memo(function ToolEntry({
   task: AgentTask;
   entry: Extract<AgentEntry, { type: "tool" }>;
 }) {
+  const { expandToolOutput } = useAgentSettings();
   const head = (
     <>
       <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} />
-      <span className={styles.toolTitle} title={entry.title || entry.kind}>
+      <span className={clsx(styles.toolTitle, liveTool(entry) && styles.shimmer)} title={entry.title || entry.kind}>
         {shortTitle(task, entry.title || entry.kind)}
       </span>
       {entry.diffs.map((d) => (
@@ -1431,7 +1842,6 @@ const ToolEntry = memo(function ToolEntry({
           <span className={styles.added}>+{d.added}</span> <span className={styles.removed}>−{d.removed}</span>
         </button>
       ))}
-      {(entry.status === "running" || entry.status === "pending") && <Spinner size={12} />}
       {entry.status === "failed" && <Icon name="error" size={12} />}
     </>
   );
@@ -1443,13 +1853,18 @@ const ToolEntry = memo(function ToolEntry({
     );
   return (
     <div className={styles.process}>
-      <details className={styles.toolDetails} open={liveTool(entry) || undefined}>
-        <summary className={styles.tool}>
-          <Icon name="chevron-right" size={12} className={styles.toolChevron} />
-          {head}
-        </summary>
+      <Fold
+        className={styles.toolDetails}
+        open={liveTool(entry) || expandToolOutput}
+        summary={
+          <summary className={styles.tool}>
+            <Icon name="chevron-right" size={12} className={styles.toolChevron} />
+            {head}
+          </summary>
+        }
+      >
         <pre className={styles.output}>{entry.output}</pre>
-      </details>
+      </Fold>
     </div>
   );
 });
@@ -1532,22 +1947,30 @@ function SubagentCard({
         </div>
       )}
       {entry.prompt && (
-        <details className={styles.subagentSection}>
-          <summary>
-            <T>Task</T>
-          </summary>
+        <Fold
+          className={styles.subagentSection}
+          summary={
+            <summary>
+              <T>Task</T>
+            </summary>
+          }
+        >
           <div className={styles.thoughtText}>{entry.prompt}</div>
-        </details>
+        </Fold>
       )}
       {entry.reply && (
-        <details className={styles.subagentSection}>
-          <summary>
-            <T>Result</T>
-          </summary>
+        <Fold
+          className={styles.subagentSection}
+          summary={
+            <summary>
+              <T>Result</T>
+            </summary>
+          }
+        >
           <div className={styles.subagentReply}>
             <AgentReply text={entry.reply} cwd={task.cwd} task={task} onDiagramDrawn={onDiagramDrawn} />
           </div>
-        </details>
+        </Fold>
       )}
     </div>
   );
@@ -1713,7 +2136,7 @@ const isRecommended = (label: string) => label.endsWith(RECOMMENDED_SUFFIX);
 
 const plainLabel = (label: string) => (isRecommended(label) ? label.slice(0, -RECOMMENDED_SUFFIX.length) : label);
 
-/** An open `AskUserQuestion` request, as a card above the composer that answers all its questions at once. */
+/** An open `AskUserQuestion` request, as a card above the composer; one question at a time. */
 function QuestionCard({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
   const entry = entries?.find(
     (candidate): candidate is PermissionEntry =>
@@ -1736,10 +2159,23 @@ function QuestionForm({
   const [answers, setAnswers] = useState<QuestionAnswer[]>(() =>
     questions.map((question) => ({ question, picked: [], other: null })),
   );
-  const [focusedPosition, setFocusedPosition] = useState(0);
-  const [hovered, setHovered] = useState<{ position: number; label: string } | null>(null);
+  const [position, setPosition] = useState(0);
+  const [hovered, setHovered] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const questionPrefix = useId();
+  const panelsRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Paging with the buttons lands the keyboard focus on the question itself.
+  const focusPanel = useRef(false);
+  const multiple = answers.length > 1;
   const complete = answers.every(isAnswered);
+  const questionId = (part: string, index: number) => `${questionPrefix}-${part}-${index}`;
+  useEffect(() => {
+    if (panelsRef.current) panelsRef.current.scrollTop = 0;
+    if (!focusPanel.current) return;
+    focusPanel.current = false;
+    panelRef.current?.focus();
+  }, [position]);
   const send = (option: string) => {
     setBusy(true);
     void respond(task.id, entry.id, option).finally(() => setBusy(false));
@@ -1770,11 +2206,17 @@ function QuestionForm({
       answer.question.multiSelect ? { ...answer, other: checked ? "" : null } : { ...answer, picked: [], other: "" },
     );
   const chooseByNumber = (number: number) => {
-    const answer = answers[focusedPosition];
+    const answer = answers[position];
     if (!answer) return;
     const option = answer.question.options[number - 1];
     if (option) choose(answer, option.label, !answer.picked.includes(option.label));
     else if (number === answer.question.options.length + 1) chooseOther(answer, answer.other === null);
+  };
+  const goTo = (next: number, moveFocus = false) => {
+    if (next < 0 || next >= answers.length) return;
+    focusPanel.current = moveFocus;
+    setPosition(next);
+    setHovered(null);
   };
   return (
     <form
@@ -1793,142 +2235,189 @@ function QuestionForm({
         }
       }}
     >
-      {answers.map((answer, position) => {
-        const { question } = answer;
-        const group = `question-${entry.id}-${position}`;
-        const hasPreviews = question.options.some((option) => option.preview);
-        const targetLabel =
-          (hovered?.position === position ? hovered.label : undefined) ??
-          answer.picked[0] ??
-          (answer.other !== null ? group : undefined);
-        const previewed =
-          targetLabel === undefined
-            ? question.options.find((option) => option.preview)
-            : question.options.find((option) => option.label === targetLabel);
-        const choices = [
-          ...question.options.map((option) => ({
-            key: option.label,
-            checked: answer.picked.includes(option.label),
-            onChange: (checked: boolean) => choose(answer, option.label, checked),
-            label: (
-              <span className={styles.questionOptionText}>
-                <span className={styles.questionLabel}>
-                  {plainLabel(option.label)}
-                  {isRecommended(option.label) && (
-                    <span className={styles.questionTag}>
-                      <T>Recommended</T>
-                    </span>
-                  )}
+      {multiple && (
+        <div inert={busy}>
+          <Tabs
+            variant="compact"
+            layout="squeeze"
+            aria-label={entry.title}
+            panelIdPrefix={questionPrefix}
+            activeId={String(position)}
+            onSelect={(id) => {
+              if (!busy) goTo(Number(id));
+            }}
+            items={answers.map((item, index) => ({
+              id: String(index),
+              label: <span>{item.question.header?.trim() || item.question.question}</span>,
+              text: item.question.header?.trim() || item.question.question,
+              tooltip: item.question.question,
+              trailing: isAnswered(item) ? (
+                <Icon name="check" size={12} className={styles.questionTabCheck} />
+              ) : undefined,
+            }))}
+          />
+        </div>
+      )}
+      {/* All questions stay mounted in one grid cell, so the card keeps the tallest one's height. */}
+      <div ref={panelsRef} className={clsx(styles.questionPanels, multiple && styles.questionPanelsPaged)}>
+        {answers.map((item, index) => {
+          const current = index === position;
+          const group = questionId("group", index);
+          const hasPreviews = item.question.options.some((option) => option.preview);
+          const targetLabel = (current ? hovered : null) ?? item.picked[0] ?? (item.other !== null ? group : undefined);
+          const previewed =
+            targetLabel === undefined
+              ? item.question.options.find((option) => option.preview)
+              : item.question.options.find((option) => option.label === targetLabel);
+          const choices = [
+            ...item.question.options.map((option) => ({
+              key: option.label,
+              checked: item.picked.includes(option.label),
+              onChange: (checked: boolean) => choose(item, option.label, checked),
+              label: (
+                <span className={styles.questionOptionText}>
+                  <span className={styles.questionLabel}>
+                    {plainLabel(option.label)}
+                    {isRecommended(option.label) && (
+                      <span className={styles.questionTag}>
+                        <T>Recommended</T>
+                      </span>
+                    )}
+                  </span>
+                  {option.description && <span className={styles.questionDescription}>{option.description}</span>}
                 </span>
-                {option.description && <span className={styles.questionDescription}>{option.description}</span>}
-              </span>
-            ),
-          })),
-          {
-            key: group,
-            checked: answer.other !== null,
-            onChange: (checked: boolean) => chooseOther(answer, checked),
-            label: (
-              <span className={styles.questionLabel}>
-                <T>Other</T>
-              </span>
-            ),
-          },
-        ];
-        return (
-          <fieldset
-            key={group}
-            className={styles.question}
-            disabled={busy}
-            onFocus={() => setFocusedPosition(position)}
-          >
-            <legend className={styles.questionText}>
-              {question.header && <span className={styles.questionTag}>{question.header}</span>}
-              {question.question}
-            </legend>
-            <div className={clsx(styles.questionBody, hasPreviews && styles.questionBodyWithPreview)}>
-              <div className={styles.questionChoices}>
-                {choices.map((choice, index) => {
-                  const label = (
-                    <span className={styles.questionChoice}>
-                      {choice.label}
-                      <span className={styles.questionKey}>{index + 1}</span>
-                    </span>
-                  );
-                  return (
-                    <div
-                      key={choice.key}
-                      onMouseEnter={() => setHovered({ position, label: choice.key })}
-                      onMouseLeave={() => setHovered(null)}
-                    >
-                      {question.multiSelect ? (
-                        <Checkbox
-                          className={styles.questionOption}
-                          checked={choice.checked}
-                          label={label}
-                          onChange={choice.onChange}
-                        />
-                      ) : (
-                        <Radio
-                          className={styles.questionOption}
-                          name={group}
-                          checked={choice.checked}
-                          label={label}
-                          onChange={() => choice.onChange(true)}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-                {answer.other !== null && (
-                  <Input
-                    autoFocus
-                    className={styles.questionOther}
-                    value={answer.other}
-                    placeholder="Type your answer"
-                    onChange={(event) => update(answer, { ...answer, other: event.target.value })}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape" && answer.other) {
-                        event.stopPropagation();
-                        update(answer, { ...answer, other: "" });
-                      }
-                    }}
-                  />
-                )}
-              </div>
-              {hasPreviews && (
-                <div className={styles.questionPreview}>
-                  {[...question.options, null].map((option) => {
-                    const active = option === (previewed ?? null);
-                    return (
-                      <div
-                        key={option?.label ?? group}
-                        className={clsx(styles.questionPreviewItem, active && styles.questionPreviewActive)}
-                        aria-hidden={!active}
-                      >
-                        <span className={styles.questionPreviewCaption}>
-                          {option ? plainLabel(option.label) : <T>Other</T>}
+              ),
+            })),
+            {
+              key: group,
+              checked: item.other !== null,
+              onChange: (checked: boolean) => chooseOther(item, checked),
+              label: (
+                <span className={styles.questionLabel}>
+                  <T>Other</T>
+                </span>
+              ),
+            },
+          ];
+          return (
+            <div
+              key={group}
+              ref={current ? panelRef : undefined}
+              role={multiple ? "tabpanel" : undefined}
+              id={questionId("panel", index)}
+              aria-labelledby={multiple ? questionId("tab", index) : undefined}
+              aria-hidden={!current}
+              inert={!current}
+              tabIndex={multiple && current ? 0 : -1}
+              className={clsx(styles.questionPanel, !current && styles.questionPanelHidden)}
+            >
+              <fieldset className={styles.question} disabled={busy}>
+                <legend className={styles.questionText}>
+                  {item.question.header && <span className={styles.questionTag}>{item.question.header}</span>}
+                  {item.question.question}
+                </legend>
+                <div className={clsx(styles.questionBody, hasPreviews && styles.questionBodyWithPreview)}>
+                  <div className={styles.questionChoices}>
+                    {choices.map((choice, choiceIndex) => {
+                      const label = (
+                        <span className={styles.questionChoice}>
+                          {choice.label}
+                          <span className={styles.questionKey}>{choiceIndex + 1}</span>
                         </span>
-                        {option?.preview ? (
-                          <pre className={styles.questionPreviewBody}>{option.preview}</pre>
-                        ) : (
-                          <span className={styles.questionPreviewEmpty}>
-                            <T>No preview</T>
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
+                      );
+                      return (
+                        <div
+                          key={choice.key}
+                          onMouseEnter={() => setHovered(choice.key)}
+                          onMouseLeave={() => setHovered(null)}
+                        >
+                          {item.question.multiSelect ? (
+                            <Checkbox
+                              className={styles.questionOption}
+                              checked={choice.checked}
+                              label={label}
+                              onChange={choice.onChange}
+                            />
+                          ) : (
+                            <Radio
+                              className={styles.questionOption}
+                              name={group}
+                              checked={choice.checked}
+                              label={label}
+                              onChange={() => choice.onChange(true)}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                    {item.other !== null && (
+                      <Input
+                        autoFocus
+                        className={styles.questionOther}
+                        value={item.other}
+                        placeholder="Type your answer"
+                        onChange={(event) => update(item, { ...item, other: event.target.value })}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape" && item.other) {
+                            event.stopPropagation();
+                            update(item, { ...item, other: "" });
+                          }
+                        }}
+                      />
+                    )}
+                  </div>
+                  {hasPreviews && (
+                    <div className={styles.questionPreview}>
+                      {[...item.question.options, null].map((option) => {
+                        const shown = option === (previewed ?? null);
+                        return (
+                          <div
+                            key={option?.label ?? group}
+                            className={clsx(styles.questionPreviewItem, shown && styles.questionPreviewActive)}
+                            aria-hidden={!shown}
+                          >
+                            <span className={styles.questionPreviewCaption}>
+                              {option ? plainLabel(option.label) : <T>Other</T>}
+                            </span>
+                            {option?.preview ? (
+                              <pre className={styles.questionPreviewBody}>{option.preview}</pre>
+                            ) : (
+                              <span className={styles.questionPreviewEmpty}>
+                                <T>No preview</T>
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              )}
+              </fieldset>
             </div>
-          </fieldset>
-        );
-      })}
+          );
+        })}
+      </div>
       <div className={styles.questionActions}>
         <Button variant="ghost" disabled={busy} onClick={() => send("reject")}>
           Skip
         </Button>
+        {multiple && (
+          <div className={styles.questionPager}>
+            <Button size="small" disabled={busy || position === 0} onClick={() => goTo(position - 1, true)}>
+              Previous
+            </Button>
+            <span className={styles.questionPage}>
+              {position + 1} / {answers.length}
+            </span>
+            <Button
+              size="small"
+              disabled={busy || position === answers.length - 1}
+              onClick={() => goTo(position + 1, true)}
+            >
+              Next
+            </Button>
+          </div>
+        )}
         <Button type="submit" variant="primary" disabled={busy || !complete}>
           Submit
         </Button>
@@ -1937,17 +2426,199 @@ function QuestionForm({
   );
 }
 
+/**
+ * What needs the user or tells where the agent is, above the composer: an approval it
+ * waits for (answered with 1, 2, 3… when the focus isn't in a text field), the plan, the
+ * task's changes, then what runs and what is queued, and a line saying what it does now.
+ */
+function Tray({
+  task,
+  entries,
+  changes,
+  commits,
+  changesOpen,
+  onToggleChanges,
+  children,
+}: {
+  task: AgentTask;
+  entries: AgentEntry[] | null;
+  changes: AgentChange[] | null;
+  commits: readonly AgentCommit[];
+  changesOpen: boolean;
+  onToggleChanges: () => void;
+  children: ReactNode;
+}) {
+  const tx = useTx();
+  const pending = entries?.find(
+    (e): e is PermissionEntry => e.type === "permission" && !e.chosen && !e.questions?.length,
+  );
+  const plan = entries?.findLast((e): e is Extract<AgentEntry, { type: "plan" }> => e.type === "plan");
+  const [planOpen, setPlanOpen] = useState(false);
+  const done = plan?.items.filter((i) => i.status === "completed").length ?? 0;
+  const planShown = plan && plan.items.length > 0 && done < plan.items.length;
+  const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
+  const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
+  return (
+    <div className={styles.tray}>
+      {pending && <PendingPermission task={task} entry={pending} />}
+      {(planShown || !!changes?.length || !!commits.length) && (
+        <div className={styles.trayStrip}>
+          {planShown && (
+            <button
+              type="button"
+              className={styles.trayChip}
+              aria-expanded={planOpen}
+              onClick={() => setPlanOpen(!planOpen)}
+            >
+              <Icon name="todo" size={13} />
+              {tx`Plan ${done}/${plan.items.length}`}
+            </button>
+          )}
+          {!!changes?.length && (
+            <button type="button" className={styles.trayChip} aria-pressed={changesOpen} onClick={onToggleChanges}>
+              <Icon name="edit" size={13} />
+              {tx(changes.length === 1 ? "1 changed file" : "{count} changed files").replace(
+                "{count}",
+                String(changes.length),
+              )}
+              {added > 0 && <span className={styles.added}>+{added}</span>}
+              {removed > 0 && <span className={styles.removed}>−{removed}</span>}
+            </button>
+          )}
+          {!!commits.length && (
+            <button type="button" className={styles.trayChip} aria-pressed={changesOpen} onClick={onToggleChanges}>
+              <Icon name="commit" size={13} />
+              {tx(commits.length === 1 ? "1 commit" : "{count} commits").replace("{count}", String(commits.length))}
+            </button>
+          )}
+        </div>
+      )}
+      {planShown && planOpen && (
+        <div className={styles.trayPlan}>
+          {plan.items.map((item, i) => (
+            <div
+              key={i}
+              className={clsx(
+                styles.planItem,
+                item.status === "completed" && styles.planDone,
+                item.status === "in_progress" && styles.planCurrent,
+              )}
+            >
+              <Icon
+                name={item.status === "completed" ? "check" : item.status === "in_progress" ? "run" : "minus"}
+                size={12}
+              />
+              {item.content}
+            </div>
+          ))}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The end of the conversation while the agent works on it: what it is doing (starting, working,
+ * retrying the API) and for how long. Hidden while it waits for an approval, which says so itself.
+ */
+function WorkingRow({
+  task,
+  entries,
+  subagent,
+}: {
+  task: AgentTask;
+  entries: AgentEntry[] | null;
+  subagent: SubagentEntry | null;
+}) {
+  if (subagent) {
+    if (!subagentWorking(subagent.status)) return null;
+    return (
+      <div className={styles.working} role="status">
+        <Spinner size={12} />
+        <T>{subagent.status === "needsInput" ? "Waiting for your answer…" : "Working…"}</T>
+        {subagent.startedMs != null && <Elapsed since={subagent.startedMs} />}
+      </div>
+    );
+  }
+  if (task.status !== "running" && task.status !== "starting") return null;
+  if (entries?.some((e) => e.type === "permission" && !e.chosen && !e.questions?.length)) return null;
+  const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
+  return (
+    <div className={styles.working} role="status">
+      <Spinner size={12} />
+      {task.retry ? (
+        <Retrying retry={task.retry} />
+      ) : (
+        <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
+      )}
+      {lastUser?.sentMs != null && !lastUser.doneMs && <Elapsed since={lastUser.sentMs} />}
+    </div>
+  );
+}
+
+/** The approval the agent waits for, with its answers on 1, 2, 3… */
+function PendingPermission({ task, entry }: { task: AgentTask; entry: PermissionEntry }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const shown = useEditorShown();
+  useEffect(() => {
+    if (!shown) return;
+    const onKey = (e: KeyboardEvent) => {
+      const el = ref.current;
+      if (!el || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      // Only while this session holds the focus: keys typed elsewhere never answer for it.
+      if (!target || !el.closest(`.${styles.session}`)?.contains(target)) return;
+      if (target.closest("input, textarea, [contenteditable='true'], .cm-editor")) return;
+      const n = Number(e.key);
+      if (!Number.isInteger(n) || n < 1) return;
+      const button = el.querySelectorAll<HTMLButtonElement>(`.${styles.permissionOption}`)[n - 1];
+      if (!button || button.disabled) return;
+      e.preventDefault();
+      button.click();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [shown]);
+  // Answered, the card goes: the focus it had moves on to the composer.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const area = el?.closest(`.${styles.composerArea}`);
+    return () => {
+      if (!el?.contains(document.activeElement) && document.activeElement !== document.body) return;
+      requestAnimationFrame(() => {
+        if (document.activeElement === document.body || !document.activeElement?.isConnected)
+          area?.querySelector<HTMLElement>("textarea")?.focus({ preventScroll: true });
+      });
+    };
+  }, []);
+  return (
+    <div ref={ref} className={styles.trayAsk}>
+      <PermissionLine task={task} entry={entry} />
+    </div>
+  );
+}
+
 function SessionComposer({
   task,
   entries,
   head,
+  changes,
+  commits,
+  changesOpen,
+  onToggleChanges,
   onOpenSubagent,
 }: {
   task: AgentTask;
   entries: AgentEntry[] | null;
   head: string | null;
+  changes: AgentChange[] | null;
+  commits: readonly AgentCommit[];
+  changesOpen: boolean;
+  onToggleChanges: () => void;
   onOpenSubagent: (id: string) => void;
 }) {
+  const { sendWith, whileRunning } = useAgentSettings();
   const project = useProject((s) => s.project);
   const composer = useAgents((s) => s.composers.get(task.id)) ?? emptyDraft();
   const [sending, setSending] = useState(false);
@@ -1958,18 +2629,33 @@ function SessionComposer({
     () => (entries ?? []).flatMap((e) => (e.type === "user" && e.text ? [e.text] : [])).reverse(),
     [entries],
   );
+  // Only a running turn of an agent that takes messages mid-turn can be steered: otherwise
+  // "now" would cancel the turn, so the message waits for it instead.
+  const steers =
+    whileRunning === "steer" &&
+    !!task.capabilities?.steer &&
+    task.status === "running" &&
+    (composer.images.length === 0 || !!task.capabilities.images);
   const send = (now: boolean) => {
     if (!canSend(composer) || sending || task.status === "archived") return;
     setSending(true);
-    sendMessage(task.id, now)
+    sendMessage(task.id, now && (whileRunning !== "steer" || steers))
       .catch((e: unknown) =>
-        notifications().notify({ level: "error", title: "Couldn't send the message", body: String(e) }),
+        notifications().notify({
+          level: "error",
+          title: "Couldn't send the message",
+          body: String(e),
+        }),
       )
       .finally(() => setSending(false));
   };
   const setOption = (id: string, value: string) =>
     void setTaskConfig(task.id, id, value).catch((e: unknown) =>
-      notifications().notify({ level: "error", title: "Couldn't change the setting", body: String(e) }),
+      notifications().notify({
+        level: "error",
+        title: "Couldn't change the setting",
+        body: String(e),
+      }),
     );
   return (
     <div className={styles.composerArea}>
@@ -1986,12 +2672,31 @@ function SessionComposer({
           />
         </div>
       )}
-      <WorkingSubagents entries={entries} onOpen={onOpenSubagent} />
-      <BackgroundTasks task={task} />
-      {task.queue.length > 0 && <Queue task={task} />}
+      <Tray
+        task={task}
+        entries={entries}
+        changes={changes}
+        commits={commits}
+        changesOpen={changesOpen}
+        onToggleChanges={onToggleChanges}
+      >
+        <WorkingSubagents entries={entries} onOpen={onOpenSubagent} />
+        <BackgroundTasks task={task} />
+        {task.queue.length > 0 && <Queue task={task} />}
+      </Tray>
       <Composer
         id={task.id}
-        placeholder={busy ? "Queue a message for when the agent is done (⌘↵ sends it now)" : "Reply to the agent"}
+        placeholder={
+          !busy
+            ? "Reply to the agent"
+            : steers
+              ? "Send into the agent's turn"
+              : whileRunning === "steer"
+                ? "Queue a message for when the agent is done"
+                : sendWith === "enter"
+                  ? "Queue a message for when the agent is done (⌘↵ sends it now)"
+                  : "Queue a message for when the agent is done (⌘⇧↵ sends it now)"
+        }
         root={task.cwd}
         projectRoot={project?.root ?? task.cwd}
         commands={agentCommands}
@@ -2019,7 +2724,10 @@ function SessionComposer({
 }
 
 /** Messages waiting for the turn to end: send now, edit, or drop. */
-const BACKGROUND_ICON: Record<string, IconName> = { local_bash: "terminal", monitor: "eye" };
+const BACKGROUND_ICON: Record<string, IconName> = {
+  local_bash: "terminal",
+  monitor: "eye",
+};
 
 /** What the agent runs in the background; its subagents show as chips of their own. */
 function BackgroundTasks({ task }: { task: AgentTask }) {
@@ -2027,7 +2735,11 @@ function BackgroundTasks({ task }: { task: AgentTask }) {
   const running = (task.background ?? []).filter((background) => background.kind !== "local_agent");
   if (!running.length) return null;
   const fail = (e: unknown) =>
-    notifications().notify({ level: "error", title: "Couldn't stop the background task", body: String(e) });
+    notifications().notify({
+      level: "error",
+      title: "Couldn't stop the background task",
+      body: String(e),
+    });
   return (
     <div className={styles.background} aria-label={tx("Running in the background")}>
       {running.map((background) => (
@@ -2053,7 +2765,11 @@ function BackgroundTasks({ task }: { task: AgentTask }) {
 
 function Queue({ task }: { task: AgentTask }) {
   const fail = (e: unknown) =>
-    notifications().notify({ level: "error", title: "Couldn't update the queue", body: String(e) });
+    notifications().notify({
+      level: "error",
+      title: "Couldn't update the queue",
+      body: String(e),
+    });
   return (
     <div className={styles.queue} aria-label={tx("Queued messages")}>
       {task.queue.map((q) => (
@@ -2102,7 +2818,10 @@ function useChangesOpen(
   changes: AgentChange[] | null,
   docked: boolean,
 ): [boolean, (open: boolean) => void] {
-  const [state, setState] = useState<{ task: string; open: boolean | undefined }>(() => ({
+  const [state, setState] = useState<{
+    task: string;
+    open: boolean | undefined;
+  }>(() => ({
     task,
     open: docked ? false : loadChangesOpen()[task],
   }));
@@ -2119,22 +2838,202 @@ function useChangesOpen(
   return [chosen ?? (changes?.length ?? 0) > 0, set];
 }
 
+const NO_SELECTION: ReadonlySet<string> = new Set();
+
+/** A row of the Changes pane: a group, a commit, or a file. */
+type ChangeRow =
+  | {
+      key: string;
+      type: "group";
+      label: "Uncommitted" | "Committed";
+      count: number;
+      added: number;
+      removed: number;
+      children: ChangeRow[];
+    }
+  | { key: string; type: "commit"; commit: AgentCommit; children: ChangeRow[] }
+  | { key: string; type: "file"; change: AgentChange; commit?: AgentCommit };
+
+function statsOf(changes: readonly AgentChange[]) {
+  return changes.reduce((n, c) => ({ added: n.added + c.added, removed: n.removed + c.removed }), {
+    added: 0,
+    removed: 0,
+  });
+}
+
+function changeRows(
+  uncommitted: readonly AgentChange[],
+  commits: readonly AgentCommit[],
+  grouped: boolean,
+): ChangeRow[] {
+  if (!grouped) return uncommitted.map((change) => ({ key: change.path, type: "file" as const, change }));
+  const roots: ChangeRow[] = [];
+  if (uncommitted.length) {
+    roots.push({
+      key: "group:uncommitted",
+      type: "group",
+      label: "Uncommitted",
+      count: uncommitted.length,
+      ...statsOf(uncommitted),
+      children: uncommitted.map((change) => ({ key: `uncommitted:${change.path}`, type: "file", change })),
+    });
+  }
+  if (commits.length) {
+    const files = commits.flatMap((commit) => commit.files);
+    roots.push({
+      key: "group:committed",
+      type: "group",
+      label: "Committed",
+      count: commits.length,
+      ...statsOf(files),
+      children: commits.map((commit) => ({
+        key: `commit:${commit.id}`,
+        type: "commit",
+        commit,
+        children: commit.files.map((change) => ({
+          key: `commit:${commit.id}:${change.path}`,
+          type: "file",
+          change,
+          commit,
+        })),
+      })),
+    });
+  }
+  return roots;
+}
+
 function ChangesPane({
   task,
   changes,
+  commits,
+  grouped,
   head,
   docked,
   onHide,
 }: {
   task: AgentTask;
   changes: AgentChange[] | null;
+  commits: readonly AgentCommit[];
+  grouped: boolean;
   head: string | null;
   docked: boolean;
   onHide: () => void;
 }) {
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  // The two views key their rows differently: a selection doesn't carry over.
+  const [selection, setSelection] = useState<{ grouped: boolean; keys: ReadonlySet<string> }>(() => ({
+    grouped,
+    keys: NO_SELECTION,
+  }));
+  const selected = selection.grouped === grouped ? selection.keys : NO_SELECTION;
+  const setSelected = (keys: ReadonlySet<string>) => setSelection({ grouped, keys });
+  const rows = useMemo(() => changeRows(changes ?? [], commits, grouped), [changes, commits, grouped]);
+  // Only the working files roll back; a commit's files are history.
+  const rollbackable = useMemo(() => {
+    const out = new Map<string, AgentChange>();
+    for (const root of rows) {
+      if (root.type === "file") {
+        if (!root.commit) out.set(root.key, root.change);
+        continue;
+      }
+      for (const child of root.children) {
+        if (child.type === "file" && !child.commit) out.set(child.key, child.change);
+      }
+    }
+    return out;
+  }, [rows]);
+  // Selection keys that no longer name a working file (a commit's file, a stale row) don't count.
+  const picked = [...selected].flatMap((key) => rollbackable.get(key) ?? []);
   const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
   const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
+  const rollback = async () => {
+    const count = picked.length || changes?.length || 0;
+    if (!count) return;
+    const ok = await confirm({
+      title: "Rollback Changes",
+      message: (
+        <>
+          <p>
+            {count === 1
+              ? tx`Roll back the changes to ${basename((picked[0] ?? changes![0]!).path)}?`
+              : tx`Roll back the changes to ${count} files?`}
+          </p>
+          <p>
+            {grouped
+              ? tx("They go back to the last commit; changes made after it are lost.")
+              : task.isolation === "worktree"
+                ? tx("They go back to how they were when the task started, in the task's worktree.")
+                : tx(
+                    "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.",
+                  )}
+          </p>
+        </>
+      ),
+      ok: "Rollback",
+      icon: "warning",
+    });
+    if (!ok) return;
+    try {
+      await rollbackChanges(
+        task.id,
+        picked.length ? picked.map((c) => c.relPath) : null,
+        grouped ? "group" : "sinceStart",
+      );
+      setSelected(new Set());
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot roll back the changes"),
+        body: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
+  const accept = async () => {
+    // Accepting brings over the task's whole work, committed or not: grouping only changes the listing.
+    const all =
+      grouped && !picked.length
+        ? await call(commands.agentChanges(task.id)).catch(() => changes ?? [])
+        : (changes ?? []);
+    const targets = picked.length ? picked : all;
+    const count = targets.length;
+    if (!count) return;
+    const name = basename(targets[0]!.path);
+    const ok = await confirm({
+      title: "Accept Changes",
+      message: (
+        <>
+          <p>
+            {count === 1
+              ? tx`Copy the changes to ${name} into the local checkout?`
+              : tx`Copy the changes to ${count} files into the local checkout?`}
+          </p>
+          <p>{tx("They land uncommitted. Files you changed yourself since the task started are left alone.")}</p>
+        </>
+      ),
+      ok: "Accept",
+      icon: "warning",
+    });
+    if (!ok) return;
+    try {
+      const outcome = await acceptChanges(task.id, picked.length ? picked.map((c) => c.relPath) : null);
+      setSelected(new Set());
+      if (outcome.skipped.length) {
+        const skippedNames = outcome.skipped.map((s) => s.path).join(", ");
+        notifications().notify({
+          level: "warning",
+          title: tx("Changes accepted, some files kept"),
+          body: tx`You changed them yourself, accept them by hand: ${skippedNames}.`,
+        });
+      } else {
+        notifications().notify({ level: "info", title: tx("Changes accepted") });
+      }
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot accept the changes"),
+        body: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
   return (
     <aside className={styles.changes} aria-label={tx("Changes")}>
       <div className={styles.changesHeader}>
@@ -2148,12 +3047,47 @@ function ChangesPane({
           </span>
         )}
         <span className={styles.bannerSpacer} />
+        {task.isolation === "worktree" && (
+          <IconButton
+            icon="check"
+            title={picked.length ? "Accept Selected Changes…" : "Accept All Changes…"}
+            disabled={(!changes?.length && !commits.length) || task.status === "starting" || task.status === "running"}
+            onClick={() => void accept()}
+          />
+        )}
+        <IconButton
+          icon="revert"
+          title={picked.length ? "Rollback Selected Changes…" : "Rollback All Changes…"}
+          disabled={!changes?.length || task.status === "starting" || task.status === "running"}
+          onClick={() => void rollback()}
+        />
         <IconButton icon="refresh" title="Refresh" onClick={() => void refreshChanges(task.id)} />
+        {task.isolation === "worktree" && (
+          <IconButton
+            icon="eye"
+            title="View Options"
+            aria-haspopup="menu"
+            onClick={(e) =>
+              showContextMenu(e, [
+                { kind: "header", label: "Group By" },
+                {
+                  id: "groupByCommit",
+                  label: "Commit",
+                  checked: grouped,
+                  run: () => {
+                    setChangesOptions({ groupByCommit: !grouped });
+                    void refreshChanges(task.id);
+                  },
+                },
+              ])
+            }
+          />
+        )}
         {!docked && <IconButton icon="chevron-right" title={tx("Hide changes")} size="small" onClick={onHide} />}
       </div>
-      {(head ?? task.base) && (
+      {(grouped || head || task.base) && (
         <div className={styles.changesSummary}>
-          <T>vs</T> {head ?? task.base}
+          <T>vs</T> {grouped ? "HEAD" : (head ?? task.base)}
           {changes && changes.length > 0 && (
             <>
               {"  "}
@@ -2166,28 +3100,81 @@ function ChangesPane({
         {changes === null ? (
           <Spinner />
         ) : (
-          <Tree<AgentChange>
+          <Tree<ChangeRow>
+            key={grouped ? "grouped" : "flat"}
             aria-label="Changed files"
-            roots={changes}
-            getKey={(c) => c.path}
-            getLabel={(c) => basename(c.path)}
-            getChildren={() => undefined}
-            isExpandable={() => false}
+            roots={rows}
+            getKey={(n) => n.key}
+            getLabel={(n) =>
+              n.type === "file" ? basename(n.change.path) : n.type === "commit" ? n.commit.summary : n.label
+            }
+            getChildren={(n) => (n.type === "file" ? undefined : n.children)}
+            isExpandable={(n) => n.type !== "file" && n.children.length > 0}
+            defaultExpanded={grouped ? ["group:uncommitted", "group:committed"] : undefined}
+            activateExpandable={(n) => n.type === "commit"}
             selected={selected}
-            onSelectionChange={(sel) => setSelected(sel)}
-            onActivate={(c) => void openChangeDiff(task, c.path)}
-            renderNode={(c) => (
-              <span className={styles.change} title={c.relPath}>
-                <Icon name={fileIconName(basename(c.path), c.path)} size={16} />
-                <span className={styles.changeName} style={{ color: KIND_COLOR[c.kind] }}>
-                  {basename(c.path)}
+            onSelectionChange={(sel, lead) => {
+              if (lead?.type === "file" && !lead.commit) setSelected(sel);
+            }}
+            onActivate={(n) => {
+              if (n.type === "file") {
+                if (n.commit) void openCommitDiff(task, n.commit, n.change.path);
+                else if (grouped) void openUncommittedDiff(task, n.change.path);
+                else void openChangeDiff(task, n.change.path);
+              } else if (n.type === "commit") {
+                void openCommitDiff(task, n.commit, n.commit.files[0]?.path ?? "");
+              }
+            }}
+            renderNode={(n) => {
+              if (n.type === "group") {
+                return (
+                  <span className={styles.changeGroup}>
+                    <span className={styles.changeGroupName}>
+                      {n.label === "Uncommitted" ? <T>Uncommitted</T> : <T>Committed</T>}
+                    </span>
+                    <span className={styles.muted}>
+                      {n.label === "Committed"
+                        ? tx(n.count === 1 ? "1 commit" : "{count} commits").replace("{count}", String(n.count))
+                        : `${n.count} ${tx(n.count === 1 ? "file" : "files")}`}
+                    </span>
+                    <span className={styles.changeStat}>
+                      {n.added > 0 && <span className={styles.added}>+{n.added}</span>}{" "}
+                      {n.removed > 0 && <span className={styles.removed}>−{n.removed}</span>}
+                    </span>
+                  </span>
+                );
+              }
+              if (n.type === "commit") {
+                const stats = statsOf(n.commit.files);
+                return (
+                  <span className={styles.changeCommit} title={n.commit.message}>
+                    <Icon name="commit" size={14} />
+                    <span className={styles.changeCommitHash}>{n.commit.shortId}</span>
+                    <span className={styles.changeCommitSummary}>{n.commit.summary}</span>
+                    {n.commit.timeMs != null && (
+                      <span className={styles.changeCommitTime}>{formatSentAt(n.commit.timeMs)}</span>
+                    )}
+                    <span className={styles.changeStat}>
+                      {stats.added > 0 && <span className={styles.added}>+{stats.added}</span>}{" "}
+                      {stats.removed > 0 && <span className={styles.removed}>−{stats.removed}</span>}
+                    </span>
+                  </span>
+                );
+              }
+              return (
+                <span className={styles.change} title={n.change.relPath}>
+                  <Icon name={fileIconName(basename(n.change.path), n.change.path)} size={16} />
+                  <span className={styles.changeName} style={{ color: KIND_COLOR[n.change.kind] }}>
+                    {basename(n.change.path)}
+                  </span>
+                  <span className={styles.changeDir}>{relativeDir(task.cwd, n.change.path)}</span>
+                  <span className={styles.changeStat}>
+                    {n.change.added > 0 && <span className={styles.added}>+{n.change.added}</span>}{" "}
+                    {n.change.removed > 0 && <span className={styles.removed}>−{n.change.removed}</span>}
+                  </span>
                 </span>
-                <span className={styles.changeDir}>{relativeDir(task.cwd, c.path)}</span>
-                <span className={styles.changeStat}>
-                  <span className={styles.added}>+{c.added}</span> <span className={styles.removed}>−{c.removed}</span>
-                </span>
-              </span>
-            )}
+              );
+            }}
             empty={
               <div className={styles.changesEmpty}>
                 <T>No changes yet</T>
@@ -2202,21 +3189,73 @@ function ChangesPane({
 
 /** Opens the diff of `path` between the task's start and now. */
 export async function openChangeDiff(task: AgentTask, path: string) {
-  const base = await call(commands.agentBaseText(task.id, path)).catch(() => null);
+  const changed = (useAgents.getState().changes.get(task.id) ?? []).map((change) => change.path);
+  const paths = changed.includes(path) ? changed : [path];
   const baseLabel = task.base ?? "Base";
   const right = task.isolation === "worktree" ? branchLabel(task.branch) : "Working tree";
-  await editorService().openInput(
-    {
-      kind: "diff",
-      key: `diff:agent:${task.id}:${path}`,
-      path,
-      data: {
-        path,
+  const diffs = await Promise.all(
+    paths.map(async (file): Promise<DiffData> => {
+      const base = await call(commands.agentBaseText(task.id, file)).catch(() => null);
+      return {
+        path: file,
         left: { type: "text", text: base ?? "", label: baseLabel },
-        right: { type: "file", path, label: right },
-        title: `${basename(path)} (${baseLabel} ↔ ${right})`,
-      },
-    },
-    { focus: true },
+        right: { type: "file", path: file, label: right },
+        title: `${basename(file)} (${baseLabel} ↔ ${right})`,
+      };
+    }),
   );
+  await openDiff(withChain(diffs, paths.indexOf(path)));
+}
+
+/** Diff of `path` in the grouped view: `HEAD` ↔ the working file. */
+function uncommittedDiffData(task: AgentTask, change: AgentChange): DiffData {
+  const left: DiffData["left"] =
+    change.kind === "added" || change.kind === "untracked"
+      ? { type: "text", text: "", label: "(does not exist)", absent: true }
+      : {
+          type: "rev",
+          rev: "HEAD",
+          path: change.oldPath ? repositoryPath(task.cwd, change.oldPath) : undefined,
+          label: "HEAD",
+        };
+  const right: DiffData["right"] =
+    change.kind === "deleted"
+      ? { type: "text", text: "", label: "(deleted)", absent: true }
+      : { type: "worktree", label: task.isolation === "worktree" ? branchLabel(task.branch) : "Working tree" };
+  return { path: change.path, left, right };
+}
+
+/** Registration needed before a diff reads revisions inside the task's own worktree. */
+async function ensureTaskRepo(task: AgentTask) {
+  // A worktree is its own repository, outside the project's: `vcs_file_at` reads it only once
+  // it is registered as an external log for this window.
+  if (task.isolation === "worktree") await call(commands.vcsOpenExternalLog(task.cwd)).catch(() => undefined);
+}
+
+/** Opens the diff of `path` among the task's uncommitted files (grouped view). */
+async function openUncommittedDiff(task: AgentTask, path: string) {
+  const changes = useAgents.getState().groupedChanges.get(task.id)?.uncommitted ?? [];
+  const paths = changes.map((change) => change.path);
+  if (!paths.includes(path)) return;
+  await ensureTaskRepo(task);
+  await openDiff(
+    withChain(
+      changes.map((change) => uncommittedDiffData(task, change)),
+      paths.indexOf(path),
+    ),
+  );
+}
+
+/** Opens the diff of one commit (`parent ↔ commit`), starting at `path`. */
+async function openCommitDiff(task: AgentTask, commit: AgentCommit, path: string) {
+  const diffs = commit.files.map((file) =>
+    commitFileDiffData(
+      { id: commit.id, shortId: commit.shortId, parents: commit.parent ? [commit.parent] : [], repo: task.cwd },
+      { path: file.relPath, kind: file.kind, oldPath: file.oldPath },
+    ),
+  );
+  if (!diffs.length) return;
+  await ensureTaskRepo(task);
+  const index = commit.files.findIndex((file) => file.path === path);
+  await openDiff(withChain(diffs, index < 0 ? 0 : index));
 }

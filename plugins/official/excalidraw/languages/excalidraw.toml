@@ -1,6 +1,0 @@
-id = "excalidraw"
-name = "Excalidraw"
-extensions = ["excalidraw"]
-indent = { tab-size = 2, insert-spaces = true }
-ui-mode = "JSON"
-tree-sitter = "json"

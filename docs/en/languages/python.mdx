@@ -1,0 +1,139 @@
+---
+title: "Python"
+description: "Python code intelligence with basedpyright and Ruff, interpreter and virtualenv detection, pytest and Django runs, and debugging with debugpy."
+---
+
+OpenIDEA edits Python through a type-checking language server (basedpyright by default) and, in projects configured for Ruff, the Ruff server next to it. The IDE finds your interpreters and virtualenvs, runs scripts, pytest and Django tests with the project interpreter, and debugs them with debugpy. For other languages, see the [support matrix](/en/languages/index).
+
+## Language server
+
+Python files (`.py`, `.pyi`, `.pyw`, `SConstruct`, `SConscript` and files with a `python` shebang) are served by one type checker at a time, plus Ruff:
+
+| Server       | Role                                                                           | Installed with               |
+| ------------ | ------------------------------------------------------------------------------ | ---------------------------- |
+| basedpyright | Default type checker: completion, navigation, hover, diagnostics, refactorings | pip, in a private virtualenv |
+| Pyright      | Used only while basedpyright is not installed                                  | npm                          |
+| ty           | Used only while neither of the above is installed                              | pip, in a private virtualenv |
+| Pyrefly      | Used only while none of the above is installed                                 | pip, in a private virtualenv |
+| Ruff         | Lint, format, organize imports, fix all                                        | pip, in a private virtualenv |
+
+basedpyright starts in its `standard` type-checking mode instead of its own stricter default. A `[tool.basedpyright]` section in `pyproject.toml` or a `pyrightconfig.json` in the project still wins.
+
+Ruff starts only for files below a Ruff configuration: a `ruff.toml`, a `.ruff.toml`, or a `pyproject.toml` that contains a `[tool.ruff]` table. basedpyright has no formatter, so formatting comes from Ruff.
+
+To pick the type checker yourself, open **Settings › Languages & Frameworks › Language Servers**, select any of the four servers and change **Language server for Python**. **Automatic** uses the first installed one in the order above; you can also choose one server or **None**.
+
+## Setup
+
+### Installing the servers
+
+When you open a Python file and the server is missing, OpenIDEA shows a notification such as **basedpyright is not installed** with an **Install** button. You can also install, reinstall or point to your own executable in **Settings › Languages & Frameworks › Language Servers**.
+
+- basedpyright, ty, Pyrefly and Ruff go into a private virtualenv inside the IDE's tools folder. The IDE uses uv when it is on `PATH`, else `python3 -m venv`. Python 3 or uv must be installed.
+- Pyright is installed with npm, so it needs Node.js.
+- Nothing is installed into your project's environment.
+
+The tools folder is in the local data directory; see [Data directories and logs](/en/reference/data-directories).
+
+### Interpreters and virtualenvs
+
+The project interpreter is chosen in this order:
+
+1. The interpreter set in **Settings › Languages & Frameworks › Python Interpreter**.
+2. A virtualenv in the project: `.venv`, `venv`, `env` or `.env` (a folder with `pyvenv.cfg`), or a pixi environment in `.pixi/envs/`.
+3. The Python version the project pins for mise or asdf (`mise.toml`, `.tool-versions` and the other mise config files).
+
+The interpreter list on that page also shows what the IDE detects on the machine: the active `VIRTUAL_ENV`, virtualenvs made by virtualenvwrapper, pipenv and Poetry, pyenv versions, Pythons installed by uv, mise and asdf installs, conda environments (Miniconda, Anaconda, Miniforge, Mambaforge, micromamba, and every env that `conda env list` shows), and the `python` executables on `PATH`.
+
+The selected interpreter is passed to basedpyright and Pyright (`python.pythonPath`), and its virtualenv is set as `VIRTUAL_ENV` for the language server and for run configurations.
+
+The **Python Interpreter** item in the status bar shows the current interpreter. Click it to switch, or to open **Add New Interpreter…** and **Interpreter Settings…**.
+
+### Creating an environment
+
+On **Settings › Languages & Frameworks › Python Interpreter**, choose **Add Python Interpreter** and pick the **Interpreter type**:
+
+- **Virtualenv Environment**: `python -m venv` from the base interpreter you pick.
+- **uv Environment**: `uv venv <location> --python <base>` (uv must be on `PATH`).
+- **Poetry Environment**: `poetry env use <base>` in the project.
+- **Conda Environment**: `conda create -p <location>`, with the base interpreter's Python version.
+
+You can also select an existing interpreter or environment folder. The new interpreter becomes the project interpreter.
+
+### Packages
+
+The same page lists the installed packages of the selected interpreter. You can search them, **Install** a package by name, **Upgrade** and **Uninstall**. The IDE uses the interpreter's pip, or `uv pip` for environments without pip (uv creates them that way).
+
+Other options on the page:
+
+- **Activate virtualenv** (section **Terminal**): new terminal sessions run the virtualenv's activate script.
+- **Documentation string format** (section **Docstrings**): Plain, reStructuredText, Epytext, NumPy or Google. Docstring tags and keywords are highlighted in that format.
+
+### Formatting
+
+**Reformat Code** (`⌘⌥L` / `Ctrl+Alt+L`) uses Ruff. In **Settings › Languages & Frameworks › Ruff** you can set the Ruff path, a configuration directory, the **Formatting provider** (**Automatic (language server first)** or Ruff), and **Run on save**. Without a configuration directory, Ruff reads the nearest `pyproject.toml` (`[tool.ruff]`), `ruff.toml` or `.ruff.toml`.
+
+## Run and test
+
+OpenIDEA detects run configurations in folders that contain `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `pytest.ini`, `tox.ini` or `manage.py`, or a project virtualenv:
+
+| Configuration         | When                                                                                                                                                                             |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `python -m <package>` | A package in the project root or `src/` has a `__main__.py`                                                                                                                      |
+| `pytest`              | The project uses pytest: `pytest.ini`, `tox.ini`, `conftest.py`, `[tool:pytest]` in `setup.cfg`, pytest in `pyproject.toml` or a requirements file, or pytest in the environment |
+| `manage.py runserver` | A `manage.py` is present (Django)                                                                                                                                                |
+| `manage.py test`      | A `manage.py` is present (Django tests)                                                                                                                                          |
+
+Tools run through the project's manager: `uv run` when there is a `uv.lock`, `poetry run` with a `poetry.lock`, `pdm run` with a `pdm.lock`, the tools of `.venv` or `venv`, or `pixi run` for a pixi environment. When you select an interpreter in settings, the configurations use it directly.
+
+In the editor, gutter icons run or debug:
+
+- a file's `if __name__ == "__main__":` block,
+- pytest functions `test_*` and classes `Test*`,
+- `unittest.TestCase` subclasses and their test methods.
+
+A test file runs with pytest even when the project declares no test setup (`python -m pytest` with the project interpreter, so pytest must be installed there). In a Django project, `TestCase` tests can also run with `manage.py test`. Results of pytest and of Django's unittest runner appear in the test tree, where **Rerun Failed Tests** runs only the failures.
+
+You can also create **pytest** and **Django tests** configurations in **Run › Edit Configurations…**. See [Run configurations](/en/guide/run) and [Testing](/en/guide/testing).
+
+| Action                      | macOS | Windows / Linux  |
+| --------------------------- | ----- | ---------------- |
+| Run Context Configuration   | `⌃⇧R` | `Ctrl+Shift+F10` |
+| Debug Context Configuration | `⌃⇧D` | none             |
+
+Run with Coverage uses coverage.py in the project interpreter, and Profile uses py-spy. When one is missing, the IDE says so and offers the command that installs it (for example `uv add --dev coverage` in a uv project). See [Coverage](/en/guide/coverage) and [Profiler](/en/guide/profiler).
+
+Jupyter notebooks (`.ipynb`) run on a Python interpreter; see [Notebooks](/en/guide/notebook).
+
+## Debugging
+
+Python debugging uses debugpy. If it is missing when you start a debug session, OpenIDEA offers to install it. The IDE keeps a private copy of debugpy in its tools folder and loads it into whichever interpreter runs your program, so you do not need debugpy in the project environment.
+
+- Scripts, `python -m` modules and console scripts such as `pytest` or `uvicorn` can be debugged. Programs started through `uv run`, `poetry run`, `pdm run`, `pipenv run`, `hatch run` or `rye run` run in that manager's environment.
+- Debugging `manage.py` enables Django support in debugpy.
+- **Attach to Process…** (`⌥⇧F5` / `Ctrl+Alt+F5`) lists local Python processes under **Python (debugpy)**.
+- The **Python Remote Debug (debugpy)** configuration attaches to a process started with `python -m debugpy --listen`, locally or on another machine, with local and remote root mapping.
+
+Options:
+
+- **Settings › Build, Execution, Deployment › Python Debugger**: **Attach to subprocess automatically while debugging** and **Gevent compatible**.
+- **Settings › Build, Execution, Deployment › Debugger › Stepping**: **Do not step into library scripts** (debugpy's `justMyCode`).
+
+See [Debugging](/en/guide/debugging) for breakpoints, stepping and the debugger tool window.
+
+## Framework support
+
+Django is the only framework with dedicated support: the `manage.py runserver` and `manage.py test` configurations, the **Django tests** configuration type (target, settings module, options), running single `TestCase` tests from the gutter, and Django mode in the debugger. Other frameworks (Flask, FastAPI and so on) run as ordinary scripts or console scripts.
+
+### Django templates
+
+The HTML and text files in a `templates` folder of a Django project (one with a `manage.py` above it) open as **Django Template** files: the template tags, variables, filters and comments are highlighted on top of the HTML, and block tags (`{% block %}`, `{% if %}`, `{% for %}`, `{% with %}` and the others of Django and its contrib libraries) fold, indent their content and highlight their end tag. Typing `{%`, `{{` or `{#` closes the pair, finishing a block tag adds its end tag, and `{% end` completes the end tags of the open blocks. **Comment with Line Comment** puts each line in its own `{# … #}`, and **Comment with Block Comment** over several lines uses `{% comment %}`. The HTML language server and Emmet work in the markup between the tags.
+
+An HTML file elsewhere with Django tags shows a banner that switches it to Django Template or keeps it as HTML; either choice is the file's **Override File Type**.
+
+## Limitations
+
+- Only one type checker runs at a time. Ruff runs only in projects with a Ruff configuration.
+- Code intelligence and diagnostics come from the language server; the IDE has no Python analysis of its own.
+- Coverage and profiling need coverage.py and py-spy in your environment; the IDE does not keep its own copies of them.
+- Gutter run icons come from a line-based scan, so unusual test layouts may not get an icon. They can still run through a pytest configuration.

@@ -15,7 +15,8 @@ import {
   prepareJavaLaunch,
   type JavaPreparation,
 } from "@/platform/javaLaunch";
-import { notifications } from "@/workbench/contributions";
+import { maybeEditorService, notifications } from "@/workbench/contributions";
+import { withEnvFiles } from "./launch";
 
 export const JAVA_ADAPTER = "java-debug";
 export const KOTLIN_ADAPTER = "kotlin-debug-adapter";
@@ -111,6 +112,7 @@ export async function javaLaunchConfig(
   preparation?: JavaPreparation,
 ): Promise<LaunchConfig> {
   const cwd = rc.cwd ? join(root, rc.cwd) : root;
+  rc = await withEnvFiles(rc, root);
   const parsed = parseJavaArgs(rc.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${rc.name}'`);
   preparation?.signal.throwIfAborted();
@@ -119,6 +121,9 @@ export async function javaLaunchConfig(
     preparation ?? {
       request: nextRequestId(),
       signal: new AbortController().signal,
+      saveAll: async () => {
+        await maybeEditorService()?.saveAll();
+      },
     },
   );
   if (info.errorCount > 0 && !preparation?.report)
@@ -134,6 +139,9 @@ export async function javaLaunchConfig(
   const classPaths = parsed.explicitClasspath
     ? parsed.explicitClasspath.split(info.pathListSeparator)
     : info.classPaths;
+  // java-debug starts the JVM itself, bypassing the Run process that echoes its
+  // command line. Echo the equivalent launch here so Debug and Run stay comparable.
+  preparation?.report?.(`${joinJavaArgs([resolved.command, ...resolved.args])}\n`);
   if (kotlin) {
     return {
       name: rc.name,

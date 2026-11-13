@@ -13,6 +13,9 @@ something to show.
 | `go-app/`        | Go 1.22+                                                        | `go run ./cmd/server`               | `go test ./...`      | `OPENIDEA_FAIL=1 go test ./...`           | unused `fmt.Sprintf` result in `internal/store/store.go` |
 | `kotlin-gradle/` | JDK 21, Gradle 8 (no wrapper)                                   | `gradle run`                        | `gradle test`        | `gradle test -PopenideaFail`              | unused variable in `App.kt`                              |
 | `java-app/`      | JDK 21, Maven 3.9                                               | `mvn compile exec:java`             | `mvn test`           | `mvn test -DopenideaFail=true`            | unused variable in `App.java`                            |
+| `c-app/`         | gcc / g++ 12+, make, GDB 14+                                    | `make all`                          | —                    | —                                     | —                                                        |
+| `php-app/`       | PHP 8.5, Composer                                               | `composer quote`                    | `vendor/bin/pest`    | `OPENIDEA_FAIL=1 vendor/bin/pest`         | unused variable in `ThresholdCustoms.php`                |
+| `django-app/`    | Python 3.10+, Django 5.2+                                       | `python manage.py runserver`        | `python manage.py test` | `OPENIDEA_FAIL=1 python manage.py test` | unused import in `shop/views.py`                         |
 | `polyglot/`      | Go, TS, Python, C, shell, SQL, TOML/YAML/JSON, proto, Terraform | `make`                              | `make test`          | —                                     | unused variable in `native/hash.c`                       |
 
 The fixtures are standalone: `rust-app` declares its own `[workspace]` and
@@ -36,7 +39,8 @@ git init -q && git add -A && git commit -qm "initial"   # for the VCS checks
 
 Then open the folder with **File › Open…** (`⌘⇧⌥O`) or from the Welcome screen.
 For `ts-app` / `polyglot/web` run `pnpm install` first; for `python-app` create a
-venv (`python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`).
+venv (`python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`); for
+`php-app` run `composer install` (debugging it needs Xdebug in the PHP on `PATH`).
 
 Missing language servers / debuggers can be installed from the IDE:
 **Settings › Languages & Frameworks › Language Servers**, or from the
@@ -57,17 +61,18 @@ language detection and highlighting.
 ### Project tree
 
 - [ ] Arrow keys move the selection; `→`/`←` expand/collapse; `Enter`/`F4` opens a file.
-- [ ] Ignored folders (`target/`, `node_modules/`, `build/`) appear dimmed.
+- [ ] Ignored folders (`target/`, `node_modules/`, `build/`, `vendor/`) appear dimmed.
 - [ ] New file (`⌘N`), rename (`⇧F6`), delete (`⌫`) work and the tree updates.
 
 ### Search Everywhere & navigation
 
 - [ ] Double `⇧` opens Search Everywhere; typing `parser` finds `src/parser.rs`.
-- [ ] `⌘O` (classes) finds `Inventory` / `Cart` / `TaskList` / `Library`.
+- [ ] `⌘O` (classes) finds `Inventory` / `Cart` / `TaskList` / `Library` /
+      `Shipment`.
 - [ ] `⌘⇧O` (files) and `⌘⌥O` (symbols) find `format_price` / `formatMoney`.
 - [ ] `⌘E` lists recent files; `⌘[` / `⌘]` navigate back/forward.
-- [ ] `⌘B` on a call (`format_price` in `main.rs`, `cart.total()` in `index.ts`)
-      jumps to the declaration; `⌥F7` lists usages.
+- [ ] `⌘B` on a call (`format_price` in `main.rs`, `cart.total()` in `index.ts`,
+      `billableGrams` in `quote.php`) jumps to the declaration; `⌥F7` lists usages.
 - [ ] `⌘F12` shows the file structure; `⌘L` goes to a line.
 
 ### Editing & code insight
@@ -75,7 +80,8 @@ language detection and highlighting.
 - [ ] Typing in a file marks the tab modified; `⌘S` saves; external edits reload.
 - [ ] `⌘F` opens the find bar (match case / words / regex); `⌘R` replaces.
 - [ ] `⌘⇧F` finds `TODO` across the project and opens results.
-- [ ] Completion (`⌃Space`) on `inventory.` / `cart.` / `tasks.` lists members.
+- [ ] Completion (`⌃Space`) on `inventory.` / `cart.` / `tasks.` / `$parcel->` lists
+      members.
 - [ ] Hover / `F1` shows documentation; `⌘P` shows parameter info.
 - [ ] Warnings: the intentional warning is underlined and listed in Problems (`⌘6`);
       `F2` jumps to it; `⌥Enter` offers a quick fix.
@@ -91,7 +97,8 @@ language detection and highlighting.
 ### Run configurations & tests
 
 - [ ] Run configurations are detected: cargo run/test (Rust), package.json scripts
-      (TS), pytest (Python), `go test` / `go run` (Go), Gradle tasks (Kotlin).
+      (TS), pytest (Python), `go test` / `go run` (Go), Gradle tasks (Kotlin),
+      composer.json scripts and Pest (PHP).
 - [ ] Gutter run icons appear next to `main` and test functions; running one opens
       the Run tool window (`⌘4`) with the output.
 - [ ] The test tree shows passed tests; enabling the failing test (table above)
@@ -103,10 +110,10 @@ language detection and highlighting.
 - [ ] Each fixture's entry point has a "Set a breakpoint here" comment: toggle a
       breakpoint there (`⌘F8`) and start debugging (`⌃D`).
 - [ ] Execution stops on the line; Frames and Variables show `inventory` / `cart` /
-      `tasks` / `library`; inline values appear in the editor.
+      `tasks` / `library` / `$shipment`; inline values appear in the editor.
 - [ ] Step over (`F8`), into (`F7`), out (`⇧F8`), resume (`⌘⌥R`) and evaluate (`⌥F8`).
-- [ ] If the debug adapter is missing (CodeLLDB, debugpy, Delve), the error offers
-      the installer and debugging works after installing.
+- [ ] If the debug adapter is missing (CodeLLDB, debugpy, Delve, PHP Debug), the error
+      offers the installer and debugging works after installing.
 
 ### Git
 

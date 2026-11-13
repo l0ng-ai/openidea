@@ -1,7 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
-import { debugUnsupportedReason, launchConfigFor } from "../launch";
+import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "../launch";
+
+const ipc = vi.hoisted(() => {
+  const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
+  return { ok, runEnvFiles: vi.fn((_files: string[]) => ok({} as Record<string, string>)) };
+});
+
+vi.mock("@/platform/ipc", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/platform/ipc")>();
+  const { ok: _ok, ...cmds } = ipc;
+  return { ...real, commands: { ...real.commands, ...cmds } };
+});
 
 const rc = (p: Partial<RunConfig>): RunConfig => ({
   id: "x",
@@ -20,7 +31,10 @@ const rc = (p: Partial<RunConfig>): RunConfig => ({
 const extra = (l: { extraJson: string | null } | null) => JSON.parse(l?.extraJson ?? "{}");
 
 const originalPlatform = usePlatform.getState();
-beforeEach(() => usePlatform.setState({ os: "linux" }));
+beforeEach(() => {
+  usePlatform.setState({ os: "linux" });
+  vi.clearAllMocks();
+});
 afterEach(() => usePlatform.setState(originalPlatform));
 
 describe("run config → launch config", () => {
@@ -253,7 +267,13 @@ describe("run config → launch config", () => {
   it("delve: debug mode for run, test mode for test", () => {
     const run = launchConfigFor(rc({ kind: "go", command: "go", args: ["run", "."], debugAdapter: "delve" }), "/p")!;
     expect(run.program).toBe("/p");
-    expect(extra(run)).toEqual({ mode: "debug", __goToolArgs: [], __goUseTags: true });
+    expect(extra(run)).toMatchObject({
+      mode: "debug",
+      __goTargets: ["."],
+      __goExecutable: "go",
+      __goToolArgs: [],
+      __goUseTags: true,
+    });
     const sub = launchConfigFor(
       rc({ kind: "go", command: "go", args: ["run", "./cmd/api"], debugAdapter: "delve" }),
       "/p",
@@ -263,8 +283,8 @@ describe("run config → launch config", () => {
       rc({ kind: "go", command: "go", args: ["test", "./..."], debugAdapter: "delve" }),
       "/p",
     )!;
-    expect(extra(test)).toEqual({ mode: "test", __goToolArgs: [], __goUseTags: true });
-    expect(test.program).toBe("/p");
+    expect(extra(test)).toMatchObject({ mode: "test", __goTargets: ["./..."], __goToolArgs: [], __goUseTags: true });
+    expect(test.program).toBe("/p/...");
     // A gutter test / subtest: the package, and `-run` for the test binary.
     const one = launchConfigFor(
       rc({
@@ -299,7 +319,7 @@ describe("run config → launch config", () => {
     });
   });
 
-  it("native programs under CodeLLDB / lldb-dap: program, args, cwd, env", () => {
+  it("native programs under CodeLLDB / lldb-dap / GDB: program, args, cwd, env", () => {
     const run = rc({ command: "./build/app", args: ["-v"], cwd: "c", env: { K: "v" } });
     const lldb = launchConfigFor({ ...run, debugAdapter: "codelldb" }, "/p")!;
     expect(lldb).toMatchObject({
@@ -314,6 +334,16 @@ describe("run config → launch config", () => {
     expect(dap).toMatchObject({ adapter: "lldb-dap", program: "/p/c/build/app" });
     // lldb-dap takes `KEY=VALUE` strings.
     expect(extra(dap)).toEqual({ env: ["K=v"] });
+    // GDB's DAP launch takes the environment as an object, like the default flow.
+    const gdb = launchConfigFor({ ...run, debugAdapter: "gdb" }, "/p")!;
+    expect(gdb).toMatchObject({
+      adapter: "gdb",
+      program: "/p/c/build/app",
+      args: ["-v"],
+      cwd: "/p/c",
+      env: { K: "v" },
+    });
+    expect(gdb.extraJson).toBeNull();
   });
 
   it.each(["native", "cmake-application"])(
@@ -419,6 +449,50 @@ it("netcoredbg launches the evaluated DLL with resolved profile arguments, env a
   expect(launchConfigFor({ ...c, params: {} }, "/repo")).toBeNull();
 });
 
+describe("Go debug target resolution inputs", () => {
+  it("preserves import paths and multiple source files for Go to resolve", () => {
+    const imported = launchConfigFor(
+      rc({ kind: "go", command: "/sdk/bin/go", args: ["test", "example.com/app/calc"], debugAdapter: "delve" }),
+      "/p",
+    )!;
+    expect(imported.program).toBe("example.com/app/calc");
+    expect(extra(imported)).toMatchObject({
+      __goTargets: ["example.com/app/calc"],
+      __goExecutable: "/sdk/bin/go",
+      __goBuildDir: "/p",
+    });
+    const files = launchConfigFor(
+      rc({ kind: "go", command: "go", args: ["run", "main.go", "helper.go", "hello"], debugAdapter: "delve" }),
+      "/p",
+    )!;
+    expect(files.args).toEqual(["hello"]);
+    expect(extra(files).__goTargets).toEqual(["main.go", "helper.go"]);
+    const packages = launchConfigFor(
+      rc({ kind: "go", command: "go", args: ["build", "./a", "./b"], debugAdapter: "delve" }),
+      "/p",
+    )!;
+    expect(extra(packages).__goTargets).toEqual(["./a", "./b"]);
+  });
+
+  it("keeps a typed recursive package target and the module's selected compiler", () => {
+    const launch = launchConfigFor(
+      rc({
+        kind: "go",
+        command: "./sdk/bin/go",
+        args: ["test", "./..."],
+        debugAdapter: "delve",
+        params: { goKind: "test", scope: "package", target: "./...", module: "backend" },
+      }),
+      "/p",
+    )!;
+    expect(extra(launch)).toMatchObject({
+      __goTargets: ["./..."],
+      __goBuildDir: "/p/backend",
+      __goExecutable: "/p/backend/sdk/bin/go",
+    });
+  });
+});
+
 it("raw and typed Go debug configurations inherit custom tags unless explicitly disabled", () => {
   for (const typed of [false, true]) {
     for (const useTags of [undefined, "true", "false"]) {
@@ -433,4 +507,19 @@ it("raw and typed Go debug configurations inherit custom tags unless explicitly 
       expect(extra(launch).__goUseTags).toBe(useTags !== "false");
     }
   }
+});
+
+describe("withEnvFiles", () => {
+  it("leaves configurations without .env files alone (no backend call)", async () => {
+    const config = rc({ env: { A: "1" } });
+    await expect(withEnvFiles(config, "/p")).resolves.toBe(config);
+    expect(ipc.runEnvFiles).not.toHaveBeenCalled();
+  });
+
+  it("loads .env files under the explicit variables, resolved against the project root", async () => {
+    ipc.runEnvFiles.mockResolvedValueOnce({ status: "ok", data: { FROM_FILE: "file", A: "file" } });
+    const out = await withEnvFiles(rc({ env: { A: "explicit" }, envFiles: [".env", "env/local.env"] }), "/p");
+    expect(ipc.runEnvFiles).toHaveBeenCalledWith(["/p/.env", "/p/env/local.env"]);
+    expect(out.env).toEqual({ FROM_FILE: "file", A: "explicit" });
+  });
 });

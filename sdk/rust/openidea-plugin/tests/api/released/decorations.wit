@@ -1,0 +1,22 @@
+package openidea:plugin@1.6.0;
+
+/// Project-scoped decorations (API 1.4). Requires project.read; paths must be inside
+/// an open project. Sets belong to the plugin and disappear when it stops.
+/// Styles: highlight, search, added, modified, removed, warning, error, info,
+/// underline, strikethrough, muted. Unknown styles are ignored. Theme tokens only.
+interface decorations {
+    use types.{error, range};
+    /// An editor annotation; after is plain text shown after the range.
+    record decoration { range: range, style: string, hover: option<string>, after: option<string> }
+    /// A project-tree annotation; badge is at most two Unicode characters.
+    record file-decoration { badge: option<string>, style: string, tooltip: option<string> }
+    /// Replace this set for a file. At most 10,000 items/file and 50 editor sets/plugin.
+    /// Metadata is bounded to 4 MiB per plugin. Unknown styles are ignored.
+    set: func(path: string, set-id: string, items: list<decoration>) -> result<_, error>;
+    /// Remove this editor set from every file/project.
+    clear: func(set-id: string) -> result<_, error>;
+    /// Replace this set's tree annotation for a file; at most 50 tree sets/plugin.
+    set-file: func(path: string, set-id: string, item: file-decoration) -> result<_, error>;
+    /// Remove this tree set from every file/project.
+    clear-file: func(set-id: string) -> result<_, error>;
+}

@@ -10,6 +10,7 @@ import { formatArgs, parseArgs, uid, uniqueName } from "./configs";
 import { commandName } from "./commandName";
 import {
   applicationType,
+  jarApplicationType,
   gradleForkedJvm,
   isWindows,
   mavenForkedJvm,
@@ -264,6 +265,50 @@ const npm: RunConfigTypeContribution = {
   },
 };
 
+const BUN_COMMANDS = ["run", "test"];
+
+const bun: RunConfigTypeContribution = {
+  id: "bun",
+  label: "Bun",
+  icon: "file-bun",
+  description: "Run a TypeScript or JavaScript file with Bun",
+  defaults: { packageManager: "bun", command: "run" },
+  ownsWorkingDirectory: true,
+  fields: [
+    { key: "packageDir", label: "Working directory", mono: true, browse: "directory", placeholder: "Project root" },
+    { key: "command", label: "Command", control: "select", options: BUN_COMMANDS.map((v) => ({ value: v, label: v })) },
+    {
+      key: "script",
+      label: "Script",
+      mono: true,
+      required: true,
+      visible: (p) => p.command === "run",
+      suggestions: (configs) => argsOf(configs, "bun", 1),
+    },
+    { key: "arguments", label: "Arguments", mono: true },
+  ],
+  commandLine(p) {
+    const command = p.command || "run";
+    const args = [command, ...(command === "run" ? [p.script ?? ""] : []), ...parseArgs(p.arguments ?? "")];
+    const manager = p.packageManager || "bun";
+    const executable = p.executable && commandName(p.executable) === manager ? p.executable : manager;
+    return { command: executable, args, cwd: p.packageDir?.trim() || null };
+  },
+  paramsFrom(c) {
+    const [command, ...rest] = c.args;
+    if (commandName(c.command) !== "bun" || !command || !BUN_COMMANDS.includes(command)) return null;
+    const script = command === "run" ? (rest.shift() ?? "") : "";
+    return {
+      packageManager: commandName(c.command),
+      command,
+      script,
+      arguments: formatArgs(rest),
+      packageDir: dirOf(c.cwd),
+      ...(c.command !== commandName(c.command) ? { executable: c.command } : {}),
+    };
+  },
+};
+
 function wrapperCommand(unix: string, windows: string, plain: string, wrapper: boolean): string {
   if (!wrapper) return plain;
   return isWindows() ? windows : `./${unix}`;
@@ -433,6 +478,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   shell,
   program,
   npm,
+  bun,
   gradle,
   maven,
   godot,
@@ -447,6 +493,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   goBuildType,
   goTestType,
   applicationType,
+  jarApplicationType,
   springBootType,
   tomcatType,
   compound,
@@ -500,6 +547,7 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
     ...(config.kind === "dotnet-test" ||
     config.kind === "django-test" ||
     config.kind === "phpunit" ||
+    config.kind === "junit" ||
     config.kind === "rspec"
       ? { isTest: true }
       : {}),

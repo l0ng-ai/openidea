@@ -75,10 +75,10 @@ export function branchMenu(
     return [
       { label: tx`New Branch from '${b.name}'…`, icon: "branch", run: run(() => newBranch()) },
       { kind: "separator" },
-      { label: "Update", icon: "git-pull", run: run(() => executeAction("vcs.update")) },
-      { label: "Push…", icon: "git-push", run: run(() => executeAction("vcs.push")) },
+      { label: "Update", icon: "git-pull", run: run(() => executeAction("vcs.update", { repo: currentRepo() })) },
+      { label: "Push…", icon: "git-push", run: run(() => executeAction("vcs.push", { repo: currentRepo() })) },
       { kind: "separator" },
-      { label: "Rename…", run: run(() => renameBranch(b.name)) },
+      { label: "Rename…", run: run(() => renameBranch(b)) },
       favoriteItem,
       history,
     ];
@@ -111,7 +111,7 @@ export function branchMenu(
     );
   items.push(
     { kind: "separator" },
-    ...(b.remote ? [] : [{ label: "Rename…", run: run(() => renameBranch(b.name)) }]),
+    ...(b.remote ? [] : [{ label: "Rename…", run: run(() => renameBranch(b)) }]),
     favoriteItem,
     {
       label: "Delete",

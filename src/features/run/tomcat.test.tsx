@@ -51,7 +51,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => ({
 afterEach(cleanup);
 
 describe("Tomcat Local", () => {
-  it("offers a Local configuration grouped under Tomcat Server with build and browser defaults", () => {
+  it("offers a Tomcat Server configuration grouped under Servers with build and browser defaults", () => {
     const config = newConfigOfType(tomcatType, []);
     expect(config.params).toMatchObject({
       httpPort: "8080",
@@ -60,9 +60,7 @@ describe("Tomcat Local", () => {
       openBrowser: "true",
     });
     expect(config.debugAdapter).toBe("java-debug");
-    expect(typeRows([tomcatType], "")).toEqual(
-      expect.arrayContaining([expect.objectContaining({ label: "Tomcat Server" })]),
-    );
+    expect(typeRows([tomcatType], "")).toEqual(expect.arrayContaining([expect.objectContaining({ label: "Servers" })]));
     expect(missingParams(config, tomcatType)).toHaveProperty("tomcatHome");
   });
   it("validates ports and context paths and supports manually chosen web roots", () => {
@@ -280,7 +278,7 @@ describe("updating a running Tomcat deployment", () => {
   it("compiles the selected WAR module and copies its outputs instead of rebuilding the WAR", async () => {
     const c = config({ deployment: "artifact", artifact: "maven:web/pom.xml" });
     expect(await syncTomcatOutputs(c, false)).toBe(true);
-    expect(commands.javaResolveLaunch).toHaveBeenCalledWith("web", false, true, expect.anything());
+    expect(commands.javaResolveLaunch).toHaveBeenCalledWith("web", false, "make", expect.anything());
     expect(commands.runTomcatSync).toHaveBeenCalledWith(c, "web", ["/p/web/target/classes", "/m2/lib.jar"], false);
   });
 

@@ -12,6 +12,7 @@ import {
   mavenChildren,
   mavenGoalConfig,
   mavenRoots,
+  mavenPomAtPath,
   nodeIcon,
   nodeLabel,
   parseGoalLine,
@@ -19,6 +20,8 @@ import {
   profilesArg,
   splitArgs,
   taskCompletions,
+  withGradleOptions,
+  gradleHasTestTask,
   type BuildNode,
 } from "./model";
 
@@ -184,6 +187,19 @@ describe("Maven tree", () => {
 describe("Maven runs", () => {
   const core = maven.projects[1]!;
 
+  it.each([["-P", "prod"], ["-Pprod"], ["--activate-profiles", "prod"], ["--activate-profiles=prod"]])(
+    "keeps explicit Maven profiles %j",
+    (...profiles) => {
+      const goals = ["test", ...profiles];
+      const config = mavenGoalConfig(core, goals, maven, {
+        offline: false,
+        skipTests: false,
+        profiles: { ci: true, dev: false },
+      });
+      expect(config.args).toEqual(goals);
+    },
+  );
+
   it("passes goals, offline, skip tests and changed profiles", () => {
     expect(profilesArg(maven.profiles, {})).toBeNull();
     expect(profilesArg(maven.profiles, { ci: true, dev: false })).toBe("!dev,ci");
@@ -198,7 +214,7 @@ describe("Maven runs", () => {
       command: "/p/mvnw",
       args: ["clean", "test", "-o", "-Pci"],
       cwd: "core",
-      env: { JAVA_HOME: "/jdk21" },
+      env: {},
       isTest: true,
       detected: false,
     });
@@ -212,6 +228,19 @@ describe("Maven runs", () => {
     });
     expect(root.cwd).toBeNull();
     expect(root.isTest).toBe(false);
+    const external = mavenGoalConfig(
+      project({
+        pom: "/code/B/pom.xml",
+        dir: "/code/B",
+        artifactId: "b",
+        displayName: "b",
+        command: "/code/B/mvnw",
+      }),
+      ["compile"],
+      maven,
+      { offline: false, skipTests: false, profiles: {} },
+    );
+    expect(external).toMatchObject({ command: "/code/B/mvnw", cwd: "/code/B", args: ["compile"] });
     const configured = {
       ...core,
       command: "//?/UNC/server/share/maven/bin/mvn.cmd",
@@ -233,6 +262,15 @@ describe("Maven runs", () => {
     ).toEqual(["-s", "/own/settings.xml", "test"]);
   });
 
+  // #2433: the model's `JAVA_HOME` is Settings-derived; freezing it in the configuration kept an
+  // outdated runner JRE even after the setting was corrected (also across a restart, since a
+  // temporary configuration persisted it). The launcher resolves it from Settings instead.
+  it("does not freeze the settings-derived JAVA_HOME into a generated configuration", () => {
+    expect(core.env).toEqual({ JAVA_HOME: "/jdk21" });
+    const goal = mavenGoalConfig(core, ["compile"], maven, { offline: false, skipTests: false, profiles: {} });
+    expect(goal.env).toEqual({});
+  });
+
   it("parses typed command lines", () => {
     expect(parseGoalLine("mvn clean install -Dmsg='a b'")).toEqual(["clean", "install", "-Dmsg=a b"]);
     expect(parseGoalLine("./mvnw -q verify")).toEqual(["-q", "verify"]);
@@ -247,6 +285,8 @@ describe("Maven runs", () => {
     expect(goalCompletions("sure", [surefire]).map((x) => x.label)).toEqual(["surefire:help", "surefire:test"]);
     expect(goalCompletions("cl", [], ["clean install"]).map((x) => x.label)[0]).toBe("clean install");
     expect(goalCompletions("-D", [surefire])).toEqual([]);
+    expect(goalCompletions("mvn clean test ", [surefire]).map((x) => x.label)).not.toContain("test");
+    expect(goalCompletions("clean c", []).map((x) => x.label)).not.toContain("clean");
   });
 });
 
@@ -301,20 +341,70 @@ describe("Gradle tree and runs", () => {
 
   it("runs tasks by path from the build directory", () => {
     const app = gradle.projects[1]!;
-    const config = gradleTaskConfig(gradle, app, ["test"], { offline: true });
+    const config = gradleTaskConfig(gradle, app, ["test"], { offline: true, skipTests: false });
     expect(config).toMatchObject({
       name: "app [test]",
       kind: "gradle",
       command: "/p/gradlew",
       args: [":app:test", "--offline"],
       cwd: null,
+      // The build model's `JAVA_HOME` comes from Settings; a task must not freeze it (#2433).
+      env: {},
       isTest: true,
     });
-    expect(gradleTaskConfig(gradle, gradle.projects[0]!, ["wrapper"], { offline: false }).args).toEqual(["wrapper"]);
-    expect(gradleTaskConfig(gradle, app, [":lib:jar", "--info"], { offline: false }).args).toEqual([
+    expect(
+      gradleTaskConfig(gradle, gradle.projects[0]!, ["wrapper"], { offline: false, skipTests: false }).args,
+    ).toEqual(["wrapper"]);
+    expect(gradleTaskConfig(gradle, app, [":lib:jar", "--info"], { offline: false, skipTests: false }).args).toEqual([
       ":lib:jar",
       "--info",
     ]);
+  });
+
+  it("appends -x test to task runs when Skip Tests is on", () => {
+    const app = gradle.projects[1]!;
+    const skipped = gradleTaskConfig(gradle, app, ["build"], { offline: false, skipTests: true });
+    expect(skipped.args).toEqual([":app:build", "-x", "test"]);
+    // Running `test` with Skip Tests on is not a test run for the Run window.
+    const test = gradleTaskConfig(gradle, app, ["test"], { offline: false, skipTests: true });
+    expect(test.args).toEqual([":app:test", "-x", "test"]);
+    expect(test.isTest).toBe(false);
+    // A command line that already excludes tests is not changed again (typed task names keep
+    // the pre-existing project-path prefix).
+    const explicit = gradleTaskConfig(gradle, app, ["build", "-x", "test"], { offline: false, skipTests: true });
+    expect(explicit.args).toEqual([":app:build", "-x", ":app:test"]);
+    const verbose = gradleTaskConfig(gradle, app, ["build", "--exclude-task", "test"], {
+      offline: false,
+      skipTests: true,
+    });
+    expect(verbose.args).toEqual([":app:build", "--exclude-task", ":app:test"]);
+    // A build without a `test` task would fail on `-x test`.
+    const noTests = {
+      ...gradle,
+      projects: gradle.projects.map((p) => ({ ...p, tasks: p.tasks.filter((t) => t.name !== "test") })),
+    };
+    expect(gradleHasTestTask([noTests])).toBe(false);
+    expect(
+      gradleTaskConfig(noTests, noTests.projects[1]!, ["build"], { offline: false, skipTests: true }).args,
+    ).toEqual([":app:build"]);
+  });
+
+  it("applies the toolbar toggles to saved configurations started from the tree", () => {
+    const saved = runConfig({ id: "g", name: "app [build]", kind: "gradle", args: ["build"] });
+    expect(withGradleOptions(saved, { offline: false, skipTests: false }).args).toEqual(["build"]);
+    expect(withGradleOptions(saved, { offline: true, skipTests: false }).args).toEqual(["build", "--offline"]);
+    expect(withGradleOptions(saved, { offline: true, skipTests: true }).args).toEqual([
+      "build",
+      "--offline",
+      "-x",
+      "test",
+    ]);
+    const excluding = withGradleOptions(runConfig({ ...saved, args: ["build", "-x", "test"] }), {
+      offline: false,
+      skipTests: true,
+    });
+    expect(excluding.args).toEqual(["build", "-x", "test"]);
+    expect(withGradleOptions(saved, { offline: false, skipTests: true }, false).args).toEqual(["build"]);
   });
 
   it("keeps identical project paths and tasks of independent builds distinct", () => {
@@ -336,12 +426,13 @@ describe("Gradle tree and runs", () => {
       return gradleChildren(group, builds, [])![0]!;
     });
     expect(tasks[0]!.key).not.toBe(tasks[1]!.key);
-    const runs = builds.map((b) => gradleTaskConfig(b, b.projects[1]!, ["test"], { offline: true }));
+    const runs = builds.map((b) => gradleTaskConfig(b, b.projects[1]!, ["test"], { offline: true, skipTests: false }));
     expect(runs[0]!.id).not.toBe(runs[1]!.id);
     expect(runs[1]).toMatchObject({
       command: "/p/second/gradlew",
       cwd: "second",
-      env: { JAVA_HOME: "/second/jdk" },
+      // The build's `JAVA_HOME` is Settings-derived and stays out of the configuration (#2433).
+      env: {},
       args: [":app:test", "--offline"],
     });
     expect(gradleProjectKey(builds[1]!, builds[1]!.projects[1]!)).toBe('gradle:["second",":app"]');
@@ -380,5 +471,18 @@ describe("Gradle tree and runs", () => {
     const labelsOf = taskCompletions("ru", gradle).map((c) => c.label);
     expect(labelsOf).toEqual([":app:run"]);
     expect(taskCompletions("clean wr", gradle).map((c) => c.line)).toEqual(["clean wrapper"]);
+    expect(taskCompletions("wrapper wr", gradle)).toEqual([]);
+    expect(taskCompletions(":app:run ", gradle).map((c) => c.label)).not.toContain(":app:run");
   });
+});
+
+it.each([
+  ["pom.xml", "/workspace/pom.xml"],
+  ["module/pom.xml", "/workspace/module/pom.xml"],
+  ["/linked/pom.xml", "/linked/pom.xml"],
+  ["/workspace/member/pom.xml", "/workspace/member/pom.xml"],
+])("resolves the Maven model POM %s at %s", (pom, path) => {
+  const projects = [project({ pom })];
+  expect(mavenPomAtPath(projects, "/workspace", path)).toBe(pom);
+  expect(mavenPomAtPath(projects, "/workspace", "/other/pom.xml")).toBeNull();
 });

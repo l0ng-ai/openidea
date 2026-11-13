@@ -9,9 +9,10 @@ import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
 import { attachDocument, editorsFor } from "@/editor/api";
-import { maybeEditorService, notifications } from "@/workbench/contributions";
+import { maybeEditorService, notifications, type NotificationService } from "@/workbench/contributions";
 import { cancelTask, upsertTaskSoon, useTasks } from "@/workbench/tasks";
 import { progressFraction } from "./model";
+import { saveDiffWindows } from "./diffWindowSave";
 import { beginGitWork, conflictedFiles, currentRepo, refreshNow, repoName, useVcs } from "./store";
 
 // ---------------------------------------------------------------------------
@@ -55,6 +56,11 @@ export function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** Feedback for an explicit Git command stays visible when background VCS notifications are muted. */
+function notify(n: Omit<Parameters<NotificationService["notify"]>[0], "group" | "userInitiated">) {
+  notifications().notify({ ...n, group: "vcs", userInitiated: true });
+}
+
 // ---------------------------------------------------------------------------
 // Local operations
 
@@ -80,7 +86,7 @@ export async function runOp<T>(title: string, fn: () => Promise<T>, opts: OpOpti
     const msg = typeof opts.success === "function" ? opts.success(value) : opts.success;
     if (msg) {
       logConsole("info", msg);
-      notifications().notify({ group: "vcs", level: "info", title: msg });
+      notify({ level: "info", title: msg });
     }
     return value;
   } catch (e) {
@@ -88,8 +94,7 @@ export async function runOp<T>(title: string, fn: () => Promise<T>, opts: OpOpti
     logConsole("err", message);
     const handled = opts.onError ? await opts.onError(message) : false;
     if (!opts.quiet && !handled)
-      notifications().notify({
-        group: "vcs",
+      notify({
         level: "error",
         title: tx`${title} failed`,
         body: message,
@@ -104,6 +109,17 @@ export async function runOp<T>(title: string, fn: () => Promise<T>, opts: OpOpti
 
 /** Saves all documents so git sees the editor contents. */
 export async function saveAll() {
+  try {
+    await saveDiffWindows();
+  } catch (error) {
+    notifications().notify({
+      group: "vcs",
+      level: "error",
+      title: tx("Could not save diff"),
+      body: errorMessage(error),
+    });
+    throw error;
+  }
   try {
     await maybeEditorService()?.saveAll();
   } catch {
@@ -160,7 +176,7 @@ export async function runRemote(
   handled?: (message: string) => boolean,
 ): Promise<boolean> {
   if (useVcs.getState().remoteBusy) {
-    notifications().notify({ group: "vcs", level: "warning", title: "Another remote operation is in progress" });
+    notify({ level: "warning", title: "Another remote operation is in progress" });
     return false;
   }
   const [progressText, doneTitle] = REMOTE_TITLE[op.op];
@@ -173,8 +189,7 @@ export async function runRemote(
   const task = (message: string | null, fraction: number | null, done: boolean) =>
     upsertTaskSoon({ id: taskId, title: progressTitle, message, fraction, done, cancel });
   task(detail ?? null, null, false);
-  notifications().notify({
-    group: "vcs",
+  notify({
     level: "info",
     key: "vcs.remote",
     title: `${progressTitle}…`,
@@ -211,7 +226,8 @@ export async function runRemote(
         const before = isUpdate(op) ? await publishedTip(repo, op) : null;
         // The push summary counts what the push carries: the commits the branch is
         // ahead of its upstream before the push (pushing does not move the local head).
-        if (op.op === "push" || (op.op === "pushBranch" && !op.target)) {
+        // Another remote or target receives other commits than "ahead of the upstream".
+        if (op.op === "push" || (op.op === "pushBranch" && !op.target && !op.remote)) {
           const info = await call(commands.vcsBranchInfo(repo)).catch(() => null);
           if (info?.upstream && info.ahead > 0) pushed.push({ to: info.upstream, commits: info.ahead });
         }
@@ -230,8 +246,7 @@ export async function runRemote(
     else {
       // One repository's push names what went out; a partial multi-repo push stays generic.
       const one = pushed.length === 1 ? pushed[0] : null;
-      notifications().notify({
-        group: "vcs",
+      notify({
         level: "info",
         key: "vcs.remote",
         title:
@@ -255,8 +270,7 @@ export async function runRemote(
       notifications().expire?.("vcs.remote");
       void executeAction("vcs.resolveConflicts");
     } else
-      notifications().notify({
-        group: "vcs",
+      notify({
         level: "error",
         key: "vcs.remote",
         title: `${doneTitle} failed`,
@@ -318,7 +332,7 @@ const pushedTitle = (n: number, to: string) =>
 /** IDEA's Update Project result: "N files updated in M commits" with View Commits. */
 async function notifyUpdated(updated: readonly UpdatedRange[]) {
   if (!updated.length) {
-    notifications().notify({ group: "vcs", level: "info", key: "vcs.remote", title: "All files are up-to-date" });
+    notify({ level: "info", key: "vcs.remote", title: "All files are up-to-date" });
     return;
   }
   let files = 0;
@@ -343,8 +357,7 @@ async function notifyUpdated(updated: readonly UpdatedRange[]) {
       commits += log.length;
     }),
   );
-  notifications().notify({
-    group: "vcs",
+  notify({
     level: "info",
     key: "vcs.remote",
     title: `${filesText(files)} updated in ${commitsText(commits)}`,
@@ -388,7 +401,7 @@ export async function runGitOperation(
   repo = currentRepo(),
 ): Promise<boolean> {
   if (useVcs.getState().remoteBusy) {
-    notifications().notify({ group: "vcs", level: "warning", title: "Another Git operation is in progress" });
+    notify({ level: "warning", title: "Another Git operation is in progress" });
     return false;
   }
   await saveAll();
@@ -401,8 +414,7 @@ export async function runGitOperation(
   const task = (message: string | null, done: boolean) =>
     upsertTaskSoon({ id: taskId, title: progress, message, fraction: done ? 1 : null, done, cancel });
   task(null, false);
-  notifications().notify({
-    group: "vcs",
+  notify({
     level: "info",
     key: "vcs.operation",
     title: `${progress}…`,
@@ -424,7 +436,7 @@ export async function runGitOperation(
     }
     logConsole("info", success);
     const actions = opts.successActions ? await opts.successActions() : undefined;
-    notifications().notify({ group: "vcs", level: "info", key: "vcs.operation", title: success, actions });
+    notify({ level: "info", key: "vcs.operation", title: success, actions });
     return true;
   } catch (e) {
     const cancelled = isCancelled(e);
@@ -434,8 +446,7 @@ export async function runGitOperation(
     await refreshNow();
     const handled = cancelled || (opts.onError ? await opts.onError(message) : false);
     if (!handled)
-      notifications().notify({
-        group: "vcs",
+      notify({
         level: "error",
         key: "vcs.operation",
         title: opts.failure,

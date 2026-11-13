@@ -40,6 +40,7 @@ import {
   useServicesTree,
 } from "./tree";
 import styles from "./Services.module.css";
+import { viewFilterMenu } from "./ops";
 import { selectionActions, selectionMenu, selectedServices } from "./selection";
 
 export const SERVICES_VIEW_FOCUS = "servicesViewFocus";
@@ -88,6 +89,7 @@ export function ServicesTreeView() {
   const selectedKeys = useServicesTree((s) => s.selectedKeys);
   const expanded = useServicesTree((s) => s.expanded);
   const addRef = useRef<HTMLButtonElement>(null);
+  const filterRef = useRef<HTMLButtonElement>(null);
 
   const roots = useMemo(() => orderedRoots(rootsByProvider, providers), [rootsByProvider, providers]);
   const index = useMemo(() => indexTree(rootsByProvider), [rootsByProvider]);
@@ -181,6 +183,18 @@ export function ServicesTreeView() {
           disabled={!roots.length}
           onClick={() => setExpanded(new Set())}
         />
+        <IconButton
+          ref={filterRef}
+          icon="filter"
+          size="small"
+          iconSize={16}
+          title="View Options"
+          disabled={!roots.length}
+          onClick={() => {
+            const r = filterRef.current?.getBoundingClientRect();
+            showContextMenu({ x: r?.left ?? 140, y: (r?.bottom ?? 100) + 2 }, viewFilterMenu());
+          }}
+        />
         {actions.length > 0 && <span className={styles.sep} />}
         {actions.map((a) => (
           <IconButton
@@ -258,7 +272,14 @@ export function ServicesTreeView() {
             </div>
           </SplitPanel>
           <SplitHandle />
-          <SplitPanel id="services-detail" minSize="200px">
+          <SplitPanel
+            id="services-detail"
+            minSize="200px"
+            // The panel library puts `overflow: auto` inline; the detail content
+            // (a console, a log) owns its scrolling, so the pane must not add a second
+            // bar. A column flex box lets that content fill the pane.
+            style={{ overflow: "hidden", height: "100%", display: "flex", flexDirection: "column" }}
+          >
             {selected && Detail && shown ? (
               <Detail key={selected.item.key} item={selected.item} />
             ) : (

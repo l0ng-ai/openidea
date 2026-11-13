@@ -54,7 +54,7 @@ test("imported PHP colours stay separate from Java and preserve regular text on 
   await expect(token("'Palette'")).toHaveCSS("color", "rgb(255, 231, 146)");
   await expect(token("'Palette'")).toHaveCSS("font-weight", "400");
   await expect(token("class").first()).toHaveCSS("color", "rgb(249, 38, 114)");
-  await expect(token("Plain PHP documentation")).toHaveCSS("font-style", "normal");
+  await expect(token("Plain PHP documentation").first()).toHaveCSS("font-style", "normal");
   await expect(token("BasePalette")).toHaveCSS("color", "rgb(174, 129, 255)");
   await expect(token(";").first()).toHaveCSS("color", "rgb(255, 255, 255)");
   await expect(token("example")).toHaveCSS("color", "rgb(141, 225, 45)");

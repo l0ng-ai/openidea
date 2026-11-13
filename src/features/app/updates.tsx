@@ -7,18 +7,22 @@
  * repeated click joins the running check or install instead of starting another.
  */
 import { Channel } from "@tauri-apps/api/core";
-import { resolveLocale, t } from "@/platform/i18n";
+import { t } from "@/platform/i18n";
 import {
   call,
   commands,
   isCancelled,
   isTauri,
+  ideEventsReady,
+  onIdeEvent,
   nextRequestId,
   type UpdateInfo,
   type UpdateProgress,
   type UpdateSource,
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { recordInstalledUpdate } from "@/platform/releaseNotes";
+import { updateSource } from "@/platform/updateSource";
 import { notifications } from "@/workbench/contributions";
 import { upsertTask } from "@/workbench/tasks";
 import { UpdateBalloonBody } from "./UpdateBalloonBody";
@@ -29,14 +33,6 @@ export const INSTALL_TASK_ID = "app.update.install";
 
 function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
-}
-
-/** System Settings › Updates › Update source; `auto` picks the CNB mirror for the Chinese UI. */
-export function updateSource(): UpdateSource {
-  const { settings } = useProject.getState();
-  const chosen = settings?.general?.updateSource;
-  if (chosen === "github" || chosen === "cnb") return chosen;
-  return resolveLocale(settings?.appearance?.locale) === "zh" ? "cnb" : "github";
 }
 
 const SOURCE_NAMES: Record<UpdateSource, string> = { github: "GitHub", cnb: "CNB" };
@@ -56,11 +52,11 @@ async function chooseSource(source: UpdateSource) {
  * Offered once a download failed or was cancelled (likely too slow): the same install from
  * the other source. A check never needs it, since it already falls back to the other source.
  */
-function otherSourceAction(version: string, source: UpdateSource) {
+function otherSourceAction(version: string, source: UpdateSource, notes: string | null) {
   const other: UpdateSource = source === "cnb" ? "github" : "cnb";
   return {
     label: t("app.update.retryWith", { source: SOURCE_NAMES[other] }),
-    run: () => void chooseSource(other).then(() => installUpdate(version, other)),
+    run: () => void chooseSource(other).then(() => installUpdate(version, other, notes)),
   };
 }
 
@@ -88,6 +84,7 @@ async function runCheck() {
       title,
       body: <UpdateBalloonBody task={CHECK_TASK_ID} />,
       key: UPDATE_KEY,
+      userInitiated: true,
     });
   try {
     const r = await Promise.race([call(commands.appCheckUpdate(updateSource())), abandoned]);
@@ -98,6 +95,7 @@ async function runCheck() {
         title: t("app.update.disabled"),
         body: t("app.update.disabledBody"),
         key: UPDATE_KEY,
+        userInitiated: true,
       });
     } else if (!r.update) {
       const info = await commands.appBuildInfo();
@@ -105,32 +103,81 @@ async function runCheck() {
         level: "info",
         title: t("app.update.none", { version: info.version }),
         key: UPDATE_KEY,
+        userInitiated: true,
       });
     } else if (!installing) {
-      notifyUpdate(r.update);
+      await notifyUpdate(r.update, true);
     }
   } catch (e) {
-    notifications().notify({ level: "error", title: t("app.update.failed"), body: errorText(e), key: UPDATE_KEY });
+    notifications().notify({
+      level: "error",
+      title: t("app.update.failed"),
+      body: errorText(e),
+      key: UPDATE_KEY,
+      userInitiated: true,
+    });
   } finally {
     upsertTask({ id: CHECK_TASK_ID, title, message: null, fraction: 1, done: true });
   }
 }
 
-/** Silent check once per app start; only an available update is shown. */
-export async function checkForUpdatesOnStartup(): Promise<void> {
-  if (!isTauri()) return;
-  const update = await commands.appStartupUpdateCheck(updateSource()).catch(() => null);
-  if (update) notifyUpdate(update);
+const NIGHTLY_PROMPT_KEY = "openidea.update.nightlyPromptedAt";
+const NIGHTLY_PROMPT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/** Nightly builds come out more often than anyone wants to be asked: at most one prompt a day. */
+function nightlyPromptDue(now = Date.now()): boolean {
+  const last = Number(localStorage.getItem(NIGHTLY_PROMPT_KEY));
+  if (now - last < NIGHTLY_PROMPT_INTERVAL_MS) return false;
+  localStorage.setItem(NIGHTLY_PROMPT_KEY, String(now));
+  return true;
 }
 
-export function notifyUpdate(update: UpdateInfo) {
+/** Start one backend schedule after this window can receive its notifications. */
+export function installUpdateChecks(): () => void {
+  let disposed = false;
+  const off = onIdeEvent("updateAvailable", ({ update }) => {
+    if (!installing) void notifyUpdate(update);
+  });
+  void ideEventsReady().then(() => {
+    if (!disposed && isTauri())
+      void call(commands.appUpdateWindowReady(true, navigator.language)).catch((e) =>
+        console.warn("cannot start update checks", e),
+      );
+  });
+  return () => {
+    disposed = true;
+    off();
+    if (isTauri()) void call(commands.appUpdateWindowReady(false, navigator.language)).catch(() => {});
+  };
+}
+
+/** The balloon shows the first paragraph; the whole notes belong to the What's New page. */
+function updateSummary(notes: string | null): string | undefined {
+  const text = notes?.trim();
+  if (!text) return undefined;
+  const paragraph = text.split(/\r?\n\s*\r?\n/)[0]?.trim() || text;
+  return paragraph.length > 300 ? paragraph.slice(0, 300).trimEnd() + "…" : paragraph;
+}
+
+/** `userInitiated`: the update came from a manual check, so it pops up regardless of the balloon settings. */
+export async function notifyUpdate(update: UpdateInfo, userInitiated = false): Promise<void> {
+  if (isTauri()) {
+    const claimed = await call(commands.appUpdateAnnouncement(update.version, !userInitiated)).catch(
+      () => userInitiated,
+    );
+    if (!claimed) return;
+  }
+  if (!userInitiated && update.currentVersion.includes("-nightly.") && !nightlyPromptDue()) return;
   notifications().notify({
     level: "info",
     title: t("app.update.available", { version: update.version }),
-    body: update.notes ?? undefined,
+    body: updateSummary(update.notes ?? null),
     sticky: true,
     key: UPDATE_KEY,
-    actions: [{ label: t("app.update.install"), run: () => void installUpdate(update.version) }],
+    actions: [
+      { label: t("app.update.install"), run: () => void installUpdate(update.version, updateSource(), update.notes) },
+    ],
+    userInitiated,
   });
 }
 
@@ -152,13 +199,13 @@ export function progressText(p: UpdateProgress): { message: string; fraction: nu
 }
 
 /** Downloads and installs `version`, then restarts. A second call while one runs joins it. */
-export function installUpdate(version: string, source = updateSource()): Promise<void> {
+export function installUpdate(version: string, source = updateSource(), notes: string | null = null): Promise<void> {
   if (!isTauri()) return Promise.resolve();
-  installing ??= runInstall(version, source).finally(() => (installing = null));
+  installing ??= runInstall(version, source, notes).finally(() => (installing = null));
   return installing;
 }
 
-async function runInstall(version: string, source: UpdateSource) {
+async function runInstall(version: string, source: UpdateSource, notes: string | null) {
   const title = t("app.update.downloading", { version });
   const request = nextRequestId();
   const cancel = () => void commands.cancelRequest(request).catch(() => {});
@@ -171,6 +218,7 @@ async function runInstall(version: string, source: UpdateSource) {
       sticky: true,
       key: UPDATE_KEY,
       actions,
+      userInitiated: true,
     });
   let installingShown = false;
   channel.onmessage = (p) => {
@@ -201,7 +249,8 @@ async function runInstall(version: string, source: UpdateSource) {
         level: "info",
         title: t("app.update.cancelled"),
         key: UPDATE_KEY,
-        actions: [otherSourceAction(version, source)],
+        actions: [otherSourceAction(version, source, notes)],
+        userInitiated: true,
       });
     } else {
       notifications().notify({
@@ -210,15 +259,18 @@ async function runInstall(version: string, source: UpdateSource) {
         body: errorText(e),
         key: UPDATE_KEY,
         actions: [
-          { label: t("app.update.retry"), run: () => void installUpdate(version, source) },
-          otherSourceAction(version, source),
+          { label: t("app.update.retry"), run: () => void installUpdate(version, source, notes) },
+          otherSourceAction(version, source, notes),
         ],
+        userInitiated: true,
       });
     }
     return;
   } finally {
     upsertTask({ id: INSTALL_TASK_ID, title, message: null, fraction: 1, done: true });
   }
+  // The restarted app reads this to show the What's New page of the version it now runs.
+  recordInstalledUpdate(version, notes);
   const restart = () => void commands.appRestart();
   // Stays if a window cancels the restart (unsaved changes): the update applies on the next start.
   notifications().notify({
@@ -228,6 +280,7 @@ async function runInstall(version: string, source: UpdateSource) {
     sticky: true,
     key: UPDATE_KEY,
     actions: [{ label: t("app.update.restart"), run: restart }],
+    userInitiated: true,
   });
   restart();
 }

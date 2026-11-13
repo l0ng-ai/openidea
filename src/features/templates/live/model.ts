@@ -21,6 +21,8 @@ export interface TemplateVariable {
 }
 
 export interface LiveTemplate {
+  /** Read-only contribution, withdrawn with its plugin. */
+  pluginOrigin?: string;
   id: string;
   /** Settings grouping, e.g. "Rust", "Surround". */
   group: string;

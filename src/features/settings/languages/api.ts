@@ -118,9 +118,9 @@ export function pip(
   );
 }
 
-/** Interpreter the project uses when none is configured (its virtualenv). */
-export function effectivePython(): Promise<string | null> {
-  return isTauri() ? call(commands.sdkPythonEffective(null)) : Promise.resolve(null);
+/** Interpreter the project uses when none is configured (its virtualenv); `near` picks the workspace member. */
+export function effectivePython(near: string | null = null): Promise<string | null> {
+  return isTauri() ? call(commands.sdkPythonEffective(near)) : Promise.resolve(null);
 }
 
 /** The PHP language level of the project `path` belongs to; null outside Tauri. */
@@ -135,7 +135,7 @@ export async function choosePath(opts: {
   defaultPath?: string;
 }): Promise<string | null> {
   if (!isTauri()) return null;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     directory: opts.directory,
     multiple: false,

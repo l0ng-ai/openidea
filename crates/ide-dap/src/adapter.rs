@@ -72,6 +72,13 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "stdio",
             "Install Kotlin Debug Adapter in Settings › Languages & Frameworks › Language Servers",
         ),
+        // Inside the language server: reached through `debugServer`, never started.
+        "kotlin-lsp" => cfg(
+            "kotlin-lsp",
+            &[],
+            "tcp",
+            "Install JetBrains Kotlin LSP in Settings › Languages & Frameworks › Language Servers",
+        ),
         // Windows installs `python.exe`; `python3.exe` there is at most a Store alias.
         "debugpy" => cfg(
             if cfg!(windows) { "python" } else { "python3" },
@@ -98,15 +105,33 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "stdio",
             "Install netcoredbg (.NET debugger) in Settings › Languages & Frameworks › Language Servers",
         ),
-        "lldb-dap" => {
-            cfg("lldb-dap", &[], "stdio", "Install LLVM's lldb-dap (brew install llvm; on macOS `xcrun -f lldb-dap`)")
-        }
+        "lldb-dap" => cfg(
+            "lldb-dap",
+            &[],
+            "stdio",
+            "Install LLVM's lldb-dap (brew install llvm), or on macOS use the one found by xcrun -f lldb-dap",
+        ),
+        // GDB's own DAP interpreter, stdio transport. The DAP support it needs shipped in GDB 14
+        // (`prepare_gdb` refuses older ones with the required version in the message).
+        "gdb" => cfg(
+            "gdb",
+            &["-i", "dap"],
+            "stdio",
+            "Install GDB 14 or newer (apt install gdb, dnf install gdb, brew install gdb)",
+        ),
+        "rdbg" => cfg("rdbg", &["-O", "--port", PORT_PLACEHOLDER, "-c"], "tcp", "gem install debug"),
         // A jdtls bundle: the session is started through jdtls and reached via `debugServer`.
         "java-debug" => cfg(
             "com.microsoft.java.debug.plugin.jar",
             &[],
             "tcp",
             "Install Microsoft java-debug (Settings › Languages & Frameworks › Language Servers)",
+        ),
+        "bun-dap" => cfg(
+            "bun-dap",
+            &["${port}", "127.0.0.1"],
+            "tcp",
+            "To install bun-dap: git clone https://github.com/morf-bls/bun-dap, run bun install && bun run build, then place dist/bun-dap in your PATH",
         ),
         _ => return None,
     })
@@ -126,6 +151,7 @@ pub fn default_type(adapter: &str) -> Option<&'static str> {
         "delve" => "go",
         "netcoredbg" => "coreclr",
         "lldb-dap" => "lldb-dap",
+        "gdb" => "gdb",
         "java-debug" => "java",
         _ => return None,
     })
@@ -165,6 +191,11 @@ pub fn parse_address(addr: &str) -> Option<(String, u16)> {
 }
 
 /// A port that was free a moment ago on the loopback interface.
+///
+/// Inherently racy: another process can bind the port between the listener being
+/// dropped here and the adapter binding it. Callers that hand the port to a child
+/// retry on a bind conflict (see [`ProcessLauncher`]), or — better — let the child
+/// pick `:0` and report the actual port back (as the Kotlin JDWP debuggee does).
 pub fn free_port() -> std::io::Result<u16> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     Ok(listener.local_addr()?.port())
@@ -326,6 +357,89 @@ pub async fn prepare_debugpy(spec: &mut AdapterSpec) -> IdeResult<()> {
     )))
 }
 
+/// GDB's DAP interpreter (`-i dap`) shipped in GDB 14; older ones exit with
+/// "Interpreter `dap' unrecognized".
+const GDB_MIN_MAJOR: u32 = 14;
+
+/// `(major, minor)` of the first version number in the output of `gdb --version`
+/// (`GNU gdb (GDB) 14.2`, `GNU gdb (Ubuntu 12.1-0ubuntu1~22.04.2) 12.1`, `GNU gdb
+/// (GDB) 15.0.50.20240403-0ubuntu1`). `None` when no standalone version number is there.
+pub fn parse_gdb_version(output: &str) -> Option<(u32, u32)> {
+    let line = output.lines().next()?;
+    // Distribution names can contain versions, e.g. `(GDB; SUSE Linux Enterprise 15) 14.2`.
+    let line = line.rsplit_once(')').map_or(line, |(_, version)| version);
+    let b = line.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if !b[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        let major: u32 = line[start..i].parse().ok()?;
+        let mut minor = 0;
+        if i + 1 < b.len() && b[i] == b'.' && b[i + 1].is_ascii_digit() {
+            i += 1;
+            let ms = i;
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+            minor = line[ms..i].parse().unwrap_or(0);
+        }
+        // A version stands alone: `mingw32-gdb13.exe`'s embedded digits are part of a word.
+        if start > 0 && (b[start - 1].is_ascii_alphabetic() || b[start - 1] == b'_') {
+            continue;
+        }
+        return Some((major, minor));
+    }
+    None
+}
+
+/// Probe the already resolved and verified executable with its launch environment.
+async fn gdb_version(binary: &Path, spec: &AdapterSpec) -> IdeResult<Option<(u32, u32)>> {
+    let mut probe = Command::new(binary);
+    if let Some(path) = adapter_path(&spec.env) {
+        probe.env("PATH", path);
+    }
+    ide_core::process::prepare(probe.as_std_mut());
+    let probe = probe
+        .arg("--version")
+        .current_dir(&spec.cwd)
+        .envs(spec.env.iter().cloned())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_secs(15), probe).await else {
+        return Ok(None);
+    };
+    Ok(parse_gdb_version(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Refuse old GDB versions and report whether launch must follow configurationDone.
+/// GDB 15 starts the inferior in launch; 14 and 16+ start it at configurationDone.
+async fn prepare_gdb(spec: &AdapterSpec, binary: &Path) -> IdeResult<bool> {
+    let Some((major, minor)) = gdb_version(binary, spec).await? else {
+        return Ok(false);
+    };
+    if major >= GDB_MIN_MAJOR {
+        return Ok(major == 15);
+    }
+    let mut msg = format!(
+        "debugging with GDB needs GDB {GDB_MIN_MAJOR} or newer (found {major}.{minor}): \
+         this one has no DAP interpreter (`gdb -i dap`)"
+    );
+    if let Some(hint) = &spec.install_hint {
+        msg.push_str(". ");
+        msg.push_str(hint);
+    }
+    Err(IdeError::unavailable(msg))
+}
+
 /// An adapter that is a plugin of another program (java-debug, a jdtls bundle) rather
 /// than a program: it has no process of its own and is reached through `debugServer`.
 pub fn is_plugin_bundle(command: &str) -> bool {
@@ -359,6 +473,8 @@ pub type BoxWriter = Box<dyn AsyncWrite + Unpin + Send>;
 
 /// A connected adapter: byte streams plus the process (if we spawned one).
 pub struct AdapterIo {
+    /// GDB 15 starts running inside `launch`; configure breakpoints before sending it.
+    pub launch_after_configuration: bool,
     pub reader: BoxReader,
     pub writer: BoxWriter,
     pub child: Option<Child>,
@@ -373,8 +489,8 @@ pub struct AdapterIo {
 pub type ProgramOutput = tokio::sync::mpsc::UnboundedReceiver<(&'static str, String)>;
 type ProgramSink = tokio::sync::mpsc::UnboundedSender<(&'static str, String)>;
 
-/// Delve's debuggee inherits its stdio; no DAP output event carries what the program prints.
-const SHARES_STDIO: &str = "delve";
+/// These debuggees inherit adapter stdio; no DAP event carries their output.
+const SHARES_STDIO: &[&str] = &["delve", "rdbg"];
 const DELVE_BANNER: &str = "DAP server listening at:";
 
 pub type LaunchFuture = Pin<Box<dyn Future<Output = IdeResult<AdapterIo>> + Send>>;
@@ -393,6 +509,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const EMBEDDED_START_TIMEOUT: Duration = Duration::from_secs(120);
 /// Probe of a `connect` address before starting the command.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+/// Attempts at a fresh port for a TCP adapter: the one `free_port` hands out can be
+/// claimed by another process before the adapter binds it, so a new one usually wins.
+const PORT_ATTEMPTS: u32 = 3;
 
 impl AdapterLauncher for ProcessLauncher {
     fn launch(&self, mut spec: AdapterSpec, reuse_port: Option<u16>) -> LaunchFuture {
@@ -407,6 +526,7 @@ impl AdapterLauncher for ProcessLauncher {
                 let stream = connect_with_retries(host, port, None, timeout).await?;
                 let (r, w) = stream.into_split();
                 return Ok(AdapterIo {
+                    launch_after_configuration: false,
                     reader: Box::new(r),
                     writer: Box::new(w),
                     child: None,
@@ -430,6 +550,7 @@ impl AdapterLauncher for ProcessLauncher {
                 let _ = stream.set_nodelay(true);
                 let (r, w) = stream.into_split();
                 return Ok(AdapterIo {
+                    launch_after_configuration: false,
                     reader: Box::new(r),
                     writer: Box::new(w),
                     child: None,
@@ -458,85 +579,150 @@ impl AdapterLauncher for ProcessLauncher {
                         .ok_or_else(|| missing(&spec))?
                 }
             };
-            let port = match spec.transport {
-                // An embedded adapter started without `${port}` listens on its usual address.
-                Transport::Tcp => match &embedded {
-                    Some((_, port)) if !spec.args.iter().any(|a| a.contains(PORT_PLACEHOLDER)) => Some(*port),
-                    _ => Some(free_port()?),
-                },
-                Transport::Stdio => None,
-            };
-            let args = substitute_root(&spec.args, &spec.cwd);
-            let args = match port {
-                Some(port) => substitute_port(&args, port),
-                None => args,
-            };
-            let mut cmd = Command::new(&binary);
-            if let Some(path) = adapter_path(&spec.env) {
-                cmd.env("PATH", path);
-            }
-            ide_core::process::prepare(cmd.as_std_mut());
-            cmd.args(&args)
-                .envs(spec.env.iter().map(|(k, v)| (k, v)))
-                .current_dir(&spec.cwd)
-                .stdin(if port.is_some() { Stdio::null() } else { Stdio::piped() })
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true);
-            let mut child =
-                cmd.spawn().map_err(|e| IdeError::unavailable(format!("failed to start {}: {e}", binary.display())))?;
-            let (program_sink, program_output) = if spec.adapter == SHARES_STDIO {
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                (Some(tx), Some(rx))
-            } else {
-                (None, None)
-            };
-            if let Some(err) = child.stderr.take() {
-                pump_lines(err, spec.adapter.clone(), stderr.clone(), program_sink.clone().map(|tx| (tx, "stderr")));
-            }
-            match port {
-                None => {
-                    let stdin = child.stdin.take().ok_or_else(|| IdeError::internal("adapter stdin unavailable"))?;
-                    let stdout = child.stdout.take().ok_or_else(|| IdeError::internal("adapter stdout unavailable"))?;
-                    Ok(AdapterIo {
-                        reader: Box::new(stdout),
-                        writer: Box::new(stdin),
-                        child: Some(child),
-                        port: None,
-                        stderr,
-                        program_output,
-                    })
+            let launch_after_configuration =
+                if spec.adapter == "gdb" { prepare_gdb(&spec, &binary).await? } else { false };
+            let base_args = substitute_root(&spec.args, &spec.cwd);
+            match spec.transport {
+                Transport::Stdio => {
+                    let mut io = spawn_adapter(&spec, &binary, &base_args, None, CONNECT_TIMEOUT).await?;
+                    io.launch_after_configuration = launch_after_configuration;
+                    Ok(io)
                 }
-                Some(port) => {
-                    if let Some(out) = child.stdout.take() {
-                        pump_lines(out, spec.adapter.clone(), stderr.clone(), program_sink.map(|tx| (tx, "stdout")));
-                    }
-                    let timeout = if embedded.is_some() { EMBEDDED_START_TIMEOUT } else { CONNECT_TIMEOUT };
-                    let stream = match connect_with_retries(LOOPBACK, port, Some(&mut child), timeout).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            let _ = child.start_kill();
-                            let tail = stderr.lock().join("\n");
-                            return Err(if tail.is_empty() {
-                                e
-                            } else {
-                                IdeError::unavailable(format!("{}\n{tail}", e.message))
-                            });
-                        }
+                Transport::Tcp => {
+                    // An embedded adapter started without `${port}` listens on its usual
+                    // address; every other TCP adapter gets a port chosen here so it can be
+                    // retried if another process takes it before the adapter binds.
+                    let fixed = match &embedded {
+                        Some((_, port)) if !spec.args.iter().any(|a| a.contains(PORT_PLACEHOLDER)) => Some(*port),
+                        _ => None,
                     };
-                    let (r, w) = stream.into_split();
-                    Ok(AdapterIo {
-                        reader: Box::new(r),
-                        writer: Box::new(w),
-                        child: Some(child),
-                        port: Some(port),
-                        stderr,
-                        program_output,
-                    })
+                    let start_timeout = if embedded.is_some() { EMBEDDED_START_TIMEOUT } else { CONNECT_TIMEOUT };
+                    for attempt in 1..=PORT_ATTEMPTS {
+                        let port = match fixed {
+                            Some(port) => port,
+                            None => free_port()?,
+                        };
+                        let args = substitute_port(&base_args, port);
+                        match spawn_adapter(&spec, &binary, &args, Some(port), start_timeout).await {
+                            Ok(mut io) => {
+                                io.launch_after_configuration = launch_after_configuration;
+                                return Ok(io);
+                            }
+                            Err(e) => {
+                                if fixed.is_none() && attempt < PORT_ATTEMPTS && is_port_race(&e) {
+                                    tracing::warn!(
+                                        target: "ide_dap::adapter",
+                                        "debug adapter failed to start on port {port}: {}; retrying",
+                                        e.message
+                                    );
+                                    continue;
+                                }
+                                return Err(e);
+                            }
+                        }
+                    }
+                    unreachable!("the retry loop returns on its last attempt")
                 }
             }
         })
     }
+}
+
+/// Starts `binary` with `args`, then connects to it when `port` is set (a TCP adapter)
+/// or hands back its stdio when it is not. The child is stopped if it never accepts.
+async fn spawn_adapter(
+    spec: &AdapterSpec,
+    binary: &Path,
+    args: &[String],
+    port: Option<u16>,
+    start_timeout: Duration,
+) -> IdeResult<AdapterIo> {
+    let stderr = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let mut cmd = Command::new(binary);
+    if let Some(path) = adapter_path(&spec.env) {
+        cmd.env("PATH", path);
+    }
+    ide_core::process::prepare(cmd.as_std_mut());
+    // Every adapter leads its own process group: the program an adapter launches itself
+    // (java-debug's JVM) joins the group, so a forced stop reaches the whole tree with
+    // one `kill(-pgid)`. On Windows the same coverage comes from the session's job object.
+    ide_core::process::own_group(cmd.as_std_mut());
+    cmd.args(args)
+        .envs(spec.env.iter().map(|(k, v)| (k, v)))
+        .current_dir(&spec.cwd)
+        .stdin(if port.is_some() { Stdio::null() } else { Stdio::piped() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child =
+        cmd.spawn().map_err(|e| IdeError::unavailable(format!("failed to start {}: {e}", binary.display())))?;
+    let (program_sink, program_output) = if SHARES_STDIO.contains(&spec.adapter.as_str()) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    if let Some(err) = child.stderr.take() {
+        pump_lines(err, spec.adapter.clone(), stderr.clone(), program_sink.clone().map(|tx| (tx, "stderr")));
+    }
+    match port {
+        None => {
+            let stdin = child.stdin.take().ok_or_else(|| IdeError::internal("adapter stdin unavailable"))?;
+            let stdout = child.stdout.take().ok_or_else(|| IdeError::internal("adapter stdout unavailable"))?;
+            Ok(AdapterIo {
+                launch_after_configuration: false,
+                reader: Box::new(stdout),
+                writer: Box::new(stdin),
+                child: Some(child),
+                port: None,
+                stderr,
+                program_output,
+            })
+        }
+        Some(port) => {
+            if let Some(out) = child.stdout.take() {
+                pump_lines(out, spec.adapter.clone(), stderr.clone(), program_sink.map(|tx| (tx, "stdout")));
+            }
+            let stream = match connect_with_retries(LOOPBACK, port, Some(&mut child), start_timeout).await {
+                Ok(s) => s,
+                Err(e) => {
+                    if spec.adapter == "rdbg"
+                        && let Some(pid) = child.id()
+                    {
+                        ide_core::process::kill_tree_of(pid);
+                    }
+                    let _ = child.start_kill();
+                    let tail = stderr.lock().join("\n");
+                    return Err(if tail.is_empty() {
+                        e
+                    } else {
+                        IdeError::unavailable(format!("{}\n{tail}", e.message))
+                    });
+                }
+            };
+            let (r, w) = stream.into_split();
+            Ok(AdapterIo {
+                launch_after_configuration: false,
+                reader: Box::new(r),
+                writer: Box::new(w),
+                child: Some(child),
+                port: Some(port),
+                stderr,
+                program_output,
+            })
+        }
+    }
+}
+
+/// A failed adapter start that another process grabbing the free port can explain
+/// (POSIX and Windows "address already in use" texts, or the adapter exiting because
+/// it could not bind). Anything else is a real start failure and is not retried.
+fn is_port_race(err: &IdeError) -> bool {
+    let message = err.message.to_ascii_lowercase();
+    message.contains("address already in use")
+        || message.contains("addrinuse")
+        || message.contains("only one usage of each socket address")
+        || message.contains("exited before accepting connections")
 }
 
 fn pump_lines<R: AsyncRead + Unpin + Send + 'static>(
@@ -674,13 +860,100 @@ mod tests {
 
     #[test]
     fn builtins_cover_common_adapters() {
-        for name in ["codelldb", "debugpy", "js-debug", "delve", "netcoredbg", "java-debug"] {
+        for name in ["codelldb", "debugpy", "js-debug", "delve", "netcoredbg", "java-debug", "gdb"] {
             let cfg = builtin(name).unwrap();
             assert!(cfg.install_hint.is_some());
         }
         let delve = resolve(&builtin("delve").unwrap(), PathBuf::from("/"));
         assert_eq!(delve.transport, Transport::Tcp);
+        // GDB's own DAP interpreter over stdio, with the required version in its hint.
+        let gdb = builtin("gdb").unwrap();
+        assert_eq!(gdb.command, "gdb");
+        assert_eq!(gdb.args, ["-i", "dap"]);
+        assert_eq!(gdb.transport, "stdio");
+        assert!(gdb.install_hint.as_deref().is_some_and(|h| h.contains("14")), "{gdb:?}");
+        assert_eq!(default_type("gdb"), Some("gdb"));
         assert!(builtin("nope").is_none());
+    }
+
+    /// The first version number of `gdb --version`'s first line, however the distro decorates it.
+    #[test]
+    fn parses_gdb_versions() {
+        for (out, want) in [
+            ("GNU gdb (GDB) 14.2\nCopyright (C) 2023 Free Software Foundation", Some((14, 2))),
+            ("GNU gdb (GDB) 15.0.50.20240403-0ubuntu1\n", Some((15, 0))),
+            ("GNU gdb (Ubuntu 12.1-0ubuntu1~22.04.2) 12.1", Some((12, 1))),
+            ("GNU gdb (Debian 13.1-3) 13.1", Some((13, 1))),
+            ("GNU gdb (GDB) Fedora Linux 16.3-1.fc41", Some((16, 3))),
+            ("GNU gdb (GDB; SUSE Linux Enterprise 15) 14.2", Some((14, 2))),
+            ("GNU gdb (GDB; SUSE Linux Enterprise 15) 11.1", Some((11, 1))),
+            ("mingw32-gdb13.exe (GDB) 13.2", Some((13, 2))),
+            ("GNU gdb 14", Some((14, 0))),
+            ("no version here", None),
+            ("", None),
+        ] {
+            assert_eq!(parse_gdb_version(out), want, "{out}");
+        }
+    }
+
+    #[tokio::test]
+    async fn gdb_probe_never_executes_a_changed_pinned_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join(if cfg!(windows) { "gdb.cmd" } else { "gdb" });
+        std::fs::write(&fake, "approved").unwrap();
+        let pin = ProgramPin::approve(&fake).unwrap();
+        #[cfg(windows)]
+        std::fs::write(&fake, "@echo off\r\necho ran>probe-ran\r\necho GNU gdb (GDB) 15.1\r\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&fake, "#!/bin/sh\ntouch probe-ran\necho 'GNU gdb (GDB) 15.1'\n").unwrap();
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut spec = resolve(&builtin("gdb").unwrap(), dir.path().to_owned());
+        spec.command = fake.to_string_lossy().into_owned();
+        spec.pinned = Some(pin);
+        let error = ProcessLauncher.launch(spec, None).await.err().expect("changed program is refused");
+        assert_eq!(error.kind, ide_core::error::ErrorKind::PermissionDenied);
+        assert!(!dir.path().join("probe-ran").exists(), "the version probe executed an unapproved program");
+    }
+
+    #[tokio::test]
+    async fn gdb_probe_uses_the_verified_program_and_launch_environment_once() {
+        use tokio::io::AsyncReadExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join(if cfg!(windows) { "gdb.cmd" } else { "gdb" });
+        #[cfg(windows)]
+        std::fs::write(&fake, "@echo off\r\nif \"%~1\"==\"--version\" (\r\n echo probe>>probes\r\n echo GNU gdb ^(GDB^) %GDB_TEST_VERSION%\r\n) else (\r\n echo adapter\r\n)\r\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&fake, "#!/bin/sh\nif [ \"$1\" = --version ]; then\n echo probe >> probes\n echo \"GNU gdb (GDB) $GDB_TEST_VERSION\"\nelse\n echo adapter\nfi\n").unwrap();
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let pin = ProgramPin::approve(&fake).unwrap();
+        for (version, deferred) in [("12.1", false), ("14.2", false), ("15.1", true), ("16.3", false)] {
+            let mut spec = resolve(&builtin("gdb").unwrap(), dir.path().to_owned());
+            // Only the approved path is executable; the symbolic command must never be probed.
+            spec.command = "definitely-not-a-real-binary-openidea".into();
+            spec.pinned = Some(pin.clone());
+            spec.env.push(("GDB_TEST_VERSION".into(), version.into()));
+            let result = ProcessLauncher.launch(spec, None).await;
+            if version == "12.1" {
+                let error = result.err().expect("GDB 12 has no DAP interpreter");
+                assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
+                assert!(error.message.contains("GDB 14 or newer"), "{}", error.message);
+                assert!(error.message.contains("12.1"), "{}", error.message);
+            } else {
+                let mut io = result.unwrap();
+                assert_eq!(io.launch_after_configuration, deferred, "{version}");
+                let mut output = String::new();
+                io.reader.read_to_string(&mut output).await.unwrap();
+                assert_eq!(output.trim(), "adapter");
+                io.child.as_mut().unwrap().wait().await.unwrap();
+            }
+        }
+        assert_eq!(std::fs::read_to_string(dir.path().join("probes")).unwrap().lines().count(), 4);
     }
 
     #[test]
@@ -765,5 +1038,17 @@ mod tests {
         let err = ProcessLauncher.launch(spec, None).await.err().unwrap();
         assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
         assert!(err.message.contains("runs inside the Java language server"), "{}", err.message);
+    }
+
+    #[test]
+    fn port_conflicts_are_recognised_for_retry() {
+        let in_use = IdeError::unavailable(
+            "debug adapter exited before accepting connections (exit status: 1)\nbind: address already in use",
+        );
+        assert!(is_port_race(&in_use));
+        assert!(is_port_race(&IdeError::unavailable(
+            "Only one usage of each socket address (protocol/network address/port) is normally permitted."
+        )));
+        assert!(!is_port_race(&IdeError::unavailable("failed to start codelldb: file not found")));
     }
 }

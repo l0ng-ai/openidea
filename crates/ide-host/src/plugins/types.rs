@@ -8,6 +8,7 @@ pub use ide_plugin::{
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeMap;
 
 /// A line a view's `process` body printed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -42,6 +43,9 @@ pub enum PluginStatus {
     NeedsConsent,
     /// Failed to load, or failed repeatedly and was stopped for this session (see `error`).
     Failed,
+    /// A plugin it requires is missing, disabled, the wrong version or cannot run
+    /// (`error` says which); it starts when that is resolved.
+    Blocked,
 }
 
 impl PluginStatus {
@@ -71,6 +75,9 @@ pub struct PluginInfo {
     pub has_code: bool,
     /// Declared capabilities with risk and grant state.
     pub capabilities: Vec<CapabilityInfo>,
+    /// HTTPS hosts the user allowed through `net:ask` ("always allow"),
+    /// none of them declared by the manifest; each can be revoked.
+    pub net_hosts: Vec<String>,
     /// What it contributes while live (point + label).
     pub contributions: Vec<ContributionInfo>,
     /// `activation` events of the manifest.
@@ -83,6 +90,45 @@ pub struct PluginInfo {
     pub publisher: Option<String>,
     /// The version an update replaced, to roll back to.
     pub previous_version: Option<String>,
+    /// `[[depends]]`, each with how it stands now.
+    pub depends: Vec<DependencyInfo>,
+    /// Plugins that need this one, directly or through others.
+    pub dependents: Vec<DependentInfo>,
+    /// `[[extension-points]]` this plugin declares while it is live.
+    pub extension_points: Vec<ExtensionPointInfo>,
+}
+
+/// A plugin another one requires.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyInfo {
+    pub id: String,
+    /// The installed plugin's name, when it is installed.
+    pub name: Option<String>,
+    /// The requirement as written (`^0.2`).
+    pub version: Option<String>,
+    pub optional: bool,
+    pub state: ide_extension::DependencyState,
+}
+
+/// A plugin that needs another one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DependentInfo {
+    pub id: String,
+    pub name: String,
+    /// Switched off by the user: disabling the plugin it needs changes nothing for it.
+    pub enabled: bool,
+}
+
+/// An extension point a plugin declared.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionPointInfo {
+    pub id: String,
+    pub description: String,
+    /// Plugin ids contributing to it now.
+    pub contributors: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Type)]
@@ -164,8 +210,33 @@ pub struct PluginUpdate {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum PluginEvent {
+    /// Project target registrations or remembered prompt answers changed.
+    RunTargetsChanged,
+    /// A window-owned operation; an empty request id queues an asynchronous run.
+    #[serde(rename_all = "camelCase")]
+    WindowRequest { plugin_id: String, request_id: String, request: WindowRequest },
+    /// Reply to a content action in this window.
+    #[serde(rename_all = "camelCase")]
+    ContentTabReply { plugin_id: String, request_id: String, reply: ide_plugin::ContentTabReply },
+
     /// Plugins, their status or their contributions changed: re-fetch `plugin_list`.
     CommandsChanged,
+    /// Complete replacement of one plugin's project-scoped decorations.
+    #[serde(rename_all = "camelCase")]
+    DecorationsChanged { plugin_id: String, sets: Vec<DecorationSet> },
+    /// Open a file in the invoking window.
+    EditorOpen { path: ide_core::IpcPath, selection: Option<ide_core::Range> },
+    /// Change selection or scrolling only in this window's already open editor.
+    EditorRanges { path: ide_core::IpcPath, ranges: Vec<ide_core::Range>, reveal: bool },
+    /// A bounded output channel snapshot, or withdrawal when the plugin stops.
+    #[serde(rename_all = "camelCase")]
+    OutputChanged { plugin_id: String, channel: String, text: Option<String> },
+    /// Reveal a read-only Output tab in the receiving window.
+    #[serde(rename_all = "camelCase")]
+    RevealOutput { plugin_id: String, channel: String, text: String },
+    /// Execute an action through the receiving window and answer over IPC.
+    #[serde(rename_all = "camelCase")]
+    ExecuteCommand { request_id: String, id: String, arg: Option<String>, chain: Vec<String> },
     /// Cached document associations were disposed (reload, disable or failure).
     DocumentIndexesChanged,
     /// The routes `plugin_id` reports for the project `root` may have changed:
@@ -187,6 +258,9 @@ pub enum PluginEvent {
     /// A plugin's status bar item was set (`item`) or removed.
     #[serde(rename_all = "camelCase")]
     StatusItemChanged { plugin_id: String, id: String, item: Option<StatusItem> },
+    /// An override in the receiving window; removal exposes the global item.
+    #[serde(rename_all = "camelCase")]
+    WindowStatusItemChanged { plugin_id: String, id: String, item: Option<StatusItem> },
     /// A plugin's context key was set (`value`: JSON text) or removed, in the
     /// emitted window (every window when the client is `None`).
     #[serde(rename_all = "camelCase")]
@@ -201,6 +275,9 @@ pub enum PluginEvent {
     /// The kinds of workbench events plugins want changed: re-fetch
     /// `plugin_event_kinds` (the UI reports only those).
     SubscriptionsChanged,
+    /// A background WebSocket has messages ready for its owning plugin.
+    #[serde(rename_all = "camelCase")]
+    WebsocketReady { plugin_id: String, connection: u64 },
     #[serde(rename_all = "camelCase")]
     ThemeChanged { theme: Option<ActiveTheme> },
     /// A plugin needs capabilities the user has not granted yet (first use
@@ -247,6 +324,10 @@ pub enum PluginEvent {
     /// The call that asked gave up (cancelled, or its plugin stopped): close the prompt.
     #[serde(rename_all = "camelCase")]
     PromptClosed { prompt_id: String },
+    /// A command of this window's prompting plugin was run from another window and refused
+    /// while the plugin waits for the answer here: bring this window to the front.
+    #[serde(rename_all = "camelCase")]
+    PromptWaiting { plugin_id: String },
     /// Bring the tool window of the plugin's view `view` to the front.
     #[serde(rename_all = "camelCase")]
     RevealView { plugin_id: String, view: String },
@@ -340,6 +421,8 @@ pub struct PackageFile {
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginStatusItem {
+    /// Whether this item overrides the global item in the requesting window.
+    pub window: bool,
     pub plugin_id: String,
     pub id: String,
     pub item: StatusItem,
@@ -387,4 +470,47 @@ pub struct PluginCommitCheckResult {
     pub problems: Vec<ide_plugin::CommitProblem>,
     /// The check could not run (the plugin failed, timed out or lacks `vcs.read`).
     pub error: Option<String>,
+}
+
+/// The invoking window's response to a command request.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub enum CommandAnswer {
+    Value(Option<String>),
+    NotFound,
+    Failed(String),
+}
+
+/// A plugin-owned editor or project-tree decoration set for one file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DecorationSet {
+    pub root: ide_core::IpcPath,
+    pub path: ide_core::IpcPath,
+    pub set_id: String,
+    pub tree: bool,
+    pub items: Vec<ide_plugin::Decoration>,
+    pub file: Option<ide_plugin::FileDecoration>,
+}
+
+/// A request that the invoking window acknowledges through plugin_answer_command.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WindowRequest {
+    /// Connect and introspect using the normal Database action in this window.
+    DatabaseConnect { id: String },
+    /// Open and acknowledge validation by the shared content editor.
+    ContentTab { tab: ide_plugin::ContentTab },
+    #[serde(rename_all = "camelCase")]
+    Run { operation: String, config: Box<ide_run::RunConfig>, debug: bool },
+    #[serde(rename_all = "camelCase")]
+    Terminal {
+        operation: String,
+        key: String,
+        title: String,
+        program: ide_core::IpcPath,
+        args: Vec<String>,
+        env: BTreeMap<String, String>,
+        cwd: ide_core::IpcPath,
+    },
 }

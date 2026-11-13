@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { groupWorktrees, isCurrentWorktree, worktreeContainsProject, type RepoWorktrees } from "./worktrees";
+import {
+  groupWorktrees,
+  isCurrentWorktree,
+  worktreeContainsProject,
+  worktreeMoveTarget,
+  type RepoWorktrees,
+} from "./worktrees";
 
 const worktree = (path: string, main = false) => ({
   path,
@@ -94,5 +100,15 @@ describe("worktreeContainsProject", () => {
     ["/p/front", null, false],
   ])("compares %s with project %s", (path, root, expected) => {
     expect(worktreeContainsProject(path, root)).toBe(expected);
+  });
+});
+
+describe("worktreeMoveTarget", () => {
+  it("keeps the worktree's folder name unless the chosen folder already has it", () => {
+    expect(worktreeMoveTarget("/work/app-fix", "/projects")).toBe("/projects/app-fix");
+    expect(worktreeMoveTarget("/work/app-fix", "/projects/")).toBe("/projects/app-fix");
+    expect(worktreeMoveTarget("/work/app-fix", "/projects/app-fix")).toBe("/projects/app-fix");
+    expect(worktreeMoveTarget("C:/work/app-fix", "D:\\wt")).toBe("D:\\wt\\app-fix");
+    expect(worktreeMoveTarget("C:/work/app-fix", "D:\\wt\\app-fix")).toBe("D:\\wt\\app-fix");
   });
 });

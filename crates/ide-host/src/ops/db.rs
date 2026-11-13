@@ -71,6 +71,22 @@ pub(crate) fn register(d: &mut Dispatcher) {
         let id = c.arg::<String>("id")?;
         databases(&c.host, &c.window, &id).await
     });
+    d.add("db_database_catalog", |c| async move {
+        let (id, database) = (c.arg::<String>("id")?, c.arg::<String>("database")?);
+        database_catalog(&c.host, &c.window, &id, &database).await
+    });
+    d.add("db_saved_catalog", |c| async move {
+        let id = c.arg::<String>("id")?;
+        saved_catalog(&c.host, &c.window, &id).await
+    });
+    d.add("db_retain_catalog", |c| async move {
+        let (id, databases) = (c.arg::<String>("id")?, c.arg::<Vec<String>>("databases")?);
+        retain_catalog(&c.host, &c.window, &id, databases).await
+    });
+    d.add("db_session_context", |c| async move {
+        let id = c.arg::<String>("id")?;
+        session_context(&c.host, &c.window, &id).await
+    });
     d.add("db_schemas", |c| async move {
         let id = c.arg::<String>("id")?;
         schemas(&c.host, &c.window, &id).await
@@ -169,7 +185,12 @@ pub fn sources(host: &Host, window: &str) -> IdeResult<Vec<DataSource>> {
 /// Replaces the project's data sources with `sources`.
 pub async fn save_sources(host: &Host, window: &str, sources: Vec<DataSource>) -> IdeResult<()> {
     let db = host.project(window)?.db.clone();
-    db.save_sources(sources).await
+    db.save_sources(sources).await?;
+    let root = host.project(window)?.root.clone();
+    for project in host.projects().into_iter().filter(|p| p.root == root) {
+        project.sink.emit(ide_core::IdeEvent::DbSourcesChanged);
+    }
+    Ok(())
 }
 
 /// Remembers the password of data source `id` for the session, and in the OS
@@ -239,6 +260,35 @@ pub async fn disconnect(host: &Host, window: &str, id: &str) -> IdeResult<()> {
 pub async fn databases(host: &Host, window: &str, id: &str) -> IdeResult<Databases> {
     let db = host.project(window)?.db.clone();
     db.databases(id).await
+}
+
+/// The schemas of `database` of Snowflake data source `id` with their tables and views.
+pub async fn database_catalog(
+    host: &Host,
+    window: &str,
+    id: &str,
+    database: &str,
+) -> IdeResult<Vec<ide_db::CatalogSchema>> {
+    let db = host.project(window)?.db.clone();
+    db.database_catalog(id, database).await
+}
+
+/// What earlier introspection of data source `id` saved; the data source is not connected to.
+pub async fn saved_catalog(host: &Host, window: &str, id: &str) -> IdeResult<Option<ide_db::SourceCatalog>> {
+    let db = host.project(window)?.db.clone();
+    db.saved_catalog(id).await
+}
+
+/// Drops the saved databases of data source `id` that are not in `databases` any more.
+pub async fn retain_catalog(host: &Host, window: &str, id: &str, databases: Vec<String>) -> IdeResult<()> {
+    let db = host.project(window)?.db.clone();
+    db.retain_catalog(id, databases).await
+}
+
+/// The warehouse and role of the Snowflake session of data source `id`, and what it may switch to.
+pub async fn session_context(host: &Host, window: &str, id: &str) -> IdeResult<ide_db::SessionContext> {
+    let db = host.project(window)?.db.clone();
+    db.session_context(id).await
 }
 
 /// The schemas of data source `id`.

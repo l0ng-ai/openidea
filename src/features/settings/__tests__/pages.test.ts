@@ -79,14 +79,14 @@ describe("page tree", () => {
     );
     const appearance = BEHAVIOR_PAGES.find((p) => p.id === "appearance")!;
     expect(specLabels(appearance)).toEqual(
-      expect.arrayContaining([
-        "Accent colour",
-        "High Contrast",
-        "UI font size",
-        "Zoom",
-        "Compact mode",
-        "Antialiasing",
-      ]),
+      expect.arrayContaining(["Accent color", "High Contrast", "UI font size", "Zoom", "Compact mode", "Antialiasing"]),
     );
   });
+});
+
+it("indexes toolbar and status bar visibility in Appearance settings", () => {
+  const appearance = BEHAVIOR_PAGES.find((p) => p.id === "appearance")!;
+  const labels = specLabels(appearance);
+  expect(labels).toContain("Show main toolbar");
+  expect(labels).toContain("Show status bar");
 });

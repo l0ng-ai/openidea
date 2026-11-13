@@ -15,6 +15,7 @@ import {
 } from "./editing";
 import { batchLanguage, commentTokens, findLanguageDescription } from "./languages";
 import { toggleCaret } from "./multiCaret";
+import { restructuredtextLanguage } from "./restructuredtext";
 import { commentBlock, enterInLineComment, lineCommentStyle } from "./comments";
 import { languages } from "@codemirror/language-data";
 
@@ -339,6 +340,32 @@ describe("fallback indentation boundaries", () => {
   });
 });
 
+describe("reStructuredText comment toggle", () => {
+  it("comments with `.. `, since `..text` is not a comment", () => {
+    const v = make("Some| text\n", restructuredtextLanguage);
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe(".. Some text\n");
+    v.dispatch({ selection: EditorSelection.cursor(0) });
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe("Some text\n");
+  });
+
+  it.each(["..text", "...", "..中文"])("preserves the dots in ordinary text %s", (text) => {
+    const v = make(`|${text}\n`, restructuredtextLanguage);
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe(`.. ${text}\n`);
+    v.dispatch({ selection: EditorSelection.cursor(0) });
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe(`${text}\n`);
+  });
+
+  it.each(["..", ".. comment", "..\tcomment"])("uncomments a valid prefix in %s", (text) => {
+    const v = make(`|${text}\n`, restructuredtextLanguage);
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe(`${text.slice(2).replace(/^ /, "")}\n`);
+  });
+});
+
 describe("Batch language mode and @REM comment toggle", () => {
   it("resolves Batch by uiMode and .bat / .cmd extensions and toggles @REM comments", () => {
     expect(findLanguageDescription("Batch", "build.bat")?.name).toBe("Batch");
@@ -391,6 +418,27 @@ describe("toggle comment where the tokens depend on the syntax context", () => {
   // A JSX comment is `{/* … */}` in JSX children, but its own text parses as
   // JavaScript, where the tokens are `/* … */`.
   const wrap = (body: string) => `const a = (\n  <div>\n    ${body}\n  </div>\n);`;
+
+  it.each(["JSX", "TSX"])("comments a JSX expression child with Ctrl+/ in %s", async (name) => {
+    const mode = await languages.find((l) => l.name === name)!.load();
+    const v = make("const view = <section>\n  |{label}\n</section>;", mode);
+    commentLine(v);
+    expect(v.state.doc.line(2).text).toBe("  {/* {label} */}");
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe("const view = <section>\n  {label}\n</section>;");
+  });
+
+  it.each(["JSX", "TSX"])("comments a selected JSX child subtree with Ctrl+/ in %s", async (name) => {
+    const mode = await languages.find((l) => l.name === name)!.load();
+    const original = "const view = <main>\n  <aside>\n    <strong>ready</strong>\n  </aside>\n</main>;";
+    const v = make(original.replace("<aside>", "[<aside>").replace("</aside>", "</aside>]"), mode);
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe(
+      "const view = <main>\n  {/* <aside>\n    <strong>ready</strong>\n  </aside> */}\n</main>;",
+    );
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe(original);
+  });
 
   it("takes a JSX line comment back out, with the caret", async () => {
     const tsx = await languages.find((l) => l.name === "TSX")!.load();

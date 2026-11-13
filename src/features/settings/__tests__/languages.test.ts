@@ -18,6 +18,9 @@ import { validateSettings } from "../model/schema";
 describe("languages settings", () => {
   it("defaults and normalises malformed values", () => {
     expect(validateLanguages(undefined)).toEqual(DEFAULT_LANGUAGES);
+    expect(validateLanguages({ pluginFormatters: { sql: "example.formatter", text: 42 } }).pluginFormatters).toEqual({
+      sql: "example.formatter",
+    });
     const v = validateLanguages({
       python: { interpreter: " /usr/bin/python3 ", activateVirtualenv: "yes" },
       node: { packageManager: "pip" },
@@ -48,12 +51,15 @@ describe("languages settings", () => {
       runnerJre: "/opt/jdk-21",
       home: "/opt/maven",
       userSettings: "",
+      toolchains: "",
       localRepository: "",
       unlinkedProjects: [],
       linkedProjects: [],
       daemon: false,
       mvndHome: "/opt/mvnd",
       threads: "2C",
+      activeProfiles: "",
+      delegateBuild: false,
     });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
     expect(validateLanguages({ java: { maven: { threads: 4 } } }).java.maven.threads).toBe("");
@@ -61,7 +67,10 @@ describe("languages settings", () => {
 
   it("defaults the Maven runner JRE to the project JDK and preserves a chosen JDK", () => {
     expect(validateSettings({}).languages.java.maven.runnerJre).toBe("");
+    expect(validateSettings({}).languages.java.maven.delegateBuild).toBe(false);
     expect(validateLanguages({ java: { maven: { runnerJre: 21 } } }).java.maven.runnerJre).toBe("");
+    expect(validateLanguages({ java: { maven: { delegateBuild: true } } }).java.maven.delegateBuild).toBe(true);
+    expect(validateLanguages({ java: { maven: { delegateBuild: "yes" } } }).java.maven.delegateBuild).toBe(false);
     const settings = validateSettings({ languages: { java: { maven: { runnerJre: " ./jdks/21 " } } } });
     expect(validateSettings(settings).languages.java.maven.runnerJre).toBe("./jdks/21");
   });
@@ -76,6 +85,7 @@ describe("languages settings", () => {
 
   it("defaults the PHP language level to Auto and keeps only known levels", () => {
     expect(validateSettings({}).languages.php).toEqual({
+      runTarget: "",
       interpreter: "",
       languageLevel: "",
       includePaths: [],
@@ -186,16 +196,28 @@ describe("languages settings", () => {
     expect(folderRole(ps, "src")).toBeNull();
   });
 
+  it("defaults shared JDT LS to off and accepts only boolean values", () => {
+    expect(DEFAULT_LANGUAGES.java.jdtlsShared).toBe(false);
+    expect(validateLanguages({}).java.jdtlsShared).toBe(false);
+    expect(validateSettings({ languages: { java: { jdtlsShared: true } } }).languages.java.jdtlsShared).toBe(true);
+    expect(validateLanguages({ java: { jdtlsShared: false } }).java.jdtlsShared).toBe(false);
+    for (const invalid of ["true", 1, null, []])
+      expect(validateLanguages({ java: { jdtlsShared: invalid } }).java.jdtlsShared).toBe(false);
+  });
+
   it("defaults Java language level to SDK default and keeps only supported levels", () => {
     expect(validateLanguages({}).java.languageLevel).toBe("");
     expect(validateLanguages({ java: { languageLevel: "8" } }).java.languageLevel).toBe("8");
     expect(validateLanguages({ java: { languageLevel: "21" } }).java.languageLevel).toBe("21");
-    for (const invalid of ["6", "26", 17, null]) {
+    expect(validateLanguages({ java: { languageLevel: "6" } }).java.languageLevel).toBe("6");
+    for (const invalid of ["4", "1.6", "26", 17, null]) {
       expect(validateLanguages({ java: { languageLevel: invalid } }).java.languageLevel).toBe("");
     }
     expect(JAVA_LANGUAGE_LEVELS[0]).toBe("");
     expect(JAVA_LANGUAGE_LEVELS).toContain("8");
     expect(JAVA_LANGUAGE_LEVELS).toContain("25");
+    expect(JAVA_LANGUAGE_LEVELS).toContain("5");
+    expect(JAVA_LANGUAGE_LEVELS).toContain("14");
   });
 
   it("normalizes project structure modules, libraries, facets, and artifacts", () => {
@@ -285,7 +307,7 @@ describe("languages settings", () => {
 describe("language pages", () => {
   it("keeps every language under Languages & Frameworks, as in IntelliJ IDEA", () => {
     const tree = buildPageTree(LANGUAGE_PAGES.map((p) => ({ ...p, component: p.component! })));
-    expect(tree.map((n) => n.title)).toEqual(["Project Structure", "Languages & Frameworks"]);
+    expect(tree.map((n) => n.title)).toEqual(["Languages & Frameworks"]);
     const langs = tree.find((n) => n.title === "Languages & Frameworks")!;
     expect(langs.children.map((n) => n.title)).toEqual([
       "Go",

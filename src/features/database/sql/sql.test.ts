@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { EditorState } from "@codemirror/state";
+import { snippet } from "@codemirror/autocomplete";
 import type { DbCompletion, DbDriver } from "@/platform/ipc";
 import { analyze, templateContexts, valuesSlot } from "./analyze";
 import { aliasFor, quoteIdent, sqlCandidates, type SqlCandidate } from "./complete";
@@ -77,6 +79,21 @@ function complete(sql: string, driver: DbDriver = "sqlite", m: DbCompletion = mo
     (a, b) => b.boost - a.boost,
   );
 }
+/** A Snowflake schema model: names as the server stores them. */
+const sf: DbCompletion = {
+  defaultSchema: "PUBLIC",
+  tables: [
+    {
+      schema: "PUBLIC",
+      name: "USERS",
+      kind: "table",
+      columns: [col("ID", "NUMBER", true), col("SRC", "VARIANT"), col("mixedCase", "VARCHAR")],
+    },
+    { schema: "RAW", name: "EVENTS", kind: "table", columns: [col("ID", "NUMBER", true), col("PAYLOAD", "VARIANT")] },
+  ],
+  foreignKeys: [],
+};
+
 const labels = (c: SqlCandidate[], kind?: string) => c.filter((x) => !kind || x.kind === kind).map((x) => x.label);
 
 describe("lexer", () => {
@@ -113,6 +130,46 @@ describe("lexer", () => {
     expect(lex("select `a b` # c\n", "mysql").tokens.map((t) => t.kind)).toEqual(["word", "quoted"]);
     expect(lex("do $x$ begin; end $x$", "postgres").tokens.map((t) => t.kind)).toEqual(["word", "string"]);
     expect(inLiteral(lex("select 'abc"), 11)).toBe("string");
+  });
+
+  it("reads Snowflake dollar strings, comments, escapes, variant paths and stages", () => {
+    const texts = (sql: string) => lex(sql, "snowflake").tokens.map((t) => t.text);
+    const l = lex("select $$ it's; -- $$ // c ' \n, 'a\\'b' /* d */ -- e", "snowflake");
+    expect(l.tokens.map((t) => t.kind)).toEqual(["word", "string", "punct", "string"]);
+    expect(l.tokens[3]!.text).toBe("'a\\'b'");
+    expect(l.comments).toHaveLength(3);
+    expect(inLiteral(lex("select $$ open", "snowflake"), 14)).toBe("string");
+    expect(texts('select src:a.b::string, "V":k, f(x):y, a[0]:z, $1, $var')).toEqual(
+      ["select", "src", ":", "a", ".", "b", "::", "string", ",", '"V"', ":", "k", ","].concat([
+        "f",
+        "(",
+        "x",
+        ")",
+        ":",
+        "y",
+        ",",
+        "a",
+        "[",
+        "0",
+        "]",
+        ":",
+        "z",
+        ",",
+        "$1",
+        ",",
+        "$var",
+      ]),
+    );
+    expect(texts("from @db.sch.stg/dir/f.csv, @~/x, @%t (pattern => '.*') where a = :id")).toEqual(
+      ["from", "@db.sch.stg/dir/f.csv", ",", "@~/x", ",", "@%t", "(", "pattern", "=>", "'.*'", ")"].concat([
+        "where",
+        "a",
+        "=",
+        ":id",
+      ]),
+    );
+    // Only Snowflake reads `//` as a comment.
+    expect(lex("select 1 // 2", "postgres").comments).toEqual([]);
   });
 });
 
@@ -223,6 +280,181 @@ describe("completion candidates", () => {
     expect(quoteIdent('a"b', "oracle")).toBe('"a""b"');
   });
 
+  it("offers Snowflake vocabulary and quotes names the server folds to upper case", () => {
+    expect(statementStarters("snowflake")).toEqual(
+      expect.arrayContaining([
+        "COPY INTO",
+        "MERGE INTO",
+        "SHOW TABLES",
+        "USE SCHEMA",
+        "EXECUTE IMMEDIATE",
+        "UNDROP TABLE",
+      ]),
+    );
+    expect(statementStarters("snowflake")).not.toContain("CREATE INDEX");
+    expect(DATA_TYPES.snowflake).toEqual(expect.arrayContaining(["VARIANT", "TIMESTAMP_NTZ", "NUMBER"]));
+    expect(new Set(DATA_TYPES.snowflake).size).toBe(DATA_TYPES.snowflake.length);
+    const afterTable = labels(complete("SELECT * FROM USERS U |", "snowflake", sf), "keyword");
+    expect(afterTable).toEqual(
+      expect.arrayContaining(["QUALIFY", "ASOF JOIN", "NATURAL JOIN", "LATERAL FLATTEN", "PIVOT"]),
+    );
+    expect(labels(complete("SELECT * FROM USERS WHERE |", "snowflake", sf), "keyword")).toEqual(
+      expect.arrayContaining(["ILIKE", "RLIKE", "QUALIFY"]),
+    );
+    expect(complete("SELECT | FROM USERS", "snowflake", sf).find((c) => c.label === "IFF")).toMatchObject({
+      snippet: "IFF(${})",
+    });
+    // Upper-case names are plain; anything else needs quotes (the server folds unquoted names).
+    expect(quoteIdent("ORDERS", "snowflake")).toBe("ORDERS");
+    expect(quoteIdent("ORDER_2$", "snowflake")).toBe("ORDER_2$");
+    expect(quoteIdent("orders", "snowflake")).toBe('"orders"');
+    expect(quoteIdent('a"b', "snowflake")).toBe('"a""b"');
+    expect(quoteIdent("QUALIFY", "snowflake")).toBe('"QUALIFY"');
+    expect(quoteIdent("QUALIFY", "oracle")).toBe("QUALIFY");
+    const columns = complete("SELECT | FROM USERS", "snowflake", sf);
+    expect(columns.find((c) => c.label === "ID")?.insert).toBe("ID");
+    expect(columns.find((c) => c.label === "mixedCase")?.insert).toBe('"mixedCase"');
+    const tables = complete("SELECT * FROM |", "snowflake", sf);
+    expect(tables.find((c) => c.label === "USERS")?.insert).toBe("USERS");
+    expect(tables.find((c) => c.label === "EVENTS")?.insert).toBe("RAW.EVENTS");
+  });
+
+  it("completes fully qualified Snowflake names through databases and schemas, in either case", () => {
+    const catalog = {
+      databases: ["ANALYTICS", "OTHER_DB", "Mixed Db"],
+      schemas: (db: string) => (db === "OTHER_DB" ? ["RAW", "STAGING"] : db === "ANALYTICS" ? ["PUBLIC", "RAW"] : null),
+      tables: (db: string, schema: string) =>
+        db === "OTHER_DB" && schema.toUpperCase() === "RAW"
+          ? [
+              { name: "CLICKS", view: false },
+              { name: "CLICKS_V", view: true },
+              { name: "mixedTable", view: false },
+            ]
+          : null,
+    };
+    const run = (sql: string) =>
+      sqlCandidates({ model: sf, analysis: at(sql, "snowflake"), driver: "snowflake", catalog }).sort(
+        (a, b) => b.boost - a.boost,
+      );
+    const inserts = (sql: string, kind?: string) =>
+      run(sql)
+        .filter((c) => !kind || c.kind === kind)
+        .map((c) => c.insert ?? c.label);
+
+    // Databases are offered where a table may start, below the tables and schemas.
+    const top = run("SELECT * FROM |");
+    expect(top.filter((c) => c.tail === "(database)").map((c) => c.insert)).toEqual([
+      "ANALYTICS.",
+      "OTHER_DB.",
+      '"Mixed Db".',
+    ]);
+    expect(top.find((c) => c.label === "OTHER_DB")).toMatchObject({ kind: "schema", retrigger: true });
+    expect(top[0]!.label).toBe("USERS");
+
+    // `database.` lists its schemas, `database.schema.` its tables and views.
+    expect(inserts("select * from OTHER_DB.|")).toEqual(["RAW.", "STAGING."]);
+    expect(run("select * from OTHER_DB.|").every((c) => c.kind === "schema" && c.retrigger)).toBe(true);
+    expect(inserts("select * from OTHER_DB.RAW.|")).toEqual(["CLICKS", '"mixedTable"', "CLICKS_V"]);
+    expect(run("select * from OTHER_DB.RAW.|").map((c) => c.kind)).toEqual(["table", "table", "view"]);
+    expect(inserts("select * from OTHER_DB.RAW.CL|")).toContain("CLICKS");
+    expect(inserts("select * from a join OTHER_DB.RAW.|")).toContain("CLICKS");
+
+    // Lower case finds the same names and keeps what is typed in lower case.
+    expect(inserts("select * from other_db.|")).toEqual(["raw.", "staging."]);
+    expect(inserts("select * from other_db.raw.|")).toEqual(["clicks", '"mixedTable"', "clicks_v"]);
+    expect(inserts("select * from other_db.raw.cl|")).toContain("clicks");
+    expect(inserts("select * from OTHER_DB.RAW.cl|")).toContain("clicks");
+    expect(inserts("select * from other_db.raw.CL|")).toContain("CLICKS");
+    expect(inserts("select * from raw.|")).toEqual(["events"]);
+    expect(inserts("select * from us|", "table")).toContain("users");
+
+    // Names follow the case being typed: the prefix first, then the qualifier, then the statement's keywords.
+    expect(inserts("select * from |", "table")).toEqual(expect.arrayContaining(["users", "raw.events"]));
+    expect(inserts("SELECT * FROM |", "table")).toEqual(expect.arrayContaining(["USERS", "RAW.EVENTS"]));
+    expect(inserts("SELECT * FROM us|", "table")).toContain("users");
+    expect(inserts("select * from US|", "table")).toContain("USERS");
+    expect(inserts("select | from USERS", "column")).toEqual(expect.arrayContaining(["id", "src", '"mixedCase"']));
+    expect(inserts("SELECT | FROM users", "column")).toEqual(expect.arrayContaining(["ID", "SRC", '"mixedCase"']));
+    expect(inserts("select u.| from USERS u")).toEqual(["id", "src", '"mixedCase"']);
+    expect(
+      run("select * from |")
+        .filter((c) => c.tail === "(database)")
+        .map((c) => c.insert),
+    ).toEqual(["analytics.", "other_db.", '"Mixed Db".']);
+
+    // Introspected tables of other databases complete by name, written fully qualified.
+    const searched = sqlCandidates({
+      model: sf,
+      analysis: at("select * from cli|", "snowflake"),
+      driver: "snowflake",
+      catalog: {
+        ...catalog,
+        search: (prefix: string, limit: number) =>
+          [
+            { database: "OTHER_DB", schema: "RAW", name: "CLICKS", view: false },
+            { database: "OTHER_DB", schema: "RAW", name: "CLICKS_V", view: true },
+            { database: "Mixed Db", schema: "PUBLIC", name: "Clients", view: false },
+          ]
+            .filter((t) => t.name.toLowerCase().startsWith(prefix.toLowerCase()))
+            .slice(0, limit),
+      },
+    });
+    expect(
+      searched.filter((c) => c.tail?.startsWith("(OTHER_DB") || c.tail?.startsWith("(Mixed")).map((c) => c.insert),
+    ).toEqual(["other_db.raw.clicks", "other_db.raw.clicks_v", '"Mixed Db".public."Clients"']);
+    // One typed letter is too little to search every database with.
+    expect(
+      sqlCandidates({
+        model: sf,
+        analysis: at("select * from c|", "snowflake"),
+        driver: "snowflake",
+        catalog: { ...catalog, search: () => [{ database: "OTHER_DB", schema: "RAW", name: "CLICKS", view: false }] },
+      }).some((c) => c.label === "CLICKS"),
+    ).toBe(false);
+
+    // A schema of the session's database that is also a database name lists both.
+    const both = sqlCandidates({
+      model: sf,
+      analysis: at("select * from RAW.|", "snowflake"),
+      driver: "snowflake",
+      catalog: { ...catalog, databases: ["RAW"], schemas: () => ["LANDING"] },
+    });
+    expect(both.map((c) => c.insert)).toEqual(["EVENTS", "LANDING."]);
+
+    // Unknown databases and schemas that are not loaded offer nothing rather than something wrong.
+    expect(run("select * from NO_SUCH_DB.|")).toEqual([]);
+    expect(run("select * from OTHER_DB.STAGING.|")).toEqual([]);
+    expect(run("select * from A.B.C.|")).toEqual([]);
+  });
+
+  it("completes Snowflake names by their last two parts and stays out of other databases", () => {
+    expect(labels(complete("select * from RAW.|", "snowflake", sf))).toEqual(["EVENTS"]);
+    expect(complete("select * from OTHER_DB.|", "snowflake", sf)).toEqual([]);
+    expect(complete("select * from OTHER_DB.RAW.|", "snowflake", sf)).toEqual([]);
+    expect(complete("select * from PUBLIC.USERS.|", "snowflake", sf)).toEqual([]);
+    expect(labels(complete("select DB.PUBLIC.USERS.| from DB.PUBLIC.USERS", "snowflake", sf))).toEqual([
+      "ID",
+      "SRC",
+      "mixedCase",
+    ]);
+    expect(labels(complete("select u.| from DB.PUBLIC.USERS u", "snowflake", sf))).toEqual(["ID", "SRC", "mixedCase"]);
+    expect(at("select * from DB.PUBLIC.USERS u where |", "snowflake").refs[0]).toMatchObject({
+      database: "DB",
+      schema: "PUBLIC",
+      name: "USERS",
+      alias: "u",
+    });
+    // The keys of a VARIANT path and its cast are not names of the model.
+    expect(complete("select SRC:|  from USERS", "snowflake", sf)).toEqual([]);
+    expect(complete("select SRC:a.| from USERS", "snowflake", sf)).toEqual([]);
+    expect(complete("select SRC:a::| from USERS", "snowflake", sf)).toEqual([]);
+    // QUALIFY is a clause, not the alias of the table before it.
+    const q = at("select * from USERS qualify |", "snowflake");
+    expect(q.refs[0]).toMatchObject({ name: "USERS", alias: null });
+    expect(q.context).toEqual({ kind: "column", clause: "having" });
+    expect(at("select * from USERS sample (10) where |", "snowflake").refs[0]).toMatchObject({ alias: null });
+  });
+
   it("offers tables after FROM, with schema and data source", () => {
     const c = complete("select * from |");
     expect(labels(c, "table")).toEqual(expect.arrayContaining(["users", "orders", "order_items", "products"]));
@@ -327,6 +559,20 @@ describe("completion candidates", () => {
     expect(c.find((x) => x.label === "count")).toMatchObject({ snippet: "count(${})" });
   });
 
+  it.each(["sqlite", "postgres", "mysql"] as const)(
+    "leaves the caret after a %s function without parameters",
+    (driver) => {
+      const candidates = complete("select |", driver).filter((c) => c.kind === "function" && c.tail === "()");
+      expect(candidates.length).toBeGreaterThan(0);
+      for (const candidate of candidates) {
+        let state = EditorState.create({ doc: "select ", selection: { anchor: 7 } });
+        snippet(candidate.snippet!)({ state, dispatch: (tr) => (state = tr.state) }, null, 7, 7);
+        expect(state.doc.toString()).toBe(`select ${candidate.label}()`);
+        expect(state.selection.main.head).toBe(state.doc.length);
+      }
+    },
+  );
+
   it("quotes identifiers that need it", () => {
     expect(quoteIdent("Users", "postgres")).toBe('"Users"');
     expect(quoteIdent("Users", "mysql")).toBe("Users");
@@ -425,6 +671,33 @@ describe("resolve", () => {
     expect(problems("select rowid, * from users;")).toEqual([]);
   });
 
+  it("judges Snowflake names without flagging variant paths, stages or other databases", () => {
+    const snow = (sql: string) =>
+      new SqlResolver(sql, "snowflake", sf).problems().map((p) => `${sql.slice(p.from, p.to)}: ${p.message}`);
+    for (const sql of [
+      "select src:customer.name::string, src['a'].b, u.src:x[0].y, $1 from users u where id = :id;",
+      "select id from users qualify row_number() over (order by id) = 1;",
+      "select f.value:x, f.index from users, lateral flatten(input => src, outer => true) f;",
+      "select $1, metadata$filename from @my_stage/path (file_format => 'ff', pattern => '.*csv') t;",
+      "select * exclude id from users sample (10); select dateadd(day, 1, id), date_trunc(quarter, id) from users;",
+      "select * from other_db.public.users; select * from other_db.sch.missing;",
+      "select o.nope from other_db.public.users o; select other_db.public.users.nope from other_db.public.users;",
+      "insert into other_db.public.users (nope) values (1);",
+      "select id from users where src:a ilike 'x%' and $$ nope $$ = 'a\\'nope' // nope\n;",
+      'select "mixedCase", ID from PUBLIC.USERS;',
+    ])
+      expect(snow(sql), sql).toEqual([]);
+    expect(snow("select nope from users;")).toEqual(["nope: Unable to resolve column 'nope'"]);
+    expect(snow("select u.nope from public.users u;")).toEqual(["nope: Unable to resolve column 'nope'"]);
+    expect(snow("select * from public.missing;")).toEqual(["missing: Unable to resolve table 'missing'"]);
+    expect(snow("select * from missing;")).toEqual(["missing: Unable to resolve table 'missing'"]);
+    const sql = "select id from db.public.users";
+    expect(new SqlResolver(sql, "snowflake", sf).resolveAt(sql.length - 1)?.symbol).toMatchObject({
+      kind: "table",
+      table: { schema: "PUBLIC", name: "USERS" },
+    });
+  });
+
   it("resolves symbols for navigation and documentation", () => {
     const sql = "select u.email from users u join orders o on o.user_id = u.id;";
     const r = new SqlResolver(sql, "sqlite", model);
@@ -468,5 +741,19 @@ describe("params", () => {
       "update t set a = 'x' where id = 3 and b = 'x'",
     );
     expect(bindParams("select ?", findParams("select ?", "sqlite"), {})).toBe("select NULL");
+  });
+
+  it("leaves Snowflake variant paths, casts, stages and session variables alone", () => {
+    const names = (sql: string) => findParams(sql, "snowflake").map((p) => p.name);
+    const sql = "SELECT src:customer.name::string, $1 FROM @my_stage/path (FILE_FORMAT => 'ff') t WHERE x = :id";
+    expect(names(sql)).toEqual([":id"]);
+    expect(bindParams(sql, findParams(sql, "snowflake"), { ":id": "7" })).toBe(sql.replace(":id", "7"));
+    expect(
+      names(
+        "select src:a.b, \"V\":k, f(x):y, a[0]:z, {'k':v}, $1, $var, t.$2 from @~/dir, @%tbl, @db.sch.stg t " +
+          "where a = $$ :no ? $$ and b = 'it\\'s :no' // :no ?\n",
+      ),
+    ).toEqual([]);
+    expect(names("select * from t where a = ? and b=:name and c in (:x, ?)")).toEqual(["?1", ":name", ":x", "?2"]);
   });
 });

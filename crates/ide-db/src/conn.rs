@@ -238,6 +238,7 @@ pub enum Pool {
     SqlServer(Bb8Pool<MssqlConnectionManager>),
     Clickhouse(crate::clickhouse::ClickhousePool),
     Oracle(crate::oracle::OraclePool),
+    Snowflake(crate::snowflake::SnowflakePool),
 }
 
 pub(crate) fn db_err(e: sqlx::Error) -> IdeError {
@@ -280,6 +281,16 @@ fn mssql_pool_err(e: bb8::RunError<tiberius::error::Error>) -> IdeError {
     match e {
         bb8::RunError::User(e) => mssql_err(e),
         bb8::RunError::TimedOut => IdeError::new(ErrorKind::Io, "timed out connecting to the database"),
+    }
+}
+
+/// Tiberius requires TLS when a TLS backend is enabled. `trust_cert` only skips
+/// certificate checks, so Disable has to turn encryption off.
+fn apply_sqlserver_ssl(config: &mut tiberius::Config, ssl: DbSslMode) {
+    match ssl {
+        DbSslMode::Disable => config.encryption(tiberius::EncryptionLevel::NotSupported),
+        DbSslMode::Prefer => config.trust_cert(),
+        DbSslMode::Require | DbSslMode::VerifyCa | DbSslMode::VerifyFull => {}
     }
 }
 
@@ -417,7 +428,7 @@ fn binary_type(name: &str, text: bool) -> bool {
 }
 
 /// Bytes as text: UTF-8, else hex (grids) or with invalid sequences replaced (catalog names).
-fn bytes_text(bytes: Vec<u8>, mode: Cells) -> String {
+pub(crate) fn bytes_text(bytes: Vec<u8>, mode: Cells) -> String {
     match (String::from_utf8(bytes), mode) {
         (Ok(s), _) => s,
         (Err(e), Cells::Display) => hex(e.as_bytes()),
@@ -594,6 +605,13 @@ fn is_identifier(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
+/// sqlx's handshake flags for `sql_mode`: with either enabled it sends
+/// `SET sql_mode=(SELECT CONCAT(...))`, a non-constant subquery that MySQL-protocol
+/// servers like StarRocks reject (#2452), so the StarRocks preset turns both off.
+fn mysql_mode_flags(vendor: &str) -> (bool, bool) {
+    if vendor == "starrocks" { (false, false) } else { (true, true) }
+}
+
 /// A MySQL `SET` value: numbers and keywords as they are, anything else quoted.
 fn mysql_value(v: &str) -> String {
     let keyword = ["ON", "OFF", "TRUE", "FALSE", "DEFAULT"].iter().any(|k| k.eq_ignore_ascii_case(v));
@@ -686,6 +704,9 @@ impl Setup {
         if source.driver == DbDriver::Clickhouse && !o.time_zone.trim().is_empty() {
             s.params.push(("session_timezone".into(), o.time_zone.trim().into()));
         }
+        if source.driver == DbDriver::Snowflake && !o.time_zone.trim().is_empty() {
+            s.params.push(("TIMEZONE".into(), o.time_zone.trim().into()));
+        }
         let script = o.startup_script.trim();
         if !script.is_empty() {
             s.statements.extend(crate::split::split(script, source.driver).into_iter().map(|st| st.text));
@@ -703,6 +724,7 @@ impl Pool {
             Pool::SqlServer(_) => DbDriver::SqlServer,
             Pool::Clickhouse(_) => DbDriver::Clickhouse,
             Pool::Oracle(_) => DbDriver::Oracle,
+            Pool::Snowflake(_) => DbDriver::Snowflake,
         }
     }
 
@@ -723,6 +745,9 @@ impl Pool {
         }
         if source.driver == DbDriver::Oracle {
             return crate::oracle::OraclePool::connect(source, password, &setup).await.map(Pool::Oracle);
+        }
+        if source.driver == DbDriver::Snowflake {
+            return crate::snowflake::SnowflakePool::connect(source, password, setup).await.map(Pool::Snowflake);
         }
         let timeout = setup.connect_timeout.unwrap_or(Duration::from_secs(30));
         let init = Arc::new(setup.statements);
@@ -839,6 +864,8 @@ impl Pool {
                 if let Some(c) = &setup.collation {
                     opts = opts.collation(c);
                 }
+                let (pipes_as_concat, no_engine_substitution) = mysql_mode_flags(&source.vendor);
+                opts = opts.pipes_as_concat(pipes_as_concat).no_engine_substitution(no_engine_substitution);
                 if let Some(n) = setup.statement_cache {
                     opts = opts.statement_cache_capacity(n);
                 }
@@ -867,9 +894,7 @@ impl Pool {
                 if !source.database.is_empty() {
                     config.database(&source.database);
                 }
-                if matches!(source.ssl, DbSslMode::Disable | DbSslMode::Prefer) {
-                    config.trust_cert();
-                }
+                apply_sqlserver_ssl(&mut config, source.ssl);
                 let manager = MssqlConnectionManager(config);
                 let pool = bb8::Pool::builder()
                     .max_size(MAX)
@@ -882,7 +907,7 @@ impl Pool {
                 Ok(Pool::SqlServer(pool))
             }
             DbDriver::Clickhouse => unreachable!(),
-            DbDriver::Oracle => unreachable!(),
+            DbDriver::Oracle | DbDriver::Snowflake => unreachable!(),
         }
     }
 
@@ -890,6 +915,7 @@ impl Pool {
         match self {
             Pool::SqlServer(_) | Pool::Oracle(_) => {}
             Pool::Clickhouse(p) => p.close(),
+            Pool::Snowflake(p) => p.close().await,
             Pool::Sqlite(p) => p.close().await,
             Pool::Postgres(p) => p.closed.store(true, Ordering::Relaxed),
             Pool::Mysql(p) => p.closed.store(true, Ordering::Relaxed),
@@ -901,6 +927,7 @@ impl Pool {
             Pool::SqlServer(_) => false,
             Pool::Oracle(p) => p.is_closed(),
             Pool::Clickhouse(p) => p.is_closed(),
+            Pool::Snowflake(p) => p.is_closed(),
             Pool::Sqlite(p) => p.is_closed(),
             Pool::Postgres(p) => p.closed.load(Ordering::Relaxed),
             Pool::Mysql(p) => p.closed.load(Ordering::Relaxed),
@@ -911,6 +938,9 @@ impl Pool {
     pub async fn rows(&self, sql: &str, max: usize) -> IdeResult<Vec<Vec<Option<String>>>> {
         if let Pool::Clickhouse(p) = self {
             return Ok(p.execute(sql, max, &CancellationToken::new()).await?.rows);
+        }
+        if let Pool::Snowflake(p) = self {
+            return Ok(p.metadata().execute(sql, max, &CancellationToken::new()).await?.rows);
         }
         let mut conn = Held::acquire(self).await?;
         conn.apply_context(None).await?;
@@ -936,6 +966,9 @@ impl Pool {
         if let Pool::Clickhouse(p) = self {
             return p.execute_from(sql, skip, max_rows, cancel).await;
         }
+        if let Pool::Snowflake(p) = self {
+            return p.execute_from(sql, skip, max_rows, cancel).await;
+        }
         let mut conn = Held::acquire(self).await?;
         let r = match conn.apply_context(None).await {
             Ok(()) => conn.execute_from(self, sql, skip, max_rows, cancel).await,
@@ -953,6 +986,7 @@ impl Pool {
     pub async fn transaction(&self, statements: &[(String, bool)]) -> IdeResult<u64> {
         match self {
             Pool::Clickhouse(_) => Err(crate::clickhouse::transaction_error()),
+            Pool::Snowflake(p) => p.transaction(statements).await,
             Pool::SqlServer(_) => {
                 let mut held = Held::acquire(self).await?;
                 held.apply_context(None).await?;
@@ -1033,7 +1067,9 @@ pub enum Held {
     Mysql(Box<bb8::PooledConnection<'static, MysqlManager>>),
     SqlServer(Box<bb8::PooledConnection<'static, MssqlConnectionManager>>),
     Clickhouse(crate::clickhouse::ClickhousePool),
-    Oracle(crate::oracle::OracleConnection),
+    Oracle(Box<crate::oracle::OracleConnection>),
+    /// The shared session, and the schema this holder's statements run in.
+    Snowflake(crate::snowflake::SnowflakePool, Option<String>),
 }
 
 impl Held {
@@ -1049,7 +1085,13 @@ impl Held {
                 }
                 Held::Clickhouse(p.clone())
             }
-            Pool::Oracle(p) => Held::Oracle(p.get().await?),
+            Pool::Oracle(p) => Held::Oracle(Box::new(p.get().await?)),
+            Pool::Snowflake(p) => {
+                if p.is_closed() {
+                    return Err(IdeError::new(ErrorKind::Io, "Snowflake connection is closed"));
+                }
+                Held::Snowflake(p.clone(), None)
+            }
         })
     }
 
@@ -1094,6 +1136,11 @@ impl Held {
     }
 
     pub async fn apply_context(&mut self, schema: Option<&str>) -> IdeResult<()> {
+        if let Held::Snowflake(_, wanted) = self {
+            // Applied with each statement, while it holds the shared session.
+            *wanted = schema.filter(|s| !s.is_empty()).map(str::to_owned);
+            return Ok(());
+        }
         let driver = match self {
             Held::Postgres(_) => DbDriver::Postgres,
             Held::Mysql(_) => DbDriver::Mysql,
@@ -1149,7 +1196,7 @@ impl Held {
             Held::Mysql(c) => fetch!(&mut ****c, sql, max, Cells::Text),
             Held::SqlServer(c) => mssql_fetch(c, sql, 0, max).await,
             Held::Oracle(c) => crate::oracle::run(c, sql, 0, max, Cells::Text, &CancellationToken::new()).await,
-            Held::Clickhouse(_) => unreachable!(),
+            Held::Clickhouse(_) | Held::Snowflake(..) => unreachable!(),
         };
         if result.is_ok() {
             self.after_statement(sql);
@@ -1171,6 +1218,12 @@ impl Held {
         match self {
             Held::SqlServer(c) => mssql_command(c, sql).await,
             Held::Clickhouse(_) => Err(crate::clickhouse::transaction_error()),
+            Held::Snowflake(c, schema) => {
+                if sql.trim().is_empty() {
+                    return Ok(());
+                }
+                c.execute_in(schema.as_deref(), sql, 0, 0, &CancellationToken::new()).await.map(drop)
+            }
             Held::Oracle(c) => {
                 let sql = sql.trim();
                 if sql.is_empty() {
@@ -1184,7 +1237,9 @@ impl Held {
                     Held::Sqlite(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
                     Held::Postgres(c) => sqlx::raw_sql(sql).execute(&mut ****c).await.map(drop),
                     Held::Mysql(c) => sqlx::raw_sql(sql).execute(&mut ****c).await.map(drop),
-                    Held::SqlServer(_) | Held::Clickhouse(_) | Held::Oracle(_) => unreachable!(),
+                    Held::SqlServer(_) | Held::Clickhouse(_) | Held::Oracle(_) | Held::Snowflake(..) => {
+                        unreachable!()
+                    }
                 }
                 .map_err(db_err)
             }
@@ -1209,7 +1264,7 @@ impl Held {
             Held::SqlServer(mut c) => {
                 c.0.take();
             }
-            Held::Clickhouse(_) => {}
+            Held::Clickhouse(_) | Held::Snowflake(..) => {}
             Held::Oracle(mut c) => c.discard_inner(),
         }
     }
@@ -1238,6 +1293,9 @@ impl Held {
     ) -> IdeResult<QueryResult> {
         if let Held::Clickhouse(c) = self {
             return c.execute_from(sql, skip, max_rows, cancel).await;
+        }
+        if let Held::Snowflake(c, schema) = self {
+            return c.execute_in(schema.as_deref(), sql, skip, max_rows, cancel).await;
         }
         self.before_statement(sql);
         let started = Instant::now();
@@ -1283,7 +1341,7 @@ impl Held {
                 }
             }
             Held::Oracle(c) => crate::oracle::run(c, sql, skip, max_rows, Cells::Display, cancel).await?,
-            Held::Clickhouse(_) => unreachable!(),
+            Held::Clickhouse(_) | Held::Snowflake(..) => unreachable!(),
         };
         self.after_statement(sql);
         let (columns, rows, affected, has_more, first) = fetched;
@@ -1306,7 +1364,7 @@ pub fn begin_statement(driver: DbDriver) -> &'static str {
         DbDriver::Mysql => "START TRANSACTION",
         DbDriver::SqlServer => "BEGIN TRAN",
         DbDriver::Oracle => "", // opens implicitly with autocommit off
-        DbDriver::Sqlite | DbDriver::Postgres | DbDriver::Clickhouse => "BEGIN",
+        DbDriver::Sqlite | DbDriver::Postgres | DbDriver::Clickhouse | DbDriver::Snowflake => "BEGIN",
     }
 }
 
@@ -1321,6 +1379,33 @@ fn statement_columns<S: sqlx::Statement>(s: &S) -> Vec<ResultColumn> {
 mod tests {
     use super::*;
     use crate::source::{DbOptions, DbProperty};
+
+    fn sqlserver_debug(ssl: DbSslMode) -> String {
+        let mut config = tiberius::Config::new();
+        apply_sqlserver_ssl(&mut config, ssl);
+        format!("{config:?}")
+    }
+
+    #[test]
+    fn sqlserver_disable_does_not_require_tls() {
+        let debug = sqlserver_debug(DbSslMode::Disable);
+        assert!(debug.contains("encryption: NotSupported"), "{debug}");
+        assert!(debug.contains("bypass: false"), "{debug}");
+    }
+
+    #[test]
+    fn sqlserver_prefer_trusts_the_server_certificate() {
+        let debug = sqlserver_debug(DbSslMode::Prefer);
+        assert!(debug.contains("encryption: Required"), "{debug}");
+        assert!(debug.contains("bypass: true"), "{debug}");
+    }
+
+    #[test]
+    fn sqlserver_require_keeps_validated_tls() {
+        let debug = sqlserver_debug(DbSslMode::Require);
+        assert!(debug.contains("encryption: Required"), "{debug}");
+        assert!(debug.contains("bypass: false"), "{debug}");
+    }
 
     #[test]
     fn discarded_sqlserver_connections_are_broken() {
@@ -1463,6 +1548,15 @@ mod tests {
         assert!(Setup::of(&DataSource { properties: vec![prop("a; drop", "1")], ..s.clone() }).is_err());
         assert!(Setup::of(&DataSource { properties: vec![prop("connect_timeout", "0")], ..s.clone() }).is_err());
         assert!(Setup::of(&DataSource { properties: vec![prop("connect_timeout", "soon")], ..s }).is_err());
+    }
+
+    #[test]
+    fn starrocks_disables_the_non_constant_sql_mode_handshake() {
+        // MySQL and its other wire-compatible presets keep sqlx's defaults.
+        for vendor in ["", "mysql", "mariadb", "tidb"] {
+            assert_eq!(mysql_mode_flags(vendor), (true, true), "{vendor}");
+        }
+        assert_eq!(mysql_mode_flags("starrocks"), (false, false));
     }
 
     #[test]

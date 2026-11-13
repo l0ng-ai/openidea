@@ -1,11 +1,11 @@
 /* Editor gutter ▶ per request (same look as run configuration targets). */
-.runGutter {
-  width: 14px;
-}
+/* No fixed width: the endpoints gutter is conditional (updateSpacer), so files
+   without endpoint markers keep a narrow gutter. */
 .runGutter :global(.cm-gutterElement) {
   display: flex;
   align-items: center;
-  justify-content: center;
+  /* Spare width stays left of the icons, which sit next to the code. */
+  justify-content: flex-end;
 }
 .runMarker {
   width: 14px;
@@ -138,6 +138,11 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+  outline: none;
+}
+.tabBody:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 .pre {
   margin: 0;
@@ -180,4 +185,25 @@
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* The request being sent, in place of a response. */
+.pending {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+.pendingLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-secondary);
+}
+.pendingRequest {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.pendingMethod {
+  font-weight: 600;
 }

@@ -1,6 +1,7 @@
 //! Immutable Maven outputs retained in the project cache, including across close/reopen.
 use ide_build::compile::{self, LaunchFingerprint};
 use ide_core::{CancellationToken, IdeError, IdeResult};
+use ide_run::BuildPolicy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -11,6 +12,8 @@ pub(super) struct Outputs {
     fingerprint: Option<LaunchFingerprint>,
     pub snapshot: PathBuf,
     pub originals: Vec<PathBuf>,
+    #[serde(skip)]
+    pub failure: Option<String>,
 }
 
 impl Outputs {
@@ -33,6 +36,12 @@ fn record_path(root: &Path, cache: &Path, module: &Path, test: bool) -> Option<P
 
 pub(super) fn has_record(root: &Path, cache: &Path, module: &Path) -> bool {
     [false, true].into_iter().any(|test| record_path(root, cache, module, test).is_some_and(|record| record.is_file()))
+}
+
+#[derive(Default)]
+pub(super) struct BuildOptions {
+    pub test: bool,
+    pub policy: BuildPolicy,
 }
 
 /// Owned by Project: running JVMs may still load superseded outputs until it drops.
@@ -61,11 +70,12 @@ impl Session {
         root: &Path,
         model: &ide_build::BuildModel,
         module: &Path,
-        test: bool,
+        options: BuildOptions,
         local_repo: Option<PathBuf>,
         cancel: &CancellationToken,
     ) -> IdeResult<Outputs> {
         self.initialize();
+        let BuildOptions { test, policy } = options;
         let cache = &self.cache;
         let record =
             record_path(root, cache, module, test).ok_or_else(|| IdeError::internal("launch outside project"))?;
@@ -78,9 +88,30 @@ impl Session {
                 Ok(None)
             }
         };
-        let before = fingerprint()?;
+        let mut before = fingerprint()?;
         let previous = fs::read(&record).ok().and_then(|bytes| serde_json::from_slice::<Outputs>(&bytes).ok());
+        // Timestamp-incremental builders (Maven, the Kotlin plugin) skip sources whose
+        // mtime did not advance. An external edit that preserves both length and mtime
+        // invalidates the fingerprint but would still compile to nothing below, and the
+        // stale outputs would be re-recorded as fresh. Re-stamp those sources first so
+        // the rebuild sees them; then re-scan so the record written afterwards matches.
+        let restamp: Vec<PathBuf> = match (before.as_ref(), previous.as_ref().and_then(|o| o.fingerprint.as_ref())) {
+            (Some(current), Some(recorded)) => recorded.mtime_preserved_edits(current),
+            _ => Vec::new(),
+        };
+        if !restamp.is_empty() {
+            let now = std::time::SystemTime::now();
+            for rel in &restamp {
+                let path = root.join(rel);
+                if let Err(error) = fs::File::options().write(true).open(&path).and_then(|file| file.set_modified(now))
+                {
+                    tracing::debug!(path = %path.display(), %error, "Cannot re-stamp externally edited source");
+                }
+            }
+            before = fingerprint()?;
+        }
         if let Some(outputs) = previous.as_ref()
+            && policy != BuildPolicy::Rebuild
             && outputs.reusable(&before, &snapshots)
         {
             tracing::info!(module = %module.display(), test, "Reusing Maven launch snapshot");
@@ -90,10 +121,27 @@ impl Session {
         // source still delegates to Maven to clean its old classes on the next launch.
         fs::create_dir_all(record.parent().unwrap())?;
         fs::write(&record, b"null")?;
-        if let Some(previous) = previous {
-            self.unreferenced.push(previous.snapshot);
+        if let Some(previous) = &previous {
+            self.unreferenced.push(previous.snapshot.clone());
         }
-        let originals = compile::build_for_launch(root, model, module, test, cancel)?;
+        let kind = if policy == BuildPolicy::Rebuild { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
+        let built = compile::build_for_launch(root, model, module, test, kind, cancel)?;
+        if let Some(failure) = &built.failure {
+            if policy != BuildPolicy::MakeAndContinueOnErrors {
+                return Err(IdeError::internal(failure.clone()));
+            }
+            if let Some(mut previous) =
+                previous.filter(|p| (0..p.originals.len()).all(|i| p.snapshot.join(i.to_string()).is_dir()))
+            {
+                previous.fingerprint = None;
+                previous.failure = built.failure;
+                let mut file = tempfile::NamedTempFile::new_in(record.parent().unwrap())?;
+                serde_json::to_writer(file.as_file_mut(), &previous).map_err(|e| IdeError::internal(e.to_string()))?;
+                file.persist(&record).map_err(|e| IdeError::from(e.error))?;
+                return Ok(previous);
+            }
+        }
+        let originals = built.class_dirs;
         fs::create_dir_all(&snapshots)?;
         let snapshot = tempfile::Builder::new().prefix("launch-").tempdir_in(&snapshots)?.keep();
         // Retain every new snapshot even if copying or publishing its record fails.
@@ -108,8 +156,8 @@ impl Session {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        let mut outputs = Outputs { fingerprint: None, snapshot, originals };
-        if before.is_some() && before == after {
+        let mut outputs = Outputs { fingerprint: None, snapshot, originals, failure: built.failure };
+        if outputs.failure.is_none() && before.is_some() && before == after {
             outputs.fingerprint = before;
             fs::create_dir_all(record.parent().unwrap())?;
             let mut file = tempfile::NamedTempFile::new_in(record.parent().unwrap())?;
@@ -199,11 +247,91 @@ mod tests {
         )
         .unwrap();
         let script = root.join("mvnw");
-        fs::write(&script, "#!/bin/sh\necho build >> calls\nif [ -f src/main/kotlin/broken ]; then exit 1; fi\nmkdir -p target/classes\ncp src/main/kotlin/Main.kt target/classes/Main.class\n").unwrap();
+        fs::write(&script, "#!/bin/sh\necho build \"$@\" >> calls\nif [ -f src/main/kotlin/broken ]; then exit 1; fi\nmkdir -p target/classes\ncp src/main/kotlin/Main.kt target/classes/Main.class\n").unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         fs::create_dir_all(root.join("src/main/kotlin")).unwrap();
         fs::write(root.join("src/main/kotlin/Main.kt"), "first").unwrap();
         ide_build::load(root, &root.join("cache"), None)
+    }
+
+    /// Like [`fixture`], but the build script skips sources whose mtime did not advance,
+    /// mirroring Maven's (and the Kotlin plugin's) timestamp-incremental compilation.
+    fn fixture_timestamp_incremental(root: &Path) -> ide_build::BuildModel {
+        fs::write(
+            root.join("pom.xml"),
+            r#"<project><groupId>demo</groupId><artifactId>app</artifactId><version>1</version></project>"#,
+        )
+        .unwrap();
+        let script = root.join("mvnw");
+        fs::write(&script, "#!/bin/sh\necho build \"$@\" >> calls\nif [ -f src/main/kotlin/broken ]; then exit 1; fi\nmkdir -p target/classes\nif [ ! -f target/classes/Main.class ] || [ src/main/kotlin/Main.kt -nt target/classes/Main.class ]; then\ncp src/main/kotlin/Main.kt target/classes/Main.class\nfi\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(root.join("src/main/kotlin")).unwrap();
+        fs::write(root.join("src/main/kotlin/Main.kt"), "first").unwrap();
+        ide_build::load(root, &root.join("cache"), None)
+    }
+
+    #[test]
+    fn rebuild_bypasses_snapshots_and_error_continuation_retains_previous_classes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root);
+        let cancel = CancellationToken::new();
+        let mut session = Session::new(root.join("cache"));
+        let first = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        let rebuilt = session
+            .build(
+                root,
+                &model,
+                root,
+                BuildOptions { policy: BuildPolicy::Rebuild, ..Default::default() },
+                None,
+                &cancel,
+            )
+            .unwrap();
+        assert_ne!(first.snapshot, rebuilt.snapshot);
+        assert_eq!(fs::read_to_string(root.join("calls")).unwrap().lines().count(), 2);
+        assert!(fs::read_to_string(root.join("calls")).unwrap().lines().last().unwrap().contains("clean"));
+        fs::write(root.join("src/main/kotlin/broken"), "broken").unwrap();
+        let continued = session
+            .build(
+                root,
+                &model,
+                root,
+                BuildOptions { policy: BuildPolicy::MakeAndContinueOnErrors, ..Default::default() },
+                None,
+                &cancel,
+            )
+            .unwrap();
+        assert_eq!(continued.snapshot, rebuilt.snapshot);
+        assert!(continued.failure.unwrap().contains("Build failed"));
+        assert_eq!(fs::read_to_string(continued.snapshot.join("0/Main.class")).unwrap(), "first");
+        let again = session
+            .build(
+                root,
+                &model,
+                root,
+                BuildOptions { policy: BuildPolicy::MakeAndContinueOnErrors, ..Default::default() },
+                None,
+                &cancel,
+            )
+            .unwrap();
+        assert_eq!(again.snapshot, rebuilt.snapshot);
+        assert!(again.failure.is_some());
+        cancel.cancel();
+        assert_eq!(
+            session
+                .build(
+                    root,
+                    &model,
+                    root,
+                    BuildOptions { policy: BuildPolicy::MakeAndContinueOnErrors, ..Default::default() },
+                    None,
+                    &cancel
+                )
+                .unwrap_err()
+                .kind,
+            ide_core::error::ErrorKind::Cancelled
+        );
     }
 
     #[test]
@@ -214,7 +342,7 @@ mod tests {
         let cache = root.join("cache");
         let cancel = CancellationToken::new();
         let mut session = Session::new(cache.clone());
-        let mut build = || session.build(root, &model, root, false, None, &cancel);
+        let mut build = || session.build(root, &model, root, BuildOptions::default(), None, &cancel);
         let first = build().unwrap();
         let snapshot = first.snapshot.clone();
         drop(first);
@@ -253,16 +381,55 @@ mod tests {
         let cache = root.join("cache");
         let cancel = CancellationToken::new();
         let mut session = Session::new(cache.clone());
-        let first = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let first = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
         assert_eq!(fs::read_to_string(first.snapshot.join("0/Main.class")).unwrap(), "first");
 
         let source = root.join("src/main/kotlin/Main.kt");
         let mtime = fs::metadata(&source).unwrap().modified().unwrap();
         fs::write(&source, "other").unwrap(); // 5 bytes, same length as "first"
         fs::File::options().write(true).open(&source).unwrap().set_modified(mtime).unwrap();
-        let rebuilt = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let rebuilt = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
         assert_ne!(rebuilt.snapshot, first.snapshot, "a same-length, same-mtime content change must rebuild");
         assert_eq!(fs::read_to_string(rebuilt.snapshot.join("0/Main.class")).unwrap(), "other");
+    }
+
+    #[test]
+    fn restart_after_mtime_preserving_external_edit_actually_recompiles() {
+        // The content hash triggers a rebuild for a same-length, same-mtime external
+        // edit, but a timestamp-incremental builder (real Maven) would still compile
+        // nothing and the stale snapshot would be re-recorded as fresh. Dropping the
+        // session simulates the IDE restart from the report.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture_timestamp_incremental(root);
+        let cache = root.join("cache");
+        let cancel = CancellationToken::new();
+        let mut session = Session::new(cache.clone());
+        let first = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert_eq!(fs::read_to_string(first.snapshot.join("0/Main.class")).unwrap(), "first");
+        // Pin the old output's mtime so the `-nt` check below is deterministic even on
+        // coarse-granularity filesystems.
+        fs::File::options()
+            .write(true)
+            .open(root.join("target/classes/Main.class"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(42))
+            .unwrap();
+        drop(session);
+
+        let source = root.join("src/main/kotlin/Main.kt");
+        let mtime = fs::metadata(&source).unwrap().modified().unwrap();
+        fs::write(&source, "other").unwrap(); // 5 bytes, same length as "first"
+        fs::File::options().write(true).open(&source).unwrap().set_modified(mtime).unwrap();
+
+        let mut session = Session::new(cache.clone());
+        let rebuilt = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert_ne!(rebuilt.snapshot, first.snapshot);
+        assert_eq!(
+            fs::read_to_string(rebuilt.snapshot.join("0/Main.class")).unwrap(),
+            "other",
+            "the re-stamped source must actually recompile instead of re-recording stale outputs"
+        );
     }
 
     #[test]
@@ -273,9 +440,9 @@ mod tests {
         let cache = root.join("cache");
         let cancel = CancellationToken::new();
         let mut session = Session::new(cache.clone());
-        let first = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let first = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
         fs::write(root.join("src/main/kotlin/Main.kt"), "updated").unwrap();
-        let second = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let second = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
         assert!(first.snapshot.is_dir());
         assert!(second.snapshot.is_dir());
         // Another mode can keep a superseded snapshot alive.
@@ -286,10 +453,10 @@ mod tests {
         assert!(first.snapshot.is_dir());
         assert!(second.snapshot.is_dir());
         let mut session = Session::new(cache.clone());
-        let reused = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let reused = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
         assert_eq!(reused.snapshot, second.snapshot);
         fs::write(root.join("src/main/kotlin/Main.kt"), "third version").unwrap();
-        let third = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let third = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
         assert!(second.snapshot.is_dir());
         drop(session);
         assert!(!second.snapshot.exists());
@@ -316,7 +483,7 @@ mod tests {
         fs::write(snapshots.join("launch-file"), "keep").unwrap();
         let record = cache.join("java-launch/records/deep/module/test.json");
         fs::create_dir_all(record.parent().unwrap()).unwrap();
-        let outputs = Outputs { fingerprint: None, snapshot: retained.clone(), originals: Vec::new() };
+        let outputs = Outputs { fingerprint: None, snapshot: retained.clone(), originals: Vec::new(), failure: None };
         fs::write(record, serde_json::to_vec(&outputs).unwrap()).unwrap();
         let mut session = Session::new(cache);
         session.initialize();
@@ -347,7 +514,7 @@ mod tests {
         fs::write(script, text).unwrap();
         let cache = root.join("cache");
         let mut session = Session::new(cache.clone());
-        assert!(session.build(root, &model, root, false, None, &CancellationToken::new()).is_err());
+        assert!(session.build(root, &model, root, BuildOptions::default(), None, &CancellationToken::new()).is_err());
         assert_eq!(session.unreferenced.len(), 1);
         let snapshot = session.unreferenced[0].clone();
         assert!(snapshot.join("0/Main.class").is_file());
@@ -366,7 +533,8 @@ mod tests {
         fs::write(script, text).unwrap();
         let cache = root.join("cache");
         let mut session = Session::new(cache.clone());
-        let outputs = session.build(root, &model, root, false, None, &CancellationToken::new()).unwrap();
+        let outputs =
+            session.build(root, &model, root, BuildOptions::default(), None, &CancellationToken::new()).unwrap();
         assert!(outputs.fingerprint.is_none());
         assert_eq!(fs::read(cache.join("java-launch/records/main.json")).unwrap(), b"null");
         assert!(outputs.snapshot.join("0/Main.class").is_file());
@@ -381,14 +549,14 @@ mod tests {
         let cache = root.join("cache");
         let cancel = CancellationToken::new();
         let mut session = Session::new(cache.clone());
-        let first = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let first = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
         fs::remove_file(root.join("src/main/kotlin/Main.kt")).unwrap();
         assert!(!compile::launch_has_non_java_sources(root, &model, root, false));
         assert!(has_record(root, &cache, root));
-        assert!(session.build(root, &model, root, false, None, &cancel).is_err());
+        assert!(session.build(root, &model, root, BuildOptions::default(), None, &cancel).is_err());
         assert!(has_record(root, &cache, root));
         fs::write(root.join("src/main/kotlin/Main.kt"), "restored").unwrap();
-        let restored = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let restored = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
         assert_ne!(first.snapshot, restored.snapshot);
     }
 }

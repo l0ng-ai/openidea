@@ -9,16 +9,18 @@ const config: KnipConfig = {
     "!src/editor/core/cm/angular/parser.terms.ts",
     "!src/editor/core/cm/jsp/parser.terms.ts",
     "!src/editor/core/cm/astro/parser.terms.ts",
+    "!src/editor/core/cm/django/parser.terms.ts",
     "scripts/**/*.ts",
     "perf/**/*.ts",
+    "evals/**/*.ts",
     "e2e/**/*.ts",
     "smoke/**/*.ts",
   ],
   // Plugins' web pages are projects of their own (own package.json, checked by plugins/build.sh and CI).
   ignore: ["plugins/**/web-src/**"],
   ignoreExportsUsedInFile: true,
-  // lint-staged formats Rust files with the toolchain's rustfmt.
-  ignoreBinaries: ["rustfmt"],
+  // System tools used by formatting and language smoke fixtures.
+  ignoreBinaries: ["rustfmt", "composer", "make"],
   compilers: {
     // Fonts come in through `@import` in global.css.
     css: (text: string) => [...text.matchAll(/(?<=@)import[^;]+/g)].join("\n"),

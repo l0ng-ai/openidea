@@ -7,6 +7,8 @@
 .swatch {
   width: 12px;
   height: 12px;
+  flex: none;
+  margin: 0 4px;
   box-sizing: border-box;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
@@ -22,14 +24,4 @@
 }
 .editable:hover {
   border-color: var(--fg-muted);
-}
-/* The native color input only anchors the system picker. */
-.picker {
-  position: fixed;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  border: 0;
-  opacity: 0;
-  pointer-events: none;
 }

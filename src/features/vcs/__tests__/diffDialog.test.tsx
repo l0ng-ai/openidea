@@ -23,7 +23,7 @@ import { ChangesTree, nodeMenu } from "../CommitView";
 import type { ChangeNode } from "../changes";
 import { VcsDialogHost } from "../dialogs";
 import { useVcs } from "../store";
-import { openDiffDialog } from "../diffDialog";
+import { loadDiffDialogSize, openDiffDialog } from "../diffDialog";
 
 const modified = (path: string) => ({
   path,
@@ -35,7 +35,9 @@ const modified = (path: string) => ({
 
 /** Editor tabs: none may open behind the modal Commit dialog. */
 const openDiff = vi.fn(async () => undefined);
-provideEditorService({ openInput: openDiff } as never);
+/** Double-click opens the source file, as the modal interface does (Show on Double-Click). */
+const openSource = vi.fn(async () => undefined);
+provideEditorService({ openInput: openDiff, openFile: openSource } as never);
 
 /** Activates (double-clicks) the file row the way a user does. */
 function activateFile(name: string) {
@@ -114,6 +116,28 @@ describe("Commit dialog diff window (#1863)", () => {
     expect(openDiff).not.toHaveBeenCalled();
     expect(screen.getByTestId("diff-view")).toHaveAttribute("data-path", "/p/b.ts");
     await screen.findByRole("dialog", { name: "b.ts (HEAD ↔ Your version)" });
+  });
+
+  it("remembers the resized size for the next opening (#2328)", async () => {
+    render(<VcsDialogHost />);
+    let close: () => void = () => {};
+    act(() => {
+      close = openDiffDialog({ path: "/p/a.ts", left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } });
+    });
+    await diffDialogs();
+    // Drag the corner grip; jsdom reports a zero rect so the dialog clamps to its
+    // minimums — what matters is that the resize end is persisted.
+    fireEvent.pointerDown(screen.getByRole("separator", { name: "Resize" }), { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { buttons: 1, clientX: 100, clientY: 80 });
+    fireEvent.pointerUp(window);
+    expect(loadDiffDialogSize()).toEqual({ w: 480, h: 280 });
+    act(() => close());
+    // A fresh open starts at the remembered size rather than the default.
+    act(() => {
+      close = openDiffDialog({ path: "/p/a.ts", left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } });
+    });
+    const reopened = await diffDialogs();
+    expect([reopened.style.width, reopened.style.height]).toEqual(["480px", "280px"]);
   });
 
   it("closes on Jump to Source so the editor it opens is not hidden behind it", async () => {

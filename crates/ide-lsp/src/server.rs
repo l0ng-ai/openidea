@@ -52,6 +52,7 @@ pub enum Phase {
 struct State {
     generation: u64,
     conn: Conn,
+    restarting: bool,
     events: VecDeque<IdeEvent>,
     publishing: bool,
 }
@@ -73,6 +74,22 @@ pub struct Progress {
     pub message: Option<String>,
     /// Set while the server accepts `window/workDoneProgress/cancel` for it.
     pub cancel: Option<ide_core::task::CancelHandle>,
+    /// When the server last reported on this token; a task that stops reporting is stuck.
+    pub last: tokio::time::Instant,
+    /// Last percentage, so a stalled task does not lose its bar.
+    pub fraction: Option<f32>,
+    /// Marked after the stale window of silence. The task stays visible, but no longer
+    /// counts as busy: the work may resume and finish in the same task.
+    pub stalled: bool,
+}
+
+impl Progress {
+    /// Nothing came for `stale` and the task is not already marked: the work behind it is
+    /// blocked on something that never answers (an HTTP read with no response header, Maven
+    /// waiting for a repository). Its task must not hold the IDE while that lasts.
+    pub fn silent(&self, stale: Duration) -> bool {
+        !self.stalled && tokio::time::Instant::now() >= self.last + stale
+    }
 }
 
 pub struct Server {
@@ -110,7 +127,7 @@ pub struct Server {
     published: Mutex<HashMap<PathBuf, Instant>>,
     /// Woken on every `publishDiagnostics` (Inspect Code waits on it).
     pub published_notify: Notify,
-    /// Woken when the last `$/progress` task ends.
+    /// Woken when an empty answer stops being suspect (see [`Server::indexing`]).
     idle_notify: Notify,
     /// `experimental/serverStatus` (rust-analyzer): `None` until the server sends
     /// one, then whether it is still loading the project.
@@ -119,6 +136,11 @@ pub struct Server {
     phase_notify: Notify,
     transient: Mutex<HashMap<PathBuf, Transient>>,
     pub java_build_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Classpath folders still missing after a full build (a module without output), so a
+    /// launch rebuilds for a missing output folder only once.
+    pub java_absent_outputs: Mutex<std::collections::HashSet<PathBuf>>,
+    /// JDT retirement waits for launch and initialization cleanup, even before `Ready`.
+    pub startup_lock: Arc<tokio::sync::Mutex<()>>,
     pub java_autobuild_suspended: std::sync::atomic::AtomicBool,
     pub external_project: tokio::sync::Mutex<crate::external_project::State>,
     pub external_diagnostics: std::sync::atomic::AtomicBool,
@@ -126,6 +148,10 @@ pub struct Server {
     /// The instance whose just registered external project is loading, until an open file's
     /// diagnostics arrive (0: none).
     pub external_loading: std::sync::atomic::AtomicU64,
+    /// jdtls sent `ServiceReady` on this instance: the project is imported.
+    java_ready: std::sync::atomic::AtomicBool,
+    /// kotlin-lsp's project import as the current instance last reported it.
+    pub(crate) import_state: watch::Sender<Option<crate::kotlin_lsp::ImportState>>,
 }
 
 impl Server {
@@ -138,7 +164,13 @@ impl Server {
             effective: Mutex::new(None),
             resolved_binary: RwLock::new(None),
             languages: Mutex::new(vec![language]),
-            state: Mutex::new(State { generation: 0, conn: Conn::Idle, events: VecDeque::new(), publishing: false }),
+            state: Mutex::new(State {
+                generation: 0,
+                conn: Conn::Idle,
+                restarting: false,
+                events: VecDeque::new(),
+                publishing: false,
+            }),
             initializing: Mutex::new(None),
             start_cancel: Mutex::new(CancellationToken::new()),
             phase: watch::channel(Phase::Down).0,
@@ -158,11 +190,15 @@ impl Server {
             phase_notify: Notify::new(),
             transient: Mutex::new(HashMap::new()),
             java_build_lock: Arc::new(tokio::sync::Mutex::new(())),
+            java_absent_outputs: Mutex::new(Default::default()),
+            startup_lock: Arc::new(tokio::sync::Mutex::new(())),
             java_autobuild_suspended: std::sync::atomic::AtomicBool::new(false),
             external_project: tokio::sync::Mutex::new(Default::default()),
             external_diagnostics: std::sync::atomic::AtomicBool::new(false),
             external_refresh_queued: std::sync::atomic::AtomicBool::new(false),
             external_loading: std::sync::atomic::AtomicU64::new(0),
+            java_ready: std::sync::atomic::AtomicBool::new(false),
+            import_state: watch::channel(None).0,
         }
     }
 
@@ -214,10 +250,23 @@ impl Server {
         }
         st.generation += 1;
         st.conn = Conn::Starting;
+        st.restarting = false;
         *self.start_cancel.lock() = CancellationToken::new();
         *self.started.lock() = Some(Instant::now());
+        // A crash report quotes only this instance's output, not its predecessors'.
+        self.stderr.lock().clear();
+        self.import_state.send_replace(None);
         self.phase.send_replace(Phase::Starting);
         Some(st.generation)
+    }
+
+    /// Publishes instance `generation`'s import state unless a newer start replaced it; checked
+    /// under the state lock so it cannot land after [`Self::begin_start`]'s reset.
+    pub(crate) fn set_import_state(&self, generation: u64, state: crate::kotlin_lsp::ImportState) {
+        let st = self.state.lock();
+        if st.generation == generation {
+            self.import_state.send_replace(Some(state));
+        }
     }
 
     /// Starting → Missing/Failed, publishing the status the failed start reports
@@ -269,6 +318,10 @@ impl Server {
         }
     }
 
+    pub fn is_starting(&self) -> bool {
+        matches!(self.state.lock().conn, Conn::Starting)
+    }
+
     /// The instance told `initialized`, ready or not.
     pub fn instance(&self) -> Option<Running> {
         self.running().or_else(|| self.initializing.lock().clone())
@@ -293,21 +346,43 @@ impl Server {
         self.running().filter(|r| r.generation == generation)
     }
 
-    /// Waits while the server is starting; returns the instance once ready.
+    /// Waits through startup or a planned restart; returns the instance once ready.
     pub async fn wait_ready(&self, timeout: Duration) -> Option<Running> {
         let mut rx = self.phase.subscribe();
-        let _ = tokio::time::timeout(timeout, rx.wait_for(|p| *p != Phase::Starting)).await;
-        self.running()
+        tokio::time::timeout(timeout, async {
+            loop {
+                {
+                    let st = self.state.lock();
+                    // Read both under the writer's lock: a restart can begin just after a wakeup.
+                    if *rx.borrow_and_update() != Phase::Starting {
+                        return match &st.conn {
+                            Conn::Ready(run) => Some(run.clone()),
+                            _ => None,
+                        };
+                    }
+                }
+                if rx.changed().await.is_err() {
+                    return None;
+                }
+            }
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     /// Ready → Stopping, returning the instance to shut down. An in-flight
     /// start is abandoned instead.
     pub fn begin_stop(&self, sink: &SharedSink, final_stop: bool) -> Option<Running> {
         let mut st = self.state.lock();
+        if final_stop {
+            st.restarting = false;
+        }
         match std::mem::replace(&mut st.conn, Conn::Idle) {
             Conn::Ready(run) => {
                 st.conn = Conn::Stopping;
-                self.phase.send_replace(Phase::Down);
+                st.restarting = !final_stop;
+                self.phase.send_replace(if st.restarting { Phase::Starting } else { Phase::Down });
                 Some(run)
             }
             Conn::Starting => {
@@ -315,7 +390,8 @@ impl Server {
                 self.start_cancel.lock().cancel();
                 self.queue_cleanup(&mut st);
                 self.queue_status(&mut st, ServerStatus::Stopped, None);
-                self.phase.send_replace(Phase::Down);
+                st.restarting = !final_stop;
+                self.phase.send_replace(if st.restarting { Phase::Starting } else { Phase::Down });
                 drop(st);
                 self.publish(sink);
                 None
@@ -324,6 +400,7 @@ impl Server {
                 st.conn = other;
                 if final_stop {
                     self.queue_status(&mut st, ServerStatus::Stopped, None);
+                    self.phase.send_replace(Phase::Down);
                 }
                 drop(st);
                 self.publish(sink);
@@ -345,7 +422,7 @@ impl Server {
         self.queue_cleanup(&mut st);
         self.queue_status(&mut st, ServerStatus::Stopped, None);
         st.conn = Conn::Idle;
-        self.phase.send_replace(Phase::Down);
+        self.phase.send_replace(if st.restarting { Phase::Starting } else { Phase::Down });
         drop(st);
         self.publish(sink);
     }
@@ -499,9 +576,10 @@ impl Server {
         self.publish(sink);
     }
 
-    /// Whether the server reports work in progress (indexing, analysis).
+    /// Whether the server reports work in progress (indexing, analysis). A task marked
+    /// stuck stays visible but no longer holds the server busy.
     pub fn is_busy(&self) -> bool {
-        !self.progress.lock().is_empty() || *self.loading.lock() == Some(true)
+        self.progress.lock().values().any(|p| !p.stalled) || *self.loading.lock() == Some(true)
     }
 
     /// Whether the server says it is still loading the project, so an empty
@@ -521,6 +599,32 @@ impl Server {
         self.phase_ended();
     }
 
+    /// Whether an empty search answer may only mean the server has not indexed the project
+    /// yet. jdtls' searches wait for its index themselves, and the progress it reports once
+    /// the project is imported is background work (builds, validation): only the import counts.
+    pub fn indexing(&self) -> bool {
+        if self.name == "jdtls" {
+            return self.is_busy() && !self.java_ready.load(std::sync::atomic::Ordering::Acquire);
+        }
+        self.is_busy()
+    }
+
+    /// Records jdtls' `ServiceReady`.
+    pub fn set_java_ready(&self) {
+        self.java_ready.store(true, std::sync::atomic::Ordering::Release);
+        self.phase_ended();
+    }
+
+    /// Whether progress token `token` is still running on this instance.
+    pub fn has_progress(&self, token: &str) -> bool {
+        self.progress.lock().contains_key(token)
+    }
+
+    /// Whether token `token` has reported nothing for `stale`.
+    pub fn progress_silent(&self, token: &str, stale: Duration) -> bool {
+        self.progress.lock().get(token).is_some_and(|p| p.silent(stale))
+    }
+
     /// Called after a `$/progress` task ended.
     pub fn progress_ended(&self) {
         self.phase_ended();
@@ -528,7 +632,7 @@ impl Server {
 
     fn phase_ended(&self) {
         self.phase_notify.notify_waiters();
-        if !self.is_busy() {
+        if !self.indexing() {
             self.idle_notify.notify_waiters();
         }
     }
@@ -538,17 +642,17 @@ impl Server {
         self.phase_notify.notified()
     }
 
-    /// Waits until no `$/progress` task is active; false on timeout or cancellation.
-    pub async fn wait_idle(&self, timeout: Duration, cancel: &CancellationToken) -> bool {
+    /// Waits until [`Server::indexing`] ends; false on timeout or cancellation.
+    pub async fn wait_indexed(&self, timeout: Duration, cancel: &CancellationToken) -> bool {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let notified = self.idle_notify.notified();
-            if !self.is_busy() || self.running().is_none() {
-                return !self.is_busy();
+            if !self.indexing() || self.running().is_none() {
+                return !self.indexing();
             }
             tokio::select! {
                 () = notified => {}
-                () = tokio::time::sleep_until(deadline) => return !self.is_busy(),
+                () = tokio::time::sleep_until(deadline) => return !self.indexing(),
                 () = cancel.cancelled() => return false,
             }
         }
@@ -626,7 +730,7 @@ impl Server {
         if buf.len() == STDERR_LINES {
             buf.pop_front();
         }
-        buf.push_back(line);
+        buf.push_back(ide_core::output_encoding::strip_ansi(&line));
     }
 
     pub fn stderr_tail(&self, n: usize) -> String {
@@ -638,6 +742,7 @@ impl Server {
     pub fn take_progress(&self) -> Vec<(TaskId, String)> {
         *self.loading.lock() = None;
         self.external_loading.store(0, std::sync::atomic::Ordering::Release);
+        self.java_ready.store(false, std::sync::atomic::Ordering::Release);
         self.progress.lock().drain().map(|(_, p)| (p.task, p.title)).collect()
     }
 
@@ -787,7 +892,15 @@ mod tests {
             s.set_diagnostics(path.clone(), vec![lsp::Diagnostic::default()]);
             s.progress.lock().insert(
                 "old".into(),
-                Progress { task: TaskId::next(), title: "Old work".into(), message: None, cancel: None },
+                Progress {
+                    task: TaskId::next(),
+                    title: "Old work".into(),
+                    message: None,
+                    cancel: None,
+                    last: tokio::time::Instant::now(),
+                    fraction: None,
+                    stalled: false,
+                },
             );
             let seen = Arc::new(Mutex::new(Vec::new()));
             let manager = Arc::new(Mutex::new(std::sync::Weak::<crate::LspManager>::new()));
@@ -824,6 +937,49 @@ mod tests {
     fn server() -> Server {
         let cfg: LanguageServerConfig = toml::from_str("name = \"s\"\ncommand = \"s\"").unwrap();
         Server::new(cfg, PathBuf::from("/p"), LanguageId::new("vue"))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_progress_task_turns_silent_once_its_reports_stop() {
+        let stale = Duration::from_secs(180);
+        let mut p = Progress {
+            task: TaskId::next(),
+            title: "Importing Maven project(s)".into(),
+            message: Some("https://maven.example/".into()),
+            cancel: None,
+            last: tokio::time::Instant::now(),
+            fraction: Some(0.44),
+            stalled: false,
+        };
+        assert!(!p.silent(stale));
+        tokio::time::advance(stale).await;
+        assert!(p.silent(stale), "no report for the whole window");
+        // A report puts the task back to work, whatever it was doing.
+        p.last = tokio::time::Instant::now();
+        p.stalled = true;
+        assert!(!p.silent(stale));
+        p.stalled = false;
+        assert!(!p.silent(stale));
+    }
+
+    #[test]
+    fn a_stalled_progress_task_does_not_keep_the_server_busy() {
+        let s = server();
+        s.progress.lock().insert(
+            "p".into(),
+            Progress {
+                task: TaskId::next(),
+                title: "Importing Maven project(s)".into(),
+                message: None,
+                cancel: None,
+                last: tokio::time::Instant::now(),
+                fraction: None,
+                stalled: true,
+            },
+        );
+        assert!(!s.is_busy(), "a stuck task must not hold wait_indexed or ReferencesIncomplete::Indexing");
+        s.progress.lock().get_mut("p").unwrap().stalled = false;
+        assert!(s.is_busy(), "a reporting task keeps the server busy");
     }
 
     #[test]
@@ -891,6 +1047,37 @@ mod tests {
         s.begin_stop(&sink, false); // abandons the start and invalidates its generation
         assert!(!s.fail_start(generation, Conn::Failed, &sink, ServerStatus::Crashed, Some("boom".into())));
         assert_eq!(s.status(), ServerStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn final_stop_cancels_pending_restarts_in_every_phase() {
+        for phase in ["starting", "stopping", "between"] {
+            let s = server();
+            let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+            let generation = s.begin_start().unwrap();
+            if phase == "starting" {
+                s.begin_stop(&sink, false);
+            } else {
+                let mut st = s.state.lock();
+                st.conn = Conn::Stopping;
+                st.restarting = true;
+            }
+            if phase == "between" {
+                s.end_stop(generation, &sink);
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), s.wait_ready(Duration::from_secs(30))).await.is_err()
+            );
+            s.begin_stop(&sink, true);
+            s.end_stop(generation, &sink);
+            assert_eq!(*s.phase.borrow(), Phase::Down);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), s.wait_ready(Duration::from_secs(30)))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 
     #[test]
@@ -1003,6 +1190,19 @@ mod tests {
         assert_eq!(s.effective_config().command, "successor");
         assert_eq!(*s.resolved_binary.read(), Some(PathBuf::from("successor")));
         assert_eq!(s.stderr_tail(5), "successor output");
+    }
+
+    #[test]
+    fn crash_report_quotes_only_the_crashed_instance_without_colour_codes() {
+        let s = server();
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let first = s.begin_start().unwrap();
+        s.push_stderr(first, "\x1b[31;1mfirst failure\x1b[0m".into());
+        assert_eq!(s.stderr_tail(5), "first failure");
+        assert!(s.on_closed(first, &sink, Some(1)).is_some());
+        let second = s.begin_start().unwrap();
+        s.push_stderr(second, "\x1b[31;1m\x1b[31;1msecond failure\x1b[0m".into());
+        assert_eq!(s.stderr_tail(5), "second failure");
     }
 
     #[test]

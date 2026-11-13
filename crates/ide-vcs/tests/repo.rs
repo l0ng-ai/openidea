@@ -65,8 +65,11 @@ impl Fixture {
         self.git(&["commit", "-q", "-m", msg]);
         self.git(&["rev-parse", "HEAD"])
     }
+    /// The repository of a trusted project.
     fn repo(&self) -> Repo {
-        Repo::discover(&self.dir).unwrap().expect("repository found")
+        let repo = Repo::discover(&self.dir).unwrap().expect("repository found");
+        repo.set_execution_allowed(true);
+        repo
     }
     fn path(&self, rel: &str) -> PathBuf {
         self.dir.join(rel)
@@ -724,6 +727,7 @@ fn file_at_in_a_blobless_clone() {
     let url = format!("file://{}", fx.dir.display());
     git_in(fx.dir.parent().unwrap(), &["clone", "-q", "--filter=blob:none", &url, "clone"]);
     let repo = Repo::discover(&clone).unwrap().unwrap();
+    repo.set_execution_allowed(true);
     // v1's blob was never fetched; reading it fetches it on demand.
     assert_eq!(repo.file_at(&clone.join("f.txt"), Some(&c1), encoding_rs::UTF_8).unwrap().as_deref(), Some("v1\n"));
 }
@@ -980,15 +984,80 @@ fn checkout_create_detached_delete_rebase() {
     );
 
     repo.checkout("main", false).unwrap();
-    repo.rename_branch("topic", "topic2").unwrap();
+    repo.rename_branch("topic", "topic2", false).unwrap();
     assert!(repo.branches().unwrap().iter().any(|b| b.name == "topic2"));
-    assert!(repo.rename_branch("topic2", "main").is_err(), "existing name must be refused");
-    assert!(repo.rename_branch("topic2", " ").is_err());
-    repo.rename_branch("topic2", "topic").unwrap();
+    assert!(repo.rename_branch("topic2", "main", false).is_err(), "existing name must be refused");
+    assert!(repo.rename_branch("topic2", " ", false).is_err());
+    repo.rename_branch("topic2", "topic", false).unwrap();
     assert!(repo.delete_branch("topic", false).is_err(), "unmerged branch must need force");
     repo.delete_branch("topic", true).unwrap();
     assert!(!repo.branches().unwrap().iter().any(|b| b.name == "topic"));
     assert!(repo.checkout("does-not-exist", false).is_err());
+}
+
+#[test]
+fn renaming_a_branch_keeps_or_drops_its_upstream() {
+    let (fx, _bare) = with_remote();
+    let repo = fx.repo();
+    fx.git(&["branch", "--track", "topic", "origin/main"]);
+
+    let upstream = |name: &str| {
+        repo.branches().unwrap().into_iter().find(|b| b.name == name && !b.remote).and_then(|b| b.upstream)
+    };
+    assert_eq!(upstream("topic").as_deref(), Some("origin/main"));
+
+    // `git branch -m` moves the tracking with the name.
+    repo.rename_branch("topic", "topic2", false).unwrap();
+    assert_eq!(upstream("topic2").as_deref(), Some("origin/main"));
+
+    // Asked to drop it, the new branch tracks nothing.
+    repo.rename_branch("topic2", "topic3", true).unwrap();
+    assert_eq!(upstream("topic3"), None);
+
+    // A branch that tracks nothing has no upstream to drop; that is not an error.
+    fx.git(&["branch", "plain"]);
+    repo.rename_branch("plain", "plain2", true).unwrap();
+    assert!(repo.branches().unwrap().iter().any(|b| b.name == "plain2" && !b.remote));
+}
+
+#[test]
+fn renaming_the_current_branch_keeps_or_drops_its_upstream() {
+    for unset_upstream in [false, true] {
+        let (fx, _bare) = with_remote();
+        let repo = fx.repo();
+        repo.rename_branch("main", "renamed", unset_upstream).unwrap();
+        let branch = repo.branch_info().unwrap();
+        assert_eq!(branch.head.as_deref(), Some("renamed"));
+        assert_eq!(branch.upstream.as_deref(), if unset_upstream { None } else { Some("origin/main") });
+    }
+}
+
+#[test]
+fn failed_branch_rename_does_not_unset_upstream() {
+    let (fx, _bare) = with_remote();
+    let repo = fx.repo();
+    fx.git(&["branch", "occupied"]);
+    assert!(repo.rename_branch("main", "occupied", true).is_err());
+    let branch = repo.branch_info().unwrap();
+    assert_eq!(branch.head.as_deref(), Some("main"));
+    assert_eq!(branch.upstream.as_deref(), Some("origin/main"));
+}
+
+#[test]
+fn branch_rename_reports_when_only_unsetting_upstream_fails() {
+    let (fx, _bare) = with_remote();
+    let repo = fx.repo();
+    // The new branch activates a broken config only after the rename has succeeded.
+    fx.write(".git/broken-config", "[broken\n");
+    fx.git(&["config", "includeIf.onbranch:renamed.path", "broken-config"]);
+    let error = repo.rename_branch("main", "renamed", true).unwrap_err();
+    assert!(error.message.contains("Renamed branch 'main' to 'renamed'"), "{error}");
+    assert!(error.message.contains("could not unset its upstream"), "{error}");
+    assert!(error.message.contains("bad config"), "{error}");
+    std::fs::remove_file(fx.path(".git/broken-config")).unwrap();
+    let branch = repo.branch_info().unwrap();
+    assert_eq!(branch.head.as_deref(), Some("renamed"));
+    assert_eq!(branch.upstream.as_deref(), Some("origin/main"));
 }
 
 #[test]
@@ -1945,4 +2014,54 @@ fn reword_refuses_commits_outside_the_current_branch() {
     let side = fx.commit_all("side");
     fx.git(&["checkout", "-q", "main"]);
     assert!(fx.repo().reword(&side, "other").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn status_skips_a_directory_it_cannot_read() {
+    // `git status` warns "could not open directory: Permission denied" and lists the rest.
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fixture::new();
+    fx.write("a.txt", "a\n");
+    fx.commit_all("init");
+    fx.write("a.txt", "b\n");
+    fx.write("new.txt", "n\n");
+    let locked = fx.path("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::write(locked.join("inside.txt"), "x").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let st = fx.repo().status();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let st = st.unwrap();
+    assert_eq!(status_of(&st, "a.txt").unstaged, Some(ChangeKind::Modified));
+    assert_eq!(status_of(&st, "new.txt").unstaged, Some(ChangeKind::Untracked));
+}
+
+#[test]
+fn a_case_only_directory_rename_keeps_status_and_head_content() {
+    let fx = Fixture::new();
+    fx.write("src/financial/table/index.vue", "<template/>\n");
+    fx.commit_all("initial");
+    std::fs::rename(fx.path("src/financial"), fx.path("src/tmp")).unwrap();
+    std::fs::rename(fx.path("src/tmp"), fx.path("src/Financial")).unwrap();
+    if !fx.path("src/financial/table/index.vue").exists() {
+        return; // A case-sensitive file system: these are different directories.
+    }
+    fx.git(&["config", "core.ignorecase", "true"]);
+    fx.write("src/Financial/table/index.vue", "<template>x</template>\n");
+    fx.write("src/Financial/added/index.vue", "new\n");
+    let repo = fx.repo();
+    let st = repo.status().unwrap();
+    let modified = status_of(&st, "src/financial/table/index.vue");
+    assert_eq!(modified.unstaged, Some(ChangeKind::Modified));
+    // Tabs and the project tree name the file as the disk does.
+    assert_eq!(modified.path.0, fx.path("src/Financial/table/index.vue"));
+    assert_eq!(status_of(&st, "src/Financial/added/index.vue").path.0, fx.path("src/Financial/added/index.vue"));
+
+    let on_disk = fx.path("src/Financial/table/index.vue");
+    assert_eq!(repo.file_at(&on_disk, None, encoding_rs::UTF_8).unwrap().as_deref(), Some("<template/>\n"));
+    repo.stage(&[on_disk]).unwrap();
+    let st = repo.status().unwrap();
+    assert_eq!(status_of(&st, "src/financial/table/index.vue").staged, Some(ChangeKind::Modified));
+    assert_eq!(fx.git(&["diff", "--cached", "--name-only"]), "src/financial/table/index.vue");
 }

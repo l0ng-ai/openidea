@@ -66,6 +66,13 @@ pub fn jdk_download_location(state: State<'_, AppState>) -> IdeResult<ide_core::
     ide_host::ops::tools::jdk_download_location(&state.host, "")
 }
 
+/// The Java version the window's jdtls needs; `None` while it isn't installed or doesn't tell.
+#[tauri::command]
+#[specta::specta]
+pub async fn jdtls_required_java(window: Window, state: State<'_, AppState>) -> IdeResult<Option<u32>> {
+    ide_host::ops::tools::jdtls_required_java(&state.host, window.label()).await
+}
+
 /// Downloads the latest `vendor` JDK of Java `version` into `location` (default:
 /// [`jdk_download_location`]), streaming progress through `on_event`; cancellable
 /// with `cancel_request(request)`. The JDK is then detected like an installed one,

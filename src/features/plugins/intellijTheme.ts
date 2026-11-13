@@ -89,6 +89,7 @@ export const ICLS_COLORS: Record<string, string[]> = {
   CARET_COLOR: ["--caret"],
   CARET_ROW_COLOR: ["--bg-current-line"],
   SELECTION_BACKGROUND: ["--bg-editor-selection"],
+  SELECTION_FOREGROUND: ["--fg-editor-selection"],
   LINE_NUMBERS_COLOR: ["--fg-line-number"],
   LINE_NUMBER_ON_CARET_ROW_COLOR: ["--fg-line-number-current"],
   // The new UI paints the gutter with this, else with the editor's background; `GUTTER_BACKGROUND` is the classic UI's.
@@ -107,6 +108,7 @@ export const ICLS_COLORS: Record<string, string[]> = {
   MODIFIED_LINES_COLOR: ["--gutter-modified"],
   ADDED_LINES_COLOR: ["--gutter-added"],
   DELETED_LINES_COLOR: ["--gutter-deleted"],
+  CONSOLE_BACKGROUND_KEY: ["--bg-console"],
 };
 
 type Part = "FOREGROUND" | "BACKGROUND" | "EFFECT_COLOR" | "ERROR_STRIPE_COLOR";
@@ -135,6 +137,12 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   DEFAULT_NUMBER: [["FOREGROUND", "--syn-number"]],
   DEFAULT_LINE_COMMENT: [["FOREGROUND", "--syn-comment"]],
   DEFAULT_DOC_COMMENT: [["FOREGROUND", "--syn-doc-comment"]],
+  DEFAULT_DOC_COMMENT_TAG: [["FOREGROUND", "--syn-doc-comment-tag"]],
+  DEFAULT_DOC_COMMENT_TAG_VALUE: [["FOREGROUND", "--syn-doc-comment-tag-value"]],
+  DEFAULT_DOC_MARKUP: [
+    ["FOREGROUND", "--syn-doc-markup"],
+    ["BACKGROUND", "--syn-doc-markup-bg"],
+  ],
   DEFAULT_FUNCTION_DECLARATION: [["FOREGROUND", "--syn-function"]],
   DEFAULT_FUNCTION_CALL: [["FOREGROUND", "--syn-function-call"]],
   DEFAULT_CLASS_NAME: [["FOREGROUND", "--syn-type"]],
@@ -164,7 +172,7 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   WARNING_ATTRIBUTES: [["EFFECT_COLOR", "--wave-warning"]],
   NOT_USED_ELEMENT_ATTRIBUTES: [["FOREGROUND", "--fg-unused"]],
   MATCHED_BRACE_ATTRIBUTES: [["BACKGROUND", "--bg-matched-brace"]],
-  SEARCH_RESULT_ATTRIBUTES: [["BACKGROUND", "--bg-search-match"]],
+  SEARCH_RESULT_ATTRIBUTES: [["BACKGROUND", "--bg-search-result"]],
   TEXT_SEARCH_RESULT_ATTRIBUTES: [["BACKGROUND", "--bg-text-search-result"]],
   IDENTIFIER_UNDER_CARET_ATTRIBUTES: [["BACKGROUND", "--bg-identifier-under-caret"]],
   WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES: [["BACKGROUND", "--bg-identifier-under-caret-write"]],
@@ -181,26 +189,76 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   "PY.SELF_PARAMETER": [["FOREGROUND", "--syn-self"]],
   "PY.KEYWORD_ARGUMENT": [["FOREGROUND", "--syn-keyword-arg"]],
   "PY.DOC_COMMENT": [["FOREGROUND", "--syn-docstring"]],
+  "PY.DOC_COMMENT_TAG": [["FOREGROUND", "--syn-python-docstring-tag"]],
+  OPENIDEA_pyDocstringKeyword: [["FOREGROUND", "--syn-python-docstring-keyword"]],
   "PY.BUILTIN_NAME": [["FOREGROUND", "--syn-predefined"]],
   MARKDOWN_HEADER_LEVEL_1: [["FOREGROUND", "--syn-markup-heading"]],
   MARKDOWN_CODE_SPAN: [["FOREGROUND", "--syn-markup-code"]],
   MARKDOWN_LINK_TEXT: [["FOREGROUND", "--syn-link"]],
-  CONSOLE_BLACK_OUTPUT: [["FOREGROUND", "--ansi-black"]],
-  CONSOLE_RED_OUTPUT: [["FOREGROUND", "--ansi-red"]],
-  CONSOLE_GREEN_OUTPUT: [["FOREGROUND", "--ansi-green"]],
-  CONSOLE_YELLOW_OUTPUT: [["FOREGROUND", "--ansi-yellow"]],
-  CONSOLE_BLUE_OUTPUT: [["FOREGROUND", "--ansi-blue"]],
-  CONSOLE_MAGENTA_OUTPUT: [["FOREGROUND", "--ansi-magenta"]],
-  CONSOLE_CYAN_OUTPUT: [["FOREGROUND", "--ansi-cyan"]],
-  CONSOLE_GRAY_OUTPUT: [["FOREGROUND", "--ansi-white"]],
-  CONSOLE_DARKGRAY_OUTPUT: [["FOREGROUND", "--ansi-bright-black"]],
-  CONSOLE_RED_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-red"]],
-  CONSOLE_GREEN_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-green"]],
-  CONSOLE_YELLOW_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-yellow"]],
-  CONSOLE_BLUE_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-blue"]],
-  CONSOLE_MAGENTA_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-magenta"]],
-  CONSOLE_CYAN_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-cyan"]],
-  CONSOLE_WHITE_OUTPUT: [["FOREGROUND", "--ansi-bright-white"]],
+  CONSOLE_BLACK_OUTPUT: [
+    ["FOREGROUND", "--ansi-black"],
+    ["FOREGROUND", "--terminal-ansi-black"],
+  ],
+  CONSOLE_RED_OUTPUT: [
+    ["FOREGROUND", "--ansi-red"],
+    ["FOREGROUND", "--terminal-ansi-red"],
+  ],
+  CONSOLE_GREEN_OUTPUT: [
+    ["FOREGROUND", "--ansi-green"],
+    ["FOREGROUND", "--terminal-ansi-green"],
+  ],
+  CONSOLE_YELLOW_OUTPUT: [
+    ["FOREGROUND", "--ansi-yellow"],
+    ["FOREGROUND", "--terminal-ansi-yellow"],
+  ],
+  CONSOLE_BLUE_OUTPUT: [
+    ["FOREGROUND", "--ansi-blue"],
+    ["FOREGROUND", "--terminal-ansi-blue"],
+  ],
+  CONSOLE_MAGENTA_OUTPUT: [
+    ["FOREGROUND", "--ansi-magenta"],
+    ["FOREGROUND", "--terminal-ansi-magenta"],
+  ],
+  CONSOLE_CYAN_OUTPUT: [
+    ["FOREGROUND", "--ansi-cyan"],
+    ["FOREGROUND", "--terminal-ansi-cyan"],
+  ],
+  CONSOLE_GRAY_OUTPUT: [
+    ["FOREGROUND", "--ansi-white"],
+    ["FOREGROUND", "--terminal-ansi-white"],
+  ],
+  CONSOLE_DARKGRAY_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-black"],
+    ["FOREGROUND", "--terminal-ansi-bright-black"],
+  ],
+  CONSOLE_RED_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-red"],
+    ["FOREGROUND", "--terminal-ansi-bright-red"],
+  ],
+  CONSOLE_GREEN_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-green"],
+    ["FOREGROUND", "--terminal-ansi-bright-green"],
+  ],
+  CONSOLE_YELLOW_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-yellow"],
+    ["FOREGROUND", "--terminal-ansi-bright-yellow"],
+  ],
+  CONSOLE_BLUE_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-blue"],
+    ["FOREGROUND", "--terminal-ansi-bright-blue"],
+  ],
+  CONSOLE_MAGENTA_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-magenta"],
+    ["FOREGROUND", "--terminal-ansi-bright-magenta"],
+  ],
+  CONSOLE_CYAN_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-cyan"],
+    ["FOREGROUND", "--terminal-ansi-bright-cyan"],
+  ],
+  CONSOLE_WHITE_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-white"],
+    ["FOREGROUND", "--terminal-ansi-bright-white"],
+  ],
 };
 
 export interface ConvertedTheme {

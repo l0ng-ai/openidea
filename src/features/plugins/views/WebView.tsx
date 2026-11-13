@@ -20,7 +20,7 @@ import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { EmptyState, Spinner } from "@/ui";
-import { editorService } from "@/workbench/contributions";
+import { editorService, registerFontZoomSurface } from "@/workbench/contributions";
 import { ToolWindowCornerActions, useOwnToolWindowHeader } from "@/workbench/toolwindows/ToolWindows";
 import { pluginsBackend, type FileFilter } from "../backend";
 import { errorText, usePlugins } from "../store";
@@ -56,6 +56,8 @@ export interface DocumentState {
 export interface FrameDocument {
   /** `name` is the file's name, without its directory. */
   read(): DocumentState & { readOnly: boolean; name: string };
+  /** The bytes of the file on disk, for binary documents (read-only, so the disk is current). */
+  bytes(): Promise<Uint8Array>;
   /** Applies the frame's edits as one change; throws `stale` when not at `version`. Returns the new version. */
   edit(version: number, changes: readonly TextChange[]): number;
   /** Changes made other than through `edit` (the text editor, Undo, other windows). */
@@ -164,6 +166,10 @@ export function WebView({ pluginId, view, label, header = "default", document = 
   const post = useCallback((message: object, transfer: Transferable[] = []) => {
     frame.current?.contentWindow?.postMessage({ tag: FRAME_TAG, ...message }, "*", transfer);
   }, []);
+  useEffect(() => {
+    const host = frame.current;
+    if (host) return registerFontZoomSurface(host, (delta) => post({ fontZoomDelta: delta }));
+  }, [page, post]);
   const postTheme = useCallback(() => {
     const t = frameTheme();
     if (ownHeader) {
@@ -257,6 +263,11 @@ export function WebView({ pluginId, view, label, header = "default", document = 
         case "document.get": {
           if (!document) throw new Error("this view shows no document");
           return [document.read()];
+        }
+        case "document.bytes": {
+          if (!document) throw new Error("this view shows no document");
+          const bytes = await document.bytes();
+          return [bytes, [bytes.buffer]];
         }
         case "document.edit":
         case "document.replace": {
@@ -360,6 +371,7 @@ export function WebView({ pluginId, view, label, header = "default", document = 
     <iframe
       ref={frame}
       className={styles.frame}
+      data-plugin-webview={pluginId}
       title={label}
       sandbox="allow-scripts"
       allow={clipboard ? "clipboard-read; clipboard-write" : undefined}

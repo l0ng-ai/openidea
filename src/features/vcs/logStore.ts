@@ -675,11 +675,42 @@ export function toggleCommitBookmark(commit: Commit) {
   });
 }
 
+/**
+ * Identity of a remembered filter value (#2443). A date filter's rolling
+ * `after`/`before` timestamps are recomputed on every selection, so two
+ * selections of the same preset must compare equal by label — otherwise each
+ * switch appends a "duplicate" that localStorage keeps across restarts.
+ */
+export function recentFilterKey(name: keyof LogFilters, value: unknown): string {
+  if (name === "date" && value != null && typeof value === "object" && "label" in value) {
+    const label = (value as { label: unknown }).label;
+    if (typeof label === "string") return `date:${label}`;
+  }
+  return JSON.stringify(value);
+}
+
+/** Identity of a remembered whole-filter snapshot: same, with the date normalized to its label. */
+function recentFiltersKey(value: LogFilters): string {
+  return JSON.stringify(value.date ? { ...value, date: value.date.label } : value);
+}
+
+function dedupeBy<K>(items: K[], key: (item: K) => string): K[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const k = key(item);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 export function recentFilterValues<K extends keyof LogFilters>(name: K): LogFilters[K][] {
   try {
-    return JSON.parse(
+    const raw: unknown = JSON.parse(
       localStorage.getItem(`openidea.vcs.logRecent.v1:${useVcs.getState().root}:${name}`) ?? "[]",
-    ) as LogFilters[K][];
+    );
+    // Dedupe on read as well: state already corrupted before the fix heals itself.
+    return Array.isArray(raw) ? dedupeBy(raw as LogFilters[K][], (v) => recentFilterKey(name, v)).slice(0, 10) : [];
   } catch {
     return [];
   }
@@ -690,7 +721,7 @@ export function recentLogFilters(): LogFilters[] {
     const raw: unknown = JSON.parse(
       localStorage.getItem(`openidea.vcs.logFilters.v1:${useVcs.getState().root}`) ?? "[]",
     );
-    return Array.isArray(raw) ? raw.slice(0, 10).map(parseFilters) : [];
+    return Array.isArray(raw) ? dedupeBy(raw.slice(0, 10).map(parseFilters), recentFiltersKey).slice(0, 10) : [];
   } catch {
     return [];
   }
@@ -704,7 +735,10 @@ function rememberRecentFilters(before: LogFilters) {
       localStorage.setItem(
         `openidea.vcs.logRecent.v1:${useVcs.getState().root}:${name}`,
         JSON.stringify(
-          [value, ...recentFilterValues(name).filter((v) => JSON.stringify(v) !== JSON.stringify(value))].slice(0, 10),
+          [
+            value,
+            ...recentFilterValues(name).filter((v) => recentFilterKey(name, v) !== recentFilterKey(name, value)),
+          ].slice(0, 10),
         ),
       );
     } catch {
@@ -713,10 +747,10 @@ function rememberRecentFilters(before: LogFilters) {
   }
   if (hasFilters(before)) {
     try {
-      const recent = [before, ...recentLogFilters().filter((f) => JSON.stringify(f) !== JSON.stringify(before))].slice(
-        0,
-        10,
-      );
+      const recent = [
+        before,
+        ...recentLogFilters().filter((f) => recentFiltersKey(f) !== recentFiltersKey(before)),
+      ].slice(0, 10);
       localStorage.setItem(`openidea.vcs.logFilters.v1:${useVcs.getState().root}`, JSON.stringify(recent));
     } catch {
       /* Recent filters are optional session state. */
@@ -783,13 +817,6 @@ async function loadOutgoing(id: string) {
     }),
   );
   if (logState(id).generation === generation) setViewState(id, { outgoing, tracked });
-}
-
-/** The commit is on the upstream of the current branch (rewriting it needs a force push). */
-export function isPushed(id: string): boolean {
-  const { outgoing, tracked, commits } = useGitLog.getState();
-  const c = commits.find((c) => commitKey(c) === id);
-  return !!c && tracked.has(commitRepo(c) ?? "") && !!outgoing && !outgoing.has(id);
 }
 
 export function loadMore(id = useGitLog.getState().shownLog): Promise<void> {
@@ -1096,31 +1123,55 @@ async function pageUntil(find: () => boolean) {
   }
 }
 
-/** Selects `id` in the log, clearing filters and paging until it is loaded. */
+/** Selects `id` in the log, seeking directly to it (and clearing filters only if needed). */
 export async function revealCommit(id: string, repo = currentRepo(), tab = "log") {
   if (useGitLog.getState().logTabs.find((t) => t.id === tab)?.location === "editor") showLogView(tab);
   else selectGitTab(tab);
-  const f = useGitLog.getState().filters;
-  const filtered = hasFilters(f);
+  if (tab === "log") initLogBranchFilter();
+  let { filters } = useGitLog.getState();
+  const { selected } = useGitLog.getState();
+  const root = useVcs.getState().root;
+  const valid = () => {
+    const state = useGitLog.getState();
+    return (
+      useVcs.getState().root === root &&
+      state.shownLog === tab &&
+      state.filters === filters &&
+      state.selected === selected
+    );
+  };
   const find = () =>
     useGitLog
       .getState()
-      .commits.find((c) => (!commitRepo(c) || commitRepo(c) === repo) && (c.id === id || c.id.startsWith(id)));
-  if (filtered) {
-    useGitLog.setState({ filters: emptyFilters() });
-    const load = reloadLog();
-    const generation = useGitLog.getState().generation;
-    await load;
-    if (useGitLog.getState().generation !== generation) return;
-  } else if (!useGitLog.getState().commits.length) {
-    const load = reloadLog();
-    const generation = useGitLog.getState().generation;
-    await load;
-    if (useGitLog.getState().generation !== generation) return;
+      .commits.find((c) => (!repo || !commitRepo(c) || commitRepo(c) === repo) && (c.id === id || c.id.startsWith(id)));
+  const waitReload = async () => {
+    await reloadLog();
+    // The log's first mount may replace this request with its own initial load.
+    while (valid()) {
+      const pending = loadPromises.get(tab);
+      if (!pending) break;
+      await pending;
+    }
+  };
+  if (find() && !loadPromises.has(tab)) {
+    const hit = find();
+    if (hit) selectCommit(commitKey(hit), true);
+    return;
   }
-  const generation = useGitLog.getState().generation;
-  await pageUntil(() => !!find());
-  if (useGitLog.getState().generation !== generation) return;
+  useGitLog.setState({ seek: { repo, id } });
+  await waitReload();
+  if (!valid()) return;
+  if (!find() && hasFilters(useGitLog.getState().filters)) {
+    filters = emptyFilters();
+    useGitLog.setState({ filters, seek: { repo, id } });
+    await waitReload();
+    if (!valid()) return;
+  }
+  if (!find()) {
+    const generation = useGitLog.getState().generation;
+    await pageUntil(() => !!find());
+    if (!valid() || useGitLog.getState().generation !== generation) return;
+  }
   const hit = find();
   if (hit) selectCommit(commitKey(hit), true);
 }

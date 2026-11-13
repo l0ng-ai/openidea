@@ -1,0 +1,13 @@
+{
+  "tools": {
+    "jdtls": "1.63.0-202610191322",
+    "java": "21.0.13.0.2 (Homebrew)"
+  },
+  "groups": {
+    "lenses": [
+      "L10:3 usages",
+      "L3:12 usages",
+      "L6:2 usages"
+    ]
+  }
+}

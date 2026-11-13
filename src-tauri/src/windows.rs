@@ -6,9 +6,15 @@
 //! (`window_take_launch`), and re-taken whenever [`LAUNCH_EVENT`] fires (a
 //! second app instance asking an already-loaded window to open a path).
 //!
-//! Auxiliary windows ([`AuxKind`]: Settings, Compare with Local, Sync with Deployed) belong to a project window and share its project (see
+//! Auxiliary windows ([`AuxKind`]: Settings, Compare with Local, Diff, Sync with Deployed) belong to a project window and share its project (see
 //! [`AppState::project`]). Their labels name the kind and the parent
-//! (`settings-main`, `comparison-project-2-3`); their [`Launch`] says what to show.
+//! (`settings-main`, `comparison-project-2-3`, `diff-main-0`); their [`Launch`] says what to show.
+
+mod cli;
+#[cfg(windows)]
+mod single_instance;
+#[cfg(windows)]
+pub use single_instance::allow_external_launches;
 
 use crate::remote_dev::RemoteTarget;
 use crate::state::AppState;
@@ -30,9 +36,11 @@ const MAIN: &str = "main";
 const PREFIX: &str = "project-";
 const CASCADE: f64 = 28.0;
 const SETTINGS_SIZE: (f64, f64) = (980.0, 720.0);
-const SETTINGS_MIN_SIZE: (f64, f64) = (640.0, 420.0);
+const SETTINGS_MIN_SIZE: (f64, f64) = (900.0, 700.0);
 const COMPARISON_SIZE: (f64, f64) = (1100.0, 720.0);
 const COMPARISON_MIN_SIZE: (f64, f64) = (640.0, 360.0);
+const DIFF_SIZE: (f64, f64) = (1100.0, 720.0);
+const DIFF_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DEPLOYMENT_SIZE: (f64, f64) = (1400.0, 900.0);
 const DEPLOYMENT_MIN_SIZE: (f64, f64) = (800.0, 500.0);
 
@@ -57,9 +65,15 @@ pub struct Launch {
     /// Comparison windows: the revisions to compare (boxed: most launches have none).
     #[serde(default)]
     pub comparison: Option<Box<ComparisonLaunch>>,
+    /// Diff windows: the diff to show (boxed: most launches have none).
+    #[serde(default)]
+    pub diff_window: Option<Box<DiffLaunch>>,
     /// `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none).
     #[serde(default)]
     pub diff: Option<Box<DiffFilesLaunch>>,
+    /// Files requested after the pending diff take focus after it opens.
+    #[serde(default)]
+    pub diff_before_files: bool,
     /// Deployment windows: the server and local selection to compare.
     #[serde(default)]
     pub deployment: Option<DeploymentLaunch>,
@@ -96,6 +110,48 @@ pub struct ComparisonLaunch {
     pub repo: Option<ide_core::IpcPath>,
 }
 
+/// One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum DiffSide {
+    /// File content at a Git revision (`HEAD`, `:0` = index, a commit id).
+    Rev {
+        rev: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// The working file (unsaved editor buffer included).
+    Worktree {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// Another file (Compare With…, Compare Files).
+    File {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// Literal text: a side that does not exist.
+    Text { text: String, label: String },
+    /// A Local History revision.
+    History { id: String, label: String },
+}
+
+/// The diff a diff window shows (IDEA's "Show Diff in New Window"), from the UI's `DiffData`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffLaunch {
+    /// Absolute path of the file (the right side's path).
+    pub path: String,
+    pub left: DiffSide,
+    pub right: DiffSide,
+    /// 0-based line of the right side to reveal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+}
+
 /// The two files of a command-line diff (`openidea diff a.txt b.txt`), both sides editable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct DiffFilesLaunch {
@@ -110,6 +166,15 @@ pub struct FilePosition {
     pub path: ide_core::IpcPath,
     pub line: u32,
     pub column: u32,
+}
+
+impl Launch {
+    fn add_positions(&mut self, positions: &[FilePosition]) {
+        for position in positions.iter().filter(|p| self.files.contains(&p.path)) {
+            self.positions.retain(|p| p.path != position.path);
+            self.positions.push(position.clone());
+        }
+    }
 }
 
 /// A project folder on an SSH host, in a WSL distribution or in a dev container.
@@ -134,12 +199,16 @@ pub struct WindowsState {
     /// read before this run first overwrites the file, so restoring still sees it.
     pub groups_persist: tokio::sync::Mutex<Option<Vec<ide_workspace::window_groups::SavedWindows>>>,
     launches: Mutex<HashMap<String, Launch>>,
-    /// Caret positions asked for on the command line, by canonical file path, until a window takes the file.
-    positions: Mutex<HashMap<PathBuf, (u32, u32)>>,
+    /// A taken launch still owns its window until the frontend finishes opening it.
+    opening: Mutex<HashMap<String, Launch>>,
+    cli: Mutex<cli::Queue>,
     /// Most recently focused window label (menu events go there).
     last_focused: Mutex<Option<String>>,
     /// Set by Quit while windows close one by one.
     quitting: AtomicBool,
+    /// The last closed project opted out of Welcome; macOS keeps its app in the Dock.
+    #[cfg(target_os = "macos")]
+    pub keep_alive: AtomicBool,
     /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
     /// once, so its members ask together.
     close_requests: Mutex<Vec<String>>,
@@ -171,33 +240,47 @@ impl WindowsState {
         self.launches.lock().insert(label.to_owned(), launch);
     }
 
+    /// Whether the window `label` is created to open a project (local or remote).
+    #[cfg(target_os = "macos")]
+    pub fn opens_project(&self, label: &str) -> bool {
+        self.pending(label).is_some_and(|l| l.project.is_some() || l.remote.is_some())
+    }
+
     pub fn take_launch(&self, label: &str) -> Option<Launch> {
-        let mut launch = self.launches.lock().remove(label)?;
-        let mut positions = self.positions.lock();
-        for file in &launch.files {
-            let path = dunce::canonicalize(&file.0).unwrap_or_else(|_| file.0.clone());
-            if let Some((line, column)) = positions.remove(&path) {
-                launch.positions.push(FilePosition { path: file.clone(), line, column });
-            }
+        let mut launches = self.launches.lock();
+        let launch = launches.remove(label)?;
+        if launch.project.is_some() || launch.remote.is_some() || !launch.files.is_empty() || launch.diff.is_some() {
+            self.opening.lock().insert(label.to_owned(), launch.clone());
         }
         Some(launch)
     }
 
-    /// The caret goes to `position` (0-based line, column) when a window opens `file`.
-    pub fn set_position(&self, file: &Path, position: (u32, u32)) {
-        let path = dunce::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
-        self.positions.lock().insert(path, position);
+    pub fn complete_launch(&self, label: &str) {
+        self.opening.lock().remove(label);
     }
 
     /// Adds `files` to `label`'s pending launch, so files sent before its frontend took the last batch aren't lost.
-    pub fn add_files(&self, label: &str, files: Vec<PathBuf>) {
+    fn add_files_at(&self, label: &str, files: Vec<PathBuf>, positions: &[FilePosition]) {
         let mut launches = self.launches.lock();
         let launch = launches.entry(label.to_owned()).or_default();
+        if !files.is_empty() && launch.diff.is_some() {
+            launch.diff_before_files = true;
+        }
         launch.files.extend(files.into_iter().map(Into::into));
+        launch.add_positions(positions);
+    }
+
+    fn add_diff(&self, label: &str, diff: DiffFilesLaunch) {
+        let mut launches = self.launches.lock();
+        let launch = launches.entry(label.to_owned()).or_default();
+        launch.diff = Some(Box::new(diff));
+        launch.diff_before_files = false;
     }
 
     pub(crate) fn pending(&self, label: &str) -> Option<Launch> {
-        self.launches.lock().get(label).cloned()
+        let launches = self.launches.lock();
+        let opening = self.opening.lock();
+        opening.get(label).or_else(|| launches.get(label)).cloned()
     }
 
     pub fn focused(&self, label: &str) {
@@ -206,7 +289,12 @@ impl WindowsState {
 
     pub fn forget(&self, label: &str) {
         self.close_settled(label);
-        self.launches.lock().remove(label);
+        {
+            let mut launches = self.launches.lock();
+            let mut opening = self.opening.lock();
+            launches.remove(label);
+            opening.remove(label);
+        }
         let mut last = self.last_focused.lock();
         if last.as_deref() == Some(label) {
             *last = None;
@@ -244,24 +332,26 @@ impl WindowsState {
 pub enum AuxKind {
     Settings,
     Comparison,
+    Diff,
     Deployment,
 }
 
 impl AuxKind {
-    const ALL: [AuxKind; 3] = [AuxKind::Settings, AuxKind::Comparison, AuxKind::Deployment];
+    const ALL: [AuxKind; 4] = [AuxKind::Settings, AuxKind::Comparison, AuxKind::Diff, AuxKind::Deployment];
 
     /// Label prefix, and the key of the one remembered geometry shared by every window of the kind.
     pub fn name(self) -> &'static str {
         match self {
             AuxKind::Settings => "settings",
             AuxKind::Comparison => "comparison",
+            AuxKind::Diff => "diff",
             AuxKind::Deployment => "deployment",
         }
     }
 
     /// Several per project window (`<kind>-<parent>-<n>`), else one (`<kind>-<parent>`).
     fn multiple(self) -> bool {
-        self == AuxKind::Comparison
+        matches!(self, AuxKind::Comparison | AuxKind::Diff)
     }
 
     /// Shows the project's documents: gets its parent's events and edits made in sibling windows,
@@ -385,97 +475,70 @@ pub fn cycle_target(sorted: &[String], current: &str, forward: bool) -> Option<S
     Some(sorted[j].clone())
 }
 
-/// Flags followed by a value (`--line 12`).
-const VALUE_FLAGS: [&str; 2] = ["--line", "--column"];
-
-/// The subcommand opening two files side by side (`openidea diff a.txt b.txt`).
-const DIFF_ARG: &str = "diff";
-
-/// The project path from command-line arguments (`openidea /path/to/project`):
-/// the first argument after the binary that is not a flag or a flag's value, resolved against `cwd`.
+/// The first path, for ordinary opening and the Windows recent-project shortcut.
 pub fn cli_path(args: &[String], cwd: &Path) -> Option<PathBuf> {
-    let mut rest = args.iter().skip(1);
-    while let Some(a) = rest.next() {
-        if VALUE_FLAGS.contains(&a.as_str()) {
-            rest.next();
-            continue;
-        }
-        if a.starts_with('-') || a.is_empty() || a.starts_with("psn_") {
-            continue;
-        }
-        let p = PathBuf::from(a);
-        return Some(if p.is_absolute() { p } else { cwd.join(p) });
-    }
-    None
+    cli::parse(args, cwd).ok().and_then(|r| r.path.or(r.file))
 }
 
-/// What the command line asks to open (arguments after the binary, resolved against `cwd`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CliLaunch {
-    /// `openidea diff a.txt b.txt`: the two files side by side in the diff viewer.
-    Diff(DiffFilesLaunch),
-    /// A project folder or a file (`openidea /path/to/project`).
-    Path(PathBuf),
-}
-
-/// What the command line asks to open; see [`CliLaunch`].
-pub fn cli_launch(args: &[String], cwd: &Path) -> Option<CliLaunch> {
-    if args.get(1).map(String::as_str) == Some(DIFF_ARG) {
-        return match cli_diff_paths(args, cwd).as_slice() {
-            [left, right, ..] => {
-                Some(CliLaunch::Diff(DiffFilesLaunch { left: left.clone().into(), right: right.clone().into() }))
+/// A positional folder plus `--file` opens that file in its project. Without a folder,
+/// ordinary files retain LightEdit behavior; an existing project window can claim them.
+pub fn cli_launch(args: &[String], cwd: &Path) -> IdeResult<Option<Launch>> {
+    if let Some(paths) = cli::diff_paths(args, cwd) {
+        return Ok(match paths.as_slice() {
+            [left, right, ..] => Some(Launch {
+                diff: Some(Box::new(DiffFilesLaunch { left: left.clone().into(), right: right.clone().into() })),
+                ..Default::default()
+            }),
+            [one] => {
+                let mut file_args = args.to_vec();
+                file_args.remove(1);
+                let position = cli::parse(&file_args, cwd).map_err(IdeError::invalid)?.position;
+                Some(position_launch(path_launch(one.clone()), position))
             }
-            // One file is no pair: open it like any path.
-            [one] => Some(CliLaunch::Path(one.clone())),
-            // `openidea diff` with no files: like starting without arguments.
             [] => None,
-        };
+        });
     }
-    cli_path(args, cwd).map(CliLaunch::Path)
-}
-
-/// The file paths of a `diff` subcommand (everything after it that is not a flag or a flag's
-/// value), resolved against `cwd`.
-fn cli_diff_paths(args: &[String], cwd: &Path) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    let mut rest = args.iter().skip(2);
-    while let Some(a) = rest.next() {
-        if VALUE_FLAGS.contains(&a.as_str()) {
-            rest.next();
-            continue;
-        }
-        if a.starts_with('-') || a.is_empty() {
-            continue;
-        }
-        let p = PathBuf::from(a);
-        paths.push(if p.is_absolute() { p } else { cwd.join(p) });
-    }
-    paths
-}
-
-/// `--line <n>` and `--column <n>` (1-based, also as `--line=<n>`) as a 0-based position;
-/// without `--line` there is none, without `--column` it is the line's start.
-pub fn cli_position(args: &[String]) -> Option<(u32, u32)> {
-    let value = |flag: &str| {
-        let prefix = format!("{flag}=");
-        args.iter().enumerate().skip(1).find_map(|(i, a)| match a.strip_prefix(&prefix) {
-            Some(v) => Some(v.to_owned()),
-            None if a == flag => args.get(i + 1).cloned(),
-            None => None,
-        })
+    let request = cli::parse(args, cwd).map_err(IdeError::invalid)?;
+    let canonical = |path: &Path| {
+        dunce::canonicalize(path).map_err(|e| IdeError::invalid(format!("Cannot open {}: {e}", path.display())))
     };
-    let number = |flag: &str| value(flag).and_then(|v| v.trim().parse::<u32>().ok());
-    let line = number("--line")?;
-    Some((line.saturating_sub(1), number("--column").unwrap_or(1).saturating_sub(1)))
+    let launch = if let Some(file) = request.file {
+        let file = canonical(&file)?;
+        if !file.is_file() {
+            return Err(IdeError::invalid("--file must name an existing file"));
+        }
+        let project = request.path.map(|p| canonical(&p)).transpose()?;
+        if project.as_ref().is_some_and(|p| !p.is_dir()) {
+            return Err(IdeError::invalid("The positional path before --file must be a project folder"));
+        }
+        if project.as_ref().is_some_and(|p| wsl_launch(p).is_some()) {
+            return Err(IdeError::invalid("External file locations require a local project folder"));
+        }
+        path_launch_of(project, vec![file])
+    } else if let Some(path) = request.path {
+        path_launch(canonical(&path)?)
+    } else {
+        return Ok(None);
+    };
+    Ok(Some(position_launch(launch, request.position)))
 }
 
-/// Remembers the command line's `--line` / `--column` for `path` (a file) before it is opened.
-pub fn remember_cli_position(windows: &WindowsState, args: &[String], path: &Path) {
-    if let Some(position) = cli_position(args)
-        && !path.is_dir()
-    {
-        windows.set_position(path, position);
+fn position_launch(mut launch: Launch, position: Option<(u32, u32)>) -> Launch {
+    if let (Some((line, column)), Some(file)) = (position, launch.files.first()) {
+        launch.positions.push(FilePosition { path: file.clone(), line, column });
     }
+    launch
+}
+
+/// CLI failures also need to be visible before the webview has subscribed to notifications.
+pub fn report_cli_error(app: &AppHandle, error: IdeError) {
+    use tauri_plugin_dialog::DialogExt;
+    tracing::warn!("external open failed: {}", error.message);
+    app.dialog()
+        .message(error.message)
+        .title("OpenIDEA")
+        .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+        .show(|_| {});
 }
 
 pub fn focus(window: &WebviewWindow) {
@@ -517,7 +580,11 @@ pub fn find_project_window(app: &AppHandle, root: &Path) -> Option<WebviewWindow
 
 /// Hands `files` to the already loaded `window` (its frontend takes them on [`LAUNCH_EVENT`]) and focuses it.
 fn send_files(app: &AppHandle, window: &WebviewWindow, files: Vec<PathBuf>) {
-    app.state::<WindowsState>().add_files(window.label(), files);
+    send_files_at(app, window, files, &[]);
+}
+
+fn send_files_at(app: &AppHandle, window: &WebviewWindow, files: Vec<PathBuf>, positions: &[FilePosition]) {
+    app.state::<WindowsState>().add_files_at(window.label(), files, positions);
     let _ = app.emit_to(window.label(), LAUNCH_EVENT, ());
     focus(window);
 }
@@ -595,7 +662,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     crate::page_swipe::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
-    align_titlebar(app, &window);
+    align_titlebar(app, &window, app.try_state::<WindowsState>().is_some_and(|w| w.opens_project(window.label())));
     // "Sync with OS" needs the OS mode, known once the window exists.
     if let Some(a) = appearance.filter(|a| plugin_frame.is_none() && (a.sync_with_os || a.theme == "system"))
         && window.theme().is_ok_and(|t| t == Theme::Dark)
@@ -640,15 +707,29 @@ fn apply_zoom(app: &AppHandle, window: &WebviewWindow) {
 /// Aligns the native window buttons before the page reports its title bar height,
 /// so they don't visibly move once it loads.
 #[cfg(target_os = "macos")]
-fn align_titlebar(app: &AppHandle, window: &WebviewWindow) {
-    // `--h-titlebar` in tokens.css.
-    const HEIGHT: f64 = 40.0;
-    const COMPACT_HEIGHT: f64 = 32.0;
+fn align_titlebar(app: &AppHandle, window: &WebviewWindow, opens_project: bool) {
     let Some(a) = app.try_state::<AppState>().map(|s| s.global_settings.effective().appearance) else {
         return;
     };
-    let height = if a.compact_mode { COMPACT_HEIGHT } else { HEIGHT };
-    let _ = crate::titlebar::set_height(window, height * f64::from(a.zoom.clamp(50, 300)) / 100.0);
+    let _ = crate::titlebar::set_height(window, initial_titlebar_height(&a, opens_project));
+}
+
+/// The title bar height (AppKit points) the page will draw. Only a project window hides its
+/// toolbar for View › Appearance › Toolbar, and it is known to be one when it opens a project.
+#[cfg(any(target_os = "macos", test))]
+fn initial_titlebar_height(a: &AppearanceSettings, opens_project: bool) -> f64 {
+    // `--h-titlebar` and `--h-compact-header` in tokens.css.
+    const HEIGHT: f64 = 40.0;
+    const COMPACT_HEIGHT: f64 = 32.0;
+    const COMPACT_HEADER_HEIGHT: f64 = 30.0;
+    let height = if opens_project && !a.show_main_toolbar {
+        COMPACT_HEADER_HEIGHT
+    } else if a.compact_mode {
+        COMPACT_HEIGHT
+    } else {
+        HEIGHT
+    };
+    height * f64::from(a.zoom.clamp(50, 300)) / 100.0
 }
 
 /// The first window (`create: false` in tauri.conf.json so it can take the theme's colour).
@@ -739,12 +820,22 @@ pub fn spawn_window(app: &AppHandle, project: Option<PathBuf>) {
 }
 
 fn spawn_window_with(app: &AppHandle, project: Option<PathBuf>, files: Vec<PathBuf>) {
+    let title = project.as_deref().or(files.first().map(PathBuf::as_path)).and_then(Path::file_name);
+    let title = title.map(|n| n.to_string_lossy().into_owned());
+    let _ = open_launch_window(app, title, path_launch_of(project, files), false);
+}
+
+fn open_launch_window(app: &AppHandle, title: Option<String>, launch: Launch, wait: bool) -> IdeResult<()> {
+    if wait {
+        return create_window_for(app, title, launch, false).map(|_| ());
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = create_window_with(&app, project, files, false) {
+        if let Err(e) = create_window_for(&app, title, launch, false) {
             tracing::warn!("cannot open window: {}", e.message);
         }
     });
+    Ok(())
 }
 
 /// How `open_project_window` satisfied the request.
@@ -799,7 +890,7 @@ pub fn open_file_in_new_window(app: &AppHandle, project: Option<PathBuf>, file: 
 }
 
 /// Loose local `files` asked for by window `caller` (File | Open File, a drop on the Welcome
-/// screen), routed like [`open_paths`]; returns the files `caller` opens itself.
+/// screen), routed by [`plan_open`]; returns the files `caller` opens itself.
 pub fn open_files_window(app: &AppHandle, caller: &str, files: Vec<PathBuf>) -> Vec<ide_core::IpcPath> {
     let files = files.into_iter().map(|f| dunce::canonicalize(&f).unwrap_or(f)).collect();
     let (steps, here) = plan_open_files(caller, files, &window_holds(app, Some(caller)));
@@ -880,7 +971,7 @@ fn pending_holds(launch: Option<&Launch>) -> Holds {
     match launch {
         Some(Launch { project: Some(root), .. }) => Holds::Project(root.to_path_buf()),
         Some(Launch { remote: Some(remote), .. }) => Holds::of_remote(remote),
-        Some(l) if !l.files.is_empty() => Holds::LightEdit,
+        Some(l) if !l.files.is_empty() || l.diff.is_some() => Holds::LightEdit,
         _ => Holds::Nothing,
     }
 }
@@ -892,8 +983,8 @@ pub enum OpenStep {
     Focus(String),
     /// Files open in this window: in its project, or join its LightEdit session.
     Files(String, Vec<PathBuf>),
-    /// A free window opens this.
-    Launch(String, Launch),
+    /// A free window opens this (boxed: the enum stays small).
+    Launch(String, Box<Launch>),
     /// A new window opens the project folder or (without one) the files in LightEdit.
     New(Option<PathBuf>, Vec<PathBuf>),
     /// A new window connects to a WSL distribution.
@@ -907,10 +998,11 @@ enum ProjectTarget {
 }
 
 /// Routes canonical `paths` (with whether each is a folder) over `windows` (the preferred
-/// free one first). A folder focuses the window that has it open, else takes a free window,
+/// one first). A folder focuses the window that has it open, else takes a free window,
 /// else a new one. A file inside a local project being opened (the deepest root if nested)
-/// opens in that project's window; the others all join the LightEdit window, else a free
-/// window or a new one switches to LightEdit for them.
+/// opens in that project's window; the others join the preferred window when it holds a local
+/// project or LightEdit, else the LightEdit window, else a free window or a new one switches to
+/// LightEdit for them.
 pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Vec<OpenStep> {
     let mut free = windows.iter().filter(|(_, h)| *h == Holds::Nothing).map(|(l, _)| l.clone());
     let (mut dirs, mut files) = (Vec::new(), Vec::new());
@@ -934,7 +1026,9 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
             steps.push(match windows.iter().find(|(_, h)| h.is_wsl_folder(&remote)) {
                 Some((label, _)) => OpenStep::Focus(label.clone()),
                 None => match free.next() {
-                    Some(label) => OpenStep::Launch(label, Launch { remote: Some(remote), ..Default::default() }),
+                    Some(label) => {
+                        OpenStep::Launch(label, Box::new(Launch { remote: Some(remote), ..Default::default() }))
+                    }
                     None => OpenStep::NewRemote(remote),
                 },
             });
@@ -946,7 +1040,7 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
         }
         roots.push((dir.clone(), ProjectTarget::Step(steps.len())));
         steps.push(match free.next() {
-            Some(label) => OpenStep::Launch(label, path_launch_of(Some(dir), Vec::new())),
+            Some(label) => OpenStep::Launch(label, Box::new(path_launch_of(Some(dir), Vec::new()))),
             None => OpenStep::New(Some(dir), Vec::new()),
         });
     }
@@ -970,13 +1064,23 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
             None => loose.push(file),
         }
     }
+    let preferred = windows.first().filter(|(_, h)| matches!(h, Holds::Project(_) | Holds::LightEdit));
+    let light = windows.iter().find(|(_, h)| *h == Holds::LightEdit);
+    match preferred.or(light) {
+        Some((label, _)) if !loose.is_empty() => {
+            let files = std::mem::take(&mut loose);
+            match in_windows.iter_mut().find(|(l, _)| l == label) {
+                Some((_, list)) => list.extend(files),
+                None => in_windows.push((label.clone(), files)),
+            }
+        }
+        _ => {}
+    }
     steps.extend(in_windows.into_iter().map(|(label, files)| OpenStep::Files(label, files)));
     if !loose.is_empty() {
-        let light = windows.iter().find(|(_, h)| *h == Holds::LightEdit).map(|(l, _)| l.clone());
-        steps.push(match (light, free.next()) {
-            (Some(label), _) => OpenStep::Files(label, loose),
-            (None, Some(label)) => OpenStep::Launch(label, path_launch_of(None, loose)),
-            (None, None) => OpenStep::New(None, loose),
+        steps.push(match free.next() {
+            Some(label) => OpenStep::Launch(label, Box::new(path_launch_of(None, loose))),
+            None => OpenStep::New(None, loose),
         });
     }
     steps
@@ -1028,14 +1132,14 @@ fn resolve(paths: Vec<PathBuf>) -> Vec<(PathBuf, bool)> {
         .collect()
 }
 
-/// Opens `path` from the command line / a second instance; see [`open_paths`].
-pub fn open_path(app: &AppHandle, path: &Path) {
-    open_paths(app, vec![path.to_path_buf()]);
+/// Opens paths from Finder's Open With or the Dock:
+/// see [`plan_open`]; the focused window is the preferred free one.
+#[cfg(target_os = "macos")]
+pub fn open_paths(app: &AppHandle, paths: Vec<PathBuf>) {
+    open_paths_at(app, paths, &[]);
 }
 
-/// Opens paths from outside the app (a second instance, Finder's Open With, the Dock):
-/// see [`plan_open`]; the focused window is the preferred free one.
-pub fn open_paths(app: &AppHandle, paths: Vec<PathBuf>) {
+fn open_paths_at(app: &AppHandle, paths: Vec<PathBuf>, positions: &[FilePosition]) {
     let (existing, missing): (Vec<_>, Vec<_>) = paths.into_iter().partition(|path| path.exists());
     if !missing.is_empty() {
         let paths = missing.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join("\n");
@@ -1046,7 +1150,11 @@ pub fn open_paths(app: &AppHandle, paths: Vec<PathBuf>) {
         });
     }
     let preferred = target_window(app).map(|w| w.label().to_owned());
-    run_open(app, plan_open(resolve(existing), &window_holds(app, preferred.as_deref())));
+    if let Err(error) =
+        run_open_at(app, plan_open(resolve(existing), &window_holds(app, preferred.as_deref())), positions, false)
+    {
+        tracing::warn!("cannot open window: {}", error.message);
+    }
 }
 
 /// What each window holds, `preferred` first.
@@ -1059,13 +1167,25 @@ fn window_holds(app: &AppHandle, preferred: Option<&str>) -> Vec<(String, Holds)
     labels.into_iter().map(|l| (l.clone(), holds(app, &l))).collect()
 }
 
-/// [`open_paths`] while the app is starting, before the `main` window exists: it takes them as its launch.
+/// Opens external paths while the app is starting, before `main` exists: it takes them as its launch.
 pub fn open_paths_at_launch(app: &AppHandle, paths: Vec<PathBuf>) {
     let main = pending_holds(app.state::<WindowsState>().pending(MAIN).as_ref());
     run_open(app, plan_open(resolve(paths), &[(MAIN.to_owned(), main)]));
 }
 
 fn run_open(app: &AppHandle, steps: Vec<OpenStep>) {
+    if let Err(error) = run_open_at(app, steps, &[], false) {
+        tracing::warn!("cannot open window: {}", error.message);
+    }
+}
+
+/// CLI workers wait for new windows so the next request can route to them.
+pub(crate) fn run_open_at(
+    app: &AppHandle,
+    steps: Vec<OpenStep>,
+    positions: &[FilePosition],
+    wait_for_window: bool,
+) -> IdeResult<()> {
     let windows = app.state::<WindowsState>();
     for step in steps {
         match step {
@@ -1075,30 +1195,32 @@ fn run_open(app: &AppHandle, steps: Vec<OpenStep>) {
                 }
             }
             OpenStep::Files(label, files) => match app.get_webview_window(&label) {
-                Some(w) => send_files(app, &w, files),
-                None => windows.add_files(&label, files),
+                Some(w) => send_files_at(app, &w, files, positions),
+                None => windows.add_files_at(&label, files, positions),
             },
-            OpenStep::Launch(label, launch) => {
-                windows.set_launch(&label, launch);
+            OpenStep::Launch(label, mut launch) => {
+                launch.add_positions(positions);
+                windows.set_launch(&label, *launch);
                 if let Some(w) = app.get_webview_window(&label) {
                     let _ = app.emit_to(&label, LAUNCH_EVENT, ());
                     focus(&w);
                 }
             }
-            OpenStep::New(project, files) => spawn_window_with(app, project, files),
+            OpenStep::New(project, files) => {
+                let title = project.as_deref().or(files.first().map(PathBuf::as_path)).and_then(Path::file_name);
+                let title = title.map(|n| n.to_string_lossy().into_owned());
+                let mut launch = path_launch_of(project, files);
+                launch.add_positions(positions);
+                open_launch_window(app, title, launch, wait_for_window)?;
+            }
             OpenStep::NewRemote(remote) => {
-                let app = app.clone();
-                // Off the event-loop thread, like `spawn_window`.
-                tauri::async_runtime::spawn(async move {
-                    let title = remote.path.trim_end_matches('/').rsplit('/').next().map(str::to_owned);
-                    let launch = Launch { remote: Some(remote), ..Default::default() };
-                    if let Err(e) = create_window_for(&app, title, launch, false) {
-                        tracing::warn!("cannot open window: {}", e.message);
-                    }
-                });
+                let title = remote.path.trim_end_matches('/').rsplit('/').next().map(str::to_owned);
+                let launch = Launch { remote: Some(remote), ..Default::default() };
+                open_launch_window(app, title, launch, wait_for_window)?;
             }
         }
     }
+    Ok(())
 }
 
 /// Local files and folders of the URLs macOS asks the app to open (Finder's Open With, the Dock).
@@ -1127,6 +1249,12 @@ fn launch_for(path: PathBuf, is_dir: bool) -> Launch {
 
 /// Second instance launched: focus this one and open its path argument.
 pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
+    if app.state::<WindowsState>().cli.lock().push(args, cwd) {
+        drain_cli(app);
+    }
+}
+
+fn dispatch_cli(app: &AppHandle, args: Vec<String>, cwd: String) {
     if args.iter().any(|arg| arg == crate::jump_list::OPEN_RECENT_ARG)
         && let Some(path) = cli_path(&args, Path::new(&cwd)).filter(|path| path.exists())
     {
@@ -1147,12 +1275,21 @@ pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
         }
     }
     match cli_launch(&args, Path::new(&cwd)) {
-        Some(CliLaunch::Diff(diff)) => open_diff_files(app, diff),
-        Some(CliLaunch::Path(path)) => {
-            remember_cli_position(&app.state::<WindowsState>(), &args, &path);
-            open_path(app, &path)
+        Ok(Some(Launch { diff: Some(diff), .. })) => {
+            if let Err(error) = open_diff_files_at(app, *diff, true) {
+                report_cli_error(app, error);
+            }
         }
-        None => focus_any(app),
+        Ok(Some(launch)) => {
+            let preferred = target_window(app).map(|w| w.label().to_owned());
+            let positions = launch.positions.clone();
+            let plan = plan_cli_launch(launch, &window_holds(app, preferred.as_deref()));
+            if let Err(error) = run_open_at(app, plan, &positions, true) {
+                report_cli_error(app, error);
+            }
+        }
+        Ok(None) => focus_any(app),
+        Err(error) => report_cli_error(app, error),
     }
 }
 
@@ -1165,46 +1302,108 @@ fn focus_any(app: &AppHandle) {
     }
 }
 
-/// Opens what the `openidea` command asked for, like [`open_paths`]; files open at their
-/// 1-based line and column. Without targets, focuses a window.
+/// Opens the installed command's targets, carrying each file's position with its launch.
 pub fn open_targets(app: &AppHandle, targets: Vec<ide_cli::Target>) {
     if targets.is_empty() {
         return focus_any(app);
     }
-    let windows = app.state::<WindowsState>();
-    let paths = targets
-        .into_iter()
-        .map(|t| {
-            if let Some(line) = t.line
-                && !t.path.is_dir()
-            {
-                windows.set_position(&t.path, (line.saturating_sub(1), t.column.map_or(0, |c| c.saturating_sub(1))));
-            }
-            t.path
-        })
-        .collect();
-    open_paths(app, paths);
+    let positions = target_positions(&targets);
+    open_paths_at(app, targets.into_iter().map(|t| t.path).collect(), &positions);
 }
 
-/// `openidea diff a.txt b.txt` while the app is running: hands the pair to the window the user is
-/// looking at (a project window, never an auxiliary one), else opens a new window for it.
+fn target_positions(targets: &[ide_cli::Target]) -> Vec<FilePosition> {
+    targets
+        .iter()
+        .filter_map(|t| {
+            let line = t.line?;
+            if t.path.is_dir() {
+                return None;
+            }
+            let path = dunce::canonicalize(&t.path).unwrap_or_else(|_| t.path.clone());
+            Some(FilePosition {
+                path: path.into(),
+                line: line.saturating_sub(1),
+                column: t.column.map_or(0, |c| c.saturating_sub(1)),
+            })
+        })
+        .collect()
+}
+
+/// Opens the command's local diff pair in a local project window, never an auxiliary or remote window.
 pub(crate) fn open_diff_files(app: &AppHandle, diff: DiffFilesLaunch) {
-    let launch = Launch { diff: Some(Box::new(diff)), ..Default::default() };
-    let target = target_window(app)
-        .filter(|window| auxiliary_parent(window.label()).is_none())
-        .or_else(|| project_window_labels(app).into_iter().find_map(|label| app.get_webview_window(&label)));
+    if let Err(error) = open_diff_files_at(app, diff, false) {
+        tracing::warn!("cannot open window: {}", error.message);
+    }
+}
+
+fn open_diff_files_at(app: &AppHandle, diff: DiffFilesLaunch, wait_for_window: bool) -> IdeResult<()> {
+    let local = |window: &WebviewWindow| {
+        auxiliary_parent(window.label()).is_none()
+            && matches!(holds(app, window.label()), Holds::Nothing | Holds::Project(_) | Holds::LightEdit)
+    };
+    let target = target_window(app).filter(local).or_else(|| {
+        project_window_labels(app).into_iter().filter_map(|label| app.get_webview_window(&label)).find(local)
+    });
     if let Some(window) = target {
-        app.state::<WindowsState>().set_launch(window.label(), launch);
+        app.state::<WindowsState>().add_diff(window.label(), diff);
         let _ = app.emit_to(window.label(), LAUNCH_EVENT, ());
         focus(&window);
+        Ok(())
     } else {
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Err(e) = create_window_for(&app, None, launch, false) {
-                tracing::warn!("cannot open window: {}", e.message);
-            }
-        });
+        let launch = Launch { diff: Some(Box::new(diff)), ..Default::default() };
+        open_launch_window(app, None, launch, wait_for_window)
     }
+}
+
+/// An explicit project owns the requested files, including sources outside its root.
+fn plan_cli_launch(launch: Launch, windows: &[(String, Holds)]) -> Vec<OpenStep> {
+    let files: Vec<_> = launch.files.into_iter().map(|f| f.0).collect();
+    let Some(project) = launch.project else {
+        if let Some(remote) = launch.remote {
+            return vec![match windows.iter().find(|(_, h)| h.is_wsl_folder(&remote)) {
+                Some((label, _)) => OpenStep::Focus(label.clone()),
+                None => match windows.iter().find(|(_, h)| *h == Holds::Nothing) {
+                    Some((label, _)) => {
+                        OpenStep::Launch(label.clone(), Box::new(Launch { remote: Some(remote), ..Default::default() }))
+                    }
+                    None => OpenStep::NewRemote(remote),
+                },
+            }];
+        }
+        return plan_open(files.into_iter().map(|f| (f, false)).collect(), windows);
+    };
+    plan_open(vec![(project.0, true)], windows)
+        .into_iter()
+        .map(|step| match step {
+            OpenStep::Focus(label) if !files.is_empty() => OpenStep::Files(label, files.clone()),
+            OpenStep::Launch(label, mut pending) => {
+                pending.files.extend(files.iter().cloned().map(Into::into));
+                OpenStep::Launch(label, pending)
+            }
+            OpenStep::New(root, _) => OpenStep::New(root, files.clone()),
+            step => step,
+        })
+        .collect()
+}
+
+/// Drain requests received while plugins and the first window were being initialized.
+pub fn ready_for_cli(app: &AppHandle) {
+    if app.state::<WindowsState>().cli.lock().ready() {
+        drain_cli(app);
+    }
+}
+
+fn drain_cli(app: &AppHandle) {
+    let app = app.clone();
+    // Creating a webview must not block the event-loop thread. Finish each creation
+    // before routing the next request so a not-yet-visible window can be reused.
+    tauri::async_runtime::spawn_blocking(move || {
+        loop {
+            let request = app.state::<WindowsState>().cli.lock().next();
+            let Some((args, cwd)) = request else { break };
+            dispatch_cli(&app, args, cwd);
+        }
+    });
 }
 
 pub fn cycle(app: &AppHandle, current: &str, forward: bool) {
@@ -1238,13 +1437,15 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
         }
     }
     let windows = app.state::<WindowsState>();
-    let label = if aux.kind.multiple() {
+    let label = if let Some(diff) = aux.launch.diff_window.as_deref() {
+        format!("diff-{parent_label}-{}", diff_window_id(diff))
+    } else if aux.kind.multiple() {
         format!("{}-{parent_label}-{}", aux.kind.name(), windows.aux_serial.fetch_add(1, Ordering::Relaxed))
     } else {
         format!("{}-{parent_label}", aux.kind.name())
     };
     if let Some(existing) = app.get_webview_window(&label) {
-        if aux.launch != Launch::default() {
+        if aux.kind != AuxKind::Diff && aux.launch != Launch::default() {
             windows.set_launch(&label, aux.launch);
             let _ = app.emit_to(label.as_str(), LAUNCH_EVENT, ());
         }
@@ -1290,7 +1491,7 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     crate::page_swipe::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
-    align_titlebar(app, &window);
+    align_titlebar(app, &window, false);
     // Restore runs during build; fit its size to the parent's current display before showing.
     #[cfg(target_os = "macos")]
     if let Err(e) = fit_over_parent(&window, &parent, aux.min_size) {
@@ -1344,6 +1545,35 @@ pub fn open_comparison_window(
             size: COMPARISON_SIZE,
             min_size: COMPARISON_MIN_SIZE,
             launch: Launch { comparison: Some(Box::new(comparison)), ..Default::default() },
+            background,
+        },
+    )
+}
+
+fn diff_window_id(diff: &DiffLaunch) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    (&diff.path, &diff.left, &diff.right).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Opens a window showing one diff of the project ("Show Diff in New Window"), like IDEA's
+/// diff window next to the Commit tool window.
+pub fn open_diff_window(
+    app: &AppHandle,
+    parent: &WebviewWindow,
+    diff: DiffLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Diff,
+            title: "Diff",
+            size: DIFF_SIZE,
+            min_size: DIFF_MIN_SIZE,
+            launch: Launch { diff_window: Some(Box::new(diff)), ..Default::default() },
             background,
         },
     )
@@ -1456,10 +1686,12 @@ pub(super) fn place_over_parent(window: &WebviewWindow, parent: &WebviewWindow) 
     if (bounds.2, bounds.3) != (own.width, own.height) {
         // Sizes are set on the client area, and even an undecorated window has a resize frame.
         let (width, height) = ((bounds.2 - frame.0).max(1.0), (bounds.3 - frame.1).max(1.0));
-        window.set_min_size(Some(tauri::LogicalSize::new(
-            SETTINGS_MIN_SIZE.0.min(width),
-            SETTINGS_MIN_SIZE.1.min(height),
-        )))?;
+        let minimum = match auxiliary(window.label()) {
+            Some((AuxKind::Comparison, _)) => COMPARISON_MIN_SIZE,
+            Some((AuxKind::Deployment, _)) => DEPLOYMENT_MIN_SIZE,
+            _ => SETTINGS_MIN_SIZE,
+        };
+        window.set_min_size(Some(tauri::LogicalSize::new(minimum.0.min(width), minimum.1.min(height))))?;
         window.set_size(tauri::LogicalSize::new(width, height))?;
     }
     if maximized {
@@ -1523,6 +1755,37 @@ fn dev_font_preferences(
 mod tests {
     use super::*;
 
+    #[test]
+    fn diff_window_identity_keeps_revisions_distinct_and_ignores_reveal_line() {
+        let mut diff = DiffLaunch {
+            path: "/p/a.txt".into(),
+            left: DiffSide::Rev { rev: "HEAD".into(), path: None, label: None },
+            right: DiffSide::Worktree { label: None },
+            line: None,
+        };
+        let id = diff_window_id(&diff);
+        diff.line = Some(12);
+        assert_eq!(diff_window_id(&diff), id);
+        diff.right = DiffSide::Rev { rev: ":0".into(), path: None, label: None };
+        assert_ne!(diff_window_id(&diff), id);
+        diff.path = "/p/b.txt".into();
+        assert_ne!(diff_window_id(&diff), id);
+    }
+
+    #[test]
+    fn a_project_window_starts_with_the_header_its_page_draws() {
+        let mut a = AppearanceSettings::default();
+        assert_eq!(initial_titlebar_height(&a, true), 40.0);
+        a.compact_mode = true;
+        assert_eq!(initial_titlebar_height(&a, true), 32.0);
+        a.show_main_toolbar = false;
+        assert_eq!(initial_titlebar_height(&a, true), 30.0);
+        // Welcome, Settings and a window whose project comes later keep the full bar.
+        assert_eq!(initial_titlebar_height(&a, false), 32.0);
+        a.zoom = 150;
+        assert_eq!(initial_titlebar_height(&a, true), 45.0);
+    }
+
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
     }
@@ -1540,12 +1803,9 @@ mod tests {
 
     #[test]
     fn additional_palettes_keep_native_startup_and_os_preferences_in_sync() {
-        for (id, color) in [
-            ("solarized-light", Color(0xee, 0xe8, 0xd5, 0xff)),
-            ("solarized-dark", Color(0x07, 0x36, 0x42, 0xff)),
-            ("one-light", Color(0xea, 0xea, 0xeb, 0xff)),
-            ("one-dark", Color(0x21, 0x25, 0x2b, 0xff)),
-        ] {
+        for (id, color) in
+            [("solarized-light", Color(0xee, 0xe8, 0xd5, 0xff)), ("solarized-dark", Color(0x07, 0x36, 0x42, 0xff))]
+        {
             let mut a = AppearanceSettings { theme: id.into(), ..Default::default() };
             assert_eq!(frame_color(&a, false), color);
             assert_eq!(frame_color(&a, true), color);
@@ -1611,46 +1871,89 @@ mod tests {
     }
 
     #[test]
-    fn cli_launch_parses_the_diff_subcommand() {
+    fn cli_launch_keeps_diff_pairs_and_single_file_fallback() {
         let cwd = Path::new("/work");
-        // Two paths: a diff pair; relative paths resolve against the cwd.
+        for args in
+            [vec!["openidea", "diff", "a.txt", "b.txt"], vec!["openidea", "diff", "--line", "3", "a.txt", "b.txt"]]
+        {
+            let launch = cli_launch(&s(&args), cwd).unwrap().unwrap();
+            assert_eq!(
+                launch.diff,
+                Some(Box::new(DiffFilesLaunch { left: "/work/a.txt".into(), right: "/work/b.txt".into() }))
+            );
+            assert!(launch.files.is_empty());
+        }
+        let launch = cli_launch(&s(&["openidea", "diff", "/abs/my a.txt", "my b.txt"]), cwd).unwrap().unwrap();
         assert_eq!(
-            cli_launch(&s(&["openidea", "diff", "a.txt", "b.txt"]), cwd),
-            Some(CliLaunch::Diff(DiffFilesLaunch { left: "/work/a.txt".into(), right: "/work/b.txt".into() }))
+            launch.diff,
+            Some(Box::new(DiffFilesLaunch { left: "/abs/my a.txt".into(), right: "/work/my b.txt".into() }))
         );
-        // Absolute paths stay absolute; a path with spaces is one argument (the shell unquotes it
-        // before the arguments reach us).
-        assert_eq!(
-            cli_launch(&s(&["openidea", "diff", "/abs/my a.txt", "my b.txt"]), cwd),
-            Some(CliLaunch::Diff(DiffFilesLaunch { left: "/abs/my a.txt".into(), right: "/work/my b.txt".into() }))
-        );
-        // Flags and their values are not file paths.
-        assert_eq!(
-            cli_launch(&s(&["openidea", "diff", "--line", "3", "a.txt", "b.txt"]), cwd),
-            Some(CliLaunch::Diff(DiffFilesLaunch { left: "/work/a.txt".into(), right: "/work/b.txt".into() }))
-        );
-        // One file is no pair: it opens like any path.
-        assert_eq!(
-            cli_launch(&s(&["openidea", "diff", "a.txt"]), cwd),
-            Some(CliLaunch::Path(PathBuf::from("/work/a.txt")))
-        );
-        // No files at all: like starting without arguments.
-        assert_eq!(cli_launch(&s(&["openidea", "diff"]), cwd), None);
-        // Only a leading `diff` is the subcommand; the rest still opens a path.
-        assert_eq!(
-            cli_launch(&s(&["openidea", "proj", "diff", "a.txt"]), cwd),
-            Some(CliLaunch::Path(PathBuf::from("/work/proj")))
-        );
+        let launch = cli_launch(&s(&["openidea", "diff", "a.txt", "--line=3"]), cwd).unwrap().unwrap();
+        assert_eq!(launch.files, [ide_core::IpcPath::from("/work/a.txt")]);
+        assert_eq!(launch.positions, [FilePosition { path: "/work/a.txt".into(), line: 2, column: 0 }]);
+        assert!(launch.diff.is_none());
+        assert_eq!(cli_launch(&s(&["openidea", "diff"]), cwd).unwrap(), None);
+        assert_eq!(cli_path(&s(&["openidea", "proj", "diff", "a.txt"]), cwd), Some(PathBuf::from("/work/proj")));
     }
 
     #[test]
-    fn cli_position_is_one_based_on_the_command_line() {
-        assert_eq!(cli_position(&s(&["openidea", "--line", "120", "--column", "8", "f"])), Some((119, 7)));
-        assert_eq!(cli_position(&s(&["openidea", "--line=5", "f"])), Some((4, 0)));
-        assert_eq!(cli_position(&s(&["openidea", "--line", "0", "f"])), Some((0, 0)));
-        assert_eq!(cli_position(&s(&["openidea", "--column", "8", "f"])), None);
-        assert_eq!(cli_position(&s(&["openidea", "--line", "x", "f"])), None);
-        assert_eq!(cli_position(&s(&["openidea", "f"])), None);
+    fn installed_command_positions_follow_canonical_file_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(temp.path()).unwrap();
+        let first = root.join("first.cs");
+        let second = root.join("second.cs");
+        std::fs::write(&first, "").unwrap();
+        std::fs::write(&second, "").unwrap();
+        let targets = vec![
+            ide_cli::Target { path: root.join("./first.cs"), line: Some(12), column: Some(5) },
+            ide_cli::Target { path: second.clone(), line: Some(3), column: None },
+            ide_cli::Target { path: root, line: Some(9), column: Some(2) },
+            ide_cli::Target { path: first.clone(), line: None, column: None },
+        ];
+        let positions = target_positions(&targets);
+        assert_eq!(
+            positions,
+            [
+                FilePosition { path: first.clone().into(), line: 11, column: 4 },
+                FilePosition { path: second.clone().into(), line: 2, column: 0 },
+            ]
+        );
+        let state = WindowsState::default();
+        state.add_files_at("main", vec![first], &positions);
+        state.add_files_at("project-1", vec![second], &positions);
+        assert_eq!(state.take_launch("main").unwrap().positions, positions[..1]);
+        assert_eq!(state.take_launch("project-1").unwrap().positions, positions[1..]);
+    }
+
+    #[test]
+    fn diff_and_file_requests_keep_each_others_pending_data() {
+        let state = WindowsState::default();
+        let diff = DiffFilesLaunch { left: "/a.txt".into(), right: "/b.txt".into() };
+        let position = FilePosition { path: "/project/a.cs".into(), line: 8, column: 2 };
+        for diff_first in [true, false] {
+            state.set_launch("main", path_launch_of(Some(p("/project")), vec![]));
+            if diff_first {
+                state.add_diff("main", diff.clone());
+            }
+            state.add_files_at("main", vec![p("/project/a.cs")], std::slice::from_ref(&position));
+            if !diff_first {
+                state.add_diff("main", diff.clone());
+            }
+            let launch = state.take_launch("main").unwrap();
+            assert_eq!(launch.project, Some("/project".into()));
+            assert_eq!(launch.files, [ide_core::IpcPath::from("/project/a.cs")]);
+            assert_eq!(launch.positions, std::slice::from_ref(&position));
+            assert_eq!(launch.diff, Some(Box::new(diff.clone())));
+            assert_eq!(launch.diff_before_files, diff_first);
+            state.complete_launch("main");
+        }
+        state.add_diff("main", diff.clone());
+        state.add_files_at("main", vec![], &[]);
+        assert!(!state.pending("main").unwrap().diff_before_files);
+        state.add_files_at("main", vec![p("/project/a.cs")], &[]);
+        assert!(state.pending("main").unwrap().diff_before_files);
+        state.add_diff("main", diff);
+        assert!(!state.take_launch("main").unwrap().diff_before_files);
     }
 
     #[test]
@@ -1658,14 +1961,98 @@ mod tests {
         let st = WindowsState::default();
         let file = std::env::current_exe().unwrap();
         let other = std::env::temp_dir().join("openidea-not-opened.txt");
-        st.set_position(&file, (11, 4));
-        st.set_position(&other, (1, 0));
-        st.add_files("main", vec![file.clone()]);
+        st.add_files_at(
+            "main",
+            vec![file.clone()],
+            &[
+                FilePosition { path: file.clone().into(), line: 11, column: 4 },
+                FilePosition { path: other.into(), line: 1, column: 0 },
+            ],
+        );
         let launch = st.take_launch("main").unwrap();
         assert_eq!(launch.positions, vec![FilePosition { path: file.into(), line: 11, column: 4 }]);
         // Taken once: the next launch of that file opens it where it was.
-        st.add_files("main", vec![std::env::current_exe().unwrap()]);
+        st.add_files_at("main", vec![std::env::current_exe().unwrap()], &[]);
         assert!(st.take_launch("main").unwrap().positions.is_empty());
+    }
+
+    #[test]
+    fn later_positions_replace_an_unconsumed_cold_launch_position() {
+        let st = WindowsState::default();
+        let file = std::env::current_exe().unwrap();
+        st.set_launch(
+            "main",
+            Launch {
+                files: vec![file.clone().into()],
+                positions: vec![FilePosition { path: file.clone().into(), line: 1, column: 0 }],
+                ..Default::default()
+            },
+        );
+        st.add_files_at("main", vec![file.clone()], &[FilePosition { path: file.clone().into(), line: 9, column: 3 }]);
+        let launch = st.take_launch("main").unwrap();
+        assert_eq!(launch.positions, vec![FilePosition { path: file.into(), line: 9, column: 3 }]);
+    }
+
+    #[test]
+    fn windows_keep_independent_positions_for_the_same_external_file() {
+        let st = WindowsState::default();
+        let file = std::env::temp_dir().join("shared-package/Type.cs");
+        let first = FilePosition { path: file.clone().into(), line: 11, column: 4 };
+        let second = FilePosition { path: file.clone().into(), line: 33, column: 8 };
+        st.set_launch(
+            "main",
+            Launch {
+                project: Some("/project-a".into()),
+                files: vec![file.clone().into()],
+                positions: vec![first.clone()],
+                ..Default::default()
+            },
+        );
+        st.set_launch("project-1", Launch { project: Some("/project-b".into()), ..Default::default() });
+        st.add_files_at("project-1", vec![file.clone()], std::slice::from_ref(&second));
+        let launch = st.take_launch("main").unwrap();
+        assert_eq!(launch.project, Some("/project-a".into()));
+        assert_eq!(launch.positions, vec![first]);
+        let launch = st.take_launch("project-1").unwrap();
+        assert_eq!(launch.project, Some("/project-b".into()));
+        assert_eq!(launch.positions, vec![second]);
+        st.add_files_at("main", vec![file], &[]);
+        assert!(st.take_launch("main").unwrap().positions.is_empty());
+    }
+
+    #[test]
+    fn external_open_has_an_explicit_project_and_validates_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(temp.path()).unwrap();
+        let project = root.join("Game with spaces");
+        std::fs::create_dir_all(project.join("Assets")).unwrap();
+        let file = project.join("Assets/角色.cs");
+        std::fs::write(&file, "class Player {}\n").unwrap();
+        let args = s(&["openidea", project.to_str().unwrap(), "--file", "Assets/角色.cs", "--line=12", "--column=5"]);
+        let launch = cli_launch(&args, &root).unwrap().unwrap();
+        assert_eq!(launch.project, Some(project.clone().into()));
+        assert_eq!(launch.files, [ide_core::IpcPath::from(file.clone())]);
+        assert_eq!(launch.positions, [FilePosition { path: file.into(), line: 11, column: 4 }]);
+        assert!(cli_launch(&s(&["openidea", "--file", project.to_str().unwrap()]), &root).is_err());
+        assert!(cli_launch(&s(&["openidea", "--file", "missing.cs"]), &root).is_err());
+        assert!(cli_launch(&s(&["openidea", "--file", "--line", "2"]), &root).is_err());
+    }
+
+    #[test]
+    fn explicit_project_routes_external_files_to_the_requested_window() {
+        let project = PathBuf::from("/game");
+        let file = PathBuf::from("/package-cache/Package.cs");
+        let launch = || path_launch_of(Some(project.clone()), vec![file.clone()]);
+        let windows = vec![
+            ("main".into(), Holds::Project(PathBuf::from("/package-cache"))),
+            ("project-1".into(), Holds::Project(project.clone())),
+        ];
+        assert_eq!(plan_cli_launch(launch(), &windows), vec![OpenStep::Files("project-1".into(), vec![file.clone()])]);
+        assert_eq!(plan_cli_launch(launch(), &[]), vec![OpenStep::New(Some(project.clone()), vec![file.clone()])]);
+        assert_eq!(
+            plan_cli_launch(launch(), &[("main".into(), Holds::Nothing)]),
+            vec![OpenStep::Launch("main".into(), Box::new(launch()))]
+        );
     }
 
     #[test]
@@ -1700,15 +2087,18 @@ mod tests {
     fn opening_at_launch_gives_the_first_window_files_or_folder() {
         let main = [w("main", Holds::Nothing)];
         let files = plan_open(vec![(p("/x/a.txt"), false), (p("/y/b.rs"), false)], &main);
-        assert_eq!(files, [OpenStep::Launch("main".into(), path_launch_of(None, vec![p("/x/a.txt"), p("/y/b.rs")]))]);
+        assert_eq!(
+            files,
+            [OpenStep::Launch("main".into(), Box::new(path_launch_of(None, vec![p("/x/a.txt"), p("/y/b.rs")])))]
+        );
         let dir = plan_open(vec![(p("/proj"), true)], &main);
-        assert_eq!(dir, [OpenStep::Launch("main".into(), path_launch_of(Some(p("/proj")), Vec::new()))]);
+        assert_eq!(dir, [OpenStep::Launch("main".into(), Box::new(path_launch_of(Some(p("/proj")), Vec::new())))]);
         // Folder and files: the folder takes the first window, the files a new LightEdit one.
         let both = plan_open(vec![(p("/x/a.txt"), false), (p("/proj"), true)], &main);
         assert_eq!(
             both,
             [
-                OpenStep::Launch("main".into(), path_launch_of(Some(p("/proj")), Vec::new())),
+                OpenStep::Launch("main".into(), Box::new(path_launch_of(Some(p("/proj")), Vec::new()))),
                 OpenStep::New(None, vec![p("/x/a.txt")]),
             ]
         );
@@ -1724,7 +2114,7 @@ mod tests {
         );
         let st = WindowsState::default();
         st.set_launch("main", cli);
-        st.add_files("main", vec![p("/x/b.txt")]);
+        st.add_files_at("main", vec![p("/x/b.txt")], &[]);
         assert_eq!(st.take_launch("main").unwrap().files, [p("/x/a.txt"), p("/x/b.txt")]);
     }
 
@@ -1748,11 +2138,13 @@ mod tests {
         assert_eq!(
             steps,
             [
-                OpenStep::Files("main".into(), vec![p("/proj/src/a.rs"), p("/proj/e.rs")]),
+                // `/projects` is not inside `/proj`; loose files join the focused project window.
+                OpenStep::Files(
+                    "main".into(),
+                    vec![p("/proj/src/a.rs"), p("/proj/e.rs"), p("/x/b.txt"), p("/projects/d.rs")],
+                ),
                 // The deepest root wins.
                 OpenStep::Files("project-2".into(), vec![p("/proj/sub/c.rs")]),
-                // `/projects` is not inside `/proj`.
-                OpenStep::Files("project-1".into(), vec![p("/x/b.txt"), p("/projects/d.rs")]),
             ]
         );
     }
@@ -1765,7 +2157,7 @@ mod tests {
         assert_eq!(
             steps,
             [
-                OpenStep::Launch("project-1".into(), path_launch_of(Some(p("/b")), vec![p("/b/y.rs")])),
+                OpenStep::Launch("project-1".into(), Box::new(path_launch_of(Some(p("/b")), vec![p("/b/y.rs")]))),
                 OpenStep::Files("main".into(), vec![p("/a/x.rs")]),
             ]
         );
@@ -1795,7 +2187,7 @@ mod tests {
             RemoteLaunch { target: RemoteTarget::Wsl { distro: distro.into() }, path: linux_path.into() }
         );
         assert!(wsl_launch(&p(linux_path)).is_none());
-        let launch = Launch { remote: Some(remote.clone()), ..Default::default() };
+        let launch = Box::new(Launch { remote: Some(remote.clone()), ..Default::default() });
         let folder = vec![(p(share), true)];
         // A free window connects, else a new one; the window that has it open is focused.
         assert_eq!(plan_open(folder.clone(), &[w("main", Holds::Nothing)]), [OpenStep::Launch("main".into(), launch)]);
@@ -1813,18 +2205,13 @@ mod tests {
 
     #[test]
     fn files_opened_from_a_window_go_to_their_project_window_else_light_edit() {
-        let windows = [
-            w("main", Holds::Nothing),
-            w("project-1", Holds::Project(p("/proj"))),
-            w("project-2", Holds::Nothing),
-            w("project-3", Holds::Other),
-        ];
-        let files = vec![p("/proj/src/a.rs"), p("/x/b.txt")];
-        // The Welcome window turns into LightEdit itself; another free window doesn't take the files.
-        let (steps, here) = plan_open_files("main", files.clone(), &windows);
-        assert_eq!(steps, [OpenStep::Files("project-1".into(), vec![p("/proj/src/a.rs")])]);
+        let welcome_only = [w("main", Holds::Nothing), w("project-2", Holds::Nothing), w("project-3", Holds::Other)];
+        // With no local project or LightEdit window, the Welcome window turns into LightEdit itself.
+        let (steps, here) = plan_open_files("main", vec![p("/x/b.txt")], &welcome_only);
+        assert!(steps.is_empty());
         assert_eq!(here, [p("/x/b.txt")]);
         // A LightEdit window keeps loose files, even with another one open.
+        let files = vec![p("/proj/src/a.rs"), p("/x/b.txt")];
         let light =
             [w("main", Holds::LightEdit), w("project-1", Holds::Project(p("/proj"))), w("project-2", Holds::LightEdit)];
         let (steps, here) = plan_open_files("main", files.clone(), &light);
@@ -1834,8 +2221,20 @@ mod tests {
         let others = [w("main", Holds::Nothing), w("project-2", Holds::LightEdit)];
         let (steps, here) = plan_open_files("main", vec![p("/x/b.txt")], &others);
         assert_eq!((steps, here), (vec![OpenStep::Files("project-2".into(), vec![p("/x/b.txt")])], vec![]));
+        // A project window in the background doesn't take them from a Welcome window.
+        let with_proj = [
+            w("main", Holds::Nothing),
+            w("project-1", Holds::Project(p("/proj"))),
+            w("project-2", Holds::Nothing),
+            w("project-3", Holds::Other),
+        ];
+        let (steps, here) = plan_open_files("main", files.clone(), &with_proj);
+        assert_eq!(steps, [OpenStep::Files("project-1".into(), vec![p("/proj/src/a.rs")])]);
+        assert_eq!(here, [p("/x/b.txt")]);
         // A remote project window gets a new LightEdit window, never a free one or its own.
-        let (steps, here) = plan_open_files("project-3", files, &windows);
+        let remote =
+            [w("project-3", Holds::Other), w("main", Holds::Nothing), w("project-1", Holds::Project(p("/proj")))];
+        let (steps, here) = plan_open_files("project-3", files, &remote);
         assert_eq!(
             steps,
             [OpenStep::Files("project-1".into(), vec![p("/proj/src/a.rs")]), OpenStep::New(None, vec![p("/x/b.txt")])]
@@ -1844,13 +2243,22 @@ mod tests {
     }
 
     #[test]
-    fn files_opened_while_running_take_a_free_window_else_a_new_one() {
-        let free = [w("main", Holds::Project(p("/proj"))), w("project-1", Holds::Nothing)];
+    fn files_opened_while_running_join_the_focused_window_else_a_free_one_else_a_new_one() {
+        // The focused local project window takes them, even with a LightEdit window open.
+        let project =
+            [w("main", Holds::Project(p("/proj"))), w("project-1", Holds::Nothing), w("project-2", Holds::LightEdit)];
+        assert_eq!(
+            plan_open(vec![(p("/x/a.txt"), false)], &project),
+            [OpenStep::Files("main".into(), vec![p("/x/a.txt")])]
+        );
+        // A project window in the background doesn't.
+        let free =
+            [w("main", Holds::Other), w("project-2", Holds::Project(p("/proj"))), w("project-1", Holds::Nothing)];
         assert_eq!(
             plan_open(vec![(p("/x/a.txt"), false)], &free),
-            [OpenStep::Launch("project-1".into(), path_launch_of(None, vec![p("/x/a.txt")]))]
+            [OpenStep::Launch("project-1".into(), Box::new(path_launch_of(None, vec![p("/x/a.txt")])))]
         );
-        let busy = [w("main", Holds::Project(p("/proj"))), w("project-1", Holds::Other)];
+        let busy = [w("main", Holds::Other)];
         assert_eq!(plan_open(vec![(p("/x/a.txt"), false)], &busy), [OpenStep::New(None, vec![p("/x/a.txt")])]);
     }
 
@@ -1874,17 +2282,68 @@ mod tests {
     }
 
     #[test]
+    fn a_taken_launch_owns_its_window_until_completion() {
+        for launch in [
+            path_launch_of(Some(p("/project")), vec![p("/project/a.cs")]),
+            path_launch_of(None, vec![p("/loose/a.cs")]),
+            Launch {
+                diff: Some(Box::new(DiffFilesLaunch { left: "/a.txt".into(), right: "/b.txt".into() })),
+                ..Default::default()
+            },
+            Launch {
+                remote: Some(RemoteLaunch {
+                    target: RemoteTarget::Wsl { distro: "Ubuntu".into() },
+                    path: "/project".into(),
+                }),
+                ..Default::default()
+            },
+        ] {
+            let st = WindowsState::default();
+            let expected = pending_holds(Some(&launch));
+            st.set_launch("main", launch.clone());
+            assert_eq!(st.take_launch("main"), Some(launch));
+            assert!(st.take_launch("main").is_none());
+            assert_eq!(pending_holds(st.pending("main").as_ref()), expected);
+            let windows = vec![("main".into(), pending_holds(st.pending("main").as_ref()))];
+            assert_eq!(
+                plan_open(vec![(p("/other-project"), true)], &windows),
+                vec![OpenStep::New(Some(p("/other-project")), vec![])]
+            );
+            st.complete_launch("main");
+            assert_eq!(pending_holds(st.pending("main").as_ref()), Holds::Nothing);
+        }
+    }
+
+    #[test]
+    fn completing_a_launch_keeps_later_requests_and_forgetting_clears_both() {
+        let st = WindowsState::default();
+        st.set_launch("main", path_launch_of(Some(p("/project")), vec![]));
+        st.take_launch("main").unwrap();
+        st.add_files_at("main", vec![p("/project/late.cs")], &[]);
+        assert_eq!(pending_holds(st.pending("main").as_ref()), Holds::Project(p("/project")));
+        st.complete_launch("main");
+        let late = st.take_launch("main").unwrap();
+        assert_eq!(late.files, [ide_core::IpcPath::from(p("/project/late.cs"))]);
+        st.add_files_at("main", vec![p("/project/later.cs")], &[]);
+        st.forget("main");
+        assert!(st.pending("main").is_none());
+        assert!(st.take_launch("main").is_none());
+    }
+
+    #[test]
     fn auxiliary_windows_map_to_their_parent() {
         assert_eq!(settings_label("project-2"), "settings-project-2");
         assert_eq!(auxiliary("settings-main"), Some((AuxKind::Settings, "main")));
         assert_eq!(auxiliary("comparison-project-2-14"), Some((AuxKind::Comparison, "project-2")));
+        assert_eq!(auxiliary("diff-project-2-3"), Some((AuxKind::Diff, "project-2")));
         assert_eq!(auxiliary("deployment-project-2"), Some((AuxKind::Deployment, "project-2")));
         for label in ["main", "project-1", "comparison-main", "comparison-main-x", "settings-", "settingsmain"] {
             assert_eq!(auxiliary(label), None, "{label}");
         }
         assert_eq!(state_key("comparison-main-3"), "comparison");
+        assert_eq!(state_key("diff-main-3"), "diff");
         assert_eq!(state_key("project-3"), "project-3");
-        let labels = ["comparison-main-0", "project-2", "main", "settings-main", "deployment-project-2"];
+        let labels = ["comparison-main-0", "diff-main-1", "project-2", "main", "settings-main", "deployment-project-2"];
         assert_eq!(sorted_labels(labels.into_iter().filter(|l| auxiliary_parent(l).is_none())), ["main", "project-2"]);
     }
 

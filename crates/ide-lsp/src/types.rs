@@ -2,7 +2,7 @@
 
 use ide_core::event::ServerStatus;
 use ide_core::settings::ExternalFormatter;
-use ide_core::{Location, Range, ServerId, SymbolKind, TextEdit, WorkspaceEdit};
+use ide_core::{Diagnostic, Location, Range, ServerId, SymbolKind, TextEdit, WorkspaceEdit};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -49,7 +49,11 @@ pub struct CompletionItem {
     pub label: String,
     /// e.g. `(req: CreateOrderRequest)` shown right after the label.
     pub label_detail: Option<String>,
-    /// e.g. return type, shown right-aligned.
+    /// `labelDetails.description`: a return type or module path, shown right-aligned. Servers
+    /// such as JDT.LS also send the whole signature as `detail`, which would repeat the label.
+    pub label_description: Option<String>,
+    /// The signature or type when the server sent no `label_description`; the documentation panel
+    /// shows it either way.
     pub detail: Option<String>,
     pub kind: Option<CompletionKind>,
     pub documentation: Option<Markup>,
@@ -193,6 +197,14 @@ pub struct InlineCompletionItem {
 #[serde(rename_all = "camelCase")]
 pub struct CodeAction {
     pub title: String,
+    /// Diagnostics this action fixes, in IDE coordinates.
+    #[serde(default)]
+    #[specta(optional)]
+    pub diagnostics: Vec<Diagnostic>,
+    /// Original server diagnostics, including encoding and data, for codeAction/resolve.
+    #[serde(default)]
+    #[specta(optional)]
+    pub original_diagnostics: Option<String>,
     /// LSP kind, e.g. `quickfix`, `refactor.extract`, `source.organizeImports`.
     pub kind: Option<String>,
     pub is_preferred: bool,
@@ -345,6 +357,14 @@ pub struct VirtualDocument {
     pub description: Option<String>,
     /// Generated Java from a decompiler, rather than real source or a disassembler stub.
     pub decompiled: bool,
+    /// Charset the content was decoded with (a WHATWG label, e.g. `gbk`);
+    /// `utf-8` for text the server decoded itself.
+    pub encoding: String,
+    pub has_bom: bool,
+    /// "Reload with Encoding" can re-decode the origin's bytes (archive
+    /// entries, JDT sources with an editable attachment encoding); false for
+    /// server-generated content such as decompiled code.
+    pub can_reload_encoding: bool,
 }
 
 /// Reference updates for a file / folder move (`workspace/willRenameFiles`).

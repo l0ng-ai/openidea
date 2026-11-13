@@ -231,9 +231,14 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     };
   }, [state, lang, path, actionHost]);
 
-  /** Puts the caret at a change and brings it into view. */
-  const moveTo = (view: EditorView, at: number) =>
+  /**
+   * Puts the caret at a change, brings it into view and focuses the pane: CodeMirror draws the
+   * caret only in a focused editor, so a move made by a toolbar button would be invisible.
+   */
+  const moveTo = (view: EditorView, at: number) => {
     view.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
+    view.focus();
+  };
 
   const goto = (dir: 1 | -1) => {
     const v = resultView.current;
@@ -246,7 +251,6 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         ? (open.find((c) => c.from > head) ?? open[0]!)
         : ([...open].reverse().find((c) => c.from < head) ?? open[open.length - 1]!);
     moveTo(v, target.from);
-    v.focus();
   };
 
   /** Runs a command on the result; `reveal` then moves to what is left to decide. */

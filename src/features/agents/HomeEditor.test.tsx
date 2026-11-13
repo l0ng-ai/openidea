@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { AgentConfigOption, AgentProvider, NewAgentTask } from "@/bindings";
 import { HomeEditor } from "./HomeEditor";
 import { HOME, savedDraft, updateComposer, useAgents } from "./store";
@@ -64,11 +64,7 @@ beforeEach(() => {
 });
 
 async function chooseModel(model: string) {
-  const button = screen.getByRole("button", { name: "Model" });
-  if (button.getAttribute("aria-haspopup") === "dialog") {
-    fireEvent.click(button);
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Model" }));
-  } else fireEvent.click(button);
+  fireEvent.click(screen.getByRole("button", { name: "Model" }));
   fireEvent.click(screen.getByRole("option", { name: model }));
   fireEvent.pointerDown(document.body);
 }

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::Path;
 
-const FILE: &str = "data-sources.toml";
+pub(crate) const FILE: &str = "data-sources.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -20,8 +20,9 @@ pub enum DbDriver {
     /// Microsoft SQL Server.
     SqlServer,
     Clickhouse,
-    /// Oracle Database (via Oracle Instant Client).
+    /// Oracle Database (pure-Rust thin driver, no client library).
     Oracle,
+    Snowflake,
 }
 
 impl DbDriver {
@@ -33,6 +34,7 @@ impl DbDriver {
             DbDriver::SqlServer => Some(1433),
             DbDriver::Clickhouse => Some(8123),
             DbDriver::Oracle => Some(1521),
+            DbDriver::Snowflake => Some(443),
         }
     }
 }
@@ -88,8 +90,6 @@ pub struct DbOptions {
     pub auto_disconnect_secs: Option<u32>,
     /// PostgreSQL: show only the configured database, its schemas right under the data source.
     pub single_database: bool,
-    /// Oracle: directory of the Oracle Instant Client (empty: `ORACLE_HOME` / system search path).
-    pub instant_client: String,
 }
 
 /// Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`.
@@ -131,6 +131,37 @@ impl Default for DbIntrospection {
 pub struct DbProperty {
     pub name: String,
     pub value: String,
+}
+
+/// How a Snowflake data source signs in. The data source's one saved secret is what the
+/// method needs: the private key's passphrase, the password, or the token.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DbSnowflakeAuth {
+    /// RSA key pair: a JWT signed with the private key file.
+    #[default]
+    KeyPair,
+    /// User name and password.
+    Password,
+    /// Programmatic access token.
+    Token,
+    /// OAuth access token.
+    OAuth,
+    /// Single sign-on in the web browser.
+    Browser,
+}
+
+/// Snowflake connection settings beyond the shared ones: the account identifier is
+/// [`DataSource::host`], the schema [`DbOptions::default_schema`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DbSnowflake {
+    pub warehouse: String,
+    pub role: String,
+    pub auth: DbSnowflakeAuth,
+    /// PEM private key of [`DbSnowflakeAuth::KeyPair`]; `~/` is the home directory. Only the
+    /// path is stored: the key is read from the file at each login.
+    pub private_key_file: String,
 }
 
 /// How the SSH tunnel authenticates (shared with Settings › SSH Configurations).
@@ -187,9 +218,17 @@ pub struct DataSource {
     pub options: DbOptions,
     pub introspection: DbIntrospection,
     pub properties: Vec<DbProperty>,
+    /// Snowflake settings (`None`: not a Snowflake data source, or all defaults).
+    pub snowflake: Option<DbSnowflake>,
     /// Stored app-wide and listed in every project. Implied by the file it is read from,
     /// so not written to it.
     pub global: bool,
+    /// Plugin id owning this source; absent for user-managed sources.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_owner: Option<String>,
+    /// Id private to the owner, never used as a connection target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_source_id: Option<String>,
 }
 
 impl Default for DataSource {
@@ -218,7 +257,10 @@ impl Default for DataSource {
             options: DbOptions::default(),
             introspection: DbIntrospection::default(),
             properties: Vec::new(),
+            snowflake: None,
             global: false,
+            plugin_owner: None,
+            plugin_source_id: None,
         }
     }
 }
@@ -262,11 +304,12 @@ pub fn scheme_driver(scheme: &str) -> Option<DbDriver> {
     match scheme.to_ascii_lowercase().as_str() {
         "postgres" | "postgresql" | "pgsql" | "redshift" | "cockroachdb" | "cockroach" | "yugabytedb"
         | "timescaledb" | "greenplum" => Some(DbDriver::Postgres),
-        "mysql" | "mariadb" | "tidb" | "singlestore" | "memsql" | "oceanbase" => Some(DbDriver::Mysql),
+        "mysql" | "mariadb" | "tidb" | "singlestore" | "memsql" | "oceanbase" | "starrocks" => Some(DbDriver::Mysql),
         "sqlserver" | "mssql" | "mssqlserver" => Some(DbDriver::SqlServer),
         "sqlite" | "sqlite3" => Some(DbDriver::Sqlite),
         "clickhouse" | "http" | "https" => Some(DbDriver::Clickhouse),
         "oracle" | "oracledb" => Some(DbDriver::Oracle),
+        "snowflake" => Some(DbDriver::Snowflake),
         _ => None,
     }
 }
@@ -369,6 +412,9 @@ impl DataSource {
         }
         let mut properties = Vec::new();
         for (k, v) in u.params {
+            if s.driver == DbDriver::Snowflake && s.snowflake_url_parameter(&k, &v) {
+                continue;
+            }
             match k.to_ascii_lowercase().as_str() {
                 "sslmode" | "ssl-mode" => {
                     s.ssl = match v.to_ascii_lowercase().replace('-', "_").as_str() {
@@ -397,6 +443,35 @@ impl DataSource {
             }
         }
         Ok(s)
+    }
+
+    /// Applies a parameter of a Snowflake JDBC URL that names a connection setting.
+    fn snowflake_url_parameter(&mut self, name: &str, value: &str) -> bool {
+        let settings = self.snowflake.get_or_insert_with(DbSnowflake::default);
+        match name.to_ascii_lowercase().as_str() {
+            "db" | "database" => self.database = value.to_owned(),
+            "schema" => self.options.default_schema = value.to_owned(),
+            "warehouse" => settings.warehouse = value.to_owned(),
+            "role" => settings.role = value.to_owned(),
+            "private_key_file" => settings.private_key_file = value.to_owned(),
+            "authenticator" => {
+                settings.auth = match value.to_ascii_lowercase().as_str() {
+                    "snowflake_jwt" => DbSnowflakeAuth::KeyPair,
+                    "externalbrowser" => DbSnowflakeAuth::Browser,
+                    "oauth" => DbSnowflakeAuth::OAuth,
+                    "programmatic_access_token" => DbSnowflakeAuth::Token,
+                    "snowflake" => DbSnowflakeAuth::Password,
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The Snowflake settings (defaults when none were saved).
+    pub fn snowflake(&self) -> DbSnowflake {
+        self.snowflake.clone().unwrap_or_default()
     }
 
     /// The password written in the URL of a [`DataSource::url_only`] data source.
@@ -551,6 +626,7 @@ mod tests {
         assert_eq!((u.host.as_str(), u.port, u.user.as_str()), ("::1", None, "root"));
         assert_eq!(parse_url("jdbc:redshift://r:5439/dev").unwrap().driver, Some(DbDriver::Postgres));
         assert_eq!(parse_url("tidb://h:4000").unwrap().driver, Some(DbDriver::Mysql));
+        assert_eq!(parse_url("starrocks://h:9030").unwrap().driver, Some(DbDriver::Mysql));
         assert_eq!(parse_url("sqlite:/tmp/a.db").unwrap().file.as_deref(), Some("/tmp/a.db"));
         let u = parse_url("oracle://scott:tiger@db.local:1521/ORCLPDB1").unwrap();
         assert_eq!(u.driver, Some(DbDriver::Oracle));
@@ -605,5 +681,73 @@ mod tests {
         assert_eq!(secure.resolved().unwrap().ssl, DbSslMode::VerifyFull);
         let error = parse_url("clickhouse://reader:secret@db.example:invalid/default").unwrap_err();
         assert!(!error.message.contains("secret"));
+    }
+
+    #[test]
+    fn snowflake_settings_round_trip_and_stay_out_of_other_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snowflake = DataSource {
+            id: "sf".into(),
+            name: "warehouse".into(),
+            driver: DbDriver::Snowflake,
+            host: "myorg-myaccount".into(),
+            user: "jane".into(),
+            database: "ANALYTICS".into(),
+            save_password: true,
+            snowflake: Some(DbSnowflake {
+                warehouse: "COMPUTE_WH".into(),
+                role: "ANALYST".into(),
+                auth: DbSnowflakeAuth::KeyPair,
+                private_key_file: "~/.ssh/rsa_key.p8".into(),
+            }),
+            ..Default::default()
+        };
+        let other = DataSource { id: "pg".into(), name: "pg".into(), driver: DbDriver::Postgres, ..Default::default() };
+        save(tmp.path(), &[snowflake.clone(), other.clone()]).unwrap();
+        assert_eq!(load(tmp.path()).unwrap(), vec![snowflake, other]);
+        let text = std::fs::read_to_string(project_dir::path(tmp.path(), FILE)).unwrap();
+        assert_eq!(text.matches("snowflake]").count(), 1, "{text}");
+        assert!(text.contains("driver = \"snowflake\""), "{text}");
+        assert!(text.contains("auth = \"keyPair\""), "{text}");
+        assert!(text.contains("privateKeyFile = \"~/.ssh/rsa_key.p8\""), "{text}");
+        assert_eq!(DbDriver::Snowflake.default_port(), Some(443));
+        assert_eq!(DataSource::default().snowflake(), DbSnowflake::default());
+    }
+
+    #[test]
+    fn snowflake_jdbc_urls_name_the_session_settings() {
+        let s = DataSource {
+            driver: DbDriver::Snowflake,
+            url_only: true,
+            url: "jdbc:snowflake://myorg-myaccount.snowflakecomputing.com:443/?warehouse=COMPUTE_WH&db=ANALYTICS\
+                  &schema=PUBLIC&role=ANALYST&user=jane&authenticator=snowflake_jwt\
+                  &private_key_file=%7E%2Fkeys%2Frsa_key.p8&QUERY_TAG=ide"
+                .into(),
+            ..Default::default()
+        };
+        let r = s.resolved().unwrap();
+        assert_eq!(r.host, "myorg-myaccount.snowflakecomputing.com");
+        assert_eq!(r.port, Some(443));
+        assert_eq!(r.user, "jane");
+        assert_eq!(r.database, "ANALYTICS");
+        assert_eq!(r.options.default_schema, "PUBLIC");
+        assert_eq!(
+            r.snowflake(),
+            DbSnowflake {
+                warehouse: "COMPUTE_WH".into(),
+                role: "ANALYST".into(),
+                auth: DbSnowflakeAuth::KeyPair,
+                private_key_file: "~/keys/rsa_key.p8".into(),
+            }
+        );
+        assert_eq!(r.properties, vec![DbProperty { name: "QUERY_TAG".into(), value: "ide".into() }]);
+        let browser = DataSource {
+            url: "snowflake://xy12345.eu-central-1.snowflakecomputing.com/DB?authenticator=externalbrowser".into(),
+            ..s
+        };
+        let r = browser.resolved().unwrap();
+        assert_eq!(r.database, "DB");
+        assert_eq!(r.snowflake().auth, DbSnowflakeAuth::Browser);
+        assert_eq!(scheme_driver("snowflake"), Some(DbDriver::Snowflake));
     }
 }

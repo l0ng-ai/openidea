@@ -297,6 +297,7 @@ export const intellijWindows: Record<string, string[]> = {
   "vcs.rollback": ["Ctrl+Alt+Z"],
   "vcs.addToVcs": ["Ctrl+Alt+A"],
   "vcs.showDiff": ["Ctrl+D"],
+  "vcs.showDiffInNewWindow": [],
   "vcs.nextChange": ["Ctrl+Alt+Shift+Down"],
   "vcs.prevChange": ["Ctrl+Alt+Shift+Up"],
   // After Next / Previous Change: these win the shared keys in a tool window.
@@ -352,6 +353,12 @@ export const intellijWindows: Record<string, string[]> = {
   "http.runRequest": ["Ctrl+Enter"],
   "graphql.runQuery": ["Ctrl+Enter"],
   "http.runAll": [],
+  "db.toggleBooleanCell": ["Space"],
+  "db.setCellNull": ["Ctrl+Backspace"],
+  "db.setCellDefault": ["Ctrl+Shift+Backspace"],
+  "db.reformatValue": ["Ctrl+Alt+L"],
+  "db.openValueWindow": [],
+  "db.findInValue": ["Ctrl+F"],
   "db.execute": ["Ctrl+Enter"],
   // Table editor with pending changes (after `vcs.rollback`, so Ctrl+Alt+Z reverts the table's edits there).
   "db.goToColumn": ["Ctrl+F12"],

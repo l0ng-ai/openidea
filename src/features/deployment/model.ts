@@ -174,6 +174,7 @@ export function sshRemedy(kind: string | undefined, message: string, auth: SshAu
   if (kind !== "permissionDenied") return null;
   if (/^SSH host key .* has changed/.test(message)) return null;
   if (/^SSH (password|key passphrase) required|^cannot decrypt SSH key/.test(message)) return "secret";
+  if (/^FTP (password required|authentication failed)/.test(message)) return "secret";
   // With OpenSSH config + agent there is nothing to type unless a key is encrypted.
   if (/^SSH authentication failed/.test(message)) return auth === "openSsh" ? null : "secret";
   return null;

@@ -105,6 +105,7 @@ html {
   --flame-3: color-mix(in srgb, var(--danger) 36%, var(--bg-elev));
   --flame-4: color-mix(in srgb, var(--danger) 26%, var(--bg-elev));
   --flame-match: color-mix(in srgb, var(--accent) 60%, var(--bg-elev));
+  --flame-type: color-mix(in srgb, var(--accent) 30%, var(--bg-elev));
   --flame-fg: var(--fg-strong);
 
   /* syntax (Islands Dark scheme) */
@@ -116,6 +117,11 @@ html {
   --syn-comment: #7a7e85;
   --syn-comment-style: normal;
   --syn-doc-comment: #5f826b;
+  --syn-doc-comment-tag: #67a37c;
+  --syn-doc-comment-tag-effect: none;
+  --syn-doc-comment-tag-value: #abadb3;
+  --syn-doc-markup: #68a67e;
+  --syn-doc-markup-bg: transparent;
   --syn-docstring: #5f826b;
   --syn-annotation: #b3ae60;
   --syn-decorator: #b3ae60;
@@ -134,11 +140,21 @@ html {
   --syn-python-constant: var(--syn-constant);
   --syn-python-property: var(--syn-property);
   --syn-python-type-parameter: var(--syn-type);
+  --syn-python-parentheses: var(--syn-punct);
+  --syn-python-brackets: var(--syn-punct);
+  --syn-python-braces: var(--syn-punct);
+  --syn-python-nested-function: var(--syn-function);
+  --syn-python-method-call: var(--syn-function-call);
+  --syn-python-annotation: var(--syn-type);
+  --syn-python-format: var(--syn-escape);
   --syn-python-builtin: var(--syn-builtin);
   --syn-python-predefined-definition: var(--syn-predefined);
   --syn-python-predefined-usage: var(--syn-predefined);
   --syn-python-fstring: #a5c261;
   --syn-python-bytes: #a5c261;
+  --syn-python-docstring-tag: var(--syn-doc-comment-tag);
+  --syn-python-docstring-tag-effect: var(--syn-doc-comment-tag-effect);
+  --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   /* PhpStorm colours PHP variables and function calls on their own */
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
@@ -176,8 +192,10 @@ html {
   --border-right-margin: #323438;
   --bg-editor-selection: #214283;
   --bg-editor-selection-inactive: #1d3460;
+  --fg-editor-selection: inherit;
   --bg-text-search-result: #114957;
   --bg-text-search-result-current: #165e70;
+  --bg-search-result: #2d543f;
   --bg-matched-brace: #43454a;
   --matched-brace-weight: var(--fw-code-bold);
   --bg-matched-tag: #3f4045;
@@ -201,6 +219,9 @@ html {
   --bg-editor-banner: #233558;
   --fg-weak-warning: #6f737a;
   --fg-bulb: #f2c55c;
+
+  /* console / terminal surfaces (Color Scheme › Console Colors) */
+  --bg-console: var(--bg-island);
 
   /* terminal / console ANSI palette */
   --ansi-black: #000000;
@@ -242,7 +263,7 @@ html {
   --font-ui: "Inter Variable", Inter, system-ui, -apple-system, sans-serif;
   /* Shortcut glyphs (⌘⇧⌥⌃↵) render best in the system UI font, as in macOS menus. */
   --font-keys: -apple-system, BlinkMacSystemFont, "Segoe UI Symbol", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, monospace;
+  --font-mono: "JetBrains Mono", "JetBrains Mono Variable", ui-monospace, Menlo, monospace;
   --fs-ui: 13px;
   --fs-small: 12px;
   --fs-tiny: 11px;
@@ -252,6 +273,8 @@ html {
 
   /* metrics (theme JSON at 100%) */
   --h-titlebar: 40px;
+  /* IDEA's compact header (HEADER_HEIGHT_DFM), the same in compact mode. */
+  --h-compact-header: 30px;
   --titlebar-tool-button: 30px;
   /* tool window stripe button, icons only */
   --stripe-icon-button: 30px;
@@ -262,6 +285,7 @@ html {
   --h-row: 24px;
   --h-list-row: 24px;
   --h-statusbar: 30px;
+  --h-navigationbar: 26px;
   --h-field: 28px;
   --h-button: 28px;
   --w-gutter: 52px;
@@ -521,6 +545,11 @@ html {
   --syn-comment: #8c8c8c;
   --syn-comment-style: italic;
   --syn-doc-comment: #8c8c8c;
+  --syn-doc-comment-tag: #8c8c8c;
+  --syn-doc-comment-tag-effect: underline #999999;
+  --syn-doc-comment-tag-value: #3d3d3d;
+  --syn-doc-markup: #8c8c8c;
+  --syn-doc-markup-bg: #e2ffe2;
   --syn-docstring: #067d17;
   --syn-annotation: #9e880d;
   --syn-decorator: #9e880d;
@@ -539,11 +568,21 @@ html {
   --syn-python-constant: var(--syn-constant);
   --syn-python-property: var(--syn-property);
   --syn-python-type-parameter: var(--syn-type);
+  --syn-python-parentheses: var(--syn-punct);
+  --syn-python-brackets: var(--syn-punct);
+  --syn-python-braces: var(--syn-punct);
+  --syn-python-nested-function: var(--syn-function);
+  --syn-python-method-call: var(--syn-function-call);
+  --syn-python-annotation: var(--syn-type);
+  --syn-python-format: var(--syn-escape);
   --syn-python-builtin: var(--syn-builtin);
   --syn-python-predefined-definition: var(--syn-predefined);
   --syn-python-predefined-usage: var(--syn-predefined);
   --syn-python-fstring: var(--syn-string);
   --syn-python-bytes: var(--syn-string);
+  --syn-python-docstring-tag: var(--syn-doc-comment-tag);
+  --syn-python-docstring-tag-effect: var(--syn-doc-comment-tag-effect);
+  --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
   --syn-builtin: #000080;
@@ -580,8 +619,10 @@ html {
   --border-right-margin: #ebecf0;
   --bg-editor-selection: #a6d2ff;
   --bg-editor-selection-inactive: #c9e3ff;
+  --fg-editor-selection: inherit;
   --bg-text-search-result: #fcd47e;
   --bg-text-search-result-current: #f2bf57;
+  --bg-search-result: #ccccff;
   --bg-matched-brace: #93d9d9;
   --matched-brace-weight: inherit;
   --bg-matched-tag: #c9ecec;
@@ -799,6 +840,11 @@ html {
   --syn-function-call: #e3e4e8;
   --syn-comment: #a5a9b0;
   --syn-doc-comment: #8fb89c;
+  --syn-doc-comment-tag: #8fcca3;
+  --syn-doc-comment-tag-effect: none;
+  --syn-doc-comment-tag-value: #d2d4d9;
+  --syn-doc-markup: #90c9a3;
+  --syn-doc-markup-bg: transparent;
   --syn-docstring: #8fb89c;
   --syn-annotation: #d6d17a;
   --syn-decorator: #d6d17a;
@@ -817,11 +863,21 @@ html {
   --syn-python-constant: var(--syn-constant);
   --syn-python-property: var(--syn-property);
   --syn-python-type-parameter: var(--syn-type);
+  --syn-python-parentheses: var(--syn-punct);
+  --syn-python-brackets: var(--syn-punct);
+  --syn-python-braces: var(--syn-punct);
+  --syn-python-nested-function: var(--syn-function);
+  --syn-python-method-call: var(--syn-function-call);
+  --syn-python-annotation: var(--syn-type);
+  --syn-python-format: var(--syn-escape);
   --syn-python-builtin: var(--syn-builtin);
   --syn-python-predefined-definition: var(--syn-predefined);
   --syn-python-predefined-usage: var(--syn-predefined);
   --syn-python-fstring: var(--syn-string);
   --syn-python-bytes: var(--syn-string);
+  --syn-python-docstring-tag: var(--syn-doc-comment-tag);
+  --syn-python-docstring-tag-effect: var(--syn-doc-comment-tag-effect);
+  --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
   --syn-builtin: #b0b0f0;
@@ -859,6 +915,7 @@ html {
   --bg-editor-selection-inactive: #1f3f7a;
   --bg-text-search-result: #146a7d;
   --bg-text-search-result-current: #1d8aa3;
+  --bg-search-result: #006112;
   --bg-matched-brace: #55585f;
   --bg-matched-tag: #45474d;
   --bg-fold-placeholder: #33353b;
@@ -990,7 +1047,7 @@ html {
 }
 
 /* Solarized and Atom One adaptations. Exact upstream palettes and MIT notices:
- * docs/themes.md and THIRD_PARTY_LICENSES.md. The shared mapping covers every
+ * THIRD_PARTY_LICENSES.md. The shared mapping covers every
  * colour token; only palette roles below differ. UI-only states use explicit
  * mixes of original colours where the source has no equivalent component.
  * Keep before appearance options so accessibility preferences still win.
@@ -1124,6 +1181,7 @@ html {
   --bg-text-search-result: color-mix(in srgb, var(--palette-yellow) 22%, var(--palette-bg));
   --bg-search-match-current: color-mix(in srgb, var(--palette-yellow) 36%, var(--palette-bg));
   --bg-text-search-result-current: color-mix(in srgb, var(--palette-yellow) 36%, var(--palette-bg));
+  --bg-search-result: color-mix(in srgb, var(--palette-green) 22%, var(--palette-bg));
   --fg-search-match: var(--palette-fg);
   --border-tab-selected: var(--palette-accent);
   --border-indent-guide-active: var(--palette-accent);
@@ -1166,6 +1224,11 @@ html {
   --syn-function-call: var(--palette-blue);
   --syn-comment: var(--palette-comment);
   --syn-doc-comment: var(--palette-comment);
+  --syn-doc-comment-tag: var(--palette-keyword);
+  --syn-doc-comment-tag-effect: none;
+  --syn-doc-comment-tag-value: var(--palette-variable);
+  --syn-doc-markup: var(--syn-doc-comment);
+  --syn-doc-markup-bg: transparent;
   --syn-docstring: var(--palette-green);
   --syn-annotation: var(--palette-orange);
   --syn-decorator: var(--palette-orange);
@@ -1184,11 +1247,21 @@ html {
   --syn-python-constant: var(--syn-constant);
   --syn-python-property: var(--syn-property);
   --syn-python-type-parameter: var(--syn-type);
+  --syn-python-parentheses: var(--syn-punct);
+  --syn-python-brackets: var(--syn-punct);
+  --syn-python-braces: var(--syn-punct);
+  --syn-python-nested-function: var(--syn-function);
+  --syn-python-method-call: var(--syn-function-call);
+  --syn-python-annotation: var(--syn-type);
+  --syn-python-format: var(--syn-escape);
   --syn-python-builtin: var(--syn-builtin);
   --syn-python-predefined-definition: var(--syn-predefined);
   --syn-python-predefined-usage: var(--syn-predefined);
   --syn-python-fstring: var(--syn-string);
   --syn-python-bytes: var(--syn-string);
+  --syn-python-docstring-tag: var(--syn-doc-comment-tag);
+  --syn-python-docstring-tag-effect: var(--syn-doc-comment-tag-effect);
+  --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
   --syn-builtin: var(--palette-cyan);
@@ -1355,92 +1428,6 @@ html {
   /* Selection and hover differ from the panel and popup surfaces; the editor keeps Solarized's own selection. */
   --bg-editor-selection: #073642;
   --bg-editor-selection-inactive: #073642;
-}
-
-:root[data-color-theme="one-light"] {
-  --palette-bg: hsl(230, 1%, 98%);
-  --palette-panel: hsl(230, 1%, 92%);
-  --palette-popup: hsl(230, 1%, 95%);
-  --palette-fg: hsl(230, 8%, 24%);
-  --palette-muted: hsl(230, 6%, 44%);
-  --palette-border: hsl(230, 1%, 86%);
-  --palette-hover: hsl(230, 1%, 90%);
-  --palette-selection: hsl(230, 1%, 90%);
-  --palette-line: color-mix(in srgb, hsl(230, 8%, 24%) 5%, hsl(230, 1%, 98%));
-  --palette-accent: hsl(230, 100%, 66%);
-  --palette-on-accent: #ffffff;
-  --palette-cyan: hsl(198, 99%, 37%);
-  --palette-blue: hsl(221, 87%, 60%);
-  --palette-magenta: hsl(301, 63%, 40%);
-  --palette-green: hsl(119, 34%, 47%);
-  --palette-red: hsl(5, 74%, 59%);
-  --palette-orange: hsl(41, 99%, 30%);
-  --palette-yellow: hsl(41, 99%, 38%);
-  --palette-comment: hsl(230, 4%, 64%);
-  --palette-keyword: hsl(301, 63%, 40%);
-  --palette-type: hsl(41, 99%, 38%);
-  --palette-number: hsl(41, 99%, 30%);
-  --palette-variable: hsl(5, 74%, 59%);
-  --palette-property: hsl(230, 8%, 24%);
-  --palette-ansi-black: hsl(230, 8%, 24%);
-  --palette-ansi-red: hsl(5, 74%, 59%);
-  --palette-ansi-green: hsl(119, 34%, 47%);
-  --palette-ansi-yellow: hsl(41, 99%, 38%);
-  --palette-ansi-blue: hsl(221, 87%, 60%);
-  --palette-ansi-magenta: hsl(301, 63%, 40%);
-  --palette-ansi-cyan: hsl(198, 99%, 37%);
-  --palette-ansi-white: hsl(230, 6%, 44%);
-  --palette-ansi-bright-black: hsl(230, 6%, 44%);
-  --palette-ansi-bright-red: hsl(5, 74%, 59%);
-  --palette-ansi-bright-green: hsl(119, 34%, 47%);
-  --palette-ansi-bright-yellow: hsl(41, 99%, 38%);
-  --palette-ansi-bright-blue: hsl(221, 87%, 60%);
-  --palette-ansi-bright-magenta: hsl(301, 63%, 40%);
-  --palette-ansi-bright-cyan: hsl(198, 99%, 37%);
-  --palette-ansi-bright-white: hsl(230, 8%, 24%);
-}
-
-:root[data-color-theme="one-dark"] {
-  --palette-bg: hsl(220, 13%, 18%);
-  --palette-panel: hsl(220, 13%, 15%);
-  --palette-popup: hsl(220, 13%, 16.5%);
-  --palette-fg: hsl(220, 14%, 71%);
-  --palette-muted: hsl(220, 9%, 55%);
-  --palette-border: hsl(220, 13%, 10.8%);
-  --palette-hover: hsl(220, 13%, 22%);
-  --palette-selection: hsl(220, 13%, 28%);
-  --palette-line: color-mix(in srgb, hsl(220, 100%, 80%) 4%, hsl(220, 13%, 18%));
-  --palette-accent: hsl(220, 100%, 66%);
-  --palette-on-accent: #000000;
-  --palette-cyan: hsl(187, 47%, 55%);
-  --palette-blue: hsl(207, 82%, 66%);
-  --palette-magenta: hsl(286, 60%, 67%);
-  --palette-green: hsl(95, 38%, 62%);
-  --palette-red: hsl(355, 65%, 65%);
-  --palette-orange: hsl(29, 54%, 61%);
-  --palette-yellow: hsl(39, 67%, 69%);
-  --palette-comment: hsl(220, 10%, 40%);
-  --palette-keyword: hsl(286, 60%, 67%);
-  --palette-type: hsl(39, 67%, 69%);
-  --palette-number: hsl(29, 54%, 61%);
-  --palette-variable: hsl(355, 65%, 65%);
-  --palette-property: hsl(220, 14%, 71%);
-  --palette-ansi-black: hsl(220, 13%, 15%);
-  --palette-ansi-red: hsl(355, 65%, 65%);
-  --palette-ansi-green: hsl(95, 38%, 62%);
-  --palette-ansi-yellow: hsl(39, 67%, 69%);
-  --palette-ansi-blue: hsl(207, 82%, 66%);
-  --palette-ansi-magenta: hsl(286, 60%, 67%);
-  --palette-ansi-cyan: hsl(187, 47%, 55%);
-  --palette-ansi-white: hsl(220, 14%, 71%);
-  --palette-ansi-bright-black: hsl(220, 9%, 55%);
-  --palette-ansi-bright-red: hsl(355, 65%, 65%);
-  --palette-ansi-bright-green: hsl(95, 38%, 62%);
-  --palette-ansi-bright-yellow: hsl(39, 67%, 69%);
-  --palette-ansi-bright-blue: hsl(207, 82%, 66%);
-  --palette-ansi-bright-magenta: hsl(286, 60%, 67%);
-  --palette-ansi-bright-cyan: hsl(187, 47%, 55%);
-  --palette-ansi-bright-white: #ffffff;
 }
 
 /*

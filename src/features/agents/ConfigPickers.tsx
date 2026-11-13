@@ -9,8 +9,8 @@ import clsx from "clsx";
 import type { AgentConfigOption } from "@/bindings";
 import { useTx } from "@/platform/i18n";
 import { Icon, IconButton, Popup, Select, T, Toggle } from "@/ui";
-import type { SelectOption } from "@/ui/Select";
-import { mainOptions, modeIcon } from "./composerModel";
+import { SelectListbox, type SelectOption } from "@/ui/Select";
+import { mainOptions, modelConfigOptions, modeIcon } from "./composerModel";
 import styles from "./Composer.module.css";
 
 export function configPickerOptions(option: AgentConfigOption): SelectOption[] {
@@ -38,7 +38,8 @@ export function configPickerOptions(option: AgentConfigOption): SelectOption[] {
 
 /** The on and off values of a two-state permissions option, or null when it has other values. */
 function switchValues(option: AgentConfigOption): { on: string; off: string } | null {
-  if (option.category !== "permissions") return null;
+  const isFast = option.id === "fast" || option.category === "model_config";
+  if (option.category !== "permissions" && !isFast) return null;
   const on = option.values.find((v) => /^(on|true)$/i.test(v.value))?.value;
   const off = option.values.find((v) => /^(off|false)$/i.test(v.value))?.value;
   return on && off ? { on, off } : null;
@@ -63,24 +64,33 @@ export function ConfigPickers({
   const options = mainOptions(config);
   const valueOf = (o: AgentConfigOption) => values?.[o.id] ?? o.current ?? null;
   const model = options.find((o) => o.category === "model");
-  const effort = model && options.find((o) => o.category === "thought_level" && o.values.length > 0);
+  const effort = config.find((o) => o.category === "thought_level" && o.values.length > 0);
+  const modelConfigs = modelConfigOptions(config);
+  const combinedModel = model && (effort || modelConfigs.length > 0);
+  const tuckedModelConfig = new Set(modelConfigs.map((o) => o.id));
   const mode = options.find((o) => o.category === "mode");
   const allowAll = mode && options.find((o) => switchValues(o));
-  const inline = options.filter((o) => o !== effort && o !== allowAll);
-  // The compact menu holds everything but the model button (which carries the effort).
-  const secondary = options.filter((o) => o.category !== "model" && o !== effort);
+  const inline = options.filter(
+    (o) => o !== effort && o !== allowAll && !(combinedModel && tuckedModelConfig.has(o.id)),
+  );
+  // The compact menu holds everything but the model button (effort + model parameters).
+  const secondary = options.filter(
+    (o) => o.category !== "model" && o !== effort && !(combinedModel && tuckedModelConfig.has(o.id)),
+  );
   const approval = secondary.find((o) => o.category === "approval" || o.category === "mode");
   const summary = secondary.map((o) => `${tx(o.name)}: ${selected(o, valueOf(o))?.name ?? tx("Default")}`).join(" · ");
   return (
     <>
       {inline.map((o) => (
         <span key={o.id} className={clsx(styles.configPicker, o.category !== "model" && styles.inlineSetting)}>
-          {o === model && effort ? (
+          {o === model && combinedModel ? (
             <ModelEffortPicker
               model={o}
               modelValue={valueOf(o)}
               effort={effort}
-              effortValue={valueOf(effort)}
+              effortValue={effort ? valueOf(effort) : null}
+              modelConfigs={modelConfigs}
+              valueOf={valueOf}
               onChange={onChange}
             />
           ) : o === mode && allowAll ? (
@@ -193,20 +203,33 @@ function ModelEffortPicker({
   modelValue,
   effort,
   effortValue,
+  modelConfigs,
+  valueOf,
   onChange,
 }: {
   model: AgentConfigOption;
   modelValue: string | null;
-  effort: AgentConfigOption;
+  effort?: AgentConfigOption;
   effortValue: string | null;
+  modelConfigs: AgentConfigOption[];
+  valueOf: (o: AgentConfigOption) => string | null;
   onChange: (option: string, value: string) => void;
 }) {
   const tx = useTx();
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
   const modelName = selected(model, modelValue)?.name ?? tx("Default");
-  const effortName = selected(effort, effortValue)?.name ?? tx("Default");
-  const summary = `${tx(model.name)}: ${modelName} · ${tx(effort.name)}: ${effortName}`;
+  const effortName = effort ? (selected(effort, effortValue)?.name ?? tx("Default")) : null;
+  const modelConfigSummary = modelConfigs
+    .map((o) => {
+      const current = selected(o, valueOf(o));
+      return current ? `${tx(o.name)}: ${current.name}` : null;
+    })
+    .filter(Boolean)
+    .join(" · ");
+  const summary = [effortName ? `${tx(effort!.name)}: ${effortName}` : null, modelConfigSummary]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <>
       <button
@@ -216,22 +239,24 @@ function ModelEffortPicker({
         aria-label={tx(model.name)}
         aria-haspopup="dialog"
         aria-expanded={open}
-        title={summary}
+        title={`${tx(model.name)}: ${modelName}${summary ? ` · ${summary}` : ""}`}
         onClick={() => setOpen((v) => !v)}
       >
         <span className={styles.chipValue}>{modelName}</span>
         {/* Every level's name in one cell, so the button keeps the widest one's width. */}
-        <span className={styles.chipDetail}>
-          {[...new Set([effortName, ...effort.values.map((v) => v.name)])].map((name) => (
-            <span
-              key={name}
-              className={name === effortName ? undefined : styles.chipSizer}
-              aria-hidden={name !== effortName}
-            >
-              {name}
-            </span>
-          ))}
-        </span>
+        {effort && (
+          <span className={styles.chipDetail}>
+            {[...new Set([effortName, ...effort.values.map((v) => v.name)])].map((name) => (
+              <span
+                key={name}
+                className={name === effortName ? undefined : styles.chipSizer}
+                aria-hidden={name !== effortName}
+              >
+                {name}
+              </span>
+            ))}
+          </span>
+        )}
         <Icon name="chevron-down" size={14} className={styles.chipChevron} />
       </button>
       <Popup
@@ -241,15 +266,29 @@ function ModelEffortPicker({
         aria-label={tx("Model & effort settings")}
         className={styles.modelEffortPopup}
       >
-        <div className={styles.settingsRow}>
-          <span className={styles.settingsLabel}>{tx(model.name)}</span>
-          <ConfigPicker option={model} value={modelValue} onChange={onChange} framed />
-        </div>
-        <div className={styles.effortHeader}>
-          <span className={styles.settingsLabel}>{tx(effort.name)}</span>
-          <span className={styles.effortValue}>{effortName}</span>
-        </div>
-        <EffortSlider option={effort} value={effortValue} onChange={(v) => onChange(effort.id, v)} />
+        {effort && (
+          <div className={styles.effortBlock}>
+            <div className={styles.effortHeader}>
+              <span className={styles.settingsLabel}>{tx(effort.name)}</span>
+              <span className={styles.effortValue}>{effortName}</span>
+            </div>
+            <EffortSlider option={effort} value={effortValue} onChange={(v) => onChange(effort.id, v)} />
+          </div>
+        )}
+        {modelConfigs.map((o) => (
+          <div key={o.id} className={styles.modeFooter}>
+            <span title={o.description ?? undefined}>{tx(o.name)}</span>
+            <ConfigPicker option={o} value={valueOf(o)} onChange={onChange} framed />
+          </div>
+        ))}
+        <SelectListbox
+          aria-label={tx(model.name)}
+          value={modelValue}
+          options={configPickerOptions(model)}
+          searchable
+          listClassName={styles.modelList}
+          onChoose={(v) => onChange(model.id, v)}
+        />
       </Popup>
     </>
   );

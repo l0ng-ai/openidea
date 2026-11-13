@@ -2,6 +2,7 @@
  * Commit tool window: change list with inclusion checkboxes, message, stashes. Its
  * parts also make the Git window's Local Changes / Stash tabs and the Commit dialog.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { formatBinding, isMacHost, macStroke, normalizeBinding, shortcutLabel, strokeOf } from "@/platform/keymap";
 import {
@@ -60,7 +61,7 @@ import {
 import { applyStash, commitChanges, deleteFiles, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
-import { commitFiles, moveToChangelist } from "./changelistsUi";
+import { addToChangelist, commitFiles } from "./changelistsUi";
 import { acceptSide } from "./conflictsUi";
 import { copyChangesAsPatch } from "./patches";
 import {
@@ -82,7 +83,9 @@ import {
   changeNodeDiff,
   changeNodeDiffData,
   diffInput,
+  openDiff,
   openVcsDiff,
+  opensDiffOnActivate,
   vcsDiffInFront,
   workingDiffData,
 } from "./diffInput";
@@ -94,9 +97,10 @@ import { OperationBanner } from "./operations";
 import { runOp } from "./ops";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
+import { saveVcsSetting } from "./settingsUi";
 import styles from "./CommitView.module.css";
 
-/** MIME type of changed files dragged between change lists (absolute paths, newline-separated). */
+/** MIME type of files dragged onto a change list (absolute paths, newline-separated). */
 const CHANGES_MIME = "application/x-openidea-changes";
 
 /** Shown text of a node: group names are translated, except the names of user change lists. */
@@ -200,14 +204,44 @@ const bottomLeft = (el: HTMLElement) => {
 };
 
 /**
- * Opens a file's diff; F7 continues through the other files of its group, in tree
- * order. Where depends on the commit interface setting (openVcsDiff): a preview editor
- * tab, or under the modal interface the front diff window, as an editor tab would sit
- * behind the modal Commit dialog (#1863).
+ * Activates a change (Enter, double-click, Show Diff); F7 continues through the other
+ * files of its group, in tree order. Enter and double-click follow IDEA's Show on
+ * Double-Click (opensDiffOnActivate): the source file, or the diff where the commit
+ * interface puts it (openVcsDiff: a preview editor tab, or under the modal interface the
+ * front diff window, behind the modal Commit dialog, #1863). `forceDiff` is Show Diff and
+ * the Commit dialog's own activation, which always show the diff in front.
  */
-function openNode(n: ChangeNode, roots: readonly ChangeNode[]) {
+function openNode(n: ChangeNode, roots: readonly ChangeNode[], forceDiff = false) {
   if (n.type !== "file" || !n.path) return;
+  if (!forceDiff && !opensDiffOnActivate()) {
+    void editorService().openFile(n.path, { focus: true });
+    return;
+  }
   void openVcsDiff(changeNodeDiffData(roots, n), { preview: true });
+}
+
+/** The setting behind Show on Double-Click (`None` follows the commit interface). */
+export const DOUBLE_CLICK_KEY = "vcs.commit.doubleClickOpensDiff";
+
+/**
+ * IDEA's Show on Double-Click: the change lists' View Options items. An unset value
+ * (Follow the Interface) is written as `null`, which removes the key from the settings.
+ */
+export function doubleClickMenu(value: boolean | null | undefined): MenuItem[] {
+  const on = value ?? null;
+  const set = (v: boolean | null) => () => void saveVcsSetting(DOUBLE_CLICK_KEY, v);
+  return [
+    { kind: "separator" },
+    {
+      label: tx("Show on Double-Click"),
+      submenu: [
+        { label: tx("Follow the Interface"), checked: on === null, run: set(null) },
+        { kind: "separator" },
+        { label: tx("Diff"), checked: on === true, run: set(true) },
+        { label: tx("Source"), checked: on === false, run: set(false) },
+      ],
+    },
+  ];
 }
 
 /** Context menu of a change list's header: the list's own actions, then the bulk ones on its files. */
@@ -268,7 +302,7 @@ export function copyChangePaths(nodes: ChangeNode[], kind: "absolute" | "name") 
   const text = filesOf(nodes)
     .map((f) => (kind === "name" ? basename(f.path) : f.path))
     .join("\n");
-  if (text) void navigator.clipboard?.writeText(text);
+  if (text) void writeClipboardText(text);
 }
 
 export function nodeMenu(
@@ -310,9 +344,16 @@ export function nodeMenu(
           label: "Show Diff",
           icon: "diff",
           shortcut: shortcutLabel("vcs.showDiff"),
-          run: () => openNode(first, opts.roots!),
+          // An explicit Show Diff always opens the diff, whatever Show on Double-Click says.
+          run: () => openNode(first, opts.roots!, true),
         }
       : { kind: "action", action: "vcs.showDiff", arg: first?.path },
+    {
+      kind: "action",
+      action: "vcs.showDiffInNewWindow",
+      arg: first?.path ? (opts?.roots ? changeNodeDiffData(opts.roots, first) : changeNodeDiff(first)) : undefined,
+      disabled: !first?.path,
+    },
     {
       label: "Jump to Source",
       icon: "external-link",
@@ -338,13 +379,15 @@ export function nodeMenu(
           },
         ]
       : []),
+    // Both destinations, as in the project view's Git menu.
     ...(toIgnore.length
       ? [
           {
-            kind: "action" as const,
-            action: "vcs.ignoreShared",
-            arg: toIgnore,
             label: "Add to .gitignore",
+            submenu: [
+              { kind: "action" as const, action: "vcs.ignoreShared", arg: toIgnore, label: ".gitignore" },
+              { kind: "action" as const, action: "vcs.ignoreLocal", arg: toIgnore, label: ".git/info/exclude" },
+            ],
           },
         ]
       : []),
@@ -513,6 +556,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const groupByStaging = useCommit((s) => s.groupByStaging);
   const diffPreview = useCommit((s) => s.diffPreview);
   const commitDiffPreview = useCommit((s) => s.commitDiffPreview);
+  const doubleClickOpensDiff = useWorkflowSettings((s) => s.vcs.commit.doubleClickOpensDiff);
   const lists = useChangelists((s) => s.state);
   const checks = useCommitChecks();
   const checkboxes = mode !== "local";
@@ -524,10 +568,11 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const viewRef = useRef<HTMLButtonElement>(null);
 
   const repos = useVcs((s) => s.roots);
+  const heads = useVcs((s) => s.heads);
   const projectRoots = useEffectiveRoots();
   const roots = useMemo(
-    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging),
-    [status, root, groupByDir, lists, repos, groupByStaging],
+    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging, heads),
+    [status, root, groupByDir, lists, repos, groupByStaging, heads],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -576,6 +621,17 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
     followDiff(editor?.activeInput?.() ?? null);
     return editor?.onActiveInputChange?.(followDiff);
   }, [byKey, revealNode]);
+
+  // While the active tab shows one of this tree's diffs, a single selected file replaces it,
+  // keeping focus in the tree (a click or arrow key walks the changes).
+  const followSelection = (nodes: readonly ChangeNode[]) => {
+    const node = nodes.length === 1 ? nodes[0] : undefined;
+    if (mode === "dialog" || node?.type !== "file" || !node.path) return;
+    const active = maybeEditorService()?.activeInput?.();
+    if (active?.kind !== DIFF_KIND || active.key !== followedDiff.current) return;
+    if (diffInput(changeNodeDiff(node)).key === active.key) return;
+    void openDiff(changeNodeDiffData(roots, node), { preview: true, focus: false });
+  };
 
   // Reveal only after the ancestors have expanded, without moving keyboard focus.
   useLayoutEffect(() => {
@@ -641,6 +697,8 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                     { label: "Show Diff Preview", checked: diffPreview, run: () => setDiffPreview(!diffPreview) },
                   ]
                 : []),
+              // Not in the Commit dialog, whose files always open as source.
+              ...(mode === "dialog" ? [] : doubleClickMenu(doubleClickOpensDiff)),
             ])
           }
         />
@@ -669,6 +727,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
       {mode !== "dialog" && <OperationBanner />}
       <div
         className={styles.treeWrap}
+        data-changes-tree={mode}
         onKeyDownCapture={(e) => {
           if (checkboxes && e.key === " " && !e.metaKey && !e.ctrlKey && selected.size) {
             e.preventDefault();
@@ -686,12 +745,6 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               e.preventDefault();
               e.stopPropagation();
               void deleteFiles(deletable);
-            }
-          } else if (e.key === "F4") {
-            const n = selectedNodes().find((x) => x.type === "file");
-            if (n?.path) {
-              e.preventDefault();
-              void editorService().openFile(n.path, { focus: true });
             }
           } else {
             // IDEA: Ctrl+C copies the file names, Ctrl+Shift+C the absolute paths (#1877).
@@ -734,8 +787,13 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               selectionKeys: [...sel],
               selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
             });
+            followSelection(nodes);
           }}
-          onActivate={(n) => openNode(n, roots)}
+          onActivate={(n) => openNode(n, roots, mode === "dialog")}
+          onJumpToSource={(n) => {
+            const file = n.type === "file" ? n : selectedNodes().find((x) => x.type === "file");
+            if (file?.path && file.kind !== "deleted") void editorService().openFile(file.path, { focus: true });
+          }}
           onContextMenu={(node, sel, e: MouseEvent) => {
             if (!node) return;
             if (node.type === "group" && node.changelist) {
@@ -767,37 +825,38 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               </span>
             );
             // Pointer-driven (HTML5 drag and drop never reaches the Tauri webview):
-            // files and folders drag; any row takes them into its changelist.
+            // file and folder rows drag (unversioned ones onto a changelist, which
+            // adds them to Git); any row of a changelist takes dropped files into it.
             const list = n.changelist;
-            const dnd =
-              list === undefined
-                ? {}
-                : {
-                    ref: (el: HTMLSpanElement | null) =>
-                      el
-                        ? registerDropTarget(el, {
-                            accepts: (type) => type === CHANGES_MIME,
-                            over: () => setDropTarget(list),
-                            leave: () => setDropTarget(null),
-                            drop: (data) => {
-                              setDropTarget(null);
-                              moveToChangelist(data.payload.split("\n"), list);
-                            },
-                          })
-                        : undefined,
-                    ...(n.type !== "group" && {
-                      onPointerDown: (e: PointerEvent<HTMLSpanElement>) => {
-                        const paths =
-                          selected.has(n.key) && selected.size > 1
-                            ? filesOf(selectedNodes()).map((f) => f.path)
-                            : n.files.map((f) => f.path);
-                        startPointerDrag(e, e.currentTarget, {
-                          type: CHANGES_MIME,
-                          payload: paths.map(stripSlash).join("\n"),
-                        });
-                      },
-                    }),
-                  };
+            const dnd = {
+              ...(list !== undefined && {
+                ref: (el: HTMLSpanElement | null) =>
+                  el
+                    ? registerDropTarget(el, {
+                        accepts: (type) => type === CHANGES_MIME,
+                        over: () => setDropTarget(list),
+                        leave: () => setDropTarget(null),
+                        drop: (data) => {
+                          setDropTarget(null);
+                          void addToChangelist(data.payload.split("\n"), list);
+                        },
+                      })
+                    : undefined,
+              }),
+              ...(n.type !== "group" &&
+                n.files.length > 0 && {
+                  onPointerDown: (e: PointerEvent<HTMLSpanElement>) => {
+                    const paths =
+                      selected.has(n.key) && selected.size > 1
+                        ? filesOf(selectedNodes()).map((f) => f.path)
+                        : n.files.map((f) => f.path);
+                    startPointerDrag(e, e.currentTarget, {
+                      type: CHANGES_MIME,
+                      payload: paths.map(stripSlash).join("\n"),
+                    });
+                  },
+                }),
+            };
             return (
               <span
                 className={clsx(styles.nodeRow, n.type === "group" && dropTarget === n.changelist && styles.dropTarget)}
@@ -825,6 +884,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                     <T>partial</T>
                   </span>
                 )}
+                {n.detail && n.detailIcon && <Icon name={n.detailIcon} size={14} className={styles.detailIcon} />}
                 {n.detail && <span className={styles.detail}>{n.detail}</span>}
               </span>
             );
@@ -920,7 +980,16 @@ export function useCommitRunner(included: number, onCommitted?: () => void): Com
 }
 
 /** Amend, message history and the message field with its inspections and failed checks. */
-export function CommitMessageField({ included, runner }: { included: number; runner: CommitRunner }) {
+export function CommitMessageField({
+  included,
+  runner,
+  autoFocus = false,
+}: {
+  included: number;
+  runner: CommitRunner;
+  /** The message takes the initial focus of the dialog it is in (the Commit dialog). */
+  autoFocus?: boolean;
+}) {
   const message = useCommit((s) => s.message);
   const amend = useCommit((s) => s.amend);
   const focusTick = useCommit((s) => s.focusTick);
@@ -993,6 +1062,7 @@ export function CommitMessageField({ included, runner }: { included: number; run
       </div>
       <textarea
         ref={ref}
+        data-autofocus={autoFocus ? "" : undefined}
         className={clsx(styles.message, !showMargin && styles.noMargin, emptyError && styles.messageError)}
         aria-invalid={emptyError || undefined}
         style={{ ["--guide" as string]: `${margin}ch` }}
@@ -1110,7 +1180,7 @@ function CommitPanel({ included }: { included: number }) {
             className={styles.pushButton}
             disabled={!canCommit || !!remoteBusy}
             onClick={() => void runner.run(true)}
-            title="⌥⌘↩"
+            title={`${tx(commitAndPushLabel(amend))} (⌥⌘↩)`}
           >
             <span>
               <T>{commitAndPushLabel(amend)}</T>

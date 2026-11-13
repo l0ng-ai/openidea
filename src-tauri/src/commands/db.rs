@@ -110,6 +110,48 @@ pub async fn db_databases(window: Window, state: State<'_, AppState>, id: String
 
 #[tauri::command]
 #[specta::specta]
+pub async fn db_database_catalog(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    database: String,
+) -> IdeResult<Vec<ide_db::CatalogSchema>> {
+    ide_host::ops::db::database_catalog(&state.host, window.label(), &id, &database).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn db_saved_catalog(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+) -> IdeResult<Option<ide_db::SourceCatalog>> {
+    ide_host::ops::db::saved_catalog(&state.host, window.label(), &id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn db_retain_catalog(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    databases: Vec<String>,
+) -> IdeResult<()> {
+    ide_host::ops::db::retain_catalog(&state.host, window.label(), &id, databases).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn db_session_context(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+) -> IdeResult<ide_db::SessionContext> {
+    ide_host::ops::db::session_context(&state.host, window.label(), &id).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn db_schemas(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<Vec<String>> {
     ide_host::ops::db::schemas(&state.host, window.label(), &id).await
 }

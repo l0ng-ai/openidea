@@ -138,6 +138,10 @@ impl PathFilter {
         &self.config.0 == extra_roots && self.config.1 == excludes
     }
 
+    pub(crate) fn reload(&self) -> Self {
+        Self::new(&self.root, &self.config.0, &self.config.1)
+    }
+
     pub(crate) fn root(&self) -> &Path {
         &self.root
     }

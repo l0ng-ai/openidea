@@ -1,0 +1,188 @@
+---
+title: "诊断与检查"
+description: "在编辑器和问题工具窗口中报告问题，在用户输入时检查未保存的文本，并提供快速修复。"
+---
+
+插件有两种报告问题的方式，结果都会以编辑器波浪线的形式显示，并与语言服务器的结果一起出现在 **问题** 工具窗口中：
+
+| 方式           | 做法                                                      | 适用场景                                                    |
+| -------------- | --------------------------------------------------------- | ----------------------------------------------------------- |
+| **发布**       | 在任意代码中调用 `host::publish_diagnostics(path, items)` | 外部工具的结果、保存时检查、项目扫描。需要 `project.read`。 |
+| **输入时提供** | `diagnostics` 提供者类型（API 1.3）                       | 对当前未保存文本的快速检查。不需要额外权限。                |
+
+两种方式的快速修复都来自 `code-actions` 提供者类型。
+
+## 诊断记录
+
+两种方式使用同一个记录（WIT `io.wit` 中的 `diagnostics.diagnostic`；Rust 中的 `openidea_plugin::Diagnostic`）：
+
+| 字段          | 说明                                                                     |
+| ------------- | ------------------------------------------------------------------------ |
+| `range`       | 从 0 开始的行号，UTF-16 列号。                                           |
+| `severity`    | `Error`、`Warning`、`Info`、`Hint`。                                     |
+| `message`     | 提供者方式下最多 4 KiB。                                                 |
+| `code`        | 规则或检查 id（如 `LineLength`），提供者方式下最多 128 字节。            |
+| `source`      | 发现问题的工具（不是插件本身时填写，如 `checkstyle`）。                  |
+| `unnecessary` | 淡化显示（WIT 标签 `unnecessary`）。                                     |
+| `deprecated`  | 删除线显示（WIT 标签 `deprecated`）。                                    |
+| `related`     | 有助于解释问题的其他位置（`RelatedInformation { location, message }`）。 |
+
+```rust
+use openidea_plugin::{Diagnostic, Range, Severity};
+
+let d = Diagnostic::new(range, Severity::Warning, "Line is longer than 100 characters").code("LineLength");
+```
+
+## 发布问题
+
+`host::publish_diagnostics(path, &items)` 替换本插件对某个文件（打开项目中的绝对路径）报告的问题；
+传空列表即清除。需要 `project.read`。
+
+[Checkstyle](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/checkstyle) 是典型示例：
+收到 `file-saved` 时在可取消的任务中运行 `checkstyle` 程序，解析 XML 报告并发布结果。
+
+```toml
+activation = ["on-event:file-saved", "on-command:*"]
+
+[capabilities]
+required = ["project.read", "events", "storage", "process:checkstyle"]
+
+[[contributes.providers]]
+kinds = ["code-actions"]
+languages = ["java"]
+```
+
+```rust
+fn check(&mut self, path: &str) -> Result<usize, Error> {
+    let project = host::project_of(path).ok_or_else(|| Error::NotFound(path.into()))?;
+    let task = host::begin_task("Checkstyle", true);
+    let args = vec!["-f".to_owned(), "xml".into(), "-c".into(), "/google_checks.xml".into(), path.to_owned()];
+    let out = project.run_process("checkstyle", &args, None)?;
+    if task.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    let problems = parse_report(&out.stdout);
+    let text = project.read_file(path)?;
+    let diagnostics: Vec<Diagnostic> = problems.iter().map(|p| diagnostic(p, &text)).collect();
+    host::publish_diagnostics(path, &diagnostics)?;
+    self.problems.insert(path.to_owned(), problems); // 留给快速修复使用
+    Ok(diagnostics.len())
+}
+```
+
+[License Header](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/license-header)
+在 `file-opened` 和 `file-saved` 时做同样的事，但不依赖外部程序。
+
+## 输入时检查未保存的文本
+
+`diagnostics` 类型（API 1.3）会把当前文档（包括未保存的修改）交给插件检查：
+
+```toml
+engines.openidea = "^1.3"
+
+[[contributes.providers]]
+kinds = ["diagnostics"]
+languages = ["text", "plaintext"]   # "*" 匹配任意语言
+```
+
+```rust
+use openidea_plugin::diagnostics::{DiagnosticsProvider, Document};
+use openidea_plugin::{Diagnostic, Range, Severity, register_plugin, text};
+
+impl DiagnosticsProvider for MyPlugin {
+    fn diagnostics(&mut self, doc: &Document) -> Vec<Diagnostic> {
+        doc.text
+            .match_indices("BAD")
+            .map(|(offset, _)| {
+                let range = Range { start: text::position(&doc.text, offset), end: text::position(&doc.text, offset + 3) };
+                Diagnostic::new(range, Severity::Warning, "Avoid BAD").code("bad-word")
+            })
+            .collect()
+    }
+}
+
+register_plugin!(MyPlugin, diagnostics);
+```
+
+对应的可选 WIT 导出是 `diagnostics-provider.diagnostics(document)`，位于 world `plugin-diagnostics` /
+`editor-diagnostics`。
+
+宿主的调用方式：
+
+- 文档打开或最后一次编辑后约 **300 ms** 调用，使用编辑器提供者预算（50 ms 软限制、500 ms 硬限制）。
+  被后续请求取代的调用会取消，旧版本的结果会丢弃。
+- 超过 2 MiB 的文档和库中的虚拟文档不检查。
+- 返回的列表替换该提供者此前对这个文档的结果；空列表即清除。每个文档最多 5,000 条；
+  消息截断到 4 KiB，`source` 和 `code` 截断到 128 字节。
+- 提供者在没有交互调用上下文的情况下运行：不能弹出对话框，也不能修改编辑器。
+
+提供者结果和发布结果属于不同的来源（`plugin-provider:<plugin-id>` 和 `plugin:<plugin-id>`），各自只替换自己的结果。
+关闭文档或项目，或者禁用、重新加载插件、插件出错时，提供者结果会被清除。结果只归属于发起请求的窗口和项目，
+即使两个窗口对同一路径的编辑不同也互不影响。
+
+## 快速修复
+
+声明 `code-actions` 类型并实现 `Providers::code_actions`。这些操作会和语言服务器的操作一起出现在
+**显示上下文操作**（`⌥⏎` / `Alt+Enter`）中。一个代码操作可以修改任意多个文件，作为一次可撤销的修改应用。
+
+```rust
+use openidea_plugin::providers::{CodeAction, Document, Providers};
+use openidea_plugin::{Position, Range, TextEdit};
+
+impl Providers for Checkstyle {
+    fn code_actions(&mut self, doc: &Document, selection: Range) -> Vec<CodeAction> {
+        let Some(problems) = self.problems.get(&doc.path) else { return vec![] };
+        let lines: Vec<&str> = doc.text.split('\n').collect();
+        problems
+            .iter()
+            .filter(|p| p.check == "FileTabCharacter" && (selection.start.line..=selection.end.line).contains(&p.line))
+            .filter_map(|p| {
+                let line = lines.get(p.line as usize)?;
+                let whole = Range::new(Position::new(p.line, 0), Position::new(p.line, line.encode_utf16().count() as u32));
+                Some(CodeAction {
+                    title: "Checkstyle: Replace tabs with spaces".into(),
+                    kind: Some("quickfix".into()),
+                    preferred: true,
+                    edits: vec![(doc.path.clone(), vec![TextEdit { range: whole, text: line.replace('\t', "    ") }])],
+                    data: None,
+                })
+            })
+            .collect()
+    }
+}
+```
+
+`code_actions` 受 50 ms 编辑器预算约束，所以 Checkstyle 直接用内存中上一次检查的结果来回答。
+
+### 延迟计算编辑
+
+代码操作可以让 `edits` 为空并设置 `data`（插件自己的引用）。这样宿主只会在用户选中它时调用
+`resolve_code_action(doc, action)`，使用 5 秒的命令预算，而不是 50 ms。解析期间可以用 `host::pick`、
+`pick_many`、`input` 和 `confirm` 在编辑器所在窗口询问用户，等待时间不计入预算。用户取消时返回 `None`
+（`confirm` 返回 `false`）：此时返回 `Error::Cancelled` 或不带编辑的操作即可放弃。延迟操作不会为意图预览或
+**保存时操作** 而解析。其他仅限命令使用的 API 在此期间仍不可用。
+
+### 创建、重命名或删除文件的修复
+
+同时实现 `file_actions::FileActions`，并一起注册：`register_plugin!(MyPlugin, providers, file_actions)`。
+同一个 `code-actions` 类型覆盖两者。详见 [文件操作](/zh/plugins/guides/file-actions)。
+
+## 读取问题视图
+
+`host::problems(path)`（API 1.4，WIT `diagnostics.problems`）返回发起调用窗口所在项目当前的问题报告，按文件和来源分组，
+包括语言服务器和插件的诊断，也可以只取某个文件。需要 `project.read` 和发起调用的窗口；远程项目返回空列表。
+[TODO Finder](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/todo-finder) 用它在状态栏中计数。
+
+## 测试
+
+```rust
+use openidea_plugin::mock::MockHost;
+
+let mock = MockHost::install();
+mock.open_editor("/project/a.txt", "text", "a BAD word", &[]);
+mock.refresh_diagnostics(&mut MyPlugin::default());
+assert_eq!(mock.provider_diagnostics()["/project/a.txt"][0].code.as_deref(), Some("bad-word"));
+```
+
+`refresh_diagnostics` 用模拟编辑器的当前版本运行提供者；`provider_diagnostics()` 保存它的结果，
+`diagnostics()` 保存插件发布的结果。防抖和取消只在真实宿主中测试。参见 [测试](/zh/plugins/testing)。

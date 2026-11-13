@@ -3,10 +3,21 @@
  * exchange (right): status line, timing, body (pretty-printed JSON / XML /
  * HTML or raw), response headers and the request as sent.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import type { HttpExchange, HttpHistoryEntry } from "@/platform/ipc";
-import { EmptyState, IconButton, SplitGroup, SplitHandle, SplitPanel, Spinner, Tabs, T } from "@/ui";
+import {
+  Button,
+  EmptyState,
+  IconButton,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  Spinner,
+  Tabs,
+  T,
+  useSelectionBoundary,
+} from "@/ui";
 import { bodyKind, formatMs, formatSize, prettyBody } from "./format";
 import { cancelRunning, clearHistory, refreshHistory, selectEntry, useHttpClient } from "./store";
 import styles from "./HttpClient.module.css";
@@ -43,6 +54,8 @@ type Tab = "body" | "headers" | "request";
 
 function ExchangeView({ ex }: { ex: HttpExchange }) {
   const [tab, setTab] = useState<Tab>("body");
+  const pane = useRef<HTMLDivElement>(null);
+  useSelectionBoundary(pane);
   const [raw, setRaw] = useState(false);
   const r = ex.response;
   const kind = r?.body != null ? bodyKind(r.contentType, r.body) : "text";
@@ -88,7 +101,8 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
           ) : undefined
         }
       />
-      <div className={styles.tabBody}>
+      {/* Focusable, so Select All and Copy work on the response like in a read-only editor. */}
+      <div ref={pane} className={styles.tabBody} tabIndex={0}>
         {tab === "body" &&
           (r == null ? (
             <pre className={styles.pre}>{ex.entry.error}</pre>
@@ -160,7 +174,23 @@ export function HttpClientView() {
       </SplitPanel>
       <SplitHandle />
       <SplitPanel id="http-response" minSize="200px">
-        {exchange ? (
+        {running ? (
+          <div className={styles.pending} role="status">
+            <div className={styles.pendingLine}>
+              <Spinner size={12} /> {tx`Sending request #${running.index + 1}…`}
+            </div>
+            {running.method && (
+              <div className={styles.pendingRequest}>
+                <span className={styles.pendingMethod}>{running.method}</span> {running.url}
+              </div>
+            )}
+            <div>
+              <Button onClick={cancelRunning}>
+                <T>Stop Request</T>
+              </Button>
+            </div>
+          </div>
+        ) : exchange ? (
           <ExchangeView key={exchange.entry.id} ex={exchange} />
         ) : selected ? (
           <div className={styles.center}>

@@ -4,9 +4,20 @@
  * workbench events it subscribed to (`events.subscribe`), reported in
  * batches.
  */
+import { writeClipboardText } from "@/platform/clipboard";
+import { providePluginTestParser, providePluginTestSelector } from "@/workbench/contributions";
+import {
+  contentTabData,
+  contentTabKey,
+  handleContentTabReplyText,
+  PLUGIN_CONTENT_EDITOR_KIND,
+  WASM_CONTENT_VIEW,
+} from "./views/contentTab";
 import { create } from "zustand";
+import { refreshRunTargets, startRunTargets } from "./runTargets";
 import type {
   CommitAnswer,
+  CommandAnswer,
   CommitRequest,
   EventKind,
   PluginContextKey,
@@ -15,10 +26,13 @@ import type {
   StatusItem,
   WorkbenchEvent,
 } from "@/bindings";
-import { onEditorEvent } from "@/editor/api";
-import { executeAction, getAction, onActionExecuted } from "@/platform/actions";
+import { EditorSelection } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { setPluginDecorations } from "./decorations";
+import { editorsFor, onEditorEvent } from "@/editor/api";
+import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
-import { onIdeEvent } from "@/platform/ipc";
+import { isTauri, onIdeEvent } from "@/platform/ipc";
 import { openExternalUrl } from "@/platform/openUrl";
 import { tx, VerbatimTextContext } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -29,8 +43,11 @@ import { notifications, maybeCommitService, maybeEditorService, registerStatusIt
 import { pickItems, promptInput } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
+import { editorContext } from "./editorContext";
 import { pluginsBackend } from "./backend";
+import { askNetPermission } from "./netAsk";
 import { usePluginT } from "./pluginText";
+import { setPluginOutput } from "./views/outputStore";
 import { PLUGIN_LOG_EDITOR_KIND } from "./views/logEditor";
 import type { PluginLogEditorData } from "./views/logTab";
 import { bumpView, deliverViewMessage } from "./views/viewStore";
@@ -45,11 +62,22 @@ export const usePluginStatusItems = create<{ items: Map<ItemKey, { pluginId: str
   items: new Map(),
 }));
 
-function setStatusItem(pluginId: string, id: string, item: StatusItem | null) {
+let statusRevision = 0;
+let statusRequest = 0;
+const globalStatus = new Map<ItemKey, { pluginId: string; item: StatusItem }>();
+const windowStatus = new Map<ItemKey, { pluginId: string; item: StatusItem }>();
+
+function setStatusItem(pluginId: string, id: string, item: StatusItem | null, window = false) {
+  statusRevision++;
+  const key: ItemKey = `${pluginId}/${id}`;
+  const scope = window ? windowStatus : globalStatus;
+  if (item) scope.set(key, { pluginId, item });
+  else scope.delete(key);
+  const effective = windowStatus.get(key) ?? globalStatus.get(key);
   usePluginStatusItems.setState((s) => {
     const items = new Map(s.items);
-    if (item) items.set(`${pluginId}/${id}`, { pluginId, item });
-    else items.delete(`${pluginId}/${id}`);
+    if (effective) items.set(key, effective);
+    else items.delete(key);
     return { items };
   });
 }
@@ -161,9 +189,21 @@ function projectStatusItems(): () => void {
  * window's project is open and trusted, so call it again when that happens.
  */
 function refreshStatusItems() {
+  const request = ++statusRequest;
+  const revision = statusRevision;
   void pluginsBackend()
     .statusItems()
-    .then((items) => items.forEach((i) => setStatusItem(i.pluginId, i.id, i.item)))
+    .then((items) => {
+      if (request !== statusRequest) return;
+      if (revision !== statusRevision) {
+        refreshStatusItems();
+        return;
+      }
+      globalStatus.clear();
+      windowStatus.clear();
+      usePluginStatusItems.setState({ items: new Map() });
+      items.forEach((i) => setStatusItem(i.pluginId, i.id, i.item, i.window));
+    })
     .catch(() => {});
 }
 
@@ -271,7 +311,10 @@ let postTimer: ReturnType<typeof setTimeout> | null = null;
 export function refreshEventKinds() {
   void pluginsBackend()
     .eventKinds()
-    .then((kinds) => (wanted = new Set(kinds)))
+    .then((kinds) => {
+      wanted = new Set(kinds);
+      if (wanted.has("settings-changed")) post({ kind: "settingsChanged", value: [] });
+    })
     .catch(() => {});
 }
 
@@ -293,7 +336,15 @@ function trackWorkbenchEvents(): () => void {
   refreshEventKinds();
   const offEditor = onEditorEvent((e) => {
     if (e.type === "docOpened" && wanted.has("file-opened")) post({ kind: "fileOpened", value: e.path });
+    if (e.type === "docClosed" && wanted.has("file-closed")) post({ kind: "fileClosed", value: e.path });
+    if (e.type === "inputModeChanged" && wanted.has("input-mode-changed"))
+      post({ kind: "inputModeChanged", value: { path: e.path, mode: e.mode, sub: e.sub } });
     if (e.type === "docSaved" && wanted.has("file-saved")) post({ kind: "fileSaved", value: e.path });
+    if (e.type === "docChanged" && wanted.has("document-changed"))
+      post({
+        kind: "documentChanged",
+        value: { path: e.path, baseVersion: e.baseVersion, version: e.version, changes: e.changes },
+      });
   });
   const offActions = onActionExecuted((id, _arg, source) => {
     if (!wanted.has("action-performed")) return;
@@ -303,6 +354,9 @@ function trackWorkbenchEvents(): () => void {
       value: { action: id, title: action?.title ?? id, source, shortcut: shortcutLabel(id) ?? null },
     });
   });
+  const offSettings = onIdeEvent("settingsChanged", () => {
+    if (wanted.has("settings-changed")) post({ kind: "settingsChanged", value: [] });
+  });
   const offVcs = onIdeEvent("vcsChanged", (e) => {
     if (wanted.has("vcs-changed")) post({ kind: "vcsChanged", value: e.root });
   });
@@ -310,6 +364,7 @@ function trackWorkbenchEvents(): () => void {
     offEditor();
     offActions();
     offVcs();
+    offSettings();
     if (postTimer) clearTimeout(postTimer);
     postTimer = null;
     queue = [];
@@ -324,7 +379,7 @@ async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | 
     case "pickDirectory": {
       if (signal.aborted) return null;
       try {
-        const { open } = await import("@tauri-apps/plugin-dialog");
+        const { open } = await import("@/platform/dialog");
         if (signal.aborted) return null;
         const selected = await open({
           directory: true,
@@ -359,13 +414,19 @@ async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | 
       return (await confirm({ title: prompt.title, message: prompt.message, ok: tx("OK"), signal, verbatim: true }))
         ? []
         : null;
+    case "netPermission":
+      // The host's own question: answered before this (`answerPrompt`).
+      return null;
   }
 }
 
-async function answerPrompt(promptId: string, prompt: Prompt) {
+async function answerPrompt(promptId: string, prompt: Prompt, pluginId: string) {
   const controller = new AbortController();
   openPrompts.set(promptId, controller);
-  const answer = await askUser(prompt, controller.signal);
+  const answer =
+    prompt.kind === "netPermission"
+      ? await askNetPermission(pluginId, prompt.host, prompt.sessionOnly, controller.signal)
+      : await askUser(prompt, controller.signal);
   openPrompts.delete(promptId);
   if (controller.signal.aborted) return;
   await pluginsBackend()
@@ -395,11 +456,77 @@ async function answerCommit(requestId: string, request: CommitRequest) {
     .catch(() => {});
 }
 
+async function answerCommand(e: Extract<PluginEvent, { type: "executeCommand" }>) {
+  let answer: CommandAnswer;
+  try {
+    const command = usePlugins
+      .getState()
+      .ui.find((c) => c.point === "commands" && e.id === `plugin.${c.pluginId}.${(c.decl as { id: string }).id}`);
+    if (command) {
+      const value = await pluginsBackend().runCommand(
+        command.pluginId,
+        (command.decl as { id: string }).id,
+        e.arg,
+        editorContext(),
+        [],
+        undefined,
+        e.chain,
+      );
+      answer = { kind: "value", value };
+    } else if (getAction(e.id)) {
+      await executeAction(e.id, e.arg);
+      answer = { kind: "value", value: null };
+    } else answer = { kind: "notFound" };
+  } catch (error) {
+    answer = { kind: "failed", value: error instanceof Error ? error.message : String(error) };
+  }
+  await pluginsBackend()
+    .answerCommand(e.requestId, answer)
+    .catch(() => {});
+}
+
 /** Handles the runtime UI events; returns whether `e` was one. */
 export function handleRuntimeEvent(e: PluginEvent): boolean {
   switch (e.type) {
+    case "runTargetsChanged":
+      void refreshRunTargets().catch(() => {});
+      return true;
+    case "decorationsChanged":
+      setPluginDecorations(e.pluginId, e.sets);
+      return true;
+    case "editorOpen": {
+      const r = e.selection;
+      void maybeEditorService()?.openFile(e.path, {
+        focus: true,
+        selection: r ? { line: r.start.line, col: r.start.col, endLine: r.end.line, endCol: r.end.col } : undefined,
+      });
+      return true;
+    }
+    case "editorRanges": {
+      for (const editor of editorsFor(e.path)) {
+        const doc = editor.view.state.doc;
+        const ranges = e.ranges.map((r) => {
+          if (r.start.line >= doc.lines || r.end.line >= doc.lines) return null;
+          const start = doc.line(r.start.line + 1),
+            end = doc.line(r.end.line + 1);
+          if (r.start.col > start.length || r.end.col > end.length) return null;
+          return EditorSelection.range(start.from + r.start.col, end.from + r.end.col);
+        });
+        if (!ranges.length || ranges.some((r) => r == null)) continue;
+        const valid = ranges.filter((r) => r != null);
+        if (e.reveal) editor.view.dispatch({ effects: EditorView.scrollIntoView(valid[0]!, { y: "center" }) });
+        else editor.view.dispatch({ selection: EditorSelection.create(valid) });
+      }
+      return true;
+    }
+    case "executeCommand":
+      void answerCommand(e);
+      return true;
     case "contextChanged":
       refreshContextKeys();
+      return true;
+    case "windowStatusItemChanged":
+      setStatusItem(e.pluginId, e.id, e.item, true);
       return true;
     case "statusItemChanged":
       setStatusItem(e.pluginId, e.id, e.item);
@@ -412,15 +539,51 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     case "subscriptionsChanged":
       refreshEventKinds();
       return true;
+    case "websocketReady":
+      post({ kind: "websocketReady", value: { pluginId: e.pluginId, connection: e.connection } });
+      return true;
     case "viewChanged":
       bumpView(e.pluginId, e.view);
       return true;
     case "viewMessage":
       deliverViewMessage(e.pluginId, e.view, e.message);
       return true;
+    case "windowRequest":
+      void handleWindowRequest(e);
+      return true;
+    case "contentTabReply":
+      handleContentTabReplyText(
+        e.pluginId,
+        JSON.stringify({
+          op: "content-tab-reply",
+          requestId: e.requestId,
+          ...JSON.parse(JSON.stringify(e.reply), (_k, v: unknown) => (v === null ? undefined : v)),
+        }),
+      );
+      return true;
     case "openTerminal":
       // The program was approved (`process:`) and verified by the host.
       void executeAction("terminal.runCommand", { program: e.program, args: e.args, name: e.title, cwd: e.cwd });
+      return true;
+    case "outputChanged":
+      setPluginOutput(e.pluginId, e.channel, e.text);
+      return true;
+    case "revealOutput":
+      setPluginOutput(e.pluginId, e.channel, e.text);
+      void maybeEditorService()?.openInput({
+        kind: PLUGIN_LOG_EDITOR_KIND,
+        key: `pluginOutput:${JSON.stringify([e.pluginId, e.channel])}`,
+        data: {
+          pluginId: e.pluginId,
+          view: "",
+          key: e.channel,
+          title: tx`Output: ${e.channel}`,
+          program: "",
+          args: [],
+          toggles: [],
+          origin: "output",
+        } satisfies PluginLogEditorData,
+      });
       return true;
     case "openLogTab":
       void maybeEditorService()?.openInput({
@@ -442,7 +605,7 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       void maybeEditorService()?.openFile(e.path, { selection: { line: e.line, col: e.column }, focus: true });
       return true;
     case "copyToClipboard":
-      void navigator.clipboard?.writeText(e.text);
+      void writeClipboardText(e.text);
       return true;
     case "openProject":
       void executeAction("file.openProjectPath", { path: e.path, newWindow: e.newWindow });
@@ -451,11 +614,14 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       void openExternalUrl(e.url);
       return true;
     case "promptRequested":
-      void answerPrompt(e.promptId, e.prompt);
+      void answerPrompt(e.promptId, e.prompt, e.pluginId);
       return true;
     case "promptClosed":
       openPrompts.get(e.promptId)?.abort();
       openPrompts.delete(e.promptId);
+      return true;
+    case "promptWaiting":
+      bringWindowToFront();
       return true;
     case "commitRequested":
       void answerCommit(e.requestId, e.request);
@@ -468,6 +634,18 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
   }
 }
 
+/** Another window ran a command of a plugin whose prompt is open here: show this window. */
+function bringWindowToFront() {
+  if (!isTauri()) return;
+  void import("@tauri-apps/api/window")
+    .then(async ({ getCurrentWindow }) => {
+      const w = getCurrentWindow();
+      if (await w.isMinimized()) await w.unminimize();
+      await w.setFocus();
+    })
+    .catch(() => undefined);
+}
+
 /**
  * The backend refuses the event kinds and status items until this window's
  * project is open and trusted (`authorize_command`), but startup asks before
@@ -477,6 +655,10 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
 function refreshOnProjectChange(): () => void {
   return useProject.subscribe((s, prev) => {
     if (s.project === prev.project) return;
+    statusRevision++;
+    globalStatus.clear();
+    windowStatus.clear();
+    usePluginStatusItems.setState({ items: new Map() });
     refreshEventKinds();
     refreshStatusItems();
     refreshContextKeys();
@@ -484,6 +666,59 @@ function refreshOnProjectChange(): () => void {
 }
 
 export function startRuntimeUi(): () => void {
-  const disposers = [projectStatusItems(), trackWorkbenchEvents(), refreshOnProjectChange()];
+  const stopParser = providePluginTestParser((config, chunk) => pluginsBackend().parseTestResults(config, chunk));
+  const disposers = [
+    startRunTargets(),
+    stopParser,
+    providePluginTestSelector((config, tests) => pluginsBackend().selectTests(config, tests)),
+    projectStatusItems(),
+    trackWorkbenchEvents(),
+    refreshOnProjectChange(),
+  ];
   return () => disposers.reverse().forEach((d) => d());
+}
+
+async function handleWindowRequest(e: Extract<PluginEvent, { type: "windowRequest" }>) {
+  const r = e.request;
+  try {
+    if (r.kind === "databaseConnect") {
+      if (!getAction("db.pluginConnect")) throw new Error(tx("Database service unavailable"));
+      await executeActionOrThrow("db.pluginConnect", r.id);
+      await pluginsBackend().answerCommand(e.requestId, { kind: "value", value: null });
+      return;
+    }
+    if (r.kind === "contentTab") {
+      const raw = JSON.parse(JSON.stringify(r.tab), (_k, v: unknown) => (v === null ? undefined : v)) as object;
+      const data = contentTabData(e.pluginId, WASM_CONTENT_VIEW, raw, JSON.stringify(raw).length);
+      const editor = maybeEditorService();
+      if (!editor) throw new Error("Editor unavailable");
+      await editor.openInput({
+        kind: PLUGIN_CONTENT_EDITOR_KIND,
+        key: contentTabKey(e.pluginId, WASM_CONTENT_VIEW, data.key),
+        data,
+      });
+      await pluginsBackend().answerCommand(e.requestId, { kind: "value", value: null });
+      return;
+    }
+    const finish = (status: number | null, stopped: boolean) => {
+      if (r.kind === "run") void pluginsBackend().finishOperation(r.operation, status, stopped);
+      else if (stopped) void pluginsBackend().closeTerminalSession(r.operation);
+    };
+    if (r.kind === "run") {
+      if (!getAction("run.pluginStart")) throw new Error("Run service unavailable");
+      await executeActionOrThrow("run.pluginStart", { config: r.config, debug: r.debug, onExit: finish });
+    } else {
+      if (!getAction("terminal.pluginSession")) throw new Error("Terminal service unavailable");
+      await executeActionOrThrow("terminal.pluginSession", {
+        ...r,
+        onExit: finish,
+        spawn: (cols: number, rows: number, output: import("@tauri-apps/api/core").Channel<string>) =>
+          pluginsBackend().terminalSessionSpawn(r.operation, cols, rows, output),
+      });
+    }
+    if (e.requestId) await pluginsBackend().answerCommand(e.requestId, { kind: "value", value: null });
+  } catch (error) {
+    if (r.kind === "run") await pluginsBackend().finishOperation(r.operation, null, false);
+    if (e.requestId) await pluginsBackend().answerCommand(e.requestId, { kind: "failed", value: String(error) });
+  }
 }

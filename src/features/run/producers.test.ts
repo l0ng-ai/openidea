@@ -138,7 +138,7 @@ describe("single-file producers (scratches)", () => {
     expect(produceContext(input, { ...ALL, deno: true })!.config!.debugAdapter).toBe("js-debug");
     expect(run(input, { ...ALL, bun: true })).toMatchObject({ command: "/bin/bun", args: ["run", "scripts/x.ts"] });
     // Bun's inspector is WebKit-only: js-debug can't attach.
-    expect(produceContext(input, { ...ALL, bun: true })!.config!.debugAdapter).toBeNull();
+    expect(produceContext(input, { ...ALL, bun: true })!.config!.debugAdapter).toBe("bun-dap");
     // Not for scratches outside the project.
     expect(run(scratch("x.ts"), { ...ALL, deno: true })).toMatchObject({ command: "/bin/node" });
   });

@@ -1,8 +1,12 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbDriver, DbQueryResult, DbTableDetails } from "@/platform/ipc";
+import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { installCellActions } from "./cellActions";
+import { getContext } from "@/platform/context";
 import { ResultsView } from "./ResultsView";
 import { executeConsole, useDatabase, type ResultTab } from "./store";
+import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
 
 const backend = vi.hoisted(() => ({
   driver: "postgres" as DbDriver,
@@ -325,4 +329,62 @@ describe("read-only results with a reason", () => {
       "Read-only: the table has no primary key to identify rows.",
     );
   });
+});
+
+describe("result grid keyboard Submit / Revert (#2332)", () => {
+  it("confirms the cell being edited, then submits; reverts pending edits", async () => {
+    const uninstall = installTableEditorFocus();
+    try {
+      show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+      await act(async () => render(<ResultsView />));
+      const submit = await screen.findByRole("button", { name: "Submit" });
+      expect(submit.getAttribute("data-tooltip-shortcut")).toBeTruthy();
+      const grid = screen.getByRole("grid");
+      act(() => grid.focus());
+      expect(getContext()).toMatchObject({ dbTableEditorFocus: true, dbTableEditorChanges: false });
+
+      fireEvent.doubleClick(screen.getByRole("gridcell", { name: "Ann" }));
+      fireEvent.change(screen.getByRole("textbox", { name: "Edit name" }), { target: { value: "Bob" } });
+      // Still the grid while a cell is being edited: ⌘↩ confirms the cell, then submits.
+      expect(getContext()).toMatchObject({ dbTableEditorFocus: true, dbTableEditorChanges: true });
+      await act(async () => activeTableEditor()!.submit());
+      expect(backend.applyEdits).toHaveBeenCalledWith("pg", "public", "users", [
+        { kind: "update", key: [{ column: "id", value: "1" }], values: [{ column: "name", value: "Bob" }] },
+      ]);
+
+      fireEvent.doubleClick(await screen.findByRole("gridcell", { name: "Ann" }));
+      fireEvent.change(screen.getByRole("textbox", { name: "Edit name" }), { target: { value: "Cara" } });
+      act(() => activeTableEditor()!.revert());
+      expect(screen.queryByRole("textbox", { name: "Edit name" })).toBeNull();
+      expect(screen.getByRole("gridcell", { name: "Ann" })).toBeTruthy();
+      expect(getContext().dbTableEditorChanges).toBe(false);
+    } finally {
+      uninstall();
+    }
+  });
+});
+
+it("omits a reset inserted cell from Submit instead of writing SQL NULL", async () => {
+  show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+  useKeymap.setState({ preset: "intellij-macos", overrides: {} });
+  const disposeActions = installCellActions();
+  const disposeKeys = installKeyboardDispatcher();
+  try {
+    await act(async () => {
+      render(<ResultsView />);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add Row" }));
+    const cells = screen.getAllByRole("gridcell");
+    fireEvent.mouseDown(cells[2]!, { button: 0 });
+    fireEvent.paste(screen.getByRole("grid"), { clipboardData: { getData: () => "3\tCara" } });
+    fireEvent.mouseDown(cells[3]!, { button: 0 });
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "Backspace", metaKey: true, shiftKey: true });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    });
+    expect(backend.applyEdits.mock.calls[0]?.[3]).toEqual([{ kind: "insert", values: [{ column: "id", value: "3" }] }]);
+  } finally {
+    disposeKeys();
+    disposeActions();
+  }
 });

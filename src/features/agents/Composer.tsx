@@ -1,6 +1,7 @@
 /**
  * The message box of the New Task page and of sessions: `@` file and folder references
- * (project index search), `/` agent commands, ↑ / ↓ history, pasted or dropped images, Shift+Tab to cycle
+ * (project index search), `/` agent commands, ↑ / ↓ history, pasted or dropped images, files dropped from
+ * outside the project as attachments, Shift+Tab to cycle
  * the agent's mode. Its draft lives in the store under `id`.
  */
 import {
@@ -15,12 +16,13 @@ import {
   type ReactNode,
 } from "react";
 import clsx from "clsx";
-import type { AgentCommand, AgentConfigOption, AgentImage } from "@/bindings";
+import type { AgentCommand, AgentConfigOption, AgentImage, SendKey, WhileRunning } from "@/bindings";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { nativeDropPoint } from "@/platform/nativeDrop";
 import { invokeLocal } from "@/platform/tauriCore";
 import { useTx } from "@/platform/i18n";
 import { basename } from "@/platform/project";
+import { isRemoteWindow } from "@/platform/remote";
 import { notifications, OWNS_FILE_DROP } from "@/workbench/contributions";
 import {
   FILES_DRAG,
@@ -57,8 +59,10 @@ import {
 import { composerDraft, updateComposer, useAgents } from "./store";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useCompletionAnchor } from "./useCompletionAnchor";
+import { useAgentSettings } from "./agentSettings";
 import styles from "./Composer.module.css";
 import { isImeKey } from "@/platform/ime";
+import { isMacHost } from "@/platform/keymap";
 
 const MAX_PROMPT_HEIGHT = 280;
 const MAX_ITEMS = 12;
@@ -84,7 +88,7 @@ export interface ComposerProps {
   /** Settings; Shift+Tab cycles the mode one. */
   config: readonly AgentConfigOption[];
   onConfig?: (option: string, value: string) => void;
-  /** `now`: ⌘↵ (send even while the agent works, interrupting it). */
+  /** `now`: send even while the agent works, into its turn (by default ⌘↵). */
   onSubmit: (now: boolean) => void;
   disabled?: boolean;
   autoFocus?: boolean;
@@ -95,12 +99,36 @@ export interface ComposerProps {
   className?: string;
 }
 
+/**
+ * What a key press in the composer sends: "queue" waits for the turn to end, "now" goes into
+ * it. The send key sends the way Settings › Agents › Chat says, with Shift (or the
+ * modifier, when Enter sends) the other way; without the send key, Enter is a new line.
+ */
+export function sendKeyAction(
+  e: { key: string; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey?: boolean },
+  sendWith: SendKey,
+  whileRunning: WhileRunning,
+): "queue" | "now" | null {
+  if (e.key !== "Enter" || e.altKey) return null;
+  const mod = e.metaKey || e.ctrlKey;
+  let other: boolean;
+  if (sendWith === "enter") {
+    if (e.shiftKey) return null;
+    other = mod;
+  } else {
+    if (!mod) return null;
+    other = e.shiftKey;
+  }
+  return (whileRunning === "steer") !== other ? "now" : "queue";
+}
+
 export function Composer(props: ComposerProps) {
   const { id, root, projectRoot } = props;
   const tx = useTx();
   const draft = useAgents((s) => s.composers.get(id));
   const text = draft?.text ?? "";
   const images = draft?.images ?? [];
+  const attached = useMemo(() => draft?.files.filter((f) => f.attached) ?? [], [draft?.files]);
   const tokens = useMemo(() => messageTokens(text), [text]);
   const [preview, setPreview] = useState<AgentImage | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -112,6 +140,7 @@ export function Composer(props: ComposerProps) {
   const [active, setActive] = useState(0);
   const composing = useRef(false);
   const recalled = useRef<{ index: number; stash: string }>({ index: -1, stash: "" });
+  const { sendWith, whileRunning } = useAgentSettings();
 
   useEffect(() => {
     if (props.autoFocus) ref.current?.focus();
@@ -265,9 +294,12 @@ export function Composer(props: ComposerProps) {
 
   const [fileOver, setFileOver] = useState(false);
 
-  /** Adds paths as `@` references (a file or a folder), each once. */
+  /**
+   * Adds paths as `@` references (a file or a folder), each once. A path outside the project is
+   * attached when `attachOutside` (an OS drop in a local window), else skipped.
+   */
   const addPaths = useCallback(
-    (paths: readonly string[]) => {
+    (paths: readonly string[], attachOutside = false) => {
       const current = composerDraft(id);
       const known = new Set(toPrompt(current).files);
       const files = current.files.filter((f) => known.has(f.path));
@@ -278,7 +310,13 @@ export function Composer(props: ComposerProps) {
           .filter(Boolean)
           .map((path) => resolveTyped(path, "."))
           .find((path) => source === path || source.startsWith(`${path}/`));
-        if (!base || !/^(\/|[A-Za-z]:[\\/])/.test(raw)) continue;
+        if (!/^(\/|[A-Za-z]:[\\/])/.test(raw)) continue;
+        if (!base) {
+          if (!attachOutside || isRemoteWindow() || known.has(raw)) continue;
+          known.add(raw);
+          refs.push({ path: raw, rel: basename(source), attached: true });
+          continue;
+        }
         const rel = source === base ? "." : source.slice(base.length + 1);
         const path = resolveTyped(root, rel);
         if (known.has(path)) continue;
@@ -286,9 +324,10 @@ export function Composer(props: ComposerProps) {
         refs.push({ path, rel });
       }
       if (!refs.length) return;
-      const mentions = refs.map((r) => mentionOf(r.rel)).join(" ");
+      const mentions = refs.flatMap((r) => (r.attached ? [] : [mentionOf(r.rel)])).join(" ");
       const glue = current.text && !/\s$/.test(current.text) ? " " : "";
-      updateComposer(id, { text: `${current.text}${glue}${mentions} `, files: [...files, ...refs] });
+      const text = mentions ? `${current.text}${glue}${mentions} ` : current.text;
+      updateComposer(id, { text, files: [...files, ...refs] });
     },
     [id, root, projectRoot],
   );
@@ -300,13 +339,15 @@ export function Composer(props: ComposerProps) {
     [id],
   );
 
+  const fitsLimit = (name: string, size: number) => {
+    if (size <= MAX_IMAGE_BYTES) return true;
+    notifications().notify({ level: "warning", title: "Image too large", body: tx`${name} is over 5 MB.` });
+    return false;
+  };
+
   const readImageFiles = (picked: Iterable<File>) => {
     for (const file of picked) {
-      if (!file.type.startsWith("image/")) continue;
-      if (file.size > MAX_IMAGE_BYTES) {
-        notifications().notify({ level: "warning", title: "Image too large", body: tx`${file.name} is over 5 MB.` });
-        continue;
-      }
+      if (!file.type.startsWith("image/") || !fitsLimit(file.name, file.size)) continue;
       const reader = new FileReader();
       reader.onload = () => {
         const image = typeof reader.result === "string" ? imageFromDataUrl(reader.result, file.name || "image") : null;
@@ -316,31 +357,49 @@ export function Composer(props: ComposerProps) {
     }
   };
 
-  // Files dropped from the OS onto the box: images are attached, other files referenced.
+  const pasteClipboardImage = async () => {
+    const url = await call(commands.clipboardImage());
+    const image = url ? imageFromDataUrl(url, "image") : null;
+    if (image && fitsLimit("image", (image.data.length * 3) / 4)) addImages([image]);
+  };
+
+  // Files dropped from the OS onto the box: images are inlined when they can be, other files
+  // referenced, or attached by path when outside the project.
   useEffect(() => {
     if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
+    const inBox = (position: { x: number; y: number }) => {
+      const box = boxRef.current?.getBoundingClientRect();
+      const { x, y } = nativeDropPoint(position);
+      return !!box && x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
+    };
     void import("@tauri-apps/api/webview").then(({ getCurrentWebview }) =>
       getCurrentWebview()
         .onDragDropEvent((event) => {
           const p = event.payload;
-          if (p.type !== "drop" || !p.paths.length) return;
-          const box = boxRef.current?.getBoundingClientRect();
-          const { x, y } = nativeDropPoint(p.position);
-          if (!box || x < box.left || x > box.right || y < box.top || y > box.bottom) return;
+          if (p.type === "enter" || p.type === "over") {
+            setFileOver(inBox(p.position));
+            return;
+          }
+          setFileOver(false);
+          if (p.type !== "drop" || !p.paths.length || !inBox(p.position)) return;
           const paths: string[] = [];
           for (const path of p.paths) {
             if (IMAGE_EXTENSIONS.test(path)) {
-              void invokeLocal<string>("fs_read_image", { path }).then((url) => {
-                const image = imageFromDataUrl(url, basename(path));
-                if (image) addImages([image]);
-              });
+              void invokeLocal<string>("fs_read_image", { path }).then(
+                (url) => {
+                  const image = imageFromDataUrl(url, basename(path));
+                  if (image && (image.data.length * 3) / 4 <= MAX_IMAGE_BYTES) addImages([image]);
+                  else addPaths([path], true);
+                },
+                () => addPaths([path], true),
+              );
             } else {
               paths.push(path);
             }
           }
-          addPaths(paths);
+          addPaths(paths, true);
         })
         .then((u) => {
           if (disposed) u();
@@ -370,33 +429,6 @@ export function Composer(props: ComposerProps) {
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (composing.current || isImeKey(e.nativeEvent)) return;
-    const el = e.currentTarget;
-    if (!e.altKey && !e.metaKey && !e.ctrlKey && el.selectionStart === el.selectionEnd) {
-      const backward = e.key === "Backspace" || e.key === "ArrowLeft";
-      const forward = e.key === "Delete" || e.key === "ArrowRight";
-      if (backward || forward) {
-        let offset = 0;
-        for (const token of tokens) {
-          const end = offset + token.value.length;
-          const caret = el.selectionStart;
-          if (token.kind !== "text" && (backward ? caret > offset && caret <= end : caret >= offset && caret < end)) {
-            e.preventDefault();
-            if (e.key === "Backspace" || e.key === "Delete") {
-              setText(text.slice(0, offset) + text.slice(end), offset);
-            } else {
-              const next = backward ? offset : end;
-              el.setSelectionRange(
-                e.shiftKey ? Math.min(caret, next) : next,
-                e.shiftKey ? Math.max(caret, next) : next,
-              );
-            }
-            setCompletion(null);
-            return;
-          }
-          offset = end;
-        }
-      }
-    }
     if (open) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -416,10 +448,17 @@ export function Composer(props: ComposerProps) {
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    const send = sendKeyAction(e, sendWith, whileRunning);
+    if (send) {
       e.preventDefault();
-      if (!props.disabled) props.onSubmit(e.metaKey || e.ctrlKey);
+      if (!props.disabled) props.onSubmit(send === "now");
       recalled.current = { index: -1, stash: "" };
+      return;
+    }
+    // macOS text boxes scroll on Home / End and leave the caret where it is.
+    if ((e.key === "Home" || e.key === "End") && !e.altKey && !e.ctrlKey && !e.metaKey && isMacHost()) {
+      e.preventDefault();
+      getSelection()?.modify(e.shiftKey ? "extend" : "move", e.key === "Home" ? "backward" : "forward", "lineboundary");
       return;
     }
     if (e.key === "Tab" && e.shiftKey) {
@@ -507,8 +546,24 @@ export function Composer(props: ComposerProps) {
           />
         </Popup>
       )}
-      {images.length > 0 && (
+      {(images.length > 0 || attached.length > 0) && (
         <div className={styles.images} onClick={(e) => e.stopPropagation()}>
+          {attached.map((file) => (
+            <span key={file.path} className={styles.attachment} title={file.path}>
+              <Icon name={fileIconName(file.rel, file.path)} size={16} />
+              <span className={styles.attachmentName}>{file.rel}</span>
+              <button
+                type="button"
+                className={styles.removeImage}
+                aria-label={tx("Remove File")}
+                onClick={() =>
+                  updateComposer(id, { files: composerDraft(id).files.filter((f) => f.path !== file.path) })
+                }
+              >
+                <Icon name="close" size={10} />
+              </button>
+            </span>
+          ))}
           {images.map((img, i) => (
             <span key={i} className={styles.image} title={img.name ?? undefined}>
               <button type="button" className={styles.previewImage} onClick={() => setPreview(img)}>
@@ -555,7 +610,10 @@ export function Composer(props: ComposerProps) {
           onChange={(e) => setText(e.target.value, e.target.selectionStart, false)}
           // The controlled text, not the event's value: closing the completion popup can emit a
           // stale select event with the old text.
-          onSelect={(e) => setCompletion(composing.current ? null : completionAt(text, e.currentTarget.selectionStart))}
+          onSelect={(e) => {
+            const caret = e.currentTarget.selectionStart;
+            setCompletion(composing.current ? null : completionAt(text, caret));
+          }}
           onCompositionStart={() => {
             composing.current = true;
             setCompletion(null);
@@ -571,6 +629,10 @@ export function Composer(props: ComposerProps) {
             if (pasted.length) {
               e.preventDefault();
               readImageFiles(pasted);
+            } else if (isTauri() && !e.clipboardData.types.length) {
+              pasteClipboardImage().catch((error: unknown) =>
+                notifications().notify({ level: "error", title: tx("Cannot insert image"), body: String(error) }),
+              );
             }
           }}
         />
@@ -588,7 +650,7 @@ export function Composer(props: ComposerProps) {
             }}
           />
           <IconButton
-            icon="file-image"
+            icon="image"
             title="Attach Image…"
             className={styles.composerButton}
             onClick={() => imageInput.current?.click()}

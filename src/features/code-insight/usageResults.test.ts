@@ -5,6 +5,8 @@ vi.mock("@/workbench/contributions", async (orig) => ({
   ...(await orig<typeof import("@/workbench/contributions")>()),
   toolWindowService: () => ({ show }),
 }));
+/** The editor at the caret (`null`: a search from outside an editor). */
+let caretView: import("@codemirror/view").EditorView | null = null;
 const referenceResponse = vi.fn();
 const lspReferences = vi.fn(async (..._args: unknown[]) => ({ status: "ok", data: null }));
 vi.mock("@/platform/ipc", async (orig) => {
@@ -13,7 +15,7 @@ vi.mock("@/platform/ipc", async (orig) => {
 });
 vi.mock("./ipc", async (orig) => ({
   ...(await orig<typeof import("./ipc")>()),
-  caretContext: () => ({ doc: 1, path: "/p/a.rs", line: 0, col: 0, word: "used", view: null }),
+  caretContext: () => ({ doc: 1, path: "/p/a.rs", line: 0, col: 0, word: "used", view: caretView }),
   lspRequest: (request: () => unknown) => {
     request();
     return referenceResponse();
@@ -109,6 +111,35 @@ describe("findUsages", () => {
     resetUsages();
   });
 
+  it("asks the server only once the editor's edits reached it", async () => {
+    const { EditorState } = await import("@codemirror/state");
+    const { EditorView } = await import("@codemirror/view");
+    const { documentSynced } = await import("@/editor/api");
+    let release!: () => void;
+    const synced = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    caretView = new EditorView({
+      state: EditorState.create({ doc: "used();", extensions: documentSynced.of(() => synced) }),
+    });
+    referenceResponse.mockResolvedValueOnce({ locations: [], incomplete: null });
+    lspReferences.mockClear();
+    const pending = findUsages();
+    try {
+      await new Promise((r) => setTimeout(r, 10));
+      expect(lspReferences).not.toHaveBeenCalled();
+      release();
+      await pending;
+      expect(lspReferences).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      await pending;
+      caretView.destroy();
+      caretView = null;
+      resetUsages();
+    }
+  });
+
   it("waits for the contributed index barrier, then preserves partial and final usage events", async () => {
     let release!: () => void;
     const sync = vi.fn(
@@ -129,7 +160,7 @@ describe("findUsages", () => {
     const pending = findUsages();
     const at = (line: number) => ({ path: "/p/b.rs", range: { start: { line, col: 4 }, end: { line, col: 8 } } });
     try {
-      await vi.waitFor(() => expect(sync).toHaveBeenCalledWith("/p/a.rs"));
+      await vi.waitFor(() => expect(sync).toHaveBeenCalledWith("/p/a.rs", "usages"));
       expect(lspReferences).not.toHaveBeenCalled();
       expect(channels).toHaveLength(allocated);
       release();
@@ -145,6 +176,23 @@ describe("findUsages", () => {
       release?.();
       finish?.({ locations: [], incomplete: null });
       await pending;
+      resetUsages();
+    }
+  });
+});
+
+describe("findUsages with a contributed index that is not up to date", () => {
+  it("still searches, and says plugin usages may be missing", async () => {
+    const off = registerDocumentIndexSync(async () => false);
+    const at = { path: "/p/b.rs", range: { start: { line: 1, col: 4 }, end: { line: 1, col: 8 } } };
+    referenceResponse.mockResolvedValueOnce({ locations: [at], incomplete: null });
+    try {
+      await findUsages();
+      const search = activeUsageSearch(useUsages.getState())!;
+      expect(search.groups).toHaveLength(1);
+      expect(search.note).toBe("May be incomplete: plugin indexes are still updating");
+    } finally {
+      off();
       resetUsages();
     }
   });

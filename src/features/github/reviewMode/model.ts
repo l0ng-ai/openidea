@@ -40,13 +40,15 @@ export interface TrackedBranch {
 export function trackedBranch(
   remote: string | null,
   merge: string | null,
-  remotes: ReadonlyArray<{ name: string; url: string }>,
+  remotes: ReadonlyArray<{ name: string; url: string; resolvedUrl?: string | null }>,
   connected?: GHRepositoryCoordinates,
 ): TrackedBranch | null {
   if (!remote || !merge || remote === ".") return null;
-  const url = remotes.find((r) => r.name === remote)?.url ?? remote;
+  const found = remotes.find((r) => r.name === remote);
+  const url = found?.url ?? remote;
   const repository =
-    parseGitHubRemote(url) ?? (connected && remoteOfRepository([{ name: remote, url }], connected) ? connected : null);
+    parseGitHubRemote(found?.resolvedUrl ?? url) ??
+    (connected && remoteOfRepository([{ name: remote, url }], connected) ? connected : null);
   if (!repository) return null;
   const pr = /^refs\/pull\/(\d+)\/head$/.exec(merge);
   if (pr) return { repository, branch: null, pullRequest: Number(pr[1]) };

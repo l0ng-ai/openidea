@@ -1,0 +1,111 @@
+---
+title: "JavaScript 与 TypeScript"
+description: "JavaScript、TypeScript、Vue、Svelte、Astro 和 Angular 的语言服务器、Node.js 识别、npm 脚本、测试、调试与框架支持。"
+---
+
+OpenIDEA 打开 JavaScript（`.js`、`.mjs`、`.cjs`、`.jsx`）和 TypeScript（`.ts`、`.mts`、`.cts`、`.tsx`）文件即可获得语法高亮和代码结构，无需任何配置；补全、跳转、重构和诊断由 TypeScript 语言服务器提供。Vue、Svelte、Astro 和 Angular 项目还会额外启动各自框架的语言服务器。所有语言的支持情况见[支持矩阵](/zh/languages/index)。
+
+## 语言服务器
+
+| 文件                        | 服务器                                  | 说明                                                                                                     |
+| --------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| JS、JSX、TS、TSX            | `vtsls`                                 | 默认的 TypeScript 服务器。                                                                               |
+| JS、JSX、TS、TSX            | `typescript-language-server`            | 备选：仅在未安装 `vtsls` 时使用。                                                                        |
+| `.vue`                      | `vue-language-server` + `vtsls`         | Vue 的 hybrid 模式：`.vue` 中的 TypeScript 由加载了 `@vue/typescript-plugin` 的 `vtsls` 处理。           |
+| `.svelte`                   | `svelte-language-server`                |                                                                                                          |
+| `.astro`                    | `astro-ls`                              | 需要 Node.js 和 TypeScript 库。                                                                          |
+| Angular 项目中的 TS 和 HTML | `angular-language-server`（`ngserver`） | 只在 `angular.json` 或 `node_modules/@angular/core` 所在目录之下启用。                                   |
+| 以上全部                    | `oxlint`                                | 只在存在 `.oxlintrc.json`、`.oxlintrc.jsonc`、`oxlint.config.ts` 或 `oxlint.config.mts` 的目录之下启用。 |
+
+TypeScript 服务器以 `tsconfig.json`、`jsconfig.json` 或 `package.json` 所在目录为工作区根。不属于任何 `tsconfig.json` / `jsconfig.json` 的文件也会注册给 tsserver，零散脚本同样有代码智能。
+
+有两处行为与服务器默认值不同：重命名符号时不会生成 `import { a as b }` 这样的别名；移动文件时服务器不会自行改写 import，而是由 IDE 先给出需要更新的 import，以预览形式展示，并可撤销。
+
+### TypeScript 版本
+
+**设置 › 语言和框架 › TypeScript** 决定 `vtsls` 和 `typescript-language-server` 加载哪个 TypeScript：
+
+- **捆绑**（默认）：语言服务器自带的 TypeScript。
+- 项目中已安装的 `node_modules/typescript`。
+- 通过文件夹按钮选择任意 TypeScript `lib` 目录。
+
+Vue、Astro 和 Angular 服务器也会使用这里选择的版本。TypeScript 7（原生移植版）没有语言服务 API，因此 IDE 在安装 `typescript-language-server` 以及 Vue、Svelte、Astro 服务器时会一并安装 `typescript@6`。
+
+## 环境配置
+
+### 安装语言服务器
+
+打开某类文件而对应服务器缺失时，IDE 会弹出通知（例如 “vtsls (TypeScript) 未安装”），提供 **安装** 和 **语言服务器…** 两个按钮。**安装** 会调用 npm（或 pnpm）把包装进 IDE 自己的工具目录，不做全局安装，也不需要 `sudo`。前提是 `PATH` 上有 `npm` 或 `pnpm`。
+
+所有语言服务器、调试器和格式化工具都列在 **设置 › 语言和框架 › 语言服务器** 中，可以在这里安装、重新安装、改用自己的可执行文件，或修改启动参数、环境变量和初始化选项。`PATH` 上已有的服务器也会被直接使用。
+
+| 工具                                                                                   | 安装方式                                                                       |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `vtsls`、`typescript-language-server`                                                  | npm（`@vtsls/language-server`；`typescript-language-server` + `typescript@6`） |
+| `vue-language-server`、`svelte-language-server`、`astro-ls`、`angular-language-server` | npm                                                                            |
+| `oxlint`                                                                               | npm                                                                            |
+| Prettier、oxfmt                                                                        | npm                                                                            |
+| JavaScript 调试器（vscode-js-debug）                                                   | GitHub release（`microsoft/vscode-js-debug`）                                  |
+
+如果项目自己的 `node_modules/.bin` 里有 Astro 或 Angular 服务器，会优先使用项目里的。
+
+### Node.js
+
+**设置 › 语言和框架 › Node.js** 包含：
+
+- **Node 解释器**：运行 npm 脚本、Node 文件以及基于 Node 的语言服务器所用的 `node`。**默认** 表示使用 `PATH` 上的 `node`。列表会列出 `PATH` 上找到的所有 Node.js，以及 nvm、Volta、fnm、mise、asdf 安装的版本。
+- **在目标中运行**：在本机，或在 **设置 › 构建、执行、部署 › 运行目标** 中配置的某个运行目标里执行 Node 和包管理器命令。
+- **软件包管理器**：检测出的脚本配置使用 `npm`、`pnpm`、`yarn` 还是 `bun`。**自动** 先读 `package.json` 的 `packageManager`，再看锁文件（`pnpm-lock.yaml`、`yarn.lock`、`bun.lock` / `bun.lockb`、`package-lock.json`），都没有时用 npm。
+
+## 格式化
+
+**重新格式化代码**（`⌥⌘L` / `Ctrl+Alt+L`）默认交给语言服务器，除非配置了优先使用外部格式化工具：
+
+- **Prettier**（**设置 › 语言和框架 › Prettier**）默认处理 JavaScript、JSX、TypeScript、TSX、JSON、Vue、HTML、CSS、SCSS、Less、GraphQL、YAML 和 Markdown。未设置 **Prettier 路径** 时，依次查找项目 `node_modules`、IDE 管理的安装、`PATH`。
+- **oxfmt**（**设置 › 语言和框架 › oxfmt**）在 oxfmt 配置文件（`.oxfmtrc.json`、`oxfmt.config.ts`）所在目录之下，或被选为格式化工具时，替代 Prettier 处理已启用的语言。
+
+两个页面上，**格式化工具** 可选 **自动（优先语言服务器）** 或工具本身，**保存时运行** 控制保存时格式化，**启用的语言** 限定工具处理哪些语言。
+
+## 运行与测试
+
+打开项目时，OpenIDEA 会自动检测运行配置：
+
+- 每个 `package.json` 脚本一个配置（`npm run build`、`pnpm run dev` 等），覆盖根包、嵌套包和 workspace 成员。名为 `test`、`jest`、`vitest` 或 `test:*` 的脚本是测试配置。
+- `deno.json` / `deno.jsonc` 中每个 task 一个配置（`deno task <name>`）。
+
+在 `package.json` 中，每个 `scripts` 条目旁的边栏图标可以直接运行或调试该脚本。
+
+在源文件中使用 **运行上下文配置**（`⌃⇧R` / `Ctrl+Shift+F10`）：
+
+- 测试文件（`*.test.*`、`*.spec.*`，或 `__tests__/` 下的文件）通过最近的测试脚本运行，并把该文件作为参数传入。`test`、`it`、`describe` 块旁的边栏图标通过追加 `-t <name>` 只运行单个测试或测试组。
+- 其他 `.js` 文件用 `node` 运行（项目含 `deno.json` 或 `bun.lock` 时改用 `deno run` 或 `bun run`）。
+- `.ts` 文件在 Node.js 22.18+ / 23.6+ 上直接运行，在 22.6–22.17 和 23.0–23.5 上加 `--experimental-strip-types`，更早的版本则通过 `tsx` 或 `ts-node` 运行。
+
+Jest 和 Vitest 的输出会解析成测试树，支持 **重新运行失败的测试**。**使用覆盖率运行** 支持调用 `vitest` 或 `jest` 的脚本（Vitest 需要 `@vitest/coverage-v8` 之类的覆盖率 provider，缺失时 IDE 会提示添加），以及通过 `c8` 运行的 `node` / `tsx` / `ts-node`。详见[测试](/zh/guide/testing)和[覆盖率](/zh/guide/coverage)。
+
+## 调试
+
+调试使用 JavaScript 调试器（vscode-js-debug）；未安装时，第一次调试会提示安装。
+
+- **调试** 适用于 npm 脚本配置、Node.js 文件以及 `deno run` / `deno test`，子进程会自动附加。
+- **附加到 Node.js** 是一种运行配置类型，用于附加到本机或其他机器上以 `--inspect` 启动的进程（默认端口 9229），可设置本地与远程根目录映射。
+- 运行菜单中的 **附加到进程…** 会列出正在运行的 Node.js 进程。
+
+开启 **不要步入库脚本**（**设置 › 构建、执行、部署 › 调试器 › 单步执行**，默认开启）后，单步调试会跳过 Node.js 内部代码和 `node_modules`。更多内容见[调试](/zh/guide/debugging)。
+
+## 框架支持
+
+- **React**：JSX 和 TSX 有各自的高亮模式，并获得完整的 TypeScript 服务器支持；除此之外没有 React 专属功能。
+- **Vue**：`.vue` 文件按块高亮，由 Vue Language Server 以 hybrid 模式提供支持。没有 `tsconfig.json` 的 Vue CLI 项目会读取 webpack 的 `resolve.alias`（如 `@/`），让 import 能正确解析。Prettier 可格式化 `.vue` 文件，模板中可用 Emmet。
+- **Svelte**：使用 Svelte Language Server；高亮沿用 HTML 模式（script 按 TypeScript、style 按 CSS），标记部分可用 Emmet。
+- **Astro**：使用 Astro Language Server，有专门的高亮模式。它需要 Node.js，找不到时请在 **设置 › 语言和框架 › Node.js** 中选择。
+- **Angular**：在含 `angular.json` 或已安装 `@angular/core` 的项目中，HTML 模板和组件里内联的 `template:` 字符串使用 Angular 高亮，Angular Language Server 提供模板补全、跳转和重命名，并按项目的 Angular 版本配置。
+
+## 已知限制
+
+- 没有内置 ESLint 集成，内置的 linter 是 oxlint。可以在语言服务器页面通过 **添加语言服务器…** 自行添加其他服务器。
+- 不支持浏览器（Chrome/Edge）调试，只能调试 Node.js 和 Deno。
+- Bun 可以运行但无法调试：它的 inspector 使用 WebKit 协议，vscode-js-debug 无法附加。
+- Deno 支持运行和调试，但没有 Deno 语言服务器，Deno 文件使用 TypeScript 服务器。
+- 不支持 Deno task 的覆盖率。
+- Emmet 只在 HTML、Vue 和 Svelte 中展开，JSX 中不可用。

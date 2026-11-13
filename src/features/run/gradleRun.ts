@@ -7,18 +7,27 @@
  */
 import RUN_SCRIPT from "./gradleRun.gradle?raw";
 import TESTS_SCRIPT from "./gradleTests.gradle?raw";
+import BOOT_SCRIPT from "./gradleBoot.gradle?raw";
 import { useBuildModel } from "@/platform/buildModel";
 import { call, commands, isTauri, type GradleModel, type RunConfig } from "@/platform/ipc";
-import { findJavaModule, isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
+import { isJvmApplication, parseJavaArgs, prepareJavaModule } from "@/platform/javaLaunch";
 import { useProject } from "@/platform/project";
+import { maybeEditorService } from "@/workbench/contributions";
+import { applyBuildPolicyToCommand } from "./buildCommand";
 
 /** System property that marks a delegated run (read by `jdwpLaunch` to add the debug flag). */
 export const DELEGATED_MAIN = "-Dopenidea.run.main=";
 export const DELEGATED_DEBUG = "-Dopenidea.run.debug=true";
+/** Lets the init script start the debugged JVM's attach listener (the memory view needs it; not on Windows). */
+export const DELEGATED_ATTACH_LISTENER = "-Dopenidea.run.attachListener=true";
 const TASK = "openideaRun";
 
 const isAbsolute = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
 const absolute = (root: string, p: string) => (isAbsolute(p) ? p : p ? `${root}/${p}` : root);
+
+export function gradleContainsModule(gradle: GradleModel, root: string, module: string): boolean {
+  return gradle.projects.some((p) => absolute(root, p.dir) === absolute(root, module));
+}
 
 export interface DelegationContext {
   /** Project root. */
@@ -73,7 +82,7 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
   // A Gradle run from here on: not an Application again (it would be delegated twice), and
   // without the Application's params (Gradle's own VM-options init script would repeat them).
   const { params: _params, ...rest } = config;
-  return {
+  return applyBuildPolicyToCommand({
     ...rest,
     kind: "gradle",
     command: ctx.gradle.command,
@@ -82,7 +91,7 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
     // The Gradle JVM's JAVA_HOME first; the configuration's own environment wins.
     env: { ...ctx.gradle.env, ...config.env },
     module: module,
-  };
+  });
 }
 
 /**
@@ -125,6 +134,17 @@ export async function gradleTestLaunch<T extends RunConfig>(config: T): Promise<
   }
 }
 
+/** Gives a direct Gradle BootRun a dynamic JDWP port for the forked application JVM. */
+export async function gradleBootLaunch<T extends RunConfig>(config: T): Promise<T> {
+  if (!isTauri() || !isGradleCommand(config) || !config.args.some((a) => /(^|:)bootRun$/.test(a))) return config;
+  try {
+    return withTestEvents(config, await writeScript("openidea-gradle-boot", BOOT_SCRIPT));
+  } catch (e) {
+    console.warn("Gradle BootRun init script not written", e);
+    return config;
+  }
+}
+
 /**
  * The launch of an Application / Spring Boot `config` through Gradle, when the project
  * runs with Gradle (Settings › Build Tools › Gradle) and the main class is in one of its
@@ -136,8 +156,9 @@ export async function gradleDelegation(config: RunConfig): Promise<RunConfig | n
   if (!project?.root || settings?.languages?.java?.gradle?.runUsing === "ide") return null;
   const { model, gradleOffline } = useBuildModel.getState();
   if (!model?.gradle?.length) return null;
-  const module = config.module ?? (await findJavaModule(config));
-  if (module === null) return null;
+  const module = await prepareJavaModule(config, async () => {
+    await maybeEditorService()?.saveAll();
+  });
   const dir = absolute(project.root, module);
   // A composite can report a sibling's module; prefer a linked root that contains it.
   const ownerDepth = (g: GradleModel) => {
@@ -146,7 +167,7 @@ export async function gradleDelegation(config: RunConfig): Promise<RunConfig | n
     return path === root || path.startsWith(`${root}/`) ? root.split("/").length : 0;
   };
   const gradle = model.gradle
-    .filter((g) => g.projects.some((p) => absolute(project.root, p.dir) === dir))
+    .filter((g) => gradleContainsModule(g, project.root, module))
     .sort((a, b) => ownerDepth(b) - ownerDepth(a))[0];
   if (!gradle) return null;
   const ctx = {

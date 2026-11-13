@@ -2,6 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 
 const scripts: string[][] = [];
+const started: RunConfig[] = [];
+// Only the launch that `debugWithAgent` hands to the run store matters here.
+vi.mock("./store", async (orig) => {
+  const real = await orig<typeof import("./store")>();
+  return {
+    ...real,
+    startRun: (_config: RunConfig, _a: unknown, _b: unknown, options: { launch: RunConfig }) => {
+      started.push(options.launch);
+      return Promise.resolve(null);
+    },
+  };
+});
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
   return {
@@ -17,10 +29,11 @@ vi.mock("@/platform/ipc", async (orig) => {
 });
 
 const { usePlatform } = await import("@/platform/platformInfo");
-const { parseJavaArgs, joinJavaArgs } = await import("@/platform/javaLaunch");
+const { parseJavaArgs, joinJavaArgs, isJvmApplication, JDWP_AGENT } = await import("@/platform/javaLaunch");
 const { parseArgs } = await import("./configs");
-const { jdwpLaunch } = await import("./javaDebug");
-const { applicationType, gradleJvmArgs, joinPropertyArgs, springBootType } = await import("./jvmTypes");
+const { debugWithAgent, jdwpLaunch } = await import("./javaDebug");
+const { applicationType, jarApplicationType, gradleJvmArgs, joinPropertyArgs, springBootType } =
+  await import("./jvmTypes");
 const { formParams, newConfigOfType, registerBuiltinTypes, typeFor, withParams } = await import("./types");
 
 const REPORTER_VM = "-Ddemo.flag=on --add-opens java.base/java.lang=ALL-UNNAMED";
@@ -45,6 +58,63 @@ beforeEach(() => {
   scripts.length = 0;
 });
 afterEach(() => dispose());
+
+describe("JAR Application", () => {
+  it("creates, edits and recovers a JAR configuration without a source module", () => {
+    const created = newConfigOfType(jarApplicationType, []);
+    expect(created.debugAdapter).toBe("java-debug");
+    const edited = withParams(created, {
+      jarPath: "dist/my app.jar",
+      vmOptions: '-Xmx1g --add-opens java.base/java.lang=ALL-UNNAMED -Dname="My App"',
+      programArgs: '--config "a b.yml" "" -jar other.jar',
+      jre: "/jdk 21",
+    });
+    expect(edited.command).toBe("/jdk 21/bin/java");
+    expect(edited.args).toEqual([
+      "-Xmx1g",
+      "--add-opens",
+      "java.base/java.lang=ALL-UNNAMED",
+      "-Dname=My App",
+      "-jar",
+      "dist/my app.jar",
+      "--config",
+      "a b.yml",
+      "",
+      "-jar",
+      "other.jar",
+    ]);
+    const recovered = formParams({ ...edited, params: undefined });
+    expect(recovered?.jarPath).toBe("dist/my app.jar");
+    expect(jarApplicationType.commandLine(recovered!)).toEqual({ command: edited.command, args: edited.args });
+    expect(parseJavaArgs(edited.args).mainClass).toBeNull();
+    expect(isJvmApplication(edited)).toBe(false);
+    const debug = jdwpLaunch(edited)!;
+    expect(debug.args).toEqual([JDWP_AGENT, ...edited.args]);
+    expect(debug.command).toBe(edited.command);
+  });
+
+  it("uses java by default and keeps Windows JRE and JAR paths", () => {
+    expect(jarApplicationType.commandLine({ jarPath: "app.jar" })).toEqual({
+      command: "java",
+      args: ["-jar", "app.jar"],
+    });
+    usePlatform.setState({ os: "windows" });
+    try {
+      expect(
+        jarApplicationType.commandLine({
+          jre: String.raw`C:\Program Files\jdk`,
+          jarPath: String.raw`C:\apps\my app.jar`,
+          programArgs: String.raw`"C:\data files\x"`,
+        }),
+      ).toEqual({
+        command: "C:\\Program Files\\jdk/bin/java.exe",
+        args: ["-jar", String.raw`C:\apps\my app.jar`, String.raw`C:\data files\x`],
+      });
+    } finally {
+      usePlatform.setState({ os: "macos" });
+    }
+  });
+});
 
 describe("Application / Spring Boot command line", () => {
   it.each([
@@ -198,7 +268,9 @@ describe("Maven / Gradle: VM options of the forked JVM", () => {
     ]);
     // Debugging adds the JDWP agent to the same property.
     const debug = jdwpLaunch(cfg({ kind: "maven", command: "mvn", args: line!.args }));
-    expect(debug!.args[1]).toMatch(/^-Dspring-boot\.run\.jvmArguments=-Ddemo\.flag=on .* -agentlib:jdwp=/);
+    expect(debug!.args[1]).toMatch(
+      /^-Dspring-boot\.run\.jvmArguments=-Ddemo\.flag=on .* -XX:\+StartAttachListener -agentlib:jdwp=/,
+    );
   });
 
   it("passes test goals' VM options to Surefire and nothing for other goals", () => {
@@ -230,14 +302,57 @@ describe("Maven / Gradle: VM options of the forked JVM", () => {
     const launched = await gradle().prepareLaunch!(c);
     expect(scripts).toEqual([gradleJvmArgs(params)]);
     expect(launched.args).toEqual(["--init-script", "/tmp/openidea-gradle/jvm-args-1.init.gradle", "bootRun"]);
-    // Debugging keeps them: `--debug-jvm` is added before the launch is prepared.
+    // Debugging keeps them: the BootRun init script gives the forked JVM a dynamic port.
     const debug = await gradle().prepareLaunch!(jdwpLaunch(c)!);
     expect(debug.args).toEqual([
       "--init-script",
       "/tmp/openidea-gradle/jvm-args-1.init.gradle",
       "bootRun",
-      "--debug-jvm",
+      "-Dopenidea.run.debug=true",
     ]);
+  });
+
+  describe("--debug-jvm", () => {
+    const INIT = "/tmp/openidea-gradle/jvm-args-1.init.gradle";
+    const debugLaunch = async (c: RunConfig) => {
+      started.length = 0;
+      await debugWithAgent(c);
+      return started[0]!;
+    };
+
+    it("starts the attach listener through an init script, ahead of the VM options' one", async () => {
+      scripts.length = 0;
+      // `bootRun`, `test` and Application runs get the agent from the delegated-run init script.
+      const c = withParams(cfg({ kind: "gradle" }), { tasks: "check", vmOptions: "-Xmx1g" });
+      const launch = await debugLaunch(c);
+      expect(scripts).toEqual([["-XX:+StartAttachListener"]]);
+      expect(launch.args).toEqual(["--init-script", INIT, "check", "--debug-jvm"]);
+      // The VM options' own init script is added when the run is prepared; Gradle takes several.
+      const prepared = await gradle().prepareLaunch!(launch);
+      expect(prepared.args).toEqual(["--init-script", INIT, "--init-script", INIT, "check", "--debug-jvm"]);
+    });
+
+    it("leaves the run alone when the VM options decide about the attach mechanism or on a run target", async () => {
+      scripts.length = 0;
+      const opted = withParams(cfg({ kind: "gradle" }), { tasks: "check", vmOptions: "-XX:+DisableAttachMechanism" });
+      expect((await debugLaunch(opted)).args).toEqual(["check", "--debug-jvm"]);
+      const remote = withParams(cfg({ kind: "gradle", target: "ssh-1" }), { tasks: "check" });
+      expect((await debugLaunch(remote)).args).toEqual(["check", "--debug-jvm"]);
+      expect(scripts).toEqual([]);
+    });
+
+    it("adds no attach listener when Gradle runs on Windows", async () => {
+      scripts.length = 0;
+      const os = usePlatform.getState().os;
+      usePlatform.setState({ os: "windows" });
+      try {
+        const c = withParams(cfg({ kind: "gradle" }), { tasks: "check" });
+        expect((await debugLaunch(c)).args).toEqual(["check", "--debug-jvm"]);
+        expect(scripts).toEqual([]);
+      } finally {
+        usePlatform.setState({ os });
+      }
+    });
   });
 
   it("leaves Gradle configurations without VM options alone", async () => {

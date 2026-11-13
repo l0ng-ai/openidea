@@ -93,3 +93,106 @@ test("service dragging scrolls across virtual rows without losing source identit
     )
     .toEqual(["app-99", "portal"]);
 });
+
+test("Docker Compose editor completes service references and navigates to declarations", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const backendModule = "/src/editor/core/backend.ts";
+    const contribModule = "/src/workbench/contributions.ts";
+    const { docBackend } = await import(/* @vite-ignore */ backendModule);
+    const { editorService } = await import(/* @vite-ignore */ contribModule);
+    const compose = [
+      "services:",
+      "  postgres:",
+      "    image: postgres:16",
+      "    networks:",
+      "      - backend",
+      "  redis:",
+      "    image: redis:7",
+      "  api:",
+      "    build: .",
+      "    depends_on:",
+      "networks:",
+      "  backend:",
+      "    driver: bridge",
+      "",
+    ].join("\n");
+    docBackend().files.set("/dev/acme-api/docker-compose.yml", compose);
+    await editorService().openFile("/dev/acme-api/docker-compose.yml");
+  });
+
+  const editor = page.locator(".cm-editor");
+  await expect(editor).toContainText("postgres:16");
+
+  // Complete a service reference under `depends_on:`
+  await editor.locator(".cm-line", { hasText: "depends_on:" }).click();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("- ");
+  await page.keyboard.press("Control+Space");
+  const popup = page.locator(".cm-tooltip-autocomplete");
+  await expect(popup.getByText("postgres", { exact: true })).toBeVisible();
+  await expect(popup.getByText("redis", { exact: true })).toBeVisible();
+  await expect(popup.getByText("api", { exact: true })).toHaveCount(0);
+  await page.keyboard.type("post");
+  await expect(popup.getByText("redis", { exact: true })).toBeHidden();
+  await page.keyboard.press("Enter");
+  await expect(popup).toBeHidden();
+  await expect(editor.locator(".cm-activeLine")).toHaveText("    - postgres");
+
+  // Go to Declaration (⌘B) on `- postgres` jumps to `  postgres:` declaration
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("Meta+b");
+  await expect(editor.locator(".cm-activeLine")).toHaveText("  postgres:");
+
+  // Go to Declaration (⌘B) on `- backend` jumps to `  backend:` under `networks:`
+  await editor.locator(".cm-line", { hasText: "      - backend" }).click();
+  await page.keyboard.press("End");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("Meta+b");
+  await expect(editor.locator(".cm-activeLine")).toHaveText("  backend:");
+});
+
+test("the Services detail pane adds no second scrollbar over a console", async ({ workbench: page }) => {
+  // A short window: the run toolbar is taller than the detail pane, which used to make
+  // the split panel scroll too (the console had its own scrollbar right beside it).
+  await page.setViewportSize({ width: 1200, height: 640 });
+  await page.evaluate(async () => {
+    const store = await import(/* @vite-ignore */ "/src/features/run/store.ts" as string);
+    await store.startSampleOutput(200, 50);
+    const id = store.useRun.getState().activeSession as string;
+    store.useRun.setState((s: { sessions: { id: string }[]; versions: Record<string, number> }) => ({
+      sessions: s.sessions.map((x) => (x.id === id ? { ...x, status: "running" } : x)),
+      versions: { ...s.versions, [id]: (s.versions[id] ?? 0) + 1 },
+    }));
+    const svc = await import(/* @vite-ignore */ "/src/features/run/services.tsx" as string);
+    const tree = await import(/* @vite-ignore */ "/src/features/services/tree.ts" as string);
+    const session = store.useRun.getState().sessions.find((s: { id: string }) => s.id === id);
+    svc.addType(session.config.kind);
+    tree.useServicesTree.setState({
+      selectedKey: `run:config:${session.config.id}`,
+      selectedKeys: new Set([`run:config:${session.config.id}`]),
+    });
+  });
+  await page.keyboard.press("Meta+8");
+  await expect(page.getByRole("log").first()).toBeVisible();
+  const result = await page.evaluate(() => {
+    const log = document.querySelector('[data-toolwindow="services"] [role="log"]');
+    let panel: Element | null = log;
+    while (panel && !panel.hasAttribute("data-panel")) panel = panel.parentElement;
+    const inner = panel?.firstElementChild as HTMLElement | null;
+    const scrollers: string[] = [];
+    for (const el of document.querySelectorAll<HTMLElement>('[data-toolwindow="services"] *')) {
+      const cs = getComputedStyle(el);
+      if ((cs.overflowY === "auto" || cs.overflowY === "scroll") && el.scrollHeight - el.clientHeight > 2)
+        scrollers.push(String(el.className));
+    }
+    return { overflowY: inner ? getComputedStyle(inner).overflowY : "missing", scrollers };
+  });
+  // The panel's inner div carries the library's inline `overflow: auto`; the detail pane
+  // overrides it, so the console is the only scroller.
+  expect(result.overflowY).toBe("hidden");
+  expect(result.scrollers.filter((c) => c.includes("detailPane") || c.includes("_panel_"))).toEqual([]);
+  expect(result.scrollers.length).toBeGreaterThan(0);
+});

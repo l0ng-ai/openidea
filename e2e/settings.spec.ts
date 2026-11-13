@@ -53,8 +53,8 @@ test("Project Structure keeps edits across repeated shortcuts and applies them",
   await page.keyboard.press("Meta+;");
   await expect(dialog.getByLabel("Compiler output", { exact: true })).toHaveValue("out/classes");
   await dialog.getByRole("button", { name: "Modules", exact: true }).click();
-  await dialog.getByRole("tab", { name: "Dependencies", exact: true }).click();
-  await expect(dialog.getByRole("button", { name: "Add Library", exact: true })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Dependencies", exact: true }).click();
+  await expect(dialog.getByRole("group", { name: "The project depends on these projects" })).toBeVisible();
   await dialog.getByRole("button", { name: "Artifacts", exact: true }).click();
   await expect(dialog.getByRole("button", { name: "JAR", exact: true })).toBeDisabled();
   await page.keyboard.press("Escape");
@@ -122,7 +122,8 @@ test("font picker supports manual families and CJK fallback in browser developme
   expect(interLoaded).toBe(true);
   await family.fill("Inter");
   await family.press("Enter");
-  await expect(dialog.getByLabel("Font preview")).toHaveCSS("font-family", /^"Inter Variable",/);
+  // Computed styles drop redundant quotes around single-token families ("Inter" -> Inter).
+  await expect(dialog.getByLabel("Font preview")).toHaveCSS("font-family", /^Inter, "Inter Variable",/);
   const fallback = dialog.getByRole("combobox", { name: "Fallback font", exact: true });
   await family.fill("Maple Mono NF");
   await family.press("Enter");

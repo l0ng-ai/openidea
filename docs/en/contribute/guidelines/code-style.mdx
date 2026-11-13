@@ -1,0 +1,72 @@
+---
+title: "Code style"
+description: "Formatting, linting and dead-code checks for Rust and TypeScript, plus the conventions for comments, errors and generated files."
+---
+
+Formatting and lint rules are enforced by tools, locally by the pre-commit hook and again in CI. Configure your editor to use the same tools and you rarely have to think about them.
+
+## Rust
+
+| Tool       | Command                                                 | Config                                                                          |
+| ---------- | ------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| rustfmt    | `cargo fmt --all` (CI: `--check`)                       | `rustfmt.toml`: `max_width = 120`, `use_small_heuristics = "Max"`; edition 2024 |
+| clippy     | `cargo clippy --workspace --all-targets -- -D warnings` | warnings are errors                                                             |
+| cargo-deny | `cargo deny check`                                      | `deny.toml`: advisories, licences, bans, sources                                |
+
+While iterating, run clippy for the crate you changed only (`cargo clippy -p <crate> --all-targets -- -D warnings`), once, before committing. The plugin SDK and official plugins are separate workspaces; CI also lints them for `wasm32-wasip2`.
+
+Conventions:
+
+- Each crate's `lib.rs` (and each significant module) starts with a `//!` doc comment stating its contract. Keep it current when the contract changes.
+- Crates keep their own error types internally (`thiserror`, `anyhow`) and convert to `IdeError` at their public edge.
+- Doc comments on Tauri commands and IPC types become JSDoc in `src/bindings.ts`; write them for the frontend reader.
+- Log with `tracing`, not `println!`. In `openidea-server`, stdout carries the protocol.
+- Blocking or long work goes to `spawn_blocking` / rayon and honours a `CancellationToken`.
+
+## TypeScript and React
+
+| Tool       | Command                                 | Config                                                                                  |
+| ---------- | --------------------------------------- | --------------------------------------------------------------------------------------- |
+| oxfmt      | `pnpm format` (CI: `pnpm format:check`) | `.oxfmtrc.json`: print width 120, double quotes, semicolons, trailing commas everywhere |
+| oxlint     | `pnpm lint`                             | `.oxlintrc.json`: TypeScript and React plugins                                          |
+| Type check | `pnpm typecheck`                        | `tsconfig.json` and the configs of `perf/`, `scripts/`, `smoke/`                        |
+| knip       | `pnpm knip`                             | `knip.ts`: unused files, exports and dependencies                                       |
+
+`pnpm knip` fails on an export nobody imports, a file nobody reaches or a dependency nobody uses. Delete dead code rather than suppressing it; exports used only inside their own file are allowed.
+
+Conventions:
+
+- Import app modules through the `@/` alias (`@/platform/ipc`, `@/workbench/contributions`).
+- State lives in zustand stores; features expose behaviour through actions and contributions, not exported singletons other features import.
+- Styling and UI rules: see [UI guidelines](/en/contribute/guidelines/ui). Text: see [Localization](/en/contribute/guidelines/i18n).
+
+## Pre-commit hook
+
+`pnpm install` installs a pre-commit hook (`simple-git-hooks` + `lint-staged`) that runs on staged files:
+
+- `oxlint --fix` on JavaScript and TypeScript files;
+- `oxfmt` on all files (TOML and generated files are ignored by its config);
+- `rustfmt --edition 2024` on Rust files.
+
+## Comments
+
+Keep comments sparse and purposeful, and match the surrounding style:
+
+- Explain **why**, a constraint, or a non-obvious contract; don't narrate what the next line does.
+- Reference the issue number when a line exists because of a specific bug report (`(#1878)`), as existing code does.
+- Don't keep change logs or commented-out code in comments; history is in git.
+
+## Generated files
+
+Never edit these by hand; regenerate them:
+
+| File                                               | Command                                                            |
+| -------------------------------------------------- | ------------------------------------------------------------------ |
+| `src/bindings.ts`                                  | `pnpm gen:bindings`                                                |
+| `src/editor/core/cm/{angular,jsp,astro}/parser.ts` | `pnpm gen:angular-grammar`, `gen:jsp-grammar`, `gen:astro-grammar` |
+| Token reference in `plugins/themes.md`             | `pnpm gen:theme-docs`                                              |
+| `plugins/official/*/dist/plugin.wasm`              | `plugins/build.sh`                                                 |
+
+## Commit and PR titles
+
+Use [Conventional Commits](https://www.conventionalcommits.org/) with a scope: `fix(editor): keep the caret visible after folding`, `feat(vcs): …`, `perf(index): …`. The repository-wide formatting commit is listed in `.git-blame-ignore-revs`; use `git blame --ignore-revs-file .git-blame-ignore-revs` to skip it.

@@ -5,8 +5,9 @@ use crate::Host;
 use crate::rpc::Dispatcher;
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
-    AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
-    NewAgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCommand, AgentEntry,
+    AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession,
+    McpScope, McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::error::ErrorKind;
 use ide_core::{IdeError, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
@@ -42,6 +43,24 @@ pub fn set_env(
 ) -> IdeResult<()> {
     host.require_trust(window)?;
     host.project(window)?.agents.set_builtin_env(&id, env)
+}
+
+/// Saves a new custom ACP agent through its agent file.
+pub fn save_custom_agent(host: &Host, window: &str, input: CustomAgentInput) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.save_custom_agent(input)
+}
+
+/// Removes a custom agent's file (registry installs go through `registry_remove`).
+pub fn remove_custom_agent(host: &Host, window: &str, id: String) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.remove_custom_agent(&id)
+}
+
+/// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents.
+pub fn import_acp_agents(host: &Host, window: &str, text: String) -> IdeResult<Vec<AcpImportOutcome>> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.import_acp_agents(&text)
 }
 
 /// Where ACP Registry agents are saved (`<config>/agents`, like the user's own) and installed.
@@ -181,6 +200,20 @@ pub fn entries(host: &Host, window: &str, task: String, subagent: Option<String>
     host.project(window)?.agents.entries(&task, subagent)
 }
 
+/// Sessions of the project on this machine that no task holds yet, newest first. Reads
+/// transcripts from disk on the blocking pool.
+pub async fn external_sessions(host: &Host, window: &str) -> IdeResult<Vec<ExternalSession>> {
+    let agents = host.project(window)?.agents.clone();
+    tokio::task::spawn_blocking(move || agents.external_sessions()).await.map_err(join_err)
+}
+
+/// Imports an external session as a task: its first turn loads and replays it.
+pub async fn import_session(host: &Host, window: &str, provider: String, session_id: String) -> IdeResult<AgentTask> {
+    host.require_trust(window)?;
+    let agents = host.project(window)?.agents.clone();
+    tokio::task::spawn_blocking(move || agents.import_session(&provider, &session_id)).await.map_err(join_err)?
+}
+
 pub async fn create(host: &Host, window: &str, mut request: NewAgentTask) -> IdeResult<AgentTask> {
     host.require_trust(window)?;
     let project = host.project(window)?;
@@ -271,10 +304,173 @@ pub async fn changes(host: &Host, window: &str, task: String) -> IdeResult<Vec<A
     host.project(window)?.agents.changes(&task).await
 }
 
+/// The task's uncommitted changes and the commits made since it started.
+pub async fn grouped_changes(host: &Host, window: &str, task: String) -> IdeResult<AgentChanges> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.grouped_changes(&task).await
+}
+
 /// Content of `path` when the task started (left side of its diff).
 pub async fn base_text(host: &Host, window: &str, task: String, path: IpcPath) -> IdeResult<Option<String>> {
     host.require_trust(window)?;
     host.project(window)?.agents.base_text(&task, path.into_path_buf()).await
+}
+
+/// Rollback: the task's changed files among `paths` (all without) back as `view` compares them.
+pub async fn rollback_changes(
+    host: &Host,
+    window: &str,
+    task: String,
+    paths: Option<Vec<String>>,
+    view: Option<AgentChangesView>,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.rollback_changes(&task, paths, view.unwrap_or_default()).await
+}
+
+/// Accept: copies a worktree task's changed files among `paths` (all without) into the
+/// local checkout, uncommitted; files the checkout changed itself are left alone and reported.
+pub async fn accept_changes(
+    host: &Host,
+    window: &str,
+    task: String,
+    paths: Option<Vec<String>>,
+) -> IdeResult<AgentAcceptOutcome> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.accept_changes(&task, paths).await
+}
+
+type McpServerMap = std::collections::BTreeMap<String, ide_core::settings::AgentMcpServer>;
+
+fn mcp_maps(host: &Host, window: &str) -> (McpServerMap, McpServerMap, Option<std::sync::Arc<crate::Project>>) {
+    let user = host.global_settings.effective().agents.mcp_servers;
+    let project = host.project(window).ok().filter(|p| !p.light);
+    let workspace = project
+        .as_ref()
+        .map(|p| p.settings.layer(ide_workspace::settings::SettingsScope::Project).agents.mcp_servers)
+        .unwrap_or_default();
+    (user, workspace, project)
+}
+
+fn persist_mcp_map(
+    host: &Host,
+    project: Option<&std::sync::Arc<crate::Project>>,
+    scope: McpScope,
+    map: &McpServerMap,
+) -> IdeResult<()> {
+    let value = if map.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::to_value(map).map_err(|e| IdeError::invalid(e.to_string()))?
+    };
+    let event = IdeEvent::SettingsChanged { key: "agents.mcpServers".into() };
+    match scope {
+        McpScope::User => {
+            host.global_settings.set(ide_workspace::settings::SettingsScope::Global, "agents.mcpServers", value)?;
+            for p in host.projects() {
+                p.settings.reload();
+                p.sink.emit(event.clone());
+            }
+        }
+        McpScope::Workspace => {
+            let p = project.ok_or_else(|| IdeError::invalid("Open a project to configure workspace MCP servers"))?;
+            p.settings.set(ide_workspace::settings::SettingsScope::Project, "agents.mcpServers", value)?;
+            p.sink.emit(event);
+        }
+    }
+    Ok(())
+}
+
+fn update_mcp_maps<F>(host: &Host, window: &str, approve: Option<&str>, f: F) -> IdeResult<Vec<McpServer>>
+where
+    F: FnOnce(&mut McpServerMap, &mut McpServerMap, Option<&std::path::Path>) -> Result<(), String>,
+{
+    let (mut user, mut workspace, project) = mcp_maps(host, window);
+    let prev_user = user.clone();
+    let prev_workspace = workspace.clone();
+    let project_root = project.as_ref().map(|p| p.root.as_path());
+    f(&mut user, &mut workspace, project_root).map_err(IdeError::invalid)?;
+    if let (Some(name), Some(p)) = (approve, &project)
+        && let Some(server) = workspace.get(name)
+    {
+        host.mcp_approvals.approve(&p.root, name, server)?;
+    }
+    if workspace != prev_workspace {
+        persist_mcp_map(host, project.as_ref(), McpScope::Workspace, &workspace)?;
+    }
+    if user != prev_user {
+        persist_mcp_map(host, project.as_ref(), McpScope::User, &user)?;
+    }
+    Ok(listed(host, project.as_ref(), &user, workspace))
+}
+
+/// Workspace servers the user hasn't turned on in Settings are listed as off: agents don't start them.
+fn listed(
+    host: &Host,
+    project: Option<&std::sync::Arc<crate::Project>>,
+    user: &McpServerMap,
+    workspace: McpServerMap,
+) -> Vec<McpServer> {
+    let workspace = match project {
+        Some(p) => host.mcp_approvals.apply(&p.root, workspace),
+        None => workspace,
+    };
+    ide_agent::mcp::servers_from_settings(user, &workspace)
+}
+
+/// The MCP servers agent sessions of the project at `root` get: the user's, and the project's the
+/// user turned on.
+pub(crate) fn session_mcp_servers(
+    settings: &ide_workspace::SettingsStore,
+    approvals: &crate::trust::McpServerApprovals,
+    root: &std::path::Path,
+) -> Vec<McpServer> {
+    use ide_workspace::settings::SettingsScope;
+    let user = settings.layer(SettingsScope::Global).agents.mcp_servers;
+    let workspace = approvals.apply(root, settings.layer(SettingsScope::Project).agents.mcp_servers);
+    ide_agent::mcp::servers_from_settings(&user, &workspace)
+}
+
+/// Lists configured MCP servers across User (`settings.toml`) and Workspace (`.openidea/settings.toml`) scopes.
+pub fn mcp_list(host: &Host, window: &str) -> IdeResult<Vec<McpServer>> {
+    let (user, workspace, project) = mcp_maps(host, window);
+    Ok(listed(host, project.as_ref(), &user, workspace))
+}
+
+/// Creates or updates a User or Workspace MCP server and returns the updated list. A Workspace
+/// server saved here is one the user turned on.
+pub fn mcp_save(host: &Host, window: &str, input: McpServerInput) -> IdeResult<Vec<McpServer>> {
+    let approve = (input.scope == McpScope::Workspace).then(|| input.name.trim().to_owned());
+    update_mcp_maps(host, window, approve.as_deref(), |user, workspace, project_root| {
+        ide_agent::mcp::apply_save(user, workspace, project_root.is_some(), input)
+    })
+}
+
+/// Enables or disables an MCP server and returns the updated list.
+pub fn mcp_set_enabled(host: &Host, window: &str, id: String, enabled: bool) -> IdeResult<Vec<McpServer>> {
+    let approve = ide_agent::mcp::parse_server_id(&id)
+        .filter(|(scope, _)| enabled && *scope == McpScope::Workspace)
+        .map(|(_, name)| name.to_owned());
+    update_mcp_maps(host, window, approve.as_deref(), |user, workspace, _| {
+        ide_agent::mcp::apply_set_enabled(user, workspace, &id, enabled).map(|_| ())
+    })
+}
+
+/// Removes a User or Workspace MCP server and returns the updated list.
+pub fn mcp_remove(host: &Host, window: &str, id: String) -> IdeResult<Vec<McpServer>> {
+    update_mcp_maps(host, window, None, |user, workspace, _| {
+        ide_agent::mcp::apply_remove(user, workspace, &id).map(|_| ())
+    })
+}
+
+/// Copies MCP servers from `.mcp.json` and `.vscode/mcp.json` into the workspace settings once;
+/// they stay off until the user turns them on.
+pub fn mcp_import(host: &Host, window: &str) -> IdeResult<Vec<McpServer>> {
+    update_mcp_maps(host, window, None, |_, workspace, project_root| {
+        let root = project_root.ok_or_else(|| "Open a project to import workspace MCP servers".to_string())?;
+        ide_agent::mcp::apply_import(workspace, root);
+        Ok(())
+    })
 }
 
 /// Commands of this module the remote server answers.
@@ -288,9 +484,21 @@ pub(crate) fn register(d: &mut Dispatcher) {
         registry_install(&c.host, &c.window, c.arg("id")?, c.arg("request")?, c.sender("onEvent")?).await
     });
     d.add("agent_registry_remove", |c| async move { registry_remove(&c.host, &c.window, c.arg("id")?).await });
+    d.add("agent_mcp_list", |c| async move { mcp_list(&c.host, &c.window) });
+    d.add("agent_mcp_save", |c| async move { mcp_save(&c.host, &c.window, c.arg("input")?) });
+    d.add(
+        "agent_mcp_set_enabled",
+        |c| async move { mcp_set_enabled(&c.host, &c.window, c.arg("id")?, c.arg("enabled")?) },
+    );
+    d.add("agent_mcp_remove", |c| async move { mcp_remove(&c.host, &c.window, c.arg("id")?) });
+    d.add("agent_mcp_import", |c| async move { mcp_import(&c.host, &c.window) });
     d.add("agent_commands", |c| async move { commands(&c.host, &c.window, c.arg("provider")?, c.arg("task")?).await });
     d.add("agent_entries", |c| async move { entries(&c.host, &c.window, c.arg("task")?, c.arg("subagent")?) });
     d.add("agent_create", |c| async move { create(&c.host, &c.window, c.arg("request")?).await });
+    d.add("agent_external_sessions", |c| async move { external_sessions(&c.host, &c.window).await });
+    d.add("agent_import_session", |c| async move {
+        import_session(&c.host, &c.window, c.arg("provider")?, c.arg("sessionId")?).await
+    });
     d.add("agent_prompt", |c| async move {
         prompt(&c.host, &c.window, c.arg("task")?, c.arg("prompt")?, c.arg("now")?).await
     });
@@ -320,7 +528,14 @@ pub(crate) fn register(d: &mut Dispatcher) {
         |c| async move { delete(&c.host, &c.window, c.arg("task")?, c.arg("removeWorktree")?).await },
     );
     d.add("agent_changes", |c| async move { changes(&c.host, &c.window, c.arg("task")?).await });
+    d.add("agent_grouped_changes", |c| async move { grouped_changes(&c.host, &c.window, c.arg("task")?).await });
     d.add("agent_base_text", |c| async move { base_text(&c.host, &c.window, c.arg("task")?, c.arg("path")?).await });
+    d.add("agent_rollback_changes", |c| async move {
+        rollback_changes(&c.host, &c.window, c.arg("task")?, c.arg("paths")?, c.arg("view")?).await
+    });
+    d.add("agent_accept_changes", |c| async move {
+        accept_changes(&c.host, &c.window, c.arg("task")?, c.arg("paths")?).await
+    });
 }
 
 fn validate_project_root(root: &std::path::Path, requested: Option<&std::path::Path>) -> IdeResult<std::path::PathBuf> {
@@ -374,5 +589,44 @@ mod tests {
         for rejected in [other, member.join("child"), member.join("../other"), "relative".into()] {
             assert!(validate_project_root(&root, Some(&rejected)).is_err(), "{rejected:?}");
         }
+    }
+
+    #[test]
+    fn sessions_get_the_users_servers_and_the_projects_turned_on_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, root) = (tmp.path().join("config"), tmp.path().join("project"));
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(root.join(".openidea")).unwrap();
+        std::fs::write(config.join("settings.toml"), "[agents.mcpServers.shared]\ncommand = \"user-cmd\"\n").unwrap();
+        std::fs::write(
+            root.join(".openidea/settings.toml"),
+            "[agents.mcpServers.shared]\ncommand = \"project-cmd\"\n\n[agents.mcpServers.extra]\ncommand = \"extra\"\n",
+        )
+        .unwrap();
+        let settings = ide_workspace::SettingsStore::load(&config, Some(&root));
+        let approvals = crate::trust::McpServerApprovals::load(&tmp.path().join("data"));
+        let on = |servers: Vec<McpServer>| -> Vec<(McpScope, String, String)> {
+            servers
+                .into_iter()
+                .filter(|s| s.enabled)
+                .map(|s| (s.scope, s.name, s.command.unwrap_or_default()))
+                .collect()
+        };
+        assert_eq!(
+            on(session_mcp_servers(&settings, &approvals, &root)),
+            [(McpScope::User, "shared".to_owned(), "user-cmd".to_owned())]
+        );
+
+        let extra = settings.layer(ide_workspace::settings::SettingsScope::Project).agents.mcp_servers["extra"].clone();
+        approvals.approve(&root, "extra", &extra).unwrap();
+        assert!(on(session_mcp_servers(&settings, &approvals, &root)).contains(&(
+            McpScope::Workspace,
+            "extra".to_owned(),
+            "extra".to_owned()
+        )));
+        // Remembered across restarts, and only for this project.
+        let reloaded = crate::trust::McpServerApprovals::load(&tmp.path().join("data"));
+        assert!(reloaded.approved(&root, "extra", &extra));
+        assert!(!reloaded.approved(&tmp.path().join("other"), "extra", &extra));
     }
 }

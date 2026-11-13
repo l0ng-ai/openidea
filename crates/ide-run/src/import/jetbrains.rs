@@ -4,8 +4,8 @@
 //! than one place is taken from the first, in that order.
 //!
 //! Python, Django server, Django tests, pytest, npm, Jest, Vitest, Node.js, Shell Script,
-//! Application, Spring Boot and compound configurations become the matching kinds; other types
-//! are skipped with their type.
+//! Application, JAR Application, Spring Boot, Go Application / Go Test and compound configurations become the
+//! matching kinds; other types are skipped with their type.
 //! `$PROJECT_DIR$` (and `$MODULE_DIR$`, `$MODULE_WORKING_DIR$`, `$ContentRoot$`,
 //! `$ProjectFileDir$`, all the project directory here) and `$USER_HOME$` are replaced; another
 //! path variable skips the configuration.
@@ -164,7 +164,10 @@ const NODE: &str = "NodeJSConfigurationType";
 const SHELL: &str = "ShConfigurationType";
 const COMPOUND: &str = "CompoundRunConfigurationType";
 const APPLICATION: &str = "Application";
+const JAR_APPLICATION: &str = "JarApplication";
 const SPRING_BOOT: &str = "SpringBootApplicationConfigurationType";
+const GO_APPLICATION: &str = "GoApplicationRunConfiguration";
+const GO_TEST: &str = "GoTestRunConfiguration";
 
 type Res<T> = Result<T, SkipReason>;
 
@@ -271,6 +274,11 @@ impl Cx<'_> {
         }
     }
 
+    /// A filesystem path: expand IDEA's macros before converting a file URL.
+    fn path(&self, value: Option<&str>) -> Res<Option<String>> {
+        Ok(self.text(value)?.map(|v| file_url_path(&v)))
+    }
+
     /// Words of a parameters field, split like IDEA's `ParametersListUtil.parse`.
     fn words(&self, value: Option<&str>) -> Res<Vec<String>> {
         self.words_quoted(value, Quotes::Double)
@@ -286,12 +294,16 @@ impl Cx<'_> {
     }
 
     fn args_quoted(&self, value: Option<&str>, quotes: Quotes, dir: &Path) -> Res<Vec<String>> {
-        Ok(self.words_quoted(value, quotes)?.into_iter().map(|a| path_from(self.root, a, dir)).collect())
+        Ok(self
+            .words_quoted(value, quotes)?
+            .into_iter()
+            .map(|a| path_from(self.root, file_url_path(&a), dir))
+            .collect())
     }
 
     /// The working directory (absolute) and the configuration's `cwd`.
     fn cwd(&self, value: Option<&str>) -> Res<(PathBuf, Option<PathBuf>)> {
-        Ok(match self.text(value)? {
+        Ok(match self.path(value)? {
             Some(dir) => working_dir(self.root, &dir),
             None => (self.root.to_path_buf(), None),
         })
@@ -333,7 +345,10 @@ impl Cx<'_> {
             NODE => self.node(name, c, &mut ignored)?,
             SHELL => self.shell(name, c)?,
             APPLICATION => self.java_app(name, c, false, &mut ignored)?,
+            JAR_APPLICATION => self.jar_app(name, c, &mut ignored)?,
             SPRING_BOOT => self.java_app(name, c, true, &mut ignored)?,
+            GO_APPLICATION => self.go_config(name, c, false, &mut ignored)?,
+            GO_TEST => self.go_config(name, c, true, &mut ignored)?,
             COMPOUND => {
                 members = c.children_named("toRun").filter_map(|t| t.attr("name")).map(str::to_owned).collect();
                 config(name, "compound", String::new(), Vec::new(), None)
@@ -344,13 +359,91 @@ impl Cx<'_> {
         Ok(Found { config, members, ignored })
     }
 
+    /// A Go Application (`GoApplicationRunConfiguration`) or Go Test configuration. Both share
+    /// the kind (package / file / directory), the target node, `go_parameters` (go tool
+    /// arguments) and envs; a test adds a `pattern` and program arguments go after `-args`.
+    fn go_config(&self, name: &str, c: &El, test: bool, _ignored: &mut Vec<String>) -> Res<RunConfig> {
+        let (dir, cwd) = self.cwd(c.value("working_directory"))?;
+        let scope = match c.value("kind").unwrap_or("PACKAGE") {
+            "FILE" => "file",
+            "DIRECTORY" => "directory",
+            _ => "package",
+        };
+        let path_target = |value: Option<&str>| -> Res<Option<String>> {
+            Ok(self.path(value)?.map(|p| path_from(self.root, p, &dir)).filter(|p| !p.is_empty()))
+        };
+        let target = match scope {
+            "file" => path_target(c.value("filePath"))?
+                .or(self.text(c.value("package"))?)
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| ".".to_owned()),
+            "directory" => path_target(c.value("directory"))?.unwrap_or_else(|| ".".to_owned()),
+            _ => self.text(c.value("package"))?.filter(|t| !t.is_empty()).unwrap_or_else(|| ".".to_owned()),
+        };
+        let raw_tool = self.text(c.value("go_parameters"))?.unwrap_or_default();
+        let tool_args = parse_params(&raw_tool, Quotes::Double);
+        let raw_program = self.text(c.value("parameters"))?.unwrap_or_default();
+        let program_args = parse_params(&raw_program, Quotes::Double);
+        let pattern = self.text(c.value("pattern"))?.unwrap_or_default();
+        let output_dir =
+            self.path(c.value("output_directory"))?.map(|p| path_from(self.root, p, self.root)).unwrap_or_default();
+        // The form's module is the working directory relative to the project root.
+        let module = cwd.as_ref().map(|d| d.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+        let run_after_build = c.option("run") != Some("false");
+        let targets: Vec<String> = if scope == "file" {
+            target.split('|').map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).collect()
+        } else {
+            vec![target.clone()]
+        };
+        let mut args = vec![if test { "test".to_owned() } else { "build".to_owned() }];
+        args.extend(tool_args.clone());
+        if test {
+            if !pattern.is_empty() {
+                args.extend(["-run".to_owned(), pattern.clone()]);
+            }
+            args.extend(targets);
+            if !program_args.is_empty() {
+                args.push("-args".to_owned());
+                args.extend(program_args.clone());
+            }
+        } else {
+            args.extend(targets);
+        }
+        let mut rc = config(name, "go", "go".into(), args, Some("delve"));
+        rc.cwd = cwd.map(Into::into);
+        rc.is_test = test;
+        let mut params = BTreeMap::from([
+            ("goKind".to_owned(), if test { "test" } else { "build" }.to_owned()),
+            ("scope".to_owned(), scope.to_owned()),
+            ("target".to_owned(), target),
+            ("toolArgs".to_owned(), raw_tool),
+            ("programArgs".to_owned(), raw_program),
+            ("module".to_owned(), module),
+        ]);
+        if test {
+            if !pattern.is_empty() {
+                params.insert("pattern".to_owned(), pattern);
+            }
+        } else {
+            params.insert("outputDir".to_owned(), output_dir);
+            params.insert("runAfterBuild".to_owned(), run_after_build.to_string());
+        }
+        if !program_args.is_empty() {
+            params.insert("programArgv".to_owned(), serde_json::to_string(&program_args).unwrap_or_default());
+        }
+        params.retain(|_, value| !value.is_empty());
+        rc.extras.params = params;
+        self.envs(c, &mut rc);
+        Ok(rc)
+    }
+
     // ------------------------------------------------------------- Python
 
     /// The interpreter (`SDK_HOME` when the configuration doesn't use the module's), its
     /// options, and the working directory.
     fn interpreter(&self, c: &El, ignored: &mut Vec<String>) -> Res<(String, Vec<String>, PathBuf, Option<PathBuf>)> {
         let (dir, cwd) = self.cwd(c.option("WORKING_DIRECTORY"))?;
-        let sdk = if c.flag("IS_MODULE_SDK") { None } else { self.text(c.option("SDK_HOME"))? };
+        let sdk = if c.flag("IS_MODULE_SDK") { None } else { self.path(c.option("SDK_HOME"))? };
         let (exe, mut args) = match sdk {
             Some(sdk) => (path_from(self.root, sdk, &dir), Vec::new()),
             None => project_python(self.root, &dir),
@@ -369,7 +462,7 @@ impl Cx<'_> {
         rc.extras.include_system_env = c.option("PARENT_ENVS") != Some("false");
         // PyCharm 2024+: "Paths to .env files", joined with `File.pathSeparator`.
         for file in split_env_files(c.option("ENV_FILES").unwrap_or_default(), PATH_SEPARATOR) {
-            if let Some(file) = self.text(Some(file))? {
+            if let Some(file) = self.path(Some(file))? {
                 rc.extras.env_files.push(path_from(self.root, file, self.root));
             }
         }
@@ -403,7 +496,7 @@ impl Cx<'_> {
                 ignored.push(format!("EnvFile {path}"));
                 continue;
             }
-            if let Some(file) = self.text(Some(path))? {
+            if let Some(file) = self.path(Some(path))? {
                 rc.extras.env_files.push(path_from(self.root, file, self.root));
             }
         }
@@ -418,7 +511,7 @@ impl Cx<'_> {
         if c.flag("MODULE_MODE") {
             args.extend(["-m".to_owned(), script]);
         } else {
-            args.push(path_from(self.root, script, &dir));
+            args.push(path_from(self.root, file_url_path(&script), &dir));
         }
         args.extend(self.args(c.option("PARAMETERS"), &dir)?);
         let mut rc = config(name, "python", exe, args, Some("debugpy"));
@@ -480,7 +573,7 @@ impl Cx<'_> {
         args.extend([manage, "test".to_owned()]);
         args.extend(self.words(c.option("TARGET"))?);
         if c.flag("CUSTOM_SETTINGS")
-            && let Some(settings) = self.text(c.option("SETTINGS_FILE"))?
+            && let Some(settings) = self.path(c.option("SETTINGS_FILE"))?
         {
             args.extend(["--settings".to_owned(), settings_module(&settings, self.root, &dir)]);
         }
@@ -519,7 +612,7 @@ impl Cx<'_> {
                     }
                 }
                 Some("CUSTOM") => {}
-                _ => args.push(path_from(self.root, target, &dir)),
+                _ => args.push(path_from(self.root, file_url_path(&target), &dir)),
             }
         }
         if target_type.as_deref() != Some("CUSTOM")
@@ -574,7 +667,7 @@ impl Cx<'_> {
     fn node_interpreter(&self, c: &El) -> Res<Option<String>> {
         match c.value("node-interpreter").or_else(|| c.attr("node-interpreter")).map(str::trim) {
             None | Some("" | "project") => Ok(None),
-            interpreter => self.text(interpreter),
+            interpreter => self.path(interpreter),
         }
     }
 
@@ -587,12 +680,12 @@ impl Cx<'_> {
     }
 
     fn npm(&self, name: &str, c: &El, ignored: &mut Vec<String>) -> Res<RunConfig> {
-        let package_json = self.text(c.value("package-json"))?;
+        let package_json = self.path(c.value("package-json"))?;
         let dir = match &package_json {
             Some(p) => normalize(&self.root.join(p)).parent().map(Path::to_path_buf).unwrap_or(self.root.to_path_buf()),
             None => self.root.to_path_buf(),
         };
-        let manager = match self.text(c.value("package-manager"))? {
+        let manager = match self.path(c.value("package-manager"))? {
             Some(pm) if ["npm", "pnpm", "yarn", "bun"].contains(&command_name(&pm)) => command_name(&pm).to_owned(),
             _ => {
                 let pkg = std::fs::read_to_string(dir.join("package.json"))
@@ -650,14 +743,14 @@ impl Cx<'_> {
     fn js_tests(&self, name: &str, c: &El, vitest: bool, ignored: &mut Vec<String>) -> Res<RunConfig> {
         let (dir, cwd) = self.cwd(c.value("working-dir"))?;
         let mut args: Vec<String> = if vitest { vec!["vitest".into(), "run".into()] } else { vec!["jest".into()] };
-        if !vitest && let Some(config_file) = self.text(c.value("config-file"))? {
+        if !vitest && let Some(config_file) = self.path(c.value("config-file"))? {
             args.extend(["--config".to_owned(), path_from(self.root, config_file, &dir)]);
         }
         args.extend(self.args(c.value(if vitest { "vitest-options" } else { "jest-options" }), &dir)?);
         match c.value("scope-kind").unwrap_or("ALL") {
-            "DIRECTORY" => args.extend(self.text(c.value("test-directory"))?.map(|d| path_from(self.root, d, &dir))),
+            "DIRECTORY" => args.extend(self.path(c.value("test-directory"))?.map(|d| path_from(self.root, d, &dir))),
             "TEST_FILE" | "SUITE" | "TEST" => {
-                args.extend(self.text(c.value("test-file"))?.map(|f| path_from(self.root, f, &dir)));
+                args.extend(self.path(c.value("test-file"))?.map(|f| path_from(self.root, f, &dir)));
                 let names: Vec<&str> = c
                     .child("test-names")
                     .into_iter()
@@ -686,7 +779,7 @@ impl Cx<'_> {
 
     fn node(&self, name: &str, c: &El, ignored: &mut Vec<String>) -> Res<RunConfig> {
         let (dir, cwd) = self.cwd(c.attr("working-dir"))?;
-        let Some(file) = self.text(c.attr("path-to-js-file"))? else {
+        let Some(file) = self.path(c.attr("path-to-js-file"))? else {
             return Err(SkipReason::NothingToRun);
         };
         let mut args = self.words(c.attr("node-parameters"))?;
@@ -701,6 +794,45 @@ impl Cx<'_> {
     }
 
     // ------------------------------------------------------------- Java
+
+    fn jar_app(&self, name: &str, c: &El, ignored: &mut Vec<String>) -> Res<RunConfig> {
+        let Some(jar) = self.path(c.option("JAR_PATH"))? else { return Err(SkipReason::NothingToRun) };
+        let (dir, cwd) = self.cwd(c.option("WORKING_DIRECTORY"))?;
+        let jar = path_from(self.root, jar, &dir);
+        let vm = self.words(c.option("VM_PARAMETERS"))?;
+        let program = self.words(c.option("PROGRAM_PARAMETERS"))?;
+        let mut params = BTreeMap::from([
+            ("jarPath".to_owned(), jar.clone()),
+            ("vmOptions".to_owned(), format_args(&vm)),
+            ("programArgs".to_owned(), format_args(&program)),
+        ]);
+        let mut command = "java".to_owned();
+        if c.flag("ALTERNATIVE_JRE_PATH_ENABLED")
+            && let Some(jre) = self.path(c.option("ALTERNATIVE_JRE_PATH"))?
+        {
+            // IDEA also stores SDK names here; those don't identify a JRE on this machine.
+            if jre.contains('/') || jre.contains('\\') {
+                let jre = jre.replace('\\', "/");
+                command = if jre.ends_with("/bin/java") || jre.to_ascii_lowercase().ends_with("/bin/java.exe") {
+                    jre.clone()
+                } else {
+                    format!("{}/bin/{}", jre.trim_end_matches('/'), if cfg!(windows) { "java.exe" } else { "java" })
+                };
+                params.insert("jre".to_owned(), jre);
+            } else {
+                ignored.push(format!("JRE {jre}"));
+            }
+        }
+        let mut args = vm;
+        args.extend(["-jar".to_owned(), jar]);
+        args.extend(program);
+        let mut rc = config(name, "jar-application", command, args, Some("java-debug"));
+        rc.cwd = cwd.map(Into::into);
+        rc.extras.params = params;
+        rc.extras.include_system_env = c.option("PASS_PARENT_ENVS") != Some("false");
+        self.envs(c, &mut rc);
+        Ok(rc)
+    }
 
     /// IDEA's Application and Spring Boot types, as the `application` / `spring-boot` forms run
     /// them: `java <vm options> -cp ${classpath} <main> [--spring.profiles.active=…] <arguments>`
@@ -756,11 +888,11 @@ impl Cx<'_> {
         let mut params = BTreeMap::new();
         // Both default to true when missing (`ShRunConfiguration.java:148-149`).
         let rc = if c.option("EXECUTE_SCRIPT_FILE") != Some("false") {
-            let Some(path) = self.text(c.option("SCRIPT_PATH"))? else { return Err(SkipReason::NothingToRun) };
+            let Some(path) = self.path(c.option("SCRIPT_PATH"))? else { return Err(SkipReason::NothingToRun) };
             let path = path_from(self.root, path, &dir);
             let options = self.text(c.option("SCRIPT_OPTIONS"))?.unwrap_or_default();
             let interpreter =
-                self.text(c.option("INTERPRETER_PATH"))?.map(|i| path_from(self.root, i, &dir)).unwrap_or_default();
+                self.path(c.option("INTERPRETER_PATH"))?.map(|i| path_from(self.root, i, &dir)).unwrap_or_default();
             let interpreter_options = self.text(c.option("INTERPRETER_OPTIONS"))?.unwrap_or_default();
             // Run directly, the script is the program: `./run.sh`, so it isn't looked up on the PATH.
             let path = if interpreter.is_empty() { dot_slash(path) } else { path };
@@ -861,7 +993,67 @@ const PATH_SEPARATOR: char = if cfg!(windows) { ';' } else { ':' };
 /// The `ENV_FILES` paths, joined with `separator` (intellij-community
 /// `AbstractPythonRunConfiguration.java:303-304`, `:337`).
 fn split_env_files(value: &str, separator: char) -> impl Iterator<Item = &str> {
-    value.split(separator).filter(|f| !f.trim().is_empty())
+    let mut rest = value;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let end = rest.match_indices(separator).find_map(|(end, _)| {
+            let field = rest[..end].trim_start();
+            if separator == ':' {
+                // A URL's scheme and optional drive letter aren't list separators.
+                let scheme = field.eq_ignore_ascii_case("file");
+                let drive = field.strip_prefix("file:").is_some_and(|body| {
+                    let body = body.trim_start_matches('/');
+                    let body = body
+                        .split_once('/')
+                        .filter(|(host, _)| host.eq_ignore_ascii_case("localhost"))
+                        .map_or(body, |(_, path)| path);
+                    body.len() == 1 && body.as_bytes()[0].is_ascii_alphabetic()
+                });
+                if scheme || drive {
+                    return None;
+                }
+            }
+            Some(end)
+        });
+        let field = match end {
+            Some(end) => {
+                let field = &rest[..end];
+                rest = &rest[end + separator.len_utf8()..];
+                field
+            }
+            None => std::mem::take(&mut rest),
+        };
+        Some(field)
+    })
+    .filter(|f| !f.trim().is_empty())
+}
+
+/// The path a `file:` URL names, and `value` unchanged when it is not one.
+///
+/// IDEA writes path options as URLs (`file://$PROJECT_DIR$`), which expand to
+/// `file://C:/project` on Windows: the drive letter lands where a URL's authority
+/// belongs. Parsing that as a path yields `C:project`, a drive-relative path that
+/// then resolves against the project directory instead of replacing it.
+fn file_url_path(value: &str) -> String {
+    let Some(rest) = value.strip_prefix("file:") else {
+        return value.to_owned();
+    };
+    let rest = match rest.strip_prefix("//").and_then(|r| r.split_once('/')) {
+        Some((host, path)) if host.eq_ignore_ascii_case("localhost") => path,
+        _ => rest,
+    };
+    let body = rest.trim_start_matches('/');
+    let drive = matches!(body.as_bytes(), [d, b':', ..] if d.is_ascii_alphabetic());
+    if drive {
+        body.to_owned()
+    } else if rest.starts_with("//") && !rest.starts_with("///") {
+        // A real authority (`file://server/share`): a UNC path.
+        format!("//{body}")
+    } else {
+        format!("/{body}")
+    }
 }
 
 /// Keywords without the quotes around them (`"not slow"` → `not slow`).
@@ -966,6 +1158,57 @@ mod tests {
     }
 
     #[test]
+    fn file_urls_become_paths_whatever_the_drive_letter_looks_like() {
+        // IDEA on Windows: the drive letter sits where the authority belongs.
+        assert_eq!(file_url_path("file://C:/p"), "C:/p");
+        assert_eq!(file_url_path(r"file://C:\p"), r"C:\p");
+        assert_eq!(file_url_path("file:///C:/p"), "C:/p");
+        assert_eq!(file_url_path("file:///p/a"), "/p/a");
+        assert_eq!(file_url_path("file://server/share"), "//server/share");
+        // Not a URL: left alone, including a bare Windows path.
+        assert_eq!(file_url_path(r"C:\p"), r"C:\p");
+        assert_eq!(file_url_path("/p/a"), "/p/a");
+        assert_eq!(file_url_path(""), "");
+    }
+
+    #[test]
+    fn file_urls_preserve_paths_and_treat_localhost_as_local() {
+        for (url, expected) in [
+            ("file:///p/100%20", "/p/100%20"),
+            ("file:///p/a%E4", "/p/a%E4"),
+            ("file:///p/a b/中.py", "/p/a b/中.py"),
+            ("file://C:/a b/é", "C:/a b/é"),
+            ("file:///C:/a%20b", "C:/a%20b"),
+            ("file://localhost/p/a%20b", "/p/a%20b"),
+            ("file://localhost/C:/a%20b", "C:/a%20b"),
+            ("file://LOCALHOST/p", "/p"),
+            ("file://server/share/a%20b", "//server/share/a%20b"),
+            ("file:///p/%2520", "/p/%2520"),
+            ("/p/a%20b", "/p/a%20b"),
+            ("relative%20path", "relative%20path"),
+            ("https://localhost/a%20b", "https://localhost/a%20b"),
+        ] {
+            assert_eq!(file_url_path(url), expected, "{url}");
+        }
+    }
+
+    /// The property the bug broke: `working_dir` joins its `cwd` onto the project
+    /// directory, so a URL that reads as a relative path resolves inside it instead
+    /// of replacing it.
+    #[test]
+    fn file_urls_name_absolute_paths() {
+        let absolute = if cfg!(windows) {
+            vec!["file://C:/p", "file:///C:/p", r"file://C:\p", "file://server/share"]
+        } else {
+            vec!["file:///p/a", "file://server/share"]
+        };
+        for url in absolute {
+            let path = file_url_path(url);
+            assert!(Path::new(&path).is_absolute(), "{url} became {path:?}, which is not absolute");
+        }
+    }
+
+    #[test]
     fn env_files_split_on_the_path_separator() {
         assert_eq!(
             split_env_files("$PROJECT_DIR$/.env:$PROJECT_DIR$/.env.local", ':').collect::<Vec<_>>(),
@@ -974,6 +1217,19 @@ mod tests {
         assert_eq!(
             split_env_files(r"C:\p\.env;C:\p\.env.local", ';').collect::<Vec<_>>(),
             [r"C:\p\.env", r"C:\p\.env.local"]
+        );
+        assert_eq!(
+            split_env_files("file://$PROJECT_DIR$/.env:file://localhost/p/a%20b:.env.local", ':').collect::<Vec<_>>(),
+            ["file://$PROJECT_DIR$/.env", "file://localhost/p/a%20b", ".env.local"]
+        );
+        assert_eq!(
+            split_env_files("file://C:/p/.env:file:///D:/p/.env:file://localhost/E:/p/.env%3Adev", ':')
+                .collect::<Vec<_>>(),
+            ["file://C:/p/.env", "file:///D:/p/.env", "file://localhost/E:/p/.env%3Adev"]
+        );
+        assert_eq!(
+            split_env_files("file://C:/p/.env;file://localhost/C:/p/.env.local", ';').collect::<Vec<_>>(),
+            ["file://C:/p/.env", "file://localhost/C:/p/.env.local"]
         );
         assert_eq!(split_env_files("", ':').count(), 0);
         assert_eq!(PATH_SEPARATOR, if cfg!(windows) { ';' } else { ':' });

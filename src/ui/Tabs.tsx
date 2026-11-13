@@ -92,9 +92,10 @@ function previewOrder(ids: readonly string[], id: string, index: number): Map<st
   return new Map(order.map((it, i) => [it, i]));
 }
 
-/** A tab strip as seen from its container: close the selected tab if it can be closed. */
+/** A tab strip as seen from its container: close or pin the selected tab when it can be. */
 export interface TabStripHandle {
   closeSelected(): boolean;
+  togglePinSelected(): boolean;
 }
 
 /**
@@ -110,6 +111,8 @@ export interface TabsProps {
   onClose?: (id: string) => void;
   /** Alt+click on a close button (IDEA: close all other tabs). */
   onCloseOthers?: (id: string) => void;
+  /** Pin / Unpin Tab on the selected tab, from the container (a tool window's content tabs). */
+  onTogglePin?: (id: string) => void;
   /** Shift+left-click a tab closes it (editor tabs; plain clicks still select). */
   closeOnShiftClick?: boolean;
   onDoubleClick?: (id: string) => void;
@@ -138,6 +141,7 @@ export function Tabs({
   onSelect,
   onClose,
   onCloseOthers,
+  onTogglePin,
   closeOnShiftClick,
   onDoubleClick,
   onContextMenu,
@@ -162,9 +166,9 @@ export function Tabs({
   const [dragging, setDragging] = useState<string | null>(null);
 
   const register = useContext(TabStripRegistry);
-  const latest = useRef({ items, activeId, onClose });
+  const latest = useRef({ items, activeId, onClose, onTogglePin });
   useLayoutEffect(() => {
-    latest.current = { items, activeId, onClose };
+    latest.current = { items, activeId, onClose, onTogglePin };
   });
   useEffect(
     () =>
@@ -174,6 +178,12 @@ export function Tabs({
           const item = items.find((it) => it.id === activeId);
           if (!item || !onClose || item.closable === false) return false;
           onClose(item.id);
+          return true;
+        },
+        togglePinSelected: () => {
+          const { items, activeId, onTogglePin } = latest.current;
+          if (!onTogglePin || !items.some((it) => it.id === activeId)) return false;
+          onTogglePin(activeId!);
           return true;
         },
       }),
@@ -215,17 +225,42 @@ export function Tabs({
     });
   }, [dndType]);
 
+  // Tab slots wholly in view as last observed, which needs no layout read: switching to one of
+  // them doesn't measure the strip (a forced layout of the window, mid-switch).
+  const inView = useRef(new Set<Element>());
   // Bring a tab's whole slot (label + close button) into view. Narrowing the strip clips
   // the active tab's close button (#1740), and clicking the already-active tab doesn't
   // change `activeId`, so the strip must also reveal on clicks and resizes.
   const revealTab = useCallback(
-    (id: string | null) => {
+    (id: string | null, always = false) => {
       const scroller = scrollRef.current;
       const tab = id ? tabRefs.current.get(id)?.parentElement : null;
-      if (scroller && tab) (vertical ? revealVertically : revealHorizontally)(scroller, tab);
+      if (!scroller || !tab || (!always && inView.current.has(tab))) return;
+      (vertical ? revealVertically : revealHorizontally)(scroller, tab);
     },
     [vertical],
   );
+
+  const tabIds = items.map((it) => it.id).join("\n");
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || typeof IntersectionObserver === "undefined") return;
+    const seen = inView.current;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.intersectionRatio >= 1) seen.add(e.target);
+          else seen.delete(e.target);
+        }
+      },
+      { root, threshold: 1 },
+    );
+    for (const tab of tabRefs.current.values()) if (tab.parentElement) io.observe(tab.parentElement);
+    return () => {
+      io.disconnect();
+      seen.clear();
+    };
+  }, [tabIds]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -235,7 +270,7 @@ export function Tabs({
       setOverflow(!vertical && el.scrollWidth > el.clientWidth + 1);
       // A resize (e.g. the editor area narrowing) must scroll the active tab back
       // into view instead of leaving its close button clipped until a tab switch.
-      revealTab(latest.current.activeId);
+      revealTab(latest.current.activeId, true);
     };
     measure();
     if (typeof ResizeObserver === "undefined") return;

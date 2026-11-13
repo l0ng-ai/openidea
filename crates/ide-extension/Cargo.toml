@@ -18,6 +18,7 @@ semver = "1"
 blake3.workspace = true
 zip.workspace = true
 base64.workspace = true
+dunce.workspace = true
 ed25519-dalek = "3"
 
 [dev-dependencies]

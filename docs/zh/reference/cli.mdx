@@ -1,0 +1,78 @@
+---
+title: "命令行"
+description: "安装 openidea 命令，在终端中打开项目、定位到文件的某一行，或比较两个文件。"
+---
+
+`openidea` 命令可以在终端中用 OpenIDEA 打开文件夹和文件。应用未运行时会先启动它，把请求交给应用后命令立即返回。
+
+## 安装命令
+
+| 系统             | 菜单                                |
+| ---------------- | ----------------------------------- |
+| macOS            | **OpenIDEA › 安装 'openidea' 命令** |
+| Windows 和 Linux | **工具 › 安装 'openidea' 命令**     |
+
+也可以在查找操作中运行这个操作。安装后请打开一个新的终端。
+
+<Tabs>
+  <Tab title="macOS">
+    请先把 OpenIDEA 移到“应用程序”文件夹：命令是指向应用包内启动脚本的链接。如果 `~/.local/bin` 在 `PATH` 中，链接放在这里；否则放在 `/usr/local/bin`，此时可能需要输入管理员密码。
+  </Tab>
+  <Tab title="Windows">
+    安装时会在 `%LOCALAPPDATA%\OpenIDEA\bin` 中创建 `openidea.cmd`，并把该目录加入用户 `PATH`。安装版和便携版都适用，不需要管理员权限。
+  </Tab>
+  <Tab title="Linux">
+    安装时会创建 `~/.local/bin/openidea`。如果该目录不在 `PATH` 中，或者有其他 `openidea` 排在前面，通知会提示你把它加到 `PATH` 的最前面：
+
+    - Bash 和 Zsh：在 shell 配置文件中加入 `export PATH="$HOME/.local/bin:$PATH"`。
+    - Fish：运行 `fish_add_path --prepend ~/.local/bin`。
+
+    使用 AppImage 时，命令会直接启动这个 AppImage 文件，所以请把它放在固定位置。
+
+  </Tab>
+</Tabs>
+
+同一菜单中的 **卸载 'openidea' 命令** 只删除 OpenIDEA 自己的启动器（在 Windows 上还会移除对应的 `PATH` 条目）。属于其他应用的同名命令不会被覆盖或删除。移动便携版或 AppImage 之后，请重新安装命令。
+
+## 用法
+
+```text
+openidea [options] [[--line <n>] [--column <n>] path[:line[:column]] ...]
+openidea diff <left> <right>
+```
+
+```sh
+openidea .                              # 把当前文件夹作为项目打开
+openidea src/main.rs README.md          # 打开文件
+openidea --line 12 --column 5 src/main.rs
+openidea src/main.rs:12:5               # 同上，写成 path:line:column
+openidea diff before.txt after.txt      # 比较两个文件
+openidea                                # 把 OpenIDEA 窗口切到前台
+```
+
+- 文件夹作为项目打开。文件在包含它的项目窗口中打开；没有已打开的项目包含它时单独打开。
+- 行号和列号从 1 开始。`--line` 和 `--column` 作用于紧随其后的路径。
+- 只有当不存在完全同名的文件时，`path:line` 和 `path:line:column` 才会被解析为位置。
+- 相对路径相对于当前目录解析。
+- 文件名以 `-` 开头，或者文件名就是 `diff` 时，在它前面加 `--`。
+
+## 选项
+
+<ParamField path="--line <n>">把光标放在下一个文件的第 `n` 行。</ParamField>
+
+<ParamField path="--column <n>">把光标放在该行的第 `n` 列。</ParamField>
+
+<ParamField path="-h, --help">打印用法说明。</ParamField>
+
+<ParamField path="-v, --version">打印版本号，例如 `OpenIDEA 0.1.40`。</ParamField>
+
+## 退出码
+
+OpenIDEA 接受请求后命令以 `0` 退出。遇到未知选项、文件不存在、无法连接到应用，或应用在 30 秒内没有启动完成时，以 `1` 退出，并输出 `openidea: <错误信息>`。
+
+不安装命令时，GUI 可执行文件和系统的文件关联照常可用。
+
+## 其他命令行工具
+
+- `openidea-server`：在远程机器上运行 OpenIDEA 后端，用于远程开发。参见 [openidea-server](/zh/guide/remote/server)。
+- `openidea-plugin`：创建、构建和打包插件。参见[插件快速开始](/zh/plugins/quickstart)。

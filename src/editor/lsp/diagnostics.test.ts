@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { Text } from "@codemirror/state";
+import { EditorState, Text } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { viewShown, type EditorDocContext } from "@/editor/api";
+import { lspDoc } from "./lsp";
 import type { Diagnostic } from "@/bindings";
 import {
+  diagnosticsAt,
+  diagnosticsExtension,
   diagnosticsFor,
   installDiagnosticsEvents,
   setFileDiagnostics,
@@ -66,10 +71,19 @@ describe("toLintDiagnostics", () => {
       d(0, 3, 7, "error", { deprecated: true }),
     ]);
     expect(out).toEqual([
-      { from: 3, to: 7, severity: "error", message: "m0:3", source: undefined, markClass: "cm-lsp-deprecated" },
+      {
+        from: 3,
+        to: 7,
+        problem: d(0, 3, 7, "error", { deprecated: true }),
+        severity: "error",
+        message: "m0:3",
+        source: undefined,
+        markClass: "cm-lsp-deprecated",
+      },
       {
         from: 18,
         to: 19,
+        problem: d(1, 6, 7, "warning", { unnecessary: true, source: "rustc", code: "unused" }),
         severity: "warning",
         message: "m1:6",
         source: "rustc unused",
@@ -82,5 +96,27 @@ describe("toLintDiagnostics", () => {
     expect(toLintDiagnostics(doc, [d(0, 2, 2)])[0]).toMatchObject({ from: 2, to: 3 });
     // At a line end the previous character is used.
     expect(toLintDiagnostics(doc, [d(2, 1, 1)])[0]).toMatchObject({ from: doc.length - 1, to: doc.length });
+  });
+});
+
+describe("editor diagnostics in a view", () => {
+  it("skips a hidden view and catches up when it is shown again", async () => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "let x = 1;",
+        extensions: [lspDoc.of({ doc: 1, path: "/p/hidden.rs" } as EditorDocContext), diagnosticsExtension()],
+      }),
+      parent: document.body,
+    });
+    view.dom.remove();
+    setFileDiagnostics("/p/hidden.rs", "rust-analyzer", [d(0, 4, 5)]);
+    await Promise.resolve();
+    expect(diagnosticsAt(view, 4)).toHaveLength(0);
+    document.body.appendChild(view.dom);
+    view.dispatch({ effects: viewShown.of(null) });
+    await Promise.resolve();
+    expect(diagnosticsAt(view, 4)).toHaveLength(1);
+    view.destroy();
+    setFileDiagnostics("/p/hidden.rs", "rust-analyzer", []);
   });
 });

@@ -48,11 +48,12 @@ const REPLY = [
   "```",
 ].join("\n");
 
-async function openReply(page: Page, text: string, imageData?: string) {
+async function openReply(page: Page, text: string, imageData?: string, theme?: "dark" | "light") {
   await page.goto("/");
   await page.getByRole("tree", { name: "Project" }).waitFor();
   await page.evaluate(
-    async ({ task, text, imageData }) => {
+    async ({ task, text, imageData, theme }) => {
+      if (theme) document.documentElement.dataset.theme = theme;
       if (imageData) {
         const routePath = "/src/platform/tauriCore.ts";
         const { setInvokeRoute } = await import(routePath);
@@ -80,7 +81,7 @@ async function openReply(page: Page, text: string, imageData?: string) {
       });
       store.dockTask(task.id);
     },
-    { task: TASK, text, imageData },
+    { task: TASK, text, imageData, theme },
   );
   const reply = page.locator("[class*='_markdown_']").first();
   await reply.locator("h1, p").first().waitFor();
@@ -143,20 +144,26 @@ test("styles quotes, rules, images and task lists", async ({ page }) => {
   expect(await css(reply, "li:has(> input)", "list-style-type")).toBe("none");
 });
 
-test("loads local and web reply images", async ({ page }) => {
-  await page.route("https://images.example.com/code.gif", (route) =>
-    route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") }),
-  );
+test("loads local reply images, and web ones when asked", async ({ page }) => {
+  let fetched = 0;
+  await page.route("https://images.example.com/code.gif", (route) => {
+    fetched++;
+    return route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") });
+  });
   const reply = await openReply(
     page,
     "![Local QR](/tmp/code.png)\n\n![Web QR](https://images.example.com/code.gif)",
     PIXEL,
   );
-  for (const name of ["Local QR", "Web QR"]) {
-    await expect
-      .poll(() => reply.getByRole("img", { name }).evaluate((img: HTMLImageElement) => img.naturalWidth))
-      .toBe(1);
-  }
+  const width = (name: string) =>
+    reply.getByRole("img", { name, includeHidden: true }).evaluate((img: HTMLImageElement) => img.naturalWidth);
+  await expect.poll(() => width("Local QR")).toBe(1);
+  const load = reply.getByRole("button", { name: "Load image from images.example.com" });
+  await expect(load).toBeVisible();
+  expect(fetched).toBe(0);
+  await load.click();
+  await expect.poll(() => width("Web QR")).toBe(1);
+  expect(fetched).toBe(1);
 });
 
 test("copies reply Markdown with the keyboard and keeps code copying separate", async ({ page, context }) => {
@@ -202,6 +209,19 @@ test("keeps latest reply actions visible and quotes into the draft without shift
       .map((line) => (line ? `> ${line}` : ">"))
       .join("\n") + "\n\n",
   );
+});
+
+test("copies a mouse selection with Ctrl+C and pops up no Quote button", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const reply = await openReply(page, "Selectable answer");
+  const box = (await reply.locator("p").first().boundingBox())!;
+  await page.mouse.move(box.x + 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2);
+  await page.mouse.up();
+  await page.keyboard.press("ControlOrMeta+c");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("Selectable answer");
+  await expect(page.getByRole("button", { name: "Quote", exact: true })).toHaveCount(0);
 });
 
 test("keeps chat history readable and selections free of timestamps and status labels", async ({ page, context }) => {
@@ -277,8 +297,10 @@ test("keeps chat history readable and selections free of timestamps and status l
   expect(selected).not.toMatch(/AM|PM|5s|Reasoning|Requesting task context/);
   await page.keyboard.press("ControlOrMeta+c");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
+  // The finished turn's reasoning is folded with its work.
+  await stream.locator("[class*='_turnFold_'] > summary").click();
   await stream.locator("[class*='_thought_'] > summary").click();
-  await expect(stream.getByText("Requesting task context", { exact: true })).toBeVisible();
+  await expect(stream.locator("[class*='_thoughtPreview_']")).toHaveText("Requesting task context");
   await expect(stream.locator("[class*='_thoughtBody_'] strong")).toHaveText("Requesting task context");
   await page.evaluate(async (id) => {
     const path = "/src/features/agents/store.ts";
@@ -339,4 +361,159 @@ test("selects through code blocks and tables while keeping copy controls outside
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(tree);
   await copies.last().click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(flow);
+});
+
+test("keeps mermaid `<style>` rules scoped to the rendered svg after id rewriting", async ({ page }) => {
+  const diagram = [
+    "```mermaid",
+    "%%{init: {'theme': 'base', 'flowchart': {'htmlLabels': false, 'curve': 'basis'}}}%%",
+    "flowchart TB",
+    '    subgraph T1["Tier 1"]',
+    "        A[(Local)] <--> B[(Peer)]",
+    "    end",
+    '    subgraph T2["Tier 2"]',
+    "        C[(Host RAM)]",
+    "    end",
+    '    C -->|"PCIe"| A',
+    "```",
+  ].join("\n");
+  const reply = await openReply(page, `Diagram:\n\n${diagram}`);
+  await expect(reply.locator("[data-mermaid-state='ok'] .mermaid-output svg")).toBeVisible();
+  expect(await css(reply, ".cluster rect", "fill")).not.toBe("rgb(0, 0, 0)");
+  expect(await css(reply, ".flowchart-link", "fill")).toBe("none");
+});
+
+test("renders KaTeX math in mermaid labels", async ({ page }) => {
+  const diagram = ["```mermaid", "flowchart LR", '  A["$$x^2 + \\frac{a}{b}$$"] --> B', "```"].join("\n");
+  const reply = await openReply(page, `Diagram:\n\n${diagram}`);
+  const svg = reply.locator("[data-mermaid-state='ok'] .mermaid-output svg");
+  await expect(svg).toBeVisible();
+  await expect(svg.locator("math mfrac")).toHaveCount(1);
+});
+
+test("keeps mermaid flowchart nodes and sequence control blocks off solid black", async ({ page }) => {
+  const flow = [
+    "```mermaid",
+    "flowchart LR",
+    '  subgraph Client["Client"]',
+    '    A["Local agent"]',
+    '    B["Voice input"]',
+    "  end",
+    '  subgraph Cloud["Cloud"]',
+    '    C["Cloud agent"]',
+    '    D["Memory service"]',
+    "  end",
+    "  B --> A",
+    "  A --> C",
+    "  C --> D",
+    "```",
+  ].join("\n");
+  const sequence = ["```mermaid", "sequenceDiagram", "  loop every minute", "    A->>B: ping", "  end", "```"].join(
+    "\n",
+  );
+  const reply = await openReply(page, `Flow:\n\n${flow}\n\nSequence:\n\n${sequence}`);
+  await expect(reply.locator("[data-mermaid-state='ok'] .mermaid-output svg")).toHaveCount(2);
+  expect(await css(reply, ".node rect", "fill")).not.toBe("rgb(0, 0, 0)");
+  expect(await css(reply, ".cluster rect", "fill")).not.toBe("rgb(0, 0, 0)");
+  expect(await css(reply, ".labelBox", "fill")).not.toBe("rgb(0, 0, 0)");
+});
+
+const DIAGRAMS = [
+  "flowchart LR\n  subgraph Client\n    A[Local agent] --> B[Voice input]\n  end",
+  "sequenceDiagram\n  loop every minute\n    A->>B: ping\n  end",
+  "classDiagram\n  class Agent {\n    +String name\n    +run()\n  }",
+  "stateDiagram-v2\n  [*] --> Ready\n  Ready --> Running\n  Running --> [*]",
+  'pie title Work\n  "Ready" : 40\n  "Running" : 35\n  "Done" : 25',
+  "gantt\n  dateFormat YYYY-MM-DD\n  section Delivery\n  Shipped :done, shipped, 2026-01-01, 5d\n  Building :active, building, after shipped, 5d\n  Next :next, after building, 5d\n  Critical :crit, critical, after next, 5d",
+]
+  .map((source) => `\`\`\`mermaid\n${source}\n\`\`\``)
+  .join("\n\n");
+
+for (const theme of ["dark", "light"] as const) {
+  test(`keeps Mermaid shapes, labels and chart series readable in ${theme} theme`, async ({ page }) => {
+    const reply = await openReply(page, `Diagrams:\n\n${DIAGRAMS}`, undefined, theme);
+    const svgs = reply.locator("[data-mermaid-state='ok'] .mermaid-output svg");
+    await expect(svgs).toHaveCount(6);
+    for (const [index, selector] of [
+      [0, ".node rect"],
+      [1, ".labelBox"],
+      [2, ".outer-path path"],
+      [3, ".node rect"],
+    ] as const) {
+      expect(await css(svgs.nth(index), selector, "fill")).not.toBe("rgb(0, 0, 0)");
+      expect(await css(svgs.nth(index), selector, "stroke")).not.toContain("url(");
+    }
+    expect(await css(svgs.nth(2), ".nodeLabel", "color")).not.toBe(await css(svgs.nth(2), ".outer-path path", "fill"));
+    const slices = await svgs
+      .nth(4)
+      .locator(".pieCircle")
+      .evaluateAll((els) => els.map((el) => getComputedStyle(el).fill));
+    expect(new Set(slices).size).toBe(3);
+    expect(slices).not.toContain("rgb(0, 0, 0)");
+    const contrasts = await svgs
+      .nth(5)
+      .locator("text.taskText")
+      .evaluateAll((els) => {
+        const luminance = (color: string) => {
+          const [r, g, b] = color
+            .match(/\d+/g)!
+            .map(Number)
+            .map((v) => {
+              const c = v / 255;
+              return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+            });
+          return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+        };
+        return els.map((el) => {
+          const bar = document.getElementById(el.id.replace(/-text$/, ""))!;
+          const fg = luminance(getComputedStyle(el).fill);
+          const bg = luminance(getComputedStyle(bar).fill);
+          return { text: el.textContent, ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05) };
+        });
+      });
+    expect(contrasts).toHaveLength(4);
+    for (const { text, ratio } of contrasts) expect(ratio, `${theme}: ${text}`).toBeGreaterThanOrEqual(4.5);
+  });
+}
+
+test("draws a diagram without reaching the hosts its configuration names", async ({ page }) => {
+  const asked: string[] = [];
+  await page.route(/^https:\/\/([a-z\d-]+\.)*example\.com\//, (route) => {
+    asked.push(new URL(route.request().url()).pathname);
+    return route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") });
+  });
+  const at = (name: string) => `https://images.example.com/${name}`;
+  const fence = (...lines: string[]) => ["```mermaid", ...lines, "```"].join("\n");
+  const diagrams = [
+    fence(
+      `%%{init: {"themeCSS": ".nodeLabel{background-image:url(${at("theme-css")})} svg{background-image:url(${at("theme-css-root")})}"}}%%`,
+      "flowchart TD",
+      "    A[One]-->B[Two]",
+    ),
+    fence(
+      `%%{init: {"fontFamily": "x;background-image:url(${at("font-family")})"}}%%`,
+      "flowchart TD",
+      "    A[One]-->B[Two]",
+    ),
+    fence(
+      "---",
+      "config:",
+      `  themeCSS: ".nodeLabel{background-image:url(${at("front-matter")})}"`,
+      "---",
+      "flowchart TD",
+      "    A[One]-->B[Two]",
+    ),
+  ];
+  const reply = await openReply(page, `Diagrams:\n\n${diagrams.join("\n\n")}`);
+  await expect(reply.locator("[data-mermaid-state='ok'] .mermaid-output svg")).toHaveCount(diagrams.length);
+  await page.evaluate(
+    (src) =>
+      new Promise<void>((done) => {
+        const img = new Image();
+        img.onload = img.onerror = () => done();
+        img.src = src;
+      }),
+    "https://example.com/after",
+  );
+  expect(asked).toEqual(["/after"]);
 });

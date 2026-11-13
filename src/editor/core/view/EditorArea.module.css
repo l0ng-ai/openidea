@@ -65,9 +65,10 @@
   flex-direction: column;
   outline: none;
 }
-/* Tabs' trailing slot may shrink to 0; keep the action buttons whole. */
+/* Keep the actions at the pane edge without changing how wrapped tabs use space. */
 .tabs > :has(> .tabActions) {
   flex: none;
+  margin-left: auto;
 }
 .tabActions {
   flex: none;
@@ -100,18 +101,22 @@
 }
 /* Library class notice (IDEA's yellowish decompiled-file bar). */
 .libraryBanner {
+  flex-wrap: wrap;
   background: var(--bg-feedback-warning);
   border-bottom-color: var(--border-feedback-warning);
 }
 .virtualBannerText {
+  flex: none;
   min-width: 0;
   padding: 8px 0;
+  white-space: nowrap;
 }
 .bannerText {
   flex: none;
   white-space: nowrap;
 }
 .bannerDetail {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -194,6 +199,7 @@
   flex: none;
   max-width: 240px;
   gap: 5px;
+  color: var(--fg);
 }
 .crumbButton:last-child {
   flex: 0 1 auto;
@@ -211,7 +217,7 @@
 .statusSep {
   flex: none;
   color: var(--fg-faint);
-  margin: 0 1px;
+  margin: 0 2px;
 }
 .lock {
   display: inline-flex;
@@ -265,8 +271,9 @@
 .tabsVertical > .tabs,
 .tabsVertical > .tabRows {
   width: max-content;
-  min-width: 140px;
-  max-width: 260px;
+  /* A narrow editor group keeps most of its width for the editor; labels truncate. */
+  min-width: min(140px, 40%);
+  max-width: min(260px, 40%);
   border-bottom: none;
   border-right: 1px solid var(--border-editor-tabs, var(--border));
 }

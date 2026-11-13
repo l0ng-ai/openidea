@@ -262,7 +262,7 @@ mod tests {
         fn project_of(&self, _: &str) -> Option<PathBuf> {
             None
         }
-        fn apply_edits(&self, _: &Path, _: u64, _: &[ide_core::TextEdit]) -> Result<u64, HostError> {
+        fn apply_edits(&self, _: &Path, _: u64, _: &[ide_core::TextEdit], _: bool) -> Result<u64, HostError> {
             unreachable!()
         }
         fn publish_diagnostics(&self, _: &str, _: &Path, _: Vec<ide_core::Diagnostic>) -> Result<(), HostError> {
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn validates_entire_rooted_batch_with_utf16_positions() {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
         let file = root.join("routes.rb");
         std::fs::write(&file, "😀x\n").unwrap();
         let good = endpoint(file.clone());

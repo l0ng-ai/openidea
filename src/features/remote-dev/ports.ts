@@ -38,7 +38,9 @@ function save(ports: readonly ForwardedPort[]) {
   const key = savedKey();
   if (!key) return;
   try {
-    if (ports.length) localStorage.setItem(key, JSON.stringify(ports.map((p) => p.remotePort)));
+    // A port of another host comes from `forwardPorts`, which forwards it on every connection.
+    const own = ports.filter((p) => !p.host).map((p) => p.remotePort);
+    if (own.length) localStorage.setItem(key, JSON.stringify(own));
     else localStorage.removeItem(key);
   } catch {
     /* storage unavailable */
@@ -88,8 +90,9 @@ export async function forwardPort(port: number): Promise<ForwardedPort | null> {
   }
 }
 
-export async function stopForwarding(port: number): Promise<void> {
-  await call(commands.remoteStopForwarding(port)).catch(() => {});
+/** `host`: the host the port belongs to (a Compose service), null for the remote host itself. */
+export async function stopForwarding(port: number, host: string | null = null): Promise<void> {
+  await call(commands.remoteStopForwarding(port, host)).catch(() => {});
   await refreshPorts(true);
 }
 

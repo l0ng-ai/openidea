@@ -91,6 +91,13 @@ describe("database object SQL", () => {
     );
   });
 
+  it("drops an Oracle package with neither IF EXISTS nor CASCADE", () => {
+    expect(dropSql("oracle", { kind: "package", schema: "hr", name: "pkg" }, { ifExists: true, cascade: true })).toBe(
+      'drop package "hr"."pkg";',
+    );
+    expect(reference("oracle", { kind: "package", schema: "hr", name: "pkg" })).toBe('"hr"."pkg"');
+  });
+
   it("renames per dialect", () => {
     expect(renameSql("sqlite", { kind: "table", schema: "main", name: "users" }, "people")).toBe(
       "alter table users rename to people;",
@@ -230,5 +237,107 @@ describe("oracle object SQL", () => {
       "alter table HR.EMPLOYEES rename column NAME to FULL_NAME;",
       "alter table HR.EMPLOYEES add (HIRED DATE default SYSDATE);",
     ]);
+  });
+});
+
+describe("snowflake object SQL", () => {
+  const emp = [
+    col("ID", "NUMBER(38,0)", { primaryKey: true, nullable: false }),
+    col("NAME", "VARCHAR(40)", { default: "'x'" }),
+  ];
+  const drop = { ifExists: true, cascade: true };
+
+  it("keeps unquoted names that the server folds to upper case", () => {
+    expect(ident("snowflake", "EMPLOYEES")).toBe("EMPLOYEES");
+    expect(ident("snowflake", "EMP_2$")).toBe("EMP_2$");
+    expect(ident("snowflake", "employees")).toBe('"employees"');
+    expect(ident("snowflake", "My Table")).toBe('"My Table"');
+    expect(ident("snowflake", 'a"b')).toBe('"a""b"');
+    expect(ident("snowflake", "QUALIFY")).toBe('"QUALIFY"');
+    expect(ident("snowflake", "ORDER")).toBe('"ORDER"');
+    expect(quoteIdent("snowflake", "x")).toBe('"x"');
+    expect(reference("snowflake", { kind: "column", schema: "HR", name: "EMPLOYEES", column: "name" })).toBe(
+      'HR.EMPLOYEES."name"',
+    );
+  });
+
+  it("renames within the object's schema", () => {
+    expect(renameSql("snowflake", { kind: "table", schema: "HR", name: "EMP" }, "STAFF")).toBe(
+      "alter table HR.EMP rename to HR.STAFF;",
+    );
+    expect(renameSql("snowflake", { kind: "view", schema: "HR", name: "V_EMP" }, "V_STAFF")).toBe(
+      "alter view HR.V_EMP rename to HR.V_STAFF;",
+    );
+    expect(renameSql("snowflake", { kind: "column", schema: "HR", name: "EMP", column: "A" }, "b")).toBe(
+      'alter table HR.EMP rename column A to "b";',
+    );
+  });
+
+  it("drops and truncates, and has no indexes or triggers", () => {
+    expect(dropSql("snowflake", { kind: "table", schema: "HR", name: "EMP" }, drop)).toBe(
+      "drop table if exists HR.EMP;",
+    );
+    expect(dropSql("snowflake", { kind: "view", schema: "HR", name: "V" }, drop)).toBe("drop view if exists HR.V;");
+    expect(dropSql("snowflake", { kind: "materializedView", schema: "HR", name: "MV" }, drop)).toBe(
+      "drop materialized view if exists HR.MV;",
+    );
+    expect(dropSql("snowflake", { kind: "sequence", schema: "HR", name: "S" }, drop)).toBe(
+      "drop sequence if exists HR.S;",
+    );
+    expect(
+      dropSql("snowflake", { kind: "function", schema: "HR", name: "F", arguments: "NUMBER, VARCHAR" }, drop),
+    ).toBe("drop function if exists HR.F(NUMBER, VARCHAR);");
+    expect(dropSql("snowflake", { kind: "procedure", schema: "HR", name: "P" }, { ...drop, ifExists: false })).toBe(
+      "drop procedure HR.P();",
+    );
+    expect(dropSql("snowflake", { kind: "column", schema: "HR", name: "EMP", column: "NAME" }, drop)).toBe(
+      "alter table HR.EMP drop column NAME;",
+    );
+    expect(dropSql("snowflake", { kind: "schema", schema: "", name: "HR" }, drop)).toBe("drop schema if exists HR;");
+    expect(truncateSql("snowflake", "HR", "EMP", { restartIdentity: true, cascade: true })).toBe(
+      "truncate table HR.EMP;",
+    );
+    expect(canDrop("snowflake", { kind: "index", schema: "HR", name: "I" })).toBe(false);
+    expect(canDrop("snowflake", { kind: "trigger", schema: "HR", name: "T" })).toBe(false);
+    expect(canDrop("snowflake", { kind: "table", schema: "HR", name: "EMP" })).toBe(true);
+    expect(canModifyTable("snowflake")).toBe(true);
+  });
+
+  it("creates tables and script templates", () => {
+    const d = emp.map(draftOf);
+    d.push({ ...d[1]!, key: 9, original: null, name: "note", dataType: "", default: "", notNull: true });
+    expect(createTableSql("snowflake", "HR", "T", d)).toBe(
+      "create table HR.T\n(\n    ID NUMBER(38,0) not null,\n    NAME VARCHAR(40) default 'x',\n" +
+        '    "note" VARCHAR not null,\n    primary key (ID)\n);\n',
+    );
+    expect(scriptSql("snowflake", "selectFirst", "HR", "EMP", emp)).toBe("select *\nfrom HR.EMP\nlimit 10;\n");
+  });
+
+  it("alters columns with ALTER COLUMN and never sets a default on an existing column", () => {
+    const p = emp.map(draftOf);
+    p[0] = { ...p[0]!, notNull: false, default: "1" };
+    p[1] = { ...p[1]!, name: "FULL_NAME", dataType: "VARCHAR(80)", notNull: true, default: "" };
+    p.push({
+      key: 99,
+      original: null,
+      name: "HIRED",
+      dataType: "DATE",
+      notNull: false,
+      default: "CURRENT_DATE",
+      primaryKey: false,
+      dropped: false,
+    } satisfies ColumnDraft);
+    expect(alterTableSql("snowflake", "HR", "EMP", "STAFF", p)).toEqual([
+      "alter table HR.EMP alter column ID drop not null;",
+      "alter table HR.EMP rename column NAME to FULL_NAME;",
+      "alter table HR.EMP alter column FULL_NAME set data type VARCHAR(80);",
+      "alter table HR.EMP alter column FULL_NAME set not null;",
+      "alter table HR.EMP alter column FULL_NAME drop default;",
+      "alter table HR.EMP add column HIRED DATE default CURRENT_DATE;",
+      "alter table HR.EMP rename to HR.STAFF;",
+    ]);
+    const dropped = emp.map(draftOf);
+    dropped[1] = { ...dropped[1]!, dropped: true };
+    expect(alterTableSql("snowflake", "HR", "EMP", "EMP", dropped)).toEqual(["alter table HR.EMP drop column NAME;"]);
   });
 });

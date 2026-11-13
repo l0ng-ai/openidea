@@ -256,6 +256,31 @@ fn effort_name(effort: &str) -> String {
     }
 }
 
+/// The enabled skills from `skills/list`, named as Codex ACP advertises them.
+pub(super) fn skill_commands(result: &Value) -> Option<Value> {
+    let entries = result.get("data")?.as_array()?;
+    let mut seen = std::collections::HashSet::new();
+    let commands: Vec<Value> = entries
+        .iter()
+        .filter_map(|entry| entry.get("skills").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|skill| {
+            let name = skill.get("name")?.as_str()?.trim();
+            if name.is_empty() || skill.get("enabled") == Some(&Value::Bool(false)) || !seen.insert(name) {
+                return None;
+            }
+            let description = skill
+                .pointer("/interface/shortDescription")
+                .and_then(Value::as_str)
+                .or_else(|| skill.get("shortDescription").and_then(Value::as_str))
+                .or_else(|| skill.get("description").and_then(Value::as_str))
+                .unwrap_or(name);
+            Some(json!({ "name": format!("${name}"), "description": description, "source": "skill", "input": null }))
+        })
+        .collect();
+    Some(json!({ "sessionUpdate": "available_commands_update", "availableCommands": commands }))
+}
+
 /// ACP prompt content blocks as codex `UserInput`s. Embedded files become text.
 pub(super) fn user_input(prompt: &Value) -> Vec<Value> {
     let blocks = prompt.as_array().map(Vec::as_slice).unwrap_or_default();
@@ -732,19 +757,23 @@ pub(super) fn answer_of(choices: &[Choice], outcome: &Value, decline: Value) -> 
     choices.iter().find(|c| selected && c.option["optionId"].as_str() == chosen).map_or(decline, |c| c.answer.clone())
 }
 
+/// The command a command approval is about: the request's own, else its item's.
+pub(super) fn approval_command<'a>(params: &'a Value, item: Option<&'a Value>) -> Option<&'a str> {
+    // Approval payloads can describe a different command from the item's earlier summary.
+    let item = item.filter(|i| i.get("id") == params.get("itemId"));
+    params
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty())
+        .or_else(|| item.and_then(|i| i.get("command")).and_then(Value::as_str).filter(|c| !c.is_empty()))
+}
+
 /// The ACP title of a command approval.
 pub(super) fn command_approval_title(params: &Value, item: Option<&Value>) -> String {
     if let Some(host) = params.pointer("/networkApprovalContext/host").and_then(Value::as_str) {
         return format!("Allow network access to {host}");
     }
-    // Approval payloads can describe a different command from the item's earlier summary.
-    let item = item.filter(|i| i.get("id") == params.get("itemId"));
-    let command = params
-        .get("command")
-        .and_then(Value::as_str)
-        .filter(|c| !c.is_empty())
-        .or_else(|| item.and_then(|i| i.get("command")).and_then(Value::as_str).filter(|c| !c.is_empty()));
-    match command {
+    match approval_command(params, item) {
         Some(command) => format!("Run {}", crate::shell_script(command).unwrap_or_else(|| command.to_owned())),
         None => "Run a command".to_owned(),
     }

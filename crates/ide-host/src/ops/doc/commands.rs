@@ -5,7 +5,7 @@ use crate::rpc::Dispatcher;
 use ide_core::{DocId, IdeError, IdeResult, OutlineItem, Range};
 use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
-use ide_workspace::{DocumentInfo, HistoryEntry};
+use ide_workspace::{DocumentEncoding, DocumentInfo, HistoryEntry};
 use std::path::PathBuf;
 
 /// Runs blocking work (disk I/O, parsing, large copies) on the blocking pool,
@@ -19,7 +19,17 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send
 pub async fn doc_open_virtual(host: &Host, window: &str, uri: String) -> IdeResult<DocumentInfo> {
     let project = host.project(window)?;
     let vd = crate::ops::lsp::lsp_virtual_document(host, window, uri).await?;
-    blocking(move || project.documents.open_virtual(&vd.uri, vd.language_id, &vd.text)).await
+    blocking(move || {
+        project.documents.open_virtual(
+            &vd.uri,
+            vd.language_id,
+            &vd.text,
+            &vd.encoding,
+            vd.has_bom,
+            vd.can_reload_encoding,
+        )
+    })
+    .await
 }
 
 /// The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
@@ -29,16 +39,32 @@ pub async fn doc_ui_mode(host: &Host, window: &str, path: PathBuf) -> IdeResult<
     blocking(move || Ok(project.documents.ui_mode_of(&path))).await
 }
 
-/// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label.
+/// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state.
+/// Virtual documents re-read their origin (archive, language server, Git blob)
+/// instead of a disk file; converting them would write to it, so it stays refused.
 pub async fn doc_set_encoding(
     host: &Host,
     window: &str,
     doc: DocId,
     encoding: String,
     reload: bool,
-) -> IdeResult<String> {
+) -> IdeResult<DocumentEncoding> {
     let project = host.project(window)?;
+    if reload && let Some(uri) = project.documents.virtual_uri(doc)? {
+        let vd = if uri.starts_with("git-revision:") {
+            crate::ops::vcs::revision_virtual_document(host, window, &uri, Some(&encoding)).await?
+        } else {
+            project.lsp.reload_virtual(&uri, &encoding).await?
+        };
+        return host.blocking(move || project.documents.replace_virtual(doc, &vd.text, &vd.encoding, vd.has_bom)).await;
+    }
     host.blocking(move || project.documents.set_encoding(doc, &encoding, reload)).await
+}
+
+/// Adds or removes the BOM on a UTF-8 document; the change is written on save.
+pub async fn doc_set_bom(host: &Host, window: &str, doc: DocId, has_bom: bool) -> IdeResult<DocumentEncoding> {
+    let project = host.project(window)?;
+    host.blocking(move || project.documents.set_bom(doc, has_bom)).await
 }
 
 pub fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_ending: LineEnding) -> IdeResult<()> {
@@ -52,6 +78,20 @@ pub fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_ending: L
 pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<OutlineItem>> {
     let project = host.project(window)?;
     let lsp = project.lsp.document_symbols(doc).await.ok().flatten();
+    let lsp = if lsp.as_ref().is_none_or(|v| v.is_empty()) {
+        if let Some((plugins, d)) =
+            crate::ops::lsp::plugin_providers(host, window, doc, crate::plugins::ProviderKind::DocumentSymbols)
+        {
+            let items =
+                crate::ops::lsp::plugin_call(move || plugins.language_document_symbols(&d)).await.unwrap_or_default();
+            if items.is_empty() { lsp } else { Some(crate::plugins::language_features::outline(items)) }
+        } else {
+            lsp
+        }
+    } else {
+        lsp
+    };
+    let lsp = lsp.filter(|v| !v.is_empty());
     blocking(move || {
         let snap = match project.documents.text_snapshot(doc) {
             Ok(snap) => snap,
@@ -80,7 +120,27 @@ pub async fn doc_folding(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec
         if snap.large {
             return Ok(Vec::new());
         }
-        Ok(project.syntax.folding(doc, &snap.language, snap.version, &snap.text))
+        let mut folds = project.syntax.folding(doc, &snap.language, snap.version, &snap.text);
+        if let Some(plugins) = crate::plugins::editor_providers_for(crate::plugins::ProviderKind::Folding) {
+            let d = ide_plugin::ProviderDocument {
+                path: project.documents.identity(doc)?.0,
+                language: snap.language.0,
+                version: u64::from(snap.version),
+                text: snap.text,
+            };
+            folds.extend(plugins.language_folding(&d).into_iter().map(|f| FoldRange {
+                start_line: f.start_line,
+                end_line: f.end_line,
+                kind: match f.kind.as_str() {
+                    "comment" => ide_language::FoldKind::Comment,
+                    "imports" => ide_language::FoldKind::Imports,
+                    _ => ide_language::FoldKind::Region,
+                },
+            }));
+            folds.sort_by_key(|f| (f.start_line, f.end_line));
+            folds.dedup_by_key(|f| (f.start_line, f.end_line));
+        }
+        Ok(folds)
     })
     .await
 }
@@ -105,6 +165,21 @@ pub async fn doc_selection_ranges(host: &Host, window: &str, doc: DocId, offset:
     let project = host.project(window)?;
     blocking(move || {
         let snap = project.documents.text_snapshot(doc)?;
+        if !snap.large
+            && let Some(plugins) = crate::plugins::editor_providers_for(crate::plugins::ProviderKind::SelectionRanges)
+        {
+            let at = ide_text::Document::new(&snap.text).offset_to_pos(offset);
+            let d = ide_plugin::ProviderDocument {
+                path: project.documents.identity(doc)?.0,
+                language: snap.language.0.clone(),
+                version: u64::from(snap.version),
+                text: snap.text.clone(),
+            };
+            let ranges = plugins.language_selection_ranges(&d, at);
+            if !ranges.is_empty() {
+                return Ok(ranges);
+            }
+        }
         let language = if snap.large { ide_core::LanguageId::plain_text() } else { snap.language };
         Ok(project.syntax.selection_ranges(doc, &language, snap.version, &snap.text, offset))
     })
@@ -126,6 +201,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("doc_set_encoding", |c| async move {
         doc_set_encoding(&c.host, &c.window, c.arg("doc")?, c.arg("encoding")?, c.arg("reload")?).await
     });
+    d.add("doc_set_bom", |c| async move { doc_set_bom(&c.host, &c.window, c.arg("doc")?, c.arg("hasBom")?).await });
     d.add("doc_set_line_ending", |c| async move {
         blocking(move || doc_set_line_ending(&c.host, &c.window, c.arg("doc")?, c.arg("lineEnding")?)).await
     });

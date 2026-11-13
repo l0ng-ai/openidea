@@ -2,9 +2,9 @@
  * Before launch tasks (IDEA's "Before launch" list): run in order before a
  * configuration starts; the first failure aborts the launch.
  */
+import { useProject } from "@/platform/project";
 import { buildCMake, isCMakeBuild } from "./cmake";
 import { dotnetBuildConfig } from "./dotnetTypes";
-import { useProject } from "@/platform/project";
 import { useBuildPresentation } from "@/platform/projectPresentation";
 import { buildTask } from "./buildTask";
 import { moduleTaskError } from "./configs";
@@ -88,7 +88,9 @@ async function runTask(
       return (await runToEnd(dotnetBuildConfig(config), chain, show)) ? null : "Build failed";
     case "build": {
       if (target) return buildCMake(target, show === true);
-      return buildTask(BUILD_ACTION, { activate: false });
+      const error = await buildTask(BUILD_ACTION, { activate: false });
+      if (error) return error;
+      return null;
     }
     case "buildModule": {
       const error = moduleTaskError(config, target);

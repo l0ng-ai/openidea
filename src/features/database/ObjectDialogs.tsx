@@ -68,6 +68,7 @@ const KIND_LABEL: Record<DbObjectRef["kind"], string> = {
   schema: "schema",
   function: "function",
   procedure: "procedure",
+  package: "package",
   trigger: "trigger",
   sequence: "sequence",
 };
@@ -215,6 +216,22 @@ function TruncateDialog({ id, schema, table }: { id: string; schema: string; tab
 // ---- Modify Table / New Table -----------------------------------------------
 
 const TYPES: Record<DbDriver, string[]> = {
+  snowflake: [
+    "NUMBER(38,0)",
+    "NUMBER(10,2)",
+    "FLOAT",
+    "VARCHAR",
+    "BOOLEAN",
+    "DATE",
+    "TIME",
+    "TIMESTAMP_NTZ",
+    "TIMESTAMP_LTZ",
+    "TIMESTAMP_TZ",
+    "VARIANT",
+    "OBJECT",
+    "ARRAY",
+    "BINARY",
+  ],
   sqlite: ["INTEGER", "TEXT", "REAL", "NUMERIC", "BLOB", "BOOLEAN", "DATE", "DATETIME"],
   postgres: [
     "integer",
@@ -633,6 +650,9 @@ function QuickDoc({ node, anchor }: { node: DbNode; anchor: { x: number; y: numb
       );
       if (node.routine.arguments) rows.push(["Arguments", node.routine.arguments]);
       if (node.routine.returns) rows.push(["Returns", node.routine.returns]);
+      break;
+    case "package":
+      rows.push(["Schema", node.schema], ["Package", node.package.name]);
       break;
     case "sequence":
       rows.push(["Schema", node.schema], ["Sequence", node.sequence.name], ["Type", node.sequence.dataType]);

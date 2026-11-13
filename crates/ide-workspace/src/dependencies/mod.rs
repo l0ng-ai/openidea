@@ -2,6 +2,8 @@
 mod cache;
 pub mod cargo;
 pub mod go;
+pub mod maven;
+pub mod npm;
 
 pub use cache::VersionCache;
 use ide_core::{CancellationToken, IdeResult};

@@ -1,3 +1,4 @@
+import { pluginLanguageVisuals } from "./languageVisuals";
 /**
  * Plugins: Settings › Plugins (installed list, enable/disable, install from
  * disk with a permission page, uninstall, theme selection) and the runtime
@@ -33,7 +34,9 @@ import { defineBuiltinUiPoints } from "./points";
 import { startViewUi } from "./uiPoints";
 import { showInstalledIntellijThemes, useIntellijThemesDialog } from "./intellijThemesDialogStore";
 import { startWorkspaceContains } from "./workspaceContains";
+import { startPluginDecorations } from "./decorations";
 import { startIndexedMarkers } from "./indexedMarkers";
+import { startRunTargets } from "./runTargets";
 import { startPluginNavigation } from "./navigation";
 import { installFromDisk, refreshPlugins, reloadPlugin, SETTINGS_PAGE_ID, updateAllPlugins, usePlugins } from "./store";
 
@@ -62,6 +65,7 @@ export function activateSettingsPages(): () => void {
     provideConsentDialog(),
     defineBuiltinUiPoints(),
     followPluginChanges(),
+    startRunTargets(false),
     syncProjection(),
     trackPluginTheme(),
     trackIconTheme(),
@@ -151,10 +155,12 @@ export function activate(): () => void {
     startPluginBridge(),
     startPluginNavigation(),
     startIndexedMarkers(),
+    startPluginDecorations(),
     // Plugin custom editors (tab kind) and context menu entries.
     startViewUi((input) => void editorService().openInput(input)),
     startWorkspaceContains(),
     // Gutter icons from plugins' `line-markers` providers (next to the LSP ones).
+    registerEditorContribution({ id: "plugins.languageFeatures", order: 58, extensions: pluginLanguageVisuals }),
     registerEditorContribution({ id: "plugins.lineMarkers", order: 57, extensions: pluginLineMarkerGutter }),
     // Dev plugins (`<project>/.openidea/plugins`) depend on the open project.
     useProject.subscribe((s, prev) => {

@@ -1,5 +1,6 @@
 package ai.openidea.usages;
 
+import ai.openidea.Documents;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +30,7 @@ import org.eclipse.lsp4j.*;
 public final class UsagesCommand implements IDelegateCommandHandler {
     @Override
     public Object executeCommand(String command, List<Object> arguments, IProgressMonitor monitor) throws Exception {
+        Documents.awaitChanges(monitor);
         String uri = (String) arguments.get(0);
         int line = ((Number) arguments.get(1)).intValue();
         int column = ((Number) arguments.get(2)).intValue();
@@ -92,12 +94,33 @@ public final class UsagesCommand implements IDelegateCommandHandler {
                     }
                 }
             }
-            for (var target : plan.targets.values()) {
-                if (monitor.isCanceled()) throw new org.eclipse.core.runtime.OperationCanceledException();
-                add(search, target.element, target.kind(), target.declarations, results, monitor);
-            }
+            UsageCache.Search run = () -> respond(search, plan, results, monitor);
+            // Unverified builds answer partly through the native handler, before the plan.
+            return replicated && !plan.targets.isEmpty()
+                    ? UsageCache.get(cacheKey(plan, sources, preferences), monitor, run) : run.run();
         } finally {
             if (targetRoot != null) JDTUtils.discardClassFileWorkingCopy(targetRoot);
+        }
+    }
+
+    /** What a search depends on besides the Java model: its targets, scope and search settings. */
+    private static String cacheKey(SearchPlan plan, boolean sources,
+            org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager preferences) {
+        var settings = preferences.getPreferences();
+        StringBuilder key = new StringBuilder().append(sources).append('|').append(settings.getSearchScope())
+                .append('|').append(preferences.isClientSupportsClassFileContent() && settings.isIncludeDecompiledSources());
+        for (var target : plan.targets.values()) {
+            key.append('|').append(target.element.getHandleIdentifier()).append('#').append(target.kind())
+                    .append('#').append(target.declarations);
+        }
+        return key.toString();
+    }
+
+    private static List<Map<String, Object>> respond(Search search, SearchPlan plan, Map<Location, String> results,
+            IProgressMonitor monitor) throws Exception {
+        for (var target : plan.targets.values()) {
+            if (monitor.isCanceled()) throw new org.eclipse.core.runtime.OperationCanceledException();
+            add(search, target.element, target.kind(), target.declarations, results, monitor);
         }
         if (monitor.isCanceled()) throw new org.eclipse.core.runtime.OperationCanceledException();
         List<Map<String, Object>> response = new ArrayList<>();

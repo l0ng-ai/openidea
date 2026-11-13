@@ -24,6 +24,7 @@ on:
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/language-smoke.yml"
+      - ".github/tool-versions.env"
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
@@ -38,15 +39,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # Pinned so a server release can't fail an unrelated PR; bump them deliberately.
-  VTSLS: 0.3.0
-  TYPESCRIPT: 6.0.3
-  BASEDPYRIGHT: 1.40.2
-  RUFF: 0.17.3
-  GOPLS: v0.24.0
-  JDTLS: 1.63.0-202610191322
-  KOTLIN_LSP: 263.7084.0
-  GRADLE: 8.14.3
 
 jobs:
   smoke:
@@ -54,11 +46,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [typescript, python, rust, go, java, kotlin]
-    runs-on: ubuntu-22.04
+        language: [typescript, python, rust, go, java, kotlin, php, c, cpp]
+    # C/C++ debug with GDB, whose DAP interpreter needs 14+: 22.04 ships 12.1, 24.04 ships 15.
+    runs-on: ${{ (matrix.language == 'c' || matrix.language == 'cpp') && 'ubuntu-24.04' || 'ubuntu-22.04' }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      # Tool versions, shared with the evals (pnpm eval).
+      - run: grep -E '^[A-Z0-9_]+=' .github/tool-versions.env >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rust-analyzer, rustfmt" }
       # One build cache for every language; main saves it.
@@ -74,6 +69,12 @@ jobs:
       - if: matrix.language == 'typescript'
         run: npm install --global "@vtsls/language-server@$VTSLS" "typescript@$TYPESCRIPT"
 
+      # The smoke builds the c-app fixture and debugs it with GDB's own DAP interpreter.
+      - if: matrix.language == 'c' || matrix.language == 'cpp'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdb
+
       - if: matrix.language == 'python'
         uses: actions/setup-python@v5
         with: { python-version: "3.12" }
@@ -88,7 +89,7 @@ jobs:
 
       - if: matrix.language == 'java' || matrix.language == 'kotlin'
         uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: "21" }
+        with: { distribution: temurin, java-version: "${{ env.JAVA }}" }
       - if: matrix.language == 'java'
         run: |
           mkdir -p "$RUNNER_TEMP/jdtls"
@@ -107,6 +108,13 @@ jobs:
             | tar xz -C "$RUNNER_TEMP/kotlin-lsp" --strip-components=1
           ln -s "$RUNNER_TEMP/kotlin-lsp/kotlin-lsp.sh" "$RUNNER_TEMP/bin/kotlin-lsp"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # Xdebug for the debug smoke; Composer installs the fixture's Pest for the run smoke.
+      - if: matrix.language == 'php'
+        uses: shivammathur/setup-php@v2
+        with: { php-version: "8.5", coverage: xdebug, tools: composer }
+      - if: matrix.language == 'php'
+        run: npm install --global "intelephense@$INTELEPHENSE"
 
       - run: cargo test --locked -p ide-host --test language_smoke --no-run
       - run: cargo test --locked -p ide-host --test language_smoke -- --ignored --exact ${{ matrix.language }}

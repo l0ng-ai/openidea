@@ -73,7 +73,7 @@ export function LiveTemplatesPage() {
               icon="minus"
               size="small"
               title="Remove Template"
-              disabled={!selected}
+              disabled={!selected || !!selected.pluginOrigin}
               onClick={() => {
                 if (!selected) return;
                 removeTemplate(selected.id);
@@ -105,6 +105,7 @@ export function LiveTemplatesPage() {
                     onClick={() => setSelectedId(t.id)}
                   >
                     <Checkbox
+                      disabled={!!t.pluginOrigin}
                       checked={t.enabled !== false}
                       onChange={(v) => saveTemplate({ ...t, enabled: v })}
                       aria-label={tx`Enable ${t.abbrev}`}
@@ -123,7 +124,9 @@ export function LiveTemplatesPage() {
         </div>
         <div className={styles.editor}>
           {selected ? (
-            <TemplateEditor key={selected.id} template={selected} />
+            <fieldset disabled={!!selected.pluginOrigin} className={styles.readonly}>
+              <TemplateEditor key={selected.id} template={selected} />
+            </fieldset>
           ) : (
             <div className={styles.empty}>
               <T>Select a template to edit it</T>

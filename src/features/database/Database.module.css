@@ -67,7 +67,7 @@
   right: -3px;
   width: 6px;
   height: 100%;
-  cursor: col-resize;
+  cursor: ew-resize;
 }
 .rowNumber {
   display: flex;
@@ -119,6 +119,11 @@
   color: var(--fg);
   font: inherit;
   outline: none;
+}
+
+.cellCheckbox {
+  flex-shrink: 0;
+  margin: 0 6px 0 0;
 }
 
 /* ---- Tool windows ------------------------------------------------------------ */
@@ -381,6 +386,10 @@
   display: flex;
   gap: 8px;
   align-items: center;
+}
+.formRow[hidden],
+.formLabel[hidden] {
+  display: none;
 }
 /* Data source dialog. */
 .formSection {
@@ -950,6 +959,37 @@
 .recordText:focus {
   outline: none;
   border-color: var(--focus-ring);
+}
+/* The JSON value editor's host (#2333): the CodeMirror view fills it. */
+.valueEditor {
+  flex: 1;
+  min-height: 120px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-input);
+  color: var(--fg-strong);
+  overflow: hidden;
+}
+.valueEditor > :global(.cm-editor) {
+  height: 100%;
+  font-size: var(--fs-code);
+}
+.valueError {
+  color: var(--danger);
+  font-size: var(--fs-code);
+  overflow-wrap: anywhere;
+}
+.valueWindowBody {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 6px;
+  overflow: hidden;
+}
+.valueWindowBody .valueEditor {
+  min-height: 160px;
 }
 .recordText {
   resize: vertical;

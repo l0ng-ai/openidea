@@ -5,7 +5,7 @@ import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { t, useTxTemplate, tx } from "@/platform/i18n";
 import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
-import { call, commands, isTauri, type SearchScope } from "@/platform/ipc";
+import { call, commands, isTauri, onIdeEvent, type SearchScope } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useProjectModules } from "@/platform/projectRoots";
 import { EDIT_SCOPES_ACTION, useCustomScopeList } from "@/platform/search";
@@ -89,7 +89,7 @@ import styles from "./FindInFiles.module.css";
 /** The Directory scope's browse button: a folder chooser opened at the current directory. */
 async function chooseDirectory(current: string): Promise<string | null> {
   if (!isTauri()) return null;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     directory: true,
     multiple: false,
@@ -235,6 +235,13 @@ function FindInFilesDialog() {
   const stale = state.stale || (state.query ? JSON.stringify(state.query) !== queryKey : !!s.pattern);
   const currentQuery = useRef(queryKey);
   const [rerun, setRerun] = useState(0);
+  useEffect(
+    () =>
+      onIdeEvent("fsChanged", (e) => {
+        if (e.ignoreRules?.length) setRerun((v) => v + 1);
+      }),
+    [],
+  );
   useLayoutEffect(() => {
     currentQuery.current = queryKey;
     session.invalidate();
@@ -614,7 +621,9 @@ function FindInFilesDialog() {
         <header className={styles.header} data-dialog-drag="">
           <span className={styles.title}>{s.replace ? tx("Replace in Files") : tx("Find in Files")}</span>
           <span className={styles.status} aria-live="polite">
-            {stale || state.status === "searching" || state.status === "validating" ? <Spinner size={12} /> : null}
+            {stale || state.status === "searching" || state.status === "validating" ? (
+              <Spinner size={16} variant="spokes" />
+            ) : null}
             {summary}
           </span>
           <span className={styles.spacer} />

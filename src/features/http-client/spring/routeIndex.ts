@@ -1,6 +1,7 @@
 /** Spring request-path index, cached per project until a mapping source changes. */
-import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { call, commands, onIdeEvent, type ProjectInfo } from "@/platform/ipc";
 import { ipcPath, isSameOrInside } from "@/platform/paths";
+import { projectFolder, relativePath, useProject } from "@/platform/project";
 import { registerEndpointProvider, type EndpointEntry } from "@/workbench/contributions";
 import { springControllers } from "./endpoints";
 
@@ -17,7 +18,7 @@ export function registerSpringEndpointProvider(): () => void {
   };
 }
 
-let cached: { root: string; promise: Promise<EndpointEntry[]> } | null = null;
+let cached: { key: string; promise: Promise<EndpointEntry[]> } | null = null;
 
 /** Whether `path` is a source a mapping can live in (a Java or Kotlin file). */
 export function isRouteSource(path: string): boolean {
@@ -32,18 +33,23 @@ export function clearRouteIndex() {
 /** The project's routes, scanned once per project and kept in memory. */
 export function routeIndex(root: string | null): Promise<EndpointEntry[]> {
   if (!root) return Promise.resolve([]);
-  if (cached?.root === root) return cached.promise;
-  const promise = scan(root);
-  cached = { root, promise };
+  const current = useProject.getState().project;
+  const project = current?.root === root ? current : null;
+  const key = JSON.stringify([root, project?.workspace?.projects ?? null]);
+  if (cached?.key === key) return cached.promise;
+  const promise = scan(root, project);
+  cached = { key, promise };
   return promise;
 }
 
-async function scan(root: string): Promise<EndpointEntry[]> {
+async function scan(root: string, project: ProjectInfo | null): Promise<EndpointEntry[]> {
   const sources = await call(commands.springRouteSources());
   const routes: EndpointEntry[] = [];
-  const base = ipcPath(root).replace(/\/$/, "");
   for (const source of sources) {
     const path = ipcPath(source.path);
+    const folder = project ? projectFolder(project, path)?.root : root;
+    if (!folder) continue;
+    const base = ipcPath(folder).replace(/\/$/, "");
     if (!isSameOrInside(path, base)) continue;
     for (const controller of springControllers(source.text)) {
       for (const endpoint of controller.endpoints) {
@@ -57,7 +63,7 @@ async function scan(root: string): Promise<EndpointEntry[]> {
             controller: controller.name,
             methodName: endpoint.methodName,
             path,
-            rel: path.slice(base.length + 1),
+            rel: relativePath(base, path),
             line: at.line,
             col: at.col,
           });

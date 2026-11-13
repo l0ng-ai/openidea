@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { call, commands, isTauri, type RunConfig, type TomcatInstallation, type WebArtifact } from "@/platform/ipc";
@@ -71,7 +72,7 @@ function serializeEnvPairs(rows: ReadonlyArray<{ name: string; value: string }>)
 
 async function pickLocalPath(directory: boolean, defaultPath?: string): Promise<string | null> {
   if (!isTauri() || isRemoteWindow()) return null;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({ directory, multiple: false, defaultPath: defaultPath || undefined });
   return typeof picked === "string" ? picked : Array.isArray(picked) ? (picked[0] ?? null) : null;
 }
@@ -889,7 +890,7 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                   disabled={envRows.length === 0}
                   onClick={() => {
                     const row = envRows[selectedEnvIdx];
-                    if (row) void navigator.clipboard?.writeText(`${row.name}=${row.value}`);
+                    if (row) void writeClipboardText(`${row.name}=${row.value}`);
                   }}
                 />
                 <IconButton

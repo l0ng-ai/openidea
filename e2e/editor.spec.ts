@@ -173,3 +173,115 @@ test("⌘R replaces every match in the file", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+z");
   await expect(editor.locator(".cm-line", { hasText: "OrderDto" })).toHaveCount(2);
 });
+
+test("Markdown preview highlights ⌘F matches and selected word occurrences", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("# Order Service\n\nManage **Order** items and `Order` status.\n");
+
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  await expect(preview).toContainText("Manage Order items");
+
+  // Selecting a word in the preview auto-highlights its other occurrences in the preview and the split editor.
+  await preview.locator("strong").dblclick();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const set = CSS.highlights.get("markdown-selection-match");
+        return set ? [...set].map((r) => (r as Range).toString()) : [];
+      }),
+    )
+    .toEqual(["Order", "Order"]);
+  await expect(editor.locator(".cm-selectionMatch")).toHaveCount(3);
+
+  // Pressing ⌘F seeds from the preview selection and highlights current + other matches in the preview.
+  await page.keyboard.press("Meta+f");
+  const find = page.getByRole("textbox", { name: "Find" });
+  await expect(find).toHaveValue("Order");
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        current: [...(CSS.highlights.get("markdown-find-current") ?? [])].map((r) => (r as Range).toString()),
+        other: [...(CSS.highlights.get("markdown-find") ?? [])].map((r) => (r as Range).toString()),
+      })),
+    )
+    .toEqual({ current: ["Order"], other: ["Order", "Order"] });
+});
+
+test("the bookmark gutter takes no width until the file has a bookmark", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const column = editor.locator(".cm-gutter.cm-openidea-bookmarks");
+  const width = () => column.evaluate((el) => el.getBoundingClientRect().width);
+  await expect.poll(width).toBe(0);
+
+  await editor.locator(".cm-content").click();
+  await page.keyboard.press("F3");
+  await expect(column.locator(".cm-openidea-bookmark")).toBeVisible();
+  await expect.poll(width).toBeGreaterThan(0);
+});
+
+test("single-line selection stays on its own row when font glyphs exceed line height", async ({ workbench: page }) => {
+  await page.evaluate(async () => {
+    const projectModule = "/src/platform/project.ts";
+    const schemaModule = "/src/features/settings/model/schema.ts";
+    const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+      import(/* @vite-ignore */ projectModule),
+      import(/* @vite-ignore */ schemaModule),
+    ]);
+    const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+    useProject.setState({
+      settings: { ...base, editor: { ...base.editor, fontSize: 20, lineHeight: 22 } },
+    });
+    await document.fonts.ready;
+  });
+
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("- Build desktop bundle\n- Run integration suite\n---");
+
+  const targetLine = editor.locator(".cm-line", { hasText: "Run integration suite" });
+  await expect(targetLine).toBeVisible();
+  await targetLine.dblclick();
+
+  const sel = editor.locator(".cm-openidea-selectionLayer .cm-selectionBackground");
+  await expect(sel).toHaveCount(1);
+  const [lineBox, selBox] = await Promise.all([targetLine.boundingBox(), sel.boundingBox()]);
+  expect(lineBox).not.toBeNull();
+  expect(selBox).not.toBeNull();
+  expect(Math.abs(selBox!.y - lineBox!.y)).toBeLessThanOrEqual(1);
+  expect(Math.abs(selBox!.height - lineBox!.height)).toBeLessThanOrEqual(1);
+});
+
+test("vertical tabs leave a narrow editor group most of its width", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 900, height: 600 });
+  await openFromTree(page, "settings.gradle.kts");
+  await page.evaluate(async () => {
+    const projectModule = "/src/platform/project.ts";
+    const schemaModule = "/src/features/settings/model/schema.ts";
+    const controllerModule = "/src/editor/core/controller.ts";
+    const [{ useProject }, { DEFAULT_SETTINGS }, { editorController, useTabs }] = await Promise.all([
+      import(/* @vite-ignore */ projectModule),
+      import(/* @vite-ignore */ schemaModule),
+      import(/* @vite-ignore */ controllerModule),
+    ]);
+    const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+    useProject.setState({
+      settings: { ...base, editor: { ...base.editor, tabs: { ...base.editor.tabs, placement: "left" } } },
+    });
+    editorController().split(useTabs.getState().activePane, "row");
+  });
+
+  const panes = page.locator("[data-pane-id]");
+  await expect(panes).toHaveCount(2);
+  for (const pane of await panes.all()) {
+    const strip = pane.getByRole("tablist", { name: "Editor tabs" });
+    await expect(strip).toHaveAttribute("aria-orientation", "vertical");
+    const [paneBox, contentBox] = await Promise.all([pane.boundingBox(), pane.getByRole("tabpanel").boundingBox()]);
+    expect(contentBox!.width).toBeGreaterThanOrEqual(paneBox!.width * 0.6 - 1);
+  }
+});

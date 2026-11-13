@@ -1,4 +1,4 @@
-package openidea:plugin@1.3.0;
+package openidea:plugin@1.6.0;
 
 interface workspace {
     use types.{error, location};
@@ -39,15 +39,39 @@ interface workspace {
         location: location,
     }
 
+    /// Text search options. Include/exclude are project-relative globs, as in Find in Files.
+    record text-query {
+        pattern: string,
+        regex: bool,
+        case-sensitive: bool,
+        whole-word: bool,
+        %include: list<string>,
+        exclude: list<string>,
+    }
+    /// A match with zero-based lines and UTF-16 columns, and its displayed line.
+    record text-match { location: location, line: string }
+    /// Bounded search results; limit-hit says there may be more matches.
+    record text-search { matches: list<text-match>, limit-hit: bool }
+
     /// A project open in the IDE.
     resource project {
         /// Absolute path of the project root. Requires `project.read`.
         root: func() -> result<string, error>;
+        /// Find in Files with unsaved documents and project excludes. Requires project.read.
+        /// Cancellable, at most 10,000 matches. Zero limit returns no matches.
+        /// Line previews are capped at 4096 UTF-8 bytes, results at 4 MiB (limit-hit).
+        search-text: func(query: text-query, limit: u32) -> result<text-search, error>;
         /// Reads a UTF-8 text file inside the project (absolute, or relative
         /// to the root); paths leaving the root are refused. Unsaved editor
         /// contents win over the disk. A missing path is `not-found`.
         /// Requires `project.read`.
         read-file: func(path: string) -> result<string, error>;
+        /// Reads the bytes of a file inside the project (absolute, or
+        /// relative to the root) — images, archives, fonts — at most 16 MiB,
+        /// as `fs.read-bytes` allows; paths leaving the root are refused and
+        /// a missing path is `not-found`. The file on disk: unsaved editor
+        /// contents don't apply. Requires `project.read`.
+        read-bytes: func(path: string) -> result<list<u8>, error>;
         /// Replaces the text of a file inside the project (absolute, or
         /// relative to the root), or creates it with missing parent
         /// directories; paths leaving the root are refused. Written in one
@@ -87,6 +111,7 @@ interface workspace {
 
 interface editor {
     use types.{error, range, text-edit};
+    use workspace.{project};
 
     record document {
         /// Grows with every change; edits name the version they were made for.
@@ -94,10 +119,35 @@ interface editor {
         text: string,
     }
 
+    /// An editor in the invoking window.
+    record open-editor { path: string, language: string, dirty: bool, active: bool }
+    /// Only from commands/events of a window. Requires editor.read.
+    open-editors: func() -> result<list<open-editor>, error>;
+    /// Open a project file (project.read) or a file in plugin-dir, selecting a range.
+    /// Only from commands/events of a window. Paths follow views.open-location.
+    open: func(path: string, selection: option<range>) -> result<_, error>;
+
+    /// Current version and text of an open project document. Unlike
+    /// `text-editor.document`, this is available to background events.
+    /// The path is project-relative and requires `project.read` and
+    /// `editor.read`.
+    document-at: func(project: borrow<project>, path: string) -> result<document, error>;
+
+    /// Applies versioned edits to an open project document from a background
+    /// event. The path is project-relative and requires `project.read` and
+    /// `editor.write`. Stale versions are rejected without changing text.
+    /// These background edits are non-undoable and are not re-emitted as
+    /// `document-changed` events.
+    apply-edits-at: func(project: borrow<project>, path: string, version: u64, edits: list<text-edit>) -> result<u64, error>;
+
     /// A file open in an editor.
     resource text-editor {
         /// Absolute path of the file.
         path: func() -> string;
+        /// Replace selections in this window's editor. No capability; commands/events only.
+        set-selections: func(selections: list<range>) -> result<_, error>;
+        /// Scroll a range into view in this window's editor. No capability; commands/events only.
+        reveal: func(range: range) -> result<_, error>;
         /// Language id (`rust`, `solidity`, …).
         language: func() -> string;
         /// Current version and text. Requires `editor.read`.
@@ -150,6 +200,22 @@ interface vcs {
         /// Files with staged or unstaged changes.
         changed-files: u32,
     }
+
+    /// A commit in repository history; date is Unix seconds.
+    record commit-info {
+        id: string, short-id: string, author: string, author-email: string,
+        date: s64, subject: string, body: string, parents: list<string>,
+    }
+    /// One zero-based document line's attribution; date is Unix seconds.
+    record blame-line { line: u32, commit: string, author: string, date: s64, summary: string }
+    /// Newest commits first, at most 1000. Trusted projects only; requires vcs.read.
+    log: func(project: borrow<project>, path: option<string>, limit: u32) -> result<list<commit-info>, error>;
+    /// Includes unsaved text, with changed lines attributed to uncommitted changes.
+    /// Trusted projects only; requires vcs.read. Paths must be inside the project.
+    blame: func(project: borrow<project>, path: string) -> result<list<blame-line>, error>;
+    /// Working tree versus HEAD or against. None outside a repository. Disk text only.
+    /// Fails above 4 MiB. Trusted projects only; requires vcs.read.
+    diff: func(project: borrow<project>, path: option<string>, against: option<string>) -> result<option<string>, error>;
 
     /// `none` when the project is not in a repository. Requires `vcs.read`.
     status: func(project: borrow<project>) -> result<option<repository-status>, error>;

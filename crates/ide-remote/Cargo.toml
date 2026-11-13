@@ -7,12 +7,14 @@ license.workspace = true
 
 [dependencies]
 ide-core.workspace = true
+dunce.workspace = true
 ide-ssh.workspace = true
 ide-run.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
 tokio.workspace = true
+futures.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 globset.workspace = true

@@ -6,6 +6,7 @@
  * sync), Run Configurations and its modules. Gradle: the root project with
  * Tasks (grouped), Run Configurations and its subprojects.
  */
+import { tx } from "@/platform/i18n";
 import type {
   GradleModel,
   GradleProject,
@@ -55,7 +56,7 @@ export const ALL_PHASES = [
 ];
 
 export type BuildNode =
-  | { kind: "profiles"; key: string }
+  | { kind: "profiles"; key: string; projectRoot?: string | null }
   | { kind: "profile"; key: string; profile: MavenProfile }
   | { kind: "mavenProject"; key: string; project: MavenProject }
   | { kind: "lifecycle"; key: string; project: MavenProject }
@@ -76,12 +77,14 @@ export type BuildNode =
 export interface MavenRunOptions {
   offline: boolean;
   skipTests: boolean;
-  /** Explicit profile choices: id → checked. Unlisted profiles keep their default. */
+  /** Explicit profile choices by profileKey. Unlisted profiles keep their default. */
   profiles: Record<string, boolean>;
 }
 
 export interface GradleRunOptions {
   offline: boolean;
+  /** Skip Tests toolbar toggle: task runs get `-x test` (no Maven-style toggle exists in IDEA's Gradle window). */
+  skipTests: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,9 +103,14 @@ export function pluginLabel(p: MavenPlugin): string {
   return `${p.prefix} (${p.groupId}:${p.artifactId}${p.version ? `:${p.version}` : ""})`;
 }
 
+/** Profile choices in different workspace members are independent. */
+export function profileKey(profile: MavenProfile): string {
+  return profile.projectRoot ? JSON.stringify([profile.projectRoot, profile.id]) : profile.id;
+}
+
 /** Whether a profile is active for runs: the explicit choice, else `activeByDefault`. */
 export function profileChecked(profile: MavenProfile, choices: Record<string, boolean>): boolean {
-  return choices[profile.id] ?? profile.activeByDefault;
+  return choices[profileKey(profile)] ?? profile.activeByDefault;
 }
 
 /** `-P` value for the choices that differ from the defaults (`a,!b`), or null. */
@@ -123,9 +131,15 @@ export function profilesList(profiles: readonly MavenProfile[], choices: Record<
 
 export function mavenRoots(model: MavenModel): BuildNode[] {
   const out: BuildNode[] = [];
-  if (model.profiles.length) out.push({ kind: "profiles", key: "mvn:profiles" });
+  for (const projectRoot of new Set(model.profiles.map((p) => p.projectRoot)))
+    out.push({ kind: "profiles", key: `mvn:profiles${projectRoot ?? ""}`, projectRoot });
   for (const p of model.projects) if (!p.aggregated) out.push({ kind: "mavenProject", key: projectKey(p), project: p });
   return out;
+}
+
+/** Resolves a POM from either a project-relative or workspace-absolute model path. */
+export function mavenPomAtPath(projects: readonly MavenProject[], root: string | null, path: string): string | null {
+  return projects.find((p) => p.pom === path || (root && `${root}/${p.pom}` === path))?.pom ?? null;
 }
 
 /** Run configurations of a Maven project: `maven` configs whose directory is the project's. */
@@ -171,7 +185,9 @@ export function mavenChildren(
 ): BuildNode[] | undefined {
   switch (node.kind) {
     case "profiles":
-      return model.profiles.map((profile) => ({ kind: "profile", key: `mvn:profile:${profile.id}`, profile }));
+      return model.profiles
+        .filter((p) => p.projectRoot === node.projectRoot)
+        .map((profile) => ({ kind: "profile", key: `mvn:profile:${profileKey(profile)}`, profile }));
     case "mavenProject": {
       const p = node.project;
       const k = projectKey(p);
@@ -330,17 +346,17 @@ export function gradleChildren(
 export function nodeLabel(node: BuildNode): string {
   switch (node.kind) {
     case "profiles":
-      return "Profiles";
+      return tx("Profiles");
     case "profile":
       return node.profile.id;
     case "mavenProject":
       return node.project.displayName;
     case "lifecycle":
-      return "Lifecycle";
+      return tx("Lifecycle");
     case "phase":
       return node.phase;
     case "plugins":
-      return "Plugins";
+      return tx("Plugins");
     case "plugin":
       return pluginLabel(node.plugin);
     case "goal":
@@ -455,7 +471,11 @@ export function mavenArgs(
   if (options.offline && !has("-o") && !has("--offline")) args.push("-o");
   if (options.skipTests && !has("-DskipTests")) args.push("-DskipTests");
   const profiles = profilesArg(model.profiles, options.profiles);
-  if (profiles && !args.some((a) => a.startsWith("-P"))) args.push(`-P${profiles}`);
+  if (
+    profiles &&
+    !args.some((a) => a.startsWith("-P") || a === "--activate-profiles" || a.startsWith("--activate-profiles="))
+  )
+    args.push(`-P${profiles}`);
   return args;
 }
 
@@ -470,7 +490,11 @@ export function mavenGoalConfig(
   model: Pick<MavenModel, "profiles">,
   options: MavenRunOptions,
 ): RunConfig {
-  const args = mavenArgs(goals, model, options);
+  const args = mavenArgs(
+    goals,
+    { profiles: model.profiles.filter((p) => p.projectRoot === project.projectRoot) },
+    options,
+  );
   return {
     id: `maven:goal:${project.pom}:${goals.join(" ")}`,
     name: mavenConfigName(project, goals),
@@ -478,7 +502,9 @@ export function mavenGoalConfig(
     command: /(?:^|[/\\])mvnw(?:\.cmd|\.bat)?$/i.test(project.command) ? project.command : "mvn",
     args,
     cwd: project.dir || null,
-    env: { ...project.env },
+    // The model's `JAVA_HOME` is derived from Settings when it was built; freezing it here would
+    // keep an outdated Maven runner JRE after the setting changes (#2433). The launcher resolves it.
+    env: {},
     detected: false,
     isTest: !options.skipTests && !args.includes("-DskipTests") && goals.some((g) => MAVEN_TEST_GOALS.test(g)),
     debugAdapter: null,
@@ -490,6 +516,29 @@ export function gradleTaskPath(project: GradleProject, task: string): string {
   return project.path === ":" ? task : `${project.path}:${task}`;
 }
 
+/**
+ * Whether one of the builds has a task named `test`: `-x test` fails the whole run with
+ * "Task 'test' not found" in a build without one (Kotlin Multiplatform, non-JVM builds).
+ */
+export function gradleHasTestTask(models: readonly GradleModel[]): boolean {
+  return models.some((m) => m.projects.some((p) => p.tasks.some((t) => t.name === "test")));
+}
+
+/** Whether the command line already excludes the `test` task (`-x test`, `-xtest`, `--exclude-task test`). */
+function excludesTest(args: readonly string[]): boolean {
+  return args.some((a, i) => {
+    const value =
+      a === "-x" || a === "--exclude-task"
+        ? args[i + 1]
+        : a.startsWith("--exclude-task=")
+          ? a.slice("--exclude-task=".length)
+          : a.startsWith("-x")
+            ? a.slice(2)
+            : undefined;
+    return value === "test";
+  });
+}
+
 export function gradleTaskConfig(
   model: GradleModel,
   project: GradleProject,
@@ -498,6 +547,8 @@ export function gradleTaskConfig(
 ): RunConfig {
   const args = tasks.map((t) => (t.startsWith("-") || t.startsWith(":") ? t : gradleTaskPath(project, t)));
   if (options.offline && !args.includes("--offline")) args.push("--offline");
+  // Typed task names are project-path prefixed above, so the typed line is the one to inspect.
+  if (options.skipTests && gradleHasTestTask([model]) && !excludesTest(tasks)) args.push("-x", "test");
   const names = tasks.filter((t) => !t.startsWith("-"));
   return {
     id: `gradle:task:${JSON.stringify([model.dir, project.path])}:${tasks.join(" ")}`,
@@ -506,17 +557,20 @@ export function gradleTaskConfig(
     command: model.command,
     args,
     cwd: model.dir || null,
-    env: { ...model.env },
+    // As for Maven: the Gradle JVM / `JAVA_HOME` is derived from Settings at launch, not frozen here.
+    env: {},
     detected: false,
-    isTest: names.some((t) => /(^|:)(test|check|build|integrationTest)$/.test(t)),
+    isTest: !options.skipTests && names.some((t) => /(^|:)(test|check|build|integrationTest)$/.test(t)),
     debugAdapter: null,
   };
 }
 
-/** Applies the current toggles to a saved configuration started from the tree. */
-export function withGradleOptions(config: RunConfig, options: GradleRunOptions): RunConfig {
-  if (!options.offline || config.args.includes("--offline")) return config;
-  return { ...config, args: [...config.args, "--offline"] };
+/** Applies the current toggles to a saved configuration started from the tree (`hasTestTask`: see {@link gradleHasTestTask}). */
+export function withGradleOptions(config: RunConfig, options: GradleRunOptions, hasTestTask = true): RunConfig {
+  let args = config.args;
+  if (options.offline && !args.includes("--offline")) args = [...args, "--offline"];
+  if (options.skipTests && hasTestTask && !excludesTest(args)) args = [...args, "-x", "test"];
+  return args === config.args ? config : { ...config, args };
 }
 
 // ---------------------------------------------------------------------------
@@ -540,7 +594,8 @@ export function goalCompletions(
   const head = line.slice(0, at);
   const word = line.slice(at).toLowerCase();
   const out: Completion[] = [];
-  const seen = new Set<string>();
+  // Already-typed goals are not offered again.
+  const seen = new Set<string>(parseGoalLine(head));
   const push = (label: string, detail?: string) => {
     if (seen.has(label) || !label.toLowerCase().startsWith(word)) return;
     seen.add(label);
@@ -564,7 +619,8 @@ export function taskCompletions(line: string, model: GradleModel, history: reado
   const head = line.slice(0, at);
   const word = line.slice(at).toLowerCase();
   const out: Completion[] = [];
-  const seen = new Set<string>();
+  // Already-typed tasks are not offered again.
+  const seen = new Set<string>(parseTaskLine(head));
   if (!head.trim())
     for (const h of history)
       if (h.toLowerCase().startsWith(line.toLowerCase()) && h !== line)

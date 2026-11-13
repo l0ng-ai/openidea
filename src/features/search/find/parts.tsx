@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
-import { EditorState, StateEffect, StateField, type Range, type Text } from "@codemirror/state";
+import { EditorState, Prec, StateEffect, StateField, type Range, type Text } from "@codemirror/state";
 import { Decoration, EditorView, keymap, drawSelection, type DecorationSet } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import { attachDocument, codePreviewExtensions, type DocumentAttachment } from "@/editor/api";
@@ -79,10 +79,12 @@ const previewMarks = StateField.define<DecorationSet>({
     for (const e of tr.effects) if (e.is(setPreviewMarks)) return e.value;
     return value.map(tr.changes);
   },
-  provide: (f) => EditorView.decorations.from(f),
+  // Above the syntax highlighter (`Prec.high`), so a match nests inside its token span as find
+  // matches do in an editor tab.
+  provide: (f) => Prec.highest(EditorView.decorations.from(f)),
 });
-const matchMark = Decoration.mark({ class: "cm-openidea-findMatch" });
-const currentMatchMark = Decoration.mark({ class: "cm-openidea-findMatch cm-openidea-findMatch-current" });
+/** IDEA's SEARCH_RESULT_ATTRIBUTES: a background only, so the syntax colours stay (#2858). */
+const matchMark = Decoration.mark({ class: "cm-openidea-searchResult" });
 const currentLineMark = Decoration.line({ class: "cm-activeLine" });
 const readOnly = [EditorState.readOnly.of(true), EditorView.editable.of(false)];
 
@@ -96,7 +98,7 @@ export function previewDecorations(doc: Text, line: number, highlights: readonly
     for (const [a, b] of h.ranges) {
       const from = l.from + Math.min(a, l.length);
       const to = l.from + Math.min(b, l.length);
-      if (to > from) out.push((h.line === line ? currentMatchMark : matchMark).range(from, to));
+      if (to > from) out.push(matchMark.range(from, to));
     }
   }
   return Decoration.set(out, true);

@@ -20,8 +20,11 @@ export const useTerminalFind = create<{ open: boolean; seq: number; query: strin
 
 /** Opens (or refocuses) the find bar, seeding it with the terminal selection. */
 export function openTerminalFind() {
-  // While open, the terminal selection is the current match: keep the query.
-  const selection = useTerminalFind.getState().open ? "" : activeSession()?.term.getSelection().trim();
+  // While open, a selection placed by SearchAddon is the current match: keep the query.
+  // A fresh user selection in the terminal still seeds the find bar.
+  const session = activeSession();
+  const { open } = useTerminalFind.getState();
+  const selection = session && (!open || !session.isSearchSelection) ? session.term.getSelection().trim() : "";
   useTerminalFind.setState((s) => ({
     open: true,
     seq: s.seq + 1,
@@ -87,6 +90,7 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
       e.stopPropagation();
       closeTerminalFind();
     } else if (e.key === "Enter") {
+      if ((e.target as Element).closest("button")) return;
       e.preventDefault();
       find(e.shiftKey ? "previous" : "next");
     } else if (e.key === "F3" || (hasPrimaryModifier(e) && e.key.toLowerCase() === "g")) {
@@ -155,7 +159,7 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
         title="Previous Occurrence"
         shortcut={formatBinding("Shift+Enter")}
         size="small"
-        disabled={!query}
+        disabled={!query || !result?.count}
         onClick={() => find("previous")}
       />
       <IconButton
@@ -163,7 +167,7 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
         title="Next Occurrence"
         shortcut="↵"
         size="small"
-        disabled={!query}
+        disabled={!query || !result?.count}
         onClick={() => find("next")}
       />
       <span className={styles.findSpacer} />

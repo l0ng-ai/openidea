@@ -1,0 +1,100 @@
+---
+title: "开发环境"
+description: "安装工具链、从源码构建 OpenIDEA、在 worktree 里运行，以及首次构建时常见的坑。"
+---
+
+OpenIDEA 是一个 Tauri 2 应用：Rust 后端（`crates/`、`src-tauri/`）加 React + TypeScript 前端（`src/`），两套工具链都要装。
+
+## 前置条件
+
+| 工具           | 版本              | 说明                                                                                       |
+| -------------- | ----------------- | ------------------------------------------------------------------------------------------ |
+| Rust           | stable，至少 1.96 | 见根目录 `Cargo.toml` 的 `rust-version`。同时安装 `clippy` 和 `rustfmt`。                  |
+| Node.js        | 22.18 及以上      | 仓库脚本（`scripts/*.ts`、`perf/*.ts`）由 Node 直接按 TypeScript 运行。CI 用的是 Node 22。 |
+| pnpm           | 11                | 与 CI 一致。                                                                               |
+| Tauri 系统依赖 | —                 | 各平台要求见 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)。            |
+
+Linux（与 CI 一样以 Ubuntu 22.04 为例）需要的系统包：
+
+```sh
+sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+```
+
+以下按需安装，只在改动相关部分时才需要：
+
+- `rustup target add wasm32-wasip2`：构建插件和插件 SDK（`plugins/build.sh`）。
+- `cargo install cargo-nextest`：CI 使用的测试运行器（直接 `cargo test` 也可以）。
+- 某个语言的语言服务器、调试器和工具链：跑它的[冒烟测试](/zh/contribute/testing/smoke)时需要。
+
+构建不需要 JDK：`java/` 下的 Java 扩展包以 jar 形式提交在仓库里，构建时直接嵌入。
+
+## 克隆并运行
+
+<Steps>
+  <Step title="克隆">```sh git clone https://github.com/l0ng-ai/openidea.git cd openidea ```</Step>
+  <Step title="安装前端依赖">
+    ```sh pnpm install ``` 这一步同时会装好 pre-commit 钩子（`simple-git-hooks` + `lint-staged`），提交时对暂存文件运行
+    `oxlint --fix`、`oxfmt` 和 `rustfmt`。
+  </Step>
+  <Step title="启动应用">
+    ```sh pnpm tauri dev ``` 第一次是整个 workspace 的完整 debug 构建，要几分钟。之后是增量构建；前端改动通过 Vite
+    热更新，不用重新编译。
+  </Step>
+</Steps>
+
+`pnpm dev:app` 与 `pnpm tauri dev` 相同，只是额外开启全局 Tauri API（`window.__TAURI__`，来自 `src-tauri/tauri.dev.conf.json`），用脚本驱动应用时比较方便。
+
+其他常用命令：
+
+| 命令                | 作用                                                                              |
+| ------------------- | --------------------------------------------------------------------------------- |
+| `pnpm build`        | 前端类型检查并打包，然后按 WebKit 最低版本检查产物（`scripts/check-webkit.ts`）。 |
+| `pnpm gen:bindings` | 根据 Rust 命令签名重新生成 `src/bindings.ts`。                                    |
+| `pnpm dev`          | 只起 Vite：在普通浏览器里运行 UI，后端用内存实现（不需要 Rust）。                 |
+
+## Worktree
+
+可以同时开发和运行多个 worktree。每个任务建一个：
+
+```sh
+git worktree add ../my-task -b my-branch origin/main
+cd ../my-task
+pnpm install
+pnpm tauri dev
+```
+
+一律通过 `pnpm tauri dev` / `pnpm dev:app` 启动，不要直接用 `pnpm exec tauri dev`。包装脚本（`scripts/tauri.ts`）会：
+
+- 按 worktree 路径算出 Vite 端口（被占用就顺延），再把实际地址传给 Tauri；
+- 同一个 worktree 已有启动器在运行时不再启动第二个，而是打印现有会话；
+- 让每个 worktree 的 debug 构建有独立的应用标识（`ai.l0ng.openidea.dev.w<hash>`），数据、设置、日志和单实例锁互不干扰。不同 worktree 与已安装的正式版可以同时运行。
+
+再次启动同一个 debug 二进制，会聚焦已运行的窗口并把路径参数转交给它。`--release` 使用正式版标识，不经过包装脚本。
+
+worktree 用完后：停掉它的应用和开发会话，删掉构建产物（`target/`），再 `git worktree remove ../my-task`。
+
+<Warning>
+  每个 worktree 的 Cargo 输出目录要分开，不要把 `CARGO_TARGET_DIR` 或 `target` 软链接指向共享目录。一次构建后 `target/`
+  大约 9 GB，跑测试和 clippy 还会更多，所以不要在一台机器上同时跑多个重型构建。
+</Warning>
+
+## MCP bridge 与端口
+
+debug 构建会加载 Tauri MCP bridge 插件（`tauri-plugin-mcp-bridge`，只绑定 `127.0.0.1`），工具和 agent 可以借此驱动正在运行的应用。release 构建不包含它。
+
+bridge 端口是动态的，范围 9223–9322。查当前 worktree 的端口：
+
+```sh
+pnpm dev:status
+```
+
+输出包括 worktree、应用标识以及属于它的 bridge（`port`、`appIdentifier`）。连接这个端口并显式传 `appIdentifier`，不要默认 MCP 会话就是自己 worktree 的。找不到 bridge 说明应用还在编译或没有运行。
+
+## 常见问题
+
+- **只跑部分前端测试**：用 `pnpm vitest run <path>`。`pnpm test -- <path>` 会忽略过滤条件跑完整套件，要好几分钟。
+- **边改边跑 clippy**：没必要，`pnpm tauri dev` 本来就会编译。提交前运行一次 `cargo fmt --all` 和 `cargo clippy -p <crate> --all-targets -- -D warnings` 即可。clippy 通过并不会让首次启动更快，`pnpm tauri dev` 仍然要完整 debug 构建。
+- **一条 shell 命令里串起多个长检查**：冷缓存构建约 5 分钟，长检查逐个跑，不要串在一起。
+- **启动时 `src/bindings.ts` 被改了**：每次 debug 启动都会重新导出绑定（内容不同才写文件）。改了 IPC 类型就把重新生成的文件一起提交，过期的话 CI 会失败。
+- **停止进程**：只停自己这个 worktree 启动的进程。不要用 `pkill openidea` 这种按进程名批量杀的方式，会误伤其他 worktree 和已安装的应用。
+- **直接用 Tauri CLI**：`pnpm exec tauri dev` 绕过了上面的 worktree 隔离，可能与其他 worktree 的 Vite 端口或应用标识冲突。

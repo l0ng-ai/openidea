@@ -43,6 +43,22 @@ afterEach(() => {
 
 const childLabels = (key: string) => (currentModel().children.get(key) ?? []).map((n) => n.label);
 
+it("retains cached types only for members that remain in the same workspace", () => {
+  initProjectTree("/workspace", "Workspace", ["/go", "/web"]);
+  useProjectTree.setState({
+    projectTypes: new Map([
+      ["/go", "go"],
+      ["/web", "node"],
+    ]),
+  });
+
+  initProjectTree("/workspace", "Workspace", ["/go", "/new"]);
+  expect([...useProjectTree.getState().projectTypes]).toEqual([["/go", "go"]]);
+
+  initProjectTree("/other-workspace", "Other workspace", ["/go"]);
+  expect(useProjectTree.getState().projectTypes.size).toBe(0);
+});
+
 describe("lazy loading", () => {
   it("loads folders on demand and shares concurrent requests", async () => {
     const spy = vi.spyOn(fs, "readDir");
@@ -94,6 +110,46 @@ describe("refresh of excluded folders", () => {
 
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith("/p/docs");
+    spy.mockRestore();
+  });
+});
+
+describe("refresh on ignore-rule changes", () => {
+  it("refreshes loaded descendants once, preserving selection and unrelated folders", async () => {
+    await fs.createFile("/p/docs/sub/note.md");
+    await expandAll();
+    setSelection(new Set(["/p/docs/guide.md"]), "/p/docs/guide.md");
+    const spy = vi.spyOn(fs, "readDir");
+    fs.ignored.add("/p/docs/sub");
+    const event = {
+      created: [],
+      modified: ["/p/docs/.gitignore"],
+      removed: [],
+      ignoreRules: ["/p/docs", "/p/docs/nested"],
+    };
+
+    await applyFsChange(event);
+
+    expect(spy.mock.calls.map(([dir]) => dir).sort()).toEqual(["/p/docs", "/p/docs/sub"]);
+    expect(
+      useProjectTree
+        .getState()
+        .listings.get("/p/docs")
+        ?.find((e) => e.name === "sub")?.ignored,
+    ).toBe(true);
+    expect(useProjectTree.getState().listings.get("/p/docs/sub")?.[0]?.ignored).toBe(true);
+    expect([...useProjectTree.getState().selected]).toEqual(["/p/docs/guide.md"]);
+    spy.mockClear();
+    fs.ignored.clear();
+    await applyFsChange({ ...event, modified: [], ignoreRules: [ROOT, "/p/docs"] });
+    expect(spy.mock.calls.map(([dir]) => dir).sort()).toEqual([...useProjectTree.getState().listings.keys()].sort());
+    expect(
+      useProjectTree
+        .getState()
+        .listings.get("/p/docs")
+        ?.find((e) => e.name === "sub")?.ignored,
+    ).toBe(false);
+    expect(useProjectTree.getState().listings.get("/p/docs/sub")?.[0]?.ignored).toBe(false);
     spy.mockRestore();
   });
 });
@@ -232,4 +288,11 @@ describe("single-click expansion", () => {
     expect(fresh.useProjectTree.getState().options.singleClickExpand).toBe(true);
     setViewOption("singleClickExpand", false);
   });
+});
+
+it("keeps the primary first and sorts attachments by name", () => {
+  initProjectTree("/z", "Z", ["/z", "/c", "/a"]);
+  expect(currentModel().roots.map((n) => n.path)).toEqual(["/z", "/a", "/c"]);
+  initProjectTree("/ws", "Workspace", ["/z", "/c", "/a"]);
+  expect(currentModel().roots.map((n) => n.path)).toEqual(["/a", "/c", "/z"]);
 });

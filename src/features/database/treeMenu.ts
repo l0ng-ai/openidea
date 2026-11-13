@@ -21,7 +21,7 @@ const act = (
 const sep: MenuItem = { kind: "separator" };
 
 async function sqliteFromFile() {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const file = await open({ multiple: false, directory: false, title: "SQLite Database File" });
   if (typeof file === "string") openSourceDialog(null, { driver: "sqlite", file, name: fileSourceName(file) });
 }
@@ -107,6 +107,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         { label: "New", icon: "plus", submenu: [newConsole, sep, ...dataSourceItems()] },
         { label: "Copy/Paste", submenu: [copyRef, act("db.duplicateSource", n)] },
         refresh,
+        ...(n.source.driver === "snowflake" ? [act("db.introspect", n)] : []),
         act("db.disconnect", n, { disabled: !connected }),
         sep,
         rename,
@@ -195,6 +196,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
     case "foreignKey":
       return [refresh, sep, { label: "Navigation", submenu: [act("db.goToReferencedTable", n), act("db.goToDdl", n)] }];
     case "routine":
+    case "package":
     case "sequence":
     case "trigger":
       return [

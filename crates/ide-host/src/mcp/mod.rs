@@ -75,7 +75,11 @@ impl ToolRegistry for Registry {
     }
     fn tools(&self, root: &Path) -> Result<Vec<ide_mcp::Tool>, String> {
         let (_, project) = self.target(root)?;
-        Ok(tools().into_iter().map(|t| t.metadata).filter(|t| allowed(t, project.is_trusted())).collect())
+        let mut all: Vec<_> = tools().into_iter().map(|t| t.metadata).collect();
+        if let Some(plugins) = self.0.plugin_host() {
+            all.extend(plugins.mcp_tools(root).into_iter().map(|(_, _, tool)| tool));
+        }
+        Ok(all.into_iter().filter(|t| allowed(t, project.is_trusted())).collect())
     }
     fn call(
         &self,
@@ -95,6 +99,12 @@ impl ToolRegistry for Registry {
         client: &str,
     ) -> Result<String, ToolCallError> {
         let (window, project) = self.target(root).map_err(ToolCallError::Failed)?;
+        if let Some(plugins) = self.0.plugin_host()
+            && let Some((plugin, tool, metadata)) =
+                plugins.mcp_tools(root).into_iter().find(|(_, _, t)| t.name == name && allowed(t, project.is_trusted()))
+        {
+            return self.call_plugin(window, project, plugins, plugin, tool, metadata, arguments, cancel, client);
+        }
         let tool = tools()
             .into_iter()
             .find(|t| t.metadata.name == name && allowed(&t.metadata, project.is_trusted()))
@@ -126,6 +136,51 @@ impl Host {
             self.projects.read().iter().filter(|(_, p)| p.root == root).map(|(w, _)| w.clone()).collect();
         windows.sort();
         windows
+    }
+}
+
+impl Registry {
+    #[allow(clippy::too_many_arguments)]
+    fn call_plugin(
+        &self,
+        window: String,
+        project: Arc<crate::Project>,
+        plugins: Arc<crate::plugins::PluginHost>,
+        plugin: String,
+        tool: String,
+        metadata: ide_mcp::Tool,
+        arguments: &str,
+        cancel: CancellationToken,
+        client: &str,
+    ) -> Result<String, ToolCallError> {
+        let run = || -> ide_core::IdeResult<String> {
+            let args = serde_json::from_str(arguments).map_err(|e| IdeError::invalid(e.to_string()))?;
+            let call = tool::Call {
+                host: self.0.clone(),
+                project: project.clone(),
+                window: window.clone(),
+                args,
+                cancel: cancel.clone(),
+                client: client.into(),
+                tool: metadata.name,
+            };
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            if metadata.destructive {
+                self.0.runtime.block_on(call.confirm(&metadata.description, None))?;
+            }
+            if !metadata.read_only {
+                project.require_trust()?;
+            }
+            let invocation = ide_plugin::Invocation {
+                client: Some(window),
+                workspace_root: Some(project.root.clone()),
+                ..Default::default()
+            };
+            plugins.call_mcp_tool(&plugin, &tool, arguments, invocation, &cancel)
+        };
+        run().map_err(|e| ToolCallError::Failed(e.message))
     }
 }
 

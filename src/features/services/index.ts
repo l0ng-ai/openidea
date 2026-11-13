@@ -8,20 +8,35 @@
  * Compose run configuration types; Dockerfiles and Compose files get gutter run
  * icons that start them.
  */
-import { registerActions } from "@/platform/actions";
-import { registerEditorContribution } from "@/editor/api";
+import { executeAction, registerActions } from "@/platform/actions";
+import { activeEditor, registerEditorContribution } from "@/editor/api";
 import {
   SERVICES_WINDOW,
+  registerEditorBanner,
+  registerEditorKind,
   registerOverlay,
   registerServiceProvider,
   registerServiceView,
   registerToolWindow,
   showServiceView,
+  useServicesRunningCount,
 } from "@/workbench/contributions";
+import { useProject } from "@/platform/project";
+import { addFileIconProvider } from "@/ui";
+import {
+  activateComposeFiles,
+  composeAutoDetectBanner,
+  composeFileIcon,
+  composeTargetAtLine,
+  isComposeFile,
+  setComposeFileOverride,
+} from "./compose";
+import { composeEditorExtension } from "./composeEditor";
 import { dockerGutter } from "./dockerGutter";
-import { registerDockerRunTypes } from "./runTypes";
+import { gutterActions, registerDockerRunTypes } from "./runTypes";
 import { ServicesDialogHost } from "./dialogs";
 import { dockerProvider, selectedTarget } from "./docker";
+import { DOCKER_LOG_EDITOR_KIND, DockerLogEditor, dockerLogEditorTitle, openContainerLogInEditor } from "./logEditor";
 import {
   canRemove,
   canStart,
@@ -37,18 +52,22 @@ import {
 } from "./ops";
 import { SERVICES_VIEW_FOCUS, ServicesTreeView, showAddServiceMenu } from "./ServicesTree";
 import { ServicesHeaderActions, ServicesHost, ServicesTabs } from "./ServicesHost";
-import { connections, refresh } from "./store";
+import { connections, refresh, setDockerFilters, useServices } from "./store";
 import { SERVICES_TREE_VIEW } from "./tree";
 import { isRunning } from "./model";
 import type { PruneTarget } from "@/platform/ipc";
 
 const PROJECT = "projectOpen";
 
+/** The window badge: how many of the listed services are running (the run provider tracks them). */
+const useServicesBadge = () => useServicesRunningCount((s) => s.count);
+
 /** The connection of the selection, else the first one. */
 const currentConnection = () => selectedTarget()?.conn ?? connections()[0]?.id ?? null;
 
 export function activate(): () => void {
   const disposers = [
+    activateComposeFiles(),
     registerToolWindow({
       id: SERVICES_WINDOW,
       title: "Services",
@@ -56,6 +75,7 @@ export function activate(): () => void {
       anchor: "bottom",
       order: 8,
       stripe: "onUse",
+      useBadge: useServicesBadge,
       component: ServicesHost,
       headerContent: ServicesTabs,
       headerActions: ServicesHeaderActions,
@@ -68,10 +88,30 @@ export function activate(): () => void {
       component: ServicesTreeView,
     }),
     registerServiceProvider(dockerProvider),
+    registerEditorKind({
+      kind: DOCKER_LOG_EDITOR_KIND,
+      component: DockerLogEditor,
+      title: dockerLogEditorTitle,
+      icon: () => "file-log",
+      keepAlive: true,
+    }),
     registerOverlay({ id: "services.dialogs", component: ServicesDialogHost }),
+    addFileIconProvider(composeFileIcon),
+    registerEditorBanner(composeAutoDetectBanner),
     registerEditorContribution({ id: "services.dockerGutter", order: 56, extensions: dockerGutter }),
+    registerEditorContribution({ id: "services.composeEditor", order: 57, extensions: composeEditorExtension }),
     registerDockerRunTypes(),
     registerActions([
+      {
+        id: "docker.setComposeFileOverride",
+        title: "Set Docker Compose File Detection",
+        category: "Docker",
+        hidden: true,
+        run: ({ arg }) => {
+          const { path, status } = (arg ?? {}) as { path?: string; status?: string };
+          if (path && (status === "kept" || status === "excluded")) return setComposeFileOverride(path, status);
+        },
+      },
       {
         id: "services.show",
         title: "Services",
@@ -136,12 +176,56 @@ export function activate(): () => void {
         run: () => (canRemove(selectedTarget()) ? remove(selectedTarget()) : undefined),
       },
       {
+        id: "docker.showDashboard",
+        title: "Show Docker Dashboard",
+        category: "Docker",
+        icon: "layout",
+        when: PROJECT,
+        run: () => {
+          showDetail("dashboard");
+          showServiceView(SERVICES_TREE_VIEW, true);
+        },
+      },
+      {
         id: "docker.showLog",
         title: "Show Container Log",
         category: "Docker",
         when: PROJECT,
         run: () => {
           showDetail("log");
+          showServiceView(SERVICES_TREE_VIEW, true);
+        },
+      },
+      {
+        id: "docker.openLogInEditor",
+        title: "Open Container Log in Editor",
+        category: "Docker",
+        icon: "file-log",
+        when: PROJECT,
+        run: () => {
+          const t = selectedTarget();
+          if (t?.node.kind === "container") openContainerLogInEditor(t.conn, t.node.container);
+        },
+      },
+      {
+        id: "docker.showProcesses",
+        title: "Show Container Processes",
+        category: "Docker",
+        icon: "list",
+        when: PROJECT,
+        run: () => {
+          showDetail("processes");
+          showServiceView(SERVICES_TREE_VIEW, true);
+        },
+      },
+      {
+        id: "docker.showLayers",
+        title: "Show Image Layers",
+        category: "Docker",
+        icon: "list",
+        when: PROJECT,
+        run: () => {
+          showDetail("layers");
           showServiceView(SERVICES_TREE_VIEW, true);
         },
       },
@@ -155,6 +239,22 @@ export function activate(): () => void {
           showDetail("inspect");
           showServiceView(SERVICES_TREE_VIEW, true);
         },
+      },
+      {
+        id: "docker.toggleStoppedContainers",
+        title: "Toggle Stopped Containers",
+        category: "Docker",
+        icon: "filter",
+        when: PROJECT,
+        run: () => setDockerFilters({ showStoppedContainers: !useServices.getState().filters.showStoppedContainers }),
+      },
+      {
+        id: "docker.toggleUntaggedImages",
+        title: "Toggle Untagged Images",
+        category: "Docker",
+        icon: "filter",
+        when: PROJECT,
+        run: () => setDockerFilters({ showUntaggedImages: !useServices.getState().filters.showUntaggedImages }),
       },
       {
         id: "docker.execShell",
@@ -172,7 +272,7 @@ export function activate(): () => void {
         id: "docker.pullImage",
         title: "Pull Docker Image…",
         category: "Docker",
-        icon: "git-pull",
+        icon: "docker-pull",
         when: PROJECT,
         run: () => {
           const conn = currentConnection();
@@ -190,6 +290,26 @@ export function activate(): () => void {
         run: ({ arg }) => {
           const conn = currentConnection();
           return conn ? prunePrompt(conn, typeof arg === "string" ? (arg as PruneTarget) : "system") : undefined;
+        },
+      },
+      {
+        id: "docker.composeUp",
+        title: "Compose Up",
+        description: "Start the service at the caret, or all services in the active Docker Compose file",
+        category: "Docker",
+        icon: "run",
+        keywords: ["docker compose up", "start stack", "start service"],
+        when: PROJECT,
+        run: () => {
+          const ed = activeEditor();
+          if (!ed) return;
+          const text = ed.view.state.doc.toString();
+          if (!isComposeFile(ed.ctx.path, text)) return;
+          const line = ed.view.state.doc.lineAt(ed.view.state.selection.main.head).number - 1;
+          const target = composeTargetAtLine(text, line) ?? { kind: "composeAll" as const, line: 0 };
+          const root = useProject.getState().project?.root ?? null;
+          const [action] = gutterActions(target, ed.ctx.path, root);
+          if (action) void executeAction("run.runConfig", { config: action.config, temporary: true });
         },
       },
     ]),

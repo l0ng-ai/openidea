@@ -1,8 +1,9 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { commitRepo } from "./multiRoot";
 /** Create Patch… (from local changes or commits) and Apply Patch… (file or clipboard, with a preview). */
 import { useEffect, useState } from "react";
 import type { Commit, FileStatus, PatchFile, PatchSource, ShelvedChangeList } from "@/bindings";
-import { revealInFileManager } from "@/platform/fileManager";
+import { canRevealInFileManager, fileManagerName, revealInFileManager } from "@/platform/fileManager";
 import { call, commands } from "@/platform/ipc";
 import { Button, Checkbox, Dialog, Icon, Input, List, Spinner, fileIconName, T } from "@/ui";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -58,7 +59,7 @@ export async function copyChangesAsPatch(paths: readonly string[]) {
     tx("Create patch"),
     async () => {
       const source: PatchSource = { from: "changes", paths: files.map((f) => stripSlash(f.path)), reverse: false };
-      await navigator.clipboard.writeText(await call(commands.vcsCreatePatch(currentRepoRoot(), source)));
+      await writeClipboardText(await call(commands.vcsCreatePatch(currentRepoRoot(), source)));
     },
     { success: "Patch copied to the clipboard", refresh: false },
   );
@@ -75,21 +76,31 @@ export function showCreatePatchForShelf(entry: ShelvedChangeList, path?: string)
 
 async function browseSave(current: string): Promise<string | null> {
   try {
-    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { save } = await import("@/platform/dialog");
     return (await save({ defaultPath: current, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] })) ?? null;
   } catch {
     return null;
   }
 }
 
-/** Settings › Version Control › Confirmation › When patch is created: ask / no / show in Finder. */
+/** Whole sentences let each locale translate the patch question. */
+export function patchSavedBody(): string {
+  const name = fileManagerName();
+  return name === "Finder"
+    ? "Patch file created successfully. Show it in Finder?"
+    : name === "Explorer"
+      ? "Patch file created successfully. Show it in Explorer?"
+      : "Patch file created successfully. Show it in Files?";
+}
+
+/** Settings › Version Control › Confirmation › When patch is created: ask / no / show in the file manager. */
 async function afterPatchSaved(path: string) {
   const mode = workflowSettings().vcs.confirmation.onPatchCreated;
-  if (mode === "no") return;
+  if (mode === "no" || !canRevealInFileManager()) return;
   if (mode === "ask") {
     const r = await ask({
       title: "Create Patch",
-      body: tx("Patch file created successfully. Show it in Finder?"),
+      body: tx(patchSavedBody()),
       checkbox: "Don't ask again",
       buttons: [{ id: "show", label: "Show", primary: true }],
     });
@@ -139,7 +150,7 @@ function CreatePatchDialog({ origin, onClose }: { origin: PatchOrigin; onClose: 
             ? await call(commands.vcsShelfPatch(origin.entry.id, origin.path ?? null))
             : await call(commands.vcsCreatePatch(repo, source!));
         if (toFile) await call(commands.vcsWritePatch(file.trim(), patch));
-        else await navigator.clipboard.writeText(patch);
+        else await writeClipboardText(patch);
         return true;
       },
       { success: toFile ? `Patch saved to ${baseName(file.trim())}` : "Patch copied to the clipboard", refresh: false },
@@ -217,7 +228,7 @@ export async function showApplyPatch(from: "file" | "clipboard", path?: string) 
     } else {
       let file = path ?? null;
       if (!file) {
-        const { open } = await import("@tauri-apps/plugin-dialog");
+        const { open } = await import("@/platform/dialog");
         const picked = await open({
           multiple: false,
           directory: false,

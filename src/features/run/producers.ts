@@ -126,6 +126,9 @@ function scopedInput<T extends Pick<ContextInput, "root" | "configs">>(input: T)
       ...c,
       cwd: c.cwd == null ? c.cwd : relative(c.cwd),
       ...(c.module == null ? {} : { module: relative(c.module) }),
+      ...(c.kind.startsWith("dotnet") && c.params?.project
+        ? { params: { ...c.params, project: relative(c.params.project) } }
+        : {}),
       ...(c.kind === "go" && c.params?.module != null
         ? { params: { ...c.params, module: relative(c.params.module) } }
         : {}),
@@ -517,7 +520,7 @@ function jsRuntime(lang: "js" | "ts", env: ToolEnv, s: FileSite): Produced {
   }
   if (s.inProject && env.bun) {
     const bun = pick(env, ["bun"]);
-    if (bun) return ok(fileConfig(s, "bun", bun.command, ["run", s.arg]));
+    if (bun) return ok(fileConfig(s, "bun", bun.command, ["run", s.arg], "bun-dap"));
   }
   const node = env.tool("node");
   const nodeCmd = node === undefined ? "node" : (node?.path ?? null);
@@ -743,7 +746,7 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     // Project-aware: test files through the project's test runner, Cargo / Go / Gradle / Maven mains.
     const role = fileRole(rel, input.content, undefined, hasDjangoTests(configs));
     if (role === "test") {
-      const found = testConfigFor(rel, configs);
+      const found = testConfigFor(rel, configs, undefined, input.content);
       const test = found && goTestNamed(found, input);
       if (test) return { name: test.name, scope: "file", config: test };
     }
@@ -887,10 +890,14 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     }
     case "ruby":
       // Sources roots go on the load path (`-Ilib`), as `rake test` does; paths are project-relative.
-      return simple(lang, s, env, lang, () => [
-        ...(s.inProject ? rubyLoadPath(currentRoots(), s.cwd, input.root) : []),
-        s.arg,
-      ]);
+      return simple(
+        lang,
+        s,
+        env,
+        lang,
+        () => [...(s.inProject ? rubyLoadPath(currentRoots(), s.cwd, input.root) : []), s.arg],
+        "rdbg",
+      );
     case "php":
       if (env.php) return { name: s.file, scope: "file", config: fileConfig(s, "php", env.php, [s.arg], "php-debug") };
       return simple(lang, s, env, lang, () => [s.arg], "php-debug");
@@ -1098,7 +1105,7 @@ export function produceContextChoices(input: ContextInput, env: ToolEnv): Produc
   for (const base of bases) {
     const found = element
       ? targetConfig(element, rel, [...input.configs], input.content, base)
-      : testConfigFor(rel, [...input.configs], base);
+      : testConfigFor(rel, [...input.configs], base, input.content);
     const config = found && goTestNamed(found, input, element?.name);
     if (!config || out.some((o) => o.config?.id === config.id)) continue;
     out.push({ name: config.name, scope: produced.scope, config, detail: base.name });

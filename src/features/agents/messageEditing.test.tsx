@@ -15,6 +15,7 @@ vi.mock("@/platform/ipc", async (original) => ({
   commands: {
     agentEntries: async () => ({ status: "ok", data: entries }),
     agentChanges: async () => ({ status: "ok", data: [] }),
+    agentGroupedChanges: async () => ({ status: "ok", data: { uncommitted: [], commits: [] } }),
     vcsBranchInfo: async () => ({ status: "ok", data: { head: "main" } }),
     agentRollback: ipc.rollback,
     agentPrompt: ipc.prompt,
@@ -61,7 +62,13 @@ beforeEach(() => {
   ipc.rollback.mockReset().mockResolvedValue({ status: "ok", data: null });
   ipc.prompt.mockReset().mockResolvedValue({ status: "ok", data: null });
   ipc.cancel.mockReset().mockResolvedValue({ status: "ok", data: null });
-  useAgents.setState({ tasks: new Map([[task.id, task]]), entries: new Map(), composers: new Map(), focus: null });
+  useAgents.setState({
+    loaded: true,
+    tasks: new Map([[task.id, task]]),
+    entries: new Map(),
+    composers: new Map(),
+    focus: null,
+  });
 });
 
 it("keeps the transcript and running session when a fresh-session rerun is cancelled", async () => {

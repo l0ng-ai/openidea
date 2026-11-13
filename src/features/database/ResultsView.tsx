@@ -4,13 +4,26 @@
  * a toolbar (re-run, export / copy as CSV, JSON, SQL…), the grid and a floating row count.
  */
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { call, commands, type DbPlanNode, type DbQueryResult } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
-import { Button, EmptyState, Icon, IconButton, Select, Spinner, Tabs, Tree, showContextMenu, T } from "@/ui";
+import {
+  Button,
+  EmptyState,
+  Icon,
+  IconButton,
+  Select,
+  Spinner,
+  Tabs,
+  Tree,
+  showContextMenu,
+  T,
+  tooltipAttrs,
+} from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { ChartView } from "./ChartView";
+import { ColumnsPopup } from "./ColumnsPopup";
 import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
 import type { ExportData, ExportFormat } from "./export";
 import { buildRowEdits, emptyEdits, hasEdits, splitTarget, type Cell, type PendingEdits } from "./model";
@@ -45,6 +58,7 @@ import {
   type ResultTab,
 } from "./store";
 import styles from "./Database.module.css";
+import { registerTableEditor, tableEditorChanged, type TableEditorHandle } from "./tableEditorFocus";
 import { tx } from "@/platform/i18n";
 
 function time(t: number): string {
@@ -213,7 +227,7 @@ function Result({ tab }: { tab: ResultTab }) {
   const resultNames = useMemo(() => r?.columns.map((c) => c.name) ?? [], [r]);
   const eq = useMemo(
     () =>
-      driver === "postgres" || driver === "oracle" || driver === "sqlServer"
+      driver === "postgres" || driver === "oracle" || driver === "sqlServer" || driver === "snowflake"
         ? (a: string | null | undefined, b: string | null | undefined) => !!a && a === b
         : nameMatcher(driver),
     [driver],
@@ -234,6 +248,21 @@ function Result({ tab }: { tab: ResultTab }) {
       eq,
     );
   }, [detailsValue, sources, resultNames, eq]);
+  // Nullability and defaults follow the table's details once they load (they gate Set NULL / Set DEFAULT).
+  const gridColumns = useMemo(
+    () =>
+      columns.map((c) => {
+        const d = detailsValue?.columns.find((x) => eq(x.name, c.name));
+        return {
+          ...c,
+          type: d?.dataType ?? c.type,
+          primaryKey: !!pk?.includes(c.name),
+          nullable: d?.nullable,
+          default: d?.default ?? null,
+        };
+      }),
+    [columns, pk, detailsValue, eq],
+  );
   const readOnlySource = source?.readOnly ?? false;
   const editable =
     editability.kind === "editable" &&
@@ -285,6 +314,16 @@ function Result({ tab }: { tab: ResultTab }) {
     });
   };
 
+  const onResetCell = (row: number, col: number) => {
+    setEdits((e) => {
+      const inserts = [...e.inserts];
+      const ins = new Map(inserts[row - loaded]);
+      ins.delete(resultNames[col]!);
+      inserts[row - loaded] = ins;
+      return { ...e, inserts };
+    });
+  };
+
   const deleteRows = (rows: number[]) =>
     setEdits((e) => {
       const deletes = new Set(e.deletes);
@@ -327,6 +366,38 @@ function Result({ tab }: { tab: ResultTab }) {
     }
   };
 
+  // Submit / Revert / Go to Column (⌘↩ / ⌥⌘Z / ⌘F12) reach the latest state through the handle, as in the table editor.
+  const canSubmit = editable && dirty && !busy;
+  const viewRef = useRef<HTMLDivElement>(null);
+  const handleRef = useRef<TableEditorHandle>({
+    dirty: false,
+    submit: () => {},
+    revert: () => {},
+    showColumns: () => {},
+  });
+  const [columnsAt, setColumnsAt] = useState<{ x: number; y: number } | null>(null);
+  const [revealColumn, setRevealColumn] = useState<{ col: number } | null>(null);
+  useLayoutEffect(() => {
+    const handle = handleRef.current;
+    handle.dirty = canSubmit;
+    handle.submit = () => {
+      if (canSubmit) void submit();
+    };
+    handle.revert = () => {
+      if (!busy) setEdits(() => emptyEdits());
+    };
+    handle.showColumns = () => {
+      const rect = viewRef.current?.getBoundingClientRect();
+      if (view === "table" && rect) setColumnsAt({ x: rect.left + rect.width / 2, y: rect.top + 48 });
+    };
+    tableEditorChanged(handle);
+  });
+  const hasResult = !!r;
+  useEffect(
+    () => (hasResult && viewRef.current ? registerTableEditor(viewRef.current, handleRef.current) : undefined),
+    [hasResult],
+  );
+
   if (!r) return null;
   const data = (): ExportData => ({
     columns,
@@ -349,7 +420,7 @@ function Result({ tab }: { tab: ResultTab }) {
     // else: the table's details are still loading.
   }
   return (
-    <div className={styles.view}>
+    <div className={styles.view} ref={viewRef} data-db-table-editor="">
       <div className={styles.toolbar}>
         <IconButton icon="db-table" title="Table" aria-pressed={view === "table"} onClick={() => setView("table")} />
         <IconButton icon="db-chart" title="Chart" aria-pressed={view === "chart"} onClick={() => setView("chart")} />
@@ -372,10 +443,21 @@ function Result({ tab }: { tab: ResultTab }) {
               disabled={busy}
               onClick={() => setEdits((e) => ({ ...e, inserts: [...e.inserts, new Map()] }))}
             />
-            <Button size="small" variant="primary" disabled={!dirty || busy} onClick={() => void submit()}>
+            <Button
+              size="small"
+              variant="primary"
+              disabled={!dirty || busy}
+              onClick={() => void submit()}
+              {...tooltipAttrs("Submit", shortcutLabel("db.submitChanges"))}
+            >
               <T>Submit</T>
             </Button>
-            <Button size="small" disabled={!dirty || busy} onClick={() => setEdits(() => emptyEdits())}>
+            <Button
+              size="small"
+              disabled={!dirty || busy}
+              onClick={() => setEdits(() => emptyEdits())}
+              {...tooltipAttrs("Revert", shortcutLabel("db.revertChanges"))}
+            >
               <T>Revert</T>
             </Button>
           </>
@@ -406,9 +488,10 @@ function Result({ tab }: { tab: ResultTab }) {
           )}
           <div className={clsx(styles.fill, styles.gridHost)}>
             <DataView
-              columns={columns.map((c) => ({ ...c, primaryKey: !!pk?.includes(c.name) }))}
+              columns={gridColumns}
               rowCount={rowCount}
               fixedRows={loaded}
+              driver={driver}
               value={value}
               panel={panel}
               onPanelChange={setPanel}
@@ -421,6 +504,8 @@ function Result({ tab }: { tab: ResultTab }) {
               isModified={(row, col) => !!edits.updates.get(row)?.has(resultNames[col]!)}
               editable={editable && !busy}
               onEdit={onEdit}
+              onResetCell={onResetCell}
+              revealColumn={revealColumn}
               rowMenu={(rows) =>
                 editable && !busy
                   ? [
@@ -440,6 +525,18 @@ function Result({ tab }: { tab: ResultTab }) {
             <Pager tab={busy ? { ...tab, busy: true } : tab} />
           </div>
         </>
+      )}
+      {columnsAt && (
+        <ColumnsPopup
+          anchor={columnsAt}
+          table={tableLabel || tab.title}
+          columns={columns}
+          onPick={(col) => {
+            setColumnsAt(null);
+            setRevealColumn({ col });
+          }}
+          onClose={() => setColumnsAt(null)}
+        />
       )}
     </div>
   );

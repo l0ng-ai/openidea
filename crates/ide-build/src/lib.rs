@@ -76,7 +76,7 @@ pub fn load_linked(
     gradle_settings: &ide_core::settings::GradleSettings,
 ) -> BuildModel {
     let maven = maven::has_projects(root, settings).then(|| {
-        let profiles = sync::maven_profiles(cache_dir);
+        let profiles = settings.profiles(&sync::maven_profiles(cache_dir));
         let repo = maven_repo.or_else(maven::default_local_repo);
         let mut m = maven::load_with_linked(root, repo, &profiles, &settings.linked_projects);
         maven::UnlinkedProjects::from_model(&m, settings).filter(&mut m);
@@ -122,6 +122,14 @@ pub fn gradle_external_roots(
     gradle::external_roots(root, dirs.iter().map(String::as_str))
 }
 
+/// Directories of Maven POMs linked from outside `root`, outermost only.
+/// Reads just those explicit paths (no POM parse and no directory walk).
+pub fn maven_external_roots(root: &Path, linked: &[String]) -> Vec<PathBuf> {
+    let dirs = maven::external_pom_dirs(root, linked);
+    let owned: Vec<String> = dirs.iter().map(|dir| dir.to_string_lossy().into_owned()).collect();
+    gradle::external_roots(root, owned.iter().map(String::as_str))
+}
+
 /// Source, resource and build folders of the last Gradle sync, absolute.
 pub fn gradle_source_roots(
     root: &Path,
@@ -147,7 +155,8 @@ pub struct DependencyCoordinate {
 
 /// The external libraries of `model`, sorted and deduplicated: Maven dependencies
 /// (with the transitive ones the last sync read), except the build's own modules,
-/// `pom` imports and `system` scope; dependencies declared in the Gradle build scripts.
+/// `pom` imports and `system` scope; dependencies declared in the Gradle build scripts,
+/// including the scripts they pull in with `apply from`.
 pub fn dependency_coordinates(root: &Path, model: &BuildModel) -> Vec<DependencyCoordinate> {
     let mut out = Vec::new();
     if let Some(m) = &model.maven {
@@ -177,11 +186,26 @@ pub fn dependency_coordinates(root: &Path, model: &BuildModel) -> Vec<Dependency
         }
     }
     for g in &model.gradle {
-        for script in g.projects.iter().filter_map(|p| p.build_file.as_ref()) {
-            let Ok(text) = std::fs::read_to_string(root.join(script)) else { continue };
-            out.extend(gradle::script_dependencies(&text).into_iter().map(|(group_id, artifact_id, version)| {
-                DependencyCoordinate { gradle: true, group_id, artifact_id, version }
-            }));
+        for p in &g.projects {
+            let Some(build_file) = p.build_file.as_deref() else { continue };
+            let build_dir = gradle::project_build_dir(root, g, p);
+            let scripts = gradle::scripts_of(root, &root.join(&p.dir), &build_dir, Path::new(build_file));
+            // The script's own `ext` values win over the scripts it applies.
+            let mut properties = std::collections::BTreeMap::new();
+            for (_, text) in scripts.iter().rev() {
+                properties.extend(gradle::script_properties(text));
+            }
+            properties.extend(gradle::file_properties(&build_dir));
+            for (_, text) in &scripts {
+                out.extend(gradle::script_dependencies(text, &properties).into_iter().map(
+                    |(group_id, artifact_id, version)| DependencyCoordinate {
+                        gradle: true,
+                        group_id,
+                        artifact_id,
+                        version,
+                    },
+                ));
+            }
         }
     }
     out.sort();
@@ -220,6 +244,30 @@ mod tests {
         );
         settings.linked_projects = Some(vec![]);
         assert!(gradle_external_roots(&root, &temp.path().join("cache"), &settings).is_empty());
+    }
+
+    #[test]
+    fn settings_profiles_and_checkbox_choices_control_modules_before_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("extra")).unwrap();
+        std::fs::write(root.join("extra/pom.xml"), "<project><artifactId>extra</artifactId></project>").unwrap();
+        std::fs::write(
+            root.join("pom.xml"),
+            r#"<project><artifactId>root</artifactId><packaging>pom</packaging>
+            <profiles><profile><id>extra</id><modules><module>extra</module></modules></profile></profiles></project>"#,
+        )
+        .unwrap();
+        let cache = root.join("cache");
+        let settings = ide_core::settings::MavenSettings { active_profiles: "extra".into(), ..Default::default() };
+        let modules = |settings: &ide_core::settings::MavenSettings| {
+            load_linked(root, &cache, None, settings, &Default::default()).maven.unwrap().projects[0].modules.clone()
+        };
+        assert!(modules(&Default::default()).is_empty());
+        assert_eq!(modules(&settings), ["extra/pom.xml"]);
+        assert_eq!(maven::load_linked(root, &settings).projects[0].modules, ["extra/pom.xml"]);
+        save_maven_profiles(&cache, &["!extra".into()]).unwrap();
+        assert!(modules(&settings).is_empty());
     }
 
     #[test]
@@ -287,5 +335,40 @@ mod tests {
             .map(|c| format!("{}{}:{}:{}", if c.gradle { "G " } else { "M " }, c.group_id, c.artifact_id, c.version))
             .collect();
         assert_eq!(names, ["M org.b:y:2", "M org.c:z:3", "G org.a:x:1.0"]);
+    }
+
+    #[test]
+    fn dependency_coordinates_read_scripts_brought_in_by_apply_from() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("gradle")).unwrap();
+        std::fs::write(root.join("build.gradle"), "apply from: 'gradle/dependencies.gradle'\n").unwrap();
+        std::fs::write(
+            root.join("gradle/dependencies.gradle"),
+            "ext { gson = '2.8.9' }\ndependencies { implementation \"com.google.code.gson:gson:${gson}\" }\n",
+        )
+        .unwrap();
+        let model = BuildModel { maven: None, gradle: gradle::load(root).into_iter().collect() };
+        let names: Vec<String> = dependency_coordinates(root, &model)
+            .into_iter()
+            .map(|c| format!("{}:{}:{}", c.group_id, c.artifact_id, c.version))
+            .collect();
+        assert_eq!(names, ["com.google.code.gson:gson:2.8.9"]);
+    }
+
+    #[test]
+    fn gradle_properties_override_script_extra_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("build.gradle"), "ext.v = 'wrong'\napply from: 'deps.gradle'").unwrap();
+        std::fs::write(
+            root.join("deps.gradle"),
+            "ext.v = 'alsoWrong'\nimplementation \"g:a:${v}\"\nimplementation \"g:b:${onlyInProperties}\"",
+        )
+        .unwrap();
+        std::fs::write(root.join("gradle.properties"), "# versions\nv = 1.2\nonlyInProperties: 2.3\n").unwrap();
+        let model = BuildModel { maven: None, gradle: gradle::load(root).into_iter().collect() };
+        let versions: Vec<_> = dependency_coordinates(root, &model).into_iter().map(|c| c.version).collect();
+        assert_eq!(versions, ["1.2", "2.3"]);
     }
 }

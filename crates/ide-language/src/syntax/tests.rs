@@ -759,6 +759,7 @@ fn outline_html_css_xml() {
           Field body
             Field div
             Field script
+              Variable a
         ",
     );
     check_outline(
@@ -883,6 +884,17 @@ fn outline_more_languages() {
         Enum Role
           EnumMember ADMIN
         Function GetUser
+        ",
+    );
+    check_outline(
+        "prisma",
+        "datasource db {\n  provider = \"sqlite\"\n}\nmodel User {\n  id Int @id\n  @@map(\"users\")\n}\nenum Role {\n  ADMIN\n}\n",
+        "
+        Module db
+        Class User
+          Field id
+        Enum Role
+          EnumMember ADMIN
         ",
     );
     check_outline(
@@ -1408,4 +1420,320 @@ fn spelling_regions_cover_declared_names_only() {
         .map(|r| &java[r.start..r.end])
         .collect();
     assert_eq!(names, ["Bird", "fly", "text"]);
+}
+
+// ---------------------------------------------------------------------------
+// Script regions of Vue SFCs and HTML documents
+
+#[test]
+fn script_regions_skip_typed_blocks() {
+    let src = "<html><body><script type=\"module\">var x = 1;</script>\
+               <script type=\"application/json\">{\"a\":1}</script>\
+               <script type=\"importmap\">{}</script>\
+               <script>var y = 2;</script></body></html>";
+    let regions = syntax().script_regions(&lang("html"), src);
+    assert_eq!(regions.len(), 2, "module and plain scripts; json/importmap skipped");
+    assert_eq!(regions[0].language.as_str(), "javascript");
+}
+
+#[test]
+fn script_regions_pick_the_lang_attribute() {
+    let src = "<script setup lang=\"tsx\">\nconst App = () => <div/>\n</script>\n";
+    let regions = syntax().script_regions(&lang("vue"), src);
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0].language.as_str(), "tsx");
+    assert!(regions[0].text.contains("const App"));
+}
+
+#[test]
+fn script_regions_empty_for_other_languages() {
+    assert!(syntax().script_regions(&lang("rust"), "fn main() {}").is_empty());
+    assert!(syntax().script_regions(&lang("vue"), "<template><div/></template>").is_empty());
+}
+
+#[test]
+fn script_regions_classify_attributes() {
+    for language in ["vue", "html"] {
+        for (attributes, expected) in [
+            ("", Some("javascript")),
+            ("setup lang=ts", Some("typescript")),
+            ("lang='typescript'", Some("typescript")),
+            ("lang=tsx", Some("tsx")),
+            ("lang=js", Some("javascript")),
+            ("lang=jsx", Some("javascript")),
+            ("LANG=TS", Some("typescript")),
+            ("type=module", Some("javascript")),
+            ("TYPE=' text/JAVASCRIPT '", Some("javascript")),
+            ("type=application/javascript", Some("javascript")),
+            ("type=application/json", None),
+            ("type='application/ld+json'", None),
+            ("type=text/template", None),
+            ("type=importmap", None),
+            ("type=speculationrules", None),
+            ("lang=coffee", None),
+            ("lang=ts type=application/json", None),
+            ("src='./external.ts' lang=ts", None),
+            ("SRC=external.js", None),
+            ("src", None),
+        ] {
+            let src = format!("<script {attributes}>const value = 1;</script>");
+            let regions = syntax().script_regions(&lang(language), &src);
+            assert_eq!(regions.len(), usize::from(expected.is_some()), "{language}: {attributes}");
+            if let Some(expected) = expected {
+                assert_eq!(regions[0].language.as_str(), expected, "{attributes}");
+                assert_eq!(regions[0].text, "const value = 1;");
+                assert_eq!(&src[regions[0].base..regions[0].base + regions[0].text.len()], regions[0].text);
+            }
+        }
+    }
+}
+
+#[test]
+fn script_regions_preserve_document_offsets_and_line_endings() {
+    use super::lines::LineIndex;
+
+    let src = "<template>中文😀</template>\r\n<script lang=ts>const 名 = '😀';\r\n</script>\r\n<script setup lang=jsx>const View = () => <div/>;</script>";
+    let regions = syntax().script_regions(&lang("vue"), src);
+    assert_eq!(regions.len(), 2);
+    let idx = LineIndex::new(src);
+    let doc = ide_text::Document::new(src);
+    for (region, (body, pos)) in
+        regions.iter().zip([("const 名 = '😀';\r\n", Pos::new(1, 16)), ("const View = () => <div/>;", Pos::new(3, 23))])
+    {
+        assert_eq!(region.base, src.find(body).unwrap());
+        assert_eq!(region.text, body);
+        assert_eq!(idx.pos(region.base), pos);
+        assert_eq!(idx.pos(region.base), doc.byte_to_pos(src[..region.base].replace("\r\n", "\n").len()));
+        assert_eq!(
+            idx.pos(region.base + body.len()),
+            doc.byte_to_pos(src[..region.base + body.len()].replace("\r\n", "\n").len())
+        );
+        if let Some(name) = body.find('名') {
+            assert_eq!(
+                idx.range(region.base + name, region.base + name + '名'.len_utf8()),
+                Range::new(Pos::new(1, 22), Pos::new(1, 23))
+            );
+        }
+    }
+    let same_line = "<template>中文😀</template><script>let x = 1;</script>";
+    let region = &syntax().script_regions(&lang("html"), same_line)[0];
+    assert_eq!(LineIndex::new(same_line).pos(region.base), Pos::new(0, 33));
+}
+
+#[test]
+fn script_regions_tolerate_incomplete_markup() {
+    for src in [
+        "<script",
+        "<script lang=",
+        "<script lang='ts",
+        "<script>const unfinished =",
+        "<template><div><script lang=ts>const x = 1;</script>",
+        "<script></script>",
+        "<script src='missing.js'>ignored</script><script>const x = 1;",
+    ] {
+        for region in syntax().script_regions(&lang("vue"), src) {
+            assert_eq!(src.get(region.base..region.base + region.text.len()), Some(region.text.as_str()));
+        }
+    }
+}
+
+#[test]
+fn script_regions_large_vue_document() {
+    for count in [2_000, 4_000, 8_000] {
+        let src =
+            "<template><div>中文😀</div></template>\r\n<script setup lang=ts>const x = 1;</script>\r\n".repeat(count);
+        let start = std::time::Instant::now();
+        let regions = syntax().script_regions(&lang("vue"), &src);
+        eprintln!("script regions: {} bytes, {count} blocks: {:?}", src.len(), start.elapsed());
+        assert_eq!(regions.len(), count);
+        assert!(regions.windows(2).all(|pair| pair[0].base < pair[1].base));
+    }
+}
+
+#[test]
+fn script_regions_tolerate_deep_markup() {
+    let src = "<div>".repeat(1_000) + "<script>const x = 1;</script>";
+    let regions = syntax().script_regions(&lang("html"), &src);
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0].base, src.find("const").unwrap());
+}
+
+// ---------------------------------------------------------------------------
+// Outline with nested <script> declarations (Vue SFC / HTML)
+
+#[test]
+fn html_outline_nests_script_declarations() {
+    let src = "<html><body>\n<script>\nfunction boot() {}\nconst app = 1;\n</script>\n\
+               <script type=\"application/json\">{\"a\": 1}</script>\n</body></html>";
+    check_outline(
+        "html",
+        src,
+        "
+        Field html
+          Field body
+            Field script
+              Function boot
+              Constant app
+            Field script
+        ",
+    );
+}
+
+#[test]
+fn vue_outline_nests_script_declarations_without_a_grammar() {
+    let src = "<template>\n  <div class=\"app\"/>\n</template>\n\
+               <script setup lang=\"ts\">\ninterface Props { size: number }\nfunction scale(n: number) {}\n</script>\n\
+               <style scoped>\n.app { color: red }\n</style>";
+    check_outline(
+        "vue",
+        src,
+        "
+        Field template
+        Field script
+          Interface Props
+            Property size
+          Function scale
+        Field style
+        ",
+    );
+}
+
+#[test]
+fn script_outline_positions_are_document_coordinates() {
+    use super::lines::LineIndex;
+    let src = "<template><!-- 😀 --></template>\r\n<script lang=\"ts\">\r\nconst answer = 42;\r\n</script>";
+    let outline = syntax().outline(&lang("vue"), src);
+    let decl = &outline.iter().find(|i| i.name == "script").unwrap().children[0];
+    // Cross-check against the document's own byte -> UTF-16 conversion.
+    let idx = LineIndex::new(src);
+    let at = src.find("answer").unwrap();
+    assert_eq!(decl.selection_range, idx.range(at, at + "answer".len()));
+    // `@def.constant` captures the declarator (`answer = 42`), not the `const` keyword.
+    assert_eq!(decl.range, idx.range(at, src.find("42;").unwrap() + 2));
+}
+
+#[test]
+fn cached_outline_matches_syntax_outline_for_web_documents() {
+    use ide_core::DocId;
+    use std::sync::Arc;
+    let cache = SyntaxCache::new(Arc::new(Syntax::new()));
+    let id = DocId::next();
+    let src = "<template><div/></template>\n<script lang=\"ts\">\nconst app = 1;\n</script>\n";
+    cache.open(id, &lang("vue"), 0);
+    assert_eq!(cache.outline(id, &lang("vue"), 0, src), syntax().outline(&lang("vue"), src));
+    cache.open(id, &lang("html"), 0);
+    assert_eq!(cache.outline(id, &lang("html"), 0, src), syntax().outline(&lang("html"), src));
+}
+
+#[test]
+fn script_outlines_compose_positions_across_multiple_blocks() {
+    use super::lines::LineIndex;
+
+    let src = "<template>中文😀</template><script lang=ts>/* 中文😀 */ function first() { return 1; }</script>\r\n<script setup lang=ts>/* 中文😀 */ const second = 2;\r\nfunction third() {}\r\n</script>";
+    let lines = LineIndex::new(src);
+    for id in ["html", "vue", "svelte", "jsp"] {
+        let items = syntax().outline(&lang(id), src);
+        let scripts: Vec<_> = items.iter().filter(|item| item.name == "script").collect();
+        assert_eq!(scripts.len(), 2, "{id}");
+        assert_eq!(scripts[0].children.len(), 1);
+        assert_eq!(scripts[1].children.len(), 2);
+        for (item, name) in scripts.iter().flat_map(|s| &s.children).zip(["first", "second", "third"]) {
+            let byte = src.find(name).unwrap();
+            assert_eq!(item.name, name);
+            assert_eq!(item.selection_range, lines.range(byte, byte + name.len()), "{id}: {name}");
+        }
+    }
+}
+
+#[test]
+fn script_outline_attaches_to_case_insensitive_html_tags() {
+    check_outline("html", "<SCRIPT>function boot() {}</SCRIPT>", "Field SCRIPT\n  Function boot");
+}
+
+#[test]
+fn outline_restructuredtext_levels_follow_first_use_of_each_adornment() {
+    let src = "\
+=========
+ Project
+=========
+
+Install
+~~~~~~~
+
+From source
+-----------
+
+Literal block::
+
+    Not a title
+    -----------
+
+Intro
+--
+
+A paragraph
+with a line
+------------
+
+.. comment
+-----------
+
+Usage
+~~~~~
+
+.. note::
+
+   Indented
+   --------
+
+Short underline, still a title
+------
+
+Underline only
+==============
+";
+    check_outline(
+        "restructuredtext",
+        src,
+        "
+        Key Project
+          Key Install
+            Key From source
+          Key Usage
+            Key Short underline, still a title
+              Key Underline only
+        ",
+    );
+    let items = syntax().outline(&lang("restructuredtext"), src);
+    let project = &items[0];
+    assert_eq!(project.range.start, Pos::new(0, 0));
+    assert_eq!((project.selection_range.start, project.selection_range.end), (Pos::new(1, 1), Pos::new(1, 8)));
+    let install = &project.children[0];
+    assert_eq!((install.range.start, install.range.end), (Pos::new(4, 0), Pos::new(23, 11)));
+    assert!(syntax().outline(&lang("restructuredtext"), "Title\n\n").is_empty());
+}
+
+#[test]
+fn outline_restructuredtext_unicode_crlf_and_cached_edits() {
+    use ide_core::DocId;
+    use std::sync::Arc;
+
+    let src = "=========\r\n 中文😀\r\n=========\r\n\r\n子章节\r\n------\r\n\r\nBody\r\n\r\nOther\r\n------\r\n";
+    let id = DocId::next();
+    let language = lang("restructuredtext");
+    let cache = SyntaxCache::new(Arc::new(Syntax::new()));
+    cache.open(id, &language, 0);
+    let items = cache.outline(id, &language, 0, src);
+    assert_eq!(items, syntax().outline(&language, src));
+    assert_eq!(items[0].name, "中文😀");
+    assert_eq!(items[0].selection_range, Range::new(Pos::new(1, 1), Pos::new(1, 5)));
+    assert_eq!(items[0].children[0].name, "子章节");
+    assert_eq!(items[0].children[0].selection_range, Range::new(Pos::new(4, 0), Pos::new(4, 3)));
+    assert_eq!(items[0].children[0].range.end, Pos::new(7, 4));
+    assert_eq!(items[0].children[1].name, "Other");
+    let edited = src.replace("子章节", "新章节😀");
+    let updated = cache.outline(id, &language, 1, &edited);
+    assert_eq!(updated, syntax().outline(&language, &edited));
+    assert_eq!(updated[0].children[0].selection_range.end, Pos::new(4, 5));
+    assert_ne!(items, updated);
 }

@@ -6,7 +6,7 @@
  * the drawn diagram hides the code block, and `onDiagramDrawn` lets the conversation
  * follow the end when a diagram draws after the last streamed chunk.
  */
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { Marked } from "marked";
 import DOMPurify from "dompurify";
 import { highlightInto } from "@/editor/lsp/markdown";
@@ -17,8 +17,9 @@ import { openExternalUrl } from "@/platform/openUrl";
 import { copyText } from "@/ui";
 import { editorService } from "@/workbench/contributions";
 import { hasMermaid, renderMermaidIn } from "@/features/viewers/markdown/mermaid";
+import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { fileHref, pathLink, type PathLink } from "./conversation";
-import { loadImages } from "./markdownImages";
+import { loadImages, type MessageImages } from "./markdownImages";
 import styles from "./Session.module.css";
 
 const escapeHtml = (s: string) =>
@@ -41,9 +42,20 @@ const RENDERED_MAX = 500;
 
 let purifier: ReturnType<typeof DOMPurify> | null = null;
 
+/** Whether the webview would read `value` as an address on another host: it drops blanks and takes `\` for `/`. */
+const namesHost = (value: string) =>
+  /^(https?:|[\\/]{2})/i.test([...value].filter((c) => c.charCodeAt(0) > 32).join(""));
+
 function purify(): ReturnType<typeof DOMPurify> {
   if (purifier) return purifier;
   const p = DOMPurify(window);
+  // A reply reaches another host only when the user asks: a link they click, an image `loadImages` holds.
+  // `poster`, `background` and the `src` of other tags would fetch as soon as the reply renders.
+  p.addHook("uponSanitizeAttribute", (node, data) => {
+    if (data.attrName === "alt" || data.attrName === "title") return;
+    if (data.attrName === "href" && node.tagName === "A") return;
+    if (namesHost(data.attrValue)) data.keepAttr = false;
+  });
   const sources = new WeakMap<Node, string>();
   // Preserve image-only file URLs without relaxing URI sanitizing for links or other tags.
   p.addHook("beforeSanitizeAttributes", (node) => {
@@ -57,6 +69,40 @@ function purify(): ReturnType<typeof DOMPurify> {
   });
   purifier = p;
   return p;
+}
+
+/**
+ * `text` cut into its top-level blocks (a paragraph, a list, a fence…), each with the
+ * blank lines after it, so they join back into `text`. While a reply streams only its
+ * last block changes: the others keep their rendering. Reference links reach across
+ * blocks, and an HTML block can open in one token and close in another, so a text with
+ * either stays whole. The blocks before the last of `previous` (this text's blocks
+ * before it streamed on) have ended: when `text` still starts with them, only the rest
+ * is cut again.
+ */
+export function markdownBlocks(text: string, previous: readonly string[] = []): string[] {
+  let stable = 0;
+  let offset = 0;
+  while (stable < previous.length - 1 && text.startsWith(previous[stable]!, offset))
+    offset += previous[stable++]!.length;
+  if (stable) {
+    const rest = lexBlocks(text.slice(offset));
+    if (rest) return [...previous.slice(0, stable), ...rest];
+  }
+  return lexBlocks(text) ?? [text];
+}
+
+/** `text`'s blocks, or `null` when it has to render whole. */
+function lexBlocks(text: string): string[] | null {
+  const tokens = marked.lexer(text);
+  if (Object.keys(tokens.links).length || tokens.some((t) => t.type === "html")) return null;
+  const blocks: string[] = [];
+  for (const t of tokens) {
+    if (t.type === "space" && blocks.length) blocks[blocks.length - 1] += t.raw;
+    else blocks.push(t.raw);
+  }
+  // The lexer can drop what it doesn't keep in a token (trailing whitespace); keep the text whole.
+  return blocks.join("") === text ? blocks : null;
 }
 
 export function markdownHtml(text: string): string {
@@ -141,7 +187,7 @@ export function openPathLink(link: PathLink) {
 }
 
 /** Highlighting, Copy buttons and file links over freshly rendered `root`. */
-function enhance(root: HTMLElement, cwd: string, images: Map<string, Promise<string>>): () => void {
+function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => void {
   let alive = true;
   const disposeImages = loadImages(root, cwd, images);
   const copies: HTMLButtonElement[] = [];
@@ -183,6 +229,48 @@ function enhance(root: HTMLElement, cwd: string, images: Map<string, Promise<str
   };
 }
 
+interface PaintedBlock {
+  source: string;
+  nodes: ChildNode[];
+  dispose: () => void;
+}
+
+/** Removes the painted blocks from `from` on. */
+function clearBlocks(painted: PaintedBlock[], from: number) {
+  for (const block of painted.splice(from)) {
+    block.dispose();
+    block.nodes.forEach((n) => n.remove());
+  }
+}
+
+/**
+ * Brings `root` to `sources`: blocks whose source is unchanged keep their nodes (and
+ * whatever was drawn into them); the rest are rendered after them. The nodes go straight
+ * into `root`, as a single rendering would put them, so styles and selections see one
+ * message.
+ */
+function paintBlocks(
+  root: HTMLElement,
+  painted: PaintedBlock[],
+  sources: string[],
+  cwd: string,
+  images: MessageImages,
+) {
+  let same = 0;
+  while (same < painted.length && same < sources.length && painted[same]!.source === sources[same]) same++;
+  clearBlocks(painted, same);
+  sources.slice(same).forEach((source, i, rest) => {
+    const holder = document.createElement("div");
+    // A streaming reply changes its last block on every frame: kept, those would push
+    // the finished blocks of other messages out of the cache.
+    holder.innerHTML = i === rest.length - 1 && !rendered.has(source) ? renderHtml(source) : markdownHtml(source);
+    const dispose = enhance(holder, cwd, images);
+    const nodes = [...holder.childNodes];
+    root.append(...nodes);
+    painted.push({ source, nodes, dispose });
+  });
+}
+
 export function Markdown({
   text,
   cwd,
@@ -193,12 +281,32 @@ export function Markdown({
   /** A diagram drew after the message rendered: the conversation may follow the end. */
   onDiagramDrawn?: () => void;
 }) {
-  const html = useMemo(() => markdownHtml(text), [text]);
   const ref = useRef<HTMLDivElement>(null);
-  const images = useRef(new Map<string, Promise<string>>());
+  const images = useRef<MessageImages>({ reads: new Map(), asked: new Set() });
+  /** The blocks on screen, so a streamed chunk repaints only the blocks it changed. */
+  const painted = useRef<PaintedBlock[]>([]);
+  const paintedCwd = useRef(cwd);
   /** The last drawing of each mermaid block, stood in while a changed one renders. */
   const diagrams = useRef<Node[]>([]);
-  useLayoutEffect(() => (ref.current ? enhance(ref.current, cwd, images.current) : undefined), [html, cwd]);
+  // Diagrams are drawn in the active theme's colours: a theme change redraws them.
+  const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    if (paintedCwd.current !== cwd) {
+      clearBlocks(painted.current, 0);
+      paintedCwd.current = cwd;
+    }
+    const sources = markdownBlocks(
+      text,
+      painted.current.map((b) => b.source),
+    );
+    paintBlocks(root, painted.current, sources, cwd, images.current);
+  }, [text, cwd]);
+  useLayoutEffect(() => {
+    const blocks = painted.current;
+    return () => clearBlocks(blocks, 0);
+  }, []);
   // Mermaid diagrams: before paint, so cached ones don't flash their source. Only a
   // draw that lands after the render needs the follow — cached ones are in place by
   // the time the conversation's own render pass scrolls.
@@ -212,7 +320,7 @@ export function Markdown({
       live = false;
       pass.cancel();
     };
-  }, [html, onDiagramDrawn]);
+  }, [text, theme, onDiagramDrawn]);
   return (
     <div
       ref={ref}
@@ -241,7 +349,6 @@ export function Markdown({
           if (link) openPathLink(link);
         }
       }}
-      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
 }

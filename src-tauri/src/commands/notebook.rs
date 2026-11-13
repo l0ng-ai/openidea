@@ -20,6 +20,16 @@ pub fn notebook_get(window: Window, state: State<'_, AppState>, id: String) -> I
 
 #[tauri::command]
 #[specta::specta]
+pub fn notebook_cell_docs(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+) -> IdeResult<Vec<ide_lsp::NotebookCellDoc>> {
+    notebook::cell_docs(&state.host, window.label(), id)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn notebook_edit(
     window: Window,
     state: State<'_, AppState>,
