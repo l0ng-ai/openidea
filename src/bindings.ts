@@ -877,6 +877,23 @@ export const commands = {
 	label: string,
 } | null, IdeError>(__TAURI_INVOKE("maven_goto_declaration", { pom, pos })),
 	/**
+	 *  Completion of the `<dependency>` coordinate the caret (`offset`, UTF-16) sits
+	 *  in the value of in the POM `doc`, from the local repository and Maven Central.
+	 */
+	mavenDependencyCompletion: (doc: DocId, offset: number, request: RequestId) => typedError<{
+	/**  UTF-16 offset where the completed text starts: the value's first character. */
+	from: number,
+	/**
+	 *  UTF-16 offset where the replaced value ends: past the caret when the caret
+	 *  sits inside an existing value, which is then replaced whole.
+	 */
+	to: number,
+	/**  Which coordinate element the caret is in. */
+	kind: PomCompletionKind,
+	/**  The suggestions, local repository first. */
+	options: PomCompletionOption[],
+} | null, IdeError>(__TAURI_INVOKE("maven_dependency_completion", { doc, offset, request })),
+	/**
 	 *  Build › Build Project / Rebuild Project / Build Module (`file`: a file or folder of the
 	 *  module) / Build Artifacts, streaming the console and messages on `on_event`; cancellable
 	 *  with `cancel_request(request)`. Diagnostics of `clear` (the files of the previous build)
@@ -8000,6 +8017,43 @@ export type PluginsSnapshot = {
 	activeTheme: ActiveTheme | null,
 	/**  UI contributions of live plugins, projected by the client. */
 	ui: UiContribution[],
+};
+
+/**
+ *  The completion offered at a caret of a POM: the replaced value span (UTF-16
+ *  offsets) and the suggestions, local ones first.
+ */
+export type PomCompletion = {
+	/**  UTF-16 offset where the completed text starts: the value's first character. */
+	from: number,
+	/**
+	 *  UTF-16 offset where the replaced value ends: past the caret when the caret
+	 *  sits inside an existing value, which is then replaced whole.
+	 */
+	to: number,
+	/**  Which coordinate element the caret is in. */
+	kind: PomCompletionKind,
+	/**  The suggestions, local repository first. */
+	options: PomCompletionOption[],
+};
+
+/**  The coordinate element a POM completion fills. */
+export type PomCompletionKind = 
+/**  The dependency's `<groupId>`. */
+"groupId" | 
+/**  The dependency's `<artifactId>`. */
+"artifactId" | 
+/**  The dependency's `<version>`. */
+"version";
+
+/**
+ *  One suggestion: the coordinate as inserted, and an optional note shown in
+ *  the lookup (the owning group of an artifactId, its newest installed version).
+ */
+export type PomCompletionOption = {
+	/**  The text the completion inserts (`org.example.lib`, `example-lib`, `1.2.0`). */
+	label: string,
+	detail: string | null,
 };
 
 /**  What a go-to-declaration in a POM found, and where. */
