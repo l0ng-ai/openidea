@@ -758,8 +758,15 @@ const completionFooter = ViewPlugin.fromClass(
             ...scope.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete"),
           ];
           for (const t of tooltips) {
-            if (t.querySelector(":scope > .cm-lsp-completion-footer")) continue;
-            const footer = document.createElement("div");
+            let footer = t.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer");
+            if (footer) {
+              // CodeMirror rebuilds the option list by appending a fresh <ul>,
+              // which would leave an existing footer above the list.
+              const list = t.querySelector(":scope > ul");
+              if (list && list.nextElementSibling !== footer) list.after(footer);
+              continue;
+            }
+            footer = document.createElement("div");
             footer.className = "cm-lsp-completion-footer";
             const tip = document.createElement("span");
             tip.textContent = tx("Press ↵ to insert, ⇥ to replace");
