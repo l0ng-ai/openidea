@@ -427,6 +427,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         build::maven_dependency_declaration,
         build::maven_exclude_dependency,
         build::maven_goto_declaration,
+        build::maven_dependency_completion,
         build::build_run,
         build::build_compile_file,
         java::java_resolve_launch,

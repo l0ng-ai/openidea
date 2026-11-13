@@ -1157,6 +1157,7 @@
   "No new MCP servers in the project's .mcp.json or .vscode/mcp.json.": "No new MCP servers in the project's .mcp.json or .vscode/mcp.json.",
   "Imported 1 MCP server from the project.": "Imported 1 MCP server from the project.",
   "Imported {count} MCP servers from the project.": "Imported {count} MCP servers from the project.",
+  "Servers added to the project's settings file outside OpenIDEA stay off until you turn them on here.": "Servers added to the project's settings file outside OpenIDEA stay off until you turn them on here.",
   "Show branch and incoming/outgoing commits in the Project view": "Show branch and incoming/outgoing commits in the Project view",
   "Up to date with {upstream}": "Up to date with {upstream}",
   "Highlight occurrences of selected text": "Highlight occurrences of selected text",
@@ -1422,4 +1423,6 @@
   "All Interpreters": "All Interpreters",
   "Dependencies": "Dependencies",
   "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff.": "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff."
+  "No credential store": "No credential store",
+  "Values of agent and MCP server settings are kept in {path}, readable only by you.": "Values of agent and MCP server settings are kept in {path}, readable only by you."
 }

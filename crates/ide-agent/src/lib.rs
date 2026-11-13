@@ -89,6 +89,18 @@ pub struct AgentPaths {
     pub custom_agents_dir: Option<PathBuf>,
     /// The user's home: its `.claude` holds their own skills and commands.
     pub home_dir: Option<PathBuf>,
+    /// Where the values of the agent files' environment variables are kept; without it they stay in the files.
+    pub env_secrets: Option<Arc<dyn EnvSecrets>>,
+}
+
+/// Keeps the values of agent files' environment variables (`agent/<id>/env/<name>`) out of
+/// the files, which keep only the names; the app keeps them in the OS credential store.
+pub trait EnvSecrets: Send + Sync {
+    fn get(&self, key: &str) -> Option<String>;
+    fn set(&self, key: &str, value: &str) -> IdeResult<()>;
+    fn delete(&self, key: &str);
+    /// The keys that start with `prefix`.
+    fn keys(&self, prefix: &str) -> Vec<String>;
 }
 
 /// Starts the ACP server of a provider in a directory, speaking to `client`.
@@ -134,6 +146,10 @@ struct Known {
 impl Shared {
     fn spec(&self, id: &str) -> Option<provider::ProviderSpec> {
         self.providers.read().iter().find(|p| p.id == id).cloned()
+    }
+
+    fn env_secrets(&self) -> Option<&dyn EnvSecrets> {
+        self.paths.env_secrets.as_deref()
     }
 
     fn emit(&self, event: AgentEvent) {
@@ -446,7 +462,7 @@ impl AgentManager {
     fn with_connector(paths: AgentPaths, runtime: tokio::runtime::Handle, connector: Connector) -> Self {
         let known =
             std::fs::read(&paths.models_file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let providers = RwLock::new(provider::load(paths.custom_agents_dir.as_deref()));
+        let providers = RwLock::new(provider::load(paths.custom_agents_dir.as_deref(), paths.env_secrets.as_deref()));
         let shared = Arc::new(Shared {
             paths,
             runtime,
@@ -503,7 +519,7 @@ impl AgentManager {
 
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.
     pub fn providers(&self) -> Vec<AgentProvider> {
-        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
+        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets());
         let in_use: std::collections::HashSet<String> =
             self.tasks.read().values().map(|t| t.state.lock().task.provider.clone()).collect();
         let list = specs
@@ -537,7 +553,7 @@ impl AgentManager {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::set_builtin_command(&dir, id, command.as_deref())
+        provider::set_builtin_command(&dir, self.shared.env_secrets(), id, command.as_deref())
     }
 
     /// Sets the environment variables built-in `id` starts with; empty clears them.
@@ -545,7 +561,7 @@ impl AgentManager {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::set_builtin_env(&dir, id, env)
+        provider::set_builtin_env(&dir, self.shared.env_secrets(), id, env)
     }
 
     /// Saves a new custom ACP agent through its agent file.
@@ -553,7 +569,7 @@ impl AgentManager {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::save_custom(&dir, &input)
+        provider::save_custom(&dir, self.shared.env_secrets(), &input)
     }
 
     /// Removes a custom agent's file (registry installs go through `registry_remove`).
@@ -561,7 +577,7 @@ impl AgentManager {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::remove_custom(&dir, id)
+        provider::remove_custom(&dir, self.shared.env_secrets(), id)
     }
 
     /// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents.
@@ -569,12 +585,12 @@ impl AgentManager {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::import_acp(&dir, text)
+        provider::import_acp(&dir, self.shared.env_secrets(), text)
     }
 
     /// Re-reads configured/installed agents, drops cached probes, and notifies subscribers.
     pub fn reload_providers(&self) {
-        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
+        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets());
         *self.shared.providers.write() = specs;
         self.shared.probes.lock().clear();
         self.shared.emit(AgentEvent::Providers);
@@ -2266,15 +2282,19 @@ impl Task {
             .iter()
             .map(|question| question.answer_key.clone().unwrap_or_else(|| question.question.clone()))
             .collect();
+        let command = security::extract_command(params);
+        // What the card names as the command: not for a request that grants more than running it.
+        let shown = command.as_deref().filter(|_| !security::widens_access(params)).map(shown_command);
         if let Some(hook) = self.shared.security.read().clone()
-            && let Some(command) = security::extract_command(params)
+            && let Some(command) = command.as_deref()
         {
-            match security::evaluate_command(&command, &hook()) {
+            match security::evaluate_command(command, &hook()) {
                 security::PolicyDecision::Blocked(pattern) => {
                     let reject = options.iter().find(|o| o.kind.starts_with("reject")).cloned();
                     let _ = self.push_entry(AgentEntry::Permission {
                         id,
                         title,
+                        command: shown.clone(),
                         options,
                         questions: Vec::new(),
                         chosen: Some(format!("Blocked by policy ({pattern})")),
@@ -2284,7 +2304,7 @@ impl Task {
                         None => json!({ "outcome": { "outcome": "cancelled" } }),
                     };
                 }
-                security::PolicyDecision::Allowed => {
+                security::PolicyDecision::Allowed if !security::widens_access(params) => {
                     if let Some(allow) = options
                         .iter()
                         .find(|o| o.kind == "allow_once")
@@ -2294,6 +2314,7 @@ impl Task {
                         let _ = self.push_entry(AgentEntry::Permission {
                             id,
                             title,
+                            command: shown.clone(),
                             options,
                             questions: Vec::new(),
                             chosen: Some(format!("{} (whitelisted)", allow.name)),
@@ -2301,12 +2322,18 @@ impl Task {
                         return json!({ "outcome": { "outcome": "selected", "optionId": allow.id } });
                     }
                 }
-                security::PolicyDecision::AskUser => {}
+                security::PolicyDecision::Allowed | security::PolicyDecision::AskUser => {}
             }
         }
         let (tx, rx) = std::sync::mpsc::channel();
-        let entry =
-            self.push_entry(AgentEntry::Permission { id, title, options: options.clone(), questions, chosen: None });
+        let entry = self.push_entry(AgentEntry::Permission {
+            id,
+            title,
+            command: shown,
+            options: options.clone(),
+            questions,
+            chosen: None,
+        });
         self.permissions.lock().insert(id, tx);
         self.set_status(AgentStatus::NeedsInput, None);
         self.approve_pending();
@@ -2466,6 +2493,11 @@ fn permission_title(params: &Value) -> String {
         }
     }
     title.unwrap_or("The agent asks for permission").to_owned()
+}
+
+/// A command as a permission card shows it: the script of a `<shell> -c <script>` line.
+fn shown_command(command: &str) -> String {
+    shell_script(command).unwrap_or_else(|| command.to_owned())
 }
 
 /// The script of a `<shell> -c <quoted script>` command line, when the whole line is exactly that.

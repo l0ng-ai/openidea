@@ -63,7 +63,6 @@ export function activateSettingsPages(): () => void {
       group: AGENTS_GROUP,
       order: 490,
       keywords: ["agent", "policy", "security", "whitelist", "blacklist", "permission", "command", "exec"],
-      projectScope: true,
       component: lazyComponent(() => import("./AgentPolicyPage").then((m) => m.AgentPolicyPage)),
     }),
   ];

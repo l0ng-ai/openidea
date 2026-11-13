@@ -7536,6 +7536,7 @@
   "No new MCP servers in the project's .mcp.json or .vscode/mcp.json.": "项目的 .mcp.json 和 .vscode/mcp.json 中没有新的 MCP 服务器。",
   "Imported 1 MCP server from the project.": "已从项目导入 1 个 MCP 服务器。",
   "Imported {count} MCP servers from the project.": "已从项目导入 {count} 个 MCP 服务器。",
+  "Servers added to the project's settings file outside OpenIDEA stay off until you turn them on here.": "在 OpenIDEA 之外添加到项目设置文件中的服务器会保持关闭，直到你在这里将其开启。",
   "Show branch and incoming/outgoing commits in the Project view": "在项目视图中显示分支及传入/传出提交",
   "Up to date with {upstream}": "已与 {upstream} 同步",
   "Highlight occurrences of selected text": "高亮所选文本的匹配项",
@@ -7823,4 +7824,6 @@
   "Double-click an interpreter to use it for this project.": "双击解释器可将其用于当前项目。",
   "All Interpreters": "所有解释器",
   "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff.": "配置项目解释器及其软件包、IDE 已知的所有解释器，以及 Ruff。"
+  "No credential store": "没有凭据存储",
+  "Values of agent and MCP server settings are kept in {path}, readable only by you.": "智能体和 MCP 服务器设置中的值保存在 {path} 中，仅你本人可读取。"
 }
