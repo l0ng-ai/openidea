@@ -870,7 +870,7 @@ impl editor::Host for StoreData {
             return Ok(Err(wit::Error::Invalid("edits too large".into())));
         }
         let root = self.table.get(&project)?.root.clone();
-        let path = match self.resolve_in_project(&root, &path) {
+        let path = match self.resolve_background_document_in_project(&root, &path) {
             Ok(path) => path,
             Err(error) => return Ok(Err(wit::Error::Invalid(error))),
         };
@@ -934,6 +934,14 @@ impl StoreData {
     fn resolve_writable_in_project(&self, root: &Path, path: &str) -> Result<PathBuf, String> {
         sandbox::resolve_writable_in_root(root, path).or_else(|root_error| {
             sandbox::resolve_writable_in_roots(&self.host.member_roots(root), path).map_err(|_| root_error)
+        })
+    }
+    /// A background document edit is the only plugin operation that changes an
+    /// editor on behalf of a remote peer.  It therefore rejects links and IDE
+    /// control directories instead of using the normal read resolver.
+    fn resolve_background_document_in_project(&self, root: &Path, path: &str) -> Result<PathBuf, String> {
+        sandbox::resolve_background_document_in_root(root, path).or_else(|root_error| {
+            sandbox::resolve_background_document_in_roots(&self.host.member_roots(root), path).map_err(|_| root_error)
         })
     }
     /// Whether a `project` resource's path lands inside the resource's root or

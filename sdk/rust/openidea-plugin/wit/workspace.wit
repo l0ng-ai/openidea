@@ -135,7 +135,9 @@ interface editor {
 
     /// Applies versioned edits to an open project document from a background
     /// event. The path is project-relative and requires `project.read` and
-    /// `editor.write`. Stale versions are rejected without changing text.
+    /// `editor.write`. The host refuses VCS/IDE control directories and every
+    /// symlink, junction or reparse-point component before it finds the open
+    /// document. Stale versions are rejected without changing text.
     /// These background edits are non-undoable and are not re-emitted as
     /// `document-changed` events.
     apply-edits-at: func(project: borrow<project>, path: string, version: u64, edits: list<text-edit>) -> result<u64, error>;
