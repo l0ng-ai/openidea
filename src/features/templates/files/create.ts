@@ -7,7 +7,7 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { dirname, useProject } from "@/platform/project";
 import { currentRoots } from "@/platform/projectRoots";
 import { activeEditor, editorsFor, type TextEditorHandle } from "@/editor/api";
-import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
+import { editorService, maybeEditorService, notifications, resolveFileEditor } from "@/workbench/contributions";
 import {
   GO_PACKAGE_RE,
   caretAfterReformat,
@@ -112,10 +112,23 @@ export function defaultDirectory(): string | null {
   return path ? dirname(path) : (useProject.getState().project?.root ?? null);
 }
 
+/** Whether a non-text editor opens `path`; the probe's acquisitions are released. */
+async function providedEditor(path: string): Promise<boolean> {
+  const resolution = await resolveFileEditor(path).catch(() => null);
+  if (!resolution) return false;
+  try {
+    await resolution.rollback();
+  } catch {
+    // Released on a best-effort basis; opening resolves the editor again.
+  }
+  return true;
+}
+
 /**
  * Creates `input` (a name, possibly with sub-directories) in `directory`
  * from `kind`, opens it and inserts the rendered body with the caret at
- * `$END$`. Throws with a user-facing message on failure.
+ * `$END$` (a file a non-text editor opens, like a notebook, gets the body on
+ * disk instead). Throws with a user-facing message on failure.
  */
 export async function createFromTemplate(
   t: FileTemplate,
@@ -144,11 +157,16 @@ export async function createFromTemplate(
     templateIncludes(),
   );
   if (cancelled?.()) return plan.path;
-  await call(commands.fsCreateFile(plan.path));
+  // A provided editor (a notebook shows cells, not text) reads the file from
+  // disk and has no view to insert into, so its body is written on create.
+  const provided = await providedEditor(plan.path);
+  if (provided && text) await call(commands.fsCreateFileBytes(plan.path, [...new TextEncoder().encode(text)]));
+  else await call(commands.fsCreateFile(plan.path));
   notifyFileOperation({ kind: "created", paths: [plan.path] });
   onCreated?.();
   await new Promise((r) => setTimeout(r, 0));
   await editorService().openFile(plan.path, { focus: true });
+  if (provided) return plan.path;
   const handle = await waitForEditor(plan.path);
   if (!handle) {
     notifications().notify({
