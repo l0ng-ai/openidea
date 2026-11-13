@@ -1276,12 +1276,13 @@ pub(super) fn commit_draft(
         };
         // Both callers have checked that the window's project is trusted.
         r.set_execution_allowed(true);
-        let pending = r.pending_changes(&repo.options, budget, &|path| Ok(workspace.vcs_encoding(path))).map_err(
-            |e| match e.kind {
+        let backend = &r as &dyn ide_vcs::Backend;
+        let pending = backend
+            .pending_changes(&repo.options, budget, &|path| Ok(workspace.vcs_encoding(path)))
+            .map_err(|e| match e.kind {
                 ide_core::error::ErrorKind::InvalidInput => HostError::Invalid(e.message),
                 _ => HostError::Failed(e.message),
-            },
-        )?;
+            })?;
         let root = to_ipc(r.root());
         for c in pending {
             budget -= c.diff.as_ref().map_or(0, String::len).min(budget);

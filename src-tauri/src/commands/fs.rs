@@ -53,8 +53,13 @@ pub fn fs_create_file(window: Window, state: State<'_, AppState>, path: PathBuf)
 
 #[tauri::command]
 #[specta::specta]
-pub async fn fs_create_file_bytes(state: State<'_, AppState>, path: PathBuf, data: Vec<u8>) -> IdeResult<()> {
-    fs::create_file_bytes(&state.host, path, data).await
+pub async fn fs_create_file_bytes(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    data: Vec<u8>,
+) -> IdeResult<()> {
+    fs::create_file_bytes(&state.host, window.label(), path, data).await
 }
 
 #[tauri::command]
@@ -65,8 +70,8 @@ pub fn fs_create_dir(path: PathBuf) -> IdeResult<()> {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn fs_rename(state: State<'_, AppState>, from: PathBuf, to: PathBuf) -> IdeResult<()> {
-    fs::rename(&state.host, from, to).await
+pub async fn fs_rename(window: Window, state: State<'_, AppState>, from: PathBuf, to: PathBuf) -> IdeResult<()> {
+    fs::rename(&state.host, window.label(), from, to).await
 }
 
 /// Toggle Read-only Attribute: sets the writable bit (and the open document's
@@ -86,8 +91,8 @@ pub async fn fs_delete(window: Window, state: State<'_, AppState>, path: PathBuf
 
 #[tauri::command]
 #[specta::specta]
-pub async fn fs_copy(state: State<'_, AppState>, from: PathBuf, to: PathBuf) -> IdeResult<()> {
-    fs::copy(&state.host, from, to).await
+pub async fn fs_copy(window: Window, state: State<'_, AppState>, from: PathBuf, to: PathBuf) -> IdeResult<()> {
+    fs::copy(&state.host, window.label(), from, to).await
 }
 
 /// Reads a text file without opening it as a document (previews, quick

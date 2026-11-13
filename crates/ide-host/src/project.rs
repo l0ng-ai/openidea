@@ -8,7 +8,7 @@ use ide_language::{FileTypes, LanguageRegistry, SyntaxCache};
 use ide_lsp::LspManager;
 use ide_syntax::StructureService;
 use ide_text::{AppliedChange, ByteEdit};
-use ide_vcs::{Repo, Repos};
+use ide_vcs::{Backend, Repo, Repos};
 use ide_vfs::Watcher;
 use ide_workspace::documents::DocumentObserver;
 use ide_workspace::{DocumentInfo, Documents, FileMoves, LocalHistory, ProjectRoots, SettingsStore, SourceFolder};
@@ -971,6 +971,11 @@ impl Project {
         }
     }
 
+    /// `with_repo_of` through the backend-agnostic Changes-view surface.
+    pub fn with_backend_of<T>(&self, path: &Path, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
+        self.with_repo_of(path, |r| f(r as &dyn Backend))
+    }
+
     fn run_in<T>(&self, repo: &Repo, f: impl FnOnce(&Repo) -> IdeResult<T>) -> IdeResult<T> {
         let settings = self.settings.effective();
         if self.is_trusted() {
@@ -978,6 +983,40 @@ impl Project {
         }
         repo.set_ignored_names(settings.ignored_names());
         f(repo)
+    }
+
+    /// `with_repo_at` through the backend-agnostic Changes-view surface.
+    pub fn with_backend_at<T>(&self, at: Option<&Path>, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
+        self.with_repo_at(at, |r| f(r as &dyn Backend))
+    }
+
+    /// `with_log_repo_at` through the backend-agnostic Changes-view surface.
+    pub fn with_log_backend_at<T>(
+        &self,
+        at: Option<&Path>,
+        f: impl FnOnce(&dyn Backend) -> IdeResult<T>,
+    ) -> IdeResult<T> {
+        self.with_log_repo_at(at, |r| f(r as &dyn Backend))
+    }
+
+    /// `with_log_repo_of` through the backend-agnostic Changes-view surface.
+    pub fn with_log_backend_of<T>(&self, path: &Path, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
+        self.with_log_repo_of(path, |r| f(r as &dyn Backend))
+    }
+
+    /// `with_repo` through the backend-agnostic Changes-view surface.
+    pub fn with_backend<T>(&self, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
+        self.with_backend_at(None, f)
+    }
+
+    /// `with_repo_recorded` through the backend-agnostic Changes-view surface.
+    pub fn with_backend_recorded<T>(
+        &self,
+        at: Option<&Path>,
+        operation: Option<&str>,
+        f: impl FnOnce(&dyn Backend) -> IdeResult<T>,
+    ) -> IdeResult<T> {
+        self.with_repo_recorded(at, operation, |r| f(r as &dyn Backend))
     }
 
     /// Runs `f` with the project's primary git repository, or fails when the project is not under git.
@@ -1004,7 +1043,7 @@ impl Project {
     ) -> IdeResult<T> {
         let Some(name) = operation else { return self.with_disk_sync(|| self.with_repo_at(at, f)) };
         self.history_label(&format!("Before {name}"));
-        if let Ok(changed) = self.with_repo_at(at, |r| r.status()) {
+        if let Ok(changed) = self.with_backend_at(at, |r| r.status()) {
             for file in changed.iter().take(HISTORY_BATCH_LIMIT) {
                 if let Err(e) = self.history.record_file(&file.path, &format!("Before {name}"), false) {
                     tracing::debug!("local history: {e}");
