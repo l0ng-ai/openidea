@@ -164,6 +164,8 @@
   "The debugger link stopped reading the JVM. Debugging continues.": "调试器链接已停止读取 JVM。调试仍在继续。",
   "No referrers": "没有引用者",
   "Could not find the source of {name}.": "找不到 {name} 的源代码。",
+  "Class to import": "要导入的类",
+  "Choose the class to import for {className}:": "选择 {className} 要导入的类：",
   "Memory view needs a JVM on this computer started with -XX:+StartAttachListener. Programs the IDE debugs get it automatically.": "内存视图需要本机上以 -XX:+StartAttachListener 启动的 JVM。由 IDE 调试的程序会自动添加该选项。",
   "Memory view is not available when the IDE listens for the JVM to connect.": "IDE 监听 JVM 连接时，内存视图不可用。",
   "Memory view is not available on this platform yet.": "此平台暂不支持内存视图。",

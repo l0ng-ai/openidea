@@ -175,6 +175,8 @@
   "The debugger link stopped reading the JVM. Debugging continues.": "The debugger link stopped reading the JVM. Debugging continues.",
   "No referrers": "No referrers",
   "Could not find the source of {name}.": "Could not find the source of {name}.",
+  "Class to import": "Class to import",
+  "Choose the class to import for {className}:": "Choose the class to import for {className}:",
   "Memory view needs a JVM on this computer started with -XX:+StartAttachListener. Programs the IDE debugs get it automatically.": "Memory view needs a JVM on this computer started with -XX:+StartAttachListener. Programs the IDE debugs get it automatically.",
   "Memory view is not available when the IDE listens for the JVM to connect.": "Memory view is not available when the IDE listens for the JVM to connect.",
   "Memory view is not available on this platform yet.": "Memory view is not available on this platform yet.",

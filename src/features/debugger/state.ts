@@ -40,6 +40,8 @@ import { refreshExceptionFilters } from "./breakpoints/exceptions";
 import { flashTaskbarForBreakpoint, stopTaskbarFlash } from "./taskbarFlash";
 import { missingAdapter } from "./missingAdapter";
 import { startFailureMessage } from "./startFailure";
+import { evaluateWithImports, forgetImports } from "./classImports";
+import { JAVA_ADAPTER } from "./java";
 
 export type SessionStatus = "starting" | "running" | "paused" | "stopping" | "terminated";
 
@@ -826,6 +828,7 @@ export function sessionSupports(cap: keyof DebugCapabilities, s: DebugSession | 
 
 function markTerminated(id: DebugSessionId) {
   stopTaskbarFlash();
+  forgetImports(id);
   patch(id, { status: "terminated", endedAt: Date.now(), frames: [], selectedFrame: null, stoppedThread: null });
   const st = useDebug.getState();
   if (st.active === id) {
@@ -1082,7 +1085,8 @@ export async function evaluate(
   session: DebugSession | null = activeSession(),
 ): Promise<Variable> {
   if (!session || !isLive(session)) throw new Error("No active debug session");
-  return call(commands.debugEvaluateIn(session.id, session.selectedFrame, expression, context));
+  const run = (expr: string) => call(commands.debugEvaluateIn(session.id, session.selectedFrame, expr, context));
+  return session.adapter === JAVA_ADAPTER ? evaluateWithImports(session.id, expression, run) : run(expression);
 }
 
 /** Settings › Debugger › Focus application on breakpoint. */
