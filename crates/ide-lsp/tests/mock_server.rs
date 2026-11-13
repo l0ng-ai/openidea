@@ -23,6 +23,7 @@ use std::time::Duration;
 struct MockState {
     caps: Mutex<Value>,
     missing: std::sync::atomic::AtomicBool,
+    omit_server_info: std::sync::atomic::AtomicBool,
     binary: Mutex<Option<PathBuf>>,
     launches: AtomicUsize,
     notifications: Mutex<Vec<(String, Value)>>,
@@ -146,7 +147,11 @@ impl Handler for MockHandler {
                 if let Some(gate) = gate {
                     gate.hold();
                 }
-                Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } }))
+                let mut result = json!({ "capabilities": s.caps.lock().clone() });
+                if !s.omit_server_info.load(Ordering::SeqCst) {
+                    result["serverInfo"] = json!({ "name": "mock" });
+                }
+                Ok(result)
             }
             "shutdown" => Ok(Value::Null),
             _ => {
@@ -7058,5 +7063,38 @@ async fn notebook_edits_change_cell_text_and_reorders_reopen_it() {
     h.mgr.restart(server).await.unwrap();
     eventually(|| nb.launches.load(Ordering::SeqCst) > launches && nb.notified("notebookDocument/didOpen").len() == 3)
         .await;
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn external_go_file_reuses_module_and_reopens_after_restart() {
+    let h = harness_configured("go", "go", &[("gopls", incremental_caps())], |cfg| {
+        cfg.root_markers = vec!["go.work".into(), "go.mod".into()];
+    });
+    h.launcher.state("gopls").omit_server_info.store(true, Ordering::SeqCst);
+    let module = h.root.join("service");
+    std::fs::create_dir_all(&module).unwrap();
+    std::fs::write(module.join("go.mod"), "module example.test/service\n").unwrap();
+    h.open("service/main.go", "package service\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    let cache = tempfile::tempdir().unwrap();
+    let external = cache.path().join("dependency.go");
+    std::fs::write(&external, "package dependency\n").unwrap();
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &external, &h.lang, 1, "package dependency\n");
+    let state = h.launcher.state("gopls");
+    let opened_external = || {
+        state.notified("textDocument/didOpen").iter().filter(|p| p["textDocument"]["uri"] == uri_of(&external)).count()
+    };
+    eventually(|| opened_external() == 1).await;
+    assert_eq!(state.launches.load(Ordering::SeqCst), 1);
+    let id = h.mgr.servers()[0].id;
+    h.mgr.restart(id).await.unwrap();
+    eventually(|| opened_external() == 2).await;
+    assert_eq!(state.launches.load(Ordering::SeqCst), 2);
+    assert_eq!(h.mgr.servers().len(), 1);
+    let inits = state.requested("initialize");
+    assert_eq!(inits.len(), 2);
+    assert!(inits.iter().all(|p| p["rootUri"] == uri_of(&module)));
     h.mgr.shutdown_all().await;
 }

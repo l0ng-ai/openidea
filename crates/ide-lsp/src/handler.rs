@@ -409,7 +409,7 @@ impl Handler for ClientHandler {
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();
                 if self.server.config.tsserver_project && tsserver_ran_out_of_memory(text) {
-                    tracing::warn!("[{}] {text}", self.server.name);
+                    tracing::warn!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name);
                     if mgr.first_message(&self.server.name, TSSERVER_OUT_OF_MEMORY) {
                         mgr.sink().emit(IdeEvent::Notify {
                             level: NotifyLevel::Error,
@@ -432,12 +432,12 @@ impl Handler for ClientHandler {
                 }
                 match params.get("type").and_then(Value::as_u64) {
                     Some(1) if self.server.name == "jdtls" && text.contains(crate::jdtls::reserved_names::IMPORT_FAILURE) => {
-                        tracing::warn!("[{}] {text}", self.server.name);
+                        tracing::warn!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name);
                         mgr.report_import_failure(self.server.root.clone(), text.to_owned());
                     }
-                    Some(1) => tracing::warn!("[{}] {text}", self.server.name),
-                    Some(2 | 3) => tracing::info!("[{}] {text}", self.server.name),
-                    _ => tracing::debug!("[{}] {text}", self.server.name),
+                    Some(1) => tracing::warn!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name),
+                    Some(2 | 3) => tracing::info!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name),
+                    _ => tracing::debug!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name),
                 }
             }
             "tsserver/request" => mgr.forward_tsserver_requests(self.server.clone(), self.generation, params),
