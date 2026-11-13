@@ -6,7 +6,7 @@ use ide_core::{IdeResult, RequestId};
 pub use ide_host::ops::tools::*;
 use ide_sdk::Sdk;
 use ide_tools::jdk::{JdkReleases, JdkVendor};
-use ide_tools::{InstallEvent, ToolInfo};
+use ide_tools::{InstallEvent, ToolInfo, ToolUpdate};
 use std::path::PathBuf;
 use tauri::ipc::Channel;
 use tauri::{State, Window};
@@ -31,6 +31,18 @@ pub async fn tools_install(
 ) -> IdeResult<ToolInfo> {
     ide_host::ops::tools::tools_install(&state.host, window.label(), name, request, crate::commands::sender(on_event))
         .await
+}
+
+/// Newer versions of the tools the IDE installed (release downloads and npm packages).
+/// Cancel with `cancel_request(request)`.
+#[tauri::command]
+#[specta::specta]
+pub async fn tools_updates(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+) -> IdeResult<Vec<ToolUpdate>> {
+    ide_host::ops::tools::tools_updates(&state.host, window.label(), request).await
 }
 
 /// Removes a tool the IDE installed.

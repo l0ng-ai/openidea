@@ -16,6 +16,7 @@ import { languageNames, NewServerDialog, ServerSettings, ToolSettings, useLangua
 import { serverKey, type ServerEntry } from "./serverConfig";
 import {
   cancelInstall,
+  checkToolUpdates,
   installTool,
   refreshTools,
   STATUS_LABEL,
@@ -98,12 +99,14 @@ function ToolRow({
   selected,
   off,
   pending,
+  update,
   onSelect,
 }: {
   tool: ToolInfo;
   selected: boolean;
   off: boolean;
   pending: boolean;
+  update: boolean;
   onSelect: () => void;
 }) {
   return (
@@ -116,7 +119,7 @@ function ToolRow({
         title={`${tool.displayName} — ${tool.languages.join(", ")}`}
         onClick={onSelect}
       >
-        <Badge dot tone={pending ? "accent" : STATUS_TONE[tool.status]}>
+        <Badge dot className={styles.rowBadge} tone={pending ? "accent" : STATUS_TONE[tool.status]}>
           {pending ? tx("New") : STATUS_LABEL[tool.status]}
         </Badge>
         <span className={styles.rowName}>{tool.displayName}</span>
@@ -135,6 +138,11 @@ function ToolRow({
             <T>Disabled</T>
           </span>
         )}
+        {update && (
+          <span className={clsx(styles.kindTag, styles.updateTag)}>
+            <T>Update</T>
+          </span>
+        )}
         <span className={styles.rowLanguages}>{tool.languages.join(", ")}</span>
       </button>
     </li>
@@ -144,6 +152,7 @@ function ToolRow({
 function Details({ tool, pending }: { tool: ToolInfo; pending: boolean }) {
   const job = useTools((s) => s.jobs[tool.name]);
   const last = useTools((s) => s.logs[tool.name]);
+  const update = useTools((s) => (tool.status === "installed" ? s.updates[tool.name] : undefined));
   const [logOpen, setLogOpen] = useState(false);
   const log = job?.lines ?? last?.lines ?? [];
   const lastError = !job && last?.error !== "Cancelled" ? last?.error : null;
@@ -185,17 +194,21 @@ function Details({ tool, pending }: { tool: ToolInfo; pending: boolean }) {
           {tool.canInstall && (
             <Button
               size="small"
-              variant={tool.status === "missing" ? "primary" : "secondary"}
+              variant={tool.status === "missing" || update ? "primary" : "secondary"}
               disabled={busy}
               title={
                 tool.installMethod ? tx`Installs into the IDE's own tools folder via ${tool.installMethod}` : undefined
               }
               onClick={() => void installTool(tool.name)}
               aria-label={
-                tool.status === "installed" ? tx`Reinstall ${tool.displayName}` : tx`Install ${tool.displayName}`
+                update
+                  ? tx`Update ${tool.displayName}`
+                  : tool.status === "installed"
+                    ? tx`Reinstall ${tool.displayName}`
+                    : tx`Install ${tool.displayName}`
               }
             >
-              {tool.status === "installed" ? "Reinstall" : "Install"}
+              {update ? "Update" : tool.status === "installed" ? "Reinstall" : "Install"}
             </Button>
           )}
           {tool.canUninstall && (
@@ -205,6 +218,11 @@ function Details({ tool, pending }: { tool: ToolInfo; pending: boolean }) {
           )}
         </div>
       </div>
+      {update && !job && (
+        <div className={styles.notice} role="note">
+          {tx`Version ${update.latest} is available.`}
+        </div>
+      )}
       {job && <JobRow name={tool.displayName} job={job} />}
       {lastError && (
         <div className={styles.error} role="alert">
@@ -244,7 +262,7 @@ function Details({ tool, pending }: { tool: ToolInfo; pending: boolean }) {
 }
 
 export function LanguageServersPage() {
-  const { tools, loaded, loading, error } = useTools();
+  const { tools, loaded, loading, error, updates, checkingUpdates } = useTools();
   const form = useSettingsForm();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -257,6 +275,8 @@ export function LanguageServersPage() {
 
   useEffect(() => {
     void refreshTools();
+    // Asks each install source once per session; the refresh button asks again.
+    if (!useTools.getState().updatesChecked) void checkToolUpdates();
     // Applied paths and servers change what is found and listed.
     return onIdeEvent("settingsChanged", (e) => {
       if (!e.key || /^(tools|languageServers)(\.|$)/.test(e.key)) void refreshTools();
@@ -307,6 +327,7 @@ export function LanguageServersPage() {
             selected={t === selected}
             off={servers[t.name]?.enabled === false}
             pending={pending.has(t.name)}
+            update={t.status === "installed" && !!updates[t.name]}
             onSelect={() => setSelectedName(t.name)}
           />
         ))}
@@ -337,14 +358,17 @@ export function LanguageServersPage() {
               onClick={() => selected && form.set(serverKey(selected.name), null)}
             />
             <span className={styles.toolbarSep} aria-hidden />
-            {loading ? (
+            {loading || checkingUpdates ? (
               <Spinner size={14} label="Checking tools" />
             ) : (
               <IconButton
                 icon="refresh"
                 size="small"
                 title="Re-check installed tools"
-                onClick={() => void refreshTools()}
+                onClick={() => {
+                  void refreshTools();
+                  void checkToolUpdates();
+                }}
               />
             )}
             <SearchField

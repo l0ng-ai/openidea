@@ -935,3 +935,26 @@ fn a_cancelled_install_leaves_the_previous_one_in_place() {
     assert!(dest.join("new").exists() && !dest.join("old").exists());
     assert!(aside.join("old").exists(), "the previous install is moved aside");
 }
+
+/// An npm tool the IDE installed is offered the version the user's npm registry has now.
+#[cfg(unix)]
+#[test]
+fn npm_tools_report_a_newer_registry_version() {
+    let env = Env::new();
+    let sdk = env._tmp.path().join("node-sdk/bin");
+    let modules = env.root.join("node_modules");
+    env.script(&modules.join(".bin"), "bash-language-server", "echo 5.4.0");
+    fs::create_dir_all(modules.join("bash-language-server")).unwrap();
+    fs::write(modules.join("bash-language-server/package.json"), r#"{"version":"5.4.0"}"#).unwrap();
+    env.script(&sdk, "node", "exit 0");
+    let tools = |latest: &str| {
+        env.script(&sdk, "npm", &format!(r#"[ "$1 $2 $3" = "view bash-language-server version" ] && echo {latest}"#));
+        env.tools().with_runtime(BTreeMap::from([("node".into(), sdk.join("node"))]), BTreeMap::new())
+    };
+    let cancel = CancellationToken::new();
+    assert_eq!(
+        tools("5.6.1").updates(&cancel).unwrap(),
+        vec![ToolUpdate { name: "bash-language-server".into(), current: "5.4.0".into(), latest: "5.6.1".into() }]
+    );
+    assert_eq!(tools("5.4.0").updates(&cancel).unwrap(), vec![]);
+}

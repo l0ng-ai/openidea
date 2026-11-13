@@ -458,6 +458,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         tools::tools_list,
         tools::tools_install,
         tools::tools_uninstall,
+        tools::tools_updates,
         tools::jdk_download_vendors,
         tools::jdk_download_releases,
         tools::jdk_download_location,

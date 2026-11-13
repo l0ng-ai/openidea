@@ -4786,6 +4786,8 @@
   "{count} file": "{count} 个文件",
   "{count} files": "{count} 个文件",
   "Reinstall {name}": "重新安装 {name}",
+  "Update {displayName}": "更新 {displayName}",
+  "Version {latest} is available.": "有新版本 {latest} 可用。",
   "Installed in {path}; it is used for projects targeting Java {version}.": "已安装到 {path}；用于以 Java {version} 为目标的项目。",
   "Code insight for {languages} needs {command}. Install it via {method}?": "{languages} 的代码洞察需要 {command}。是否通过 {method} 安装？",
   "Version {version}": "版本 {version}",
