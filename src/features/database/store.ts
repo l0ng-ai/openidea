@@ -25,9 +25,10 @@ import {
   type RequestId,
   type SqlStatement,
 } from "@/platform/ipc";
-import { editorsFor } from "@/editor/api";
+import { activeEditor, editorsFor } from "@/editor/api";
 import {
   editorService,
+  maybeEditorService,
   notifications,
   showServiceView,
   toolWindowService,
@@ -44,8 +45,11 @@ import {
   idleTargets,
   newSourceId,
   splitTarget,
+  targetOf,
 } from "./model";
 import { tableFolder, type DbNode } from "./nodes";
+import { SQL_LANGUAGE } from "./sqlLanguage";
+import { TABLE_KIND, type TableRef } from "./tableInput";
 import type { ExportData, ExportFormat } from "./export";
 import type { DbObjectRef } from "./objects";
 import { formatted } from "./sql/format";
@@ -180,7 +184,7 @@ interface DatabaseState {
   /** Expanded nodes of the Database tree. */
   treeExpanded: Set<string>;
   /** A tree node to select and scroll to (Go to Declaration from a console). */
-  treeReveal: { key: string; seq: number } | null;
+  treeReveal: { path: string[]; seq: number } | null;
   /** Last value entered per query parameter name. */
   paramValues: Record<string, string>;
   /** Data sources in manual-commit mode. */
@@ -604,13 +608,14 @@ export async function loadDetails(id: string, schema: string, table: string): Pr
 
 /**
  * Selects a table (or one of its columns) in the Database tool window,
- * loading and expanding the nodes that lead to it.
+ * loading and expanding the nodes that lead to it. Without `kind` the loaded
+ * tables tell whether it is a table or a view.
  */
 export async function revealInTree(
   id: string,
   schema: string,
   table: string,
-  kind: DbTableKind,
+  kind: DbTableKind | undefined,
   column?: string,
 ): Promise<void> {
   const loaded = (l: Loaded<unknown> | undefined) => l?.status === "ok";
@@ -632,20 +637,64 @@ export async function revealInTree(
   if (!loaded(useDatabase.getState().tables[tablesKey(id, schema)])) await loadTables(id, schema);
   if (column && !loaded(useDatabase.getState().details[detailsKey(id, schema, table)]))
     await loadDetails(id, schema, table);
+  const tables = useDatabase.getState().tables[tablesKey(id, schema)];
+  kind ??= (tables?.status === "ok" ? tables.value.find((t) => t.name === table)?.kind : undefined) ?? "table";
   const folder = `${id}/${schema}/${tableFolder(kind)}`;
   const tableKey = `${folder}/${table}`;
-  const open = [
-    sourceId,
-    ...databaseNode,
-    `${id}/${schema}`,
-    folder,
-    ...(column ? [tableKey, `${tableKey}/columns`] : []),
-  ];
+  selectInTree(
+    [sourceId, ...databaseNode, `${id}/${schema}`, folder, ...(column ? [tableKey, `${tableKey}/columns`] : [])],
+    column ? `${tableKey}/columns/${column}` : tableKey,
+  );
+}
+
+/**
+ * Expands `open` and selects node `key` in the Database tool window, showing it.
+ * A node the tree doesn't show (filtered out, dropped) selects its nearest shown ancestor.
+ */
+function selectInTree(open: string[], key: string) {
   useDatabase.setState((s) => ({
     treeExpanded: new Set([...s.treeExpanded, ...open]),
-    treeReveal: { key: column ? `${tableKey}/columns/${column}` : tableKey, seq: (s.treeReveal?.seq ?? 0) + 1 },
+    treeReveal: { path: [...open, key], seq: (s.treeReveal?.seq ?? 0) + 1 },
   }));
-  toolWindowService().show(DB_TOOL_WINDOW, true);
+  // Not `show(…, true)`: activation focuses the filter field after the view focuses the tree.
+  toolWindowService().show(DB_TOOL_WINDOW);
+}
+
+/**
+ * Select Opened File: the active table editor's table, else the schema (or
+ * database / data source) a SQL console runs in. A console reveals only nodes
+ * already loaded: it never connects.
+ */
+export async function revealOpened(): Promise<void> {
+  const input = maybeEditorService()?.activeInput?.();
+  if (input?.kind === TABLE_KIND) {
+    const { id, schema, table } = input.data as TableRef;
+    return revealInTree(id, schema, table, undefined);
+  }
+  const editor = activeEditor();
+  if (editor?.ctx.language !== SQL_LANGUAGE || (input && input.path !== editor.ctx.path)) return;
+  const target = consoleSource(editor.ctx.path);
+  if (!target) return;
+  const s = useDatabase.getState();
+  const { id: sourceId, database } = splitTarget(target);
+  const open: string[] = [];
+  let key = sourceId;
+  let nodeTarget = target;
+  if (listsDatabases(sourceById(sourceId))) {
+    const dbs = s.databases[sourceId];
+    const name = database ?? (dbs?.status === "ok" ? dbs.value.current : null);
+    if (dbs?.status !== "ok" || !name) return selectInTree(open, key);
+    open.push(key);
+    key = databaseKey(sourceId, name);
+    nodeTarget = targetOf(sourceId, name, dbs.value.current);
+  }
+  const schema = consoleSchema(editor.ctx.path);
+  const schemas = s.schemas[nodeTarget];
+  if (schema && schemas?.status === "ok" && schemas.value.includes(schema)) {
+    open.push(key);
+    key = `${nodeTarget}/${schema}`;
+  }
+  selectInTree(open, key);
 }
 
 const completionLoads = new Map<string, Promise<DbCompletion | null>>();

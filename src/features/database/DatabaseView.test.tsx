@@ -5,6 +5,9 @@ import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { registerDatabaseTreeActions } from "./treeActions";
 import { tablesKey, useDatabase } from "./store";
+import { tableInput } from "./tableInput";
+import { useEditorRegistry } from "@/editor/api";
+import { provideEditorService, provideToolWindowService, type EditorInput } from "@/workbench/contributions";
 
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
@@ -105,5 +108,60 @@ describe("routine grouping", () => {
     expect(tree.queryByText("public")).toBeNull();
     expect(tree.queryByText("routines")).toBeNull();
     expect(tree.queryByText("functions")).toBeNull();
+  });
+});
+
+describe("Select Opened File", () => {
+  const nextFrame = () => act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  let active: EditorInput | null = null;
+  const show = vi.fn();
+
+  beforeEach(() => {
+    provideEditorService({ activeInput: () => active } as never);
+    provideToolWindowService({ show } as never);
+    useDatabase.setState({
+      tables: {
+        [tablesKey("pg", "public")]: {
+          status: "ok",
+          value: [
+            { name: "people", kind: "table" },
+            { name: "adults", kind: "view" },
+          ],
+        },
+      },
+      schemas: { pg: { status: "ok", value: ["public", "audit"] } },
+      treeExpanded: new Set(),
+    });
+  });
+
+  afterEach(() => {
+    active = null;
+    useEditorRegistry.setState({ active: null });
+  });
+
+  it("selects the active table editor's view in the views folder", async () => {
+    render(<DatabaseView />);
+    active = tableInput("pg", "public", "adults");
+    await act(() => executeAction("db.selectOpened"));
+    await nextFrame();
+    expect(useDatabase.getState().selectedNode?.key).toBe("pg/public/views/adults");
+    expect(show).toHaveBeenCalledWith("database");
+    expect(document.activeElement).toBe(screen.getByRole("tree", { name: "Data sources" }));
+  });
+
+  it("selects the nearest shown ancestor of a dropped table, and a console's schema", async () => {
+    render(<DatabaseView />);
+    active = tableInput("pg", "public", "dropped");
+    await act(() => executeAction("db.selectOpened"));
+    await nextFrame();
+    expect(useDatabase.getState().selectedNode?.key).toBe("pg/public/tables");
+
+    const path = "/project/audit.sql";
+    useDatabase.setState({ consoles: { [path]: "pg" }, consoleSchemas: { [path]: "audit" } });
+    active = { kind: "file", key: path, path };
+    useEditorRegistry.setState({ active: { ctx: { path, language: "sql" } } as never });
+    await act(() => executeAction("db.selectOpened"));
+    await nextFrame();
+    expect(useDatabase.getState().selectedNode?.key).toBe("pg/audit");
   });
 });
