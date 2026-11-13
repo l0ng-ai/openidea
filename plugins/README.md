@@ -1331,7 +1331,7 @@ main-toolbar actions use the focused editor context.
 `net.http:<host>` for unencrypted HTTP to other hosts; it does not imply an
 HTTPS grant. Both use the same wildcard rules. Each redirect is checked before
 connecting to the destination; HTTPS → HTTP also requires `net.http:<host>`,
-even on loopback. Responses are limited to 8 MiB. Requests run on the project
+even on loopback. Responses are limited to 16 MiB. Requests run on the project
 machine. A manifest using `net.http:` or `ipc:` declares `engines.openidea = "^1.4"`.
 
 A plugin with `net:ask` (API 1.5) may reach an HTTPS (or loopback) host that is
