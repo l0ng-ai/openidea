@@ -352,7 +352,7 @@ function SessionStatus({
         showContextMenu(e, taskMenu([task]));
       }}
     >
-      <span className={styles.agent} title={task.cwd}>
+      <span className={styles.agent} title={`${providerName(task.provider)} · ${task.cwd}`}>
         <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
         <span className={styles.agentName}>
           {providerName(task.provider)}

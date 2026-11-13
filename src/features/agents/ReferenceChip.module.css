@@ -47,11 +47,12 @@
 .missing {
   color: var(--fg-muted);
   background: transparent;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 45%, transparent);
+  box-shadow: none;
+  outline: 1px dashed var(--border-strong);
+  outline-offset: -1px;
 }
 .missing .name {
   text-decoration: line-through;
-  text-decoration-color: color-mix(in srgb, var(--danger) 70%, transparent);
 }
 /* Selected together with the text around it in the composer. */
 .selected {
@@ -75,11 +76,11 @@
   text-underline-offset: 3px;
 }
 
-/* A quoted reply or selection in a sent message. */
+/* A quoted reply or selection in a sent message: as a Markdown quote in a reply. */
 .quote {
   margin: 2px 0 6px;
-  padding: 2px 0 2px 10px;
-  border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  padding: 0 10px;
+  border-left: 3px solid var(--border-strong);
   color: var(--fg-secondary);
 }
 
@@ -147,19 +148,14 @@
 .quoteLine {
   margin-left: 0;
   padding-left: 10px !important;
-  border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
-  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  border-left: 3px solid var(--border-strong);
   color: var(--fg-secondary);
 }
 .quoteFirst {
   margin-top: 2px;
-  padding-top: 2px !important;
-  border-top-right-radius: var(--radius-small);
 }
 .quoteLast {
   margin-bottom: 4px;
-  padding-bottom: 2px !important;
-  border-bottom-right-radius: var(--radius-small);
 }
 
 /* Sent message text: lays out as the text it wraps. */

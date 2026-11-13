@@ -310,6 +310,14 @@
     --session-card-width: 96%;
   }
 }
+/* A narrow docked session: rather than cut every fact to a letter or two, the bar keeps the
+   agent's icon and its state; where it works is in the task's tooltip and Changes. */
+@container (max-width: 420px) {
+  .where,
+  .agentName {
+    display: none;
+  }
+}
 .messageActions {
   display: inline-flex;
   gap: 4px;

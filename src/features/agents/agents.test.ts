@@ -19,6 +19,7 @@ import {
   recall,
   toPrompt,
   mergeMatches,
+  messageTokens,
   fenced,
   fencedBlocks,
   fenceLabel,
@@ -159,6 +160,18 @@ describe("mergeMatches", () => {
 });
 
 describe("agent composer", () => {
+  it("leaves punctuation after a reference or command to the text", () => {
+    expect(messageTokens("in @src/a.ts:3-8, keep @src/retry/。then /review.")).toEqual([
+      { kind: "text", value: "in " },
+      { kind: "file", value: "@src/a.ts:3-8" },
+      { kind: "text", value: ", keep " },
+      { kind: "file", value: "@src/retry/" },
+      { kind: "text", value: "。then " },
+      { kind: "command", value: "/review" },
+      { kind: "text", value: "." },
+    ]);
+  });
+
   it("completes @files and /commands anywhere at a word boundary", () => {
     expect(completionAt("fix @src/le", 11)).toEqual({
       kind: "file",

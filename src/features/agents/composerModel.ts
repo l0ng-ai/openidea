@@ -38,12 +38,15 @@ export type MessageToken = { kind: "text" | "file" | "command"; value: string };
 /**
  * A message's text split into plain runs, `@file` references and `/command` skills. A
  * command is a `/word` at the start or after whitespace; a reference likewise after `@`.
+ * Punctuation that ends either belongs to the text.
  */
 export function messageTokens(text: string): MessageToken[] {
   const out: MessageToken[] = [];
   let last = 0;
-  for (const match of text.matchAll(/(^|\s)([@/][^\s@]+)/g)) {
-    const token = match[2]!;
+  // Full-width punctuation ends one too, as Chinese text runs on without a space after it.
+  for (const match of text.matchAll(/(^|\s)([@/][^\s@，。；：！？、（）【】《》「」『』]+)/g)) {
+    // Punctuation after it ends the sentence, not the path: "see @a.ts, then /review."
+    const token = match[2]!.replace(/(?<=.)[,.;:!?)\]}>'"，。；：！？、）】》」』]+$/, "");
     const start = match.index! + match[1]!.length;
     const command = /^\/[A-Za-z][\w:.-]*$/.test(token);
     if (token.startsWith("/") && !command) continue;
