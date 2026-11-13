@@ -22,8 +22,8 @@ mod protocol;
 mod server;
 pub mod stdio;
 
-pub use discovery::{DISCOVERY_FILE, Discovery, discovery_path};
-pub use server::McpServer;
+pub use discovery::{DISCOVERY_FILE, Discovery, TOKEN_FILE, discovery_path, kept_token, token_path};
+pub use server::{McpServer, ServerOptions};
 pub use tokio_util::sync::CancellationToken;
 
 use std::path::{Path, PathBuf};

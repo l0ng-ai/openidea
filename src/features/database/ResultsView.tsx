@@ -23,6 +23,7 @@ import {
   tooltipAttrs,
 } from "@/ui";
 import { notifications } from "@/workbench/contributions";
+import { ToolWindowContentTabs } from "@/workbench/toolwindows/ToolWindows";
 import { ChartView } from "./ChartView";
 import { ColumnsPopup } from "./ColumnsPopup";
 import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
@@ -433,7 +434,7 @@ function Result({ tab }: { tab: ResultTab }) {
   return (
     <div className={styles.view} ref={viewRef} data-db-table-editor="">
       <div className={styles.toolbar}>
-        <IconButton icon="db-table" title="Table" aria-pressed={view === "table"} onClick={() => setView("table")} />
+        <IconButton icon="database" title="Table" aria-pressed={view === "table"} onClick={() => setView("table")} />
         <IconButton icon="db-chart" title="Chart" aria-pressed={view === "chart"} onClick={() => setView("chart")} />
         <span className={styles.toolbarSeparator} />
         <IconButton icon="refresh" title="Rerun Query" disabled={busy} onClick={() => void rerunResult(tab.id)} />
@@ -716,31 +717,33 @@ export function ResultsView() {
         );
       }}
     >
-      <Tabs
-        className={styles.resultTabs}
-        variant="compact"
-        aria-label="Results"
-        activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
-        panelIdPrefix="db-results"
-        onSelect={(id) => useDatabase.setState({ activeResult: Number(id) })}
-        onClose={(id) => closeResult(Number(id))}
-        onTogglePin={(id) => {
-          const r = results.find((r) => r.id === Number(id));
-          if (r) pinResult(r.id, !r.pinned);
-        }}
-        onContextMenu={tabMenu}
-        items={[
-          { id: String(OUTPUT_TAB), label: "Output", icon: "db-console", closable: false },
-          ...results.map((r) => ({
-            id: String(r.id),
-            label: r.title,
-            icon: r.plan ? "db-plan" : "db-table",
-            closable: true,
-            pinned: r.pinned,
-            tooltip: r.outcome.statement.text,
-          })),
-        ]}
-      />
+      <ToolWindowContentTabs>
+        <Tabs
+          className={styles.resultTabs}
+          variant="compact"
+          aria-label="Results"
+          activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
+          panelIdPrefix="db-results"
+          onSelect={(id) => useDatabase.setState({ activeResult: Number(id) })}
+          onClose={(id) => closeResult(Number(id))}
+          onTogglePin={(id) => {
+            const r = results.find((r) => r.id === Number(id));
+            if (r) pinResult(r.id, !r.pinned);
+          }}
+          onContextMenu={tabMenu}
+          items={[
+            { id: String(OUTPUT_TAB), label: "Output", icon: "db-console", closable: false },
+            ...results.map((r) => ({
+              id: String(r.id),
+              label: r.title,
+              icon: r.plan ? "db-plan" : "database",
+              closable: true,
+              pinned: r.pinned,
+              tooltip: r.outcome.statement.text,
+            })),
+          ]}
+        />
+      </ToolWindowContentTabs>
       <div className={styles.fill}>
         {!tab ? <Output /> : tab.plan ? <PlanResult key={tab.id} tab={tab} /> : <Result key={tab.id} tab={tab} />}
       </div>

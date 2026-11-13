@@ -3,6 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installKeyboardDispatcher, normalizeBinding, PRESETS, useKeymap } from "@/platform/keymap";
 import { ContextMenuHost, hideContextMenu } from "@/ui";
 import { InputDialogsHost } from "@/workbench/inputDialogs";
+import { SERVICES_WINDOW, registerToolWindow } from "@/workbench/contributions";
+import { installToolWindowActions } from "@/workbench/toolwindows/actions";
+import {
+  isToolWindowVisible,
+  resetToolWindowLayout,
+  setFocusedToolWindow,
+  showToolWindow,
+} from "@/workbench/toolwindows/store";
+import { ToolWindowLayout } from "@/workbench/toolwindows/ToolWindows";
 import { ResultsView } from "./ResultsView";
 import { registerResultTabActions } from "./resultTabActions";
 import { OUTPUT_TAB, useDatabase, type ResultTab } from "./store";
@@ -502,6 +511,60 @@ describe("database result tab context menu", () => {
     } finally {
       uninstall();
     }
+  });
+});
+
+describe("Close Tab in the Services tool window", () => {
+  let disposers: (() => void)[] = [];
+
+  beforeEach(() => {
+    resetToolWindowLayout();
+    disposers = [
+      installToolWindowActions(),
+      installKeyboardDispatcher(window),
+      registerToolWindow({
+        id: SERVICES_WINDOW,
+        title: "Services",
+        icon: "toolwindow-services",
+        anchor: "bottom",
+        requiresProject: false,
+        component: ResultsView,
+      }),
+    ];
+  });
+
+  afterEach(() => {
+    setFocusedToolWindow(null);
+    disposers.forEach((dispose) => dispose());
+  });
+
+  async function closeTab(focus: () => HTMLElement) {
+    showToolWindow(SERVICES_WINDOW);
+    await act(async () => render(<ToolWindowLayout editor={null} />));
+    act(() => {
+      focus().focus();
+      setFocusedToolWindow(SERVICES_WINDOW);
+    });
+    await act(async () => {
+      fireEvent.keyDown(document.activeElement!, { key: "w", code: "KeyW", metaKey: true });
+    });
+  }
+
+  it.each([
+    ["the grid", () => screen.getByRole("grid")],
+    ["the tab strip", () => tab("Customer count")],
+  ])("closes the active result, not the window, from %s", async (_, focus) => {
+    await closeTab(focus);
+    expect(screen.queryByRole("tab", { name: "Customer count" })).not.toBeInTheDocument();
+    expectSelected("Orders");
+    expect(isToolWindowVisible(SERVICES_WINDOW)).toBe(true);
+  });
+
+  it("hides the window when Output, which cannot be closed, is active", async () => {
+    useDatabase.setState({ activeResult: OUTPUT_TAB });
+    await closeTab(() => tab("Output"));
+    expect(useDatabase.getState().results).toBe(seeded);
+    expect(isToolWindowVisible(SERVICES_WINDOW)).toBe(false);
   });
 });
 

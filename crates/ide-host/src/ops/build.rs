@@ -985,6 +985,38 @@ mod build_tool_settings_tests {
         }
     }
 
+    /// Changing Project JDK updates the next Maven build without reopening the project.
+    #[test]
+    fn changing_project_jdk_updates_the_next_maven_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(
+            root.join("pom.xml"),
+            r#"<project><modelVersion>4.0.0</modelVersion><groupId>test</groupId><artifactId>app</artifactId><version>1</version></project>"#,
+        )
+        .unwrap();
+        for (name, version) in [("jdk8", "1.8"), ("jdk21", "21")] {
+            let home = root.join(name);
+            std::fs::create_dir_all(home.join("bin")).unwrap();
+            std::fs::write(home.join("bin").join(if cfg!(windows) { "java.exe" } else { "java" }), "").unwrap();
+            std::fs::write(home.join("release"), format!("JAVA_VERSION=\"{version}\"\n")).unwrap();
+        }
+
+        let mut settings = Settings::default();
+        settings.languages.java.maven.runner_jre.clear();
+        for name in ["jdk8", "jdk21"] {
+            settings.languages.java.jdk = name.into();
+            let expected = root.join(name);
+            let model = load(&root, &root.join("cache"), &settings);
+            assert_eq!(model.maven.as_ref().unwrap().projects[0].env["JAVA_HOME"], expected.to_string_lossy());
+            let plan = compile::plan(&root, &model, BuildKind::Build, None, None).unwrap();
+            assert!(!plan.steps.is_empty());
+            for step in plan.steps {
+                assert_eq!(step.env["JAVA_HOME"], expected.to_string_lossy());
+            }
+        }
+    }
+
     #[test]
     fn model_for_sync_tasks_and_compile_uses_gradle_settings() {
         let tmp = tempfile::tempdir().unwrap();

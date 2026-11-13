@@ -14,6 +14,10 @@ pub(super) struct Outputs {
     pub originals: Vec<PathBuf>,
     #[serde(skip)]
     pub failure: Option<String>,
+    /// Whether this result replaces jdtls diagnostics with a clean Maven build or a
+    /// verified snapshot. It is runtime-only because reuse is determined per launch.
+    #[serde(skip)]
+    pub authoritative: bool,
 }
 
 impl Outputs {
@@ -42,6 +46,9 @@ pub(super) fn has_record(root: &Path, cache: &Path, module: &Path) -> bool {
 pub(super) struct BuildOptions {
     pub test: bool,
     pub policy: BuildPolicy,
+    /// A JDT error makes a cache miss rebuild, but it must not prevent an unchanged
+    /// snapshot from being reused on the next launch.
+    pub rebuild_on_jdt_errors: bool,
 }
 
 /// Owned by Project: running JVMs may still load superseded outputs until it drops.
@@ -75,7 +82,7 @@ impl Session {
         cancel: &CancellationToken,
     ) -> IdeResult<Outputs> {
         self.initialize();
-        let BuildOptions { test, policy } = options;
+        let BuildOptions { test, policy, rebuild_on_jdt_errors } = options;
         let cache = &self.cache;
         let record =
             record_path(root, cache, module, test).ok_or_else(|| IdeError::internal("launch outside project"))?;
@@ -115,8 +122,14 @@ impl Session {
             && outputs.reusable(&before, &snapshots)
         {
             tracing::info!(module = %module.display(), test, "Reusing Maven launch snapshot");
-            return Ok(previous.unwrap());
+            let mut outputs = previous.unwrap();
+            outputs.authoritative = true;
+            return Ok(outputs);
         }
+        // JDT can report errors from its own classpath while the last Maven snapshot is
+        // still valid. Reuse that snapshot first; only a cache miss needs the expensive
+        // clean rebuild that replaces JDT's error-stub classes.
+        let policy = if rebuild_on_jdt_errors { BuildPolicy::Rebuild } else { policy };
         // Retain a non-reusable record even on failure, so removing the final mixed
         // source still delegates to Maven to clean its old classes on the next launch.
         fs::create_dir_all(record.parent().unwrap())?;
@@ -156,7 +169,13 @@ impl Session {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        let mut outputs = Outputs { fingerprint: None, snapshot, originals, failure: built.failure };
+        let mut outputs = Outputs {
+            fingerprint: None,
+            snapshot,
+            originals,
+            failure: built.failure,
+            authoritative: policy == BuildPolicy::Rebuild,
+        };
         if outputs.failure.is_none() && before.is_some() && before == after {
             outputs.fingerprint = before;
             fs::create_dir_all(record.parent().unwrap())?;
@@ -335,6 +354,48 @@ mod tests {
     }
 
     #[test]
+    fn jdt_errors_reuse_an_unchanged_snapshot_and_rebuild_only_on_a_cache_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root);
+        let cancel = CancellationToken::new();
+        let mut session = Session::new(root.join("cache"));
+        let first = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert!(!first.authoritative);
+
+        let reused = session
+            .build(
+                root,
+                &model,
+                root,
+                BuildOptions { rebuild_on_jdt_errors: true, ..Default::default() },
+                None,
+                &cancel,
+            )
+            .unwrap();
+        assert_eq!(reused.snapshot, first.snapshot);
+        assert!(reused.authoritative);
+        assert_eq!(fs::read_to_string(root.join("calls")).unwrap().lines().count(), 1);
+
+        fs::write(root.join("src/main/kotlin/Main.kt"), "updated").unwrap();
+        let rebuilt = session
+            .build(
+                root,
+                &model,
+                root,
+                BuildOptions { rebuild_on_jdt_errors: true, ..Default::default() },
+                None,
+                &cancel,
+            )
+            .unwrap();
+        assert_ne!(rebuilt.snapshot, first.snapshot);
+        assert!(rebuilt.authoritative);
+        let calls = fs::read_to_string(root.join("calls")).unwrap();
+        assert_eq!(calls.lines().count(), 2);
+        assert!(calls.lines().last().unwrap().contains("clean"));
+    }
+
+    #[test]
     fn successful_snapshots_reuse_across_close_and_rebuild_for_changes_missing_outputs_or_failure() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -483,7 +544,13 @@ mod tests {
         fs::write(snapshots.join("launch-file"), "keep").unwrap();
         let record = cache.join("java-launch/records/deep/module/test.json");
         fs::create_dir_all(record.parent().unwrap()).unwrap();
-        let outputs = Outputs { fingerprint: None, snapshot: retained.clone(), originals: Vec::new(), failure: None };
+        let outputs = Outputs {
+            fingerprint: None,
+            snapshot: retained.clone(),
+            originals: Vec::new(),
+            failure: None,
+            authoritative: false,
+        };
         fs::write(record, serde_json::to_vec(&outputs).unwrap()).unwrap();
         let mut session = Session::new(cache);
         session.initialize();

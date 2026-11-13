@@ -666,6 +666,14 @@ export function ToolWindowHeader({
   );
 }
 
+/** Makes the tab strips in `children`, rendered in a tool window's content, the ones Close Tab (⌘W) acts on. */
+export function ToolWindowContentTabs({ children }: { children: ReactNode }) {
+  const tw = useContext(ToolWindowFrame)?.tw;
+  return (
+    <TabStripRegistry.Provider value={tw ? contentTabRegistry(tw.id) : null}>{children}</TabStripRegistry.Provider>
+  );
+}
+
 /**
  * The Options (`⋮` Move To / Maximize / Hide) and Hide (`—`) buttons of a tool
  * window that uses `useOwnToolWindowHeader` without a full `ToolWindowHeader`.

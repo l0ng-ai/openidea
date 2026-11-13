@@ -1440,13 +1440,9 @@ impl LspManager {
         let params = serde_json::to_value(params).map_err(|e| IdeError::internal(e.to_string()))?;
         let stamp = self.injected_request_stamp(&params);
         let fut = async {
-            if t.server.name == "csharp-ls" {
-                let mut value = t.run.peer.request::<Value, Value>(method, params, cancel.cloned()).await?;
-                virtual_doc::normalize_csharp_uris(&mut value);
-                serde_json::from_value(value).map_err(|e| RpcError::Protocol(format!("{method}: {e}")))
-            } else {
-                t.run.peer.request::<Value, R>(method, params, cancel.cloned()).await
-            }
+            let mut value = t.run.peer.request::<Value, Value>(method, params, cancel.cloned()).await?;
+            virtual_doc::normalize_uris(&mut value);
+            serde_json::from_value(value).map_err(|e| RpcError::Protocol(format!("{method}: {e}")))
         };
         let result = match tokio::time::timeout(timeout, fut).await {
             Ok(r) => r.map_err(|e| rpc_err(&t.server.name, method, e)),

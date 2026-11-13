@@ -7150,7 +7150,7 @@
   "Open a project to get its endpoint.": "打开一个项目以获取其端点。",
   "No project open": "未打开项目",
   "Client configuration": "客户端配置",
-  "The HTTP configuration holds this run's token and stops working when OpenIDEA restarts. The stdio one starts OpenIDEA's executable, which relays to the running IDE.": "HTTP 配置包含本次运行的令牌，OpenIDEA 重启后即失效。stdio 配置会启动 OpenIDEA 的可执行文件，由它转发到正在运行的 IDE。",
+  "The HTTP configuration holds the token: it keeps working after OpenIDEA restarts only with a fixed port and a kept token. The stdio one starts OpenIDEA's executable, which relays to the running IDE.": "HTTP 配置包含令牌：只有同时使用固定端口并保留令牌时，它在 OpenIDEA 重启后才继续有效。stdio 配置会启动 OpenIDEA 的可执行文件，由它转发到正在运行的 IDE。",
   "Copy HTTP Config": "复制 HTTP 配置",
   "Copy Stdio Config": "复制 Stdio 配置",
   "Copied to the clipboard": "已复制到剪贴板",
@@ -7871,5 +7871,14 @@
   "Archived ({count})": "归档({count})",
   "no usages": "无用法",
   "1 usage": "1 个用法",
-  "{n} usages": "{n} 个用法"
+  "{n} usages": "{n} 个用法",
+  "Running on port {port}: the fixed port is unavailable ({busy})": "正在端口 {port} 上运行：固定端口不可用（{busy}）",
+  "Token": "令牌",
+  "Clients configured with the current token stop working.": "使用当前令牌配置的客户端将失效。",
+  "Regenerate Token": "重新生成令牌",
+  "Use a fixed port": "使用固定端口",
+  "Listen on the same port in every run, so HTTP clients and port forwards keep working after OpenIDEA restarts. When the port is in use, this run takes a free one and Status says so. Off: a free port in every run.": "每次运行都监听同一个端口，这样 OpenIDEA 重启后 HTTP 客户端和端口转发仍然有效。端口被占用时，本次运行改用一个空闲端口，并在状态中说明。关闭时：每次运行使用一个空闲端口。",
+  "The fixed port on 127.0.0.1, used while Use a fixed port is on.": "127.0.0.1 上的固定端口，在开启“使用固定端口”时使用。",
+  "Keep the token": "保留令牌",
+  "Keep the same bearer token in every run, stored for your account only. Off: a new token in every run. Anyone with the token can use the tools while OpenIDEA runs, so regenerate it if it leaks.": "每次运行都使用同一个访问令牌，只为你的账户保存。关闭时：每次运行生成新令牌。任何拿到令牌的人都能在 OpenIDEA 运行时使用这些工具，令牌泄露时请重新生成。"
 }
