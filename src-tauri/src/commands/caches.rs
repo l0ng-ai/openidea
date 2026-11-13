@@ -7,13 +7,13 @@ use ide_host::data_dirs;
 use ide_workspace::caches::{self, InvalidateCachesOptions};
 use serde::Serialize;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 /// Schedules the invalidation for the next start (`None` cancels a pending one).
 #[tauri::command]
 #[specta::specta]
 pub fn caches_schedule_invalidation(app: AppHandle, options: Option<InvalidateCachesOptions>) -> IdeResult<()> {
-    let data_dir = app.path().app_data_dir().map_err(|e| ide_core::IdeError::internal(e.to_string()))?;
+    let data_dir = ide_host::data_dirs::data_dir(&app.config().identifier).map_err(ide_core::IdeError::internal)?;
     match options {
         Some(o) => caches::schedule(&data_dir, &o),
         None => {

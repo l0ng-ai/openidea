@@ -67,6 +67,8 @@ pub struct EditorAppearanceSettings {
     /// Smooth caret movement curve: `snappy` | `gliding`.
     pub caret_movement_style: String,
     pub line_numbers: bool,
+    /// Gutter numbering: `absolute` | `relative` | `hybrid` (absolute on the caret line, distances elsewhere).
+    pub line_number_mode: String,
     pub method_separators: bool,
     /// Sub-options of `editor.showWhitespace`.
     pub whitespace_leading: bool,
@@ -96,6 +98,7 @@ impl Default for EditorAppearanceSettings {
             smooth_caret_movement: false,
             caret_movement_style: "snappy".into(),
             line_numbers: true,
+            line_number_mode: "absolute".into(),
             method_separators: false,
             whitespace_leading: true,
             whitespace_inner: true,

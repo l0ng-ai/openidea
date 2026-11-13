@@ -22,6 +22,7 @@ const backend = vi.hoisted(() => ({
   changes: [] as AgentChange[],
   changesCalls: 0,
   grouped: { uncommitted: [] as AgentChange[], commits: [] as AgentCommit[] },
+  groupedCalls: 0,
   rolledBack: [] as Array<[string, string[] | null, string | null]>,
   answers: [] as Array<[string, number, string | null]>,
   fetched: [] as string[],
@@ -59,7 +60,10 @@ vi.mock("@/platform/ipc", async (original) => ({
       backend.changesCalls += 1;
       return { status: "ok", data: backend.changes };
     },
-    agentGroupedChanges: async () => ({ status: "ok", data: backend.grouped }),
+    agentGroupedChanges: async () => {
+      backend.groupedCalls += 1;
+      return { status: "ok", data: backend.grouped };
+    },
     agentRollbackChanges: async (task: string, paths: string[] | null, view: string | null) => {
       backend.rolledBack.push([task, paths, view]);
       return { status: "ok", data: null };
@@ -170,6 +174,7 @@ beforeEach(() => {
   backend.changes = [];
   backend.changesCalls = 0;
   backend.grouped = { uncommitted: [], commits: [] };
+  backend.groupedCalls = 0;
   backend.rolledBack = [];
   backend.external = [];
   // The flat list unless a test asks for the grouped view, so counts and selections stay as before.
@@ -522,6 +527,71 @@ describe("scrolling", () => {
     act(() => useAgents.setState({ entries: new Map([["A", [reply, sent]]]) }));
     expect(el.scrollTop).toBe(1100);
     expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+  });
+
+  it.each([
+    { name: "stays at the end below it", top: 300, bottom: 360, scrolled: 60, away: false },
+    { name: "keeps its header on screen", top: 50, bottom: 900, scrolled: 50, away: true },
+    { name: "back at the end without following", top: 300, bottom: 360, scrolled: 60, away: false, released: true },
+  ])("scrolls a section opened at the end into view: $name", async ({ top, bottom, scrolled, away, released }) => {
+    backend.entries.set("A", [
+      { type: "thought", text: "Weighing it" },
+      { type: "agent", text: "Answer A" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    const el = stream();
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.getBoundingClientRect = () => ({ top: 0, bottom: 400 }) as DOMRect;
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    if (released) {
+      fireEvent.wheel(el, { deltaY: -50 });
+      el.scrollTop = 550;
+      fireEvent.scroll(el);
+      el.scrollTop = 600;
+      fireEvent.scroll(el);
+      expect(screen.getByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
+    }
+    const fold = stream().querySelector("details")!;
+    fold.getBoundingClientRect = () => ({ top, bottom }) as DOMRect;
+    // It grows once its content renders.
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      get: () => (fold.children.length > 1 ? 1000 + bottom - top : 1000),
+    });
+    fireEvent.pointerDown(fold);
+    fireEvent.pointerUp(fold);
+    fold.open = true;
+    act(() => {
+      fireEvent(fold, new Event("toggle"));
+    });
+    expect(el.scrollTop).toBe(600 + scrolled);
+    fireEvent.scroll(el);
+    // With the end out of view, the next chunk doesn't pull the reader away from the section.
+    expect(screen.queryByRole("button", { name: "Jump to Latest" }) !== null).toBe(away);
+  });
+
+  it("keeps following when the view grows taller and the browser pulls the offset back", () => {
+    useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Initial reply" }]]]) });
+    render(<SessionEditor input={input("A")} />);
+    const el = stream();
+    let height = 1000;
+    let viewport = 400;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => viewport });
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    // The composer shrank after sending: the end moved up and the offset was clamped to it.
+    viewport = 500;
+    el.scrollTop = 500;
+    fireEvent.scroll(el);
+    expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+    height = 1200;
+    act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "Streaming" }]]]) }));
+    expect(el.scrollTop).toBe(1200);
   });
 
   it.each(["wheel", "touch", "ArrowUp", "PageUp", "Home", "Shift+Space"])(
@@ -1343,7 +1413,9 @@ describe("meters in the task header", () => {
     useAgents.setState({ tasks: new Map([["A", reported]]), limits: new Map([["codex", limits]]) });
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Answer A");
-    expect(screen.getByText("12%")).toBeInTheDocument();
+    const usage = screen.getByLabelText(/^Context /);
+    expect(usage).toHaveTextContent("24k/200k (12%)");
+    expect(usage.querySelector(`.${styles.usageBar} span`)).toHaveStyle({ width: "12%" });
     expect(screen.getByText("5h 19%")).toBeInTheDocument();
     expect(screen.getByText("7d 9%")).toBeInTheDocument();
     expect(screen.queryByText("$0.42")).toBeNull();
@@ -1352,7 +1424,7 @@ describe("meters in the task header", () => {
         settings: { agents: { showContextUsage: false, showUsageLimits: false, showCost: true } },
       }),
     );
-    expect(screen.queryByText("12%")).toBeNull();
+    expect(screen.queryByText("24k/200k (12%)")).toBeNull();
     expect(screen.queryByText("5h 19%")).toBeNull();
     expect(screen.getByText("$0.42")).toBeInTheDocument();
   });
@@ -1406,6 +1478,26 @@ describe("changes refresh", () => {
     act(() => emitLocalIdeEvent({ type: "vcsChanged", root: "/project" }));
     await act(() => vi.advanceTimersByTimeAsync(600));
     expect(backend.changesCalls).toBe(1);
+  });
+
+  it("re-reads a worktree task's changes on the project's events, where its gitdir lives", async () => {
+    vi.useFakeTimers();
+    useChangesOptions.setState({ groupByCommit: true });
+    useAgents.setState({
+      tasks: new Map([["A", { ...task("A"), isolation: "worktree", cwd: "/worktrees/a", projectRoot: "/project" }]]),
+    });
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    backend.groupedCalls = 0;
+
+    act(() => emitLocalIdeEvent({ type: "vcsChanged", root: "/elsewhere" }));
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    expect(backend.groupedCalls).toBe(0);
+
+    // A commit in the worktree writes <project>/.git/worktrees/<slug>, so the event is rooted at the project.
+    act(() => emitLocalIdeEvent({ type: "vcsChanged", root: "/project" }));
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    expect(backend.groupedCalls).toBe(1);
   });
 });
 

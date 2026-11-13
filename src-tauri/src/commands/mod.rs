@@ -465,6 +465,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         scaffold::scaffold_requirements,
         scaffold::scaffold_create,
         sdk::sdk_detect,
+        sdk::sdk_python_project_interpreters,
         sdk::sdk_python_interpreter,
         sdk::sdk_python_effective,
         sdk::sdk_php_effective,

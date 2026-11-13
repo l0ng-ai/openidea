@@ -43,6 +43,9 @@ pub type AgentSink = Arc<dyn Fn(AgentEvent) + Send + Sync>;
 /// Returns the active command execution security policy for the project.
 pub type SecurityHook = Arc<dyn Fn() -> ide_core::settings::AgentSecuritySettings + Send + Sync>;
 
+/// Returns the user's choice of the approvals new tasks start with.
+pub type NewTaskApprovalsHook = Arc<dyn Fn() -> ide_core::settings::NewTaskApprovals + Send + Sync>;
+
 /// Entry changes are batched for this long before they are sent.
 const FLUSH_DELAY: Duration = Duration::from_millis(40);
 /// Updates that arrive this late after `session/load` returns are still replayed history.
@@ -89,6 +92,18 @@ pub struct AgentPaths {
     pub custom_agents_dir: Option<PathBuf>,
     /// The user's home: its `.claude` holds their own skills and commands.
     pub home_dir: Option<PathBuf>,
+    /// Where the values of the agent files' environment variables are kept; without it they stay in the files.
+    pub env_secrets: Option<Arc<dyn EnvSecrets>>,
+}
+
+/// Keeps the values of agent files' environment variables (`agent/<id>/env/<name>`) out of
+/// the files, which keep only the names; the app keeps them in the OS credential store.
+pub trait EnvSecrets: Send + Sync {
+    fn get(&self, key: &str) -> Option<String>;
+    fn set(&self, key: &str, value: &str) -> IdeResult<()>;
+    fn delete(&self, key: &str);
+    /// The keys that start with `prefix`.
+    fn keys(&self, prefix: &str) -> Vec<String>;
 }
 
 /// Starts the ACP server of a provider in a directory, speaking to `client`.
@@ -107,6 +122,7 @@ struct Shared {
     connector: Connector,
     sink: RwLock<Option<AgentSink>>,
     security: RwLock<Option<SecurityHook>>,
+    new_task_approvals: RwLock<Option<NewTaskApprovalsHook>>,
     known: Mutex<HashMap<String, Known>>,
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
@@ -136,6 +152,10 @@ impl Shared {
         self.providers.read().iter().find(|p| p.id == id).cloned()
     }
 
+    fn env_secrets(&self) -> Option<&dyn EnvSecrets> {
+        self.paths.env_secrets.as_deref()
+    }
+
     fn emit(&self, event: AgentEvent) {
         let sink = self.sink.read().clone();
         if let Some(sink) = sink {
@@ -155,6 +175,11 @@ impl Shared {
         // Model-specific options are offered separately, never as provider-wide defaults.
         config.retain(|o| o.category.as_deref() != Some("thought_level"));
         config::add_client_options(provider, &mut config);
+        let hook = self.new_task_approvals.read().clone();
+        if hook.is_some_and(|ask| ask() == ide_core::settings::NewTaskApprovals::Ask) {
+            config::ask_for_approvals(&mut config);
+            return config;
+        }
         if let Some((o, v)) = config::bypass_mode(&config).map(|(o, v)| (o.id.clone(), v.value.clone()))
             && let Some(o) = config.iter_mut().find(|c| c.id == o)
         {
@@ -446,13 +471,14 @@ impl AgentManager {
     fn with_connector(paths: AgentPaths, runtime: tokio::runtime::Handle, connector: Connector) -> Self {
         let known =
             std::fs::read(&paths.models_file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let providers = RwLock::new(provider::load(paths.custom_agents_dir.as_deref()));
+        let providers = RwLock::new(provider::load(paths.custom_agents_dir.as_deref(), paths.env_secrets.as_deref()));
         let shared = Arc::new(Shared {
             paths,
             runtime,
             connector,
             sink: RwLock::new(None),
             security: RwLock::new(None),
+            new_task_approvals: RwLock::new(None),
             known: Mutex::new(known),
             providers,
             probes: Mutex::new(HashMap::new()),
@@ -501,9 +527,14 @@ impl AgentManager {
         *self.shared.security.write() = Some(hook);
     }
 
+    /// Sets the callback that reads which approvals new tasks start with.
+    pub fn set_new_task_approvals_hook(&self, hook: NewTaskApprovalsHook) {
+        *self.shared.new_task_approvals.write() = Some(hook);
+    }
+
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.
     pub fn providers(&self) -> Vec<AgentProvider> {
-        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
+        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets());
         let in_use: std::collections::HashSet<String> =
             self.tasks.read().values().map(|t| t.state.lock().task.provider.clone()).collect();
         let list = specs
@@ -537,7 +568,7 @@ impl AgentManager {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::set_builtin_command(&dir, id, command.as_deref())
+        provider::set_builtin_command(&dir, self.shared.env_secrets(), id, command.as_deref())
     }
 
     /// Sets the environment variables built-in `id` starts with; empty clears them.
@@ -545,7 +576,7 @@ impl AgentManager {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::set_builtin_env(&dir, id, env)
+        provider::set_builtin_env(&dir, self.shared.env_secrets(), id, env)
     }
 
     /// Saves a new custom ACP agent through its agent file.
@@ -553,7 +584,7 @@ impl AgentManager {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::save_custom(&dir, &input)
+        provider::save_custom(&dir, self.shared.env_secrets(), &input)
     }
 
     /// Removes a custom agent's file (registry installs go through `registry_remove`).
@@ -561,7 +592,7 @@ impl AgentManager {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::remove_custom(&dir, id)
+        provider::remove_custom(&dir, self.shared.env_secrets(), id)
     }
 
     /// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents.
@@ -569,12 +600,12 @@ impl AgentManager {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::import_acp(&dir, text)
+        provider::import_acp(&dir, self.shared.env_secrets(), text)
     }
 
     /// Re-reads configured/installed agents, drops cached probes, and notifies subscribers.
     pub fn reload_providers(&self) {
-        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
+        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets());
         *self.shared.providers.write() = specs;
         self.shared.probes.lock().clear();
         self.shared.emit(AgentEvent::Providers);

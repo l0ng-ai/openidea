@@ -984,6 +984,8 @@ export const commands = {
 	scaffoldCreate: (req: CreateRequest, request: RequestId, onEvent: Channel<ScaffoldEvent>) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("scaffold_create", { req, request, onEvent })),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
+	/**  The Python interpreters of the recently opened projects, each with its project. */
+	sdkPythonProjectInterpreters: () => typedError<ProjectInterpreter[], IdeError>(__TAURI_INVOKE("sdk_python_project_interpreters")),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
 	sdkPythonInterpreter: (path: string) => typedError<{
 	/**
@@ -2117,6 +2119,11 @@ export type AgentSettings_Deserialize = {
 	 *  send it into the turn.
 	 */
 	whileRunning?: WhileRunning,
+	/**
+	 *  Whether new tasks start in the agent's mode that approves everything (Claude Code's
+	 *  bypass permissions, Codex's full access) or in one that asks. User settings only.
+	 */
+	newTaskApprovals?: NewTaskApprovals,
 	/**  Settings new tasks of an agent start with: agent id → option id → value. */
 	defaults?: { [key in string]: { [key in string]: string } },
 	/**
@@ -2150,6 +2157,11 @@ export type AgentSettings_Serialize = {
 	 *  send it into the turn.
 	 */
 	whileRunning: WhileRunning,
+	/**
+	 *  Whether new tasks start in the agent's mode that approves everything (Claude Code's
+	 *  bypass permissions, Codex's full access) or in one that asks. User settings only.
+	 */
+	newTaskApprovals: NewTaskApprovals,
 	/**  Settings new tasks of an agent start with: agent id → option id → value. */
 	defaults: { [key in string]: { [key in string]: string } },
 	/**
@@ -2264,6 +2276,8 @@ export type AppInfo = {
 	platform: string,
 	windowsBuildNumber: number | null,
 	configDir: IpcPath,
+	/**  User data (plugins, scratches, Local History); follows `OPENIDEA_DATA_DIR`. */
+	dataDir: IpcPath,
 	/**  Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges. */
 	wayland: boolean,
 };
@@ -4515,6 +4529,8 @@ export type EditorAppearanceSettings = {
 	/**  Smooth caret movement curve: `snappy` | `gliding`. */
 	caretMovementStyle?: string,
 	lineNumbers?: boolean,
+	/**  Gutter numbering: `absolute` | `relative` | `hybrid` (absolute on the caret line, distances elsewhere). */
+	lineNumberMode?: string,
 	methodSeparators?: boolean,
 	/**  Sub-options of `editor.showWhitespace`. */
 	whitespaceLeading?: boolean,
@@ -7340,6 +7356,13 @@ export type NewAgentTask = {
 	base: string | null,
 };
 
+/**  The approvals new agent tasks start with. */
+export type NewTaskApprovals = 
+/**  The agent's mode that approves everything without asking, when it has one. */
+"bypass" | 
+/**  A mode in which the agent asks before edits and commands. */
+"ask";
+
 /**  Result of `node_at`: the smallest named node covering a range, with its ancestors. */
 export type NodeAt = {
 	node: SyntaxNode,
@@ -8320,6 +8343,12 @@ export type ProjectInfo_Serialize = {
 	unity?: UnityProjectInfo | null,
 };
 
+/**  An interpreter another project uses: the project root and the SDK itself. */
+export type ProjectInterpreter = {
+	project: IpcPath,
+	sdk: Sdk,
+};
+
 /**  A project-level library (Project Structure › Libraries). */
 export type ProjectLibrary = {
 	name?: string,
@@ -8473,6 +8502,20 @@ export type PythonSettings = {
 	interpreter?: string,
 	/**  Activate the interpreter's virtualenv in new terminal sessions. */
 	activateVirtualenv?: boolean,
+	/**
+	 *  Interpreters the user added to Settings › Python › All Interpreters (executable paths).
+	 *  Detection contributes the rest; `hidden_interpreters` removes some of them.
+	 */
+	interpreters?: string[],
+	/**
+	 *  Interpreters the user removed from that list, as executable paths: detection does
+	 *  not list them again.
+	 */
+	hiddenInterpreters?: string[],
+	/**  Hide interpreters that belong to another project (a virtualenv inside its folder). */
+	hideOtherProjectInterpreters?: boolean,
+	/**  Show each interpreter's path under its name on the interpreters page. */
+	showInterpreterPaths?: boolean,
 };
 
 /**  Half-open range `[start, end)`. */

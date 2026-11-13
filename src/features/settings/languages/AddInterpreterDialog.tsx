@@ -5,6 +5,7 @@
 import { isCancelled } from "@/platform/ipc";
 import { useId, useMemo, useState } from "react";
 import { Dialog, IconButton, Input, Select, Spinner, type SelectOption, T } from "@/ui";
+import { Icon, type IconName } from "@/ui/icons";
 import { choosePath, createVenv, pythonInterpreter, rememberSdk, type Sdk, type VenvTool } from "./api";
 import { tildify, useDetected } from "./components";
 import styles from "./Sdk.module.css";
@@ -13,11 +14,11 @@ import { tx } from "@/platform/i18n";
 type Mode = "new" | "existing";
 
 /** Environment types of the left column, in PyCharm's order. */
-const KINDS: { tool: VenvTool; label: string; missing: string }[] = [
-  { tool: "venv", label: "Virtualenv Environment", missing: "" },
-  { tool: "conda", label: "Conda Environment", missing: "conda is not installed" },
-  { tool: "uv", label: "uv Environment", missing: "uv is not installed" },
-  { tool: "poetry", label: "Poetry Environment", missing: "Poetry is not installed" },
+const KINDS: { tool: VenvTool; label: string; missing: string; icon: IconName }[] = [
+  { tool: "venv", label: "Virtualenv Environment", missing: "", icon: "python-venv" },
+  { tool: "conda", label: "Conda Environment", missing: "conda is not installed", icon: "python-conda" },
+  { tool: "uv", label: "uv Environment", missing: "uv is not installed", icon: "python-uv" },
+  { tool: "poetry", label: "Poetry Environment", missing: "Poetry is not installed", icon: "python-poetry" },
 ];
 
 export function AddInterpreterDialog({
@@ -145,6 +146,7 @@ export function AddInterpreterDialog({
                   setError(null);
                 }}
               >
+                <Icon name={k.icon} size={16} />
                 {k.label}
               </button>
             </li>
