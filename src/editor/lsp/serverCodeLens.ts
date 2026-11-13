@@ -6,6 +6,12 @@ import { call, commands } from "@/platform/ipc";
 import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
 import { posToOffset } from "./positions";
 import { onLspRefresh, onServerSettled } from "./availability";
+/**
+ * A server's reference count ("3 references", csharp-ls's "3 Reference(s)"): Code Vision's
+ * Usages shows the same count above the declaration, under its own setting.
+ */
+const REFERENCE_COUNT = /^\s*\d+\s+references?(\(s\))?\s*$/i;
+
 const set = StateEffect.define<CodeLens[]>();
 const field = StateField.define<CodeLens[]>({
   create: () => [],
@@ -62,7 +68,7 @@ export function serverCodeLenses(ctx: EditorDocContext): Extension {
               view.dispatch({
                 effects: set.of(
                   result.flatMap((l) =>
-                    l.command
+                    l.command && !REFERENCE_COUNT.test(l.command.title)
                       ? [
                           {
                             pos: posToOffset(text, l.range.start),

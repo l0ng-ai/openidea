@@ -46,7 +46,7 @@ it("keeps mapped lenses across edits instead of clearing them (#2710)", async ()
     data: [
       {
         range: { start: { line: 1, col: 0 }, end: { line: 1, col: 3 } },
-        command: { title: "1 reference", command: "csharp.showReferences", arguments: [] },
+        command: { title: "Run test", command: "csharp.runTest", arguments: [] },
       },
     ],
   });
@@ -67,5 +67,27 @@ it("keeps mapped lenses across edits instead of clearing them (#2710)", async ()
   const after = view.state.facet(codeLenses);
   expect(after).toHaveLength(1);
   expect(after[0]!.pos).toBe(posBefore + 1);
-  expect(after[0]!.title).toBe("1 reference");
+  expect(after[0]!.title).toBe("Run test");
+});
+
+it("leaves reference counts to Code Vision's usages", async () => {
+  vi.useFakeTimers();
+  const lens = (line: number, title: string) => ({
+    range: { start: { line, col: 0 }, end: { line, col: 1 } },
+    command: { title, command: "csharp.showReferences", arguments: [] },
+  });
+  ipc.lspCodeLens.mockResolvedValue({
+    status: "ok",
+    data: [lens(0, "3 Reference(s)"), lens(1, "1 reference"), lens(2, "12 references"), lens(3, "2 implementations")],
+  });
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: "a\nb\nc\nd",
+      extensions: serverCodeLenses({ doc: 1, path: "/p/a.cs", language: "csharp", uiMode: null, readOnly: false }),
+    }),
+    parent: document.body,
+  });
+  views.push(view);
+  await vi.advanceTimersByTimeAsync(400);
+  expect(view.state.facet(codeLenses).map((l) => l.title)).toEqual(["2 implementations"]);
 });
