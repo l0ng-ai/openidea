@@ -1284,7 +1284,8 @@ function CommitList() {
             {
               id: "date",
               title: "Date",
-              width: 120,
+              // Fits a 12-hour date and time ("11/05/2026 02:30 PM", "Yesterday 09:07 AM").
+              width: 140,
               render: (c: Commit) => formatTime(opts.commitTimestamp ? (c.commitTimeMs ?? c.timeMs) : c.timeMs),
             },
           ]
