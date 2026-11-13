@@ -155,6 +155,34 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "ansiBrightCyan", name: "Bright cyan", path: ["Console Colors"], fg: "--ansi-bright-cyan" },
   { id: "ansiBrightWhite", name: "Bright white", path: ["Console Colors"], fg: "--ansi-bright-white" },
 
+  // Color Scheme › Git: inline blame segments and project view branch decorations.
+  // The inline blame widget and the project root suffix read these variables directly.
+  { id: "gitBlameAuthor", name: "Editor inline blame › Author", path: ["Git"], fg: "--git-blame-author" },
+  { id: "gitBlameDate", name: "Editor inline blame › Date time", path: ["Git"], fg: "--git-blame-date" },
+  { id: "gitBlameIssue", name: "Editor inline blame › Issue link", path: ["Git"], fg: "--git-blame-issue" },
+  { id: "gitBlameSubject", name: "Editor inline blame › Subject", path: ["Git"], fg: "--git-blame-subject" },
+  { id: "gitBranchChanged", name: "Project View › Changed decoration", path: ["Git"], fg: "--git-branch-changed" },
+  { id: "gitHeadTags", name: "Project View › HEAD tags decoration", path: ["Git"], fg: "--git-head-tags" },
+  { id: "gitLocalBranch", name: "Project View › Local branch decoration", path: ["Git"], fg: "--git-local-branch" },
+  {
+    id: "gitMasterWithRemote",
+    name: "Project View › master/main with remote",
+    path: ["Git"],
+    fg: "--git-master-with-remote",
+  },
+  {
+    id: "gitMasterWithoutRemote",
+    name: "Project View › master/main without remote",
+    path: ["Git"],
+    fg: "--git-master-without-remote",
+  },
+  {
+    id: "gitTrackingBranch",
+    name: "Project View › Tracking branch decoration",
+    path: ["Git"],
+    fg: "--git-tracking-branch",
+  },
+
   syn("keyword", "Keyword", [LD], "keyword"),
   syn("identifier", "Identifiers › Local variable", [LD], "variable"),
   syn("parameter", "Identifiers › Parameter", [LD], "param"),

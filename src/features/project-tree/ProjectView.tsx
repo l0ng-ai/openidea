@@ -372,6 +372,7 @@ function DecorationSuffix({ segments, color }: DecorationSuffixProps) {
             role={s.label ? "img" : undefined}
             aria-label={s.label}
             title={s.label}
+            style={s.color ? { color: s.color } : undefined}
           >
             {text}
             {s.icon && <Icon name={s.icon} size={12} />}

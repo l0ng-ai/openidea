@@ -7,17 +7,47 @@ import { useVcs } from "./store";
 
 const PROVIDER = "vcs-root-sync";
 const GIT_CHANGE_DELAY_MS = 250;
-const SUFFIX_COLOR = "var(--accent)";
+const SUFFIX_COLOR = "var(--git-local-branch, var(--accent))";
+
+/** Whether a branch name is a default branch (master/main get their own colours). */
+const defaultBranch = (name: string) => name === "master" || name === "main";
 
 export function rootSyncSuffix(info: BranchInfo): DecorationSegment[] | null {
   const { head, upstream, ahead, behind } = info;
   if (!head) return null;
-  if (!upstream) return [{ text: head }];
+  const branchColor = upstream
+    ? defaultBranch(head)
+      ? "var(--git-master-with-remote, var(--accent))"
+      : "var(--git-tracking-branch, var(--accent))"
+    : defaultBranch(head)
+      ? "var(--git-master-without-remote, var(--accent))"
+      : "var(--git-local-branch, var(--accent))";
+  const branch: DecorationSegment = { text: head, color: branchColor };
+  if (!upstream) return [branch];
   const counts: DecorationSegment[] = [];
-  if (ahead > 0) counts.push({ text: String(ahead), icon: "vcs-outgoing", label: tx`${ahead} outgoing commits` });
-  if (behind > 0) counts.push({ text: String(behind), icon: "vcs-incoming", label: tx`${behind} incoming commits` });
-  if (!counts.length) counts.push({ text: "0", strike: true, label: tx`Up to date with ${upstream}` });
-  return [{ text: head }, { text: "/" }, ...counts];
+  const changed = "var(--git-branch-changed, var(--accent))";
+  if (ahead > 0)
+    counts.push({
+      text: String(ahead),
+      icon: "vcs-outgoing",
+      label: tx`${ahead} outgoing commits`,
+      color: changed,
+    });
+  if (behind > 0)
+    counts.push({
+      text: String(behind),
+      icon: "vcs-incoming",
+      label: tx`${behind} incoming commits`,
+      color: changed,
+    });
+  if (!counts.length)
+    counts.push({
+      text: "0",
+      strike: true,
+      label: tx`Up to date with ${upstream}`,
+      color: "var(--git-head-tags, var(--accent))",
+    });
+  return [branch, { text: "/", color: "var(--git-head-tags, var(--accent))" }, ...counts];
 }
 
 async function branchInfoOf(root: string): Promise<[string, BranchInfo] | null> {

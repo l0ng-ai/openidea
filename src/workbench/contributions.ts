@@ -894,6 +894,8 @@ export interface DecorationSegment {
   icon?: string;
   strike?: boolean;
   label?: string;
+  /** CSS colour of this segment; falls back to the suffix colour. */
+  color?: string;
 }
 
 export interface FileDecoration {

@@ -382,3 +382,27 @@ describe("Console Colors (#2698)", () => {
     expect(screen.getByRole("treeitem", { name: "Red", selected: true })).toBeInTheDocument();
   });
 });
+
+describe("Git colors", () => {
+  it("groups inline blame and project view attributes and overrides the preview", () => {
+    act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+    schemePage("editor.colorScheme.git");
+    const tree = screen.getByRole("tree", { name: "Color scheme attributes" });
+    expect(within(tree).getByRole("treeitem", { name: "Editor inline blame" })).toBeInTheDocument();
+    expect(within(tree).getByRole("treeitem", { name: "Project View" })).toBeInTheDocument();
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(within(preview).getByText(/^Kitov/)));
+    expect(screen.getByRole("treeitem", { name: "Author", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(screen.getByRole("checkbox", { name: "Foreground" })));
+    expect(value("colorOverrides")).toEqual({ dark: { gitBlameAuthor: { foreground: "#808080" } } });
+    expect(preview.style.getPropertyValue("--git-blame-author")).toBe("#808080");
+  });
+
+  it("selects a project view branch colour from the preview suffix", () => {
+    act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+    schemePage("editor.colorScheme.git");
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(within(preview).getByText("feature/login")));
+    expect(screen.getByRole("treeitem", { name: "Local branch decoration", selected: true })).toBeInTheDocument();
+  });
+});
