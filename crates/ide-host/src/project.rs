@@ -670,6 +670,10 @@ impl Host {
             self.runtime.clone(),
         ));
         let settings = settings.clone();
+        {
+            let settings = settings.clone();
+            agents.set_new_task_approvals_hook(Arc::new(move || settings.effective().agents.new_task_approvals));
+        }
         let approvals = self.mcp_approvals.clone();
         let root = root.to_path_buf();
         agents.set_mcp_servers_hook(Box::new(move || {

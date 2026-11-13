@@ -42,9 +42,38 @@ pub(crate) fn bypass_approvals(config: &[AgentConfigOption]) -> bool {
     let selected = |category: &str| {
         config.iter().find(|o| o.category.as_deref() == Some(category)).and_then(|o| o.current.as_deref())
     };
-    selected("mode").is_some_and(is_bypass_mode)
-        || selected("permissions").is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "on" | "true"))
-        || selected("approval").is_some_and(|v| v.eq_ignore_ascii_case("bypass"))
+    ["mode", "permissions", "approval"]
+        .into_iter()
+        .any(|category| selected(category).zip(bypass_value(category)).is_some_and(|(value, bypass)| bypass(value)))
+}
+
+/// For an option of `category` that can approve everything, what tells its approving values.
+fn bypass_value(category: &str) -> Option<fn(&str) -> bool> {
+    match category {
+        "mode" => Some(is_bypass_mode),
+        "permissions" => Some(|v| matches!(v.to_ascii_lowercase().as_str(), "on" | "true")),
+        "approval" => Some(|v| v.eq_ignore_ascii_case("bypass")),
+        _ => None,
+    }
+}
+
+/// Moves options that approve everything without asking to a value that asks: the agent's
+/// default or ask mode, else its first one that asks.
+pub(crate) fn ask_for_approvals(config: &mut [AgentConfigOption]) {
+    for option in config {
+        let Some(bypass) = option.category.as_deref().and_then(bypass_value) else { continue };
+        if option.current.as_deref().is_some_and(|c| !bypass(c)) {
+            continue;
+        }
+        let asks = |v: &&AgentConfigValue| !bypass(&v.value);
+        let value = ["default", "ask"]
+            .iter()
+            .find_map(|preferred| option.values.iter().filter(asks).find(|v| v.value == *preferred))
+            .or_else(|| option.values.iter().find(asks));
+        if let Some(value) = value {
+            option.current = Some(value.value.clone());
+        }
+    }
 }
 
 /// The mode that approves everything without asking (`bypassPermissions`, `yolo`, `full-access`…), if the agent has one.
@@ -339,6 +368,36 @@ mod tests {
                       "availableModes": [{"id": "https://agentclientprotocol.com/protocol/session-modes#yolo"}]}
         }));
         assert!(bypass_approvals(&url_mode));
+    }
+
+    #[test]
+    fn asking_for_approvals_keeps_a_mode_that_asks_and_leaves_one_that_does_not() {
+        let mode = |current: &str, values: &[&str]| {
+            options_of(&json!({"modes": {"currentModeId": current,
+                "availableModes": values.iter().map(|v| json!({"id": v})).collect::<Vec<_>>()}}))
+        };
+        let codex = ["read-only", "ask", "auto", "full-access"];
+        for (current, expected) in [("auto", "auto"), ("read-only", "read-only"), ("full-access", "ask")] {
+            let mut c = mode(current, &codex);
+            ask_for_approvals(&mut c);
+            assert_eq!(c[0].current.as_deref(), Some(expected), "{current}");
+            assert!(!bypass_approvals(&c));
+        }
+        let mut claude = mode("bypassPermissions", &["acceptEdits", "default", "plan", "bypassPermissions"]);
+        ask_for_approvals(&mut claude);
+        assert_eq!(claude[0].current.as_deref(), Some("default"));
+        let mut other = mode("yolo", &["yolo", "code", "architect"]);
+        ask_for_approvals(&mut other);
+        assert_eq!(other[0].current.as_deref(), Some("code"));
+
+        let mut c = options_of(&json!({"configOptions": [
+            {"id": "allow_all", "category": "permissions", "type": "select", "currentValue": "on",
+             "options": [{"value": "on"}, {"value": "off"}]},
+            {"id": "approval", "category": "approval", "type": "select", "currentValue": "bypass",
+             "options": [{"value": "bypass"}, {"value": "ask"}]}
+        ]}));
+        ask_for_approvals(&mut c);
+        assert_eq!(ids(&c), [("allow_all", Some("off")), ("approval", Some("ask"))]);
     }
 
     #[test]

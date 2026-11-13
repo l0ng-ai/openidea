@@ -32,7 +32,7 @@ import {
 } from "./model";
 import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
-import { closeActiveTask, closeAndNewTask, connect, disconnect, openHome, useAgents } from "./store";
+import { closeActiveTask, closeAndNewTask, connect, disconnect, openHome, refreshProviders, useAgents } from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
@@ -95,6 +95,9 @@ export function activate(): () => void {
       : () => {},
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root || s.project?.trusted !== prev.project?.trusted) sync(s.project?.root);
+      // What new tasks start with comes from the agents' list.
+      else if (s.settings?.agents?.newTaskApprovals !== prev.settings?.agents?.newTaskApprovals && s.project?.root)
+        void refreshProviders();
     }),
     registerToolWindow({
       id: TOOL_WINDOW,

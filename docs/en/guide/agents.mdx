@@ -71,6 +71,8 @@ On your own messages you can **Edit** (the messages after it are replaced; files
 
 When an agent wants to run a command or call a tool that needs approval, the task shows the request and is listed as **Needs Input**. Choose one of the options the agent offers, such as **Allow Once**, **Allow for This Session**, **Always Allow**, **Decline**, **Always Decline** or **Decline and Stop**. Many agents also have a mode picker that approves edits or everything automatically; use it with care.
 
+Once an agent has run a task, new tasks start in its mode that approves everything (Claude Code's bypass permissions, Codex's Full Access), and the Command Execution Policy doesn't apply there. To start them in a mode that asks, set **Settings › Agents › Chat › New tasks start** to **Asking for approval**. Only your own settings choose this, never a project's.
+
 ### Review the changes
 
 Click **Show changes** in the task header to list the files the task changed. Click a file to open a diff between the task's starting point and now. For a worktree task, the changes live on its `agent/…` branch: open a terminal there with **Open in Terminal**, and merge or cherry-pick the branch with the Git tools (see [Version control](/en/guide/vcs)) when you are happy with it.
