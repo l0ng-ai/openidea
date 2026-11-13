@@ -47,6 +47,48 @@ pub const SECRET_REQUEST: &str = "plugin_secret";
 pub const SECRET_WRITE: &str = "plugin_secret_write";
 /// OAuth listeners bound on the desktop, never the project server.
 pub const AUTH_REQUEST: &str = "plugin_auth";
+/// What [`RemotePlugins::register`] adds to a server's commands.
+pub const COMMANDS: &[&str] = &[
+    SYNC_PACKAGES,
+    "plugin_run_command",
+    "plugin_set_ui_locale",
+    "plugin_select_tests",
+    "plugin_parse_test_results",
+    "plugin_terminal_session_close",
+    "plugin_terminal_session_spawn",
+    "plugin_prepare_debug_run",
+    "plugin_finish_operation",
+    "plugin_content_tab_action",
+    "plugin_post_events",
+    "plugin_event_kinds",
+    "plugin_status_items",
+    "plugin_context_keys",
+    "plugin_cancel_task",
+    "plugin_answer_prompt",
+    "plugin_choose_program",
+    "plugin_program",
+    "plugin_answer_command",
+    "plugin_answer_commit",
+    "plugin_commit_checks",
+    "mcp_set_open_editors",
+    "mcp_set_focused_editor",
+    "mcp_report_problems",
+    "plugin_decoration_sets",
+    "plugin_set_active_file",
+    "plugin_view_render",
+    "plugin_view_event",
+    "plugin_service_detail",
+    "plugin_service_log",
+    "plugin_navigation_files",
+    "plugin_navigation_invalidate",
+    "plugin_navigation_index",
+    "plugin_navigation_goto",
+    "plugin_navigation_markers",
+    "plugin_endpoints",
+    "plugin_run_targets",
+    "plugin_answer_run_target",
+    "plugin_line_markers",
+];
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SecretWrite {
@@ -134,8 +176,13 @@ pub fn package_digest(dir: &Path, files: &[PathBuf]) -> IdeResult<String> {
 }
 
 /// Whether a plugin event means something to a remote window (the desktop
-/// owns the plugin list, themes and consent).
+/// owns the plugin list, themes and consent). The desktop checks it again on
+/// arrival: a server may send anything, and only what acts on the remote project
+/// passes. A command may only be another plugin command, which runs on the server.
 pub fn forwarded(event: &PluginEvent) -> bool {
+    if let PluginEvent::ExecuteCommand { id, .. } = event {
+        return plugin_command(id);
+    }
     matches!(
         event,
         PluginEvent::RunTargetsChanged
@@ -147,7 +194,6 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::Notification { .. }
             | PluginEvent::StatusItemChanged { .. }
             | PluginEvent::WindowStatusItemChanged { .. }
-            | PluginEvent::ExecuteCommand { .. }
             | PluginEvent::OutputChanged { .. }
             | PluginEvent::RevealOutput { .. }
             | PluginEvent::ContextChanged { .. }
@@ -163,7 +209,6 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::OpenLogTab { .. }
             | PluginEvent::CopyToClipboard { .. }
             | PluginEvent::OpenUrl { .. }
-            | PluginEvent::OpenProject { .. }
             | PluginEvent::PromptRequested { .. }
             | PluginEvent::PromptClosed { .. }
             | PluginEvent::PromptWaiting { .. }
@@ -171,6 +216,13 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::CommitRequested { .. }
             | PluginEvent::EndpointsChanged { .. }
     )
+}
+
+/// `plugin.<plugin id>.<command id>`, as the workbench names plugin commands.
+fn plugin_command(id: &str) -> bool {
+    id.strip_prefix("plugin.")
+        .and_then(|rest| rest.split_once('.'))
+        .is_some_and(|(plugin, command)| !plugin.is_empty() && !command.is_empty() && !command.ends_with('.'))
 }
 
 // ---- desktop side -----------------------------------------------------------
@@ -950,5 +1002,44 @@ mod tests {
         }
         assert!(valid_id("ai-completion"));
         assert!(!valid_id("../x") && !valid_id(".data") && !valid_id(""));
+    }
+
+    fn execute(id: &str) -> PluginEvent {
+        PluginEvent::ExecuteCommand {
+            request_id: "1".into(),
+            id: id.into(),
+            arg: Some(r"\\host.example\share\pkg".into()),
+            chain: vec!["tools".into()],
+        }
+    }
+
+    #[test]
+    fn a_server_runs_only_plugin_commands_in_the_desktop_window() {
+        assert!(forwarded(&execute("plugin.tools.build")));
+        assert!(forwarded(&execute("plugin.acme.tools.build.all")));
+        for id in [
+            "plugins.installFromDisk",
+            "project.revokeTrust",
+            "project.removeTrustedLocation",
+            "ssh.startSession",
+            "file.openProjectPath",
+            "terminal.runCommand",
+            "plugin.",
+            "plugin.tools",
+            "plugin..build",
+            "plugin.tools.",
+        ] {
+            assert!(!forwarded(&execute(id)), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_server_does_not_open_desktop_folders() {
+        let open = PluginEvent::OpenProject {
+            plugin_id: "tools".into(),
+            path: r"\\host.example\share\project".into(),
+            new_window: true,
+        };
+        assert!(!forwarded(&open));
     }
 }

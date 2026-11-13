@@ -455,3 +455,29 @@ async fn properties_conversion_through_remote_dispatch_without_a_remote_host() {
     invoke(&peer, "close_project", json!({})).await.unwrap();
     peer.kill();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_desktop_routes_exactly_what_a_server_of_this_build_answers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().join("server");
+    let peer_slot = Arc::new(OnceLock::new());
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    // As `openidea-server` assembles its commands.
+    let plugins = ide_host::plugins::remote_host::RemotePlugins::start(&base.join("data"), &host, peer_slot).unwrap();
+    let mut dispatcher = Dispatcher::standard();
+    plugins.register(&mut dispatcher);
+    dispatcher.add(ide_host::plugins::remote::SYNC_COMMAND, |_| async { Ok(()) });
+    assert_eq!(rpc::client_commands(), dispatcher.commands());
+    assert!(rpc::client_commands().contains(&"term_spawn"));
+    plugins.host().shutdown();
+}

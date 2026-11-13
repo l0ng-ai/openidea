@@ -1634,6 +1634,10 @@ export const commands = {
 	os: string,
 	commands: string[],
 } | null>("remote_current"),
+	/**  This machine's trust decision for the window's remote project (see [`Connection::authorize_command`]). */
+	remoteTrustStatus: () => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("remote_trust_status")),
+	/**  Records the user's trust decision for the window's remote project on this machine. */
+	remoteTrustSet: (trusted: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("remote_trust_set", { trusted })),
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
 	/**  The remote ports this window forwards to this machine. */
 	remoteForwardedPorts: () => __TAURI_INVOKE<ForwardedPort[]>("remote_forwarded_ports"),
@@ -8720,7 +8724,7 @@ export type RemoteProject_Deserialize = {
 	host: string,
 	serverVersion: string,
 	os: string,
-	/**  Commands the server answers (the rest run locally). */
+	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Deserialize,
 };
@@ -8732,7 +8736,7 @@ export type RemoteProject_Serialize = {
 	host: string,
 	serverVersion: string,
 	os: string,
-	/**  Commands the server answers (the rest run locally). */
+	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Serialize,
 };
