@@ -1,3 +1,4 @@
+import clsx from "clsx";
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import type { Branch } from "@/bindings";
 import { HighlightedText, Icon, List, Popup, SearchField, T, firstSelectable, fuzzyMatch, listNavigate } from "@/ui";
@@ -24,7 +25,6 @@ type Row =
 
 const ROW_HEIGHT = 24;
 const MAX_LIST_HEIGHT = 320;
-const INDENT = 16;
 
 /**
  * IDEA's branch filter: HEAD, the favorite branches (★), then Local and Remote collapsed like its
@@ -182,7 +182,7 @@ export function BranchFilterPopup({
                 <span className={styles.branchFilterLabel}>{r.label}</span>
               </span>
             ) : r.type === "ref" ? (
-              <span className={styles.branchFilterRow} style={r.nested ? { paddingLeft: INDENT } : undefined}>
+              <span className={clsx(styles.branchFilterRow, r.nested && styles.branchFilterNested)}>
                 <Icon
                   name={r.current ? "current-branch" : r.favorite ? "star" : "branch"}
                   size={14}
