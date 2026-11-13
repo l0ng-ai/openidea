@@ -2204,6 +2204,12 @@ async fn checking_a_document_saves_it_and_waits_for_fresh_diagnostics() {
     let stale = h.mgr.check_document(doc, changed, Duration::from_millis(800), &cancel).await.unwrap();
     assert!(stale.servers[0].checked && stale.servers[0].incomplete, "{:?}", stale.servers);
     assert_eq!(stale.diagnostics.len(), 1);
+
+    // The text changed before the call (the file watcher reloaded it), so the caller saw no
+    // change of its own: the old publication is still not fresh.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 3), "good")], &|| "good\n".to_owned());
+    let reloaded = h.mgr.check_document(doc, None, Duration::from_millis(800), &cancel).await.unwrap();
+    assert!(reloaded.servers[0].incomplete, "{:?}", reloaded.servers);
 }
 
 #[tokio::test(flavor = "multi_thread")]

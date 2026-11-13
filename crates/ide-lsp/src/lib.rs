@@ -120,6 +120,8 @@ struct DocState {
     compose_detected: bool,
     /// The notebook a code cell belongs to: synced through `notebookDocument/*`, not as a file.
     notebook: Option<PathBuf>,
+    /// When the servers last got new text (open or change): diagnostics published before are stale.
+    changed: std::time::Instant,
 }
 
 impl DocState {
@@ -158,6 +160,8 @@ struct DocSnap {
     language: LanguageId,
     text: Arc<DocText>,
     servers: Vec<Arc<Server>>,
+    /// [`DocState::changed`].
+    changed: std::time::Instant,
 }
 
 impl DocSnap {
@@ -1170,6 +1174,7 @@ impl LspManager {
             servers: servers.iter().map(|s| Attached { server: s.clone(), opened_gen: None }).collect(),
             compose_detected,
             notebook: None,
+            changed: std::time::Instant::now(),
         };
         let compose_added = {
             let mut docs = self.docs.lock();
@@ -1217,6 +1222,7 @@ impl LspManager {
         let mut docs = self.docs.lock();
         let Some(d) = docs.get_mut(&doc) else { return };
         d.version = version as i32;
+        d.changed = std::time::Instant::now();
 
         // Servers that have this document open on their current instance.
         let targets: Vec<(Arc<Server>, Running, SyncKind, Encoding)> = d
@@ -1392,6 +1398,7 @@ impl LspManager {
             language: d.language.clone(),
             text: d.text.clone(),
             servers,
+            changed: d.changed,
         })
     }
 

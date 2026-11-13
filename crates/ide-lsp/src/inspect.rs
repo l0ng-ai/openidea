@@ -239,6 +239,9 @@ impl LspManager {
         cancel: &CancellationToken,
     ) -> IdeResult<DocumentCheck> {
         let snap = self.snapshot(doc)?;
+        // The text may have changed before this call synced it (the file watcher reloaded it):
+        // only diagnostics published after the servers got the current text are fresh.
+        let changed = Some(changed.map_or(snap.changed, |c| c.max(snap.changed)));
         let deadline = tokio::time::Instant::now() + timeout;
         let left = || deadline.saturating_duration_since(tokio::time::Instant::now());
         let ready = tokio::select! {
