@@ -9,7 +9,7 @@ import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
 import { hideContextMenu, resolveMenuItems, useContextMenuStore } from "@/ui";
-import { getContext, setContext } from "@/platform/context";
+import { evaluateWhen, getContext, setContext } from "@/platform/context";
 import { installKeyboardDispatcher } from "@/platform/keymap";
 import { TEXT_WHEN } from "./actions";
 
@@ -462,5 +462,17 @@ describe("EditorController", () => {
     } finally {
       offWrapper();
     }
+  });
+});
+
+describe("TEXT_WHEN", () => {
+  const editorBehind = { textEditorActive: true, editorTextFocus: false, popupOpen: true };
+
+  it("runs text actions on the editor from a popup such as Find Action", () => {
+    expect(evaluateWhen(TEXT_WHEN, { ...editorBehind, toolWindowFocus: false })).toBe(true);
+  });
+
+  it("leaves keys to a tool window's speed search, so ⌘⌫ there doesn't delete an editor line", () => {
+    expect(evaluateWhen(TEXT_WHEN, { ...editorBehind, toolWindowFocus: true })).toBe(false);
   });
 });
