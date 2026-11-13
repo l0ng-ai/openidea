@@ -21,6 +21,7 @@ import {
   showContextMenu,
   T,
   tooltipAttrs,
+  Toolbar,
 } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { ToolWindowContentTabs } from "@/workbench/toolwindows/ToolWindows";
@@ -80,10 +81,10 @@ function Output() {
   }, [lines.length]);
   return (
     <div className={styles.view}>
-      <div className={styles.toolbar}>
+      <Toolbar className={styles.toolbar} aria-label="Output actions">
         <span className={styles.spacer} />
         <IconButton icon="trash" title="Clear All" disabled={!lines.length} onClick={clearOutput} />
-      </div>
+      </Toolbar>
       <div
         ref={ref}
         className={styles.output}
@@ -148,12 +149,7 @@ function Pager({ tab }: { tab: ResultTab }) {
   const total = w.total === null ? `${w.last + 1}+` : String(w.total);
   const sizes = PAGE_SIZES.includes(pageSize) ? PAGE_SIZES : [...PAGE_SIZES, pageSize].sort((a, b) => a - b);
   return (
-    <div
-      className={styles.resultPager}
-      role="toolbar"
-      aria-label={tx("Result pages")}
-      title={outcomeSummary(tab.outcome)}
-    >
+    <Toolbar className={styles.resultPager} aria-label="Result pages" title={outcomeSummary(tab.outcome)}>
       <IconButton
         icon="page-first"
         title="First Page"
@@ -198,7 +194,7 @@ function Pager({ tab }: { tab: ResultTab }) {
         onChange={(v) => go(0, Number(v))}
         disabled={!canPage}
       />
-    </div>
+    </Toolbar>
   );
 }
 
@@ -433,7 +429,7 @@ function Result({ tab }: { tab: ResultTab }) {
   }
   return (
     <div className={styles.view} ref={viewRef} data-db-table-editor="">
-      <div className={styles.toolbar}>
+      <Toolbar className={styles.toolbar} aria-label="Result actions">
         <IconButton icon="database" title="Table" aria-pressed={view === "table"} onClick={() => setView("table")} />
         <IconButton icon="db-chart" title="Chart" aria-pressed={view === "chart"} onClick={() => setView("chart")} />
         <span className={styles.toolbarSeparator} />
@@ -487,7 +483,7 @@ function Result({ tab }: { tab: ResultTab }) {
           onClick={(e) => showContextMenu(e, exportMenu(data(), queryTable(text, { driver }), extractor))}
         />
         {view === "table" && <PanelToggle panel={panel} onChange={setPanel} />}
-      </div>
+      </Toolbar>
       {view === "chart" ? (
         <div className={styles.fill}>
           <ChartView columns={columns} rows={r.rows} />
@@ -595,7 +591,7 @@ function PlanResult({ tab }: { tab: ResultTab }) {
   const selectedKey = selected < 0 ? statement.key : String(selected);
   return (
     <div className={styles.view}>
-      <div className={styles.toolbar}>
+      <Toolbar className={styles.toolbar} aria-label="Result actions">
         <IconButton icon="refresh" title="Explain Again" disabled={tab.busy} onClick={() => void rerunResult(tab.id)} />
         <PinButton tab={tab} />
         {tab.busy && <Spinner size={12} />}
@@ -603,7 +599,7 @@ function PlanResult({ tab }: { tab: ResultTab }) {
         <span className={styles.resultSource} title={tab.outcome.statement.text}>
           {targetLabel(tab.sourceId)}
         </span>
-      </div>
+      </Toolbar>
       <div className={clsx(styles.fill, styles.planView)}>
         <div className={styles.planTree}>
           <div className={styles.planHeader}>
@@ -677,6 +673,13 @@ export function ResultsView() {
   const active = useDatabase((s) => s.activeResult);
   const hasOutput = useDatabase((s) => s.output.length > 0);
   const root = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  /** Tab from a result tab: its table, plan tree or output log (IDEA focuses the tab's content). */
+  const focusContent = () => {
+    const target = panel.current?.querySelector<HTMLElement>('[role="grid"], [role="tree"], [role="log"]');
+    target?.focus();
+    return !!target && document.activeElement === target;
+  };
   useEffect(() => {
     const syncFocus = () => setContext("dbResultsFocus", !!root.current?.contains(document.activeElement));
     document.addEventListener("focusin", syncFocus);
@@ -725,6 +728,7 @@ export function ResultsView() {
           aria-label="Results"
           activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
           panelIdPrefix="db-results"
+          focusContent={focusContent}
           onSelect={(id) => useDatabase.setState({ activeResult: Number(id) })}
           onClose={(id) => closeResult(Number(id))}
           onTogglePin={(id) => {
@@ -745,7 +749,13 @@ export function ResultsView() {
           ]}
         />
       </ToolWindowContentTabs>
-      <div className={styles.fill}>
+      <div
+        ref={panel}
+        className={styles.fill}
+        role="tabpanel"
+        id={`db-results-panel-${tab ? tab.id : OUTPUT_TAB}`}
+        aria-labelledby={`db-results-tab-${tab ? tab.id : OUTPUT_TAB}`}
+      >
         {!tab ? <Output /> : tab.plan ? <PlanResult key={tab.id} tab={tab} /> : <Result key={tab.id} tab={tab} />}
       </div>
     </div>

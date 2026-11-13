@@ -8,6 +8,7 @@ export * from "./Input";
 export * from "./Checkbox";
 export * from "./Select";
 export * from "./Tabs";
+export * from "./Toolbar";
 export {
   FILES_DRAG,
   REMOTE_FILES_DRAG,
