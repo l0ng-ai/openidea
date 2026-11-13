@@ -1,7 +1,7 @@
 /** Branches popup model for a project with several repositories (pure). */
 import type { Branch } from "@/bindings";
 import { tx } from "@/platform/i18n";
-import { fuzzyMatch } from "@/ui/match";
+import { fuzzyMatch, wordMatch } from "@/ui/match";
 import { rootOf } from "./model";
 import {
   actionRows,
@@ -173,7 +173,7 @@ export function buildMultiRepoRows({
   showTags = true,
 }: MultiRepoInput): RepoRow[] {
   const q = query.trim();
-  const match = (text: string): number[] | null | false => (q ? (fuzzyMatch(text, q) ?? false) : null);
+  const match = (text: string): number[] | null | false => (q ? (wordMatch(text, q) ?? false) : null);
   const open = (key: string, byDefault: boolean) => !!q || (expanded.get(key) ?? byDefault);
   const blocks: RepoRow[][] = [];
 
@@ -181,7 +181,8 @@ export function buildMultiRepoRows({
 
   const repoRows: RepoRow[] = [];
   repos.forEach((repo, i) => {
-    const m = match(repo.name);
+    // Repository names keep the loose match: the list is short and abbreviations like `deps` help.
+    const m = q ? (fuzzyMatch(repo.name, q) ?? false) : null;
     if (m !== false)
       repoRows.push({ type: "repo", key: `repo:${repo.root}`, repo, color: repoColorIndex(i), matches: m });
   });
