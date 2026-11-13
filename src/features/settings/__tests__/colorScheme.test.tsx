@@ -283,10 +283,9 @@ describe("scheme attribute state", () => {
     expect(screen.getByRole("checkbox", { name: "Bold" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Italic" })).not.toBeChecked();
     expect(screen.getByRole("textbox", { name: "Foreground hex" })).toHaveValue("#139839");
-    expect(screen.queryByRole("textbox", { name: "Background hex" })).not.toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Effects" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Effect style" })).toBeChecked();
     expect(screen.getByRole("button", { name: "Effect" })).toHaveTextContent("Underwaved");
-    expect(screen.getByRole("textbox", { name: "Effect color hex" })).toHaveValue("#abcdef");
+    expect(screen.getByRole("textbox", { name: "Effects hex" })).toHaveValue("#abcdef");
   });
 
   it("selects an empty background and clears it back to the scheme state", () => {

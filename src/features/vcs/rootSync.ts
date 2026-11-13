@@ -12,42 +12,56 @@ const SUFFIX_COLOR = "var(--git-local-branch, var(--accent))";
 /** Whether a branch name is a default branch (master/main get their own colours). */
 const defaultBranch = (name: string) => name === "master" || name === "main";
 
+/** Font style / effect a scheme override puts on one Git attribute, e.g. bold tracking branches. */
+const styled = (attr: string, extra: Pick<DecorationSegment, "text"> & DecorationSegment): DecorationSegment => ({
+  fontWeight: `var(--git-${attr}-bold, inherit)`,
+  fontStyle: `var(--git-${attr}-italic, inherit)`,
+  textDecoration: `var(--git-${attr}-effect, none)`,
+  ...extra,
+});
+
 export function rootSyncSuffix(info: BranchInfo): DecorationSegment[] | null {
   const { head, upstream, ahead, behind } = info;
   if (!head) return null;
-  const branchColor = upstream
+  const branchAttr = upstream
     ? defaultBranch(head)
-      ? "var(--git-master-with-remote, var(--accent))"
-      : "var(--git-tracking-branch, var(--accent))"
+      ? "master-with-remote"
+      : "tracking-branch"
     : defaultBranch(head)
-      ? "var(--git-master-without-remote, var(--accent))"
-      : "var(--git-local-branch, var(--accent))";
-  const branch: DecorationSegment = { text: head, color: branchColor };
+      ? "master-without-remote"
+      : "local-branch";
+  const branchColor = `var(--git-${branchAttr}, var(--accent))`;
+  const branch: DecorationSegment = styled(branchAttr, { text: head, color: branchColor });
   if (!upstream) return [branch];
   const counts: DecorationSegment[] = [];
-  const changed = "var(--git-branch-changed, var(--accent))";
   if (ahead > 0)
-    counts.push({
-      text: String(ahead),
-      icon: "vcs-outgoing",
-      label: tx`${ahead} outgoing commits`,
-      color: changed,
-    });
+    counts.push(
+      styled("branch-changed", {
+        text: String(ahead),
+        icon: "vcs-outgoing",
+        label: tx`${ahead} outgoing commits`,
+        color: "var(--git-branch-changed, var(--accent))",
+      }),
+    );
   if (behind > 0)
-    counts.push({
-      text: String(behind),
-      icon: "vcs-incoming",
-      label: tx`${behind} incoming commits`,
-      color: changed,
-    });
+    counts.push(
+      styled("branch-changed", {
+        text: String(behind),
+        icon: "vcs-incoming",
+        label: tx`${behind} incoming commits`,
+        color: "var(--git-branch-changed, var(--accent))",
+      }),
+    );
   if (!counts.length)
-    counts.push({
-      text: "0",
-      strike: true,
-      label: tx`Up to date with ${upstream}`,
-      color: "var(--git-head-tags, var(--accent))",
-    });
-  return [branch, { text: "/", color: "var(--git-head-tags, var(--accent))" }, ...counts];
+    counts.push(
+      styled("head-tags", {
+        text: "0",
+        strike: true,
+        label: tx`Up to date with ${upstream}`,
+        color: "var(--git-head-tags, var(--accent))",
+      }),
+    );
+  return [branch, styled("head-tags", { text: "/", color: "var(--git-head-tags, var(--accent))" }), ...counts];
 }
 
 async function branchInfoOf(root: string): Promise<[string, BranchInfo] | null> {
