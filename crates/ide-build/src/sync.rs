@@ -270,6 +270,13 @@ fn run(
 
 /// The first error lines of a failed build, for the tool window.
 pub(crate) fn error_summary(text: &str) -> String {
+    // The JVM's "could not find or load main class" (localized) when `gradlew` has no jar.
+    if text.contains("org.gradle.wrapper.GradleWrapperMain") {
+        return "gradle/wrapper/gradle-wrapper.jar is missing (often excluded by a `*.jar` rule in .gitignore). \
+                Restore it, run `gradle wrapper` with an installed Gradle, or choose Distribution: Local installation \
+                in Settings › Build, Execution, Deployment › Gradle."
+            .to_owned();
+    }
     let lines: Vec<&str> = text
         .lines()
         .filter(|l| {
@@ -909,6 +916,8 @@ mod tests {
         let text = "[INFO] x\n[ERROR] Failed to execute goal\n[ERROR] \n[ERROR] Re-run Maven using -X\n";
         assert_eq!(error_summary(text), "Failed to execute goal");
         assert_eq!(error_summary("one\nlast line\n\n"), "last line");
+        let missing_jar = "错误: 找不到或无法加载主类 org.gradle.wrapper.GradleWrapperMain\n";
+        assert!(error_summary(missing_jar).starts_with("gradle/wrapper/gradle-wrapper.jar is missing"));
     }
 
     #[test]
