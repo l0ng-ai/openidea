@@ -77,6 +77,7 @@ export function activate(): () => void {
       icon: "toolwindow-usages",
       anchor: "bottom",
       stripe: "onUse",
+      sessionContent: true,
       order: 35,
       component: UsagesView,
       headerContent: UsagesTabs,

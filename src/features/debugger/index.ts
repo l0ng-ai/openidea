@@ -73,6 +73,7 @@ export function activate(): () => void {
       icon: "toolwindow-debug",
       anchor: "bottom",
       stripe: "onUse",
+      sessionContent: true,
       order: 20,
       component: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugToolWindow)),
       headerContent: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugTabs)),
