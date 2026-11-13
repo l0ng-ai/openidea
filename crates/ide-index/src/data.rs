@@ -53,9 +53,21 @@ impl Span {
     /// A slice of nothing; used for optional fields (`None` containers).
     pub(crate) const NONE: Span = Span { start: u32::MAX, len: 0 };
 
+    /// Appends `s` to `arena`, returning the span it will occupy.
+    ///
+    /// Spans are `u32`-addressed and `NONE` uses `u32::MAX` as its start, so an
+    /// arena that reaches that bound cannot be represented. Fail loudly here
+    /// instead of truncating the offsets: a wrapped span would make [`Self::get`]
+    /// slice unrelated text, or panic far from the actual cause.
     #[inline]
     fn of(arena: &str, s: &str) -> Self {
-        Self { start: arena.len() as u32, len: s.len() as u32 }
+        let start = u32::try_from(arena.len()).expect("index text arena exceeded the 4 GiB span limit");
+        let len = u32::try_from(s.len()).expect("index text span exceeded the 4 GiB span limit");
+        assert!(
+            start != u32::MAX && start.checked_add(len).is_some(),
+            "index text arena exceeded the 4 GiB span limit"
+        );
+        Self { start, len }
     }
 
     #[inline]
