@@ -37,6 +37,18 @@ pub(crate) struct SavedSubagent {
     pub entries: Vec<AgentEntry>,
 }
 
+/// How much of a first user message rides with every task event: enough to search by,
+/// far below what a prompt can reach.
+pub(crate) const PROMPT_CAP_CHARS: usize = 2000;
+
+/// The first `PROMPT_CAP_CHARS` characters of `text`.
+pub(crate) fn cap_prompt(text: &str) -> String {
+    match text.char_indices().nth(PROMPT_CAP_CHARS) {
+        Some((cut, _)) => text[..cut].to_owned(),
+        None => text.to_owned(),
+    }
+}
+
 impl Conversation {
     pub fn restore(main: Vec<AgentEntry>, subagents: Vec<SavedSubagent>) -> Self {
         Self {
@@ -60,6 +72,15 @@ impl Conversation {
             None => Some(&self.main),
             Some(id) => self.subagents.iter().find(|s| &s.id == id).map(|s| &s.timeline),
         }
+    }
+
+    /// The first user message, capped (`PROMPT_CAP_CHARS`): what the task was asked,
+    /// for the task list's search (#3148).
+    pub fn first_prompt(&self) -> Option<String> {
+        self.main.entries.iter().find_map(|e| match e {
+            AgentEntry::User { text, .. } => Some(cap_prompt(text)),
+            _ => None,
+        })
     }
 
     fn timeline_mut(&mut self, session: &Session) -> Option<&mut Timeline> {
@@ -196,6 +217,34 @@ mod tests {
 
     fn card(c: &Conversation, session: &Session, index: usize) -> AgentEntry {
         c.timeline(session).unwrap().entries[index].clone()
+    }
+
+    fn user(text: &str) -> AgentEntry {
+        AgentEntry::User {
+            text: text.to_owned(),
+            attachments: Vec::new(),
+            images: Vec::new(),
+            sent_ms: Some(1.0),
+            done_ms: None,
+            steered: false,
+        }
+    }
+
+    #[test]
+    fn first_prompt_is_the_first_user_message_capped() {
+        let mut entries = vec![AgentEntry::Agent { text: "before anything was asked".into() }];
+        let long = "word ".repeat(500); // 2500 characters, over the cap
+        entries.push(user(&long));
+        entries.push(user("a later turn stays out"));
+        let c = Conversation::restore(entries, Vec::new());
+        let prompt = c.first_prompt().unwrap();
+        assert_eq!(prompt.chars().count(), PROMPT_CAP_CHARS);
+        assert!(prompt.starts_with("word word "));
+        assert!(!prompt.contains("a later turn"));
+        assert_eq!(
+            Conversation::restore(vec![AgentEntry::Agent { text: "no user yet".into() }], Vec::new()).first_prompt(),
+            None
+        );
     }
 
     /// Claude Code's Agent tool, as `claude-agent-acp` reports it to a client with subagent sessions.

@@ -1510,5 +1510,7 @@
   "{name} (group)": "{name} (group)",
   "Servers in group": "Servers in group",
   "Upload to… on this group uploads the files to each of its servers in turn.": "Upload to… on this group uploads the files to each of its servers in turn.",
-  "Server Group": "Server Group"
+  "Server Group": "Server Group",
+  "Search agent tasks": "Search agent tasks",
+  "No agent tasks match": "No agent tasks match"
 }

@@ -24,7 +24,7 @@ mod worktree;
 pub use external::ExternalSession;
 pub use model::*;
 
-use conversation::{Conversation, SavedSubagent, Session};
+use conversation::{Conversation, SavedSubagent, Session, cap_prompt};
 use ide_core::{IdeError, IdeResult, IpcPath};
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
 use ide_vcs::Repo;
@@ -517,7 +517,7 @@ impl AgentManager {
     /// Routes events to `sink` (replacing the previous subscriber); returns every task.
     pub fn subscribe(&self, sink: AgentSink) -> Vec<AgentTask> {
         *self.shared.sink.write() = Some(sink);
-        let mut tasks: Vec<AgentTask> = self.tasks.read().values().map(|t| t.state.lock().task.clone()).collect();
+        let mut tasks: Vec<AgentTask> = self.tasks.read().values().map(|t| t.snapshot()).collect();
         tasks.sort_by(|a, b| b.updated_ms.total_cmp(&a.updated_ms));
         tasks
     }
@@ -723,6 +723,7 @@ impl AgentManager {
             project_root: Some(IpcPath(root)),
             id,
             title: found.title,
+            prompt: None,
             provider: spec.id.clone(),
             model: model_of(&config),
             status: AgentStatus::Ready,
@@ -832,6 +833,8 @@ impl AgentManager {
             project_root,
             id,
             title,
+            // The conversation is still empty: say what the task was asked (#3148).
+            prompt: Some(cap_prompt(&prompt.text)),
             provider: spec.id.clone(),
             model: model_of(&config),
             status: AgentStatus::Starting,
@@ -1101,7 +1104,7 @@ impl AgentManager {
         self.tasks.write().insert(task.id.clone(), task.clone());
         task.persist();
         task.emit_task();
-        let copy = task.state.lock().task.clone();
+        let copy = task.snapshot();
         Ok(copy)
     }
 
@@ -1540,8 +1543,16 @@ impl Task {
         }
     }
 
+    /// The task as the UI sees it: with the first user message, for the list's search (#3148).
+    fn snapshot(&self) -> AgentTask {
+        let s = self.state.lock();
+        let mut task = s.task.clone();
+        task.prompt = s.conversation.first_prompt();
+        task
+    }
+
     fn emit_task(&self) {
-        let task = self.state.lock().task.clone();
+        let task = self.snapshot();
         self.shared.emit(AgentEvent::Task { task });
     }
 

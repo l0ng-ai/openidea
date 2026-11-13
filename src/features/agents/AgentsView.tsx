@@ -5,9 +5,11 @@ import type { AgentStatus as Status, AgentTask } from "@/bindings";
 import { EDITOR_TAB_MIME, maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import {
   EmptyState,
+  HighlightedText,
   Icon,
   IconButton,
   Popup,
+  SearchField,
   Spinner,
   T,
   Tree,
@@ -28,6 +30,7 @@ import {
   type TaskGroup,
 } from "./model";
 import { groupMembers, pinnedMembers, ungroupedMembers, type OrganizeGroup } from "./organize";
+import { searching, sessionHits, taskHits } from "./search";
 import {
   importExternalSession,
   moveTasksToGroup,
@@ -187,6 +190,15 @@ export function AgentsView() {
     return new Set(task ? [task] : []);
   });
   const organize = useAgents((s) => s.organize);
+  // The list's search: every task is a candidate, its section only shows the matches (#3148).
+  const [query, setQuery] = useState("");
+  const isSearching = searching(query);
+  const hits = useMemo(() => {
+    const root = project?.root ?? "";
+    const workspace = !!project?.workspace;
+    return taskHits(tasks.values(), query, (task) => (workspace ? basename(task.projectRoot ?? root) : null));
+  }, [tasks, query, project]);
+  const sessionMatches = useMemo(() => sessionHits(external, query), [external, query]);
   // Follow the active session tab.
   useEffect(
     () =>
@@ -203,17 +215,21 @@ export function AgentsView() {
   );
   const roots = useMemo<Node[]>(() => {
     const all = [...tasks.values()];
-    const pinned = pinnedMembers(all, organize);
+    // Searching keeps the layout and filters each section; a task matches wherever it sits.
+    const shown = (task: AgentTask) => !isSearching || hits.has(task.id);
+    const pinned = pinnedMembers(all, organize).filter(shown);
     return [
       ...(pinned.length ? [{ kind: "pinned", tasks: pinned } as Node] : []),
-      ...organize.groups.map((group): Node => ({
-        kind: "custom",
-        group,
-        tasks: groupMembers(tasks.values(), organize, group.id),
-      })),
-      ...groupTasks(ungroupedMembers(all, organize)).map((group): Node => ({ kind: "group", group })),
+      ...organize.groups
+        .map((group) => ({
+          kind: "custom" as const,
+          group,
+          tasks: groupMembers(tasks.values(), organize, group.id).filter(shown),
+        }))
+        .filter((node) => !isSearching || node.tasks.length > 0),
+      ...groupTasks(ungroupedMembers(all, organize).filter(shown)).map((group): Node => ({ kind: "group", group })),
     ];
-  }, [tasks, organize]);
+  }, [tasks, organize, isSearching, hits]);
   const expanded = useMemo(() => new Set(roots.map(nodeKey).filter((k) => !collapsed.has(k))), [roots, collapsed]);
   // Dropping a session editor tab anywhere on the tool window docks it.
   const viewRef = useRef<HTMLDivElement>(null);
@@ -248,9 +264,20 @@ export function AgentsView() {
   const dockedTitle = docked ? (tasks.get(docked)?.title ?? docked) : null;
   const dragTask = (e: ReactPointerEvent<HTMLSpanElement>, task: string) =>
     startPointerDrag(e, e.currentTarget, { type: TASK_DRAG, payload: task });
+  const shownExternal = isSearching
+    ? external.filter((s) => sessionMatches.has(`${s.provider}:${s.sessionId}`))
+    : external;
 
   const taskList = (
     <div className={styles.tasks}>
+      <SearchField
+        className={styles.search}
+        value={query}
+        onChange={setQuery}
+        placeholder={tx("Search agent tasks")}
+        aria-label={tx("Search agent tasks")}
+        clearable
+      />
       <Tree<Node>
         aria-label="Agent tasks"
         roots={roots}
@@ -331,7 +358,7 @@ export function AgentsView() {
                 >
                   <Icon name={providerIcon(n.task.provider)} size={16} label={providerName(n.task.provider)} />
                   <span className={styles.title} data-unread={unread.has(n.task.id) || undefined}>
-                    {n.task.title}
+                    <HighlightedText text={n.task.title} indices={isSearching ? (hits.get(n.task.id) ?? null) : null} />
                   </span>
                   {/* Ready tasks say so by their group; the others show what they're doing. */}
                   {n.task.status !== "ready" && <TaskStatusIcon status={n.task.status} />}
@@ -352,12 +379,18 @@ export function AgentsView() {
           }
         }}
         empty={
-          <div className={styles.empty}>
-            <T>No agent tasks yet</T>
-            <button type="button" className={styles.link} onClick={() => openHome()}>
-              <T>New Task…</T>
-            </button>
-          </div>
+          isSearching ? (
+            <div className={styles.empty}>
+              <T>No agent tasks match</T>
+            </div>
+          ) : (
+            <div className={styles.empty}>
+              <T>No agent tasks yet</T>
+              <button type="button" className={styles.link} onClick={() => openHome()}>
+                <T>New Task…</T>
+              </button>
+            </div>
+          )
         }
       />
     </div>
@@ -419,21 +452,26 @@ export function AgentsView() {
               <T>Agent sessions</T>
             </div>
             {taskList}
-            {(external.length > 0 || externalError) && (
+            {(shownExternal.length > 0 || (externalError && !isSearching)) && (
               <>
                 <div className={styles.historyTitle}>
                   <T>Sessions from other apps</T>
                 </div>
-                {externalError ? (
+                {externalError && !isSearching ? (
                   <div className={styles.empty}>{externalError}</div>
                 ) : (
                   <div className={styles.external}>
-                    {external.map((s) => {
+                    {shownExternal.map((s) => {
                       const key = `${s.provider}:${s.sessionId}`;
                       return (
                         <div key={key} className={styles.row} title={s.cwd ?? s.sessionId}>
                           <Icon name={providerIcon(s.provider)} size={16} label={providerName(s.provider)} />
-                          <span className={styles.title}>{s.title}</span>
+                          <span className={styles.title}>
+                            <HighlightedText
+                              text={s.title}
+                              indices={isSearching ? (sessionMatches.get(key) ?? null) : null}
+                            />
+                          </span>
                           <span className={styles.age}>{age(s.updatedMs ?? 0)}</span>
                           <button
                             type="button"

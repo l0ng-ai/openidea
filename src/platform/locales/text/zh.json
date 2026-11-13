@@ -7911,5 +7911,7 @@
   "{name} (group)": "{name}（分组）",
   "Servers in group": "组内服务器",
   "Upload to… on this group uploads the files to each of its servers in turn.": "对此分组执行“上传到…”时，会依次上传到组内的每台服务器。",
-  "Server Group": "服务器分组"
+  "Server Group": "服务器分组",
+  "Search agent tasks": "搜索 Agent 任务",
+  "No agent tasks match": "没有匹配的 Agent 任务"
 }

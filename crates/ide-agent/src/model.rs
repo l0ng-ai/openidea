@@ -55,6 +55,9 @@ pub struct AgentTask {
     pub project_root: Option<IpcPath>,
     pub id: String,
     pub title: String,
+    /// The first user message, capped: what the task was asked, for search (#3148).
+    #[serde(default)]
+    pub prompt: Option<String>,
     /// [`AgentProvider::id`].
     pub provider: String,
     /// Model the task runs on (its `model` setting), when known.

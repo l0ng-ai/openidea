@@ -490,3 +490,89 @@ describe("Agents pinned and grouped tasks", () => {
     }
   });
 });
+
+describe("Agents search", () => {
+  const type = (query: string) =>
+    fireEvent.change(screen.getByRole("textbox", { name: "Search agent tasks" }), { target: { value: query } });
+  const titled = (id: string, title: string, prompt: string | null = null): AgentTask => ({
+    ...task(id),
+    title,
+    prompt,
+  });
+
+  it("filters as you type, every section keeping its matches, and highlights title hits", () => {
+    useAgents.setState({
+      tasks: new Map(
+        [titled("one", "Fix the login bug"), titled("two", "Write the docs"), titled("three", "Login page docs")].map(
+          (t) => [t.id, t],
+        ),
+      ),
+      organize: { groups: [{ id: "g1", name: "Docs" }], groupOf: { two: "g1" }, pinned: ["three"] },
+    });
+    setup();
+    type("login");
+    const tree = within(screen.getByRole("tree", { name: "Agent tasks" }));
+    // Both matching tasks stay in their sections: the pinned one above, the other in its status group.
+    const rows = treeRows();
+    expect(rows.filter((text) => text.includes("Login page docs"))).toHaveLength(1);
+    expect(rows.filter((text) => text.includes("Fix the login bug"))).toHaveLength(1);
+    // The group whose tasks match nothing is hidden while searching.
+    expect(screen.queryByText("Write the docs")).toBeNull();
+    expect(screen.queryByText("Docs")).toBeNull();
+    // The matched characters are highlighted in the title.
+    expect(tree.getByText("login").closest("mark")).toBeTruthy();
+  });
+
+  it("searches across all groups: a task matches by its first user message too", () => {
+    useAgents.setState({
+      tasks: new Map(
+        [titled("one", "Explore the repo", "make the parser thread-safe"), task("two")].map((t) => [t.id, t]),
+      ),
+      organize: { groups: [{ id: "g1", name: "Frontend" }], groupOf: { two: "g1" }, pinned: [] },
+    });
+    setup();
+    type("thread");
+    const tree = within(screen.getByRole("tree", { name: "Agent tasks" }));
+    // "one" sits in a status group, not the searched-for text's group: found anyway.
+    expect(tree.getByText("Explore the repo")).toBeTruthy();
+    // Its title has no hit characters; the match was in the message.
+    expect(tree.getByText("Explore the repo").querySelector("mark")).toBeNull();
+    expect(screen.queryByText("two")).toBeNull();
+  });
+
+  it("reports when nothing matches", () => {
+    setup();
+    type("nomatch");
+    expect(screen.getByText("No agent tasks match")).toBeTruthy();
+    expect(screen.queryByText("one")).toBeNull();
+  });
+
+  it("restores the whole list when the search is cleared", () => {
+    useAgents.setState({
+      tasks: new Map([titled("one", "Fix the login bug"), titled("two", "Write the docs")].map((t) => [t.id, t])),
+    });
+    setup();
+    type("login");
+    expect(screen.queryByText("Write the docs")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    const rows = treeRows();
+    expect(rows.some((text) => text.includes("Fix the login bug"))).toBe(true);
+    expect(rows.some((text) => text.includes("Write the docs"))).toBe(true);
+    expect(screen.queryByText("No agent tasks match")).toBeNull();
+  });
+
+  it("filters the imported sessions of the history popup by title", () => {
+    useAgents.setState({
+      docked: "one",
+      external: [
+        { provider: "claude", sessionId: "a1", title: "Refactor the parser", cwd: null, updatedMs: 0 },
+        { provider: "codex", sessionId: "b2", title: "Run the tests", cwd: null, updatedMs: 0 },
+      ],
+    });
+    setup();
+    fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
+    type("refactor");
+    expect(screen.getByText("Refactor").closest("mark")).toBeTruthy();
+    expect(screen.queryByText("Run the tests")).toBeNull();
+  });
+});

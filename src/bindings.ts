@@ -2217,6 +2217,8 @@ export type AgentTask = {
 	projectRoot?: IpcPath | null,
 	id: string,
 	title: string,
+	/**  The first user message, capped: what the task was asked, for search (#3148). */
+	prompt?: string | null,
 	/**  [`AgentProvider::id`]. */
 	provider: string,
 	/**  Model the task runs on (its `model` setting), when known. */
