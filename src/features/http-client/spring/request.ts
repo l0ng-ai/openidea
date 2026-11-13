@@ -193,25 +193,36 @@ const MAX_SUPERCLASSES = 5;
 
 const dirname = (p: string) => p.replace(/[\\/][^\\/]*$/, "");
 
-/** The Spring Boot configuration files for `sourcePath` (its module's `src/main/resources`), most specific first. */
-export function configCandidates(sourcePath: string, projectRoot: string | null): string[] {
+/** The Spring Boot configuration files (of `profile`) for `sourcePath` (its module's `src/main/resources`), most specific first. */
+export function configCandidates(sourcePath: string, projectRoot: string | null, profile?: string): string[] {
   const norm = sourcePath.replace(/\\/g, "/");
   const at = norm.lastIndexOf("/src/main/");
   const roots = at >= 0 ? [norm.slice(0, at)] : [];
   if (projectRoot && !roots.includes(projectRoot)) roots.push(projectRoot.replace(/\\/g, "/").replace(/\/$/, ""));
   return roots.flatMap((r) =>
-    ["application.properties", "application.yml", "application.yaml"].map((f) => `${r}/src/main/resources/${f}`),
+    ["properties", "yml", "yaml"].map((x) => `${r}/src/main/resources/application${profile ? `-${profile}` : ""}.${x}`),
   );
 }
 
 export async function findHost(sourcePath: string, projectRoot: string | null, fs: SourceReader): Promise<string> {
-  const configs: Map<string, string>[] = [];
-  for (const path of configCandidates(sourcePath, projectRoot)) {
-    const text = await fs.read(path).catch(() => null);
-    if (text === null) continue;
-    configs.push(path.endsWith(".properties") ? parseProperties(text) : parseYaml(text));
-  }
-  return hostFromConfig(configs);
+  const read = async (paths: string[]) => {
+    const configs: Map<string, string>[] = [];
+    for (const path of paths) {
+      const text = await fs.read(path).catch(() => null);
+      if (text !== null) configs.push(path.endsWith(".properties") ? parseProperties(text) : parseYaml(text));
+    }
+    return configs;
+  };
+  const base = await read(configCandidates(sourcePath, projectRoot));
+  // `spring.profiles.active=dev`: `application-dev.*` overrides the base files (the last profile wins).
+  const active = base.map((c) => resolved(c.get("spring.profiles.active"))).find(Boolean);
+  const profiles = (active ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter((p) => /^[\w.-]+$/.test(p))
+    .reverse();
+  const profiled = await read(profiles.flatMap((p) => configCandidates(sourcePath, projectRoot, p)));
+  return hostFromConfig([...profiled, ...base]);
 }
 
 /**
