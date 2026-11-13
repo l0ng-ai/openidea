@@ -6842,6 +6842,8 @@
   "Bad regex": "正则表达式无效",
   "Filter rows": "筛选行",
   "Result pages": "结果分页",
+  "Result actions": "结果操作",
+  "Output actions": "输出操作",
   "First Page": "第一页",
   "Count rows": "统计行数",
   "Last Page": "最后一页",
