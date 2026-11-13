@@ -87,6 +87,8 @@ While the server runs, OpenIDEA writes its port and token to `mcp/server.json` i
 | Code          | `get_symbol_info`, `find_references`, `rename_refactoring`, `reformat_file` |
 | Problems      | `get_file_problems`, `get_project_problems`                                 |
 | Run and build | `get_run_configurations`, `execute_run_configuration`, `build_project`      |
+| Commands      | `run_command`, `wait_for_run`, `send_run_input`, `stop_run`                 |
+| Command state | `get_run_status`, `read_run_output`, `list_runs`                            |
 | Git           | `get_repositories`, `git_status`, `git_diff`                                |
 
 Notes on what they do:
@@ -98,12 +100,23 @@ Notes on what they do:
 - `apply_patch` accepts the Codex `apply_patch` format and unified diffs. Paths must stay inside the project.
 - `git_diff` compares files on disk, so unsaved editor text is not included.
 
+## Commands in the Run tool window
+
+`run_command` runs a shell command line in a tab of the Run tool window, with the shell of **Settings › Tools › Terminal**. The agent names the tab and OpenIDEA shows it as `_agent_<name>`, so you see the output as it comes and can type into the command, rerun it or stop it like any run.
+
+As JetBrains IDEs do, the command runs on pipes, not a terminal: programs print plain lines instead of progress bars and redraws. The agent gets that output cleaned of escape sequences and cut to 2000 lines (`maxLinesCount`); beyond that the end stays, or the start or both ends with `truncateMode`. The tab's raw output log stays complete.
+
+- **One tab per name.** A name whose command finished runs the next command in the same tab. A name whose command is still running is refused, with that command and its last output: the agent has to stop it with `stop_run` first or pick another name. Nothing is stopped behind your back.
+- **Following a command up.** `wait_for_run` waits for the command to end or for a pattern in its output (a server's "listening" line), `read_run_output` reads the output from any point, `get_run_status` tells whether it is running, succeeded, failed, crashed or was stopped by the agent or by you, and `send_run_input` writes text and Enter to its input; Ctrl+C stops it and Ctrl+D ends its input.
+- **You can step in.** What you type into the tab's input line, a rerun, a Stop and closing the tab are reported to the agent with their time. A wait ends at once, and the agent is advised to stop what it is doing, tell you it received the intervention and wait for your confirmation.
+- **Finished tabs are greyed out.** Beyond **Finished agent tabs to show** (1 by default) the oldest finished ones move to an archive at the end of the tab strip, shown as **Archived (n)**. Beyond **Archived agent tabs to keep** (999) the oldest archived ones are closed. Running commands are never archived or closed. Both settings are on **Settings › Agents › IDE MCP Server**.
+
 Plugins can add more tools; they appear in the same list. A plugin tool marked as destructive asks for confirmation the same way.
 
 ## Safety
 
 - **Untrusted projects** expose only the read-only tools. Tools that write files, rename, reformat, build or run need a project you have trusted.
-- **Running and building ask first.** `execute_run_configuration` and `build_project` show a dialog in OpenIDEA naming the client, the project, the tool and what will run. Choose **Allow** or **Deny**; several requests queue up.
+- **Running and building ask first.** `execute_run_configuration`, `build_project` and `run_command` show a dialog in OpenIDEA naming the client, the project, the tool and what will run. Choose **Allow** or **Deny**; several requests queue up.
 - Tools that write refuse paths outside the project.
 
 ## Limits

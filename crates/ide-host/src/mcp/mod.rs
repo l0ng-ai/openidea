@@ -2,7 +2,7 @@
 mod edit;
 mod editors;
 mod requests;
-mod run;
+pub(crate) mod run;
 mod vcs;
 pub use requests::Requests;
 mod files;
@@ -16,6 +16,7 @@ use crate::Host;
 use ide_core::{CancellationToken, IdeError};
 use ide_mcp::{ToolCallError, ToolRegistry};
 pub use reports::{FileProblems, FocusedEditor, Reports};
+pub use run::agent::{AGENT_PARAM, AgentRun, AgentRuns, NAME_PREFIX, SHELL_PARAM};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

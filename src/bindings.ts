@@ -17,6 +17,8 @@ export const commands = {
 	gtkPickPaths: (options: GtkPickOptions) => typedError<IpcPath[] | null, IdeError>(__TAURI_INVOKE("gtk_pick_paths", { options })),
 	mcpUiReady: (ready: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_ui_ready", { ready })),
 	mcpRespond: (id: number, allow: boolean, error: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_respond", { id, allow, error })),
+	/**  The user closed the Run tool window tab of an agent command (`run_command`). */
+	mcpAgentRunClosed: (name: string) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_agent_run_closed", { name })),
 	mcpServerStatus: () => typedError<McpServerStatus, IdeError>(__TAURI_INVOKE("mcp_server_status")),
 	mcpSetOpenEditors: (paths: IpcPath[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_open_editors", { paths })),
 	mcpSetFocusedEditor: (editor: {
@@ -7189,6 +7191,10 @@ export type McpServerSettings = {
 	 *  (IDEA's brave mode). Read from the IDE's own settings only, never a project's.
 	 */
 	runWithoutConfirmation?: boolean,
+	/**  Finished agent tabs (`run_command`) the Run tool window shows; older ones are archived. */
+	agentTabLimit?: number,
+	/**  Archived agent tabs kept; older ones are closed. */
+	agentArchiveLimit?: number,
 };
 
 /**  What Settings › Agents › MCP Server shows. */
@@ -7210,7 +7216,12 @@ export type McpServerStatus = {
 /**  Transport of an MCP server configured in Settings › Agents › MCP Servers. */
 export type McpTransport = "stdio" | "http" | "sse";
 
-export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null };
+/**
+ *  What a built-in MCP tool asks the project window for. `AgentRun` runs `command` (a shell
+ *  line) in the Run tool window's agent tab `name`, on pipes, answered once the process
+ *  started or failed to.
+ */
+export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null } | { type: "agentRun"; name: string; command: string; cwd: IpcPath; env: { [key in string]: string } };
 
 export type MemoryCategory = 
 /**  The backend and its WebView processes. */
