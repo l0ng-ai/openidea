@@ -61,8 +61,8 @@ export interface TreeOccurrence {
 
 export interface TreeHandle {
   focus(): void;
-  /** Selects `key` (must be visible, i.e. ancestors expanded) and scrolls to it. */
-  reveal(key: string): void;
+  /** Selects `key` (must be visible, i.e. ancestors expanded) and scrolls to it; false when no row has `key`. */
+  reveal(key: string): boolean;
   leadKey(): string | null;
   /** Selects the next (1) / previous (-1) row, for a filter field that keeps the focus (Settings search). */
   moveSelection(dir: 1 | -1): void;
@@ -420,10 +420,11 @@ export function Tree<T>(props: TreeProps<T>) {
     focus: () => scrollRef.current?.focus(),
     reveal: (key: string) => {
       const i = indexOfKey.get(key);
-      if (i === undefined) return;
+      if (i === undefined) return false;
       setAnchor(key);
       commitSelection(new Set([key]), key);
       virtualizer.scrollToIndex(i, { align: "center" });
+      return true;
     },
     leadKey: () => lead,
     moveSelection: (dir: 1 | -1) => {
