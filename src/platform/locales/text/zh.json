@@ -7811,6 +7811,23 @@
   "Introspect": "内省",
   "Not Now": "暂不",
   "Introspect All Databases": "内省所有数据库",
+  "Interpreters": "解释器",
+  "Remove Interpreter": "删除解释器",
+  "Refresh Interpreters": "刷新解释器",
+  "Hide Interpreters from Other Projects": "隐藏其他项目的解释器",
+  "Show Interpreter Paths": "显示解释器路径",
+  "Search interpreters": "搜索解释器",
+  "Set as Project Interpreter": "设为项目解释器",
+  "Remove {name} from the list? It is the project interpreter: the project falls back to its virtualenv.": "从列表中删除 {name}？它是项目解释器：项目将回退到其 virtualenv。",
+  "Remove {name} from the list? Its files are not deleted.": "从列表中删除 {name}？其文件不会被删除。",
+  "Project interpreter": "项目解释器",
+  "No interpreters match the search": "没有匹配的解释器",
+  "No interpreters found. Add one with +.": "未找到解释器。使用 + 添加。",
+  "Detecting interpreters": "正在检测解释器",
+  "Interpreters added here are shared by every project; removing one only hides it from this list.": "此处添加的解释器由所有项目共享；删除一个只会将其从本列表中隐藏。",
+  "Double-click an interpreter to use it for this project.": "双击解释器可将其用于当前项目。",
+  "All Interpreters": "所有解释器",
+  "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff.": "配置项目解释器及其软件包、IDE 已知的所有解释器，以及 Ruff。"
   "No credential store": "没有凭据存储",
   "Values of agent and MCP server settings are kept in {path}, readable only by you.": "智能体和 MCP 服务器设置中的值保存在 {path} 中，仅你本人可读取。"
 }

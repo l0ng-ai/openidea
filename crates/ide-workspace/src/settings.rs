@@ -72,6 +72,13 @@ fn restrict_project_layer(below: &Json, layer: &mut Json) {
         }
         *blocked = all;
     }
+    // The IDE-wide interpreter list, its view options and the project interpreters of
+    // other projects belong to the user's settings, not to one project.
+    if let Some(python) = layer.get_mut("languages").and_then(|l| l.get_mut("python")).and_then(Json::as_object_mut) {
+        for key in ["interpreters", "hiddenInterpreters", "hideOtherProjectInterpreters", "showInterpreterPaths"] {
+            python.remove(key);
+        }
+    }
 }
 
 fn defaults_json() -> Json {
@@ -564,6 +571,34 @@ mod tests {
         assert_eq!(store.reload().editor.custom_schemes["custom-forest"].name, "Forest");
         store.set(SettingsScope::Global, "editor.customSchemes", json!({})).unwrap();
         assert!(SettingsStore::load(&cfg, Some(&proj)).effective().editor.custom_schemes.is_empty());
+    }
+
+    #[test]
+    fn the_interpreter_list_and_its_view_options_are_user_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(proj.join(".openidea")).unwrap();
+        let store = SettingsStore::load(&cfg, Some(&proj));
+        store.set(SettingsScope::Global, "languages.python.interpreters", json!(["/envs/a/bin/python"])).unwrap();
+        store.set(SettingsScope::Global, "languages.python.showInterpreterPaths", json!(false)).unwrap();
+        let loaded = SettingsStore::load(&cfg, Some(&proj)).effective();
+        assert_eq!(loaded.languages.python.interpreters, ["/envs/a/bin/python"]);
+        assert!(!loaded.languages.python.show_interpreter_paths);
+
+        // A project's own settings.toml cannot change the IDE-wide list or its view options.
+        std::fs::write(
+            proj.join(".openidea/settings.toml"),
+            "[languages.python]\ninterpreters = [\"/proj/bin/python\"]\n\
+             hiddenInterpreters = [\"/envs/a/bin/python\"]\nhideOtherProjectInterpreters = true\n\
+             showInterpreterPaths = true\n",
+        )
+        .unwrap();
+        let loaded = SettingsStore::load(&cfg, Some(&proj)).effective();
+        assert_eq!(loaded.languages.python.interpreters, ["/envs/a/bin/python"]);
+        assert!(loaded.languages.python.hidden_interpreters.is_empty());
+        assert!(!loaded.languages.python.hide_other_project_interpreters);
+        assert!(!loaded.languages.python.show_interpreter_paths);
     }
 
     #[test]
