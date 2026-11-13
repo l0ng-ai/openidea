@@ -1,12 +1,11 @@
-/* The chip surface: shared with the pickers that open (Select's chip variant) and the changes
-   button. A light fill with a toolbar button's corners, no frame, like the main toolbar's run
-   widget; the ones that open darken on hover. */
+/* The chip surface: shared with the pickers that open (Select's chip variant) and the changes button. */
 .surface {
   box-sizing: border-box;
   height: 22px;
-  border-radius: var(--radius-toolbar-button);
-  background: color-mix(in srgb, var(--fg) 7%, transparent);
-  color: var(--fg-secondary);
+  border-radius: 11px;
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--fg-strong);
   font-size: var(--fs-small);
 }
 /* A read-only fact: same shape and height as the pickers it sits beside. */

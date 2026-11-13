@@ -45,8 +45,7 @@
 }
 .chip:hover,
 .chip[aria-expanded="true"] {
-  background: color-mix(in srgb, var(--fg) 13%, transparent);
-  color: var(--fg-strong);
+  background: var(--bg-hover);
 }
 .chip:focus-visible {
   outline: none;

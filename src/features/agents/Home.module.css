@@ -67,6 +67,7 @@
 .docked .where {
   flex-wrap: nowrap;
   min-width: 0;
+  gap: 6px;
 }
 .docked .projectPicker,
 .docked .projectChip {
