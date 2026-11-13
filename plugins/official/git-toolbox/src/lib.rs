@@ -73,20 +73,20 @@ fn tooltip(s: &RepositoryStatus) -> String {
 }
 
 /// Shows the first of `projects` that has a repository in the status bar (the
-/// item hides when none has).
-fn show(projects: &[Project]) -> Result<(), Error> {
-    for project in projects {
+/// item hides when none has). Returns the index of the one shown.
+fn show(projects: &[Project]) -> Result<Option<usize>, Error> {
+    for (i, project) in projects.iter().enumerate() {
         if let Some(s) = project.vcs_status()? {
             let _ = storage::set(SHOWN, &project.root()?);
             host::set_status_item(
                 ITEM,
                 &StatusItem { text: label(&s), tooltip: Some(tooltip(&s)), command: Some("fetch".into()) },
             );
-            return Ok(());
+            return Ok(Some(i));
         }
     }
     host::remove_status_item(ITEM);
-    Ok(())
+    Ok(None)
 }
 
 impl GitToolbox {
@@ -162,7 +162,11 @@ impl Plugin for GitToolbox {
         }
         match id {
             "fetch" => {
-                let n = fetch(&projects)?;
+                // Only the repository the status bar shows, not every candidate.
+                let Some(i) = show(&projects)? else {
+                    return Ok(Some("The project is not in a git repository.".to_owned()));
+                };
+                let n = fetch(std::slice::from_ref(&projects[i]))?;
                 show(&projects)?;
                 Ok((n == 0).then(|| "The project is not in a git repository.".to_owned()))
             }
@@ -268,6 +272,19 @@ mod tests {
         // A scheduled tick keeps following the focused member.
         plugin.handle_events(&[Event::Scheduled], &host.invocation());
         assert_eq!(host.storage()["shown-root"], "/repos/b");
+    }
+
+    /// Fetch Now fetches the repository the status bar shows, not every
+    /// other open project.
+    #[test]
+    fn fetch_now_fetches_only_the_shown_repository() {
+        let host = MockHost::install();
+        host.add_project("/other");
+        storage::set(SHOWN, "/other").unwrap();
+        host.set_vcs_status(Some(status(0, 0)));
+        GitToolbox::default().run_command("fetch", &host.invocation(), None).unwrap();
+        assert_eq!(host.fetches(), 1);
+        assert_eq!(host.storage()["shown-root"], "/project");
     }
 
     /// A focused path outside every open project falls back to the window's
