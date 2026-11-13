@@ -4641,6 +4641,7 @@
   "{count} rows": "{count} 行",
   "Remove data source '{name}'? Its query console file stays on disk.": "是否移除数据源 '{name}'？其查询控制台文件将保留在磁盘上。",
   "Result {n}": "结果 {n}",
+  "Result {n}-{index}": "结果 {n}-{index}",
   "{name} has uncommitted changes. Commit or roll them back before switching to auto-commit?": "{name} 有未提交的更改。是否在切换到自动提交前提交或回滚这些更改？",
   "Cannot copy the name": "无法复制名称",
   "Cannot copy the reference": "无法复制引用",
