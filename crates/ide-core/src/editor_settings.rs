@@ -270,6 +270,8 @@ pub struct SmartKeysSettings {
     pub pair_quotes: bool,
     pub surround_selection: bool,
     pub tab_out_of_pair: bool,
+    /// Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag.
+    pub simultaneous_tag_editing: bool,
     /// Reformat on paste: `none` | `indentBlock` | `indentEachLine`.
     pub reformat_on_paste: String,
     pub escape_on_paste: bool,
@@ -289,6 +291,7 @@ impl Default for SmartKeysSettings {
             pair_quotes: true,
             surround_selection: true,
             tab_out_of_pair: true,
+            simultaneous_tag_editing: true,
             reformat_on_paste: "indentEachLine".into(),
             escape_on_paste: true,
             smart_indent: true,

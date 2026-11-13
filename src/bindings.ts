@@ -9605,6 +9605,8 @@ export type SmartKeysSettings = {
 	pairQuotes?: boolean,
 	surroundSelection?: boolean,
 	tabOutOfPair?: boolean,
+	/**  Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag. */
+	simultaneousTagEditing?: boolean,
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
 	reformatOnPaste?: string,
 	escapeOnPaste?: boolean,
