@@ -156,6 +156,9 @@ pub(crate) struct FileRow {
     pub name_start: u32,
     pub sym_start: u32,
     pub sym_len: u32,
+    /// Union of every symbol's [`char_mask`]: a selective symbol query can skip
+    /// the whole file before touching its symbol range.
+    pub sym_mask: u64,
     pub rel_mask: u64,
     pub name_mask: u64,
     /// Mask of the directory part (`rel[..name_start]`), precomputed for path queries.
@@ -229,7 +232,7 @@ impl HotFiles {
     }
 
     /// Updates the row of an existing slot (replace) in place.
-    fn update(&mut self, slot: u32, e: &FileEntry) {
+    fn update(&mut self, slot: u32, e: &FileEntry, sym_mask: u64) {
         let idx = slot as usize;
         if self.rows[idx].rel.get(&self.text) != &*e.rel {
             self.dead_text += self.rows[idx].rel.len as usize;
@@ -244,6 +247,7 @@ impl HotFiles {
         row.rel_mask = e.rel_mask;
         row.sym_start = e.sym_start;
         row.sym_len = e.sym_len;
+        row.sym_mask = sym_mask;
         row.live = true;
     }
 
@@ -253,6 +257,7 @@ impl HotFiles {
         row.rel = Span::NONE;
         row.sym_start = 0;
         row.sym_len = 0;
+        row.sym_mask = 0;
         row.live = false;
     }
 
@@ -416,21 +421,25 @@ impl SymTable {
         span
     }
 
-    /// Appends a file's symbols; they stay contiguous.
-    fn push(&mut self, symbols: &[StoredSymbol]) -> u32 {
+    /// Appends a file's symbols; they stay contiguous. Returns the start index
+    /// and the union of their masks.
+    fn push(&mut self, symbols: &[StoredSymbol]) -> (u32, u64) {
         let start = self.head.len() as u32;
+        let mut agg_mask = 0u64;
         for s in symbols {
+            let mask = char_mask(&s.name);
+            agg_mask |= mask;
             let name = self.intern(&s.name);
             let container = match &s.container {
                 Some(c) => self.intern(c),
                 None => Span::NONE,
             };
-            self.head.push(SymHead { mask: char_mask(&s.name), name });
+            self.head.push(SymHead { mask, name });
             self.container.push(container);
             self.kind.push(s.kind);
             self.range.push(s.range);
         }
-        start
+        (start, agg_mask)
     }
 
     /// Whether `symbols` would flatten to exactly the range at `start`.
@@ -573,20 +582,22 @@ impl IndexData {
             let old_len = old.sym_len;
             // Rescans and saves that re-parse to the same symbols reuse the range; a
             // same-path replacement then costs nothing in the symbol table.
-            entry.sym_start = if self.syms.same(old.sym_start, old_len, &symbols) {
-                old.sym_start
+            let (sym_start, sym_mask) = if self.syms.same(old.sym_start, old_len, &symbols) {
+                (old.sym_start, self.hot.rows[slot as usize].sym_mask)
             } else {
                 self.syms.free(old.sym_start, old_len);
                 self.syms.push(&symbols)
             };
+            entry.sym_start = sym_start;
             entry.sym_len = sym_len;
             self.symbol_count = self.symbol_count - old_len + sym_len;
-            self.hot.update(slot, &entry);
+            self.hot.update(slot, &entry, sym_mask);
             self.files[slot as usize] = Some(entry);
             self.compact_if_needed();
             return;
         }
-        entry.sym_start = self.syms.push(&symbols);
+        let (sym_start, sym_mask) = self.syms.push(&symbols);
+        entry.sym_start = sym_start;
         entry.sym_len = sym_len;
         let slot = match self.free.pop() {
             Some(slot) => slot,
@@ -605,6 +616,7 @@ impl IndexData {
                 name_start,
                 sym_start: entry.sym_start,
                 sym_len,
+                sym_mask,
                 rel_mask,
                 name_mask,
                 dir_mask: char_mask(&entry.rel[..name_start as usize]),
@@ -748,6 +760,7 @@ mod tests {
             assert_eq!(row.ascii, e.rel.is_ascii());
             assert_eq!(row.sym_start, e.sym_start);
             assert_eq!(row.sym_len, e.sym_len);
+            assert_eq!(row.sym_mask, d.symbols_of(e).fold(0u64, |m, s| m | char_mask(s.name)));
             assert_eq!(d.syms.head.len(), d.syms.container.len());
             assert_eq!(d.syms.head.len(), d.syms.kind.len());
             assert_eq!(d.syms.head.len(), d.syms.range.len());

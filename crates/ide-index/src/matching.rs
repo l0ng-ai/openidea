@@ -16,6 +16,7 @@ use nucleo_matcher::{Config, Matcher, Utf32Str, Utf32String};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const TIER_NAME: u32 = 1 << 20;
@@ -171,15 +172,22 @@ fn scan_until(
 
 pub(crate) struct Recents<'a> {
     pub paths: &'a [PathBuf],
+    /// Position of each path, so ranking a survivor does not scan the list.
+    /// Duplicates keep their first position, like `position`.
+    ranks: HashMap<&'a Path, usize>,
 }
 
-impl Recents<'_> {
-    fn rank(&self, path: &std::path::Path) -> Option<usize> {
-        self.paths.iter().position(|p| p == path)
+impl<'a> Recents<'a> {
+    pub(crate) fn new(paths: &'a [PathBuf]) -> Self {
+        let mut ranks = HashMap::with_capacity(paths.len());
+        for (i, p) in paths.iter().enumerate() {
+            ranks.entry(p.as_path()).or_insert(i);
+        }
+        Self { paths, ranks }
     }
 
-    fn bonus(&self, path: &std::path::Path) -> u32 {
-        self.rank(path).map_or(0, |r| RECENT_MAX.saturating_sub(r as u32 * 12))
+    fn bonus(&self, path: &Path) -> u32 {
+        self.ranks.get(path).map_or(0, |&r| RECENT_MAX.saturating_sub(r as u32 * 12))
     }
 }
 
@@ -498,7 +506,9 @@ pub(crate) fn find_symbols_until(
     let tiebreak = |a: &Cand, b: &Cand| a.len.cmp(&b.len).then_with(|| data.hot.rel(a.slot).cmp(data.hot.rel(b.slot)));
     let pool = limit * 4 + 64;
     let cands = scan_until(data, pool, &tiebreak, stopped, |slot, row, m, acc| {
-        if row.sym_len == 0 {
+        // Whole-file pre-filter: when the union of the file's symbol masks
+        // already misses a query character, no symbol can match.
+        if row.sym_len == 0 || name.mask & row.sym_mask != name.mask {
             return;
         }
         let e = file(data, slot);
