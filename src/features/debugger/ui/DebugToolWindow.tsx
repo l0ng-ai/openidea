@@ -39,6 +39,7 @@ import {
   type DebugSession,
 } from "../state";
 import { remoteWaitingNote } from "../remote";
+import { sessionTabs } from "./sessionTabs";
 import { MemoryView } from "../memory/MemoryView";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
@@ -113,24 +114,27 @@ export function DebugTabs() {
   const active = useDebug((s) => s.active);
   const list = Object.values(sessions);
   if (!list.length) return null;
-  const items: TabItem[] = list.map((s) => ({
+  const tabs = sessionTabs(list);
+  const items: TabItem[] = tabs.map(({ session: s, child }) => ({
     id: String(s.id),
-    label: s.parent != null ? tx`${s.name} (child)` : s.name,
+    label: child ? tx`${s.name} (child)` : s.name,
     text: s.name,
     icon: "debug",
     italic: s.status === "terminated",
     closable: true,
     tooltip: statusText(s),
   }));
+  // A browser launch's own session has no tab: its page's tab stands for it.
+  const shown = tabs.find((t) => t.session.id === active) ?? tabs.find((t) => t.owner === active);
   return (
     <Tabs
       variant="compact"
       className={styles.sessionTabs}
       aria-label="Debug sessions"
       items={items}
-      activeId={active != null ? String(active) : null}
+      activeId={shown ? String(shown.session.id) : null}
       onSelect={(id) => selectSession(+id)}
-      onClose={(id) => void closeSessionTab(+id)}
+      onClose={(id) => void closeSessionTab(tabs.find((t) => t.session.id === +id)?.owner ?? +id)}
       panelIdPrefix="openidea-debug"
     />
   );

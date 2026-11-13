@@ -393,6 +393,16 @@ fn no_session(s: DebugSessionId) -> IdeError {
     IdeError::not_found(format!("no debug session {}", s.0))
 }
 
+/// The name of a child session: the adapter's, or the parent's when it gives none. js-debug
+/// names a browser page's session after the page the browser starts on, before the URL
+/// loads (`about:blank`, or nothing in a new profile), which says nothing about what is debugged.
+fn child_name(configuration: &Value, parent: &str) -> String {
+    match configuration.get("name").and_then(Value::as_str) {
+        Some(name) if !name.trim().is_empty() && name != "about:blank" => name.to_owned(),
+        _ => parent.to_owned(),
+    }
+}
+
 /// Builds the `launch`/`attach` arguments: our fields first, then `extra_json` merged on top.
 pub fn launch_arguments(config: &LaunchConfig) -> IdeResult<Value> {
     // VS Code puts `type`, `request` and `name` in the arguments; js-debug picks launch
@@ -744,6 +754,9 @@ impl DebugManager {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         let dbg = adapter::find_config(&self.languages, &config.adapter)
             .ok_or_else(|| IdeError::unavailable(format!("unknown debug adapter `{}`", config.adapter)))?;
+        if config.adapter == "js-debug" {
+            adapter::set_browser_profile(&mut arguments, &cwd);
+        }
         let mut spec = adapter::resolve(&dbg, cwd.clone());
         if config.adapter == kotlin::ADAPTER
             && let Some(home) = arguments
@@ -872,8 +885,7 @@ impl DebugManager {
         request: String,
         configuration: Value,
     ) -> IdeResult<()> {
-        let name =
-            configuration.get("name").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| parent.name.clone());
+        let name = child_name(&configuration, &parent.name);
         let mut configuration = configuration;
         if let Some(obj) = configuration.as_object_mut() {
             obj.entry("request").or_insert_with(|| request.clone().into());
