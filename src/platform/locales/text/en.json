@@ -1517,5 +1517,7 @@
   "Created Git repository in {dir}": "Created Git repository in {dir}",
   "Check the JVM Debugger": "Check the JVM Debugger",
   "Whether the debugger for a build tool's JVMs is installed, offering the install when not (arg: { module, retry, done(ready) })": "Whether the debugger for a build tool's JVMs is installed, offering the install when not (arg: { module, retry, done(ready) })",
-  "This module has Kotlin sources, so debugging it needs the Kotlin debugger (kotlin-debug-adapter).": "This module has Kotlin sources, so debugging it needs the Kotlin debugger (kotlin-debug-adapter)."
+  "This module has Kotlin sources, so debugging it needs the Kotlin debugger (kotlin-debug-adapter).": "This module has Kotlin sources, so debugging it needs the Kotlin debugger (kotlin-debug-adapter).",
+  "Implements {names}": "Implements {names}",
+  "Choose Implemented Interface of {name} ({count} found)": "Choose Implemented Interface of {name} ({count} found)"
 }
