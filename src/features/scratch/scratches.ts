@@ -4,7 +4,7 @@
  * `scratch[_n].<ext>` name and opens it as a normal document.
  */
 import { IpcError, call, commands, emitLocalIdeEvent, isTauri } from "@/platform/ipc";
-import { ipcPath } from "@/platform/paths";
+import { appDataDir } from "@/platform/platformInfo";
 import { editorService, notifications } from "@/workbench/contributions";
 import { scratchContent, scratchFileName, scratchLanguages, type ScratchLanguage } from "./model";
 
@@ -19,11 +19,7 @@ export interface ScratchBackend {
 }
 
 export const tauriScratchBackend: ScratchBackend = {
-  // `appDataDir()` is native (`C:\…`); the scratch paths are used as UI paths.
-  dataDir: async () => {
-    const { appDataDir } = await import("@tauri-apps/api/path");
-    return ipcPath(await appDataDir());
-  },
+  dataDir: appDataDir,
   listNames: async (dir) => (await call(commands.fsReadDir(dir))).map((e) => e.name),
   createDir: async (dir) => void (await call(commands.fsCreateDir(dir))),
   createFile: async (path, text) =>
