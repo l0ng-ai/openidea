@@ -5,11 +5,14 @@
  *
  * A chip moves and deletes as one piece. Backspace right after one turns it back into its
  * text to edit (the completion opens on it); it folds again once the caret leaves it.
+ *
+ * A ``` block (pasted code or terminal output) is a card while the caret is outside it; a click
+ * on the card, or the caret at its end, opens it as text.
  */
 import { EditorState, StateEffect, StateField, type Extension, type Range, type Text } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, keymap, type DecorationSet } from "@codemirror/view";
-import { isQuoteLine, messageTokens, parseMention, type FileRef, type Mention } from "./composerModel";
-import { chipElement, chipStyles, openReference } from "./ReferenceChip";
+import { fencedBlocks, isQuoteLine, messageTokens, parseMention, type FileRef, type Mention } from "./composerModel";
+import { chipElement, chipStyles, codeCardElement, openReference } from "./ReferenceChip";
 
 /** The draft's referenced files: mentions of these are chips. */
 export const setReferences = StateEffect.define<readonly FileRef[]>();
@@ -91,12 +94,52 @@ class ChipWidget extends WidgetType {
   }
 }
 
+class CodeCardWidget extends WidgetType {
+  constructor(
+    readonly info: string,
+    readonly body: string,
+  ) {
+    super();
+  }
+  eq(other: CodeCardWidget) {
+    return other.info === this.info && other.body === this.body;
+  }
+  toDOM(view: EditorView) {
+    const range = (dom: HTMLElement) => {
+      const from = view.posAtDOM(dom);
+      return view.state.field(painted).cards.find((c) => c.from === from) ?? null;
+    };
+    const card: HTMLElement = codeCardElement(
+      this.info,
+      this.body,
+      () => {
+        const at = range(card);
+        if (at) view.dispatch({ selection: { anchor: at.to } });
+        view.focus();
+      },
+      () => {
+        const at = range(card);
+        if (!at) return;
+        const end = view.state.sliceDoc(at.to, at.to + 1) === "\n" ? at.to + 1 : at.to;
+        view.dispatch({ changes: { from: at.from, to: end }, userEvent: "delete" });
+        view.focus();
+      },
+    );
+    return card;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
 const quoteMarker = Decoration.replace({});
+const codeLine = Decoration.line({ class: chipStyles.codeLine });
 
 interface Painted {
   decorations: DecorationSet;
   atomic: DecorationSet;
   chips: readonly Chip[];
+  cards: readonly { from: number; to: number }[];
 }
 
 function paint(state: EditorState): Painted {
@@ -105,8 +148,28 @@ function paint(state: EditorState): Painted {
   const decorations: Range<Decoration>[] = [];
   const atomic: Range<Decoration>[] = [];
   const chips: Chip[] = [];
+  const cards: { from: number; to: number }[] = [];
   const { doc } = state;
+  const head = state.selection.main.head;
+  // Line numbers (1-based) inside ``` blocks: no chips or quotes there.
+  const coded = new Set<number>();
+  for (const fence of fencedBlocks(doc.toString().split("\n"))) {
+    const from = doc.line(fence.open + 1).from;
+    const to = doc.line(fence.close + 1).to;
+    for (let n = fence.open + 1; n <= fence.close + 1; n++) coded.add(n);
+    if (head > from && head <= to) {
+      for (let n = fence.open + 1; n <= fence.close + 1; n++) decorations.push(codeLine.range(doc.line(n).from));
+      continue;
+    }
+    const body =
+      fence.close > fence.open + 1 ? doc.sliceString(doc.line(fence.open + 2).from, doc.line(fence.close).to) : "";
+    const card = Decoration.replace({ widget: new CodeCardWidget(fence.info, body), block: true });
+    decorations.push(card.range(from, to));
+    atomic.push(card.range(from, to));
+    cards.push({ from, to });
+  }
   for (let n = 1; n <= doc.lines; n++) {
+    if (coded.has(n)) continue;
     const line = doc.line(n);
     if (isQuoteLine(line.text)) {
       const prev = n > 1 && isQuoteLine(doc.line(n - 1).text);
@@ -140,14 +203,18 @@ function paint(state: EditorState): Painted {
     decorations: Decoration.set(decorations, true),
     atomic: Decoration.set(atomic, true),
     chips,
+    cards,
   };
 }
 
 const painted = StateField.define<Painted>({
   create: paint,
   update(value, tr) {
+    // A ``` block opens while the caret is in it.
+    const fences = tr.selection && tr.state.doc.toString().includes("```");
     const changed =
       tr.docChanged ||
+      fences ||
       tr.effects.some((e) => e.is(setReferences) || e.is(unfold)) ||
       tr.startState.field(unfolded) !== tr.state.field(unfolded);
     return changed ? paint(tr.state) : value;

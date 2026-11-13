@@ -192,6 +192,43 @@ export const linesLabel = (lines: { from: number; to: number }) =>
 /** Lines of `text` that start with `>`: a quoted reply or selection, drawn as a block. */
 export const isQuoteLine = (line: string) => /^>( |$)/.test(line);
 
+export interface Fence {
+  /** Line indexes (0-based) of the opening and the closing fence. */
+  open: number;
+  close: number;
+  /** After the opening fence: a language, or `terminal <title>`. */
+  info: string;
+}
+
+/** The closed ``` blocks among `lines`. */
+export function fencedBlocks(lines: readonly string[]): Fence[] {
+  const out: Fence[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const open = /^(`{3,})([^`]*)$/.exec(lines[i]!);
+    if (!open) continue;
+    const ticks = open[1]!.length;
+    const close = lines.findIndex((l, j) => j > i && new RegExp(`^\`{${ticks},}\\s*$`).test(l));
+    if (close < 0) break;
+    out.push({ open: i, close, info: open[2]!.trim() });
+    i = close;
+  }
+  return out;
+}
+
+/** `text` as a ``` block on its own lines, fenced longer than any run of backticks in it. */
+export function fenced(text: string, info: string): string {
+  const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
+  const fence = "`".repeat(longest + 1);
+  return `${fence}${info}\n${text.replace(/\r\n?/g, "\n").replace(/\s+$/, "")}\n${fence}`;
+}
+
+/** A block's kind and label: `terminal zsh` → a terminal named zsh; `ts` → TypeScript code. */
+export function fenceLabel(info: string): { terminal: boolean; label: string; language: string | null } {
+  const [first = "", ...rest] = info.split(/\s+/);
+  if (first === "terminal") return { terminal: true, label: rest.join(" "), language: null };
+  return { terminal: false, label: info, language: first || null };
+}
+
 /** `@rel` with a line range suffix when given ("@src/a.rs:10-20"). */
 export function mentionOf(rel: string, lines?: { from: number; to: number }): string {
   if (!lines) return `@${rel}`;

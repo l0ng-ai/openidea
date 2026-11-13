@@ -5,6 +5,7 @@
  * a terminal feeds its process).
  */
 import { writeClipboardText } from "@/platform/clipboard";
+import { noteCopySource } from "@/platform/clipboardSource";
 import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
 import { installTerminalPaste } from "./paste";
@@ -64,7 +65,11 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     if (action.kind === "send" && e.key === "Enter") {
       if (e.type === "keydown") term.input(action.data);
     } else if (action.kind === "copy") {
-      if (e.type === "keydown") void writeClipboardText(term.getSelection()).catch(() => undefined);
+      if (e.type === "keydown") {
+        const text = term.getSelection();
+        noteCopySource(text, { kind: "terminal", title: "Terminal" });
+        void writeClipboardText(text).catch(() => undefined);
+      }
     } else {
       return true;
     }

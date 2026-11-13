@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { copySourceOf, noteCopySource } from "@/platform/clipboardSource";
+import { EditorView } from "@codemirror/view";
+import { trackEditorCopies } from "./references";
 import userEvent from "@testing-library/user-event";
 import { caretOf, setCaret, textOf, typeChars, typeIn } from "./composerTesting";
 import chipStyles from "./ReferenceChip.module.css";
@@ -298,6 +301,80 @@ describe("Composer current file", () => {
       expect(document.querySelector("[data-ref-path]")).toHaveAttribute("data-ref-path", "/p/src/main.ts");
     } finally {
       act(() => useEditorRegistry.setState({ active: null }));
+    }
+  });
+});
+
+describe("Composer pasted code and terminal output", () => {
+  const paste = (box: HTMLElement, text: string) =>
+    act(() => {
+      const event = new Event("paste", { bubbles: true, cancelable: true }) as ClipboardEvent;
+      Object.defineProperty(event, "clipboardData", {
+        value: { files: [], types: ["text/plain"], getData: () => text },
+      });
+      box.dispatchEvent(event);
+    });
+
+  it("turns terminal output into a terminal card, and opens it as text when the caret enters it", () => {
+    const box = renderComposer();
+    typeIn(box, "why does this fail?");
+    noteCopySource("$ pnpm test\nFAIL a.test.ts\n  expected 1", { kind: "terminal", title: "zsh" });
+    paste(box, "$ pnpm test\nFAIL a.test.ts\n  expected 1\n");
+    expect(textOf(box)).toBe("why does this fail?\n```terminal zsh\n$ pnpm test\nFAIL a.test.ts\n  expected 1\n```\n");
+    const card = screen.getByRole("group", { name: "Terminal · zsh" });
+    expect(card).toHaveTextContent("3 lines");
+    expect(card.querySelector("pre")).toHaveTextContent("$ pnpm test");
+    fireEvent.click(card);
+    expect(screen.queryByRole("group")).toBeNull();
+    expect(box.querySelectorAll(`.${chipStyles.codeLine}`)).toHaveLength(5);
+  });
+
+  it("removes a card with its button", () => {
+    const box = renderComposer();
+    typeIn(box, "```ts\nconst a = 1;\n```\nnext");
+    fireEvent.click(within(screen.getByRole("group", { name: "TypeScript" })).getByRole("button", { name: "Remove" }));
+    expect(textOf(box)).toBe("next");
+  });
+
+  it("references the lines copied from an editor, and pastes a copied single line as text", () => {
+    const box = renderComposer();
+    noteCopySource("fn a() {\n}", { kind: "file", path: "/p/src/a.rs", from: 3, to: 4 });
+    paste(box, "fn a() {\n}");
+    expect(textOf(box)).toBe("@src/a.rs:3-4 ");
+    expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/a.rs"]);
+    noteCopySource("fn a()", { kind: "file", path: "/p/src/a.rs", from: 3, to: 3 });
+    paste(box, "fn a()");
+    expect(textOf(box)).toBe("@src/a.rs:3-4 fn a()");
+  });
+
+  it("pastes other text as written", () => {
+    const box = renderComposer();
+    noteCopySource("something else", { kind: "terminal", title: "zsh" });
+    paste(box, "line one\nline two");
+    expect(textOf(box)).toBe("line one\nline two");
+  });
+});
+
+describe("editor copies", () => {
+  it("notes the copied lines of a file editor, or the caret's line when nothing is selected", () => {
+    const view = new EditorView({
+      doc: "one\ntwo\nthree\nfour",
+      parent: document.body,
+      selection: { anchor: 4, head: 14 },
+    });
+    const handle = { view, ctx: { path: "/p/src/a.ts" } } as TextEditorHandle;
+    act(() => useEditorRegistry.setState({ editors: new Set([handle]) }));
+    const stop = trackEditorCopies();
+    try {
+      view.contentDOM.dispatchEvent(new Event("copy", { bubbles: true }));
+      expect(copySourceOf("two\nthree\n")).toEqual({ kind: "file", path: "/p/src/a.ts", from: 2, to: 3 });
+      view.dispatch({ selection: { anchor: 15 } });
+      view.contentDOM.dispatchEvent(new Event("copy", { bubbles: true }));
+      expect(copySourceOf("four")).toEqual({ kind: "file", path: "/p/src/a.ts", from: 4, to: 4 });
+    } finally {
+      stop();
+      view.destroy();
+      act(() => useEditorRegistry.setState({ editors: new Set() }));
     }
   });
 });

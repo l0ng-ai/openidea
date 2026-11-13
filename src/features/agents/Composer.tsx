@@ -21,6 +21,7 @@ import { basename } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
 import { registerKeyClaim } from "@/platform/keymap";
 import { isVirtualUri } from "@/platform/virtualDocs";
+import { copySourceOf } from "@/platform/clipboardSource";
 import { notifications, OWNS_FILE_DROP } from "@/workbench/contributions";
 import {
   FILES_DRAG,
@@ -43,6 +44,7 @@ import {
   mergeMatches,
   resolveTyped,
   completionAt,
+  fenced,
   imageFromDataUrl,
   matchCommands,
   mentionOf,
@@ -561,6 +563,37 @@ export function Composer(props: ComposerProps) {
     return true;
   };
 
+  /**
+   * Text copied in the IDE: an editor's lines become a reference to them (a ``` block when the
+   * file is outside the project), a terminal's output a terminal block. A single line from an
+   * editor is pasted as text.
+   */
+  const pasteCopied = (pasted: string, view: EditorView): boolean => {
+    const source = copySourceOf(pasted);
+    if (!source) return false;
+    const { from, to } = view.state.selection.main;
+    const block = (info: string) => {
+      const before = view.state.sliceDoc(Math.max(0, from - 1), from);
+      replace(from, to, `${before && before !== "\n" ? "\n" : ""}${fenced(pasted, info)}\n`);
+    };
+    if (source.kind === "terminal") {
+      block(`terminal ${source.title}`.trim());
+      return true;
+    }
+    if (!pasted.replace(/\s+$/, "").includes("\n")) return false;
+    const rel = relativeTo([root, projectRoot], source.path);
+    if (!rel || rel === ".") {
+      const ext = /\.([\w+-]+)$/.exec(source.path)?.[1] ?? "";
+      block(ext);
+      return true;
+    }
+    updateComposer(id, { files: [...composerDraft(id).files, { path: resolveTyped(root, rel), rel }] });
+    const before = view.state.sliceDoc(Math.max(0, from - 1), from);
+    const glue = before && !/\s/.test(before) ? " " : "";
+    replace(from, to, `${glue}${mentionOf(rel, { from: source.from, to: source.to })} `);
+    return true;
+  };
+
   const onPaste = (e: ClipboardEvent, view: EditorView): boolean => {
     const data = e.clipboardData;
     if (!data) return false;
@@ -581,6 +614,10 @@ export function Composer(props: ComposerProps) {
       return false;
     }
     const plain = data.getData("text/plain");
+    if (plain && pasteCopied(plain, view)) {
+      e.preventDefault();
+      return true;
+    }
     if (plain && !plain.includes("\n") && pastePath(plain, view)) {
       e.preventDefault();
       return true;

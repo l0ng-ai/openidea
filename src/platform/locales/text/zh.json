@@ -7876,5 +7876,8 @@
   "File reference {name}, lines {lines}": "文件引用 {name}，第 {lines} 行",
   "Lines {lines}": "第 {lines} 行",
   "Open Editors": "已打开的编辑器",
-  "Enter Folder": "进入文件夹"
+  "Enter Folder": "进入文件夹",
+  "Click to edit": "点击编辑",
+  "Show less": "收起",
+  "Show {more} more lines": "展开其余 {more} 行"
 }

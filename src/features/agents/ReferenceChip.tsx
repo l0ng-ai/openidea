@@ -3,7 +3,7 @@
  * composer and in sent messages: a click opens the file at its lines (a folder is selected in
  * the Project view), hovering shows the full path and the lines.
  */
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { computePosition, flip, offset, shift } from "@floating-ui/react-dom";
 import { highlightInto, languageForPath } from "@/editor/lsp/markdown";
@@ -12,9 +12,18 @@ import { executeAction } from "@/platform/actions";
 import { tx, useTx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { basename } from "@/platform/project";
-import { fileIconName, Icon } from "@/ui";
+import { copyText, fileIconName, Icon } from "@/ui";
 import { editorService } from "@/workbench/contributions";
-import { isQuoteLine, linesLabel, messageTokens, parseMention, resolveTyped, type Mention } from "./composerModel";
+import {
+  fenceLabel,
+  fencedBlocks,
+  isQuoteLine,
+  linesLabel,
+  messageTokens,
+  parseMention,
+  resolveTyped,
+  type Mention,
+} from "./composerModel";
 import styles from "./ReferenceChip.module.css";
 
 export { styles as chipStyles };
@@ -108,32 +117,45 @@ export function ReferenceChip({ path, mention }: { path: string; mention: Mentio
 }
 
 /**
- * Message text with its references as chips, `/commands` tagged and `>` quotes as blocks.
+ * Message text with its references as chips, `/commands` tagged, `>` quotes and ``` blocks as cards.
  * `cwd` is the directory references resolve in.
  */
 export function ReferencedText({ text, cwd }: { text: string; cwd: string }) {
   const [root, setRoot] = useState<HTMLSpanElement | null>(null);
   useReferenceHover(root);
-  const blocks: { quote: boolean; text: string }[] = [];
-  for (const line of text.split("\n")) {
-    const quote = isQuoteLine(line);
+  const all = text.split("\n");
+  const blocks: ({ kind: "quote" | "text"; text: string } | { kind: "code"; info: string; text: string })[] = [];
+  const push = (kind: "quote" | "text", body: string) => {
     const last = blocks.at(-1);
-    const body = quote ? line.replace(/^> ?/, "") : line;
-    if (last && last.quote === quote) last.text += `\n${body}`;
-    else blocks.push({ quote, text: body });
+    if (last && last.kind === kind) last.text += `\n${body}`;
+    else blocks.push({ kind, text: body });
+  };
+  let i = 0;
+  for (const fence of [...fencedBlocks(all), null]) {
+    const end = fence ? fence.open : all.length;
+    for (; i < end; i++) {
+      const line = all[i]!;
+      const quote = isQuoteLine(line);
+      push(quote ? "quote" : "text", quote ? line.replace(/^> ?/, "") : line);
+    }
+    if (!fence) break;
+    blocks.push({ kind: "code", info: fence.info, text: all.slice(fence.open + 1, fence.close).join("\n") });
+    i = fence.close + 1;
   }
   return (
     <span ref={setRoot} className={styles.text}>
-      {blocks.map((block, i) =>
-        block.quote ? (
-          <div key={i} className={styles.quote}>
-            {block.text}
-          </div>
-        ) : (
-          // A quote ends its own line: the paragraph after it starts without an empty one.
-          <Fragment key={i}>{inline(i > 0 ? block.text.replace(/^\n/, "") : block.text, cwd)}</Fragment>
-        ),
-      )}
+      {blocks.map((block, n) => {
+        if (block.kind === "code") return <CodeCard key={n} info={block.info} body={block.text} />;
+        if (block.kind === "quote")
+          return (
+            <div key={n} className={styles.quote}>
+              {block.text}
+            </div>
+          );
+        // A block ends its own line: the paragraph after it starts without an empty one.
+        const body = n > 0 ? block.text.replace(/^\n/, "") : block.text;
+        return <Fragment key={n}>{inline(body, cwd)}</Fragment>;
+      })}
     </span>
   );
 }
@@ -276,4 +298,98 @@ async function preview(path: string, mention: Mention): Promise<HTMLElement | nu
 function useReferenceHover(root: HTMLElement | null) {
   const t = useTx();
   useEffect(() => (root ? referenceHover(root) : undefined), [root, t]);
+}
+
+/** A ``` block's header: icon and title ("Terminal · zsh", "ts"). */
+function cardTitle(info: string): { icon: string; title: string } {
+  const { terminal, label, language } = fenceLabel(info);
+  if (terminal) return { icon: "terminal", title: label ? `${tx("Terminal")} · ${label}` : tx("Terminal") };
+  const name = language && label === language ? languageForPath(`x.${language}`) : null;
+  return { icon: language ? fileIconName(`x.${language}`) : "file", title: name ?? (label || tx("Code")) };
+}
+
+const lineCount = (count: number, t: typeof tx) => (count === 1 ? t("1 line") : t`${count} lines`);
+
+const COMPOSER_PREVIEW_LINES = 5;
+
+/**
+ * A ``` block in the composer, folded to a card: its title, line count and first lines.
+ * `onOpen` edits it as text; `onRemove` deletes it.
+ */
+export function codeCardElement(info: string, body: string, onOpen: () => void, onRemove: () => void): HTMLElement {
+  const { icon, title } = cardTitle(info);
+  const lines = body.split("\n");
+  const card = document.createElement("div");
+  card.className = styles.codeCard!;
+  card.setAttribute("role", "group");
+  card.setAttribute("aria-label", title);
+  const head = document.createElement("div");
+  head.className = styles.codeHead!;
+  head.append(iconNode(icon, 14));
+  const name = document.createElement("span");
+  name.className = styles.codeTitle!;
+  name.textContent = title;
+  const meta = document.createElement("span");
+  meta.className = styles.codeMeta!;
+  meta.textContent = lineCount(lines.length, tx);
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = styles.codeRemove!;
+  remove.setAttribute("aria-label", tx("Remove"));
+  remove.append(iconNode("close", 10));
+  remove.addEventListener("mousedown", (e) => e.preventDefault());
+  remove.addEventListener("click", (e) => {
+    e.stopPropagation();
+    onRemove();
+  });
+  head.append(name, meta, remove);
+  const pre = document.createElement("pre");
+  pre.className = clsx(styles.codeBody, lines.length > COMPOSER_PREVIEW_LINES && styles.codeFaded);
+  const shown = lines.slice(0, COMPOSER_PREVIEW_LINES).join("\n");
+  pre.textContent = shown;
+  const { language, terminal } = fenceLabel(info);
+  if (!terminal) void highlightInto(pre, shown, language);
+  card.append(head, pre);
+  card.title = tx("Click to edit");
+  card.addEventListener("mousedown", (e) => e.preventDefault());
+  card.addEventListener("click", onOpen);
+  return card;
+}
+
+const MESSAGE_PREVIEW_LINES = 12;
+
+/** A ``` block in a sent message: a card with its title, the code highlighted, long ones folded. */
+function CodeCard({ info, body }: { info: string; body: string }) {
+  const t = useTx();
+  const { icon, title } = cardTitle(info);
+  const lines = body.split("\n");
+  const [open, setOpen] = useState(lines.length <= MESSAGE_PREVIEW_LINES);
+  const code = useRef<HTMLPreElement>(null);
+  const shown = open ? body : lines.slice(0, MESSAGE_PREVIEW_LINES).join("\n");
+  useEffect(() => {
+    const el = code.current;
+    if (!el) return;
+    el.textContent = shown;
+    const { language, terminal } = fenceLabel(info);
+    if (!terminal) void highlightInto(el, shown, language);
+  }, [shown, info]);
+  const more = lines.length - MESSAGE_PREVIEW_LINES;
+  return (
+    <div className={styles.codeCard} role="group" aria-label={title}>
+      <div className={styles.codeHead}>
+        <Icon name={icon} size={14} />
+        <span className={styles.codeTitle}>{title}</span>
+        <span className={styles.codeMeta}>{lineCount(lines.length, t)}</span>
+        <button type="button" className={styles.codeCopy} aria-label={t("Copy")} onClick={() => void copyText(body)}>
+          <Icon name="copy" size={12} />
+        </button>
+      </div>
+      <pre ref={code} className={clsx(styles.codeBody, !open && styles.codeFaded)} />
+      {more > 0 && (
+        <button type="button" className={styles.codeMore} onClick={() => setOpen(!open)}>
+          {open ? t("Show less") : t`Show ${more} more lines`}
+        </button>
+      )}
+    </div>
+  );
 }

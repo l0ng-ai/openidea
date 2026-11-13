@@ -30,7 +30,7 @@ import {
   TOOL_WINDOW,
   providerIcon,
 } from "./model";
-import { sendPaths, sendSelection } from "./references";
+import { sendPaths, sendSelection, trackEditorCopies } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { closeActiveTask, closeAndNewTask, connect, disconnect, openHome, refreshProviders, useAgents } from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
@@ -77,6 +77,7 @@ export function activate(): () => void {
   sync(useProject.getState().project?.root);
   const disposers = [
     activateSettingsPages(),
+    trackEditorCopies(),
     // The performance harness (`perf/`): long conversations to switch between and scroll.
     import.meta.env.DEV || import.meta.env.MODE === "perf"
       ? registerActions([

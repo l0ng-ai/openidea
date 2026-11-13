@@ -19,6 +19,9 @@ import {
   recall,
   toPrompt,
   mergeMatches,
+  fenced,
+  fencedBlocks,
+  fenceLabel,
   retryParts,
   usageLabel,
   limitLabel,
@@ -70,6 +73,18 @@ const option = (category: string, values: string[], current: string | null): Age
   current,
   values: values.map((value) => ({ value, name: value, description: null })),
   via: "option",
+});
+
+describe("fenced blocks", () => {
+  it("finds closed blocks, a longer fence holding backticks", () => {
+    const text = fenced("a ``` b\n```", "terminal zsh");
+    expect(text).toBe("````terminal zsh\na ``` b\n```\n````");
+    expect(fencedBlocks(["x", ...text.split("\n"), "```ts", "open"])).toEqual([
+      { open: 1, close: 4, info: "terminal zsh" },
+    ]);
+    expect(fenceLabel("terminal zsh")).toEqual({ terminal: true, label: "zsh", language: null });
+    expect(fenceLabel("ts")).toEqual({ terminal: false, label: "ts", language: "ts" });
+  });
 });
 
 describe("mergeMatches", () => {

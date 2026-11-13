@@ -1478,5 +1478,11 @@
   "File reference {name}, lines {lines}": "File reference {name}, lines {lines}",
   "Lines {lines}": "Lines {lines}",
   "Open Editors": "Open Editors",
-  "Enter Folder": "Enter Folder"
+  "Enter Folder": "Enter Folder",
+  "Click to edit": "Click to edit",
+  "Show less": "Show less",
+  "Show {more} more lines": "Show {more} more lines",
+  "Terminal": "Terminal",
+  "Code": "Code",
+  "Copy": "Copy"
 }

@@ -525,6 +525,31 @@ describe("folded content", () => {
   });
 });
 
+describe("message code blocks", () => {
+  it("shows a terminal block as a card, folding long output", async () => {
+    const output = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join("\n");
+    backend.entries.set("A", [
+      {
+        type: "user",
+        text: `why?\n\`\`\`terminal zsh\n${output}\n\`\`\`\nthanks`,
+        attachments: [],
+        images: [],
+        sentMs: 1,
+        doneMs: 2,
+        steered: false,
+      },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const card = await within(stream()).findByRole("group", { name: "Terminal · zsh" });
+    expect(card).toHaveTextContent("20 lines");
+    expect(card.querySelector("pre")!.textContent!.split("\n")).toHaveLength(12);
+    fireEvent.click(within(card).getByRole("button", { name: "Show 8 more lines" }));
+    expect(card.querySelector("pre")!.textContent!.split("\n")).toHaveLength(20);
+    expect(within(stream()).getByText(/thanks/)).toBeInTheDocument();
+  });
+});
+
 describe("message tags", () => {
   it("shows file references as chips that open the file, and skills as tags", async () => {
     backend.entries.set("A", [

@@ -4,6 +4,7 @@
  * session survives its tool window being hidden or its pane being re-mounted.
  */
 import { writeClipboardText } from "@/platform/clipboard";
+import { noteCopySource } from "@/platform/clipboardSource";
 import { Terminal, type IDisposable, type ILink, type ILinkHandler } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
@@ -781,6 +782,7 @@ export class TerminalSession {
   copySelection(): boolean {
     const text = this.term.getSelection();
     if (!text) return false;
+    noteCopySource(text, { kind: "terminal", title: this.snapshot.appTitle ?? this.snapshot.title });
     void writeClipboardText(text).catch(() => undefined);
     return true;
   }
