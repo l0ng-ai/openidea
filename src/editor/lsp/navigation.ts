@@ -1049,10 +1049,11 @@ type HighlightItem = { from: number; to: number; kind: Highlight["kind"] };
 
 const setHighlights = StateEffect.define<{ items: HighlightItem[]; sticky: boolean }>();
 
+const OCCURRENCE = "cm-lsp-occurrence";
 const KIND_CLASS = {
-  text: "cm-lsp-occurrence",
-  read: "cm-lsp-occurrence cm-lsp-occurrence-read",
-  write: "cm-lsp-occurrence cm-lsp-occurrence-write",
+  text: OCCURRENCE,
+  read: `${OCCURRENCE} ${OCCURRENCE}-read`,
+  write: `${OCCURRENCE} ${OCCURRENCE}-write`,
 };
 const marks = {
   text: Decoration.mark({ class: KIND_CLASS.text }),
