@@ -9,11 +9,15 @@ use openidea_plugin::text::{offset, position};
 use openidea_plugin::{
     Error, Invocation, Location, Plugin, Position, Project, Range, TextQuery, host, register_plugin,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 /// How long a namespace → XML file lookup is trusted.
 const INDEX_TTL: Duration = Duration::from_secs(30);
+/// Lookups kept per project before the expired ones are dropped.
+const MAX_INDEXED: usize = 1024;
+/// Other mappers one file's references are looked up in (each is a search).
+const MAX_OTHER_MAPPERS: usize = 32;
 /// Files declaring one namespace that are tried (normally one).
 const MAX_MAPPERS: u32 = 64;
 const STATEMENTS: [&str; 4] = ["select", "insert", "update", "delete"];
@@ -85,27 +89,77 @@ pub struct MapperJava {
     pub result_ids: Vec<(usize, Named)>,
 }
 
-fn range_of(text: &str, start: usize, end: usize) -> Range {
-    Range::new(position(text, start), position(text, end))
+/// Positions of many byte offsets in one text, asked in about increasing
+/// order: each one scans only from the offset asked before it, so a file with
+/// many names costs about one pass, not one pass per name.
+struct Positions<'a> {
+    text: &'a str,
+    at: usize,
+    pos: Position,
+}
+
+fn utf16_len(s: &str) -> u32 {
+    s.chars().map(|c| c.len_utf16() as u32).sum()
+}
+
+impl<'a> Positions<'a> {
+    fn new(text: &'a str) -> Self {
+        Positions { text, at: 0, pos: Position::new(0, 0) }
+    }
+
+    fn of(&mut self, at: usize) -> Position {
+        let at = at.min(self.text.len());
+        if at >= self.at {
+            for c in self.text[self.at..at].chars() {
+                if c == '\n' {
+                    self.pos = Position::new(self.pos.line + 1, 0);
+                } else {
+                    self.pos.character += c.len_utf16() as u32;
+                }
+            }
+        } else {
+            let back = &self.text[at..self.at];
+            match back.matches('\n').count() as u32 {
+                0 => self.pos.character -= utf16_len(back),
+                lines => {
+                    let line_start = self.text[..at].rfind('\n').map_or(0, |i| i + 1);
+                    self.pos = Position::new(self.pos.line - lines, utf16_len(&self.text[line_start..at]));
+                }
+            }
+        }
+        self.at = at;
+        self.pos
+    }
+
+    fn range(&mut self, start: usize, end: usize) -> Range {
+        Range::new(self.of(start), self.of(end))
+    }
+}
+
+/// Where a completion that replaces `typed` (just before `at`, on its line) starts.
+fn replace_start(at: Position, typed: &str) -> Option<Position> {
+    if typed.contains('\n') {
+        return None;
+    }
+    Some(Position::new(at.line, at.character.checked_sub(utf16_len(typed))?))
 }
 
 pub fn parse_xml(text: &str) -> MapperXml {
     let mut out = MapperXml::default();
-    let attr = |tag_start: usize, name: &str| -> Option<(String, usize, usize)> {
-        let tag_end = text[tag_start..].find('>').map_or(text.len(), |i| tag_start + i);
-        let tag = &text[tag_start..tag_end];
-        let i = tag.find(&format!("{name}=\""))? + name.len() + 2;
-        let j = tag[i..].find('"')? + i;
-        Some((tag[i..j].to_owned(), tag_start + i, tag_start + j))
-    };
+    let mut positions = Positions::new(text);
     let mut at = 0;
     while let Some(i) = text[at..].find('<') {
         let start = at + i + 1;
         at = start;
         let name: String = text[start..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
-        let named = |attr_name: &str| -> Option<Named> {
-            let (v, s, e) = attr(start, attr_name)?;
-            Some(Named { name: v, range: range_of(text, s, e) })
+        // `<` cannot appear inside an attribute value, so a tag without its
+        // `>` ends at the next `<`: no tag is searched past the next one.
+        let tag_end = text[start..].find(['<', '>']).map_or(text.len(), |i| start + i);
+        let tag = &text[start..tag_end];
+        let mut named = |attr_name: &str| -> Option<Named> {
+            let i = tag.find(&format!("{attr_name}=\""))? + attr_name.len() + 2;
+            let j = tag[i..].find('"')? + i;
+            Some(Named { name: tag[i..j].to_owned(), range: positions.range(start + i, start + j) })
         };
         if name == "mapper" {
             out.namespace = named("namespace");
@@ -163,7 +217,8 @@ fn skip_string(bytes: &[u8], mut i: usize) -> usize {
             _ => i += 1,
         }
     }
-    i
+    // A `\` as the last byte steps past the end.
+    i.min(bytes.len())
 }
 
 /// The index just past the `//…` or `/*…*/` comment opening at `bytes[i]`.
@@ -227,7 +282,7 @@ fn scan_declaration(stmt: &str) -> Option<Declaration> {
             }
             b'(' => {
                 let before = stmt[..i].trim_end();
-                let start = before.rfind(|c: char| !ident(c)).map_or(0, |p| p + 1);
+                let start = before.char_indices().rev().find(|&(_, c)| !ident(c)).map_or(0, |(p, c)| p + c.len_utf8());
                 if start == before.len() {
                     return None;
                 }
@@ -463,11 +518,8 @@ fn annotation_string_arg(args: &str, key: &str) -> Option<(String, usize, usize)
                 depth = depth.saturating_sub(1);
                 i += 1;
             }
-            _ if depth == 0 && ident(bytes[i] as char) => {
-                let mut j = i + 1;
-                while j < bytes.len() && ident(bytes[j] as char) {
-                    j += 1;
-                }
+            _ if depth == 0 && args.is_char_boundary(i) && args[i..].chars().next().is_some_and(ident) => {
+                let j = args[i..].char_indices().find(|&(_, c)| !ident(c)).map_or(args.len(), |(n, _)| i + n);
                 if &args[i..j] == key {
                     let mut k = j;
                     while k < bytes.len() && bytes[k].is_ascii_whitespace() {
@@ -548,8 +600,9 @@ pub fn parse_java(text: &str) -> MapperJava {
         Some(p) => format!("{p}.{simple}"),
         None => simple.clone(),
     });
+    let mut positions = Positions::new(text);
     let decl =
-        Some(Named { name: simple.clone(), range: range_of(text, i + 10 + indent, i + 10 + indent + simple.len()) });
+        Some(Named { name: simple.clone(), range: positions.range(i + 10 + indent, i + 10 + indent + simple.len()) });
     let body_start = text[i..].find('{').map_or(text.len(), |b| i + b + 1);
     let mut methods = Vec::new();
     let mut annotation_sql = Vec::new();
@@ -599,22 +652,21 @@ pub fn parse_java(text: &str) -> MapperJava {
                 {
                     let (s, e) = (stmt_start + decl.name.0, stmt_start + decl.name.1);
                     let list_base = stmt_start + decl.parens.0 + 1;
+                    let method_name =
+                        Named { name: stmt[decl.name.0..decl.name.1].to_owned(), range: positions.range(s, e) };
                     let params = params_of(&stmt[decl.parens.0 + 1..decl.parens.1])
                         .into_iter()
-                        .map(|(name, ps, pe)| Param { name, range: range_of(text, list_base + ps, list_base + pe) })
+                        .map(|(name, ps, pe)| Param { name, range: positions.range(list_base + ps, list_base + pe) })
                         .collect();
                     let method = methods.len();
-                    methods.push((
-                        Named { name: stmt[decl.name.0..decl.name.1].to_owned(), range: range_of(text, s, e) },
-                        params,
-                    ));
+                    methods.push((method_name, params));
                     let mut strings = Vec::new();
                     let mut sql_params = Vec::new();
                     for (ss, se, ps) in annotation_sql_of(&stmt[..decl.parens.0]) {
-                        strings.push(range_of(text, stmt_start + ss, stmt_start + se));
+                        strings.push(positions.range(stmt_start + ss, stmt_start + se));
                         sql_params.extend(ps.into_iter().map(|(n, ms, me)| Named {
                             name: n,
-                            range: range_of(text, stmt_start + ms, stmt_start + me),
+                            range: positions.range(stmt_start + ms, stmt_start + me),
                         }));
                     }
                     if !strings.is_empty() {
@@ -623,10 +675,10 @@ pub fn parse_java(text: &str) -> MapperJava {
                     let (refs, defs) = result_map_of(&stmt[..decl.parens.0]);
                     result_refs.extend(refs.into_iter().map(|(v, rs, re)| ResultMapRef {
                         method,
-                        name: Named { name: v, range: range_of(text, stmt_start + rs, stmt_start + re) },
+                        name: Named { name: v, range: positions.range(stmt_start + rs, stmt_start + re) },
                     }));
                     result_ids.extend(defs.into_iter().map(|(v, ds, de)| {
-                        (method, Named { name: v, range: range_of(text, stmt_start + ds, stmt_start + de) })
+                        (method, Named { name: v, range: positions.range(stmt_start + ds, stmt_start + de) })
                     }));
                 }
                 stmt_start = k + 1;
@@ -641,8 +693,13 @@ pub fn parse_java(text: &str) -> MapperJava {
 
 /// `namespace="com.acme.UserMapper"` in an XML file, either quote.
 fn namespace_query(namespace: &str) -> TextQuery {
-    let escaped: String =
-        namespace.chars().flat_map(|c| matches!(c, '.' | '$').then_some('\\').into_iter().chain([c])).collect();
+    let mut escaped = String::with_capacity(namespace.len());
+    for c in namespace.chars() {
+        if r"\.+*?()|[]{}^$#&-~".contains(c) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
     TextQuery {
         pattern: format!(r#"namespace\s*=\s*["']{escaped}["']"#),
         regex: true,
@@ -656,14 +713,22 @@ fn project_of(path: &str) -> Option<Project> {
     host::projects()
         .ok()?
         .into_iter()
-        .filter(|p| p.root().is_ok_and(|r| path.starts_with(&r)))
+        .filter(|p| p.root().is_ok_and(|r| is_under(path, &r)))
         .max_by_key(|p| p.root().map(|r| r.len()).unwrap_or(0))
+}
+
+/// Whether `path` is `root` or inside it (`/proj-x/a` is not inside `/proj`).
+fn is_under(path: &str, root: &str) -> bool {
+    path.strip_prefix(root)
+        .is_some_and(|rest| rest.is_empty() || root.ends_with(['/', '\\']) || rest.starts_with(['/', '\\']))
 }
 
 #[derive(Default)]
 pub struct Navigator {
     /// project root → namespace → (when it was looked up, the XML mapping it, if any).
     xml_index: BTreeMap<String, BTreeMap<String, (Instant, Option<String>)>>,
+    /// Other mappers looked up for the file being linked (see [`MAX_OTHER_MAPPERS`]).
+    other_mappers: BTreeSet<String>,
 }
 
 impl Navigator {
@@ -687,15 +752,20 @@ impl Navigator {
         let mut paths: Vec<&str> = found.matches.iter().map(|m| m.location.path.as_str()).collect();
         paths.dedup();
         let hit = paths.into_iter().find_map(|path| Some((path.to_owned(), read(path)?)));
-        self.xml_index
-            .entry(root)
-            .or_default()
-            .insert(namespace.to_owned(), (Instant::now(), hit.as_ref().map(|(path, _)| path.clone())));
+        let index = self.xml_index.entry(root).or_default();
+        if index.len() >= MAX_INDEXED {
+            index.retain(|_, (at, _)| at.elapsed() < INDEX_TTL);
+        }
+        index.insert(namespace.to_owned(), (Instant::now(), hit.as_ref().map(|(path, _)| path.clone())));
         hit
     }
 
     /// The interface `namespace` names (`com.acme.UserMapper` → `**/com/acme/UserMapper.java`).
     fn java_for(project: &Project, namespace: &str) -> Option<(String, MapperJava)> {
+        // A Java name only: anything else would be read as a glob.
+        if namespace.is_empty() || !namespace.chars().all(|c| ident(c) || c == '.') {
+            return None;
+        }
         let rel = format!("**/{}.java", namespace.replace('.', "/"));
         let path = project.find_files(&rel, 1).ok()?.into_iter().next()?;
         let java = parse_java(&project.read_file(&path).ok()?);
@@ -721,6 +791,14 @@ impl Navigator {
         };
         if ns == here_ns {
             return pick(xml, doc.path.clone());
+        }
+        // Each other mapper is a project search: a file naming thousands of them
+        // resolves the first few rather than running out of time.
+        if !self.other_mappers.contains(ns) {
+            if self.other_mappers.len() >= MAX_OTHER_MAPPERS {
+                return None;
+            }
+            self.other_mappers.insert(ns.to_owned());
         }
         let (path, other) = self.xml_for(project, ns)?;
         pick(&other, path)
@@ -751,7 +829,7 @@ impl Navigator {
             }
             typed
         };
-        let start = Position::new(at.line, at.character - typed.encode_utf16().count() as u32);
+        let start = replace_start(at, typed)?;
         let mut ids: Vec<String> = java.result_ids.iter().map(|(_, d)| d.name.clone()).collect();
         if let Some(project) = project_of(&doc.path)
             && let Some(name) = &java.name
@@ -796,6 +874,7 @@ impl Navigator {
                 }));
             }
             // resultMap / sql references resolve even when the interface is missing.
+            self.other_mappers.clear();
             for r in xml.result_map_refs.iter().chain(xml.extends_refs.iter()) {
                 if let Some(target) = self.anchor_target(&project, doc, &xml, &ns.name, &r.name, false) {
                     out.push((r.clone(), target, format!("resultMap {}", r.name)));
@@ -914,7 +993,7 @@ impl Providers for Navigator {
             && STATEMENTS.iter().any(|t| line.contains(&format!("<{t}")))
         {
             let typed = &line[i + 4..];
-            let start = Position::new(at.line, at.character - typed.encode_utf16().count() as u32);
+            let Some(start) = replace_start(at, typed) else { return Vec::new() };
             return java
                 .methods
                 .iter()
@@ -932,7 +1011,7 @@ impl Providers for Navigator {
             && line.contains("<include")
         {
             let typed = &line[i + 7..];
-            let start = Position::new(at.line, at.character - typed.encode_utf16().count() as u32);
+            let Some(start) = replace_start(at, typed) else { return Vec::new() };
             return xml
                 .sql_fragments
                 .iter()
@@ -949,12 +1028,12 @@ impl Providers for Navigator {
             && !before[i..].contains('}')
         {
             let typed = &before[i + 2..];
-            let statement =
-                xml.statements.iter().rev().find(|s| offset(&doc.text, s.range.start).is_some_and(|o| o < cursor));
+            let here = position(&doc.text, cursor);
+            let statement = xml.statements.iter().rev().find(|s| s.range.start < here);
             let Some((_, params)) = statement.and_then(|s| java.methods.iter().find(|(m, _)| m.name == s.name)) else {
                 return Vec::new();
             };
-            let start = Position::new(at.line, at.character - typed.encode_utf16().count() as u32);
+            let Some(start) = replace_start(at, typed) else { return Vec::new() };
             return params
                 .iter()
                 .filter(|p| p.name.starts_with(typed))
@@ -971,16 +1050,12 @@ impl Providers for Navigator {
 /// After `#{` / `${` inside an annotation SQL string: the method's parameters.
 fn annotation_param_completion(doc: &Document, at: Position) -> Vec<CompletionItem> {
     let Some(cursor) = offset(&doc.text, at) else { return Vec::new() };
+    let here = position(&doc.text, cursor);
     let java = parse_java(&doc.text);
     for sql in &java.annotation_sql {
         let (_, params) = &java.methods[sql.method];
-        for s in &sql.strings {
-            let (Some(start), Some(end)) = (offset(&doc.text, s.start), offset(&doc.text, s.end)) else {
-                continue;
-            };
-            if !(start <= cursor && cursor <= end) {
-                continue;
-            }
+        for s in sql.strings.iter().filter(|s| s.start <= here && here <= s.end) {
+            let Some(start) = offset(&doc.text, s.start) else { continue };
             let seg = &doc.text[start..cursor];
             let mut token: Option<usize> = None;
             for t in ["#{", "${"] {
@@ -993,7 +1068,7 @@ fn annotation_param_completion(doc: &Document, at: Position) -> Vec<CompletionIt
             if typed.contains('}') || !typed.chars().all(|c| ident(c) || c == '.') {
                 continue;
             }
-            let start = Position::new(at.line, at.character - typed.encode_utf16().count() as u32);
+            let Some(start) = replace_start(at, typed) else { continue };
             return params
                 .iter()
                 .filter(|p| p.name.starts_with(typed))
@@ -1476,5 +1551,90 @@ mod tests {
         let col = line.find("\"userMap\"").unwrap() + 1 + 2;
         let items = n.completion(&closed, Position::new(7, col as u32), None);
         assert_eq!(items.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["userMap"]);
+    }
+
+    #[test]
+    fn positions_agree_with_the_sdk_in_any_order() {
+        let text = "a\n中文 😀 x\r\n\n  é\nlast";
+        let mut positions = Positions::new(text);
+        let boundaries: Vec<usize> = (0..=text.len()).filter(|&i| text.is_char_boundary(i)).collect();
+        let order = boundaries.iter().chain(boundaries.iter().rev()).chain(boundaries.iter().step_by(3).rev());
+        for &at in order.chain([0, text.len(), 5, 1, text.len()].iter()) {
+            assert_eq!(positions.of(at), position(text, at), "at {at}");
+        }
+    }
+
+    /// Text a mapper may hold (or be crafted to hold) must not crash the plugin.
+    #[test]
+    fn odd_java_does_not_panic() {
+        // A no-break space before the name: the char before it is 2 bytes.
+        let java = parse_java("package a;\ninterface M {\n    User\u{00A0}findById(long id);\n}\n");
+        assert_eq!(java.methods.iter().map(|(m, _)| m.name.as_str()).collect::<Vec<_>>(), ["findById"]);
+        // A non-ASCII identifier among `@Results` arguments.
+        let java = parse_java("interface M { @Results(é) User f(); @Results(id = 常量.ID, x = \"y\") User g(); }");
+        assert_eq!(java.methods.len(), 2);
+        // A string the annotation scanner reads as a char literal, ending in `\`.
+        for text in [
+            "package a;\ninterface M {\n  @Select('\"' \\) void f();\n}",
+            "interface M { @Select(/*\"*/ \\) void f(); }",
+        ] {
+            parse_java(text);
+        }
+        assert_eq!(skip_string(b"\"a\\", 0), 3);
+    }
+
+    #[test]
+    fn a_tag_without_its_end_stops_at_the_next() {
+        let xml = parse_xml("<mapper namespace=\"a.B\"\n<select id=\"x\"\n<sql id=\"y\"/>");
+        assert_eq!(xml.namespace.map(|n| n.name).as_deref(), Some("a.B"));
+        assert_eq!(xml.statements.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["x"]);
+        assert_eq!(xml.sql_fragments[0].range, Range::new(Position::new(2, 9), Position::new(2, 10)));
+        // Many unclosed tags parse in one pass, not one pass per tag.
+        let many = "<select id=\"a\" ".repeat(50_000);
+        assert_eq!(parse_xml(&many).statements.len(), 50_000);
+    }
+
+    #[test]
+    fn completion_before_an_unclosed_parameter_on_an_earlier_line() {
+        let _host = setup();
+        let text = "<mapper namespace=\"com.acme.UserMapper\">\n  <select id=\"findById\">\n    where id = #{i\nx";
+        let xml = doc("/project/src/main/resources/mapper/UserMapper.xml", "xml", text);
+        assert!(Navigator::default().completion(&xml, Position::new(3, 0), None).is_empty());
+    }
+
+    #[test]
+    fn namespaces_are_searched_and_globbed_literally() {
+        let pattern = namespace_query("a|b.x[0]").pattern;
+        assert!(pattern.contains(r"a\|b\.x\[0\]"), "{pattern}");
+        let _host = setup();
+        let project = host::projects().unwrap().remove(0);
+        assert!(Navigator::java_for(&project, "com.acme.UserMapper").is_some());
+        assert!(Navigator::java_for(&project, "com.*.UserMapper").is_none());
+        assert!(Navigator::java_for(&project, "").is_none());
+    }
+
+    #[test]
+    fn a_project_contains_only_its_own_paths() {
+        assert!(is_under("/proj/a.xml", "/proj"));
+        assert!(is_under("/proj/a.xml", "/proj/"));
+        assert!(is_under("C:\\proj\\a.xml", "C:\\proj"));
+        assert!(is_under("/proj", "/proj"));
+        assert!(!is_under("/proj-x/a.xml", "/proj"));
+    }
+
+    #[test]
+    fn a_file_naming_many_mappers_looks_up_a_few() {
+        let host = MockHost::install();
+        let searches = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = searches.clone();
+        host.on_search(move |_, _| {
+            count.set(count.get() + 1);
+            Ok(TextSearch { matches: Vec::new(), limit_hit: false })
+        });
+        let refs: String = (0..200).map(|n| format!("  <include refid=\"ns{n}.x\"/>\n")).collect();
+        let text = format!("<mapper namespace=\"a.Self\">\n{refs}</mapper>\n");
+        let xml = doc("/project/src/m.xml", "xml", &text);
+        assert!(Navigator::default().line_markers(&xml).is_empty());
+        assert_eq!(searches.get(), MAX_OTHER_MAPPERS);
     }
 }

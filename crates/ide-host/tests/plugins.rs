@@ -2992,13 +2992,18 @@ fn official_csv_editor_edits_the_shared_document() {
     f.host.view_event("openidea.csv-editor", "table", cell, inv.clone()).unwrap();
     assert_eq!(f.workspace.text("people.csv"), "name,city\nAda,\"Paris, FR\"\nBob,Oslo\n");
 
+    // Add Row appends, also on wasm32 (where its row index used to wrap to the header).
+    let add = ide_plugin::ViewEvent::Button { id: "add-row".into() };
+    f.host.view_event("openidea.csv-editor", "table", add, inv.clone()).unwrap();
+    assert_eq!(f.workspace.text("people.csv"), "name,city\nAda,\"Paris, FR\"\nBob,Oslo\n,\n");
+
     // Settings: without a header row every record is a row.
     let mut values = serde_json::Map::new();
     values.insert("firstRowIsHeader".into(), serde_json::Value::Bool(false));
     f.workspace.settings.lock().insert("openidea.csv-editor".into(), values);
     let view = f.host.render_view("openidea.csv-editor", "table", None, inv.clone()).unwrap();
     let ide_plugin::ViewBody::Table(t) = &view.body else { panic!("{view:?}") };
-    assert_eq!((t.columns[0].as_str(), t.total_rows), ("Column 1", 3));
+    assert_eq!((t.columns[0].as_str(), t.total_rows), ("Column 1", 4));
 
     // Undeclared views are refused before any code runs.
     let err = f.host.render_view("openidea.csv-editor", "other", None, inv).unwrap_err();
