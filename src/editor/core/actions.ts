@@ -100,7 +100,7 @@ import { shortcutLabel } from "@/platform/keymap";
  * tool window's speed search: it opens a layer too, but the keys belong to its tree (⌘⌫).
  */
 export const TEXT_WHEN = "editorTextFocus || textEditorActive && popupOpen && !toolWindowFocus";
-const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 const TABS_WHEN = "editorTabsOpen && !toolWindowFocus";
 
 function activeSlot(): EditorSlot | null {

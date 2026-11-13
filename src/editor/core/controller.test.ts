@@ -12,6 +12,7 @@ import { hideContextMenu, resolveMenuItems, useContextMenuStore } from "@/ui";
 import { evaluateWhen, getContext, setContext } from "@/platform/context";
 import { installKeyboardDispatcher } from "@/platform/keymap";
 import { TEXT_WHEN } from "./actions";
+import { EDITOR_WHEN } from "@/editor/lsp/actions";
 
 let ctrl: EditorController | null = null;
 
@@ -465,14 +466,20 @@ describe("EditorController", () => {
   });
 });
 
-describe("TEXT_WHEN", () => {
-  const editorBehind = { textEditorActive: true, editorTextFocus: false, popupOpen: true };
+describe("editor action when clauses", () => {
+  const editorBehind = { textEditorActive: true, editorTextFocus: false, editorFocus: false, popupOpen: true };
 
-  it("runs text actions on the editor from a popup such as Find Action", () => {
-    expect(evaluateWhen(TEXT_WHEN, { ...editorBehind, toolWindowFocus: false })).toBe(true);
+  it.each([
+    ["TEXT_WHEN", TEXT_WHEN],
+    ["EDITOR_WHEN", EDITOR_WHEN],
+  ])("%s runs on the editor from a popup such as Find Action", (_, when) => {
+    expect(evaluateWhen(when, { ...editorBehind, toolWindowFocus: false })).toBe(true);
   });
 
-  it("leaves keys to a tool window's speed search, so ⌘⌫ there doesn't delete an editor line", () => {
-    expect(evaluateWhen(TEXT_WHEN, { ...editorBehind, toolWindowFocus: true })).toBe(false);
+  it.each([
+    ["TEXT_WHEN", TEXT_WHEN],
+    ["EDITOR_WHEN", EDITOR_WHEN],
+  ])("%s leaves keys to a tool window's speed search, e.g. ⌘⌫ to Delete Line", (_, when) => {
+    expect(evaluateWhen(when, { ...editorBehind, toolWindowFocus: true })).toBe(false);
   });
 });
