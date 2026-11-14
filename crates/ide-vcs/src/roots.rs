@@ -146,54 +146,34 @@ impl Repos {
     /// The reads go through [`Backend`], the Changes-view surface — repositories of a
     /// future second backend slot in here once `Repos` learns to hold them.
     pub fn status(&self) -> IdeResult<Vec<FileStatus>> {
-        let mut out = Vec::new();
-        let mut first_error = None;
-        let mut read = 0;
-        for repo in &self.repos {
-            let nested: Vec<&Path> = self
-                .repos
-                .iter()
-                .map(|r| r.root())
-                .filter(|r| *r != repo.root() && r.starts_with(repo.root()))
-                .collect();
-            let status = match (repo.as_ref() as &dyn Backend).status() {
-                Ok(status) => {
-                    read += 1;
-                    status
-                }
-                Err(e) => {
-                    tracing::warn!("git status of {}: {e}", repo.root().display());
-                    first_error.get_or_insert(e);
-                    continue;
-                }
-            };
-            out.extend(status.into_iter().filter(|f| {
-                let untracked_root =
-                    f.unstaged == Some(crate::ChangeKind::Untracked) && nested.iter().any(|n| f.path.0 == *n);
-                !untracked_root
-            }));
-        }
-        match first_error {
-            Some(e) if read == 0 => Err(e),
-            _ => Ok(out),
-        }
+        let groups: Vec<(Arc<Repo>, Vec<PathBuf>)> = self.repos.iter().map(|repo| (repo.clone(), Vec::new())).collect();
+        self.read_status(groups, false)
     }
 
     /// [`status`](Self::status) for `paths` only: each path goes to its innermost repository,
     /// so a repository without one is not read at all and a nested repository keeps its own
     /// files (the enclosing one's "untracked folder" entry for them is dropped).
     pub fn status_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<FileStatus>> {
+        self.read_status(self.group(paths), true)
+    }
+
+    /// Reads one status per repository: the whole working tree, or `scoped` the paths it was
+    /// given. A nested repository reports its own files, so the enclosing one's "untracked
+    /// folder" entry for it is dropped. A repository that cannot be read is left out; fails
+    /// only when all fail.
+    fn read_status(&self, groups: Vec<(Arc<Repo>, Vec<PathBuf>)>, scoped: bool) -> IdeResult<Vec<FileStatus>> {
         let mut out = Vec::new();
         let mut first_error = None;
         let mut read = 0;
-        for (repo, mine) in self.group(paths) {
+        for (repo, mine) in groups {
             let nested: Vec<&Path> = self
                 .repos
                 .iter()
                 .map(|r| r.root())
                 .filter(|r| *r != repo.root() && r.starts_with(repo.root()))
                 .collect();
-            let status = match (repo.as_ref() as &dyn Backend).status_paths(&mine) {
+            let backend = repo.as_ref() as &dyn Backend;
+            let status = match if scoped { backend.status_paths(&mine) } else { backend.status() } {
                 Ok(status) => {
                     read += 1;
                     status

@@ -154,7 +154,7 @@ let timer: ReturnType<typeof setTimeout> | undefined;
 let pendingFull = false;
 /** Paths of watcher batches waiting for an incremental refresh. */
 const pendingPaths = new Set<string>();
-/** Above this many paths one full status is cheaper than a scoped read of each. */
+/** Above this many paths one full read is cheaper than a pathspec that big. */
 const PATH_BATCH_LIMIT = 200;
 let inflight: Promise<void> | null = null;
 /** The refresh queued behind `inflight` (it may have started before the caller's change). */
@@ -209,9 +209,12 @@ async function runScheduled(): Promise<void> {
 export function refreshNow(): Promise<void> {
   if (!useVcs.getState().available) return Promise.resolve();
   if (inflight) {
+    // A full refresh answers for every path: queue it as one, drained after the running read, so a
+    // pending batch of paths cannot swallow it (and the caller still reads the state it produced).
+    pendingFull = true;
     followUp ??= inflight.then(() => {
       followUp = null;
-      return refreshNow();
+      return runScheduled();
     });
     return followUp;
   }
@@ -277,9 +280,12 @@ export function refreshPathsNow(paths: readonly string[]): Promise<void> {
     return refreshNow();
   }
   if (inflight) {
+    // Coalesce with the running refresh: the queued run drains every path that arrived meanwhile,
+    // so a second batch is not answered with the first one's list.
+    for (const path of paths) pendingPaths.add(path);
     followUp ??= inflight.then(() => {
       followUp = null;
-      return refreshPathsNow(paths);
+      return runScheduled();
     });
     return followUp;
   }
@@ -319,7 +325,8 @@ export function mergeStatus(
     const path = stripSlash(f.path);
     return !exact.has(path) && !dirs.some((dir) => path.startsWith(dir));
   };
-  return [...base.filter(keep), ...fresh].sort((a, b) => a.relPath.localeCompare(b.relPath));
+  // Byte order, as the backend sorts a full status: a locale-aware compare would reorder it.
+  return [...base.filter(keep), ...fresh].sort((a, b) => (a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0));
 }
 
 export function applyStatus(status: FileStatus[], branch: BranchInfo | null) {
